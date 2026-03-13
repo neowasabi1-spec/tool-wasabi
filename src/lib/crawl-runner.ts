@@ -53,9 +53,9 @@ function isCheckoutLikePage(url: string, pageTitle?: string): boolean {
 
 async function getQuizStepLabel(page: Page): Promise<string> {
   return page.evaluate(() => {
-    const h1 = document.querySelector('h1')?.innerText?.trim();
-    const h2 = document.querySelector('h2')?.innerText?.trim();
-    const question = document.querySelector('[class*="question"], [data-question], .quiz-question')?.innerText?.trim();
+    const h1 = (document.querySelector('h1') as HTMLElement | null)?.innerText?.trim();
+    const h2 = (document.querySelector('h2') as HTMLElement | null)?.innerText?.trim();
+    const question = (document.querySelector('[class*="question"], [data-question], .quiz-question') as HTMLElement | null)?.innerText?.trim();
     return h1 || h2 || question || 'Quiz step';
   });
 }
