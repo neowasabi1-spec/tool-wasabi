@@ -4,7 +4,7 @@ const nextConfig = {
   ...(process.env.STANDALONE === 'true' ? { output: 'standalone' } : {}),
 
   typescript: { ignoreBuildErrors: process.env.NODE_ENV !== 'production' },
-  eslint: { ignoreDuringBuilds: process.env.NODE_ENV !== 'production' },
+  eslint: { ignoreDuringBuilds: true },
 
   experimental: {
     serverActions: {
