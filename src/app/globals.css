@@ -1,0 +1,73 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --foreground-rgb: 0, 0, 0;
+  --background-start-rgb: 249, 250, 251;
+  --background-end-rgb: 255, 255, 255;
+}
+
+body {
+  color: rgb(var(--foreground-rgb));
+  background: linear-gradient(
+      to bottom,
+      transparent,
+      rgb(var(--background-end-rgb))
+    )
+    rgb(var(--background-start-rgb));
+}
+
+/* Excel-like table styles */
+.excel-table {
+  @apply w-full border-collapse table-fixed;
+}
+
+.excel-table th {
+  @apply bg-gray-100 border border-gray-300 px-2 py-1.5 text-left text-xs font-semibold text-gray-700 sticky top-0 whitespace-nowrap;
+}
+
+.excel-table td {
+  @apply border border-gray-200 px-2 py-1 text-xs;
+}
+
+.excel-table tr:hover td {
+  @apply bg-blue-50;
+}
+
+.excel-table input,
+.excel-table select {
+  @apply w-full bg-transparent border-0 focus:ring-1 focus:ring-blue-500 focus:outline-none rounded px-1 py-0.5 text-xs;
+}
+
+.excel-table input:focus,
+.excel-table select:focus {
+  @apply bg-white;
+}
+
+.excel-table select {
+  @apply truncate max-w-full;
+}
+
+/* Compact buttons in table */
+.excel-table button {
+  @apply text-xs px-1.5 py-0.5;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-gray-100;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-gray-300 rounded;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-gray-400;
+}

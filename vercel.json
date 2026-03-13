@@ -1,0 +1,25 @@
+{
+  "framework": "nextjs",
+  "buildCommand": "npm run build",
+  "outputDirectory": ".next",
+  "functions": {
+    "src/app/api/swipe-quiz/multiagent-generate/route.ts": {
+      "maxDuration": 800,
+      "memory": 1024
+    },
+    "src/app/api/clone-funnel/route.ts": {
+      "maxDuration": 300,
+      "memory": 1024
+    },
+    "src/app/api/generate-quiz/route.ts": {
+      "maxDuration": 800
+    },
+    "src/app/api/swipe-quiz/per-step-analysis/route.ts": {
+      "maxDuration": 800
+    },
+    "src/app/api/swipe-quiz/screenshot/route.ts": {
+      "maxDuration": 300,
+      "memory": 1024
+    }
+  }
+}
