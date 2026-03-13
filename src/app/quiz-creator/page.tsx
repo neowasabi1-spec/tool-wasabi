@@ -223,7 +223,7 @@ const EMPTY_PRODUCT: ProductInfo = {
 };
 
 interface GenPhaseStatus {
-  phase: GenPhase;
+  phase: GenPhase | SwipePhase;
   status: 'pending' | 'running' | 'completed' | 'error';
   duration_ms?: number;
   error?: string;
