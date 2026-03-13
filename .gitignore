@@ -52,3 +52,6 @@ service-account*.json
 .vscode/
 *.swp
 *.swo
+
+.vercel
+.env*.local

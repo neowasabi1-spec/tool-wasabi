@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-const CACHE = new Map<string, { data: Buffer; ts: number }>();
+const CACHE = new Map<string, { data: Uint8Array; contentType: string; ts: number }>();
 const TTL = 1000 * 60 * 60; // 1 hour
 
 export async function GET(req: NextRequest) {
@@ -11,7 +11,7 @@ export async function GET(req: NextRequest) {
   if (cached && Date.now() - cached.ts < TTL) {
     return new NextResponse(cached.data, {
       headers: {
-        'Content-Type': 'image/png',
+        'Content-Type': cached.contentType,
         'Cache-Control': 'public, max-age=3600',
       },
     });
@@ -35,13 +35,13 @@ export async function GET(req: NextRequest) {
       if (!contentType.startsWith('image/')) continue;
 
       const arrayBuf = await res.arrayBuffer();
-      const buf = Buffer.from(arrayBuf);
+      const bytes = new Uint8Array(arrayBuf);
 
-      if (buf.length < 1000) continue;
+      if (bytes.length < 1000) continue;
 
-      CACHE.set(url, { data: buf, ts: Date.now() });
+      CACHE.set(url, { data: bytes, contentType, ts: Date.now() });
 
-      return new NextResponse(buf, {
+      return new NextResponse(bytes, {
         headers: {
           'Content-Type': contentType,
           'Cache-Control': 'public, max-age=3600',
