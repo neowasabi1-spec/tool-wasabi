@@ -448,14 +448,14 @@ function SwipedAnalysisDisplay({ swiped, original }: { swiped: AnalysisResult; o
             Your Brand - Summary
           </h4>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {brandSummary.brand_name && <InfoRow label="Brand" value={String(brandSummary.brand_name)} />}
-            {brandSummary.value_proposition && <InfoRow label="Value Prop" value={String(brandSummary.value_proposition)} />}
-            {brandSummary.quiz_title && <InfoRow label="Quiz Title" value={String(brandSummary.quiz_title)} />}
-            {brandSummary.quiz_subtitle && <InfoRow label="Quiz Subtitle" value={String(brandSummary.quiz_subtitle)} />}
-            {brandSummary.quiz_hook && <InfoRow label="Quiz Hook" value={String(brandSummary.quiz_hook)} />}
-            {brandSummary.cta_primary && <InfoRow label="CTA" value={String(brandSummary.cta_primary)} />}
-            {brandSummary.lead_magnet_angle && <InfoRow label="Lead Magnet" value={String(brandSummary.lead_magnet_angle)} />}
-            {brandSummary.conversion_strategy && <InfoRow label="Conversion" value={String(brandSummary.conversion_strategy)} />}
+            {!!brandSummary.brand_name && <InfoRow label="Brand" value={String(brandSummary.brand_name)} />}
+            {!!brandSummary.value_proposition && <InfoRow label="Value Prop" value={String(brandSummary.value_proposition)} />}
+            {!!brandSummary.quiz_title && <InfoRow label="Quiz Title" value={String(brandSummary.quiz_title)} />}
+            {!!brandSummary.quiz_subtitle && <InfoRow label="Quiz Subtitle" value={String(brandSummary.quiz_subtitle)} />}
+            {!!brandSummary.quiz_hook && <InfoRow label="Quiz Hook" value={String(brandSummary.quiz_hook)} />}
+            {!!brandSummary.cta_primary && <InfoRow label="CTA" value={String(brandSummary.cta_primary)} />}
+            {!!brandSummary.lead_magnet_angle && <InfoRow label="Lead Magnet" value={String(brandSummary.lead_magnet_angle)} />}
+            {!!brandSummary.conversion_strategy && <InfoRow label="Conversion" value={String(brandSummary.conversion_strategy)} />}
           </div>
           {Array.isArray(brandSummary.key_benefits) && brandSummary.key_benefits.length > 0 && (
             <div className="mt-3">
