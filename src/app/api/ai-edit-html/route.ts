@@ -34,7 +34,7 @@ function splitHtmlIntoChunks(html: string): { chunks: string[]; boundaries: numb
     return { chunks: [html], boundaries: [0] };
   }
 
-  const bodyMatch = html.match(/<body[\s\S]*?<\/body>/is);
+  const bodyMatch = html.match(/<body[\s\S]*?<\/body>/i);
 
   if (!bodyMatch) {
     if (html.length < 60000) {
