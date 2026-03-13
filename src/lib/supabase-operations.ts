@@ -313,7 +313,7 @@ export async function createFunnelCrawlSteps(
       quizStepLabel: s.quizStepLabel,
     } as unknown as Json,
     screenshot_base64: s.screenshotBase64 ?? null,
-    vision_analysis: visionAnalysesByStep?.[s.stepIndex] ?? null,
+    vision_analysis: (visionAnalysesByStep?.[s.stepIndex] ?? null) as unknown as Json,
   }));
 
   const { data, error } = await supabase
