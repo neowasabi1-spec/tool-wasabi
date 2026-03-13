@@ -559,7 +559,7 @@ export default function ComplianceAIPage() {
                 </div>
                 <div className="flex items-center gap-3">
                   {catStatus !== 'pending' && (
-                    <span className={`text-xs font-medium px-2 py-1 rounded ${STATUS_CONFIG[catStatus === 'pending' ? 'warning' : catStatus].bg} ${STATUS_CONFIG[catStatus === 'pending' ? 'warning' : catStatus].color}`}>
+                    <span className={`text-xs font-medium px-2 py-1 rounded ${STATUS_CONFIG[catStatus].bg} ${STATUS_CONFIG[catStatus].color}`}>
                       {catStatus.toUpperCase()}
                     </span>
                   )}
