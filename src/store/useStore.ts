@@ -58,6 +58,7 @@ interface AppFunnelPage {
   feedback?: string;
   clonedData?: {
     html: string;
+    mobileHtml?: string;
     title: string;
     method_used: string;
     content_length: number;
