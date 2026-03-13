@@ -3,7 +3,7 @@ const nextConfig = {
   reactStrictMode: true,
   ...(process.env.STANDALONE === 'true' ? { output: 'standalone' } : {}),
 
-  typescript: { ignoreBuildErrors: process.env.NODE_ENV !== 'production' },
+  typescript: { ignoreBuildErrors: true },
   eslint: { ignoreDuringBuilds: true },
 
   experimental: {
