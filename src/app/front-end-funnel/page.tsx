@@ -427,7 +427,7 @@ export default function FrontEndFunnel() {
   const affiliateFunnelSteps = useMemo<AffiliateFunnelStep[]>(() => {
     if (!selectedAffiliateFunnel) return [];
     const raw = selectedAffiliateFunnel.steps;
-    if (Array.isArray(raw)) return raw as AffiliateFunnelStep[];
+    if (Array.isArray(raw)) return raw as unknown as AffiliateFunnelStep[];
     return [];
   }, [selectedAffiliateFunnel]);
 
@@ -504,7 +504,7 @@ export default function FrontEndFunnel() {
     importDoneRef.current = true;
 
     const steps = Array.isArray(funnel.steps)
-      ? (funnel.steps as AffiliateFunnelStep[])
+      ? (funnel.steps as unknown as AffiliateFunnelStep[])
       : [];
 
     if (steps.length === 0) return;
