@@ -27,6 +27,7 @@ import type {
   SavedPromptUpdate,
   ArchivedFunnel,
   ArchivedFunnelInsert,
+  Json,
 } from '@/types/database';
 
 type ArchivedFunnelUpdate = import('@/types/database').Database['public']['Tables']['archived_funnels']['Update'];
@@ -310,7 +311,7 @@ export async function createFunnelCrawlSteps(
       timestamp: s.timestamp,
       isQuizStep: s.isQuizStep,
       quizStepLabel: s.quizStepLabel,
-    },
+    } as unknown as Json,
     screenshot_base64: s.screenshotBase64 ?? null,
     vision_analysis: visionAnalysesByStep?.[s.stepIndex] ?? null,
   }));
