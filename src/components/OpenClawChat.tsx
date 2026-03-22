@@ -151,29 +151,23 @@ RULES:
       }));
 
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 55000);
-      const res = await fetch('/api/openclaw/action', {
+      const res = await fetch('/api/openclaw/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          message: trimmed,
-          section: section.name,
-          conversationHistory: history,
+          messages: [
+            ...history,
+            { role: 'user', content: trimmed },
+          ],
+          systemPrompt: buildSystemPrompt(),
         }),
-        signal: controller.signal,
       });
-      clearTimeout(timeoutId);
 
       const data = await res.json();
 
       if (data.error) {
         addMessage('system', `Error: ${data.error}`);
       } else {
-        if (data.actionExecuted) {
-          const emoji = data.actionSuccess ? '✅' : '❌';
-          addMessage('system', `${emoji} Action: ${data.actionExecuted.replace(/_/g, ' ')}`);
-        }
         addMessage('assistant', data.content);
       }
     } catch (err) {
