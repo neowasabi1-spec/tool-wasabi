@@ -151,6 +151,8 @@ RULES:
       }));
 
     try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 55000);
       const res = await fetch('/api/openclaw/action', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -159,7 +161,9 @@ RULES:
           section: section.name,
           conversationHistory: history,
         }),
+        signal: controller.signal,
       });
+      clearTimeout(timeoutId);
 
       const data = await res.json();
 

@@ -519,6 +519,8 @@ async function exec(a: ToolAction, o: string): Promise<{ success: boolean; resul
   }
 }
 
+export const maxDuration = 60;
+
 export async function POST(req: NextRequest) {
   const { message, section, conversationHistory } = await req.json();
   if (!message) return NextResponse.json({ error: 'Missing message' }, { status: 400 });
@@ -527,7 +529,18 @@ export async function POST(req: NextRequest) {
   if (!cfg.apiKey) return NextResponse.json({ error: 'OpenClaw not configured' }, { status: 500 });
 
   const origin = req.nextUrl.origin;
-  const detected = await detectAction(message, section, cfg);
+
+  // Quick-detect: skip full LLM action detection for simple chat messages
+  const looksLikeAction = /\b(crea|create|analyz|analis|clone|clona|deploy|import|export|delete|elimin|naviga|browse|compli|genera)\b/i.test(message);
+
+  let detected: ToolAction = { action: 'no_action', params: {} };
+  if (looksLikeAction) {
+    try {
+      detected = await detectAction(message, section, cfg);
+    } catch {
+      detected = { action: 'no_action', params: {} };
+    }
+  }
 
   let actionResult: { success: boolean; result: string; data?: unknown } | null = null;
   if (detected.action !== 'no_action') {
@@ -545,8 +558,8 @@ Be concise, helpful. Same language as user (Italian/English).`;
     const r = await fetch(`${cfg.baseUrl}/v1/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${cfg.apiKey}` },
-      body: JSON.stringify({ model: cfg.model, messages: [{ role: 'system', content: sys }, ...history], temperature: 0.7, max_tokens: 4096 }),
-      signal: AbortSignal.timeout(120000),
+      body: JSON.stringify({ model: cfg.model, messages: [{ role: 'system', content: sys }, ...history], temperature: 0.7, max_tokens: 2048 }),
+      signal: AbortSignal.timeout(55000),
     });
     if (!r.ok) { const e = await r.text(); return NextResponse.json({ error: `OpenClaw: ${r.status} - ${e}` }, { status: r.status }); }
     const data = await r.json();
