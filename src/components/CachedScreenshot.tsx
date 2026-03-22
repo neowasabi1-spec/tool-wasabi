@@ -1,11 +1,13 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
-import { Eye, Globe, Loader2 } from 'lucide-react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
+import { Globe, Loader2, RefreshCw } from 'lucide-react';
 
 const CACHE_PREFIX = 'sc_';
 const CACHE_TTL = 1000 * 60 * 60 * 24 * 7; // 7 days
 const MAX_CONCURRENT = 3;
+const MAX_RETRIES = 2;
+const RETRY_DELAY = 8000; // mshots needs time to generate
 
 let activeRequests = 0;
 const queue: (() => void)[] = [];
@@ -56,7 +58,6 @@ function saveToCache(url: string, dataUrl: string) {
       JSON.stringify({ data: dataUrl, ts: Date.now() })
     );
   } catch {
-    // localStorage full - clear old screenshot caches
     const keysToRemove: string[] = [];
     for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i);
@@ -75,13 +76,12 @@ function saveToCache(url: string, dataUrl: string) {
 async function fetchAndCompress(url: string): Promise<string | null> {
   try {
     const res = await fetch(`/api/thumbnail?url=${encodeURIComponent(url)}`, {
-      signal: AbortSignal.timeout(20000),
+      signal: AbortSignal.timeout(30000),
     });
     if (!res.ok) return null;
     const blob = await res.blob();
     if (blob.size < 500) return null;
 
-    // Compress via canvas to reduce localStorage size
     const img = new Image();
     const objectUrl = URL.createObjectURL(blob);
 
@@ -121,6 +121,50 @@ export default function CachedScreenshot({ url, alt = '', className = '', height
   const [failed, setFailed] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const fetchedRef = useRef(false);
+  const retriesRef = useRef(0);
+
+  const attemptFetch = useCallback((isRetry = false) => {
+    const doFetch = () => {
+      activeRequests++;
+      setLoading(true);
+      setFailed(false);
+      fetchAndCompress(url).then((dataUrl) => {
+        activeRequests--;
+        if (dataUrl) {
+          setLoading(false);
+          saveToCache(url, dataUrl);
+          setSrc(dataUrl);
+        } else if (retriesRef.current < MAX_RETRIES) {
+          retriesRef.current++;
+          // Retry after delay (mshots queues the render on first request)
+          setTimeout(() => {
+            doFetch();
+          }, RETRY_DELAY * retriesRef.current);
+          return; // don't process queue yet, we're retrying
+        } else {
+          setLoading(false);
+          setFailed(true);
+        }
+        processQueue();
+      });
+    };
+
+    if (isRetry) {
+      retriesRef.current = 0;
+      if (activeRequests >= MAX_CONCURRENT) {
+        queue.push(doFetch);
+      } else {
+        doFetch();
+      }
+      return;
+    }
+
+    if (activeRequests >= MAX_CONCURRENT) {
+      queue.push(doFetch);
+    } else {
+      doFetch();
+    }
+  }, [url]);
 
   useEffect(() => {
     if (!url) return;
@@ -136,28 +180,7 @@ export default function CachedScreenshot({ url, alt = '', className = '', height
         if (entries[0]?.isIntersecting && !fetchedRef.current) {
           fetchedRef.current = true;
           observer.disconnect();
-
-          const doFetch = () => {
-            activeRequests++;
-            setLoading(true);
-            fetchAndCompress(url).then((dataUrl) => {
-              activeRequests--;
-              setLoading(false);
-              if (dataUrl) {
-                saveToCache(url, dataUrl);
-                setSrc(dataUrl);
-              } else {
-                setFailed(true);
-              }
-              processQueue();
-            });
-          };
-
-          if (activeRequests >= MAX_CONCURRENT) {
-            queue.push(doFetch);
-          } else {
-            doFetch();
-          }
+          attemptFetch();
         }
       },
       { rootMargin: '200px' }
@@ -165,7 +188,7 @@ export default function CachedScreenshot({ url, alt = '', className = '', height
 
     if (containerRef.current) observer.observe(containerRef.current);
     return () => observer.disconnect();
-  }, [url]);
+  }, [url, attemptFetch]);
 
   const domain = getDomain(url);
   const color1 = getColorFromUrl(url);
@@ -196,13 +219,19 @@ export default function CachedScreenshot({ url, alt = '', className = '', height
           <span className="text-white/70 text-[10px] font-medium">Loading preview...</span>
         </>
       ) : failed ? (
-        <>
-          <Globe className="w-6 h-6 text-white/60 mb-1" />
+        <button
+          onClick={(e) => { e.stopPropagation(); retriesRef.current = 0; fetchedRef.current = true; attemptFetch(true); }}
+          className="flex flex-col items-center gap-1 hover:scale-105 transition-transform"
+        >
+          <Globe className="w-6 h-6 text-white/60" />
           <span className="text-white/90 text-xs font-semibold truncate max-w-[90%] text-center">{domain}</span>
-        </>
+          <span className="flex items-center gap-1 text-white/50 text-[9px] mt-1">
+            <RefreshCw className="w-3 h-3" /> Retry
+          </span>
+        </button>
       ) : (
         <>
-          <Eye className="w-6 h-6 text-white/50 mb-1" />
+          <Globe className="w-6 h-6 text-white/50 mb-1" />
           <span className="text-white/80 text-[10px] font-medium truncate max-w-[90%] text-center">{domain}</span>
         </>
       )}
