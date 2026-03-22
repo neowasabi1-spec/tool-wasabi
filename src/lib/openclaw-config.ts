@@ -11,15 +11,6 @@ let _cacheTime = 0;
 const CACHE_TTL = 60_000; // 1 minute cache
 
 export async function getOpenClawConfig() {
-  // Check env vars first
-  if (process.env.OPENCLAW_API_KEY && process.env.OPENCLAW_BASE_URL) {
-    return {
-      baseUrl: process.env.OPENCLAW_BASE_URL,
-      apiKey: process.env.OPENCLAW_API_KEY,
-      model: process.env.OPENCLAW_MODEL || OPENCLAW_DEFAULTS.model,
-    };
-  }
-
   // Return cache if fresh
   if (_cachedConfig && Date.now() - _cacheTime < CACHE_TTL) {
     return _cachedConfig;
