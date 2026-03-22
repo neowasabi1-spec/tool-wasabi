@@ -160,22 +160,53 @@ RULES:
             { role: 'user', content: trimmed },
           ],
           systemPrompt: buildSystemPrompt(),
+          stream: true,
         }),
       });
 
-      const text = await res.text();
-      let data;
-      try {
-        data = JSON.parse(text);
-      } catch {
-        addMessage('system', `Error: Server returned invalid response (${res.status})`);
+      if (!res.ok) {
+        const text = await res.text();
+        try {
+          const err = JSON.parse(text);
+          addMessage('system', `Error: ${err.error || res.statusText}`);
+        } catch {
+          addMessage('system', `Error: ${res.status} ${res.statusText}`);
+        }
         return;
       }
 
-      if (data.error) {
-        addMessage('system', `Error: ${data.error}`);
-      } else {
-        addMessage('assistant', data.content);
+      // Stream SSE response
+      const reader = res.body?.getReader();
+      const decoder = new TextDecoder();
+      let fullContent = '';
+      const assistantId = generateId();
+      const assistantMsg: ChatMessage = { id: assistantId, role: 'assistant', content: '', timestamp: new Date() };
+      setMessages(prev => [...prev, assistantMsg]);
+
+      if (reader) {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const chunk = decoder.decode(value, { stream: true });
+          const lines = chunk.split('\n');
+          for (const line of lines) {
+            if (line.startsWith('data: ') && line !== 'data: [DONE]') {
+              try {
+                const json = JSON.parse(line.slice(6));
+                const delta = json.choices?.[0]?.delta?.content;
+                if (delta) {
+                  fullContent += delta;
+                  setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, content: fullContent } : m));
+                }
+              } catch { /* skip */ }
+            }
+          }
+        }
+      }
+
+      if (!fullContent) {
+        setMessages(prev => prev.filter(m => m.id !== assistantId));
+        addMessage('system', 'Error: Empty response from OpenClaw');
       }
     } catch (err) {
       addMessage('system', `Connection failed: ${(err as Error).message}`);
