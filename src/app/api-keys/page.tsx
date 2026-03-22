@@ -250,10 +250,29 @@ export default function ApiKeysPage() {
               </div>
             </div>
             <div className="mt-5 pt-4 border-t border-gray-700">
-              <p className="text-gray-400 font-sans text-xs mb-2">Example (curl):</p>
-              <code className="text-blue-300 text-xs break-all">
-                curl -H &quot;X-API-Key: fsk_your_key_here&quot; {baseUrl}/api/v1/products
-              </code>
+              <div className="mb-4">
+                <p className="text-red-400 font-bold font-sans text-sm mb-1">FULL ACCESS PROXY (requires full_access permission)</p>
+                <p className="text-yellow-400">POST {baseUrl}/api/v1/proxy</p>
+                <p className="text-gray-500 text-xs mb-2">Call ANY internal API route through a single endpoint</p>
+                <p className="text-gray-400 font-sans text-xs mb-1">Body format:</p>
+                <pre className="text-green-300 text-xs bg-gray-800 p-3 rounded-lg overflow-x-auto">{`{
+  "method": "POST",
+  "path": "/api/product-brief",
+  "body": { "product": { "name": "..." } }
+}`}</pre>
+              </div>
+              <div className="pt-3 border-t border-gray-700">
+                <p className="text-gray-400 font-sans text-xs mb-1">List all available routes:</p>
+                <code className="text-blue-300 text-xs break-all">
+                  curl -H &quot;X-API-Key: fsk_your_key_here&quot; {baseUrl}/api/v1/proxy
+                </code>
+              </div>
+              <div className="mt-3 pt-3 border-t border-gray-700">
+                <p className="text-gray-400 font-sans text-xs mb-1">Example - Read products:</p>
+                <code className="text-blue-300 text-xs break-all">
+                  curl -H &quot;X-API-Key: fsk_your_key_here&quot; {baseUrl}/api/v1/products
+                </code>
+              </div>
             </div>
           </div>
         )}
