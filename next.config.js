@@ -6,6 +6,12 @@ const nextConfig = {
   typescript: { ignoreBuildErrors: true },
   eslint: { ignoreDuringBuilds: true },
 
+  env: {
+    OPENCLAW_BASE_URL: process.env.OPENCLAW_BASE_URL || 'http://69.197.168.23:19001',
+    OPENCLAW_API_KEY: process.env.OPENCLAW_API_KEY || '76d0f4b9c277c5e457d64d908fc51fe0a2e8a93664b30806',
+    OPENCLAW_MODEL: process.env.OPENCLAW_MODEL || 'openclaw:neo',
+  },
+
   experimental: {
     serverActions: {
       bodySizeLimit: '10mb',
