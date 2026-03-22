@@ -144,6 +144,11 @@ export default function AffiliateBrowserChatPage() {
   const [serverOnline, setServerOnline] = useState<boolean | null>(null);
   const [isSaving, setIsSaving] = useState(false);
 
+  // OpenClaw mode
+  const [useOpenClaw, setUseOpenClaw] = useState(false);
+  const [openClawOnline, setOpenClawOnline] = useState<boolean | null>(null);
+  const [openClawHistory, setOpenClawHistory] = useState<{ role: string; content: string }[]>([]);
+
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -184,6 +189,13 @@ export default function AffiliateBrowserChatPage() {
       setServerOnline(data.success && data.agenticServer === 'online');
     } catch {
       setServerOnline(false);
+    }
+    try {
+      const res = await fetch('/api/openclaw/chat');
+      const data = await res.json();
+      setOpenClawOnline(data.status === 'online');
+    } catch {
+      setOpenClawOnline(false);
     }
   };
 
@@ -273,6 +285,46 @@ export default function AffiliateBrowserChatPage() {
     }
   };
 
+  // --- OpenClaw chat ---
+  const sendToOpenClaw = async (customPrompt?: string) => {
+    const trimmedPrompt = (customPrompt || prompt).trim();
+    if (!trimmedPrompt) return;
+
+    setActiveTab('chat');
+    setIsRunning(true);
+
+    addMessage('user', trimmedPrompt);
+    if (!customPrompt) setPrompt('');
+
+    const urlContext = startUrl.trim() ? `\n\nNavigate and analyze this URL: ${startUrl.trim()}` : '';
+    const userMsg = { role: 'user', content: trimmedPrompt + urlContext };
+    const history = [...openClawHistory, userMsg];
+
+    addMessage('system', 'Sending to OpenClaw...');
+
+    try {
+      const res = await fetch('/api/openclaw/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: history }),
+      });
+
+      const data = await res.json();
+
+      if (data.error) {
+        addMessage('system', `OpenClaw error: ${data.error}`);
+      } else {
+        const assistantMsg = { role: 'assistant', content: data.content };
+        setOpenClawHistory([...history, assistantMsg]);
+        addMessage('agent', data.content);
+      }
+    } catch (err) {
+      addMessage('system', `OpenClaw connection failed: ${(err as Error).message}`);
+    } finally {
+      setIsRunning(false);
+    }
+  };
+
   // --- Use template ---
   const useTemplate = (template: AffiliatePromptTemplate) => {
     setPrompt(template.prompt);
@@ -284,7 +336,12 @@ export default function AffiliateBrowserChatPage() {
 
   // --- Run template immediately ---
   const runTemplateNow = (template: AffiliatePromptTemplate) => {
-    startAgent(template.prompt, template.startUrl, template.maxTurns);
+    if (useOpenClaw) {
+      setStartUrl(template.startUrl || '');
+      sendToOpenClaw(template.prompt);
+    } else {
+      startAgent(template.prompt, template.startUrl, template.maxTurns);
+    }
   };
 
   // --- Schedule a template ---
@@ -523,6 +580,8 @@ export default function AffiliateBrowserChatPage() {
       addMessage('user', trimmedPrompt);
       setPrompt('');
       saveFunnel(saveCmd.saveType);
+    } else if (useOpenClaw) {
+      sendToOpenClaw();
     } else {
       startAgent();
     }
@@ -564,19 +623,60 @@ export default function AffiliateBrowserChatPage() {
       <div className="flex-1 flex flex-col p-6 max-w-6xl mx-auto w-full">
         {/* Server status bar */}
         <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-2">
-            {serverOnline === null ? (
-              <span className="flex items-center gap-1.5 text-xs text-gray-400">
-                <Loader2 className="w-3 h-3 animate-spin" /> Checking server...
-              </span>
-            ) : serverOnline ? (
-              <span className="flex items-center gap-1.5 text-xs text-green-600">
-                <Wifi className="w-3 h-3" /> Agentic server online
-              </span>
+          <div className="flex items-center gap-4">
+            {/* Engine toggle */}
+            <div className="flex items-center bg-gray-100 rounded-lg p-0.5">
+              <button
+                onClick={() => setUseOpenClaw(false)}
+                className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
+                  !useOpenClaw ? 'bg-white text-blue-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                <span className="flex items-center gap-1.5">
+                  <Bot className="w-3 h-3" /> Agentic Browser
+                </span>
+              </button>
+              <button
+                onClick={() => setUseOpenClaw(true)}
+                className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
+                  useOpenClaw ? 'bg-white text-orange-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                <span className="flex items-center gap-1.5">
+                  <Zap className="w-3 h-3" /> OpenClaw
+                </span>
+              </button>
+            </div>
+
+            {/* Status indicator */}
+            {useOpenClaw ? (
+              openClawOnline === null ? (
+                <span className="flex items-center gap-1.5 text-xs text-gray-400">
+                  <Loader2 className="w-3 h-3 animate-spin" /> Checking OpenClaw...
+                </span>
+              ) : openClawOnline ? (
+                <span className="flex items-center gap-1.5 text-xs text-green-600">
+                  <Wifi className="w-3 h-3" /> OpenClaw online
+                </span>
+              ) : (
+                <span className="flex items-center gap-1.5 text-xs text-red-500">
+                  <WifiOff className="w-3 h-3" /> OpenClaw offline
+                </span>
+              )
             ) : (
-              <span className="flex items-center gap-1.5 text-xs text-red-500">
-                <WifiOff className="w-3 h-3" /> Agentic server offline
-              </span>
+              serverOnline === null ? (
+                <span className="flex items-center gap-1.5 text-xs text-gray-400">
+                  <Loader2 className="w-3 h-3 animate-spin" /> Checking server...
+                </span>
+              ) : serverOnline ? (
+                <span className="flex items-center gap-1.5 text-xs text-green-600">
+                  <Wifi className="w-3 h-3" /> Agentic server online
+                </span>
+              ) : (
+                <span className="flex items-center gap-1.5 text-xs text-red-500">
+                  <WifiOff className="w-3 h-3" /> Agentic server offline
+                </span>
+              )
             )}
             <button
               onClick={checkHealth}
@@ -757,7 +857,7 @@ export default function AffiliateBrowserChatPage() {
                   ) : (
                     <button
                       onClick={handleSubmit}
-                      disabled={!prompt.trim() || (serverOnline === false && !parseSaveCommand(prompt))}
+                      disabled={!prompt.trim() || (!parseSaveCommand(prompt) && (useOpenClaw ? openClawOnline === false : serverOnline === false))}
                       className="flex items-center gap-2 px-5 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors font-medium text-sm shrink-0"
                     >
                       {parseSaveCommand(prompt) ? <Save className="w-4 h-4" /> : <Send className="w-4 h-4" />}
