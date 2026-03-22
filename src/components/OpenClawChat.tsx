@@ -150,15 +150,14 @@ RULES:
         content: m.content,
       }));
 
-    history.push({ role: 'user', content: trimmed });
-
     try {
-      const res = await fetch('/api/openclaw/chat', {
+      const res = await fetch('/api/openclaw/action', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          messages: history,
-          systemPrompt: buildSystemPrompt(),
+          message: trimmed,
+          section: section.name,
+          conversationHistory: history,
         }),
       });
 
@@ -167,6 +166,10 @@ RULES:
       if (data.error) {
         addMessage('system', `Error: ${data.error}`);
       } else {
+        if (data.actionExecuted) {
+          const emoji = data.actionSuccess ? '✅' : '❌';
+          addMessage('system', `${emoji} Action: ${data.actionExecuted.replace(/_/g, ' ')}`);
+        }
         addMessage('assistant', data.content);
       }
     } catch (err) {
@@ -260,9 +263,11 @@ RULES:
                 <div className="mt-4 space-y-2">
                   {[
                     `What can I do in ${section.name}?`,
-                    'Analyze this funnel for me',
-                    'Help me write better copy',
-                  ].map((suggestion) => (
+                    'Analyze the copy of https://example.com',
+                    'Clone the landing page at https://example.com',
+                    'Check compliance of https://example.com',
+                    'Create a product called "My Product"',
+                  ].slice(0, 3).map((suggestion) => (
                     <button
                       key={suggestion}
                       onClick={() => { setInput(suggestion); inputRef.current?.focus(); }}
