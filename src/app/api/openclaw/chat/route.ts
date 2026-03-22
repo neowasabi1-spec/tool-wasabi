@@ -27,37 +27,10 @@ export async function POST(req: NextRequest) {
     messages: [systemMessage, ...messages],
     temperature: 0.7,
     max_tokens: 2048,
-    stream,
+    stream: true,
   };
 
   try {
-    if (stream) {
-      const res = await fetch(`${config.baseUrl}/v1/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${config.apiKey}`,
-        },
-        body: JSON.stringify(payload),
-      });
-
-      if (!res.ok) {
-        const errText = await res.text();
-        return NextResponse.json(
-          { error: `OpenClaw error: ${res.status} - ${errText}` },
-          { status: res.status }
-        );
-      }
-
-      return new Response(res.body, {
-        headers: {
-          'Content-Type': 'text/event-stream',
-          'Cache-Control': 'no-cache',
-          'Connection': 'keep-alive',
-        },
-      });
-    }
-
     const res = await fetch(`${config.baseUrl}/v1/chat/completions`, {
       method: 'POST',
       headers: {
@@ -65,7 +38,6 @@ export async function POST(req: NextRequest) {
         'Authorization': `Bearer ${config.apiKey}`,
       },
       body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(50000),
     });
 
     if (!res.ok) {
@@ -76,14 +48,40 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const data = await res.json();
-    const content = data.choices?.[0]?.message?.content || '';
+    if (stream) {
+      return new Response(res.body, {
+        headers: {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive',
+        },
+      });
+    }
 
-    return NextResponse.json({
-      content,
-      model: data.model,
-      usage: data.usage,
-    });
+    // Non-stream mode: collect SSE chunks into a single response
+    const reader = res.body?.getReader();
+    const decoder = new TextDecoder();
+    let fullContent = '';
+
+    if (reader) {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value, { stream: true });
+        const lines = chunk.split('\n');
+        for (const line of lines) {
+          if (line.startsWith('data: ') && line !== 'data: [DONE]') {
+            try {
+              const json = JSON.parse(line.slice(6));
+              const delta = json.choices?.[0]?.delta?.content;
+              if (delta) fullContent += delta;
+            } catch { /* skip malformed */ }
+          }
+        }
+      }
+    }
+
+    return NextResponse.json({ content: fullContent, model: config.model });
   } catch (err) {
     return NextResponse.json(
       { error: `OpenClaw connection failed: ${(err as Error).message}` },
