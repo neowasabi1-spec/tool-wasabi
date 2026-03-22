@@ -1,9 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+const OPENCLAW_DEFAULTS = {
+  baseUrl: 'http://69.197.168.23:19001',
+  apiKey: '76d0f4b9c277c5e457d64d908fc51fe0a2e8a93664b30806',
+  model: 'openclaw:neo',
+};
+
 const getConfig = () => ({
-  baseUrl: process.env.OPENCLAW_BASE_URL || 'http://69.197.168.23:19001',
-  apiKey: process.env.OPENCLAW_API_KEY || '',
-  model: process.env.OPENCLAW_MODEL || 'openclaw:neo',
+  baseUrl: process.env.OPENCLAW_BASE_URL || OPENCLAW_DEFAULTS.baseUrl,
+  apiKey: process.env.OPENCLAW_API_KEY || OPENCLAW_DEFAULTS.apiKey,
+  model: process.env.OPENCLAW_MODEL || OPENCLAW_DEFAULTS.model,
 });
 
 export async function POST(req: NextRequest) {
