@@ -26,7 +26,7 @@ export async function POST(req: NextRequest) {
     model: config.model,
     messages: [systemMessage, ...messages],
     temperature: 0.7,
-    max_tokens: 4096,
+    max_tokens: 2048,
     stream,
   };
 
@@ -65,7 +65,7 @@ export async function POST(req: NextRequest) {
         'Authorization': `Bearer ${config.apiKey}`,
       },
       body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(120000),
+      signal: AbortSignal.timeout(50000),
     });
 
     if (!res.ok) {

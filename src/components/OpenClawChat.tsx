@@ -163,7 +163,14 @@ RULES:
         }),
       });
 
-      const data = await res.json();
+      const text = await res.text();
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        addMessage('system', `Error: Server returned invalid response (${res.status})`);
+        return;
+      }
 
       if (data.error) {
         addMessage('system', `Error: ${data.error}`);
