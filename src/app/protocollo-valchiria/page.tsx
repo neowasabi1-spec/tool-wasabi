@@ -3,14 +3,16 @@
 import { useState, useEffect, useRef } from 'react';
 import Header from '@/components/Header';
 import { useStore } from '@/store/useStore';
-import { Swords, ExternalLink, ChevronDown, Package, Check, Search } from 'lucide-react';
+import { Swords, ExternalLink, ChevronDown, Package, Check } from 'lucide-react';
 
 export default function ProtocolloValchiriaPage() {
   const { funnelPages, products, isInitialized, initialize } = useStore();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [openProductMenu, setOpenProductMenu] = useState<string | null>(null);
-  const [search, setSearch] = useState('');
+  const [selectedProductFilter, setSelectedProductFilter] = useState<string | null>(null);
+  const [showProductFilter, setShowProductFilter] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const filterRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!isInitialized) initialize();
@@ -20,6 +22,9 @@ export default function ProtocolloValchiriaPage() {
     function handleClickOutside(e: MouseEvent) {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
         setOpenProductMenu(null);
+      }
+      if (filterRef.current && !filterRef.current.contains(e.target as Node)) {
+        setShowProductFilter(false);
       }
     }
     document.addEventListener('mousedown', handleClickOutside);
@@ -45,15 +50,11 @@ export default function ProtocolloValchiriaPage() {
 
   const getProduct = (productId: string) => products.find(p => p.id === productId);
 
+  const selectedFilterProduct = selectedProductFilter ? products.find(p => p.id === selectedProductFilter) : null;
+
   const filtered = funnelPages.filter(f => {
-    if (!search.trim()) return true;
-    const q = search.toLowerCase();
-    const prod = getProduct(f.productId);
-    return (
-      f.name.toLowerCase().includes(q) ||
-      f.urlToSwipe?.toLowerCase().includes(q) ||
-      prod?.name.toLowerCase().includes(q)
-    );
+    if (!selectedProductFilter) return true;
+    return f.productId === selectedProductFilter;
   });
 
   return (
@@ -78,18 +79,48 @@ export default function ProtocolloValchiriaPage() {
           )}
         </div>
 
-        {/* Search */}
-        <div className="mb-4">
-          <div className="relative max-w-md">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search flows, products..."
-              className="w-full pl-10 pr-4 py-2.5 bg-white border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-            />
-          </div>
+        {/* Product filter */}
+        <div className="mb-4 relative" ref={filterRef}>
+          <button
+            onClick={() => setShowProductFilter(!showProductFilter)}
+            className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium border transition-colors ${
+              selectedFilterProduct
+                ? 'bg-purple-50 border-purple-300 text-purple-800 hover:bg-purple-100'
+                : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'
+            }`}
+          >
+            <Package className="w-4 h-4" />
+            {selectedFilterProduct ? selectedFilterProduct.name : 'Select Product'}
+            <ChevronDown className={`w-4 h-4 transition-transform ${showProductFilter ? 'rotate-180' : ''}`} />
+          </button>
+
+          {showProductFilter && (
+            <div className="absolute top-full left-0 mt-1 w-72 bg-white rounded-lg border border-gray-200 shadow-xl z-50 max-h-72 overflow-y-auto">
+              <button
+                onClick={() => { setSelectedProductFilter(null); setShowProductFilter(false); setSelected(new Set()); }}
+                className={`w-full text-left px-4 py-3 text-sm hover:bg-gray-50 transition-colors border-b border-gray-100 ${
+                  !selectedProductFilter ? 'bg-purple-50 text-purple-700 font-semibold' : 'text-gray-500'
+                }`}
+              >
+                All Products
+              </button>
+              {products.map((p) => (
+                <button
+                  key={p.id}
+                  onClick={() => { setSelectedProductFilter(p.id); setShowProductFilter(false); setSelected(new Set()); }}
+                  className={`w-full text-left px-4 py-3 text-sm hover:bg-gray-50 flex items-center justify-between transition-colors ${
+                    selectedProductFilter === p.id ? 'bg-purple-50 text-purple-700 font-semibold' : 'text-gray-700'
+                  }`}
+                >
+                  <div>
+                    <p className="font-medium">{p.name}</p>
+                    {p.price > 0 && <p className="text-xs text-gray-400 mt-0.5">€{p.price}</p>}
+                  </div>
+                  {selectedProductFilter === p.id && <Check className="w-4 h-4 text-purple-600" />}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Table */}
@@ -121,8 +152,8 @@ export default function ProtocolloValchiriaPage() {
                 <tr>
                   <td colSpan={4} className="px-4 py-12 text-center">
                     <Swords className="w-10 h-10 text-gray-300 mx-auto mb-2" />
-                    <p className="text-gray-500 font-medium">{search ? 'No results' : 'No flows available'}</p>
-                    <p className="text-gray-400 text-sm mt-0.5">{search ? 'Try a different search' : 'Add flows in Front End Funnel first'}</p>
+                    <p className="text-gray-500 font-medium">{selectedProductFilter ? 'No flows for this product' : 'No flows available'}</p>
+                    <p className="text-gray-400 text-sm mt-0.5">{selectedProductFilter ? 'Select a different product' : 'Add flows in Front End Funnel first'}</p>
                   </td>
                 </tr>
               ) : (
