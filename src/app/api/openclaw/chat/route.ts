@@ -7,7 +7,7 @@ const getConfig = () => ({
 });
 
 export async function POST(req: NextRequest) {
-  const { messages, stream = false } = await req.json();
+  const { messages, stream = false, systemPrompt } = await req.json();
 
   if (!messages || !Array.isArray(messages) || messages.length === 0) {
     return NextResponse.json({ error: 'Missing or invalid messages array' }, { status: 400 });
@@ -18,9 +18,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'OpenClaw API key not configured' }, { status: 500 });
   }
 
+  const defaultSystem = `You are OpenClaw, an AI agent with browser navigation skills. You can browse websites, analyze funnels, extract data from landing pages, and provide detailed reports. When asked to navigate a URL, describe what you see on the page including: headlines, CTAs, images, forms, pricing, testimonials, and the overall funnel structure. Provide actionable insights for affiliate marketers.`;
+
   const systemMessage = {
     role: 'system',
-    content: `You are OpenClaw, an AI agent with browser navigation skills. You can browse websites, analyze funnels, extract data from landing pages, and provide detailed reports. When asked to navigate a URL, describe what you see on the page including: headlines, CTAs, images, forms, pricing, testimonials, and the overall funnel structure. Provide actionable insights for affiliate marketers.`,
+    content: systemPrompt || defaultSystem,
   };
 
   const payload = {

@@ -2,6 +2,7 @@
 
 import { usePathname } from 'next/navigation';
 import Sidebar from './Sidebar';
+import OpenClawChat from './OpenClawChat';
 
 export default function ConditionalLayout({
   children,
@@ -19,6 +20,7 @@ export default function ConditionalLayout({
     <div className="flex min-h-screen">
       <Sidebar />
       <main className="flex-1 bg-gray-50">{children}</main>
+      <OpenClawChat />
     </div>
   );
 }
