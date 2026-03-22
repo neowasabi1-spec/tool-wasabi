@@ -7,6 +7,7 @@ import { useStore } from '@/store/useStore';
 import { BUILT_IN_PAGE_TYPE_OPTIONS, PAGE_TYPE_CATEGORIES, PageType, PageTypeOption, TemplateCategory, TEMPLATE_CATEGORY_OPTIONS, TemplateViewFormat, TEMPLATE_VIEW_FORMAT_OPTIONS, LIBRARY_TEMPLATES } from '@/types';
 import type { ArchivedFunnel } from '@/types/database';
 import { Plus, Trash2, Edit2, Save, X, FileCode, ExternalLink, Tag, Filter, Eye, EyeOff, Maximize2, Layers, HelpCircle, FolderPlus, Settings, Monitor, Smartphone, BookOpen, ChevronDown, ChevronRight, FolderOpen, Archive, CheckSquare, Square, Package, Sparkles, Send, Loader2, MessageCircle, Search } from 'lucide-react';
+import CachedScreenshot from '@/components/CachedScreenshot';
 
 interface SelectedPage {
   name: string;
@@ -721,13 +722,7 @@ export default function TemplatesPage() {
                               >
                                 <div className="relative w-full h-[180px] bg-gray-100 overflow-hidden">
                                   {s.url_to_swipe ? (
-                                    <img
-                                      src={`/api/thumbnail?url=${encodeURIComponent(s.url_to_swipe)}`}
-                                      alt={s.name}
-                                      className="w-full h-full object-cover object-top"
-                                      loading="lazy"
-                                      onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
-                                    />
+                                    <CachedScreenshot url={s.url_to_swipe} alt={s.name} className="w-full" height="180px" />
                                   ) : (
                                     <div className="w-full h-full flex items-center justify-center text-gray-300">
                                       <Eye className="w-8 h-8" />
@@ -903,13 +898,7 @@ export default function TemplatesPage() {
                                 >
                                   <div className="relative w-full h-[180px] bg-gray-100 overflow-hidden">
                                     {p.url_to_swipe ? (
-                                      <img
-                                        src={`/api/thumbnail?url=${encodeURIComponent(p.url_to_swipe)}`}
-                                        alt={p.name}
-                                        className="w-full h-full object-cover object-top"
-                                        loading="lazy"
-                                        onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
-                                      />
+                                      <CachedScreenshot url={p.url_to_swipe} alt={p.name} className="w-full" height="180px" />
                                     ) : (
                                       <div className="w-full h-full flex items-center justify-center text-gray-300">
                                         <Eye className="w-8 h-8" />

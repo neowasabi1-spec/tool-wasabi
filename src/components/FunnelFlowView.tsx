@@ -19,6 +19,7 @@ import {
   Link2,
   Loader2,
 } from 'lucide-react';
+import CachedScreenshot from '@/components/CachedScreenshot';
 
 /* ────────── Types ────────── */
 
@@ -90,8 +91,6 @@ function buildInitialPositions(count: number): NodePos[] {
 /* ────────── StepPreview ────────── */
 
 function StepPreview({ url, title, screenshotBase64 }: { url: string; title: string; screenshotBase64?: string }) {
-  const [imgError, setImgError] = useState(false);
-
   if (screenshotBase64) {
     return (
       <div className="relative w-full h-full bg-white overflow-hidden">
@@ -105,16 +104,14 @@ function StepPreview({ url, title, screenshotBase64 }: { url: string; title: str
     );
   }
 
-  if (url && !imgError) {
+  if (url) {
     return (
       <div className="relative w-full h-full bg-white overflow-hidden">
-        <img
-          src={`/api/thumbnail?url=${encodeURIComponent(url)}`}
+        <CachedScreenshot
+          url={url}
           alt={`Preview: ${title}`}
-          className="w-full h-full object-cover object-top"
-          draggable={false}
-          loading="lazy"
-          onError={() => setImgError(true)}
+          className="w-full"
+          height="100%"
         />
       </div>
     );
