@@ -59,6 +59,44 @@ export default function ApiKeysPage() {
   // Docs panel
   const [showDocs, setShowDocs] = useState(false);
 
+  // OpenClaw config
+  const [ocUrl, setOcUrl] = useState('');
+  const [ocKey, setOcKey] = useState('');
+  const [ocModel, setOcModel] = useState('');
+  const [ocSaving, setOcSaving] = useState(false);
+  const [ocStatus, setOcStatus] = useState<'idle' | 'saved' | 'error'>('idle');
+
+  const loadOpenClawConfig = useCallback(async () => {
+    try {
+      const res = await fetch('/api/openclaw/config');
+      const data = await res.json();
+      setOcUrl(data.baseUrl || '');
+      setOcKey(data.apiKey || '');
+      setOcModel(data.model || '');
+    } catch { /* ignore */ }
+  }, []);
+
+  const saveOpenClawConfig = async () => {
+    setOcSaving(true);
+    try {
+      const res = await fetch('/api/openclaw/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ baseUrl: ocUrl, apiKey: ocKey, model: ocModel }),
+      });
+      if (res.ok) {
+        setOcStatus('saved');
+        setTimeout(() => setOcStatus('idle'), 3000);
+      } else {
+        setOcStatus('error');
+      }
+    } catch {
+      setOcStatus('error');
+    } finally {
+      setOcSaving(false);
+    }
+  };
+
   const loadKeys = useCallback(async () => {
     try {
       const res = await fetch('/api/api-keys');
@@ -71,7 +109,7 @@ export default function ApiKeysPage() {
     }
   }, []);
 
-  useEffect(() => { loadKeys(); }, [loadKeys]);
+  useEffect(() => { loadKeys(); loadOpenClawConfig(); }, [loadKeys, loadOpenClawConfig]);
 
   const handleCreate = async () => {
     if (!newName.trim()) return;
@@ -188,6 +226,62 @@ export default function ApiKeysPage() {
             </div>
           </div>
         )}
+
+        {/* OpenClaw Config */}
+        <div className="mb-6 bg-gradient-to-r from-orange-50 to-amber-50 border border-orange-200 rounded-xl p-5">
+          <h3 className="font-bold text-orange-800 text-lg flex items-center gap-2 mb-3">
+            <Shield className="w-5 h-5" />
+            OpenClaw Connection
+          </h3>
+          <p className="text-orange-700 text-sm mb-4">
+            Configura l&apos;URL del tunnel Cloudflare. Quando riavvii cloudflared, incolla qui il nuovo URL.
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Tunnel URL</label>
+              <input
+                type="text"
+                value={ocUrl}
+                onChange={e => setOcUrl(e.target.value)}
+                placeholder="https://xxxx.trycloudflare.com"
+                className="w-full px-3 py-2 border border-orange-200 rounded-lg text-sm focus:ring-2 focus:ring-orange-400 focus:border-orange-400"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">API Key</label>
+              <input
+                type="password"
+                value={ocKey}
+                onChange={e => setOcKey(e.target.value)}
+                className="w-full px-3 py-2 border border-orange-200 rounded-lg text-sm focus:ring-2 focus:ring-orange-400 focus:border-orange-400"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Model</label>
+              <input
+                type="text"
+                value={ocModel}
+                onChange={e => setOcModel(e.target.value)}
+                className="w-full px-3 py-2 border border-orange-200 rounded-lg text-sm focus:ring-2 focus:ring-orange-400 focus:border-orange-400"
+              />
+            </div>
+          </div>
+          <div className="mt-3 flex items-center gap-3">
+            <button
+              onClick={saveOpenClawConfig}
+              disabled={ocSaving}
+              className="px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition-colors text-sm font-medium disabled:opacity-50 flex items-center gap-2"
+            >
+              {ocSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+              {ocSaving ? 'Saving...' : 'Save'}
+            </button>
+            {ocStatus === 'saved' && <span className="text-green-600 text-sm font-medium">Saved!</span>}
+            {ocStatus === 'error' && <span className="text-red-600 text-sm font-medium">Error saving config</span>}
+            <span className="text-xs text-gray-500 ml-auto">
+              Sul VPS: <code className="bg-white px-1.5 py-0.5 rounded text-orange-700">C:\cloudflared.exe tunnel --url http://localhost:19001</code>
+            </span>
+          </div>
+        </div>
 
         {/* Toolbar */}
         <div className="flex items-center justify-between mb-6">

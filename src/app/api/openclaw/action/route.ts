@@ -1,16 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-
-const OPENCLAW_DEFAULTS = {
-  baseUrl: 'https://downloading-after-wizard-virtue.trycloudflare.com',
-  apiKey: '76d0f4b9c277c5e457d64d908fc51fe0a2e8a93664b30806',
-  model: 'openclaw:neo',
-};
-
-const getConfig = () => ({
-  baseUrl: process.env.OPENCLAW_BASE_URL || OPENCLAW_DEFAULTS.baseUrl,
-  apiKey: process.env.OPENCLAW_API_KEY || OPENCLAW_DEFAULTS.apiKey,
-  model: process.env.OPENCLAW_MODEL || OPENCLAW_DEFAULTS.model,
-});
+import { getOpenClawConfig } from '@/lib/openclaw-config';
 
 interface ToolAction {
   action: string;
@@ -142,7 +131,7 @@ RULES:
 - Extract all params (URLs, names, IDs, text) from the message
 - Respond ONLY with JSON: { "action": "name", "params": { ... } }`;
 
-async function detectAction(msg: string, section: string, cfg: ReturnType<typeof getConfig>): Promise<ToolAction> {
+async function detectAction(msg: string, section: string, cfg: { baseUrl: string; apiKey: string; model: string }): Promise<ToolAction> {
   try {
     const res = await fetch(`${cfg.baseUrl}/v1/chat/completions`, {
       method: 'POST',
@@ -534,7 +523,7 @@ export async function POST(req: NextRequest) {
   const { message, section, conversationHistory } = await req.json();
   if (!message) return NextResponse.json({ error: 'Missing message' }, { status: 400 });
 
-  const cfg = getConfig();
+  const cfg = await getOpenClawConfig();
   if (!cfg.apiKey) return NextResponse.json({ error: 'OpenClaw not configured' }, { status: 500 });
 
   const origin = req.nextUrl.origin;
