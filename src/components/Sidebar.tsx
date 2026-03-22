@@ -23,6 +23,7 @@ import {
   ShieldCheck,
   Wand,
   KeyRound,
+  Swords,
 } from 'lucide-react';
 
 const menuItems = [
@@ -115,6 +116,11 @@ const menuItems = [
     name: 'Compliance AI',
     href: '/compliance-ai',
     icon: ShieldCheck,
+  },
+  {
+    name: 'Protocollo Valchiria',
+    href: '/protocollo-valchiria',
+    icon: Swords,
   },
   {
     name: 'API Keys',
