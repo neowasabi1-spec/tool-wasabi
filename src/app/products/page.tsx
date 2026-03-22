@@ -63,6 +63,11 @@ export default function ProductsPage() {
   const saveProductBriefs = (briefs: Record<string, string>) => {
     setProductBriefs(briefs);
     try { localStorage.setItem('product_briefs', JSON.stringify(briefs)); } catch { /* ignore */ }
+    fetch('/api/briefs-sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ briefs }),
+    }).catch(() => {});
   };
 
   const generateBrief = async (product: { id: string; name: string; description: string; price: number; brandName: string; benefits: string[]; ctaText: string; ctaUrl: string }) => {
@@ -88,6 +93,16 @@ export default function ProductsPage() {
   useEffect(() => {
     if (!archivedFunnelsLoaded) loadArchivedFunnels();
   }, [archivedFunnelsLoaded, loadArchivedFunnels]);
+
+  useEffect(() => {
+    if (Object.keys(productBriefs).length > 0) {
+      fetch('/api/briefs-sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ briefs: productBriefs }),
+      }).catch(() => {});
+    }
+  }, []);
 
   const getPageTypeLabel = (value: string): string => {
     const opt = BUILT_IN_PAGE_TYPE_OPTIONS.find(o => o.value === value);

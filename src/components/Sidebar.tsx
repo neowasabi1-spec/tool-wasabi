@@ -22,6 +22,7 @@ import {
   BookOpen,
   ShieldCheck,
   Wand,
+  KeyRound,
 } from 'lucide-react';
 
 const menuItems = [
@@ -114,6 +115,11 @@ const menuItems = [
     name: 'Compliance AI',
     href: '/compliance-ai',
     icon: ShieldCheck,
+  },
+  {
+    name: 'API Keys',
+    href: '/api-keys',
+    icon: KeyRound,
   },
 ];
 

@@ -154,6 +154,20 @@ Generate the full brief following the Ecom Domination framework. Be creative, sp
       brief = data.choices?.[0]?.message?.content || '';
     }
 
+    if (brief && product.id) {
+      try {
+        const fs = await import('fs');
+        const path = await import('path');
+        const sharedFile = path.default.resolve('C:/Users/Utente1/Desktop/wasabi/shared/product_briefs.json');
+        const dir = path.default.dirname(sharedFile);
+        if (!fs.default.existsSync(dir)) fs.default.mkdirSync(dir, { recursive: true });
+        let existing: Record<string, string> = {};
+        try { existing = JSON.parse(fs.default.readFileSync(sharedFile, 'utf-8')); } catch {}
+        existing[product.id] = brief;
+        fs.default.writeFileSync(sharedFile, JSON.stringify(existing, null, 2), 'utf-8');
+      } catch {}
+    }
+
     return NextResponse.json({ brief });
   } catch (error) {
     console.error('Product brief error:', error);

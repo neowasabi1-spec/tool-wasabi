@@ -515,6 +515,52 @@ export type SavedPromptUpdate = Database['public']['Tables']['saved_prompts']['U
 export type ArchivedFunnel = Database['public']['Tables']['archived_funnels']['Row'];
 export type ArchivedFunnelInsert = Database['public']['Tables']['archived_funnels']['Insert'];
 
+// API Keys
+export interface ApiKeyRow {
+  id: string;
+  name: string;
+  description: string;
+  key_hash: string;
+  key_prefix: string;
+  permissions: ApiPermission[];
+  is_active: boolean;
+  last_used_at: string | null;
+  expires_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export type ApiPermission =
+  | 'full_access'
+  | 'read_products'
+  | 'write_products'
+  | 'read_funnels'
+  | 'write_funnels'
+  | 'read_templates'
+  | 'write_templates'
+  | 'read_archive'
+  | 'write_archive'
+  | 'ai_chat'
+  | 'ai_analysis'
+  | 'clone_swipe'
+  | 'deploy';
+
+export const API_PERMISSION_OPTIONS: { value: ApiPermission; label: string; description: string; category: string }[] = [
+  { value: 'full_access', label: 'Full Access', description: 'Unrestricted access to all endpoints and data', category: 'Global' },
+  { value: 'read_products', label: 'Read Products', description: 'View products and product briefs', category: 'Products' },
+  { value: 'write_products', label: 'Write Products', description: 'Create, update, delete products', category: 'Products' },
+  { value: 'read_funnels', label: 'Read Funnels', description: 'View funnel pages and steps', category: 'Funnels' },
+  { value: 'write_funnels', label: 'Write Funnels', description: 'Create, update, delete funnel pages', category: 'Funnels' },
+  { value: 'read_templates', label: 'Read Templates', description: 'View swipe templates', category: 'Templates' },
+  { value: 'write_templates', label: 'Write Templates', description: 'Create, update, delete templates', category: 'Templates' },
+  { value: 'read_archive', label: 'Read Archive', description: 'View archived/saved funnels', category: 'Archive' },
+  { value: 'write_archive', label: 'Write Archive', description: 'Create, update archived funnels', category: 'Archive' },
+  { value: 'ai_chat', label: 'AI Chat', description: 'Use AI chat endpoints (funnel brief, product chat)', category: 'AI' },
+  { value: 'ai_analysis', label: 'AI Analysis', description: 'Run AI analysis (copy, landing, funnel)', category: 'AI' },
+  { value: 'clone_swipe', label: 'Clone & Swipe', description: 'Clone pages and run swipe pipeline', category: 'Operations' },
+  { value: 'deploy', label: 'Deploy', description: 'Deploy funnels to external platforms', category: 'Operations' },
+];
+
 // Agentic Swipe types
 export interface AgenticSwipeInput {
   url: string;

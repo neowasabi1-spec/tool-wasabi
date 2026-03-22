@@ -17,6 +17,7 @@ const PUBLIC_API = new Set(['/api/health']);
 function isPublicPath(pathname: string): boolean {
   if (PUBLIC_PATHS.has(pathname)) return true;
   if (PUBLIC_API.has(pathname)) return true;
+  if (pathname.startsWith('/api/v1/')) return true;
   if (pathname.startsWith('/_next/')) return true;
   if (pathname.startsWith('/favicon')) return true;
   if (pathname.match(/\.(ico|png|jpg|jpeg|svg|gif|webp|css|js|woff2?)$/)) return true;
