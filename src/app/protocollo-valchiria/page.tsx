@@ -3,14 +3,18 @@
 import { useState, useEffect, useRef } from 'react';
 import Header from '@/components/Header';
 import { useStore } from '@/store/useStore';
-import { Swords, ExternalLink, ChevronDown, Package, Check } from 'lucide-react';
+import type { PageType, SwipeStatus } from '@/types';
+import { Swords, ExternalLink, ChevronDown, Package, Check, Plus, X } from 'lucide-react';
 
 export default function ProtocolloValchiriaPage() {
-  const { funnelPages, products, isInitialized, initialize } = useStore();
+  const { funnelPages, products, isInitialized, initialize, addFunnelPage } = useStore();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [openProductMenu, setOpenProductMenu] = useState<string | null>(null);
   const [selectedProductFilter, setSelectedProductFilter] = useState<string | null>(null);
   const [showProductFilter, setShowProductFilter] = useState(false);
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [newFlow, setNewFlow] = useState({ name: '', url: '', productId: '' });
+  const [creating, setCreating] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const filterRef = useRef<HTMLDivElement>(null);
 
@@ -50,6 +54,26 @@ export default function ProtocolloValchiriaPage() {
 
   const getProduct = (productId: string) => products.find(p => p.id === productId);
 
+  const handleCreateFlow = async () => {
+    if (!newFlow.name.trim() || !newFlow.productId) return;
+    setCreating(true);
+    try {
+      await addFunnelPage({
+        name: newFlow.name.trim(),
+        pageType: 'bridge' as PageType,
+        productId: newFlow.productId,
+        urlToSwipe: newFlow.url.trim(),
+        swipeStatus: 'pending' as SwipeStatus,
+      });
+      setNewFlow({ name: '', url: '', productId: '' });
+      setShowCreateModal(false);
+    } catch (e) {
+      console.error('Error creating flow:', e);
+    } finally {
+      setCreating(false);
+    }
+  };
+
   const selectedFilterProduct = selectedProductFilter ? products.find(p => p.id === selectedProductFilter) : null;
 
   const filtered = funnelPages.filter(f => {
@@ -72,11 +96,20 @@ export default function ProtocolloValchiriaPage() {
               <p className="text-gray-500 text-sm">Strategic operations center</p>
             </div>
           </div>
-          {selected.size > 0 && (
-            <div className="flex items-center gap-2 bg-purple-50 border border-purple-200 rounded-lg px-4 py-2">
-              <span className="text-purple-700 text-sm font-semibold">{selected.size} flow selected</span>
-            </div>
-          )}
+          <div className="flex items-center gap-3">
+            {selected.size > 0 && (
+              <div className="flex items-center gap-2 bg-purple-50 border border-purple-200 rounded-lg px-4 py-2">
+                <span className="text-purple-700 text-sm font-semibold">{selected.size} flow selected</span>
+              </div>
+            )}
+            <button
+              onClick={() => setShowCreateModal(true)}
+              className="inline-flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-purple-600 to-red-600 text-white rounded-lg text-sm font-semibold hover:from-purple-700 hover:to-red-700 transition-all shadow-md"
+            >
+              <Plus className="w-4 h-4" />
+              Create Flow
+            </button>
+          </div>
         </div>
 
         {/* Product filter */}
@@ -260,6 +293,73 @@ export default function ProtocolloValchiriaPage() {
           <span>{filtered.length} flow{filtered.length !== 1 ? 's' : ''} total</span>
           {selected.size > 0 && <span>{selected.size} selected</span>}
         </div>
+        {/* Create Flow Modal */}
+        {showCreateModal && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setShowCreateModal(false)}>
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center justify-between mb-5">
+                <h2 className="text-lg font-bold text-gray-900">Create New Flow</h2>
+                <button onClick={() => setShowCreateModal(false)} className="p-1 hover:bg-gray-100 rounded-lg">
+                  <X className="w-5 h-5 text-gray-400" />
+                </button>
+              </div>
+
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Flow Name</label>
+                  <input
+                    type="text"
+                    value={newFlow.name}
+                    onChange={(e) => setNewFlow(prev => ({ ...prev, name: e.target.value }))}
+                    placeholder="e.g. Bridge Page Energy V1"
+                    className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">URL</label>
+                  <input
+                    type="url"
+                    value={newFlow.url}
+                    onChange={(e) => setNewFlow(prev => ({ ...prev, url: e.target.value }))}
+                    placeholder="https://..."
+                    className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Product</label>
+                  <select
+                    value={newFlow.productId}
+                    onChange={(e) => setNewFlow(prev => ({ ...prev, productId: e.target.value }))}
+                    className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 bg-white"
+                  >
+                    <option value="">Select a product...</option>
+                    {products.map((p) => (
+                      <option key={p.id} value={p.id}>{p.name}{p.price > 0 ? ` — €${p.price}` : ''}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-3 mt-6">
+                <button
+                  onClick={() => setShowCreateModal(false)}
+                  className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleCreateFlow}
+                  disabled={!newFlow.name.trim() || !newFlow.productId || creating}
+                  className="px-5 py-2 bg-gradient-to-r from-purple-600 to-red-600 text-white rounded-lg text-sm font-semibold hover:from-purple-700 hover:to-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                >
+                  {creating ? 'Creating...' : 'Create'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </main>
     </div>
   );
