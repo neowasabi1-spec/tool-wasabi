@@ -77,7 +77,7 @@ async function processMessage(msg) {
     .eq('id', msg.id);
 
   try {
-    const systemPrompt = (msg.system_prompt || 'You are OpenClaw, an AI assistant. Be concise and helpful. Respond in the same language as the user.') + '\nIMPORTANT: Do NOT use browser tools or navigate URLs. Never trigger browser automation. Give text-based answers only.';
+    const systemPrompt = msg.system_prompt || 'You are OpenClaw, an AI assistant. Be concise and helpful. Respond in the same language as the user. You have full access to all your skills including browser navigation, URL analysis, and any other tool available to you. Use them freely when the user requests it.';
     const messages = [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: msg.user_message },
