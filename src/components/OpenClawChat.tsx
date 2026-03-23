@@ -41,6 +41,7 @@ const SECTION_CONTEXT: Record<string, { name: string; description: string }> = {
   '/prompts': { name: 'My Prompts', description: 'Saved AI prompts library for reuse across the tool' },
   '/deploy-funnel': { name: 'Deploy Funnel', description: 'Deploy funnels to external platforms like Funnelish or CheckoutChamp' },
   '/compliance-ai': { name: 'Compliance AI', description: 'Check landing pages for FTC/advertising compliance issues' },
+  '/strategist': { name: 'Strategist', description: 'AI-powered strategic planner: angle, brief, mockup, colors, tone of voice, copy, funnel strategy, target audience and launch plan' },
   '/protocollo-valchiria': { name: 'Protocollo Valchiria', description: 'Strategic operations center for managing flows and products' },
   '/api-keys': { name: 'API Keys', description: 'Manage API keys for external tool integrations' },
 };

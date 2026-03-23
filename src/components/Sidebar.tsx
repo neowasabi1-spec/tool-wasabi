@@ -24,6 +24,7 @@ import {
   Wand,
   KeyRound,
   Swords,
+  Brain,
 } from 'lucide-react';
 
 const menuItems = [
@@ -31,6 +32,11 @@ const menuItems = [
     name: 'Dashboard',
     href: '/',
     icon: LayoutDashboard,
+  },
+  {
+    name: 'Strategist',
+    href: '/strategist',
+    icon: Brain,
   },
   {
     name: 'Copy Analyzer',
