@@ -3,17 +3,17 @@ import { NextRequest, NextResponse } from 'next/server';
 export const maxDuration = 120;
 export const dynamic = 'force-dynamic';
 
-const SYSTEM_PROMPT = `You are an expert product researcher and ecommerce analyst. Given a product name (and optionally some basic data from a catalog), you MUST research it thoroughly and create a complete product card.
+const SYSTEM_PROMPT = `You are an expert product researcher and ecommerce analyst. Given a product name (and optionally some basic data from a catalog), you MUST research it thoroughly and create the most complete product card possible.
 
 Return a VALID JSON object with EXACTLY these fields:
 {
-  "name": "Official product name",
+  "name": "Official full product name including variant/size if applicable",
   "sku": "Product SKU/model number if found, or generate a logical one like BRAND-CATEGORY-001",
   "category": "Product category path (e.g. 'Health & Wellness / Oral Care', 'Beauty / Skincare')",
-  "description": "Detailed product description (2-3 sentences). What it is, what it does, what makes it unique.",
+  "description": "...",
   "price": 0,
-  "benefits": ["Benefit 1", "Benefit 2", ...],
-  "characteristics": ["Ingredient/spec/feature 1", "Ingredient/spec/feature 2", ...],
+  "benefits": ["...", "...", ...],
+  "characteristics": ["...", "...", ...],
   "geoMarket": "Target markets (e.g. 'US, UK, EU', 'Global', 'Italy, EU')",
   "brandName": "Brand name",
   "ctaText": "Suggested CTA text based on product type",
@@ -22,13 +22,36 @@ Return a VALID JSON object with EXACTLY these fields:
 }
 
 RULES:
+
+DESCRIPTION (very important):
+- Write a rich, compelling product description of 5-8 sentences minimum.
+- Include: what the product is, what problem it solves, how it works, what makes it unique vs competitors, who it's for, and any clinical studies or certifications.
+- Write in a professional ecommerce copywriting style, ready to be used on a product page.
+
+BENEFITS (very important):
+- List at least 8-12 specific, detailed benefits. NOT generic ones.
+- Each benefit should be a full sentence explaining the benefit and WHY it matters.
+- BAD example: "Improves skin" — too vague.
+- GOOD example: "Reduces fine lines and wrinkles by up to 45% in 8 weeks thanks to its retinol + hyaluronic acid complex, clinically proven in a double-blind study."
+- Include quantified results, timeframes, and mechanisms of action when available.
+
+CHARACTERISTICS (very important):
+- List at least 10-15 detailed characteristics.
+- Include: all key ingredients/materials with percentages when known, dimensions/weight/size, form factor, dosage/usage instructions, certifications (FDA, CE, organic, cruelty-free, etc.), manufacturing origin, shelf life, packaging type, compatibility, technical specifications.
+- Each characteristic should be specific and informative.
+- BAD example: "Contains vitamins" — too vague.
+- GOOD example: "Vitamin C (L-Ascorbic Acid) 20% — pharmaceutical grade, stabilized with Ferulic Acid for enhanced antioxidant protection"
+
+PROMOTION ANGLES:
+- Provide 5-7 detailed promotion angles for affiliate/ecommerce marketing.
+- Each angle should include the target audience, the emotional hook, and a suggested headline.
+- Example: "Pain Point → Solution: Target adults 30-50 with back pain. Hook: 'Stop suffering in silence.' Headline: 'The NASA-inspired mattress topper that eliminated back pain for 89% of users'"
+
+OTHER RULES:
 - price: number in EUR (convert if needed). Use the most common retail price.
-- benefits: array of real, specific benefits found in your research (at least 4-5)
-- characteristics: array of ingredients, specs, materials, key features (at least 5-6)
-- promotionAngles: 3-5 advertising angles for affiliate/ecommerce marketing
 - geoMarket: where this product is primarily sold/shipped
 - imageUrl: MUST be a real, direct URL to a product image (jpg/png/webp). Search for the official product page or Amazon/ecommerce listing and get the main product image URL. Do NOT leave this empty.
-- Be FACTUAL. Use real information from your research.
+- Be FACTUAL. Use real information from your research. Do NOT invent data.
 - Return ONLY the JSON object. No markdown, no code blocks, no explanations.`;
 
 interface EnrichedProduct {
@@ -68,13 +91,20 @@ export async function POST(request: NextRequest) {
       ? `\n\nAdditional data from catalog file:\n${Object.entries(rawData).map(([k, v]) => `- ${k}: ${v}`).join('\n')}`
       : '';
 
-    const userPrompt = `Research this product thoroughly and create a complete product card:
+    const userPrompt = `Research this product IN DEPTH and create the most complete, detailed product card possible:
 
 Product: "${productName}"${rawDataText}
 
-Find: official description, ingredients/specifications/features, retail price, target markets, benefits, a direct URL to the main product image, and suggest promotion angles for affiliate marketing.
+You must find and include ALL of the following:
+1. A rich, detailed description (5-8 sentences minimum) covering what it is, how it works, what makes it unique, who it's for
+2. ALL ingredients, specifications, materials, certifications, technical details — be exhaustive (10-15 items minimum)
+3. ALL real benefits with specific details, quantities, timeframes, clinical evidence when available (8-12 items minimum)
+4. The exact retail price in EUR
+5. Target geographic markets
+6. A real, direct product image URL (from official site, Amazon, or ecommerce listing) — do NOT leave imageUrl empty
+7. 5-7 detailed promotion angles for affiliate marketing with target audience and emotional hooks
 
-IMPORTANT: You MUST find and include a real product image URL (from the official site, Amazon, or any ecommerce listing). Do NOT leave imageUrl empty.
+Be EXTREMELY detailed and specific. Generic or vague entries are unacceptable.
 
 Return ONLY the JSON object.`;
 
@@ -156,7 +186,7 @@ async function enrichWithOpenAIChat(apiKey: string, prompt: string): Promise<Enr
     },
     body: JSON.stringify({
       model: 'gpt-4o',
-      max_tokens: 2048,
+      max_tokens: 4096,
       response_format: { type: 'json_object' },
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
@@ -185,7 +215,7 @@ async function enrichWithClaude(apiKey: string, prompt: string): Promise<Enriche
     },
     body: JSON.stringify({
       model: 'claude-sonnet-4-20250514',
-      max_tokens: 2048,
+      max_tokens: 4096,
       system: SYSTEM_PROMPT,
       messages: [{ role: 'user', content: prompt }],
     }),
