@@ -67,10 +67,36 @@ export default function ProductsPage() {
   const [catalogEnrichStatus, setCatalogEnrichStatus] = useState<Record<number, 'pending' | 'enriching' | 'done' | 'error'>>({});
   const [catalogEnrichedData, setCatalogEnrichedData] = useState<Record<number, Record<string, unknown>>>({});
   const [catalogEnrichErrors, setCatalogEnrichErrors] = useState<Record<number, string>>({});
+  const [brokenImages, setBrokenImages] = useState<Set<string>>(new Set());
+  const [imageSearchLoading, setImageSearchLoading] = useState<string | null>(null);
   const [isCatalogEnriching, setIsCatalogEnriching] = useState(false);
   const [catalogImportDone, setCatalogImportDone] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [isCatalogParsing, setIsCatalogParsing] = useState(false);
+
+  const searchProductImage = async (productId: string, productName: string, brandName?: string) => {
+    setImageSearchLoading(productId);
+    try {
+      const res = await fetch('/api/product-image-search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ productName, brandName }),
+      });
+      const data = await res.json();
+      if (data.imageUrl) {
+        await updateProduct(productId, { imageUrl: data.imageUrl });
+        setBrokenImages(prev => {
+          const next = new Set(prev);
+          next.delete(productId);
+          return next;
+        });
+      }
+    } catch (err) {
+      console.error('Image search failed:', err);
+    } finally {
+      setImageSearchLoading(null);
+    }
+  };
 
   const saveProductBriefs = (briefs: Record<string, string>) => {
     setProductBriefs(briefs);
@@ -301,11 +327,25 @@ export default function ProductsPage() {
 
         const enriched = data.product;
 
+        let finalImageUrl = enriched.imageUrl || '';
+
+        if (!finalImageUrl) {
+          try {
+            const imgRes = await fetch('/api/product-image-search', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ productName: enriched.name || productName, brandName: enriched.brandName }),
+            });
+            const imgData = await imgRes.json();
+            if (imgData.imageUrl) finalImageUrl = imgData.imageUrl;
+          } catch { /* image search is best-effort */ }
+        }
+
         await addProduct({
           name: enriched.name || productName,
           description: enriched.description || '',
           price: enriched.price || 0,
-          imageUrl: enriched.imageUrl || '',
+          imageUrl: finalImageUrl,
           benefits: enriched.benefits || [],
           ctaText: enriched.ctaText || 'Buy Now',
           ctaUrl: enriched.ctaUrl || '',
@@ -317,7 +357,7 @@ export default function ProductsPage() {
         });
 
         setCatalogEnrichStatus(prev => ({ ...prev, [i]: 'done' }));
-        setCatalogEnrichedData(prev => ({ ...prev, [i]: enriched }));
+        setCatalogEnrichedData(prev => ({ ...prev, [i]: { ...enriched, imageUrl: finalImageUrl } }));
       } catch (error) {
         setCatalogEnrichStatus(prev => ({ ...prev, [i]: 'error' }));
         setCatalogEnrichErrors(prev => ({ ...prev, [i]: error instanceof Error ? error.message : 'Unknown error' }));
@@ -981,11 +1021,16 @@ export default function ProductsPage() {
                   >
                     {isExpanded ? <ChevronDown className="w-5 h-5 text-gray-400 flex-shrink-0" /> : <ChevronRight className="w-5 h-5 text-gray-400 flex-shrink-0" />}
 
-                    {product.imageUrl ? (
-                      <img src={product.imageUrl} alt={product.name} className="w-10 h-10 rounded-lg object-cover flex-shrink-0 border border-gray-200" />
+                    {product.imageUrl && !brokenImages.has(product.id) ? (
+                      <img
+                        src={product.imageUrl}
+                        alt={product.name}
+                        className="w-10 h-10 rounded-lg object-cover flex-shrink-0 border border-gray-200"
+                        onError={() => setBrokenImages(prev => new Set(prev).add(product.id))}
+                      />
                     ) : (
-                      <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center flex-shrink-0">
-                        <Package className="w-5 h-5 text-blue-500" />
+                      <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center flex-shrink-0 text-blue-600 font-bold text-sm">
+                        {product.name.charAt(0).toUpperCase()}
                       </div>
                     )}
 
@@ -1097,19 +1142,40 @@ export default function ProductsPage() {
                           {/* Top section: Image + Details side by side */}
                           <div className="flex gap-8">
                             {/* Product Image */}
-                            <div className="flex-shrink-0">
-                              {product.imageUrl ? (
+                            <div className="flex-shrink-0 relative group">
+                              {product.imageUrl && !brokenImages.has(product.id) ? (
                                 <img
                                   src={product.imageUrl}
                                   alt={product.name}
                                   className="w-48 h-48 rounded-xl object-cover border border-gray-200 shadow-sm"
+                                  onError={() => setBrokenImages(prev => new Set(prev).add(product.id))}
                                 />
                               ) : (
-                                <div className="w-48 h-48 rounded-xl bg-gradient-to-br from-gray-50 to-gray-100 border border-gray-200 flex flex-col items-center justify-center text-gray-400">
-                                  <ImageIcon className="w-12 h-12 mb-2" />
-                                  <span className="text-xs">No image</span>
+                                <div className="w-48 h-48 rounded-xl bg-gradient-to-br from-blue-50 to-indigo-100 border border-gray-200 flex flex-col items-center justify-center">
+                                  <span className="text-5xl font-bold text-blue-400">{product.name.charAt(0).toUpperCase()}</span>
+                                  <span className="text-xs text-gray-400 mt-2">No image available</span>
                                 </div>
                               )}
+                              <div className="absolute bottom-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); searchProductImage(product.id, product.name, product.brandName); }}
+                                  disabled={imageSearchLoading === product.id}
+                                  className="bg-white/90 backdrop-blur-sm text-gray-600 hover:text-blue-600 hover:bg-white p-1.5 rounded-lg shadow-sm disabled:opacity-50"
+                                  title="Find image with AI"
+                                >
+                                  {imageSearchLoading === product.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+                                </button>
+                                <a
+                                  href={`https://www.google.com/search?tbm=isch&q=${encodeURIComponent(product.name + ' ' + (product.brandName || '') + ' product')}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="bg-white/90 backdrop-blur-sm text-gray-600 hover:text-blue-600 hover:bg-white p-1.5 rounded-lg shadow-sm"
+                                  title="Search on Google Images"
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  <Search className="w-4 h-4" />
+                                </a>
+                              </div>
                             </div>
 
                             {/* Product Info */}
