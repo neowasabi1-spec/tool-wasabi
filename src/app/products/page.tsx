@@ -427,13 +427,33 @@ export default function ProductsPage() {
 
         const enriched = data.product;
 
+        const pName = enriched.name || productName;
+        const pBrand = enriched.brandName || '';
         let finalImageUrl = fileImageUrl || '';
 
+        // Step 1: proxy enriched.imageUrl from AI (it found a URL online)
+        if (!finalImageUrl && enriched.imageUrl) {
+          try {
+            console.log(`[IMG ${i}] Trying enriched URL: ${enriched.imageUrl}`);
+            const proxyRes = await fetch('/api/product-image-search', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ productName: pName, directImageUrl: enriched.imageUrl }),
+            });
+            const proxyData = await proxyRes.json();
+            if (proxyData.imageUrl) finalImageUrl = proxyData.imageUrl;
+          } catch (err) {
+            console.error(`[IMG ${i}] Proxy enriched URL failed:`, err);
+          }
+        }
+
+        // Step 2: extract from catalog page with Gemini Vision (crop bottle)
         if (!finalImageUrl && catalogPageBase64.length > 0) {
           const b64PageIdx = Math.min(Math.floor(i * catalogPageBase64.length / numProducts), catalogPageBase64.length - 1);
           const rawBase64 = catalogPageBase64[b64PageIdx];
           if (rawBase64) {
             try {
+              console.log(`[IMG ${i}] Trying Gemini Vision extraction from page ${b64PageIdx}`);
               const smallBase64 = await (async () => {
                 const img = new Image();
                 await new Promise<void>((resolve, reject) => {
@@ -454,32 +474,33 @@ export default function ProductsPage() {
               const extractRes = await fetch('/api/catalog-import/extract-product-image', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  pageBase64: smallBase64,
-                  productName: enriched.name || productName,
-                }),
+                body: JSON.stringify({ pageBase64: smallBase64, productName: pName }),
               });
               const extractData = await extractRes.json();
               if (extractData.imageUrl) finalImageUrl = extractData.imageUrl;
             } catch (err) {
-              console.error('Image extraction failed:', err);
+              console.error(`[IMG ${i}] Vision extraction failed:`, err);
             }
           }
         }
 
+        // Step 3: search online for product image
         if (!finalImageUrl) {
           try {
+            console.log(`[IMG ${i}] Trying online search for "${pName}"`);
             const searchRes = await fetch('/api/product-image-search', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ productName: enriched.name || productName }),
+              body: JSON.stringify({ productName: pName, brandName: pBrand }),
             });
             const searchData = await searchRes.json();
             if (searchData.imageUrl) finalImageUrl = searchData.imageUrl;
           } catch (err) {
-            console.error('Online image search failed:', err);
+            console.error(`[IMG ${i}] Online search failed:`, err);
           }
         }
+
+        console.log(`[IMG ${i}] Final image for "${pName}": ${finalImageUrl || 'NONE'}`);
 
         await addProduct({
           name: enriched.name || productName,

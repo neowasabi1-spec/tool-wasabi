@@ -23,21 +23,30 @@ async function ensureBucket(sb: any) {
 
 async function downloadAndUpload(imageUrl: string, productName: string): Promise<string> {
   try {
+    console.log(`[downloadAndUpload] Downloading: ${imageUrl}`);
     const res = await fetch(imageUrl, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'image/*,*/*',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+        'Referer': new URL(imageUrl).origin + '/',
       },
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(15000),
+      redirect: 'follow',
     });
 
-    if (!res.ok) return '';
+    if (!res.ok) {
+      console.log(`[downloadAndUpload] HTTP ${res.status} for ${imageUrl}`);
+      return '';
+    }
 
-    const contentType = res.headers.get('content-type') || '';
-    if (!contentType.startsWith('image/')) return '';
-
+    const contentType = res.headers.get('content-type') || 'image/jpeg';
     const buffer = Buffer.from(await res.arrayBuffer());
-    if (buffer.length < 1000) return '';
+    console.log(`[downloadAndUpload] Downloaded ${buffer.length} bytes, type: ${contentType}`);
+
+    if (buffer.length < 500) {
+      console.log(`[downloadAndUpload] Image too small (${buffer.length} bytes)`);
+      return '';
+    }
 
     const sb = getSupabase();
     await ensureBucket(sb);
@@ -46,25 +55,38 @@ async function downloadAndUpload(imageUrl: string, productName: string): Promise
     const safeName = productName.replace(/[^a-zA-Z0-9-_]/g, '_').substring(0, 40);
     const filePath = `products/${safeName}-${Date.now()}.${ext}`;
 
+    const uploadContentType = contentType.startsWith('image/') ? contentType : 'image/jpeg';
+
     const { error } = await sb.storage
       .from(BUCKET_NAME)
-      .upload(filePath, buffer, { contentType, upsert: false });
+      .upload(filePath, buffer, { contentType: uploadContentType, upsert: false });
 
-    if (error) return '';
+    if (error) {
+      console.error(`[downloadAndUpload] Upload error:`, error);
+      return '';
+    }
 
     const { data } = sb.storage.from(BUCKET_NAME).getPublicUrl(filePath);
+    console.log(`[downloadAndUpload] Uploaded: ${data.publicUrl}`);
     return data.publicUrl;
-  } catch {
+  } catch (err) {
+    console.error(`[downloadAndUpload] Error:`, err);
     return '';
   }
 }
 
 export async function POST(request: NextRequest) {
   try {
-    const { productName, brandName, catalogImageBase64 } = await request.json();
+    const { productName, brandName, catalogImageBase64, directImageUrl } = await request.json();
 
     if (!productName) {
       return NextResponse.json({ error: 'Product name is required' }, { status: 400 });
+    }
+
+    if (directImageUrl) {
+      console.log(`Proxying direct URL for "${productName}": ${directImageUrl}`);
+      const proxiedUrl = await downloadAndUpload(directImageUrl, productName);
+      if (proxiedUrl) return NextResponse.json({ imageUrl: proxiedUrl });
     }
 
     const geminiKey = (
@@ -74,7 +96,7 @@ export async function POST(request: NextRequest) {
     const openaiKey = (process.env.OPENAI_API_KEY ?? '').trim();
 
     if (!geminiKey && !openaiKey) {
-      return NextResponse.json({ error: 'No API key configured' }, { status: 500 });
+      return NextResponse.json({ imageUrl: '' });
     }
 
     const query = `${productName} ${brandName || ''} product`.trim();
@@ -82,10 +104,12 @@ export async function POST(request: NextRequest) {
 
     if (geminiKey) {
       foundUrl = await searchWithGemini(geminiKey, query, catalogImageBase64);
+      console.log(`Gemini search for "${query}": ${foundUrl || 'not found'}`);
     }
 
     if (!foundUrl && openaiKey) {
       foundUrl = await searchWithOpenAI(openaiKey, query);
+      console.log(`OpenAI search for "${query}": ${foundUrl || 'not found'}`);
     }
 
     if (!foundUrl) {
@@ -120,10 +144,19 @@ If you cannot find one, return {"imageUrl": ""}`,
     });
   } else {
     parts.push({
-      text: `Search the web and find a REAL, publicly accessible, direct image URL for this product: "${query}"
-Return ONLY a JSON: {"imageUrl": "https://..."}
-The URL must be a direct link to an image file. Prefer Amazon, official sites, or major retailers.
-If you cannot find one, return {"imageUrl": ""}`,
+      text: `Search for product images of "${query}" online.
+I need a DIRECT image URL — a URL that loads as an image in a browser (not a webpage).
+
+LOOK FOR THESE TYPES OF URLs:
+- Amazon product images: https://m.media-amazon.com/images/I/...jpg
+- eBay images: https://i.ebayimg.com/images/g/...
+- Shopify CDN: https://cdn.shopify.com/s/files/...
+- iHerb images: https://cloudinary.images-iherb.com/...
+- Any .jpg, .png, .webp direct image link
+
+Search for the product on Amazon, iHerb, eBay, or the manufacturer's website.
+Return ONLY: {"imageUrl": "https://direct-link-to-image.jpg"}
+If you cannot find a direct image link, return {"imageUrl": ""}`,
     });
   }
 
@@ -159,10 +192,8 @@ async function searchWithOpenAI(apiKey: string, query: string): Promise<string> 
     },
     body: JSON.stringify({
       model: 'gpt-4o-mini',
-      instructions: `Find a REAL, WORKING, DIRECT image URL for this product. Return ONLY: {"imageUrl": "https://..."}
-Prefer: Amazon CDN, official sites, eBay, major retailers.
-If you cannot find one, return {"imageUrl": ""}`,
-      input: `Find product image URL for: "${query}"`,
+      instructions: `Find a REAL, WORKING, DIRECT image URL for this product. Search on Amazon, iHerb, eBay, or manufacturer sites. The URL must load as an image directly (not a webpage). Look for URLs like https://m.media-amazon.com/images/... or similar CDN links. Return ONLY: {"imageUrl": "https://..."}. If not found: {"imageUrl": ""}`,
+      input: `Find a direct product image URL for: "${query}". Search on Amazon, iHerb, or Google Images.`,
       tools: [{ type: 'web_search_preview' }],
     }),
   });
