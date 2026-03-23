@@ -135,18 +135,22 @@ async function getProductImageBBox(
               inline_data: { mime_type: 'image/jpeg', data: pageBase64 },
             },
             {
-              text: `Look at this product catalog page image. Find the main PRODUCT PHOTO/IMAGE for the product "${productName}".
+              text: `This is a supplement/product catalog page. I need to crop ONLY the product bottle/packaging/container image for "${productName}".
 
-I need the PRODUCT IMAGE — the photo of the physical product (bottle, box, jar, packaging, container, etc). 
-Do NOT include text, tables, ingredient lists, or the full page.
-Just the product photo itself.
+CRITICAL RULES:
+- Find the WHITE BOTTLE or PRODUCT CONTAINER/PACKAGING for "${productName}" specifically
+- Crop TIGHT around JUST the bottle/jar/box — nothing else
+- Do NOT include ingredient tables, text descriptions, pricing, lifestyle photos, or other products
+- The bottle is usually on the LEFT side of the product section
+- If the page shows multiple products, find the one labeled "${productName}" and crop ONLY its bottle
+- The bounding box should cover roughly 15-30% of the page width and 20-40% of the page height — just the bottle
 
-Return the bounding box as JSON with coordinates on a 0-1000 scale (0,0 = top-left, 1000,1000 = bottom-right):
-{"x": <left edge>, "y": <top edge>, "w": <width>, "h": <height>}
+Return bounding box as JSON on 0-1000 scale (0,0 = top-left corner, 1000,1000 = bottom-right corner):
+{"x": <left>, "y": <top>, "w": <width>, "h": <height>}
 
-Example: if the product bottle is in the left quarter of the page, roughly: {"x": 50, "y": 100, "w": 300, "h": 500}
+The width should typically be 150-300 and height 200-400 (just the bottle, not the whole row).
 
-If there is NO clear product photo visible, return: {"x": 0, "y": 0, "w": 0, "h": 0}
+If you cannot find a distinct product bottle/container, return: {"x": 0, "y": 0, "w": 0, "h": 0}
 
 Return ONLY the JSON.`,
             },
@@ -184,6 +188,20 @@ Return ONLY the JSON.`,
     const h = Number(parsed.h || parsed.height) || 0;
 
     if (w < 30 || h < 30) return null;
+
+    if (w > 600 || h > 700) {
+      console.log(`BBox too large for "${productName}": w=${w}, h=${h} — clamping`);
+      const centerX = x + w / 2;
+      const centerY = y + h / 2;
+      const clampedW = Math.min(w, 350);
+      const clampedH = Math.min(h, 450);
+      return {
+        x: Math.max(0, centerX - clampedW / 2),
+        y: Math.max(0, centerY - clampedH / 2),
+        w: clampedW,
+        h: clampedH,
+      };
+    }
 
     return { x, y, w, h };
   } catch {

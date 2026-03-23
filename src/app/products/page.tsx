@@ -397,9 +397,10 @@ export default function ProductsPage() {
       const productName = nameCol ? String(row[nameCol] || '').trim() : '';
       const fileImageUrl = imageCol ? String(row[imageCol] || '').trim() : '';
       const fileSupplier = supplierCol ? String(row[supplierCol] || '').trim() : '';
-      const catalogPageImage = catalogPageImages.length > 0
-        ? (catalogPageImages[Math.min(i, catalogPageImages.length - 1)] || '')
-        : '';
+      const numPages = catalogPageImages.length;
+      const numProducts = parsedCatalogRows.length;
+      const pageIdx = numPages > 0 ? Math.min(Math.floor(i * numPages / numProducts), numPages - 1) : -1;
+      const catalogPageImage = pageIdx >= 0 ? (catalogPageImages[pageIdx] || '') : '';
 
       if (!productName) {
         setCatalogEnrichStatus(prev => ({ ...prev, [i]: 'error' }));
@@ -429,8 +430,8 @@ export default function ProductsPage() {
         let finalImageUrl = fileImageUrl || '';
 
         if (!finalImageUrl && catalogPageBase64.length > 0) {
-          const pageIdx = Math.min(i, catalogPageBase64.length - 1);
-          const rawBase64 = catalogPageBase64[pageIdx];
+          const b64PageIdx = Math.min(Math.floor(i * catalogPageBase64.length / numProducts), catalogPageBase64.length - 1);
+          const rawBase64 = catalogPageBase64[b64PageIdx];
           if (rawBase64) {
             try {
               const smallBase64 = await (async () => {
@@ -467,10 +468,17 @@ export default function ProductsPage() {
         }
 
         if (!finalImageUrl) {
-          const pageUrl = catalogPageImages.length > 0
-            ? catalogPageImages[Math.min(i, catalogPageImages.length - 1)]
-            : '';
-          if (pageUrl) finalImageUrl = pageUrl;
+          try {
+            const searchRes = await fetch('/api/product-image-search', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ productName: enriched.name || productName }),
+            });
+            const searchData = await searchRes.json();
+            if (searchData.imageUrl) finalImageUrl = searchData.imageUrl;
+          } catch (err) {
+            console.error('Online image search failed:', err);
+          }
         }
 
         await addProduct({
