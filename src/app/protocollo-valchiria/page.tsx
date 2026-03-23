@@ -232,15 +232,6 @@ export default function ProtocolloValchiriaPage() {
 
                     {/* Actions */}
                     <div className="flex items-center gap-2 shrink-0">
-                      {/* Expand pages */}
-                      <button
-                        onClick={() => setExpandedFlow(isExpanded ? null : flow.id)}
-                        className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
-                        title="Vedi pagine"
-                      >
-                        <Eye className="w-4 h-4" />
-                      </button>
-
                       {/* Swipe button */}
                       <div className="relative" ref={isSwipeOpen ? pickerRef : undefined}>
                         <button
@@ -279,25 +270,23 @@ export default function ProtocolloValchiriaPage() {
                     </div>
                   </div>
 
-                  {/* Expanded pages */}
-                  {isExpanded && (
-                    <div className="border-t border-gray-100 bg-gray-50/50 px-5 py-3">
-                      <div className="space-y-2">
-                        {flow.pages.map((page, pi) => (
-                          <div key={page.id} className="flex items-center gap-3 text-sm">
-                            <span className="w-6 text-center text-xs text-gray-400 font-mono">{pi + 1}.</span>
-                            <span className="text-gray-700 font-medium flex-1">{page.name}</span>
-                            <span className="text-xs text-gray-400 bg-gray-100 px-2 py-0.5 rounded">{page.pageType}</span>
-                            {page.url && (
-                              <a href={page.url} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-500 hover:underline truncate max-w-[200px]">
-                                {page.url.replace(/^https?:\/\/(www\.)?/, '')}
-                              </a>
-                            )}
-                          </div>
-                        ))}
-                      </div>
+                  {/* Pages list */}
+                  <div className="border-t border-gray-100 bg-gray-50/50 px-5 py-3">
+                    <div className="space-y-2">
+                      {flow.pages.map((page, pi) => (
+                        <div key={page.id} className="flex items-center gap-3 text-sm">
+                          <span className="w-6 text-center text-xs text-gray-400 font-mono">{pi + 1}.</span>
+                          <span className="text-gray-700 font-medium flex-1">{page.name}</span>
+                          <span className="text-xs text-gray-400 bg-gray-100 px-2 py-0.5 rounded">{page.pageType}</span>
+                          {page.url && (
+                            <a href={page.url} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-500 hover:underline truncate max-w-[200px]">
+                              {page.url.replace(/^https?:\/\/(www\.)?/, '')}
+                            </a>
+                          )}
+                        </div>
+                      ))}
                     </div>
-                  )}
+                  </div>
                 </div>
               );
             })
