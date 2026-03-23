@@ -424,24 +424,37 @@ export default function ProductsPage() {
 
         const enriched = data.product;
 
-        let finalImageUrl = fileImageUrl || enriched.imageUrl || '';
+        let finalImageUrl = fileImageUrl || '';
 
-        if (!finalImageUrl) {
+        if (!finalImageUrl && catalogPageBase64.length > 0) {
           const pageIdx = Math.min(i, catalogPageBase64.length - 1);
-          const pageBase64 = catalogPageBase64.length > 0 ? catalogPageBase64[pageIdx] : undefined;
           try {
-            const imgRes = await fetch('/api/product-image-search', {
+            const extractRes = await fetch('/api/catalog-import/extract-product-image', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                pageBase64: catalogPageBase64[pageIdx],
+                productName: enriched.name || productName,
+              }),
+            });
+            const extractData = await extractRes.json();
+            if (extractData.imageUrl) finalImageUrl = extractData.imageUrl;
+          } catch { /* extraction is best-effort */ }
+        }
+
+        if (!finalImageUrl && enriched.imageUrl) {
+          try {
+            const proxyRes = await fetch('/api/product-image-search', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 productName: enriched.name || productName,
                 brandName: enriched.brandName,
-                catalogImageBase64: pageBase64,
               }),
             });
-            const imgData = await imgRes.json();
-            if (imgData.imageUrl) finalImageUrl = imgData.imageUrl;
-          } catch { /* image search is best-effort */ }
+            const proxyData = await proxyRes.json();
+            if (proxyData.imageUrl) finalImageUrl = proxyData.imageUrl;
+          } catch { /* search is best-effort */ }
         }
 
         if (!finalImageUrl) finalImageUrl = catalogPageImage;
