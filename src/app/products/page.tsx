@@ -78,6 +78,31 @@ export default function ProductsPage() {
   const [catalogDefaultGeoMarket, setCatalogDefaultGeoMarket] = useState('');
   const [catalogDefaultSupplier, setCatalogDefaultSupplier] = useState('');
 
+  // Filter state
+  const [filterText, setFilterText] = useState('');
+  const [filterGeo, setFilterGeo] = useState('');
+  const [filterSupplier, setFilterSupplier] = useState('');
+  const [filterCategory, setFilterCategory] = useState('');
+
+  const uniqueGeos = [...new Set(products.map(p => p.geoMarket).filter(Boolean))].sort();
+  const uniqueSuppliers = [...new Set(products.map(p => p.supplier).filter(Boolean))].sort();
+  const uniqueCategories = [...new Set(products.map(p => p.category).filter(Boolean))].sort();
+
+  const filteredProducts = products.filter(p => {
+    if (filterText) {
+      const q = filterText.toLowerCase();
+      const match = p.name.toLowerCase().includes(q) ||
+        (p.brandName || '').toLowerCase().includes(q) ||
+        (p.sku || '').toLowerCase().includes(q) ||
+        (p.description || '').toLowerCase().includes(q);
+      if (!match) return false;
+    }
+    if (filterGeo && p.geoMarket !== filterGeo) return false;
+    if (filterSupplier && p.supplier !== filterSupplier) return false;
+    if (filterCategory && p.category !== filterCategory) return false;
+    return true;
+  });
+
   const searchProductImage = async (productId: string, productName: string, brandName?: string) => {
     setImageSearchLoading(productId);
     try {
@@ -774,6 +799,65 @@ export default function ProductsPage() {
           </div>
         </div>
 
+        {/* Filter Bar */}
+        {products.length > 0 && (
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-3 mb-6 flex flex-wrap items-center gap-3">
+            <div className="relative flex-1 min-w-[200px]">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+              <input
+                type="text"
+                value={filterText}
+                onChange={(e) => setFilterText(e.target.value)}
+                placeholder="Search by name, brand, SKU..."
+                className="w-full pl-9 pr-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+              />
+            </div>
+            {uniqueCategories.length > 0 && (
+              <select
+                value={filterCategory}
+                onChange={(e) => setFilterCategory(e.target.value)}
+                className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none bg-white text-gray-700 min-w-[140px]"
+              >
+                <option value="">All Categories</option>
+                {uniqueCategories.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+            )}
+            {uniqueGeos.length > 0 && (
+              <select
+                value={filterGeo}
+                onChange={(e) => setFilterGeo(e.target.value)}
+                className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none bg-white text-gray-700 min-w-[120px]"
+              >
+                <option value="">All Geo</option>
+                {uniqueGeos.map(g => <option key={g} value={g}>{g}</option>)}
+              </select>
+            )}
+            {uniqueSuppliers.length > 0 && (
+              <select
+                value={filterSupplier}
+                onChange={(e) => setFilterSupplier(e.target.value)}
+                className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none bg-white text-gray-700 min-w-[120px]"
+              >
+                <option value="">All Suppliers</option>
+                {uniqueSuppliers.map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+            )}
+            {(filterText || filterGeo || filterSupplier || filterCategory) && (
+              <button
+                onClick={() => { setFilterText(''); setFilterGeo(''); setFilterSupplier(''); setFilterCategory(''); }}
+                className="text-xs text-gray-500 hover:text-red-500 flex items-center gap-1"
+              >
+                <X className="w-3 h-3" /> Clear
+              </button>
+            )}
+            {(filterText || filterGeo || filterSupplier || filterCategory) && (
+              <span className="text-xs text-gray-400">
+                {filteredProducts.length} of {products.length}
+              </span>
+            )}
+          </div>
+        )}
+
         {/* Add Product Form */}
         {showAddForm && (
           <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
@@ -1127,8 +1211,13 @@ export default function ProductsPage() {
               <h3 className="text-lg font-medium text-gray-900">No products</h3>
               <p className="text-gray-500 mt-1">Add your first product to get started</p>
             </div>
+          ) : filteredProducts.length === 0 ? (
+            <div className="text-center py-8 text-gray-400">
+              <Search className="w-8 h-8 mx-auto mb-2 opacity-50" />
+              <p>No products match your filters</p>
+            </div>
           ) : (
-            products.map((product) => {
+            filteredProducts.map((product) => {
               const isExpanded = expandedProductId === product.id;
               const isEditing = editingId === product.id;
               return (
