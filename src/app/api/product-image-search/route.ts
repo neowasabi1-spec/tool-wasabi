@@ -1,7 +1,63 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
 
-export const maxDuration = 30;
+export const maxDuration = 45;
 export const dynamic = 'force-dynamic';
+
+const BUCKET_NAME = 'product-catalog-images';
+
+function getSupabase() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!url || !key) throw new Error('Missing Supabase credentials');
+  return createClient(url, key);
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function ensureBucket(sb: any) {
+  const { data } = await sb.storage.getBucket(BUCKET_NAME);
+  if (!data) {
+    await sb.storage.createBucket(BUCKET_NAME, { public: true });
+  }
+}
+
+async function downloadAndUpload(imageUrl: string, productName: string): Promise<string> {
+  try {
+    const res = await fetch(imageUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'image/*,*/*',
+      },
+      signal: AbortSignal.timeout(10000),
+    });
+
+    if (!res.ok) return '';
+
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.startsWith('image/')) return '';
+
+    const buffer = Buffer.from(await res.arrayBuffer());
+    if (buffer.length < 1000) return '';
+
+    const sb = getSupabase();
+    await ensureBucket(sb);
+
+    const ext = contentType.includes('png') ? 'png' : contentType.includes('webp') ? 'webp' : 'jpg';
+    const safeName = productName.replace(/[^a-zA-Z0-9-_]/g, '_').substring(0, 40);
+    const filePath = `products/${safeName}-${Date.now()}.${ext}`;
+
+    const { error } = await sb.storage
+      .from(BUCKET_NAME)
+      .upload(filePath, buffer, { contentType, upsert: false });
+
+    if (error) return '';
+
+    const { data } = sb.storage.from(BUCKET_NAME).getPublicUrl(filePath);
+    return data.publicUrl;
+  } catch {
+    return '';
+  }
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -22,17 +78,23 @@ export async function POST(request: NextRequest) {
     }
 
     const query = `${productName} ${brandName || ''} product`.trim();
-    let imageUrl = '';
+    let foundUrl = '';
 
     if (geminiKey) {
-      imageUrl = await searchWithGemini(geminiKey, query, catalogImageBase64);
+      foundUrl = await searchWithGemini(geminiKey, query, catalogImageBase64);
     }
 
-    if (!imageUrl && openaiKey) {
-      imageUrl = await searchWithOpenAI(openaiKey, query);
+    if (!foundUrl && openaiKey) {
+      foundUrl = await searchWithOpenAI(openaiKey, query);
     }
 
-    return NextResponse.json({ imageUrl });
+    if (!foundUrl) {
+      return NextResponse.json({ imageUrl: '' });
+    }
+
+    const proxiedUrl = await downloadAndUpload(foundUrl, productName);
+
+    return NextResponse.json({ imageUrl: proxiedUrl || foundUrl });
   } catch (error) {
     console.error('Product image search error:', error);
     return NextResponse.json(
@@ -47,13 +109,10 @@ async function searchWithGemini(apiKey: string, query: string, catalogImageBase6
 
   if (catalogImageBase64) {
     parts.push({
-      inline_data: {
-        mime_type: 'image/jpeg',
-        data: catalogImageBase64,
-      },
+      inline_data: { mime_type: 'image/jpeg', data: catalogImageBase64 },
     });
     parts.push({
-      text: `This is a catalog page showing the product "${query}". 
+      text: `This is a catalog page showing the product "${query}".
 Find a REAL, publicly accessible image URL for this exact product by searching online.
 Return ONLY a JSON: {"imageUrl": "https://..."}
 The URL must be a direct image link (ending in .jpg, .png, .webp or from a CDN like Amazon, eBay, etc).
@@ -76,10 +135,7 @@ If you cannot find one, return {"imageUrl": ""}`,
       body: JSON.stringify({
         contents: [{ parts }],
         tools: [{ google_search: {} }],
-        generationConfig: {
-          temperature: 0.1,
-          maxOutputTokens: 512,
-        },
+        generationConfig: { temperature: 0.1, maxOutputTokens: 512 },
       }),
     }
   );
@@ -91,18 +147,7 @@ If you cannot find one, return {"imageUrl": ""}`,
     ?.map((p: { text?: string }) => p.text || '')
     .join('') || '';
 
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (jsonMatch) {
-    try {
-      const parsed = JSON.parse(jsonMatch[0]);
-      return parsed.imageUrl || parsed.image_url || '';
-    } catch { /* ignore */ }
-  }
-
-  const urlMatch = text.match(/https?:\/\/[^\s"'<>]+\.(?:jpg|jpeg|png|webp|gif)/i);
-  if (urlMatch) return urlMatch[0];
-
-  return '';
+  return extractImageUrl(text);
 }
 
 async function searchWithOpenAI(apiKey: string, query: string): Promise<string> {
@@ -115,7 +160,7 @@ async function searchWithOpenAI(apiKey: string, query: string): Promise<string> 
     body: JSON.stringify({
       model: 'gpt-4o-mini',
       instructions: `Find a REAL, WORKING, DIRECT image URL for this product. Return ONLY: {"imageUrl": "https://..."}
-Prefer: Amazon CDN (m.media-amazon.com, images-na.ssl-images-amazon.com), official sites, eBay, major retailers.
+Prefer: Amazon CDN, official sites, eBay, major retailers.
 If you cannot find one, return {"imageUrl": ""}`,
       input: `Find product image URL for: "${query}"`,
       tools: [{ type: 'web_search_preview' }],
@@ -134,6 +179,10 @@ If you cannot find one, return {"imageUrl": ""}`,
     }
   }
 
+  return extractImageUrl(text);
+}
+
+function extractImageUrl(text: string): string {
   const jsonMatch = text.match(/\{[\s\S]*\}/);
   if (jsonMatch) {
     try {
@@ -141,6 +190,9 @@ If you cannot find one, return {"imageUrl": ""}`,
       return parsed.imageUrl || parsed.image_url || '';
     } catch { /* ignore */ }
   }
+
+  const urlMatch = text.match(/https?:\/\/[^\s"'<>]+\.(?:jpg|jpeg|png|webp|gif)/i);
+  if (urlMatch) return urlMatch[0];
 
   return '';
 }
