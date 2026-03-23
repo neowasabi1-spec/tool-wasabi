@@ -143,7 +143,7 @@ RULES:
     addMessage('user', trimmed);
     setIsLoading(true);
 
-    const history = messages
+    const chatHistory = messages
       .filter(m => m.role !== 'system')
       .slice(-20)
       .map(m => ({
@@ -152,7 +152,7 @@ RULES:
       }));
 
     try {
-      // Send message to queue
+      // Send message to queue with full conversation history
       const res = await fetch('/api/openclaw/queue', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -160,6 +160,7 @@ RULES:
           message: trimmed,
           systemPrompt: buildSystemPrompt(),
           section: section.name,
+          chatHistory,
         }),
       });
 
@@ -175,7 +176,7 @@ RULES:
 
       // Poll for response
       let attempts = 0;
-      const maxAttempts = 40; // 40 * 3s = 120s max
+      const maxAttempts = 100; // 100 * 3s = 300s max (5 min for browser tasks)
       const pollInterval = 3000;
 
       const pollForResponse = async (): Promise<void> => {
@@ -195,7 +196,7 @@ RULES:
           }
 
           if (attempts >= maxAttempts) {
-            setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, role: 'system' as const, content: 'Error: Response timeout (120s)' } : m));
+            setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, role: 'system' as const, content: 'Error: Response timeout (300s)' } : m));
             return;
           }
 

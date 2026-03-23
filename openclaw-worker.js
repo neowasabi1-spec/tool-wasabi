@@ -28,7 +28,7 @@ function callOpenClaw(messages) {
       model: OPENCLAW_MODEL,
       messages,
       temperature: 0.7,
-      max_tokens: 2048,
+      max_tokens: 4096,
     });
 
     const req = http.request({
@@ -42,7 +42,7 @@ function callOpenClaw(messages) {
         'Host': `${OPENCLAW_HOST}:${OPENCLAW_PORT}`,
         'Content-Length': Buffer.byteLength(payload),
       },
-      timeout: 120000,
+      timeout: 300000, // 5 minutes for browser/agent tasks
     }, (res) => {
       let body = '';
       res.on('data', (chunk) => body += chunk);
@@ -78,10 +78,24 @@ async function processMessage(msg) {
 
   try {
     const systemPrompt = msg.system_prompt || 'You are OpenClaw, an AI assistant. Be concise and helpful. Respond in the same language as the user. You have full access to all your skills including browser navigation, URL analysis, and any other tool available to you. Use them freely when the user requests it.';
-    const messages = [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: msg.user_message },
-    ];
+    
+    const messages = [{ role: 'system', content: systemPrompt }];
+    
+    // Include conversation history if available
+    let history = [];
+    try {
+      if (msg.chat_history) {
+        history = typeof msg.chat_history === 'string' ? JSON.parse(msg.chat_history) : msg.chat_history;
+      }
+    } catch (e) {
+      console.log('Could not parse chat_history, using single message');
+    }
+    
+    if (Array.isArray(history) && history.length > 0) {
+      history.forEach(h => messages.push({ role: h.role, content: h.content }));
+    }
+    
+    messages.push({ role: 'user', content: msg.user_message });
 
     const response = await callOpenClaw(messages);
 
