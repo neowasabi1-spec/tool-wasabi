@@ -139,6 +139,29 @@ export default function ProductsPage() {
     return keys[0] || null;
   };
 
+  const detectImageColumn = (rows: Record<string, string>[]): string | null => {
+    if (rows.length === 0) return null;
+    const keys = Object.keys(rows[0]);
+    const imgPatterns = [
+      'image', 'immagine', 'img', 'image_url', 'imageurl', 'image url',
+      'foto', 'photo', 'picture', 'pic', 'thumbnail', 'thumb',
+      'product_image', 'product image', 'immagine_prodotto', 'immagine prodotto',
+      'img_url', 'img url', 'photo_url', 'photo url', 'url_image', 'url image',
+      'image_link', 'image link', 'link_immagine', 'link immagine',
+      'media', 'media_url', 'cover', 'cover_image', 'main_image',
+    ];
+    for (const pattern of imgPatterns) {
+      const found = keys.find(k => k.toLowerCase().trim() === pattern);
+      if (found) return found;
+    }
+    const urlCol = keys.find(k => {
+      const lower = k.toLowerCase();
+      return (lower.includes('image') || lower.includes('img') || lower.includes('foto') || lower.includes('photo') || lower.includes('immagine') || lower.includes('picture')) &&
+        (lower.includes('url') || lower.includes('link') || lower.includes('src'));
+    });
+    return urlCol || null;
+  };
+
   const fileToBase64 = (file: File): Promise<string> => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -297,10 +320,12 @@ export default function ProductsPage() {
     setIsCatalogEnriching(true);
     setCatalogImportDone(false);
     const nameCol = detectNameColumn(parsedCatalogRows);
+    const imageCol = detectImageColumn(parsedCatalogRows);
 
     for (let i = 0; i < parsedCatalogRows.length; i++) {
       const row = parsedCatalogRows[i];
       const productName = nameCol ? String(row[nameCol] || '').trim() : '';
+      const fileImageUrl = imageCol ? String(row[imageCol] || '').trim() : '';
 
       if (!productName) {
         setCatalogEnrichStatus(prev => ({ ...prev, [i]: 'error' }));
@@ -313,7 +338,7 @@ export default function ProductsPage() {
       try {
         const rawData: Record<string, string> = {};
         for (const [key, val] of Object.entries(row)) {
-          if (key !== nameCol && String(val).trim()) rawData[key] = String(val);
+          if (key !== nameCol && key !== imageCol && String(val).trim()) rawData[key] = String(val);
         }
 
         const res = await fetch('/api/catalog-import/enrich', {
@@ -327,7 +352,7 @@ export default function ProductsPage() {
 
         const enriched = data.product;
 
-        let finalImageUrl = enriched.imageUrl || '';
+        let finalImageUrl = fileImageUrl || enriched.imageUrl || '';
 
         if (!finalImageUrl) {
           try {
