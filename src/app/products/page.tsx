@@ -441,8 +441,8 @@ export default function ProductsPage() {
           sku: enriched.sku || '',
           category: enriched.category || '',
           characteristics: enriched.characteristics || [],
-          geoMarket: catalogDefaultGeoMarket || enriched.geoMarket || '',
-          supplier: catalogDefaultSupplier || fileSupplier || enriched.supplier || '',
+          geoMarket: catalogDefaultGeoMarket || '',
+          supplier: catalogDefaultSupplier || fileSupplier || '',
         });
 
         setCatalogEnrichStatus(prev => ({ ...prev, [i]: 'done' }));
@@ -1004,26 +1004,29 @@ export default function ProductsPage() {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-3 mb-4">
-                  <div>
-                    <label className="block text-xs font-medium text-gray-600 mb-1">Geo Market (all products)</label>
-                    <input
-                      type="text"
-                      value={catalogDefaultGeoMarket}
-                      onChange={(e) => setCatalogDefaultGeoMarket(e.target.value)}
-                      placeholder="e.g. EU, US, Global..."
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 outline-none"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-gray-600 mb-1">Supplier (all products)</label>
-                    <input
-                      type="text"
-                      value={catalogDefaultSupplier}
-                      onChange={(e) => setCatalogDefaultSupplier(e.target.value)}
-                      placeholder="e.g. Bigarena, Acme..."
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 outline-none"
-                    />
+                <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4">
+                  <p className="text-xs font-semibold text-amber-700 mb-2">Set defaults for all products in this catalog:</p>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-bold text-amber-800 mb-1">Geo Market *</label>
+                      <input
+                        type="text"
+                        value={catalogDefaultGeoMarket}
+                        onChange={(e) => setCatalogDefaultGeoMarket(e.target.value)}
+                        placeholder="e.g. EU, US, Global..."
+                        className="w-full px-3 py-2 border-2 border-amber-300 rounded-lg text-sm focus:ring-2 focus:ring-amber-500 outline-none bg-white"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-amber-800 mb-1">Supplier *</label>
+                      <input
+                        type="text"
+                        value={catalogDefaultSupplier}
+                        onChange={(e) => setCatalogDefaultSupplier(e.target.value)}
+                        placeholder="e.g. Bigarena, Acme..."
+                        className="w-full px-3 py-2 border-2 border-amber-300 rounded-lg text-sm focus:ring-2 focus:ring-amber-500 outline-none bg-white"
+                      />
+                    </div>
                   </div>
                 </div>
 
