@@ -42,7 +42,7 @@ function callOpenClaw(messages) {
         'Host': `${OPENCLAW_HOST}:${OPENCLAW_PORT}`,
         'Content-Length': Buffer.byteLength(payload),
       },
-      timeout: 300000, // 5 minutes for browser/agent tasks
+      timeout: 1800000, // 30 minutes for complex agent tasks
     }, (res) => {
       let body = '';
       res.on('data', (chunk) => body += chunk);

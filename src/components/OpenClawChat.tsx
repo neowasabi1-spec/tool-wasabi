@@ -176,7 +176,7 @@ RULES:
 
       // Poll for response
       let attempts = 0;
-      const maxAttempts = 100; // 100 * 3s = 300s max (5 min for browser tasks)
+      const maxAttempts = 600; // 600 * 3s = 1800s max (30 min for complex tasks)
       const pollInterval = 3000;
 
       const pollForResponse = async (): Promise<void> => {
@@ -196,7 +196,7 @@ RULES:
           }
 
           if (attempts >= maxAttempts) {
-            setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, role: 'system' as const, content: 'Error: Response timeout (300s)' } : m));
+            setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, role: 'system' as const, content: 'Error: Response timeout (30min)' } : m));
             return;
           }
 
