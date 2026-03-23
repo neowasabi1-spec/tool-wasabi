@@ -194,8 +194,8 @@ export default function ProductsPage() {
         const base64 = await compressImage(file);
         rows = await sendToParseAPI({ base64, mimeType: 'image/jpeg', filename: file.name });
       } else if (ext === 'pdf') {
-        const { getDocument, GlobalWorkerOptions, version } = await import('pdfjs-dist');
-        GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${version}/pdf.worker.min.mjs`;
+        const { getDocument, GlobalWorkerOptions } = await import('pdfjs-dist');
+        GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
 
         const buffer = await file.arrayBuffer();
         const pdf = await getDocument({ data: new Uint8Array(buffer) }).promise;
