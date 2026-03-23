@@ -27,6 +27,10 @@ interface AppProduct {
   ctaText: string;
   ctaUrl: string;
   brandName: string;
+  sku?: string;
+  category?: string;
+  characteristics?: string[];
+  geoMarket?: string;
   createdAt: Date;
 }
 
@@ -132,6 +136,10 @@ function dbProductToApp(p: Product): AppProduct {
     ctaText: p.cta_text,
     ctaUrl: p.cta_url,
     brandName: p.brand_name,
+    sku: p.sku || undefined,
+    category: p.category || undefined,
+    characteristics: p.characteristics || [],
+    geoMarket: p.geo_market || undefined,
     createdAt: new Date(p.created_at),
   };
 }
@@ -361,6 +369,10 @@ export const useStore = create<Store>()((set, get) => ({
         cta_text: product.ctaText,
         cta_url: product.ctaUrl,
         brand_name: product.brandName,
+        sku: product.sku,
+        category: product.category,
+        characteristics: product.characteristics,
+        geo_market: product.geoMarket,
       });
       
       set((state) => ({
@@ -383,6 +395,10 @@ export const useStore = create<Store>()((set, get) => ({
         cta_text: product.ctaText,
         cta_url: product.ctaUrl,
         brand_name: product.brandName,
+        sku: product.sku,
+        category: product.category,
+        characteristics: product.characteristics,
+        geo_market: product.geoMarket,
       });
       
       set((state) => ({

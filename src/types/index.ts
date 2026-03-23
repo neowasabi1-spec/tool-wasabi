@@ -69,6 +69,10 @@ export interface Product {
   ctaText: string;
   ctaUrl: string;
   brandName: string;
+  sku?: string;
+  category?: string;
+  characteristics?: string[];
+  geoMarket?: string;
   createdAt: Date;
 }
 

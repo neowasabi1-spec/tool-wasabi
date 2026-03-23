@@ -37,6 +37,10 @@ export interface Database {
           cta_text: string;
           cta_url: string;
           brand_name: string;
+          sku: string | null;
+          category: string | null;
+          characteristics: string[];
+          geo_market: string | null;
           created_at: string;
           updated_at: string;
         };
@@ -50,6 +54,10 @@ export interface Database {
           cta_text: string;
           cta_url: string;
           brand_name: string;
+          sku?: string | null;
+          category?: string | null;
+          characteristics?: string[];
+          geo_market?: string | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -63,6 +71,10 @@ export interface Database {
           cta_text?: string;
           cta_url?: string;
           brand_name?: string;
+          sku?: string | null;
+          category?: string | null;
+          characteristics?: string[];
+          geo_market?: string | null;
           updated_at?: string;
         };
       };

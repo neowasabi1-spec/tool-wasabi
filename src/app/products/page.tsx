@@ -6,7 +6,7 @@ import Header from '@/components/Header';
 import { useStore } from '@/store/useStore';
 import { BUILT_IN_PAGE_TYPE_OPTIONS, PageType } from '@/types';
 import type { ArchivedFunnel } from '@/types/database';
-import { Plus, Trash2, Edit2, Save, X, Package, Tag, Link, MousePointer, ChevronDown, ChevronRight, DollarSign, Image as ImageIcon, MessageCircle, Send, Loader2, Sparkles, ExternalLink, Globe, Layers, CheckSquare, Square, FileText, RefreshCw } from 'lucide-react';
+import { Plus, Trash2, Edit2, Save, X, Package, Tag, Link, MousePointer, ChevronDown, ChevronRight, DollarSign, Image as ImageIcon, MessageCircle, Send, Loader2, Sparkles, ExternalLink, Globe, Layers, CheckSquare, Square, FileText, RefreshCw, Upload, FileSpreadsheet, Search, AlertCircle, CheckCircle, MapPin, BarChart3 } from 'lucide-react';
 
 interface NewProductForm {
   name: string;
@@ -60,6 +60,17 @@ export default function ProductsPage() {
   const [briefLoading, setBriefLoading] = useState<string | null>(null);
   const [briefExpanded, setBriefExpanded] = useState<Set<string>>(new Set());
 
+  // Catalog import state
+  const [showCatalogImport, setShowCatalogImport] = useState(false);
+  const [catalogFileName, setCatalogFileName] = useState('');
+  const [parsedCatalogRows, setParsedCatalogRows] = useState<Record<string, string>[]>([]);
+  const [catalogEnrichStatus, setCatalogEnrichStatus] = useState<Record<number, 'pending' | 'enriching' | 'done' | 'error'>>({});
+  const [catalogEnrichedData, setCatalogEnrichedData] = useState<Record<number, Record<string, unknown>>>({});
+  const [catalogEnrichErrors, setCatalogEnrichErrors] = useState<Record<number, string>>({});
+  const [isCatalogEnriching, setIsCatalogEnriching] = useState(false);
+  const [catalogImportDone, setCatalogImportDone] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+
   const saveProductBriefs = (briefs: Record<string, string>) => {
     setProductBriefs(briefs);
     try { localStorage.setItem('product_briefs', JSON.stringify(briefs)); } catch { /* ignore */ }
@@ -88,6 +99,119 @@ export default function ProductsPage() {
     } finally {
       setBriefLoading(null);
     }
+  };
+
+  const detectNameColumn = (rows: Record<string, string>[]): string | null => {
+    if (rows.length === 0) return null;
+    const keys = Object.keys(rows[0]);
+    const namePatterns = ['name', 'nome', 'product', 'prodotto', 'product_name', 'nome_prodotto', 'product name', 'nome prodotto', 'item', 'title', 'titolo', 'articolo'];
+    for (const pattern of namePatterns) {
+      const found = keys.find(k => k.toLowerCase().trim() === pattern);
+      if (found) return found;
+    }
+    return keys[0] || null;
+  };
+
+  const processCatalogFile = async (file: File) => {
+    setCatalogFileName(file.name);
+    const XLSX = await import('xlsx');
+    const buffer = await file.arrayBuffer();
+    const data = new Uint8Array(buffer);
+    const wb = XLSX.read(data, { type: 'array' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(ws, { defval: '' }) as Record<string, string>[];
+    setParsedCatalogRows(rows);
+    const status: Record<number, 'pending'> = {};
+    rows.forEach((_, i) => { status[i] = 'pending'; });
+    setCatalogEnrichStatus(status);
+    setCatalogEnrichedData({});
+    setCatalogEnrichErrors({});
+    setCatalogImportDone(false);
+  };
+
+  const handleCatalogFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) await processCatalogFile(file);
+  };
+
+  const handleCatalogDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const file = e.dataTransfer.files[0];
+    if (file) await processCatalogFile(file);
+  };
+
+  const handleCatalogEnrich = async () => {
+    if (parsedCatalogRows.length === 0) return;
+    setIsCatalogEnriching(true);
+    setCatalogImportDone(false);
+    const nameCol = detectNameColumn(parsedCatalogRows);
+
+    for (let i = 0; i < parsedCatalogRows.length; i++) {
+      const row = parsedCatalogRows[i];
+      const productName = nameCol ? String(row[nameCol] || '').trim() : '';
+
+      if (!productName) {
+        setCatalogEnrichStatus(prev => ({ ...prev, [i]: 'error' }));
+        setCatalogEnrichErrors(prev => ({ ...prev, [i]: 'No product name found in row' }));
+        continue;
+      }
+
+      setCatalogEnrichStatus(prev => ({ ...prev, [i]: 'enriching' }));
+
+      try {
+        const rawData: Record<string, string> = {};
+        for (const [key, val] of Object.entries(row)) {
+          if (key !== nameCol && String(val).trim()) rawData[key] = String(val);
+        }
+
+        const res = await fetch('/api/catalog-import/enrich', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ productName, rawData }),
+        });
+
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+
+        const enriched = data.product;
+
+        await addProduct({
+          name: enriched.name || productName,
+          description: enriched.description || '',
+          price: enriched.price || 0,
+          imageUrl: enriched.imageUrl || '',
+          benefits: enriched.benefits || [],
+          ctaText: enriched.ctaText || 'Buy Now',
+          ctaUrl: enriched.ctaUrl || '',
+          brandName: enriched.brandName || '',
+          sku: enriched.sku || '',
+          category: enriched.category || '',
+          characteristics: enriched.characteristics || [],
+          geoMarket: enriched.geoMarket || '',
+        });
+
+        setCatalogEnrichStatus(prev => ({ ...prev, [i]: 'done' }));
+        setCatalogEnrichedData(prev => ({ ...prev, [i]: enriched }));
+      } catch (error) {
+        setCatalogEnrichStatus(prev => ({ ...prev, [i]: 'error' }));
+        setCatalogEnrichErrors(prev => ({ ...prev, [i]: error instanceof Error ? error.message : 'Unknown error' }));
+      }
+    }
+
+    setIsCatalogEnriching(false);
+    setCatalogImportDone(true);
+  };
+
+  const resetCatalogImport = () => {
+    setShowCatalogImport(false);
+    setCatalogFileName('');
+    setParsedCatalogRows([]);
+    setCatalogEnrichStatus({});
+    setCatalogEnrichedData({});
+    setCatalogEnrichErrors({});
+    setIsCatalogEnriching(false);
+    setCatalogImportDone(false);
   };
 
   useEffect(() => {
@@ -238,6 +362,10 @@ export default function ProductsPage() {
       `Description: ${product.description}`,
       `Benefits:\n${benefitsText}`,
       `CTA: "${product.ctaText}" → ${product.ctaUrl || 'N/A'}`,
+      product.sku ? `SKU: ${product.sku}` : '',
+      product.category ? `Category: ${product.category}` : '',
+      product.geoMarket ? `Geo Market: ${product.geoMarket}` : '',
+      product.characteristics?.length ? `Characteristics:\n${product.characteristics.map((c: string, i: number) => `  ${i + 1}. ${c}`).join('\n')}` : '',
       product.imageUrl ? `Image: ${product.imageUrl}` : '',
       briefText ? `\n=== PRODUCT BRIEF (separate document, NOT the product card) ===\n${briefText}` : '',
       `\n=== ALL PRODUCTS ===\n${allProductsText}`,
@@ -368,11 +496,18 @@ export default function ProductsPage() {
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 mb-6 flex items-center justify-between">
           <div className="flex items-center gap-4">
             <button
-              onClick={() => setShowAddForm(true)}
+              onClick={() => { setShowAddForm(true); setShowCatalogImport(false); }}
               className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors"
             >
               <Plus className="w-4 h-4" />
               Add Product
+            </button>
+            <button
+              onClick={() => { setShowCatalogImport(true); setShowAddForm(false); }}
+              className="flex items-center gap-2 bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-700 transition-colors"
+            >
+              <Upload className="w-4 h-4" />
+              Import Catalog
             </button>
             <span className="text-gray-500">
               {products.length} {products.length === 1 ? 'product' : 'products'}
@@ -496,6 +631,201 @@ export default function ProductsPage() {
           </div>
         )}
 
+        {/* Catalog Import Panel */}
+        {showCatalogImport && (
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+                <FileSpreadsheet className="w-5 h-5 text-emerald-600" />
+                Import Product Catalog
+              </h3>
+              <button onClick={resetCatalogImport} className="p-1 text-gray-400 hover:text-gray-600">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Step 1: File Upload */}
+            {parsedCatalogRows.length === 0 && (
+              <div
+                onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+                onDragLeave={() => setIsDragging(false)}
+                onDrop={handleCatalogDrop}
+                className={`border-2 border-dashed rounded-xl p-12 text-center transition-colors ${
+                  isDragging ? 'border-emerald-400 bg-emerald-50' : 'border-gray-300 hover:border-emerald-400'
+                }`}
+              >
+                <FileSpreadsheet className="w-12 h-12 text-gray-300 mx-auto mb-4" />
+                <p className="text-gray-600 mb-2">Drag & drop your catalog file here, or click to select</p>
+                <p className="text-sm text-gray-400 mb-4">Supports CSV, XLSX, XLS — needs at least a column with product names</p>
+                <label className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 cursor-pointer transition-colors">
+                  <Upload className="w-4 h-4" />
+                  Select File
+                  <input
+                    type="file"
+                    accept=".csv,.xlsx,.xls"
+                    onChange={handleCatalogFileSelect}
+                    className="hidden"
+                  />
+                </label>
+              </div>
+            )}
+
+            {/* Step 2: Preview */}
+            {parsedCatalogRows.length > 0 && !isCatalogEnriching && !catalogImportDone && (
+              <div>
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-3">
+                    <span className="text-sm text-gray-500">{catalogFileName}</span>
+                    <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 text-xs rounded-full font-medium">
+                      {parsedCatalogRows.length} products found
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => { setParsedCatalogRows([]); setCatalogFileName(''); }}
+                    className="text-sm text-gray-500 hover:text-gray-700"
+                  >
+                    Change file
+                  </button>
+                </div>
+
+                <div className="border border-gray-200 rounded-lg overflow-hidden mb-4">
+                  <div className="max-h-[300px] overflow-auto">
+                    <table className="w-full text-sm">
+                      <thead className="bg-gray-50 sticky top-0">
+                        <tr>
+                          <th className="text-left px-3 py-2 text-gray-600 font-medium">#</th>
+                          {Object.keys(parsedCatalogRows[0] || {}).slice(0, 5).map(key => (
+                            <th key={key} className="text-left px-3 py-2 text-gray-600 font-medium truncate max-w-[150px]">
+                              {key}
+                            </th>
+                          ))}
+                          {Object.keys(parsedCatalogRows[0] || {}).length > 5 && (
+                            <th className="text-left px-3 py-2 text-gray-400 font-medium">...</th>
+                          )}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100">
+                        {parsedCatalogRows.slice(0, 50).map((row, i) => (
+                          <tr key={i} className="hover:bg-gray-50">
+                            <td className="px-3 py-2 text-gray-400">{i + 1}</td>
+                            {Object.values(row).slice(0, 5).map((val, j) => (
+                              <td key={j} className="px-3 py-2 text-gray-800 truncate max-w-[150px]">
+                                {String(val)}
+                              </td>
+                            ))}
+                            {Object.keys(row).length > 5 && (
+                              <td className="px-3 py-2 text-gray-400">...</td>
+                            )}
+                          </tr>
+                        ))}
+                        {parsedCatalogRows.length > 50 && (
+                          <tr>
+                            <td colSpan={99} className="px-3 py-2 text-center text-gray-400 text-xs">
+                              ... and {parsedCatalogRows.length - 50} more rows
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div className="bg-blue-50 rounded-lg p-3 mb-4 flex items-start gap-2">
+                  <Search className="w-4 h-4 text-blue-600 mt-0.5 flex-shrink-0" />
+                  <div className="text-sm text-blue-800">
+                    <strong>AI Web Research:</strong> For each product, AI will search the web to find descriptions, characteristics, ingredients/specs, benefits, pricing, target market, and suggest promotion angles.
+                  </div>
+                </div>
+
+                <div className="flex justify-end gap-3">
+                  <button onClick={resetCatalogImport} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors">
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleCatalogEnrich}
+                    className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors"
+                  >
+                    <Sparkles className="w-4 h-4" />
+                    Research & Import All ({parsedCatalogRows.length})
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Step 3: Enriching / Done */}
+            {(isCatalogEnriching || catalogImportDone) && (
+              <div>
+                <div className="mb-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-sm font-medium text-gray-700">
+                      {catalogImportDone ? 'Import complete!' : 'Researching products online...'}
+                    </span>
+                    <span className="text-sm text-gray-500">
+                      {Object.values(catalogEnrichStatus).filter(s => s === 'done').length} / {parsedCatalogRows.length}
+                    </span>
+                  </div>
+                  <div className="w-full bg-gray-200 rounded-full h-2">
+                    <div
+                      className="bg-emerald-500 h-2 rounded-full transition-all duration-500"
+                      style={{ width: `${(Object.values(catalogEnrichStatus).filter(s => s === 'done' || s === 'error').length / parsedCatalogRows.length) * 100}%` }}
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-2 max-h-[400px] overflow-auto">
+                  {parsedCatalogRows.map((row, i) => {
+                    const nameCol = detectNameColumn(parsedCatalogRows);
+                    const productName = nameCol ? String(row[nameCol] || '') : `Row ${i + 1}`;
+                    const status = catalogEnrichStatus[i];
+                    const enriched = catalogEnrichedData[i] as Record<string, unknown> | undefined;
+                    const error = catalogEnrichErrors[i];
+
+                    return (
+                      <div key={i} className={`flex items-center gap-3 px-3 py-2.5 rounded-lg border ${
+                        status === 'done' ? 'bg-green-50 border-green-200' :
+                        status === 'error' ? 'bg-red-50 border-red-200' :
+                        status === 'enriching' ? 'bg-blue-50 border-blue-200' :
+                        'bg-gray-50 border-gray-200'
+                      }`}>
+                        {status === 'enriching' && <Loader2 className="w-4 h-4 text-blue-500 animate-spin flex-shrink-0" />}
+                        {status === 'done' && <CheckCircle className="w-4 h-4 text-green-600 flex-shrink-0" />}
+                        {status === 'error' && <AlertCircle className="w-4 h-4 text-red-500 flex-shrink-0" />}
+                        {status === 'pending' && <div className="w-4 h-4 rounded-full border-2 border-gray-300 flex-shrink-0" />}
+
+                        <span className="text-sm font-medium text-gray-800 flex-1 truncate">{productName}</span>
+
+                        {status === 'done' && enriched && (
+                          <div className="flex items-center gap-2 flex-shrink-0">
+                            {enriched.category && <span className="text-xs px-2 py-0.5 bg-teal-100 text-teal-700 rounded-full">{String(enriched.category)}</span>}
+                            {enriched.geoMarket && <span className="text-xs px-2 py-0.5 bg-amber-100 text-amber-700 rounded-full">{String(enriched.geoMarket)}</span>}
+                            <span className="text-xs text-green-600 font-bold">&euro;{String(enriched.price || 0)}</span>
+                          </div>
+                        )}
+
+                        {status === 'error' && (
+                          <span className="text-xs text-red-600 truncate max-w-[250px] flex-shrink-0">{error}</span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {catalogImportDone && (
+                  <div className="flex justify-end mt-4">
+                    <button
+                      onClick={resetCatalogImport}
+                      className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors"
+                    >
+                      <CheckCircle className="w-4 h-4" />
+                      Done
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Products List */}
         <div className="space-y-3">
           {products.length === 0 ? (
@@ -529,6 +859,7 @@ export default function ProductsPage() {
                       <div className="flex items-center gap-3">
                         <span className="font-semibold text-gray-900 text-base">{product.name}</span>
                         <span className="px-2 py-0.5 bg-purple-100 text-purple-700 text-xs rounded-full font-medium">{product.brandName || 'No Brand'}</span>
+                        {product.category && <span className="px-2 py-0.5 bg-teal-100 text-teal-700 text-xs rounded-full font-medium">{product.category}</span>}
                       </div>
                       <p className="text-sm text-gray-500 truncate mt-0.5">{product.description || 'No description'}</p>
                     </div>
@@ -651,9 +982,12 @@ export default function ProductsPage() {
                             <div className="flex-1 min-w-0 space-y-4">
                               {/* Title + Price */}
                               <div>
-                                <div className="flex items-center gap-3 mb-1">
+                                <div className="flex items-center gap-3 flex-wrap mb-1">
                                   <h3 className="text-2xl font-bold text-gray-900">{product.name}</h3>
                                   <span className="px-3 py-1 bg-purple-100 text-purple-700 text-sm rounded-full font-medium">{product.brandName}</span>
+                                  {product.sku && <span className="px-2 py-0.5 bg-gray-100 text-gray-600 text-xs rounded-full font-mono">SKU: {product.sku}</span>}
+                                  {product.category && <span className="px-2 py-0.5 bg-teal-100 text-teal-700 text-xs rounded-full font-medium">{product.category}</span>}
+                                  {product.geoMarket && <span className="px-2 py-0.5 bg-amber-100 text-amber-700 text-xs rounded-full font-medium flex items-center gap-1"><MapPin className="w-3 h-3" />{product.geoMarket}</span>}
                                 </div>
                                 <div className="flex items-center gap-2 text-2xl font-bold text-green-600">
                                   <DollarSign className="w-5 h-5" />
@@ -705,6 +1039,24 @@ export default function ProductsPage() {
                               <p className="text-gray-400 text-sm">No benefits added. Click Edit to add some.</p>
                             )}
                           </div>
+
+                          {/* Characteristics */}
+                          {product.characteristics && product.characteristics.length > 0 && (
+                            <div className="bg-slate-50/50 rounded-xl p-5 border border-slate-200">
+                              <h4 className="text-sm font-semibold text-slate-800 uppercase tracking-wide mb-3 flex items-center gap-2">
+                                <BarChart3 className="w-4 h-4" />
+                                Characteristics
+                              </h4>
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                                {product.characteristics.map((char: string, index: number) => (
+                                  <div key={index} className="flex items-start gap-2 text-sm text-gray-700">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-slate-400 mt-2 flex-shrink-0" />
+                                    <span>{char}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
 
                           {/* Product Brief Section */}
                           <div className="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">

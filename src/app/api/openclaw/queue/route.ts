@@ -26,6 +26,18 @@ export async function POST(req: NextRequest) {
 
 export async function GET(req: NextRequest) {
   const id = req.nextUrl.searchParams.get('id');
+  const debug = req.nextUrl.searchParams.get('debug');
+
+  // Debug: show all recent messages status
+  if (debug === '1') {
+    const { data, error } = await supabase
+      .from('openclaw_messages')
+      .select('id, status, section, created_at, completed_at, error_message, user_message')
+      .order('created_at', { ascending: false })
+      .limit(10);
+    return NextResponse.json({ messages: data, error: error?.message });
+  }
+
   if (!id) return NextResponse.json({ error: 'Missing id' }, { status: 400 });
 
   const { data, error } = await supabase

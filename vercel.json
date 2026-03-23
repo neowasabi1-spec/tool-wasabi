@@ -20,6 +20,9 @@
     "src/app/api/swipe-quiz/screenshot/route.ts": {
       "maxDuration": 300,
       "memory": 1024
+    },
+    "src/app/api/catalog-import/enrich/route.ts": {
+      "maxDuration": 120
     }
   }
 }
