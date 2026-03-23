@@ -131,7 +131,8 @@ RULES:
 - If the user asks about something specific to their current section, provide context-aware help
 - You can suggest actions the user can take in the current section
 - Use markdown formatting for readability
-- Respond in the same language the user writes in (Italian or English)`;
+- Respond in the same language the user writes in (Italian or English)
+- IMPORTANT: Do NOT use browser tools, do NOT try to navigate URLs, do NOT open web pages. If the user asks to navigate or browse a URL, analyze it based on your knowledge or suggest they use the Affiliate Browser Chat section instead. Never trigger browser automation from this chat.`;
   };
 
   const sendMessage = async () => {
