@@ -17,7 +17,7 @@ Return a VALID JSON object with EXACTLY these fields:
   "geoMarket": "Target markets (e.g. 'US, UK, EU', 'Global', 'Italy, EU')",
   "brandName": "Brand name",
   "ctaText": "Suggested CTA text based on product type",
-  "imageUrl": "",
+  "imageUrl": "https://example.com/product-image.jpg",
   "promotionAngles": ["Angle 1: brief description", "Angle 2: brief description", ...]
 }
 
@@ -27,6 +27,7 @@ RULES:
 - characteristics: array of ingredients, specs, materials, key features (at least 5-6)
 - promotionAngles: 3-5 advertising angles for affiliate/ecommerce marketing
 - geoMarket: where this product is primarily sold/shipped
+- imageUrl: MUST be a real, direct URL to a product image (jpg/png/webp). Search for the official product page or Amazon/ecommerce listing and get the main product image URL. Do NOT leave this empty.
 - Be FACTUAL. Use real information from your research.
 - Return ONLY the JSON object. No markdown, no code blocks, no explanations.`;
 
@@ -71,7 +72,9 @@ export async function POST(request: NextRequest) {
 
 Product: "${productName}"${rawDataText}
 
-Find: official description, ingredients/specifications/features, retail price, target markets, benefits, and suggest promotion angles for affiliate marketing.
+Find: official description, ingredients/specifications/features, retail price, target markets, benefits, a direct URL to the main product image, and suggest promotion angles for affiliate marketing.
+
+IMPORTANT: You MUST find and include a real product image URL (from the official site, Amazon, or any ecommerce listing). Do NOT leave imageUrl empty.
 
 Return ONLY the JSON object.`;
 
