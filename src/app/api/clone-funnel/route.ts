@@ -11,6 +11,158 @@ async function getBrowser(): Promise<Browser> {
   return getSingletonBrowser();
 }
 
+interface ExtractedText {
+  index: number;
+  originalText: string;
+  rawText?: string;
+  tagName: string;
+  fullTag: string;
+  classes: string;
+  attributes: string;
+  context: string;
+  position: number;
+}
+
+function extractTextsFromHtml(html: string): ExtractedText[] {
+  let cleaned = html
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, '')
+    .replace(/<svg[\s\S]*?<\/svg>/gi, '');
+
+  const bodyMatch = cleaned.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+  const bodyHtml = bodyMatch ? bodyMatch[1] : cleaned;
+
+  const texts: ExtractedText[] = [];
+  const extracted = new Set<string>();
+  let idx = 0;
+
+  const textTags = [
+    'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+    'p', 'li', 'td', 'th', 'dt', 'dd',
+    'button', 'a', 'label', 'figcaption', 'caption',
+    'blockquote', 'summary', 'legend',
+  ];
+
+  const blockTags = new Set([
+    'div', 'section', 'article', 'main', 'aside', 'header', 'footer', 'nav',
+    'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p',
+    'ul', 'ol', 'li', 'dl', 'dt', 'dd',
+    'table', 'thead', 'tbody', 'tr', 'td', 'th',
+    'blockquote', 'figure', 'figcaption', 'form', 'fieldset',
+    'button', 'details', 'summary',
+  ]);
+
+  for (const tag of textTags) {
+    const regex = new RegExp(`<${tag}([^>]*)>([\\s\\S]*?)<\\/${tag}>`, 'gi');
+    let match;
+    while ((match = regex.exec(bodyHtml)) !== null) {
+      const attrs = match[1] || '';
+      const innerHTML = match[2];
+      const plainText = innerHTML.replace(/<[^>]*>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
+
+      if (plainText.length < 2 || !/[a-zA-Z]/.test(plainText)) continue;
+      if (extracted.has(plainText)) continue;
+      if (plainText.includes('{') && plainText.includes('}') && plainText.includes('=>')) continue;
+
+      const hasBlockChild = Array.from(innerHTML.matchAll(/<(div|section|article|p|h[1-6]|ul|ol|li|table|tr|td|th|blockquote|form|button)[^>]*>/gi))
+        .some((m) => {
+          const childTag = m[1].toLowerCase();
+          if (!blockTags.has(childTag)) return false;
+          const childContent = innerHTML.slice(m.index! + m[0].length);
+          const closeIdx = childContent.indexOf(`</${childTag}`);
+          if (closeIdx === -1) return false;
+          const childText = childContent.slice(0, closeIdx).replace(/<[^>]*>/g, '').trim();
+          return childText.length >= 2;
+        });
+      if (hasBlockChild) continue;
+
+      extracted.add(plainText);
+
+      const classMatch = attrs.match(/class=["']([^"']*)["']/i);
+      const idMatch = attrs.match(/id=["']([^"']*)["']/i);
+      const cls = classMatch ? classMatch[1] : '';
+      const id = idMatch ? idMatch[1] : '';
+
+      texts.push({
+        index: idx++,
+        originalText: plainText,
+        rawText: innerHTML !== plainText && innerHTML.length <= 5000 ? innerHTML : undefined,
+        tagName: tag,
+        fullTag: `<${tag}${id ? ` id="${id}"` : ''}${cls ? ` class="${cls}"` : ''}>`,
+        classes: cls,
+        attributes: attrs.trim().substring(0, 200),
+        context: tag,
+        position: match.index || 0,
+      });
+    }
+  }
+
+  const spanDivRegex = /<(span|div|strong|em|b|i)([^>]*)>([^<]{3,500})<\/\1>/gi;
+  let sdMatch;
+  while ((sdMatch = spanDivRegex.exec(bodyHtml)) !== null) {
+    const tag = sdMatch[1].toLowerCase();
+    const attrs = sdMatch[2] || '';
+    const text = sdMatch[3].replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
+    if (text.length < 3 || !/[a-zA-Z]/.test(text) || extracted.has(text)) continue;
+    extracted.add(text);
+
+    const classMatch = attrs.match(/class=["']([^"']*)["']/i);
+    const cls = classMatch ? classMatch[1] : '';
+
+    texts.push({
+      index: idx++,
+      originalText: text,
+      tagName: tag,
+      fullTag: `<${tag}${cls ? ` class="${cls}"` : ''}>`,
+      classes: cls,
+      attributes: attrs.trim().substring(0, 200),
+      context: tag,
+      position: sdMatch.index || 0,
+    });
+  }
+
+  const attrRegex = /(alt|title|placeholder|aria-label)=["']([^"']{3,200})["']/gi;
+  let attrMatch;
+  while ((attrMatch = attrRegex.exec(bodyHtml)) !== null) {
+    const attrName = attrMatch[1];
+    const val = attrMatch[2].trim();
+    if (val.length < 3 || !/[a-zA-Z]/.test(val) || extracted.has(val) || val.startsWith('http')) continue;
+    extracted.add(val);
+
+    texts.push({
+      index: idx++,
+      originalText: val,
+      tagName: '',
+      fullTag: `${attrName}="${val}"`,
+      classes: '',
+      attributes: `${attrName}="${val}"`,
+      context: `attr:${attrName}`,
+      position: 0,
+    });
+  }
+
+  const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+  if (titleMatch) {
+    const titleText = titleMatch[1].trim();
+    if (titleText.length >= 3 && /[a-zA-Z]/.test(titleText) && !extracted.has(titleText)) {
+      extracted.add(titleText);
+      texts.push({
+        index: idx++,
+        originalText: titleText,
+        tagName: 'title',
+        fullTag: '<title>',
+        classes: '',
+        attributes: '',
+        context: 'title',
+        position: -1,
+      });
+    }
+  }
+
+  return texts;
+}
+
 // Clone a page using Playwright headless browser - renders JS, captures full DOM + CSS
 async function cloneWithBrowser(url: string, viewport: 'desktop' | 'mobile' = 'desktop'): Promise<{
   html: string;
@@ -593,8 +745,98 @@ export async function POST(request: NextRequest) {
         });
       } catch (err) {
         console.error('❌ Playwright rewrite extract error:', err);
-        console.log('⚠️ Fallback: Edge Function will fetch directly...');
-        // Fall through to Edge Function proxy
+        console.log('⚠️ Fallback: extracting texts via fetch + regex (no browser)...');
+
+        try {
+          const htmlResponse = await fetch(url.trim(), {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            },
+            redirect: 'follow',
+            signal: AbortSignal.timeout(20000),
+          });
+
+          if (!htmlResponse.ok) {
+            return NextResponse.json(
+              { error: `Unable to fetch page: HTTP ${htmlResponse.status}` },
+              { status: 502 }
+            );
+          }
+
+          let rawHtml = await htmlResponse.text();
+          rawHtml = rawHtml.replace(/"\s*==\s*\$\d+/g, '"').replace(/\s*==\s*\$\d+/g, '');
+
+          const extractResult = extractTextsFromHtml(rawHtml);
+
+          if (extractResult.length === 0) {
+            return NextResponse.json({ error: 'No text found on the page.' }, { status: 400 });
+          }
+
+          const { createClient } = await import('@supabase/supabase-js');
+          const supabase = createClient(SUPABASE_URL!, SUPABASE_ANON_KEY!);
+
+          const { data: job, error: jobError } = await supabase
+            .from('cloning_jobs')
+            .insert({
+              user_id: body.userId || '00000000-0000-0000-0000-000000000001',
+              url,
+              clone_mode: 'rewrite',
+              product_name: body.productName || '',
+              product_description: body.productDescription || '',
+              framework: body.framework || null,
+              target: body.target || null,
+              custom_prompt: body.customPrompt || null,
+              original_html: rawHtml,
+              total_texts: extractResult.length,
+              status: 'ready',
+            })
+            .select()
+            .single();
+
+          if (jobError || !job) {
+            return NextResponse.json({ error: `Job creation error: ${jobError?.message}` }, { status: 500 });
+          }
+
+          const textsToInsert = extractResult.map((t) => ({
+            job_id: job.id,
+            index: t.index,
+            original_text: t.originalText,
+            raw_text: t.rawText || null,
+            tag_name: t.tagName,
+            full_tag: t.fullTag,
+            classes: t.classes,
+            attributes: t.attributes,
+            context: t.context,
+            position: t.position,
+            processed: false,
+          }));
+
+          for (let i = 0; i < textsToInsert.length; i += 500) {
+            const batch = textsToInsert.slice(i, i + 500);
+            const { error: insertError } = await supabase.from('cloning_texts').insert(batch);
+            if (insertError) {
+              await supabase.from('cloning_jobs').delete().eq('id', job.id);
+              return NextResponse.json({ error: `Text saving error: ${insertError.message}` }, { status: 500 });
+            }
+          }
+
+          console.log(`✅ Job ${job.id} created with ${extractResult.length} texts (fetch fallback)`);
+
+          return NextResponse.json({
+            success: true,
+            phase: 'extract',
+            jobId: job.id,
+            totalTexts: extractResult.length,
+            message: 'Texts extracted via fetch fallback and saved. Proceed with process phase.',
+          });
+        } catch (fallbackErr) {
+          console.error('❌ Fetch fallback also failed:', fallbackErr);
+          return NextResponse.json(
+            { error: `Extract failed: ${fallbackErr instanceof Error ? fallbackErr.message : 'unknown error'}` },
+            { status: 502 }
+          );
+        }
       }
     }
 
