@@ -127,6 +127,32 @@ function sanitizeClonedHtml(html: string, originalUrl: string): string {
       return `@import url("${abs(url)}")`;
     });
 
+    // 6. Fix lazy-loaded videos/iframes: promote data-src to src so media loads without JS
+    clean = clean.replace(/<(iframe|video|source)([^>]*?)(\s)data-src\s*=\s*"([^"]*)"([^>]*?)>/gi, (_m, tag, before, sp, dataSrc, after) => {
+      if (/\ssrc\s*=/i.test(before + after)) return _m;
+      return `<${tag}${before}${sp}src="${dataSrc}"${after}>`;
+    });
+    clean = clean.replace(/<(iframe|video|source)([^>]*?)(\s)data-src\s*=\s*'([^']*)'([^>]*?)>/gi, (_m, tag, before, sp, dataSrc, after) => {
+      if (/\ssrc\s*=/i.test(before + after)) return _m;
+      return `<${tag}${before}${sp}src="${dataSrc}"${after}>`;
+    });
+
+    // 7. Detect common JS-based video embeds and inject fallback iframes
+    // Wistia
+    clean = clean.replace(/<div[^>]*class="[^"]*wistia_embed[^"]*"[^>]*data-video-id="([^"]+)"[^>]*>/gi, (_m, videoId) => {
+      return `${_m}<iframe src="https://fast.wistia.net/embed/iframe/${videoId}" allowfullscreen style="width:100%;height:100%;position:absolute;top:0;left:0" frameborder="0"></iframe>`;
+    });
+    // Vidyard
+    clean = clean.replace(/<img[^>]*class="[^"]*vidyard-player-embed[^"]*"[^>]*data-uuid="([^"]+)"[^>]*\/?>/gi, (_m, uuid) => {
+      return `<iframe src="https://play.vidyard.com/${uuid}" allowfullscreen style="width:100%;aspect-ratio:16/9" frameborder="0"></iframe>`;
+    });
+
+    // 8. Ensure all iframes/videos have allow attributes for playback
+    clean = clean.replace(/<iframe([^>]*?)>/gi, (_m, attrs) => {
+      if (/\sallow\s*=/i.test(attrs)) return _m;
+      return `<iframe${attrs} allow="autoplay; fullscreen; encrypted-media; picture-in-picture">`;
+    });
+
     return clean;
   } catch {
     return html;
@@ -2769,6 +2795,7 @@ export default function FrontEndFunnel() {
                       : 'w-full h-full'
                   }`}
                   title="HTML Preview"
+                  allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
                 />
               </div>
             </div>
