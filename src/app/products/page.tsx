@@ -162,6 +162,27 @@ export default function ProductsPage() {
     return urlCol || null;
   };
 
+  const detectSupplierColumn = (rows: Record<string, string>[]): string | null => {
+    if (rows.length === 0) return null;
+    const keys = Object.keys(rows[0]);
+    const supplierPatterns = [
+      'supplier', 'fornitore', 'vendor', 'manufacturer', 'produttore',
+      'supplier_name', 'nome_fornitore', 'vendor_name', 'manufacturer_name',
+      'supplier name', 'nome fornitore', 'vendor name', 'manufacturer name',
+      'distributore', 'distributor', 'azienda', 'company', 'maker',
+      'fabbricante', 'grossista', 'wholesaler',
+    ];
+    for (const pattern of supplierPatterns) {
+      const found = keys.find(k => k.toLowerCase().trim() === pattern);
+      if (found) return found;
+    }
+    const partialMatch = keys.find(k => {
+      const lower = k.toLowerCase();
+      return lower.includes('supplier') || lower.includes('fornitore') || lower.includes('vendor') || lower.includes('manufacturer');
+    });
+    return partialMatch || null;
+  };
+
   const fileToBase64 = (file: File): Promise<string> => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -321,11 +342,13 @@ export default function ProductsPage() {
     setCatalogImportDone(false);
     const nameCol = detectNameColumn(parsedCatalogRows);
     const imageCol = detectImageColumn(parsedCatalogRows);
+    const supplierCol = detectSupplierColumn(parsedCatalogRows);
 
     for (let i = 0; i < parsedCatalogRows.length; i++) {
       const row = parsedCatalogRows[i];
       const productName = nameCol ? String(row[nameCol] || '').trim() : '';
       const fileImageUrl = imageCol ? String(row[imageCol] || '').trim() : '';
+      const fileSupplier = supplierCol ? String(row[supplierCol] || '').trim() : '';
 
       if (!productName) {
         setCatalogEnrichStatus(prev => ({ ...prev, [i]: 'error' }));
@@ -338,7 +361,7 @@ export default function ProductsPage() {
       try {
         const rawData: Record<string, string> = {};
         for (const [key, val] of Object.entries(row)) {
-          if (key !== nameCol && key !== imageCol && String(val).trim()) rawData[key] = String(val);
+          if (key !== nameCol && key !== imageCol && key !== supplierCol && String(val).trim()) rawData[key] = String(val);
         }
 
         const res = await fetch('/api/catalog-import/enrich', {
@@ -379,6 +402,7 @@ export default function ProductsPage() {
           category: enriched.category || '',
           characteristics: enriched.characteristics || [],
           geoMarket: enriched.geoMarket || '',
+          supplier: fileSupplier || enriched.supplier || '',
         });
 
         setCatalogEnrichStatus(prev => ({ ...prev, [i]: 'done' }));
@@ -1109,6 +1133,11 @@ export default function ProductsPage() {
                               <input type="text" value={product.brandName} onChange={(e) => updateProduct(product.id, { brandName: e.target.value })}
                                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-white" />
                             </div>
+                            <div>
+                              <label className="block text-sm font-medium text-gray-700 mb-1">Supplier / Fornitore</label>
+                              <input type="text" value={product.supplier || ''} onChange={(e) => updateProduct(product.id, { supplier: e.target.value })}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-white" placeholder="Nome fornitore..." />
+                            </div>
                             <div className="md:col-span-2">
                               <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
                               <textarea value={product.description} onChange={(e) => updateProduct(product.id, { description: e.target.value })}
@@ -1213,6 +1242,7 @@ export default function ProductsPage() {
                                   {product.sku && <span className="px-2 py-0.5 bg-gray-100 text-gray-600 text-xs rounded-full font-mono">SKU: {product.sku}</span>}
                                   {product.category && <span className="px-2 py-0.5 bg-teal-100 text-teal-700 text-xs rounded-full font-medium">{product.category}</span>}
                                   {product.geoMarket && <span className="px-2 py-0.5 bg-amber-100 text-amber-700 text-xs rounded-full font-medium flex items-center gap-1"><MapPin className="w-3 h-3" />{product.geoMarket}</span>}
+                                  {product.supplier && <span className="px-2 py-0.5 bg-orange-100 text-orange-700 text-xs rounded-full font-medium flex items-center gap-1"><Package className="w-3 h-3" />{product.supplier}</span>}
                                 </div>
                                 <div className="flex items-center gap-2 text-2xl font-bold text-green-600">
                                   <DollarSign className="w-5 h-5" />

@@ -31,6 +31,7 @@ interface AppProduct {
   category?: string;
   characteristics?: string[];
   geoMarket?: string;
+  supplier?: string;
   createdAt: Date;
 }
 
@@ -140,6 +141,7 @@ function dbProductToApp(p: Product): AppProduct {
     category: p.category || undefined,
     characteristics: p.characteristics || [],
     geoMarket: p.geo_market || undefined,
+    supplier: p.supplier || undefined,
     createdAt: new Date(p.created_at),
   };
 }
@@ -373,6 +375,7 @@ export const useStore = create<Store>()((set, get) => ({
         category: product.category,
         characteristics: product.characteristics,
         geo_market: product.geoMarket,
+        supplier: product.supplier,
       });
       
       set((state) => ({
@@ -399,6 +402,7 @@ export const useStore = create<Store>()((set, get) => ({
         category: product.category,
         characteristics: product.characteristics,
         geo_market: product.geoMarket,
+        supplier: product.supplier,
       });
       
       set((state) => ({

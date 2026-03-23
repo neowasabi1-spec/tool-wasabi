@@ -15,7 +15,8 @@ Return a VALID JSON object with EXACTLY these fields:
   "benefits": ["...", "...", ...],
   "characteristics": ["...", "...", ...],
   "geoMarket": "Target markets (e.g. 'US, UK, EU', 'Global', 'Italy, EU')",
-  "brandName": "Brand name",
+  "supplier": "Supplier/manufacturer/vendor name — the company that makes or distributes this product",
+  "brandName": "Brand name (can be same as supplier if brand = manufacturer)",
   "ctaText": "Suggested CTA text based on product type",
   "imageUrl": "https://example.com/product-image.jpg",
   "promotionAngles": ["Angle 1: brief description", "Angle 2: brief description", ...]
@@ -47,6 +48,12 @@ PROMOTION ANGLES:
 - Each angle should include the target audience, the emotional hook, and a suggested headline.
 - Example: "Pain Point → Solution: Target adults 30-50 with back pain. Hook: 'Stop suffering in silence.' Headline: 'The NASA-inspired mattress topper that eliminated back pain for 89% of users'"
 
+SUPPLIER:
+- The supplier is the company that manufactures, produces, or distributes the product.
+- This can be the same as the brand name, or different (e.g. brand = "iPhone", supplier = "Apple Inc.")
+- If from a catalog, use the supplier/vendor info from the raw data if available.
+- If not available, research who manufactures/distributes this product.
+
 OTHER RULES:
 - price: number in EUR (convert if needed). Use the most common retail price.
 - geoMarket: where this product is primarily sold/shipped
@@ -63,6 +70,7 @@ interface EnrichedProduct {
   benefits: string[];
   characteristics: string[];
   geoMarket: string;
+  supplier: string;
   brandName: string;
   ctaText: string;
   imageUrl: string;
@@ -251,6 +259,7 @@ function parseProductJSON(text: string): EnrichedProduct {
       benefits: Array.isArray(parsed.benefits) ? parsed.benefits : [],
       characteristics: Array.isArray(parsed.characteristics) ? parsed.characteristics : [],
       geoMarket: parsed.geoMarket || parsed.geo_market || '',
+      supplier: parsed.supplier || parsed.vendor || parsed.manufacturer || parsed.fornitore || '',
       brandName: parsed.brandName || parsed.brand_name || '',
       ctaText: parsed.ctaText || parsed.cta_text || 'Buy Now',
       imageUrl: parsed.imageUrl || parsed.image_url || '',

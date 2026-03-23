@@ -41,6 +41,7 @@ export interface Database {
           category: string | null;
           characteristics: string[];
           geo_market: string | null;
+          supplier: string | null;
           created_at: string;
           updated_at: string;
         };
@@ -58,6 +59,7 @@ export interface Database {
           category?: string | null;
           characteristics?: string[];
           geo_market?: string | null;
+          supplier?: string | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -75,6 +77,7 @@ export interface Database {
           category?: string | null;
           characteristics?: string[];
           geo_market?: string | null;
+          supplier?: string | null;
           updated_at?: string;
         };
       };

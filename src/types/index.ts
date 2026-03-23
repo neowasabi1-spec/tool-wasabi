@@ -73,6 +73,7 @@ export interface Product {
   category?: string;
   characteristics?: string[];
   geoMarket?: string;
+  supplier?: string;
   createdAt: Date;
 }
 
