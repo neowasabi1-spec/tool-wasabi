@@ -68,6 +68,7 @@ export default function ProductsPage() {
   const [catalogEnrichedData, setCatalogEnrichedData] = useState<Record<number, Record<string, unknown>>>({});
   const [catalogEnrichErrors, setCatalogEnrichErrors] = useState<Record<number, string>>({});
   const [brokenImages, setBrokenImages] = useState<Set<string>>(new Set());
+  const [catalogPageImages, setCatalogPageImages] = useState<string[]>([]);
   const [imageSearchLoading, setImageSearchLoading] = useState<string | null>(null);
   const [isCatalogEnriching, setIsCatalogEnriching] = useState(false);
   const [catalogImportDone, setCatalogImportDone] = useState(false);
@@ -263,6 +264,16 @@ export default function ProductsPage() {
       } else if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'tiff', 'tif'].includes(ext)) {
         const base64 = await compressImage(file);
         rows = await sendToParseAPI({ base64, mimeType: 'image/jpeg', filename: file.name });
+
+        try {
+          const uploadRes = await fetch('/api/catalog-import/upload-image', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ base64, mimeType: 'image/jpeg', filename: file.name.replace(/\.[^.]+$/, '') }),
+          });
+          const uploadData = await uploadRes.json();
+          if (uploadData.imageUrl) setCatalogPageImages([uploadData.imageUrl]);
+        } catch { /* upload is best-effort */ }
       } else if (ext === 'pdf') {
         const { getDocument, GlobalWorkerOptions } = await import('pdfjs-dist');
         GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
@@ -271,28 +282,52 @@ export default function ProductsPage() {
         const pdf = await getDocument({ data: new Uint8Array(buffer) }).promise;
 
         let allText = '';
+        const pageImagesBase64: string[] = [];
+
         for (let i = 1; i <= pdf.numPages; i++) {
           const page = await pdf.getPage(i);
+
           const content = await page.getTextContent();
           const pageText = content.items
             .filter((item): item is Extract<typeof item, { str: string }> => 'str' in item)
             .map(item => item.str)
             .join(' ');
           allText += pageText + '\n';
-        }
 
-        if (allText.trim().length > 50) {
-          rows = await sendToParseAPI({ text: allText.substring(0, 100000), filename: file.name });
-        } else {
-          const page = await pdf.getPage(1);
-          const viewport = page.getViewport({ scale: 1.5 });
+          const viewport = page.getViewport({ scale: 2 });
           const canvas = document.createElement('canvas');
           canvas.width = viewport.width;
           canvas.height = viewport.height;
           const ctx = canvas.getContext('2d')!;
           await page.render({ canvasContext: ctx, viewport }).promise;
-          const imgBase64 = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
-          rows = await sendToParseAPI({ base64: imgBase64, mimeType: 'image/jpeg', filename: file.name });
+          const imgBase64 = canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
+          pageImagesBase64.push(imgBase64);
+        }
+
+        const uploadedPageUrls: string[] = [];
+        for (let i = 0; i < pageImagesBase64.length; i++) {
+          try {
+            const uploadRes = await fetch('/api/catalog-import/upload-image', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                base64: pageImagesBase64[i],
+                mimeType: 'image/jpeg',
+                filename: `${file.name.replace(/\.pdf$/i, '')}-page${i + 1}`,
+              }),
+            });
+            const uploadData = await uploadRes.json();
+            uploadedPageUrls.push(uploadData.imageUrl || '');
+          } catch {
+            uploadedPageUrls.push('');
+          }
+        }
+        setCatalogPageImages(uploadedPageUrls);
+
+        if (allText.trim().length > 50) {
+          rows = await sendToParseAPI({ text: allText.substring(0, 100000), filename: file.name });
+        } else {
+          rows = await sendToParseAPI({ base64: pageImagesBase64[0], mimeType: 'image/jpeg', filename: file.name });
         }
       } else {
         const text = await file.text();
@@ -349,6 +384,9 @@ export default function ProductsPage() {
       const productName = nameCol ? String(row[nameCol] || '').trim() : '';
       const fileImageUrl = imageCol ? String(row[imageCol] || '').trim() : '';
       const fileSupplier = supplierCol ? String(row[supplierCol] || '').trim() : '';
+      const catalogPageImage = catalogPageImages.length > 0
+        ? (catalogPageImages[Math.min(i, catalogPageImages.length - 1)] || '')
+        : '';
 
       if (!productName) {
         setCatalogEnrichStatus(prev => ({ ...prev, [i]: 'error' }));
@@ -375,7 +413,7 @@ export default function ProductsPage() {
 
         const enriched = data.product;
 
-        let finalImageUrl = fileImageUrl || enriched.imageUrl || '';
+        let finalImageUrl = fileImageUrl || enriched.imageUrl || catalogPageImage || '';
 
         if (!finalImageUrl) {
           try {
@@ -427,6 +465,7 @@ export default function ProductsPage() {
     setIsCatalogEnriching(false);
     setIsCatalogParsing(false);
     setCatalogImportDone(false);
+    setCatalogPageImages([]);
   };
 
   useEffect(() => {
