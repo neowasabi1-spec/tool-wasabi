@@ -194,11 +194,36 @@ export default function ProductsPage() {
         const base64 = await compressImage(file);
         rows = await sendToParseAPI({ base64, mimeType: 'image/jpeg', filename: file.name });
       } else if (ext === 'pdf') {
-        const base64 = await fileToBase64(file);
-        if (base64.length > 4_000_000) {
-          throw new Error('PDF too large (max ~3MB). Try converting to text/CSV or splitting into smaller files.');
+        const { getDocument, GlobalWorkerOptions, version } = await import('pdfjs-dist');
+        GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${version}/pdf.worker.min.mjs`;
+
+        const buffer = await file.arrayBuffer();
+        const pdf = await getDocument({ data: new Uint8Array(buffer) }).promise;
+
+        let allText = '';
+        for (let i = 1; i <= pdf.numPages; i++) {
+          const page = await pdf.getPage(i);
+          const content = await page.getTextContent();
+          const pageText = content.items
+            .filter((item): item is Extract<typeof item, { str: string }> => 'str' in item)
+            .map(item => item.str)
+            .join(' ');
+          allText += pageText + '\n';
         }
-        rows = await sendToParseAPI({ base64, mimeType: 'application/pdf', filename: file.name });
+
+        if (allText.trim().length > 50) {
+          rows = await sendToParseAPI({ text: allText.substring(0, 100000), filename: file.name });
+        } else {
+          const page = await pdf.getPage(1);
+          const viewport = page.getViewport({ scale: 1.5 });
+          const canvas = document.createElement('canvas');
+          canvas.width = viewport.width;
+          canvas.height = viewport.height;
+          const ctx = canvas.getContext('2d')!;
+          await page.render({ canvasContext: ctx, viewport }).promise;
+          const imgBase64 = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
+          rows = await sendToParseAPI({ base64: imgBase64, mimeType: 'image/jpeg', filename: file.name });
+        }
       } else {
         const text = await file.text();
         if (!text.trim()) throw new Error('File appears to be empty or binary. Try converting to CSV/Excel.');
