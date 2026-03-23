@@ -343,8 +343,17 @@ export default function ProductsPage() {
         return obj;
       });
 
-      if (normalized.length === 0) throw new Error('No products found in file');
-      setParsedCatalogRows(normalized);
+      const nameCol = detectNameColumn(normalized);
+      const seen = new Set<string>();
+      const deduplicated = normalized.filter(row => {
+        const name = nameCol ? (row[nameCol] || '').trim().toLowerCase() : '';
+        if (!name || seen.has(name)) return false;
+        seen.add(name);
+        return true;
+      });
+
+      if (deduplicated.length === 0) throw new Error('No products found in file');
+      setParsedCatalogRows(deduplicated);
       const status: Record<number, 'pending'> = {};
       normalized.forEach((_, i) => { status[i] = 'pending'; });
       setCatalogEnrichStatus(status);

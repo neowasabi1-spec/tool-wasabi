@@ -3,13 +3,15 @@ import { NextRequest, NextResponse } from 'next/server';
 export const maxDuration = 120;
 export const dynamic = 'force-dynamic';
 
-const EXTRACT_PROMPT = `You are a product catalog parser. Extract ALL products from the provided content.
+const EXTRACT_PROMPT = `You are a product catalog parser. Extract ALL UNIQUE products from the provided content.
 
 Return a JSON array where each element is an object. Each object MUST have at least a "name" field.
-Include any other fields you can identify: sku, price, category, description, brand, quantity, etc.
+Include any other fields you can identify: sku, price, category, description, brand, quantity, supplier, etc.
 
-RULES:
-- Extract EVERY product mentioned, even if information is minimal
+CRITICAL RULES:
+- Extract each product ONLY ONCE. Do NOT create duplicates.
+- If a product has multiple pricing tiers (e.g. Tier 1, Tier 2, Tier 3), create ONE entry and put all prices in the price field (e.g. "Tier 1: €4.18 / Tier 2: €3.93 / Tier 3: €3.68")
+- If the same product appears on multiple pages or in multiple sections, include it ONLY ONCE
 - The "name" field is REQUIRED for each product
 - Use consistent field names across all products
 - price should be a string (keep currency symbols if present)
@@ -18,8 +20,8 @@ RULES:
 
 Example output:
 [
-  {"name": "Product A", "sku": "SKU-001", "price": "€49.00", "category": "Health"},
-  {"name": "Product B", "price": "$29.99"}
+  {"name": "Product A", "sku": "SKU-001", "price": "Tier 1: €4.18 / Tier 2: €3.93 / Tier 3: €3.68", "category": "Health"},
+  {"name": "Product B", "price": "€29.99", "supplier": "Acme Corp"}
 ]`;
 
 const SPREADSHEET_EXTENSIONS = ['csv', 'xlsx', 'xls', 'tsv', 'ods'];
@@ -85,7 +87,18 @@ export async function POST(request: NextRequest) {
       return obj;
     });
 
-    return NextResponse.json({ rows: normalized });
+    const seen = new Set<string>();
+    const deduplicated = normalized.filter(row => {
+      const nameKey = Object.keys(row).find(k => 
+        ['name', 'nome', 'product', 'prodotto', 'product_name', 'title'].includes(k.toLowerCase().trim())
+      ) || Object.keys(row)[0];
+      const name = (row[nameKey] || '').trim().toLowerCase();
+      if (!name || seen.has(name)) return false;
+      seen.add(name);
+      return true;
+    });
+
+    return NextResponse.json({ rows: deduplicated });
   } catch (error) {
     console.error('Catalog parse error:', error);
     return NextResponse.json(
