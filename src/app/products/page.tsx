@@ -69,6 +69,7 @@ export default function ProductsPage() {
   const [catalogEnrichErrors, setCatalogEnrichErrors] = useState<Record<number, string>>({});
   const [brokenImages, setBrokenImages] = useState<Set<string>>(new Set());
   const [catalogPageImages, setCatalogPageImages] = useState<string[]>([]);
+  const [catalogPageBase64, setCatalogPageBase64] = useState<string[]>([]);
   const [imageSearchLoading, setImageSearchLoading] = useState<string | null>(null);
   const [isCatalogEnriching, setIsCatalogEnriching] = useState(false);
   const [catalogImportDone, setCatalogImportDone] = useState(false);
@@ -323,6 +324,7 @@ export default function ProductsPage() {
           }
         }
         setCatalogPageImages(uploadedPageUrls);
+        setCatalogPageBase64(pageImagesBase64);
 
         if (allText.trim().length > 50) {
           rows = await sendToParseAPI({ text: allText.substring(0, 100000), filename: file.name });
@@ -422,19 +424,27 @@ export default function ProductsPage() {
 
         const enriched = data.product;
 
-        let finalImageUrl = fileImageUrl || enriched.imageUrl || catalogPageImage || '';
+        let finalImageUrl = fileImageUrl || enriched.imageUrl || '';
 
         if (!finalImageUrl) {
+          const pageIdx = Math.min(i, catalogPageBase64.length - 1);
+          const pageBase64 = catalogPageBase64.length > 0 ? catalogPageBase64[pageIdx] : undefined;
           try {
             const imgRes = await fetch('/api/product-image-search', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ productName: enriched.name || productName, brandName: enriched.brandName }),
+              body: JSON.stringify({
+                productName: enriched.name || productName,
+                brandName: enriched.brandName,
+                catalogImageBase64: pageBase64,
+              }),
             });
             const imgData = await imgRes.json();
             if (imgData.imageUrl) finalImageUrl = imgData.imageUrl;
           } catch { /* image search is best-effort */ }
         }
+
+        if (!finalImageUrl) finalImageUrl = catalogPageImage;
 
         await addProduct({
           name: enriched.name || productName,
@@ -475,6 +485,7 @@ export default function ProductsPage() {
     setIsCatalogParsing(false);
     setCatalogImportDone(false);
     setCatalogPageImages([]);
+    setCatalogPageBase64([]);
   };
 
   useEffect(() => {
