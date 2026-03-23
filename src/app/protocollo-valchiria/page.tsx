@@ -19,7 +19,10 @@ export default function ProtocolloValchiriaPage() {
   const [expandedFlow, setExpandedFlow] = useState<string | null>(null);
   const [swipeTarget, setSwipeTarget] = useState<string | null>(null);
   const [showProductPicker, setShowProductPicker] = useState(false);
+  const [targetProductId, setTargetProductId] = useState<string | null>(null);
+  const [showTargetPicker, setShowTargetPicker] = useState(false);
   const pickerRef = useRef<HTMLDivElement>(null);
+  const targetRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!isInitialized) initialize();
@@ -30,6 +33,9 @@ export default function ProtocolloValchiriaPage() {
       if (pickerRef.current && !pickerRef.current.contains(e.target as Node)) {
         setSwipeTarget(null);
         setShowProductPicker(false);
+      }
+      if (targetRef.current && !targetRef.current.contains(e.target as Node)) {
+        setShowTargetPicker(false);
       }
     }
     document.addEventListener('mousedown', handleClickOutside);
@@ -113,6 +119,61 @@ export default function ProtocolloValchiriaPage() {
             <div className="bg-purple-50 border border-purple-200 rounded-lg px-4 py-2">
               <span className="text-purple-700 text-sm font-semibold">{selected.size} flussi selezionati</span>
             </div>
+          )}
+        </div>
+
+        {/* Target product selector */}
+        <div className="mb-6 flex items-center gap-4">
+          <div className="relative" ref={targetRef}>
+            <button
+              onClick={() => setShowTargetPicker(!showTargetPicker)}
+              className={`inline-flex items-center gap-2 px-5 py-3 rounded-xl text-sm font-semibold border-2 transition-all ${
+                targetProductId
+                  ? 'bg-green-50 border-green-400 text-green-800 shadow-sm'
+                  : 'bg-white border-gray-200 text-gray-600 hover:border-purple-300'
+              }`}
+            >
+              <Package className="w-5 h-5" />
+              {targetProductId ? products.find(p => p.id === targetProductId)?.name || 'Prodotto' : 'Seleziona Prodotto Target'}
+              <ChevronDown className={`w-4 h-4 transition-transform ${showTargetPicker ? 'rotate-180' : ''}`} />
+            </button>
+
+            {showTargetPicker && (
+              <div className="absolute top-full left-0 mt-2 w-80 bg-white rounded-xl border border-gray-200 shadow-2xl z-50 max-h-72 overflow-y-auto">
+                <div className="px-4 py-2.5 border-b border-gray-100">
+                  <p className="text-xs font-semibold text-gray-500 uppercase">Per quale prodotto vuoi swippare?</p>
+                </div>
+                {products.map((p) => (
+                  <button
+                    key={p.id}
+                    onClick={() => { setTargetProductId(p.id); setShowTargetPicker(false); }}
+                    className={`w-full text-left px-4 py-3 text-sm hover:bg-purple-50 flex items-center justify-between transition-colors ${
+                      targetProductId === p.id ? 'bg-purple-50 text-purple-700' : 'text-gray-700'
+                    }`}
+                  >
+                    <div>
+                      <p className="font-medium">{p.name}</p>
+                      {p.price > 0 && <p className="text-xs text-gray-400 mt-0.5">€{p.price}</p>}
+                    </div>
+                    {targetProductId === p.id && <Check className="w-4 h-4 text-purple-600" />}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {targetProductId && selected.size > 0 && (
+            <button
+              onClick={() => {
+                const product = products.find(p => p.id === targetProductId);
+                const selectedFlows = flows.filter(f => selected.has(f.id));
+                alert(`Swipe ${selectedFlows.length} flussi → ${product?.name}\n\n${selectedFlows.map(f => f.name).join('\n')}\n\nFunzionalità in arrivo!`);
+              }}
+              className="inline-flex items-center gap-2 px-5 py-3 bg-gradient-to-r from-purple-600 to-red-600 text-white rounded-xl text-sm font-semibold hover:from-purple-700 hover:to-red-700 transition-all shadow-md"
+            >
+              <Wand2 className="w-4 h-4" />
+              Swipe {selected.size} flussi per {products.find(p => p.id === targetProductId)?.name}
+            </button>
           )}
         </div>
 
