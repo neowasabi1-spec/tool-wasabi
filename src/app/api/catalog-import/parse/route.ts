@@ -27,29 +27,50 @@ const IMAGE_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'tiff', 't
 
 export async function POST(request: NextRequest) {
   try {
-    const formData = await request.formData();
-    const file = formData.get('file') as File;
-
-    if (!file) {
-      return NextResponse.json({ error: 'No file provided' }, { status: 400 });
-    }
-
-    const ext = file.name.split('.').pop()?.toLowerCase() || '';
-    const buffer = Buffer.from(await file.arrayBuffer());
-
+    const contentType = request.headers.get('content-type') || '';
     let rows: Record<string, string>[];
 
-    if (SPREADSHEET_EXTENSIONS.includes(ext)) {
-      rows = parseSpreadsheet(buffer);
-    } else if (ext === 'json') {
-      rows = parseJSONFile(buffer);
-    } else if (ext === 'pdf') {
-      rows = await parsePDF(buffer);
-    } else if (IMAGE_EXTENSIONS.includes(ext)) {
-      rows = await parseImage(buffer, file.type || `image/${ext}`);
+    if (contentType.includes('application/json')) {
+      const body = await request.json();
+      const { text, base64, mimeType } = body;
+
+      if (text) {
+        rows = await parseTextWithAI(text);
+      } else if (base64 && mimeType) {
+        const buffer = Buffer.from(base64, 'base64');
+        if (mimeType === 'application/pdf') {
+          rows = await parsePDF(buffer);
+        } else if (mimeType.startsWith('image/')) {
+          rows = await parseImage(buffer, mimeType);
+        } else {
+          rows = await parseTextWithAI(buffer.toString('utf-8'));
+        }
+      } else {
+        return NextResponse.json({ error: 'Missing text or base64 data' }, { status: 400 });
+      }
     } else {
-      const text = buffer.toString('utf-8');
-      rows = await parseTextWithAI(text);
+      const formData = await request.formData();
+      const file = formData.get('file') as File;
+
+      if (!file) {
+        return NextResponse.json({ error: 'No file provided' }, { status: 400 });
+      }
+
+      const ext = file.name.split('.').pop()?.toLowerCase() || '';
+      const buffer = Buffer.from(await file.arrayBuffer());
+
+      if (SPREADSHEET_EXTENSIONS.includes(ext)) {
+        rows = parseSpreadsheet(buffer);
+      } else if (ext === 'json') {
+        rows = parseJSONFile(buffer);
+      } else if (ext === 'pdf') {
+        rows = await parsePDF(buffer);
+      } else if (IMAGE_EXTENSIONS.includes(ext)) {
+        rows = await parseImage(buffer, file.type || `image/${ext}`);
+      } else {
+        const text = buffer.toString('utf-8');
+        rows = await parseTextWithAI(text);
+      }
     }
 
     if (rows.length === 0) {

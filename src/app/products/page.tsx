@@ -113,6 +113,58 @@ export default function ProductsPage() {
     return keys[0] || null;
   };
 
+  const fileToBase64 = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = reader.result as string;
+        resolve(result.split(',')[1]);
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const compressImage = (file: File, maxDim = 1600): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const img = new window.Image();
+      img.onload = () => {
+        let { width, height } = img;
+        if (width > maxDim || height > maxDim) {
+          const ratio = Math.min(maxDim / width, maxDim / height);
+          width = Math.round(width * ratio);
+          height = Math.round(height * ratio);
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) { reject(new Error('Canvas not supported')); return; }
+        ctx.drawImage(img, 0, 0, width, height);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+        resolve(dataUrl.split(',')[1]);
+        URL.revokeObjectURL(img.src);
+      };
+      img.onerror = () => reject(new Error('Failed to load image'));
+      img.src = URL.createObjectURL(file);
+    });
+  };
+
+  const sendToParseAPI = async (payload: Record<string, unknown>): Promise<Record<string, string>[]> => {
+    const res = await fetch('/api/catalog-import/parse', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      throw new Error(errText || `Server error (${res.status})`);
+    }
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    return data.rows;
+  };
+
   const processCatalogFile = async (file: File) => {
     setCatalogFileName(file.name);
     setIsCatalogParsing(true);
@@ -138,21 +190,19 @@ export default function ProductsPage() {
         } else {
           throw new Error('Invalid JSON format');
         }
-      } else {
-        const formData = new FormData();
-        formData.append('file', file);
-        const res = await fetch('/api/catalog-import/parse', {
-          method: 'POST',
-          body: formData,
-        });
-        if (!res.ok) {
-          const errText = await res.text().catch(() => '');
-          if (res.status === 413) throw new Error('File too large. Max 4.5MB for PDF/image uploads. Try splitting the file.');
-          throw new Error(errText || `Server error (${res.status}). Try converting to CSV or Excel first.`);
+      } else if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'tiff', 'tif'].includes(ext)) {
+        const base64 = await compressImage(file);
+        rows = await sendToParseAPI({ base64, mimeType: 'image/jpeg', filename: file.name });
+      } else if (ext === 'pdf') {
+        const base64 = await fileToBase64(file);
+        if (base64.length > 4_000_000) {
+          throw new Error('PDF too large (max ~3MB). Try converting to text/CSV or splitting into smaller files.');
         }
-        const data = await res.json();
-        if (data.error) throw new Error(data.error);
-        rows = data.rows;
+        rows = await sendToParseAPI({ base64, mimeType: 'application/pdf', filename: file.name });
+      } else {
+        const text = await file.text();
+        if (!text.trim()) throw new Error('File appears to be empty or binary. Try converting to CSV/Excel.');
+        rows = await sendToParseAPI({ text: text.substring(0, 50000), filename: file.name });
       }
 
       const normalized = (rows || []).map(row => {
