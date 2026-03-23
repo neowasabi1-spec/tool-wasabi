@@ -428,41 +428,50 @@ export default function ProductsPage() {
 
         let finalImageUrl = fileImageUrl || '';
 
-        if (!finalImageUrl && catalogPageImages.length > 0) {
-          const pageIdx = Math.min(i, catalogPageImages.length - 1);
-          const pageUrl = catalogPageImages[pageIdx];
-          if (pageUrl) {
+        if (!finalImageUrl && catalogPageBase64.length > 0) {
+          const pageIdx = Math.min(i, catalogPageBase64.length - 1);
+          const rawBase64 = catalogPageBase64[pageIdx];
+          if (rawBase64) {
             try {
+              const smallBase64 = await (async () => {
+                const img = new Image();
+                await new Promise<void>((resolve, reject) => {
+                  img.onload = () => resolve();
+                  img.onerror = () => reject(new Error('img load fail'));
+                  img.src = 'data:image/jpeg;base64,' + rawBase64;
+                });
+                const cvs = document.createElement('canvas');
+                const maxW = 900;
+                const scale = Math.min(1, maxW / img.width);
+                cvs.width = img.width * scale;
+                cvs.height = img.height * scale;
+                const c = cvs.getContext('2d')!;
+                c.drawImage(img, 0, 0, cvs.width, cvs.height);
+                return cvs.toDataURL('image/jpeg', 0.6).split(',')[1];
+              })();
+
               const extractRes = await fetch('/api/catalog-import/extract-product-image', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                  pageImageUrl: pageUrl,
+                  pageBase64: smallBase64,
                   productName: enriched.name || productName,
                 }),
               });
               const extractData = await extractRes.json();
               if (extractData.imageUrl) finalImageUrl = extractData.imageUrl;
-            } catch { /* extraction is best-effort */ }
+            } catch (err) {
+              console.error('Image extraction failed:', err);
+            }
           }
         }
 
         if (!finalImageUrl) {
-          try {
-            const proxyRes = await fetch('/api/product-image-search', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                productName: enriched.name || productName,
-                brandName: enriched.brandName,
-              }),
-            });
-            const proxyData = await proxyRes.json();
-            if (proxyData.imageUrl) finalImageUrl = proxyData.imageUrl;
-          } catch { /* search is best-effort */ }
+          const pageUrl = catalogPageImages.length > 0
+            ? catalogPageImages[Math.min(i, catalogPageImages.length - 1)]
+            : '';
+          if (pageUrl) finalImageUrl = pageUrl;
         }
-
-        if (!finalImageUrl) finalImageUrl = catalogPageImage;
 
         await addProduct({
           name: enriched.name || productName,
