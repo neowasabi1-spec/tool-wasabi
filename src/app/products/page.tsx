@@ -70,6 +70,7 @@ export default function ProductsPage() {
   const [isCatalogEnriching, setIsCatalogEnriching] = useState(false);
   const [catalogImportDone, setCatalogImportDone] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  const [isCatalogParsing, setIsCatalogParsing] = useState(false);
 
   const saveProductBriefs = (briefs: Record<string, string>) => {
     setProductBriefs(briefs);
@@ -114,19 +115,31 @@ export default function ProductsPage() {
 
   const processCatalogFile = async (file: File) => {
     setCatalogFileName(file.name);
-    const XLSX = await import('xlsx');
-    const buffer = await file.arrayBuffer();
-    const data = new Uint8Array(buffer);
-    const wb = XLSX.read(data, { type: 'array' });
-    const ws = wb.Sheets[wb.SheetNames[0]];
-    const rows = XLSX.utils.sheet_to_json(ws, { defval: '' }) as Record<string, string>[];
-    setParsedCatalogRows(rows);
-    const status: Record<number, 'pending'> = {};
-    rows.forEach((_, i) => { status[i] = 'pending'; });
-    setCatalogEnrichStatus(status);
-    setCatalogEnrichedData({});
-    setCatalogEnrichErrors({});
-    setCatalogImportDone(false);
+    setIsCatalogParsing(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await fetch('/api/catalog-import/parse', {
+        method: 'POST',
+        body: formData,
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      const rows = data.rows as Record<string, string>[];
+      if (rows.length === 0) throw new Error('No products found in file');
+      setParsedCatalogRows(rows);
+      const status: Record<number, 'pending'> = {};
+      rows.forEach((_, i) => { status[i] = 'pending'; });
+      setCatalogEnrichStatus(status);
+      setCatalogEnrichedData({});
+      setCatalogEnrichErrors({});
+      setCatalogImportDone(false);
+    } catch (error) {
+      setCatalogFileName('');
+      alert(error instanceof Error ? error.message : 'Failed to parse file');
+    } finally {
+      setIsCatalogParsing(false);
+    }
   };
 
   const handleCatalogFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -211,6 +224,7 @@ export default function ProductsPage() {
     setCatalogEnrichedData({});
     setCatalogEnrichErrors({});
     setIsCatalogEnriching(false);
+    setIsCatalogParsing(false);
     setCatalogImportDone(false);
   };
 
@@ -645,7 +659,7 @@ export default function ProductsPage() {
             </div>
 
             {/* Step 1: File Upload */}
-            {parsedCatalogRows.length === 0 && (
+            {parsedCatalogRows.length === 0 && !isCatalogParsing && (
               <div
                 onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
                 onDragLeave={() => setIsDragging(false)}
@@ -656,17 +670,25 @@ export default function ProductsPage() {
               >
                 <FileSpreadsheet className="w-12 h-12 text-gray-300 mx-auto mb-4" />
                 <p className="text-gray-600 mb-2">Drag & drop your catalog file here, or click to select</p>
-                <p className="text-sm text-gray-400 mb-4">Supports CSV, XLSX, XLS — needs at least a column with product names</p>
+                <p className="text-sm text-gray-400 mb-4">Supports any format: Excel, CSV, PDF, images, JSON, TXT and more</p>
                 <label className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 cursor-pointer transition-colors">
                   <Upload className="w-4 h-4" />
                   Select File
                   <input
                     type="file"
-                    accept=".csv,.xlsx,.xls"
                     onChange={handleCatalogFileSelect}
                     className="hidden"
                   />
                 </label>
+              </div>
+            )}
+
+            {/* Parsing in progress */}
+            {isCatalogParsing && (
+              <div className="text-center py-12">
+                <Loader2 className="w-10 h-10 text-emerald-500 animate-spin mx-auto mb-3" />
+                <p className="text-sm text-gray-600 font-medium">Parsing {catalogFileName}...</p>
+                <p className="text-xs text-gray-400 mt-1">AI is extracting products from your file</p>
               </div>
             )}
 

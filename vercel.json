@@ -23,6 +23,9 @@
     },
     "src/app/api/catalog-import/enrich/route.ts": {
       "maxDuration": 120
+    },
+    "src/app/api/catalog-import/parse/route.ts": {
+      "maxDuration": 120
     }
   }
 }
