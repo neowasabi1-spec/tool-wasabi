@@ -76,6 +76,29 @@ function sanitizeClonedHtml(html: string, originalUrl: string): string {
 
     let clean = html;
 
+    // 0. BEFORE removing scripts: extract video embed IDs from script tags & markup
+    const videoEmbeds: { provider: string; id: string }[] = [];
+
+    // Wistia: <script src="fast.wistia.com/embed/medias/VIDEOID.jsonp">
+    const wistiaScripts = clean.matchAll(/fast\.wistia\.com\/embed\/medias\/([a-z0-9]+)/gi);
+    for (const m of wistiaScripts) videoEmbeds.push({ provider: 'wistia', id: m[1] });
+    // Wistia class pattern: class="wistia_async_VIDEOID" or class="wistia_embed wistia_async_VIDEOID"
+    const wistiaClasses = clean.matchAll(/wistia_async_([a-z0-9]+)/gi);
+    for (const m of wistiaClasses) {
+      if (!videoEmbeds.some(v => v.provider === 'wistia' && v.id === m[1])) {
+        videoEmbeds.push({ provider: 'wistia', id: m[1] });
+      }
+    }
+    // Vimeo: player.vimeo.com/video/VIDEOID
+    const vimeoMatches = clean.matchAll(/player\.vimeo\.com\/video\/(\d+)/gi);
+    for (const m of vimeoMatches) videoEmbeds.push({ provider: 'vimeo', id: m[1] });
+    // YouTube: youtube.com/embed/VIDEOID or youtu.be/VIDEOID
+    const ytMatches = clean.matchAll(/(?:youtube\.com\/embed\/|youtu\.be\/)([\w-]+)/gi);
+    for (const m of ytMatches) videoEmbeds.push({ provider: 'youtube', id: m[1] });
+    // Loom: loom.com/embed/VIDEOID or loom.com/share/VIDEOID
+    const loomMatches = clean.matchAll(/loom\.com\/(?:embed|share)\/([\w]+)/gi);
+    for (const m of loomMatches) videoEmbeds.push({ provider: 'loom', id: m[1] });
+
     // 1. Remove scripts & dangerous content
     clean = clean.replace(/<base[^>]*>/gi, '');
     clean = clean.replace(/<script[\s\S]*?<\/script>/gi, '');
@@ -128,29 +151,78 @@ function sanitizeClonedHtml(html: string, originalUrl: string): string {
     });
 
     // 6. Fix lazy-loaded videos/iframes: promote data-src to src so media loads without JS
-    clean = clean.replace(/<(iframe|video|source)([^>]*?)(\s)data-src\s*=\s*"([^"]*)"([^>]*?)>/gi, (_m, tag, before, sp, dataSrc, after) => {
+    clean = clean.replace(/<(iframe|video|source)([^>]*?)\sdata-src\s*=\s*"([^"]*)"([^>]*?)>/gi, (_m, tag, before, dataSrc, after) => {
       if (/\ssrc\s*=/i.test(before + after)) return _m;
-      return `<${tag}${before}${sp}src="${dataSrc}"${after}>`;
+      return `<${tag}${before} src="${dataSrc}"${after}>`;
     });
-    clean = clean.replace(/<(iframe|video|source)([^>]*?)(\s)data-src\s*=\s*'([^']*)'([^>]*?)>/gi, (_m, tag, before, sp, dataSrc, after) => {
+    clean = clean.replace(/<(iframe|video|source)([^>]*?)\sdata-src\s*=\s*'([^']*)'([^>]*?)>/gi, (_m, tag, before, dataSrc, after) => {
       if (/\ssrc\s*=/i.test(before + after)) return _m;
-      return `<${tag}${before}${sp}src="${dataSrc}"${after}>`;
+      return `<${tag}${before} src="${dataSrc}"${after}>`;
     });
 
-    // 7. Detect common JS-based video embeds and inject fallback iframes
-    // Wistia
-    clean = clean.replace(/<div[^>]*class="[^"]*wistia_embed[^"]*"[^>]*data-video-id="([^"]+)"[^>]*>/gi, (_m, videoId) => {
-      return `${_m}<iframe src="https://fast.wistia.net/embed/iframe/${videoId}" allowfullscreen style="width:100%;height:100%;position:absolute;top:0;left:0" frameborder="0"></iframe>`;
-    });
-    // Vidyard
+    // 7. Inject fallback iframes for JS-based video embeds detected in step 0
+    const iframeStyle = 'width:100%;height:100%;position:absolute;top:0;left:0;border:0';
+    const iframeAllow = 'autoplay; fullscreen; encrypted-media; picture-in-picture';
+
+    for (const embed of videoEmbeds) {
+      let embedUrl = '';
+      if (embed.provider === 'wistia') embedUrl = `https://fast.wistia.net/embed/iframe/${embed.id}?autoPlay=false`;
+      if (embed.provider === 'vimeo') embedUrl = `https://player.vimeo.com/video/${embed.id}`;
+      if (embed.provider === 'youtube') embedUrl = `https://www.youtube.com/embed/${embed.id}`;
+      if (embed.provider === 'loom') embedUrl = `https://www.loom.com/embed/${embed.id}`;
+      if (!embedUrl) continue;
+
+      const embedIframe = `<iframe src="${embedUrl}" allow="${iframeAllow}" allowfullscreen style="${iframeStyle}" frameborder="0"></iframe>`;
+
+      // Wistia: replace empty wistia_embed/wistia_async divs with the iframe
+      if (embed.provider === 'wistia') {
+        const wistiaPattern = new RegExp(
+          `(<div[^>]*class="[^"]*(?:wistia_embed|wistia_async_${embed.id})[^"]*"[^>]*>)([\\s\\S]*?)(</div>)`,
+          'i'
+        );
+        if (wistiaPattern.test(clean)) {
+          clean = clean.replace(wistiaPattern, (_m, open, inner, close) => {
+            if (/<iframe/i.test(inner)) return _m;
+            const wrapper = open.replace(/style="([^"]*)"/i, `style="$1;position:relative;aspect-ratio:16/9"`);
+            return `${wrapper}${embedIframe}${close}`;
+          });
+        } else {
+          // Wistia div might not exist in raw HTML — find a likely video container and inject
+          const containerPattern = /(<div[^>]*class="[^"]*(?:video|player|wistia|vsl|hero-video|embed)[^"]*"[^>]*>)\s*(<\/div>)/i;
+          if (containerPattern.test(clean)) {
+            clean = clean.replace(containerPattern, (_m, open, close) => {
+              const wrapper = open.replace(/style="([^"]*)"/i, `style="$1;position:relative;aspect-ratio:16/9"`);
+              return `${wrapper}${embedIframe}${close}`;
+            });
+          }
+        }
+      }
+
+      // For other providers: check if their iframe already exists (from step 6 data-src fix),
+      // if not, try to inject into an appropriate container
+      if (embed.provider !== 'wistia') {
+        const srcCheck = new RegExp(embed.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+        if (!srcCheck.test(clean)) {
+          const containerPattern = /(<div[^>]*class="[^"]*(?:video|player|vsl|hero-video|embed)[^"]*"[^>]*>)\s*(<\/div>)/i;
+          if (containerPattern.test(clean)) {
+            clean = clean.replace(containerPattern, (_m, open, close) => {
+              const wrapper = open.replace(/style="([^"]*)"/i, `style="$1;position:relative;aspect-ratio:16/9"`);
+              return `${wrapper}${embedIframe}${close}`;
+            });
+          }
+        }
+      }
+    }
+
+    // 8. Vidyard fallback
     clean = clean.replace(/<img[^>]*class="[^"]*vidyard-player-embed[^"]*"[^>]*data-uuid="([^"]+)"[^>]*\/?>/gi, (_m, uuid) => {
-      return `<iframe src="https://play.vidyard.com/${uuid}" allowfullscreen style="width:100%;aspect-ratio:16/9" frameborder="0"></iframe>`;
+      return `<iframe src="https://play.vidyard.com/${uuid}" allow="${iframeAllow}" allowfullscreen style="width:100%;aspect-ratio:16/9;border:0" frameborder="0"></iframe>`;
     });
 
-    // 8. Ensure all iframes/videos have allow attributes for playback
+    // 9. Ensure all iframes have allow attributes for playback
     clean = clean.replace(/<iframe([^>]*?)>/gi, (_m, attrs) => {
       if (/\sallow\s*=/i.test(attrs)) return _m;
-      return `<iframe${attrs} allow="autoplay; fullscreen; encrypted-media; picture-in-picture">`;
+      return `<iframe${attrs} allow="${iframeAllow}">`;
     });
 
     return clean;
