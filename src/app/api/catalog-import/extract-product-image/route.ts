@@ -24,10 +24,11 @@ async function ensureBucket(sb: any) {
 
 export async function POST(req: NextRequest) {
   try {
-    const { pageBase64, productName } = await req.json();
+    const body = await req.json();
+    const { productName, pageImageUrl, pageBase64 } = body;
 
-    if (!pageBase64 || !productName) {
-      return NextResponse.json({ error: 'pageBase64 and productName are required' }, { status: 400 });
+    if (!productName) {
+      return NextResponse.json({ error: 'productName is required' }, { status: 400 });
     }
 
     const geminiKey = (
@@ -39,14 +40,38 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'GOOGLE_GEMINI_API_KEY not configured' }, { status: 500 });
     }
 
-    const bbox = await getProductImageBBox(geminiKey, pageBase64, productName);
+    let imageBuffer: Buffer;
+    let base64ForGemini: string;
+
+    if (pageBase64) {
+      imageBuffer = Buffer.from(pageBase64, 'base64');
+      base64ForGemini = pageBase64;
+    } else if (pageImageUrl) {
+      const res = await fetch(pageImageUrl, { signal: AbortSignal.timeout(15000) });
+      if (!res.ok) {
+        console.error('Failed to download page image:', res.status);
+        return NextResponse.json({ imageUrl: '' });
+      }
+      imageBuffer = Buffer.from(await res.arrayBuffer());
+      base64ForGemini = imageBuffer.toString('base64');
+    } else {
+      return NextResponse.json({ error: 'pageImageUrl or pageBase64 is required' }, { status: 400 });
+    }
+
+    const compressedBuffer = await sharp(imageBuffer)
+      .resize({ width: 1200, withoutEnlargement: true })
+      .jpeg({ quality: 75 })
+      .toBuffer();
+    const compressedBase64 = compressedBuffer.toString('base64');
+
+    const bbox = await getProductImageBBox(geminiKey, compressedBase64, productName);
 
     if (!bbox) {
+      console.log(`No product image found for "${productName}"`);
       return NextResponse.json({ imageUrl: '' });
     }
 
-    const pageBuffer = Buffer.from(pageBase64, 'base64');
-    const metadata = await sharp(pageBuffer).metadata();
+    const metadata = await sharp(imageBuffer).metadata();
     const imgWidth = metadata.width || 1000;
     const imgHeight = metadata.height || 1000;
 
@@ -59,7 +84,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ imageUrl: '' });
     }
 
-    const croppedBuffer = await sharp(pageBuffer)
+    console.log(`Cropping "${productName}": left=${left}, top=${top}, w=${width}, h=${height} from ${imgWidth}x${imgHeight}`);
+
+    const croppedBuffer = await sharp(imageBuffer)
       .extract({ left, top, width, height })
       .resize({ width: Math.min(width, 800), withoutEnlargement: true })
       .jpeg({ quality: 85 })
@@ -81,13 +108,11 @@ export async function POST(req: NextRequest) {
     }
 
     const { data } = sb.storage.from(BUCKET_NAME).getPublicUrl(filePath);
+    console.log(`Extracted image for "${productName}": ${data.publicUrl}`);
     return NextResponse.json({ imageUrl: data.publicUrl });
   } catch (err) {
     console.error('Extract product image error:', err);
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Failed to extract image' },
-      { status: 500 }
-    );
+    return NextResponse.json({ imageUrl: '' });
   }
 }
 
@@ -110,30 +135,34 @@ async function getProductImageBBox(
               inline_data: { mime_type: 'image/jpeg', data: pageBase64 },
             },
             {
-              text: `Look at this product catalog page. Find the main PRODUCT IMAGE (the photo/picture of the product itself — like a bottle, box, packaging, supplement container, etc.) for "${productName}".
+              text: `Look at this product catalog page image. Find the main PRODUCT PHOTO/IMAGE for the product "${productName}".
 
-Do NOT select the entire page. Do NOT select text areas, tables, or decorative images. Select ONLY the product photo/packaging image.
+I need the PRODUCT IMAGE — the photo of the physical product (bottle, box, jar, packaging, container, etc). 
+Do NOT include text, tables, ingredient lists, or the full page.
+Just the product photo itself.
 
-Return the bounding box of the product image as a JSON object with coordinates in a 0-1000 scale (where 0,0 is top-left and 1000,1000 is bottom-right):
-{"x": <left>, "y": <top>, "w": <width>, "h": <height>}
+Return the bounding box as JSON with coordinates on a 0-1000 scale (0,0 = top-left, 1000,1000 = bottom-right):
+{"x": <left edge>, "y": <top edge>, "w": <width>, "h": <height>}
 
-If there are multiple product images, pick the largest/main one (usually the product bottle or packaging).
-If you cannot find a clear product image, return {"x": 0, "y": 0, "w": 0, "h": 0}
+Example: if the product bottle is in the left quarter of the page, roughly: {"x": 50, "y": 100, "w": 300, "h": 500}
 
-Return ONLY the JSON object.`,
+If there is NO clear product photo visible, return: {"x": 0, "y": 0, "w": 0, "h": 0}
+
+Return ONLY the JSON.`,
             },
           ],
         }],
         generationConfig: {
           temperature: 0.1,
-          maxOutputTokens: 256,
+          maxOutputTokens: 200,
         },
       }),
     }
   );
 
   if (!response.ok) {
-    console.error('Gemini API error:', response.status, await response.text().catch(() => ''));
+    const errText = await response.text().catch(() => '');
+    console.error('Gemini Vision API error:', response.status, errText.substring(0, 200));
     return null;
   }
 
@@ -142,7 +171,9 @@ Return ONLY the JSON object.`,
     ?.map((p: { text?: string }) => p.text || '')
     .join('') || '';
 
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  console.log(`Gemini bbox response for "${productName}":`, text);
+
+  const jsonMatch = text.match(/\{[\s\S]*?\}/);
   if (!jsonMatch) return null;
 
   try {

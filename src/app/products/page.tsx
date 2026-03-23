@@ -426,23 +426,26 @@ export default function ProductsPage() {
 
         let finalImageUrl = fileImageUrl || '';
 
-        if (!finalImageUrl && catalogPageBase64.length > 0) {
-          const pageIdx = Math.min(i, catalogPageBase64.length - 1);
-          try {
-            const extractRes = await fetch('/api/catalog-import/extract-product-image', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                pageBase64: catalogPageBase64[pageIdx],
-                productName: enriched.name || productName,
-              }),
-            });
-            const extractData = await extractRes.json();
-            if (extractData.imageUrl) finalImageUrl = extractData.imageUrl;
-          } catch { /* extraction is best-effort */ }
+        if (!finalImageUrl && catalogPageImages.length > 0) {
+          const pageIdx = Math.min(i, catalogPageImages.length - 1);
+          const pageUrl = catalogPageImages[pageIdx];
+          if (pageUrl) {
+            try {
+              const extractRes = await fetch('/api/catalog-import/extract-product-image', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  pageImageUrl: pageUrl,
+                  productName: enriched.name || productName,
+                }),
+              });
+              const extractData = await extractRes.json();
+              if (extractData.imageUrl) finalImageUrl = extractData.imageUrl;
+            } catch { /* extraction is best-effort */ }
+          }
         }
 
-        if (!finalImageUrl && enriched.imageUrl) {
+        if (!finalImageUrl) {
           try {
             const proxyRes = await fetch('/api/product-image-search', {
               method: 'POST',

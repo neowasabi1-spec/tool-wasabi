@@ -26,6 +26,9 @@
     },
     "src/app/api/catalog-import/parse/route.ts": {
       "maxDuration": 120
+    },
+    "src/app/api/catalog-import/extract-product-image/route.ts": {
+      "maxDuration": 60
     }
   }
 }
