@@ -117,19 +117,56 @@ export default function ProductsPage() {
     setCatalogFileName(file.name);
     setIsCatalogParsing(true);
     try {
-      const formData = new FormData();
-      formData.append('file', file);
-      const res = await fetch('/api/catalog-import/parse', {
-        method: 'POST',
-        body: formData,
+      const ext = file.name.split('.').pop()?.toLowerCase() || '';
+      let rows: Record<string, string>[];
+
+      if (['csv', 'xlsx', 'xls', 'tsv', 'ods'].includes(ext)) {
+        const XLSX = await import('xlsx');
+        const buffer = await file.arrayBuffer();
+        const wb = XLSX.read(new Uint8Array(buffer), { type: 'array' });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        rows = XLSX.utils.sheet_to_json(ws, { defval: '' }) as Record<string, string>[];
+      } else if (ext === 'json') {
+        const text = await file.text();
+        const parsed = JSON.parse(text);
+        if (Array.isArray(parsed)) {
+          rows = parsed.map((item: unknown) => typeof item === 'string' ? { name: item } : item as Record<string, string>);
+        } else if (typeof parsed === 'object' && parsed !== null) {
+          const arr = parsed.products || parsed.items || parsed.data || parsed.prodotti || parsed.catalogo;
+          if (Array.isArray(arr)) { rows = arr; }
+          else { throw new Error('JSON must contain an array or an object with a products/items/data key'); }
+        } else {
+          throw new Error('Invalid JSON format');
+        }
+      } else {
+        const formData = new FormData();
+        formData.append('file', file);
+        const res = await fetch('/api/catalog-import/parse', {
+          method: 'POST',
+          body: formData,
+        });
+        if (!res.ok) {
+          const errText = await res.text().catch(() => '');
+          if (res.status === 413) throw new Error('File too large. Max 4.5MB for PDF/image uploads. Try splitting the file.');
+          throw new Error(errText || `Server error (${res.status}). Try converting to CSV or Excel first.`);
+        }
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+        rows = data.rows;
+      }
+
+      const normalized = (rows || []).map(row => {
+        const obj: Record<string, string> = {};
+        for (const [k, v] of Object.entries(row)) {
+          obj[k] = v != null ? String(v) : '';
+        }
+        return obj;
       });
-      const data = await res.json();
-      if (data.error) throw new Error(data.error);
-      const rows = data.rows as Record<string, string>[];
-      if (rows.length === 0) throw new Error('No products found in file');
-      setParsedCatalogRows(rows);
+
+      if (normalized.length === 0) throw new Error('No products found in file');
+      setParsedCatalogRows(normalized);
       const status: Record<number, 'pending'> = {};
-      rows.forEach((_, i) => { status[i] = 'pending'; });
+      normalized.forEach((_, i) => { status[i] = 'pending'; });
       setCatalogEnrichStatus(status);
       setCatalogEnrichedData({});
       setCatalogEnrichErrors({});
