@@ -59,6 +59,7 @@ OTHER RULES:
 - geoMarket: where this product is primarily sold/shipped
 - imageUrl: MUST be a real, direct URL to a product image (jpg/png/webp). Search for the official product page or Amazon/ecommerce listing and get the main product image URL. Do NOT leave this empty.
 - Be FACTUAL. Use real information from your research. Do NOT invent data.
+- NEVER include source URLs, citations, references, or links in ANY field. No "(https://...)", no "([source](url))", no "(source.com)". Just clean text.
 - Return ONLY the JSON object. No markdown, no code blocks, no explanations.`;
 
 interface EnrichedProduct {
@@ -248,24 +249,33 @@ function parseProductJSON(text: string): EnrichedProduct {
   const objMatch = jsonStr.match(/\{[\s\S]*\}/);
   if (objMatch) jsonStr = objMatch[0];
 
+  const strip = (s: string) => s
+    .replace(/\(\[?[^\]]*\]?\(https?:\/\/[^)]+\)\)/g, '')
+    .replace(/\[([^\]]+)\]\(https?:\/\/[^)]+\)/g, '$1')
+    .replace(/\(https?:\/\/[^)]+\)/g, '')
+    .replace(/https?:\/\/\S+/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  const stripArr = (arr: string[]) => arr.map(s => strip(s)).filter(s => s.length > 0);
+
   try {
     const parsed = JSON.parse(jsonStr);
     return {
-      name: parsed.name || '',
+      name: strip(parsed.name || ''),
       sku: parsed.sku || '',
-      category: parsed.category || '',
-      description: parsed.description || '',
+      category: strip(parsed.category || ''),
+      description: strip(parsed.description || ''),
       price: typeof parsed.price === 'number' ? parsed.price : parseFloat(parsed.price) || 0,
-      benefits: Array.isArray(parsed.benefits) ? parsed.benefits : [],
-      characteristics: Array.isArray(parsed.characteristics) ? parsed.characteristics : [],
+      benefits: stripArr(Array.isArray(parsed.benefits) ? parsed.benefits : []),
+      characteristics: stripArr(Array.isArray(parsed.characteristics) ? parsed.characteristics : []),
       geoMarket: parsed.geoMarket || parsed.geo_market || '',
       supplier: parsed.supplier || parsed.vendor || parsed.manufacturer || parsed.fornitore || '',
-      brandName: parsed.brandName || parsed.brand_name || '',
-      ctaText: parsed.ctaText || parsed.cta_text || 'Buy Now',
+      brandName: strip(parsed.brandName || parsed.brand_name || ''),
+      ctaText: strip(parsed.ctaText || parsed.cta_text || 'Buy Now'),
       imageUrl: parsed.imageUrl || parsed.image_url || '',
-      promotionAngles: Array.isArray(parsed.promotionAngles || parsed.promotion_angles)
+      promotionAngles: stripArr(Array.isArray(parsed.promotionAngles || parsed.promotion_angles)
         ? (parsed.promotionAngles || parsed.promotion_angles)
-        : [],
+        : []),
     };
   } catch {
     throw new Error(`Failed to parse AI response as JSON: ${text.substring(0, 300)}`);
