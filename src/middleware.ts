@@ -59,7 +59,7 @@ function addSecurityHeaders(response: NextResponse): void {
       "font-src 'self' https://fonts.gstatic.com https:",
       "img-src 'self' data: blob: https:",
       "media-src 'self' blob: https:",
-      "frame-src 'self' https:",
+      "frame-src 'self' blob: https:",
       "connect-src 'self' https://*.supabase.co wss://*.supabase.co https://api.anthropic.com https://generativelanguage.googleapis.com https://api.openai.com https://api.firecrawl.dev",
       "frame-ancestors 'none'",
       "base-uri 'self'",

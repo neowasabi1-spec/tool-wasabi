@@ -3006,7 +3006,6 @@ export default function FrontEndFunnel() {
                       : 'w-full h-full'
                   }`}
                   title="HTML Preview"
-                  sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
                   allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
                 />
               </div>
