@@ -502,6 +502,8 @@ export default function FrontEndFunnel() {
   const [cloneMode, setCloneMode] = useState<'identical' | 'rewrite' | 'translate'>('identical');
   const [cloneMobile, setCloneMobile] = useState(true);
   const [previewViewport, setPreviewViewport] = useState<'desktop' | 'mobile'>('desktop');
+  const [previewTab, setPreviewTab] = useState<'preview' | 'html'>('preview');
+  const [editableHtml, setEditableHtml] = useState('');
   const [cloneConfig, setCloneConfig] = useState({
     productName: '',
     productDescription: '',
@@ -2466,6 +2468,7 @@ export default function FrontEndFunnel() {
                             <button
                               onClick={() => {
                                 if (page.swipedData) {
+                                  setPreviewTab('preview');
                                   setHtmlPreviewModal({
                                     isOpen: true,
                                     title: page.swipedData.newTitle || page.name,
@@ -2473,13 +2476,14 @@ export default function FrontEndFunnel() {
                                     mobileHtml: '',
                                     iframeSrc: '',
                                     metadata: {
-                                      method: page.swipedData.methodUsed,
-                                      length: page.swipedData.newLength,
-                                      duration: page.swipedData.processingTime,
+                                      method: page.swipedData.methodUsed || 'unknown',
+                                      length: page.swipedData.newLength || page.swipedData.html?.length || 0,
+                                      duration: page.swipedData.processingTime || 0,
                                     },
                                   });
                                 } else if (page.clonedData) {
                                   setPreviewViewport('desktop');
+                                  setPreviewTab('preview');
                                   setHtmlPreviewModal({
                                     isOpen: true,
                                     title: page.clonedData!.title || page.name,
@@ -2487,9 +2491,9 @@ export default function FrontEndFunnel() {
                                     mobileHtml: page.clonedData!.mobileHtml || '',
                                     iframeSrc: '',
                                     metadata: {
-                                      method: page.clonedData!.method_used,
-                                      length: page.clonedData!.content_length,
-                                      duration: page.clonedData!.duration_seconds,
+                                      method: page.clonedData!.method_used || 'clone',
+                                      length: page.clonedData!.content_length || page.clonedData!.html?.length || 0,
+                                      duration: page.clonedData!.duration_seconds || 0,
                                     },
                                   });
                                 }
@@ -2879,8 +2883,8 @@ export default function FrontEndFunnel() {
                   {htmlPreviewModal.metadata && (
                     <p className="text-white/80 text-sm">
                       Method: {htmlPreviewModal.metadata.method} | 
-                      {htmlPreviewModal.metadata.length.toLocaleString()} chars | 
-                      {htmlPreviewModal.metadata.duration.toFixed(2)}s
+                      {(htmlPreviewModal.metadata.length || 0).toLocaleString()} chars | 
+                      {(htmlPreviewModal.metadata.duration || 0).toFixed(2)}s
                     </p>
                   )}
                   {htmlPreviewModal.iframeSrc && (
@@ -2891,7 +2895,7 @@ export default function FrontEndFunnel() {
                 </div>
               </div>
               <button
-                onClick={() => setHtmlPreviewModal({ isOpen: false, title: '', html: '', mobileHtml: '', iframeSrc: '', metadata: null })}
+                onClick={() => { setPreviewTab('preview'); setHtmlPreviewModal({ isOpen: false, title: '', html: '', mobileHtml: '', iframeSrc: '', metadata: null }); }}
                 className="text-white/80 hover:text-white text-2xl font-bold"
               >
                 ×
@@ -2902,7 +2906,12 @@ export default function FrontEndFunnel() {
             <div className="flex-1 overflow-hidden flex flex-col">
               <div className="flex items-center border-b border-gray-200">
                 <button
-                  className="px-4 py-2 text-sm font-medium text-blue-600 border-b-2 border-blue-600"
+                  onClick={() => setPreviewTab('preview')}
+                  className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                    previewTab === 'preview'
+                      ? 'text-blue-600 border-blue-600'
+                      : 'text-gray-500 hover:text-gray-700 border-transparent'
+                  }`}
                 >
                   Preview
                 </button>
@@ -2913,6 +2922,23 @@ export default function FrontEndFunnel() {
                   >
                     <Paintbrush className="w-3.5 h-3.5" />
                     Edit Visually
+                  </button>
+                )}
+                {htmlPreviewModal.html && (
+                  <button
+                    onClick={() => {
+                      setEditableHtml(previewViewport === 'mobile' && htmlPreviewModal.mobileHtml
+                        ? htmlPreviewModal.mobileHtml : htmlPreviewModal.html);
+                      setPreviewTab('html');
+                    }}
+                    className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors flex items-center gap-1.5 ${
+                      previewTab === 'html'
+                        ? 'text-purple-600 border-purple-600'
+                        : 'text-gray-500 hover:text-gray-700 border-transparent'
+                    }`}
+                  >
+                    <Code className="w-3.5 h-3.5" />
+                    Edit HTML
                   </button>
                 )}
                 {htmlPreviewModal.html && (
@@ -2969,36 +2995,71 @@ export default function FrontEndFunnel() {
                 )}
               </div>
               
-              {/* Preview iframe */}
-              <div className="flex-1 overflow-hidden bg-gray-100 p-2 flex items-start justify-center">
-                <iframe
-                  key={`${previewViewport}-${htmlPreviewModal.html?.length || ''}-${htmlPreviewModal.iframeSrc || 'empty'}`}
-                  ref={(iframe) => {
-                    if (!iframe) return;
-                    if (htmlPreviewModal.iframeSrc) {
-                      iframe.src = htmlPreviewModal.iframeSrc;
-                    } else {
-                      const htmlToShow = previewViewport === 'mobile' && htmlPreviewModal.mobileHtml
-                        ? htmlPreviewModal.mobileHtml : htmlPreviewModal.html;
-                      if (htmlToShow) {
-                        const doc = iframe.contentDocument || iframe.contentWindow?.document;
-                        if (doc) {
-                          doc.open();
-                          doc.write(htmlToShow);
-                          doc.close();
+              {/* Preview iframe OR HTML editor */}
+              {previewTab === 'html' ? (
+                <div className="flex-1 overflow-hidden flex flex-col">
+                  <div className="flex items-center justify-between px-3 py-2 bg-gray-800 text-gray-300 text-xs">
+                    <span>{editableHtml.length.toLocaleString()} chars</span>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(editableHtml);
+                          alert('HTML copied!');
+                        }}
+                        className="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs"
+                      >
+                        Copy
+                      </button>
+                      <button
+                        onClick={() => {
+                          setHtmlPreviewModal(prev => ({ ...prev, html: editableHtml }));
+                          setPreviewTab('preview');
+                        }}
+                        className="px-2 py-1 bg-green-600 hover:bg-green-500 rounded text-xs text-white"
+                      >
+                        Apply &amp; Preview
+                      </button>
+                    </div>
+                  </div>
+                  <textarea
+                    value={editableHtml}
+                    onChange={(e) => setEditableHtml(e.target.value)}
+                    className="flex-1 w-full font-mono text-xs p-3 bg-gray-900 text-green-400 border-0 resize-none focus:outline-none focus:ring-0"
+                    spellCheck={false}
+                    wrap="off"
+                  />
+                </div>
+              ) : (
+                <div className="flex-1 overflow-hidden bg-gray-100 p-2 flex items-start justify-center">
+                  <iframe
+                    key={`${previewViewport}-${htmlPreviewModal.html?.length || ''}-${htmlPreviewModal.iframeSrc || 'empty'}`}
+                    ref={(iframe) => {
+                      if (!iframe) return;
+                      if (htmlPreviewModal.iframeSrc) {
+                        iframe.src = htmlPreviewModal.iframeSrc;
+                      } else {
+                        const htmlToShow = previewViewport === 'mobile' && htmlPreviewModal.mobileHtml
+                          ? htmlPreviewModal.mobileHtml : htmlPreviewModal.html;
+                        if (htmlToShow) {
+                          const doc = iframe.contentDocument || iframe.contentWindow?.document;
+                          if (doc) {
+                            doc.open();
+                            doc.write(htmlToShow);
+                            doc.close();
+                          }
                         }
                       }
-                    }
-                  }}
-                  className={`bg-white rounded border border-gray-300 transition-all duration-300 ${
-                    previewViewport === 'mobile' && htmlPreviewModal.mobileHtml
-                      ? 'w-[390px] h-full shadow-xl border-2 border-gray-400 rounded-[2rem]'
-                      : 'w-full h-full'
-                  }`}
-                  title="HTML Preview"
-                  allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
-                />
-              </div>
+                    }}
+                    className={`bg-white rounded border border-gray-300 transition-all duration-300 ${
+                      previewViewport === 'mobile' && htmlPreviewModal.mobileHtml
+                        ? 'w-[390px] h-full shadow-xl border-2 border-gray-400 rounded-[2rem]'
+                        : 'w-full h-full'
+                    }`}
+                    title="HTML Preview"
+                    allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
+                  />
+                </div>
+              )}
             </div>
 
             {/* Modal Footer */}
@@ -3045,7 +3106,7 @@ export default function FrontEndFunnel() {
                 </button>
               )}
               <button
-                onClick={() => setHtmlPreviewModal({ isOpen: false, title: '', html: '', mobileHtml: '', iframeSrc: '', metadata: null })}
+                onClick={() => { setPreviewTab('preview'); setHtmlPreviewModal({ isOpen: false, title: '', html: '', mobileHtml: '', iframeSrc: '', metadata: null }); }}
                 className="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors"
               >
                 Close
