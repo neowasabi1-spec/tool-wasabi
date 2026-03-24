@@ -55,8 +55,8 @@ import * as XLSX from 'xlsx';
 import VisualHtmlEditor from '@/components/VisualHtmlEditor';
 
 // Helper: sanitize cloned HTML and rewrite ALL relative URLs to absolute using the original domain
-// Strips scripts, rewrites src/href/url() so CSS, images, fonts load correctly in preview
-function sanitizeClonedHtml(html: string, originalUrl: string): string {
+// Strips scripts (unless keepScripts=true for quiz pages), rewrites src/href/url() so CSS, images, fonts load correctly in preview
+function sanitizeClonedHtml(html: string, originalUrl: string, options?: { keepScripts?: boolean }): string {
   try {
     const base = new URL(originalUrl);
     const origin = base.origin; // https://example.com
@@ -99,10 +99,12 @@ function sanitizeClonedHtml(html: string, originalUrl: string): string {
     const loomMatches = clean.matchAll(/loom\.com\/(?:embed|share)\/([\w]+)/gi);
     for (const m of loomMatches) videoEmbeds.push({ provider: 'loom', id: m[1] });
 
-    // 1. Remove scripts & dangerous content
+    // 1. Remove scripts & dangerous content (unless keepScripts for quiz pages)
     clean = clean.replace(/<base[^>]*>/gi, '');
-    clean = clean.replace(/<script[\s\S]*?<\/script>/gi, '');
-    clean = clean.replace(/<script[^>]*\/>/gi, '');
+    if (!options?.keepScripts) {
+      clean = clean.replace(/<script[\s\S]*?<\/script>/gi, '');
+      clean = clean.replace(/<script[^>]*\/>/gi, '');
+    }
     clean = clean.replace(/<\/?noscript[^>]*>/gi, '');
     clean = clean.replace(/\s+on[a-z]+\s*=\s*"[^"]*"/gi, '');
     clean = clean.replace(/\s+on[a-z]+\s*=\s*'[^']*'/gi, '');
@@ -1156,143 +1158,6 @@ export default function FrontEndFunnel() {
     });
   };
 
-  const handleQuizRewrite = async (pageId: string, url: string, pageName: string) => {
-    const page = (funnelPages || []).find(p => p.id === pageId);
-    const product = page ? (products || []).find(p => p.id === page.productId) : null;
-
-    setCloneProgress({ phase: 'extract', totalTexts: 0, processedTexts: 0, message: 'Taking quiz screenshot...' });
-    updateFunnelPage(pageId, { swipeResult: 'Quiz: screenshot...' });
-
-    let screenshotBase64: string | undefined;
-    let cssTokens: unknown = null;
-    try {
-      const ssRes = await fetch('/api/swipe-quiz/screenshot', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url }),
-      });
-      const ssData = await ssRes.json();
-      if (ssData.success && ssData.screenshot) {
-        screenshotBase64 = ssData.screenshot;
-        cssTokens = ssData.cssTokens || null;
-      }
-    } catch {
-      // Screenshot is optional, continue without it
-    }
-
-    setCloneProgress({ phase: 'processing', totalTexts: 3, processedTexts: 1, message: 'Generating quiz with AI...' });
-    updateFunnelPage(pageId, { swipeResult: 'Quiz: generating...' });
-
-    const swapPrompt = product
-      ? `Replicate exactly this quiz but swap all the content for the product "${product.name}" by "${product.brandName}". Description: ${product.description}. Keep the same exact structure, number of steps, question types and result logic.`
-      : `Replicate exactly this quiz with the same structure, questions, options and result logic. Create a modern and professional design.`;
-
-    const payload: Record<string, unknown> = {
-      prompt: swapPrompt,
-      screenshot: screenshotBase64,
-      cssTokens,
-      funnelMeta: { funnel_name: pageName, entry_url: url },
-    };
-
-    if (product) {
-      payload.product = {
-        name: product.name,
-        description: product.description,
-        price: product.price,
-        benefits: product.benefits || [],
-        ctaText: product.ctaText || 'Buy Now',
-        ctaUrl: product.ctaUrl || '#',
-        brandName: product.brandName || product.name,
-      };
-    }
-
-    const response = await fetch('/api/swipe-quiz/generate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-
-    if (!response.ok) {
-      const errData = await response.json().catch(() => ({}));
-      throw new Error(errData.error || 'Quiz generation failed');
-    }
-
-    const reader = response.body?.getReader();
-    if (!reader) throw new Error('No response stream');
-
-    const decoder = new TextDecoder();
-    let accumulated = '';
-    let finalHtml = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      const chunk = decoder.decode(value, { stream: true });
-      const lines = chunk.split('\n');
-
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        try {
-          const data = JSON.parse(line.slice(6));
-
-          if (data.phase) {
-            const phaseMsg = data.phaseLabel || data.phase;
-            setCloneProgress({ phase: 'processing', totalTexts: 3, processedTexts: 2, message: phaseMsg });
-            updateFunnelPage(pageId, { swipeResult: `Quiz: ${phaseMsg}` });
-          }
-
-          if (data.assembled && data.html) {
-            finalHtml = data.html;
-          }
-
-          if (data.text && !data.assembled) {
-            accumulated += data.text;
-          }
-
-          if (data.error) {
-            throw new Error(data.error);
-          }
-
-          if (data.done) {
-            if (!finalHtml) finalHtml = accumulated;
-          }
-        } catch (e) {
-          if (e instanceof SyntaxError) continue;
-          throw e;
-        }
-      }
-    }
-
-    if (!finalHtml) throw new Error('No HTML generated');
-
-    setCloneProgress(null);
-    updateFunnelPage(pageId, {
-      swipeStatus: 'completed',
-      swipeResult: `Quiz OK (${(finalHtml.length / 1024).toFixed(1)}KB generated)`,
-      swipedData: {
-        html: finalHtml,
-        originalTitle: pageName,
-        newTitle: `Quiz: ${pageName}`,
-        originalLength: 0,
-        newLength: finalHtml.length,
-        processingTime: 0,
-        methodUsed: 'swipe-quiz-generate',
-        changesMade: ['Full quiz regenerated with AI'],
-        swipedAt: new Date(),
-      },
-    });
-
-    setHtmlPreviewModal({
-      isOpen: true,
-      title: `Quiz: ${pageName}`,
-      html: finalHtml,
-      mobileHtml: '',
-      iframeSrc: '',
-      metadata: { method: 'swipe-quiz', length: finalHtml.length, duration: 0 },
-    });
-  };
-
   const handleClone = async () => {
     const pageId = cloneModal.pageId;
     const url = cloneModal.url;
@@ -1304,25 +1169,6 @@ export default function FrontEndFunnel() {
 
     const currentPage = (funnelPages || []).find(p => p.id === pageId);
     const pageIsQuiz = currentPage && isQuizPage(currentPage);
-
-    if (mode === 'rewrite' && pageIsQuiz) {
-      updateFunnelPage(pageId, {
-        swipeStatus: 'in_progress',
-        swipeResult: 'Quiz: starting...',
-      });
-      try {
-        await handleQuizRewrite(pageId, url, pageName);
-      } catch (error) {
-        setCloneProgress(null);
-        updateFunnelPage(pageId, {
-          swipeStatus: 'failed',
-          swipeResult: error instanceof Error ? error.message : 'Quiz generation error',
-        });
-      } finally {
-        setCloningIds(prev => prev.filter(i => i !== pageId));
-      }
-      return;
-    }
 
     updateFunnelPage(pageId, {
       swipeStatus: 'in_progress',
@@ -1344,8 +1190,8 @@ export default function FrontEndFunnel() {
           console.warn('⚠️ Clone warning:', data.warning);
         }
 
-        const clonedHtml = sanitizeClonedHtml(data.content, url);
-        const clonedMobileHtml = data.mobileContent ? sanitizeClonedHtml(data.mobileContent, url) : '';
+        const clonedHtml = sanitizeClonedHtml(data.content, url, { keepScripts: pageIsQuiz });
+        const clonedMobileHtml = data.mobileContent ? sanitizeClonedHtml(data.mobileContent, url, { keepScripts: pageIsQuiz }) : '';
         const mobileInfo = clonedMobileHtml ? ` + mobile ${(data.mobileFinalSize || 0).toLocaleString()}` : '';
         const statusMsg = data.jsRendered
           ? `⚠️ JS-rendered page (${(data.finalSize || 0).toLocaleString()} chars) - content might be incomplete`
@@ -1431,10 +1277,10 @@ export default function FrontEndFunnel() {
             const textsProcessed = processData.textsProcessed || totalTexts;
             setCloneProgress(null);
 
-            const rewrittenHtml = sanitizeClonedHtml(processData.content, url);
+            const rewrittenHtml = sanitizeClonedHtml(processData.content, url, { keepScripts: pageIsQuiz });
             updateFunnelPage(pageId, {
               swipeStatus: 'completed',
-              swipeResult: `Rewrite OK (${replacements}/${textsProcessed} texts)`,
+              swipeResult: `${pageIsQuiz ? 'Quiz ' : ''}Rewrite OK (${replacements}/${textsProcessed} texts)`,
               swipedData: {
                 html: rewrittenHtml,
                 originalTitle: pageName,
@@ -1499,7 +1345,7 @@ export default function FrontEndFunnel() {
         if (!response.ok || data.error) throw new Error(data.error || 'Translate failed');
 
         setCloneProgress(null);
-        const translatedHtml = sanitizeClonedHtml(data.content, url);
+        const translatedHtml = sanitizeClonedHtml(data.content, url, { keepScripts: pageIsQuiz });
         updateFunnelPage(pageId, {
           swipeStatus: 'completed',
           swipeResult: `Translated (${data.textsTranslated || 0} texts → ${data.targetLanguage})`,
@@ -3669,7 +3515,7 @@ export default function FrontEndFunnel() {
                     return quiz ? (
                       <div className="bg-purple-50 border border-purple-200 rounded-lg p-3 text-sm text-purple-800 flex items-center gap-2">
                         <Sparkles className="w-4 h-4 shrink-0" />
-                        <span><strong>Quiz detected!</strong> This page will be fully regenerated as an interactive quiz (HTML+CSS+JS) using the AI Quiz pipeline with screenshot analysis.</span>
+                        <span><strong>Quiz detected!</strong> JavaScript will be kept intact. Texts are rewritten for your product while the quiz logic and design stay identical.</span>
                       </div>
                     ) : (
                       <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
@@ -3851,7 +3697,7 @@ export default function FrontEndFunnel() {
                   const mp = (funnelPages || []).find(p => p.id === cloneModal.pageId);
                   const isQ = mp && isQuizPage(mp);
                   return isQ
-                    ? <><Sparkles className="w-4 h-4" /> Generate Quiz</>
+                    ? <><Sparkles className="w-4 h-4" /> Quiz Rewrite (keep JS)</>
                     : <><Wand2 className="w-4 h-4" /> Clone &amp; Rewrite</>;
                 })()}
                 {cloneMode === 'translate' && <><Globe className="w-4 h-4" /> Translate</>}
