@@ -3,7 +3,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { usePathname } from 'next/navigation';
 import {
-  MessageCircle,
   X,
   Send,
   Loader2,
@@ -13,13 +12,28 @@ import {
   Maximize2,
   Copy,
   Check,
+  Paperclip,
+  Image as ImageIcon,
+  FileText,
+  Film,
+  File,
 } from 'lucide-react';
+
+interface FileAttachment {
+  id: string;
+  name: string;
+  type: string;
+  size: number;
+  dataUrl?: string;
+  textContent?: string;
+}
 
 interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: Date;
+  attachments?: FileAttachment[];
 }
 
 const SECTION_CONTEXT: Record<string, { name: string; description: string }> = {
@@ -56,6 +70,21 @@ function generateId() {
 
 const STORAGE_KEY = 'openclaw_chat_history';
 const MAX_STORED_MESSAGES = 50;
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+const ACCEPTED_TYPES = 'image/*,video/*,application/pdf,.pdf,.doc,.docx,.txt,.html,.htm,.css,.js,.json,.csv,.xlsx,.xls,.md';
+
+function getFileIcon(type: string) {
+  if (type.startsWith('image/')) return <ImageIcon className="w-4 h-4" />;
+  if (type.startsWith('video/')) return <Film className="w-4 h-4" />;
+  if (type === 'application/pdf' || type.includes('pdf')) return <FileText className="w-4 h-4" />;
+  return <File className="w-4 h-4" />;
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 function loadMessages(): ChatMessage[] {
   if (typeof window === 'undefined') return [];
@@ -71,9 +100,33 @@ function loadMessages(): ChatMessage[] {
 
 function saveMessages(msgs: ChatMessage[]) {
   try {
-    const toStore = msgs.slice(-MAX_STORED_MESSAGES);
+    const toStore = msgs.slice(-MAX_STORED_MESSAGES).map(m => ({
+      ...m,
+      attachments: m.attachments?.map(a => ({
+        ...a,
+        dataUrl: a.dataUrl && a.dataUrl.length > 50000 ? undefined : a.dataUrl,
+      })),
+    }));
     localStorage.setItem(STORAGE_KEY, JSON.stringify(toStore));
   } catch { /* full */ }
+}
+
+async function readFileAsDataUrl(file: globalThis.File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+async function readFileAsText(file: globalThis.File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = reject;
+    reader.readAsText(file);
+  });
 }
 
 export default function OpenClawChat() {
@@ -86,9 +139,12 @@ export default function OpenClawChat() {
   const [messages, setMessages] = useState<ChatMessage[]>(() => loadMessages());
   const [isLoading, setIsLoading] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [pendingFiles, setPendingFiles] = useState<FileAttachment[]>([]);
+  const [isDragOver, setIsDragOver] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (isOpen) {
@@ -101,11 +157,73 @@ export default function OpenClawChat() {
     saveMessages(messages);
   }, [messages]);
 
-  const addMessage = useCallback((role: ChatMessage['role'], content: string) => {
-    const msg: ChatMessage = { id: generateId(), role, content, timestamp: new Date() };
+  const addMessage = useCallback((role: ChatMessage['role'], content: string, attachments?: FileAttachment[]) => {
+    const msg: ChatMessage = { id: generateId(), role, content, timestamp: new Date(), attachments };
     setMessages(prev => [...prev, msg]);
     return msg;
   }, []);
+
+  const processFiles = async (files: globalThis.File[]) => {
+    const newAttachments: FileAttachment[] = [];
+
+    for (const file of files) {
+      if (file.size > MAX_FILE_SIZE) {
+        addMessage('system', `File "${file.name}" is too large (max ${formatFileSize(MAX_FILE_SIZE)})`);
+        continue;
+      }
+
+      const attachment: FileAttachment = {
+        id: generateId(),
+        name: file.name,
+        type: file.type || 'application/octet-stream',
+        size: file.size,
+      };
+
+      if (file.type.startsWith('image/')) {
+        attachment.dataUrl = await readFileAsDataUrl(file);
+      } else if (file.type.startsWith('video/')) {
+        attachment.dataUrl = await readFileAsDataUrl(file);
+      } else if (
+        file.type === 'application/pdf' ||
+        file.type.includes('text') ||
+        file.name.match(/\.(txt|html|htm|css|js|json|csv|md|xml|svg)$/i)
+      ) {
+        attachment.textContent = await readFileAsText(file);
+      } else if (file.name.match(/\.(doc|docx|xlsx|xls)$/i)) {
+        attachment.textContent = `[Binary file: ${file.name} (${formatFileSize(file.size)})]`;
+      } else {
+        attachment.textContent = `[File: ${file.name} (${formatFileSize(file.size)})]`;
+      }
+
+      newAttachments.push(attachment);
+    }
+
+    setPendingFiles(prev => [...prev, ...newAttachments]);
+  };
+
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length > 0) await processFiles(files);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(false);
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length > 0) await processFiles(files);
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(true);
+  };
+
+  const handleDragLeave = () => setIsDragOver(false);
+
+  const removePendingFile = (id: string) => {
+    setPendingFiles(prev => prev.filter(f => f.id !== id));
+  };
 
   const buildSystemPrompt = () => {
     return `You are OpenClaw, an AI assistant integrated into the "Funnel Swiper" tool. You help users with all aspects of affiliate marketing, funnel building, landing page optimization, and e-commerce strategy.
@@ -125,6 +243,7 @@ You can help with:
 - Affiliate marketing strategy and offer discovery
 - Navigating and analyzing competitor websites
 - Building complete funnel flows (bridge pages, VSLs, upsells, downsells)
+- Analyzing uploaded images, PDFs, documents, and files
 
 RULES:
 - Be concise but thorough
@@ -133,16 +252,42 @@ RULES:
 - You can suggest actions the user can take in the current section
 - Use markdown formatting for readability
 - Respond in the same language the user writes in (Italian or English)
-- You have full access to all your skills including browser navigation, URL analysis, and any other tool available to you. Use them freely when the user requests it.`;
+- You have full access to all your skills including browser navigation, URL analysis, and any other tool available to you. Use them freely when the user requests it.
+- When the user uploads files, analyze them thoroughly and provide insights.`;
+  };
+
+  const buildMessageWithAttachments = (text: string, files: FileAttachment[]): string => {
+    if (files.length === 0) return text;
+
+    let combined = text || '';
+    for (const f of files) {
+      if (f.textContent) {
+        combined += `\n\n--- File: ${f.name} (${formatFileSize(f.size)}) ---\n${f.textContent.substring(0, 50000)}`;
+      } else if (f.dataUrl && f.type.startsWith('image/')) {
+        combined += `\n\n[Image attached: ${f.name} (${formatFileSize(f.size)})]`;
+      } else if (f.dataUrl && f.type.startsWith('video/')) {
+        combined += `\n\n[Video attached: ${f.name} (${formatFileSize(f.size)})]`;
+      } else {
+        combined += `\n\n[File attached: ${f.name} (${formatFileSize(f.size)})]`;
+      }
+    }
+    return combined;
   };
 
   const sendMessage = async () => {
     const trimmed = input.trim();
-    if (!trimmed || isLoading) return;
+    const hasFiles = pendingFiles.length > 0;
+    if ((!trimmed && !hasFiles) || isLoading) return;
+
+    const messageText = trimmed || (hasFiles ? `Analyze ${pendingFiles.length === 1 ? 'this file' : 'these files'}` : '');
+    const attachments = [...pendingFiles];
 
     setInput('');
-    addMessage('user', trimmed);
+    setPendingFiles([]);
+    addMessage('user', messageText, attachments);
     setIsLoading(true);
+
+    const fullMessage = buildMessageWithAttachments(messageText, attachments);
 
     const chatHistory = messages
       .filter(m => m.role !== 'system')
@@ -153,12 +298,11 @@ RULES:
       }));
 
     try {
-      // Send message to queue with full conversation history
       const res = await fetch('/api/openclaw/queue', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          message: trimmed,
+          message: fullMessage,
           systemPrompt: buildSystemPrompt(),
           section: section.name,
           chatHistory,
@@ -175,9 +319,8 @@ RULES:
       const assistantId = generateId();
       setMessages(prev => [...prev, { id: assistantId, role: 'assistant', content: '⏳ Waiting for OpenClaw...', timestamp: new Date() }]);
 
-      // Poll for response
       let attempts = 0;
-      const maxAttempts = 600; // 600 * 3s = 1800s max (30 min for complex tasks)
+      const maxAttempts = 600;
       const pollInterval = 3000;
 
       const pollForResponse = async (): Promise<void> => {
@@ -201,7 +344,6 @@ RULES:
             return;
           }
 
-          // Still processing, update dots animation
           const dots = '.'.repeat((attempts % 3) + 1);
           setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, content: `⏳ OpenClaw is thinking${dots}` } : m));
 
@@ -231,8 +373,19 @@ RULES:
     }
   };
 
+  const handlePaste = async (e: React.ClipboardEvent) => {
+    const items = Array.from(e.clipboardData.items);
+    const fileItems = items.filter(i => i.kind === 'file');
+    if (fileItems.length === 0) return;
+
+    e.preventDefault();
+    const files = fileItems.map(i => i.getAsFile()).filter(Boolean) as globalThis.File[];
+    if (files.length > 0) await processFiles(files);
+  };
+
   const clearChat = () => {
     setMessages([]);
+    setPendingFiles([]);
     localStorage.removeItem(STORAGE_KEY);
   };
 
@@ -245,8 +398,35 @@ RULES:
   const chatWidth = isExpanded ? 'w-[600px]' : 'w-[380px]';
   const chatHeight = isExpanded ? 'h-[80vh]' : 'h-[500px]';
 
+  const renderAttachments = (attachments: FileAttachment[]) => (
+    <div className="flex flex-wrap gap-1.5 mt-1.5">
+      {attachments.map(a => (
+        <div key={a.id} className="flex items-center gap-1 px-2 py-1 bg-white/20 rounded-lg text-[11px]">
+          {a.dataUrl && a.type.startsWith('image/') ? (
+            <img src={a.dataUrl} alt={a.name} className="w-16 h-16 rounded object-cover" />
+          ) : (
+            <>
+              {getFileIcon(a.type)}
+              <span className="max-w-[100px] truncate">{a.name}</span>
+            </>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+
   return (
     <>
+      {/* Hidden file input */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        accept={ACCEPTED_TYPES}
+        onChange={handleFileSelect}
+        className="hidden"
+      />
+
       {/* Floating button */}
       {!isOpen && (
         <button
@@ -264,7 +444,23 @@ RULES:
 
       {/* Chat panel */}
       {isOpen && (
-        <div className={`fixed bottom-6 right-6 z-50 ${chatWidth} ${chatHeight} bg-white rounded-2xl shadow-2xl border border-gray-200 flex flex-col overflow-hidden transition-all duration-200`}>
+        <div
+          className={`fixed bottom-6 right-6 z-50 ${chatWidth} ${chatHeight} bg-white rounded-2xl shadow-2xl border border-gray-200 flex flex-col overflow-hidden transition-all duration-200 ${isDragOver ? 'ring-2 ring-orange-500 ring-offset-2' : ''}`}
+          onDrop={handleDrop}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+        >
+          {/* Drag overlay */}
+          {isDragOver && (
+            <div className="absolute inset-0 z-10 bg-orange-500/10 backdrop-blur-sm flex items-center justify-center pointer-events-none">
+              <div className="bg-white px-6 py-4 rounded-xl shadow-lg border-2 border-dashed border-orange-400 text-center">
+                <Paperclip className="w-8 h-8 text-orange-500 mx-auto mb-2" />
+                <p className="text-sm font-medium text-gray-700">Drop files here</p>
+                <p className="text-xs text-gray-400">Images, PDF, videos, documents</p>
+              </div>
+            </div>
+          )}
+
           {/* Header */}
           <div className="bg-gradient-to-r from-orange-500 to-red-600 px-4 py-3 flex items-center justify-between shrink-0">
             <div className="flex items-center gap-2">
@@ -305,14 +501,13 @@ RULES:
                 <Zap className="w-10 h-10 text-orange-300 mx-auto mb-3" />
                 <p className="text-gray-500 text-sm font-medium">OpenClaw ready</p>
                 <p className="text-gray-400 text-xs mt-1">Ask me anything about {section.name}</p>
+                <p className="text-gray-300 text-[10px] mt-1">You can also drop files, images, or PDFs</p>
                 <div className="mt-4 space-y-2">
                   {[
                     `What can I do in ${section.name}?`,
                     'Analyze the copy of https://example.com',
                     'Clone the landing page at https://example.com',
-                    'Check compliance of https://example.com',
-                    'Create a product called "My Product"',
-                  ].slice(0, 3).map((suggestion) => (
+                  ].map((suggestion) => (
                     <button
                       key={suggestion}
                       onClick={() => { setInput(suggestion); inputRef.current?.focus(); }}
@@ -340,6 +535,7 @@ RULES:
                   }`}
                 >
                   <div className="whitespace-pre-wrap break-words text-[13px] leading-relaxed">{msg.content}</div>
+                  {msg.attachments && msg.attachments.length > 0 && renderAttachments(msg.attachments)}
                   {msg.role === 'assistant' && (
                     <button
                       onClick={() => copyMessage(msg.id, msg.content)}
@@ -366,14 +562,49 @@ RULES:
             <div ref={messagesEndRef} />
           </div>
 
+          {/* Pending files preview */}
+          {pendingFiles.length > 0 && (
+            <div className="px-3 pt-2 pb-0 border-t border-gray-100 shrink-0">
+              <div className="flex flex-wrap gap-2">
+                {pendingFiles.map(f => (
+                  <div key={f.id} className="relative group flex items-center gap-1.5 px-2 py-1.5 bg-gray-100 rounded-lg text-xs">
+                    {f.dataUrl && f.type.startsWith('image/') ? (
+                      <img src={f.dataUrl} alt={f.name} className="w-10 h-10 rounded object-cover" />
+                    ) : (
+                      <>
+                        {getFileIcon(f.type)}
+                        <span className="max-w-[80px] truncate">{f.name}</span>
+                        <span className="text-gray-400">{formatFileSize(f.size)}</span>
+                      </>
+                    )}
+                    <button
+                      onClick={() => removePendingFile(f.id)}
+                      className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-red-500 text-white rounded-full flex items-center justify-center text-[10px] opacity-0 group-hover:opacity-100 transition-opacity"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Input */}
           <div className="border-t border-gray-100 p-3 shrink-0">
             <div className="flex items-end gap-2">
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="p-2.5 text-gray-400 hover:text-orange-500 hover:bg-orange-50 rounded-xl transition-colors shrink-0"
+                title="Attach file (images, PDF, video, documents)"
+              >
+                <Paperclip className="w-4 h-4" />
+              </button>
               <textarea
                 ref={inputRef}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
+                onPaste={handlePaste}
                 placeholder={`Ask OpenClaw about ${section.name}...`}
                 rows={1}
                 className="flex-1 resize-none px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent max-h-24"
@@ -381,7 +612,7 @@ RULES:
               />
               <button
                 onClick={sendMessage}
-                disabled={!input.trim() || isLoading}
+                disabled={(!input.trim() && pendingFiles.length === 0) || isLoading}
                 className="p-2.5 bg-gradient-to-r from-orange-500 to-red-600 text-white rounded-xl hover:from-orange-600 hover:to-red-700 disabled:from-gray-300 disabled:to-gray-300 disabled:cursor-not-allowed transition-all shrink-0"
               >
                 <Send className="w-4 h-4" />
