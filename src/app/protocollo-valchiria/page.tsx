@@ -1,9 +1,10 @@
 'use client';
 
 import { useState, useEffect, useMemo, useRef } from 'react';
+import { useRouter } from 'next/navigation';
 import Header from '@/components/Header';
 import { useStore } from '@/store/useStore';
-import { ArchivedFunnel } from '@/types/database';
+import { ArchivedFunnel, PageType } from '@/types/database';
 import {
   Swords, ChevronDown, ChevronRight, Package, Check, Wand2,
   ExternalLink, Loader2, CheckSquare, Square,
@@ -20,13 +21,16 @@ export default function ProtocolloValchiriaPage() {
   const {
     products, isInitialized, initializeData,
     archivedFunnels, archivedFunnelsLoaded, loadArchivedFunnels,
+    addFunnelPage, deleteFunnelPage, funnelPages,
   } = useStore();
 
+  const router = useRouter();
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [selectedSteps, setSelectedSteps] = useState<Set<string>>(new Set());
   const [targetProductId, setTargetProductId] = useState<string | null>(null);
   const [showTargetPicker, setShowTargetPicker] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [isSwipping, setIsSwipping] = useState(false);
   const targetRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -96,16 +100,17 @@ export default function ProtocolloValchiriaPage() {
   const selectedCount = selectedSteps.size;
 
   const getSelectedStepDetails = () => {
-    const details: { funnelName: string; stepName: string; url: string; pageType: string }[] = [];
+    const details: { funnelName: string; stepName: string; url: string; pageType: string; prompt: string }[] = [];
     swipeFunnels.forEach(funnel => {
-      const steps = (funnel.steps as { step_index: number; name: string; url_to_swipe: string; page_type: string }[]) || [];
+      const steps = (funnel.steps as { step_index: number; name: string; url_to_swipe: string; page_type: string; prompt: string }[]) || [];
       steps.forEach(s => {
         if (selectedSteps.has(stepKey(funnel.id, s.step_index))) {
           details.push({
             funnelName: funnel.name,
             stepName: s.name,
             url: s.url_to_swipe || '',
-            pageType: s.page_type || '',
+            pageType: s.page_type || 'landing',
+            prompt: s.prompt || '',
           });
         }
       });
@@ -113,12 +118,38 @@ export default function ProtocolloValchiriaPage() {
     return details;
   };
 
-  const handleSwipeSelected = () => {
+  const handleSwipeSelected = async () => {
     if (!targetProductId || selectedCount === 0) return;
-    const product = products.find(p => p.id === targetProductId);
-    const details = getSelectedStepDetails();
-    const summary = details.map(d => `• ${d.stepName} (${d.funnelName})`).join('\n');
-    alert(`Swipe ${details.length} step → ${product?.name}\n\n${summary}\n\nFunzionalità di swipe in arrivo!`);
+    setIsSwipping(true);
+
+    try {
+      // Clear existing funnel pages first
+      const existingIds = funnelPages.map(p => p.id);
+      for (const id of existingIds) {
+        await deleteFunnelPage(id);
+      }
+
+      const details = getSelectedStepDetails();
+
+      for (const step of details) {
+        await addFunnelPage({
+          name: step.stepName,
+          pageType: (step.pageType || 'landing') as PageType,
+          productId: targetProductId,
+          urlToSwipe: step.url,
+          prompt: step.prompt,
+          swipeStatus: 'pending',
+        });
+      }
+
+      setSelectedSteps(new Set());
+      router.push('/front-end-funnel');
+    } catch (error) {
+      console.error('Error loading steps into Front End Funnel:', error);
+      alert('Errore nel caricamento degli step. Riprova.');
+    } finally {
+      setIsSwipping(false);
+    }
   };
 
   if (isLoading) {
@@ -198,10 +229,14 @@ export default function ProtocolloValchiriaPage() {
           {targetProductId && selectedCount > 0 && (
             <button
               onClick={handleSwipeSelected}
-              className="inline-flex items-center gap-2 px-5 py-3 bg-gradient-to-r from-purple-600 to-red-600 text-white rounded-xl text-sm font-semibold hover:from-purple-700 hover:to-red-700 transition-all shadow-md"
+              disabled={isSwipping}
+              className="inline-flex items-center gap-2 px-5 py-3 bg-gradient-to-r from-purple-600 to-red-600 text-white rounded-xl text-sm font-semibold hover:from-purple-700 hover:to-red-700 transition-all shadow-md disabled:opacity-60 disabled:cursor-not-allowed"
             >
-              <Wand2 className="w-4 h-4" />
-              Swipe {selectedCount} step per {products.find(p => p.id === targetProductId)?.name}
+              {isSwipping ? <Loader2 className="w-4 h-4 animate-spin" /> : <Wand2 className="w-4 h-4" />}
+              {isSwipping
+                ? 'Caricamento in Front End Funnel...'
+                : `Swipe ${selectedCount} step per ${products.find(p => p.id === targetProductId)?.name}`
+              }
             </button>
           )}
 
