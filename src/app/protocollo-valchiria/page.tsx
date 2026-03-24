@@ -1,39 +1,45 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import Header from '@/components/Header';
 import { useStore } from '@/store/useStore';
-import { Swords, ChevronDown, Package, Check, Wand2, Eye, ChevronRight } from 'lucide-react';
+import { ArchivedFunnel } from '@/types/database';
+import {
+  Swords, ChevronDown, ChevronRight, Package, Check, Wand2,
+  ExternalLink, Loader2, CheckSquare, Square,
+} from 'lucide-react';
 
-interface Flow {
-  id: string;
-  name: string;
-  pages: { id: string; name: string; pageType: string; url: string }[];
-  productId: string;
-  productName: string;
+interface StepKey {
+  funnelId: string;
+  stepIndex: number;
 }
 
+const stepKey = (funnelId: string, stepIndex: number) => `${funnelId}::${stepIndex}`;
+
 export default function ProtocolloValchiriaPage() {
-  const { funnelPages, products, isInitialized, initialize } = useStore();
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [expandedFlow, setExpandedFlow] = useState<string | null>(null);
-  const [swipeTarget, setSwipeTarget] = useState<string | null>(null);
-  const [showProductPicker, setShowProductPicker] = useState(false);
+  const {
+    products, isInitialized, initializeData,
+    archivedFunnels, archivedFunnelsLoaded, loadArchivedFunnels,
+  } = useStore();
+
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const [selectedSteps, setSelectedSteps] = useState<Set<string>>(new Set());
   const [targetProductId, setTargetProductId] = useState<string | null>(null);
   const [showTargetPicker, setShowTargetPicker] = useState(false);
-  const pickerRef = useRef<HTMLDivElement>(null);
+  const [isLoading, setIsLoading] = useState(true);
   const targetRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!isInitialized) initialize();
-  }, [isInitialized, initialize]);
+    const init = async () => {
+      if (!isInitialized) await initializeData();
+      if (!archivedFunnelsLoaded) await loadArchivedFunnels();
+      setIsLoading(false);
+    };
+    init();
+  }, [isInitialized, initializeData, archivedFunnelsLoaded, loadArchivedFunnels]);
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
-      if (pickerRef.current && !pickerRef.current.contains(e.target as Node)) {
-        setSwipeTarget(null);
-        setShowProductPicker(false);
-      }
       if (targetRef.current && !targetRef.current.contains(e.target as Node)) {
         setShowTargetPicker(false);
       }
@@ -42,39 +48,13 @@ export default function ProtocolloValchiriaPage() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Group pages into flows by common prefix (before " — ")
-  const flows: Flow[] = (() => {
-    const groups = new Map<string, Flow>();
+  const swipeFunnels = useMemo(() =>
+    archivedFunnels.filter((f: ArchivedFunnel) => f.name.includes('[SWIPE]')),
+    [archivedFunnels]
+  );
 
-    funnelPages.forEach((page) => {
-      const parts = page.name.split(' — ');
-      const flowName = parts[0]?.trim() || page.name;
-      const key = `${flowName}__${page.productId}`;
-
-      if (!groups.has(key)) {
-        const product = products.find(p => p.id === page.productId);
-        groups.set(key, {
-          id: key,
-          name: flowName,
-          pages: [],
-          productId: page.productId,
-          productName: product?.name || 'No product',
-        });
-      }
-
-      groups.get(key)!.pages.push({
-        id: page.id,
-        name: page.name,
-        pageType: page.pageType,
-        url: page.urlToSwipe || '',
-      });
-    });
-
-    return Array.from(groups.values());
-  })();
-
-  const toggleSelect = (id: string) => {
-    setSelected(prev => {
+  const toggleExpand = (id: string) => {
+    setExpandedIds(prev => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
@@ -82,28 +62,81 @@ export default function ProtocolloValchiriaPage() {
     });
   };
 
-  const toggleAll = () => {
-    if (selected.size === flows.length) {
-      setSelected(new Set());
-    } else {
-      setSelected(new Set(flows.map(f => f.id)));
-    }
+  const toggleStep = (funnelId: string, stepIndex: number) => {
+    const key = stepKey(funnelId, stepIndex);
+    setSelectedSteps(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
   };
 
-  const handleSwipe = (flowId: string, productId: string) => {
-    const product = products.find(p => p.id === productId);
-    const flow = flows.find(f => f.id === flowId);
-    if (!product || !flow) return;
+  const toggleAllStepsInFunnel = (funnel: ArchivedFunnel) => {
+    const steps = (funnel.steps as { step_index: number }[]) || [];
+    const keys = steps.map(s => stepKey(funnel.id, s.step_index));
+    const allSelected = keys.every(k => selectedSteps.has(k));
 
-    alert(`Swipe "${flow.name}" (${flow.pages.length} pages) → ${product.name}\n\nFunzionalità di swipe in arrivo!`);
-    setSwipeTarget(null);
-    setShowProductPicker(false);
+    setSelectedSteps(prev => {
+      const next = new Set(prev);
+      if (allSelected) {
+        keys.forEach(k => next.delete(k));
+      } else {
+        keys.forEach(k => next.add(k));
+      }
+      return next;
+    });
   };
+
+  const isFunnelFullySelected = (funnel: ArchivedFunnel) => {
+    const steps = (funnel.steps as { step_index: number }[]) || [];
+    return steps.length > 0 && steps.every(s => selectedSteps.has(stepKey(funnel.id, s.step_index)));
+  };
+
+  const selectedCount = selectedSteps.size;
+
+  const getSelectedStepDetails = () => {
+    const details: { funnelName: string; stepName: string; url: string; pageType: string }[] = [];
+    swipeFunnels.forEach(funnel => {
+      const steps = (funnel.steps as { step_index: number; name: string; url_to_swipe: string; page_type: string }[]) || [];
+      steps.forEach(s => {
+        if (selectedSteps.has(stepKey(funnel.id, s.step_index))) {
+          details.push({
+            funnelName: funnel.name,
+            stepName: s.name,
+            url: s.url_to_swipe || '',
+            pageType: s.page_type || '',
+          });
+        }
+      });
+    });
+    return details;
+  };
+
+  const handleSwipeSelected = () => {
+    if (!targetProductId || selectedCount === 0) return;
+    const product = products.find(p => p.id === targetProductId);
+    const details = getSelectedStepDetails();
+    const summary = details.map(d => `• ${d.stepName} (${d.funnelName})`).join('\n');
+    alert(`Swipe ${details.length} step → ${product?.name}\n\n${summary}\n\nFunzionalità di swipe in arrivo!`);
+  };
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-gray-50">
+        <Header />
+        <div className="flex items-center justify-center py-32">
+          <Loader2 className="w-8 h-8 animate-spin text-purple-500" />
+          <span className="ml-3 text-gray-500 font-medium">Caricamento funnel...</span>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gray-50">
       <Header />
-      <main className="max-w-5xl mx-auto px-6 py-8">
+      <main className="max-w-6xl mx-auto px-6 py-8">
         {/* Header */}
         <div className="flex items-center justify-between mb-8">
           <div className="flex items-center gap-3">
@@ -112,18 +145,18 @@ export default function ProtocolloValchiriaPage() {
             </div>
             <div>
               <h1 className="text-2xl font-bold text-gray-900">Protocollo Valchiria</h1>
-              <p className="text-gray-500 text-sm">Seleziona un flusso e swippalo per il tuo prodotto</p>
+              <p className="text-gray-500 text-sm">Espandi ogni funnel, seleziona gli step da swippare</p>
             </div>
           </div>
-          {selected.size > 0 && (
+          {selectedCount > 0 && (
             <div className="bg-purple-50 border border-purple-200 rounded-lg px-4 py-2">
-              <span className="text-purple-700 text-sm font-semibold">{selected.size} flussi selezionati</span>
+              <span className="text-purple-700 text-sm font-semibold">{selectedCount} step selezionati</span>
             </div>
           )}
         </div>
 
-        {/* Target product selector */}
-        <div className="mb-6 flex items-center gap-4">
+        {/* Target product + Swipe action */}
+        <div className="mb-6 flex items-center gap-4 flex-wrap">
           <div className="relative" ref={targetRef}>
             <button
               onClick={() => setShowTargetPicker(!showTargetPicker)}
@@ -153,7 +186,7 @@ export default function ProtocolloValchiriaPage() {
                   >
                     <div>
                       <p className="font-medium">{p.name}</p>
-                      {p.price > 0 && <p className="text-xs text-gray-400 mt-0.5">€{p.price}</p>}
+                      {p.price > 0 && <p className="text-xs text-gray-400 mt-0.5">&euro;{p.price}</p>}
                     </div>
                     {targetProductId === p.id && <Check className="w-4 h-4 text-purple-600" />}
                   </button>
@@ -162,141 +195,135 @@ export default function ProtocolloValchiriaPage() {
             )}
           </div>
 
-          {targetProductId && selected.size > 0 && (
+          {targetProductId && selectedCount > 0 && (
             <button
-              onClick={() => {
-                const product = products.find(p => p.id === targetProductId);
-                const selectedFlows = flows.filter(f => selected.has(f.id));
-                alert(`Swipe ${selectedFlows.length} flussi → ${product?.name}\n\n${selectedFlows.map(f => f.name).join('\n')}\n\nFunzionalità in arrivo!`);
-              }}
+              onClick={handleSwipeSelected}
               className="inline-flex items-center gap-2 px-5 py-3 bg-gradient-to-r from-purple-600 to-red-600 text-white rounded-xl text-sm font-semibold hover:from-purple-700 hover:to-red-700 transition-all shadow-md"
             >
               <Wand2 className="w-4 h-4" />
-              Swipe {selected.size} flussi per {products.find(p => p.id === targetProductId)?.name}
+              Swipe {selectedCount} step per {products.find(p => p.id === targetProductId)?.name}
+            </button>
+          )}
+
+          {selectedCount > 0 && (
+            <button
+              onClick={() => setSelectedSteps(new Set())}
+              className="text-sm text-gray-400 hover:text-red-500 transition-colors"
+            >
+              Deseleziona tutti
             </button>
           )}
         </div>
 
-        {/* Flows */}
+        {/* Funnel list */}
         <div className="space-y-3">
-          {flows.length === 0 ? (
+          {swipeFunnels.length === 0 ? (
             <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-12 text-center">
               <Swords className="w-12 h-12 text-gray-300 mx-auto mb-3" />
-              <p className="text-gray-500 font-medium">Nessun flusso disponibile</p>
-              <p className="text-gray-400 text-sm mt-1">Aggiungi pagine in Front End Funnel per creare flussi</p>
+              <p className="text-gray-500 font-medium">Nessun funnel [SWIPE] trovato</p>
+              <p className="text-gray-400 text-sm mt-1">Salva funnel con &quot;[SWIPE]&quot; nel nome dalla sezione Saved Funnels</p>
             </div>
           ) : (
-            flows.map((flow, index) => {
-              const isSelected = selected.has(flow.id);
-              const isExpanded = expandedFlow === flow.id;
-              const isSwipeOpen = swipeTarget === flow.id;
+            swipeFunnels.map((funnel, index) => {
+              const steps = (funnel.steps as { step_index: number; name: string; page_type: string; url_to_swipe: string; product_name: string }[]) || [];
+              const isExpanded = expandedIds.has(funnel.id);
+              const allSelected = isFunnelFullySelected(funnel);
+              const funnelSelectedCount = steps.filter(s => selectedSteps.has(stepKey(funnel.id, s.step_index))).length;
 
               return (
                 <div
-                  key={flow.id}
+                  key={funnel.id}
                   className={`bg-white rounded-xl border shadow-sm transition-all ${
-                    isSelected ? 'border-purple-300 ring-1 ring-purple-200' : 'border-gray-200'
+                    allSelected ? 'border-purple-300 ring-1 ring-purple-200' : 'border-gray-200'
                   }`}
                 >
-                  {/* Flow row */}
                   <div className="flex items-center gap-4 px-5 py-4">
-                    {/* Checkbox */}
+                    {/* Select all steps */}
                     <button
-                      onClick={() => toggleSelect(flow.id)}
-                      className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-colors shrink-0 ${
-                        isSelected
-                          ? 'bg-purple-600 border-purple-600'
-                          : 'border-gray-300 hover:border-purple-400'
-                      }`}
+                      onClick={() => toggleAllStepsInFunnel(funnel)}
+                      className="shrink-0"
+                      title={allSelected ? 'Deseleziona tutti gli step' : 'Seleziona tutti gli step'}
                     >
-                      {isSelected && <Check className="w-3.5 h-3.5 text-white" />}
+                      {allSelected
+                        ? <CheckSquare className="w-5 h-5 text-purple-600" />
+                        : <Square className="w-5 h-5 text-gray-300 hover:text-purple-400" />
+                      }
                     </button>
 
-                    {/* Flow number */}
+                    {/* Number */}
                     <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-purple-100 to-red-100 flex items-center justify-center shrink-0">
                       <span className="text-sm font-bold text-purple-700">{index + 1}</span>
                     </div>
 
-                    {/* Flow name & info */}
-                    <div className="flex-1 min-w-0">
-                      <h3 className="text-base font-semibold text-gray-900">{flow.name}</h3>
+                    {/* Funnel info (clickable to expand) */}
+                    <div
+                      className="flex-1 min-w-0 cursor-pointer"
+                      onClick={() => toggleExpand(funnel.id)}
+                    >
+                      <h3 className="text-base font-semibold text-gray-900">{funnel.name}</h3>
                       <div className="flex items-center gap-3 mt-0.5">
-                        <span className="text-xs text-gray-400">{flow.pages.length} pagine</span>
-                        <span className="text-xs text-gray-300">•</span>
-                        <span className="text-xs text-gray-400 flex items-center gap-1">
-                          <Package className="w-3 h-3" />
-                          {flow.productName}
+                        <span className="text-xs text-gray-400">{funnel.total_steps} step</span>
+                        {funnelSelectedCount > 0 && (
+                          <>
+                            <span className="text-xs text-gray-300">&bull;</span>
+                            <span className="text-xs text-purple-500 font-medium">{funnelSelectedCount} selezionati</span>
+                          </>
+                        )}
+                        <span className="text-xs text-gray-300">&bull;</span>
+                        <span className="text-xs text-gray-400">
+                          {new Date(funnel.created_at).toLocaleDateString('it-IT', { day: '2-digit', month: 'short', year: 'numeric' })}
                         </span>
                       </div>
                     </div>
 
-                    {/* Actions */}
-                    <div className="flex items-center gap-2 shrink-0">
-                      {/* Expand pages */}
-                      <button
-                        onClick={() => setExpandedFlow(isExpanded ? null : flow.id)}
-                        className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
-                        title="Vedi pagine"
-                      >
-                        <Eye className="w-4 h-4" />
-                      </button>
+                    {/* Expand chevron */}
+                    <button
+                      onClick={() => toggleExpand(funnel.id)}
+                      className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors shrink-0"
+                    >
+                      {isExpanded ? <ChevronDown className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
+                    </button>
+                  </div>
 
-                      {/* Swipe button */}
-                      <div className="relative" ref={isSwipeOpen ? pickerRef : undefined}>
-                        <button
-                          onClick={() => { setSwipeTarget(isSwipeOpen ? null : flow.id); setShowProductPicker(!isSwipeOpen); }}
-                          className="inline-flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-purple-600 to-red-600 text-white rounded-lg text-sm font-medium hover:from-purple-700 hover:to-red-700 transition-all shadow-sm"
-                        >
-                          <Wand2 className="w-4 h-4" />
-                          Swipe
-                          <ChevronDown className="w-3.5 h-3.5" />
-                        </button>
-
-                        {isSwipeOpen && (
-                          <div className="absolute top-full right-0 mt-2 w-72 bg-white rounded-xl border border-gray-200 shadow-2xl z-50 max-h-72 overflow-y-auto">
-                            <div className="px-4 py-2.5 border-b border-gray-100">
-                              <p className="text-xs font-semibold text-gray-500 uppercase">Swippa per prodotto</p>
+                  {/* Steps (expanded) */}
+                  {isExpanded && steps.length > 0 && (
+                    <div className="border-t border-gray-100 bg-gray-50/50">
+                      <div className="divide-y divide-gray-100">
+                        {steps.map((s) => {
+                          const key = stepKey(funnel.id, s.step_index);
+                          const checked = selectedSteps.has(key);
+                          return (
+                            <div
+                              key={key}
+                              onClick={() => toggleStep(funnel.id, s.step_index)}
+                              className={`flex items-center gap-4 px-5 py-3.5 cursor-pointer transition-colors ${
+                                checked ? 'bg-purple-50/60' : 'hover:bg-gray-100/50'
+                              }`}
+                            >
+                              {checked
+                                ? <CheckSquare className="w-4.5 h-4.5 text-purple-600 shrink-0" />
+                                : <Square className="w-4.5 h-4.5 text-gray-300 shrink-0" />
+                              }
+                              <span className="w-7 text-center text-xs text-gray-400 font-mono shrink-0">{s.step_index}</span>
+                              <span className="text-sm text-gray-800 font-medium flex-1 min-w-0 truncate">{s.name}</span>
+                              <span className="text-[11px] text-gray-400 bg-gray-100 px-2.5 py-1 rounded-full shrink-0">{s.page_type || 'other'}</span>
+                              {s.url_to_swipe && (
+                                <a
+                                  href={s.url_to_swipe}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  onClick={(e) => e.stopPropagation()}
+                                  className="p-1.5 text-gray-400 hover:text-blue-500 hover:bg-blue-50 rounded-lg transition-colors shrink-0"
+                                  title={s.url_to_swipe}
+                                >
+                                  <ExternalLink className="w-3.5 h-3.5" />
+                                </a>
+                              )}
                             </div>
-                            {products.map((p) => (
-                              <button
-                                key={p.id}
-                                onClick={() => handleSwipe(flow.id, p.id)}
-                                className="w-full text-left px-4 py-3 text-sm hover:bg-purple-50 flex items-center justify-between transition-colors"
-                              >
-                                <div>
-                                  <p className="font-medium text-gray-800">{p.name}</p>
-                                  {p.price > 0 && <p className="text-xs text-gray-400 mt-0.5">€{p.price}</p>}
-                                </div>
-                                <ChevronRight className="w-4 h-4 text-gray-300" />
-                              </button>
-                            ))}
-                            {products.length === 0 && (
-                              <div className="px-4 py-6 text-center text-gray-400 text-sm">Nessun prodotto disponibile</div>
-                            )}
-                          </div>
-                        )}
+                          );
+                        })}
                       </div>
                     </div>
-                  </div>
-
-                  {/* Pages list */}
-                  {isExpanded && (
-                  <div className="border-t border-gray-100 bg-gray-50/50 px-5 py-3">
-                    <div className="space-y-2">
-                      {flow.pages.map((page, pi) => (
-                        <div key={page.id} className="flex items-center gap-3 text-sm">
-                          <span className="w-6 text-center text-xs text-gray-400 font-mono">{pi + 1}.</span>
-                          <span className="text-gray-700 font-medium flex-1">{page.name}</span>
-                          <span className="text-xs text-gray-400 bg-gray-100 px-2 py-0.5 rounded">{page.pageType}</span>
-                          {page.url && (
-                            <a href={page.url} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-500 hover:underline truncate max-w-[200px]">
-                              {page.url.replace(/^https?:\/\/(www\.)?/, '')}
-                            </a>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
                   )}
                 </div>
               );
@@ -305,13 +332,9 @@ export default function ProtocolloValchiriaPage() {
         </div>
 
         {/* Footer */}
-        <div className="mt-4 flex items-center justify-between text-xs text-gray-400">
-          <span>{flows.length} flussi totali</span>
-          {selected.size > 0 && (
-            <button onClick={toggleAll} className="text-purple-500 hover:text-purple-700">
-              {selected.size === flows.length ? 'Deseleziona tutti' : 'Seleziona tutti'}
-            </button>
-          )}
+        <div className="mt-4 text-xs text-gray-400">
+          {swipeFunnels.length} funnel &bull; {swipeFunnels.reduce((acc, f) => acc + f.total_steps, 0)} step totali
+          {selectedCount > 0 && <span className="ml-2 text-purple-500 font-medium">&bull; {selectedCount} selezionati</span>}
         </div>
       </main>
     </div>
