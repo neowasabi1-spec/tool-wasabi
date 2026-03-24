@@ -1251,145 +1251,107 @@ export default function FrontEndFunnel() {
         });
 
       } else if (mode === 'rewrite') {
-        // Async rewrite: extract → process loop → completed
-        const DEFAULT_USER_ID = '00000000-0000-0000-0000-000000000001';
+        if (pageIsQuiz) {
+          // Quiz rewrite: take existing HTML, extract texts, rewrite with AI, replace in-place
+          const existingHtml = currentPage?.clonedData?.html || currentPage?.swipedData?.html || '';
+          if (!existingHtml) throw new Error('No HTML loaded for this quiz page. Clone or upload HTML first.');
 
-        // Phase 1: Extract
-        setCloneProgress({ phase: 'extract', totalTexts: 0, processedTexts: 0, message: 'Extracting texts...' });
-        const extractRes = await fetch('/api/clone-funnel', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            url,
-            cloneMode: 'rewrite',
-            phase: 'extract',
-            productName: cloneConfig.productName,
-            productDescription: cloneConfig.productDescription,
-            framework: cloneConfig.framework || undefined,
-            target: cloneConfig.target || undefined,
-            customPrompt: cloneConfig.customPrompt || undefined,
-            userId: DEFAULT_USER_ID,
-          }),
-        });
-        const extractData = await extractRes.json();
-        if (!extractRes.ok || extractData.error) throw new Error(extractData.error || 'Extract failed');
+          setCloneProgress({ phase: 'processing', totalTexts: 0, processedTexts: 0, message: 'Rewriting quiz texts...' });
 
-        const jobId = extractData.jobId;
-        const totalTexts = extractData.totalTexts || 0;
-        setCloneProgress({ phase: 'processing', totalTexts, processedTexts: 0, message: `0/${totalTexts} texts processed...` });
-        updateFunnelPage(pageId, { swipeResult: `Rewriting 0/${totalTexts}...` });
-
-        // Phase 2: Process loop
-        let completed = false;
-        let batchNum = 0;
-        while (!completed) {
-          await new Promise(r => setTimeout(r, 3000));
-
-          const processRes = await fetch('/api/clone-funnel', {
+          const rewriteRes = await fetch('/api/quiz-rewrite', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
+              html: existingHtml,
+              productName: cloneConfig.productName,
+              productDescription: cloneConfig.productDescription,
+              customPrompt: cloneConfig.customPrompt || undefined,
+            }),
+          });
+          const rewriteData = await rewriteRes.json();
+          if (!rewriteRes.ok || rewriteData.error) throw new Error(rewriteData.error || 'Quiz rewrite failed');
+
+          setCloneProgress(null);
+          const quizHtml = rewriteData.html;
+
+          updateFunnelPage(pageId, {
+            swipeStatus: 'completed',
+            swipeResult: `Quiz Rewrite OK (${rewriteData.replacements}/${rewriteData.totalTexts} texts)`,
+            swipedData: {
+              html: quizHtml,
+              originalTitle: pageName,
+              newTitle: `Rewrite: ${pageName}`,
+              originalLength: rewriteData.originalLength || existingHtml.length,
+              newLength: rewriteData.newLength || quizHtml.length,
+              processingTime: 0,
+              methodUsed: 'quiz-rewrite',
+              changesMade: [`${rewriteData.replacements} texts rewritten out of ${rewriteData.totalTexts}`],
+              swipedAt: new Date(),
+            },
+          });
+
+          setPreviewTab('preview');
+          setHtmlPreviewModal({
+            isOpen: true,
+            title: `Quiz Rewrite: ${pageName}`,
+            html: quizHtml,
+            mobileHtml: '',
+            iframeSrc: '',
+            metadata: { method: 'quiz-rewrite', length: quizHtml.length, duration: 0 },
+          });
+        } else {
+          // Standard rewrite: extract → process loop → completed
+          const DEFAULT_USER_ID = '00000000-0000-0000-0000-000000000001';
+
+          setCloneProgress({ phase: 'extract', totalTexts: 0, processedTexts: 0, message: 'Extracting texts...' });
+          const extractRes = await fetch('/api/clone-funnel', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              url,
               cloneMode: 'rewrite',
-              phase: 'process',
-              jobId,
-              batchNumber: batchNum,
+              phase: 'extract',
+              productName: cloneConfig.productName,
+              productDescription: cloneConfig.productDescription,
+              framework: cloneConfig.framework || undefined,
+              target: cloneConfig.target || undefined,
+              customPrompt: cloneConfig.customPrompt || undefined,
               userId: DEFAULT_USER_ID,
             }),
           });
-          const processData = await processRes.json();
-          if (!processRes.ok || processData.error) throw new Error(processData.error || 'Process failed');
+          const extractData = await extractRes.json();
+          if (!extractRes.ok || extractData.error) throw new Error(extractData.error || 'Extract failed');
 
-          if (processData.phase === 'completed') {
-            completed = true;
+          const jobId = extractData.jobId;
+          const totalTexts = extractData.totalTexts || 0;
+          setCloneProgress({ phase: 'processing', totalTexts, processedTexts: 0, message: `0/${totalTexts} texts processed...` });
+          updateFunnelPage(pageId, { swipeResult: `Rewriting 0/${totalTexts}...` });
 
-            const replacements = processData.replacements || 0;
-            const textsProcessed = processData.textsProcessed || totalTexts;
-            setCloneProgress(null);
+          let completed = false;
+          let batchNum = 0;
+          while (!completed) {
+            await new Promise(r => setTimeout(r, 3000));
 
-            if (pageIsQuiz) {
-              // Quiz pages: fetch raw HTML + text mappings, inject runtime patcher
-              setCloneProgress({ phase: 'processing', totalTexts, processedTexts: totalTexts, message: 'Building quiz preview...' });
+            const processRes = await fetch('/api/clone-funnel', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                cloneMode: 'rewrite',
+                phase: 'process',
+                jobId,
+                batchNumber: batchNum,
+                userId: DEFAULT_USER_ID,
+              }),
+            });
+            const processData = await processRes.json();
+            if (!processRes.ok || processData.error) throw new Error(processData.error || 'Process failed');
 
-              const [rawRes, mappingsRes] = await Promise.all([
-                fetch('/api/clone-funnel', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ url, cloneMode: 'identical', viewport: 'desktop' }),
-                }),
-                fetch(`/api/clone-funnel/text-mappings?jobId=${jobId}`),
-              ]);
-              const rawData = await rawRes.json();
-              const mappingsData = await mappingsRes.json();
+            if (processData.phase === 'completed') {
+              completed = true;
+              const replacements = processData.replacements || 0;
+              const textsProcessed = processData.textsProcessed || totalTexts;
               setCloneProgress(null);
 
-              let quizHtml = rawData.content || processData.content;
-              // Keep scripts and structure intact for the raw version
-              quizHtml = sanitizeClonedHtml(quizHtml, url, { keepScripts: true });
-
-              if (mappingsData.mappings && Object.keys(mappingsData.mappings).length > 0) {
-                const escapedMappings = JSON.stringify(mappingsData.mappings)
-                  .replace(/</g, '\\u003c').replace(/>/g, '\\u003e');
-                const patcherScript = `
-<script>
-(function(){
-  var m=${escapedMappings};
-  var keys=Object.keys(m).sort(function(a,b){return b.length-a.length});
-  function patch(root){
-    var walker=document.createTreeWalker(root,NodeFilter.SHOW_TEXT,null,false);
-    var node;
-    while(node=walker.nextNode()){
-      var t=node.textContent;
-      if(!t||t.trim().length<2)continue;
-      for(var i=0;i<keys.length;i++){
-        if(t.indexOf(keys[i])!==-1){
-          node.textContent=t.replace(keys[i],m[keys[i]]);
-          t=node.textContent;
-        }
-      }
-    }
-  }
-  function run(){patch(document.body)}
-  if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',function(){setTimeout(run,1500)})}
-  else{setTimeout(run,1500)}
-  var obs=new MutationObserver(function(muts){
-    for(var j=0;j<muts.length;j++){
-      for(var k=0;k<muts[j].addedNodes.length;k++){
-        var n=muts[j].addedNodes[k];
-        if(n.nodeType===1)patch(n);
-      }
-    }
-  });
-  setTimeout(function(){obs.observe(document.body,{childList:true,subtree:true})},500);
-})();
-</script>`;
-                quizHtml = quizHtml.replace(/<\/body>/i, patcherScript + '</body>');
-              }
-
-              updateFunnelPage(pageId, {
-                swipeStatus: 'completed',
-                swipeResult: `Quiz Rewrite OK (${replacements}/${textsProcessed} texts, live patch)`,
-                swipedData: {
-                  html: quizHtml,
-                  originalTitle: pageName,
-                  newTitle: `Rewrite: ${pageName}`,
-                  originalLength: 0,
-                  newLength: quizHtml.length,
-                  processingTime: 0,
-                  methodUsed: 'quiz-live-patch',
-                  changesMade: [`${replacements} texts rewritten out of ${textsProcessed}`, 'Runtime text patcher injected'],
-                  swipedAt: new Date(),
-                },
-              });
-
-              setHtmlPreviewModal({
-                isOpen: true,
-                title: `Quiz Rewrite: ${pageName}`,
-                html: quizHtml,
-                mobileHtml: '',
-                iframeSrc: '',
-                metadata: { method: 'quiz-live-patch', length: quizHtml.length, duration: 0 },
-              });
-            } else {
               const rewrittenHtml = sanitizeClonedHtml(processData.content, url);
               updateFunnelPage(pageId, {
                 swipeStatus: 'completed',
@@ -1407,6 +1369,7 @@ export default function FrontEndFunnel() {
                 },
               });
 
+              setPreviewTab('preview');
               setHtmlPreviewModal({
                 isOpen: true,
                 title: `Rewrite: ${pageName}`,
@@ -1415,9 +1378,8 @@ export default function FrontEndFunnel() {
                 iframeSrc: '',
                 metadata: { method: 'rewrite', length: processData.content?.length || 0, duration: 0 },
               });
-            }
-          } else if (processData.continue) {
-            batchNum++;
+            } else if (processData.continue) {
+              batchNum++;
             const processed = processData.batchProcessed || 0;
             const remaining = processData.remainingTexts || 0;
             const done = totalTexts - remaining;
