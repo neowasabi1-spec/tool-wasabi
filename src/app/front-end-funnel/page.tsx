@@ -104,10 +104,16 @@ function sanitizeClonedHtml(html: string, originalUrl: string, options?: { keepS
     if (!options?.keepScripts) {
       clean = clean.replace(/<script[\s\S]*?<\/script>/gi, '');
       clean = clean.replace(/<script[^>]*\/>/gi, '');
+      // Non-quiz: remove noscript tags but keep inner content as fallback text
+      clean = clean.replace(/<\/?noscript[^>]*>/gi, '');
+      // Strip inline event handlers for security
+      clean = clean.replace(/\s+on[a-z]+\s*=\s*"[^"]*"/gi, '');
+      clean = clean.replace(/\s+on[a-z]+\s*=\s*'[^']*'/gi, '');
+    } else {
+      // Quiz: remove entire <noscript> blocks (tags + content) — they show
+      // "Activate JavaScript" messages that are misleading in the preview
+      clean = clean.replace(/<noscript[^>]*>[\s\S]*?<\/noscript>/gi, '');
     }
-    clean = clean.replace(/<\/?noscript[^>]*>/gi, '');
-    clean = clean.replace(/\s+on[a-z]+\s*=\s*"[^"]*"/gi, '');
-    clean = clean.replace(/\s+on[a-z]+\s*=\s*'[^']*'/gi, '');
     clean = clean.replace(/(href|src)\s*=\s*"javascript:[^"]*"/gi, '$1=""');
     clean = clean.replace(/(href|src)\s*=\s*'javascript:[^']*'/gi, "$1=''");
 
@@ -2869,11 +2875,21 @@ export default function FrontEndFunnel() {
                       const htmlToShow = previewViewport === 'mobile' && htmlPreviewModal.mobileHtml
                         ? htmlPreviewModal.mobileHtml : htmlPreviewModal.html;
                       if (htmlToShow) {
-                        const doc = iframe.contentDocument || iframe.contentWindow?.document;
-                        if (doc) {
-                          doc.open();
-                          doc.write(htmlToShow);
-                          doc.close();
+                        // Use blob URL so external scripts (HeyFlow, etc.) can load
+                        // without being blocked by the parent page's CSP
+                        const hasExternalScripts = /<script[^>]+src\s*=/i.test(htmlToShow);
+                        if (hasExternalScripts) {
+                          const blob = new Blob([htmlToShow], { type: 'text/html' });
+                          const blobUrl = URL.createObjectURL(blob);
+                          iframe.src = blobUrl;
+                          iframe.onload = () => URL.revokeObjectURL(blobUrl);
+                        } else {
+                          const doc = iframe.contentDocument || iframe.contentWindow?.document;
+                          if (doc) {
+                            doc.open();
+                            doc.write(htmlToShow);
+                            doc.close();
+                          }
                         }
                       }
                     }
@@ -2884,6 +2900,7 @@ export default function FrontEndFunnel() {
                       : 'w-full h-full'
                   }`}
                   title="HTML Preview"
+                  sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
                   allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
                 />
               </div>
