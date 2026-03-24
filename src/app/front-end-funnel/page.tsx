@@ -1380,18 +1380,19 @@ export default function FrontEndFunnel() {
               });
             } else if (processData.continue) {
               batchNum++;
-            const processed = processData.batchProcessed || 0;
-            const remaining = processData.remainingTexts || 0;
-            const done = totalTexts - remaining;
-            setCloneProgress({
-              phase: 'processing',
-              totalTexts,
-              processedTexts: done,
-              message: `${done}/${totalTexts} texts processed...`,
-            });
-            updateFunnelPage(pageId, { swipeResult: `Rewriting ${done}/${totalTexts}...` });
-          } else {
-            throw new Error('Unexpected response from process phase');
+              const processed = processData.batchProcessed || 0;
+              const remaining = processData.remainingTexts || 0;
+              const done = totalTexts - remaining;
+              setCloneProgress({
+                phase: 'processing',
+                totalTexts,
+                processedTexts: done,
+                message: `${done}/${totalTexts} texts processed...`,
+              });
+              updateFunnelPage(pageId, { swipeResult: `Rewriting ${done}/${totalTexts}...` });
+            } else {
+              throw new Error('Unexpected response from process phase');
+            }
           }
         }
 
