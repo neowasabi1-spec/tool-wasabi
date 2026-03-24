@@ -158,14 +158,35 @@ function sanitizeClonedHtml(html: string, originalUrl: string, options?: { keepS
       return `@import url("${abs(url)}")`;
     });
 
-    // 6. Fix lazy-loaded videos/iframes: promote data-src to src so media loads without JS
-    clean = clean.replace(/<(iframe|video|source)([^>]*?)\sdata-src\s*=\s*"([^"]*)"([^>]*?)>/gi, (_m, tag, before, dataSrc, after) => {
-      if (/\ssrc\s*=/i.test(before + after)) return _m;
-      return `<${tag}${before} src="${dataSrc}"${after}>`;
-    });
-    clean = clean.replace(/<(iframe|video|source)([^>]*?)\sdata-src\s*=\s*'([^']*)'([^>]*?)>/gi, (_m, tag, before, dataSrc, after) => {
-      if (/\ssrc\s*=/i.test(before + after)) return _m;
-      return `<${tag}${before} src="${dataSrc}"${after}>`;
+    // 6. Fix lazy-loaded media & images: promote data-src/data-lazy-src to src
+    const lazyTags = 'iframe|video|source|img';
+    const lazyAttrs = ['data-src', 'data-lazy-src', 'data-original'];
+    for (const lazyAttr of lazyAttrs) {
+      const dblLazy = new RegExp(`<(${lazyTags})([^>]*?)\\s${lazyAttr}\\s*=\\s*"([^"]*)"([^>]*?)>`, 'gi');
+      clean = clean.replace(dblLazy, (_m, tag, before, val, after) => {
+        if (/\ssrc\s*=/i.test(before + after)) return _m;
+        return `<${tag}${before} src="${val}"${after}>`;
+      });
+      const sglLazy = new RegExp(`<(${lazyTags})([^>]*?)\\s${lazyAttr}\\s*=\\s*'([^']*)'([^>]*?)>`, 'gi');
+      clean = clean.replace(sglLazy, (_m, tag, before, val, after) => {
+        if (/\ssrc\s*=/i.test(before + after)) return _m;
+        return `<${tag}${before} src="${val}"${after}>`;
+      });
+    }
+
+    // 6b. Force eager loading on all images (lazy loading doesn't trigger in iframe previews)
+    clean = clean.replace(/(<img\b[^>]*)\sloading\s*=\s*["']lazy["']/gi, '$1 loading="eager"');
+
+    // 6c. Promote data-bg to inline background-image so CSS-background images render
+    clean = clean.replace(/<([a-z][a-z0-9]*)\b([^>]*?)\sdata-bg\s*=\s*"([^"]*)"([^>]*?)>/gi, (_m, tag, before, bgUrl, after) => {
+      const existingStyle = (before + after).match(/style\s*=\s*"([^"]*)"/i);
+      if (existingStyle && existingStyle[1].includes('background-image')) return _m;
+      const styleAdd = `background-image:url('${bgUrl}')`;
+      if (existingStyle) {
+        const updated = (before + after).replace(/style\s*=\s*"([^"]*)"/i, `style="$1;${styleAdd}"`);
+        return `<${tag}${updated}>`;
+      }
+      return `<${tag}${before} style="${styleAdd}"${after}>`;
     });
 
     // 7. Inject fallback iframes for JS-based video embeds detected in step 0
@@ -1283,31 +1304,116 @@ export default function FrontEndFunnel() {
             const textsProcessed = processData.textsProcessed || totalTexts;
             setCloneProgress(null);
 
-            const rewrittenHtml = sanitizeClonedHtml(processData.content, url, { keepScripts: pageIsQuiz });
-            updateFunnelPage(pageId, {
-              swipeStatus: 'completed',
-              swipeResult: `${pageIsQuiz ? 'Quiz ' : ''}Rewrite OK (${replacements}/${textsProcessed} texts)`,
-              swipedData: {
-                html: rewrittenHtml,
-                originalTitle: pageName,
-                newTitle: `Rewrite: ${pageName}`,
-                originalLength: 0,
-                newLength: processData.content?.length || 0,
-                processingTime: 0,
-                methodUsed: 'smooth-responder-rewrite',
-                changesMade: [`${replacements} texts rewritten out of ${textsProcessed}`],
-                swipedAt: new Date(),
-              },
-            });
+            if (pageIsQuiz) {
+              // Quiz pages: fetch raw HTML + text mappings, inject runtime patcher
+              setCloneProgress({ phase: 'processing', totalTexts, processedTexts: totalTexts, message: 'Building quiz preview...' });
 
-            setHtmlPreviewModal({
-              isOpen: true,
-              title: `Rewrite: ${pageName}`,
-              html: rewrittenHtml,
-              mobileHtml: '',
-              iframeSrc: '',
-              metadata: { method: 'rewrite', length: processData.content?.length || 0, duration: 0 },
-            });
+              const [rawRes, mappingsRes] = await Promise.all([
+                fetch('/api/clone-funnel', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ url, cloneMode: 'identical', viewport: 'desktop' }),
+                }),
+                fetch(`/api/clone-funnel/text-mappings?jobId=${jobId}`),
+              ]);
+              const rawData = await rawRes.json();
+              const mappingsData = await mappingsRes.json();
+              setCloneProgress(null);
+
+              let quizHtml = rawData.content || processData.content;
+              // Keep scripts and structure intact for the raw version
+              quizHtml = sanitizeClonedHtml(quizHtml, url, { keepScripts: true });
+
+              if (mappingsData.mappings && Object.keys(mappingsData.mappings).length > 0) {
+                const escapedMappings = JSON.stringify(mappingsData.mappings)
+                  .replace(/</g, '\\u003c').replace(/>/g, '\\u003e');
+                const patcherScript = `
+<script>
+(function(){
+  var m=${escapedMappings};
+  var keys=Object.keys(m).sort(function(a,b){return b.length-a.length});
+  function patch(root){
+    var walker=document.createTreeWalker(root,NodeFilter.SHOW_TEXT,null,false);
+    var node;
+    while(node=walker.nextNode()){
+      var t=node.textContent;
+      if(!t||t.trim().length<2)continue;
+      for(var i=0;i<keys.length;i++){
+        if(t.indexOf(keys[i])!==-1){
+          node.textContent=t.replace(keys[i],m[keys[i]]);
+          t=node.textContent;
+        }
+      }
+    }
+  }
+  function run(){patch(document.body)}
+  if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',function(){setTimeout(run,1500)})}
+  else{setTimeout(run,1500)}
+  var obs=new MutationObserver(function(muts){
+    for(var j=0;j<muts.length;j++){
+      for(var k=0;k<muts[j].addedNodes.length;k++){
+        var n=muts[j].addedNodes[k];
+        if(n.nodeType===1)patch(n);
+      }
+    }
+  });
+  setTimeout(function(){obs.observe(document.body,{childList:true,subtree:true})},500);
+})();
+</script>`;
+                quizHtml = quizHtml.replace(/<\/body>/i, patcherScript + '</body>');
+              }
+
+              updateFunnelPage(pageId, {
+                swipeStatus: 'completed',
+                swipeResult: `Quiz Rewrite OK (${replacements}/${textsProcessed} texts, live patch)`,
+                swipedData: {
+                  html: quizHtml,
+                  originalTitle: pageName,
+                  newTitle: `Rewrite: ${pageName}`,
+                  originalLength: 0,
+                  newLength: quizHtml.length,
+                  processingTime: 0,
+                  methodUsed: 'quiz-live-patch',
+                  changesMade: [`${replacements} texts rewritten out of ${textsProcessed}`, 'Runtime text patcher injected'],
+                  swipedAt: new Date(),
+                },
+              });
+
+              setHtmlPreviewModal({
+                isOpen: true,
+                title: `Quiz Rewrite: ${pageName}`,
+                html: quizHtml,
+                mobileHtml: '',
+                iframeSrc: '',
+                metadata: { method: 'quiz-live-patch', length: quizHtml.length, duration: 0 },
+              });
+            } else {
+              const rewrittenHtml = sanitizeClonedHtml(processData.content, url);
+              updateFunnelPage(pageId, {
+                swipeStatus: 'completed',
+                swipeResult: `Rewrite OK (${replacements}/${textsProcessed} texts)`,
+                swipedData: {
+                  html: rewrittenHtml,
+                  originalTitle: pageName,
+                  newTitle: `Rewrite: ${pageName}`,
+                  originalLength: 0,
+                  newLength: processData.content?.length || 0,
+                  processingTime: 0,
+                  methodUsed: 'smooth-responder-rewrite',
+                  changesMade: [`${replacements} texts rewritten out of ${textsProcessed}`],
+                  swipedAt: new Date(),
+                },
+              });
+
+              setHtmlPreviewModal({
+                isOpen: true,
+                title: `Rewrite: ${pageName}`,
+                html: rewrittenHtml,
+                mobileHtml: '',
+                iframeSrc: '',
+                metadata: { method: 'rewrite', length: processData.content?.length || 0, duration: 0 },
+              });
+            }
           } else if (processData.continue) {
             batchNum++;
             const processed = processData.batchProcessed || 0;
