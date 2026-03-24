@@ -2981,21 +2981,11 @@ export default function FrontEndFunnel() {
                       const htmlToShow = previewViewport === 'mobile' && htmlPreviewModal.mobileHtml
                         ? htmlPreviewModal.mobileHtml : htmlPreviewModal.html;
                       if (htmlToShow) {
-                        // Use blob URL so external scripts (HeyFlow, etc.) can load
-                        // without being blocked by the parent page's CSP
-                        const hasExternalScripts = /<script[^>]+src\s*=/i.test(htmlToShow);
-                        if (hasExternalScripts) {
-                          const blob = new Blob([htmlToShow], { type: 'text/html' });
-                          const blobUrl = URL.createObjectURL(blob);
-                          iframe.src = blobUrl;
-                          iframe.onload = () => URL.revokeObjectURL(blobUrl);
-                        } else {
-                          const doc = iframe.contentDocument || iframe.contentWindow?.document;
-                          if (doc) {
-                            doc.open();
-                            doc.write(htmlToShow);
-                            doc.close();
-                          }
+                        const doc = iframe.contentDocument || iframe.contentWindow?.document;
+                        if (doc) {
+                          doc.open();
+                          doc.write(htmlToShow);
+                          doc.close();
                         }
                       }
                     }
