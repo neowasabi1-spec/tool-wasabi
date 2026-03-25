@@ -182,7 +182,7 @@ async function fetchCssViaPage(page: import('playwright-core').Page, href: strin
 }
 
 // Clone a page using Playwright headless browser - renders JS, captures full DOM + CSS
-async function cloneWithBrowser(url: string, viewport: 'desktop' | 'mobile' = 'desktop'): Promise<{
+async function cloneWithBrowser(url: string, viewport: 'desktop' | 'mobile' = 'desktop', keepScripts = false): Promise<{
   html: string;
   title: string;
   renderedSize: number;
@@ -287,8 +287,8 @@ async function cloneWithBrowser(url: string, viewport: 'desktop' | 'mobile' = 'd
     }
 
     // Extract the FULL rendered page with all CSS inlined
-    const result = await page.evaluate((args: { pageUrl: string; corsFixedCss: Record<string, string> }) => {
-      const { pageUrl, corsFixedCss: fetchedCss } = args;
+    const result = await page.evaluate((args: { pageUrl: string; corsFixedCss: Record<string, string>; keepScripts: boolean }) => {
+      const { pageUrl, corsFixedCss: fetchedCss, keepScripts: preserveScripts } = args;
 
       function abs(relative: string): string {
         if (!relative || relative.startsWith('data:') || relative.startsWith('blob:') || 
@@ -340,17 +340,22 @@ async function cloneWithBrowser(url: string, viewport: 'desktop' | 'mobile' = 'd
       // 2. Get the rendered DOM
       const docClone = document.documentElement.cloneNode(true) as HTMLElement;
 
-      // 3. Remove scripts
-      docClone.querySelectorAll('script').forEach(s => s.remove());
-      docClone.querySelectorAll('noscript').forEach(s => s.remove());
+      // 3. Remove scripts (unless keepScripts for quiz pages)
+      if (!preserveScripts) {
+        docClone.querySelectorAll('script').forEach(s => s.remove());
+        docClone.querySelectorAll('noscript').forEach(s => s.remove());
 
-      // 4. Remove inline event handlers
-      docClone.querySelectorAll('*').forEach(el => {
-        const attrs = Array.from(el.attributes);
-        attrs.forEach(attr => {
-          if (attr.name.startsWith('on')) el.removeAttribute(attr.name);
+        // 4. Remove inline event handlers
+        docClone.querySelectorAll('*').forEach(el => {
+          const attrs = Array.from(el.attributes);
+          attrs.forEach(attr => {
+            if (attr.name.startsWith('on')) el.removeAttribute(attr.name);
+          });
         });
-      });
+      } else {
+        // For quiz: only remove noscript (shows fallback error messages)
+        docClone.querySelectorAll('noscript').forEach(s => s.remove());
+      }
 
       // 5. Handle stylesheet links
       docClone.querySelectorAll('link[rel="stylesheet"]').forEach(link => {
@@ -464,7 +469,7 @@ async function cloneWithBrowser(url: string, viewport: 'desktop' | 'mobile' = 'd
         imgCount: docClone.querySelectorAll('img').length,
         corsLinks: corsBlockedLinks,
       };
-    }, { pageUrl: url, corsFixedCss });
+    }, { pageUrl: url, corsFixedCss, keepScripts });
 
     return {
       html: result.html,
@@ -484,13 +489,14 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { cloneMode, url } = body;
     const viewport: 'desktop' | 'mobile' | 'both' = body.viewport || 'desktop';
+    const keepScriptsFlag: boolean = body.keepScripts || false;
 
     // IDENTICAL MODE: use Playwright headless browser for full page rendering
     if (cloneMode === 'identical' && url) {
-      console.log(`🔄 Clone IDENTICAL with Playwright (${viewport}): ${url}`);
+      console.log(`🔄 Clone IDENTICAL with Playwright (${viewport}${keepScriptsFlag ? ', keepScripts' : ''}): ${url}`);
 
       try {
-        const result = await cloneWithBrowser(url, 'desktop');
+        const result = await cloneWithBrowser(url, 'desktop', keepScriptsFlag);
         
         console.log(`✅ Desktop clone completed: ${result.renderedSize.toLocaleString()} chars, ${result.cssCount} CSS, ${result.imgCount} images`);
 
@@ -498,7 +504,7 @@ export async function POST(request: NextRequest) {
         if (viewport === 'mobile' || viewport === 'both') {
           try {
             console.log(`📱 Clone MOBILE with Playwright: ${url}`);
-            mobileResult = await cloneWithBrowser(url, 'mobile');
+            mobileResult = await cloneWithBrowser(url, 'mobile', keepScriptsFlag);
             console.log(`✅ Mobile clone completed: ${mobileResult.renderedSize.toLocaleString()} chars`);
           } catch (mobileErr) {
             console.error('⚠️ Mobile clone failed, desktop only:', mobileErr);

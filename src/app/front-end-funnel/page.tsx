@@ -1396,7 +1396,7 @@ export default function FrontEndFunnel() {
         const response = await fetch('/api/clone-funnel', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url, cloneMode: 'identical', viewport: cloneMobile ? 'both' : 'desktop' }),
+          body: JSON.stringify({ url, cloneMode: 'identical', viewport: cloneMobile ? 'both' : 'desktop', keepScripts: pageIsQuiz }),
         });
         const data = await response.json();
         if (!response.ok || data.error) throw new Error(data.error || 'Clone failed');
