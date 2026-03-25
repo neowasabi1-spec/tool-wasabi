@@ -49,21 +49,21 @@ function addSecurityHeaders(response: NextResponse): void {
     'camera=(), microphone=(), geolocation=(), interest-cohort=()'
   );
 
-  // Content Security Policy — tight defaults with necessary relaxations
+  // Content Security Policy — relaxed to support cloned page previews with
+  // embedded fonts (data: URIs), external images, and inline styles/scripts
   response.headers.set(
     'Content-Security-Policy',
     [
-      "default-src 'self'",
-      "script-src 'self' 'unsafe-inline' 'unsafe-eval' https:",
-      "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https:",
-      "font-src 'self' https://fonts.gstatic.com https:",
-      "img-src 'self' data: blob: https:",
-      "media-src 'self' blob: https:",
-      "frame-src 'self' blob: https:",
-      "connect-src 'self' https: wss://*.supabase.co",
-      "frame-ancestors 'none'",
+      "default-src 'self' https: data: blob:",
+      "script-src 'self' 'unsafe-inline' 'unsafe-eval' https: blob:",
+      "style-src 'self' 'unsafe-inline' https: data:",
+      "font-src 'self' https: data:",
+      "img-src * data: blob:",
+      "media-src * data: blob:",
+      "frame-src 'self' blob: https: data:",
+      "connect-src 'self' https: wss: http:",
       "base-uri 'self'",
-      "form-action 'self'",
+      "form-action *",
     ].join('; ')
   );
 
