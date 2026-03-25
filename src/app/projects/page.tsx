@@ -36,7 +36,7 @@ function getStatusInfo(status: string) {
 }
 
 interface AssetItem { url: string; name: string; addedAt: string; }
-interface TableRow { step: string; mockup: string; label: string; offer: string; }
+interface TableRow { step: string; mockup: string; label: string; price: string; offer: string; }
 
 type ProjectType = ReturnType<typeof useStore.getState>['projects'][number];
 type UpdateFn = (id: string, data: Partial<ProjectType>) => Promise<void>;
@@ -426,6 +426,8 @@ function RichBoxTab({ project, updateProject, sectionKey, title, isBrief }: {
 }
 
 /* ── Grid Tab (Front End / Back End / Compliance / Funnel) ── */
+const IMAGE_ACCEPT = '.png,.jpg,.jpeg,.gif,.webp,.svg,.ai,.eps,.psd,.tiff,.bmp';
+
 function GridTab({ project, updateProject, sectionKey, title }: {
   project: ProjectType; updateProject: UpdateFn;
   sectionKey: 'frontEnd' | 'backEnd' | 'complianceFunnel' | 'funnel'; title: string;
@@ -433,6 +435,8 @@ function GridTab({ project, updateProject, sectionKey, title }: {
   const storeData = (project[sectionKey] || {}) as Record<string, unknown>;
   const storeRows = (storeData.rows as TableRow[] || []);
   const [rows, setRows] = useState<TableRow[]>(storeRows);
+  const mockupRefs = useRef<Record<number, HTMLInputElement | null>>({});
+  const labelRefs = useRef<Record<number, HTMLInputElement | null>>({});
 
   useEffect(() => {
     setRows((storeData.rows as TableRow[] || []));
@@ -443,7 +447,7 @@ function GridTab({ project, updateProject, sectionKey, title }: {
   }, [project.id, sectionKey, updateProject, storeData]);
 
   const addRow = () => {
-    const newRows = [...rows, { step: '', mockup: '', label: '', offer: '' }];
+    const newRows = [...rows, { step: '', mockup: '', label: '', price: '', offer: '' }];
     setRows(newRows);
     persistRows(newRows);
   };
@@ -454,18 +458,67 @@ function GridTab({ project, updateProject, sectionKey, title }: {
     persistRows(newRows);
   };
 
+  const handleFileUpload = (rowIdx: number, col: 'mockup' | 'label', e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files?.length) return;
+    const file = e.target.files[0];
+    const reader = new FileReader();
+    reader.onload = () => {
+      updateCell(rowIdx, col, reader.result as string);
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  };
+
   const removeRow = (idx: number) => {
     const newRows = rows.filter((_, i) => i !== idx);
     setRows(newRows);
     persistRows(newRows);
   };
 
-  const COL_HEADERS = [
-    { key: 'step' as const, label: 'Step', color: 'bg-blue-600' },
-    { key: 'mockup' as const, label: 'Mockup', color: 'bg-indigo-600' },
-    { key: 'label' as const, label: 'Label', color: 'bg-violet-600' },
-    { key: 'offer' as const, label: 'Offer', color: 'bg-purple-600' },
+  const COL_HEADERS: { key: keyof TableRow; label: string; color: string; isFile?: boolean }[] = [
+    { key: 'step', label: 'Step', color: 'bg-blue-600' },
+    { key: 'mockup', label: 'Mockup', color: 'bg-indigo-600', isFile: true },
+    { key: 'label', label: 'Label', color: 'bg-violet-600', isFile: true },
+    { key: 'price', label: 'Price', color: 'bg-fuchsia-600' },
+    { key: 'offer', label: 'Offer', color: 'bg-purple-600' },
   ];
+
+  const renderCell = (row: TableRow, rowIdx: number, col: typeof COL_HEADERS[number]) => {
+    if (!col.isFile) {
+      return (
+        <input type="text" value={row[col.key] || ''} onChange={(e) => updateCell(rowIdx, col.key, e.target.value)}
+          placeholder={col.label}
+          className="w-full px-3 py-2.5 text-sm outline-none focus:bg-blue-50 transition-colors" />
+      );
+    }
+
+    const value = row[col.key] || '';
+    const isDataUrl = value.startsWith('data:');
+    const refMap = col.key === 'mockup' ? mockupRefs : labelRefs;
+
+    return (
+      <div className="flex items-center gap-1 px-2 py-1.5 min-h-[42px]">
+        <input
+          ref={(el) => { refMap.current[rowIdx] = el; }}
+          type="file" accept={IMAGE_ACCEPT} className="hidden"
+          onChange={(e) => handleFileUpload(rowIdx, col.key as 'mockup' | 'label', e)} />
+        {isDataUrl ? (
+          <div className="flex items-center gap-2 flex-1 min-w-0">
+            <img src={value} alt={col.label} className="w-8 h-8 object-contain rounded border border-gray-200 flex-shrink-0" />
+            <button onClick={() => updateCell(rowIdx, col.key, '')}
+              className="text-gray-400 hover:text-red-500 transition-colors flex-shrink-0">
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        ) : (
+          <button onClick={() => refMap.current[rowIdx]?.click()}
+            className="flex items-center gap-1 px-2 py-1 text-xs text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors w-full">
+            <Upload className="w-3 h-3" /> Upload
+          </button>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div>
@@ -478,7 +531,7 @@ function GridTab({ project, updateProject, sectionKey, title }: {
       </div>
 
       <div className="overflow-x-auto">
-        <table className="w-full border-collapse min-w-[600px]">
+        <table className="w-full border-collapse min-w-[700px]">
           <thead>
             <tr>
               {COL_HEADERS.map(col => (
@@ -492,7 +545,7 @@ function GridTab({ project, updateProject, sectionKey, title }: {
           <tbody>
             {rows.length === 0 ? (
               <tr>
-                <td colSpan={5} className="text-center py-8 text-sm text-gray-400 border border-gray-200">
+                <td colSpan={6} className="text-center py-8 text-sm text-gray-400 border border-gray-200">
                   No rows yet. Click &quot;Add Row&quot; to start.
                 </td>
               </tr>
@@ -501,9 +554,7 @@ function GridTab({ project, updateProject, sectionKey, title }: {
                 <tr key={rowIdx} className="group">
                   {COL_HEADERS.map(col => (
                     <td key={col.key} className="border border-gray-200 p-0">
-                      <input type="text" value={row[col.key]} onChange={(e) => updateCell(rowIdx, col.key, e.target.value)}
-                        placeholder={col.label}
-                        className="w-full px-3 py-2.5 text-sm outline-none focus:bg-blue-50 transition-colors" />
+                      {renderCell(row, rowIdx, col)}
                     </td>
                   ))}
                   <td className="border border-gray-200 p-0 text-center">
