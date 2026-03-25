@@ -157,6 +157,13 @@ const EDITOR_SCRIPT = `
     return!t||t==='html'||t==='head'||t==='style'||t==='link'||t==='meta'||t==='script'||t==='noscript';
   }
 
+  function selectEl(el){
+    if(sk(el))return;
+    if(sel)co(sel);sel=el;
+    el.style.outline=SS;el.style.outlineOffset='2px';
+    window.parent.postMessage({type:'element-selected',data:gi(el)},'*');
+  }
+
   function sendHtml(){
     var saved=null,so=null;
     if(sel){saved=sel.style.outline;so=sel.style.outlineOffset;sel.style.outline='';sel.style.outlineOffset='';}
@@ -175,6 +182,22 @@ const EDITOR_SCRIPT = `
     editing=false;editEl=null;sendHtml();
   }
 
+  // Block native image/link drag so click events fire normally
+  document.addEventListener('dragstart',function(e){e.preventDefault();},true);
+
+  // Disable draggable on all images and future images
+  document.querySelectorAll('img').forEach(function(img){img.setAttribute('draggable','false');});
+  new MutationObserver(function(muts){
+    muts.forEach(function(m){
+      m.addedNodes.forEach(function(n){
+        if(n.nodeType===1){
+          if(n.tagName==='IMG')n.setAttribute('draggable','false');
+          if(n.querySelectorAll)n.querySelectorAll('img').forEach(function(i){i.setAttribute('draggable','false');});
+        }
+      });
+    });
+  }).observe(document.body,{childList:true,subtree:true});
+
   document.addEventListener('mouseover',function(e){
     if(editing)return;var el=e.target;if(sk(el)||el===sel)return;
     if(hover&&hover!==sel)co(hover);hover=el;el.style.outline=HS;el.style.outlineOffset='1px';
@@ -182,6 +205,18 @@ const EDITOR_SCRIPT = `
 
   document.addEventListener('mouseout',function(e){
     var el=e.target;if(el!==sel)co(el);if(hover===el)hover=null;
+  },true);
+
+  // mousedown on images/svg/video/canvas as primary selection (click may not fire due to residual drag)
+  document.addEventListener('mousedown',function(e){
+    var el=e.target;
+    if(!el||!el.tagName)return;
+    var t=el.tagName.toLowerCase();
+    if(t==='img'||t==='svg'||t==='video'||t==='canvas'||t==='picture'){
+      e.preventDefault();e.stopPropagation();
+      if(editing&&editEl)finishEdit();
+      selectEl(el);
+    }
   },true);
 
   document.addEventListener('click',function(e){
@@ -300,6 +335,17 @@ const EDITOR_SCRIPT = `
     }
   });
 
+  // Remove transparent overlay divs that block click on images
+  document.querySelectorAll('div,span').forEach(function(el){
+    var cs=getComputedStyle(el);
+    if(cs.position==='absolute'||cs.position==='fixed'){
+      var bg=cs.backgroundColor;var op=parseFloat(cs.opacity);
+      if((bg==='transparent'||bg==='rgba(0, 0, 0, 0)'||op===0)&&el.children.length===0&&(el.textContent||'').trim()===''){
+        el.style.pointerEvents='none';
+      }
+    }
+  });
+
   window.parent.postMessage({type:'editor-ready'},'*');
 })();
 `;
@@ -309,21 +355,36 @@ const EDITOR_SCRIPT = `
 function prepareEditorHtml(html: string): string {
   let clean = html;
   clean = clean.replace(/<meta[^>]*content-security-policy[^>]*>/gi, '');
+  const editorCss = `<style data-editor-override>
+    * { pointer-events: auto !important; }
+    img, svg, video, canvas, picture { 
+      cursor: pointer !important; 
+      position: relative; 
+      z-index: 1; 
+      -webkit-user-drag: none !important; 
+      user-select: none !important;
+      -webkit-user-select: none !important;
+    }
+    img[draggable="false"] { -webkit-user-drag: none !important; }
+  </style>`;
   const script = `<script>${EDITOR_SCRIPT}<\/script>`;
-  if (clean.includes('</body>')) return clean.replace('</body>', `${script}</body>`);
-  if (clean.includes('</html>')) return clean.replace('</html>', `${script}</html>`);
-  return clean + script;
+  const inject = editorCss + script;
+  if (clean.includes('</body>')) return clean.replace('</body>', `${inject}</body>`);
+  if (clean.includes('</html>')) return clean.replace('</html>', `${inject}</html>`);
+  return clean + inject;
 }
 
 function stripEditorScript(html: string): string {
-  const idx = html.indexOf(EDITOR_SCRIPT.substring(0, 40));
-  if (idx === -1) return html;
-  const scriptStart = html.lastIndexOf('<script>', idx);
-  const scriptEnd = html.indexOf('</script>', idx);
+  let result = html;
+  result = result.replace(/<style data-editor-override>[\s\S]*?<\/style>/g, '');
+  const idx = result.indexOf(EDITOR_SCRIPT.substring(0, 40));
+  if (idx === -1) return result;
+  const scriptStart = result.lastIndexOf('<script>', idx);
+  const scriptEnd = result.indexOf('</script>', idx);
   if (scriptStart !== -1 && scriptEnd !== -1) {
-    return html.substring(0, scriptStart) + html.substring(scriptEnd + 9);
+    return result.substring(0, scriptStart) + result.substring(scriptEnd + 9);
   }
-  return html;
+  return result;
 }
 
 const FONT_SIZES = ['10px','12px','14px','16px','18px','20px','24px','28px','32px','36px','40px','48px','56px','64px','72px'];
