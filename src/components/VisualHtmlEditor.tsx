@@ -225,7 +225,8 @@ const EDITOR_SCRIPT = `
         window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');}break;
       case 'cmd-set-attr':if(sel){sel.setAttribute(m.name,m.value);sendHtml();
         window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');}break;
-      case 'cmd-set-text':if(sel){sel.textContent=m.value;sendHtml();}break;
+      case 'cmd-set-text':if(sel){sel.textContent=m.value;sendHtml();
+        window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');}break;
       case 'cmd-delete':if(sel){sel.remove();sel=null;sendHtml();
         window.parent.postMessage({type:'element-deselected'},'*');}break;
       case 'cmd-duplicate':if(sel&&sel.parentElement){
@@ -1423,8 +1424,9 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                 {el.textContent && el.isTextNode && (
                   <div className="p-3">
                     <PropLabel>Text</PropLabel>
-                    <textarea value={el.textContent} rows={3} className="prop-input font-normal"
-                      onChange={(e) => sendToIframe({ type: 'cmd-set-text', value: e.target.value })} />
+                    <textarea key={el.path} defaultValue={el.textContent} rows={3} className="prop-input font-normal"
+                      onBlur={(e) => sendToIframe({ type: 'cmd-set-text', value: e.target.value })}
+                      onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendToIframe({ type: 'cmd-set-text', value: (e.target as HTMLTextAreaElement).value }); (e.target as HTMLTextAreaElement).blur(); } }} />
                   </div>
                 )}
 
