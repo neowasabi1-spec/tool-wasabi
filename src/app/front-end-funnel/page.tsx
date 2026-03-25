@@ -577,17 +577,79 @@ export default function FrontEndFunnel() {
   const injectCtaLinks = useCallback((html: string, nextUrl: string): string => {
     if (!nextUrl || !html) return html;
     let result = html;
-    // Replace CTA links (buttons, anchors with common CTA patterns)
+
+    // 1) All <a> tags with CTA-like classes (href before or after class)
+    const ctaClassPattern = /btn|button|cta|buy|order|get-started|add-to-cart|checkout|shop-now|sign-up|subscribe|learn-more|try-now|start|join|claim|grab|reserve|enroll/i;
+
+    result = result.replace(/<a\b([^>]*)>/gi, (fullMatch, attrs: string) => {
+      const hasCtaClass = ctaClassPattern.test(attrs);
+      const isHash = /href=["']#/.test(attrs);
+      const isJavascript = /href=["']javascript:/i.test(attrs);
+      const isMailto = /href=["']mailto:/i.test(attrs);
+      const isTel = /href=["']tel:/i.test(attrs);
+      const isAnchor = /href=["']#[a-zA-Z]/.test(attrs);
+
+      if (isMailto || isTel) return fullMatch;
+
+      if (hasCtaClass || isHash || isJavascript) {
+        const newAttrs = attrs.replace(/href=["'][^"']*["']/i, `href="${nextUrl}"`);
+        if (newAttrs === attrs && !attrs.includes('href=')) {
+          return `<a ${attrs} href="${nextUrl}">`;
+        }
+        return `<a ${newAttrs}>`;
+      }
+
+      return fullMatch;
+    });
+
+    // 2) onclick="location.href=..." or window.location patterns
     result = result.replace(
-      /(<a\b[^>]*class="[^"]*(?:btn|button|cta|buy|order|get-started|add-to-cart|checkout)[^"]*"[^>]*href=")[^"]*(")/gi,
-      `$1${nextUrl}$2`,
+      /(onclick=["'][^"']*(?:location\.href|window\.location)\s*=\s*['"])([^"']*)(['"][^"']*["'])/gi,
+      `$1${nextUrl}$3`,
     );
-    result = result.replace(
-      /(<a\b[^>]*href=")#[^"]*("[^>]*class="[^"]*(?:btn|button|cta|buy|order|get-started|add-to-cart|checkout)[^"]*")/gi,
-      `$1${nextUrl}$2`,
-    );
+
     return result;
   }, []);
+
+  const [linkingInProgress, setLinkingInProgress] = useState(false);
+
+  const applyLinksToAllSteps = useCallback(async () => {
+    if (!funnelDomain || Object.keys(stepSlugs).length === 0) {
+      alert('Set domain and generate step names first.');
+      return;
+    }
+    setLinkingInProgress(true);
+    let updated = 0;
+    try {
+      for (let i = 0; i < funnelPages.length; i++) {
+        const page = funnelPages[i];
+        const nextUrl = getNextStepUrl(page.id);
+        if (!nextUrl) continue;
+
+        const html = page.swipedData?.html || page.clonedData?.html;
+        if (!html) continue;
+
+        const linkedHtml = injectCtaLinks(html, nextUrl);
+        if (linkedHtml === html) continue;
+
+        if (page.swipedData?.html) {
+          await updateFunnelPage(page.id, {
+            swipedData: { ...page.swipedData, html: linkedHtml },
+          });
+        } else if (page.clonedData?.html) {
+          await updateFunnelPage(page.id, {
+            clonedData: { ...page.clonedData, html: linkedHtml },
+          });
+        }
+        updated++;
+      }
+      alert(`CTA links updated in ${updated} step(s). Last step has no next link.`);
+    } catch (err) {
+      alert(`Error: ${err instanceof Error ? err.message : 'Failed'}`);
+    } finally {
+      setLinkingInProgress(false);
+    }
+  }, [funnelDomain, stepSlugs, funnelPages, getNextStepUrl, injectCtaLinks, updateFunnelPage]);
 
   const handlePublish = useCallback(async (pageId: string, platform: 'repli' | 'checkoutchamp') => {
     const page = funnelPages.find(p => p.id === pageId);
@@ -2285,9 +2347,19 @@ export default function FrontEndFunnel() {
               Auto-Name Steps
             </button>
             {funnelDomain && Object.keys(stepSlugs).length > 0 && (
-              <div className="text-xs text-gray-500">
-                {Object.keys(stepSlugs).length} steps mapped
-              </div>
+              <>
+                <button
+                  onClick={applyLinksToAllSteps}
+                  disabled={linkingInProgress}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-green-100 text-green-700 rounded-lg hover:bg-green-200 transition-colors disabled:opacity-50"
+                >
+                  {linkingInProgress ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Rocket className="w-3.5 h-3.5" />}
+                  Apply Links to CTA
+                </button>
+                <div className="text-xs text-gray-500">
+                  {Object.keys(stepSlugs).length} steps mapped
+                </div>
+              </>
             )}
           </div>
           {funnelDomain && Object.keys(stepSlugs).length > 0 && (
