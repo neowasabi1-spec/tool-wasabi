@@ -97,6 +97,12 @@ const EDITOR_SCRIPT = `
         padding:cs.padding,margin:cs.margin,borderRadius:cs.borderRadius,
         border:cs.border,display:cs.display,opacity:cs.opacity,
         backgroundImage:cs.backgroundImage,
+        width:cs.width,height:cs.height,
+        maxWidth:cs.maxWidth,minWidth:cs.minWidth,
+        maxHeight:cs.maxHeight,minHeight:cs.minHeight,
+        overflow:cs.overflow,position:cs.position,
+        gap:cs.gap,flexDirection:cs.flexDirection,
+        justifyContent:cs.justifyContent,alignItems:cs.alignItems,
       }
     };
   }
@@ -1610,6 +1616,72 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                   </div>
                 </div>
 
+                {/* Dimensions */}
+                <div className="p-3">
+                  <PropLabel>Dimensions</PropLabel>
+                  <div className="grid grid-cols-2 gap-2 mt-1">
+                    <div>
+                      <label className="text-[10px] text-slate-400">Width</label>
+                      <input type="text" defaultValue={el.styles.width} className="prop-input" placeholder="auto"
+                        onBlur={(e) => setStyle('width', e.target.value)} />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-slate-400">Height</label>
+                      <input type="text" defaultValue={el.styles.height} className="prop-input" placeholder="auto"
+                        onBlur={(e) => setStyle('height', e.target.value)} />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-slate-400">Max Width</label>
+                      <input type="text" defaultValue={el.styles.maxWidth} className="prop-input" placeholder="none"
+                        onBlur={(e) => setStyle('maxWidth', e.target.value)} />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-slate-400">Min Height</label>
+                      <input type="text" defaultValue={el.styles.minHeight} className="prop-input" placeholder="0"
+                        onBlur={(e) => setStyle('minHeight', e.target.value)} />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-slate-400">Display</label>
+                      <select defaultValue={el.styles.display} className="prop-select"
+                        onChange={(e) => setStyle('display', e.target.value)}>
+                        <option value="block">block</option>
+                        <option value="flex">flex</option>
+                        <option value="grid">grid</option>
+                        <option value="inline">inline</option>
+                        <option value="inline-block">inline-block</option>
+                        <option value="inline-flex">inline-flex</option>
+                        <option value="none">none</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-slate-400">Overflow</label>
+                      <select defaultValue={el.styles.overflow} className="prop-select"
+                        onChange={(e) => setStyle('overflow', e.target.value)}>
+                        <option value="visible">visible</option>
+                        <option value="hidden">hidden</option>
+                        <option value="scroll">scroll</option>
+                        <option value="auto">auto</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-slate-400">Position</label>
+                      <select defaultValue={el.styles.position} className="prop-select"
+                        onChange={(e) => setStyle('position', e.target.value)}>
+                        <option value="static">static</option>
+                        <option value="relative">relative</option>
+                        <option value="absolute">absolute</option>
+                        <option value="fixed">fixed</option>
+                        <option value="sticky">sticky</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-slate-400">Gap</label>
+                      <input type="text" defaultValue={el.styles.gap} className="prop-input" placeholder="0"
+                        onBlur={(e) => setStyle('gap', e.target.value)} />
+                    </div>
+                  </div>
+                </div>
+
                 {/* Spacing */}
                 <div className="p-3">
                   <PropLabel>Spacing</PropLabel>
@@ -1630,10 +1702,18 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                         onBlur={(e) => setStyle('borderRadius', e.target.value)} />
                     </div>
                     <div>
+                      <label className="text-[10px] text-slate-400">Border</label>
+                      <input type="text" defaultValue={el.styles.border} className="prop-input" placeholder="none"
+                        onBlur={(e) => setStyle('border', e.target.value)} />
+                    </div>
+                    <div className="col-span-2">
                       <label className="text-[10px] text-slate-400">Opacity</label>
-                      <input type="range" min="0" max="1" step="0.05" defaultValue={el.styles.opacity}
-                        className="w-full mt-1"
-                        onChange={(e) => setStyle('opacity', e.target.value)} />
+                      <div className="flex items-center gap-2">
+                        <input type="range" min="0" max="1" step="0.05" defaultValue={el.styles.opacity}
+                          className="flex-1"
+                          onChange={(e) => setStyle('opacity', e.target.value)} />
+                        <span className="text-[10px] text-slate-500 w-8 text-right">{el.styles.opacity}</span>
+                      </div>
                     </div>
                   </div>
                 </div>
