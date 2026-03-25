@@ -14,6 +14,49 @@ import {
   BookOpen, ArrowDownToLine, Eye as EyeIcon,
 } from 'lucide-react';
 import { SavedSection, SECTION_TYPE_OPTIONS, OUTPUT_STACK_OPTIONS, type OutputStack } from '@/types';
+import { createClient } from '@supabase/supabase-js';
+
+/* ── Direct browser → Supabase Storage upload (bypasses Vercel 4.5MB body limit) ── */
+const ALLOWED_UPLOAD_TYPES: Record<string, string> = {
+  'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif',
+  'image/webp': 'webp', 'image/svg+xml': 'svg', 'image/avif': 'avif',
+  'video/mp4': 'mp4', 'video/webm': 'webm', 'video/ogg': 'ogv',
+  'video/quicktime': 'mov',
+};
+const UPLOAD_MAX_SIZE = 20 * 1024 * 1024; // 20MB
+
+async function directSupabaseUpload(file: File): Promise<string> {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!url || !key) throw new Error('Supabase not configured');
+
+  if (!ALLOWED_UPLOAD_TYPES[file.type]) {
+    throw new Error(`Unsupported file type: ${file.type}`);
+  }
+  if (file.size > UPLOAD_MAX_SIZE) {
+    throw new Error(`File too large (max ${UPLOAD_MAX_SIZE / 1024 / 1024}MB)`);
+  }
+
+  const sb = createClient(url, key);
+  const ts = Date.now();
+  const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_').substring(0, 80);
+  const path = `editor-uploads/${ts}_${safeName}`;
+
+  const { error } = await sb.storage.from('media').upload(path, file, {
+    contentType: file.type,
+    upsert: false,
+  });
+
+  if (error) {
+    if (error.message?.includes('Bucket not found')) {
+      throw new Error('Storage bucket "media" not found. Create it in Supabase → Storage.');
+    }
+    throw new Error(error.message);
+  }
+
+  const { data } = sb.storage.from('media').getPublicUrl(path);
+  return data.publicUrl;
+}
 
 /* ─────────── Types ─────────── */
 
@@ -730,18 +773,10 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     setUploading(true);
     setUploadError('');
     try {
-      const fd = new FormData();
-      fd.append('file', file);
-      const res = await fetch('/api/upload-media', { method: 'POST', body: fd });
-      const text = await res.text();
-      let data: { url?: string; error?: string };
-      try { data = JSON.parse(text); } catch { throw new Error(text.slice(0, 200) || `Server error ${res.status}`); }
-      if (!res.ok) throw new Error(data.error || 'Upload failed');
-      if (data.url) {
-        setAttr('src', data.url);
-        if (target === 'image' && file.name) {
-          setAttr('alt', file.name.replace(/\.[^.]+$/, '').replace(/[_-]/g, ' '));
-        }
+      const publicUrl = await directSupabaseUpload(file);
+      setAttr('src', publicUrl);
+      if (target === 'image' && file.name) {
+        setAttr('alt', file.name.replace(/\.[^.]+$/, '').replace(/[_-]/g, ' '));
       }
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : 'Upload failed');
@@ -858,27 +893,19 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     if (elAiUploading) return;
     setElAiUploading(true);
     try {
-      const fd = new FormData();
-      fd.append('file', file);
-      const res = await fetch('/api/upload-media', { method: 'POST', body: fd });
-      const text = await res.text();
-      let data: { url?: string; error?: string };
-      try { data = JSON.parse(text); } catch { throw new Error(text.slice(0, 200) || `Server error ${res.status}`); }
-      if (!res.ok) throw new Error(data.error || 'Upload failed');
-      if (data.url) {
-        if (selectedElement?.tagName === 'img') {
-          setAttr('src', data.url);
-          setAttr('alt', file.name.replace(/\.[^.]+$/, '').replace(/[_-]/g, ' '));
-          setElAiMessages(prev => [...prev,
-            { role: 'user', content: `📎 Uploaded: ${file.name}` },
-            { role: 'assistant', content: `Done! Image replaced with uploaded file.` },
-          ]);
-        } else {
-          setElAiInput(prev => prev + (prev ? ' ' : '') + data.url);
-          setElAiMessages(prev => [...prev,
-            { role: 'user', content: `📎 Uploaded: ${file.name} → ${data.url}` },
-          ]);
-        }
+      const publicUrl = await directSupabaseUpload(file);
+      if (selectedElement?.tagName === 'img') {
+        setAttr('src', publicUrl);
+        setAttr('alt', file.name.replace(/\.[^.]+$/, '').replace(/[_-]/g, ' '));
+        setElAiMessages(prev => [...prev,
+          { role: 'user', content: `📎 Uploaded: ${file.name}` },
+          { role: 'assistant', content: `Done! Image replaced with uploaded file.` },
+        ]);
+      } else {
+        setElAiInput(prev => prev + (prev ? ' ' : '') + publicUrl);
+        setElAiMessages(prev => [...prev,
+          { role: 'user', content: `📎 Uploaded: ${file.name} → ${publicUrl}` },
+        ]);
       }
     } catch (err) {
       setElAiMessages(prev => [...prev, { role: 'assistant', content: `Upload error: ${err instanceof Error ? err.message : 'Failed'}` }]);
