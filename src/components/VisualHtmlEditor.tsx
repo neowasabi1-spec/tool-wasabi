@@ -227,6 +227,8 @@ const EDITOR_SCRIPT = `
         window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');}break;
       case 'cmd-set-text':if(sel){sel.textContent=m.value;sendHtml();
         window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');}break;
+      case 'cmd-set-inner-html':if(sel){sel.innerHTML=m.value;sendHtml();
+        window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');}break;
       case 'cmd-delete':if(sel){sel.remove();sel=null;sendHtml();
         window.parent.postMessage({type:'element-deselected'},'*');}break;
       case 'cmd-duplicate':if(sel&&sel.parentElement){
@@ -361,6 +363,14 @@ const TAG_LABELS: Record<string, string> = {
   video: 'Video', figure: 'Figure', figcaption: 'Caption', main: 'Main Content',
   article: 'Article', aside: 'Sidebar', blockquote: 'Blockquote',
 };
+
+const TEXT_EDITABLE_TAGS = new Set([
+  'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+  'span', 'a', 'button', 'li', 'label',
+  'td', 'th', 'figcaption', 'blockquote', 'cite',
+  'em', 'strong', 'small', 'b', 'i', 'u', 'mark',
+  'del', 'ins', 'dt', 'dd', 'caption', 'summary', 'legend',
+]);
 
 /* ─────────── Component ─────────── */
 
@@ -1427,6 +1437,18 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                     <textarea key={el.path} defaultValue={el.textContent} rows={3} className="prop-input font-normal"
                       onBlur={(e) => sendToIframe({ type: 'cmd-set-text', value: e.target.value })}
                       onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendToIframe({ type: 'cmd-set-text', value: (e.target as HTMLTextAreaElement).value }); (e.target as HTMLTextAreaElement).blur(); } }} />
+                  </div>
+                )}
+
+                {/* Rich Content (elements with children like advertorial paragraphs, headings, etc.) */}
+                {!el.isTextNode && el.textContent && TEXT_EDITABLE_TAGS.has(el.tagName) && (
+                  <div className="p-3">
+                    <PropLabel icon={Type}>Content</PropLabel>
+                    <p className="text-[10px] text-slate-400 mb-1">Edit inner HTML — formatting preserved</p>
+                    <textarea key={`html-${el.path}`} defaultValue={el.innerHTML} rows={4} className="prop-input font-mono text-[11px]"
+                      onBlur={(e) => sendToIframe({ type: 'cmd-set-inner-html', value: e.target.value })}
+                      onKeyDown={(e) => { if (e.key === 'Enter' && e.metaKey) { e.preventDefault(); sendToIframe({ type: 'cmd-set-inner-html', value: (e.target as HTMLTextAreaElement).value }); (e.target as HTMLTextAreaElement).blur(); } }} />
+                    <p className="text-[10px] text-slate-400 mt-1">Cmd+Enter to apply</p>
                   </div>
                 )}
 
