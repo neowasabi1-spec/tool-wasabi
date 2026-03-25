@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import {
   X, Download, Copy, Undo2, Redo2, Eye, Code, Paintbrush,
   Bold, Italic, Underline, AlignLeft, AlignCenter, AlignRight, AlignJustify,
@@ -451,7 +451,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   const undoStack = useRef<string[]>([initialHtml]);
   const redoStack = useRef<string[]>([]);
   const undoIdx = useRef(0);
-  const reloadKey = useRef(0);
+  const [iframeVersion, setIframeVersion] = useState(0);
 
   /* ── Mobile viewport ── */
   const [editorViewport, setEditorViewport] = useState<'desktop' | 'mobile'>('desktop');
@@ -588,7 +588,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   const handleUndo = useCallback(() => {
     if (undoIdx.current <= 0) return;
     undoIdx.current--;
-    reloadKey.current++;
+    setIframeVersion(v => v + 1);
     const html = undoStack.current[undoIdx.current];
     setCurrentHtml(html);
     setCodeHtml(html);
@@ -597,7 +597,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   const handleRedo = useCallback(() => {
     if (undoIdx.current >= undoStack.current.length - 1) return;
     undoIdx.current++;
-    reloadKey.current++;
+    setIframeVersion(v => v + 1);
     const html = undoStack.current[undoIdx.current];
     setCurrentHtml(html);
     setCodeHtml(html);
@@ -761,7 +761,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   const switchMode = useCallback((newMode: EditorMode) => {
     if (newMode === mode) return;
     if (mode === 'code' && newMode === 'visual') {
-      reloadKey.current++;
+      setIframeVersion(v => v + 1);
       if (editorViewport === 'mobile' && mobileHtml) {
         setMobileHtml(mobileCodeHtml);
       } else {
@@ -915,7 +915,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                 break;
               case 'result':
                 if (data.html) {
-                  reloadKey.current++;
+                  setIframeVersion(v => v + 1);
                   if (editorViewport === 'mobile' && mobileHtml) {
                     setAiEditHistory(prev => [...prev, mobileHtml]);
                     setMobileHtml(data.html);
@@ -950,7 +950,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
 
   const handleAiEditUndo = useCallback(() => {
     if (aiEditHistory.length === 0) return;
-    reloadKey.current++;
+    setIframeVersion(v => v + 1);
     const prev = aiEditHistory[aiEditHistory.length - 1];
     setAiEditHistory(h => h.slice(0, -1));
     if (editorViewport === 'mobile' && mobileHtml) {
@@ -1038,7 +1038,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
       if (data.scope === 'page') {
         const { action, target, code } = data;
         if (!target || !code) throw new Error('Invalid page-level response');
-        reloadKey.current++;
+        setIframeVersion(v => v + 1);
         pushUndo(currentHtml);
         let newHtml = currentHtml;
         const targetIdx = newHtml.toLowerCase().indexOf(target.toLowerCase());
@@ -1094,7 +1094,10 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   }, [mode]);
 
   const activeHtml = editorViewport === 'mobile' && mobileHtml ? mobileHtml : currentHtml;
-  const editorSrcDoc = prepareEditorHtml(activeHtml);
+
+  // Only recompute srcDoc when we explicitly need to reload the iframe (undo/redo/AI edit/viewport switch)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const stableSrcDoc = useMemo(() => prepareEditorHtml(activeHtml), [iframeVersion, editorViewport]);
   const el = selectedElement;
 
   return (
@@ -1336,8 +1339,8 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
             }`}>
               <iframe
                 ref={iframeRef}
-                key={`${editorViewport}-${reloadKey.current}`}
-                srcDoc={editorSrcDoc}
+                key={`${editorViewport}-${iframeVersion}`}
+                srcDoc={stableSrcDoc}
                 className={`h-full border-0 transition-all duration-300 ${
                   editorViewport === 'mobile'
                     ? 'w-[390px] border-x-2 border-gray-300 shadow-2xl'
