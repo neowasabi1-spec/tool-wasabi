@@ -18,71 +18,87 @@ const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZ
 
 // ── OpenClaw Gateway (WebSocket) ──
 const GATEWAY_URL = 'ws://127.0.0.1:18789';
-const GATEWAY_TOKEN = '';  // leave empty if auth mode is "none"
+const GATEWAY_TOKEN = '';
 
 // ── Tuning ──
-const POLL_INTERVAL   = 3000;      // 3 s
-const RECONNECT_DELAY = 5000;      // 5 s
-const MESSAGE_TIMEOUT = 600000;    // 10 min (agent tasks can be slow)
+const POLL_INTERVAL   = 3000;
+const RECONNECT_DELAY = 5000;
+const MESSAGE_TIMEOUT = 600000;
+const PING_INTERVAL   = 15000;
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 let ws = null;
 let isConnected = false;
 let reconnecting = false;
+let pingTimer = null;
 
-// Map of pending request-id → { resolve, reject, timer, chunks[] }
 const pending = new Map();
 
-// ────────────────────────── WebSocket helpers ──────────────────────────
-
 function connectGateway() {
-  if (reconnecting) return;
+  if (reconnecting) return Promise.resolve();
   reconnecting = true;
 
   return new Promise((resolve, reject) => {
-    const url = GATEWAY_TOKEN
-      ? `${GATEWAY_URL}?token=${GATEWAY_TOKEN}`
-      : GATEWAY_URL;
+    const url = GATEWAY_TOKEN ? `${GATEWAY_URL}?token=${GATEWAY_TOKEN}` : GATEWAY_URL;
 
-    ws = new WebSocket(url);
+    ws = new WebSocket(url, {
+      perMessageDeflate: false,
+      headers: { 'Origin': 'http://localhost' },
+      handshakeTimeout: 10000,
+    });
 
     ws.on('open', () => {
       isConnected = true;
       reconnecting = false;
-      console.log(`[${ts()}] ✓ Connected to Gateway ${GATEWAY_URL}`);
+      console.log(`[${ts()}] Connected to Gateway`);
+
+      if (pingTimer) clearInterval(pingTimer);
+      pingTimer = setInterval(() => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.ping();
+        }
+      }, PING_INTERVAL);
+
       resolve();
     });
+
+    ws.on('pong', () => {});
 
     ws.on('message', (raw) => {
       let msg;
       try { msg = JSON.parse(raw.toString()); } catch { return; }
+
+      // Log all incoming messages for debugging
+      console.log(`[${ts()}] << ${msg.type || 'unknown'} id=${msg.id || 'none'}`);
 
       const id = msg.id;
       if (!id || !pending.has(id)) return;
 
       const entry = pending.get(id);
 
-      if (msg.type === 'response') {
-        // Final response
+      if (msg.type === 'response' || msg.type === 'result') {
         clearTimeout(entry.timer);
         pending.delete(id);
-        const text = msg.payload?.text || entry.chunks.join('');
+        const text = msg.payload?.text || msg.result?.text || msg.data?.text || entry.chunks.join('') || JSON.stringify(msg.payload || msg.result || msg.data || '');
         entry.resolve(text);
-      } else if (msg.type === 'chunk' || msg.type === 'partial') {
-        // Streaming chunk — accumulate
-        if (msg.payload?.text) entry.chunks.push(msg.payload.text);
+      } else if (msg.type === 'chunk' || msg.type === 'partial' || msg.type === 'stream') {
+        if (msg.payload?.text || msg.data?.text) {
+          entry.chunks.push(msg.payload?.text || msg.data?.text);
+        }
       } else if (msg.type === 'error') {
         clearTimeout(entry.timer);
         pending.delete(id);
-        entry.reject(new Error(msg.payload?.message || 'Gateway error'));
+        entry.reject(new Error(msg.payload?.message || msg.error?.message || msg.message || 'Gateway error'));
       }
     });
 
-    ws.on('close', () => {
+    ws.on('close', (code, reason) => {
       isConnected = false;
       reconnecting = false;
-      console.log(`[${ts()}] Gateway disconnected — reconnecting in ${RECONNECT_DELAY / 1000}s …`);
+      if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
+      const reasonStr = reason ? reason.toString() : 'no reason';
+      console.log(`[${ts()}] Disconnected (code=${code}, reason=${reasonStr}). Reconnecting in ${RECONNECT_DELAY / 1000}s...`);
       rejectAllPending('Gateway connection closed');
       setTimeout(() => connectGateway().catch(() => {}), RECONNECT_DELAY);
     });
@@ -98,7 +114,7 @@ function connectGateway() {
 }
 
 function rejectAllPending(reason) {
-  for (const [id, entry] of pending) {
+  for (const [, entry] of pending) {
     clearTimeout(entry.timer);
     entry.reject(new Error(reason));
   }
@@ -120,7 +136,7 @@ function sendChat(text, context = {}) {
 
     pending.set(id, { resolve, reject, timer, chunks: [] });
 
-    ws.send(JSON.stringify({
+    const msg = {
       type: 'chat',
       id,
       payload: {
@@ -128,14 +144,15 @@ function sendChat(text, context = {}) {
         context,
         options: {},
       },
-    }));
+    };
+
+    console.log(`[${ts()}] >> chat id=${id} text="${text.substring(0, 50)}..."`);
+    ws.send(JSON.stringify(msg));
   });
 }
 
-// ────────────────────────── Message processing ──────────────────────────
-
 async function processMessage(msg) {
-  console.log(`[${ts()}] Processing: "${msg.user_message.substring(0, 60)}…"`);
+  console.log(`[${ts()}] Processing: "${msg.user_message.substring(0, 60)}"`);
 
   await supabase
     .from('openclaw_messages')
@@ -145,7 +162,7 @@ async function processMessage(msg) {
   try {
     const systemPrompt =
       msg.system_prompt ||
-      'You are OpenClaw, an AI assistant. Be concise and helpful. Respond in the same language as the user. You have full access to all your skills including browser navigation, URL analysis, and any other tool available to you. Use them freely when the user requests it.';
+      'You are OpenClaw, an AI assistant. Be concise and helpful. Respond in the same language as the user.';
 
     let history = [];
     try {
@@ -154,7 +171,7 @@ async function processMessage(msg) {
           ? JSON.parse(msg.chat_history)
           : msg.chat_history;
       }
-    } catch { /* ignore parse errors */ }
+    } catch {}
 
     const context = {
       systemPrompt,
@@ -172,9 +189,9 @@ async function processMessage(msg) {
       })
       .eq('id', msg.id);
 
-    console.log(`[${ts()}] ✓ Done: "${response.substring(0, 80)}…"`);
+    console.log(`[${ts()}] Done: "${response.substring(0, 80)}"`);
   } catch (err) {
-    console.error(`[${ts()}] ✗ Error: ${err.message}`);
+    console.error(`[${ts()}] Error: ${err.message}`);
     await supabase
       .from('openclaw_messages')
       .update({
@@ -185,8 +202,6 @@ async function processMessage(msg) {
       .eq('id', msg.id);
   }
 }
-
-// ────────────────────────── Polling ──────────────────────────
 
 async function poll() {
   if (!isConnected) return;
@@ -211,15 +226,13 @@ async function cleanup() {
   await supabase.from('openclaw_messages').delete().lt('created_at', cutoff);
 }
 
-// ────────────────────────── Main ──────────────────────────
-
 function ts() { return new Date().toLocaleTimeString(); }
 
 async function main() {
   console.log('========================================');
-  console.log('  OpenClaw WebSocket Worker');
-  console.log(`  Gateway : ${GATEWAY_URL}`);
-  console.log(`  Poll    : every ${POLL_INTERVAL / 1000}s`);
+  console.log('  OpenClaw WebSocket Worker v2');
+  console.log('  Gateway : ' + GATEWAY_URL);
+  console.log('  Poll    : every ' + (POLL_INTERVAL / 1000) + 's');
   console.log('========================================');
 
   try {
@@ -228,8 +241,8 @@ async function main() {
     setInterval(cleanup, 300000);
     poll();
   } catch (err) {
-    console.error(`Failed to connect: ${err.message}`);
-    console.log(`Retrying in ${RECONNECT_DELAY / 1000}s …`);
+    console.error('Failed to connect: ' + err.message);
+    console.log('Retrying in ' + (RECONNECT_DELAY / 1000) + 's...');
     setTimeout(main, RECONNECT_DELAY);
   }
 }
