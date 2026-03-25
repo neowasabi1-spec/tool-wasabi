@@ -578,31 +578,38 @@ export default function FrontEndFunnel() {
     if (!nextUrl || !html) return html;
     let result = html;
 
-    // 1) All <a> tags with CTA-like classes (href before or after class)
-    const ctaClassPattern = /btn|button|cta|buy|order|get-started|add-to-cart|checkout|shop-now|sign-up|subscribe|learn-more|try-now|start|join|claim|grab|reserve|enroll/i;
+    const ctaClassPattern = /btn|button|cta|buy|order|get-started|add-to-cart|checkout|shop-now|sign-up|subscribe|learn-more|try-now|start|join|claim|grab|reserve|enroll|action|primary|hero-link|main-link/i;
+    const ctaTextPattern = /buy|order|get|shop|add to cart|checkout|subscribe|sign up|claim|grab|start|try|reserve|enroll|acquist|compra|ordina|scopri|ottieni|inizia|iscriviti|prenota/i;
 
-    result = result.replace(/<a\b([^>]*)>/gi, (fullMatch, attrs: string) => {
-      const hasCtaClass = ctaClassPattern.test(attrs);
-      const isHash = /href=["']#/.test(attrs);
-      const isJavascript = /href=["']javascript:/i.test(attrs);
+    // Match every <a ...>TEXT</a> block to check both attributes and inner text
+    result = result.replace(/<a\b([^>]*)>([\s\S]*?)<\/a>/gi, (fullMatch, attrs: string, innerContent: string) => {
       const isMailto = /href=["']mailto:/i.test(attrs);
       const isTel = /href=["']tel:/i.test(attrs);
-      const isAnchor = /href=["']#[a-zA-Z]/.test(attrs);
-
       if (isMailto || isTel) return fullMatch;
 
-      if (hasCtaClass || isHash || isJavascript) {
-        const newAttrs = attrs.replace(/href=["'][^"']*["']/i, `href="${nextUrl}"`);
-        if (newAttrs === attrs && !attrs.includes('href=')) {
-          return `<a ${attrs} href="${nextUrl}">`;
+      const hrefMatch = attrs.match(/href=["']([^"']*)["']/i);
+      const currentHref = hrefMatch ? hrefMatch[1] : '';
+
+      const isEmpty = !currentHref || currentHref === '#' || currentHref === '#!' || currentHref.startsWith('javascript:');
+      const hasCtaClass = ctaClassPattern.test(attrs);
+      const plainText = innerContent.replace(/<[^>]*>/g, '').trim();
+      const hasCtaText = ctaTextPattern.test(plainText);
+      const hasCtaStyle = /background|bg-|btn|button|padding.*:.*\d+px/i.test(attrs);
+
+      if (isEmpty || hasCtaClass || hasCtaText || hasCtaStyle) {
+        let newAttrs: string;
+        if (hrefMatch) {
+          newAttrs = attrs.replace(/href=["'][^"']*["']/i, `href="${nextUrl}"`);
+        } else {
+          newAttrs = `${attrs} href="${nextUrl}"`;
         }
-        return `<a ${newAttrs}>`;
+        return `<a ${newAttrs}>${innerContent}</a>`;
       }
 
       return fullMatch;
     });
 
-    // 2) onclick="location.href=..." or window.location patterns
+    // onclick patterns
     result = result.replace(
       /(onclick=["'][^"']*(?:location\.href|window\.location)\s*=\s*['"])([^"']*)(['"][^"']*["'])/gi,
       `$1${nextUrl}$3`,
