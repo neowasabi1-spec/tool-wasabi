@@ -4,6 +4,35 @@ import { getOpenClawConfig } from '@/lib/openclaw-config';
 export const maxDuration = 120;
 export const dynamic = 'force-dynamic';
 
+async function callAnthropicFallback(systemPrompt: string, userPrompt: string): Promise<string> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) throw new Error('No ANTHROPIC_API_KEY configured for fallback');
+
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 16000,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: userPrompt }],
+    }),
+    signal: AbortSignal.timeout(90000),
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Anthropic ${res.status}: ${err.substring(0, 300)}`);
+  }
+
+  const data = await res.json();
+  return data.content?.[0]?.text || '';
+}
+
 interface ExtractedText {
   original: string;
   tag: string;
@@ -147,13 +176,13 @@ RULES:
 
     const userPrompt = `Rewrite these ${texts.length} texts for the product "${productName}":\n\n${JSON.stringify(textsForAi, null, 2)}`;
 
-    // Call OpenClaw via OpenAI-compatible API
+    // Try OpenClaw first, fallback to Anthropic
     const apiUrl = `${config.baseUrl}/v1/chat/completions`;
-    console.log(`[quiz-rewrite] Calling OpenClaw: ${apiUrl} model=${config.model} texts=${texts.length}`);
+    console.log(`[quiz-rewrite] Trying OpenClaw: ${apiUrl} model=${config.model} texts=${texts.length}`);
 
     let aiText = '';
+    let usedProvider = 'openclaw';
 
-    // Try non-streaming first (more reliable), fallback to streaming
     try {
       const res = await fetch(apiUrl, {
         method: 'POST',
@@ -171,7 +200,7 @@ RULES:
           max_tokens: 16000,
           stream: false,
         }),
-        signal: AbortSignal.timeout(90000),
+        signal: AbortSignal.timeout(60000),
       });
 
       if (!res.ok) {
@@ -185,7 +214,6 @@ RULES:
         const data = await res.json();
         aiText = data.choices?.[0]?.message?.content || '';
       } else {
-        // Server returned SSE even with stream:false — collect it
         const reader = res.body?.getReader();
         const decoder = new TextDecoder();
         if (reader) {
@@ -205,17 +233,22 @@ RULES:
           }
         }
       }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Unknown';
-      console.error(`[quiz-rewrite] OpenClaw error: ${msg}`);
-      return NextResponse.json({ error: `OpenClaw connection failed: ${msg}` }, { status: 502 });
-    }
 
-    if (!aiText.trim()) {
-      return NextResponse.json({ error: 'OpenClaw returned empty response. Check if the bot is running.' }, { status: 500 });
+      if (!aiText.trim()) throw new Error('Empty response from OpenClaw');
+      console.log(`[quiz-rewrite] OpenClaw OK, response: ${aiText.length} chars`);
+    } catch (openclawErr) {
+      console.warn(`[quiz-rewrite] OpenClaw failed: ${openclawErr instanceof Error ? openclawErr.message : 'Unknown'}. Falling back to Anthropic...`);
+      usedProvider = 'anthropic';
+      try {
+        aiText = await callAnthropicFallback(systemPrompt, userPrompt);
+        console.log(`[quiz-rewrite] Anthropic fallback OK, response: ${aiText.length} chars`);
+      } catch (anthropicErr) {
+        console.error(`[quiz-rewrite] Anthropic fallback also failed: ${anthropicErr instanceof Error ? anthropicErr.message : 'Unknown'}`);
+        return NextResponse.json({
+          error: `Both OpenClaw and Anthropic failed. OpenClaw: ${openclawErr instanceof Error ? openclawErr.message : 'Unknown'}. Anthropic: ${anthropicErr instanceof Error ? anthropicErr.message : 'Unknown'}`,
+        }, { status: 502 });
+      }
     }
-
-    console.log(`[quiz-rewrite] OpenClaw response length: ${aiText.length}`);
 
     const cleaned = cleanAiOutput(aiText);
 
@@ -247,6 +280,7 @@ RULES:
       replacements,
       originalLength: html.length,
       newLength: resultHtml.length,
+      provider: usedProvider,
     });
   } catch (error) {
     console.error('Quiz rewrite error:', error);
