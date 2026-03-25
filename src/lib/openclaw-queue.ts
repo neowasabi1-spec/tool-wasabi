@@ -1,11 +1,10 @@
-import { supabase } from './supabase';
-
-const POLL_INTERVAL = 1500;
-const MAX_WAIT = 120_000; // 2 minutes
+const OPENCLAW_BASE_URL = process.env.OPENCLAW_BASE_URL || '';
+const OPENCLAW_API_KEY = process.env.OPENCLAW_API_KEY || '';
+const OPENCLAW_MODEL = process.env.OPENCLAW_MODEL || 'openclaw:neo';
 
 /**
- * Insert a message into the openclaw_messages queue and wait for
- * the VPS worker to process it. Returns the bot's response text.
+ * Call OpenClaw directly via HTTP (OpenAI-compatible API).
+ * Drop-in replacement for the old Supabase queue approach.
  */
 export async function queueAndWait(
   userMessage: string,
@@ -16,48 +15,53 @@ export async function queueAndWait(
     timeoutMs?: number;
   } = {},
 ): Promise<string> {
-  const { data, error } = await supabase
-    .from('openclaw_messages')
-    .insert({
-      user_message: userMessage,
-      system_prompt: opts.systemPrompt || null,
-      section: opts.section || 'API',
-      chat_history: opts.chatHistory ? JSON.stringify(opts.chatHistory) : null,
-      status: 'pending',
-    })
-    .select('id')
-    .single();
-
-  if (error || !data) {
-    throw new Error(`Queue insert failed: ${error?.message ?? 'no data'}`);
+  if (!OPENCLAW_BASE_URL) {
+    throw new Error('OPENCLAW_BASE_URL not configured');
   }
 
-  const msgId = data.id;
-  const deadline = Date.now() + (opts.timeoutMs ?? MAX_WAIT);
+  const messages: { role: string; content: string }[] = [];
 
-  while (Date.now() < deadline) {
-    await sleep(POLL_INTERVAL);
+  if (opts.systemPrompt) {
+    messages.push({ role: 'system', content: opts.systemPrompt });
+  }
 
-    const { data: row, error: pollErr } = await supabase
-      .from('openclaw_messages')
-      .select('status, response, error_message')
-      .eq('id', msgId)
-      .single();
-
-    if (pollErr) continue;
-
-    if (row?.status === 'completed' && row.response) {
-      return row.response;
-    }
-
-    if (row?.status === 'error') {
-      throw new Error(row.error_message || 'OpenClaw processing error');
+  if (opts.chatHistory && opts.chatHistory.length > 0) {
+    for (const h of opts.chatHistory) {
+      messages.push({ role: h.role, content: h.content });
     }
   }
 
-  throw new Error('OpenClaw response timeout');
-}
+  messages.push({ role: 'user', content: userMessage });
 
-function sleep(ms: number) {
-  return new Promise((r) => setTimeout(r, ms));
+  const url = `${OPENCLAW_BASE_URL.replace(/\/$/, '')}/v1/chat/completions`;
+  const timeout = opts.timeoutMs ?? 120_000;
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${OPENCLAW_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: OPENCLAW_MODEL,
+      messages,
+      temperature: 0.7,
+      max_tokens: 4096,
+    }),
+    signal: AbortSignal.timeout(timeout),
+  });
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`OpenClaw HTTP ${res.status}: ${body.substring(0, 300)}`);
+  }
+
+  const data = await res.json();
+  const content = data.choices?.[0]?.message?.content || '';
+
+  if (!content) {
+    throw new Error('OpenClaw returned empty response');
+  }
+
+  return content;
 }
