@@ -212,7 +212,7 @@ const EDITOR_SCRIPT = `
     var el=e.target;
     if(!el||!el.tagName)return;
     var t=el.tagName.toLowerCase();
-    if(t==='img'||t==='svg'||t==='video'||t==='canvas'||t==='picture'){
+    if(t==='img'||t==='svg'||t==='video'||t==='canvas'||t==='picture'||t==='iframe'||t==='object'||t==='embed'){
       e.preventDefault();e.stopPropagation();
       if(editing&&editEl)finishEdit();
       selectEl(el);
@@ -346,6 +346,12 @@ const EDITOR_SCRIPT = `
     }
   });
 
+  // Disable pointer-events on iframes/embeds so clicks hit parent containers
+  document.querySelectorAll('iframe,object,embed').forEach(function(el){
+    el.style.pointerEvents='none';
+    el.style.userSelect='none';
+  });
+
   window.parent.postMessage({type:'editor-ready'},'*');
 })();
 `;
@@ -366,6 +372,10 @@ function prepareEditorHtml(html: string): string {
       -webkit-user-select: none !important;
     }
     img[draggable="false"] { -webkit-user-drag: none !important; }
+    iframe, object, embed { 
+      pointer-events: none !important; 
+      user-select: none !important;
+    }
   </style>`;
   const script = `<script>${EDITOR_SCRIPT}<\/script>`;
   const inject = editorCss + script;
