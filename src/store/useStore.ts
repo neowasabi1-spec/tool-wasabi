@@ -42,17 +42,8 @@ interface ProjectAsset {
   addedAt: string;
 }
 
-interface ProjectMarketResearch {
-  targetAudience?: string;
-  competitors?: string;
-  positioning?: string;
-  notes?: string;
-}
-
-interface ProjectSelectedProduct {
-  productId?: string;
-  manualName: string;
-  manualDescription?: string;
+interface ProjectSectionData {
+  [key: string]: unknown;
 }
 
 interface AppProject {
@@ -62,13 +53,14 @@ interface AppProject {
   status: string;
   tags: string[];
   notes?: string;
+  domain: string;
   logo: ProjectAsset[];
-  mockup: ProjectAsset[];
-  label: ProjectAsset[];
-  marketResearch: ProjectMarketResearch;
-  selectedProducts: ProjectSelectedProduct[];
-  flowSteps: string[][];
+  marketResearch: ProjectSectionData;
   brief: string;
+  frontEnd: ProjectSectionData;
+  backEnd: ProjectSectionData;
+  complianceFunnel: ProjectSectionData;
+  funnel: ProjectSectionData;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -192,13 +184,14 @@ function dbProjectToApp(p: Project): AppProject {
     status: p.status,
     tags: p.tags,
     notes: p.notes || undefined,
+    domain: p.domain || '',
     logo: (p.logo as ProjectAsset[]) || [],
-    mockup: (p.mockup as ProjectAsset[]) || [],
-    label: (p.label as ProjectAsset[]) || [],
-    marketResearch: (p.market_research as ProjectMarketResearch) || {},
-    selectedProducts: (p.selected_products as ProjectSelectedProduct[]) || [],
-    flowSteps: (p.flow_steps as string[][]) || [[], [], [], [], [], []],
+    marketResearch: (p.market_research as ProjectSectionData) || {},
     brief: p.brief || '',
+    frontEnd: (p.front_end as ProjectSectionData) || {},
+    backEnd: (p.back_end as ProjectSectionData) || {},
+    complianceFunnel: (p.compliance_funnel as ProjectSectionData) || {},
+    funnel: (p.funnel as ProjectSectionData) || {},
     createdAt: new Date(p.created_at),
     updatedAt: new Date(p.updated_at),
   };
@@ -505,13 +498,14 @@ export const useStore = create<Store>()((set, get) => ({
         status: project.status,
         tags: project.tags,
         notes: project.notes,
+        domain: project.domain,
         logo: project.logo as unknown as import('@/types/database').Json,
-        mockup: project.mockup as unknown as import('@/types/database').Json,
-        label: project.label as unknown as import('@/types/database').Json,
         market_research: project.marketResearch as unknown as import('@/types/database').Json,
-        selected_products: project.selectedProducts as unknown as import('@/types/database').Json,
-        flow_steps: project.flowSteps as unknown as import('@/types/database').Json,
         brief: project.brief,
+        front_end: project.frontEnd as unknown as import('@/types/database').Json,
+        back_end: project.backEnd as unknown as import('@/types/database').Json,
+        compliance_funnel: project.complianceFunnel as unknown as import('@/types/database').Json,
+        funnel: project.funnel as unknown as import('@/types/database').Json,
       });
       set((state) => ({
         projects: [dbProjectToApp(created), ...state.projects],
@@ -530,13 +524,14 @@ export const useStore = create<Store>()((set, get) => ({
       if (project.status !== undefined) updates.status = project.status;
       if (project.tags !== undefined) updates.tags = project.tags;
       if (project.notes !== undefined) updates.notes = project.notes;
+      if (project.domain !== undefined) updates.domain = project.domain;
       if (project.logo !== undefined) updates.logo = project.logo as unknown as import('@/types/database').Json;
-      if (project.mockup !== undefined) updates.mockup = project.mockup as unknown as import('@/types/database').Json;
-      if (project.label !== undefined) updates.label = project.label as unknown as import('@/types/database').Json;
       if (project.marketResearch !== undefined) updates.market_research = project.marketResearch as unknown as import('@/types/database').Json;
-      if (project.selectedProducts !== undefined) updates.selected_products = project.selectedProducts as unknown as import('@/types/database').Json;
-      if (project.flowSteps !== undefined) updates.flow_steps = project.flowSteps as unknown as import('@/types/database').Json;
       if (project.brief !== undefined) updates.brief = project.brief;
+      if (project.frontEnd !== undefined) updates.front_end = project.frontEnd as unknown as import('@/types/database').Json;
+      if (project.backEnd !== undefined) updates.back_end = project.backEnd as unknown as import('@/types/database').Json;
+      if (project.complianceFunnel !== undefined) updates.compliance_funnel = project.complianceFunnel as unknown as import('@/types/database').Json;
+      if (project.funnel !== undefined) updates.funnel = project.funnel as unknown as import('@/types/database').Json;
       const updated = await supabaseOps.updateProject(id, updates);
       set((state) => ({
         projects: state.projects.map((p) =>
