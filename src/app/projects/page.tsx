@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import Header from '@/components/Header';
 import { useStore } from '@/store/useStore';
 import {
@@ -79,10 +79,14 @@ export default function ProjectsPage() {
     const file = e.target.files[0];
     const project = projects.find(p => p.id === uploadProjectId);
     if (!project) return;
-    const url = URL.createObjectURL(file);
-    const newAsset: AssetItem = { url, name: file.name, addedAt: new Date().toISOString() };
-    const current = (project.logo || []) as AssetItem[];
-    updateProject(uploadProjectId, { logo: [...current, newAsset] });
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result as string;
+      const newAsset: AssetItem = { url: dataUrl, name: file.name, addedAt: new Date().toISOString() };
+      const current = (project.logo || []) as AssetItem[];
+      updateProject(uploadProjectId, { logo: [...current, newAsset] });
+    };
+    reader.readAsDataURL(file);
     e.target.value = '';
     setUploadProjectId(null);
   }, [uploadProjectId, projects, updateProject]);
@@ -273,7 +277,7 @@ function OverviewTab({ project, updateProject, onUploadLogo, onRemoveLogo }: {
         <label className="text-sm font-medium text-gray-700 mb-1 flex items-center gap-1.5">
           <Globe className="w-3.5 h-3.5 text-gray-500" /> Domain
         </label>
-        <input type="url" value={project.domain} onChange={(e) => updateProject(project.id, { domain: e.target.value })}
+        <input type="text" value={project.domain || ''} onChange={(e) => updateProject(project.id, { domain: e.target.value })}
           placeholder="https://example.com"
           className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
       </div>
@@ -357,17 +361,19 @@ function RichBoxTab({ project, updateProject, sectionKey, title, isBrief }: {
   const handleUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files?.length) return;
     const file = e.target.files[0];
-    const url = URL.createObjectURL(file);
-    const newAttach: AssetItem = { url, name: file.name, addedAt: new Date().toISOString() };
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result as string;
+      const newAttach: AssetItem = { url: dataUrl, name: file.name, addedAt: new Date().toISOString() };
 
-    if (isBrief) {
-      const current = (project.marketResearch || {}) as Record<string, unknown>;
-      const existing = (current.briefAttachments as AssetItem[] || []);
-      updateProject(project.id, { marketResearch: { ...current, briefAttachments: [...existing, newAttach] } });
-    } else {
-      const current = (project[sectionKey as keyof ProjectType] || {}) as Record<string, unknown>;
-      const existing = (current.attachments as AssetItem[] || []);
-      updateProject(project.id, { [sectionKey]: { ...current, attachments: [...existing, newAttach] } });
+      if (isBrief) {
+        const current = (project.marketResearch || {}) as Record<string, unknown>;
+        const existing = (current.briefAttachments as AssetItem[] || []);
+        updateProject(project.id, { marketResearch: { ...current, briefAttachments: [...existing, newAttach] } });
+      } else {
+        const current = (project[sectionKey as keyof ProjectType] || {}) as Record<string, unknown>;
+        const existing = (current.attachments as AssetItem[] || []);
+        updateProject(project.id, { [sectionKey]: { ...current, attachments: [...existing, newAttach] } });
     }
     e.target.value = '';
   };
@@ -422,24 +428,34 @@ function GridTab({ project, updateProject, sectionKey, title }: {
   project: ProjectType; updateProject: UpdateFn;
   sectionKey: 'frontEnd' | 'backEnd' | 'complianceFunnel' | 'funnel'; title: string;
 }) {
-  const data = (project[sectionKey] || {}) as Record<string, unknown>;
-  const rows = (data.rows as TableRow[] || []);
+  const storeData = (project[sectionKey] || {}) as Record<string, unknown>;
+  const storeRows = (storeData.rows as TableRow[] || []);
+  const [rows, setRows] = useState<TableRow[]>(storeRows);
 
-  const updateRows = (newRows: TableRow[]) => {
-    updateProject(project.id, { [sectionKey]: { ...data, rows: newRows } });
-  };
+  useEffect(() => {
+    setRows((storeData.rows as TableRow[] || []));
+  }, [project.id, sectionKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const persistRows = useCallback((newRows: TableRow[]) => {
+    updateProject(project.id, { [sectionKey]: { ...storeData, rows: newRows } } as Record<string, unknown>);
+  }, [project.id, sectionKey, updateProject, storeData]);
 
   const addRow = () => {
-    updateRows([...rows, { step: '', mockup: '', label: '', offer: '' }]);
+    const newRows = [...rows, { step: '', mockup: '', label: '', offer: '' }];
+    setRows(newRows);
+    persistRows(newRows);
   };
 
   const updateCell = (rowIdx: number, col: keyof TableRow, value: string) => {
-    const updated = rows.map((r, i) => i === rowIdx ? { ...r, [col]: value } : r);
-    updateRows(updated);
+    const newRows = rows.map((r, i) => i === rowIdx ? { ...r, [col]: value } : r);
+    setRows(newRows);
+    persistRows(newRows);
   };
 
   const removeRow = (idx: number) => {
-    updateRows(rows.filter((_, i) => i !== idx));
+    const newRows = rows.filter((_, i) => i !== idx);
+    setRows(newRows);
+    persistRows(newRows);
   };
 
   const COL_HEADERS = [

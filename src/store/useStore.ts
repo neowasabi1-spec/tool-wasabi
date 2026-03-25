@@ -517,6 +517,11 @@ export const useStore = create<Store>()((set, get) => ({
   },
 
   updateProject: async (id, project) => {
+    set((state) => ({
+      projects: state.projects.map((p) =>
+        p.id === id ? { ...p, ...project, updatedAt: new Date() } : p
+      ),
+    }));
     try {
       const updates: import('@/types/database').ProjectUpdate = {};
       if (project.name !== undefined) updates.name = project.name;
@@ -540,7 +545,6 @@ export const useStore = create<Store>()((set, get) => ({
       }));
     } catch (error) {
       console.error('Error updating project:', error);
-      throw error;
     }
   },
 
