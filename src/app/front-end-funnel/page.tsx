@@ -479,6 +479,8 @@ export default function FrontEndFunnel() {
     mobileHtml: string;
     iframeSrc: string;
     metadata: { method: string; length: number; duration: number } | null;
+    pageId?: string;
+    sourceType?: 'cloned' | 'swiped';
   }>({ isOpen: false, title: '', html: '', mobileHtml: '', iframeSrc: '', metadata: null });
 
   const [showVisualEditor, setShowVisualEditor] = useState(false);
@@ -1473,6 +1475,8 @@ export default function FrontEndFunnel() {
           mobileHtml: clonedMobileHtml,
           iframeSrc: '',
           metadata: { method: 'identical', length: data.finalSize || data.content?.length || 0, duration: 0 },
+          pageId,
+          sourceType: 'cloned',
         });
 
       } else if (mode === 'rewrite') {
@@ -1543,6 +1547,8 @@ export default function FrontEndFunnel() {
           mobileHtml: '',
           iframeSrc: '',
           metadata: { method: 'openclaw-rewrite', length: rewrittenHtml.length, duration: 0 },
+          pageId,
+          sourceType: 'swiped',
         });
 
       } else if (mode === 'translate') {
@@ -1595,6 +1601,8 @@ export default function FrontEndFunnel() {
           mobileHtml: '',
           iframeSrc: '',
           metadata: { method: 'translate', length: data.finalHtmlSize || 0, duration: 0 },
+          pageId,
+          sourceType: 'swiped',
         });
       }
     } catch (error) {
@@ -2658,6 +2666,8 @@ export default function FrontEndFunnel() {
                                       length: page.swipedData.newLength || page.swipedData.html?.length || 0,
                                       duration: page.swipedData.processingTime || 0,
                                     },
+                                    pageId: page.id,
+                                    sourceType: 'swiped',
                                   });
                                 } else if (page.clonedData) {
                                   setPreviewViewport('desktop');
@@ -2673,6 +2683,8 @@ export default function FrontEndFunnel() {
                                       length: page.clonedData!.content_length || page.clonedData!.html?.length || 0,
                                       duration: page.clonedData!.duration_seconds || 0,
                                     },
+                                    pageId: page.id,
+                                    sourceType: 'cloned',
                                   });
                                 }
                               }}
@@ -4172,6 +4184,27 @@ export default function FrontEndFunnel() {
           pageTitle={htmlPreviewModal.title || 'Edit Landing'}
           onSave={(html, mobileHtml) => {
             setHtmlPreviewModal(prev => ({ ...prev, html, mobileHtml: mobileHtml || prev.mobileHtml }));
+
+            if (htmlPreviewModal.pageId) {
+              const pid = htmlPreviewModal.pageId;
+              const page = (funnelPages || []).find(p => p.id === pid);
+              if (page) {
+                if (htmlPreviewModal.sourceType === 'swiped' && page.swipedData) {
+                  updateFunnelPage(pid, {
+                    swipedData: { ...page.swipedData, html, newLength: html.length },
+                  });
+                } else if (page.clonedData) {
+                  updateFunnelPage(pid, {
+                    clonedData: {
+                      ...page.clonedData,
+                      html,
+                      mobileHtml: mobileHtml || page.clonedData.mobileHtml,
+                      content_length: html.length,
+                    },
+                  });
+                }
+              }
+            }
           }}
           onClose={() => setShowVisualEditor(false)}
         />
