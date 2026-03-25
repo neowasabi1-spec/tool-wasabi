@@ -733,7 +733,9 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
       const fd = new FormData();
       fd.append('file', file);
       const res = await fetch('/api/upload-media', { method: 'POST', body: fd });
-      const data = await res.json();
+      const text = await res.text();
+      let data: { url?: string; error?: string };
+      try { data = JSON.parse(text); } catch { throw new Error(text.slice(0, 200) || `Server error ${res.status}`); }
       if (!res.ok) throw new Error(data.error || 'Upload failed');
       if (data.url) {
         setAttr('src', data.url);
@@ -859,7 +861,9 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
       const fd = new FormData();
       fd.append('file', file);
       const res = await fetch('/api/upload-media', { method: 'POST', body: fd });
-      const data = await res.json();
+      const text = await res.text();
+      let data: { url?: string; error?: string };
+      try { data = JSON.parse(text); } catch { throw new Error(text.slice(0, 200) || `Server error ${res.status}`); }
       if (!res.ok) throw new Error(data.error || 'Upload failed');
       if (data.url) {
         if (selectedElement?.tagName === 'img') {
@@ -1417,7 +1421,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                       onKeyDown={(e) => { if (e.key === 'Enter') setAttr('src', (e.target as HTMLInputElement).value); }} />
 
                     {/* Upload Image */}
-                    <input ref={imgUploadRef} type="file" accept="image/*" className="hidden"
+                    <input ref={imgUploadRef} type="file" accept="image/*,.gif,.webp,.avif,.svg" className="hidden"
                       onChange={(e) => { const f = e.target.files?.[0]; if (f) handleMediaUpload(f, 'image'); e.target.value = ''; }} />
                     <button
                       onClick={() => imgUploadRef.current?.click()}
@@ -1794,7 +1798,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
               </div>
 
               <div className="p-2 border-t border-slate-100 flex gap-1 items-end">
-                <input ref={elAiFileRef} type="file" accept="image/*,video/*" className="hidden"
+                <input ref={elAiFileRef} type="file" accept="image/*,.gif,.webp,.avif,video/*" className="hidden"
                   onChange={(e) => { const f = e.target.files?.[0]; if (f) handleElAiImageUpload(f); e.target.value = ''; }} />
                 <button
                   onClick={() => elAiFileRef.current?.click()}

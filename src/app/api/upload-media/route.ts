@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
 export const dynamic = 'force-dynamic';
+export const maxDuration = 60;
 
 const MAX_SIZE = 20 * 1024 * 1024; // 20MB
 
@@ -20,7 +21,16 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Supabase not configured' }, { status: 500 });
     }
 
-    const formData = await request.formData();
+    let formData: FormData;
+    try {
+      formData = await request.formData();
+    } catch (parseErr) {
+      return NextResponse.json(
+        { error: `Failed to parse upload (file may be too large): ${parseErr instanceof Error ? parseErr.message : 'Unknown'}` },
+        { status: 413 },
+      );
+    }
+
     const file = formData.get('file') as File | null;
     if (!file) {
       return NextResponse.json({ error: 'No file provided' }, { status: 400 });
