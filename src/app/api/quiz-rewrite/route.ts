@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import Anthropic from '@anthropic-ai/sdk';
+import { getOpenClawConfig } from '@/lib/openclaw-config';
 
 export const maxDuration = 120;
 export const dynamic = 'force-dynamic';
@@ -91,6 +91,11 @@ function cleanAiOutput(text: string): string {
   let cleaned = text.trim();
   cleaned = cleaned.replace(/^```(?:json)?\s*\n?/i, '');
   cleaned = cleaned.replace(/\n?```\s*$/i, '');
+  const jsonStart = cleaned.indexOf('[');
+  const jsonEnd = cleaned.lastIndexOf(']');
+  if (jsonStart >= 0 && jsonEnd > jsonStart) {
+    cleaned = cleaned.substring(jsonStart, jsonEnd + 1);
+  }
   return cleaned.trim();
 }
 
@@ -119,7 +124,10 @@ export async function POST(request: NextRequest) {
 
     const textsForAi = texts.map((t, i) => ({ id: i, text: t.original, tag: t.tag }));
 
-    const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    const config = await getOpenClawConfig();
+    if (!config.apiKey) {
+      return NextResponse.json({ error: 'OpenClaw API key not configured' }, { status: 500 });
+    }
 
     const systemPrompt = `You are a direct-response copywriter. You rewrite marketing texts for a specific product while keeping the EXACT SAME tone, style, length, and persuasion structure.
 
@@ -137,18 +145,59 @@ RULES:
 7. Return a JSON array of objects: [{"id": 0, "rewritten": "new text"}, ...]
 8. Return ONLY the JSON array, nothing else.`;
 
-    const userPrompt = `Rewrite these ${texts.length} texts for the product "${productName}":
+    const userPrompt = `Rewrite these ${texts.length} texts for the product "${productName}":\n\n${JSON.stringify(textsForAi, null, 2)}`;
 
-${JSON.stringify(textsForAi, null, 2)}`;
-
-    const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 16000,
-      system: systemPrompt,
-      messages: [{ role: 'user', content: userPrompt }],
+    // Call OpenClaw via OpenAI-compatible API (SSE streaming, collected into full response)
+    const res = await fetch(`${config.baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${config.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: config.model,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+        temperature: 0.6,
+        max_tokens: 16000,
+        stream: true,
+      }),
     });
 
-    const aiText = response.content[0].type === 'text' ? response.content[0].text : '';
+    if (!res.ok) {
+      const errText = await res.text();
+      return NextResponse.json({ error: `OpenClaw error: ${res.status} - ${errText}` }, { status: 502 });
+    }
+
+    // Collect SSE stream into full text
+    const reader = res.body?.getReader();
+    const decoder = new TextDecoder();
+    let aiText = '';
+
+    if (reader) {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value, { stream: true });
+        const lines = chunk.split('\n');
+        for (const line of lines) {
+          if (line.startsWith('data: ') && line !== 'data: [DONE]') {
+            try {
+              const json = JSON.parse(line.slice(6));
+              const delta = json.choices?.[0]?.delta?.content;
+              if (delta) aiText += delta;
+            } catch { /* skip malformed */ }
+          }
+        }
+      }
+    }
+
+    if (!aiText.trim()) {
+      return NextResponse.json({ error: 'OpenClaw returned empty response' }, { status: 500 });
+    }
+
     const cleaned = cleanAiOutput(aiText);
 
     let rewrites: Array<{ id: number; rewritten: string }>;
@@ -184,7 +233,7 @@ ${JSON.stringify(textsForAi, null, 2)}`;
     console.error('Quiz rewrite error:', error);
     return NextResponse.json(
       { error: error instanceof Error ? error.message : 'Unknown error' },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }
