@@ -9,7 +9,7 @@ import {
   Type, Save, MousePointer, Heading1, Heading2, Heading3,
   CheckCircle, Strikethrough, List, ListOrdered, Minus,
   Sparkles, Loader2, Wand2, ImagePlus, Bot, Zap, RotateCcw, Send,
-  Smartphone, Monitor,
+  Smartphone, Monitor, Upload, Film,
   BookmarkPlus, Library, Tag, Clock, FileCode, Search,
   BookOpen, ArrowDownToLine, Eye as EyeIcon,
 } from 'lucide-react';
@@ -713,6 +713,35 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     }
   }, [aiPrompt, aiSize, aiStyle, aiGenerating, setAttr]);
 
+  /* ── Media Upload ── */
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState('');
+  const imgUploadRef = useRef<HTMLInputElement>(null);
+  const vidUploadRef = useRef<HTMLInputElement>(null);
+
+  const handleMediaUpload = useCallback(async (file: File, target: 'image' | 'video') => {
+    if (uploading) return;
+    setUploading(true);
+    setUploadError('');
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const res = await fetch('/api/upload-media', { method: 'POST', body: fd });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Upload failed');
+      if (data.url) {
+        setAttr('src', data.url);
+        if (target === 'image' && file.name) {
+          setAttr('alt', file.name.replace(/\.[^.]+$/, '').replace(/[_-]/g, ' '));
+        }
+      }
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : 'Upload failed');
+    } finally {
+      setUploading(false);
+    }
+  }, [uploading, setAttr]);
+
   /* ── AI Code Edit Handler ── */
   const handleAiEdit = useCallback(async () => {
     if (!aiEditPrompt.trim() || aiEditRunning) return;
@@ -1335,17 +1364,55 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                     <input type="url" defaultValue={el.src} className="prop-input"
                       onBlur={(e) => setAttr('src', e.target.value)}
                       onKeyDown={(e) => { if (e.key === 'Enter') setAttr('src', (e.target as HTMLInputElement).value); }} />
+
+                    {/* Upload Image */}
+                    <input ref={imgUploadRef} type="file" accept="image/*" className="hidden"
+                      onChange={(e) => { const f = e.target.files?.[0]; if (f) handleMediaUpload(f, 'image'); e.target.value = ''; }} />
+                    <button
+                      onClick={() => imgUploadRef.current?.click()}
+                      disabled={uploading}
+                      className="mt-1.5 w-full flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-lg bg-blue-50 border border-blue-200 hover:border-blue-300 hover:bg-blue-100 transition-all text-xs font-medium text-blue-700 disabled:opacity-50"
+                    >
+                      {uploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
+                      {uploading ? 'Uploading...' : 'Upload Image'}
+                    </button>
+                    {uploadError && <p className="text-[10px] text-red-500 mt-1">{uploadError}</p>}
+
                     <label className="text-[10px] text-slate-500 mt-2 mb-0.5 block">Alt text</label>
                     <input type="text" defaultValue={el.alt} className="prop-input"
                       onBlur={(e) => setAttr('alt', e.target.value)} />
 
-                    {/* AI Image preview */}
+                    {/* Image preview */}
                     {el.src && (
                       <div className="mt-2 rounded-lg overflow-hidden border border-slate-200 bg-slate-50">
                         {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img src={el.src} alt={el.alt || 'preview'} className="w-full h-auto max-h-32 object-contain" />
                       </div>
                     )}
+                  </div>
+                )}
+
+                {/* Video */}
+                {(el.tagName === 'video' || el.tagName === 'source') && (
+                  <div className="p-3">
+                    <PropLabel icon={Film}>Video</PropLabel>
+                    <label className="text-[10px] text-slate-500 mb-0.5 block">Video URL</label>
+                    <input type="url" defaultValue={el.src} className="prop-input"
+                      onBlur={(e) => setAttr('src', e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') setAttr('src', (e.target as HTMLInputElement).value); }} />
+
+                    {/* Upload Video */}
+                    <input ref={vidUploadRef} type="file" accept="video/*" className="hidden"
+                      onChange={(e) => { const f = e.target.files?.[0]; if (f) handleMediaUpload(f, 'video'); e.target.value = ''; }} />
+                    <button
+                      onClick={() => vidUploadRef.current?.click()}
+                      disabled={uploading}
+                      className="mt-1.5 w-full flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-lg bg-purple-50 border border-purple-200 hover:border-purple-300 hover:bg-purple-100 transition-all text-xs font-medium text-purple-700 disabled:opacity-50"
+                    >
+                      {uploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
+                      {uploading ? 'Uploading...' : 'Upload Video'}
+                    </button>
+                    {uploadError && <p className="text-[10px] text-red-500 mt-1">{uploadError}</p>}
                   </div>
                 )}
 
