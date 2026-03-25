@@ -209,21 +209,21 @@ export default function ProjectsPage() {
                   </div>
 
                   {isExpanded && (
-                    <div className="border-t">
-                      <div className="flex items-center gap-0.5 px-4 py-2 bg-gray-50 border-b overflow-x-auto">
+                    <div className="border-t flex min-h-[400px]">
+                      <div className="w-48 shrink-0 bg-gray-50 border-r py-2 px-2 space-y-0.5">
                         {PROJECT_TABS.map(tab => {
                           const TabIcon = tab.icon;
                           return (
                             <button key={tab.key} onClick={() => setActiveTab(tab.key)}
-                              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-colors ${
+                              className={`flex items-center gap-2 w-full px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
                                 activeTab === tab.key ? 'bg-blue-600 text-white shadow-sm' : 'text-gray-600 hover:bg-white hover:shadow-sm'
                               }`}>
-                              <TabIcon className="w-3.5 h-3.5" />{tab.label}
+                              <TabIcon className="w-4 h-4 shrink-0" />{tab.label}
                             </button>
                           );
                         })}
                       </div>
-                      <div className="p-5">
+                      <div className="flex-1 p-5 overflow-auto">
                         {activeTab === 'overview' && (
                           <OverviewTab project={project} updateProject={updateProject}
                             onUploadLogo={() => { setUploadProjectId(project.id); logoInputRef.current?.click(); }}
