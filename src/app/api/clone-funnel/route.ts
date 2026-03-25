@@ -535,6 +535,17 @@ async function cloneWithBrowser(url: string, viewport: 'desktop' | 'mobile' = 'd
           const firstChild = head.querySelector('meta[charset]')?.nextSibling || head.firstChild;
           if (firstChild) { head.insertBefore(styleEl, firstChild); } else { head.appendChild(styleEl); }
         }
+        // Inject no-referrer so CDNs with hotlink protection serve images
+        const refMeta = document.createElement('meta');
+        refMeta.setAttribute('name', 'referrer');
+        refMeta.setAttribute('content', 'no-referrer');
+        head.insertBefore(refMeta, head.firstChild);
+
+        // Permissive CSP so all external resources load in iframe preview
+        const cspMeta = document.createElement('meta');
+        cspMeta.setAttribute('http-equiv', 'Content-Security-Policy');
+        cspMeta.setAttribute('content', "default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; img-src * data: blob:; media-src * data: blob:; font-src * data:; style-src * 'unsafe-inline';");
+        head.insertBefore(cspMeta, refMeta.nextSibling);
       }
 
       const finalHtml = '<!DOCTYPE html>\n' + docClone.outerHTML;

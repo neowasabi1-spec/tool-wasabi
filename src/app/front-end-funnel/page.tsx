@@ -279,6 +279,17 @@ function sanitizeClonedHtml(html: string, originalUrl: string, options?: { keepS
       return `<iframe${attrs} allow="${iframeAllow}">`;
     });
 
+    // 10. Inject no-referrer meta tag so CDNs with hotlink protection serve images
+    // Also inject permissive CSP so external images/fonts/styles load in iframe preview
+    const metaTags = `<meta name="referrer" content="no-referrer">\n<meta http-equiv="Content-Security-Policy" content="default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; img-src * data: blob:; media-src * data: blob:; font-src * data:; style-src * 'unsafe-inline';">`;
+    if (clean.includes('<head>')) {
+      clean = clean.replace('<head>', `<head>\n${metaTags}`);
+    } else if (clean.includes('<head ')) {
+      clean = clean.replace(/<head\s[^>]*>/, `$&\n${metaTags}`);
+    } else {
+      clean = `${metaTags}\n${clean}`;
+    }
+
     return clean;
   } catch {
     return html;
