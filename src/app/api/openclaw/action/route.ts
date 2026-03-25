@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getOpenClawConfig } from '@/lib/openclaw-config';
+import { queueAndWait } from '@/lib/openclaw-queue';
 
 interface ToolAction {
   action: string;
@@ -131,25 +131,13 @@ RULES:
 - Extract all params (URLs, names, IDs, text) from the message
 - Respond ONLY with JSON: { "action": "name", "params": { ... } }`;
 
-async function detectAction(msg: string, section: string, cfg: { baseUrl: string; apiKey: string; model: string }): Promise<ToolAction> {
+async function detectAction(msg: string, section: string): Promise<ToolAction> {
   try {
-    const res = await fetch(`${cfg.baseUrl}/v1/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${cfg.apiKey}` },
-      body: JSON.stringify({
-        model: cfg.model,
-        messages: [
-          { role: 'system', content: ACTION_DETECTION_PROMPT + `\n\nUser is in "${section}" section.` },
-          { role: 'user', content: msg },
-        ],
-        temperature: 0.1,
-        max_tokens: 300,
-      }),
-      signal: AbortSignal.timeout(15000),
+    const content = await queueAndWait(msg, {
+      systemPrompt: ACTION_DETECTION_PROMPT + `\n\nUser is in "${section}" section.`,
+      section,
+      timeoutMs: 30_000,
     });
-    if (!res.ok) return noAction();
-    const data = await res.json();
-    const content = data.choices?.[0]?.message?.content || '';
     const m = content.match(/\{[\s\S]*\}/);
     if (!m) return noAction();
     return JSON.parse(m[0]);
@@ -525,18 +513,14 @@ export async function POST(req: NextRequest) {
   const { message, section, conversationHistory } = await req.json();
   if (!message) return NextResponse.json({ error: 'Missing message' }, { status: 400 });
 
-  const cfg = await getOpenClawConfig();
-  if (!cfg.apiKey) return NextResponse.json({ error: 'OpenClaw not configured' }, { status: 500 });
-
   const origin = req.nextUrl.origin;
 
-  // Quick-detect: skip full LLM action detection for simple chat messages
   const looksLikeAction = /\b(crea|create|analyz|analis|clone|clona|deploy|import|export|delete|elimin|naviga|browse|compli|genera)\b/i.test(message);
 
   let detected: ToolAction = { action: 'no_action', params: {} };
   if (looksLikeAction) {
     try {
-      detected = await detectAction(message, section, cfg);
+      detected = await detectAction(message, section);
     } catch {
       detected = { action: 'no_action', params: {} };
     }
@@ -555,16 +539,15 @@ Be concise, helpful. Same language as user (Italian/English).`;
   history.push({ role: 'user', content: message });
 
   try {
-    const r = await fetch(`${cfg.baseUrl}/v1/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${cfg.apiKey}` },
-      body: JSON.stringify({ model: cfg.model, messages: [{ role: 'system', content: sys }, ...history], temperature: 0.7, max_tokens: 2048 }),
-      signal: AbortSignal.timeout(55000),
+    const content = await queueAndWait(message, {
+      systemPrompt: sys,
+      section,
+      chatHistory: history,
+      timeoutMs: 110_000,
     });
-    if (!r.ok) { const e = await r.text(); return NextResponse.json({ error: `OpenClaw: ${r.status} - ${e}` }, { status: r.status }); }
-    const data = await r.json();
+
     return NextResponse.json({
-      content: data.choices?.[0]?.message?.content || '',
+      content,
       actionExecuted: detected.action !== 'no_action' ? detected.action : null,
       actionSuccess: actionResult?.success ?? null,
       actionData: actionResult?.data ?? null,

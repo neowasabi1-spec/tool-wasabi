@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getOpenClawConfig } from '@/lib/openclaw-config';
+import { queueAndWait } from '@/lib/openclaw-queue';
 
 export const maxDuration = 120;
 export const dynamic = 'force-dynamic';
@@ -153,11 +153,6 @@ export async function POST(request: NextRequest) {
 
     const textsForAi = texts.map((t, i) => ({ id: i, text: t.original, tag: t.tag }));
 
-    const config = await getOpenClawConfig();
-    if (!config.apiKey) {
-      return NextResponse.json({ error: 'OpenClaw API key not configured' }, { status: 500 });
-    }
-
     const systemPrompt = `You are a direct-response copywriter. You rewrite marketing texts for a specific product while keeping the EXACT SAME tone, style, length, and persuasion structure.
 
 PRODUCT: ${productName}
@@ -176,64 +171,16 @@ RULES:
 
     const userPrompt = `Rewrite these ${texts.length} texts for the product "${productName}":\n\n${JSON.stringify(textsForAi, null, 2)}`;
 
-    // Try OpenClaw first, fallback to Anthropic
-    const apiUrl = `${config.baseUrl}/v1/chat/completions`;
-    console.log(`[quiz-rewrite] Trying OpenClaw: ${apiUrl} model=${config.model} texts=${texts.length}`);
-
     let aiText = '';
     let usedProvider = 'openclaw';
 
     try {
-      const res = await fetch(apiUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${config.apiKey}`,
-        },
-        body: JSON.stringify({
-          model: config.model,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userPrompt },
-          ],
-          temperature: 0.6,
-          max_tokens: 16000,
-          stream: false,
-        }),
-        signal: AbortSignal.timeout(60000),
+      console.log(`[quiz-rewrite] Sending to OpenClaw queue, texts=${texts.length}`);
+      aiText = await queueAndWait(userPrompt, {
+        systemPrompt,
+        section: 'Quiz Rewrite',
+        timeoutMs: 110_000,
       });
-
-      if (!res.ok) {
-        const errText = await res.text();
-        throw new Error(`HTTP ${res.status}: ${errText.substring(0, 300)}`);
-      }
-
-      const contentType = res.headers.get('content-type') || '';
-
-      if (contentType.includes('application/json')) {
-        const data = await res.json();
-        aiText = data.choices?.[0]?.message?.content || '';
-      } else {
-        const reader = res.body?.getReader();
-        const decoder = new TextDecoder();
-        if (reader) {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            const chunk = decoder.decode(value, { stream: true });
-            for (const line of chunk.split('\n')) {
-              if (line.startsWith('data: ') && line !== 'data: [DONE]') {
-                try {
-                  const json = JSON.parse(line.slice(6));
-                  const delta = json.choices?.[0]?.delta?.content || json.choices?.[0]?.message?.content || '';
-                  if (delta) aiText += delta;
-                } catch { /* skip */ }
-              }
-            }
-          }
-        }
-      }
-
       if (!aiText.trim()) throw new Error('Empty response from OpenClaw');
       console.log(`[quiz-rewrite] OpenClaw OK, response: ${aiText.length} chars`);
     } catch (openclawErr) {
