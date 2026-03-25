@@ -8,6 +8,7 @@ import {
   FolderOpen, Search, FileText, Clock, CheckCircle,
   Pause, Archive, Image as ImageIcon, Upload, Globe,
   BarChart3, FileEdit, Layers, ShieldCheck, GitBranch, Monitor,
+  Paperclip,
 } from 'lucide-react';
 
 const STATUS_OPTIONS = [
@@ -35,6 +36,7 @@ function getStatusInfo(status: string) {
 }
 
 interface AssetItem { url: string; name: string; addedAt: string; }
+interface TableRow { step: string; mockup: string; label: string; offer: string; }
 
 type ProjectType = ReturnType<typeof useStore.getState>['projects'][number];
 type UpdateFn = (id: string, data: Partial<ProjectType>) => Promise<void>;
@@ -48,7 +50,7 @@ export default function ProjectsPage() {
   const [filterText, setFilterText] = useState('');
   const [filterStatus, setFilterStatus] = useState('');
 
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const logoInputRef = useRef<HTMLInputElement>(null);
   const [uploadProjectId, setUploadProjectId] = useState<string | null>(null);
 
   const filteredProjects = projects.filter(p => {
@@ -99,7 +101,7 @@ export default function ProjectsPage() {
     <div className="min-h-screen">
       <Header title="My Projects" subtitle="Manage your projects, research, funnels and briefs" />
       <div className="p-6 max-w-6xl mx-auto">
-        <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleLogoUpload} />
+        <input ref={logoInputRef} type="file" accept="image/*" className="hidden" onChange={handleLogoUpload} />
 
         {/* Toolbar */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 mb-6">
@@ -220,48 +222,15 @@ export default function ProjectsPage() {
                       <div className="p-5">
                         {activeTab === 'overview' && (
                           <OverviewTab project={project} updateProject={updateProject}
-                            onUploadLogo={() => { setUploadProjectId(project.id); fileInputRef.current?.click(); }}
+                            onUploadLogo={() => { setUploadProjectId(project.id); logoInputRef.current?.click(); }}
                             onRemoveLogo={(idx) => removeLogo(project.id, idx)} />
                         )}
-                        {activeTab === 'research' && <SectionTab project={project} updateProject={updateProject} sectionKey="marketResearch"
-                          title="Market Research" fields={[
-                            { key: 'targetAudience', label: 'Target Audience', rows: 3 },
-                            { key: 'competitors', label: 'Competitors', rows: 3 },
-                            { key: 'positioning', label: 'Positioning', rows: 3 },
-                            { key: 'notes', label: 'Research Notes', rows: 4 },
-                          ]} />}
-                        {activeTab === 'brief' && <BriefTab project={project} updateProject={updateProject} />}
-                        {activeTab === 'frontend' && <SectionTab project={project} updateProject={updateProject} sectionKey="frontEnd"
-                          title="Front End" fields={[
-                            { key: 'landingPage', label: 'Landing Page', rows: 3 },
-                            { key: 'salesPage', label: 'Sales Page', rows: 3 },
-                            { key: 'optinPage', label: 'Opt-in Page', rows: 3 },
-                            { key: 'notes', label: 'Notes', rows: 4 },
-                          ]} />}
-                        {activeTab === 'backend' && <SectionTab project={project} updateProject={updateProject} sectionKey="backEnd"
-                          title="Back End" fields={[
-                            { key: 'upsell', label: 'Upsell', rows: 3 },
-                            { key: 'downsell', label: 'Downsell', rows: 3 },
-                            { key: 'orderBump', label: 'Order Bump', rows: 3 },
-                            { key: 'thankYou', label: 'Thank You Page', rows: 3 },
-                            { key: 'notes', label: 'Notes', rows: 4 },
-                          ]} />}
-                        {activeTab === 'compliance' && <SectionTab project={project} updateProject={updateProject} sectionKey="complianceFunnel"
-                          title="Compliance Funnel" fields={[
-                            { key: 'privacyPolicy', label: 'Privacy Policy', rows: 3 },
-                            { key: 'termsConditions', label: 'Terms & Conditions', rows: 3 },
-                            { key: 'disclaimer', label: 'Disclaimer', rows: 3 },
-                            { key: 'refundPolicy', label: 'Refund Policy', rows: 3 },
-                            { key: 'notes', label: 'Notes', rows: 4 },
-                          ]} />}
-                        {activeTab === 'funnel' && <SectionTab project={project} updateProject={updateProject} sectionKey="funnel"
-                          title="Funnel" fields={[
-                            { key: 'structure', label: 'Funnel Structure', rows: 4 },
-                            { key: 'trafficSources', label: 'Traffic Sources', rows: 3 },
-                            { key: 'emailSequence', label: 'Email Sequence', rows: 3 },
-                            { key: 'retargeting', label: 'Retargeting', rows: 3 },
-                            { key: 'notes', label: 'Notes', rows: 4 },
-                          ]} />}
+                        {activeTab === 'research' && <RichBoxTab project={project} updateProject={updateProject} sectionKey="marketResearch" title="Market Research" />}
+                        {activeTab === 'brief' && <RichBoxTab project={project} updateProject={updateProject} sectionKey="brief" title="Brief" isBrief />}
+                        {activeTab === 'frontend' && <GridTab project={project} updateProject={updateProject} sectionKey="frontEnd" title="Front End" />}
+                        {activeTab === 'backend' && <GridTab project={project} updateProject={updateProject} sectionKey="backEnd" title="Back End" />}
+                        {activeTab === 'compliance' && <GridTab project={project} updateProject={updateProject} sectionKey="complianceFunnel" title="Compliance Funnel" />}
+                        {activeTab === 'funnel' && <GridTab project={project} updateProject={updateProject} sectionKey="funnel" title="Funnel" />}
                       </div>
                     </div>
                   )}
@@ -301,10 +270,10 @@ function OverviewTab({ project, updateProject, onUploadLogo, onRemoveLogo }: {
       </div>
 
       <div>
-        <label className="text-sm font-medium text-gray-700 mb-1 flex items-center gap-1.5 block">
+        <label className="text-sm font-medium text-gray-700 mb-1 flex items-center gap-1.5">
           <Globe className="w-3.5 h-3.5 text-gray-500" /> Domain
         </label>
-        <input type="text" value={project.domain || ''} onChange={(e) => updateProject(project.id, { domain: e.target.value })}
+        <input type="url" value={project.domain} onChange={(e) => updateProject(project.id, { domain: e.target.value })}
           placeholder="https://example.com"
           className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
       </div>
@@ -323,7 +292,7 @@ function OverviewTab({ project, updateProject, onUploadLogo, onRemoveLogo }: {
           className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none resize-none" />
       </div>
 
-      {/* Logo Section */}
+      {/* Logo */}
       <div>
         <div className="flex items-center justify-between mb-2">
           <label className="text-sm font-medium text-gray-700 flex items-center gap-1.5">
@@ -335,9 +304,9 @@ function OverviewTab({ project, updateProject, onUploadLogo, onRemoveLogo }: {
           </button>
         </div>
         {logos.length === 0 ? (
-          <div className="border-2 border-dashed border-gray-200 rounded-lg p-6 text-center">
+          <div className="border-2 border-dashed border-gray-200 rounded-lg p-6 text-center cursor-pointer hover:border-blue-300 transition-colors" onClick={onUploadLogo}>
             <ImageIcon className="w-8 h-8 text-gray-300 mx-auto mb-1" />
-            <p className="text-xs text-gray-400">No logo uploaded</p>
+            <p className="text-xs text-gray-400">Click to upload logo</p>
           </div>
         ) : (
           <div className="flex flex-wrap gap-3">
@@ -361,41 +330,176 @@ function OverviewTab({ project, updateProject, onUploadLogo, onRemoveLogo }: {
   );
 }
 
-function SectionTab({ project, updateProject, sectionKey, title, fields }: {
+/* ── Rich Box Tab (Market Research / Brief) ── */
+function RichBoxTab({ project, updateProject, sectionKey, title, isBrief }: {
   project: ProjectType; updateProject: UpdateFn;
-  sectionKey: 'marketResearch' | 'frontEnd' | 'backEnd' | 'complianceFunnel' | 'funnel';
-  title: string;
-  fields: { key: string; label: string; rows: number }[];
+  sectionKey: string; title: string; isBrief?: boolean;
 }) {
-  const data = (project[sectionKey] || {}) as Record<string, string>;
+  const fileRef = useRef<HTMLInputElement>(null);
 
-  const update = (key: string, value: string) => {
-    updateProject(project.id, { [sectionKey]: { ...data, [key]: value } });
+  const textValue = isBrief
+    ? (project.brief || '')
+    : ((project[sectionKey as keyof ProjectType] as Record<string, string>)?.content || '');
+
+  const attachments: AssetItem[] = isBrief
+    ? ((project.marketResearch as Record<string, unknown>)?.briefAttachments as AssetItem[] || [])
+    : ((project[sectionKey as keyof ProjectType] as Record<string, unknown>)?.attachments as AssetItem[] || []);
+
+  const updateText = (val: string) => {
+    if (isBrief) {
+      updateProject(project.id, { brief: val });
+    } else {
+      const current = (project[sectionKey as keyof ProjectType] || {}) as Record<string, unknown>;
+      updateProject(project.id, { [sectionKey]: { ...current, content: val } });
+    }
+  };
+
+  const handleUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files?.length) return;
+    const file = e.target.files[0];
+    const url = URL.createObjectURL(file);
+    const newAttach: AssetItem = { url, name: file.name, addedAt: new Date().toISOString() };
+
+    if (isBrief) {
+      const current = (project.marketResearch || {}) as Record<string, unknown>;
+      const existing = (current.briefAttachments as AssetItem[] || []);
+      updateProject(project.id, { marketResearch: { ...current, briefAttachments: [...existing, newAttach] } });
+    } else {
+      const current = (project[sectionKey as keyof ProjectType] || {}) as Record<string, unknown>;
+      const existing = (current.attachments as AssetItem[] || []);
+      updateProject(project.id, { [sectionKey]: { ...current, attachments: [...existing, newAttach] } });
+    }
+    e.target.value = '';
+  };
+
+  const removeAttach = (idx: number) => {
+    if (isBrief) {
+      const current = (project.marketResearch || {}) as Record<string, unknown>;
+      const existing = [...(current.briefAttachments as AssetItem[] || [])];
+      existing.splice(idx, 1);
+      updateProject(project.id, { marketResearch: { ...current, briefAttachments: existing } });
+    } else {
+      const current = (project[sectionKey as keyof ProjectType] || {}) as Record<string, unknown>;
+      const existing = [...(current.attachments as AssetItem[] || [])];
+      existing.splice(idx, 1);
+      updateProject(project.id, { [sectionKey]: { ...current, attachments: existing } });
+    }
   };
 
   return (
-    <div className="space-y-4 max-w-3xl">
-      <h3 className="text-sm font-semibold text-gray-800">{title}</h3>
-      {fields.map(f => (
-        <div key={f.key}>
-          <label className="text-sm font-medium text-gray-700 mb-1 block">{f.label}</label>
-          <textarea value={data[f.key] || ''} onChange={(e) => update(f.key, e.target.value)}
-            rows={f.rows} placeholder={`${f.label}...`}
-            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none resize-y" />
+    <div className="max-w-4xl">
+      <input ref={fileRef} type="file" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.txt" className="hidden" onChange={handleUpload} />
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="text-sm font-semibold text-gray-800">{title}</h3>
+        <button onClick={() => fileRef.current?.click()}
+          className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors">
+          <Paperclip className="w-3 h-3" /> Upload File
+        </button>
+      </div>
+      <textarea value={textValue} onChange={(e) => updateText(e.target.value)}
+        rows={14} placeholder={`Write your ${title.toLowerCase()} here... or upload files below.`}
+        className="w-full px-4 py-3 border border-gray-300 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 outline-none resize-y leading-relaxed" />
+      {attachments.length > 0 && (
+        <div className="mt-3 space-y-1.5">
+          <p className="text-xs font-medium text-gray-500">Attachments</p>
+          {attachments.map((att, idx) => (
+            <div key={idx} className="flex items-center gap-2 px-3 py-2 bg-gray-50 rounded-lg border border-gray-200 text-xs">
+              <Paperclip className="w-3 h-3 text-gray-400 shrink-0" />
+              <span className="flex-1 truncate text-gray-700">{att.name}</span>
+              <button onClick={() => removeAttach(idx)} className="text-gray-400 hover:text-red-500 transition-colors">
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+          ))}
         </div>
-      ))}
+      )}
     </div>
   );
 }
 
-function BriefTab({ project, updateProject }: { project: ProjectType; updateProject: UpdateFn }) {
+/* ── Grid Tab (Front End / Back End / Compliance / Funnel) ── */
+function GridTab({ project, updateProject, sectionKey, title }: {
+  project: ProjectType; updateProject: UpdateFn;
+  sectionKey: 'frontEnd' | 'backEnd' | 'complianceFunnel' | 'funnel'; title: string;
+}) {
+  const data = (project[sectionKey] || {}) as Record<string, unknown>;
+  const rows = (data.rows as TableRow[] || []);
+
+  const updateRows = (newRows: TableRow[]) => {
+    updateProject(project.id, { [sectionKey]: { ...data, rows: newRows } });
+  };
+
+  const addRow = () => {
+    updateRows([...rows, { step: '', mockup: '', label: '', offer: '' }]);
+  };
+
+  const updateCell = (rowIdx: number, col: keyof TableRow, value: string) => {
+    const updated = rows.map((r, i) => i === rowIdx ? { ...r, [col]: value } : r);
+    updateRows(updated);
+  };
+
+  const removeRow = (idx: number) => {
+    updateRows(rows.filter((_, i) => i !== idx));
+  };
+
+  const COL_HEADERS = [
+    { key: 'step' as const, label: 'Step', color: 'bg-blue-600' },
+    { key: 'mockup' as const, label: 'Mockup', color: 'bg-indigo-600' },
+    { key: 'label' as const, label: 'Label', color: 'bg-violet-600' },
+    { key: 'offer' as const, label: 'Offer', color: 'bg-purple-600' },
+  ];
+
   return (
-    <div className="max-w-3xl">
-      <h3 className="text-sm font-semibold text-gray-800 mb-2">Project Brief</h3>
-      <p className="text-xs text-gray-400 mb-3">Write a comprehensive brief for this project</p>
-      <textarea value={project.brief || ''} onChange={(e) => updateProject(project.id, { brief: e.target.value })}
-        rows={16} placeholder="Write your project brief here..."
-        className="w-full px-4 py-3 border border-gray-300 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 outline-none resize-y leading-relaxed" />
+    <div>
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="text-sm font-semibold text-gray-800">{title}</h3>
+        <button onClick={addRow}
+          className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 text-white text-xs font-medium rounded-lg hover:bg-blue-700 transition-colors">
+          <Plus className="w-3 h-3" /> Add Row
+        </button>
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full border-collapse min-w-[600px]">
+          <thead>
+            <tr>
+              {COL_HEADERS.map(col => (
+                <th key={col.key} className={`${col.color} text-white text-xs font-bold px-3 py-2 text-left first:rounded-tl-lg`}>
+                  {col.label}
+                </th>
+              ))}
+              <th className="bg-gray-400 text-white text-xs font-bold px-2 py-2 rounded-tr-lg w-10"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 ? (
+              <tr>
+                <td colSpan={5} className="text-center py-8 text-sm text-gray-400 border border-gray-200">
+                  No rows yet. Click &quot;Add Row&quot; to start.
+                </td>
+              </tr>
+            ) : (
+              rows.map((row, rowIdx) => (
+                <tr key={rowIdx} className="group">
+                  {COL_HEADERS.map(col => (
+                    <td key={col.key} className="border border-gray-200 p-0">
+                      <input type="text" value={row[col.key]} onChange={(e) => updateCell(rowIdx, col.key, e.target.value)}
+                        placeholder={col.label}
+                        className="w-full px-3 py-2.5 text-sm outline-none focus:bg-blue-50 transition-colors" />
+                    </td>
+                  ))}
+                  <td className="border border-gray-200 p-0 text-center">
+                    <button onClick={() => removeRow(rowIdx)}
+                      className="p-1.5 text-gray-300 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100">
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
