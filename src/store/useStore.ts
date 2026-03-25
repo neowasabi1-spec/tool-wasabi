@@ -36,6 +36,25 @@ interface AppProduct {
   createdAt: Date;
 }
 
+interface ProjectAsset {
+  url: string;
+  name: string;
+  addedAt: string;
+}
+
+interface ProjectMarketResearch {
+  targetAudience?: string;
+  competitors?: string;
+  positioning?: string;
+  notes?: string;
+}
+
+interface ProjectSelectedProduct {
+  productId?: string;
+  manualName: string;
+  manualDescription?: string;
+}
+
 interface AppProject {
   id: string;
   name: string;
@@ -43,6 +62,13 @@ interface AppProject {
   status: string;
   tags: string[];
   notes?: string;
+  logo: ProjectAsset[];
+  mockup: ProjectAsset[];
+  label: ProjectAsset[];
+  marketResearch: ProjectMarketResearch;
+  selectedProducts: ProjectSelectedProduct[];
+  flowSteps: string[][];
+  brief: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -166,6 +192,13 @@ function dbProjectToApp(p: Project): AppProject {
     status: p.status,
     tags: p.tags,
     notes: p.notes || undefined,
+    logo: (p.logo as ProjectAsset[]) || [],
+    mockup: (p.mockup as ProjectAsset[]) || [],
+    label: (p.label as ProjectAsset[]) || [],
+    marketResearch: (p.market_research as ProjectMarketResearch) || {},
+    selectedProducts: (p.selected_products as ProjectSelectedProduct[]) || [],
+    flowSteps: (p.flow_steps as string[][]) || [[], [], [], [], [], []],
+    brief: p.brief || '',
     createdAt: new Date(p.created_at),
     updatedAt: new Date(p.updated_at),
   };
@@ -472,6 +505,13 @@ export const useStore = create<Store>()((set, get) => ({
         status: project.status,
         tags: project.tags,
         notes: project.notes,
+        logo: project.logo as unknown as import('@/types/database').Json,
+        mockup: project.mockup as unknown as import('@/types/database').Json,
+        label: project.label as unknown as import('@/types/database').Json,
+        market_research: project.marketResearch as unknown as import('@/types/database').Json,
+        selected_products: project.selectedProducts as unknown as import('@/types/database').Json,
+        flow_steps: project.flowSteps as unknown as import('@/types/database').Json,
+        brief: project.brief,
       });
       set((state) => ({
         projects: [dbProjectToApp(created), ...state.projects],
@@ -484,13 +524,20 @@ export const useStore = create<Store>()((set, get) => ({
 
   updateProject: async (id, project) => {
     try {
-      const updated = await supabaseOps.updateProject(id, {
-        name: project.name,
-        description: project.description,
-        status: project.status,
-        tags: project.tags,
-        notes: project.notes,
-      });
+      const updates: import('@/types/database').ProjectUpdate = {};
+      if (project.name !== undefined) updates.name = project.name;
+      if (project.description !== undefined) updates.description = project.description;
+      if (project.status !== undefined) updates.status = project.status;
+      if (project.tags !== undefined) updates.tags = project.tags;
+      if (project.notes !== undefined) updates.notes = project.notes;
+      if (project.logo !== undefined) updates.logo = project.logo as unknown as import('@/types/database').Json;
+      if (project.mockup !== undefined) updates.mockup = project.mockup as unknown as import('@/types/database').Json;
+      if (project.label !== undefined) updates.label = project.label as unknown as import('@/types/database').Json;
+      if (project.marketResearch !== undefined) updates.market_research = project.marketResearch as unknown as import('@/types/database').Json;
+      if (project.selectedProducts !== undefined) updates.selected_products = project.selectedProducts as unknown as import('@/types/database').Json;
+      if (project.flowSteps !== undefined) updates.flow_steps = project.flowSteps as unknown as import('@/types/database').Json;
+      if (project.brief !== undefined) updates.brief = project.brief;
+      const updated = await supabaseOps.updateProject(id, updates);
       set((state) => ({
         projects: state.projects.map((p) =>
           p.id === id ? dbProjectToApp(updated) : p

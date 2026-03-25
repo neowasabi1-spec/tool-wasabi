@@ -1,4 +1,4 @@
--- Migration: Create projects table
+-- Migration: Create projects table with all sections
 CREATE TABLE IF NOT EXISTS projects (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   name TEXT NOT NULL,
@@ -6,6 +6,16 @@ CREATE TABLE IF NOT EXISTS projects (
   status TEXT NOT NULL DEFAULT 'active',
   tags TEXT[] NOT NULL DEFAULT '{}',
   notes TEXT,
+
+  -- Project sections (stored as JSONB for flexibility)
+  logo JSONB NOT NULL DEFAULT '[]',
+  mockup JSONB NOT NULL DEFAULT '[]',
+  label JSONB NOT NULL DEFAULT '[]',
+  market_research JSONB NOT NULL DEFAULT '{}',
+  selected_products JSONB NOT NULL DEFAULT '[]',
+  flow_steps JSONB NOT NULL DEFAULT '[[],[],[],[],[],[]]',
+  brief TEXT NOT NULL DEFAULT '',
+
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
