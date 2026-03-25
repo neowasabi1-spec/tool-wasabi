@@ -50,6 +50,9 @@ import {
   Monitor,
   Upload,
   FileSpreadsheet,
+  Rocket,
+  Link2,
+  Send,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import VisualHtmlEditor from '@/components/VisualHtmlEditor';
@@ -533,6 +536,120 @@ export default function FrontEndFunnel() {
   const [visionLoading, setVisionLoading] = useState(false);
   const [visionError, setVisionError] = useState<string | null>(null);
   const [expandedSections, setExpandedSections] = useState<number[]>([]);
+
+  // Domain & Publish
+  const [funnelDomain, setFunnelDomain] = useState('');
+  const [stepSlugs, setStepSlugs] = useState<Record<string, string>>({});
+  const [publishingIds, setPublishingIds] = useState<Record<string, 'repli' | 'checkoutchamp'>>({});
+
+  const generateSlug = useCallback((name: string, index: number) => {
+    const base = name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .substring(0, 40);
+    return base || `step-${index + 1}`;
+  }, []);
+
+  const autoGenerateSlugs = useCallback(() => {
+    if (!funnelPages || funnelPages.length === 0) return;
+    const newSlugs: Record<string, string> = {};
+    funnelPages.forEach((page, i) => {
+      newSlugs[page.id] = stepSlugs[page.id] || generateSlug(page.name, i);
+    });
+    setStepSlugs(newSlugs);
+  }, [funnelPages, stepSlugs, generateSlug]);
+
+  const getStepUrl = useCallback((pageId: string) => {
+    if (!funnelDomain) return '';
+    const slug = stepSlugs[pageId] || '';
+    const domain = funnelDomain.replace(/\/+$/, '');
+    const protocol = domain.startsWith('http') ? '' : 'https://';
+    return `${protocol}${domain}/${slug}`;
+  }, [funnelDomain, stepSlugs]);
+
+  const getNextStepUrl = useCallback((pageId: string) => {
+    const idx = funnelPages.findIndex(p => p.id === pageId);
+    if (idx < 0 || idx >= funnelPages.length - 1) return '';
+    return getStepUrl(funnelPages[idx + 1].id);
+  }, [funnelPages, getStepUrl]);
+
+  const injectCtaLinks = useCallback((html: string, nextUrl: string): string => {
+    if (!nextUrl || !html) return html;
+    let result = html;
+    // Replace CTA links (buttons, anchors with common CTA patterns)
+    result = result.replace(
+      /(<a\b[^>]*class="[^"]*(?:btn|button|cta|buy|order|get-started|add-to-cart|checkout)[^"]*"[^>]*href=")[^"]*(")/gi,
+      `$1${nextUrl}$2`,
+    );
+    result = result.replace(
+      /(<a\b[^>]*href=")#[^"]*("[^>]*class="[^"]*(?:btn|button|cta|buy|order|get-started|add-to-cart|checkout)[^"]*")/gi,
+      `$1${nextUrl}$2`,
+    );
+    return result;
+  }, []);
+
+  const handlePublish = useCallback(async (pageId: string, platform: 'repli' | 'checkoutchamp') => {
+    const page = funnelPages.find(p => p.id === pageId);
+    if (!page) return;
+    const html = page.swipedData?.html || page.clonedData?.html;
+    if (!html) {
+      alert('No HTML available. Clone or swipe the page first.');
+      return;
+    }
+    if (!funnelDomain) {
+      alert('Insert a domain first.');
+      return;
+    }
+
+    const nextUrl = getNextStepUrl(pageId);
+    const finalHtml = injectCtaLinks(html, nextUrl);
+    const slug = stepSlugs[pageId] || generateSlug(page.name, funnelPages.indexOf(page));
+
+    setPublishingIds(prev => ({ ...prev, [pageId]: platform }));
+    try {
+      if (platform === 'repli') {
+        const domain = funnelDomain.replace(/\/+$/, '').replace(/^https?:\/\//, '');
+        const res = await fetch('/api/deploy/funnelish', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            html: finalHtml,
+            slug,
+            domain,
+            pageName: page.name,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Deploy failed');
+        updateFunnelPage(pageId, { swipeResult: `Published → ${getStepUrl(pageId)}` });
+      } else {
+        const res = await fetch('/api/deploy/checkout-champ', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            html: finalHtml,
+            funnelName: `${funnelDomain}-funnel`,
+            pageName: slug,
+            pageType: page.pageType,
+            email: '',
+            password: '',
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Deploy failed');
+        updateFunnelPage(pageId, { swipeResult: `CheckoutChamp → ${data.url || 'Deployed'}` });
+      }
+    } catch (err) {
+      alert(`Publish error: ${err instanceof Error ? err.message : 'Failed'}`);
+    } finally {
+      setPublishingIds(prev => {
+        const next = { ...prev };
+        delete next[pageId];
+        return next;
+      });
+    }
+  }, [funnelPages, funnelDomain, stepSlugs, getNextStepUrl, injectCtaLinks, getStepUrl, generateSlug, updateFunnelPage]);
 
   // Quiz Generation
   const [quizGenerating, setQuizGenerating] = useState(false);
@@ -2145,6 +2262,61 @@ export default function FrontEndFunnel() {
           )}
         </div>
 
+        {/* Domain & Publish Section */}
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4 mb-4">
+          <div className="flex items-center gap-4 flex-wrap">
+            <div className="flex items-center gap-2">
+              <Globe className="w-4 h-4 text-gray-500" />
+              <label className="text-sm font-medium text-gray-700">Domain:</label>
+            </div>
+            <input
+              type="text"
+              value={funnelDomain}
+              onChange={(e) => setFunnelDomain(e.target.value)}
+              placeholder="myfunnel.com"
+              className="flex-1 max-w-xs px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-amber-500 outline-none"
+            />
+            <button
+              onClick={autoGenerateSlugs}
+              disabled={!funnelPages || funnelPages.length === 0}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-amber-100 text-amber-700 rounded-lg hover:bg-amber-200 transition-colors disabled:opacity-50"
+            >
+              <Link2 className="w-3.5 h-3.5" />
+              Auto-Name Steps
+            </button>
+            {funnelDomain && Object.keys(stepSlugs).length > 0 && (
+              <div className="text-xs text-gray-500">
+                {Object.keys(stepSlugs).length} steps mapped
+              </div>
+            )}
+          </div>
+          {funnelDomain && Object.keys(stepSlugs).length > 0 && (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {funnelPages.map((page, i) => {
+                const slug = stepSlugs[page.id];
+                if (!slug) return null;
+                const url = getStepUrl(page.id);
+                const nextUrl = getNextStepUrl(page.id);
+                return (
+                  <div key={page.id} className="flex items-center gap-1.5 px-2 py-1 bg-gray-50 rounded-lg border border-gray-200 text-[11px]">
+                    <span className="font-medium text-gray-600">Step {i + 1}:</span>
+                    <input
+                      type="text"
+                      value={slug}
+                      onChange={(e) => setStepSlugs(prev => ({ ...prev, [page.id]: e.target.value.replace(/[^a-z0-9-]/g, '') }))}
+                      className="w-24 px-1.5 py-0.5 border border-gray-200 rounded text-[11px] focus:ring-1 focus:ring-amber-400 outline-none"
+                    />
+                    <span className="text-gray-400 truncate max-w-[150px]" title={url}>{url}</span>
+                    {nextUrl && (
+                      <span className="text-green-600" title={`CTA → ${nextUrl}`}>→ next</span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
         {/* Excel-style Table */}
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
           <div className="overflow-x-auto">
@@ -2163,6 +2335,7 @@ export default function FrontEndFunnel() {
                   <th className="min-w-[100px]">Feedback</th>
                   <th className="w-16">AI</th>
                   <th className="w-32">Actions</th>
+                  <th className="w-40">Publish</th>
                 </tr>
               </thead>
               <tbody>
@@ -2565,6 +2738,30 @@ export default function FrontEndFunnel() {
                             title="Delete"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </td>
+
+                      {/* Publish */}
+                      <td>
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={() => handlePublish(page.id, 'repli')}
+                            disabled={!!publishingIds[page.id] || (!page.swipedData?.html && !page.clonedData?.html) || !funnelDomain}
+                            className="px-2 py-1 text-[10px] font-semibold rounded bg-blue-100 text-blue-700 hover:bg-blue-200 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center gap-1"
+                            title="Publish to Repli"
+                          >
+                            {publishingIds[page.id] === 'repli' ? <Loader2 className="w-3 h-3 animate-spin" /> : <Rocket className="w-3 h-3" />}
+                            Repli
+                          </button>
+                          <button
+                            onClick={() => handlePublish(page.id, 'checkoutchamp')}
+                            disabled={!!publishingIds[page.id] || (!page.swipedData?.html && !page.clonedData?.html) || !funnelDomain}
+                            className="px-2 py-1 text-[10px] font-semibold rounded bg-emerald-100 text-emerald-700 hover:bg-emerald-200 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center gap-1"
+                            title="Publish to CheckoutChamp"
+                          >
+                            {publishingIds[page.id] === 'checkoutchamp' ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
+                            CC
                           </button>
                         </div>
                       </td>
