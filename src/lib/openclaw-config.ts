@@ -8,15 +8,30 @@ const OPENCLAW_DEFAULTS = {
 
 let _cachedConfig: typeof OPENCLAW_DEFAULTS | null = null;
 let _cacheTime = 0;
-const CACHE_TTL = 60_000; // 1 minute cache
+const CACHE_TTL = 60_000;
 
 export async function getOpenClawConfig() {
-  // Return cache if fresh
   if (_cachedConfig && Date.now() - _cacheTime < CACHE_TTL) {
     return _cachedConfig;
   }
 
-  // Try Supabase
+  // Priority 1: Environment variables (always win — set in .env.local or Vercel)
+  const envUrl = process.env.OPENCLAW_BASE_URL;
+  const envKey = process.env.OPENCLAW_API_KEY;
+  const envModel = process.env.OPENCLAW_MODEL;
+
+  if (envUrl && envKey) {
+    _cachedConfig = {
+      baseUrl: envUrl.replace(/\/+$/, ''),
+      apiKey: envKey,
+      model: envModel || OPENCLAW_DEFAULTS.model,
+    };
+    _cacheTime = Date.now();
+    console.log(`[openclaw-config] Using ENV vars → ${_cachedConfig.baseUrl}`);
+    return _cachedConfig;
+  }
+
+  // Priority 2: Supabase settings table
   try {
     const { data } = await supabase
       .from('settings')
@@ -32,11 +47,14 @@ export async function getOpenClawConfig() {
         model: config.model || OPENCLAW_DEFAULTS.model,
       };
       _cacheTime = Date.now();
+      console.log(`[openclaw-config] Using Supabase settings → ${_cachedConfig.baseUrl}`);
       return _cachedConfig;
     }
   } catch {
     // Supabase not available or table doesn't exist
   }
 
+  // Priority 3: Hardcoded defaults
+  console.log(`[openclaw-config] Using hardcoded defaults → ${OPENCLAW_DEFAULTS.baseUrl}`);
   return OPENCLAW_DEFAULTS;
 }

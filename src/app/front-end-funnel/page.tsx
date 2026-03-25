@@ -1462,7 +1462,7 @@ export default function FrontEndFunnel() {
 
           updateFunnelPage(pageId, {
             swipeStatus: 'completed',
-            swipeResult: `Quiz Rewrite OK (${rewriteData.replacements}/${rewriteData.totalTexts} texts)`,
+            swipeResult: `Quiz Rewrite OK (${rewriteData.replacements}/${rewriteData.totalTexts} texts) [${rewriteData.provider || 'unknown'}]`,
             swipedData: {
               html: quizHtml,
               originalTitle: pageName,
