@@ -7,7 +7,6 @@ import {
   Plus, Trash2, X, ChevronDown, ChevronRight,
   FolderOpen, Search, FileText, Clock, CheckCircle,
   Pause, Archive, Image as ImageIcon, Upload, Globe,
-  BarChart3, FileEdit, Layers, ShieldCheck, GitBranch, Monitor,
   Paperclip,
 } from 'lucide-react';
 
@@ -19,17 +18,7 @@ const STATUS_OPTIONS = [
   { value: 'archived', label: 'Archived', color: 'bg-gray-100 text-gray-500', icon: Archive },
 ];
 
-const PROJECT_TABS = [
-  { key: 'overview', label: 'Overview', icon: FileText },
-  { key: 'research', label: 'Market Research', icon: BarChart3 },
-  { key: 'brief', label: 'Brief', icon: FileEdit },
-  { key: 'frontend', label: 'Front End', icon: Monitor },
-  { key: 'backend', label: 'Back End', icon: Layers },
-  { key: 'compliance', label: 'Compliance Funnel', icon: ShieldCheck },
-  { key: 'funnel', label: 'Funnel', icon: GitBranch },
-] as const;
 
-type TabKey = typeof PROJECT_TABS[number]['key'];
 
 function getStatusInfo(status: string) {
   return STATUS_OPTIONS.find(s => s.value === status) || STATUS_OPTIONS[0];
@@ -46,7 +35,6 @@ export default function ProjectsPage() {
   const [showAddForm, setShowAddForm] = useState(false);
   const [newName, setNewName] = useState('');
   const [expandedProjectId, setExpandedProjectId] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<TabKey>('overview');
   const [filterText, setFilterText] = useState('');
   const [filterStatus, setFilterStatus] = useState('');
 
@@ -61,7 +49,7 @@ export default function ProjectsPage() {
 
   const toggleExpand = (id: string) => {
     if (expandedProjectId === id) { setExpandedProjectId(null); }
-    else { setExpandedProjectId(id); setActiveTab('overview'); }
+    else { setExpandedProjectId(id); }
   };
 
   const handleAddProject = () => {
@@ -209,32 +197,29 @@ export default function ProjectsPage() {
                   </div>
 
                   {isExpanded && (
-                    <div className="border-t flex min-h-[400px]">
-                      <div className="w-48 shrink-0 bg-gray-50 border-r py-2 px-2 space-y-0.5">
-                        {PROJECT_TABS.map(tab => {
-                          const TabIcon = tab.icon;
-                          return (
-                            <button key={tab.key} onClick={() => setActiveTab(tab.key)}
-                              className={`flex items-center gap-2 w-full px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                                activeTab === tab.key ? 'bg-blue-600 text-white shadow-sm' : 'text-gray-600 hover:bg-white hover:shadow-sm'
-                              }`}>
-                              <TabIcon className="w-4 h-4 shrink-0" />{tab.label}
-                            </button>
-                          );
-                        })}
+                    <div className="border-t divide-y divide-gray-100">
+                      <div className="p-5">
+                        <OverviewTab project={project} updateProject={updateProject}
+                          onUploadLogo={() => { setUploadProjectId(project.id); logoInputRef.current?.click(); }}
+                          onRemoveLogo={(idx) => removeLogo(project.id, idx)} />
                       </div>
-                      <div className="flex-1 p-5 overflow-auto">
-                        {activeTab === 'overview' && (
-                          <OverviewTab project={project} updateProject={updateProject}
-                            onUploadLogo={() => { setUploadProjectId(project.id); logoInputRef.current?.click(); }}
-                            onRemoveLogo={(idx) => removeLogo(project.id, idx)} />
-                        )}
-                        {activeTab === 'research' && <RichBoxTab project={project} updateProject={updateProject} sectionKey="marketResearch" title="Market Research" />}
-                        {activeTab === 'brief' && <RichBoxTab project={project} updateProject={updateProject} sectionKey="brief" title="Brief" isBrief />}
-                        {activeTab === 'frontend' && <GridTab project={project} updateProject={updateProject} sectionKey="frontEnd" title="Front End" />}
-                        {activeTab === 'backend' && <GridTab project={project} updateProject={updateProject} sectionKey="backEnd" title="Back End" />}
-                        {activeTab === 'compliance' && <GridTab project={project} updateProject={updateProject} sectionKey="complianceFunnel" title="Compliance Funnel" />}
-                        {activeTab === 'funnel' && <GridTab project={project} updateProject={updateProject} sectionKey="funnel" title="Funnel" />}
+                      <div className="p-5">
+                        <RichBoxTab project={project} updateProject={updateProject} sectionKey="marketResearch" title="Market Research" />
+                      </div>
+                      <div className="p-5">
+                        <RichBoxTab project={project} updateProject={updateProject} sectionKey="brief" title="Brief" isBrief />
+                      </div>
+                      <div className="p-5">
+                        <GridTab project={project} updateProject={updateProject} sectionKey="frontEnd" title="Front End" />
+                      </div>
+                      <div className="p-5">
+                        <GridTab project={project} updateProject={updateProject} sectionKey="backEnd" title="Back End" />
+                      </div>
+                      <div className="p-5">
+                        <GridTab project={project} updateProject={updateProject} sectionKey="complianceFunnel" title="Compliance Funnel" />
+                      </div>
+                      <div className="p-5">
+                        <GridTab project={project} updateProject={updateProject} sectionKey="funnel" title="Funnel" />
                       </div>
                     </div>
                   )}
