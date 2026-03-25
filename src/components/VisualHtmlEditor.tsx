@@ -103,6 +103,14 @@ const EDITOR_SCRIPT = `
 (function(){
   var sel=null,hover=null,editing=false,editEl=null;
   var HS='2px dashed rgba(59,130,246,0.4)',SS='2px solid #3b82f6',ES='2px solid #f59e0b';
+  var savedRange=null;
+
+  document.addEventListener('selectionchange',function(){
+    var s=window.getSelection();
+    if(s&&s.rangeCount>0&&!s.isCollapsed){
+      savedRange=s.getRangeAt(0).cloneRange();
+    }
+  });
 
   function gp(el){
     var p=[];var c=el;
@@ -256,6 +264,15 @@ const EDITOR_SCRIPT = `
     switch(m.type){
       case 'cmd-exec':document.execCommand(m.command,false,m.value||null);sendHtml();
         if(sel)window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');break;
+      case 'cmd-text-color':
+        if(savedRange&&editing&&editEl){
+          var ws=window.getSelection();ws.removeAllRanges();ws.addRange(savedRange);
+          document.execCommand('foreColor',false,m.value);savedRange=null;sendHtml();
+          if(sel)window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');
+        }else if(sel){
+          sel.style.color=m.value;sendHtml();
+          window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');
+        }break;
       case 'cmd-set-style':if(sel){sel.style[m.property]=m.value;sendHtml();
         window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');}break;
       case 'cmd-set-attr':if(sel){sel.setAttribute(m.name,m.value);sendHtml();
@@ -1260,7 +1277,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
           {/* Colors */}
           <div className="flex items-center gap-1">
             <ColorPicker label="A" title="Text color" value={el ? rgbToHex(el.styles.color) : '#000000'}
-              onChange={(c) => execCmd('foreColor', c)} textColor />
+              onChange={(c) => sendToIframe({ type: 'cmd-text-color', value: c })} textColor />
             <ColorPicker label="" title="Background color" value={el ? rgbToHex(el.styles.backgroundColor) : '#ffffff'}
               onChange={(c) => { if (el) setStyle('backgroundColor', c); }} />
           </div>
@@ -1701,7 +1718,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                       <label className="text-[10px] text-slate-400">Color</label>
                       <div className="flex items-center gap-1">
                         <input type="color" value={rgbToHex(el.styles.color)} className="w-6 h-6 rounded cursor-pointer border border-slate-200"
-                          onChange={(e) => setStyle('color', e.target.value)} />
+                          onChange={(e) => sendToIframe({ type: 'cmd-text-color', value: e.target.value })} />
                         <span className="text-[10px] font-mono text-slate-500">{rgbToHex(el.styles.color)}</span>
                       </div>
                     </div>
