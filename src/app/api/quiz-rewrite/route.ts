@@ -147,56 +147,75 @@ RULES:
 
     const userPrompt = `Rewrite these ${texts.length} texts for the product "${productName}":\n\n${JSON.stringify(textsForAi, null, 2)}`;
 
-    // Call OpenClaw via OpenAI-compatible API (SSE streaming, collected into full response)
-    const res = await fetch(`${config.baseUrl}/v1/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${config.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: config.model,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt },
-        ],
-        temperature: 0.6,
-        max_tokens: 16000,
-        stream: true,
-      }),
-    });
+    // Call OpenClaw via OpenAI-compatible API
+    const apiUrl = `${config.baseUrl}/v1/chat/completions`;
+    console.log(`[quiz-rewrite] Calling OpenClaw: ${apiUrl} model=${config.model} texts=${texts.length}`);
 
-    if (!res.ok) {
-      const errText = await res.text();
-      return NextResponse.json({ error: `OpenClaw error: ${res.status} - ${errText}` }, { status: 502 });
-    }
-
-    // Collect SSE stream into full text
-    const reader = res.body?.getReader();
-    const decoder = new TextDecoder();
     let aiText = '';
 
-    if (reader) {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split('\n');
-        for (const line of lines) {
-          if (line.startsWith('data: ') && line !== 'data: [DONE]') {
-            try {
-              const json = JSON.parse(line.slice(6));
-              const delta = json.choices?.[0]?.delta?.content;
-              if (delta) aiText += delta;
-            } catch { /* skip malformed */ }
+    // Try non-streaming first (more reliable), fallback to streaming
+    try {
+      const res = await fetch(apiUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${config.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: config.model,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt },
+          ],
+          temperature: 0.6,
+          max_tokens: 16000,
+          stream: false,
+        }),
+        signal: AbortSignal.timeout(90000),
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`HTTP ${res.status}: ${errText.substring(0, 300)}`);
+      }
+
+      const contentType = res.headers.get('content-type') || '';
+
+      if (contentType.includes('application/json')) {
+        const data = await res.json();
+        aiText = data.choices?.[0]?.message?.content || '';
+      } else {
+        // Server returned SSE even with stream:false — collect it
+        const reader = res.body?.getReader();
+        const decoder = new TextDecoder();
+        if (reader) {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            const chunk = decoder.decode(value, { stream: true });
+            for (const line of chunk.split('\n')) {
+              if (line.startsWith('data: ') && line !== 'data: [DONE]') {
+                try {
+                  const json = JSON.parse(line.slice(6));
+                  const delta = json.choices?.[0]?.delta?.content || json.choices?.[0]?.message?.content || '';
+                  if (delta) aiText += delta;
+                } catch { /* skip */ }
+              }
+            }
           }
         }
       }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Unknown';
+      console.error(`[quiz-rewrite] OpenClaw error: ${msg}`);
+      return NextResponse.json({ error: `OpenClaw connection failed: ${msg}` }, { status: 502 });
     }
 
     if (!aiText.trim()) {
-      return NextResponse.json({ error: 'OpenClaw returned empty response' }, { status: 500 });
+      return NextResponse.json({ error: 'OpenClaw returned empty response. Check if the bot is running.' }, { status: 500 });
     }
+
+    console.log(`[quiz-rewrite] OpenClaw response length: ${aiText.length}`);
 
     const cleaned = cleanAiOutput(aiText);
 
