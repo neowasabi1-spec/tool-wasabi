@@ -1,8 +1,8 @@
 import { supabase } from './supabase';
 
 const OPENCLAW_DEFAULTS = {
-  baseUrl: 'https://lol-jacket-firefox-kinds.trycloudflare.com',
-  apiKey: '76d0f4b9c277c5e457d64d908fc51fe0a2e8a93664b30806',
+  baseUrl: 'https://articles-meeting-shown-pools.trycloudflare.com',
+  apiKey: 'a353475b70538480030b744771524d183521a46ab8db7b02a2846d1103bc5734',
   model: 'openclaw:neo',
 };
 
