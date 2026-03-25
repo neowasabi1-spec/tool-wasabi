@@ -105,12 +105,15 @@ const EDITOR_SCRIPT = `
   var HS='2px dashed rgba(59,130,246,0.4)',SS='2px solid #3b82f6',ES='2px solid #f59e0b';
   var savedRange=null;
 
-  document.addEventListener('selectionchange',function(){
+  function saveSelection(){
     var s=window.getSelection();
     if(s&&s.rangeCount>0&&!s.isCollapsed){
       savedRange=s.getRangeAt(0).cloneRange();
     }
-  });
+  }
+  document.addEventListener('selectionchange',saveSelection);
+  document.addEventListener('mouseup',function(){setTimeout(saveSelection,0);});
+  document.addEventListener('keyup',saveSelection);
 
   function gp(el){
     var p=[];var c=el;
@@ -266,8 +269,18 @@ const EDITOR_SCRIPT = `
         if(sel)window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');break;
       case 'cmd-text-color':
         if(savedRange&&editing&&editEl){
+          editEl.focus();
           var ws=window.getSelection();ws.removeAllRanges();ws.addRange(savedRange);
-          document.execCommand('foreColor',false,m.value);savedRange=null;sendHtml();
+          var r=savedRange.cloneRange();
+          try{
+            var span=document.createElement('span');span.style.color=m.value;
+            r.surroundContents(span);
+          }catch(ex){
+            document.execCommand('styleWithCSS',false,true);
+            document.execCommand('foreColor',false,m.value);
+            document.execCommand('styleWithCSS',false,false);
+          }
+          savedRange=null;sendHtml();
           if(sel)window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');
         }else if(sel){
           sel.style.color=m.value;sendHtml();
