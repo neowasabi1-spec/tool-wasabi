@@ -255,6 +255,32 @@ async function cloneWithBrowser(url: string, viewport: 'desktop' | 'mobile' = 'd
 
     // Wait for images to finish loading after scroll
     await page.waitForTimeout(2000);
+
+    // Force ALL lazy images to load by promoting data-src → src on the LIVE page
+    await page.evaluate(() => {
+      document.querySelectorAll('img').forEach(img => {
+        const lazySources = ['data-src', 'data-lazy-src', 'data-original', 'data-lazy', 'data-ll-src', 'data-image', 'data-wf-src'];
+        for (const attr of lazySources) {
+          const val = img.getAttribute(attr);
+          if (val && val.length > 5) {
+            const curSrc = img.getAttribute('src') || '';
+            const isPlaceholder = !curSrc || curSrc.length < 100 && (
+              curSrc.includes('data:image') || curSrc.includes('placeholder') ||
+              curSrc.includes('blank') || curSrc.includes('pixel') ||
+              curSrc.includes('spacer') || curSrc.includes('grey') ||
+              curSrc.includes('gray') || curSrc.includes('1x1') ||
+              curSrc === '#' || curSrc === '' || curSrc.includes('transparent')
+            );
+            if (isPlaceholder || !curSrc) {
+              img.setAttribute('src', val);
+            }
+          }
+        }
+        img.removeAttribute('loading');
+      });
+    });
+    await page.waitForTimeout(1500);
+
     await page.evaluate(async () => {
       const imgs = Array.from(document.querySelectorAll('img'));
       await Promise.allSettled(
@@ -266,6 +292,18 @@ async function cloneWithBrowser(url: string, viewport: 'desktop' | 'mobile' = 'd
           })
         )
       );
+    });
+
+    // Capture the actual rendered image sources from the live DOM
+    const liveImageSources: Record<number, string> = await page.evaluate(() => {
+      const sources: Record<number, string> = {};
+      document.querySelectorAll('img').forEach((img, i) => {
+        const realSrc = (img as HTMLImageElement).currentSrc || img.getAttribute('src') || '';
+        if (realSrc && !realSrc.startsWith('data:image') && realSrc.length > 10) {
+          sources[i] = realSrc;
+        }
+      });
+      return sources;
     });
 
     // Collect CORS-blocked stylesheet URLs for server-side fetch
@@ -287,8 +325,8 @@ async function cloneWithBrowser(url: string, viewport: 'desktop' | 'mobile' = 'd
     }
 
     // Extract the FULL rendered page with all CSS inlined
-    const result = await page.evaluate((args: { pageUrl: string; corsFixedCss: Record<string, string>; keepScripts: boolean }) => {
-      const { pageUrl, corsFixedCss: fetchedCss, keepScripts: preserveScripts } = args;
+    const result = await page.evaluate((args: { pageUrl: string; corsFixedCss: Record<string, string>; keepScripts: boolean; liveImgSrc: Record<number, string> }) => {
+      const { pageUrl, corsFixedCss: fetchedCss, keepScripts: preserveScripts, liveImgSrc } = args;
 
       function abs(relative: string): string {
         if (!relative || relative.startsWith('data:') || relative.startsWith('blob:') || 
@@ -368,16 +406,35 @@ async function cloneWithBrowser(url: string, viewport: 'desktop' | 'mobile' = 'd
       });
 
       // 6. Fix ALL lazy-loaded images — promote data attributes to src
-      docClone.querySelectorAll('img').forEach(img => {
-        const lazySources = ['data-src', 'data-lazy-src', 'data-original', 'data-lazy', 'data-ll-src', 'data-srcset', 'data-image'];
+      const allImgs = docClone.querySelectorAll('img');
+      allImgs.forEach((img, idx) => {
+        const lazySources = ['data-src', 'data-lazy-src', 'data-original', 'data-lazy', 'data-ll-src', 'data-srcset', 'data-image', 'data-wf-src'];
+
+        // First: if we captured a real currentSrc from the live DOM, use it
+        const liveSrc = liveImgSrc[idx];
+        const curSrc = img.getAttribute('src') || '';
+        const isPlaceholder = !curSrc || curSrc.startsWith('data:image') ||
+          /placeholder|blank|pixel|spacer|grey|gray|1x1|transparent/i.test(curSrc) ||
+          curSrc === '#';
+
+        if (liveSrc && (isPlaceholder || !curSrc)) {
+          img.setAttribute('src', abs(liveSrc));
+        }
+
         for (const attr of lazySources) {
           const val = img.getAttribute(attr);
-          if (val && !img.getAttribute('src')) {
+          if (!val) continue;
+          const currentSrc = img.getAttribute('src') || '';
+          const stillPlaceholder = !currentSrc || currentSrc.startsWith('data:image') ||
+            /placeholder|blank|pixel|spacer|grey|gray|1x1|transparent/i.test(currentSrc) ||
+            currentSrc === '#';
+
+          if (stillPlaceholder) {
             img.setAttribute('src', abs(val));
-          } else if (val) {
-            img.setAttribute(attr, abs(val));
           }
+          img.setAttribute(attr, abs(val));
         }
+
         // Force eager loading
         img.removeAttribute('loading');
         img.setAttribute('loading', 'eager');
@@ -388,6 +445,26 @@ async function cloneWithBrowser(url: string, viewport: 'desktop' | 'mobile' = 'd
         const srcset = img.getAttribute('srcset');
         if (srcset) {
           img.setAttribute('srcset', srcset.split(',').map((e: string) => {
+            const parts = e.trim().split(/\s+/);
+            if (parts[0]) parts[0] = abs(parts[0]);
+            return parts.join(' ');
+          }).join(', '));
+        }
+      });
+
+      // 6b. Handle <picture> elements — ensure <source> srcset is absolute
+      docClone.querySelectorAll('picture source').forEach(source => {
+        const srcset = source.getAttribute('srcset');
+        if (srcset) {
+          source.setAttribute('srcset', srcset.split(',').map((e: string) => {
+            const parts = e.trim().split(/\s+/);
+            if (parts[0]) parts[0] = abs(parts[0]);
+            return parts.join(' ');
+          }).join(', '));
+        }
+        const dataSrcset = source.getAttribute('data-srcset');
+        if (dataSrcset && !srcset) {
+          source.setAttribute('srcset', dataSrcset.split(',').map((e: string) => {
             const parts = e.trim().split(/\s+/);
             if (parts[0]) parts[0] = abs(parts[0]);
             return parts.join(' ');
@@ -469,7 +546,7 @@ async function cloneWithBrowser(url: string, viewport: 'desktop' | 'mobile' = 'd
         imgCount: docClone.querySelectorAll('img').length,
         corsLinks: corsBlockedLinks,
       };
-    }, { pageUrl: url, corsFixedCss, keepScripts });
+    }, { pageUrl: url, corsFixedCss, keepScripts, liveImgSrc: liveImageSources });
 
     return {
       html: result.html,

@@ -163,16 +163,38 @@ function sanitizeClonedHtml(html: string, originalUrl: string, options?: { keepS
 
     // 6. Fix lazy-loaded media & images: promote data-src/data-lazy-src to src
     const lazyTags = 'iframe|video|source|img';
-    const lazyAttrs = ['data-src', 'data-lazy-src', 'data-original'];
+    const lazyAttrs = ['data-src', 'data-lazy-src', 'data-original', 'data-wf-src', 'data-image', 'data-lazy'];
     for (const lazyAttr of lazyAttrs) {
       const dblLazy = new RegExp(`<(${lazyTags})([^>]*?)\\s${lazyAttr}\\s*=\\s*"([^"]*)"([^>]*?)>`, 'gi');
       clean = clean.replace(dblLazy, (_m, tag, before, val, after) => {
-        if (/\ssrc\s*=/i.test(before + after)) return _m;
+        const srcMatch = (before + after).match(/\ssrc\s*=\s*"([^"]*)"/i);
+        if (srcMatch) {
+          const existingSrc = srcMatch[1];
+          const isPlaceholder = !existingSrc || existingSrc.startsWith('data:image') ||
+            /placeholder|blank|pixel|spacer|grey|gray|1x1|transparent/i.test(existingSrc) ||
+            existingSrc === '#';
+          if (isPlaceholder && val) {
+            const fixed = (before + after).replace(/\ssrc\s*=\s*"[^"]*"/i, ` src="${val}"`);
+            return `<${tag}${fixed}>`;
+          }
+          return _m;
+        }
         return `<${tag}${before} src="${val}"${after}>`;
       });
       const sglLazy = new RegExp(`<(${lazyTags})([^>]*?)\\s${lazyAttr}\\s*=\\s*'([^']*)'([^>]*?)>`, 'gi');
       clean = clean.replace(sglLazy, (_m, tag, before, val, after) => {
-        if (/\ssrc\s*=/i.test(before + after)) return _m;
+        const srcMatch = (before + after).match(/\ssrc\s*=\s*'([^']*)'/i);
+        if (srcMatch) {
+          const existingSrc = srcMatch[1];
+          const isPlaceholder = !existingSrc || existingSrc.startsWith('data:image') ||
+            /placeholder|blank|pixel|spacer|grey|gray|1x1|transparent/i.test(existingSrc) ||
+            existingSrc === '#';
+          if (isPlaceholder && val) {
+            const fixed = (before + after).replace(/\ssrc\s*=\s*'[^']*'/i, ` src='${val}'`);
+            return `<${tag}${fixed}>`;
+          }
+          return _m;
+        }
         return `<${tag}${before} src="${val}"${after}>`;
       });
     }
