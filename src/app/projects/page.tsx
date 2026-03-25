@@ -374,7 +374,9 @@ function RichBoxTab({ project, updateProject, sectionKey, title, isBrief }: {
         const current = (project[sectionKey as keyof ProjectType] || {}) as Record<string, unknown>;
         const existing = (current.attachments as AssetItem[] || []);
         updateProject(project.id, { [sectionKey]: { ...current, attachments: [...existing, newAttach] } });
-    }
+      }
+    };
+    reader.readAsDataURL(file);
     e.target.value = '';
   };
 
