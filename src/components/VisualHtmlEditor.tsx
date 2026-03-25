@@ -103,17 +103,6 @@ const EDITOR_SCRIPT = `
 (function(){
   var sel=null,hover=null,editing=false,editEl=null;
   var HS='2px dashed rgba(59,130,246,0.4)',SS='2px solid #3b82f6',ES='2px solid #f59e0b';
-  var savedRange=null;
-
-  function saveSelection(){
-    var s=window.getSelection();
-    if(s&&s.rangeCount>0&&!s.isCollapsed){
-      savedRange=s.getRangeAt(0).cloneRange();
-    }
-  }
-  document.addEventListener('selectionchange',saveSelection);
-  document.addEventListener('mouseup',function(){setTimeout(saveSelection,0);});
-  document.addEventListener('keyup',saveSelection);
 
   function gp(el){
     var p=[];var c=el;
@@ -267,25 +256,6 @@ const EDITOR_SCRIPT = `
     switch(m.type){
       case 'cmd-exec':document.execCommand(m.command,false,m.value||null);sendHtml();
         if(sel)window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');break;
-      case 'cmd-text-color':
-        if(savedRange&&editing&&editEl){
-          editEl.focus();
-          var ws=window.getSelection();ws.removeAllRanges();ws.addRange(savedRange);
-          var r=savedRange.cloneRange();
-          try{
-            var span=document.createElement('span');span.style.color=m.value;
-            r.surroundContents(span);
-          }catch(ex){
-            document.execCommand('styleWithCSS',false,true);
-            document.execCommand('foreColor',false,m.value);
-            document.execCommand('styleWithCSS',false,false);
-          }
-          savedRange=null;sendHtml();
-          if(sel)window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');
-        }else if(sel){
-          sel.style.color=m.value;sendHtml();
-          window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');
-        }break;
       case 'cmd-set-style':if(sel){sel.style[m.property]=m.value;sendHtml();
         window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');}break;
       case 'cmd-set-attr':if(sel){sel.setAttribute(m.name,m.value);sendHtml();
@@ -1290,7 +1260,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
           {/* Colors */}
           <div className="flex items-center gap-1">
             <ColorPicker label="A" title="Text color" value={el ? rgbToHex(el.styles.color) : '#000000'}
-              onChange={(c) => sendToIframe({ type: 'cmd-text-color', value: c })} textColor />
+              onChange={(c) => { if (isEditing) { execCmd('foreColor', c); } else if (el) { setStyle('color', c); } }} textColor />
             <ColorPicker label="" title="Background color" value={el ? rgbToHex(el.styles.backgroundColor) : '#ffffff'}
               onChange={(c) => { if (el) setStyle('backgroundColor', c); }} />
           </div>
@@ -1731,7 +1701,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                       <label className="text-[10px] text-slate-400">Color</label>
                       <div className="flex items-center gap-1">
                         <input type="color" value={rgbToHex(el.styles.color)} className="w-6 h-6 rounded cursor-pointer border border-slate-200"
-                          onChange={(e) => sendToIframe({ type: 'cmd-text-color', value: e.target.value })} />
+                          onChange={(e) => { if (isEditing) { execCmd('foreColor', e.target.value); } else { setStyle('color', e.target.value); } }} />
                         <span className="text-[10px] font-mono text-slate-500">{rgbToHex(el.styles.color)}</span>
                       </div>
                     </div>
@@ -2610,6 +2580,17 @@ function ToolBtn({ icon: Icon, title, onClick, danger }: {
   );
 }
 
+const COLOR_SWATCHES = [
+  '#000000','#434343','#666666','#999999','#b7b7b7','#cccccc','#d9d9d9','#efefef','#f3f3f3','#ffffff',
+  '#980000','#ff0000','#ff9900','#ffff00','#00ff00','#00ffff','#4a86e8','#0000ff','#9900ff','#ff00ff',
+  '#e6b8af','#f4cccc','#fce5cd','#fff2cc','#d9ead3','#d0e0e3','#c9daf8','#cfe2f3','#d9d2e9','#ead1dc',
+  '#dd7e6b','#ea9999','#f9cb9c','#ffe599','#b6d7a8','#a2c4c9','#a4c2f4','#9fc5e8','#b4a7d6','#d5a6bd',
+  '#cc4125','#e06666','#f6b26b','#ffd966','#93c47d','#76a5af','#6d9eeb','#6fa8dc','#8e7cc3','#c27ba0',
+  '#a61c00','#cc0000','#e69138','#f1c232','#6aa84f','#45818e','#3c78d8','#3d85c6','#674ea7','#a64d79',
+  '#85200c','#990000','#b45f06','#bf9000','#38761d','#134f5c','#1155cc','#0b5394','#351c75','#741b47',
+  '#5b0f00','#660000','#783f04','#7f6000','#274e13','#0c343d','#1c4587','#073763','#20124d','#4c1130',
+];
+
 function ColorPicker({ label, title, value, onChange, textColor }: {
   label: string;
   title: string;
@@ -2617,15 +2598,50 @@ function ColorPicker({ label, title, value, onChange, textColor }: {
   onChange: (color: string) => void;
   textColor?: boolean;
 }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [open]);
+
   return (
-    <label className="relative flex items-center gap-1 cursor-pointer group" title={title}>
-      <div className={`flex items-center justify-center w-7 h-7 rounded-md border border-slate-200 group-hover:border-amber-300 transition-colors ${textColor ? 'text-slate-700 font-bold text-xs' : ''}`}>
+    <div className="relative" ref={ref} title={title}>
+      <button
+        type="button"
+        onMouseDown={(e) => { e.preventDefault(); setOpen(!open); }}
+        className={`flex items-center justify-center w-7 h-7 rounded-md border border-slate-200 hover:border-amber-300 transition-colors relative ${textColor ? 'text-slate-700 font-bold text-xs' : ''}`}
+      >
         {textColor ? label : <Palette className="h-3.5 w-3.5 text-slate-500" />}
         <div className="absolute bottom-0 left-0 right-0 h-1 rounded-b-md" style={{ backgroundColor: value }} />
-      </div>
-      <input type="color" value={value} onChange={(e) => onChange(e.target.value)}
-        className="absolute inset-0 opacity-0 cursor-pointer w-full h-full" />
-    </label>
+      </button>
+      {open && (
+        <div className="absolute top-full left-0 mt-1 z-50 bg-white rounded-lg shadow-xl border border-slate-200 p-2 w-[220px]"
+          onMouseDown={(e) => e.preventDefault()}>
+          <div className="grid grid-cols-10 gap-0.5">
+            {COLOR_SWATCHES.map((c) => (
+              <button key={c} type="button"
+                onMouseDown={(e) => { e.preventDefault(); onChange(c); setOpen(false); }}
+                className={`w-[18px] h-[18px] rounded-sm border transition-transform hover:scale-125 ${c === value ? 'border-blue-500 ring-1 ring-blue-500' : 'border-slate-300/50'}`}
+                style={{ backgroundColor: c }}
+                title={c} />
+            ))}
+          </div>
+          <div className="mt-2 flex items-center gap-1.5 border-t border-slate-100 pt-2">
+            <input type="color" value={value}
+              onMouseDown={(e) => e.stopPropagation()}
+              onChange={(e) => { onChange(e.target.value); setOpen(false); }}
+              className="w-6 h-6 rounded cursor-pointer border border-slate-200" />
+            <span className="text-[10px] text-slate-400">Custom</span>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
