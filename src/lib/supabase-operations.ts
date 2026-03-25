@@ -3,6 +3,9 @@ import type {
   Product,
   ProductInsert,
   ProductUpdate,
+  Project,
+  ProjectInsert,
+  ProjectUpdate,
   SwipeTemplate,
   SwipeTemplateInsert,
   SwipeTemplateUpdate,
@@ -86,6 +89,64 @@ export async function deleteProduct(id: string): Promise<void> {
   
   if (error) {
     console.error('Error deleting product:', error);
+    throw error;
+  }
+}
+
+// =====================================================
+// PROJECTS OPERATIONS
+// =====================================================
+
+export async function fetchProjects(): Promise<Project[]> {
+  const { data, error } = await supabase
+    .from('projects')
+    .select('*')
+    .order('created_at', { ascending: false });
+  
+  if (error) {
+    console.error('Error fetching projects:', error);
+    throw error;
+  }
+  return data || [];
+}
+
+export async function createProject(project: ProjectInsert): Promise<Project> {
+  const { data, error } = await supabase
+    .from('projects')
+    .insert(project)
+    .select()
+    .single();
+  
+  if (error) {
+    console.error('Error creating project:', error);
+    throw error;
+  }
+  return data;
+}
+
+export async function updateProject(id: string, updates: ProjectUpdate): Promise<Project> {
+  const { data, error } = await supabase
+    .from('projects')
+    .update(updates)
+    .eq('id', id)
+    .select()
+    .single();
+  
+  if (error) {
+    console.error('Error updating project:', error);
+    throw error;
+  }
+  return data;
+}
+
+export async function deleteProject(id: string): Promise<void> {
+  const { error } = await supabase
+    .from('projects')
+    .delete()
+    .eq('id', id);
+  
+  if (error) {
+    console.error('Error deleting project:', error);
     throw error;
   }
 }

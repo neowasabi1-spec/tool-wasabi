@@ -487,6 +487,37 @@ export interface Database {
           analysis?: string | null;
         };
       };
+      projects: {
+        Row: {
+          id: string;
+          name: string;
+          description: string;
+          status: string;
+          tags: string[];
+          notes: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          name: string;
+          description?: string;
+          status?: string;
+          tags?: string[];
+          notes?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          name?: string;
+          description?: string;
+          status?: string;
+          tags?: string[];
+          notes?: string | null;
+          updated_at?: string;
+        };
+      };
     };
   };
 }
@@ -495,6 +526,10 @@ export interface Database {
 export type Product = Database['public']['Tables']['products']['Row'];
 export type ProductInsert = Database['public']['Tables']['products']['Insert'];
 export type ProductUpdate = Database['public']['Tables']['products']['Update'];
+
+export type Project = Database['public']['Tables']['projects']['Row'];
+export type ProjectInsert = Database['public']['Tables']['projects']['Insert'];
+export type ProjectUpdate = Database['public']['Tables']['projects']['Update'];
 
 export type SwipeTemplate = Database['public']['Tables']['swipe_templates']['Row'];
 export type SwipeTemplateInsert = Database['public']['Tables']['swipe_templates']['Insert'];

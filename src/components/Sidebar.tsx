@@ -25,6 +25,7 @@ import {
   KeyRound,
   Swords,
   Brain,
+  FolderOpen,
 } from 'lucide-react';
 
 const menuItems = [
@@ -87,6 +88,11 @@ const menuItems = [
     name: 'My Products',
     href: '/products',
     icon: ShoppingBag,
+  },
+  {
+    name: 'My Projects',
+    href: '/projects',
+    icon: FolderOpen,
   },
   {
     name: 'Quiz Creator',

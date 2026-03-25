@@ -4,6 +4,7 @@ import { create } from 'zustand';
 import { SwipeApiResponse } from '@/types';
 import type {
   Product,
+  Project,
   SwipeTemplate,
   FunnelPage,
   PostPurchasePage,
@@ -33,6 +34,17 @@ interface AppProduct {
   geoMarket?: string;
   supplier?: string;
   createdAt: Date;
+}
+
+interface AppProject {
+  id: string;
+  name: string;
+  description: string;
+  status: string;
+  tags: string[];
+  notes?: string;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 type ViewFormat = 'desktop' | 'mobile';
@@ -146,6 +158,19 @@ function dbProductToApp(p: Product): AppProduct {
   };
 }
 
+function dbProjectToApp(p: Project): AppProject {
+  return {
+    id: p.id,
+    name: p.name,
+    description: p.description,
+    status: p.status,
+    tags: p.tags,
+    notes: p.notes || undefined,
+    createdAt: new Date(p.created_at),
+    updatedAt: new Date(p.updated_at),
+  };
+}
+
 function dbTemplateToApp(t: SwipeTemplate): AppSwipeTemplate {
   const row = t as SwipeTemplate & { category?: 'standard' | 'quiz' };
   return {
@@ -221,6 +246,12 @@ interface Store {
   updateProduct: (id: string, product: Partial<AppProduct>) => Promise<void>;
   deleteProduct: (id: string) => Promise<void>;
 
+  // Projects
+  projects: AppProject[];
+  addProject: (project: Omit<AppProject, 'id' | 'createdAt' | 'updatedAt'>) => Promise<void>;
+  updateProject: (id: string, project: Partial<AppProject>) => Promise<void>;
+  deleteProject: (id: string) => Promise<void>;
+
   // Custom page types (per Templates)
   customPageTypes: { value: string; label: string }[];
   addCustomPageType: (label: string) => void;
@@ -272,9 +303,10 @@ export const useStore = create<Store>()((set, get) => ({
     };
 
     try {
-      const [products, templates, funnelPages, postPurchasePages] = await fetchWithTimeout(
+      const [products, projects, templates, funnelPages, postPurchasePages] = await fetchWithTimeout(
         Promise.all([
           supabaseOps.fetchProducts(),
+          supabaseOps.fetchProjects().catch(() => [] as Project[]),
           supabaseOps.fetchTemplates(),
           supabaseOps.fetchFunnelPages(),
           supabaseOps.fetchPostPurchasePages(),
@@ -283,6 +315,7 @@ export const useStore = create<Store>()((set, get) => ({
 
       set({
         products: products.map(dbProductToApp),
+        projects: projects.map(dbProjectToApp),
         templates: templates.map(dbTemplateToApp),
         funnelPages: funnelPages.map(dbFunnelPageToApp),
         postPurchasePages: postPurchasePages.map(dbPostPurchaseToApp),
@@ -424,6 +457,59 @@ export const useStore = create<Store>()((set, get) => ({
       }));
     } catch (error) {
       console.error('Error deleting product:', error);
+      throw error;
+    }
+  },
+
+  // Projects
+  projects: [],
+
+  addProject: async (project) => {
+    try {
+      const created = await supabaseOps.createProject({
+        name: project.name,
+        description: project.description,
+        status: project.status,
+        tags: project.tags,
+        notes: project.notes,
+      });
+      set((state) => ({
+        projects: [dbProjectToApp(created), ...state.projects],
+      }));
+    } catch (error) {
+      console.error('Error adding project:', error);
+      throw error;
+    }
+  },
+
+  updateProject: async (id, project) => {
+    try {
+      const updated = await supabaseOps.updateProject(id, {
+        name: project.name,
+        description: project.description,
+        status: project.status,
+        tags: project.tags,
+        notes: project.notes,
+      });
+      set((state) => ({
+        projects: state.projects.map((p) =>
+          p.id === id ? dbProjectToApp(updated) : p
+        ),
+      }));
+    } catch (error) {
+      console.error('Error updating project:', error);
+      throw error;
+    }
+  },
+
+  deleteProject: async (id) => {
+    try {
+      await supabaseOps.deleteProject(id);
+      set((state) => ({
+        projects: state.projects.filter((p) => p.id !== id),
+      }));
+    } catch (error) {
+      console.error('Error deleting project:', error);
       throw error;
     }
   },
