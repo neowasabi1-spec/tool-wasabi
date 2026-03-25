@@ -9,7 +9,7 @@ import {
   Type, Save, MousePointer, Heading1, Heading2, Heading3,
   CheckCircle, Strikethrough, List, ListOrdered, Minus,
   Sparkles, Loader2, Wand2, ImagePlus, Bot, Zap, RotateCcw, Send,
-  Smartphone, Monitor, Upload, Film,
+  Smartphone, Monitor, Upload, Film, Paperclip,
   BookmarkPlus, Library, Tag, Clock, FileCode, Search,
   BookOpen, ArrowDownToLine, Eye as EyeIcon,
 } from 'lucide-react';
@@ -842,6 +842,51 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     }
   }, [aiEditHistory, editorViewport, mobileHtml, pushUndo]);
 
+  /* ── Element AI Chat — image upload/paste ── */
+  const elAiFileRef = useRef<HTMLInputElement>(null);
+  const [elAiUploading, setElAiUploading] = useState(false);
+
+  const handleElAiImageUpload = useCallback(async (file: File) => {
+    if (elAiUploading) return;
+    setElAiUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const res = await fetch('/api/upload-media', { method: 'POST', body: fd });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Upload failed');
+      if (data.url) {
+        if (selectedElement?.tagName === 'img') {
+          setAttr('src', data.url);
+          setAttr('alt', file.name.replace(/\.[^.]+$/, '').replace(/[_-]/g, ' '));
+          setElAiMessages(prev => [...prev,
+            { role: 'user', content: `📎 Uploaded: ${file.name}` },
+            { role: 'assistant', content: `Done! Image replaced with uploaded file.` },
+          ]);
+        } else {
+          setElAiInput(prev => prev + (prev ? ' ' : '') + data.url);
+          setElAiMessages(prev => [...prev,
+            { role: 'user', content: `📎 Uploaded: ${file.name} → ${data.url}` },
+          ]);
+        }
+      }
+    } catch (err) {
+      setElAiMessages(prev => [...prev, { role: 'assistant', content: `Upload error: ${err instanceof Error ? err.message : 'Failed'}` }]);
+    } finally {
+      setElAiUploading(false);
+    }
+  }, [elAiUploading, selectedElement, setAttr]);
+
+  const handleElAiPaste = useCallback((e: React.ClipboardEvent) => {
+    const items = Array.from(e.clipboardData.items);
+    const imageItem = items.find(i => i.kind === 'file' && i.type.startsWith('image/'));
+    if (imageItem) {
+      e.preventDefault();
+      const file = imageItem.getAsFile();
+      if (file) handleElAiImageUpload(file);
+    }
+  }, [handleElAiImageUpload]);
+
   /* ── Element AI Chat Handler ── */
   const handleElAiSend = useCallback(async () => {
     if (!elAiInput.trim() || elAiLoading) return;
@@ -1668,12 +1713,23 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                 <div ref={elAiChatEndRef} />
               </div>
 
-              <div className="p-2 border-t border-slate-100 flex gap-1.5">
+              <div className="p-2 border-t border-slate-100 flex gap-1 items-end">
+                <input ref={elAiFileRef} type="file" accept="image/*,video/*" className="hidden"
+                  onChange={(e) => { const f = e.target.files?.[0]; if (f) handleElAiImageUpload(f); e.target.value = ''; }} />
+                <button
+                  onClick={() => elAiFileRef.current?.click()}
+                  disabled={elAiUploading || elAiLoading}
+                  className="p-1.5 text-slate-400 hover:text-violet-600 hover:bg-violet-50 rounded-lg transition-colors shrink-0 disabled:opacity-40"
+                  title="Upload image or video"
+                >
+                  {elAiUploading ? <Loader2 className="w-3.5 h-3.5 animate-spin text-violet-500" /> : <Paperclip className="w-3.5 h-3.5" />}
+                </button>
                 <input
                   type="text"
                   value={elAiInput}
                   onChange={(e) => setElAiInput(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleElAiSend(); } }}
+                  onPaste={handleElAiPaste}
                   placeholder={el ? 'E.g.: Make text bigger...' : 'E.g.: Add tracking script before </head>...'}
                   className="flex-1 px-2.5 py-1.5 border border-slate-200 rounded-lg text-[11px] focus:ring-1 focus:ring-violet-500 focus:border-violet-500 outline-none"
                   disabled={elAiLoading}
@@ -1681,7 +1737,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                 <button
                   onClick={handleElAiSend}
                   disabled={elAiLoading || !elAiInput.trim()}
-                  className="px-2 py-1.5 bg-violet-600 text-white rounded-lg hover:bg-violet-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                  className="px-2 py-1.5 bg-violet-600 text-white rounded-lg hover:bg-violet-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0"
                 >
                   {elAiLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
                 </button>
