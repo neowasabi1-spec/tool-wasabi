@@ -167,6 +167,33 @@ const EDITOR_SCRIPT = `
     window.parent.postMessage({type:'request-insert-after'},'*');};
   document.body.appendChild(plusBtn);
 
+  var delBtn=document.createElement('div');
+  delBtn.innerHTML='<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
+  delBtn.style.cssText='position:absolute;z-index:999999;width:28px;height:28px;border-radius:6px;background:#ef4444;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.3);pointer-events:auto;transition:transform .15s,background .15s;user-select:none;opacity:0;transition:opacity .15s,transform .15s;';
+  delBtn.onmouseenter=function(){delBtn.style.transform='scale(1.15)';delBtn.style.background='#dc2626';};
+  delBtn.onmouseleave=function(){delBtn.style.transform='scale(1)';delBtn.style.background='#ef4444';};
+  var delTarget=null;
+  delBtn.onclick=function(e){e.preventDefault();e.stopPropagation();
+    var toDelete=delTarget||sel;
+    if(toDelete){
+      if(sel===toDelete){co(sel);sel=null;insertTarget=null;plusBtn.style.display='none';window.parent.postMessage({type:'element-deselected'},'*');}
+      if(hover===toDelete)hover=null;
+      toDelete.remove();delTarget=null;delBtn.style.opacity='0';
+      sendHtml();
+    }
+  };
+  document.body.appendChild(delBtn);
+
+  function positionDel(el){
+    if(!el||sk(el)){delBtn.style.opacity='0';return;}
+    var r=el.getBoundingClientRect();
+    delBtn.style.left=(r.right-34+window.scrollX)+'px';
+    delBtn.style.top=(r.top+6+window.scrollY)+'px';
+    delBtn.style.opacity='1';
+    delTarget=el;
+  }
+  function hideDel(){delBtn.style.opacity='0';delTarget=null;}
+
   function positionPlus(){
     if(!sel){plusBtn.style.display='none';return;}
     var r=sel.getBoundingClientRect();
@@ -176,19 +203,23 @@ const EDITOR_SCRIPT = `
   }
 
   function selectEl(el){
-    if(sk(el)||el===plusBtn)return;
+    if(sk(el)||isUI(el))return;
     if(sel)co(sel);sel=el;insertTarget=el;
     el.style.outline=SS;el.style.outlineOffset='2px';
     window.parent.postMessage({type:'element-selected',data:gi(el)},'*');
-    positionPlus();
+    positionPlus();positionDel(el);
   }
 
   function sendHtml(){
     var saved=null,so=null;
     if(sel){saved=sel.style.outline;so=sel.style.outlineOffset;sel.style.outline='';sel.style.outlineOffset='';}
     if(editEl){editEl.contentEditable='false';}
+    plusBtn.style.display='none';var delVis=delBtn.style.opacity;delBtn.style.opacity='0';
+    delBtn.style.display='none';plusBtn.style.display='none';
     var h='<!DOCTYPE html>'+document.documentElement.outerHTML;
-    if(sel){sel.style.outline=saved;sel.style.outlineOffset=so;}
+    delBtn.style.display='';plusBtn.style.display='';
+    if(sel){sel.style.outline=saved;sel.style.outlineOffset=so;positionPlus();}
+    delBtn.style.opacity=delVis;
     if(editEl){editEl.contentEditable='true';}
     window.parent.postMessage({type:'html-updated',data:h},'*');
   }
@@ -202,8 +233,8 @@ const EDITOR_SCRIPT = `
   }
 
   // Block native image/link drag so click events fire normally
-  window.addEventListener('scroll',positionPlus,true);
-  window.addEventListener('resize',positionPlus);
+  window.addEventListener('scroll',function(){positionPlus();if(sel)positionDel(sel);else if(hover)positionDel(hover);},true);
+  window.addEventListener('resize',function(){positionPlus();if(sel)positionDel(sel);else if(hover)positionDel(hover);});
 
   document.addEventListener('dragstart',function(e){e.preventDefault();},true);
 
@@ -220,19 +251,26 @@ const EDITOR_SCRIPT = `
     });
   }).observe(document.body,{childList:true,subtree:true});
 
+  function isUI(el){return el===plusBtn||el===delBtn||plusBtn.contains(el)||delBtn.contains(el);}
+
   document.addEventListener('mouseover',function(e){
-    if(editing)return;var el=e.target;if(sk(el)||el===sel||el===plusBtn)return;
+    if(editing)return;var el=e.target;if(sk(el)||el===sel||isUI(el))return;
     if(hover&&hover!==sel)co(hover);hover=el;el.style.outline=HS;el.style.outlineOffset='1px';
+    positionDel(el);
   },true);
 
   document.addEventListener('mouseout',function(e){
-    var el=e.target;if(el===plusBtn)return;if(el!==sel)co(el);if(hover===el)hover=null;
+    var el=e.target;if(isUI(el))return;if(el!==sel)co(el);if(hover===el)hover=null;
+    var related=e.relatedTarget;
+    if(!related||(!isUI(related)&&related!==el)){
+      setTimeout(function(){if(!hover&&!delBtn.matches(':hover'))hideDel();},100);
+    }
   },true);
 
   // mousedown on images/svg/video/canvas as primary selection (click may not fire due to residual drag)
   document.addEventListener('mousedown',function(e){
     var el=e.target;
-    if(!el||!el.tagName||el===plusBtn||plusBtn.contains(el))return;
+    if(!el||!el.tagName||isUI(el))return;
     var t=el.tagName.toLowerCase();
     if(t==='img'||t==='svg'||t==='video'||t==='canvas'||t==='picture'||t==='iframe'||t==='object'||t==='embed'){
       e.preventDefault();e.stopPropagation();
@@ -242,7 +280,7 @@ const EDITOR_SCRIPT = `
   },true);
 
   document.addEventListener('click',function(e){
-    if(e.target===plusBtn||plusBtn.contains(e.target))return;
+    if(isUI(e.target))return;
     if(editing&&editEl&&!editEl.contains(e.target)){finishEdit();}
     if(editing&&editEl&&editEl.contains(e.target))return;
     e.preventDefault();e.stopPropagation();
@@ -301,7 +339,7 @@ const EDITOR_SCRIPT = `
         if(sel){sel.style.outline=SS;sel.style.outlineOffset='2px';}
         window.parent.postMessage({type:'clean-html',data:ch},'*');break;
       case 'cmd-deselect':if(editing)finishEdit();if(sel)co(sel);sel=null;hover=null;
-        plusBtn.style.display='none';
+        plusBtn.style.display='none';hideDel();
         window.parent.postMessage({type:'element-deselected'},'*');break;
       case 'cmd-select-path':try{var found=document.querySelector(m.path);
         if(found){if(sel)co(sel);sel=found;found.style.outline=SS;found.style.outlineOffset='2px';
