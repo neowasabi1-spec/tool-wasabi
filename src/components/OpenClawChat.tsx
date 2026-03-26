@@ -298,67 +298,28 @@ RULES:
       }));
 
     try {
-      const res = await fetch('/api/openclaw/queue', {
+      const allMessages = [
+        ...chatHistory,
+        { role: 'user', content: fullMessage },
+      ];
+
+      const res = await fetch('/api/openclaw/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          message: fullMessage,
+          messages: allMessages,
           systemPrompt: buildSystemPrompt(),
-          section: section.name,
-          chatHistory,
         }),
       });
 
-      const queueData = await res.json();
-      if (queueData.error) {
-        addMessage('system', `Error: ${queueData.error}`);
+      const data = await res.json();
+
+      if (!res.ok || data.error) {
+        addMessage('system', `Error: ${data.error || `HTTP ${res.status}`}`);
         return;
       }
 
-      const msgId = queueData.id;
-      const assistantId = generateId();
-      setMessages(prev => [...prev, { id: assistantId, role: 'assistant', content: '⏳ Waiting for OpenClaw...', timestamp: new Date() }]);
-
-      let attempts = 0;
-      const maxAttempts = 600;
-      const pollInterval = 3000;
-
-      const pollForResponse = async (): Promise<void> => {
-        attempts++;
-        try {
-          const pollRes = await fetch(`/api/openclaw/queue?id=${msgId}`);
-          const pollData = await pollRes.json();
-
-          if (pollData.status === 'completed' && pollData.content) {
-            setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, content: pollData.content } : m));
-            return;
-          }
-
-          if (pollData.status === 'error') {
-            setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, role: 'system' as const, content: `Error: ${pollData.error || 'OpenClaw error'}` } : m));
-            return;
-          }
-
-          if (attempts >= maxAttempts) {
-            setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, role: 'system' as const, content: 'Error: Response timeout (30min)' } : m));
-            return;
-          }
-
-          const dots = '.'.repeat((attempts % 3) + 1);
-          setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, content: `⏳ OpenClaw is thinking${dots}` } : m));
-
-          await new Promise(r => setTimeout(r, pollInterval));
-          return pollForResponse();
-        } catch {
-          if (attempts < maxAttempts) {
-            await new Promise(r => setTimeout(r, pollInterval));
-            return pollForResponse();
-          }
-          setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, role: 'system' as const, content: 'Error: Connection lost' } : m));
-        }
-      };
-
-      await pollForResponse();
+      addMessage('assistant', data.content || 'No response');
     } catch (err) {
       addMessage('system', `Connection failed: ${(err as Error).message}`);
     } finally {
