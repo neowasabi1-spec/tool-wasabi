@@ -160,24 +160,8 @@ function makeAbsolute(path: string, origin: string, basePath: string, protocol: 
   return basePath + trimmed;
 }
 
-function unwrapCdnProxy(url: string): string {
-  const match = url.match(/\/cdn-cgi\/image\/[^/]*\/(https?:\/\/.+)/i);
-  if (match) return match[1];
-  return url;
-}
-
-function unwrapCdnProxiesInHtml(html: string): string {
-  return html
-    .replace(/(src|srcset|poster|data-src|data-lazy-src)=(["'])(.*?)\2/gi, (_m, attr, quote, value) => {
-      if (attr.toLowerCase() === 'srcset') {
-        const fixed = value.replace(/https?:\/\/[^/]+\/cdn-cgi\/image\/[^/]*\/(https?:\/\/[^\s,]+)/gi, '$1');
-        return `${attr}=${quote}${fixed}${quote}`;
-      }
-      return `${attr}=${quote}${unwrapCdnProxy(value)}${quote}`;
-    })
-    .replace(/url\((['"]?)(https?:\/\/[^)'"]*\/cdn-cgi\/image\/[^/]*\/(https?:\/\/[^)'"]+))\1\)/gi,
-      (_m, quote, _full, inner) => `url(${quote}${inner}${quote})`)
-    .replace(/loading=["']lazy["']/gi, 'loading="eager"');
+function fixLazyLoading(html: string): string {
+  return html.replace(/loading=["']lazy["']/gi, 'loading="eager"');
 }
 
 function absolutizeUrls(html: string, baseUrl: string): string {
@@ -231,7 +215,7 @@ export async function POST(request: NextRequest) {
     } else {
       originalHtml = await clonePageHtml(source_url!);
     }
-    originalHtml = unwrapCdnProxiesInHtml(originalHtml);
+    originalHtml = fixLazyLoading(originalHtml);
     if (originalHtml.length < 50) {
       return NextResponse.json({ error: 'HTML too short' }, { status: 400 });
     }
