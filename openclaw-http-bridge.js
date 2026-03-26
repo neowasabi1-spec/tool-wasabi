@@ -12,8 +12,9 @@ function callOpenClaw(userMessage) {
     const tmpFile = path.join(os.tmpdir(), 'openclaw-msg-' + Date.now() + '.txt');
     fs.writeFileSync(tmpFile, userMessage, 'utf8');
 
-    const cmd = 'openclaw agent --agent main --message "' + tmpFile + '" --json';
-    const proc = spawn('cmd', ['/c', 'openclaw', 'agent', '--agent', 'main', '--message', userMessage, '--json'], {
+    var safeMsg = userMessage.length > 6000 ? userMessage.substring(0, 6000) + '...' : userMessage;
+
+    const proc = spawn('cmd', ['/c', 'openclaw', 'agent', '--agent', 'main', '--message', safeMsg, '--json'], {
       timeout: 600000,
       windowsHide: true,
     });
@@ -84,9 +85,23 @@ var server = http.createServer(function(req, res) {
         var lastUser = userMsgs[userMsgs.length - 1];
         var userText = (lastUser && lastUser.content) || '';
 
-        console.log('[' + ts() + '] >> "' + userText.substring(0, 60) + '..."');
+        var context = '[Sei Merlino, AI assistant di Funnel Swiper. Hai pieni poteri: gestisci prodotti, progetti, funnel, template, clonazione pagine, analisi, compliance, quiz, branding, deploy. Rispondi nella lingua dell\'utente.]\n\n';
 
-        callOpenClaw(userText).then(function(content) {
+        var recentHistory = '';
+        var nonSystemMsgs = messages.filter(function(m) { return m.role !== 'system'; });
+        if (nonSystemMsgs.length > 1) {
+          var hist = nonSystemMsgs.slice(-6, -1);
+          for (var i = 0; i < hist.length; i++) {
+            recentHistory += hist[i].role.toUpperCase() + ': ' + hist[i].content.substring(0, 200) + '\n';
+          }
+          if (recentHistory) recentHistory = '[Chat recente]\n' + recentHistory + '[Fine chat]\n\n';
+        }
+
+        var fullMessage = context + recentHistory + userText;
+
+        console.log('[' + ts() + '] >> "' + userText.substring(0, 80) + '..."');
+
+        callOpenClaw(fullMessage).then(function(content) {
           console.log('[' + ts() + '] << ' + content.substring(0, 80) + '...');
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({
