@@ -682,11 +682,13 @@ export const useStore = create<Store>()((set, get) => ({
     await get().updateFunnelPage(id, { swipeStatus: 'in_progress' });
 
     try {
+      const clonedHtml = page.clonedData?.html || '';
       const response = await fetch(SWIPE_API_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           source_url: page.urlToSwipe,
+          html: clonedHtml || undefined,
           product: {
             name: product.name,
             description: product.description,
@@ -809,11 +811,13 @@ export const useStore = create<Store>()((set, get) => ({
     await get().updatePostPurchasePage(id, { swipeStatus: 'in_progress' });
 
     try {
+      const ppClonedHtml = page.clonedData?.html || '';
       const response = await fetch(SWIPE_API_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           source_url: page.urlToSwipe,
+          html: ppClonedHtml || undefined,
           product: {
             name: product.name,
             description: product.description,
