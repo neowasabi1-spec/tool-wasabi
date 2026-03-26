@@ -1,7 +1,44 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-// URL del servizio di clonazione - configurabile via env
 const CLONER_API_URL = process.env.CLONER_API_URL || 'http://localhost:8080';
+
+function fixClonedHtml(html: string, sourceUrl: string): string {
+  let fixed = html;
+  fixed = fixed.replace(
+    /(src|srcset|poster|data-src|data-lazy-src)=(["'])(.*?)\2/gi,
+    (_m, attr, quote, value) => {
+      if (attr.toLowerCase() === 'srcset') {
+        const unwrapped = value.replace(
+          /https?:\/\/[^/]+\/cdn-cgi\/image\/[^/]*\/(https?:\/\/[^\s,]+)/gi, '$1'
+        );
+        return `${attr}=${quote}${unwrapped}${quote}`;
+      }
+      const match = value.match(/\/cdn-cgi\/image\/[^/]*\/(https?:\/\/.+)/i);
+      return match
+        ? `${attr}=${quote}${match[1]}${quote}`
+        : `${attr}=${quote}${value}${quote}`;
+    }
+  );
+  fixed = fixed.replace(/loading=["']lazy["']/gi, 'loading="eager"');
+
+  try {
+    const urlObj = new URL(sourceUrl);
+    const origin = urlObj.origin;
+    const basePath = sourceUrl.substring(0, sourceUrl.lastIndexOf('/') + 1);
+    fixed = fixed.replace(
+      /(src|href|poster|data-src|data-lazy-src)=(["'])((?!https?:\/\/|data:|#|mailto:|javascript:|\/\/).*?)\2/gi,
+      (_m, attr, quote, path) => {
+        const trimmed = path.trim();
+        if (!trimmed) return `${attr}=${quote}${path}${quote}`;
+        const abs = trimmed.startsWith('//') ? urlObj.protocol + trimmed
+          : trimmed.startsWith('/') ? origin + trimmed
+          : basePath + trimmed;
+        return `${attr}=${quote}${abs}${quote}`;
+      }
+    );
+  } catch { /* sourceUrl parse failed, skip absolutize */ }
+  return fixed;
+}
 
 export interface CloneRequest {
   url: string;
@@ -67,15 +104,17 @@ export async function POST(request: NextRequest) {
 
     const data: CloneResponse = await cloneResponse.json();
 
+    const cleanHtml = data.html ? fixClonedHtml(data.html, body.url) : data.html;
+
     return NextResponse.json({
       success: true,
       url: data.url,
       method_used: data.method_used,
-      content_length: data.content_length,
+      content_length: cleanHtml?.length || data.content_length,
       title: data.title,
       duration_seconds: data.duration_seconds,
-      html: data.html,
-      html_preview: data.html?.substring(0, 500) + '...',
+      html: cleanHtml,
+      html_preview: cleanHtml?.substring(0, 500) + '...',
     });
 
   } catch (error) {
