@@ -23,6 +23,7 @@ function callOpenClaw(text) {
       timeout: REQUEST_TIMEOUT,
       maxBuffer: 10 * 1024 * 1024,
       env: { ...process.env },
+      shell: true,
     }, (err, stdout, stderr) => {
       if (err) {
         console.error(`[${ts()}] CLI stderr: ${stderr}`);
