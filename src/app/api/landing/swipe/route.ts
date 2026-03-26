@@ -305,55 +305,79 @@ CRITICAL RULES:
       return NextResponse.json({ error: 'AI returned invalid JSON', raw: cleaned.substring(0, 500) }, { status: 500 });
     }
 
-    let resultHtml = originalHtml;
-    let replacements = 0;
-
+    const replacementPairs: Array<{ from: string; to: string; attr?: string }> = [];
     for (const rw of rewrites) {
       const original = texts[rw.id];
       if (!original || !rw.rewritten || original.original === rw.rewritten) continue;
-
       if (original.tag.startsWith('attr:')) {
-        const attrName = original.tag.replace('attr:', '');
-        const escaped = original.original.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const attrRegex = new RegExp(`(${attrName}=["'])${escaped}(["'])`, 'g');
-        const before = resultHtml;
-        resultHtml = resultHtml.replace(attrRegex, `$1${rw.rewritten}$2`);
-        if (resultHtml !== before) replacements++;
+        replacementPairs.push({ from: original.original, to: rw.rewritten, attr: original.tag.replace('attr:', '') });
       } else {
-        const escaped = original.original.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const parts = resultHtml.split(/(<[^>]*>)/g);
-        let changed = false;
-        for (let i = 0; i < parts.length; i++) {
-          if (!parts[i].startsWith('<')) {
-            const before = parts[i];
-            parts[i] = parts[i].replace(new RegExp(escaped, 'g'), rw.rewritten);
-            if (parts[i] !== before) changed = true;
-          }
-        }
-        if (changed) {
-          resultHtml = parts.join('');
-          replacements++;
-        }
+        replacementPairs.push({ from: original.original, to: rw.rewritten });
       }
     }
 
-    const titleMatch = resultHtml.match(/<title[^>]*>([^<]*)<\/title>/i);
+    const swipeScript = `<script data-swipe-replacer>
+(function(){
+  var pairs = ${JSON.stringify(replacementPairs)};
+  function walkText(node){
+    if(node.nodeType===3){
+      var t=node.textContent;
+      for(var i=0;i<pairs.length;i++){
+        if(!pairs[i].attr&&t.indexOf(pairs[i].from)!==-1){
+          t=t.split(pairs[i].from).join(pairs[i].to);
+        }
+      }
+      if(t!==node.textContent)node.textContent=t;
+    }else if(node.nodeType===1&&node.tagName!=='SCRIPT'&&node.tagName!=='STYLE'){
+      for(var c=node.firstChild;c;c=c.nextSibling)walkText(c);
+    }
+  }
+  walkText(document.body);
+  for(var i=0;i<pairs.length;i++){
+    if(pairs[i].attr){
+      var els=document.querySelectorAll('['+pairs[i].attr+']');
+      for(var j=0;j<els.length;j++){
+        var v=els[j].getAttribute(pairs[i].attr);
+        if(v&&v.indexOf(pairs[i].from)!==-1){
+          els[j].setAttribute(pairs[i].attr,v.split(pairs[i].from).join(pairs[i].to));
+        }
+      }
+    }
+  }
+  var titleEl=document.querySelector('title');
+  if(titleEl){
+    var tt=titleEl.textContent;
+    for(var i=0;i<pairs.length;i++){
+      if(!pairs[i].attr&&tt.indexOf(pairs[i].from)!==-1){
+        tt=tt.split(pairs[i].from).join(pairs[i].to);
+      }
+    }
+    titleEl.textContent=tt;
+  }
+})();
+<\/script>`;
+
+    let resultHtml = originalHtml;
+    if (resultHtml.includes('</body>')) {
+      resultHtml = resultHtml.replace('</body>', swipeScript + '</body>');
+    } else {
+      resultHtml += swipeScript;
+    }
+
+    const newTitle = texts.length > 0 ? (replacementPairs.find(p => !p.attr)?.to || '') : '';
 
     return NextResponse.json({
       success: true,
       html: resultHtml,
       original_title: originalHtml.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1] || '',
-      new_title: titleMatch?.[1] || '',
+      new_title: newTitle,
       original_length: originalHtml.length,
       new_length: resultHtml.length,
       totalTexts: texts.length,
-      replacements,
+      replacements: replacementPairs.length,
       provider: usedProvider,
-      method_used: 'text-replacement',
-      changes_made: rewrites.filter(rw => {
-        const orig = texts[rw.id];
-        return orig && rw.rewritten && orig.original !== rw.rewritten;
-      }).map(rw => ({ from: texts[rw.id].original.substring(0, 50), to: rw.rewritten.substring(0, 50) })),
+      method_used: 'dom-replacement',
+      changes_made: replacementPairs.map(p => ({ from: p.from.substring(0, 50), to: p.to.substring(0, 50) })),
     });
   } catch (error) {
     console.error('Swipe error:', error);
