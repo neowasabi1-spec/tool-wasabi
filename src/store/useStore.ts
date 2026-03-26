@@ -15,7 +15,7 @@ import type {
 } from '@/types/database';
 import * as supabaseOps from '@/lib/supabase-operations';
 
-const SWIPE_API_URL = 'https://claude-code-agents.fly.dev/api/landing/swipe';
+const SWIPE_API_URL = '/api/landing/swipe';
 
 // Helper to convert database types to app types
 interface AppProduct {
@@ -711,16 +711,16 @@ export const useStore = create<Store>()((set, get) => ({
 
       await get().updateFunnelPage(id, {
         swipeStatus: 'completed',
-        swipeResult: `✓ Swipe completed: "${data.new_title}" (${data.new_length} chars, ${data.processing_time_seconds.toFixed(2)}s)`,
+        swipeResult: `✓ Swipe completed: "${data.new_title || ''}" (${data.new_length || 0} chars, ${data.replacements || 0} replacements)`,
         swipedData: {
           html: data.html,
-          originalTitle: data.original_title,
-          newTitle: data.new_title,
-          originalLength: data.original_length,
-          newLength: data.new_length,
-          processingTime: data.processing_time_seconds,
-          methodUsed: data.method_used,
-          changesMade: data.changes_made,
+          originalTitle: data.original_title || '',
+          newTitle: data.new_title || '',
+          originalLength: data.original_length || 0,
+          newLength: data.new_length || 0,
+          processingTime: data.processing_time_seconds || 0,
+          methodUsed: data.method_used || 'text-replacement',
+          changesMade: data.changes_made || [],
           swipedAt: new Date(),
         },
       });
@@ -838,16 +838,16 @@ export const useStore = create<Store>()((set, get) => ({
 
       await get().updatePostPurchasePage(id, {
         swipeStatus: 'completed',
-        swipeResult: `✓ Swipe completed: "${data.new_title}" (${data.new_length} chars)`,
+        swipeResult: `✓ Swipe completed: "${data.new_title || ''}" (${data.new_length || 0} chars, ${data.replacements || 0} replacements)`,
         swipedData: {
           html: data.html,
-          originalTitle: data.original_title,
-          newTitle: data.new_title,
-          originalLength: data.original_length,
-          newLength: data.new_length,
-          processingTime: data.processing_time_seconds,
-          methodUsed: data.method_used,
-          changesMade: data.changes_made,
+          originalTitle: data.original_title || '',
+          newTitle: data.new_title || '',
+          originalLength: data.original_length || 0,
+          newLength: data.new_length || 0,
+          processingTime: data.processing_time_seconds || 0,
+          methodUsed: data.method_used || 'text-replacement',
+          changesMade: data.changes_made || [],
           swipedAt: new Date(),
         },
       });
