@@ -1,6 +1,6 @@
-const OPENCLAW_BASE_URL = process.env.OPENCLAW_BASE_URL || '';
-const OPENCLAW_API_KEY = process.env.OPENCLAW_API_KEY || '';
-const OPENCLAW_MODEL = process.env.OPENCLAW_MODEL || 'openclaw:neo';
+const OPENCLAW_BASE_URL = process.env.OPENCLAW_BASE_URL || 'https://along-pda-surprise-smaller.trycloudflare.com';
+const OPENCLAW_API_KEY = process.env.OPENCLAW_API_KEY || 'a353475b70538480030b744771524d183521a46ab8db7b02a2846d1103bc5734';
+const OPENCLAW_MODEL = process.env.OPENCLAW_MODEL || 'merlino';
 
 /**
  * Call OpenClaw directly via HTTP (OpenAI-compatible API).
