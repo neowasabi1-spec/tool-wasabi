@@ -2025,74 +2025,98 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
       </div>
 
       {/* ═══ Insert Section Panel (triggered by + button) ═══ */}
-      {showInsertPanel && (
+      {showInsertPanel && (() => {
+        const BUILTIN_BLOCKS = [
+          { id: 'b-text', icon: '📝', label: 'Text Block', html: '<div style="padding:40px 20px;max-width:800px;margin:0 auto"><h2 style="font-size:28px;font-weight:700;margin-bottom:16px;color:#1a1a1a">Your Headline Here</h2><p style="font-size:16px;line-height:1.7;color:#444">Write your paragraph text here. You can edit this directly in the visual editor by double-clicking.</p></div>' },
+          { id: 'b-image', icon: '🖼️', label: 'Image', html: '<div style="padding:24px 20px;text-align:center"><img src="https://placehold.co/800x400/e2e8f0/64748b?text=Your+Image+Here" alt="Image" style="max-width:100%;height:auto;border-radius:8px" /></div>' },
+          { id: 'b-video', icon: '🎬', label: 'Video', html: '<div style="padding:24px 20px;max-width:800px;margin:0 auto"><div style="position:relative;padding-bottom:56.25%;height:0;overflow:hidden;border-radius:8px;background:#000"><iframe src="https://www.youtube.com/embed/dQw4w9WgXcQ" style="position:absolute;top:0;left:0;width:100%;height:100%;border:0" allow="autoplay;encrypted-media" allowfullscreen></iframe></div></div>' },
+          { id: 'b-2col', icon: '▥', label: '2 Columns', html: '<div style="padding:40px 20px;max-width:960px;margin:0 auto;display:flex;gap:32px;flex-wrap:wrap"><div style="flex:1;min-width:280px"><img src="https://placehold.co/460x300/e2e8f0/64748b?text=Image" alt="" style="width:100%;border-radius:8px" /></div><div style="flex:1;min-width:280px"><h3 style="font-size:22px;font-weight:700;margin-bottom:12px;color:#1a1a1a">Column Title</h3><p style="font-size:15px;line-height:1.7;color:#555">Description text goes here. Edit it in the visual editor.</p><a href="#" style="display:inline-block;margin-top:16px;padding:12px 28px;background:#3b82f6;color:#fff;text-decoration:none;border-radius:8px;font-weight:600;font-size:14px">Learn More</a></div></div>' },
+          { id: 'b-offer', icon: '🏷️', label: 'Offer / CTA', html: '<div style="padding:48px 20px;background:linear-gradient(135deg,#1e40af,#7c3aed);text-align:center"><h2 style="font-size:32px;font-weight:800;color:#fff;margin-bottom:8px">Special Offer</h2><p style="font-size:18px;color:rgba(255,255,255,.85);margin-bottom:24px">Get 50% off for a limited time only</p><div style="display:inline-block;background:#fff;border-radius:12px;padding:24px 40px;margin-bottom:20px"><div style="font-size:14px;color:#6b7280;text-decoration:line-through">$197.00</div><div style="font-size:40px;font-weight:800;color:#1e40af">$97</div></div><br/><a href="#" style="display:inline-block;padding:16px 48px;background:#f59e0b;color:#1a1a1a;text-decoration:none;border-radius:10px;font-weight:800;font-size:18px;text-transform:uppercase;letter-spacing:1px">Buy Now</a><p style="font-size:12px;color:rgba(255,255,255,.6);margin-top:16px">60-day money-back guarantee</p></div>' },
+          { id: 'b-testimonial', icon: '💬', label: 'Testimonials', html: '<div style="padding:48px 20px;background:#f8fafc"><div style="max-width:960px;margin:0 auto"><h2 style="text-align:center;font-size:26px;font-weight:700;margin-bottom:32px;color:#1a1a1a">What Our Customers Say</h2><div style="display:flex;gap:20px;flex-wrap:wrap"><div style="flex:1;min-width:260px;background:#fff;border-radius:12px;padding:24px;box-shadow:0 1px 4px rgba(0,0,0,.08)"><div style="font-size:20px;color:#f59e0b;margin-bottom:12px">★★★★★</div><p style="font-size:14px;line-height:1.6;color:#555;font-style:italic">"This product completely changed my life. I can\'t recommend it enough to anyone looking for real results."</p><div style="margin-top:16px;font-size:13px;font-weight:600;color:#1a1a1a">— Sarah J.</div></div><div style="flex:1;min-width:260px;background:#fff;border-radius:12px;padding:24px;box-shadow:0 1px 4px rgba(0,0,0,.08)"><div style="font-size:20px;color:#f59e0b;margin-bottom:12px">★★★★★</div><p style="font-size:14px;line-height:1.6;color:#555;font-style:italic">"Amazing results in just a few weeks. The quality exceeded all my expectations. Highly recommended!"</p><div style="margin-top:16px;font-size:13px;font-weight:600;color:#1a1a1a">— Mike R.</div></div><div style="flex:1;min-width:260px;background:#fff;border-radius:12px;padding:24px;box-shadow:0 1px 4px rgba(0,0,0,.08)"><div style="font-size:20px;color:#f59e0b;margin-bottom:12px">★★★★★</div><p style="font-size:14px;line-height:1.6;color:#555;font-style:italic">"Best purchase I\'ve made this year. Customer service was also outstanding!"</p><div style="margin-top:16px;font-size:13px;font-weight:600;color:#1a1a1a">— Lisa T.</div></div></div></div></div>' },
+          { id: 'b-hero', icon: '🎯', label: 'Hero Section', html: '<div style="padding:64px 20px;background:linear-gradient(135deg,#0f172a,#1e3a5f);text-align:center"><h1 style="font-size:42px;font-weight:800;color:#fff;margin-bottom:16px;line-height:1.2">The Headline That Grabs Attention</h1><p style="font-size:18px;color:rgba(255,255,255,.75);max-width:600px;margin:0 auto 32px;line-height:1.6">Your subheadline explains the main benefit and sets expectations</p><a href="#" style="display:inline-block;padding:16px 40px;background:#3b82f6;color:#fff;text-decoration:none;border-radius:10px;font-weight:700;font-size:16px">Get Started Now →</a></div>' },
+          { id: 'b-faq', icon: '❓', label: 'FAQ', html: '<div style="padding:48px 20px;max-width:800px;margin:0 auto"><h2 style="font-size:28px;font-weight:700;text-align:center;margin-bottom:32px;color:#1a1a1a">Frequently Asked Questions</h2><div style="border-top:1px solid #e5e7eb"><div style="padding:20px 0;border-bottom:1px solid #e5e7eb"><h3 style="font-size:16px;font-weight:600;color:#1a1a1a;margin-bottom:8px">How does it work?</h3><p style="font-size:14px;color:#555;line-height:1.6">Explain how your product/service works in simple terms.</p></div><div style="padding:20px 0;border-bottom:1px solid #e5e7eb"><h3 style="font-size:16px;font-weight:600;color:#1a1a1a;margin-bottom:8px">Is there a guarantee?</h3><p style="font-size:14px;color:#555;line-height:1.6">Yes, we offer a 60-day money-back guarantee. No questions asked.</p></div><div style="padding:20px 0;border-bottom:1px solid #e5e7eb"><h3 style="font-size:16px;font-weight:600;color:#1a1a1a;margin-bottom:8px">How long until I see results?</h3><p style="font-size:14px;color:#555;line-height:1.6">Most customers see results within the first week of use.</p></div></div></div>' },
+          { id: 'b-divider', icon: '➖', label: 'Divider', html: '<div style="padding:8px 20px;max-width:800px;margin:0 auto"><hr style="border:none;border-top:2px solid #e5e7eb" /></div>' },
+        ];
+
+        const insertBlock = (html: string) => {
+          sendToIframe({ type: 'cmd-insert-after-selected', html });
+          setShowInsertPanel(false);
+        };
+
+        const filtered = insertSearch.trim()
+          ? BUILTIN_BLOCKS.filter(b => b.label.toLowerCase().includes(insertSearch.toLowerCase()))
+          : BUILTIN_BLOCKS;
+
+        return (
         <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/40 backdrop-blur-sm"
           onClick={() => setShowInsertPanel(false)}>
-          <div className="bg-white rounded-2xl shadow-2xl w-[480px] max-w-[95vw] max-h-[70vh] overflow-hidden flex flex-col"
+          <div className="bg-white rounded-2xl shadow-2xl w-[520px] max-w-[95vw] max-h-[80vh] overflow-hidden flex flex-col"
             onClick={e => e.stopPropagation()}>
             <div className="px-5 py-3 bg-gradient-to-r from-blue-600 to-cyan-600 text-white flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <Layers className="w-5 h-5" />
-                <span className="font-bold text-sm">Insert Section</span>
+                <span className="font-bold text-sm">Insert Block</span>
               </div>
               <button onClick={() => setShowInsertPanel(false)} className="text-white/80 hover:text-white text-lg font-bold">×</button>
             </div>
             <div className="px-4 py-2 border-b">
               <div className="relative">
                 <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
-                <input
-                  value={insertSearch}
-                  onChange={e => setInsertSearch(e.target.value)}
-                  placeholder="Search templates..."
-                  className="w-full pl-8 pr-3 py-1.5 text-xs border rounded-lg focus:ring-1 focus:ring-blue-400 focus:border-blue-400"
-                />
+                <input value={insertSearch} onChange={e => setInsertSearch(e.target.value)}
+                  placeholder="Search blocks & templates..." autoFocus
+                  className="w-full pl-8 pr-3 py-1.5 text-xs border rounded-lg focus:ring-1 focus:ring-blue-400 focus:border-blue-400" />
               </div>
             </div>
-            <div className="flex-1 overflow-y-auto p-3 space-y-2">
-              {insertPanelSections.length === 0 ? (
-                <div className="text-center py-8 text-gray-400 text-xs">
-                  <Library className="w-8 h-8 mx-auto mb-2 opacity-40" />
-                  <p>No saved sections yet</p>
-                  <p className="mt-1">Clone landing pages to auto-save sections</p>
-                </div>
-              ) : (
-                insertPanelSections.map(section => (
-                  <div key={section.id} className="border rounded-lg overflow-hidden hover:shadow-md transition-shadow group">
-                    <div className="h-24 bg-gray-50 overflow-hidden relative">
-                      <iframe
-                        srcDoc={section.html}
-                        className="w-full h-full border-0 pointer-events-none"
-                        title={section.name}
-                        sandbox="allow-same-origin"
-                        style={{ transform: 'scale(0.4)', transformOrigin: 'top left', width: '250%', height: '250%' }}
-                      />
-                      <div className="absolute inset-0 bg-transparent group-hover:bg-blue-500/10 transition-colors" />
-                    </div>
-                    <div className="px-3 py-2 flex items-center justify-between bg-white">
-                      <div className="min-w-0">
-                        <p className="text-xs font-medium truncate">{section.name}</p>
-                        {section.tags?.length > 0 && (
-                          <div className="flex gap-1 mt-0.5">
-                            {section.tags.slice(0, 3).map(t => (
-                              <span key={t} className="px-1.5 py-0.5 bg-gray-100 rounded text-[9px] text-gray-500">{t}</span>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                      <button
-                        onClick={() => handleInsertAfter(section)}
-                        className="px-3 py-1.5 bg-blue-600 text-white text-xs rounded-lg hover:bg-blue-700 transition-colors font-medium shrink-0"
-                      >
-                        Insert
+            <div className="flex-1 overflow-y-auto p-3 space-y-4">
+              {filtered.length > 0 && (
+                <div>
+                  <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-2 px-1">Blocks</p>
+                  <div className="grid grid-cols-4 gap-2">
+                    {filtered.map(b => (
+                      <button key={b.id} onClick={() => insertBlock(b.html)}
+                        className="flex flex-col items-center gap-1.5 p-3 rounded-xl border border-gray-200 hover:border-blue-400 hover:bg-blue-50 transition-all text-center group">
+                        <span className="text-2xl">{b.icon}</span>
+                        <span className="text-[10px] font-medium text-gray-600 group-hover:text-blue-700 leading-tight">{b.label}</span>
                       </button>
-                    </div>
+                    ))}
                   </div>
-                ))
+                </div>
+              )}
+
+              {insertPanelSections.length > 0 && (
+                <div>
+                  <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-2 px-1">Saved Templates ({insertPanelSections.length})</p>
+                  <div className="space-y-2">
+                    {insertPanelSections.map(section => (
+                      <div key={section.id} className="border rounded-lg overflow-hidden hover:shadow-md transition-shadow group">
+                        <div className="h-20 bg-gray-50 overflow-hidden relative">
+                          <iframe srcDoc={section.html} className="w-full h-full border-0 pointer-events-none" title={section.name}
+                            sandbox="allow-same-origin" style={{ transform: 'scale(0.35)', transformOrigin: 'top left', width: '286%', height: '286%' }} />
+                          <div className="absolute inset-0 bg-transparent group-hover:bg-blue-500/10 transition-colors" />
+                        </div>
+                        <div className="px-3 py-1.5 flex items-center justify-between bg-white">
+                          <p className="text-[11px] font-medium truncate flex-1 min-w-0">{section.name}</p>
+                          <button onClick={() => handleInsertAfter(section)}
+                            className="px-2.5 py-1 bg-blue-600 text-white text-[10px] rounded-lg hover:bg-blue-700 transition-colors font-medium shrink-0 ml-2">
+                            Insert
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {filtered.length === 0 && insertPanelSections.length === 0 && (
+                <div className="text-center py-8 text-gray-400 text-xs">
+                  <Search className="w-8 h-8 mx-auto mb-2 opacity-40" />
+                  <p>No results for &quot;{insertSearch}&quot;</p>
+                </div>
               )}
             </div>
           </div>
-        </div>
-      )}
+        </div>);
+      })()}
 
       {/* ═══ Save Section Dialog ═══ */}
       {showSaveDialog && (
