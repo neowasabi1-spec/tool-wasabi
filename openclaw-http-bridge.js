@@ -1,113 +1,50 @@
 /**
- * OpenClaw HTTP-to-WebSocket Bridge
+ * OpenClaw HTTP-to-CLI Bridge
  * Runs on the VPS alongside OpenClaw Gateway.
- * Exposes an OpenAI-compatible HTTP API that translates to WebSocket calls.
+ * Exposes an OpenAI-compatible HTTP API using `openclaw agent` CLI.
  *
  * Usage:  node openclaw-http-bridge.js
  * Port:   19001 (or set HTTP_PORT env var)
- *
- * Requires: npm install ws
  */
 
 const http = require('http');
-const WebSocket = require('ws');
+const { execFile } = require('child_process');
 const crypto = require('crypto');
 
 const HTTP_PORT = parseInt(process.env.HTTP_PORT || '19001', 10);
-const GATEWAY_WS = process.env.GATEWAY_WS || 'ws://127.0.0.1:18789';
 const API_KEY = process.env.BRIDGE_API_KEY || '';
 const REQUEST_TIMEOUT = 600000; // 10 min
 
-function sendToGateway(messages) {
+function callOpenClaw(text) {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(GATEWAY_WS, {
-      perMessageDeflate: false,
-      headers: { 'Origin': 'http://localhost' },
-      handshakeTimeout: 10000,
-    });
+    const args = ['agent', '--message', text, '--json'];
 
-    const id = crypto.randomUUID();
-    const chunks = [];
-    let settled = false;
-
-    const timer = setTimeout(() => {
-      if (!settled) {
-        settled = true;
-        ws.close();
-        reject(new Error('Gateway response timeout'));
+    const proc = execFile('openclaw', args, {
+      timeout: REQUEST_TIMEOUT,
+      maxBuffer: 10 * 1024 * 1024,
+      env: { ...process.env },
+    }, (err, stdout, stderr) => {
+      if (err) {
+        console.error(`[${ts()}] CLI stderr: ${stderr}`);
+        return reject(new Error(err.message || 'openclaw agent failed'));
       }
-    }, REQUEST_TIMEOUT);
 
-    const finish = (text) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      ws.close();
-      resolve(text);
-    };
-
-    const fail = (err) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      ws.close();
-      reject(err);
-    };
-
-    ws.on('open', () => {
-      const systemMsg = messages.find(m => m.role === 'system');
-      const userMsgs = messages.filter(m => m.role !== 'system');
-      const lastUser = userMsgs[userMsgs.length - 1];
-      const history = userMsgs.slice(0, -1);
-
-      const msg = {
-        type: 'chat',
-        id,
-        payload: {
-          text: lastUser?.content || '',
-          context: {
-            systemPrompt: systemMsg?.content || '',
-            history: history.map(m => ({ role: m.role, content: m.content })),
-          },
-          options: {},
-        },
-      };
-
-      ws.send(JSON.stringify(msg));
-    });
-
-    ws.on('message', (raw) => {
-      let msg;
-      try { msg = JSON.parse(raw.toString()); } catch { return; }
-
-      if (msg.id && msg.id !== id) return;
-
-      if (msg.type === 'response' || msg.type === 'result') {
-        const text = msg.payload?.text || msg.result?.text || msg.data?.text || chunks.join('') || JSON.stringify(msg.payload || msg.result || msg.data || '');
-        finish(text);
-      } else if (msg.type === 'chunk' || msg.type === 'partial' || msg.type === 'stream') {
-        if (msg.payload?.text || msg.data?.text) {
-          chunks.push(msg.payload?.text || msg.data?.text);
-        }
-      } else if (msg.type === 'error') {
-        fail(new Error(msg.payload?.message || msg.error?.message || msg.message || 'Gateway error'));
-      } else if (msg.type === 'agent:lifecycle' && msg.payload?.event === 'done') {
-        if (chunks.length > 0) finish(chunks.join(''));
-      }
-    });
-
-    ws.on('close', (code, reason) => {
-      if (!settled) {
-        if (chunks.length > 0) {
-          finish(chunks.join(''));
+      try {
+        const json = JSON.parse(stdout);
+        const reply = json.reply || json.text || json.content || json.message || json.output || stdout.trim();
+        resolve(typeof reply === 'string' ? reply : JSON.stringify(reply));
+      } catch {
+        const text = stdout.trim();
+        if (text) {
+          resolve(text);
         } else {
-          fail(new Error(`Gateway closed (code=${code}, reason=${reason?.toString() || 'none'})`));
+          reject(new Error('Empty response from openclaw agent'));
         }
       }
     });
 
-    ws.on('error', (err) => {
-      fail(new Error(`WebSocket error: ${err.message}`));
+    proc.on('error', (err) => {
+      reject(new Error(`Failed to run openclaw: ${err.message}`));
     });
   });
 }
@@ -143,7 +80,7 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, gateway: GATEWAY_WS, port: HTTP_PORT }));
+    res.end(JSON.stringify({ ok: true, port: HTTP_PORT, method: 'openclaw-cli' }));
     return;
   }
 
@@ -159,9 +96,21 @@ const server = http.createServer(async (req, res) => {
           return;
         }
 
-        console.log(`[${ts()}] >> ${model || 'merlino'} | ${messages.length} msgs | "${(messages[messages.length - 1]?.content || '').substring(0, 60)}..."`);
+        const systemMsg = messages.find(m => m.role === 'system');
+        const userMsgs = messages.filter(m => m.role !== 'system');
+        const lastUser = userMsgs[userMsgs.length - 1];
 
-        const content = await sendToGateway(messages);
+        let prompt = '';
+        if (systemMsg) prompt += `[System: ${systemMsg.content}]\n\n`;
+        const history = userMsgs.slice(0, -1);
+        if (history.length > 0) {
+          prompt += history.map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`).join('\n') + '\n\n';
+        }
+        prompt += lastUser?.content || '';
+
+        console.log(`[${ts()}] >> ${model || 'merlino'} | "${(lastUser?.content || '').substring(0, 60)}..."`);
+
+        const content = await callOpenClaw(prompt);
 
         console.log(`[${ts()}] << ${content.substring(0, 80)}...`);
 
@@ -193,10 +142,10 @@ function ts() { return new Date().toLocaleTimeString(); }
 
 server.listen(HTTP_PORT, '0.0.0.0', () => {
   console.log('==========================================');
-  console.log('  OpenClaw HTTP-to-WebSocket Bridge');
-  console.log(`  HTTP API  : http://0.0.0.0:${HTTP_PORT}`);
-  console.log(`  Gateway WS: ${GATEWAY_WS}`);
-  console.log(`  Endpoints :`);
+  console.log('  OpenClaw HTTP Bridge (CLI mode)');
+  console.log(`  HTTP API : http://0.0.0.0:${HTTP_PORT}`);
+  console.log(`  Method   : openclaw agent --message`);
+  console.log(`  Endpoints:`);
   console.log(`    POST /v1/chat/completions`);
   console.log(`    GET  /v1/models`);
   console.log(`    GET  /health`);
