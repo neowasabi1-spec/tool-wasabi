@@ -62,6 +62,62 @@ import VisualHtmlEditor from '@/components/VisualHtmlEditor';
 const SAVED_SECTIONS_KEY = 'funnel-swiper-saved-sections';
 const CLONED_URLS_KEY = 'funnel-swiper-cloned-urls';
 
+interface SavedSectionEntry {
+  id: string;
+  name: string;
+  html: string;
+  sectionType: string;
+  tags: string[];
+  createdAt: string;
+}
+
+const SECTION_PATTERNS: { type: string; label: string; keywords: RegExp }[] = [
+  { type: 'hero', label: 'Hero', keywords: /hero|banner|jumbotron|above.?fold|main.?heading/i },
+  { type: 'cta', label: 'CTA / Offer', keywords: /buy.?now|order.?now|add.?to.?cart|get.?started|sign.?up|subscribe|acquista|compra|ordina|special.?offer|limited.?time|discount|sconto|offerta/i },
+  { type: 'testimonial', label: 'Testimonial', keywords: /testimonial|review|customer.?say|what.?people|rating|stars?|verified|recension/i },
+  { type: 'faq', label: 'FAQ', keywords: /faq|frequently|domand|question|q\s*&\s*a|accordion/i },
+  { type: 'features', label: 'Features', keywords: /feature|benefit|vantagg|why.?choose|perch[eè]|how.?it.?works|come.?funziona/i },
+  { type: 'pricing', label: 'Pricing', keywords: /pricing|price|prezzo|plan|bundle|package|\$\d|€\d|was\s*\$|original/i },
+  { type: 'guarantee', label: 'Guarantee', keywords: /guarantee|garanzia|money.?back|risk.?free|refund|rimborso|soddisfatt/i },
+  { type: 'social-proof', label: 'Social Proof', keywords: /as.?seen|featured.?in|trusted|media|press|logo|brand|partner/i },
+  { type: 'video', label: 'Video', keywords: /video|watch|play|youtube|vimeo|wistia/i },
+  { type: 'form', label: 'Form', keywords: /form|input|email|newsletter|contatt|submit|invia/i },
+  { type: 'footer', label: 'Footer', keywords: /footer|copyright|©|privacy|terms|disclaimer|all.?rights/i },
+  { type: 'header', label: 'Header / Nav', keywords: /header|nav|menu|logo/i },
+  { type: 'comparison', label: 'Comparison', keywords: /comparison|vs\.?|versus|compar|before.?after|prima.?dopo/i },
+  { type: 'ingredients', label: 'Ingredients', keywords: /ingredient|component|formula|composi|contien/i },
+  { type: 'results', label: 'Results', keywords: /result|before.?&?.?after|trasform|success|clinical|study|studi/i },
+];
+
+function classifySection(el: Element): { type: string; label: string } {
+  const text = (el.textContent || '').substring(0, 500).toLowerCase();
+  const html = el.outerHTML.substring(0, 1000).toLowerCase();
+  const combined = text + ' ' + html;
+
+  for (const p of SECTION_PATTERNS) {
+    if (p.keywords.test(combined)) return { type: p.type, label: p.label };
+  }
+
+  const hasImg = !!el.querySelector('img,picture,svg');
+  const hasVideo = !!el.querySelector('video,iframe[src*="youtube"],iframe[src*="vimeo"]');
+  const hasBtn = !!el.querySelector('a,button');
+  const hasForm = !!el.querySelector('form,input');
+  const hasList = !!el.querySelector('ul,ol');
+
+  if (hasVideo) return { type: 'video', label: 'Video' };
+  if (hasForm) return { type: 'form', label: 'Form' };
+  if (hasImg && hasBtn) return { type: 'cta-image', label: 'Image + CTA' };
+  if (hasImg) return { type: 'image-section', label: 'Image Section' };
+  if (hasList) return { type: 'list', label: 'List / Steps' };
+  if (hasBtn) return { type: 'cta', label: 'CTA' };
+
+  return { type: 'content', label: 'Content' };
+}
+
+function fingerprint(html: string): string {
+  return html.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim().substring(0, 200).toLowerCase();
+}
+
 function autoSaveSections(html: string, sourceUrl: string, pageName: string) {
   if (typeof window === 'undefined') return;
   const clonedUrls: string[] = JSON.parse(localStorage.getItem(CLONED_URLS_KEY) || '[]');
@@ -74,9 +130,10 @@ function autoSaveSections(html: string, sourceUrl: string, pageName: string) {
   wrapper.innerHTML = bodyHtml;
 
   const skipTags = new Set(['style', 'script', 'link', 'meta', 'noscript', 'br', 'hr']);
-  const existing: { name: string; html: string }[] = JSON.parse(localStorage.getItem(SAVED_SECTIONS_KEY) || '[]');
-  const newSections: typeof existing = [];
-  let idx = 0;
+  const existing: SavedSectionEntry[] = JSON.parse(localStorage.getItem(SAVED_SECTIONS_KEY) || '[]');
+  const existingFingerprints = new Set(existing.map(s => fingerprint(s.html)));
+  const newSections: SavedSectionEntry[] = [];
+  let typeCounters: Record<string, number> = {};
 
   for (let i = 0; i < wrapper.children.length; i++) {
     const child = wrapper.children[i];
@@ -85,31 +142,29 @@ function autoSaveSections(html: string, sourceUrl: string, pageName: string) {
     const text = (child.textContent || '').trim();
     if (text.length < 10 && !child.querySelector('img,video,picture,svg')) continue;
 
-    idx++;
-    const preview = text.substring(0, 40).replace(/\s+/g, ' ');
-    const sectionName = `${pageName} - Section ${idx}${preview ? ': ' + preview : ''}`;
+    const fp = fingerprint(child.outerHTML);
+    if (existingFingerprints.has(fp)) continue;
+    existingFingerprints.add(fp);
 
-    child.removeAttribute('style');
+    const classified = classifySection(child);
+    typeCounters[classified.type] = (typeCounters[classified.type] || 0) + 1;
+    const count = typeCounters[classified.type];
+    const shortHost = host.replace(/^www\./i, '').split('.')[0];
+    const sectionName = `${classified.label}${count > 1 ? ' ' + count : ''} — ${shortHost}`;
+
     newSections.push({
+      id: `auto-${Date.now()}-${i}`,
       name: sectionName,
       html: child.outerHTML,
+      sectionType: classified.type,
+      tags: [host, 'auto-saved', classified.type],
+      createdAt: new Date().toISOString(),
     });
   }
 
   if (newSections.length === 0) return;
 
-  const ts = Date.now();
-  const merged = [
-    ...newSections.map((s, j) => ({
-      id: `auto-${ts}-${j}`,
-      name: s.name,
-      html: s.html,
-      sectionType: 'body' as const,
-      tags: [host, 'auto-saved'],
-      createdAt: new Date().toISOString(),
-    })),
-    ...existing,
-  ];
+  const merged = [...newSections, ...existing];
   localStorage.setItem(SAVED_SECTIONS_KEY, JSON.stringify(merged));
   clonedUrls.push(host);
   localStorage.setItem(CLONED_URLS_KEY, JSON.stringify(clonedUrls));

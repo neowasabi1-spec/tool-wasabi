@@ -2122,7 +2122,15 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                 </div>
               )}
 
-              {insertPanelSections.length > 0 && (
+              {insertPanelSections.length > 0 && (() => {
+                const typeIcons: Record<string, string> = {
+                  hero: '🎯', cta: '🏷️', 'cta-image': '🏷️', testimonial: '💬', faq: '❓',
+                  features: '✨', pricing: '💰', guarantee: '🛡️', 'social-proof': '📰',
+                  video: '🎬', form: '📝', footer: '🔻', header: '🔝', comparison: '⚖️',
+                  ingredients: '🧪', results: '📊', 'image-section': '🖼️', list: '📋',
+                  content: '📄', body: '📄',
+                };
+                return (
                 <div>
                   <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-2 px-1">Saved Templates ({insertPanelSections.length})</p>
                   <div className="space-y-2">
@@ -2134,7 +2142,13 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                           <div className="absolute inset-0 bg-transparent group-hover:bg-blue-500/10 transition-colors" />
                         </div>
                         <div className="px-3 py-1.5 flex items-center justify-between bg-white">
-                          <p className="text-[11px] font-medium truncate flex-1 min-w-0">{section.name}</p>
+                          <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                            <span className="text-sm shrink-0">{typeIcons[section.sectionType] || '📄'}</span>
+                            <p className="text-[11px] font-medium truncate min-w-0">{section.name}</p>
+                            {section.tags?.includes('auto-saved') && (
+                              <span className="text-[8px] bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded-full font-medium shrink-0">AI</span>
+                            )}
+                          </div>
                           <button onClick={() => handleInsertAfter(section)}
                             className="px-2.5 py-1 bg-blue-600 text-white text-[10px] rounded-lg hover:bg-blue-700 transition-colors font-medium shrink-0 ml-2">
                             Insert
@@ -2143,8 +2157,8 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                       </div>
                     ))}
                   </div>
-                </div>
-              )}
+                </div>);
+              })()}
 
               {filtered.length === 0 && insertPanelSections.length === 0 && (
                 <div className="text-center py-8 text-gray-400 text-xs">
