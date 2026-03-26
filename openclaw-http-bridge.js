@@ -17,7 +17,7 @@ const REQUEST_TIMEOUT = 600000; // 10 min
 
 function callOpenClaw(text) {
   return new Promise((resolve, reject) => {
-    const args = ['agent', '--message', text, '--json'];
+    const args = ['agent', '--agent', 'main', '--message', text, '--json'];
 
     const proc = execFile('openclaw', args, {
       timeout: REQUEST_TIMEOUT,
@@ -31,12 +31,18 @@ function callOpenClaw(text) {
 
       try {
         const json = JSON.parse(stdout);
-        const reply = json.reply || json.text || json.content || json.message || json.output || stdout.trim();
-        resolve(typeof reply === 'string' ? reply : JSON.stringify(reply));
+        if (json.status === 'ok' && json.result?.payloads?.length > 0) {
+          const texts = json.result.payloads.map(p => p.text).filter(Boolean);
+          resolve(texts.join('\n') || 'No response');
+        } else if (json.error) {
+          reject(new Error(json.error));
+        } else {
+          resolve(stdout.trim() || 'No response');
+        }
       } catch {
-        const text = stdout.trim();
-        if (text) {
-          resolve(text);
+        const raw = stdout.trim();
+        if (raw) {
+          resolve(raw);
         } else {
           reject(new Error('Empty response from openclaw agent'));
         }
