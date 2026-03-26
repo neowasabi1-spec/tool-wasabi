@@ -113,10 +113,26 @@ var server = http.createServer(function(req, res) {
 
 function ts() { return new Date().toLocaleTimeString(); }
 
+server.on('error', function(err) {
+  console.error('SERVER ERROR: ' + err.message);
+  if (err.code === 'EADDRINUSE') {
+    console.error('Port ' + HTTP_PORT + ' is already in use! Try a different port.');
+  }
+});
+
+process.on('uncaughtException', function(err) {
+  console.error('UNCAUGHT: ' + err.message);
+  console.error(err.stack);
+});
+
 server.listen(HTTP_PORT, '0.0.0.0', function() {
   console.log('==========================================');
   console.log('  OpenClaw HTTP Bridge (CLI mode)');
   console.log('  HTTP API : http://0.0.0.0:' + HTTP_PORT);
   console.log('  Method   : openclaw agent --agent main');
+  console.log('  PID      : ' + process.pid);
   console.log('==========================================');
+  console.log('Bridge running... (press Ctrl+C to stop)');
 });
+
+setInterval(function() {}, 60000);
