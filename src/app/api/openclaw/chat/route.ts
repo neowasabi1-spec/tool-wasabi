@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 
 export const maxDuration = 120;
 
-const OPENCLAW_BASE_URL = process.env.OPENCLAW_BASE_URL || 'https://makes-continues-identify-uniform.trycloudflare.com';
+const OPENCLAW_BASE_URL = process.env.OPENCLAW_BASE_URL || 'http://38.247.186.84:19001';
 const OPENCLAW_API_KEY = process.env.OPENCLAW_API_KEY || 'a353475b70538480030b744771524d183521a46ab8db7b02a2846d1103bc5734';
 const OPENCLAW_MODEL = process.env.OPENCLAW_MODEL || 'merlino';
 
