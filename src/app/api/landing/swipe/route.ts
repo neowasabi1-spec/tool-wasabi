@@ -168,7 +168,8 @@ function absolutizeUrls(html: string, baseUrl: string): string {
 
   return html
     .replace(/(srcset)=(["'])(.*?)\2/gi, (_match, attr, quote, value) => {
-      const fixed = value.split(',').map((entry: string) => {
+      if (/^\s*(https?:\/\/|\/\/)/i.test(value)) return `${attr}=${quote}${value}${quote}`;
+      const fixed = value.split(/,(?=\s)/).map((entry: string) => {
         const parts = entry.trim().split(/\s+/);
         if (parts.length === 0) return entry;
         parts[0] = makeAbsolute(parts[0], origin, basePath, protocol);
