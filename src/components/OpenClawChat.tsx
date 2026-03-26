@@ -321,56 +321,66 @@ REGOLE:
       systemPrompt: buildSystemPrompt(),
     });
 
-    let lastError = '';
-    for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      // Step 1: Check for actions via Vercel (fast, <1s)
+      const actionRes = await fetch('/api/openclaw/action', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload,
+      });
+
+      const actionText = await actionRes.text();
+      let actionData;
       try {
-        const res = await fetch('/api/openclaw/action', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: payload,
-        });
+        actionData = JSON.parse(actionText);
+      } catch {
+        throw new Error(`Server error (${actionRes.status}): ${actionText.substring(0, 200)}`);
+      }
 
-        const text = await res.text();
-        let data;
-        try {
-          data = JSON.parse(text);
-        } catch {
-          throw new Error(`Server error (${res.status}): ${text.substring(0, 200)}`);
-        }
-
-        if (!res.ok || data.error) {
-          lastError = data.error || `HTTP ${res.status}`;
-          if (attempt === 0 && (lastError.includes('timeout') || lastError.includes('aborted') || res.status >= 500)) {
-            await new Promise(r => setTimeout(r, 2000));
-            continue;
-          }
-          addMessage('system', `Error: ${lastError}`);
-          setConnectionStatus('offline');
-          setIsLoading(false);
-          return;
-        }
-
-        setConnectionStatus('online');
-
-        let response = data.content || 'No response';
-        if (data.actionExecuted && data.actionExecuted !== 'no_action') {
-          const badge = data.actionSuccess ? '\u2705' : '\u274C';
-          response = `${badge} **${data.actionExecuted}** ${data.actionSuccess ? 'eseguito' : 'fallito'}\n\n${response}`;
-        }
-
-        addMessage('assistant', response);
+      if (actionData.error) {
+        addMessage('system', `Error: ${actionData.error}`);
         setIsLoading(false);
         return;
-      } catch (err) {
-        lastError = (err as Error).message;
-        if (attempt === 0) {
-          await new Promise(r => setTimeout(r, 2000));
-          continue;
-        }
       }
+
+      // If action was executed, show result directly
+      if (actionData.actionExecuted) {
+        const badge = actionData.actionSuccess ? '\u2705' : '\u274C';
+        addMessage('assistant', `${badge} **${actionData.actionExecuted}** ${actionData.actionSuccess ? 'eseguito' : 'fallito'}\n\n${actionData.content}`);
+        setConnectionStatus('online');
+        setIsLoading(false);
+        return;
+      }
+
+      // Step 2: No action — call Merlino directly from browser (bypasses Vercel timeout)
+      const bridgeUrl = actionData.bridgeUrl || 'http://38.247.186.84:19001';
+      const merlinoRes = await fetch(`${bridgeUrl}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: actionData.model || 'merlino',
+          messages: [
+            { role: 'system', content: buildSystemPrompt() },
+            ...allMessages,
+          ],
+          temperature: 0.7,
+          max_tokens: 4096,
+        }),
+      });
+
+      const merlinoData = await merlinoRes.json();
+      const content = merlinoData.choices?.[0]?.message?.content || merlinoData.error || 'Nessuna risposta';
+
+      if (merlinoData.error) {
+        addMessage('system', `Merlino error: ${merlinoData.error}`);
+      } else {
+        addMessage('assistant', content);
+      }
+      setConnectionStatus('online');
+    } catch (err) {
+      addMessage('system', `Connessione fallita: ${(err as Error).message}`);
+      setConnectionStatus('offline');
     }
-    addMessage('system', `Connessione fallita dopo 2 tentativi: ${lastError}`);
-    setConnectionStatus('offline');
     setIsLoading(false);
   };
 

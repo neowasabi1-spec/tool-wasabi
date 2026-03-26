@@ -415,53 +415,13 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  // Chat only (no action) — try Merlino with short timeout, fallback to direct response
-  const openclawMessages: { role: string; content: string }[] = [];
-  if (systemPrompt) {
-    openclawMessages.push({ role: 'system', content: systemPrompt });
-  }
-  for (const m of messages) {
-    if (m.role !== 'system') {
-      openclawMessages.push({ role: m.role, content: m.content });
-    }
-  }
-
-  try {
-    const content = await callMerlinoOnce(openclawMessages, 8000);
-    return NextResponse.json({ content, model: OPENCLAW_MODEL });
-  } catch {
-    // Merlino too slow for Vercel timeout — try Anthropic as fast fallback
-    try {
-      const anthropicKey = process.env.ANTHROPIC_API_KEY;
-      if (anthropicKey) {
-        const res = await fetch('https://api.anthropic.com/v1/messages', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-api-key': anthropicKey,
-            'anthropic-version': '2023-06-01',
-          },
-          body: JSON.stringify({
-            model: 'claude-sonnet-4-20250514',
-            max_tokens: 4096,
-            system: systemPrompt || 'Sei Merlino, AI assistant di Funnel Swiper. Rispondi nella lingua dell\'utente.',
-            messages: messages.filter((m: { role: string }) => m.role !== 'system').slice(-10).map((m: { role: string; content: string }) => ({ role: m.role, content: m.content })),
-          }),
-          signal: AbortSignal.timeout(8000),
-        });
-        if (res.ok) {
-          const data = await res.json();
-          const content = data.content?.[0]?.text || '';
-          if (content) return NextResponse.json({ content, model: 'anthropic-fallback' });
-        }
-      }
-    } catch { /* fallback also failed */ }
-
-    return NextResponse.json(
-      { error: 'Merlino sta rispondendo lentamente. Riprova tra qualche secondo.' },
-      { status: 504 },
-    );
-  }
+  // No action detected — tell frontend to call Merlino directly
+  return NextResponse.json({
+    content: null,
+    directCall: true,
+    bridgeUrl: OPENCLAW_BASE_URL,
+    model: OPENCLAW_MODEL,
+  });
   } catch (outerErr) {
     console.error('[action] Unhandled error:', outerErr);
     return NextResponse.json(
