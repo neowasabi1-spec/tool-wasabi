@@ -345,6 +345,23 @@ const EDITOR_SCRIPT = `
         if(found){if(sel)co(sel);sel=found;found.style.outline=SS;found.style.outlineOffset='2px';
         found.scrollIntoView({behavior:'smooth',block:'center'});
         window.parent.postMessage({type:'element-selected',data:gi(found)},'*');}}catch(x){}break;
+      case 'cmd-get-context-text':
+        if(sel){
+          var ctx='';
+          var par=sel.parentElement||document.body;
+          var sibs=par.children;
+          for(var ci=0;ci<sibs.length;ci++){
+            var sib=sibs[ci];if(sib===sel||sib===plusBtn||sib===delBtn)continue;
+            var st=(sib.textContent||'').trim();if(st.length>5)ctx+=st.substring(0,300)+' ';
+          }
+          if(!ctx.trim()){var gpar=par.parentElement;if(gpar){
+            var gs=gpar.children;for(var gi2=0;gi2<gs.length;gi2++){
+              var gsib=gs[gi2];if(gsib===par||gsib===plusBtn||gsib===delBtn)continue;
+              var gst=(gsib.textContent||'').trim();if(gst.length>5)ctx+=gst.substring(0,300)+' ';
+            }
+          }}
+          window.parent.postMessage({type:'context-text',data:ctx.trim().substring(0,800)},'*');
+        }break;
       case 'cmd-get-sections':
         var b=document.body,secs=[];
         for(var i=0;i<b.children.length;i++){var c=b.children[i];var tg=c.tagName.toLowerCase();
@@ -618,6 +635,8 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   const [aiError, setAiError] = useState('');
   const [aiRevisedPrompt, setAiRevisedPrompt] = useState('');
   const [showAiPanel, setShowAiPanel] = useState(false);
+  const [showAiImagePopup, setShowAiImagePopup] = useState(false);
+  const [aiContextText, setAiContextText] = useState('');
 
   /* ── AI Code Editor ── */
   const [aiEditPrompt, setAiEditPrompt] = useState('');
@@ -759,6 +778,9 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
           break;
         case 'request-insert-after':
           setShowInsertPanel(true);
+          break;
+        case 'context-text':
+          setAiContextText(e.data.data || '');
           break;
       }
     };
@@ -922,7 +944,15 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
 
   /* ── AI Image Generation ── */
   const handleAiGenerate = useCallback(async () => {
-    if (!aiPrompt.trim() || aiGenerating) return;
+    if (aiGenerating) return;
+    let finalPrompt = aiPrompt.trim();
+    if (!finalPrompt && aiContextText.trim()) {
+      finalPrompt = `Create a professional, high-quality image that visually represents the following content. Make it suitable for a landing page or marketing material. Context: "${aiContextText.trim().substring(0, 500)}"`;
+    }
+    if (!finalPrompt) {
+      setAiError('Inserisci un prompt o seleziona un elemento con testo vicino');
+      return;
+    }
     setAiGenerating(true);
     setAiError('');
     setAiRevisedPrompt('');
@@ -930,7 +960,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
       const res = await fetch('/api/generate-image', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: aiPrompt, size: aiSize, style: aiStyle }),
+        body: JSON.stringify({ prompt: finalPrompt, size: aiSize, style: aiStyle }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Error generating image');
@@ -940,13 +970,14 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
           setAiRevisedPrompt(data.revisedPrompt);
           setAttr('alt', data.revisedPrompt.substring(0, 120));
         }
+        setShowAiImagePopup(false);
       }
     } catch (err) {
       setAiError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
       setAiGenerating(false);
     }
-  }, [aiPrompt, aiSize, aiStyle, aiGenerating, setAttr]);
+  }, [aiPrompt, aiSize, aiStyle, aiGenerating, aiContextText, setAttr]);
 
   /* ── Media Upload ── */
   const [uploading, setUploading] = useState(false);
@@ -1707,7 +1738,13 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                 {el.tagName === 'img' && (
                   <div className="p-3">
                     <button
-                      onClick={() => setShowAiPanel(!showAiPanel)}
+                      onClick={() => {
+                        setAiError('');
+                        setAiRevisedPrompt('');
+                        setAiContextText('');
+                        sendToIframe({ type: 'cmd-get-context-text' });
+                        setShowAiImagePopup(true);
+                      }}
                       className="w-full flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg bg-gradient-to-r from-violet-50 to-purple-50 border border-violet-200 hover:border-violet-300 transition-all group"
                     >
                       <div className="flex items-center gap-2">
@@ -1716,80 +1753,9 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                         </div>
                         <span className="text-xs font-semibold text-violet-700">Generate with AI</span>
                       </div>
-                      <Wand2 className={`h-3.5 w-3.5 text-violet-400 transition-transform ${showAiPanel ? 'rotate-45' : ''}`} />
+                      <Wand2 className="h-3.5 w-3.5 text-violet-400" />
                     </button>
 
-                    {showAiPanel && (
-                      <div className="mt-2 space-y-2.5 p-2.5 rounded-lg bg-gradient-to-b from-violet-50/50 to-transparent border border-violet-100">
-                        <div>
-                          <label className="text-[10px] text-violet-600 font-medium mb-0.5 block">Describe the image</label>
-                          <textarea
-                            value={aiPrompt}
-                            onChange={(e) => setAiPrompt(e.target.value)}
-                            placeholder="E.g.: A premium olive oil bottle with Mediterranean background, warm light, professional photography style..."
-                            rows={3}
-                            className="prop-input text-[11px] leading-relaxed resize-none !border-violet-200 focus:!border-violet-400 focus:!shadow-[0_0_0_2px_rgba(139,92,246,0.1)]"
-                          />
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-2">
-                          <div>
-                            <label className="text-[10px] text-violet-500">Size</label>
-                            <select
-                              value={aiSize}
-                              onChange={(e) => setAiSize(e.target.value as typeof aiSize)}
-                              className="prop-select !border-violet-200 text-[10px]"
-                            >
-                              <option value="1024x1024">Square</option>
-                              <option value="1792x1024">Landscape</option>
-                              <option value="1024x1792">Portrait</option>
-                            </select>
-                          </div>
-                          <div>
-                            <label className="text-[10px] text-violet-500">Style</label>
-                            <select
-                              value={aiStyle}
-                              onChange={(e) => setAiStyle(e.target.value as typeof aiStyle)}
-                              className="prop-select !border-violet-200 text-[10px]"
-                            >
-                              <option value="vivid">Vivid</option>
-                              <option value="natural">Natural</option>
-                            </select>
-                          </div>
-                        </div>
-
-                        <button
-                          onClick={handleAiGenerate}
-                          disabled={!aiPrompt.trim() || aiGenerating}
-                          className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold text-white bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-500 hover:to-purple-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm hover:shadow-md"
-                        >
-                          {aiGenerating ? (
-                            <>
-                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                              Generating...
-                            </>
-                          ) : (
-                            <>
-                              <ImagePlus className="h-3.5 w-3.5" />
-                              Generate Image
-                            </>
-                          )}
-                        </button>
-
-                        {aiError && (
-                          <div className="p-2 rounded-md bg-red-50 border border-red-200">
-                            <p className="text-[10px] text-red-600 font-medium">{aiError}</p>
-                          </div>
-                        )}
-
-                        {aiRevisedPrompt && (
-                          <div className="p-2 rounded-md bg-emerald-50 border border-emerald-200">
-                            <p className="text-[10px] text-emerald-600 font-medium mb-0.5">Prompt used by DALL-E:</p>
-                            <p className="text-[10px] text-emerald-700 leading-relaxed">{aiRevisedPrompt}</p>
-                          </div>
-                        )}
-                      </div>
-                    )}
                   </div>
                 )}
 
@@ -2170,6 +2136,110 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
           </div>
         </div>);
       })()}
+
+      {/* ═══ AI Image Generation Popup ═══ */}
+      {showAiImagePopup && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={() => !aiGenerating && setShowAiImagePopup(false)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 overflow-hidden" onClick={e => e.stopPropagation()}>
+            <div className="bg-gradient-to-r from-violet-600 to-purple-600 px-5 py-4 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-white/20 flex items-center justify-center">
+                  <Sparkles className="h-4 w-4 text-white" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white">Genera Immagine con AI</h3>
+                  <p className="text-[10px] text-violet-200">DALL-E 3 — lascia vuoto per auto-generare dal contesto</p>
+                </div>
+              </div>
+              <button onClick={() => !aiGenerating && setShowAiImagePopup(false)} className="p-1.5 rounded-lg hover:bg-white/20 transition-colors" disabled={aiGenerating}>
+                <X className="h-4 w-4 text-white" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              {aiContextText && (
+                <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
+                  <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Contesto rilevato automaticamente</p>
+                  <p className="text-xs text-slate-600 leading-relaxed line-clamp-3">{aiContextText}</p>
+                </div>
+              )}
+
+              <div>
+                <label className="text-xs text-violet-700 font-semibold mb-1.5 block">
+                  Prompt (opzionale)
+                </label>
+                <textarea
+                  value={aiPrompt}
+                  onChange={(e) => setAiPrompt(e.target.value)}
+                  placeholder={aiContextText ? 'Lascia vuoto per generare dal contesto sopra, oppure descrivi l\'immagine...' : 'Descrivi l\'immagine che vuoi generare...'}
+                  rows={3}
+                  className="w-full px-3 py-2.5 text-sm border border-violet-200 rounded-xl focus:border-violet-400 focus:ring-2 focus:ring-violet-100 outline-none resize-none transition-all placeholder:text-slate-400"
+                  disabled={aiGenerating}
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[10px] text-violet-500 font-medium mb-1 block">Formato</label>
+                  <select
+                    value={aiSize}
+                    onChange={(e) => setAiSize(e.target.value as typeof aiSize)}
+                    className="w-full px-2.5 py-2 text-xs border border-violet-200 rounded-lg focus:border-violet-400 outline-none bg-white"
+                    disabled={aiGenerating}
+                  >
+                    <option value="1024x1024">Quadrato (1:1)</option>
+                    <option value="1792x1024">Landscape (16:9)</option>
+                    <option value="1024x1792">Portrait (9:16)</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[10px] text-violet-500 font-medium mb-1 block">Stile</label>
+                  <select
+                    value={aiStyle}
+                    onChange={(e) => setAiStyle(e.target.value as typeof aiStyle)}
+                    className="w-full px-2.5 py-2 text-xs border border-violet-200 rounded-lg focus:border-violet-400 outline-none bg-white"
+                    disabled={aiGenerating}
+                  >
+                    <option value="vivid">Vivid (colori intensi)</option>
+                    <option value="natural">Natural (fotorealistico)</option>
+                  </select>
+                </div>
+              </div>
+
+              <button
+                onClick={handleAiGenerate}
+                disabled={aiGenerating}
+                className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-sm font-bold text-white bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-500 hover:to-purple-500 disabled:opacity-60 disabled:cursor-not-allowed transition-all shadow-md hover:shadow-lg"
+              >
+                {aiGenerating ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Generando immagine...
+                  </>
+                ) : (
+                  <>
+                    <ImagePlus className="h-4 w-4" />
+                    {aiPrompt.trim() ? 'Genera Immagine' : aiContextText ? 'Genera dal Contesto' : 'Genera Immagine'}
+                  </>
+                )}
+              </button>
+
+              {aiError && (
+                <div className="p-3 rounded-lg bg-red-50 border border-red-200">
+                  <p className="text-xs text-red-600 font-medium">{aiError}</p>
+                </div>
+              )}
+
+              {aiRevisedPrompt && (
+                <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200">
+                  <p className="text-[10px] text-emerald-600 font-semibold mb-0.5">Prompt usato da DALL-E:</p>
+                  <p className="text-xs text-emerald-700 leading-relaxed">{aiRevisedPrompt}</p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ═══ Save Section Dialog ═══ */}
       {showSaveDialog && (
