@@ -3258,7 +3258,13 @@ export default function FrontEndFunnel() {
                           const doc = iframe.contentDocument || iframe.contentWindow?.document;
                           if (doc) {
                             doc.open();
-                            doc.write(htmlToShow);
+                            let safeHtml = htmlToShow;
+                            if (!safeHtml.includes('name="referrer"')) {
+                              const refTag = '<meta name="referrer" content="no-referrer">';
+                              safeHtml = safeHtml.includes('<head>') ? safeHtml.replace('<head>', '<head>' + refTag) : refTag + safeHtml;
+                            }
+                            safeHtml = safeHtml.replace(/loading=["']lazy["']/gi, 'loading="eager"');
+                            doc.write(safeHtml);
                             doc.close();
                           }
                         }

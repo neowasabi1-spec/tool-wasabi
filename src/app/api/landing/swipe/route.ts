@@ -160,8 +160,19 @@ function makeAbsolute(path: string, origin: string, basePath: string, protocol: 
   return basePath + trimmed;
 }
 
-function fixLazyLoading(html: string): string {
-  return html.replace(/loading=["']lazy["']/gi, 'loading="eager"');
+function fixMediaLoading(html: string): string {
+  let fixed = html.replace(/loading=["']lazy["']/gi, 'loading="eager"');
+  fixed = fixed.replace(/<img\b/gi, '<img referrerpolicy="no-referrer" ');
+  fixed = fixed.replace(/<video\b/gi, '<video referrerpolicy="no-referrer" ');
+  fixed = fixed.replace(/<source\b/gi, '<source referrerpolicy="no-referrer" ');
+  if (fixed.includes('<head>')) {
+    fixed = fixed.replace('<head>', '<head><meta name="referrer" content="no-referrer">');
+  } else if (fixed.includes('<head ')) {
+    fixed = fixed.replace(/<head\s/i, '<head><meta name="referrer" content="no-referrer"></head><head ');
+  } else {
+    fixed = '<meta name="referrer" content="no-referrer">' + fixed;
+  }
+  return fixed;
 }
 
 function absolutizeUrls(html: string, baseUrl: string): string {
@@ -215,7 +226,7 @@ export async function POST(request: NextRequest) {
     } else {
       originalHtml = await clonePageHtml(source_url!);
     }
-    originalHtml = fixLazyLoading(originalHtml);
+    originalHtml = fixMediaLoading(originalHtml);
     if (originalHtml.length < 50) {
       return NextResponse.json({ error: 'HTML too short' }, { status: 400 });
     }

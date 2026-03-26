@@ -5,6 +5,14 @@ const CLONER_API_URL = process.env.CLONER_API_URL || 'http://localhost:8080';
 function fixClonedHtml(html: string, sourceUrl: string): string {
   let fixed = html;
   fixed = fixed.replace(/loading=["']lazy["']/gi, 'loading="eager"');
+  fixed = fixed.replace(/<img\b/gi, '<img referrerpolicy="no-referrer" ');
+  fixed = fixed.replace(/<video\b/gi, '<video referrerpolicy="no-referrer" ');
+  fixed = fixed.replace(/<source\b/gi, '<source referrerpolicy="no-referrer" ');
+  if (fixed.includes('<head>')) {
+    fixed = fixed.replace('<head>', '<head><meta name="referrer" content="no-referrer">');
+  } else {
+    fixed = '<meta name="referrer" content="no-referrer">' + fixed;
+  }
 
   try {
     const urlObj = new URL(sourceUrl);

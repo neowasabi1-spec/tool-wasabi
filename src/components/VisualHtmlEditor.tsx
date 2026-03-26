@@ -361,6 +361,13 @@ const EDITOR_SCRIPT = `
 function prepareEditorHtml(html: string): string {
   let clean = html;
   clean = clean.replace(/<meta[^>]*content-security-policy[^>]*>/gi, '');
+  clean = clean.replace(/loading=["']lazy["']/gi, 'loading="eager"');
+  if (!clean.includes('referrer')) {
+    const referrerMeta = '<meta name="referrer" content="no-referrer">';
+    if (clean.includes('<head>')) clean = clean.replace('<head>', '<head>' + referrerMeta);
+    else if (clean.includes('<head ')) clean = clean.replace(/<head\s/, '<head>' + referrerMeta + '</head><head ');
+    else clean = referrerMeta + clean;
+  }
   const editorCss = `<style data-editor-override>
     * { pointer-events: auto !important; }
     img, svg, video, canvas, picture { 
