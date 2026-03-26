@@ -853,16 +853,16 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   const insertPanelSections = savedSections.filter(s => {
     if (!insertSearch.trim()) return true;
     const q = insertSearch.toLowerCase();
-    return s.name.toLowerCase().includes(q) || (s.tags || []).some(t => t.toLowerCase().includes(q));
+    return (s.name || '').toLowerCase().includes(q) || (s.tags || []).some(t => (t || '').toLowerCase().includes(q)) || (s.sectionType || '').toLowerCase().includes(q);
   });
 
   const filteredLibrarySections = savedSections.filter(s => {
     if (libraryFilterType !== 'all' && s.sectionType !== libraryFilterType) return false;
     if (librarySearch.trim()) {
       const q = librarySearch.toLowerCase();
-      return s.name.toLowerCase().includes(q) ||
-             s.textPreview.toLowerCase().includes(q) ||
-             s.tags.some(t => t.toLowerCase().includes(q));
+      return (s.name || '').toLowerCase().includes(q) ||
+             (s.textPreview || '').toLowerCase().includes(q) ||
+             (s.tags || []).some(t => (t || '').toLowerCase().includes(q));
     }
     return true;
   });
