@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
 
-export const maxDuration = 120;
+export const maxDuration = 60;
 
 const OPENCLAW_BASE_URL = process.env.OPENCLAW_BASE_URL || 'http://38.247.186.84:19001';
 const OPENCLAW_API_KEY = process.env.OPENCLAW_API_KEY || 'a353475b70538480030b744771524d183521a46ab8db7b02a2846d1103bc5734';
@@ -415,13 +415,19 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  // No action detected — tell frontend to call Merlino directly
-  return NextResponse.json({
-    content: null,
-    directCall: true,
-    bridgeUrl: OPENCLAW_BASE_URL,
-    model: OPENCLAW_MODEL,
-  });
+  // No action — proxy chat to Merlino (only Merlino, no fallback)
+  const openclawMessages: { role: string; content: string }[] = [];
+  if (systemPrompt) {
+    openclawMessages.push({ role: 'system', content: systemPrompt });
+  }
+  for (const m of messages) {
+    if (m.role !== 'system') {
+      openclawMessages.push({ role: m.role, content: m.content });
+    }
+  }
+
+  const content = await callMerlinoOnce(openclawMessages, 55_000);
+  return NextResponse.json({ content, model: OPENCLAW_MODEL });
   } catch (outerErr) {
     console.error('[action] Unhandled error:', outerErr);
     return NextResponse.json(
