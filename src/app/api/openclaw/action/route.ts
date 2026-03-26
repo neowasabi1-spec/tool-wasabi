@@ -119,13 +119,13 @@ function detectAction(message: string): ToolAction {
   return { action: 'no_action', params: {} };
 }
 
-async function callMerlino(messages: { role: string; content: string }[]) {
+async function callMerlinoOnce(messages: { role: string; content: string }[], timeoutMs: number) {
   const url = `${OPENCLAW_BASE_URL.replace(/\/$/, '')}/v1/chat/completions`;
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${OPENCLAW_API_KEY}` },
     body: JSON.stringify({ model: OPENCLAW_MODEL, messages, temperature: 0.7, max_tokens: 4096 }),
-    signal: AbortSignal.timeout(110_000),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   if (!res.ok) {
     const body = await res.text().catch(() => '');
@@ -133,6 +133,25 @@ async function callMerlino(messages: { role: string; content: string }[]) {
   }
   const data = await res.json();
   return data.choices?.[0]?.message?.content || '';
+}
+
+async function callMerlino(messages: { role: string; content: string }[], maxRetries = 2) {
+  let lastErr: Error | null = null;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const timeout = attempt === 0 ? 60_000 : 90_000;
+      const content = await callMerlinoOnce(messages, timeout);
+      if (content) return content;
+      throw new Error('Empty response');
+    } catch (err) {
+      lastErr = err as Error;
+      console.warn(`[Merlino] attempt ${attempt + 1}/${maxRetries + 1} failed: ${lastErr.message}`);
+      if (attempt < maxRetries) {
+        await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
+      }
+    }
+  }
+  throw lastErr || new Error('All retries failed');
 }
 
 async function exec(a: ToolAction, o: string): Promise<{ success: boolean; result: string; data?: unknown }> {

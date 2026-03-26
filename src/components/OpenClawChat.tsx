@@ -141,17 +141,35 @@ export default function OpenClawChat() {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [pendingFiles, setPendingFiles] = useState<FileAttachment[]>([]);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState<'checking' | 'online' | 'offline'>('checking');
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const checkHealth = useCallback(async () => {
+    try {
+      const res = await fetch('/api/openclaw/chat', { signal: AbortSignal.timeout(8000) });
+      const data = await res.json();
+      setConnectionStatus(data.status === 'online' ? 'online' : 'offline');
+    } catch {
+      setConnectionStatus('offline');
+    }
+  }, []);
+
+  useEffect(() => {
+    checkHealth();
+    const interval = setInterval(checkHealth, 30000);
+    return () => clearInterval(interval);
+  }, [checkHealth]);
+
   useEffect(() => {
     if (isOpen) {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
       setTimeout(() => inputRef.current?.focus(), 100);
+      checkHealth();
     }
-  }, [isOpen, messages.length]);
+  }, [isOpen, messages.length, checkHealth]);
 
   useEffect(() => {
     saveMessages(messages);
@@ -293,40 +311,61 @@ REGOLE:
         content: m.content,
       }));
 
-    try {
-      const allMessages = [
-        ...chatHistory,
-        { role: 'user', content: fullMessage },
-      ];
+    const allMessages = [
+      ...chatHistory,
+      { role: 'user', content: fullMessage },
+    ];
 
-      const res = await fetch('/api/openclaw/action', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messages: allMessages,
-          systemPrompt: buildSystemPrompt(),
-        }),
-      });
+    const payload = JSON.stringify({
+      messages: allMessages,
+      systemPrompt: buildSystemPrompt(),
+    });
 
-      const data = await res.json();
+    let lastError = '';
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const res = await fetch('/api/openclaw/action', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: payload,
+        });
 
-      if (!res.ok || data.error) {
-        addMessage('system', `Error: ${data.error || `HTTP ${res.status}`}`);
+        const data = await res.json();
+
+        if (!res.ok || data.error) {
+          lastError = data.error || `HTTP ${res.status}`;
+          if (attempt === 0 && (lastError.includes('timeout') || lastError.includes('aborted') || res.status >= 500)) {
+            await new Promise(r => setTimeout(r, 2000));
+            continue;
+          }
+          addMessage('system', `Error: ${lastError}`);
+          setConnectionStatus('offline');
+          setIsLoading(false);
+          return;
+        }
+
+        setConnectionStatus('online');
+
+        let response = data.content || 'No response';
+        if (data.actionExecuted && data.actionExecuted !== 'no_action') {
+          const badge = data.actionSuccess ? '\u2705' : '\u274C';
+          response = `${badge} **${data.actionExecuted}** ${data.actionSuccess ? 'eseguito' : 'fallito'}\n\n${response}`;
+        }
+
+        addMessage('assistant', response);
+        setIsLoading(false);
         return;
+      } catch (err) {
+        lastError = (err as Error).message;
+        if (attempt === 0) {
+          await new Promise(r => setTimeout(r, 2000));
+          continue;
+        }
       }
-
-      let response = data.content || 'No response';
-      if (data.actionExecuted && data.actionExecuted !== 'no_action') {
-        const badge = data.actionSuccess ? '\u2705' : '\u274C';
-        response = `${badge} **${data.actionExecuted}** ${data.actionSuccess ? 'eseguito' : 'fallito'}\n\n${response}`;
-      }
-
-      addMessage('assistant', response);
-    } catch (err) {
-      addMessage('system', `Connection failed: ${(err as Error).message}`);
-    } finally {
-      setIsLoading(false);
     }
+    addMessage('system', `Connessione fallita dopo 2 tentativi: ${lastError}`);
+    setConnectionStatus('offline');
+    setIsLoading(false);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -429,7 +468,10 @@ REGOLE:
             <div className="flex items-center gap-2">
               <Zap className="w-5 h-5 text-white" />
               <div>
-                <h3 className="text-white font-semibold text-sm">Merlino</h3>
+                <div className="flex items-center gap-1.5">
+                  <h3 className="text-white font-semibold text-sm">Merlino</h3>
+                  <span className={`w-2 h-2 rounded-full ${connectionStatus === 'online' ? 'bg-green-400' : connectionStatus === 'offline' ? 'bg-red-400' : 'bg-yellow-400 animate-pulse'}`} title={connectionStatus} />
+                </div>
                 <p className="text-white/70 text-[10px]">{section.name}</p>
               </div>
             </div>
