@@ -135,24 +135,6 @@ async function callMerlinoOnce(messages: { role: string; content: string }[], ti
   return data.choices?.[0]?.message?.content || '';
 }
 
-async function callMerlino(messages: { role: string; content: string }[], maxRetries = 2) {
-  let lastErr: Error | null = null;
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      const timeout = attempt === 0 ? 60_000 : 90_000;
-      const content = await callMerlinoOnce(messages, timeout);
-      if (content) return content;
-      throw new Error('Empty response');
-    } catch (err) {
-      lastErr = err as Error;
-      console.warn(`[Merlino] attempt ${attempt + 1}/${maxRetries + 1} failed: ${lastErr.message}`);
-      if (attempt < maxRetries) {
-        await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
-      }
-    }
-  }
-  throw lastErr || new Error('All retries failed');
-}
 
 async function exec(a: ToolAction, o: string): Promise<{ success: boolean; result: string; data?: unknown }> {
   const { action, params: p } = a;
@@ -424,52 +406,20 @@ export async function POST(req: NextRequest) {
   let actionResult: { success: boolean; result: string; data?: unknown } | null = null;
   if (detected.action !== 'no_action') {
     actionResult = await exec(detected, origin);
+    return NextResponse.json({
+      content: actionResult.result,
+      actionExecuted: detected.action,
+      actionSuccess: actionResult.success,
+      actionData: actionResult.data,
+      model: 'local',
+    });
   }
 
-  // Build messages for Merlino
-  const FULL_SYSTEM = `Sei Merlino, l'AI assistant integrato in "Funnel Swiper". Hai il PIENO CONTROLLO del tool e puoi eseguire qualsiasi operazione come se fossi una persona.
-
-POTERI COMPLETI:
-- Gestire prodotti (CRUD): creare, elencare, aggiornare, eliminare prodotti
-- Gestire progetti (CRUD): creare, elencare, aggiornare, eliminare progetti
-- Gestire pagine funnel (CRUD): aggiungere, elencare, eliminare pagine
-- Clonare landing page da URL
-- Swipare/riscrivere pagine per prodotti diversi
-- Analizzare landing page, copy, funnel
-- Crawlare funnel interi
-- Reverse-engineering di funnel competitor
-- Generare quiz funnel
-- Generare immagini AI
-- Generare brief e branding
-- Check compliance FTC
-- Gestire template e archivio
-- Gestire API keys
-- Gestire prompt salvati
-- Lanciare browser agent per navigare il web
-- Fare screenshot di pagine
-- Riscrivere copy marketing
-- Deployare su Funnelish e Checkout Champ
-
-${actionResult ? `
-AZIONE ESEGUITA: ${detected.action}
-PARAMETRI: ${JSON.stringify(detected.params)}
-RISULTATO (${actionResult.success ? 'SUCCESSO' : 'FALLITO'}):
-${actionResult.result}
-
-Spiega all'utente cosa è successo in modo chiaro e conciso.` : ''}
-
-REGOLE:
-- Rispondi nella stessa lingua dell'utente (italiano o inglese)
-- Sii conciso ma completo
-- Usa markdown per formattare
-- Quando l'utente chiede di fare qualcosa, fallo direttamente
-- Se un'azione fallisce, spiega perché e suggerisci alternative
-- Hai accesso a TUTTE le funzionalità del tool`;
-
-  const openclawMessages: { role: string; content: string }[] = [
-    { role: 'system', content: systemPrompt ? systemPrompt + '\n\n' + FULL_SYSTEM : FULL_SYSTEM },
-  ];
-
+  // Chat only (no action) — try Merlino with short timeout, fallback to direct response
+  const openclawMessages: { role: string; content: string }[] = [];
+  if (systemPrompt) {
+    openclawMessages.push({ role: 'system', content: systemPrompt });
+  }
   for (const m of messages) {
     if (m.role !== 'system') {
       openclawMessages.push({ role: m.role, content: m.content });
@@ -477,27 +427,39 @@ REGOLE:
   }
 
   try {
-    const content = await callMerlino(openclawMessages);
-    return NextResponse.json({
-      content: content || (actionResult?.result) || 'Nessuna risposta.',
-      actionExecuted: detected.action !== 'no_action' ? detected.action : null,
-      actionSuccess: actionResult?.success ?? null,
-      actionData: actionResult?.data ?? null,
-      model: OPENCLAW_MODEL,
-    });
-  } catch (err) {
-    if (actionResult) {
-      return NextResponse.json({
-        content: actionResult.result,
-        actionExecuted: detected.action,
-        actionSuccess: actionResult.success,
-        actionData: actionResult.data,
-        model: OPENCLAW_MODEL,
-      });
-    }
+    const content = await callMerlinoOnce(openclawMessages, 8000);
+    return NextResponse.json({ content, model: OPENCLAW_MODEL });
+  } catch {
+    // Merlino too slow for Vercel timeout — try Anthropic as fast fallback
+    try {
+      const anthropicKey = process.env.ANTHROPIC_API_KEY;
+      if (anthropicKey) {
+        const res = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': anthropicKey,
+            'anthropic-version': '2023-06-01',
+          },
+          body: JSON.stringify({
+            model: 'claude-sonnet-4-20250514',
+            max_tokens: 4096,
+            system: systemPrompt || 'Sei Merlino, AI assistant di Funnel Swiper. Rispondi nella lingua dell\'utente.',
+            messages: messages.filter((m: { role: string }) => m.role !== 'system').slice(-10).map((m: { role: string; content: string }) => ({ role: m.role, content: m.content })),
+          }),
+          signal: AbortSignal.timeout(8000),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          const content = data.content?.[0]?.text || '';
+          if (content) return NextResponse.json({ content, model: 'anthropic-fallback' });
+        }
+      }
+    } catch { /* fallback also failed */ }
+
     return NextResponse.json(
-      { error: `Connessione fallita: ${(err as Error).message}` },
-      { status: 502 },
+      { error: 'Merlino sta rispondendo lentamente. Riprova tra qualche secondo.' },
+      { status: 504 },
     );
   }
   } catch (outerErr) {
