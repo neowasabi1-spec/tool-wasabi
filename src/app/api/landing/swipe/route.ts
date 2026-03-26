@@ -148,7 +148,40 @@ async function clonePageHtml(url: string): Promise<string> {
     signal: AbortSignal.timeout(15000),
   });
   if (!res.ok) throw new Error(`Failed to fetch page: HTTP ${res.status}`);
-  return await res.text();
+  let html = await res.text();
+  return absolutizeUrls(html, url);
+}
+
+function absolutizeUrls(html: string, baseUrl: string): string {
+  const urlObj = new URL(baseUrl);
+  const origin = urlObj.origin;
+  const basePath = baseUrl.substring(0, baseUrl.lastIndexOf('/') + 1);
+
+  return html
+    .replace(/(src|href|poster|data-src|data-lazy-src|srcset)=(["'])((?!https?:\/\/|data:|#|mailto:|javascript:|\/\/).*?)\2/gi,
+      (_match, attr, quote, path) => {
+        let absolute: string;
+        if (path.startsWith('//')) {
+          absolute = urlObj.protocol + path;
+        } else if (path.startsWith('/')) {
+          absolute = origin + path;
+        } else {
+          absolute = basePath + path;
+        }
+        return `${attr}=${quote}${absolute}${quote}`;
+      })
+    .replace(/url\((['"]?)((?!https?:\/\/|data:|#)(?:\/[^)'"]+|[^)'"\s]+))\1\)/gi,
+      (_match, quote, path) => {
+        let absolute: string;
+        if (path.startsWith('//')) {
+          absolute = urlObj.protocol + path;
+        } else if (path.startsWith('/')) {
+          absolute = origin + path;
+        } else {
+          absolute = basePath + path;
+        }
+        return `url(${quote}${absolute}${quote})`;
+      });
 }
 
 export async function POST(request: NextRequest) {
@@ -169,7 +202,12 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'product.name required' }, { status: 400 });
     }
 
-    const originalHtml = providedHtml || await clonePageHtml(source_url!);
+    let originalHtml: string;
+    if (providedHtml) {
+      originalHtml = source_url ? absolutizeUrls(providedHtml, source_url) : providedHtml;
+    } else {
+      originalHtml = await clonePageHtml(source_url!);
+    }
     if (originalHtml.length < 50) {
       return NextResponse.json({ error: 'HTML too short' }, { status: 400 });
     }
