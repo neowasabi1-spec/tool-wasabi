@@ -152,35 +152,37 @@ async function clonePageHtml(url: string): Promise<string> {
   return absolutizeUrls(html, url);
 }
 
+function makeAbsolute(path: string, origin: string, basePath: string, protocol: string): string {
+  const trimmed = path.trim();
+  if (!trimmed || /^(https?:\/\/|data:|#|mailto:|javascript:)/i.test(trimmed)) return trimmed;
+  if (trimmed.startsWith('//')) return protocol + trimmed;
+  if (trimmed.startsWith('/')) return origin + trimmed;
+  return basePath + trimmed;
+}
+
 function absolutizeUrls(html: string, baseUrl: string): string {
   const urlObj = new URL(baseUrl);
   const origin = urlObj.origin;
   const basePath = baseUrl.substring(0, baseUrl.lastIndexOf('/') + 1);
+  const protocol = urlObj.protocol;
 
   return html
-    .replace(/(src|href|poster|data-src|data-lazy-src|srcset)=(["'])((?!https?:\/\/|data:|#|mailto:|javascript:|\/\/).*?)\2/gi,
+    .replace(/(srcset)=(["'])(.*?)\2/gi, (_match, attr, quote, value) => {
+      const fixed = value.split(',').map((entry: string) => {
+        const parts = entry.trim().split(/\s+/);
+        if (parts.length === 0) return entry;
+        parts[0] = makeAbsolute(parts[0], origin, basePath, protocol);
+        return parts.join(' ');
+      }).join(', ');
+      return `${attr}=${quote}${fixed}${quote}`;
+    })
+    .replace(/(src|href|poster|data-src|data-lazy-src)=(["'])((?!https?:\/\/|data:|#|mailto:|javascript:|\/\/).*?)\2/gi,
       (_match, attr, quote, path) => {
-        let absolute: string;
-        if (path.startsWith('//')) {
-          absolute = urlObj.protocol + path;
-        } else if (path.startsWith('/')) {
-          absolute = origin + path;
-        } else {
-          absolute = basePath + path;
-        }
-        return `${attr}=${quote}${absolute}${quote}`;
+        return `${attr}=${quote}${makeAbsolute(path, origin, basePath, protocol)}${quote}`;
       })
     .replace(/url\((['"]?)((?!https?:\/\/|data:|#)(?:\/[^)'"]+|[^)'"\s]+))\1\)/gi,
       (_match, quote, path) => {
-        let absolute: string;
-        if (path.startsWith('//')) {
-          absolute = urlObj.protocol + path;
-        } else if (path.startsWith('/')) {
-          absolute = origin + path;
-        } else {
-          absolute = basePath + path;
-        }
-        return `url(${quote}${absolute}${quote})`;
+        return `url(${quote}${makeAbsolute(path, origin, basePath, protocol)}${quote})`;
       });
 }
 
@@ -293,11 +295,29 @@ CRITICAL RULES:
       const original = texts[rw.id];
       if (!original || !rw.rewritten || original.original === rw.rewritten) continue;
 
-      const escaped = original.original.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const regex = new RegExp(escaped, 'g');
-      const before = resultHtml;
-      resultHtml = resultHtml.replace(regex, rw.rewritten);
-      if (resultHtml !== before) replacements++;
+      if (original.tag.startsWith('attr:')) {
+        const attrName = original.tag.replace('attr:', '');
+        const escaped = original.original.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const attrRegex = new RegExp(`(${attrName}=["'])${escaped}(["'])`, 'g');
+        const before = resultHtml;
+        resultHtml = resultHtml.replace(attrRegex, `$1${rw.rewritten}$2`);
+        if (resultHtml !== before) replacements++;
+      } else {
+        const escaped = original.original.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const parts = resultHtml.split(/(<[^>]*>)/g);
+        let changed = false;
+        for (let i = 0; i < parts.length; i++) {
+          if (!parts[i].startsWith('<')) {
+            const before = parts[i];
+            parts[i] = parts[i].replace(new RegExp(escaped, 'g'), rw.rewritten);
+            if (parts[i] !== before) changed = true;
+          }
+        }
+        if (changed) {
+          resultHtml = parts.join('');
+          replacements++;
+        }
+      }
     }
 
     const titleMatch = resultHtml.match(/<title[^>]*>([^<]*)<\/title>/i);
