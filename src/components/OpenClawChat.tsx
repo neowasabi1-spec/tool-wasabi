@@ -330,7 +330,13 @@ REGOLE:
           body: payload,
         });
 
-        const data = await res.json();
+        const text = await res.text();
+        let data;
+        try {
+          data = JSON.parse(text);
+        } catch {
+          throw new Error(`Server error (${res.status}): ${text.substring(0, 200)}`);
+        }
 
         if (!res.ok || data.error) {
           lastError = data.error || `HTTP ${res.status}`;

@@ -404,7 +404,12 @@ async function exec(a: ToolAction, o: string): Promise<{ success: boolean; resul
 }
 
 export async function POST(req: NextRequest) {
-  const { messages, systemPrompt } = await req.json();
+  try {
+  const body = await req.json().catch(() => null);
+  if (!body) {
+    return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
+  }
+  const { messages, systemPrompt } = body;
 
   if (!messages || !Array.isArray(messages) || messages.length === 0) {
     return NextResponse.json({ error: 'Missing messages' }, { status: 400 });
@@ -493,6 +498,13 @@ REGOLE:
     return NextResponse.json(
       { error: `Connessione fallita: ${(err as Error).message}` },
       { status: 502 },
+    );
+  }
+  } catch (outerErr) {
+    console.error('[action] Unhandled error:', outerErr);
+    return NextResponse.json(
+      { error: `Server error: ${(outerErr as Error).message}` },
+      { status: 500 },
     );
   }
 }
