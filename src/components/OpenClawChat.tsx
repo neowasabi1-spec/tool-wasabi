@@ -226,34 +226,30 @@ export default function OpenClawChat() {
   };
 
   const buildSystemPrompt = () => {
-    return `You are OpenClaw, an AI assistant integrated into the "Funnel Swiper" tool. You help users with all aspects of affiliate marketing, funnel building, landing page optimization, and e-commerce strategy.
+    return `Sei Merlino, l'AI assistant con PIENI POTERI integrato in "Funnel Swiper".
 
-CURRENT CONTEXT:
-- The user is in the "${section.name}" section
-- Section purpose: ${section.description}
+CONTESTO: Sezione "${section.name}" — ${section.description}
 
-CAPABILITIES:
-You can help with:
-- Analyzing funnels, landing pages, and marketing copy
-- Writing and improving headlines, CTAs, benefits, and sales copy
-- Creating quiz funnels and lead generation strategies
-- Product brief generation and positioning
-- Compliance checks for advertising
-- Swipe file creation and template customization
-- Affiliate marketing strategy and offer discovery
-- Navigating and analyzing competitor websites
-- Building complete funnel flows (bridge pages, VSLs, upsells, downsells)
-- Analyzing uploaded images, PDFs, documents, and files
+POTERI COMPLETI — Puoi eseguire direttamente:
+- CRUD Prodotti: creare, elencare, aggiornare, eliminare
+- CRUD Progetti: creare, elencare, aggiornare, eliminare
+- CRUD Pagine Funnel: aggiungere, elencare, eliminare
+- Clonare landing page da URL
+- Swipare/riscrivere pagine per prodotti
+- Analizzare landing page, copy, funnel interi
+- Crawlare funnel, reverse-engineering competitor
+- Generare quiz, immagini AI, brief, branding
+- Check compliance FTC
+- Gestire template, archivio, API keys, prompt
+- Lanciare browser agent, fare screenshot
+- Riscrivere copy marketing
+- Deployare su Funnelish e Checkout Champ
 
-RULES:
-- Be concise but thorough
-- Give actionable advice
-- If the user asks about something specific to their current section, provide context-aware help
-- You can suggest actions the user can take in the current section
-- Use markdown formatting for readability
-- Respond in the same language the user writes in (Italian or English)
-- You have full access to all your skills including browser navigation, URL analysis, and any other tool available to you. Use them freely when the user requests it.
-- When the user uploads files, analyze them thoroughly and provide insights.`;
+REGOLE:
+- Rispondi nella lingua dell'utente (IT/EN)
+- Sii conciso ma completo, usa markdown
+- Quando l'utente chiede di FARE qualcosa, eseguilo direttamente
+- Analizza file caricati in dettaglio`;
   };
 
   const buildMessageWithAttachments = (text: string, files: FileAttachment[]): string => {
@@ -303,7 +299,7 @@ RULES:
         { role: 'user', content: fullMessage },
       ];
 
-      const res = await fetch('/api/openclaw/chat', {
+      const res = await fetch('/api/openclaw/action', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -319,7 +315,13 @@ RULES:
         return;
       }
 
-      addMessage('assistant', data.content || 'No response');
+      let response = data.content || 'No response';
+      if (data.actionExecuted && data.actionExecuted !== 'no_action') {
+        const badge = data.actionSuccess ? '\u2705' : '\u274C';
+        response = `${badge} **${data.actionExecuted}** ${data.actionSuccess ? 'eseguito' : 'fallito'}\n\n${response}`;
+      }
+
+      addMessage('assistant', response);
     } catch (err) {
       addMessage('system', `Connection failed: ${(err as Error).message}`);
     } finally {
@@ -427,7 +429,7 @@ RULES:
             <div className="flex items-center gap-2">
               <Zap className="w-5 h-5 text-white" />
               <div>
-                <h3 className="text-white font-semibold text-sm">OpenClaw</h3>
+                <h3 className="text-white font-semibold text-sm">Merlino</h3>
                 <p className="text-white/70 text-[10px]">{section.name}</p>
               </div>
             </div>
@@ -460,8 +462,8 @@ RULES:
             {messages.length === 0 && (
               <div className="text-center py-8">
                 <Zap className="w-10 h-10 text-orange-300 mx-auto mb-3" />
-                <p className="text-gray-500 text-sm font-medium">OpenClaw ready</p>
-                <p className="text-gray-400 text-xs mt-1">Ask me anything about {section.name}</p>
+                <p className="text-gray-500 text-sm font-medium">Merlino pronto</p>
+                <p className="text-gray-400 text-xs mt-1">Chiedimi qualsiasi cosa su {section.name}</p>
                 <p className="text-gray-300 text-[10px] mt-1">You can also drop files, images, or PDFs</p>
                 <div className="mt-4 space-y-2">
                   {[
@@ -514,7 +516,7 @@ RULES:
                 <div className="bg-gray-100 rounded-2xl rounded-bl-md px-4 py-3">
                   <div className="flex items-center gap-2">
                     <Loader2 className="w-4 h-4 text-orange-500 animate-spin" />
-                    <span className="text-xs text-gray-500">OpenClaw is thinking...</span>
+                    <span className="text-xs text-gray-500">Merlino sta pensando...</span>
                   </div>
                 </div>
               </div>
@@ -566,7 +568,7 @@ RULES:
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
                 onPaste={handlePaste}
-                placeholder={`Ask OpenClaw about ${section.name}...`}
+                placeholder={`Chiedi a Merlino...`}
                 rows={1}
                 className="flex-1 resize-none px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent max-h-24"
                 style={{ minHeight: '42px' }}
