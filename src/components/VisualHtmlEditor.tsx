@@ -164,7 +164,6 @@ const EDITOR_SCRIPT = `
   plusBtn.onmouseleave=function(){plusBtn.style.transform='scale(1)';};
   var insertTarget=null;
   plusBtn.onclick=function(e){e.preventDefault();e.stopPropagation();
-    insertTarget=sel;
     window.parent.postMessage({type:'request-insert-after'},'*');};
   document.body.appendChild(plusBtn);
 
@@ -177,8 +176,8 @@ const EDITOR_SCRIPT = `
   }
 
   function selectEl(el){
-    if(sk(el))return;
-    if(sel)co(sel);sel=el;
+    if(sk(el)||el===plusBtn)return;
+    if(sel)co(sel);sel=el;insertTarget=el;
     el.style.outline=SS;el.style.outlineOffset='2px';
     window.parent.postMessage({type:'element-selected',data:gi(el)},'*');
     positionPlus();
@@ -222,18 +221,18 @@ const EDITOR_SCRIPT = `
   }).observe(document.body,{childList:true,subtree:true});
 
   document.addEventListener('mouseover',function(e){
-    if(editing)return;var el=e.target;if(sk(el)||el===sel)return;
+    if(editing)return;var el=e.target;if(sk(el)||el===sel||el===plusBtn)return;
     if(hover&&hover!==sel)co(hover);hover=el;el.style.outline=HS;el.style.outlineOffset='1px';
   },true);
 
   document.addEventListener('mouseout',function(e){
-    var el=e.target;if(el!==sel)co(el);if(hover===el)hover=null;
+    var el=e.target;if(el===plusBtn)return;if(el!==sel)co(el);if(hover===el)hover=null;
   },true);
 
   // mousedown on images/svg/video/canvas as primary selection (click may not fire due to residual drag)
   document.addEventListener('mousedown',function(e){
     var el=e.target;
-    if(!el||!el.tagName)return;
+    if(!el||!el.tagName||el===plusBtn||plusBtn.contains(el))return;
     var t=el.tagName.toLowerCase();
     if(t==='img'||t==='svg'||t==='video'||t==='canvas'||t==='picture'||t==='iframe'||t==='object'||t==='embed'){
       e.preventDefault();e.stopPropagation();
@@ -243,13 +242,12 @@ const EDITOR_SCRIPT = `
   },true);
 
   document.addEventListener('click',function(e){
+    if(e.target===plusBtn||plusBtn.contains(e.target))return;
     if(editing&&editEl&&!editEl.contains(e.target)){finishEdit();}
     if(editing&&editEl&&editEl.contains(e.target))return;
     e.preventDefault();e.stopPropagation();
     var el=e.target;if(sk(el))return;
-    if(sel)co(sel);sel=el;
-    el.style.outline=SS;el.style.outlineOffset='2px';
-    window.parent.postMessage({type:'element-selected',data:gi(el)},'*');
+    selectEl(el);
   },true);
 
   document.addEventListener('dblclick',function(e){
