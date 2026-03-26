@@ -157,11 +157,29 @@ const EDITOR_SCRIPT = `
     return!t||t==='html'||t==='head'||t==='style'||t==='link'||t==='meta'||t==='script'||t==='noscript';
   }
 
+  var plusBtn=document.createElement('div');
+  plusBtn.innerHTML='+';
+  plusBtn.style.cssText='position:absolute;z-index:999999;width:32px;height:32px;border-radius:50%;background:#3b82f6;color:#fff;font-size:20px;line-height:32px;text-align:center;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.25);display:none;pointer-events:auto;transition:transform .15s;user-select:none;';
+  plusBtn.onmouseenter=function(){plusBtn.style.transform='scale(1.15)';};
+  plusBtn.onmouseleave=function(){plusBtn.style.transform='scale(1)';};
+  plusBtn.onclick=function(e){e.preventDefault();e.stopPropagation();
+    window.parent.postMessage({type:'request-insert-after'},'*');};
+  document.body.appendChild(plusBtn);
+
+  function positionPlus(){
+    if(!sel){plusBtn.style.display='none';return;}
+    var r=sel.getBoundingClientRect();
+    plusBtn.style.left=(r.left+r.width/2-16+window.scrollX)+'px';
+    plusBtn.style.top=(r.bottom+6+window.scrollY)+'px';
+    plusBtn.style.display='block';
+  }
+
   function selectEl(el){
     if(sk(el))return;
     if(sel)co(sel);sel=el;
     el.style.outline=SS;el.style.outlineOffset='2px';
     window.parent.postMessage({type:'element-selected',data:gi(el)},'*');
+    positionPlus();
   }
 
   function sendHtml(){
@@ -183,6 +201,9 @@ const EDITOR_SCRIPT = `
   }
 
   // Block native image/link drag so click events fire normally
+  window.addEventListener('scroll',positionPlus,true);
+  window.addEventListener('resize',positionPlus);
+
   document.addEventListener('dragstart',function(e){e.preventDefault();},true);
 
   // Disable draggable on all images and future images
@@ -280,6 +301,7 @@ const EDITOR_SCRIPT = `
         if(sel){sel.style.outline=SS;sel.style.outlineOffset='2px';}
         window.parent.postMessage({type:'clean-html',data:ch},'*');break;
       case 'cmd-deselect':if(editing)finishEdit();if(sel)co(sel);sel=null;hover=null;
+        plusBtn.style.display='none';
         window.parent.postMessage({type:'element-deselected'},'*');break;
       case 'cmd-select-path':try{var found=document.querySelector(m.path);
         if(found){if(sel)co(sel);sel=found;found.style.outline=SS;found.style.outlineOffset='2px';
@@ -328,6 +350,21 @@ const EDITOR_SCRIPT = `
             nodes.forEach(function(n){target.parentElement.insertBefore(n,target.nextSibling);});
           }else{
             nodes.forEach(function(n){document.body.appendChild(n);});
+          }
+          sendHtml();
+          window.parent.postMessage({type:'section-inserted',data:true},'*');
+        }break;
+      case 'cmd-insert-after-selected':
+        if(m.html){
+          var ia_tmp=document.createElement('div');ia_tmp.innerHTML=m.html;
+          var ia_nodes=Array.from(ia_tmp.children);
+          var ia_target=sel||document.body.lastElementChild;
+          if(ia_target&&ia_target.parentElement){
+            var ia_ref=ia_target.nextSibling;
+            ia_nodes.forEach(function(n){ia_target.parentElement.insertBefore(n,ia_ref);});
+            if(ia_nodes.length>0){if(sel)co(sel);sel=ia_nodes[0];sel.style.outline=SS;sel.style.outlineOffset='2px';positionPlus();}
+          }else{
+            ia_nodes.forEach(function(n){document.body.appendChild(n);});
           }
           sendHtml();
           window.parent.postMessage({type:'section-inserted',data:true},'*');
@@ -569,6 +606,8 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   /* ── Section Library (state only) ── */
   const [savedSections, setSavedSections] = useState<SavedSection[]>([]);
   const [showSectionLibrary, setShowSectionLibrary] = useState(false);
+  const [showInsertPanel, setShowInsertPanel] = useState(false);
+  const [insertSearch, setInsertSearch] = useState('');
   const [showSaveDialog, setShowSaveDialog] = useState(false);
   const [saveSectionName, setSaveSectionName] = useState('');
   const [saveSectionType, setSaveSectionType] = useState('other');
@@ -677,6 +716,10 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
           elAiPendingRef.current = e.data.data;
           break;
         case 'section-inserted':
+          setShowInsertPanel(false);
+          break;
+        case 'request-insert-after':
+          setShowInsertPanel(true);
           break;
       }
     };
@@ -762,6 +805,17 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     sendToIframe({ type: 'cmd-insert-section', html: section.html });
     setTimeout(() => setImportingId(null), 1500);
   }, [sendToIframe]);
+
+  const handleInsertAfter = useCallback((section: SavedSection) => {
+    sendToIframe({ type: 'cmd-insert-after-selected', html: section.html });
+    setShowInsertPanel(false);
+  }, [sendToIframe]);
+
+  const insertPanelSections = savedSections.filter(s => {
+    if (!insertSearch.trim()) return true;
+    const q = insertSearch.toLowerCase();
+    return s.name.toLowerCase().includes(q) || (s.tags || []).some(t => t.toLowerCase().includes(q));
+  });
 
   const filteredLibrarySections = savedSections.filter(s => {
     if (libraryFilterType !== 'all' && s.sectionType !== libraryFilterType) return false;
@@ -1969,6 +2023,76 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
           </div>
         )}
       </div>
+
+      {/* ═══ Insert Section Panel (triggered by + button) ═══ */}
+      {showInsertPanel && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/40 backdrop-blur-sm"
+          onClick={() => setShowInsertPanel(false)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-[480px] max-w-[95vw] max-h-[70vh] overflow-hidden flex flex-col"
+            onClick={e => e.stopPropagation()}>
+            <div className="px-5 py-3 bg-gradient-to-r from-blue-600 to-cyan-600 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Layers className="w-5 h-5" />
+                <span className="font-bold text-sm">Insert Section</span>
+              </div>
+              <button onClick={() => setShowInsertPanel(false)} className="text-white/80 hover:text-white text-lg font-bold">×</button>
+            </div>
+            <div className="px-4 py-2 border-b">
+              <div className="relative">
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
+                <input
+                  value={insertSearch}
+                  onChange={e => setInsertSearch(e.target.value)}
+                  placeholder="Search templates..."
+                  className="w-full pl-8 pr-3 py-1.5 text-xs border rounded-lg focus:ring-1 focus:ring-blue-400 focus:border-blue-400"
+                />
+              </div>
+            </div>
+            <div className="flex-1 overflow-y-auto p-3 space-y-2">
+              {insertPanelSections.length === 0 ? (
+                <div className="text-center py-8 text-gray-400 text-xs">
+                  <Library className="w-8 h-8 mx-auto mb-2 opacity-40" />
+                  <p>No saved sections yet</p>
+                  <p className="mt-1">Clone landing pages to auto-save sections</p>
+                </div>
+              ) : (
+                insertPanelSections.map(section => (
+                  <div key={section.id} className="border rounded-lg overflow-hidden hover:shadow-md transition-shadow group">
+                    <div className="h-24 bg-gray-50 overflow-hidden relative">
+                      <iframe
+                        srcDoc={section.html}
+                        className="w-full h-full border-0 pointer-events-none"
+                        title={section.name}
+                        sandbox="allow-same-origin"
+                        style={{ transform: 'scale(0.4)', transformOrigin: 'top left', width: '250%', height: '250%' }}
+                      />
+                      <div className="absolute inset-0 bg-transparent group-hover:bg-blue-500/10 transition-colors" />
+                    </div>
+                    <div className="px-3 py-2 flex items-center justify-between bg-white">
+                      <div className="min-w-0">
+                        <p className="text-xs font-medium truncate">{section.name}</p>
+                        {section.tags?.length > 0 && (
+                          <div className="flex gap-1 mt-0.5">
+                            {section.tags.slice(0, 3).map(t => (
+                              <span key={t} className="px-1.5 py-0.5 bg-gray-100 rounded text-[9px] text-gray-500">{t}</span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      <button
+                        onClick={() => handleInsertAfter(section)}
+                        className="px-3 py-1.5 bg-blue-600 text-white text-xs rounded-lg hover:bg-blue-700 transition-colors font-medium shrink-0"
+                      >
+                        Insert
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ═══ Save Section Dialog ═══ */}
       {showSaveDialog && (

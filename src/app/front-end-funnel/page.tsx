@@ -59,6 +59,62 @@ import VisualHtmlEditor from '@/components/VisualHtmlEditor';
 
 // Helper: sanitize cloned HTML and rewrite ALL relative URLs to absolute using the original domain
 // Strips scripts (unless keepScripts=true for quiz pages), rewrites src/href/url() so CSS, images, fonts load correctly in preview
+const SAVED_SECTIONS_KEY = 'funnel-swiper-saved-sections';
+const CLONED_URLS_KEY = 'funnel-swiper-cloned-urls';
+
+function autoSaveSections(html: string, sourceUrl: string, pageName: string) {
+  if (typeof window === 'undefined') return;
+  const clonedUrls: string[] = JSON.parse(localStorage.getItem(CLONED_URLS_KEY) || '[]');
+  const host = new URL(sourceUrl).hostname;
+  if (clonedUrls.includes(host)) return;
+
+  const bodyMatch = html.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+  const bodyHtml = bodyMatch ? bodyMatch[1] : html;
+  const wrapper = document.createElement('div');
+  wrapper.innerHTML = bodyHtml;
+
+  const skipTags = new Set(['style', 'script', 'link', 'meta', 'noscript', 'br', 'hr']);
+  const existing: { name: string; html: string }[] = JSON.parse(localStorage.getItem(SAVED_SECTIONS_KEY) || '[]');
+  const newSections: typeof existing = [];
+  let idx = 0;
+
+  for (let i = 0; i < wrapper.children.length; i++) {
+    const child = wrapper.children[i];
+    const tag = child.tagName.toLowerCase();
+    if (skipTags.has(tag)) continue;
+    const text = (child.textContent || '').trim();
+    if (text.length < 10 && !child.querySelector('img,video,picture,svg')) continue;
+
+    idx++;
+    const preview = text.substring(0, 40).replace(/\s+/g, ' ');
+    const sectionName = `${pageName} - Section ${idx}${preview ? ': ' + preview : ''}`;
+
+    child.removeAttribute('style');
+    newSections.push({
+      name: sectionName,
+      html: child.outerHTML,
+    });
+  }
+
+  if (newSections.length === 0) return;
+
+  const ts = Date.now();
+  const merged = [
+    ...newSections.map((s, j) => ({
+      id: `auto-${ts}-${j}`,
+      name: s.name,
+      html: s.html,
+      sectionType: 'body' as const,
+      tags: [host, 'auto-saved'],
+      createdAt: new Date().toISOString(),
+    })),
+    ...existing,
+  ];
+  localStorage.setItem(SAVED_SECTIONS_KEY, JSON.stringify(merged));
+  clonedUrls.push(host);
+  localStorage.setItem(CLONED_URLS_KEY, JSON.stringify(clonedUrls));
+}
+
 function sanitizeClonedHtml(html: string, originalUrl: string, options?: { keepScripts?: boolean }): string {
   try {
     const base = new URL(originalUrl);
@@ -1466,6 +1522,8 @@ export default function FrontEndFunnel() {
             cloned_at: new Date(),
           },
         });
+
+        try { autoSaveSections(clonedHtml, url, pageName); } catch {}
 
         setPreviewViewport('desktop');
         setHtmlPreviewModal({
