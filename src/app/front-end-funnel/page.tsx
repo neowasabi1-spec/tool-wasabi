@@ -2914,7 +2914,7 @@ export default function FrontEndFunnel() {
                         <div className="flex items-center gap-1">
                           <button
                             onClick={() => handlePublish(page.id, 'repli')}
-                            disabled={!!publishingIds[page.id] || (!page.swipedData?.html && !page.clonedData?.html) || !funnelDomain}
+                            disabled={!!publishingIds[page.id] || (!page.swipedData?.html && !page.clonedData?.html)}
                             className="px-2 py-1 text-[10px] font-semibold rounded bg-blue-100 text-blue-700 hover:bg-blue-200 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center gap-1"
                             title="Publish to Repli"
                           >
@@ -2923,7 +2923,7 @@ export default function FrontEndFunnel() {
                           </button>
                           <button
                             onClick={() => handlePublish(page.id, 'checkoutchamp')}
-                            disabled={!!publishingIds[page.id] || (!page.swipedData?.html && !page.clonedData?.html) || !funnelDomain}
+                            disabled={!!publishingIds[page.id] || (!page.swipedData?.html && !page.clonedData?.html)}
                             className="px-2 py-1 text-[10px] font-semibold rounded bg-emerald-100 text-emerald-700 hover:bg-emerald-200 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center gap-1"
                             title="Publish to CheckoutChamp"
                           >
