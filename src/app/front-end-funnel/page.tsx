@@ -818,11 +818,6 @@ export default function FrontEndFunnel() {
       alert('No HTML available. Clone or swipe the page first.');
       return;
     }
-    if (!funnelDomain) {
-      alert('Insert a domain first.');
-      return;
-    }
-
     const nextUrl = getNextStepUrl(pageId);
     const finalHtml = injectCtaLinks(html, nextUrl);
     const slug = stepSlugs[pageId] || generateSlug(page.name, funnelPages.indexOf(page));
@@ -830,7 +825,7 @@ export default function FrontEndFunnel() {
     setPublishingIds(prev => ({ ...prev, [pageId]: platform }));
     try {
       if (platform === 'repli') {
-        const domain = funnelDomain.replace(/\/+$/, '').replace(/^https?:\/\//, '');
+        const domain = (funnelDomain || 'default').replace(/\/+$/, '').replace(/^https?:\/\//, '');
         const res = await fetch('/api/deploy/funnelish', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -850,7 +845,7 @@ export default function FrontEndFunnel() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             html: finalHtml,
-            funnelName: `${funnelDomain}-funnel`,
+            funnelName: `${funnelDomain || 'funnel'}-funnel`,
             pageName: slug,
             pageType: page.pageType,
             email: '',
