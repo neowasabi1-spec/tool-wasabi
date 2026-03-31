@@ -1039,10 +1039,10 @@ export default function TemplatesPage() {
         {/* ============ QUIZ VIEW ============ */}
         {mainView === 'quiz' && (() => {
           const quizTemplates = (templates || []).filter(t => t.category === 'quiz');
-          const quizFiltered = searchTerm
+          const quizFiltered = archiveSearch.trim()
             ? quizTemplates.filter(t =>
-                t.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                (t.tags || []).some(tag => tag.toLowerCase().includes(searchTerm.toLowerCase()))
+                t.name.toLowerCase().includes(archiveSearch.toLowerCase()) ||
+                (t.tags || []).some(tag => tag.toLowerCase().includes(archiveSearch.toLowerCase()))
               )
             : quizTemplates;
           return (
