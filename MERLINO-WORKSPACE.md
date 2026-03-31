@@ -59,7 +59,13 @@ src/
 - `OPENCLAW_MODEL` — Model name (merlino)
 
 ## Database (Supabase)
-Tables: products, funnel_pages, post_purchase_pages, templates, saved_funnels, projects, openclaw_messages, api_keys
+Tables: products, funnel_pages, post_purchase_pages, templates, saved_funnels, projects, openclaw_messages, api_keys, archived_funnels
+
+### archived_funnels table
+- `id` UUID, `name` TEXT, `total_steps` INTEGER, `steps` JSONB, `analysis` TEXT, `section` TEXT (default 'funnel'), `created_at` TIMESTAMPTZ
+- The `section` column distinguishes funnel types: 'funnel' (default) or 'quiz'
+- To save a quiz funnel: insert with `section: 'quiz'`
+- Example: `salva in quiz "Nome Quiz"` → saves current funnel pages as quiz in archive
 
 ## Your Powers
 You have FULL access to:

@@ -301,7 +301,7 @@ interface Store {
   archivedFunnels: ArchivedFunnel[];
   archivedFunnelsLoaded: boolean;
   loadArchivedFunnels: () => Promise<void>;
-  saveCurrentFunnelAsArchive: (name: string) => Promise<void>;
+  saveCurrentFunnelAsArchive: (name: string, section?: string) => Promise<void>;
   deleteArchivedFunnel: (id: string) => Promise<void>;
 }
 
@@ -877,7 +877,7 @@ export const useStore = create<Store>()((set, get) => ({
     }
   },
 
-  saveCurrentFunnelAsArchive: async (name: string) => {
+  saveCurrentFunnelAsArchive: async (name: string, section?: string) => {
     const pages = get().funnelPages;
     const products = get().products;
     const templates = get().templates;
@@ -903,6 +903,7 @@ export const useStore = create<Store>()((set, get) => ({
         name,
         total_steps: steps.length,
         steps: steps as unknown as import('@/types/database').Json,
+        ...(section ? { section } : {}),
       });
       set((state) => ({
         archivedFunnels: [created, ...state.archivedFunnels],

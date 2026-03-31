@@ -53,6 +53,14 @@ const ACTION_PATTERNS: { pattern: RegExp; action: string; extract: (m: RegExpMat
   { pattern: /\b(lista|list|elenca|mostra|show)\b.*\b(template|archiv)/i, action: 'list_templates', extract: () => ({}) },
   { pattern: /\b(lista|list|elenca|mostra|show)\b.*\b(archiv|salvat|saved)/i, action: 'list_archive', extract: () => ({}) },
 
+  // Save to archive (quiz or funnel)
+  { pattern: /\b(salva|save|archivia|archive)\b.*\b(quiz)\b/i, action: 'save_to_archive', extract: (_m, msg) => {
+    const nameM = msg.match(/["""](.+?)["""]/); return { name: nameM?.[1] || '', section: 'quiz' };
+  }},
+  { pattern: /\b(salva|save|archivia|archive)\b.*\b(funnel|archivi?o?)\b/i, action: 'save_to_archive', extract: (_m, msg) => {
+    const nameM = msg.match(/["""](.+?)["""]/); const isQuiz = /quiz/i.test(msg); return { name: nameM?.[1] || '', section: isQuiz ? 'quiz' : 'funnel' };
+  }},
+
   // Clone & Swipe
   { pattern: /\b(clon[ae]|clone)\b.*?(https?:\/\/[^\s"]+)/i, action: 'clone_page', extract: (m) => ({ url: m[2] }) },
   { pattern: /\b(swipe|swipa|riscrivi|rewrite)\b.*?(https?:\/\/[^\s"]+)/i, action: 'swipe_page', extract: (m, msg) => {
@@ -297,7 +305,23 @@ async function exec(a: ToolAction, o: string): Promise<{ success: boolean; resul
         const { data: items, error: e } = await supabase.from('archived_funnels').select('*').order('created_at', { ascending: false });
         if (e) return fail(e.message);
         if (!items?.length) return { success: true, result: 'Nessun funnel archiviato.' };
-        return { success: true, result: items.map((x: { name: string; total_steps: number }, i: number) => `${i + 1}. **${x.name}** (${x.total_steps} step)`).join('\n'), data: items };
+        return { success: true, result: items.map((x: { name: string; total_steps: number; section?: string }, i: number) => `${i + 1}. **${x.name}** (${x.total_steps} step) [${x.section || 'funnel'}]`).join('\n'), data: items };
+      }
+
+      case 'save_to_archive': {
+        if (!p.name) return fail('Nome richiesto per salvare nell\'archivio. Usa: salva in quiz "Nome Funnel"');
+        const section = (p.section as string) || 'funnel';
+        const { data: pages, error: pErr } = await supabase.from('funnel_pages').select('*').order('created_at', { ascending: true });
+        if (pErr) return fail(pErr.message);
+        if (!pages?.length) return fail('Nessuna pagina funnel da archiviare. Crea prima delle pagine nel Front End Funnel.');
+        const steps = pages.map((pg: { name: string; page_type: string; url_to_swipe: string; prompt: string; swipe_status: string }, i: number) => ({
+          step_index: i + 1, name: pg.name, page_type: pg.page_type, url_to_swipe: pg.url_to_swipe || '', prompt: pg.prompt || '', swipe_status: pg.swipe_status || '',
+        }));
+        const { data: created, error: cErr } = await supabase.from('archived_funnels').insert({
+          name: p.name as string, total_steps: steps.length, steps, section,
+        }).select().single();
+        if (cErr) return fail(cErr.message);
+        return { success: true, result: `Funnel "${p.name}" salvato in sezione **${section}** con ${steps.length} step.`, data: created };
       }
 
       // Compliance

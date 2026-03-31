@@ -469,6 +469,7 @@ export interface Database {
           total_steps: number;
           steps: Json;
           analysis: string | null;
+          section: string;
           created_at: string;
         };
         Insert: {
@@ -477,6 +478,7 @@ export interface Database {
           total_steps: number;
           steps: Json;
           analysis?: string | null;
+          section?: string;
           created_at?: string;
         };
         Update: {
@@ -485,6 +487,7 @@ export interface Database {
           total_steps?: number;
           steps?: Json;
           analysis?: string | null;
+          section?: string;
         };
       };
       projects: {
