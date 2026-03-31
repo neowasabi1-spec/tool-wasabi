@@ -732,21 +732,28 @@ export default function TemplatesPage() {
                                   checked ? 'border-green-400 ring-2 ring-green-200 shadow-md' : 'border-gray-200 hover:shadow-lg hover:border-blue-300'
                                 }`}
                               >
-                                <div className="relative w-full h-[180px] bg-gray-100 overflow-hidden">
-                                  {s.url_to_swipe ? (
-                                    <CachedScreenshot url={s.url_to_swipe} alt={s.name} className="w-full" height="180px" />
-                                  ) : (
-                                    <div className="w-full h-full flex items-center justify-center text-gray-300">
-                                      <Eye className="w-8 h-8" />
-                                    </div>
-                                  )}
+                                <div className="relative w-full h-[180px] overflow-hidden">
+                                  {(() => {
+                                    const isRealUrl = s.url_to_swipe && /^https?:\/\/.+\..+/.test(s.url_to_swipe);
+                                    if (isRealUrl) {
+                                      return <CachedScreenshot url={s.url_to_swipe} alt={s.name} className="w-full" height="180px" />;
+                                    }
+                                    const hue = (i * 47 + 200) % 360;
+                                    return (
+                                      <div className="w-full h-full flex flex-col items-center justify-center p-4 text-center" style={{ background: `linear-gradient(135deg, hsl(${hue}, 50%, 55%), hsl(${(hue + 40) % 360}, 55%, 45%))` }}>
+                                        <span className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center text-white font-bold text-lg mb-2">{s.step_index}</span>
+                                        <span className="text-white/90 text-xs font-medium line-clamp-2 leading-relaxed">{s.name}</span>
+                                        <span className="mt-1 px-2 py-0.5 bg-white/20 rounded-full text-[9px] text-white/80 font-medium">{getPageTypeLabel(s.page_type)}</span>
+                                      </div>
+                                    );
+                                  })()}
                                   <div className="absolute top-2 left-2">
                                     {checked
                                       ? <CheckSquare className="w-5 h-5 text-green-600 drop-shadow" />
                                       : <Square className="w-5 h-5 text-white/70 drop-shadow group-hover:text-white" />
                                     }
                                   </div>
-                                  {s.url_to_swipe && (
+                                  {s.url_to_swipe && /^https?:\/\//.test(s.url_to_swipe) && (
                                     <a
                                       href={s.url_to_swipe}
                                       target="_blank"
@@ -908,21 +915,28 @@ export default function TemplatesPage() {
                                     checked ? 'border-green-400 ring-2 ring-green-200 shadow-md' : 'border-gray-200 hover:shadow-lg hover:border-purple-300'
                                   }`}
                                 >
-                                  <div className="relative w-full h-[180px] bg-gray-100 overflow-hidden">
-                                    {p.url_to_swipe ? (
-                                      <CachedScreenshot url={p.url_to_swipe} alt={p.name} className="w-full" height="180px" />
-                                    ) : (
-                                      <div className="w-full h-full flex items-center justify-center text-gray-300">
-                                        <Eye className="w-8 h-8" />
-                                      </div>
-                                    )}
+                                  <div className="relative w-full h-[180px] overflow-hidden">
+                                    {(() => {
+                                      const isRealUrl = p.url_to_swipe && /^https?:\/\/.+\..+/.test(p.url_to_swipe);
+                                      if (isRealUrl) {
+                                        return <CachedScreenshot url={p.url_to_swipe} alt={p.name} className="w-full" height="180px" />;
+                                      }
+                                      const hue = (i * 47 + 280) % 360;
+                                      return (
+                                        <div className="w-full h-full flex flex-col items-center justify-center p-4 text-center" style={{ background: `linear-gradient(135deg, hsl(${hue}, 50%, 55%), hsl(${(hue + 40) % 360}, 55%, 45%))` }}>
+                                          <span className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center text-white font-bold text-lg mb-2">{i + 1}</span>
+                                          <span className="text-white/90 text-xs font-medium line-clamp-2 leading-relaxed">{p.name}</span>
+                                          <span className="mt-1 px-2 py-0.5 bg-white/20 rounded-full text-[9px] text-white/80 font-medium">{getPageTypeLabel(typeValue)}</span>
+                                        </div>
+                                      );
+                                    })()}
                                     <div className="absolute top-2 left-2">
                                       {checked
                                         ? <CheckSquare className="w-5 h-5 text-green-600 drop-shadow" />
                                         : <Square className="w-5 h-5 text-white/70 drop-shadow group-hover:text-white" />
                                       }
                                     </div>
-                                    {p.url_to_swipe && (
+                                    {p.url_to_swipe && /^https?:\/\//.test(p.url_to_swipe) && (
                                       <a
                                         href={p.url_to_swipe}
                                         target="_blank"
