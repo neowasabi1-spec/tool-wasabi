@@ -1163,29 +1163,40 @@ export default function TemplatesPage() {
 
                 {/* Archived Quiz Funnels (from archived_funnels with section='quiz') */}
                 {quizArchivedFiltered.map((funnel) => {
-                  const steps = (funnel.steps as { url_to_swipe?: string; name?: string }[]) || [];
-                  const firstUrl = steps.find(s => s.url_to_swipe)?.url_to_swipe;
+                  const steps = (funnel.steps as { url_to_swipe?: string; name?: string; page_type?: string }[]) || [];
+                  const questionSteps = steps.filter(s => {
+                    const n = (s.name || '').toLowerCase();
+                    return n.includes('q') || n.includes('question') || n.includes('step') || s.page_type === 'quiz_funnel';
+                  });
+                  const displaySteps = questionSteps.length > 0 ? questionSteps : steps;
                   return (
                     <div key={funnel.id} className="bg-white rounded-2xl border border-gray-200 overflow-hidden hover:shadow-xl transition-all group relative">
-                      <div className="relative">
-                        {firstUrl ? (
-                          <CachedScreenshot url={firstUrl} alt={funnel.name} height="280px" className="w-full" />
-                        ) : (
-                          <div className="h-[280px] bg-gradient-to-br from-orange-50 to-amber-100 flex items-center justify-center">
-                            <Archive className="w-16 h-16 text-amber-300" />
+                      <div className="relative h-[280px] bg-gradient-to-br from-purple-600 via-indigo-600 to-blue-700 p-6 flex flex-col justify-between overflow-hidden">
+                        <div className="absolute inset-0 opacity-10">
+                          <div className="absolute top-4 right-4 w-32 h-32 border-2 border-white rounded-full" />
+                          <div className="absolute bottom-8 left-8 w-20 h-20 border-2 border-white rounded-full" />
+                          <div className="absolute top-1/2 left-1/2 w-48 h-48 border border-white rounded-full -translate-x-1/2 -translate-y-1/2" />
+                        </div>
+                        <div className="relative z-10">
+                          <div className="flex items-center gap-2 mb-3">
+                            <span className="px-3 py-1 bg-orange-500 text-white rounded-lg text-xs font-semibold shadow-sm">Saved Quiz</span>
+                            <span className="px-2 py-1 bg-white/20 backdrop-blur-sm rounded-lg text-[10px] font-medium text-white shadow-sm">{funnel.total_steps} steps</span>
                           </div>
-                        )}
-                        <div className="absolute top-3 left-3 flex items-center gap-2">
-                          <span className="px-3 py-1 bg-orange-500/90 text-white rounded-lg text-xs font-semibold shadow-sm">Saved Quiz</span>
-                          <span className="px-2 py-1 bg-white/90 backdrop-blur-sm rounded-lg text-[10px] font-medium text-gray-700 shadow-sm">{funnel.total_steps} steps</span>
+                          <h3 className="text-white font-bold text-lg leading-tight line-clamp-2 drop-shadow-sm">{funnel.name}</h3>
+                        </div>
+                        <div className="relative z-10 space-y-1.5">
+                          {displaySteps.slice(0, 4).map((s, i) => (
+                            <div key={i} className="flex items-center gap-2">
+                              <span className="w-5 h-5 rounded-full bg-white/20 flex items-center justify-center text-[10px] font-bold text-white flex-shrink-0">{i + 1}</span>
+                              <span className="text-white/90 text-xs truncate">{s.name || `Step ${i + 1}`}</span>
+                            </div>
+                          ))}
+                          {displaySteps.length > 4 && (
+                            <span className="text-white/60 text-[10px] ml-7">+{displaySteps.length - 4} more steps</span>
+                          )}
                         </div>
                       </div>
                       <div className="p-5">
-                        <h3 className="text-base font-bold text-gray-900 mb-1 line-clamp-1">{funnel.name}</h3>
-                        <p className="text-xs text-gray-500 mb-3">
-                          {steps.slice(0, 3).map(s => s.name || 'Step').join(' → ')}
-                          {steps.length > 3 && ` → +${steps.length - 3} more`}
-                        </p>
                         <p className="text-[10px] text-gray-400 mb-3">
                           Saved: {new Date(funnel.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
                         </p>
