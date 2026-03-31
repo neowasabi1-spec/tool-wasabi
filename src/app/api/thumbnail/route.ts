@@ -19,16 +19,16 @@ export async function GET(req: NextRequest) {
 
   const encodedUrl = encodeURIComponent(url);
 
-  // Multiple services for maximum reliability
+  // Multiple services — ordered by reliability (mshots last as it returns WP logo placeholders)
   const services = [
-    // WordPress mshots - very reliable, free, no key needed
-    `https://s0.wp.com/mshots/v1/${encodedUrl}?w=600&h=450`,
-    // thum.io
+    // thum.io — very reliable for most pages
     `https://image.thum.io/get/width/600/crop/900/${url}`,
     // Google PageSpeed screenshot
     `https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=${encodedUrl}&category=PERFORMANCE&strategy=DESKTOP`,
     // microlink
     `https://api.microlink.io/?url=${encodedUrl}&screenshot=true&meta=false&embed=screenshot.url`,
+    // WordPress mshots — last resort (often returns WP logo placeholder for quiz/dynamic pages)
+    `https://s0.wp.com/mshots/v1/${encodedUrl}?w=600&h=450`,
   ];
 
   for (let i = 0; i < services.length; i++) {
@@ -72,13 +72,11 @@ export async function GET(req: NextRequest) {
 
       const contentType = res.headers.get('content-type') || '';
 
-      // wp.com/mshots sometimes returns "image/gif" placeholder (1x1 pixel)
-      // for pages it hasn't rendered yet, then it queues the render
+      // wp.com/mshots returns a WP logo placeholder (10-30KB) when it can't render a page.
+      // Real screenshots at 600x450 are typically 40KB+.
       if (serviceUrl.includes('wp.com/mshots')) {
         const arrayBuf = await res.arrayBuffer();
-        // If it's a tiny placeholder (<5KB), the screenshot isn't ready yet.
-        // Queue a retry by not caching and continuing to next service.
-        if (arrayBuf.byteLength < 5000) continue;
+        if (arrayBuf.byteLength < 40000) continue;
 
         CACHE.set(url, { data: arrayBuf, contentType: contentType || 'image/jpeg', ts: Date.now() });
         return new Response(arrayBuf, {

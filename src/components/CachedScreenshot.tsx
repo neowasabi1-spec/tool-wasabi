@@ -3,7 +3,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { Globe, Loader2, RefreshCw } from 'lucide-react';
 
-const CACHE_PREFIX = 'sc_';
+const CACHE_PREFIX = 'sc2_';
 const CACHE_TTL = 1000 * 60 * 60 * 24 * 7; // 7 days
 const MAX_CONCURRENT = 3;
 const MAX_RETRIES = 2;
