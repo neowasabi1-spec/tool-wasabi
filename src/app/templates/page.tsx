@@ -46,7 +46,7 @@ export default function TemplatesPage() {
   const { templates, addTemplate, updateTemplate, deleteTemplate, customPageTypes, addCustomPageType, deleteCustomPageType, archivedFunnels, archivedFunnelsLoaded, loadArchivedFunnels, deleteArchivedFunnel, products, addFunnelPage, funnelPages, deleteFunnelPage } = useStore();
   const router = useRouter();
   
-  const [mainView, setMainView] = useState<'templates' | 'funnels' | 'byType'>('templates');
+  const [mainView, setMainView] = useState<'templates' | 'funnels' | 'byType' | 'quiz'>('templates');
   const [expandedFunnelIds, setExpandedFunnelIds] = useState<string[]>([]);
   const [expandedTypes, setExpandedTypes] = useState<string[]>([]);
 
@@ -625,6 +625,18 @@ export default function TemplatesPage() {
               )}
             </button>
             <button
+              onClick={() => setMainView('quiz')}
+              className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+                mainView === 'quiz' ? 'bg-white text-orange-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              <HelpCircle className="w-4 h-4" />
+              Quiz
+              {quizCount > 0 && (
+                <span className="ml-1 px-1.5 py-0.5 bg-orange-100 text-orange-700 rounded-full text-xs">{quizCount}</span>
+              )}
+            </button>
+            <button
               onClick={() => setMainView('byType')}
               className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium transition-colors ${
                 mainView === 'byType' ? 'bg-white text-purple-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'
@@ -638,7 +650,7 @@ export default function TemplatesPage() {
             </button>
           </div>
 
-          {mainView !== 'templates' && (
+          {(mainView !== 'templates') && (
             <div className="relative flex-1 max-w-sm">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
               <input
@@ -1023,6 +1035,116 @@ export default function TemplatesPage() {
             )}
           </div>
         )}
+
+        {/* ============ QUIZ VIEW ============ */}
+        {mainView === 'quiz' && (() => {
+          const quizTemplates = (templates || []).filter(t => t.category === 'quiz');
+          const quizFiltered = searchTerm
+            ? quizTemplates.filter(t =>
+                t.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                (t.tags || []).some(tag => tag.toLowerCase().includes(searchTerm.toLowerCase()))
+              )
+            : quizTemplates;
+          return (
+          <div className="space-y-4">
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-orange-100 flex items-center justify-center">
+                    <HelpCircle className="w-5 h-5 text-orange-600" />
+                  </div>
+                  <div>
+                    <h2 className="text-lg font-bold text-gray-900">Quiz Templates</h2>
+                    <p className="text-xs text-gray-500">Quiz funnels, surveys, interactive quizzes and lead magnets</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => {
+                    setActiveTab('quiz');
+                    setShowAddForm(!showAddForm);
+                    setMainView('templates');
+                  }}
+                  className="flex items-center gap-1.5 px-4 py-2 bg-orange-600 text-white rounded-lg text-sm font-medium hover:bg-orange-700 transition-colors"
+                >
+                  <Plus className="w-4 h-4" />
+                  Add Quiz Template
+                </button>
+              </div>
+
+              {quizFiltered.length === 0 ? (
+                <div className="text-center py-12">
+                  <HelpCircle className="w-12 h-12 text-gray-200 mx-auto mb-3" />
+                  <h3 className="text-sm font-medium text-gray-500 mb-1">
+                    {quizTemplates.length === 0 ? 'No quiz templates yet' : 'No results'}
+                  </h3>
+                  <p className="text-xs text-gray-400">
+                    {quizTemplates.length === 0
+                      ? 'Add your first quiz template to get started'
+                      : 'Try a different search term'}
+                  </p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {quizFiltered.map((template) => (
+                    <div key={template.id} className="border border-gray-200 rounded-xl overflow-hidden hover:shadow-lg transition-all group">
+                      {template.screenshot_url && (
+                        <div className="h-36 bg-gray-50 overflow-hidden">
+                          <CachedScreenshot url={template.screenshot_url} alt={template.name}
+                            className="w-full h-full object-cover object-top group-hover:scale-105 transition-transform duration-300" />
+                        </div>
+                      )}
+                      <div className="p-4">
+                        <div className="flex items-start justify-between gap-2 mb-2">
+                          <h3 className="text-sm font-bold text-gray-900 line-clamp-1">{template.name}</h3>
+                          <span className="px-2 py-0.5 bg-orange-100 text-orange-700 text-[10px] font-semibold rounded-full shrink-0">Quiz</span>
+                        </div>
+                        {template.url_to_swipe && (
+                          <a href={template.url_to_swipe} target="_blank" rel="noopener noreferrer"
+                            className="text-[10px] text-blue-500 hover:underline truncate block mb-2">
+                            {template.url_to_swipe}
+                          </a>
+                        )}
+                        {template.tags && template.tags.length > 0 && (
+                          <div className="flex flex-wrap gap-1 mb-3">
+                            {template.tags.map((tag, i) => (
+                              <span key={i} className="px-1.5 py-0.5 bg-gray-100 text-gray-600 text-[9px] rounded-full">{tag}</span>
+                            ))}
+                          </div>
+                        )}
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => {
+                              setActiveTab('quiz');
+                              setEditingId(template.id);
+                              setMainView('templates');
+                            }}
+                            className="flex items-center gap-1 px-3 py-1.5 bg-gray-100 text-gray-700 rounded-lg text-xs font-medium hover:bg-gray-200 transition-colors"
+                          >
+                            <Edit2 className="w-3 h-3" />
+                            Edit
+                          </button>
+                          <button
+                            onClick={() => { if (confirm('Delete this quiz template?')) deleteTemplate(template.id); }}
+                            className="flex items-center gap-1 px-3 py-1.5 bg-red-50 text-red-600 rounded-lg text-xs font-medium hover:bg-red-100 transition-colors"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </button>
+                          {template.url_to_swipe && (
+                            <a href={template.url_to_swipe} target="_blank" rel="noopener noreferrer"
+                              className="flex items-center gap-1 px-3 py-1.5 bg-blue-50 text-blue-600 rounded-lg text-xs font-medium hover:bg-blue-100 transition-colors ml-auto">
+                              <ExternalLink className="w-3 h-3" />
+                              Open
+                            </a>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>);
+        })()}
 
         {/* ============ TEMPLATES VIEW ============ */}
         {mainView === 'templates' && <>
