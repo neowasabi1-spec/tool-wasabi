@@ -10,7 +10,19 @@ export async function GET(req: NextRequest) {
   if (id) {
     const { data, error } = await supabase.from('projects').select('*').eq('id', id).single();
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-    return NextResponse.json({ project: data });
+
+    const [funnelPages, templates, archives] = await Promise.all([
+      supabase.from('funnel_pages').select('*').eq('project_id', id).order('created_at', { ascending: false }),
+      supabase.from('swipe_templates').select('*').eq('project_id', id).order('created_at', { ascending: false }),
+      supabase.from('archived_funnels').select('*').eq('project_id', id).order('created_at', { ascending: false }),
+    ]);
+
+    return NextResponse.json({
+      project: data,
+      funnel_pages: funnelPages.data || [],
+      templates: templates.data || [],
+      archived_funnels: archives.data || [],
+    });
   }
 
   const status = req.nextUrl.searchParams.get('status');
@@ -29,21 +41,29 @@ export async function POST(req: NextRequest) {
   const body = await req.json();
   if (!body.name) return NextResponse.json({ error: 'Missing name' }, { status: 400 });
 
-  const insert = {
+  const insert: Record<string, unknown> = {
     name: body.name,
     description: body.description || '',
     status: body.status || 'active',
     tags: body.tags || [],
     notes: body.notes || '',
-    domain: body.domain || '',
-    logo: body.logo || [],
-    market_research: body.market_research || body.marketResearch || {},
-    brief: body.brief || '',
-    front_end: body.front_end || body.frontEnd || {},
-    back_end: body.back_end || body.backEnd || {},
-    compliance_funnel: body.compliance_funnel || body.complianceFunnel || {},
-    funnel: body.funnel || {},
   };
+
+  const optionalJsonFields: Record<string, string[]> = {
+    domain: ['domain'],
+    logo: ['logo'],
+    market_research: ['market_research', 'marketResearch'],
+    brief: ['brief'],
+    front_end: ['front_end', 'frontEnd'],
+    back_end: ['back_end', 'backEnd'],
+    compliance_funnel: ['compliance_funnel', 'complianceFunnel'],
+    funnel: ['funnel'],
+  };
+
+  for (const [col, keys] of Object.entries(optionalJsonFields)) {
+    const val = keys.map(k => body[k]).find(v => v !== undefined);
+    if (val !== undefined) insert[col] = val;
+  }
 
   const { data, error } = await supabase.from('projects').insert(insert).select().single();
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });

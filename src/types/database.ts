@@ -91,6 +91,7 @@ export interface Database {
           tags: string[];
           description: string | null;
           preview_image: string | null;
+          project_id: string | null;
           created_at: string;
           updated_at: string;
         };
@@ -103,6 +104,7 @@ export interface Database {
           tags?: string[];
           description?: string | null;
           preview_image?: string | null;
+          project_id?: string | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -112,6 +114,7 @@ export interface Database {
           source_url?: string;
           page_type?: PageType;
           view_format?: ViewFormat;
+          project_id?: string | null;
           tags?: string[];
           description?: string | null;
           preview_image?: string | null;
@@ -125,6 +128,7 @@ export interface Database {
           page_type: PageType;
           template_id: string | null;
           product_id: string;
+          project_id: string | null;
           url_to_swipe: string;
           prompt: string | null;
           swipe_status: SwipeStatus;
@@ -144,6 +148,7 @@ export interface Database {
           page_type: PageType;
           template_id?: string | null;
           product_id: string;
+          project_id?: string | null;
           url_to_swipe: string;
           prompt?: string | null;
           swipe_status?: SwipeStatus;
@@ -163,6 +168,7 @@ export interface Database {
           page_type?: PageType;
           template_id?: string | null;
           product_id?: string;
+          project_id?: string | null;
           url_to_swipe?: string;
           prompt?: string | null;
           swipe_status?: SwipeStatus;
@@ -470,6 +476,7 @@ export interface Database {
           steps: Json;
           analysis: string | null;
           section: string;
+          project_id: string | null;
           created_at: string;
         };
         Insert: {
@@ -479,6 +486,7 @@ export interface Database {
           steps: Json;
           analysis?: string | null;
           section?: string;
+          project_id?: string | null;
           created_at?: string;
         };
         Update: {
@@ -488,6 +496,7 @@ export interface Database {
           steps?: Json;
           analysis?: string | null;
           section?: string;
+          project_id?: string | null;
         };
       };
       projects: {

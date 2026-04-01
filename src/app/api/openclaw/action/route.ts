@@ -39,6 +39,16 @@ const ACTION_PATTERNS: { pattern: RegExp; action: string; extract: (m: RegExpMat
     return { id: idM?.[1] || '', name: nameM?.[1] };
   }},
 
+  // Link funnel page to project
+  { pattern: /\b(collega|link|associa|assign)\b.*\b(pagina|page|funnel)\b.*\b(progetto|project)\b/i, action: 'link_page_to_project', extract: (_m, msg) => {
+    const pageId = msg.match(/page[_ ]?id[:\s]+([a-f0-9-]+)/i); const projId = msg.match(/project[_ ]?id[:\s]+([a-f0-9-]+)/i);
+    return { pageId: pageId?.[1] || '', projectId: projId?.[1] || '' };
+  }},
+  // List project funnel pages
+  { pattern: /\b(lista|list|mostra|show)\b.*\b(funnel|pagin|page)\b.*\b(progetto|project)\b/i, action: 'list_project_funnels', extract: (_m, msg) => {
+    const idM = msg.match(/id[:\s]+([a-f0-9-]+)/i); return { projectId: idM?.[1] || '' };
+  }},
+
   // Funnel pages
   { pattern: /\b(crea|create|aggiungi|add)\b.*\b(pagina|page|funnel)\b/i, action: 'add_funnel_page', extract: (_m, msg) => {
     const nameM = msg.match(/["""](.+?)["""]/); const urlM = msg.match(/(https?:\/\/[^\s"]+)/i);
@@ -298,13 +308,35 @@ async function exec(a: ToolAction, o: string): Promise<{ success: boolean; resul
       // Funnel Pages (direct Supabase)
       case 'add_funnel_page': {
         if (!p.name) return fail('Nome pagina richiesto.');
-        const { data: d, error: e } = await supabase.from('funnel_pages').insert({ name: p.name, page_type: p.pageType || 'bridge', url_to_swipe: p.url || '', product_id: p.productId || null, swipe_status: 'pending' }).select().single();
+        const fpInsert: Record<string, unknown> = { name: p.name, page_type: p.pageType || 'bridge', url_to_swipe: p.url || '', product_id: p.productId || null, swipe_status: 'pending' };
+        if (p.projectId || p.project_id) fpInsert.project_id = p.projectId || p.project_id;
+        const { data: d, error: e } = await supabase.from('funnel_pages').insert(fpInsert).select().single();
         return e ? fail(e.message) : { success: true, result: `Pagina "${p.name}" aggiunta!`, data: d };
       }
       case 'delete_funnel_page': {
         if (!p.id) return fail('Page ID richiesto.');
         const { error: e } = await supabase.from('funnel_pages').delete().eq('id', p.id);
         return e ? fail(e.message) : { success: true, result: 'Pagina eliminata.' };
+      }
+      case 'link_page_to_project': {
+        if (!p.pageId) return fail('Page ID richiesto.');
+        if (!p.projectId) return fail('Project ID richiesto.');
+        const { error: e } = await supabase.from('funnel_pages').update({ project_id: p.projectId }).eq('id', p.pageId);
+        return e ? fail(e.message) : { success: true, result: 'Pagina collegata al progetto.' };
+      }
+      case 'list_project_funnels': {
+        if (!p.projectId) return fail('Project ID richiesto.');
+        const [fpRes, archRes] = await Promise.all([
+          supabase.from('funnel_pages').select('*').eq('project_id', p.projectId).order('created_at', { ascending: false }),
+          supabase.from('archived_funnels').select('*').eq('project_id', p.projectId).order('created_at', { ascending: false }),
+        ]);
+        const pages = fpRes.data || [];
+        const archives = archRes.data || [];
+        if (!pages.length && !archives.length) return { success: true, result: 'Nessun funnel collegato a questo progetto.' };
+        let result = '';
+        if (pages.length) result += `**Funnel Pages (${pages.length}):**\n` + pages.map((x: { name: string; page_type: string; id: string }, i: number) => `${i + 1}. ${x.name} (${x.page_type}) id:${x.id}`).join('\n');
+        if (archives.length) result += `\n\n**Archived Funnels (${archives.length}):**\n` + archives.map((x: { name: string; total_steps: number; id: string }, i: number) => `${i + 1}. ${x.name} (${x.total_steps} step) id:${x.id}`).join('\n');
+        return { success: true, result, data: { funnel_pages: pages, archived_funnels: archives } };
       }
       case 'list_flows': {
         const { data: items, error: e } = await supabase.from('funnel_pages').select('*').order('created_at', { ascending: false });
@@ -339,9 +371,9 @@ async function exec(a: ToolAction, o: string): Promise<{ success: boolean; resul
           prompt: pg.prompt || '', feedback: pg.feedback || '', swipe_status: pg.swipe_status || '',
           swipe_result: pg.swipe_result || '', cloned_data: pg.cloned_data || null, swiped_data: pg.swiped_data || null,
         }));
-        const { data: created, error: cErr } = await supabase.from('archived_funnels').insert({
-          name: p.name as string, total_steps: steps.length, steps, section,
-        }).select().single();
+        const archiveInsert: Record<string, unknown> = { name: p.name as string, total_steps: steps.length, steps, section };
+        if (p.projectId || p.project_id) archiveInsert.project_id = p.projectId || p.project_id;
+        const { data: created, error: cErr } = await supabase.from('archived_funnels').insert(archiveInsert).select().single();
         if (cErr) return fail(cErr.message);
         return { success: true, result: `Funnel "${p.name}" salvato in sezione **${section}** con ${steps.length} step (HTML incluso).`, data: created };
       }
