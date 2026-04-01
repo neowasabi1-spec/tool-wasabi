@@ -57,6 +57,32 @@ function absolutizeUrls(html: string, sourceUrl: string): string {
   }
 }
 
+export async function GET(request: NextRequest) {
+  const url = request.nextUrl.searchParams.get('url');
+  if (!url) {
+    return new NextResponse('<html><body>Missing url</body></html>', { status: 400, headers: { 'Content-Type': 'text/html' } });
+  }
+  try {
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+      redirect: 'follow',
+      signal: AbortSignal.timeout(15000),
+    });
+    const rawHtml = await res.text();
+    const html = absolutizeUrls(rawHtml, url);
+    return new NextResponse(html, {
+      status: 200,
+      headers: { 'Content-Type': 'text/html; charset=utf-8', 'Access-Control-Allow-Origin': '*' },
+    });
+  } catch {
+    return new NextResponse('<html><body>Could not load page</body></html>', { status: 502, headers: { 'Content-Type': 'text/html' } });
+  }
+}
+
 export async function POST(request: NextRequest) {
   try {
     const { url } = await request.json();

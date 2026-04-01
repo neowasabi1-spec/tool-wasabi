@@ -757,43 +757,27 @@ export default function TemplatesPage() {
                                   checked ? 'border-green-400 ring-2 ring-green-200 shadow-md' : 'border-gray-200 hover:shadow-lg hover:border-blue-300'
                                 }`}
                               >
-                                <div className="relative w-full h-[180px] overflow-hidden">
+                                <div className="relative w-full h-[180px] overflow-hidden bg-gray-100">
                                   {(() => {
-                                    const isQuizFunnel = funnel.section === 'quiz';
-                                    const isRealUrl = !isQuizFunnel && s.url_to_swipe && /^https?:\/\/.+\..+/.test(s.url_to_swipe);
+                                    const isRealUrl = s.url_to_swipe && /^https?:\/\/.+\..+/.test(s.url_to_swipe);
                                     if (isRealUrl) {
-                                      return <CachedScreenshot url={s.url_to_swipe} alt={s.name} className="w-full" height="180px" />;
+                                      return (
+                                        <iframe
+                                          src={`/api/proxy-page?url=${encodeURIComponent(s.url_to_swipe)}`}
+                                          className="border-0 pointer-events-none origin-top-left"
+                                          style={{ width: '1280px', height: '900px', transform: 'scale(0.156)', transformOrigin: 'top left' }}
+                                          loading="lazy"
+                                          sandbox="allow-same-origin allow-scripts"
+                                          title={s.name}
+                                        />
+                                      );
                                     }
-                                    const stepColors = [
-                                      'from-blue-500 to-indigo-600',
-                                      'from-emerald-500 to-teal-600',
-                                      'from-orange-500 to-red-600',
-                                      'from-purple-500 to-pink-600',
-                                      'from-cyan-500 to-blue-600',
-                                      'from-rose-500 to-fuchsia-600',
-                                      'from-amber-500 to-orange-600',
-                                      'from-green-500 to-emerald-600',
-                                      'from-violet-500 to-purple-600',
-                                      'from-teal-500 to-cyan-600',
-                                      'from-red-500 to-rose-600',
-                                      'from-indigo-500 to-violet-600',
-                                      'from-fuchsia-500 to-pink-600',
-                                      'from-sky-500 to-blue-600',
-                                      'from-lime-500 to-green-600',
-                                    ];
-                                    const colorClass = stepColors[i % stepColors.length];
-                                    const isQuestion = /^q\d/i.test(s.name) || s.page_type === 'quiz_funnel';
-                                    const isTransition = /transition/i.test(s.name) || /bridge/i.test(s.name);
-                                    const isResult = /result/i.test(s.name) || /scarcity/i.test(s.name) || /gate/i.test(s.name);
-                                    const icon = isQuestion ? '?' : isTransition ? '→' : isResult ? '★' : '•';
+                                    const hue = (i * 47 + 200) % 360;
                                     return (
-                                      <div className={`w-full h-full bg-gradient-to-br ${colorClass} flex flex-col items-center justify-center p-4 text-center relative`}>
-                                        <div className="absolute top-3 right-3 px-2 py-0.5 bg-white/20 rounded-full text-[9px] text-white/80 font-medium backdrop-blur-sm">
-                                          {isQuestion ? 'Question' : isTransition ? 'Transition' : isResult ? 'Result' : getPageTypeLabel(s.page_type)}
-                                        </div>
-                                        <span className="w-14 h-14 rounded-2xl bg-white/20 backdrop-blur-sm flex items-center justify-center text-white font-bold text-2xl mb-3 shadow-lg">{icon}</span>
-                                        <span className="text-white font-bold text-sm line-clamp-2 leading-snug drop-shadow-sm">{s.name}</span>
-                                        <span className="mt-2 text-white/70 text-[11px] font-medium">Step {i + 1}</span>
+                                      <div className="w-full h-full flex flex-col items-center justify-center p-4 text-center" style={{ background: `linear-gradient(135deg, hsl(${hue}, 50%, 55%), hsl(${(hue + 40) % 360}, 55%, 45%))` }}>
+                                        <span className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center text-white font-bold text-lg mb-2">{s.step_index}</span>
+                                        <span className="text-white/90 text-xs font-medium line-clamp-2 leading-relaxed">{s.name}</span>
+                                        <span className="mt-1 px-2 py-0.5 bg-white/20 rounded-full text-[9px] text-white/80 font-medium">{getPageTypeLabel(s.page_type)}</span>
                                       </div>
                                     );
                                   })()}
@@ -965,11 +949,20 @@ export default function TemplatesPage() {
                                     checked ? 'border-green-400 ring-2 ring-green-200 shadow-md' : 'border-gray-200 hover:shadow-lg hover:border-purple-300'
                                   }`}
                                 >
-                                  <div className="relative w-full h-[180px] overflow-hidden">
+                                  <div className="relative w-full h-[180px] overflow-hidden bg-gray-100">
                                     {(() => {
                                       const isRealUrl = p.url_to_swipe && /^https?:\/\/.+\..+/.test(p.url_to_swipe);
                                       if (isRealUrl) {
-                                        return <CachedScreenshot url={p.url_to_swipe} alt={p.name} className="w-full" height="180px" />;
+                                        return (
+                                          <iframe
+                                            src={`/api/proxy-page?url=${encodeURIComponent(p.url_to_swipe)}`}
+                                            className="border-0 pointer-events-none origin-top-left"
+                                            style={{ width: '1280px', height: '900px', transform: 'scale(0.156)', transformOrigin: 'top left' }}
+                                            loading="lazy"
+                                            sandbox="allow-same-origin allow-scripts"
+                                            title={p.name}
+                                          />
+                                        );
                                       }
                                       const hue = (i * 47 + 280) % 360;
                                       return (
