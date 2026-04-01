@@ -42,6 +42,63 @@ const emptyForm: NewTemplateForm = {
   description: '',
 };
 
+const htmlCache = new Map<string, string>();
+
+function PageThumbnail({ url, alt, height = '180px' }: { url: string; alt: string; height?: string }) {
+  const [html, setHtml] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (htmlCache.has(url)) {
+      setHtml(htmlCache.get(url)!);
+      setLoading(false);
+      return;
+    }
+    let cancelled = false;
+    fetch('/api/proxy-page', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    })
+      .then(r => r.json())
+      .then(data => {
+        if (!cancelled && data.html) {
+          htmlCache.set(url, data.html);
+          setHtml(data.html);
+        }
+      })
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [url]);
+
+  if (loading) {
+    return (
+      <div className="w-full flex items-center justify-center bg-gray-50" style={{ height }}>
+        <div className="w-6 h-6 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+  if (!html) {
+    return (
+      <div className="w-full flex items-center justify-center bg-gray-100" style={{ height }}>
+        <span className="text-gray-400 text-xs">Preview not available</span>
+      </div>
+    );
+  }
+  return (
+    <div className="w-full overflow-hidden" style={{ height }}>
+      <iframe
+        srcDoc={html}
+        className="border-0 pointer-events-none origin-top-left"
+        style={{ width: '1280px', height: '900px', transform: 'scale(0.156)', transformOrigin: 'top left' }}
+        sandbox="allow-same-origin allow-scripts"
+        title={alt}
+      />
+    </div>
+  );
+}
+
 export default function TemplatesPage() {
   const { templates, addTemplate, updateTemplate, deleteTemplate, customPageTypes, addCustomPageType, deleteCustomPageType, archivedFunnels, archivedFunnelsLoaded, loadArchivedFunnels, deleteArchivedFunnel, products, addFunnelPage, funnelPages, deleteFunnelPage } = useStore();
   const router = useRouter();
@@ -757,30 +814,16 @@ export default function TemplatesPage() {
                                   checked ? 'border-green-400 ring-2 ring-green-200 shadow-md' : 'border-gray-200 hover:shadow-lg hover:border-blue-300'
                                 }`}
                               >
-                                <div className="relative w-full h-[180px] overflow-hidden bg-gray-100">
-                                  {(() => {
-                                    const isRealUrl = s.url_to_swipe && /^https?:\/\/.+\..+/.test(s.url_to_swipe);
-                                    if (isRealUrl) {
-                                      return (
-                                        <iframe
-                                          src={`/api/proxy-page?url=${encodeURIComponent(s.url_to_swipe)}`}
-                                          className="border-0 pointer-events-none origin-top-left"
-                                          style={{ width: '1280px', height: '900px', transform: 'scale(0.156)', transformOrigin: 'top left' }}
-                                          loading="lazy"
-                                          sandbox="allow-same-origin allow-scripts"
-                                          title={s.name}
-                                        />
-                                      );
-                                    }
-                                    const hue = (i * 47 + 200) % 360;
-                                    return (
+                                <div className="relative w-full h-[180px] overflow-hidden bg-gray-50">
+                                  {s.url_to_swipe && /^https?:\/\/.+\..+/.test(s.url_to_swipe)
+                                    ? <PageThumbnail url={s.url_to_swipe} alt={s.name} />
+                                    : (() => { const hue = (i * 47 + 200) % 360; return (
                                       <div className="w-full h-full flex flex-col items-center justify-center p-4 text-center" style={{ background: `linear-gradient(135deg, hsl(${hue}, 50%, 55%), hsl(${(hue + 40) % 360}, 55%, 45%))` }}>
                                         <span className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center text-white font-bold text-lg mb-2">{s.step_index}</span>
                                         <span className="text-white/90 text-xs font-medium line-clamp-2 leading-relaxed">{s.name}</span>
                                         <span className="mt-1 px-2 py-0.5 bg-white/20 rounded-full text-[9px] text-white/80 font-medium">{getPageTypeLabel(s.page_type)}</span>
-                                      </div>
-                                    );
-                                  })()}
+                                      </div>); })()
+                                  }
                                   <div className="absolute top-2 left-2" onClick={(e) => { e.stopPropagation(); togglePage(sp); }}>
                                     {checked
                                       ? <CheckSquare className="w-5 h-5 text-green-600 drop-shadow cursor-pointer" />
@@ -949,30 +992,16 @@ export default function TemplatesPage() {
                                     checked ? 'border-green-400 ring-2 ring-green-200 shadow-md' : 'border-gray-200 hover:shadow-lg hover:border-purple-300'
                                   }`}
                                 >
-                                  <div className="relative w-full h-[180px] overflow-hidden bg-gray-100">
-                                    {(() => {
-                                      const isRealUrl = p.url_to_swipe && /^https?:\/\/.+\..+/.test(p.url_to_swipe);
-                                      if (isRealUrl) {
-                                        return (
-                                          <iframe
-                                            src={`/api/proxy-page?url=${encodeURIComponent(p.url_to_swipe)}`}
-                                            className="border-0 pointer-events-none origin-top-left"
-                                            style={{ width: '1280px', height: '900px', transform: 'scale(0.156)', transformOrigin: 'top left' }}
-                                            loading="lazy"
-                                            sandbox="allow-same-origin allow-scripts"
-                                            title={p.name}
-                                          />
-                                        );
-                                      }
-                                      const hue = (i * 47 + 280) % 360;
-                                      return (
+                                  <div className="relative w-full h-[180px] overflow-hidden bg-gray-50">
+                                    {p.url_to_swipe && /^https?:\/\/.+\..+/.test(p.url_to_swipe)
+                                      ? <PageThumbnail url={p.url_to_swipe} alt={p.name} />
+                                      : (() => { const hue = (i * 47 + 280) % 360; return (
                                         <div className="w-full h-full flex flex-col items-center justify-center p-4 text-center" style={{ background: `linear-gradient(135deg, hsl(${hue}, 50%, 55%), hsl(${(hue + 40) % 360}, 55%, 45%))` }}>
                                           <span className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center text-white font-bold text-lg mb-2">{i + 1}</span>
                                           <span className="text-white/90 text-xs font-medium line-clamp-2 leading-relaxed">{p.name}</span>
                                           <span className="mt-1 px-2 py-0.5 bg-white/20 rounded-full text-[9px] text-white/80 font-medium">{getPageTypeLabel(typeValue)}</span>
-                                        </div>
-                                      );
-                                    })()}
+                                        </div>); })()
+                                    }
                                     <div className="absolute top-2 left-2" onClick={(e) => { e.stopPropagation(); togglePage(sp); }}>
                                       {checked
                                         ? <CheckSquare className="w-5 h-5 text-green-600 drop-shadow cursor-pointer" />
