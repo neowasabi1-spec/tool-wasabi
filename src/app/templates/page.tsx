@@ -454,6 +454,31 @@ export default function TemplatesPage() {
     name: '',
     viewFormat: 'desktop',
   });
+  const [pagePreview, setPagePreview] = useState<{ isOpen: boolean; url: string; name: string; pageType: string } | null>(null);
+  const [previewHtml, setPreviewHtml] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+
+  useEffect(() => {
+    if (!pagePreview?.isOpen || !pagePreview.url) {
+      setPreviewHtml(null);
+      return;
+    }
+    let cancelled = false;
+    setPreviewLoading(true);
+    setPreviewHtml(null);
+    fetch('/api/proxy-page', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: pagePreview.url }),
+    })
+      .then(r => r.json())
+      .then(data => {
+        if (!cancelled && data.html) setPreviewHtml(data.html);
+      })
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setPreviewLoading(false); });
+    return () => { cancelled = true; };
+  }, [pagePreview?.isOpen, pagePreview?.url]);
   
   // Custom page types management
   const [showPageTypeManager, setShowPageTypeManager] = useState(false);
@@ -727,7 +752,7 @@ export default function TemplatesPage() {
                             return (
                               <div
                                 key={i}
-                                onClick={() => togglePage(sp)}
+                                onClick={() => s.url_to_swipe ? setPagePreview({ isOpen: true, url: s.url_to_swipe, name: s.name, pageType: s.page_type }) : togglePage(sp)}
                                 className={`group bg-white rounded-xl border overflow-hidden cursor-pointer transition-all ${
                                   checked ? 'border-green-400 ring-2 ring-green-200 shadow-md' : 'border-gray-200 hover:shadow-lg hover:border-blue-300'
                                 }`}
@@ -747,10 +772,10 @@ export default function TemplatesPage() {
                                       </div>
                                     );
                                   })()}
-                                  <div className="absolute top-2 left-2">
+                                  <div className="absolute top-2 left-2" onClick={(e) => { e.stopPropagation(); togglePage(sp); }}>
                                     {checked
-                                      ? <CheckSquare className="w-5 h-5 text-green-600 drop-shadow" />
-                                      : <Square className="w-5 h-5 text-white/70 drop-shadow group-hover:text-white" />
+                                      ? <CheckSquare className="w-5 h-5 text-green-600 drop-shadow cursor-pointer" />
+                                      : <Square className="w-5 h-5 text-white/70 drop-shadow group-hover:text-white cursor-pointer" />
                                     }
                                   </div>
                                   {s.url_to_swipe && /^https?:\/\//.test(s.url_to_swipe) && (
@@ -910,7 +935,7 @@ export default function TemplatesPage() {
                               return (
                                 <div
                                   key={i}
-                                  onClick={() => togglePage(sp)}
+                                  onClick={() => p.url_to_swipe ? setPagePreview({ isOpen: true, url: p.url_to_swipe, name: p.name, pageType: typeValue }) : togglePage(sp)}
                                   className={`group bg-white rounded-xl border overflow-hidden cursor-pointer transition-all ${
                                     checked ? 'border-green-400 ring-2 ring-green-200 shadow-md' : 'border-gray-200 hover:shadow-lg hover:border-purple-300'
                                   }`}
@@ -930,10 +955,10 @@ export default function TemplatesPage() {
                                         </div>
                                       );
                                     })()}
-                                    <div className="absolute top-2 left-2">
+                                    <div className="absolute top-2 left-2" onClick={(e) => { e.stopPropagation(); togglePage(sp); }}>
                                       {checked
-                                        ? <CheckSquare className="w-5 h-5 text-green-600 drop-shadow" />
-                                        : <Square className="w-5 h-5 text-white/70 drop-shadow group-hover:text-white" />
+                                        ? <CheckSquare className="w-5 h-5 text-green-600 drop-shadow cursor-pointer" />
+                                        : <Square className="w-5 h-5 text-white/70 drop-shadow group-hover:text-white cursor-pointer" />
                                       }
                                     </div>
                                     {p.url_to_swipe && /^https?:\/\//.test(p.url_to_swipe) && (
@@ -1137,12 +1162,12 @@ export default function TemplatesPage() {
                         </div>
                         <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-all flex items-center justify-center opacity-0 group-hover:opacity-100">
                           {template.url_to_swipe && (
-                            <a href={template.url_to_swipe} target="_blank" rel="noopener noreferrer"
+                            <button
+                              onClick={() => setPagePreview({ isOpen: true, url: template.url_to_swipe, name: template.name, pageType: 'quiz' })}
                               className="flex items-center gap-2 px-4 py-2 bg-white rounded-lg shadow-lg text-sm font-medium text-gray-800 hover:bg-gray-50 transition-colors"
-                              onClick={(e) => e.stopPropagation()}
                             >
                               <Eye className="w-4 h-4" /> Preview
-                            </a>
+                            </button>
                           )}
                         </div>
                       </div>
@@ -1702,11 +1727,11 @@ export default function TemplatesPage() {
                   </label>
                   {isValidUrl(newTemplate.sourceUrl) && (
                     <button
-                      onClick={() => setFullscreenPreview({
+                      onClick={() => setPagePreview({
                         isOpen: true,
                         url: newTemplate.sourceUrl,
                         name: newTemplate.name || 'New Template',
-                        viewFormat: newTemplate.viewFormat,
+                        pageType: newTemplate.viewFormat,
                       })}
                       className="text-sm text-blue-600 hover:underline flex items-center gap-1"
                     >
@@ -1983,7 +2008,7 @@ export default function TemplatesPage() {
                   </div>
                   <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-all flex items-center justify-center opacity-0 group-hover:opacity-100">
                     <button
-                      onClick={() => setFullscreenPreview({ isOpen: true, url: template.sourceUrl, name: template.name, viewFormat: template.viewFormat || 'desktop' })}
+                      onClick={() => setPagePreview({ isOpen: true, url: template.sourceUrl, name: template.name, pageType: template.viewFormat || 'desktop' })}
                       className="flex items-center gap-2 px-4 py-2 bg-white rounded-lg shadow-lg text-sm font-medium text-gray-800 hover:bg-gray-50 transition-colors"
                     >
                       <Eye className="w-4 h-4" />
@@ -2012,7 +2037,7 @@ export default function TemplatesPage() {
                   )}
                   <div className="flex items-center gap-2">
                     <button
-                      onClick={() => setFullscreenPreview({ isOpen: true, url: template.sourceUrl, name: template.name, viewFormat: template.viewFormat || 'desktop' })}
+                      onClick={() => setPagePreview({ isOpen: true, url: template.sourceUrl, name: template.name, pageType: template.viewFormat || 'desktop' })}
                       className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-slate-800 text-white rounded-xl text-sm font-semibold hover:bg-slate-700 transition-colors"
                     >
                       Use this template <span className="text-xs">→</span>
@@ -2032,6 +2057,66 @@ export default function TemplatesPage() {
         </div>
         </>}
       </div>
+
+      {/* Page Preview Modal — Desktop + Mobile side by side */}
+      {pagePreview?.isOpen && (
+        <div className="fixed inset-0 bg-black/85 flex flex-col z-50" onClick={() => setPagePreview(null)}>
+          <div className="px-6 py-4 flex items-center justify-between bg-gray-900 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-3">
+              <Eye className="w-6 h-6 text-white" />
+              <div>
+                <h2 className="text-lg font-bold text-white">{pagePreview.name}</h2>
+                <p className="text-gray-400 text-sm truncate max-w-xl">{pagePreview.url}</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-3">
+              <a href={pagePreview.url} target="_blank" rel="noopener noreferrer"
+                className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm">
+                <ExternalLink className="w-4 h-4" /> Open in new tab
+              </a>
+              <button onClick={() => setPagePreview(null)} className="text-white/80 hover:text-white text-3xl font-bold px-2">×</button>
+            </div>
+          </div>
+          <div className="flex-1 flex gap-6 p-6 overflow-hidden" onClick={(e) => e.stopPropagation()}>
+            {previewLoading ? (
+              <div className="flex-1 flex items-center justify-center">
+                <div className="text-center">
+                  <div className="w-12 h-12 border-4 border-blue-400 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
+                  <p className="text-white text-lg font-medium">Loading page...</p>
+                  <p className="text-gray-400 text-sm mt-1">{pagePreview.url}</p>
+                </div>
+              </div>
+            ) : previewHtml ? (<>
+              <div className="flex-1 flex flex-col min-w-0">
+                <div className="flex items-center gap-2 mb-3">
+                  <Monitor className="w-4 h-4 text-blue-400" />
+                  <span className="text-blue-400 text-sm font-semibold">Desktop</span>
+                </div>
+                <div className="flex-1 bg-white rounded-xl overflow-hidden shadow-2xl">
+                  <iframe srcDoc={previewHtml} className="w-full h-full border-0" title="Desktop Preview" sandbox="allow-same-origin" />
+                </div>
+              </div>
+              <div className="flex flex-col items-center" style={{ width: '375px', flexShrink: 0 }}>
+                <div className="flex items-center gap-2 mb-3">
+                  <Smartphone className="w-4 h-4 text-green-400" />
+                  <span className="text-green-400 text-sm font-semibold">Mobile</span>
+                </div>
+                <div className="w-[375px] h-full bg-white rounded-[32px] overflow-hidden shadow-2xl border-[6px] border-gray-700">
+                  <iframe srcDoc={previewHtml} className="w-full h-full border-0" title="Mobile Preview" sandbox="allow-same-origin" />
+                </div>
+              </div>
+            </>) : (
+              <div className="flex-1 flex items-center justify-center">
+                <div className="text-center">
+                  <p className="text-white text-lg font-medium">Could not load page</p>
+                  <p className="text-gray-400 text-sm mt-2">Try opening it directly:</p>
+                  <a href={pagePreview.url} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 text-sm mt-1 inline-block">{pagePreview.url}</a>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Fullscreen Preview Modal */}
       {fullscreenPreview.isOpen && (
