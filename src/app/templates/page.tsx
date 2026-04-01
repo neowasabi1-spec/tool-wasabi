@@ -2093,7 +2093,7 @@ export default function TemplatesPage() {
                   <span className="text-blue-400 text-sm font-semibold">Desktop</span>
                 </div>
                 <div className="flex-1 bg-white rounded-xl overflow-hidden shadow-2xl">
-                  <iframe srcDoc={previewHtml} className="w-full h-full border-0" title="Desktop Preview" sandbox="allow-same-origin" />
+                  <iframe srcDoc={previewHtml} className="w-full h-full border-0" title="Desktop Preview" sandbox="allow-same-origin allow-scripts" />
                 </div>
               </div>
               <div className="flex flex-col items-center" style={{ width: '375px', flexShrink: 0 }}>
@@ -2102,7 +2102,7 @@ export default function TemplatesPage() {
                   <span className="text-green-400 text-sm font-semibold">Mobile</span>
                 </div>
                 <div className="w-[375px] h-full bg-white rounded-[32px] overflow-hidden shadow-2xl border-[6px] border-gray-700">
-                  <iframe srcDoc={previewHtml} className="w-full h-full border-0" title="Mobile Preview" sandbox="allow-same-origin" />
+                  <iframe srcDoc={previewHtml} className="w-full h-full border-0" title="Mobile Preview" sandbox="allow-same-origin allow-scripts" />
                 </div>
               </div>
             </>) : (
