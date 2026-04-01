@@ -44,11 +44,12 @@ const emptyForm: NewTemplateForm = {
 
 const htmlCache = new Map<string, string>();
 
-function PageThumbnail({ url, alt, height = '180px' }: { url: string; alt: string; height?: string }) {
-  const [html, setHtml] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+function PageThumbnail({ url, alt, height = '180px', savedHtml }: { url: string; alt: string; height?: string; savedHtml?: string | null }) {
+  const [html, setHtml] = useState<string | null>(savedHtml || null);
+  const [loading, setLoading] = useState(!savedHtml);
 
   useEffect(() => {
+    if (savedHtml || html) return;
     if (htmlCache.has(url)) {
       setHtml(htmlCache.get(url)!);
       setLoading(false);
@@ -70,7 +71,7 @@ function PageThumbnail({ url, alt, height = '180px' }: { url: string; alt: strin
       .catch(() => {})
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [url]);
+  }, [url, savedHtml, html]);
 
   if (loading) {
     return (
@@ -511,13 +512,23 @@ export default function TemplatesPage() {
     name: '',
     viewFormat: 'desktop',
   });
-  const [pagePreview, setPagePreview] = useState<{ isOpen: boolean; url: string; name: string; pageType: string } | null>(null);
+  const [pagePreview, setPagePreview] = useState<{ isOpen: boolean; url: string; name: string; pageType: string; savedHtml?: string | null } | null>(null);
   const [previewHtml, setPreviewHtml] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
 
   useEffect(() => {
-    if (!pagePreview?.isOpen || !pagePreview.url) {
+    if (!pagePreview?.isOpen) {
       setPreviewHtml(null);
+      return;
+    }
+    if (pagePreview.savedHtml) {
+      setPreviewHtml(pagePreview.savedHtml);
+      setPreviewLoading(false);
+      return;
+    }
+    if (!pagePreview.url) {
+      setPreviewHtml(null);
+      setPreviewLoading(false);
       return;
     }
     let cancelled = false;
@@ -535,7 +546,7 @@ export default function TemplatesPage() {
       .catch(() => {})
       .finally(() => { if (!cancelled) setPreviewLoading(false); });
     return () => { cancelled = true; };
-  }, [pagePreview?.isOpen, pagePreview?.url]);
+  }, [pagePreview?.isOpen, pagePreview?.url, pagePreview?.savedHtml]);
   
   // Custom page types management
   const [showPageTypeManager, setShowPageTypeManager] = useState(false);
@@ -762,7 +773,7 @@ export default function TemplatesPage() {
               </div>
             ) : (
               filteredArchivedFunnels.map((funnel) => {
-                const steps = (funnel.steps as { step_index: number; name: string; page_type: string; url_to_swipe: string; prompt: string; template_name: string; product_name: string; swipe_status: string; feedback: string }[]) || [];
+                const steps = (funnel.steps as { step_index: number; name: string; page_type: string; url_to_swipe: string; prompt: string; template_name: string; product_name: string; swipe_status: string; feedback: string; cloned_data?: { html?: string } | null; swiped_data?: { html?: string } | null }[]) || [];
                 const isExpanded = expandedFunnelIds.includes(funnel.id);
                 const allSelected = isFunnelFullySelected(funnel);
                 return (
@@ -809,21 +820,27 @@ export default function TemplatesPage() {
                             return (
                               <div
                                 key={i}
-                                onClick={() => s.url_to_swipe ? setPagePreview({ isOpen: true, url: s.url_to_swipe, name: s.name, pageType: s.page_type }) : togglePage(sp)}
+                                onClick={() => (s.url_to_swipe || s.swiped_data?.html || s.cloned_data?.html) ? setPagePreview({ isOpen: true, url: s.url_to_swipe, name: s.name, pageType: s.page_type, savedHtml: s.swiped_data?.html || s.cloned_data?.html || null }) : togglePage(sp)}
                                 className={`group bg-white rounded-xl border overflow-hidden cursor-pointer transition-all ${
                                   checked ? 'border-green-400 ring-2 ring-green-200 shadow-md' : 'border-gray-200 hover:shadow-lg hover:border-blue-300'
                                 }`}
                               >
                                 <div className="relative w-full h-[180px] overflow-hidden bg-gray-50">
-                                  {s.url_to_swipe && /^https?:\/\/.+\..+/.test(s.url_to_swipe)
-                                    ? <PageThumbnail url={s.url_to_swipe} alt={s.name} />
-                                    : (() => { const hue = (i * 47 + 200) % 360; return (
+                                  {(() => {
+                                    const stepHtml = s.swiped_data?.html || s.cloned_data?.html || null;
+                                    const isRealUrl = s.url_to_swipe && /^https?:\/\/.+\..+/.test(s.url_to_swipe);
+                                    if (stepHtml || isRealUrl) {
+                                      return <PageThumbnail url={s.url_to_swipe} alt={s.name} savedHtml={stepHtml} />;
+                                    }
+                                    const hue = (i * 47 + 200) % 360;
+                                    return (
                                       <div className="w-full h-full flex flex-col items-center justify-center p-4 text-center" style={{ background: `linear-gradient(135deg, hsl(${hue}, 50%, 55%), hsl(${(hue + 40) % 360}, 55%, 45%))` }}>
                                         <span className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center text-white font-bold text-lg mb-2">{s.step_index}</span>
                                         <span className="text-white/90 text-xs font-medium line-clamp-2 leading-relaxed">{s.name}</span>
                                         <span className="mt-1 px-2 py-0.5 bg-white/20 rounded-full text-[9px] text-white/80 font-medium">{getPageTypeLabel(s.page_type)}</span>
-                                      </div>); })()
-                                  }
+                                      </div>
+                                    );
+                                  })()}
                                   <div className="absolute top-2 left-2" onClick={(e) => { e.stopPropagation(); togglePage(sp); }}>
                                     {checked
                                       ? <CheckSquare className="w-5 h-5 text-green-600 drop-shadow cursor-pointer" />
