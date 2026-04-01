@@ -314,14 +314,17 @@ async function exec(a: ToolAction, o: string): Promise<{ success: boolean; resul
         const { data: pages, error: pErr } = await supabase.from('funnel_pages').select('*').order('created_at', { ascending: true });
         if (pErr) return fail(pErr.message);
         if (!pages?.length) return fail('Nessuna pagina funnel da archiviare. Crea prima delle pagine nel Front End Funnel.');
-        const steps = pages.map((pg: { name: string; page_type: string; url_to_swipe: string; prompt: string; swipe_status: string }, i: number) => ({
-          step_index: i + 1, name: pg.name, page_type: pg.page_type, url_to_swipe: pg.url_to_swipe || '', prompt: pg.prompt || '', swipe_status: pg.swipe_status || '',
+        interface FunnelPageRow { name: string; page_type: string; url_to_swipe: string; prompt: string; feedback: string | null; swipe_status: string; swipe_result: string | null; cloned_data: unknown; swiped_data: unknown; template_id: string | null; product_id: string | null }
+        const steps = pages.map((pg: FunnelPageRow, i: number) => ({
+          step_index: i + 1, name: pg.name, page_type: pg.page_type, url_to_swipe: pg.url_to_swipe || '',
+          prompt: pg.prompt || '', feedback: pg.feedback || '', swipe_status: pg.swipe_status || '',
+          swipe_result: pg.swipe_result || '', cloned_data: pg.cloned_data || null, swiped_data: pg.swiped_data || null,
         }));
         const { data: created, error: cErr } = await supabase.from('archived_funnels').insert({
           name: p.name as string, total_steps: steps.length, steps, section,
         }).select().single();
         if (cErr) return fail(cErr.message);
-        return { success: true, result: `Funnel "${p.name}" salvato in sezione **${section}** con ${steps.length} step.`, data: created };
+        return { success: true, result: `Funnel "${p.name}" salvato in sezione **${section}** con ${steps.length} step (HTML incluso).`, data: created };
       }
 
       // Compliance
