@@ -212,14 +212,33 @@ async function exec(a: ToolAction, o: string): Promise<{ success: boolean; resul
         if (!p.url) return fail('URL required.');
         const r = await fetch(`${o}/api/landing/clone`, { method: 'POST', headers: hdr(), body: JSON.stringify({ url: p.url }) });
         const d = await r.json();
-        return r.ok && d.html ? { success: true, result: `Clonato! ${d.html.length} caratteri. Titolo: "${d.title || 'N/A'}"`, data: { title: d.title, length: d.html.length } } : { success: false, result: d.error || 'Failed.' };
+        if (!r.ok || !d.html) return { success: false, result: d.error || 'Clone failed.' };
+        const pageName = d.title || new URL(p.url as string).pathname.split('/').pop() || 'Cloned Page';
+        const { data: saved, error: saveErr } = await supabase.from('funnel_pages').insert({
+          name: pageName, page_type: 'landing', url_to_swipe: p.url as string,
+          swipe_status: 'pending', cloned_data: { html: d.html, title: d.title, url: p.url },
+        }).select().single();
+        if (saveErr) return { success: true, result: `Clonato (${d.html.length} car.) ma errore salvataggio: ${saveErr.message}`, data: { title: d.title } };
+        return { success: true, result: `Clonato e salvato! "${pageName}" — ${d.html.length} caratteri. HTML salvato in Front End Funnel.`, data: { id: saved.id, title: d.title, length: d.html.length } };
       }
       case 'swipe_page': {
         if (!p.url) return fail('URL required.');
         if (!p.productName) return fail('Serve il nome del prodotto.');
+        const cloneR = await fetch(`${o}/api/landing/clone`, { method: 'POST', headers: hdr(), body: JSON.stringify({ url: p.url }) });
+        const cloneD = await cloneR.json();
+        const clonedHtml = cloneR.ok && cloneD.html ? cloneD.html : null;
         const r = await fetch(`${o}/api/landing/swipe`, { method: 'POST', headers: hdr(), body: JSON.stringify({ url: p.url, product: { name: p.productName, description: p.productDescription || '' } }) });
         const d = await r.json();
-        return r.ok && d.html ? { success: true, result: `Swipato per "${p.productName}"! ${d.html.length} caratteri.`, data: { length: d.html.length } } : { success: false, result: d.error || 'Failed.' };
+        if (!r.ok || !d.html) return { success: false, result: d.error || 'Swipe failed.' };
+        const swipeName = `${p.productName} — ${new URL(p.url as string).pathname.split('/').pop() || 'Swiped'}`;
+        const { data: saved, error: saveErr } = await supabase.from('funnel_pages').insert({
+          name: swipeName, page_type: 'landing', url_to_swipe: p.url as string,
+          swipe_status: 'completed', swipe_result: d.html.substring(0, 500),
+          cloned_data: clonedHtml ? { html: clonedHtml, title: cloneD.title, url: p.url } : null,
+          swiped_data: { html: d.html, url: p.url, product: p.productName },
+        }).select().single();
+        if (saveErr) return { success: true, result: `Swipato (${d.html.length} car.) ma errore salvataggio: ${saveErr.message}` };
+        return { success: true, result: `Swipato e salvato! "${swipeName}" — ${d.html.length} caratteri. HTML originale + riscritto salvati in Front End Funnel.`, data: { id: saved.id, length: d.html.length } };
       }
 
       // Products (direct Supabase)
