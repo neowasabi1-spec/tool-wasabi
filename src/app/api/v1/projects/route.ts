@@ -65,6 +65,13 @@ export async function POST(req: NextRequest) {
     if (val !== undefined) insert[col] = val;
   }
 
+  if (body.id) {
+    insert.id = body.id;
+    const { data, error } = await supabase.from('projects').upsert(insert, { onConflict: 'id' }).select().single();
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ project: data });
+  }
+
   const { data, error } = await supabase.from('projects').insert(insert).select().single();
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ project: data });

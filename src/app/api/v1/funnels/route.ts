@@ -16,6 +16,17 @@ export async function POST(req: NextRequest) {
   if (!auth.valid) return NextResponse.json({ error: auth.error }, { status: auth.status });
 
   const body = await req.json();
+
+  if (body.id) {
+    const { data, error } = await supabase
+      .from('funnel_pages')
+      .upsert(body, { onConflict: 'id' })
+      .select()
+      .single();
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ funnel_page: data });
+  }
+
   const { data, error } = await supabase.from('funnel_pages').insert(body).select().single();
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ funnel_page: data });
