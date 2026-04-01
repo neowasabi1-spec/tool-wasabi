@@ -42,60 +42,112 @@ const emptyForm: NewTemplateForm = {
   description: '',
 };
 
-const htmlCache = new Map<string, string>();
+const screenshotCache = new Map<string, string>();
+let screenshotQueue: (() => void)[] = [];
+let activeScreenshots = 0;
+const MAX_SS = 2;
+
+function processScreenshotQueue() {
+  while (activeScreenshots < MAX_SS && screenshotQueue.length > 0) {
+    const next = screenshotQueue.shift();
+    if (next) next();
+  }
+}
+
+async function htmlToScreenshot(html: string, cacheKey: string): Promise<string | null> {
+  if (screenshotCache.has(cacheKey)) return screenshotCache.get(cacheKey)!;
+  const lsKey = `ss_${cacheKey}`;
+  try { const cached = localStorage.getItem(lsKey); if (cached) { screenshotCache.set(cacheKey, cached); return cached; } } catch {}
+
+  return new Promise((resolve) => {
+    const iframe = document.createElement('iframe');
+    iframe.style.cssText = 'position:fixed;left:-9999px;top:0;width:1280px;height:900px;border:none;visibility:hidden';
+    iframe.sandbox.add('allow-same-origin');
+    iframe.srcdoc = html;
+    document.body.appendChild(iframe);
+    iframe.onload = async () => {
+      try {
+        await new Promise(r => setTimeout(r, 500));
+        const html2canvas = (await import('html2canvas')).default;
+        const body = iframe.contentDocument?.body;
+        if (!body) { document.body.removeChild(iframe); resolve(null); return; }
+        const canvas = await html2canvas(body, { width: 1280, height: 900, scale: 0.3, useCORS: true, allowTaint: true, logging: false });
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
+        screenshotCache.set(cacheKey, dataUrl);
+        try { localStorage.setItem(lsKey, dataUrl); } catch {}
+        document.body.removeChild(iframe);
+        resolve(dataUrl);
+      } catch {
+        document.body.removeChild(iframe);
+        resolve(null);
+      }
+    };
+    iframe.onerror = () => { document.body.removeChild(iframe); resolve(null); };
+    setTimeout(() => { try { document.body.removeChild(iframe); } catch {} resolve(null); }, 15000);
+  });
+}
 
 function PageThumbnail({ url, alt, height = '180px', savedHtml }: { url: string; alt: string; height?: string; savedHtml?: string | null }) {
-  const [html, setHtml] = useState<string | null>(savedHtml || null);
-  const [loading, setLoading] = useState(!savedHtml);
+  const [imgSrc, setImgSrc] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const startedRef = useRef(false);
 
   useEffect(() => {
-    if (savedHtml || html) return;
-    if (htmlCache.has(url)) {
-      setHtml(htmlCache.get(url)!);
-      setLoading(false);
-      return;
-    }
-    let cancelled = false;
-    fetch('/api/proxy-page', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url }),
-    })
-      .then(r => r.json())
-      .then(data => {
-        if (!cancelled && data.html) {
-          htmlCache.set(url, data.html);
-          setHtml(data.html);
-        }
-      })
-      .catch(() => {})
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [url, savedHtml, html]);
+    if (startedRef.current) return;
+    const cacheKey = savedHtml ? `h_${savedHtml.length}_${savedHtml.substring(0, 100)}` : `u_${url}`;
+    const cached = screenshotCache.get(cacheKey);
+    if (cached) { setImgSrc(cached); setLoading(false); return; }
+    try { const ls = localStorage.getItem(`ss_${cacheKey}`); if (ls) { screenshotCache.set(cacheKey, ls); setImgSrc(ls); setLoading(false); return; } } catch {}
 
-  if (loading) {
-    return (
-      <div className="w-full flex items-center justify-center bg-gray-50" style={{ height }}>
-        <div className="w-6 h-6 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
-      </div>
-    );
-  }
-  if (!html) {
-    return (
-      <div className="w-full flex items-center justify-center bg-gray-100" style={{ height }}>
-        <span className="text-gray-400 text-xs">Preview not available</span>
-      </div>
-    );
-  }
+    const observer = new IntersectionObserver((entries) => {
+      if (!entries[0]?.isIntersecting || startedRef.current) return;
+      startedRef.current = true;
+      observer.disconnect();
+
+      const doWork = async () => {
+        activeScreenshots++;
+        let htmlContent = savedHtml || null;
+        if (!htmlContent && url) {
+          try {
+            const r = await fetch('/api/proxy-page', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }) });
+            const d = await r.json();
+            htmlContent = d.html || null;
+          } catch {}
+        }
+        if (htmlContent) {
+          const ss = await htmlToScreenshot(htmlContent, cacheKey);
+          if (ss) setImgSrc(ss);
+        }
+        setLoading(false);
+        activeScreenshots--;
+        processScreenshotQueue();
+      };
+
+      if (activeScreenshots >= MAX_SS) {
+        screenshotQueue.push(doWork);
+      } else {
+        doWork();
+      }
+    }, { rootMargin: '300px' });
+
+    if (containerRef.current) observer.observe(containerRef.current);
+    return () => observer.disconnect();
+  }, [url, savedHtml]);
+
   return (
-    <div className="w-full overflow-hidden" style={{ height }}>
-      <iframe
-        srcDoc={html}
-        className="border-0 pointer-events-none origin-top-left"
-        style={{ width: '1280px', height: '900px', transform: 'scale(0.156)', transformOrigin: 'top left' }}
-        sandbox="allow-same-origin allow-scripts"
-        title={alt}
-      />
+    <div ref={containerRef} className="w-full overflow-hidden bg-gray-50" style={{ height }}>
+      {imgSrc ? (
+        <img src={imgSrc} alt={alt} className="w-full h-full object-cover object-top" />
+      ) : loading ? (
+        <div className="w-full h-full flex items-center justify-center">
+          <div className="w-6 h-6 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+        </div>
+      ) : (
+        <div className="w-full h-full flex items-center justify-center bg-gray-100">
+          <span className="text-gray-400 text-xs">No preview</span>
+        </div>
+      )}
     </div>
   );
 }
