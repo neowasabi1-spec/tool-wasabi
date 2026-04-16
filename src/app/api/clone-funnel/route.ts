@@ -574,42 +574,63 @@ async function cloneWithBrowser(url: string, viewport: 'desktop' | 'mobile' = 'd
 }
 
 export async function POST(request: NextRequest) {
+  let body: Record<string, unknown> = {};
   try {
-    const body = await request.json();
-    const { cloneMode, url } = body;
-    const viewport: 'desktop' | 'mobile' | 'both' = body.viewport || 'desktop';
-    const keepScriptsFlag: boolean = body.keepScripts || false;
+    try {
+      body = await request.json();
+    } catch (jsonErr) {
+      return NextResponse.json({ error: `Invalid JSON body: ${jsonErr instanceof Error ? jsonErr.message : 'parse error'}` }, { status: 400 });
+    }
+    const { cloneMode, url } = body as { cloneMode?: string; url?: string };
+    const viewport: 'desktop' | 'mobile' | 'both' = (body.viewport as 'desktop' | 'mobile' | 'both') || 'desktop';
+    const keepScriptsFlag: boolean = !!body.keepScripts;
+    console.log(`[clone-funnel] request: mode=${cloneMode}, url=${url}, viewport=${viewport}, serverless=${IS_SERVERLESS}`);
 
     // IDENTICAL MODE: use Playwright headless browser for full page rendering
     if (cloneMode === 'identical' && url) {
       if (IS_SERVERLESS) {
         console.log(`⚠️ Serverless detected, using direct fetch for clone: ${url}`);
-        const htmlResponse = await fetch(url, {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          },
-          redirect: 'follow',
-          signal: AbortSignal.timeout(20000),
-        });
+        try {
+          const cleanUrl = String(url).trim();
+          if (!/^https?:\/\//i.test(cleanUrl)) {
+            return NextResponse.json({ error: `Invalid URL (must start with http:// or https://): ${cleanUrl}` }, { status: 400 });
+          }
 
-        if (!htmlResponse.ok) {
-          return NextResponse.json({ error: `Download error: HTTP ${htmlResponse.status}` }, { status: 502 });
+          const htmlResponse = await fetch(cleanUrl, {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+              'Accept-Language': 'en-US,en;q=0.9',
+            },
+            redirect: 'follow',
+            signal: AbortSignal.timeout(25000),
+          });
+
+          if (!htmlResponse.ok) {
+            return NextResponse.json({ error: `Download error: HTTP ${htmlResponse.status} ${htmlResponse.statusText}` }, { status: 502 });
+          }
+
+          const fallbackHTML = await htmlResponse.text();
+          return NextResponse.json({
+            success: true,
+            content: fallbackHTML,
+            mobileContent: null,
+            format: 'html',
+            mode: 'identical',
+            originalSize: fallbackHTML.length,
+            finalSize: fallbackHTML.length,
+            cssInlined: false,
+            jsRendered: false,
+            title: fallbackHTML.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1] || '',
+          });
+        } catch (fetchErr) {
+          const msg = fetchErr instanceof Error ? fetchErr.message : 'unknown fetch error';
+          console.error('❌ Serverless fetch clone error:', msg, fetchErr);
+          return NextResponse.json(
+            { error: `Unable to clone the page (serverless fetch): ${msg}` },
+            { status: 502 }
+          );
         }
-
-        const fallbackHTML = await htmlResponse.text();
-        return NextResponse.json({
-          success: true,
-          content: fallbackHTML,
-          mobileContent: null,
-          format: 'html',
-          mode: 'identical',
-          originalSize: fallbackHTML.length,
-          finalSize: fallbackHTML.length,
-          cssInlined: false,
-          jsRendered: false,
-          title: fallbackHTML.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1] || '',
-        });
       }
 
       console.log(`🔄 Clone IDENTICAL with Playwright (${viewport}${keepScriptsFlag ? ', keepScripts' : ''}): ${url}`);
@@ -1172,9 +1193,12 @@ export async function POST(request: NextRequest) {
     const data = await response.json();
     return NextResponse.json(data, { status: response.status });
   } catch (error) {
-    console.error('Clone funnel API error:', error);
+    const errMsg = error instanceof Error
+      ? `${error.name}: ${error.message}${error.stack ? `\n${error.stack.substring(0, 500)}` : ''}`
+      : String(error);
+    console.error('Clone funnel API error:', errMsg, { body });
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Unknown error' },
+      { error: error instanceof Error ? `${error.name}: ${error.message}` : 'Unknown error', body_received: body },
       { status: 500 }
     );
   }
