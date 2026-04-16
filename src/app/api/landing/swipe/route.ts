@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { queueAndWait } from '@/lib/openclaw-queue';
 
 export const maxDuration = 120;
 
@@ -271,29 +270,18 @@ CRITICAL RULES:
     const userPrompt = `Rewrite these ${texts.length} texts for "${product.name}":\n\n${JSON.stringify(textsForAi, null, 2)}`;
 
     let aiText = '';
-    let usedProvider = 'openclaw';
+    const usedProvider = 'anthropic';
 
     try {
-      console.log(`[swipe] Sending to Merlino, texts=${texts.length}`);
-      aiText = await queueAndWait(userPrompt, {
-        systemPrompt,
-        section: 'Swipe',
-        timeoutMs: 110_000,
-      });
-      if (!aiText.trim()) throw new Error('Empty response');
-      console.log(`[swipe] Merlino OK, response: ${aiText.length} chars`);
-    } catch (openclawErr) {
-      console.warn(`[swipe] Merlino failed: ${openclawErr instanceof Error ? openclawErr.message : 'Unknown'}. Fallback Anthropic...`);
-      usedProvider = 'anthropic';
-      try {
-        aiText = await callAnthropicFallback(systemPrompt, userPrompt);
-        console.log(`[swipe] Anthropic OK, response: ${aiText.length} chars`);
-      } catch (anthropicErr) {
-        console.error(`[swipe] Both failed`);
-        return NextResponse.json({
-          error: `Merlino: ${openclawErr instanceof Error ? openclawErr.message : 'Unknown'}. Anthropic: ${anthropicErr instanceof Error ? anthropicErr.message : 'Unknown'}`,
-        }, { status: 502 });
-      }
+      console.log(`[swipe] Sending to Anthropic, texts=${texts.length}`);
+      aiText = await callAnthropicFallback(systemPrompt, userPrompt);
+      if (!aiText.trim()) throw new Error('Empty response from Anthropic');
+      console.log(`[swipe] Anthropic OK, response: ${aiText.length} chars`);
+    } catch (anthropicErr) {
+      console.error(`[swipe] Anthropic failed: ${anthropicErr instanceof Error ? anthropicErr.message : 'Unknown'}`);
+      return NextResponse.json({
+        error: `Anthropic failed: ${anthropicErr instanceof Error ? anthropicErr.message : 'Unknown'}`,
+      }, { status: 502 });
     }
 
     const cleaned = cleanAiOutput(aiText);

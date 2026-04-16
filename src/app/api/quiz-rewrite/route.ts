@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { queueAndWait } from '@/lib/openclaw-queue';
 
 export const maxDuration = 120;
 export const dynamic = 'force-dynamic';
@@ -172,29 +171,18 @@ RULES:
     const userPrompt = `Rewrite these ${texts.length} texts for the product "${productName}":\n\n${JSON.stringify(textsForAi, null, 2)}`;
 
     let aiText = '';
-    let usedProvider = 'openclaw';
+    const usedProvider = 'anthropic';
 
     try {
-      console.log(`[quiz-rewrite] Sending to OpenClaw queue, texts=${texts.length}`);
-      aiText = await queueAndWait(userPrompt, {
-        systemPrompt,
-        section: 'Quiz Rewrite',
-        timeoutMs: 110_000,
-      });
-      if (!aiText.trim()) throw new Error('Empty response from OpenClaw');
-      console.log(`[quiz-rewrite] OpenClaw OK, response: ${aiText.length} chars`);
-    } catch (openclawErr) {
-      console.warn(`[quiz-rewrite] OpenClaw failed: ${openclawErr instanceof Error ? openclawErr.message : 'Unknown'}. Falling back to Anthropic...`);
-      usedProvider = 'anthropic';
-      try {
-        aiText = await callAnthropicFallback(systemPrompt, userPrompt);
-        console.log(`[quiz-rewrite] Anthropic fallback OK, response: ${aiText.length} chars`);
-      } catch (anthropicErr) {
-        console.error(`[quiz-rewrite] Anthropic fallback also failed: ${anthropicErr instanceof Error ? anthropicErr.message : 'Unknown'}`);
-        return NextResponse.json({
-          error: `Both OpenClaw and Anthropic failed. OpenClaw: ${openclawErr instanceof Error ? openclawErr.message : 'Unknown'}. Anthropic: ${anthropicErr instanceof Error ? anthropicErr.message : 'Unknown'}`,
-        }, { status: 502 });
-      }
+      console.log(`[quiz-rewrite] Sending to Anthropic, texts=${texts.length}`);
+      aiText = await callAnthropicFallback(systemPrompt, userPrompt);
+      if (!aiText.trim()) throw new Error('Empty response from Anthropic');
+      console.log(`[quiz-rewrite] Anthropic OK, response: ${aiText.length} chars`);
+    } catch (anthropicErr) {
+      console.error(`[quiz-rewrite] Anthropic failed: ${anthropicErr instanceof Error ? anthropicErr.message : 'Unknown'}`);
+      return NextResponse.json({
+        error: `Anthropic failed: ${anthropicErr instanceof Error ? anthropicErr.message : 'Unknown'}`,
+      }, { status: 502 });
     }
 
     const cleaned = cleanAiOutput(aiText);
