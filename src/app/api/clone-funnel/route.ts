@@ -580,6 +580,38 @@ export async function POST(request: NextRequest) {
 
     // IDENTICAL MODE: use Playwright headless browser for full page rendering
     if (cloneMode === 'identical' && url) {
+      const isServerless = !!process.env.VERCEL || !!process.env.AWS_LAMBDA_FUNCTION_NAME;
+
+      if (isServerless) {
+        console.log(`⚠️ Serverless detected, using direct fetch for clone: ${url}`);
+        const htmlResponse = await fetch(url, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          },
+          redirect: 'follow',
+          signal: AbortSignal.timeout(20000),
+        });
+
+        if (!htmlResponse.ok) {
+          return NextResponse.json({ error: `Download error: HTTP ${htmlResponse.status}` }, { status: 502 });
+        }
+
+        const fallbackHTML = await htmlResponse.text();
+        return NextResponse.json({
+          success: true,
+          content: fallbackHTML,
+          mobileContent: null,
+          format: 'html',
+          mode: 'identical',
+          originalSize: fallbackHTML.length,
+          finalSize: fallbackHTML.length,
+          cssInlined: false,
+          jsRendered: false,
+          title: fallbackHTML.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1] || '',
+        });
+      }
+
       console.log(`🔄 Clone IDENTICAL with Playwright (${viewport}${keepScriptsFlag ? ', keepScripts' : ''}): ${url}`);
 
       try {
@@ -659,11 +691,85 @@ export async function POST(request: NextRequest) {
 
     // REWRITE EXTRACT PHASE: render with Playwright, extract texts locally, save to Supabase DB
     if (cloneMode === 'rewrite' && body.phase === 'extract' && url) {
-      console.log(`🔄 Rewrite EXTRACT with Playwright: ${url}`);
-
       if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
         return NextResponse.json({ error: 'Supabase not configured.' }, { status: 500 });
       }
+
+      const isServerless = !!process.env.VERCEL || !!process.env.AWS_LAMBDA_FUNCTION_NAME;
+
+      if (isServerless) {
+        console.log(`⚠️ Serverless detected, using fetch fallback for rewrite extract: ${url}`);
+        // Jump directly to the fetch fallback (same code as the catch block below)
+        const htmlResponse = await fetch(url.trim(), {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          },
+          redirect: 'follow',
+          signal: AbortSignal.timeout(20000),
+        });
+
+        if (!htmlResponse.ok) {
+          return NextResponse.json({ error: `Unable to fetch page: HTTP ${htmlResponse.status}` }, { status: 502 });
+        }
+
+        let rawHtml = await htmlResponse.text();
+        rawHtml = rawHtml.replace(/"\s*==\s*\$\d+/g, '"').replace(/\s*==\s*\$\d+/g, '');
+
+        const fetchExtractResult = extractTextsFromHtml(rawHtml);
+        if (fetchExtractResult.length === 0) {
+          return NextResponse.json({ error: 'No text found on the page.' }, { status: 400 });
+        }
+
+        const { createClient } = await import('@supabase/supabase-js');
+        const supa = createClient(SUPABASE_URL!, SUPABASE_ANON_KEY!);
+
+        const { data: job, error: jobError } = await supa
+          .from('cloning_jobs')
+          .insert({
+            user_id: body.userId || '00000000-0000-0000-0000-000000000001',
+            url,
+            clone_mode: 'rewrite',
+            product_name: body.productName || '',
+            product_description: body.productDescription || '',
+            framework: body.framework || null,
+            target: body.target || null,
+            custom_prompt: body.customPrompt || null,
+            original_html: rawHtml,
+            total_texts: fetchExtractResult.length,
+            status: 'ready',
+          })
+          .select()
+          .single();
+
+        if (jobError || !job) {
+          return NextResponse.json({ error: `Job creation error: ${jobError?.message}` }, { status: 500 });
+        }
+
+        const textsToInsert = fetchExtractResult.map((t) => ({
+          job_id: job.id, index: t.index, original_text: t.originalText,
+          raw_text: t.rawText || null, tag_name: t.tagName, full_tag: t.fullTag,
+          classes: t.classes, attributes: t.attributes, context: t.context,
+          position: t.position, processed: false,
+        }));
+
+        for (let i = 0; i < textsToInsert.length; i += 500) {
+          const batch = textsToInsert.slice(i, i + 500);
+          const { error: insertError } = await supa.from('cloning_texts').insert(batch);
+          if (insertError) {
+            await supa.from('cloning_jobs').delete().eq('id', job.id);
+            return NextResponse.json({ error: `Text saving error: ${insertError.message}` }, { status: 500 });
+          }
+        }
+
+        return NextResponse.json({
+          success: true, phase: 'extract', jobId: job.id,
+          totalTexts: fetchExtractResult.length,
+          message: 'Texts extracted via serverless fetch and saved.',
+        });
+      }
+
+      console.log(`🔄 Rewrite EXTRACT with Playwright: ${url}`);
 
       try {
         // Step 1: Render the page with Playwright
