@@ -4,34 +4,64 @@ import { requireAnthropicKey } from '@/lib/anthropic-key';
 export const maxDuration = 300;
 export const dynamic = 'force-dynamic';
 
-const REWRITE_MODEL = process.env.ANTHROPIC_REWRITE_MODEL || 'claude-3-haiku-20240307';
+// Ordered from highest quality to most compatible. The first model the account
+// has access to will be used (and cached).
+const MODEL_CASCADE: string[] = process.env.ANTHROPIC_REWRITE_MODEL
+  ? [process.env.ANTHROPIC_REWRITE_MODEL]
+  : [
+    'claude-opus-4-5-20250929',
+    'claude-opus-4-20250514',
+    'claude-sonnet-4-5-20250929',
+    'claude-sonnet-4-20250514',
+    'claude-3-5-sonnet-20241022',
+    'claude-3-5-sonnet-20240620',
+    'claude-3-haiku-20240307',
+  ];
+
+let _resolvedModel: string | null = null;
 
 async function callAnthropic(systemPrompt: string, userPrompt: string, timeoutMs = 60_000): Promise<string> {
   const apiKey = requireAnthropicKey();
 
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify({
-      model: REWRITE_MODEL,
-      max_tokens: 8000,
-      system: systemPrompt,
-      messages: [{ role: 'user', content: userPrompt }],
-    }),
-    signal: AbortSignal.timeout(timeoutMs),
-  });
+  const modelsToTry = _resolvedModel ? [_resolvedModel] : MODEL_CASCADE;
+  let lastError: string = '';
 
-  if (!res.ok) {
+  for (const model of modelsToTry) {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model,
+        max_tokens: 8000,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: userPrompt }],
+      }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+
+    if (res.ok) {
+      if (!_resolvedModel) {
+        _resolvedModel = model;
+        console.log(`[quiz-rewrite] Resolved model: ${model}`);
+      }
+      const data = await res.json();
+      return data.content?.[0]?.text || '';
+    }
+
     const err = await res.text();
-    throw new Error(`Anthropic ${res.status}: ${err.substring(0, 300)}`);
+    lastError = `Anthropic ${res.status} on ${model}: ${err.substring(0, 200)}`;
+    // Only cascade to next model on 404 (model not available). For other errors (401, 429, 500) stop.
+    if (res.status !== 404) {
+      throw new Error(lastError);
+    }
+    console.warn(`[quiz-rewrite] ${model} not available, trying next...`);
   }
 
-  const data = await res.json();
-  return data.content?.[0]?.text || '';
+  throw new Error(`No available model. Last error: ${lastError}`);
 }
 
 interface ExtractedText {
