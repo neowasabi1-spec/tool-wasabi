@@ -283,6 +283,67 @@ export default function ApiKeysPage() {
           </div>
         </div>
 
+        {/* MCP Server Info */}
+        <div className="mb-6 bg-gradient-to-r from-purple-50 to-indigo-50 border border-purple-200 rounded-xl p-5">
+          <h3 className="font-bold text-purple-800 text-lg flex items-center gap-2 mb-3">
+            <ShieldCheck className="w-5 h-5" />
+            MCP Server (Model Context Protocol)
+          </h3>
+          <p className="text-purple-700 text-sm mb-4">
+            Collega il tuo bot al tool tramite MCP. Il server espone tutte le funzioni come tools MCP.
+          </p>
+          <div className="bg-white/70 rounded-lg p-4 space-y-3">
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">MCP Endpoint</label>
+              <div className="flex items-center gap-2">
+                <code className="flex-1 bg-gray-900 text-green-400 px-3 py-2 rounded-lg text-sm font-mono">
+                  {baseUrl}/api/mcp
+                </code>
+                <button
+                  onClick={() => { navigator.clipboard.writeText(`${baseUrl}/api/mcp`); }}
+                  className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
+                  title="Copy"
+                >
+                  <Copy className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Transport</label>
+              <code className="bg-gray-100 text-gray-800 px-2 py-1 rounded text-sm">Streamable HTTP (POST JSON-RPC 2.0)</code>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Auth</label>
+              <code className="bg-gray-100 text-gray-800 px-2 py-1 rounded text-sm">X-API-Key: fsk_... (richiede full_access)</code>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-2">Tools disponibili ({21})</label>
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-1.5 text-xs">
+                {['list_products', 'create_product', 'update_product', 'delete_product', 'search_products', 'get_product',
+                  'list_funnels', 'create_funnel_page', 'update_funnel_page', 'delete_funnel_page', 'get_funnel_page',
+                  'list_templates', 'create_template', 'list_archive', 'create_archive_entry',
+                  'analyze_copy', 'clone_landing_page', 'send_openclaw_message', 'generate_product_brief',
+                  'crawl_funnel', 'get_tool_status'].map(t => (
+                  <span key={t} className="bg-purple-100 text-purple-700 px-2 py-1 rounded font-mono">{t}</span>
+                ))}
+              </div>
+            </div>
+            <div className="pt-2 border-t border-purple-100">
+              <label className="block text-xs font-medium text-gray-600 mb-1">Esempio di connessione (cursor/mcp.json)</label>
+              <pre className="bg-gray-900 text-gray-100 px-3 py-2 rounded-lg text-xs overflow-x-auto">{`{
+  "mcpServers": {
+    "funnel-swiper": {
+      "url": "${baseUrl}/api/mcp",
+      "headers": {
+        "X-API-Key": "fsk_YOUR_API_KEY_HERE"
+      }
+    }
+  }
+}`}</pre>
+            </div>
+          </div>
+        </div>
+
         {/* Toolbar */}
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3">
