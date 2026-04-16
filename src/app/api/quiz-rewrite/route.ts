@@ -180,6 +180,7 @@ RULES:
     console.log(`[quiz-rewrite] Total texts=${texts.length}, batches=${batches.length}, batch_size=${BATCH_SIZE}, concurrency=${CONCURRENCY}`);
 
     const rewrites: Array<{ id: number; rewritten: string }> = [];
+    const batchErrors: string[] = [];
     const usedProvider = 'anthropic';
 
     async function processBatch(batch: typeof textsForAi, batchIdx: number): Promise<Array<{ id: number; rewritten: string }>> {
@@ -187,11 +188,20 @@ RULES:
       try {
         const aiText = await callAnthropic(systemPrompt, batchPrompt, 55_000);
         const cleaned = cleanAiOutput(aiText);
-        const parsed = JSON.parse(cleaned) as Array<{ id: number; rewritten: string }>;
-        console.log(`[quiz-rewrite] batch ${batchIdx + 1}/${batches.length} OK (${parsed.length} rewrites)`);
-        return parsed;
+        try {
+          const parsed = JSON.parse(cleaned) as Array<{ id: number; rewritten: string }>;
+          console.log(`[quiz-rewrite] batch ${batchIdx + 1}/${batches.length} OK (${parsed.length} rewrites)`);
+          return parsed;
+        } catch (parseErr) {
+          const msg = `batch ${batchIdx + 1}: JSON parse failed — raw start: ${cleaned.substring(0, 200)}`;
+          batchErrors.push(msg);
+          console.error(`[quiz-rewrite] ${msg}`);
+          return [];
+        }
       } catch (err) {
-        console.error(`[quiz-rewrite] batch ${batchIdx + 1}/${batches.length} failed:`, err instanceof Error ? err.message : err);
+        const msg = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+        batchErrors.push(`batch ${batchIdx + 1}: ${msg}`);
+        console.error(`[quiz-rewrite] batch ${batchIdx + 1}/${batches.length} failed:`, msg);
         return [];
       }
     }
@@ -203,7 +213,12 @@ RULES:
     }
 
     if (rewrites.length === 0) {
-      return NextResponse.json({ error: 'Anthropic returned no rewrites for any batch (timeout or all batches failed)' }, { status: 502 });
+      return NextResponse.json({
+        error: 'Anthropic returned no rewrites for any batch',
+        batches_total: batches.length,
+        batches_failed: batchErrors.length,
+        first_errors: batchErrors.slice(0, 5),
+      }, { status: 502 });
     }
 
     let resultHtml = html;
