@@ -236,6 +236,57 @@ const TOOLS = [
     },
   },
   {
+    name: 'swipe_landing_page',
+    description: 'Clone a landing page from a URL and rewrite all the copy for a specific product. Returns the full swiped HTML ready to use.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        source_url: { type: 'string', description: 'URL of the landing page to swipe' },
+        product_name: { type: 'string', description: 'Name of the product to swipe for' },
+        product_description: { type: 'string', description: 'Product description' },
+        benefits: { type: 'string', description: 'Product benefits (comma separated)' },
+        price: { type: 'string', description: 'Product price' },
+        cta_text: { type: 'string', description: 'CTA button text' },
+        cta_url: { type: 'string', description: 'CTA destination URL' },
+        target_audience: { type: 'string', description: 'Target audience' },
+        brand_name: { type: 'string', description: 'Brand name' },
+        tone: { type: 'string', description: 'Copy tone: professional, casual, urgent, luxury (default: professional)' },
+        language: { type: 'string', description: 'Language code: it, en, es, de, fr (default: it)' },
+      },
+      required: ['source_url', 'product_name'],
+    },
+  },
+  {
+    name: 'swipe_landing_for_product_id',
+    description: 'Clone a landing page and swipe it using product data already saved in the tool (by product ID)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        source_url: { type: 'string', description: 'URL of the landing page to swipe' },
+        product_id: { type: 'string', description: 'ID of the product (from list_products) to swipe for' },
+        tone: { type: 'string', description: 'Copy tone (default: professional)' },
+        language: { type: 'string', description: 'Language code (default: it)' },
+      },
+      required: ['source_url', 'product_id'],
+    },
+  },
+  {
+    name: 'save_swiped_page',
+    description: 'Save a swiped HTML page as a funnel page and optionally to the archive',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Page name' },
+        html_content: { type: 'string', description: 'The swiped HTML content' },
+        source_url: { type: 'string', description: 'Original source URL' },
+        product_id: { type: 'string', description: 'Associated product ID' },
+        page_type: { type: 'string', description: 'Page type: bridge, vsl, presell, squeeze, checkout, upsell, downsell, thank_you' },
+        save_to_archive: { type: 'boolean', description: 'Also save to archive (default: true)' },
+      },
+      required: ['name', 'html_content'],
+    },
+  },
+  {
     name: 'get_tool_status',
     description: 'Get the current status of the Funnel Swiper tool: counts of products, funnels, templates, archive entries',
     inputSchema: { type: 'object', properties: {}, required: [] },
@@ -417,6 +468,102 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
         body: JSON.stringify({ url: args.url, maxPages: args.max_pages || 10 }),
       });
       return await res.json();
+    }
+    case 'swipe_landing_page': {
+      const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || 'https://cloner-funnel-builder.vercel.app';
+      const product: Record<string, unknown> = { name: args.product_name };
+      if (args.product_description) product.description = args.product_description;
+      if (args.benefits) product.benefits = String(args.benefits).split(',').map((b: string) => b.trim());
+      if (args.price) product.price = args.price;
+      if (args.cta_text) product.cta_text = args.cta_text;
+      if (args.cta_url) product.cta_url = args.cta_url;
+      if (args.target_audience) product.target_audience = args.target_audience;
+      if (args.brand_name) product.brand_name = args.brand_name;
+      const res = await fetch(`${baseUrl}/api/landing/swipe`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          source_url: args.source_url,
+          product,
+          tone: args.tone || 'professional',
+          language: args.language || 'it',
+        }),
+        signal: AbortSignal.timeout(180000),
+      });
+      const result = await res.json();
+      if (result.error) throw new Error(result.error);
+      return {
+        success: true,
+        html_length: result.html?.length || 0,
+        original_title: result.original_title,
+        new_title: result.new_title,
+        total_texts: result.totalTexts,
+        replacements: result.replacements,
+        provider: result.provider,
+        changes: result.changes_made,
+        html: result.html,
+      };
+    }
+    case 'swipe_landing_for_product_id': {
+      const { data: prod, error: prodErr } = await supabase.from('products').select('*').eq('id', args.product_id).single();
+      if (prodErr || !prod) throw new Error(`Product not found: ${args.product_id}`);
+      const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || 'https://cloner-funnel-builder.vercel.app';
+      const res = await fetch(`${baseUrl}/api/landing/swipe`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          source_url: args.source_url,
+          product: {
+            name: prod.name,
+            description: prod.description,
+            benefits: prod.benefits ? String(prod.benefits).split(',').map((b: string) => b.trim()) : [],
+            price: prod.price,
+            cta_text: prod.cta_text,
+            cta_url: prod.cta_url,
+            target_audience: prod.target_audience,
+            brand_name: prod.brand_name,
+          },
+          tone: args.tone || 'professional',
+          language: args.language || 'it',
+        }),
+        signal: AbortSignal.timeout(180000),
+      });
+      const result = await res.json();
+      if (result.error) throw new Error(result.error);
+      return {
+        success: true,
+        product_used: prod.name,
+        html_length: result.html?.length || 0,
+        original_title: result.original_title,
+        new_title: result.new_title,
+        total_texts: result.totalTexts,
+        replacements: result.replacements,
+        provider: result.provider,
+        changes: result.changes_made,
+        html: result.html,
+      };
+    }
+    case 'save_swiped_page': {
+      const { data: fp, error: fpErr } = await supabase.from('funnel_pages').insert({
+        name: args.name,
+        html_content: args.html_content,
+        url: args.source_url || '',
+        page_type: args.page_type || 'bridge',
+        product_id: args.product_id || null,
+      }).select().single();
+      if (fpErr) throw new Error(fpErr.message);
+
+      let archiveResult = null;
+      if (args.save_to_archive !== false) {
+        const { data: ar } = await supabase.from('archived_funnels').insert({
+          name: args.name,
+          html_content: args.html_content,
+          url: args.source_url || '',
+          page_type: args.page_type || 'bridge',
+        }).select().single();
+        archiveResult = ar;
+      }
+      return { funnel_page: fp, archived: !!archiveResult, archive_id: archiveResult?.id };
     }
     case 'get_tool_status': {
       const [products, funnels, templates, archive] = await Promise.all([

@@ -317,12 +317,13 @@ export default function ApiKeysPage() {
               <code className="bg-gray-100 text-gray-800 px-2 py-1 rounded text-sm">X-API-Key: fsk_... (richiede full_access)</code>
             </div>
             <div>
-              <label className="block text-xs font-medium text-gray-600 mb-2">Tools disponibili ({21})</label>
+              <label className="block text-xs font-medium text-gray-600 mb-2">Tools disponibili ({24})</label>
               <div className="grid grid-cols-2 md:grid-cols-3 gap-1.5 text-xs">
                 {['list_products', 'create_product', 'update_product', 'delete_product', 'search_products', 'get_product',
                   'list_funnels', 'create_funnel_page', 'update_funnel_page', 'delete_funnel_page', 'get_funnel_page',
                   'list_templates', 'create_template', 'list_archive', 'create_archive_entry',
-                  'analyze_copy', 'clone_landing_page', 'send_openclaw_message', 'generate_product_brief',
+                  'analyze_copy', 'clone_landing_page', 'swipe_landing_page', 'swipe_landing_for_product_id', 'save_swiped_page',
+                  'send_openclaw_message', 'generate_product_brief',
                   'crawl_funnel', 'get_tool_status'].map(t => (
                   <span key={t} className="bg-purple-100 text-purple-700 px-2 py-1 rounded font-mono">{t}</span>
                 ))}
