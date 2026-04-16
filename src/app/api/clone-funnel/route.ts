@@ -13,6 +13,99 @@ async function getBrowser() {
   return getSingletonBrowser();
 }
 
+/**
+ * Tries multiple strategies to fetch a remote HTML page from a serverless env.
+ *   1) native fetch with a realistic browser UA
+ *   2) native fetch with a Googlebot UA (bypasses some anti-bot walls)
+ *   3) r.jina.ai proxy (returns readable content) — last resort
+ */
+async function fetchPageWithFallbacks(url: string): Promise<
+  | { ok: true; html: string; method: string }
+  | { ok: false; error: string; details: string[] }
+> {
+  const details: string[] = [];
+  const attempts: Array<{ name: string; run: () => Promise<Response> }> = [
+    {
+      name: 'chrome-desktop',
+      run: () => fetch(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9,it;q=0.8',
+          'Accept-Encoding': 'gzip, deflate, br',
+          'Sec-Fetch-Dest': 'document',
+          'Sec-Fetch-Mode': 'navigate',
+          'Sec-Fetch-Site': 'none',
+          'Sec-Fetch-User': '?1',
+          'Upgrade-Insecure-Requests': '1',
+          'Cache-Control': 'max-age=0',
+        },
+        redirect: 'follow',
+        signal: AbortSignal.timeout(20000),
+      }),
+    },
+    {
+      name: 'googlebot',
+      run: () => fetch(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        },
+        redirect: 'follow',
+        signal: AbortSignal.timeout(20000),
+      }),
+    },
+  ];
+
+  for (const attempt of attempts) {
+    try {
+      const res = await attempt.run();
+      if (res.ok) {
+        const html = await res.text();
+        if (html && html.length > 50) {
+          return { ok: true, html, method: attempt.name };
+        }
+        details.push(`${attempt.name}: empty response (${html.length} chars)`);
+      } else {
+        details.push(`${attempt.name}: HTTP ${res.status} ${res.statusText}`);
+      }
+    } catch (err) {
+      const e = err as { message?: string; cause?: { code?: string; message?: string; errno?: number } };
+      const msg = e?.message || String(err);
+      const causeCode = e?.cause?.code || e?.cause?.message || '';
+      details.push(`${attempt.name}: ${msg}${causeCode ? ` (cause: ${causeCode})` : ''}`);
+      console.error(`[clone-funnel] attempt ${attempt.name} failed:`, msg, 'cause:', e?.cause);
+    }
+  }
+
+  // Final fallback: r.jina.ai returns the rendered page content
+  try {
+    const jinaUrl = `https://r.jina.ai/${url}`;
+    const res = await fetch(jinaUrl, {
+      headers: {
+        'Accept': 'text/html',
+        'X-Return-Format': 'html',
+      },
+      redirect: 'follow',
+      signal: AbortSignal.timeout(25000),
+    });
+    if (res.ok) {
+      const html = await res.text();
+      if (html && html.length > 50) {
+        return { ok: true, html, method: 'jina-proxy' };
+      }
+      details.push(`jina-proxy: empty response`);
+    } else {
+      details.push(`jina-proxy: HTTP ${res.status}`);
+    }
+  } catch (err) {
+    const e = err as { message?: string; cause?: { code?: string } };
+    details.push(`jina-proxy: ${e?.message || String(err)}${e?.cause?.code ? ` (${e.cause.code})` : ''}`);
+  }
+
+  return { ok: false, error: details[0] || 'all fetch attempts failed', details };
+}
+
 interface ExtractedText {
   index: number;
   originalText: string;
@@ -590,47 +683,32 @@ export async function POST(request: NextRequest) {
     if (cloneMode === 'identical' && url) {
       if (IS_SERVERLESS) {
         console.log(`⚠️ Serverless detected, using direct fetch for clone: ${url}`);
-        try {
-          const cleanUrl = String(url).trim();
-          if (!/^https?:\/\//i.test(cleanUrl)) {
-            return NextResponse.json({ error: `Invalid URL (must start with http:// or https://): ${cleanUrl}` }, { status: 400 });
-          }
+        const cleanUrl = String(url).trim();
+        if (!/^https?:\/\//i.test(cleanUrl)) {
+          return NextResponse.json({ error: `Invalid URL (must start with http:// or https://): ${cleanUrl}` }, { status: 400 });
+        }
 
-          const htmlResponse = await fetch(cleanUrl, {
-            headers: {
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-              'Accept-Language': 'en-US,en;q=0.9',
-            },
-            redirect: 'follow',
-            signal: AbortSignal.timeout(25000),
-          });
-
-          if (!htmlResponse.ok) {
-            return NextResponse.json({ error: `Download error: HTTP ${htmlResponse.status} ${htmlResponse.statusText}` }, { status: 502 });
-          }
-
-          const fallbackHTML = await htmlResponse.text();
-          return NextResponse.json({
-            success: true,
-            content: fallbackHTML,
-            mobileContent: null,
-            format: 'html',
-            mode: 'identical',
-            originalSize: fallbackHTML.length,
-            finalSize: fallbackHTML.length,
-            cssInlined: false,
-            jsRendered: false,
-            title: fallbackHTML.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1] || '',
-          });
-        } catch (fetchErr) {
-          const msg = fetchErr instanceof Error ? fetchErr.message : 'unknown fetch error';
-          console.error('❌ Serverless fetch clone error:', msg, fetchErr);
+        const result = await fetchPageWithFallbacks(cleanUrl);
+        if (!result.ok) {
           return NextResponse.json(
-            { error: `Unable to clone the page (serverless fetch): ${msg}` },
+            { error: `Unable to clone the page: ${result.error}`, details: result.details },
             { status: 502 }
           );
         }
+
+        return NextResponse.json({
+          success: true,
+          content: result.html,
+          mobileContent: null,
+          format: 'html',
+          mode: 'identical',
+          originalSize: result.html.length,
+          finalSize: result.html.length,
+          cssInlined: false,
+          jsRendered: false,
+          method: result.method,
+          title: result.html.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1] || '',
+        });
       }
 
       console.log(`🔄 Clone IDENTICAL with Playwright (${viewport}${keepScriptsFlag ? ', keepScripts' : ''}): ${url}`);
@@ -718,21 +796,11 @@ export async function POST(request: NextRequest) {
 
       if (IS_SERVERLESS) {
         console.log(`⚠️ Serverless detected, using fetch fallback for rewrite extract: ${url}`);
-        // Jump directly to the fetch fallback (same code as the catch block below)
-        const htmlResponse = await fetch(url.trim(), {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          },
-          redirect: 'follow',
-          signal: AbortSignal.timeout(20000),
-        });
-
-        if (!htmlResponse.ok) {
-          return NextResponse.json({ error: `Unable to fetch page: HTTP ${htmlResponse.status}` }, { status: 502 });
+        const fetchResult = await fetchPageWithFallbacks(url.trim());
+        if (!fetchResult.ok) {
+          return NextResponse.json({ error: `Unable to fetch page: ${fetchResult.error}`, details: fetchResult.details }, { status: 502 });
         }
-
-        let rawHtml = await htmlResponse.text();
+        let rawHtml = fetchResult.html;
         rawHtml = rawHtml.replace(/"\s*==\s*\$\d+/g, '"').replace(/\s*==\s*\$\d+/g, '');
 
         const fetchExtractResult = extractTextsFromHtml(rawHtml);
