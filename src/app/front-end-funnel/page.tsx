@@ -170,6 +170,141 @@ function autoSaveSections(html: string, sourceUrl: string, pageName: string) {
   localStorage.setItem(CLONED_URLS_KEY, JSON.stringify(clonedUrls));
 }
 
+/**
+ * Client-side rewrite via OpenClaw using direct Supabase queue polling.
+ * Bypasses Vercel's 60s serverless timeout by polling from the browser.
+ */
+async function rewriteWithOpenClawFromBrowser(args: {
+  html: string;
+  productName: string;
+  productDescription: string;
+  customPrompt?: string;
+  onProgress?: (batchesDone: number, batchesTotal: number) => void;
+}): Promise<{ html: string; replacements: number; totalTexts: number; originalLength: number; newLength: number; provider: string }> {
+  const { html, productName, productDescription, customPrompt, onProgress } = args;
+  const { supabase } = await import('@/lib/supabase');
+
+  // 1. Extract texts server-side via the existing route (fast: <5s)
+  const extractRes = await fetch('/api/quiz-rewrite/extract', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ html }),
+  });
+  if (!extractRes.ok) {
+    const t = await extractRes.text();
+    throw new Error(`Extract failed: ${t.substring(0, 200)}`);
+  }
+  const { texts, systemPrompt } = await extractRes.json() as {
+    texts: Array<{ original: string; tag: string }>;
+    systemPrompt: string;
+  };
+
+  if (texts.length === 0) throw new Error('No texts found to rewrite');
+
+  // 2. Split into batches and enqueue each in Supabase (fast: <2s)
+  const BATCH_SIZE = 100;
+  const textsForAi = texts.map((t, i) => ({ id: i, text: t.original, tag: t.tag }));
+  const batches: typeof textsForAi[] = [];
+  for (let i = 0; i < textsForAi.length; i += BATCH_SIZE) {
+    batches.push(textsForAi.slice(i, i + BATCH_SIZE));
+  }
+
+  const effectiveSystem = `${systemPrompt}\n\nPRODUCT: ${productName}\nDESCRIPTION: ${productDescription}${customPrompt ? `\nADDITIONAL: ${customPrompt}` : ''}`;
+
+  const messageIds: string[] = [];
+  for (const batch of batches) {
+    const batchPrompt = `Rewrite these ${batch.length} texts for the product "${productName}":\n\n${JSON.stringify(batch, null, 2)}`;
+    const { data, error } = await supabase
+      .from('openclaw_messages')
+      .insert({
+        user_message: batchPrompt,
+        system_prompt: effectiveSystem,
+        section: 'Quiz Rewrite',
+        status: 'pending',
+      })
+      .select('id')
+      .single();
+    if (error || !data) throw new Error(`Enqueue failed: ${error?.message || 'no data'}`);
+    messageIds.push(data.id);
+  }
+
+  onProgress?.(0, batches.length);
+
+  // 3. Poll Supabase directly from browser until all batches complete or timeout
+  const POLL_INTERVAL = 3000;
+  const MAX_WAIT_MS = 30 * 60 * 1000; // 30 minutes
+  const startTime = Date.now();
+  const rewrites: Array<{ id: number; rewritten: string }> = [];
+  const completedIds = new Set<string>();
+  const errors: string[] = [];
+
+  while (completedIds.size < messageIds.length) {
+    if (Date.now() - startTime > MAX_WAIT_MS) {
+      throw new Error(`OpenClaw timeout: only ${completedIds.size}/${messageIds.length} batches completed. Check that openclaw-worker.js is running on your PC.`);
+    }
+    await new Promise(r => setTimeout(r, POLL_INTERVAL));
+
+    const pendingIds = messageIds.filter(id => !completedIds.has(id));
+    const { data: polled, error: pollError } = await supabase
+      .from('openclaw_messages')
+      .select('id, status, response, error_message')
+      .in('id', pendingIds);
+
+    if (pollError) {
+      console.error('Poll error:', pollError.message);
+      continue;
+    }
+
+    for (const row of polled || []) {
+      if (row.status === 'completed' && row.response) {
+        completedIds.add(row.id);
+        try {
+          let cleaned = String(row.response).trim();
+          cleaned = cleaned.replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/i, '');
+          const startIdx = cleaned.indexOf('[');
+          const endIdx = cleaned.lastIndexOf(']');
+          if (startIdx >= 0 && endIdx > startIdx) cleaned = cleaned.substring(startIdx, endIdx + 1);
+          const parsed = JSON.parse(cleaned) as Array<{ id: number; rewritten: string }>;
+          rewrites.push(...parsed);
+        } catch (err) {
+          errors.push(`batch ${row.id}: JSON parse error`);
+        }
+      } else if (row.status === 'error') {
+        completedIds.add(row.id);
+        errors.push(`batch ${row.id}: ${row.error_message || 'unknown'}`);
+      }
+    }
+
+    onProgress?.(completedIds.size, messageIds.length);
+  }
+
+  if (rewrites.length === 0) {
+    throw new Error(`All batches failed. Errors: ${errors.slice(0, 3).join('; ')}`);
+  }
+
+  // 4. Apply replacements to the original HTML
+  let resultHtml = html;
+  let replacements = 0;
+  for (const rw of rewrites) {
+    const original = texts[rw.id];
+    if (!original || !rw.rewritten || original.original === rw.rewritten) continue;
+    const escaped = original.original.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(escaped, 'g');
+    const before = resultHtml;
+    resultHtml = resultHtml.replace(regex, rw.rewritten);
+    if (resultHtml !== before) replacements++;
+  }
+
+  return {
+    html: resultHtml,
+    replacements,
+    totalTexts: texts.length,
+    originalLength: html.length,
+    newLength: resultHtml.length,
+    provider: 'openclaw',
+  };
+}
+
 function sanitizeClonedHtml(html: string, originalUrl: string, options?: { keepScripts?: boolean }): string {
   try {
     const base = new URL(originalUrl);
@@ -1616,19 +1751,35 @@ export default function FrontEndFunnel() {
 
         setCloneProgress({ phase: 'processing', totalTexts: 0, processedTexts: 0, message: cloneConfig.useOpenClaw ? 'Rewriting texts with OpenClaw (local)...' : 'Rewriting texts with Claude...' });
 
-        const rewriteRes = await fetch('/api/quiz-rewrite', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
+        let rewriteData: { html: string; replacements: number; totalTexts: number; originalLength?: number; newLength?: number; provider?: string; error?: string };
+
+        if (cloneConfig.useOpenClaw) {
+          rewriteData = await rewriteWithOpenClawFromBrowser({
             html: htmlToRewrite,
             productName: cloneConfig.productName,
             productDescription: cloneConfig.productDescription,
             customPrompt: cloneConfig.customPrompt || undefined,
-            useOpenClaw: cloneConfig.useOpenClaw,
-          }),
-        });
-        const rewriteData = await rewriteRes.json();
-        if (!rewriteRes.ok || rewriteData.error) throw new Error(rewriteData.error || 'Rewrite failed');
+            onProgress: (done, total) => setCloneProgress({ phase: 'processing', totalTexts: total, processedTexts: done, message: `Rewriting via OpenClaw (${done}/${total} batches)...` }),
+          });
+        } else {
+          const rewriteRes = await fetch('/api/quiz-rewrite', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              html: htmlToRewrite,
+              productName: cloneConfig.productName,
+              productDescription: cloneConfig.productDescription,
+              customPrompt: cloneConfig.customPrompt || undefined,
+            }),
+          });
+          const rawText = await rewriteRes.text();
+          try {
+            rewriteData = JSON.parse(rawText);
+          } catch {
+            throw new Error(`Server returned non-JSON response (likely timeout): ${rawText.substring(0, 200)}`);
+          }
+          if (!rewriteRes.ok || rewriteData.error) throw new Error(rewriteData.error || 'Rewrite failed');
+        }
 
         setCloneProgress(null);
         const rewrittenHtml = rewriteData.html;
