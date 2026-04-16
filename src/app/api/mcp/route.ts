@@ -307,6 +307,528 @@ const TOOLS = [
     description: 'Get the current status of the Funnel Swiper tool: counts of products, funnels, templates, archive entries',
     inputSchema: { type: 'object', properties: {}, required: [] },
   },
+
+  // ─── PROJECTS ───────────────────────────────────────────────────────
+  {
+    name: 'list_projects',
+    description: 'List all projects (umbrella entities that group products, funnels, templates, archive)',
+    inputSchema: {
+      type: 'object',
+      properties: { status: { type: 'string', description: 'Optional filter by status (active, archived, etc.)' } },
+      required: [],
+    },
+  },
+  {
+    name: 'get_project',
+    description: 'Get a single project with its associated funnel pages, templates, and archived funnels',
+    inputSchema: {
+      type: 'object',
+      properties: { id: { type: 'string', description: 'Project ID' } },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'create_project',
+    description: 'Create a new project (or upsert if id is provided)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'Optional id (upsert)' },
+        name: { type: 'string' },
+        description: { type: 'string' },
+        status: { type: 'string', description: 'active, archived, draft (default active)' },
+        tags: { type: 'array', items: { type: 'string' } },
+        notes: { type: 'string' },
+        domain: { type: 'object', description: 'Domain config object' },
+        logo: { type: 'object', description: 'Logo config' },
+        market_research: { type: 'object' },
+        brief: { type: 'object' },
+        front_end: { type: 'object' },
+        back_end: { type: 'object' },
+        compliance_funnel: { type: 'object' },
+        funnel: { type: 'object' },
+      },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'update_project',
+    description: 'Update an existing project',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'Project ID' },
+        name: { type: 'string' },
+        description: { type: 'string' },
+        status: { type: 'string' },
+        tags: { type: 'array', items: { type: 'string' } },
+        notes: { type: 'string' },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'delete_project',
+    description: 'Delete a project by ID',
+    inputSchema: {
+      type: 'object',
+      properties: { id: { type: 'string', description: 'Project ID' } },
+      required: ['id'],
+    },
+  },
+
+  // ─── PROMPTS LIBRARY ─────────────────────────────────────────────────
+  {
+    name: 'list_prompts',
+    description: 'List all saved AI prompts in the prompt library',
+    inputSchema: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'create_prompt',
+    description: 'Save a new prompt template to the library',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string' },
+        category: { type: 'string', description: 'Category/section (copy, design, brief, etc.)' },
+        content: { type: 'string', description: 'The prompt body' },
+        variables: { type: 'array', items: { type: 'string' }, description: 'Variable names used in the prompt' },
+        notes: { type: 'string' },
+      },
+      required: ['name', 'content'],
+    },
+  },
+
+  // ─── SCHEDULED JOBS ─────────────────────────────────────────────────
+  {
+    name: 'list_scheduled_jobs',
+    description: 'List all scheduled jobs (cron-like recurring tasks)',
+    inputSchema: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'create_scheduled_job',
+    description: 'Create a new scheduled job that runs an action periodically',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string' },
+        action: { type: 'string', description: 'The action to run (e.g. swipe_landing_page, clone_funnel, generate_image)' },
+        params: { type: 'object', description: 'Parameters passed to the action' },
+        schedule: { type: 'string', description: 'Cron expression or interval (e.g. "0 9 * * *", "every 1h")' },
+        is_active: { type: 'boolean' },
+      },
+      required: ['name', 'action'],
+    },
+  },
+  {
+    name: 'run_scheduled_jobs_now',
+    description: 'Trigger the scheduled jobs runner immediately (run all due jobs)',
+    inputSchema: { type: 'object', properties: {}, required: [] },
+  },
+
+  // ─── AI EDITING ──────────────────────────────────────────────────────
+  {
+    name: 'ai_edit_html',
+    description: 'Use AI to modify a full HTML page based on a natural language instruction',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        html: { type: 'string', description: 'The HTML to modify' },
+        instruction: { type: 'string', description: 'Natural language instruction (e.g. "change CTA color to red")' },
+        productContext: { type: 'string', description: 'Optional product context for the AI' },
+      },
+      required: ['html', 'instruction'],
+    },
+  },
+  {
+    name: 'ai_edit_element',
+    description: 'Use AI to modify a single HTML element',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        html: { type: 'string', description: 'The element HTML' },
+        instruction: { type: 'string', description: 'What to change about this element' },
+      },
+      required: ['html', 'instruction'],
+    },
+  },
+  {
+    name: 'rewrite_section',
+    description: 'Rewrite a single section of a landing page (headline, benefits, CTA, etc.) using AI',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sectionHtml: { type: 'string', description: 'The HTML of the section to rewrite' },
+        sectionType: { type: 'string', description: 'Type: hero, benefits, testimonials, cta, faq, etc.' },
+        product: { type: 'object', description: 'Product context (name, description, benefits, etc.)' },
+        tone: { type: 'string', description: 'Copy tone (professional, casual, urgent, luxury)' },
+        language: { type: 'string', description: 'Language code (it, en, es, de, fr)' },
+      },
+      required: ['sectionHtml'],
+    },
+  },
+
+  // ─── QUIZ CREATOR ────────────────────────────────────────────────────
+  {
+    name: 'quiz_creator_analyze',
+    description: 'Analyze a quiz landing page (screenshot + URL) to extract its structure for cloning',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string' },
+        screenshot: { type: 'string', description: 'Base64-encoded screenshot (data URL or raw base64)' },
+      },
+      required: ['url'],
+    },
+  },
+  {
+    name: 'quiz_creator_generate',
+    description: 'Generate a pixel-perfect HTML clone of a quiz from screenshot + analysis',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string' },
+        title: { type: 'string' },
+        screenshot: { type: 'string' },
+        analysis: { type: 'object' },
+        phase: { type: 'string', description: 'generate or review (default generate)' },
+      },
+      required: ['url'],
+    },
+  },
+  {
+    name: 'quiz_analyze',
+    description: 'Analyze an existing quiz to extract questions, answers, and logic flow',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string' },
+        html: { type: 'string', description: 'Optional pre-fetched HTML' },
+      },
+      required: [],
+    },
+  },
+
+  // ─── SWIPE QUIZ ──────────────────────────────────────────────────────
+  {
+    name: 'swipe_quiz_generate',
+    description: 'Swipe (clone + rewrite) an entire quiz funnel for a product',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sourceUrl: { type: 'string' },
+        product: { type: 'object', description: 'Product object (name, description, benefits, etc.)' },
+        tone: { type: 'string' },
+        language: { type: 'string' },
+      },
+      required: ['sourceUrl', 'product'],
+    },
+  },
+  {
+    name: 'swipe_quiz_multiagent_generate',
+    description: 'Run the multi-agent swipe quiz pipeline (more thorough but slower)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sourceUrl: { type: 'string' },
+        product: { type: 'object' },
+        productId: { type: 'string', description: 'Use a saved product by ID instead of inline product' },
+      },
+      required: ['sourceUrl'],
+    },
+  },
+
+  // ─── FUNNEL ANALYZER ─────────────────────────────────────────────────
+  {
+    name: 'funnel_analyzer_crawl_start',
+    description: 'Start a deep crawl of a funnel (returns jobId to poll)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string' },
+        maxPages: { type: 'number' },
+      },
+      required: ['url'],
+    },
+  },
+  {
+    name: 'funnel_analyzer_crawl_status',
+    description: 'Get the status / partial results of a funnel crawl job',
+    inputSchema: {
+      type: 'object',
+      properties: { jobId: { type: 'string' } },
+      required: ['jobId'],
+    },
+  },
+  {
+    name: 'funnel_analyzer_save_steps',
+    description: 'Save the discovered steps of a funnel crawl as funnel pages',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        jobId: { type: 'string' },
+        productId: { type: 'string' },
+        projectId: { type: 'string' },
+      },
+      required: ['jobId'],
+    },
+  },
+  {
+    name: 'funnel_analyzer_vision',
+    description: 'Run vision AI on funnel pages to extract design tokens, structure, copy',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        urls: { type: 'array', items: { type: 'string' } },
+        screenshots: { type: 'array', items: { type: 'string' } },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'funnel_analyze',
+    description: 'High-level analysis of a single funnel URL (copy, structure, conversion elements)',
+    inputSchema: {
+      type: 'object',
+      properties: { url: { type: 'string' } },
+      required: ['url'],
+    },
+  },
+
+  // ─── REVERSE FUNNEL ──────────────────────────────────────────────────
+  {
+    name: 'reverse_funnel_analyze',
+    description: 'Reverse-engineer a competitor funnel: ad → bridge → VSL → checkout',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string' },
+        adCreative: { type: 'string', description: 'Optional ad creative URL or text' },
+      },
+      required: ['url'],
+    },
+  },
+  {
+    name: 'reverse_funnel_generate_visual',
+    description: 'Generate a visual diagram of a reversed funnel structure',
+    inputSchema: {
+      type: 'object',
+      properties: { funnelData: { type: 'object' } },
+      required: ['funnelData'],
+    },
+  },
+
+  // ─── BRANDING ────────────────────────────────────────────────────────
+  {
+    name: 'branding_generate',
+    description: 'Generate a complete brand kit (logo, colors, fonts, tagline) for a product',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        productName: { type: 'string' },
+        productDescription: { type: 'string' },
+        targetAudience: { type: 'string' },
+        style: { type: 'string', description: 'modern, luxury, playful, minimal, etc.' },
+      },
+      required: ['productName'],
+    },
+  },
+
+  // ─── COMPLIANCE ──────────────────────────────────────────────────────
+  {
+    name: 'compliance_check',
+    description: 'Check a landing page or copy against ad-network compliance rules (Meta, Google, TikTok)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        html: { type: 'string' },
+        url: { type: 'string' },
+        platform: { type: 'string', description: 'meta, google, tiktok' },
+      },
+      required: [],
+    },
+  },
+
+  // ─── MEDIA / GENERATE ────────────────────────────────────────────────
+  {
+    name: 'generate_image',
+    description: 'Generate an image with AI (logo, hero, product shot, banner)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        prompt: { type: 'string' },
+        style: { type: 'string' },
+        size: { type: 'string', description: 'e.g. 1024x1024, 1792x1024' },
+      },
+      required: ['prompt'],
+    },
+  },
+  {
+    name: 'product_image_search',
+    description: 'Search for product images on the web by name',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string' },
+        count: { type: 'number' },
+      },
+      required: ['query'],
+    },
+  },
+
+  // ─── CATALOG IMPORT ──────────────────────────────────────────────────
+  {
+    name: 'catalog_import_parse',
+    description: 'Parse a catalog file (Excel/CSV/JSON) into structured product data',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        fileUrl: { type: 'string', description: 'URL of the catalog file (or base64 in fileData)' },
+        fileData: { type: 'string', description: 'Base64-encoded file content' },
+        format: { type: 'string', description: 'xlsx, csv, json' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'catalog_import_enrich',
+    description: 'Enrich parsed products with AI (descriptions, benefits, target audience, copy)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        products: { type: 'array', items: { type: 'object' } },
+      },
+      required: ['products'],
+    },
+  },
+
+  // ─── PIPELINE (long-running jobs) ────────────────────────────────────
+  {
+    name: 'pipeline_start',
+    description: 'Start a multi-step pipeline job (e.g. clone+rewrite+save+deploy)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        steps: { type: 'array', items: { type: 'object' }, description: 'Array of step definitions' },
+        params: { type: 'object', description: 'Initial pipeline parameters' },
+      },
+      required: ['steps'],
+    },
+  },
+  {
+    name: 'pipeline_status',
+    description: 'Get status of a pipeline job',
+    inputSchema: {
+      type: 'object',
+      properties: { jobId: { type: 'string' } },
+      required: ['jobId'],
+    },
+  },
+  {
+    name: 'pipeline_result',
+    description: 'Get final result of a completed pipeline job',
+    inputSchema: {
+      type: 'object',
+      properties: { jobId: { type: 'string' } },
+      required: ['jobId'],
+    },
+  },
+  {
+    name: 'pipeline_jobs',
+    description: 'List recent pipeline jobs',
+    inputSchema: { type: 'object', properties: {}, required: [] },
+  },
+
+  // ─── BRIEFS ──────────────────────────────────────────────────────────
+  {
+    name: 'funnel_brief_chat',
+    description: 'Chat with the AI brief assistant to refine a funnel brief',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        message: { type: 'string' },
+        history: { type: 'array', items: { type: 'object' } },
+        productId: { type: 'string' },
+      },
+      required: ['message'],
+    },
+  },
+  {
+    name: 'briefs_sync',
+    description: 'Sync briefs across products / funnels',
+    inputSchema: { type: 'object', properties: {}, required: [] },
+  },
+
+  // ─── FIRECRAWL ───────────────────────────────────────────────────────
+  {
+    name: 'firecrawl_crawl',
+    description: 'Crawl a URL with Firecrawl (deep web scraping)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string' },
+        depth: { type: 'number' },
+        limit: { type: 'number' },
+      },
+      required: ['url'],
+    },
+  },
+
+  // ─── MEDIA UPLOAD ────────────────────────────────────────────────────
+  {
+    name: 'upload_media',
+    description: 'Upload an image or media file (base64) to storage and get a public URL',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        fileData: { type: 'string', description: 'Base64-encoded file content (or data URL)' },
+        fileName: { type: 'string' },
+        contentType: { type: 'string', description: 'e.g. image/png, image/jpeg' },
+      },
+      required: ['fileData'],
+    },
+  },
+  {
+    name: 'get_thumbnail',
+    description: 'Get a screenshot thumbnail of a URL',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string' },
+        viewport: { type: 'string', description: 'desktop or mobile' },
+      },
+      required: ['url'],
+    },
+  },
+
+  // ─── DISCOVERY ───────────────────────────────────────────────────────
+  {
+    name: 'list_sections',
+    description: 'List all UI sections (pages) of the tool with their purpose. Use this to understand the full surface area available.',
+    inputSchema: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'list_api_endpoints',
+    description: 'List ALL internal API endpoints of the tool with their methods and a short description. Use this to discover what invoke_api can call.',
+    inputSchema: { type: 'object', properties: {}, required: [] },
+  },
+
+  // ─── GENERIC ESCAPE HATCH ────────────────────────────────────────────
+  {
+    name: 'invoke_api',
+    description: 'Generic call to any internal /api/* endpoint of the tool. Use this when no specific MCP tool covers what you need. Inspect available endpoints with list_api_endpoints first.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Endpoint path starting with /api/ (e.g. /api/quiz-creator/generate)' },
+        method: { type: 'string', description: 'HTTP method: GET, POST, PUT, DELETE, PATCH (default POST)' },
+        body: { type: 'object', description: 'JSON body for POST/PUT/PATCH' },
+        query: { type: 'object', description: 'Query string parameters as key/value' },
+        timeoutMs: { type: 'number', description: 'Request timeout in ms (default 180000, max 600000)' },
+      },
+      required: ['path'],
+    },
+  },
 ];
 
 async function validateMcpAuth(req: NextRequest): Promise<{ valid: boolean; error?: string }> {
@@ -596,10 +1118,368 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
         status: 'online',
       };
     }
+
+    // ─── PROJECTS ──────────────────────────────────────────────────────
+    case 'list_projects': {
+      let q = supabase.from('projects').select('*').order('created_at', { ascending: false });
+      if (args.status) q = q.eq('status', args.status);
+      const { data, error } = await q;
+      if (error) throw new Error(error.message);
+      return { projects: data, count: data?.length || 0 };
+    }
+    case 'get_project': {
+      const { data, error } = await supabase.from('projects').select('*').eq('id', args.id).single();
+      if (error) throw new Error(error.message);
+      const [funnelPages, templates, archives] = await Promise.all([
+        supabase.from('funnel_pages').select('*').eq('project_id', args.id),
+        supabase.from('swipe_templates').select('*').eq('project_id', args.id),
+        supabase.from('archived_funnels').select('*').eq('project_id', args.id),
+      ]);
+      return {
+        project: data,
+        funnel_pages: funnelPages.data || [],
+        templates: templates.data || [],
+        archived_funnels: archives.data || [],
+      };
+    }
+    case 'create_project': {
+      const { id, ...rest } = args;
+      const insert: Record<string, unknown> = { ...rest, status: rest.status || 'active' };
+      if (id) {
+        insert.id = id;
+        const { data, error } = await supabase.from('projects').upsert(insert, { onConflict: 'id' }).select().single();
+        if (error) throw new Error(error.message);
+        return { project: data };
+      }
+      const { data, error } = await supabase.from('projects').insert(insert).select().single();
+      if (error) throw new Error(error.message);
+      return { project: data };
+    }
+    case 'update_project': {
+      const { id, ...updates } = args;
+      const { data, error } = await supabase.from('projects').update(updates).eq('id', id).select().single();
+      if (error) throw new Error(error.message);
+      return { project: data };
+    }
+    case 'delete_project': {
+      const { error } = await supabase.from('projects').delete().eq('id', args.id);
+      if (error) throw new Error(error.message);
+      return { success: true };
+    }
+
+    // ─── PROMPTS ───────────────────────────────────────────────────────
+    case 'list_prompts': {
+      const { data, error } = await supabase.from('prompts').select('*').order('created_at', { ascending: false });
+      if (error) throw new Error(error.message);
+      return { prompts: data, count: data?.length || 0 };
+    }
+    case 'create_prompt': {
+      const { data, error } = await supabase.from('prompts').insert(args).select().single();
+      if (error) throw new Error(error.message);
+      return { prompt: data };
+    }
+
+    // ─── SCHEDULED JOBS ────────────────────────────────────────────────
+    case 'list_scheduled_jobs': {
+      const { data, error } = await supabase.from('scheduled_jobs').select('*').order('created_at', { ascending: false });
+      if (error) throw new Error(error.message);
+      return { jobs: data, count: data?.length || 0 };
+    }
+    case 'create_scheduled_job': {
+      const insert = { ...args, is_active: args.is_active !== false };
+      const { data, error } = await supabase.from('scheduled_jobs').insert(insert).select().single();
+      if (error) throw new Error(error.message);
+      return { job: data };
+    }
+    case 'run_scheduled_jobs_now': {
+      return await proxyApiCall('GET', '/api/scheduled-jobs/cron', {}, {}, 60_000);
+    }
+
+    // ─── AI EDITING ────────────────────────────────────────────────────
+    case 'ai_edit_html':
+      return await proxyApiCall('POST', '/api/ai-edit-html', args, {}, 180_000);
+    case 'ai_edit_element':
+      return await proxyApiCall('POST', '/api/ai-edit-element', args, {}, 60_000);
+    case 'rewrite_section':
+      return await proxyApiCall('POST', '/api/rewrite-section', args, {}, 120_000);
+
+    // ─── QUIZ CREATOR ──────────────────────────────────────────────────
+    case 'quiz_creator_analyze':
+      return await proxyApiCall('POST', '/api/quiz-creator/analyze', args, {}, 180_000);
+    case 'quiz_creator_generate':
+      return await proxyApiCall('POST', '/api/quiz-creator/generate', args, {}, 300_000);
+    case 'quiz_analyze':
+      return await proxyApiCall('POST', '/api/quiz/analyze', args, {}, 120_000);
+
+    // ─── SWIPE QUIZ ────────────────────────────────────────────────────
+    case 'swipe_quiz_generate':
+      return await proxyApiCall('POST', '/api/swipe-quiz/generate', args, {}, 300_000);
+    case 'swipe_quiz_multiagent_generate':
+      return await proxyApiCall('POST', '/api/swipe-quiz/multiagent-generate', args, {}, 300_000);
+
+    // ─── FUNNEL ANALYZER ───────────────────────────────────────────────
+    case 'funnel_analyzer_crawl_start':
+      return await proxyApiCall('POST', '/api/funnel-analyzer/crawl/start', { url: args.url, maxPages: args.maxPages || 10 }, {}, 60_000);
+    case 'funnel_analyzer_crawl_status':
+      return await proxyApiCall('GET', `/api/funnel-analyzer/crawl/status/${args.jobId}`, {}, {}, 30_000);
+    case 'funnel_analyzer_save_steps':
+      return await proxyApiCall('POST', '/api/funnel-analyzer/save-steps', args, {}, 60_000);
+    case 'funnel_analyzer_vision':
+      return await proxyApiCall('POST', '/api/funnel-analyzer/vision', args, {}, 180_000);
+    case 'funnel_analyze':
+      return await proxyApiCall('POST', '/api/funnel/analyze', args, {}, 180_000);
+
+    // ─── REVERSE FUNNEL ────────────────────────────────────────────────
+    case 'reverse_funnel_analyze':
+      return await proxyApiCall('POST', '/api/reverse-funnel/analyze', args, {}, 180_000);
+    case 'reverse_funnel_generate_visual':
+      return await proxyApiCall('POST', '/api/reverse-funnel/generate-visual', args, {}, 60_000);
+
+    // ─── BRANDING ──────────────────────────────────────────────────────
+    case 'branding_generate':
+      return await proxyApiCall('POST', '/api/branding/generate', args, {}, 180_000);
+
+    // ─── COMPLIANCE ────────────────────────────────────────────────────
+    case 'compliance_check':
+      return await proxyApiCall('POST', '/api/compliance-ai', args, {}, 120_000);
+
+    // ─── MEDIA / GENERATE ──────────────────────────────────────────────
+    case 'generate_image':
+      return await proxyApiCall('POST', '/api/generate-image', args, {}, 120_000);
+    case 'product_image_search':
+      return await proxyApiCall('POST', '/api/product-image-search', args, {}, 60_000);
+
+    // ─── CATALOG IMPORT ────────────────────────────────────────────────
+    case 'catalog_import_parse':
+      return await proxyApiCall('POST', '/api/catalog-import/parse', args, {}, 120_000);
+    case 'catalog_import_enrich':
+      return await proxyApiCall('POST', '/api/catalog-import/enrich', args, {}, 240_000);
+
+    // ─── PIPELINE ──────────────────────────────────────────────────────
+    case 'pipeline_start':
+      return await proxyApiCall('POST', '/api/pipeline/start', args, {}, 60_000);
+    case 'pipeline_status':
+      return await proxyApiCall('GET', `/api/pipeline/status/${args.jobId}`, {}, {}, 30_000);
+    case 'pipeline_result':
+      return await proxyApiCall('GET', `/api/pipeline/result/${args.jobId}`, {}, {}, 30_000);
+    case 'pipeline_jobs':
+      return await proxyApiCall('GET', '/api/pipeline/jobs', {}, {}, 30_000);
+
+    // ─── BRIEFS ────────────────────────────────────────────────────────
+    case 'funnel_brief_chat':
+      return await proxyApiCall('POST', '/api/funnel-brief/chat', args, {}, 120_000);
+    case 'briefs_sync':
+      return await proxyApiCall('POST', '/api/briefs-sync', args, {}, 60_000);
+
+    // ─── FIRECRAWL ─────────────────────────────────────────────────────
+    case 'firecrawl_crawl':
+      return await proxyApiCall('POST', '/api/firecrawl', args, {}, 240_000);
+
+    // ─── MEDIA UPLOAD ──────────────────────────────────────────────────
+    case 'upload_media':
+      return await proxyApiCall('POST', '/api/upload-media', args, {}, 120_000);
+    case 'get_thumbnail':
+      return await proxyApiCall('GET', '/api/thumbnail', {}, { url: String(args.url), viewport: String(args.viewport || 'desktop') }, 60_000);
+
+    // ─── DISCOVERY ─────────────────────────────────────────────────────
+    case 'list_sections':
+      return { sections: SECTIONS, count: SECTIONS.length };
+    case 'list_api_endpoints':
+      return { endpoints: API_ENDPOINTS, count: API_ENDPOINTS.length };
+
+    // ─── GENERIC INVOKE ────────────────────────────────────────────────
+    case 'invoke_api': {
+      const path = String(args.path || '');
+      if (!path.startsWith('/api/')) throw new Error('path must start with /api/');
+      const method = String(args.method || 'POST').toUpperCase();
+      const body = (args.body as Record<string, unknown>) || {};
+      const query = (args.query as Record<string, unknown>) || {};
+      const timeoutMs = Math.min(Number(args.timeoutMs) || 180_000, 600_000);
+      return await proxyApiCall(method, path, body, query, timeoutMs);
+    }
+
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
 }
+
+// ─── HELPERS: proxy + manifests ──────────────────────────────────────────
+function getBaseUrl(): string {
+  return (
+    process.env.NEXT_PUBLIC_BASE_URL
+    || process.env.VERCEL_URL && `https://${process.env.VERCEL_URL}`
+    || 'https://cloner-funnel-builder.vercel.app'
+  );
+}
+
+async function proxyApiCall(
+  method: string,
+  path: string,
+  body: Record<string, unknown>,
+  query: Record<string, unknown>,
+  timeoutMs: number,
+): Promise<unknown> {
+  const baseUrl = getBaseUrl();
+  let url = `${baseUrl}${path}`;
+  const queryKeys = Object.keys(query);
+  if (queryKeys.length > 0) {
+    const qs = new URLSearchParams();
+    for (const k of queryKeys) qs.set(k, String(query[k]));
+    url += `?${qs.toString()}`;
+  }
+
+  const init: RequestInit = {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    signal: AbortSignal.timeout(timeoutMs),
+  };
+  if (method !== 'GET' && method !== 'HEAD' && Object.keys(body).length > 0) {
+    init.body = JSON.stringify(body);
+  }
+
+  const res = await fetch(url, init);
+  const ct = res.headers.get('content-type') || '';
+  const text = await res.text();
+  let parsed: unknown = text;
+  if (ct.includes('application/json')) {
+    try { parsed = JSON.parse(text); } catch { /* keep raw */ }
+  }
+  if (!res.ok) {
+    return { error: `HTTP ${res.status}`, status: res.status, body: parsed };
+  }
+  return parsed;
+}
+
+const SECTIONS = [
+  { path: '/projects', name: 'Projects', description: 'Umbrella entities grouping products, funnels, templates, archive, briefs' },
+  { path: '/products', name: 'Products', description: 'Product catalog with descriptions, benefits, pricing, CTAs' },
+  { path: '/front-end-funnel', name: 'Front End Funnel', description: 'Build / clone / rewrite the front-end funnel pages (bridge, VSL, presell, squeeze, checkout, upsell, downsell)' },
+  { path: '/my-funnels', name: 'My Funnels', description: 'List of all saved funnel pages' },
+  { path: '/templates', name: 'Templates', description: 'Saved swipe templates from competitor pages' },
+  { path: '/m', name: 'My Archive', description: 'Archived full funnels with cached thumbnails' },
+  { path: '/clone-landing', name: 'Clone Landing', description: 'Standalone landing page cloner' },
+  { path: '/landing-analyzer', name: 'Landing Analyzer', description: 'Analyze a single landing page' },
+  { path: '/copy-analyzer', name: 'Copy Analyzer', description: 'AI analysis of marketing copy' },
+  { path: '/quiz-creator', name: 'Quiz Creator', description: 'Build / clone quiz funnels from screenshots' },
+  { path: '/swipe-quiz', name: 'Swipe Quiz', description: 'Swipe an entire quiz funnel for a product' },
+  { path: '/funnel-analyzer', name: 'Funnel Analyzer', description: 'Deep crawl + vision analysis of multi-step funnels' },
+  { path: '/reverse-funnel', name: 'Reverse Funnel', description: 'Reverse-engineer competitor funnels from ad to checkout' },
+  { path: '/strategist', name: 'Strategist', description: 'AI strategist for offer / funnel design' },
+  { path: '/compliance-ai', name: 'Compliance AI', description: 'Check copy/pages against ad-platform compliance rules' },
+  { path: '/post-purchase', name: 'Post Purchase', description: 'Post-purchase flow builder (upsells, thank-you, retention)' },
+  { path: '/protocollo-valchiria', name: 'Protocollo Valchiria', description: 'Curated flows (groups of pages) per product with global filtering' },
+  { path: '/agentic-swipe', name: 'Agentic Swipe', description: 'Autonomous agent that swipes funnels end-to-end' },
+  { path: '/browser-agentico', name: 'Browser Agentico', description: 'Agentic browser for navigating and extracting from competitor sites' },
+  { path: '/affiliate-browser-chat', name: 'Affiliate Browser Chat', description: 'Chat-driven affiliate funnel discovery and saving' },
+  { path: '/coding-agent', name: 'Coding Agent', description: 'AI coding assistant for editing the funnel HTML/CSS/JS' },
+  { path: '/firecrawl', name: 'Firecrawl', description: 'Deep web scraping with Firecrawl' },
+  { path: '/deploy-funnel', name: 'Deploy Funnel', description: 'Deploy a built funnel to a public URL' },
+  { path: '/prompts', name: 'Prompts', description: 'Reusable AI prompt library' },
+  { path: '/api-keys', name: 'API Keys', description: 'Manage API keys + view MCP info' },
+];
+
+const API_ENDPOINTS = [
+  // Public v1 (require API key with scoped permissions)
+  { path: '/api/v1/projects', methods: ['GET', 'POST', 'PUT', 'DELETE'], description: 'Projects CRUD (scoped: read_products / write_products)' },
+  { path: '/api/v1/products', methods: ['GET', 'POST', 'PUT', 'DELETE'], description: 'Products CRUD' },
+  { path: '/api/v1/funnels', methods: ['GET', 'POST', 'PUT', 'DELETE'], description: 'Funnel pages CRUD' },
+  { path: '/api/v1/templates', methods: ['GET', 'POST', 'PUT', 'DELETE'], description: 'Swipe templates CRUD' },
+  { path: '/api/v1/archive', methods: ['GET', 'POST', 'PUT', 'DELETE'], description: 'Archived funnels CRUD' },
+  { path: '/api/v1/chat', methods: ['POST'], description: 'Chat / AI conversation endpoint' },
+  { path: '/api/v1/proxy', methods: ['GET', 'POST'], description: 'Proxy a URL through the tool' },
+
+  // Cloning + landing
+  { path: '/api/clone-funnel', methods: ['POST'], description: 'Clone a landing/funnel page (identical or rewrite mode)' },
+  { path: '/api/clone-funnel/text-mappings', methods: ['POST'], description: 'Get text mappings for a cloned page' },
+  { path: '/api/landing/clone', methods: ['POST'], description: 'Standalone landing cloner' },
+  { path: '/api/landing/swipe', methods: ['POST'], description: 'Clone + rewrite landing for a product' },
+
+  // Quiz
+  { path: '/api/quiz-creator/analyze', methods: ['POST'], description: 'Analyze a quiz from URL+screenshot' },
+  { path: '/api/quiz-creator/generate', methods: ['POST'], description: 'Generate pixel-perfect quiz HTML' },
+  { path: '/api/quiz-creator/swipe-analysis', methods: ['POST'], description: 'Pre-swipe analysis for quiz' },
+  { path: '/api/quiz/analyze', methods: ['POST'], description: 'Analyze quiz logic + flow' },
+  { path: '/api/quiz-rewrite', methods: ['POST'], description: 'Rewrite quiz texts (Anthropic batched)' },
+  { path: '/api/quiz-rewrite/extract', methods: ['POST'], description: 'Extract quiz texts from HTML (fast)' },
+
+  // Swipe quiz
+  { path: '/api/swipe-quiz/generate', methods: ['POST'], description: 'Single-pass swipe of a quiz' },
+  { path: '/api/swipe-quiz/multiagent-generate', methods: ['POST'], description: 'Multi-agent swipe pipeline (slower, higher quality)' },
+  { path: '/api/swipe-quiz/screenshot', methods: ['POST'], description: 'Take quiz screenshot' },
+  { path: '/api/swipe-quiz/debug-gemini', methods: ['POST'], description: 'Debug Gemini swipe call' },
+
+  // Funnel analyzer
+  { path: '/api/funnel-analyzer/crawl/start', methods: ['POST'], description: 'Start a deep funnel crawl (returns jobId)' },
+  { path: '/api/funnel-analyzer/crawl/status/[jobId]', methods: ['GET'], description: 'Get crawl status / partial results' },
+  { path: '/api/funnel-analyzer/crawl', methods: ['GET', 'POST'], description: 'Crawl management' },
+  { path: '/api/funnel-analyzer/save-steps', methods: ['POST'], description: 'Save discovered crawl steps as funnel pages' },
+  { path: '/api/funnel-analyzer/save-steps/check', methods: ['POST'], description: 'Pre-check before saving steps' },
+  { path: '/api/funnel-analyzer/save-vision', methods: ['POST'], description: 'Save vision analysis results' },
+  { path: '/api/funnel-analyzer/vision', methods: ['POST'], description: 'Run vision AI on funnel pages' },
+  { path: '/api/funnel/analyze', methods: ['POST'], description: 'High-level single-funnel analysis' },
+
+  // Reverse funnel
+  { path: '/api/reverse-funnel/analyze', methods: ['POST'], description: 'Reverse-engineer a competitor funnel' },
+  { path: '/api/reverse-funnel/generate-visual', methods: ['POST'], description: 'Generate visual diagram of a reversed funnel' },
+
+  // Branding + compliance + strategist
+  { path: '/api/branding/generate', methods: ['POST'], description: 'Generate brand kit (logo, colors, fonts, tagline)' },
+  { path: '/api/compliance-ai', methods: ['POST'], description: 'Compliance check against ad networks' },
+
+  // Briefs
+  { path: '/api/product-brief', methods: ['POST'], description: 'Generate AI product brief' },
+  { path: '/api/funnel-brief/chat', methods: ['POST'], description: 'Funnel brief chat assistant' },
+  { path: '/api/briefs-sync', methods: ['POST'], description: 'Sync briefs across products' },
+
+  // AI editing
+  { path: '/api/ai-edit-html', methods: ['POST'], description: 'AI edit a full HTML page from instruction' },
+  { path: '/api/ai-edit-element', methods: ['POST'], description: 'AI edit a single element' },
+  { path: '/api/rewrite-section', methods: ['POST'], description: 'Rewrite one section of a landing' },
+
+  // Catalog import
+  { path: '/api/catalog-import/parse', methods: ['POST'], description: 'Parse Excel/CSV/JSON catalog' },
+  { path: '/api/catalog-import/enrich', methods: ['POST'], description: 'Enrich parsed products with AI' },
+  { path: '/api/catalog-import/extract-product-image', methods: ['POST'], description: 'Extract product image from a URL' },
+  { path: '/api/catalog-import/upload-image', methods: ['POST'], description: 'Upload product image' },
+
+  // Generate / media
+  { path: '/api/generate-image', methods: ['POST'], description: 'AI image generation' },
+  { path: '/api/generate-quiz', methods: ['POST'], description: 'Generate a quiz from scratch' },
+  { path: '/api/product-image-search', methods: ['POST'], description: 'Search product images on the web' },
+  { path: '/api/upload-media', methods: ['POST'], description: 'Upload media file to storage' },
+  { path: '/api/thumbnail', methods: ['GET'], description: 'Get thumbnail screenshot of a URL' },
+  { path: '/api/proxy-page', methods: ['GET'], description: 'Proxy a remote page (for previews)' },
+
+  // Pipeline
+  { path: '/api/pipeline/start', methods: ['POST'], description: 'Start a multi-step pipeline job' },
+  { path: '/api/pipeline/status/[jobId]', methods: ['GET'], description: 'Pipeline job status' },
+  { path: '/api/pipeline/result/[jobId]', methods: ['GET'], description: 'Pipeline job result' },
+  { path: '/api/pipeline/jobs', methods: ['GET'], description: 'List pipeline jobs' },
+
+  // Scheduled / cron
+  { path: '/api/scheduled-jobs', methods: ['GET', 'POST', 'DELETE'], description: 'Scheduled jobs CRUD' },
+  { path: '/api/scheduled-jobs/cron', methods: ['GET'], description: 'Trigger due scheduled jobs' },
+
+  // Firecrawl
+  { path: '/api/firecrawl', methods: ['POST'], description: 'Firecrawl deep scrape' },
+
+  // OpenClaw
+  { path: '/api/openclaw/chat', methods: ['POST'], description: 'OpenClaw chat (queue-based)' },
+  { path: '/api/openclaw/queue', methods: ['POST'], description: 'Insert message into OpenClaw queue' },
+  { path: '/api/openclaw/action', methods: ['POST'], description: 'Execute OpenClaw action' },
+  { path: '/api/openclaw/config', methods: ['GET', 'POST'], description: 'OpenClaw config' },
+
+  // Affiliate
+  { path: '/api/affiliate-browser-chat/save-funnel', methods: ['POST'], description: 'Save discovered affiliate funnel' },
+
+  // Misc
+  { path: '/api/analyze-copy', methods: ['POST'], description: 'Analyze copy of a landing' },
+  { path: '/api/api-keys', methods: ['GET', 'POST', 'DELETE'], description: 'Manage API keys' },
+  { path: '/api/health', methods: ['GET'], description: 'Health check' },
+  { path: '/api/supabase/test', methods: ['GET'], description: 'Supabase connectivity test' },
+  { path: '/api/debug/anthropic-key', methods: ['GET'], description: 'Diagnose Anthropic API key' },
+  { path: '/api/mcp', methods: ['POST', 'GET', 'DELETE', 'OPTIONS'], description: 'This MCP endpoint' },
+];
 
 interface JsonRpcRequest {
   jsonrpc: '2.0';
