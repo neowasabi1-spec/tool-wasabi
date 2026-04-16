@@ -801,6 +801,129 @@ const TOOLS = [
     },
   },
 
+  // ─── PROTOCOLLO VALCHIRIA ────────────────────────────────────────────
+  {
+    name: 'valchiria_list_swipe_funnels',
+    description: 'List Protocollo Valchiria swipe funnels (archived funnels whose name contains [SWIPE]). Each contains a steps array with step_index/name/url_to_swipe/page_type/prompt.',
+    inputSchema: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'valchiria_get_swipe_funnel',
+    description: 'Get a single Protocollo Valchiria swipe funnel with its full steps array',
+    inputSchema: {
+      type: 'object',
+      properties: { id: { type: 'string', description: 'Archived funnel ID' } },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'valchiria_create_swipe_funnel',
+    description: 'Create a new Protocollo Valchiria swipe funnel (archived funnel marked with [SWIPE] in name) with a list of steps to be swipe-loaded later',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Funnel name. [SWIPE] prefix is added automatically if missing' },
+        url: { type: 'string', description: 'Optional source URL of the original funnel' },
+        page_type: { type: 'string' },
+        notes: { type: 'string' },
+        steps: {
+          type: 'array',
+          description: 'Array of step objects. Each step: { step_index, name, url_to_swipe, page_type, prompt, product_name? }',
+          items: {
+            type: 'object',
+            properties: {
+              step_index: { type: 'number' },
+              name: { type: 'string' },
+              url_to_swipe: { type: 'string' },
+              page_type: { type: 'string', description: 'bridge, vsl, presell, squeeze, checkout, upsell, downsell, thank_you, landing' },
+              prompt: { type: 'string', description: 'Custom rewrite prompt for this step' },
+              product_name: { type: 'string' },
+            },
+          },
+        },
+      },
+      required: ['name', 'steps'],
+    },
+  },
+  {
+    name: 'valchiria_update_swipe_funnel',
+    description: 'Update a Protocollo Valchiria swipe funnel (replace name, steps, or other fields)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string' },
+        name: { type: 'string' },
+        url: { type: 'string' },
+        notes: { type: 'string' },
+        page_type: { type: 'string' },
+        steps: { type: 'array', items: { type: 'object' } },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'valchiria_add_step',
+    description: 'Append a step to an existing Protocollo Valchiria swipe funnel. step_index is auto-assigned if not provided.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        funnel_id: { type: 'string', description: 'Archived funnel ID' },
+        step_index: { type: 'number' },
+        name: { type: 'string' },
+        url_to_swipe: { type: 'string' },
+        page_type: { type: 'string' },
+        prompt: { type: 'string' },
+        product_name: { type: 'string' },
+      },
+      required: ['funnel_id', 'name', 'url_to_swipe'],
+    },
+  },
+  {
+    name: 'valchiria_remove_step',
+    description: 'Remove a step from a Protocollo Valchiria swipe funnel by its step_index',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        funnel_id: { type: 'string' },
+        step_index: { type: 'number' },
+      },
+      required: ['funnel_id', 'step_index'],
+    },
+  },
+  {
+    name: 'valchiria_delete_swipe_funnel',
+    description: 'Delete a Protocollo Valchiria swipe funnel entirely',
+    inputSchema: {
+      type: 'object',
+      properties: { id: { type: 'string' } },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'valchiria_load_steps_to_funnel',
+    description: 'Main Protocollo Valchiria action: take selected steps from one or more swipe funnels and load them as funnel_pages for a target product. By default WIPES current funnel_pages first (matching the UI behavior). Each created funnel_page is set to swipe_status=pending so the Front End Funnel can swipe them.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        target_product_id: { type: 'string', description: 'Product ID the new funnel pages will be associated with' },
+        selections: {
+          type: 'array',
+          description: 'List of {funnel_id, step_index} pairs to load',
+          items: {
+            type: 'object',
+            properties: {
+              funnel_id: { type: 'string' },
+              step_index: { type: 'number' },
+            },
+            required: ['funnel_id', 'step_index'],
+          },
+        },
+        wipe_existing: { type: 'boolean', description: 'Whether to delete existing funnel_pages first (default true, matches UI)' },
+      },
+      required: ['target_product_id', 'selections'],
+    },
+  },
+
   // ─── DISCOVERY ───────────────────────────────────────────────────────
   {
     name: 'list_sections',
@@ -1280,6 +1403,193 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
       return await proxyApiCall('POST', '/api/upload-media', args, {}, 120_000);
     case 'get_thumbnail':
       return await proxyApiCall('GET', '/api/thumbnail', {}, { url: String(args.url), viewport: String(args.viewport || 'desktop') }, 60_000);
+
+    // ─── PROTOCOLLO VALCHIRIA ──────────────────────────────────────────
+    case 'valchiria_list_swipe_funnels': {
+      const { data, error } = await supabase
+        .from('archived_funnels')
+        .select('*')
+        .ilike('name', '%[SWIPE]%')
+        .order('created_at', { ascending: false });
+      if (error) throw new Error(error.message);
+      return { swipe_funnels: data, count: data?.length || 0 };
+    }
+    case 'valchiria_get_swipe_funnel': {
+      const { data, error } = await supabase
+        .from('archived_funnels')
+        .select('*')
+        .eq('id', args.id)
+        .single();
+      if (error) throw new Error(error.message);
+      return { swipe_funnel: data };
+    }
+    case 'valchiria_create_swipe_funnel': {
+      const rawName = String(args.name || '');
+      const name = rawName.includes('[SWIPE]') ? rawName : `[SWIPE] ${rawName}`;
+      const insert: Record<string, unknown> = {
+        name,
+        url: args.url || '',
+        page_type: args.page_type || 'landing',
+        notes: args.notes || '',
+        steps: Array.isArray(args.steps) ? args.steps : [],
+      };
+      const { data, error } = await supabase
+        .from('archived_funnels')
+        .insert(insert)
+        .select()
+        .single();
+      if (error) throw new Error(error.message);
+      return { swipe_funnel: data };
+    }
+    case 'valchiria_update_swipe_funnel': {
+      const { id, ...updates } = args;
+      const { data, error } = await supabase
+        .from('archived_funnels')
+        .update(updates)
+        .eq('id', id)
+        .select()
+        .single();
+      if (error) throw new Error(error.message);
+      return { swipe_funnel: data };
+    }
+    case 'valchiria_add_step': {
+      const { data: existing, error: fetchErr } = await supabase
+        .from('archived_funnels')
+        .select('steps')
+        .eq('id', args.funnel_id)
+        .single();
+      if (fetchErr) throw new Error(fetchErr.message);
+      const steps = Array.isArray((existing as { steps?: unknown[] })?.steps)
+        ? [...((existing as { steps?: unknown[] }).steps as unknown[])]
+        : [];
+      const stepIndex = typeof args.step_index === 'number'
+        ? args.step_index
+        : steps.length;
+      const newStep = {
+        step_index: stepIndex,
+        name: args.name,
+        url_to_swipe: args.url_to_swipe,
+        page_type: args.page_type || 'landing',
+        prompt: args.prompt || '',
+        product_name: args.product_name || '',
+      };
+      steps.push(newStep);
+      const { data, error } = await supabase
+        .from('archived_funnels')
+        .update({ steps })
+        .eq('id', args.funnel_id)
+        .select()
+        .single();
+      if (error) throw new Error(error.message);
+      return { swipe_funnel: data, added_step: newStep };
+    }
+    case 'valchiria_remove_step': {
+      const { data: existing, error: fetchErr } = await supabase
+        .from('archived_funnels')
+        .select('steps')
+        .eq('id', args.funnel_id)
+        .single();
+      if (fetchErr) throw new Error(fetchErr.message);
+      const stepsArr = Array.isArray((existing as { steps?: unknown[] })?.steps)
+        ? ((existing as { steps?: unknown[] }).steps as Array<{ step_index?: number }>)
+        : [];
+      const filtered = stepsArr.filter(s => s.step_index !== args.step_index);
+      const { data, error } = await supabase
+        .from('archived_funnels')
+        .update({ steps: filtered })
+        .eq('id', args.funnel_id)
+        .select()
+        .single();
+      if (error) throw new Error(error.message);
+      return { swipe_funnel: data, removed: stepsArr.length - filtered.length };
+    }
+    case 'valchiria_delete_swipe_funnel': {
+      const { error } = await supabase
+        .from('archived_funnels')
+        .delete()
+        .eq('id', args.id);
+      if (error) throw new Error(error.message);
+      return { success: true };
+    }
+    case 'valchiria_load_steps_to_funnel': {
+      const targetProductId = String(args.target_product_id);
+      const selections = (args.selections as Array<{ funnel_id: string; step_index: number }>) || [];
+      const wipeExisting = args.wipe_existing !== false;
+
+      if (!targetProductId) throw new Error('target_product_id is required');
+      if (selections.length === 0) throw new Error('selections cannot be empty');
+
+      // 1. Fetch all referenced swipe funnels
+      const funnelIds = Array.from(new Set(selections.map(s => s.funnel_id)));
+      const { data: funnels, error: fErr } = await supabase
+        .from('archived_funnels')
+        .select('id, name, steps')
+        .in('id', funnelIds);
+      if (fErr) throw new Error(fErr.message);
+
+      // 2. Resolve each (funnel_id, step_index) → step detail
+      const stepsToLoad: Array<{
+        name: string;
+        url_to_swipe: string;
+        page_type: string;
+        prompt: string;
+        source_funnel: string;
+      }> = [];
+      for (const sel of selections) {
+        const f = funnels?.find(x => x.id === sel.funnel_id);
+        if (!f) continue;
+        const fSteps = Array.isArray(f.steps)
+          ? (f.steps as Array<{ step_index: number; name: string; url_to_swipe: string; page_type: string; prompt: string }>)
+          : [];
+        const step = fSteps.find(s => s.step_index === sel.step_index);
+        if (!step) continue;
+        stepsToLoad.push({
+          name: step.name,
+          url_to_swipe: step.url_to_swipe || '',
+          page_type: step.page_type || 'landing',
+          prompt: step.prompt || '',
+          source_funnel: f.name,
+        });
+      }
+
+      if (stepsToLoad.length === 0) {
+        throw new Error('No matching steps found for the provided selections');
+      }
+
+      // 3. Wipe existing funnel_pages if requested
+      let wiped = 0;
+      if (wipeExisting) {
+        const { count, error: delErr } = await supabase
+          .from('funnel_pages')
+          .delete({ count: 'exact' })
+          .neq('id', '00000000-0000-0000-0000-000000000000');
+        if (delErr) throw new Error(`Wipe failed: ${delErr.message}`);
+        wiped = count || 0;
+      }
+
+      // 4. Insert new funnel_pages, one per selected step
+      const inserts = stepsToLoad.map(s => ({
+        name: s.name,
+        page_type: s.page_type,
+        product_id: targetProductId,
+        url_to_swipe: s.url_to_swipe,
+        prompt: s.prompt,
+        swipe_status: 'pending',
+      }));
+      const { data: created, error: insErr } = await supabase
+        .from('funnel_pages')
+        .insert(inserts)
+        .select();
+      if (insErr) throw new Error(`Insert failed: ${insErr.message}`);
+
+      return {
+        success: true,
+        loaded: created?.length || 0,
+        wiped,
+        target_product_id: targetProductId,
+        funnel_pages: created,
+      };
+    }
 
     // ─── DISCOVERY ─────────────────────────────────────────────────────
     case 'list_sections':
