@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { requireAnthropicKey } from '@/lib/anthropic-key';
 
 export const maxDuration = 120;
 
@@ -110,8 +111,7 @@ function cleanAiOutput(text: string): string {
 }
 
 async function callAnthropicFallback(systemPrompt: string, userPrompt: string): Promise<string> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error('No ANTHROPIC_API_KEY');
+  const apiKey = requireAnthropicKey();
 
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',

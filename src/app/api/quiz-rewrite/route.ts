@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { requireAnthropicKey } from '@/lib/anthropic-key';
 
 export const maxDuration = 120;
 export const dynamic = 'force-dynamic';
 
 async function callAnthropicFallback(systemPrompt: string, userPrompt: string): Promise<string> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error('No ANTHROPIC_API_KEY configured for fallback');
+  const apiKey = requireAnthropicKey();
 
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
