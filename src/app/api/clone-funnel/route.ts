@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getSingletonBrowser, type Browser } from '@/lib/get-browser';
 
 export const maxDuration = 300;
 export const dynamic = 'force-dynamic';
@@ -7,7 +6,10 @@ export const dynamic = 'force-dynamic';
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-async function getBrowser(): Promise<Browser> {
+const IS_SERVERLESS = !!process.env.VERCEL || !!process.env.AWS_LAMBDA_FUNCTION_NAME;
+
+async function getBrowser() {
+  const { getSingletonBrowser } = await import('@/lib/get-browser');
   return getSingletonBrowser();
 }
 
@@ -580,9 +582,7 @@ export async function POST(request: NextRequest) {
 
     // IDENTICAL MODE: use Playwright headless browser for full page rendering
     if (cloneMode === 'identical' && url) {
-      const isServerless = !!process.env.VERCEL || !!process.env.AWS_LAMBDA_FUNCTION_NAME;
-
-      if (isServerless) {
+      if (IS_SERVERLESS) {
         console.log(`⚠️ Serverless detected, using direct fetch for clone: ${url}`);
         const htmlResponse = await fetch(url, {
           headers: {
@@ -695,9 +695,7 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: 'Supabase not configured.' }, { status: 500 });
       }
 
-      const isServerless = !!process.env.VERCEL || !!process.env.AWS_LAMBDA_FUNCTION_NAME;
-
-      if (isServerless) {
+      if (IS_SERVERLESS) {
         console.log(`⚠️ Serverless detected, using fetch fallback for rewrite extract: ${url}`);
         // Jump directly to the fetch fallback (same code as the catch block below)
         const htmlResponse = await fetch(url.trim(), {
