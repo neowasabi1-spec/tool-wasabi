@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAnthropicKey } from '@/lib/anthropic-key';
 
-export const maxDuration = 120;
+export const maxDuration = 300;
 export const dynamic = 'force-dynamic';
 
-async function callAnthropicFallback(systemPrompt: string, userPrompt: string): Promise<string> {
+const REWRITE_MODEL = 'claude-3-5-haiku-20241022';
+
+async function callAnthropic(systemPrompt: string, userPrompt: string, timeoutMs = 60_000): Promise<string> {
   const apiKey = requireAnthropicKey();
 
   const res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -15,12 +17,12 @@ async function callAnthropicFallback(systemPrompt: string, userPrompt: string): 
       'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 16000,
+      model: REWRITE_MODEL,
+      max_tokens: 8000,
       system: systemPrompt,
       messages: [{ role: 'user', content: userPrompt }],
     }),
-    signal: AbortSignal.timeout(90000),
+    signal: AbortSignal.timeout(timeoutMs),
   });
 
   if (!res.ok) {
@@ -168,30 +170,40 @@ RULES:
 7. Return a JSON array of objects: [{"id": 0, "rewritten": "new text"}, ...]
 8. Return ONLY the JSON array, nothing else.`;
 
-    const userPrompt = `Rewrite these ${texts.length} texts for the product "${productName}":\n\n${JSON.stringify(textsForAi, null, 2)}`;
-
-    let aiText = '';
-    const usedProvider = 'anthropic';
-
-    try {
-      console.log(`[quiz-rewrite] Sending to Anthropic, texts=${texts.length}`);
-      aiText = await callAnthropicFallback(systemPrompt, userPrompt);
-      if (!aiText.trim()) throw new Error('Empty response from Anthropic');
-      console.log(`[quiz-rewrite] Anthropic OK, response: ${aiText.length} chars`);
-    } catch (anthropicErr) {
-      console.error(`[quiz-rewrite] Anthropic failed: ${anthropicErr instanceof Error ? anthropicErr.message : 'Unknown'}`);
-      return NextResponse.json({
-        error: `Anthropic failed: ${anthropicErr instanceof Error ? anthropicErr.message : 'Unknown'}`,
-      }, { status: 502 });
+    const BATCH_SIZE = 40;
+    const CONCURRENCY = 4;
+    const batches: typeof textsForAi[] = [];
+    for (let i = 0; i < textsForAi.length; i += BATCH_SIZE) {
+      batches.push(textsForAi.slice(i, i + BATCH_SIZE));
     }
 
-    const cleaned = cleanAiOutput(aiText);
+    console.log(`[quiz-rewrite] Total texts=${texts.length}, batches=${batches.length}, batch_size=${BATCH_SIZE}, concurrency=${CONCURRENCY}`);
 
-    let rewrites: Array<{ id: number; rewritten: string }>;
-    try {
-      rewrites = JSON.parse(cleaned);
-    } catch {
-      return NextResponse.json({ error: 'AI returned invalid JSON', raw: cleaned.substring(0, 500) }, { status: 500 });
+    const rewrites: Array<{ id: number; rewritten: string }> = [];
+    const usedProvider = 'anthropic';
+
+    async function processBatch(batch: typeof textsForAi, batchIdx: number): Promise<Array<{ id: number; rewritten: string }>> {
+      const batchPrompt = `Rewrite these ${batch.length} texts for the product "${productName}":\n\n${JSON.stringify(batch, null, 2)}`;
+      try {
+        const aiText = await callAnthropic(systemPrompt, batchPrompt, 55_000);
+        const cleaned = cleanAiOutput(aiText);
+        const parsed = JSON.parse(cleaned) as Array<{ id: number; rewritten: string }>;
+        console.log(`[quiz-rewrite] batch ${batchIdx + 1}/${batches.length} OK (${parsed.length} rewrites)`);
+        return parsed;
+      } catch (err) {
+        console.error(`[quiz-rewrite] batch ${batchIdx + 1}/${batches.length} failed:`, err instanceof Error ? err.message : err);
+        return [];
+      }
+    }
+
+    for (let i = 0; i < batches.length; i += CONCURRENCY) {
+      const slice = batches.slice(i, i + CONCURRENCY);
+      const results = await Promise.all(slice.map((b, j) => processBatch(b, i + j)));
+      for (const r of results) rewrites.push(...r);
+    }
+
+    if (rewrites.length === 0) {
+      return NextResponse.json({ error: 'Anthropic returned no rewrites for any batch (timeout or all batches failed)' }, { status: 502 });
     }
 
     let resultHtml = html;
