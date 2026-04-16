@@ -213,8 +213,9 @@ RULES:
     }
 
     if (rewrites.length === 0) {
+      const reason = batchErrors[0] || 'unknown';
       return NextResponse.json({
-        error: 'Anthropic returned no rewrites for any batch',
+        error: `Anthropic all ${batches.length} batches failed. First error: ${reason}`,
         batches_total: batches.length,
         batches_failed: batchErrors.length,
         first_errors: batchErrors.slice(0, 5),
