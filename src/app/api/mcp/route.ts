@@ -120,8 +120,17 @@ const TOOLS = [
   },
   {
     name: 'list_templates',
-    description: 'List all saved swipe templates',
+    description: 'List all saved swipe templates (My Templates section)',
     inputSchema: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'get_template',
+    description: 'Get a single swipe template by ID',
+    inputSchema: {
+      type: 'object',
+      properties: { id: { type: 'string' } },
+      required: ['id'],
+    },
   },
   {
     name: 'create_template',
@@ -139,9 +148,43 @@ const TOOLS = [
     },
   },
   {
+    name: 'update_template',
+    description: 'Update an existing swipe template',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string' },
+        name: { type: 'string' },
+        html: { type: 'string' },
+        source_url: { type: 'string' },
+        page_type: { type: 'string' },
+        tags: { type: 'string' },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'delete_template',
+    description: 'Delete a swipe template by ID',
+    inputSchema: {
+      type: 'object',
+      properties: { id: { type: 'string' } },
+      required: ['id'],
+    },
+  },
+  {
     name: 'list_archive',
-    description: 'List all archived funnels',
+    description: 'List all archived funnels (My Archive section)',
     inputSchema: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'get_archive_entry',
+    description: 'Get a single archived funnel by ID',
+    inputSchema: {
+      type: 'object',
+      properties: { id: { type: 'string' } },
+      required: ['id'],
+    },
   },
   {
     name: 'create_archive_entry',
@@ -154,8 +197,35 @@ const TOOLS = [
         html_content: { type: 'string', description: 'HTML content' },
         page_type: { type: 'string', description: 'Page type' },
         notes: { type: 'string', description: 'Notes' },
+        steps: { type: 'array', description: 'Optional array of step objects (for multi-step archived funnels)' },
       },
       required: ['name'],
+    },
+  },
+  {
+    name: 'update_archive_entry',
+    description: 'Update an archived funnel',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string' },
+        name: { type: 'string' },
+        url: { type: 'string' },
+        html_content: { type: 'string' },
+        page_type: { type: 'string' },
+        notes: { type: 'string' },
+        steps: { type: 'array' },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'delete_archive_entry',
+    description: 'Delete an archived funnel by ID',
+    inputSchema: {
+      type: 'object',
+      properties: { id: { type: 'string' } },
+      required: ['id'],
     },
   },
   {
@@ -924,6 +994,286 @@ const TOOLS = [
     },
   },
 
+  // ─── BROWSER AGENTICO ────────────────────────────────────────────────
+  {
+    name: 'browser_agentico_start',
+    description: 'Start an agentic browser session that navigates a URL and performs an action (e.g. extract, scroll, click)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string' },
+        instruction: { type: 'string' },
+        maxSteps: { type: 'number' },
+      },
+      required: ['url', 'instruction'],
+    },
+  },
+  {
+    name: 'browser_agentico_status',
+    description: 'Get status / partial result of a running browser-agentico job',
+    inputSchema: {
+      type: 'object',
+      properties: { jobId: { type: 'string' } },
+      required: ['jobId'],
+    },
+  },
+
+  // ─── AGENTIC ─────────────────────────────────────────────────────────
+  {
+    name: 'agentic_extract',
+    description: 'Use the agentic extractor to pull structured data (text, images, prices) from a URL',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string' },
+        schema: { type: 'object', description: 'Optional JSON schema for what to extract' },
+      },
+      required: ['url'],
+    },
+  },
+  {
+    name: 'agentic_scrape',
+    description: 'Scrape a URL with the agentic scraper (returns markdown + metadata)',
+    inputSchema: {
+      type: 'object',
+      properties: { url: { type: 'string' } },
+      required: ['url'],
+    },
+  },
+  {
+    name: 'agentic_analyze',
+    description: 'Run agentic analysis on a URL or HTML',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string' },
+        html: { type: 'string' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'agentic_vision',
+    description: 'Run agentic vision analysis on a screenshot or URL',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string' },
+        screenshot: { type: 'string', description: 'Base64 or data URL' },
+        instruction: { type: 'string' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'agentic_health',
+    description: 'Health check for agentic services',
+    inputSchema: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'agentic_swipe',
+    description: 'Run the autonomous Agentic Swipe pipeline that swipes a competitor funnel end-to-end for a product',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sourceUrl: { type: 'string' },
+        productId: { type: 'string' },
+        product: { type: 'object' },
+        tone: { type: 'string' },
+        language: { type: 'string' },
+      },
+      required: ['sourceUrl'],
+    },
+  },
+
+  // ─── DEPLOY ──────────────────────────────────────────────────────────
+  {
+    name: 'deploy_funnelish',
+    description: 'Deploy a funnel page to Funnelish',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        html: { type: 'string' },
+        funnelName: { type: 'string' },
+        productId: { type: 'string' },
+        pageType: { type: 'string' },
+      },
+      required: ['html'],
+    },
+  },
+  {
+    name: 'deploy_checkout_champ',
+    description: 'Deploy a funnel to Checkout Champ',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        html: { type: 'string' },
+        funnelName: { type: 'string' },
+        productId: { type: 'string' },
+        pageType: { type: 'string' },
+      },
+      required: ['html'],
+    },
+  },
+  {
+    name: 'deploy_checkout_champ_tracking',
+    description: 'Set / update Checkout Champ tracking config',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        funnelId: { type: 'string' },
+        trackingConfig: { type: 'object' },
+      },
+      required: ['funnelId'],
+    },
+  },
+
+  // ─── VISION JOBS ─────────────────────────────────────────────────────
+  {
+    name: 'list_vision_jobs',
+    description: 'List vision analysis jobs',
+    inputSchema: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'get_vision_job',
+    description: 'Get a vision job by ID with its result',
+    inputSchema: {
+      type: 'object',
+      properties: { jobId: { type: 'string' } },
+      required: ['jobId'],
+    },
+  },
+
+  // ─── CURSOR AGENTS ───────────────────────────────────────────────────
+  {
+    name: 'list_cursor_agents',
+    description: 'List Cursor coding-agent sessions',
+    inputSchema: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'create_cursor_agent',
+    description: 'Spawn a new Cursor coding-agent task',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        prompt: { type: 'string' },
+        repo: { type: 'string' },
+        branch: { type: 'string' },
+        model: { type: 'string' },
+      },
+      required: ['prompt'],
+    },
+  },
+  {
+    name: 'cursor_agent_followup',
+    description: 'Send a follow-up message to a Cursor coding-agent session',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'Cursor agent session ID' },
+        message: { type: 'string' },
+      },
+      required: ['id', 'message'],
+    },
+  },
+
+  // ─── AFFILIATE ───────────────────────────────────────────────────────
+  {
+    name: 'affiliate_save_funnel',
+    description: 'Save a discovered affiliate funnel from the Affiliate Browser Chat',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string' },
+        url: { type: 'string' },
+        offer: { type: 'object' },
+        steps: { type: 'array' },
+        notes: { type: 'string' },
+      },
+      required: ['name'],
+    },
+  },
+
+  // ─── GENERATE QUIZ ───────────────────────────────────────────────────
+  {
+    name: 'generate_quiz',
+    description: 'Generate a quiz funnel from scratch given a topic / product',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        topic: { type: 'string' },
+        productId: { type: 'string' },
+        questions: { type: 'number' },
+        style: { type: 'string' },
+      },
+      required: [],
+    },
+  },
+
+  // ─── GENERIC DATABASE ACCESS ─────────────────────────────────────────
+  {
+    name: 'db_list_tables',
+    description: 'List all Supabase tables the MCP can read/write directly via db_select / db_insert / db_update / db_delete.',
+    inputSchema: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'db_select',
+    description: 'Read rows from any Supabase table with optional filters / ordering / pagination. Escape hatch for everything not covered by named tools.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        table: { type: 'string', description: 'Table name (call db_list_tables to discover)' },
+        columns: { type: 'string', description: 'Comma-separated columns or "*" (default *)' },
+        filters: {
+          type: 'object',
+          description: 'Equality filters as { col: value }. For advanced filters use op-prefixed values: { col: "ilike:%foo%" }, { col: "gt:100" }, { col: "in:1,2,3" }',
+        },
+        orderBy: { type: 'string', description: 'Column name (default created_at)' },
+        ascending: { type: 'boolean', description: 'default false' },
+        limit: { type: 'number', description: 'max rows (default 100, hard cap 1000)' },
+        offset: { type: 'number' },
+      },
+      required: ['table'],
+    },
+  },
+  {
+    name: 'db_insert',
+    description: 'Insert a row (or rows) into any Supabase table',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        table: { type: 'string' },
+        data: { description: 'Row object or array of rows' },
+      },
+      required: ['table', 'data'],
+    },
+  },
+  {
+    name: 'db_update',
+    description: 'Update rows in any Supabase table by equality filter',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        table: { type: 'string' },
+        filters: { type: 'object', description: 'Equality filters (e.g. { id: "..." })' },
+        data: { type: 'object', description: 'Fields to update' },
+      },
+      required: ['table', 'filters', 'data'],
+    },
+  },
+  {
+    name: 'db_delete',
+    description: 'Delete rows from any Supabase table by equality filter',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        table: { type: 'string' },
+        filters: { type: 'object', description: 'Equality filters (e.g. { id: "..." })' },
+      },
+      required: ['table', 'filters'],
+    },
+  },
+
   // ─── DISCOVERY ───────────────────────────────────────────────────────
   {
     name: 'list_sections',
@@ -1042,20 +1392,52 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
       if (error) throw new Error(error.message);
       return { templates: data, count: data?.length || 0 };
     }
+    case 'get_template': {
+      const { data, error } = await supabase.from('swipe_templates').select('*').eq('id', args.id).single();
+      if (error) throw new Error(error.message);
+      return { template: data };
+    }
     case 'create_template': {
       const { data, error } = await supabase.from('swipe_templates').insert(args).select().single();
       if (error) throw new Error(error.message);
       return { template: data };
+    }
+    case 'update_template': {
+      const { id, ...updates } = args;
+      const { data, error } = await supabase.from('swipe_templates').update(updates).eq('id', id).select().single();
+      if (error) throw new Error(error.message);
+      return { template: data };
+    }
+    case 'delete_template': {
+      const { error } = await supabase.from('swipe_templates').delete().eq('id', args.id);
+      if (error) throw new Error(error.message);
+      return { success: true };
     }
     case 'list_archive': {
       const { data, error } = await supabase.from('archived_funnels').select('*').order('created_at', { ascending: false });
       if (error) throw new Error(error.message);
       return { archived_funnels: data, count: data?.length || 0 };
     }
+    case 'get_archive_entry': {
+      const { data, error } = await supabase.from('archived_funnels').select('*').eq('id', args.id).single();
+      if (error) throw new Error(error.message);
+      return { archived_funnel: data };
+    }
     case 'create_archive_entry': {
       const { data, error } = await supabase.from('archived_funnels').insert(args).select().single();
       if (error) throw new Error(error.message);
       return { archived_funnel: data };
+    }
+    case 'update_archive_entry': {
+      const { id, ...updates } = args;
+      const { data, error } = await supabase.from('archived_funnels').update(updates).eq('id', id).select().single();
+      if (error) throw new Error(error.message);
+      return { archived_funnel: data };
+    }
+    case 'delete_archive_entry': {
+      const { error } = await supabase.from('archived_funnels').delete().eq('id', args.id);
+      if (error) throw new Error(error.message);
+      return { success: true };
     }
     case 'analyze_copy': {
       const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || 'https://cloner-funnel-builder.vercel.app';
@@ -1290,14 +1672,21 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
       return { success: true };
     }
 
-    // ─── PROMPTS ───────────────────────────────────────────────────────
+    // ─── PROMPTS (saved_prompts table) ─────────────────────────────────
     case 'list_prompts': {
-      const { data, error } = await supabase.from('prompts').select('*').order('created_at', { ascending: false });
+      const { data, error } = await supabase.from('saved_prompts').select('*').order('created_at', { ascending: false });
       if (error) throw new Error(error.message);
       return { prompts: data, count: data?.length || 0 };
     }
     case 'create_prompt': {
-      const { data, error } = await supabase.from('prompts').insert(args).select().single();
+      const insert = {
+        title: args.name || args.title,
+        content: args.content,
+        category: args.category || 'general',
+        tags: args.variables || args.tags || [],
+        is_favorite: false,
+      };
+      const { data, error } = await supabase.from('saved_prompts').insert(insert).select().single();
       if (error) throw new Error(error.message);
       return { prompt: data };
     }
@@ -1591,6 +1980,136 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
       };
     }
 
+    // ─── BROWSER AGENTICO ──────────────────────────────────────────────
+    case 'browser_agentico_start':
+      return await proxyApiCall('POST', '/api/browser-agentico/start', args, {}, 60_000);
+    case 'browser_agentico_status':
+      return await proxyApiCall('GET', `/api/browser-agentico/status/${args.jobId}`, {}, {}, 30_000);
+
+    // ─── AGENTIC ───────────────────────────────────────────────────────
+    case 'agentic_extract':
+      return await proxyApiCall('POST', '/api/agentic/extract', args, {}, 180_000);
+    case 'agentic_scrape':
+      return await proxyApiCall('POST', '/api/agentic/scrape', args, {}, 180_000);
+    case 'agentic_analyze':
+      return await proxyApiCall('POST', '/api/agentic/analyze', args, {}, 180_000);
+    case 'agentic_vision':
+      return await proxyApiCall('POST', '/api/agentic/vision', args, {}, 180_000);
+    case 'agentic_health':
+      return await proxyApiCall('GET', '/api/agentic/health', {}, {}, 15_000);
+    case 'agentic_swipe':
+      return await proxyApiCall('POST', '/api/agentic-swipe', args, {}, 300_000);
+
+    // ─── DEPLOY ────────────────────────────────────────────────────────
+    case 'deploy_funnelish':
+      return await proxyApiCall('POST', '/api/deploy/funnelish', args, {}, 180_000);
+    case 'deploy_checkout_champ':
+      return await proxyApiCall('POST', '/api/deploy/checkout-champ', args, {}, 180_000);
+    case 'deploy_checkout_champ_tracking':
+      return await proxyApiCall('POST', '/api/deploy/checkout-champ/tracking', args, {}, 60_000);
+
+    // ─── VISION JOBS ───────────────────────────────────────────────────
+    case 'list_vision_jobs':
+      return await proxyApiCall('GET', '/api/vision/jobs', {}, {}, 30_000);
+    case 'get_vision_job':
+      return await proxyApiCall('GET', `/api/vision/jobs/${args.jobId}`, {}, {}, 30_000);
+
+    // ─── CURSOR AGENTS ─────────────────────────────────────────────────
+    case 'list_cursor_agents':
+      return await proxyApiCall('GET', '/api/cursor-agents', {}, {}, 30_000);
+    case 'create_cursor_agent':
+      return await proxyApiCall('POST', '/api/cursor-agents', args, {}, 60_000);
+    case 'cursor_agent_followup':
+      return await proxyApiCall('POST', `/api/cursor-agents/${args.id}/followup`, { message: args.message }, {}, 60_000);
+
+    // ─── AFFILIATE ─────────────────────────────────────────────────────
+    case 'affiliate_save_funnel':
+      return await proxyApiCall('POST', '/api/affiliate-browser-chat/save-funnel', args, {}, 60_000);
+
+    // ─── GENERATE QUIZ ─────────────────────────────────────────────────
+    case 'generate_quiz':
+      return await proxyApiCall('POST', '/api/generate-quiz', args, {}, 240_000);
+
+    // ─── GENERIC DB ────────────────────────────────────────────────────
+    case 'db_list_tables':
+      return { tables: DB_TABLES, count: DB_TABLES.length };
+
+    case 'db_select': {
+      const table = String(args.table);
+      if (!DB_TABLES.includes(table)) throw new Error(`Unknown or non-allowed table: ${table}. Call db_list_tables first.`);
+      const columns = String(args.columns || '*');
+      const orderBy = String(args.orderBy || 'created_at');
+      const ascending = Boolean(args.ascending);
+      const limit = Math.min(Number(args.limit) || 100, 1000);
+      const offset = Number(args.offset) || 0;
+
+      let q = supabase.from(table).select(columns, { count: 'exact' });
+
+      const filters = (args.filters as Record<string, unknown>) || {};
+      for (const [col, raw] of Object.entries(filters)) {
+        if (typeof raw === 'string' && raw.includes(':')) {
+          const [op, ...rest] = raw.split(':');
+          const val = rest.join(':');
+          switch (op) {
+            case 'ilike': q = q.ilike(col, val); break;
+            case 'like': q = q.like(col, val); break;
+            case 'gt': q = q.gt(col, val); break;
+            case 'gte': q = q.gte(col, val); break;
+            case 'lt': q = q.lt(col, val); break;
+            case 'lte': q = q.lte(col, val); break;
+            case 'neq': q = q.neq(col, val); break;
+            case 'in': q = q.in(col, val.split(',')); break;
+            case 'is': q = q.is(col, val === 'null' ? null : val); break;
+            default: q = q.eq(col, raw);
+          }
+        } else {
+          q = q.eq(col, raw);
+        }
+      }
+
+      try { q = q.order(orderBy, { ascending }); } catch { /* table may not have created_at */ }
+      q = q.range(offset, offset + limit - 1);
+
+      const { data, error, count } = await q;
+      if (error) throw new Error(error.message);
+      return { table, rows: data, count: count || data?.length || 0, limit, offset };
+    }
+
+    case 'db_insert': {
+      const table = String(args.table);
+      if (!DB_TABLES.includes(table)) throw new Error(`Unknown or non-allowed table: ${table}`);
+      const data = args.data;
+      if (!data) throw new Error('data is required');
+      const { data: result, error } = await supabase.from(table).insert(data as Record<string, unknown> | Record<string, unknown>[]).select();
+      if (error) throw new Error(error.message);
+      return { table, inserted: result, count: result?.length || 0 };
+    }
+
+    case 'db_update': {
+      const table = String(args.table);
+      if (!DB_TABLES.includes(table)) throw new Error(`Unknown or non-allowed table: ${table}`);
+      const filters = (args.filters as Record<string, unknown>) || {};
+      const data = (args.data as Record<string, unknown>) || {};
+      if (Object.keys(filters).length === 0) throw new Error('filters cannot be empty (refuse to update without where clause)');
+      let q = supabase.from(table).update(data);
+      for (const [col, val] of Object.entries(filters)) q = q.eq(col, val);
+      const { data: result, error } = await q.select();
+      if (error) throw new Error(error.message);
+      return { table, updated: result, count: result?.length || 0 };
+    }
+
+    case 'db_delete': {
+      const table = String(args.table);
+      if (!DB_TABLES.includes(table)) throw new Error(`Unknown or non-allowed table: ${table}`);
+      const filters = (args.filters as Record<string, unknown>) || {};
+      if (Object.keys(filters).length === 0) throw new Error('filters cannot be empty (refuse to delete without where clause)');
+      let q = supabase.from(table).delete({ count: 'exact' });
+      for (const [col, val] of Object.entries(filters)) q = q.eq(col, val);
+      const { error, count } = await q;
+      if (error) throw new Error(error.message);
+      return { table, deleted: count || 0 };
+    }
+
     // ─── DISCOVERY ─────────────────────────────────────────────────────
     case 'list_sections':
       return { sections: SECTIONS, count: SECTIONS.length };
@@ -1659,6 +2178,25 @@ async function proxyApiCall(
   }
   return parsed;
 }
+
+const DB_TABLES = [
+  'products',
+  'funnel_pages',
+  'swipe_templates',
+  'archived_funnels',
+  'projects',
+  'saved_prompts',
+  'scheduled_jobs',
+  'api_keys',
+  'openclaw_messages',
+  'briefs',
+  'product_briefs',
+  'funnel_briefs',
+  'vision_jobs',
+  'pipeline_jobs',
+  'cursor_agents',
+  'affiliate_funnels',
+];
 
 const SECTIONS = [
   { path: '/projects', name: 'Projects', description: 'Umbrella entities grouping products, funnels, templates, archive, briefs' },
@@ -1778,6 +2316,35 @@ const API_ENDPOINTS = [
   { path: '/api/openclaw/queue', methods: ['POST'], description: 'Insert message into OpenClaw queue' },
   { path: '/api/openclaw/action', methods: ['POST'], description: 'Execute OpenClaw action' },
   { path: '/api/openclaw/config', methods: ['GET', 'POST'], description: 'OpenClaw config' },
+
+  // Browser agentico + agentic
+  { path: '/api/browser-agentico/start', methods: ['POST'], description: 'Start agentic browser session' },
+  { path: '/api/browser-agentico/status/[jobId]', methods: ['GET'], description: 'Browser agentico job status' },
+  { path: '/api/agentic/extract', methods: ['POST'], description: 'Agentic structured extraction' },
+  { path: '/api/agentic/scrape', methods: ['POST'], description: 'Agentic scrape (markdown + meta)' },
+  { path: '/api/agentic/analyze', methods: ['POST'], description: 'Agentic analysis' },
+  { path: '/api/agentic/vision', methods: ['POST'], description: 'Agentic vision analysis' },
+  { path: '/api/agentic/health', methods: ['GET'], description: 'Agentic health' },
+  { path: '/api/agentic-swipe', methods: ['POST'], description: 'Autonomous agentic swipe pipeline' },
+
+  // Deploy
+  { path: '/api/deploy/funnelish', methods: ['POST'], description: 'Deploy to Funnelish' },
+  { path: '/api/deploy/checkout-champ', methods: ['POST'], description: 'Deploy to Checkout Champ' },
+  { path: '/api/deploy/checkout-champ/tracking', methods: ['POST'], description: 'Checkout Champ tracking config' },
+
+  // Vision jobs
+  { path: '/api/vision/jobs', methods: ['GET', 'POST'], description: 'Vision jobs list / create' },
+  { path: '/api/vision/jobs/[jobId]', methods: ['GET'], description: 'Vision job detail' },
+
+  // Cursor agents
+  { path: '/api/cursor-agents', methods: ['GET', 'POST'], description: 'Cursor coding-agent sessions' },
+  { path: '/api/cursor-agents/[id]/followup', methods: ['POST'], description: 'Send follow-up to Cursor agent' },
+
+  // Saved prompts
+  { path: '/api/prompts', methods: ['GET', 'POST', 'PUT', 'DELETE'], description: 'Saved prompts library CRUD' },
+
+  // Generate quiz
+  { path: '/api/generate-quiz', methods: ['POST'], description: 'Generate a quiz funnel from scratch' },
 
   // Affiliate
   { path: '/api/affiliate-browser-chat/save-funnel', methods: ['POST'], description: 'Save discovered affiliate funnel' },
