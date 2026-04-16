@@ -4,7 +4,7 @@ import { requireAnthropicKey } from '@/lib/anthropic-key';
 export const maxDuration = 300;
 export const dynamic = 'force-dynamic';
 
-const REWRITE_MODEL = 'claude-3-5-haiku-20241022';
+const REWRITE_MODEL = process.env.ANTHROPIC_REWRITE_MODEL || 'claude-3-haiku-20240307';
 
 async function callAnthropic(systemPrompt: string, userPrompt: string, timeoutMs = 60_000): Promise<string> {
   const apiKey = requireAnthropicKey();
