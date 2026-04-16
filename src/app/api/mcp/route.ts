@@ -79,18 +79,22 @@ const TOOLS = [
   },
   {
     name: 'create_funnel_page',
-    description: 'Create a new funnel page',
+    description: 'Create a new funnel page (Front End Funnel). product_id + url_to_swipe are required by the DB.',
     inputSchema: {
       type: 'object',
       properties: {
         name: { type: 'string', description: 'Page name' },
-        url: { type: 'string', description: 'Page URL' },
-        page_type: { type: 'string', description: 'Type: bridge, vsl, presell, squeeze, checkout, upsell, downsell, thank_you' },
-        product_id: { type: 'string', description: 'Associated product ID' },
-        html_content: { type: 'string', description: 'HTML content of the page' },
-        notes: { type: 'string', description: 'Notes about the page' },
+        page_type: { type: 'string', description: 'Type: 5_reasons_listicle, quiz_funnel, landing, product_page, safe_page, checkout, advertorial, altro' },
+        product_id: { type: 'string', description: 'Associated product ID (required)' },
+        project_id: { type: 'string' },
+        template_id: { type: 'string' },
+        url_to_swipe: { type: 'string', description: 'Source URL to clone/swipe from (required)' },
+        prompt: { type: 'string', description: 'Custom rewrite prompt' },
+        swipe_status: { type: 'string', description: 'pending, in_progress, completed, failed (default pending)' },
+        cloned_data: { type: 'object', description: 'JSON blob with cloned HTML and metadata' },
+        swiped_data: { type: 'object', description: 'JSON blob with swiped (rewritten) HTML and metadata' },
       },
-      required: ['name'],
+      required: ['name', 'product_id', 'url_to_swipe'],
     },
   },
   {
@@ -101,10 +105,16 @@ const TOOLS = [
       properties: {
         id: { type: 'string', description: 'Funnel page ID' },
         name: { type: 'string' },
-        url: { type: 'string' },
         page_type: { type: 'string' },
-        html_content: { type: 'string' },
-        notes: { type: 'string' },
+        product_id: { type: 'string' },
+        project_id: { type: 'string' },
+        url_to_swipe: { type: 'string' },
+        prompt: { type: 'string' },
+        swipe_status: { type: 'string' },
+        swipe_result: { type: 'string' },
+        feedback: { type: 'string' },
+        cloned_data: { type: 'object' },
+        swiped_data: { type: 'object' },
       },
       required: ['id'],
     },
@@ -134,17 +144,20 @@ const TOOLS = [
   },
   {
     name: 'create_template',
-    description: 'Save a new swipe template',
+    description: 'Save a new swipe template. source_url and page_type are required by the DB.',
     inputSchema: {
       type: 'object',
       properties: {
         name: { type: 'string', description: 'Template name' },
-        html: { type: 'string', description: 'Template HTML content' },
-        source_url: { type: 'string', description: 'Source URL of the template' },
-        page_type: { type: 'string', description: 'Page type' },
-        tags: { type: 'string', description: 'Tags (comma separated)' },
+        source_url: { type: 'string', description: 'Source URL of the template (required)' },
+        page_type: { type: 'string', description: 'Page type (required): 5_reasons_listicle, quiz_funnel, landing, product_page, safe_page, checkout, advertorial, altro' },
+        view_format: { type: 'string', description: 'desktop or mobile (default desktop)' },
+        tags: { type: 'array', items: { type: 'string' } },
+        description: { type: 'string' },
+        preview_image: { type: 'string', description: 'URL of preview screenshot' },
+        project_id: { type: 'string' },
       },
-      required: ['name'],
+      required: ['name', 'source_url', 'page_type'],
     },
   },
   {
@@ -155,10 +168,13 @@ const TOOLS = [
       properties: {
         id: { type: 'string' },
         name: { type: 'string' },
-        html: { type: 'string' },
         source_url: { type: 'string' },
         page_type: { type: 'string' },
-        tags: { type: 'string' },
+        view_format: { type: 'string' },
+        tags: { type: 'array', items: { type: 'string' } },
+        description: { type: 'string' },
+        preview_image: { type: 'string' },
+        project_id: { type: 'string' },
       },
       required: ['id'],
     },
@@ -188,33 +204,33 @@ const TOOLS = [
   },
   {
     name: 'create_archive_entry',
-    description: 'Save a funnel to the archive',
+    description: 'Save a (multi-step) funnel to the archive. Real DB columns: name, total_steps (auto-calculated from steps.length if omitted), steps (JSON array), analysis (string), section, project_id.',
     inputSchema: {
       type: 'object',
       properties: {
-        name: { type: 'string', description: 'Archive entry name' },
-        url: { type: 'string', description: 'Funnel URL' },
-        html_content: { type: 'string', description: 'HTML content' },
-        page_type: { type: 'string', description: 'Page type' },
-        notes: { type: 'string', description: 'Notes' },
-        steps: { type: 'array', description: 'Optional array of step objects (for multi-step archived funnels)' },
+        name: { type: 'string' },
+        steps: { type: 'array', description: 'Array of step objects with at least { step_index, name, url_to_swipe, page_type, prompt }' },
+        total_steps: { type: 'number', description: 'Optional, auto-calculated from steps.length' },
+        analysis: { type: 'string', description: 'AI analysis summary of the funnel' },
+        section: { type: 'string', description: 'Section/category (default "archive")' },
+        project_id: { type: 'string' },
       },
       required: ['name'],
     },
   },
   {
     name: 'update_archive_entry',
-    description: 'Update an archived funnel',
+    description: 'Update an archived funnel. Allowed columns: name, total_steps, steps, analysis, section, project_id. (No notes/url/html_content — those columns do NOT exist in the DB.)',
     inputSchema: {
       type: 'object',
       properties: {
         id: { type: 'string' },
         name: { type: 'string' },
-        url: { type: 'string' },
-        html_content: { type: 'string' },
-        page_type: { type: 'string' },
-        notes: { type: 'string' },
         steps: { type: 'array' },
+        total_steps: { type: 'number' },
+        analysis: { type: 'string' },
+        section: { type: 'string' },
+        project_id: { type: 'string' },
       },
       required: ['id'],
     },
@@ -472,22 +488,27 @@ const TOOLS = [
   // ─── SCHEDULED JOBS ─────────────────────────────────────────────────
   {
     name: 'list_scheduled_jobs',
-    description: 'List all scheduled jobs (cron-like recurring tasks)',
+    description: 'List all scheduled jobs (table: scheduled_browser_jobs — recurring browser-agent tasks)',
     inputSchema: { type: 'object', properties: {}, required: [] },
   },
   {
     name: 'create_scheduled_job',
-    description: 'Create a new scheduled job that runs an action periodically',
+    description: 'Create a new scheduled browser-agent job (table: scheduled_browser_jobs). Required: template_id, title, prompt.',
     inputSchema: {
       type: 'object',
       properties: {
-        name: { type: 'string' },
-        action: { type: 'string', description: 'The action to run (e.g. swipe_landing_page, clone_funnel, generate_image)' },
-        params: { type: 'object', description: 'Parameters passed to the action' },
-        schedule: { type: 'string', description: 'Cron expression or interval (e.g. "0 9 * * *", "every 1h")' },
-        is_active: { type: 'boolean' },
+        template_id: { type: 'string', description: 'Browser-agent template ID (required)' },
+        title: { type: 'string', description: 'Job title (required)' },
+        prompt: { type: 'string', description: 'Agent prompt (required)' },
+        start_url: { type: 'string' },
+        max_turns: { type: 'number', description: 'Default 10' },
+        category: { type: 'string' },
+        tags: { type: 'array', items: { type: 'string' } },
+        frequency: { type: 'string', description: 'daily, weekly, hourly, etc.' },
+        is_active: { type: 'boolean', description: 'Default true' },
+        next_run_at: { type: 'string', description: 'ISO timestamp of next scheduled run' },
       },
-      required: ['name', 'action'],
+      required: ['template_id', 'title', 'prompt'],
     },
   },
   {
@@ -888,14 +909,11 @@ const TOOLS = [
   },
   {
     name: 'valchiria_create_swipe_funnel',
-    description: 'Create a new Protocollo Valchiria swipe funnel (archived funnel marked with [SWIPE] in name) with a list of steps to be swipe-loaded later',
+    description: 'Create a new Protocollo Valchiria swipe funnel (archived_funnels row with [SWIPE] in name). Real DB columns: name, total_steps (auto from steps.length), steps (JSON array), analysis (string, optional), section (default "valchiria"), project_id (optional). NO notes/url/html_content/page_type columns exist on archived_funnels.',
     inputSchema: {
       type: 'object',
       properties: {
-        name: { type: 'string', description: 'Funnel name. [SWIPE] prefix is added automatically if missing' },
-        url: { type: 'string', description: 'Optional source URL of the original funnel' },
-        page_type: { type: 'string' },
-        notes: { type: 'string' },
+        name: { type: 'string', description: 'Funnel name. [SWIPE] prefix is added automatically if missing.' },
         steps: {
           type: 'array',
           description: 'Array of step objects. Each step: { step_index, name, url_to_swipe, page_type, prompt, product_name? }',
@@ -905,28 +923,32 @@ const TOOLS = [
               step_index: { type: 'number' },
               name: { type: 'string' },
               url_to_swipe: { type: 'string' },
-              page_type: { type: 'string', description: 'bridge, vsl, presell, squeeze, checkout, upsell, downsell, thank_you, landing' },
+              page_type: { type: 'string', description: 'landing, advertorial, quiz_funnel, checkout, product_page, etc.' },
               prompt: { type: 'string', description: 'Custom rewrite prompt for this step' },
               product_name: { type: 'string' },
             },
           },
         },
+        analysis: { type: 'string', description: 'Optional AI analysis summary' },
+        section: { type: 'string', description: 'Optional section tag (default "valchiria")' },
+        project_id: { type: 'string' },
       },
       required: ['name', 'steps'],
     },
   },
   {
     name: 'valchiria_update_swipe_funnel',
-    description: 'Update a Protocollo Valchiria swipe funnel (replace name, steps, or other fields)',
+    description: 'Update a Protocollo Valchiria swipe funnel. Allowed columns only: name, steps, total_steps, analysis, section, project_id.',
     inputSchema: {
       type: 'object',
       properties: {
         id: { type: 'string' },
         name: { type: 'string' },
-        url: { type: 'string' },
-        notes: { type: 'string' },
-        page_type: { type: 'string' },
         steps: { type: 'array', items: { type: 'object' } },
+        total_steps: { type: 'number' },
+        analysis: { type: 'string' },
+        section: { type: 'string' },
+        project_id: { type: 'string' },
       },
       required: ['id'],
     },
@@ -1424,13 +1446,30 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
       return { archived_funnel: data };
     }
     case 'create_archive_entry': {
-      const { data, error } = await supabase.from('archived_funnels').insert(args).select().single();
+      const stepsArr = Array.isArray(args.steps) ? args.steps : [];
+      const insert: Record<string, unknown> = {
+        name: args.name,
+        steps: stepsArr,
+        total_steps: typeof args.total_steps === 'number' ? args.total_steps : stepsArr.length,
+      };
+      if (args.analysis !== undefined) insert.analysis = args.analysis;
+      if (args.section !== undefined) insert.section = args.section;
+      if (args.project_id !== undefined) insert.project_id = args.project_id;
+      const { data, error } = await supabase.from('archived_funnels').insert(insert).select().single();
       if (error) throw new Error(error.message);
       return { archived_funnel: data };
     }
     case 'update_archive_entry': {
-      const { id, ...updates } = args;
-      const { data, error } = await supabase.from('archived_funnels').update(updates).eq('id', id).select().single();
+      const allowed = ['name', 'steps', 'total_steps', 'analysis', 'section', 'project_id'];
+      const updates: Record<string, unknown> = {};
+      for (const k of allowed) {
+        if (args[k] !== undefined) updates[k] = args[k];
+      }
+      // Auto-recompute total_steps if steps was provided but total_steps wasn't
+      if (Array.isArray(args.steps) && args.total_steps === undefined) {
+        updates.total_steps = (args.steps as unknown[]).length;
+      }
+      const { data, error } = await supabase.from('archived_funnels').update(updates).eq('id', args.id).select().single();
       if (error) throw new Error(error.message);
       return { archived_funnel: data };
     }
@@ -1691,15 +1730,18 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
       return { prompt: data };
     }
 
-    // ─── SCHEDULED JOBS ────────────────────────────────────────────────
+    // ─── SCHEDULED JOBS (scheduled_browser_jobs table) ─────────────────
     case 'list_scheduled_jobs': {
-      const { data, error } = await supabase.from('scheduled_jobs').select('*').order('created_at', { ascending: false });
+      const { data, error } = await supabase.from('scheduled_browser_jobs').select('*').order('created_at', { ascending: false });
       if (error) throw new Error(error.message);
       return { jobs: data, count: data?.length || 0 };
     }
     case 'create_scheduled_job': {
-      const insert = { ...args, is_active: args.is_active !== false };
-      const { data, error } = await supabase.from('scheduled_jobs').insert(insert).select().single();
+      const allowed = ['template_id', 'title', 'prompt', 'start_url', 'max_turns', 'category', 'tags', 'frequency', 'is_active', 'next_run_at'];
+      const insert: Record<string, unknown> = {};
+      for (const k of allowed) if (args[k] !== undefined) insert[k] = args[k];
+      if (insert.is_active === undefined) insert.is_active = true;
+      const { data, error } = await supabase.from('scheduled_browser_jobs').insert(insert).select().single();
       if (error) throw new Error(error.message);
       return { job: data };
     }
@@ -1815,13 +1857,15 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
     case 'valchiria_create_swipe_funnel': {
       const rawName = String(args.name || '');
       const name = rawName.includes('[SWIPE]') ? rawName : `[SWIPE] ${rawName}`;
+      const stepsArr = Array.isArray(args.steps) ? args.steps : [];
       const insert: Record<string, unknown> = {
         name,
-        url: args.url || '',
-        page_type: args.page_type || 'landing',
-        notes: args.notes || '',
-        steps: Array.isArray(args.steps) ? args.steps : [],
+        steps: stepsArr,
+        total_steps: stepsArr.length,
+        section: typeof args.section === 'string' ? args.section : 'valchiria',
       };
+      if (args.analysis !== undefined) insert.analysis = args.analysis;
+      if (args.project_id !== undefined) insert.project_id = args.project_id;
       const { data, error } = await supabase
         .from('archived_funnels')
         .insert(insert)
@@ -1831,11 +1875,18 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
       return { swipe_funnel: data };
     }
     case 'valchiria_update_swipe_funnel': {
-      const { id, ...updates } = args;
+      const allowed = ['name', 'steps', 'total_steps', 'analysis', 'section', 'project_id'];
+      const updates: Record<string, unknown> = {};
+      for (const k of allowed) {
+        if (args[k] !== undefined) updates[k] = args[k];
+      }
+      if (Array.isArray(args.steps) && args.total_steps === undefined) {
+        updates.total_steps = (args.steps as unknown[]).length;
+      }
       const { data, error } = await supabase
         .from('archived_funnels')
         .update(updates)
-        .eq('id', id)
+        .eq('id', args.id)
         .select()
         .single();
       if (error) throw new Error(error.message);
@@ -1865,7 +1916,7 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
       steps.push(newStep);
       const { data, error } = await supabase
         .from('archived_funnels')
-        .update({ steps })
+        .update({ steps, total_steps: steps.length })
         .eq('id', args.funnel_id)
         .select()
         .single();
@@ -1885,7 +1936,7 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
       const filtered = stepsArr.filter(s => s.step_index !== args.step_index);
       const { data, error } = await supabase
         .from('archived_funnels')
-        .update({ steps: filtered })
+        .update({ steps: filtered, total_steps: filtered.length })
         .eq('id', args.funnel_id)
         .select()
         .single();
@@ -2185,17 +2236,14 @@ const DB_TABLES = [
   'swipe_templates',
   'archived_funnels',
   'projects',
+  'post_purchase_pages',
+  'funnel_crawl_steps',
+  'affiliate_browser_chats',
+  'affiliate_saved_funnels',
   'saved_prompts',
-  'scheduled_jobs',
+  'scheduled_browser_jobs',
   'api_keys',
   'openclaw_messages',
-  'briefs',
-  'product_briefs',
-  'funnel_briefs',
-  'vision_jobs',
-  'pipeline_jobs',
-  'cursor_agents',
-  'affiliate_funnels',
 ];
 
 const SECTIONS = [
