@@ -1,6 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-const CLONER_API_URL = process.env.CLONER_API_URL || 'http://localhost:8080';
+export const maxDuration = 60;
+
+function makeAbsolute(path: string, origin: string, basePath: string, protocol: string): string {
+  const trimmed = path.trim();
+  if (!trimmed || /^(https?:\/\/|data:|#|mailto:|javascript:)/i.test(trimmed)) return trimmed;
+  if (trimmed.startsWith('//')) return protocol + trimmed;
+  if (trimmed.startsWith('/')) return origin + trimmed;
+  return basePath + trimmed;
+}
 
 function fixClonedHtml(html: string, sourceUrl: string): string {
   let fixed = html;
@@ -18,118 +26,90 @@ function fixClonedHtml(html: string, sourceUrl: string): string {
     const urlObj = new URL(sourceUrl);
     const origin = urlObj.origin;
     const basePath = sourceUrl.substring(0, sourceUrl.lastIndexOf('/') + 1);
-    fixed = fixed.replace(
-      /(src|href|poster|data-src|data-lazy-src)=(["'])((?!https?:\/\/|data:|#|mailto:|javascript:|\/\/).*?)\2/gi,
-      (_m, attr, quote, path) => {
-        const trimmed = path.trim();
-        if (!trimmed) return `${attr}=${quote}${path}${quote}`;
-        const abs = trimmed.startsWith('//') ? urlObj.protocol + trimmed
-          : trimmed.startsWith('/') ? origin + trimmed
-          : basePath + trimmed;
-        return `${attr}=${quote}${abs}${quote}`;
-      }
-    );
-  } catch { /* sourceUrl parse failed, skip absolutize */ }
+    const protocol = urlObj.protocol;
+
+    fixed = fixed
+      .replace(/(srcset)=(["'])(.*?)\2/gi, (_match, attr, quote, value) => {
+        if (/^\s*(https?:\/\/|\/\/)/i.test(value)) return `${attr}=${quote}${value}${quote}`;
+        const parts = value.split(/,(?=\s)/).map((entry: string) => {
+          const segs = entry.trim().split(/\s+/);
+          if (segs.length === 0) return entry;
+          segs[0] = makeAbsolute(segs[0], origin, basePath, protocol);
+          return segs.join(' ');
+        });
+        return `${attr}=${quote}${parts.join(', ')}${quote}`;
+      })
+      .replace(
+        /(src|href|poster|data-src|data-lazy-src)=(["'])((?!https?:\/\/|data:|#|mailto:|javascript:|\/\/).*?)\2/gi,
+        (_m, attr, quote, path) => `${attr}=${quote}${makeAbsolute(path, origin, basePath, protocol)}${quote}`
+      )
+      .replace(
+        /url\((['"]?)((?!https?:\/\/|data:|#)(?:\/[^)'"]+|[^)'"\s]+))\1\)/gi,
+        (_m, quote, path) => `url(${quote}${makeAbsolute(path, origin, basePath, protocol)}${quote})`
+      );
+  } catch { /* sourceUrl parse failed */ }
   return fixed;
-}
-
-export interface CloneRequest {
-  url: string;
-  wait_for_js?: boolean;
-  remove_scripts?: boolean;
-}
-
-export interface CloneResponse {
-  url: string;
-  method_used: string;
-  content_length: number;
-  title: string;
-  duration_seconds: number;
-  html: string;
-  success: boolean;
-  error?: string;
 }
 
 export async function POST(request: NextRequest) {
   try {
-    const body: CloneRequest = await request.json();
+    const body = await request.json();
+    const { url, remove_scripts } = body as { url?: string; remove_scripts?: boolean };
 
-    if (!body.url) {
-      return NextResponse.json(
-        { success: false, error: 'URL is required' },
-        { status: 400 }
-      );
+    if (!url) {
+      return NextResponse.json({ success: false, error: 'URL is required' }, { status: 400 });
     }
 
-    // Validazione URL
-    try {
-      new URL(body.url);
-    } catch {
-      return NextResponse.json(
-        { success: false, error: 'Invalid URL format' },
-        { status: 400 }
-      );
+    try { new URL(url); } catch {
+      return NextResponse.json({ success: false, error: 'Invalid URL format' }, { status: 400 });
     }
 
-    // Chiamata al servizio di clonazione
-    const cloneResponse = await fetch(`${CLONER_API_URL}/api/landing/clone`, {
-      method: 'POST',
+    const start = Date.now();
+
+    const pageRes = await fetch(url, {
       headers: {
-        'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9,it;q=0.8',
       },
-      body: JSON.stringify({
-        url: body.url,
-        wait_for_js: body.wait_for_js ?? false,
-        remove_scripts: body.remove_scripts ?? true,
-      }),
+      redirect: 'follow',
+      signal: AbortSignal.timeout(20000),
     });
 
-    if (!cloneResponse.ok) {
-      const errorText = await cloneResponse.text();
+    if (!pageRes.ok) {
       return NextResponse.json(
-        { 
-          success: false, 
-          error: `Cloner service error: ${cloneResponse.status} - ${errorText}` 
-        },
-        { status: cloneResponse.status }
+        { success: false, error: `Unable to clone the page: HTTP ${pageRes.status} ${pageRes.statusText}` },
+        { status: 400 },
       );
     }
 
-    const data: CloneResponse = await cloneResponse.json();
+    let html = await pageRes.text();
+    const duration = (Date.now() - start) / 1000;
 
-    const cleanHtml = data.html ? fixClonedHtml(data.html, body.url) : data.html;
+    if (remove_scripts !== false) {
+      html = html.replace(/<script[\s\S]*?<\/script>/gi, '');
+    }
+
+    const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+    const title = titleMatch ? titleMatch[1].replace(/<[^>]*>/g, '').trim() : '';
+
+    const cleanHtml = fixClonedHtml(html, url);
 
     return NextResponse.json({
       success: true,
-      url: data.url,
-      method_used: data.method_used,
-      content_length: cleanHtml?.length || data.content_length,
-      title: data.title,
-      duration_seconds: data.duration_seconds,
+      url,
+      method_used: 'direct-fetch',
+      content_length: cleanHtml.length,
+      title,
+      duration_seconds: duration,
       html: cleanHtml,
-      html_preview: cleanHtml?.substring(0, 500) + '...',
+      html_preview: cleanHtml.substring(0, 500) + '...',
     });
-
   } catch (error) {
     console.error('Clone API error:', error);
-    
-    // Handle service connection error
-    if (error instanceof TypeError && error.message.includes('fetch')) {
-      return NextResponse.json(
-        { 
-          success: false, 
-          error: 'Impossibile connettersi al servizio di clonazione. Assicurati che sia in esecuzione su localhost:8080' 
-        },
-        { status: 503 }
-      );
-    }
-
     return NextResponse.json(
-      { 
-        success: false, 
-        error: error instanceof Error ? error.message : 'Unknown error' 
-      },
-      { status: 500 }
+      { success: false, error: error instanceof Error ? error.message : 'Unknown error' },
+      { status: 500 },
     );
   }
 }
