@@ -667,6 +667,7 @@ export default function FrontEndFunnel() {
     customPrompt: '',
     language: 'it',
     targetLanguage: 'Italiano',
+    useOpenClaw: false,
   });
   const [cloningIds, setCloningIds] = useState<string[]>([]);
   const [cloneProgress, setCloneProgress] = useState<{
@@ -1613,7 +1614,7 @@ export default function FrontEndFunnel() {
           });
         }
 
-        setCloneProgress({ phase: 'processing', totalTexts: 0, processedTexts: 0, message: 'Rewriting texts with Claude...' });
+        setCloneProgress({ phase: 'processing', totalTexts: 0, processedTexts: 0, message: cloneConfig.useOpenClaw ? 'Rewriting texts with OpenClaw (local)...' : 'Rewriting texts with Claude...' });
 
         const rewriteRes = await fetch('/api/quiz-rewrite', {
           method: 'POST',
@@ -1623,6 +1624,7 @@ export default function FrontEndFunnel() {
             productName: cloneConfig.productName,
             productDescription: cloneConfig.productDescription,
             customPrompt: cloneConfig.customPrompt || undefined,
+            useOpenClaw: cloneConfig.useOpenClaw,
           }),
         });
         const rewriteData = await rewriteRes.json();
@@ -4124,6 +4126,23 @@ export default function FrontEndFunnel() {
                       rows={2}
                       placeholder="E.g.: Luxurious but accessible tone, in English..."
                     />
+                  </div>
+
+                  <div className="bg-gradient-to-r from-purple-50 to-indigo-50 border border-purple-200 rounded-lg p-3">
+                    <label className="flex items-start gap-3 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={cloneConfig.useOpenClaw}
+                        onChange={(e) => setCloneConfig({ ...cloneConfig, useOpenClaw: e.target.checked })}
+                        className="mt-1 w-4 h-4 text-purple-600 rounded focus:ring-2 focus:ring-purple-500"
+                      />
+                      <div className="flex-1">
+                        <div className="text-sm font-semibold text-purple-900">Use OpenClaw (local bot) instead of Claude</div>
+                        <div className="text-xs text-purple-700 mt-0.5">
+                          Routes the rewrite through your local OpenClaw via the Supabase queue. Requires <code className="bg-purple-100 px-1 rounded">openclaw-worker.js</code> running on your PC.
+                        </div>
+                      </div>
+                    </label>
                   </div>
                 </div>
               )}

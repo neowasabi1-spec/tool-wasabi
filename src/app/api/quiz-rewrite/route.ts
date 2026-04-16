@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAnthropicKey } from '@/lib/anthropic-key';
+import { queueAndWait } from '@/lib/openclaw-queue';
 
 export const maxDuration = 300;
 export const dynamic = 'force-dynamic';
@@ -166,9 +167,10 @@ export async function POST(request: NextRequest) {
       productName: string;
       productDescription: string;
       customPrompt?: string;
+      useOpenClaw?: boolean;
     };
 
-    const { html, productName, productDescription, customPrompt } = body;
+    const { html, productName, productDescription, customPrompt, useOpenClaw } = body;
 
     if (!html || html.length < 50) {
       return NextResponse.json({ error: 'HTML too short or missing' }, { status: 400 });
@@ -200,23 +202,25 @@ RULES:
 7. Return a JSON array of objects: [{"id": 0, "rewritten": "new text"}, ...]
 8. Return ONLY the JSON array, nothing else.`;
 
-    const BATCH_SIZE = 40;
-    const CONCURRENCY = 4;
+    const BATCH_SIZE = useOpenClaw ? 100 : 40;
+    const CONCURRENCY = useOpenClaw ? 1 : 4;
     const batches: typeof textsForAi[] = [];
     for (let i = 0; i < textsForAi.length; i += BATCH_SIZE) {
       batches.push(textsForAi.slice(i, i + BATCH_SIZE));
     }
 
-    console.log(`[quiz-rewrite] Total texts=${texts.length}, batches=${batches.length}, batch_size=${BATCH_SIZE}, concurrency=${CONCURRENCY}`);
+    console.log(`[quiz-rewrite] provider=${useOpenClaw ? 'openclaw' : 'anthropic'}, texts=${texts.length}, batches=${batches.length}, batch_size=${BATCH_SIZE}, concurrency=${CONCURRENCY}`);
 
     const rewrites: Array<{ id: number; rewritten: string }> = [];
     const batchErrors: string[] = [];
-    const usedProvider = 'anthropic';
+    const usedProvider = useOpenClaw ? 'openclaw' : 'anthropic';
 
     async function processBatch(batch: typeof textsForAi, batchIdx: number): Promise<Array<{ id: number; rewritten: string }>> {
       const batchPrompt = `Rewrite these ${batch.length} texts for the product "${productName}":\n\n${JSON.stringify(batch, null, 2)}`;
       try {
-        const aiText = await callAnthropic(systemPrompt, batchPrompt, 55_000);
+        const aiText = useOpenClaw
+          ? await queueAndWait(batchPrompt, { systemPrompt, section: 'Quiz Rewrite', timeoutMs: 240_000 })
+          : await callAnthropic(systemPrompt, batchPrompt, 55_000);
         const cleaned = cleanAiOutput(aiText);
         try {
           const parsed = JSON.parse(cleaned) as Array<{ id: number; rewritten: string }>;
