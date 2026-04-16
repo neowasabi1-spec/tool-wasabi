@@ -1588,7 +1588,7 @@ export default function FrontEndFunnel() {
         });
 
       } else if (mode === 'rewrite') {
-        // All rewrites use OpenClaw via /api/quiz-rewrite
+        // All rewrites go through /api/quiz-rewrite (Anthropic Claude)
         let htmlToRewrite = currentPage?.clonedData?.html || currentPage?.swipedData?.html || '';
 
         // If no HTML exists, first clone the page to get it
@@ -1613,7 +1613,7 @@ export default function FrontEndFunnel() {
           });
         }
 
-        setCloneProgress({ phase: 'processing', totalTexts: 0, processedTexts: 0, message: 'Rewriting texts with OpenClaw...' });
+        setCloneProgress({ phase: 'processing', totalTexts: 0, processedTexts: 0, message: 'Rewriting texts with Claude...' });
 
         const rewriteRes = await fetch('/api/quiz-rewrite', {
           method: 'POST',
@@ -1633,7 +1633,7 @@ export default function FrontEndFunnel() {
 
         updateFunnelPage(pageId, {
           swipeStatus: 'completed',
-          swipeResult: `Rewrite OK (${rewriteData.replacements}/${rewriteData.totalTexts} texts) [${rewriteData.provider || 'openclaw'}]`,
+          swipeResult: `Rewrite OK (${rewriteData.replacements}/${rewriteData.totalTexts} texts) [${rewriteData.provider || 'claude'}]`,
           swipedData: {
             html: rewrittenHtml,
             originalTitle: pageName,
@@ -1641,7 +1641,7 @@ export default function FrontEndFunnel() {
             originalLength: rewriteData.originalLength || htmlToRewrite.length,
             newLength: rewriteData.newLength || rewrittenHtml.length,
             processingTime: 0,
-            methodUsed: 'openclaw-rewrite',
+            methodUsed: 'claude-rewrite',
             changesMade: [`${rewriteData.replacements} texts rewritten out of ${rewriteData.totalTexts}`],
             swipedAt: new Date(),
           },
@@ -1654,7 +1654,7 @@ export default function FrontEndFunnel() {
           html: rewrittenHtml,
           mobileHtml: '',
           iframeSrc: '',
-          metadata: { method: 'openclaw-rewrite', length: rewrittenHtml.length, duration: 0 },
+          metadata: { method: 'claude-rewrite', length: rewrittenHtml.length, duration: 0 },
           pageId,
           sourceType: 'swiped',
         });
