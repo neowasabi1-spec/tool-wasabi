@@ -2,6 +2,13 @@
 
 Run the worker permanently on the PC where OpenClaw is installed. It will start automatically at boot and restart if it crashes.
 
+The worker handles **two types of jobs** from the Supabase queue (`openclaw_messages` table):
+
+1. **Chat messages** (`section != 'swipe_job'`) → forwarded to local OpenClaw at `127.0.0.1:19001`
+2. **Swipe jobs** (`section = 'swipe_job'`) → executed by calling the deployed tool API directly (no Vercel timeout!) — used by `swipe_landing_page_async` MCP tool, supports jobs up to 6 hours
+
+Optional environment variable: `TOOL_BASE_URL` (default: `https://cloner-funnel-builder.vercel.app`)
+
 ## 1. Install prerequisites (once, on the OpenClaw PC)
 
 1. Install **Node.js LTS**: https://nodejs.org

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAnthropicKey } from '@/lib/anthropic-key';
 
-export const maxDuration = 120;
+export const maxDuration = 300;
 
 interface ProductInfo {
   name: string;

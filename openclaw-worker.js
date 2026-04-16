@@ -12,6 +12,8 @@
 
 const { createClient } = require('@supabase/supabase-js');
 const http = require('http');
+const https = require('https');
+const { URL } = require('url');
 
 // ===== CONFIG =====================================================
 const SUPABASE_URL = process.env.SUPABASE_URL
@@ -25,10 +27,14 @@ const OPENCLAW_API_KEY = process.env.OPENCLAW_API_KEY
   || '76d0f4b9c277c5e457d64d908fc51fe0a2e8a93664b30806';
 const OPENCLAW_MODEL = process.env.OPENCLAW_MODEL || 'openclaw:neo';
 
+const TOOL_BASE_URL = process.env.TOOL_BASE_URL
+  || 'https://cloner-funnel-builder.vercel.app';
+
 const POLL_INTERVAL_MS = 3000;
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
-const OPENCLAW_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes per message
-const MAX_CONSECUTIVE_POLL_ERRORS = 20;     // after 20 consecutive errors, exit (service will restart)
+const OPENCLAW_TIMEOUT_MS = 30 * 60 * 1000;          // 30 minutes per chat message
+const SWIPE_JOB_TIMEOUT_MS = 6 * 60 * 60 * 1000;     // 6 hours per swipe job
+const MAX_CONSECUTIVE_POLL_ERRORS = 20;
 
 // ===== STATE ======================================================
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -93,10 +99,52 @@ function callOpenClaw(messages) {
   });
 }
 
+// ===== TOOL API CALL (for swipe jobs) =============================
+function callToolApi(path, body, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(path, TOOL_BASE_URL);
+    const isHttps = u.protocol === 'https:';
+    const lib = isHttps ? https : http;
+    const payload = JSON.stringify(body);
+
+    const req = lib.request({
+      hostname: u.hostname,
+      port: u.port || (isHttps ? 443 : 80),
+      path: u.pathname + u.search,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload),
+      },
+      timeout: timeoutMs,
+    }, (res) => {
+      let buf = '';
+      res.on('data', (c) => buf += c);
+      res.on('end', () => {
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          try { resolve(JSON.parse(buf)); }
+          catch { resolve({ raw: buf }); }
+        } else {
+          reject(new Error(`Tool API HTTP ${res.statusCode}: ${buf.substring(0, 300)}`));
+        }
+      });
+    });
+
+    req.on('timeout', () => {
+      req.destroy();
+      reject(new Error(`Tool API timeout after ${(timeoutMs / 1000).toFixed(0)}s`));
+    });
+    req.on('error', (e) => reject(new Error(`Tool API network error: ${e.message}`)));
+    req.write(payload);
+    req.end();
+  });
+}
+
 // ===== MESSAGE PROCESSING =========================================
 async function processMessage(msg) {
+  const isSwipeJob = msg.section === 'swipe_job';
   const preview = String(msg.user_message || '').substring(0, 60).replace(/\n/g, ' ');
-  log(`Processing #${msg.id}: "${preview}..."`);
+  log(`Processing #${msg.id} [${msg.section || 'chat'}]: "${preview}..."`);
 
   try {
     await supabase
@@ -104,40 +152,90 @@ async function processMessage(msg) {
       .update({ status: 'processing' })
       .eq('id', msg.id);
 
-    const systemPrompt = msg.system_prompt
-      || 'You are OpenClaw, an AI assistant. Be concise and helpful. Respond in the same language as the user.';
-    const messages = [{ role: 'system', content: systemPrompt }];
-
-    let history = [];
-    try {
-      if (msg.chat_history) {
-        history = typeof msg.chat_history === 'string'
-          ? JSON.parse(msg.chat_history)
-          : msg.chat_history;
-      }
-    } catch {
-      /* ignore malformed history */
-    }
-    if (Array.isArray(history) && history.length > 0) {
-      history.forEach(h => messages.push({ role: h.role, content: h.content }));
-    }
-    messages.push({ role: 'user', content: msg.user_message });
-
     const started = Date.now();
-    const response = await callOpenClaw(messages);
+    let responsePayload;
+
+    if (isSwipeJob) {
+      // ─── SWIPE JOB ──────────────────────────────────────────────────
+      // user_message is a JSON-encoded job payload: { action, ...params }
+      let job;
+      try { job = JSON.parse(msg.user_message); }
+      catch { throw new Error('Invalid swipe_job payload (not valid JSON)'); }
+
+      if (!job.action) throw new Error('swipe_job missing action');
+      log(`  ▸ Action: ${job.action}`);
+
+      switch (job.action) {
+        case 'swipe_landing_page': {
+          const result = await callToolApi('/api/landing/swipe', {
+            source_url: job.source_url,
+            product: job.product,
+            tone: job.tone || 'professional',
+            language: job.language || 'it',
+          }, SWIPE_JOB_TIMEOUT_MS);
+          responsePayload = JSON.stringify(result);
+          break;
+        }
+        case 'clone_funnel': {
+          const result = await callToolApi('/api/clone-funnel', {
+            url: job.url,
+            cloneMode: job.cloneMode || 'identical',
+            viewport: job.viewport || 'desktop',
+            keepScripts: job.keepScripts || false,
+          }, SWIPE_JOB_TIMEOUT_MS);
+          responsePayload = JSON.stringify(result);
+          break;
+        }
+        case 'agentic_swipe': {
+          const result = await callToolApi('/api/agentic-swipe', job.params || {}, SWIPE_JOB_TIMEOUT_MS);
+          responsePayload = JSON.stringify(result);
+          break;
+        }
+        case 'invoke_api': {
+          // Generic escape hatch: allow MCP to enqueue any tool API call
+          if (!job.path) throw new Error('invoke_api job missing path');
+          const result = await callToolApi(job.path, job.body || {}, job.timeoutMs || SWIPE_JOB_TIMEOUT_MS);
+          responsePayload = JSON.stringify(result);
+          break;
+        }
+        default:
+          throw new Error(`Unknown swipe_job action: ${job.action}`);
+      }
+    } else {
+      // ─── CHAT MESSAGE (existing behavior) ───────────────────────────
+      const systemPrompt = msg.system_prompt
+        || 'You are OpenClaw, an AI assistant. Be concise and helpful. Respond in the same language as the user.';
+      const messages = [{ role: 'system', content: systemPrompt }];
+
+      let history = [];
+      try {
+        if (msg.chat_history) {
+          history = typeof msg.chat_history === 'string'
+            ? JSON.parse(msg.chat_history)
+            : msg.chat_history;
+        }
+      } catch { /* ignore malformed history */ }
+      if (Array.isArray(history) && history.length > 0) {
+        history.forEach(h => messages.push({ role: h.role, content: h.content }));
+      }
+      messages.push({ role: 'user', content: msg.user_message });
+
+      responsePayload = await callOpenClaw(messages);
+    }
+
     const elapsed = ((Date.now() - started) / 1000).toFixed(1);
 
     await supabase
       .from('openclaw_messages')
       .update({
         status: 'completed',
-        response,
+        response: responsePayload,
         completed_at: new Date().toISOString(),
       })
       .eq('id', msg.id);
 
     totalProcessed++;
-    log(`✅ Completed #${msg.id} in ${elapsed}s (${response.length} chars, total processed: ${totalProcessed})`);
+    log(`✅ Completed #${msg.id} in ${elapsed}s (${(responsePayload || '').length} chars, total processed: ${totalProcessed})`);
   } catch (e) {
     totalErrors++;
     err(`#${msg.id}:`, e.message);

@@ -2,6 +2,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
 import { createHash, randomUUID } from 'crypto';
 
+// Allow this route up to the Vercel maximum (300s on Pro). Anything longer
+// MUST go through the async pattern (swipe_landing_page_async / swipe_status)
+// because Vercel will hard-kill the function after maxDuration regardless.
+export const maxDuration = 300;
+
 const SERVER_INFO = {
   name: 'funnel-swiper-mcp',
   version: '1.1.0',
@@ -370,6 +375,52 @@ const TOOLS = [
         language: { type: 'string', description: 'Language code (default: it)' },
       },
       required: ['source_url', 'product_id'],
+    },
+  },
+  {
+    name: 'swipe_landing_page_async',
+    description: 'ASYNC variant of swipe_landing_page for long pages that exceed Vercel\'s 300s limit. Enqueues the swipe job in Supabase and returns a job_id immediately. The local openclaw-worker.js (running on the user\'s PC) processes the job with no timeout, so this works for jobs up to several hours. Poll with swipe_status until status=completed.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        source_url: { type: 'string', description: 'URL of the landing page to swipe' },
+        product_name: { type: 'string' },
+        product_id: { type: 'string', description: 'Alternative: use a saved product by ID instead of inline fields' },
+        product_description: { type: 'string' },
+        benefits: { type: 'string', description: 'Comma-separated benefits' },
+        price: { type: 'string' },
+        cta_text: { type: 'string' },
+        cta_url: { type: 'string' },
+        target_audience: { type: 'string' },
+        brand_name: { type: 'string' },
+        tone: { type: 'string', description: 'professional, casual, urgent, luxury (default: professional)' },
+        language: { type: 'string', description: 'it, en, es, de, fr (default: it)' },
+      },
+      required: ['source_url'],
+    },
+  },
+  {
+    name: 'swipe_status',
+    description: 'Poll the status of any async swipe / long-running job started via *_async tools. Returns { status, progress?, response?, error? }. Status values: pending, processing, completed, error.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        job_id: { type: 'string', description: 'The job_id returned by an *_async tool' },
+        wait_seconds: { type: 'number', description: 'Optional: wait up to N seconds for completion before returning (max 250). Useful for "blocking poll".' },
+      },
+      required: ['job_id'],
+    },
+  },
+  {
+    name: 'list_swipe_jobs',
+    description: 'List recent async swipe jobs and their statuses',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        limit: { type: 'number', description: 'Max jobs to return (default 20)' },
+        status: { type: 'string', description: 'Optional filter: pending, processing, completed, error' },
+      },
+      required: [],
     },
   },
   {
@@ -1570,7 +1621,7 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
           tone: args.tone || 'professional',
           language: args.language || 'it',
         }),
-        signal: AbortSignal.timeout(180000),
+        signal: AbortSignal.timeout(290_000),
       });
       const result = await res.json();
       if (result.error) throw new Error(result.error);
@@ -1608,7 +1659,7 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
           tone: args.tone || 'professional',
           language: args.language || 'it',
         }),
-        signal: AbortSignal.timeout(180000),
+        signal: AbortSignal.timeout(290_000),
       });
       const result = await res.json();
       if (result.error) throw new Error(result.error);
@@ -1625,6 +1676,128 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
         html: result.html,
       };
     }
+    case 'swipe_landing_page_async': {
+      // Resolve product (either by id or from inline fields)
+      let product: Record<string, unknown> = {};
+      if (args.product_id) {
+        const { data: prod, error: prodErr } = await supabase
+          .from('products').select('*').eq('id', args.product_id).single();
+        if (prodErr || !prod) throw new Error(`Product not found: ${args.product_id}`);
+        product = {
+          name: prod.name,
+          description: prod.description,
+          benefits: prod.benefits ? (Array.isArray(prod.benefits) ? prod.benefits : String(prod.benefits).split(',').map((b: string) => b.trim())) : [],
+          price: prod.price,
+          cta_text: prod.cta_text,
+          cta_url: prod.cta_url,
+          target_audience: prod.target_audience,
+          brand_name: prod.brand_name,
+        };
+      } else {
+        if (!args.product_name) throw new Error('Either product_id or product_name is required');
+        product = { name: args.product_name };
+        if (args.product_description) product.description = args.product_description;
+        if (args.benefits) product.benefits = String(args.benefits).split(',').map((b: string) => b.trim());
+        if (args.price) product.price = args.price;
+        if (args.cta_text) product.cta_text = args.cta_text;
+        if (args.cta_url) product.cta_url = args.cta_url;
+        if (args.target_audience) product.target_audience = args.target_audience;
+        if (args.brand_name) product.brand_name = args.brand_name;
+      }
+
+      const jobPayload = {
+        action: 'swipe_landing_page',
+        source_url: args.source_url,
+        product,
+        tone: args.tone || 'professional',
+        language: args.language || 'it',
+      };
+
+      const { data: msg, error } = await supabase
+        .from('openclaw_messages')
+        .insert({
+          user_message: JSON.stringify(jobPayload),
+          section: 'swipe_job',
+          status: 'pending',
+        })
+        .select('id, created_at')
+        .single();
+      if (error) throw new Error(error.message);
+
+      return {
+        job_id: msg.id,
+        status: 'pending',
+        created_at: msg.created_at,
+        notes: 'Poll with swipe_status (or list_swipe_jobs). The local openclaw-worker.js must be running with swipe_job handler enabled.',
+      };
+    }
+
+    case 'swipe_status': {
+      const jobId = String(args.job_id);
+      const waitMs = Math.min(Math.max(Number(args.wait_seconds) || 0, 0), 250) * 1000;
+      const start = Date.now();
+
+      do {
+        const { data, error } = await supabase
+          .from('openclaw_messages')
+          .select('id, status, response, error_message, section, created_at, completed_at')
+          .eq('id', jobId)
+          .single();
+        if (error) throw new Error(error.message);
+        if (!data) throw new Error('Job not found');
+
+        const elapsedMs = Date.now() - start;
+
+        if (data.status === 'completed') {
+          let parsedResponse: unknown = data.response;
+          try { parsedResponse = JSON.parse(String(data.response)); } catch { /* keep raw */ }
+          return {
+            job_id: data.id,
+            status: 'completed',
+            response: parsedResponse,
+            section: data.section,
+            elapsed_ms: elapsedMs,
+            completed_at: data.completed_at,
+          };
+        }
+        if (data.status === 'error') {
+          return {
+            job_id: data.id,
+            status: 'error',
+            error: data.error_message,
+            section: data.section,
+            elapsed_ms: elapsedMs,
+          };
+        }
+        if (waitMs > 0 && elapsedMs < waitMs) {
+          await new Promise(r => setTimeout(r, 3000));
+          continue;
+        }
+        return {
+          job_id: data.id,
+          status: data.status,
+          section: data.section,
+          created_at: data.created_at,
+          elapsed_ms: elapsedMs,
+          notes: 'Job not yet completed. Call swipe_status again or pass wait_seconds for a blocking poll.',
+        };
+      } while (true);
+    }
+
+    case 'list_swipe_jobs': {
+      const limit = Math.min(Number(args.limit) || 20, 100);
+      let q = supabase
+        .from('openclaw_messages')
+        .select('id, status, section, created_at, completed_at, error_message')
+        .eq('section', 'swipe_job')
+        .order('created_at', { ascending: false })
+        .limit(limit);
+      if (args.status) q = q.eq('status', String(args.status));
+      const { data, error } = await q;
+      if (error) throw new Error(error.message);
+      return { jobs: data, count: data?.length || 0 };
+    }
+
     case 'save_swiped_page': {
       const { data: fp, error: fpErr } = await supabase.from('funnel_pages').insert({
         name: args.name,
