@@ -1,11 +1,27 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 
 const SERVER_INFO = {
   name: 'funnel-swiper-mcp',
-  version: '1.0.0',
+  version: '1.1.0',
 };
+
+// MCP Streamable HTTP protocol version (2025-03-26 introduced Streamable HTTP)
+const MCP_PROTOCOL_VERSION = '2025-06-18';
+const SUPPORTED_PROTOCOL_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'];
+
+// Common headers returned on every response (CORS + protocol version)
+function baseHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  return {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-API-Key, Mcp-Session-Id, MCP-Protocol-Version, Accept',
+    'Access-Control-Expose-Headers': 'Mcp-Session-Id, MCP-Protocol-Version',
+    'MCP-Protocol-Version': MCP_PROTOCOL_VERSION,
+    ...extra,
+  };
+}
 
 const TOOLS = [
   {
@@ -585,6 +601,13 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
   }
 }
 
+interface JsonRpcRequest {
+  jsonrpc: '2.0';
+  id?: unknown;
+  method: string;
+  params?: Record<string, unknown>;
+}
+
 function jsonRpcResponse(id: unknown, result: unknown) {
   return { jsonrpc: '2.0', id, result };
 }
@@ -593,85 +616,182 @@ function jsonRpcError(id: unknown, code: number, message: string) {
   return { jsonrpc: '2.0', id, error: { code, message } };
 }
 
-export async function POST(req: NextRequest) {
-  const auth = await validateMcpAuth(req);
-  if (!auth.valid) {
-    return NextResponse.json(jsonRpcError(null, -32000, auth.error || 'Unauthorized'), { status: 401 });
-  }
+function isNotification(req: JsonRpcRequest): boolean {
+  // A JSON-RPC notification has no `id` field. MCP also treats `notifications/*` as notifications.
+  return req.id === undefined || req.method?.startsWith('notifications/');
+}
 
-  let body;
-  try {
-    body = await req.json();
-  } catch {
-    return NextResponse.json(jsonRpcError(null, -32700, 'Parse error'));
-  }
-
-  const { jsonrpc, id, method, params } = body;
+async function dispatch(msg: JsonRpcRequest): Promise<unknown | null> {
+  const { jsonrpc, id, method, params } = msg;
 
   if (jsonrpc !== '2.0') {
-    return NextResponse.json(jsonRpcError(id, -32600, 'Invalid Request: must be JSON-RPC 2.0'));
+    return jsonRpcError(id ?? null, -32600, 'Invalid Request: must be JSON-RPC 2.0');
+  }
+
+  // Notifications do not produce a response body (per JSON-RPC 2.0).
+  if (isNotification(msg)) {
+    // Still handle any side-effects, but return null so the HTTP layer sends 202.
+    return null;
   }
 
   switch (method) {
-    case 'initialize':
-      return NextResponse.json(jsonRpcResponse(id, {
-        protocolVersion: '2024-11-05',
-        capabilities: { tools: {} },
+    case 'initialize': {
+      // Echo back the client's requested protocol version if we support it,
+      // otherwise return our latest supported version.
+      const requested = (params as { protocolVersion?: string })?.protocolVersion;
+      const protocolVersion = requested && SUPPORTED_PROTOCOL_VERSIONS.includes(requested)
+        ? requested
+        : MCP_PROTOCOL_VERSION;
+      return jsonRpcResponse(id, {
+        protocolVersion,
+        capabilities: {
+          tools: { listChanged: false },
+        },
         serverInfo: SERVER_INFO,
-      }));
-
-    case 'notifications/initialized':
-      return NextResponse.json(jsonRpcResponse(id, {}));
+        instructions: 'Funnel Swiper MCP: call tools/list then tools/call with a tool name and arguments.',
+      });
+    }
 
     case 'tools/list':
-      return NextResponse.json(jsonRpcResponse(id, { tools: TOOLS }));
+      return jsonRpcResponse(id, { tools: TOOLS });
 
     case 'tools/call': {
-      const toolName = params?.name;
-      const toolArgs = params?.arguments || {};
+      const toolName = (params as { name?: string })?.name;
+      const toolArgs = ((params as { arguments?: Record<string, unknown> })?.arguments) || {};
       if (!toolName) {
-        return NextResponse.json(jsonRpcError(id, -32602, 'Missing tool name'));
+        return jsonRpcError(id, -32602, 'Missing tool name');
       }
       const toolDef = TOOLS.find(t => t.name === toolName);
       if (!toolDef) {
-        return NextResponse.json(jsonRpcError(id, -32602, `Unknown tool: ${toolName}`));
+        return jsonRpcError(id, -32602, `Unknown tool: ${toolName}`);
       }
       try {
         const result = await executeTool(toolName, toolArgs);
-        return NextResponse.json(jsonRpcResponse(id, {
+        return jsonRpcResponse(id, {
           content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-        }));
+        });
       } catch (err) {
-        return NextResponse.json(jsonRpcResponse(id, {
+        return jsonRpcResponse(id, {
           content: [{ type: 'text', text: `Error: ${(err as Error).message}` }],
           isError: true,
-        }));
+        });
       }
     }
 
     case 'resources/list':
-      return NextResponse.json(jsonRpcResponse(id, { resources: [] }));
+      return jsonRpcResponse(id, { resources: [] });
+
+    case 'resources/templates/list':
+      return jsonRpcResponse(id, { resourceTemplates: [] });
 
     case 'prompts/list':
-      return NextResponse.json(jsonRpcResponse(id, { prompts: [] }));
+      return jsonRpcResponse(id, { prompts: [] });
 
     case 'ping':
-      return NextResponse.json(jsonRpcResponse(id, {}));
+      return jsonRpcResponse(id, {});
 
     default:
-      return NextResponse.json(jsonRpcError(id, -32601, `Method not found: ${method}`));
+      return jsonRpcError(id, -32601, `Method not found: ${method}`);
   }
 }
 
-export async function GET() {
-  return NextResponse.json({
-    name: SERVER_INFO.name,
-    version: SERVER_INFO.version,
-    protocol: 'MCP',
-    protocolVersion: '2024-11-05',
-    transport: 'streamable-http',
-    tools: TOOLS.map(t => ({ name: t.name, description: t.description })),
-    auth: 'API key via X-API-Key header (requires full_access permission)',
-    endpoint: '/api/mcp',
+export async function OPTIONS() {
+  return new NextResponse(null, { status: 204, headers: baseHeaders() });
+}
+
+export async function POST(req: NextRequest) {
+  const auth = await validateMcpAuth(req);
+  if (!auth.valid) {
+    return NextResponse.json(
+      jsonRpcError(null, -32000, auth.error || 'Unauthorized'),
+      { status: 401, headers: baseHeaders() }
+    );
+  }
+
+  // Parse body (supports single JSON-RPC request or batch array).
+  let body: JsonRpcRequest | JsonRpcRequest[];
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json(
+      jsonRpcError(null, -32700, 'Parse error'),
+      { status: 400, headers: baseHeaders() }
+    );
+  }
+
+  // Session management: on initialize, mint a session id. Echo it back on every response.
+  let sessionId = req.headers.get('mcp-session-id') || undefined;
+  const isInitialize = !Array.isArray(body) && body?.method === 'initialize';
+  if (isInitialize && !sessionId) sessionId = randomUUID();
+
+  const extraHeaders: Record<string, string> = {};
+  if (sessionId) extraHeaders['Mcp-Session-Id'] = sessionId;
+
+  // Handle batch requests
+  if (Array.isArray(body)) {
+    const results = await Promise.all(body.map(msg => dispatch(msg)));
+    const responses = results.filter(r => r !== null);
+    if (responses.length === 0) {
+      // All messages were notifications → 202 Accepted, no body
+      return new NextResponse(null, { status: 202, headers: baseHeaders(extraHeaders) });
+    }
+    return NextResponse.json(responses, {
+      status: 200,
+      headers: baseHeaders({ ...extraHeaders, 'Content-Type': 'application/json' }),
+    });
+  }
+
+  // Single message
+  const result = await dispatch(body);
+  if (result === null) {
+    // Notification → 202 Accepted, no body
+    return new NextResponse(null, { status: 202, headers: baseHeaders(extraHeaders) });
+  }
+  return NextResponse.json(result, {
+    status: 200,
+    headers: baseHeaders({ ...extraHeaders, 'Content-Type': 'application/json' }),
   });
+}
+
+// GET on the MCP endpoint is optional in Streamable HTTP (would open a server-to-client SSE stream).
+// We don't push server-initiated messages, so we return a capability descriptor instead.
+// Clients that require a stream can still POST normally.
+export async function GET(req: NextRequest) {
+  const accept = req.headers.get('accept') || '';
+  // If a client explicitly requests the stream, reply 405 per spec (we don't support server-initiated streams).
+  if (accept.includes('text/event-stream')) {
+    return new NextResponse('Server-initiated streams are not supported. POST to this endpoint instead.', {
+      status: 405,
+      headers: baseHeaders({ 'Content-Type': 'text/plain', 'Allow': 'POST, OPTIONS, DELETE' }),
+    });
+  }
+
+  return NextResponse.json(
+    {
+      name: SERVER_INFO.name,
+      version: SERVER_INFO.version,
+      protocol: 'MCP',
+      protocolVersion: MCP_PROTOCOL_VERSION,
+      supportedProtocolVersions: SUPPORTED_PROTOCOL_VERSIONS,
+      transport: 'streamable-http',
+      contentType: 'application/json',
+      tools: TOOLS.map(t => ({ name: t.name, description: t.description })),
+      auth: 'API key via X-API-Key header (requires full_access permission)',
+      endpoint: '/api/mcp',
+    },
+    { headers: baseHeaders() }
+  );
+}
+
+// DELETE is used in Streamable HTTP to terminate a session.
+export async function DELETE(req: NextRequest) {
+  const auth = await validateMcpAuth(req);
+  if (!auth.valid) {
+    return NextResponse.json(
+      jsonRpcError(null, -32000, auth.error || 'Unauthorized'),
+      { status: 401, headers: baseHeaders() }
+    );
+  }
+  // Stateless: nothing to persist server-side, just acknowledge.
+  return new NextResponse(null, { status: 204, headers: baseHeaders() });
 }

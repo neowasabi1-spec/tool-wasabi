@@ -1,27 +1,50 @@
 /**
- * OpenClaw Worker - Runs on the VPS alongside OpenClaw
- * Polls Supabase for pending messages, sends them to local OpenClaw, writes responses back
- * 
- * Usage: node openclaw-worker.js
- * 
- * Requires: npm install @supabase/supabase-js (run once)
+ * OpenClaw Worker — polls Supabase for pending messages and forwards them
+ * to the local OpenClaw server. Resilient: auto-reconnects on errors, retries on
+ * transient failures, logs verbose status.
+ *
+ * Usage:
+ *   npm install @supabase/supabase-js
+ *   node openclaw-worker.js
+ *
+ * Recommended: run as a Windows service via NSSM so it starts on boot.
  */
 
 const { createClient } = require('@supabase/supabase-js');
 const http = require('http');
 
-const SUPABASE_URL = 'https://bsovaojzveayoagshuuy.supabase.co';
-const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJzb3Zhb2p6dmVheW9hZ3NodXV5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njk2MzUzNjIsImV4cCI6MjA4NTIxMTM2Mn0.OVgrc-9-ijgP0S7VPgcJ1EjSl4Hkumo_Tk_2aQHKTJQ';
+// ===== CONFIG =====================================================
+const SUPABASE_URL = process.env.SUPABASE_URL
+  || 'https://bsovaojzveayoagshuuy.supabase.co';
+const SUPABASE_KEY = process.env.SUPABASE_KEY
+  || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJzb3Zhb2p6dmVheW9hZ3NodXV5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njk2MzUzNjIsImV4cCI6MjA4NTIxMTM2Mn0.OVgrc-9-ijgP0S7VPgcJ1EjSl4Hkumo_Tk_2aQHKTJQ';
 
-const OPENCLAW_HOST = '127.0.0.1';
-const OPENCLAW_PORT = 19001;
-const OPENCLAW_API_KEY = '76d0f4b9c277c5e457d64d908fc51fe0a2e8a93664b30806';
-const OPENCLAW_MODEL = 'openclaw:neo';
+const OPENCLAW_HOST = process.env.OPENCLAW_HOST || '127.0.0.1';
+const OPENCLAW_PORT = parseInt(process.env.OPENCLAW_PORT || '19001', 10);
+const OPENCLAW_API_KEY = process.env.OPENCLAW_API_KEY
+  || '76d0f4b9c277c5e457d64d908fc51fe0a2e8a93664b30806';
+const OPENCLAW_MODEL = process.env.OPENCLAW_MODEL || 'openclaw:neo';
 
-const POLL_INTERVAL = 3000; // 3 seconds
+const POLL_INTERVAL_MS = 3000;
+const CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
+const OPENCLAW_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes per message
+const MAX_CONSECUTIVE_POLL_ERRORS = 20;     // after 20 consecutive errors, exit (service will restart)
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+// ===== STATE ======================================================
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+  auth: { persistSession: false, autoRefreshToken: false },
+});
 
+let consecutivePollErrors = 0;
+let totalProcessed = 0;
+let totalErrors = 0;
+let isProcessing = false;
+
+const stamp = () => new Date().toISOString().replace('T', ' ').substring(0, 19);
+const log = (...args) => console.log(`[${stamp()}]`, ...args);
+const err = (...args) => console.error(`[${stamp()}] ERROR`, ...args);
+
+// ===== OPENCLAW CALL ==============================================
 function callOpenClaw(messages) {
   return new Promise((resolve, reject) => {
     const payload = JSON.stringify({
@@ -42,7 +65,7 @@ function callOpenClaw(messages) {
         'Host': `${OPENCLAW_HOST}:${OPENCLAW_PORT}`,
         'Content-Length': Buffer.byteLength(payload),
       },
-      timeout: 1800000, // 30 minutes for complex agent tasks
+      timeout: OPENCLAW_TIMEOUT_MS,
     }, (res) => {
       let body = '';
       res.on('data', (chunk) => body += chunk);
@@ -52,7 +75,7 @@ function callOpenClaw(messages) {
             const data = JSON.parse(body);
             resolve(data.choices?.[0]?.message?.content || '');
           } catch (e) {
-            reject(new Error('Invalid JSON response: ' + body.substring(0, 200)));
+            reject(new Error('Invalid JSON from OpenClaw: ' + body.substring(0, 200)));
           }
         } else {
           reject(new Error(`OpenClaw HTTP ${res.statusCode}: ${body.substring(0, 200)}`));
@@ -60,44 +83,49 @@ function callOpenClaw(messages) {
       });
     });
 
-    req.on('timeout', () => { req.destroy(); reject(new Error('OpenClaw timeout')); });
-    req.on('error', reject);
+    req.on('timeout', () => {
+      req.destroy();
+      reject(new Error(`OpenClaw timeout after ${OPENCLAW_TIMEOUT_MS / 1000}s`));
+    });
+    req.on('error', (e) => reject(new Error(`OpenClaw network error: ${e.message}`)));
     req.write(payload);
     req.end();
   });
 }
 
+// ===== MESSAGE PROCESSING =========================================
 async function processMessage(msg) {
-  console.log(`[${new Date().toLocaleTimeString()}] Processing: "${msg.user_message.substring(0, 50)}..."`);
-
-  // Mark as processing
-  await supabase
-    .from('openclaw_messages')
-    .update({ status: 'processing' })
-    .eq('id', msg.id);
+  const preview = String(msg.user_message || '').substring(0, 60).replace(/\n/g, ' ');
+  log(`Processing #${msg.id}: "${preview}..."`);
 
   try {
-    const systemPrompt = msg.system_prompt || 'You are OpenClaw, an AI assistant. Be concise and helpful. Respond in the same language as the user. You have full access to all your skills including browser navigation, URL analysis, and any other tool available to you. Use them freely when the user requests it.';
-    
+    await supabase
+      .from('openclaw_messages')
+      .update({ status: 'processing' })
+      .eq('id', msg.id);
+
+    const systemPrompt = msg.system_prompt
+      || 'You are OpenClaw, an AI assistant. Be concise and helpful. Respond in the same language as the user.';
     const messages = [{ role: 'system', content: systemPrompt }];
-    
-    // Include conversation history if available
+
     let history = [];
     try {
       if (msg.chat_history) {
-        history = typeof msg.chat_history === 'string' ? JSON.parse(msg.chat_history) : msg.chat_history;
+        history = typeof msg.chat_history === 'string'
+          ? JSON.parse(msg.chat_history)
+          : msg.chat_history;
       }
-    } catch (e) {
-      console.log('Could not parse chat_history, using single message');
+    } catch {
+      /* ignore malformed history */
     }
-    
     if (Array.isArray(history) && history.length > 0) {
       history.forEach(h => messages.push({ role: h.role, content: h.content }));
     }
-    
     messages.push({ role: 'user', content: msg.user_message });
 
+    const started = Date.now();
     const response = await callOpenClaw(messages);
+    const elapsed = ((Date.now() - started) / 1000).toFixed(1);
 
     await supabase
       .from('openclaw_messages')
@@ -108,21 +136,31 @@ async function processMessage(msg) {
       })
       .eq('id', msg.id);
 
-    console.log(`[${new Date().toLocaleTimeString()}] Completed: "${response.substring(0, 60)}..."`);
-  } catch (err) {
-    console.error(`[${new Date().toLocaleTimeString()}] Error:`, err.message);
-    await supabase
-      .from('openclaw_messages')
-      .update({
-        status: 'error',
-        error_message: err.message,
-        completed_at: new Date().toISOString(),
-      })
-      .eq('id', msg.id);
+    totalProcessed++;
+    log(`✅ Completed #${msg.id} in ${elapsed}s (${response.length} chars, total processed: ${totalProcessed})`);
+  } catch (e) {
+    totalErrors++;
+    err(`#${msg.id}:`, e.message);
+    try {
+      await supabase
+        .from('openclaw_messages')
+        .update({
+          status: 'error',
+          error_message: e.message.substring(0, 500),
+          completed_at: new Date().toISOString(),
+        })
+        .eq('id', msg.id);
+    } catch (updateErr) {
+      err(`Failed to mark #${msg.id} as error:`, updateErr.message);
+    }
   }
 }
 
+// ===== POLL LOOP ==================================================
 async function poll() {
+  if (isProcessing) return; // skip if still busy
+  isProcessing = true;
+
   try {
     const { data, error } = await supabase
       .from('openclaw_messages')
@@ -132,34 +170,75 @@ async function poll() {
       .limit(1);
 
     if (error) {
-      console.error('Supabase error:', error.message);
+      consecutivePollErrors++;
+      err(`Poll error (${consecutivePollErrors}/${MAX_CONSECUTIVE_POLL_ERRORS}):`, error.message);
+      if (consecutivePollErrors >= MAX_CONSECUTIVE_POLL_ERRORS) {
+        err('Too many consecutive poll errors. Exiting so service manager can restart us.');
+        process.exit(1);
+      }
       return;
     }
+
+    consecutivePollErrors = 0;
 
     if (data && data.length > 0) {
       await processMessage(data[0]);
     }
-  } catch (err) {
-    console.error('Poll error:', err.message);
+  } catch (e) {
+    consecutivePollErrors++;
+    err(`Poll exception:`, e.message);
+  } finally {
+    isProcessing = false;
   }
 }
 
-// Cleanup old messages (older than 1 hour)
 async function cleanup() {
-  const oneHourAgo = new Date(Date.now() - 3600000).toISOString();
-  await supabase
-    .from('openclaw_messages')
-    .delete()
-    .lt('created_at', oneHourAgo);
+  try {
+    const oneHourAgo = new Date(Date.now() - 3600000).toISOString();
+    const { error } = await supabase
+      .from('openclaw_messages')
+      .delete()
+      .lt('created_at', oneHourAgo)
+      .in('status', ['completed', 'error']);
+    if (error) err('Cleanup error:', error.message);
+  } catch (e) {
+    err('Cleanup exception:', e.message);
+  }
 }
 
-console.log('========================================');
-console.log('  OpenClaw Worker Started');
-console.log(`  OpenClaw: ${OPENCLAW_HOST}:${OPENCLAW_PORT}`);
-console.log(`  Polling every ${POLL_INTERVAL / 1000}s`);
-console.log('  Waiting for messages...');
-console.log('========================================');
+// ===== STARTUP ====================================================
+function printBanner() {
+  console.log('╔════════════════════════════════════════════╗');
+  console.log('║           OpenClaw Worker v2               ║');
+  console.log('╠════════════════════════════════════════════╣');
+  console.log(`║  Supabase URL:  ${SUPABASE_URL.substring(0, 28).padEnd(28)}║`);
+  console.log(`║  OpenClaw:      ${OPENCLAW_HOST}:${OPENCLAW_PORT.toString().padEnd(28 - OPENCLAW_HOST.length - 1)}║`);
+  console.log(`║  Model:         ${OPENCLAW_MODEL.padEnd(28)}║`);
+  console.log(`║  Poll:          every ${POLL_INTERVAL_MS / 1000}s`.padEnd(45) + '║');
+  console.log('╚════════════════════════════════════════════╝');
+  log('Worker started. Waiting for messages...');
+}
 
-setInterval(poll, POLL_INTERVAL);
-setInterval(cleanup, 300000); // cleanup every 5 min
-poll(); // immediate first poll
+process.on('uncaughtException', (e) => {
+  err('UNCAUGHT EXCEPTION:', e.message, e.stack);
+  process.exit(1); // service manager will restart
+});
+
+process.on('unhandledRejection', (reason) => {
+  err('UNHANDLED REJECTION:', reason);
+});
+
+process.on('SIGINT', () => {
+  log(`Shutdown requested. Processed=${totalProcessed}, errors=${totalErrors}. Bye.`);
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  log(`Terminated. Processed=${totalProcessed}, errors=${totalErrors}.`);
+  process.exit(0);
+});
+
+printBanner();
+setInterval(poll, POLL_INTERVAL_MS);
+setInterval(cleanup, CLEANUP_INTERVAL_MS);
+poll();
