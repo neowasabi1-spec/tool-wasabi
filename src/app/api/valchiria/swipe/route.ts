@@ -1,5 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { createClient } from '@supabase/supabase-js';
+
+// Usa service role per accesso server-side
+function getServerSupabase() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+  return createClient(url, key);
+}
 
 /**
  * POST /api/valchiria/swipe
@@ -16,6 +23,8 @@ export async function POST(req: NextRequest) {
     if (!productId) {
       return NextResponse.json({ error: 'productId required' }, { status: 400 });
     }
+
+    const supabase = getServerSupabase();
 
     // 1. Leggi i funnel archiviati con i loro step
     const { data: funnels, error: fetchError } = await supabase
@@ -98,6 +107,7 @@ export async function POST(req: NextRequest) {
  */
 export async function GET() {
   try {
+    const supabase = getServerSupabase();
     const { data: funnels, error } = await supabase
       .from('archived_funnels')
       .select('id, name, steps, total_steps, created_at')
