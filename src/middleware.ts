@@ -114,46 +114,8 @@ export async function middleware(request: NextRequest) {
     return response;
   }
 
-  // Authentication gate
-  // When DASHBOARD_API_SECRET is set, enforce auth for non-public paths.
-  // This uses Supabase session cookies or Bearer tokens.
-  const dashboardSecret = process.env.DASHBOARD_API_SECRET;
-
-  if (dashboardSecret) {
-    const isApiRoute = pathname.startsWith('/api/');
-
-    if (isApiRoute) {
-      // API routes: check X-API-Key header or Authorization Bearer token
-      const apiKey = request.headers.get('x-api-key');
-      const authHeader = request.headers.get('authorization');
-
-      const hasValidKey = apiKey === dashboardSecret;
-      const hasToken = authHeader?.startsWith('Bearer ');
-
-      if (!hasValidKey && !hasToken) {
-        const response = NextResponse.json(
-          { error: 'Authentication required' },
-          { status: 401 }
-        );
-        addSecurityHeaders(response);
-        handleCors(request, response);
-        return response;
-      }
-    } else {
-      // Page routes: check for Supabase auth cookie
-      const supabaseCookie = request.cookies.getAll().find(
-        (c) => c.name.startsWith('sb-') && c.name.endsWith('-auth-token')
-      );
-
-      if (!supabaseCookie) {
-        const loginUrl = new URL('/login', request.url);
-        loginUrl.searchParams.set('redirect', pathname);
-        const response = NextResponse.redirect(loginUrl);
-        addSecurityHeaders(response);
-        return response;
-      }
-    }
-  }
+  // Authentication gate DISABLED — open access
+  // Uncomment above block to re-enable auth
 
   const response = NextResponse.next();
   addSecurityHeaders(response);

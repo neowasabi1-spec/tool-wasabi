@@ -39,45 +39,11 @@ const menuItems = [
     href: '/strategist',
     icon: Brain,
   },
+
   {
-    name: 'Copy Analyzer',
-    href: '/copy-analyzer',
-    icon: Sparkles,
-  },
-  {
-    name: 'Landing Analyzer',
-    href: '/landing-analyzer',
-    icon: Zap,
-  },
-  {
-    name: 'Funnel Analyzer',
-    href: '/funnel-analyzer',
-    icon: ScanSearch,
-  },
-  {
-    name: 'Affiliate Browser Chat',
-    href: '/affiliate-browser-chat',
-    icon: MessageSquare,
-  },
-  {
-    name: 'My Funnels',
-    href: '/my-funnels',
-    icon: GitBranch,
-  },
-  {
-    name: 'Reverse Funnel',
-    href: '/reverse-funnel',
-    icon: FlipVertical,
-  },
-  {
-    name: 'Front End Funnel',
+    name: 'Clone / Swipe',
     href: '/front-end-funnel',
-    icon: Layers,
-  },
-  {
-    name: 'Post Purchase Funnel',
-    href: '/post-purchase',
-    icon: CreditCard,
+    icon: Copy,
   },
   {
     name: 'My Archive',
@@ -85,7 +51,7 @@ const menuItems = [
     icon: FileCode,
   },
   {
-    name: 'My Products',
+    name: 'Catalogue',
     href: '/products',
     icon: ShoppingBag,
   },
@@ -94,41 +60,7 @@ const menuItems = [
     href: '/projects',
     icon: FolderOpen,
   },
-  {
-    name: 'Quiz Creator',
-    href: '/quiz-creator',
-    icon: Wand2,
-  },
-  {
-    name: 'Swipe Quiz',
-    href: '/swipe-quiz',
-    icon: HelpCircle,
-  },
-  {
-    name: 'Agentic Swipe',
-    href: '/agentic-swipe',
-    icon: Wand,
-  },
-  {
-    name: 'Clone & Swipe',
-    href: '/clone-landing',
-    icon: Copy,
-  },
-  {
-    name: 'My Prompts',
-    href: '/prompts',
-    icon: BookOpen,
-  },
-  {
-    name: 'Deploy Funnel',
-    href: '/deploy-funnel',
-    icon: Rocket,
-  },
-  {
-    name: 'Compliance AI',
-    href: '/compliance-ai',
-    icon: ShieldCheck,
-  },
+
   {
     name: 'Protocollo Valchiria',
     href: '/protocollo-valchiria',
