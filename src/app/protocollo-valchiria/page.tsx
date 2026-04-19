@@ -99,6 +99,21 @@ export default function ProtocolloValchiriaPage() {
 
   const selectedCount = selectedSteps.size;
 
+  // Normalizza i page_type non standard al formato enum del DB
+  const normalizePageType = (pt: string): string => {
+    if (!pt) return 'landing';
+    const l = pt.toLowerCase();
+    if (l.includes('advertorial') || l.includes('pre-sell') || l.includes('presell')) return 'landing';
+    if (l.includes('landing') || l.includes('sales page') || l.includes('lp')) return 'landing';
+    if (l.includes('checkout') || l.includes('order form') || l.includes('shipping')) return 'checkout';
+    if (l.includes('upsell') || l.includes('oto') || l.includes('one time')) return 'upsell';
+    if (l.includes('downsell')) return 'downsell';
+    if (l.includes('thank') || l.includes('confirmation') || l.includes('post-purchase') || l.includes('post purchase')) return 'thank_you';
+    if (l.includes('quiz')) return 'quiz';
+    if (l.includes('pre') && l.includes('sell')) return 'landing';
+    return 'landing';
+  };
+
   const getSelectedStepDetails = () => {
     const details: { funnelName: string; stepName: string; url: string; pageType: string; prompt: string }[] = [];
     swipeFunnels.forEach(funnel => {
@@ -109,7 +124,7 @@ export default function ProtocolloValchiriaPage() {
             funnelName: funnel.name,
             stepName: s.name,
             url: s.url_to_swipe || '',
-            pageType: s.page_type || 'landing',
+            pageType: normalizePageType(s.page_type || 'landing'),
             prompt: s.prompt || '',
           });
         }
