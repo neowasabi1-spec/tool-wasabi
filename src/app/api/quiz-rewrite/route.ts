@@ -1,77 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { requireAnthropicKey } from '@/lib/anthropic-key';
-import { queueAndWait } from '@/lib/openclaw-queue';
 
-export const maxDuration = 300;
+export const maxDuration = 30;
 export const dynamic = 'force-dynamic';
 
-// Ordered from highest quality to most compatible. The first model the account
-// has access to will be used (and cached).
-const MODEL_CASCADE: string[] = process.env.ANTHROPIC_REWRITE_MODEL
-  ? [process.env.ANTHROPIC_REWRITE_MODEL]
-  : [
-    'claude-opus-4-5-20250929',
-    'claude-opus-4-20250514',
-    'claude-sonnet-4-5-20250929',
-    'claude-sonnet-4-20250514',
-    'claude-3-5-sonnet-20241022',
-    'claude-3-5-sonnet-20240620',
-    'claude-3-haiku-20240307',
-  ];
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-let _resolvedModel: string | null = null;
-
-async function callAnthropic(systemPrompt: string, userPrompt: string, timeoutMs = 60_000): Promise<string> {
-  const apiKey = requireAnthropicKey();
-
-  const modelsToTry = _resolvedModel ? [_resolvedModel] : MODEL_CASCADE;
-  let lastError: string = '';
-
-  for (const model of modelsToTry) {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model,
-        max_tokens: 8000,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: userPrompt }],
-      }),
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-
-    if (res.ok) {
-      if (!_resolvedModel) {
-        _resolvedModel = model;
-        console.log(`[quiz-rewrite] Resolved model: ${model}`);
-      }
-      const data = await res.json();
-      return data.content?.[0]?.text || '';
-    }
-
-    const err = await res.text();
-    lastError = `Anthropic ${res.status} on ${model}: ${err.substring(0, 200)}`;
-    // Only cascade to next model on 404 (model not available). For other errors (401, 429, 500) stop.
-    if (res.status !== 404) {
-      throw new Error(lastError);
-    }
-    console.warn(`[quiz-rewrite] ${model} not available, trying next...`);
-  }
-
-  throw new Error(`No available model. Last error: ${lastError}`);
-}
-
-interface ExtractedText {
-  original: string;
-  tag: string;
-  position: number;
-}
-
-function extractTextsFromHtml(html: string): ExtractedText[] {
+// Extract texts from HTML
+function extractTextsFromHtml(html: string): Array<{ original: string; tag: string; position: number }> {
   const stripped = html
     .replace(/<script[\s\S]*?<\/script>/gi, '')
     .replace(/<style[\s\S]*?<\/style>/gi, '')
@@ -81,24 +17,11 @@ function extractTextsFromHtml(html: string): ExtractedText[] {
   const bodyMatch = stripped.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
   const bodyHtml = bodyMatch ? bodyMatch[1] : stripped;
 
-  const texts: ExtractedText[] = [];
+  const texts: Array<{ original: string; tag: string; position: number }> = [];
   const seen = new Set<string>();
 
-  const textTags = [
-    'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
-    'p', 'li', 'td', 'th', 'dt', 'dd',
-    'button', 'a', 'label', 'figcaption',
-    'blockquote', 'summary', 'legend',
-  ];
-
-  const blockTags = new Set([
-    'div', 'section', 'article', 'main', 'aside', 'header', 'footer', 'nav',
-    'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p',
-    'ul', 'ol', 'li', 'dl', 'dt', 'dd',
-    'table', 'thead', 'tbody', 'tr', 'td', 'th',
-    'blockquote', 'figure', 'figcaption', 'form', 'fieldset',
-    'button', 'details', 'summary',
-  ]);
+  const blockTags = new Set(['div', 'section', 'article', 'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 'table', 'tr', 'td', 'th', 'blockquote', 'form', 'button']);
+  const textTags = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'li', 'td', 'th', 'label', 'a', 'button', 'details', 'summary'];
 
   for (const tag of textTags) {
     const regex = new RegExp(`<${tag}([^>]*)>([\\s\\S]*?)<\\/${tag}>`, 'gi');
@@ -148,18 +71,6 @@ function extractTextsFromHtml(html: string): ExtractedText[] {
   return texts;
 }
 
-function cleanAiOutput(text: string): string {
-  let cleaned = text.trim();
-  cleaned = cleaned.replace(/^```(?:json)?\s*\n?/i, '');
-  cleaned = cleaned.replace(/\n?```\s*$/i, '');
-  const jsonStart = cleaned.indexOf('[');
-  const jsonEnd = cleaned.lastIndexOf(']');
-  if (jsonStart >= 0 && jsonEnd > jsonStart) {
-    cleaned = cleaned.substring(jsonStart, jsonEnd + 1);
-  }
-  return cleaned.trim();
-}
-
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json() as {
@@ -167,10 +78,9 @@ export async function POST(request: NextRequest) {
       productName: string;
       productDescription: string;
       customPrompt?: string;
-      useOpenClaw?: boolean;
     };
 
-    const { html, productName, productDescription, customPrompt, useOpenClaw } = body;
+    const { html, productName, productDescription, customPrompt } = body;
 
     if (!html || html.length < 50) {
       return NextResponse.json({ error: 'HTML too short or missing' }, { status: 400 });
@@ -178,112 +88,88 @@ export async function POST(request: NextRequest) {
     if (!productName) {
       return NextResponse.json({ error: 'Product name required' }, { status: 400 });
     }
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+      return NextResponse.json({ error: 'Supabase not configured' }, { status: 500 });
+    }
 
+    // Extract texts from HTML
     const texts = extractTextsFromHtml(html);
     if (texts.length === 0) {
       return NextResponse.json({ error: 'No text found in the HTML to rewrite' }, { status: 400 });
     }
 
-    const textsForAi = texts.map((t, i) => ({ id: i, text: t.original, tag: t.tag }));
+    // Limit to 80 texts to keep prompt manageable
+    const textsForAi = texts.slice(0, 80).map((t, i) => ({ id: i, text: t.original, tag: t.tag }));
 
-    const systemPrompt = `You are a direct-response copywriter. You rewrite marketing texts for a specific product while keeping the EXACT SAME tone, style, length, and persuasion structure.
+    // Build the Trinity rewrite prompt
+    const userMessage = `Sei Trinity, la copywriter del Matrix Team. Devi riscrivere i testi di questa pagina HTML per il prodotto: ${productName}.
 
-PRODUCT: ${productName}
-DESCRIPTION: ${productDescription}
-${customPrompt ? `ADDITIONAL INSTRUCTIONS: ${customPrompt}` : ''}
+DESCRIZIONE PRODOTTO: ${productDescription}
+ISTRUZIONI EXTRA: ${customPrompt || 'Nessuna'}
+
+Testi da riscrivere (JSON):
+${JSON.stringify(textsForAi, null, 2)}
+
+Riscrivi ogni testo per il prodotto ${productName}. Mantieni lunghezza simile, stesso tono persuasivo, stessa lingua.
+Restituisci SOLO un JSON array: [{"id": 0, "rewritten": "testo riscritto"}, ...]`;
+
+    const systemPrompt = `You are Trinity, a direct-response copywriter for the Matrix Team. You rewrite marketing texts for specific products while keeping the same tone, style, length, and persuasion structure.
 
 RULES:
-1. Rewrite each text to sell THIS product, keeping the same emotional angle and copywriting technique.
+1. Rewrite each text to sell THE PRODUCT, keeping the same emotional angle and copywriting technique.
 2. Keep roughly the same length (±20%).
 3. Keep the same language/tone (if original is casual, stay casual; if urgent, stay urgent).
 4. Do NOT add markdown, HTML tags, or formatting — return plain text only for each item.
 5. If a text is a button label, CTA, or short phrase, keep it short and punchy.
-6. If a text is clearly structural (like "Step 1", "FAQ", numbers), keep it unchanged or adapt minimally.
-7. Return a JSON array of objects: [{"id": 0, "rewritten": "new text"}, ...]
-8. Return ONLY the JSON array, nothing else.`;
+6. Return a JSON array ONLY: [{"id": 0, "rewritten": "new text"}, ...]`;
 
-    const BATCH_SIZE = useOpenClaw ? 100 : 40;
-    const CONCURRENCY = useOpenClaw ? 1 : 4;
-    const batches: typeof textsForAi[] = [];
-    for (let i = 0; i < textsForAi.length; i += BATCH_SIZE) {
-      batches.push(textsForAi.slice(i, i + BATCH_SIZE));
+    // Insert async job into openclaw_messages
+    const insertRes = await fetch(`${SUPABASE_URL}/rest/v1/openclaw_messages`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_ANON_KEY,
+        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+        'Prefer': 'return=representation',
+      },
+      body: JSON.stringify({
+        user_message: userMessage,
+        system_prompt: systemPrompt,
+        section: 'Rewrite',
+        status: 'pending',
+        // Store original HTML + texts in chat_history for reconstruction when job completes
+        chat_history: {
+          html,
+          texts: texts.slice(0, 80).map(t => ({ original: t.original, tag: t.tag })),
+          productName,
+          totalTextsInPage: texts.length,
+        },
+      }),
+    });
+
+    if (!insertRes.ok) {
+      const errText = await insertRes.text();
+      console.error('[quiz-rewrite] Supabase insert failed:', errText);
+      return NextResponse.json({ error: `Failed to enqueue rewrite job: ${errText.substring(0, 200)}` }, { status: 500 });
     }
 
-    console.log(`[quiz-rewrite] provider=${useOpenClaw ? 'openclaw' : 'anthropic'}, texts=${texts.length}, batches=${batches.length}, batch_size=${BATCH_SIZE}, concurrency=${CONCURRENCY}`);
-
-    const rewrites: Array<{ id: number; rewritten: string }> = [];
-    const batchErrors: string[] = [];
-    const usedProvider = useOpenClaw ? 'openclaw' : 'anthropic';
-
-    async function processBatch(batch: typeof textsForAi, batchIdx: number): Promise<Array<{ id: number; rewritten: string }>> {
-      const batchPrompt = `Rewrite these ${batch.length} texts for the product "${productName}":\n\n${JSON.stringify(batch, null, 2)}`;
-      try {
-        const aiText = useOpenClaw
-          ? await queueAndWait(batchPrompt, { systemPrompt, section: 'Quiz Rewrite', timeoutMs: 240_000 })
-          : await callAnthropic(systemPrompt, batchPrompt, 55_000);
-        const cleaned = cleanAiOutput(aiText);
-        try {
-          const parsed = JSON.parse(cleaned) as Array<{ id: number; rewritten: string }>;
-          console.log(`[quiz-rewrite] batch ${batchIdx + 1}/${batches.length} OK (${parsed.length} rewrites)`);
-          return parsed;
-        } catch (parseErr) {
-          const msg = `batch ${batchIdx + 1}: JSON parse failed — raw start: ${cleaned.substring(0, 200)}`;
-          batchErrors.push(msg);
-          console.error(`[quiz-rewrite] ${msg}`);
-          return [];
-        }
-      } catch (err) {
-        const msg = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
-        batchErrors.push(`batch ${batchIdx + 1}: ${msg}`);
-        console.error(`[quiz-rewrite] batch ${batchIdx + 1}/${batches.length} failed:`, msg);
-        return [];
-      }
+    const [inserted] = await insertRes.json() as Array<{ id: string }>;
+    if (!inserted?.id) {
+      return NextResponse.json({ error: 'No job ID returned from Supabase' }, { status: 500 });
     }
 
-    for (let i = 0; i < batches.length; i += CONCURRENCY) {
-      const slice = batches.slice(i, i + CONCURRENCY);
-      const results = await Promise.all(slice.map((b, j) => processBatch(b, i + j)));
-      for (const r of results) rewrites.push(...r);
-    }
-
-    if (rewrites.length === 0) {
-      const reason = batchErrors[0] || 'unknown';
-      return NextResponse.json({
-        error: `Anthropic all ${batches.length} batches failed. First error: ${reason}`,
-        batches_total: batches.length,
-        batches_failed: batchErrors.length,
-        first_errors: batchErrors.slice(0, 5),
-      }, { status: 502 });
-    }
-
-    let resultHtml = html;
-    let replacements = 0;
-
-    for (const rw of rewrites) {
-      const original = texts[rw.id];
-      if (!original || !rw.rewritten || original.original === rw.rewritten) continue;
-
-      const escaped = original.original.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const regex = new RegExp(escaped, 'g');
-      const before = resultHtml;
-      resultHtml = resultHtml.replace(regex, rw.rewritten);
-      if (resultHtml !== before) replacements++;
-    }
+    console.log(`[quiz-rewrite] Async job enqueued: ${inserted.id}, texts: ${textsForAi.length}`);
 
     return NextResponse.json({
-      success: true,
-      html: resultHtml,
-      totalTexts: texts.length,
-      replacements,
-      originalLength: html.length,
-      newLength: resultHtml.length,
-      provider: usedProvider,
+      jobId: inserted.id,
+      status: 'pending',
+      totalTexts: textsForAi.length,
+      message: 'Rewrite job queued. Poll /api/quiz-rewrite/status/' + inserted.id,
     });
+
   } catch (error) {
-    console.error('Quiz rewrite error:', error);
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Unknown error' },
-      { status: 500 },
-    );
+    const errMsg = error instanceof Error ? error.message : String(error);
+    console.error('[quiz-rewrite] Error:', errMsg);
+    return NextResponse.json({ error: errMsg }, { status: 500 });
   }
 }

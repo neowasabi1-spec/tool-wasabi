@@ -1,0 +1,89 @@
+{
+  "project": {
+    "id": "seedpure",
+    "name": "SeedPure Microplastic Detox",
+    "type": "supplement",
+    "status": "research-complete",
+    "createdAt": "2026-04-20T11:01:00Z",
+    "updatedAt": "2026-04-20T11:01:00Z"
+  },
+  "product": {
+    "name": "SeedPure HER + HIM",
+    "tagline": "The Microplastic Detox for Unexplained Infertility",
+    "mechanism": "Zeolite + Chlorella microplastic removal",
+    "target": "Couples trying to conceive 12-48 months",
+    "aov": 294,
+    "currency": "USD"
+  },
+  "offer": {
+    "core": {
+      "name": "6-Month Couple Bundle",
+      "price": 294,
+      "value": 588,
+      "includes": ["3x HER bottles", "3x HIM bottles", "Fertility guide"]
+    },
+    "upsell": {
+      "name": "Microplastics Test Kit",
+      "price": 97,
+      "value": 197
+    },
+    "downsell": {
+      "name": "HER Formula Only (3 months)",
+      "price": 147,
+      "value": 294
+    },
+    "guarantee": {
+      "type": "results",
+      "duration": 180,
+      "promise": "Pregnant or Your Money Back"
+    }
+  },
+  "research": {
+    "rmbc": {
+      "file": "seedpure-rmbc-research.md",
+      "wordCount": 10000,
+      "completedBy": "Trinity",
+      "completedAt": "2026-04-17"
+    },
+    "vsl": {
+      "file": "seedpure-vsl-script-10200w.md",
+      "wordCount": 10200,
+      "completedBy": "Trinity",
+      "completedAt": "2026-04-17"
+    },
+    "mechanism": {
+      "study": "ESHRE 2025 European Fertility Study",
+      "claim": "89% pregnancy rate after microplastic detox",
+      "scientificBacking": true
+    }
+  },
+  "funnel": {
+    "type": "advertorial-vsl-checkout",
+    "pages": {
+      "advertorial": {
+        "status": "not-started",
+        "template": null
+      },
+      "vsl": {
+        "status": "script-ready",
+        "script": "seedpure-vsl-script-10200w.md",
+        "duration": "45-50 minutes"
+      },
+      "checkout": {
+        "status": "not-started",
+        "processor": null
+      }
+    }
+  },
+  "assets": {
+    "label": {
+      "status": "not-created"
+    },
+    "images": {
+      "status": "not-created"
+    },
+    "video": {
+      "status": "not-created"
+    }
+  }
+}

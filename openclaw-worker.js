@@ -17,18 +17,18 @@ const { URL } = require('url');
 
 // ===== CONFIG =====================================================
 const SUPABASE_URL = process.env.SUPABASE_URL
-  || 'https://bsovaojzveayoagshuuy.supabase.co';
+  || 'https://sktpbizpckxldhxzezws.supabase.co';
 const SUPABASE_KEY = process.env.SUPABASE_KEY
-  || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJzb3Zhb2p6dmVheW9hZ3NodXV5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njk2MzUzNjIsImV4cCI6MjA4NTIxMTM2Mn0.OVgrc-9-ijgP0S7VPgcJ1EjSl4Hkumo_Tk_2aQHKTJQ';
+  || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNrdHBiaXpwY2t4bGRoeHplendzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY1NjEyNjUsImV4cCI6MjA5MjEzNzI2NX0.2fnHDXnnrwuLyXP9fqtSsJnskftf4PcNVYmigHTz1YI';
 
 const OPENCLAW_HOST = process.env.OPENCLAW_HOST || '127.0.0.1';
-const OPENCLAW_PORT = parseInt(process.env.OPENCLAW_PORT || '19001', 10);
+const OPENCLAW_PORT = parseInt(process.env.OPENCLAW_PORT || '18789', 10);
 const OPENCLAW_API_KEY = process.env.OPENCLAW_API_KEY
-  || '76d0f4b9c277c5e457d64d908fc51fe0a2e8a93664b30806';
-const OPENCLAW_MODEL = process.env.OPENCLAW_MODEL || 'openclaw:neo';
+  || 'ba893c2470e9f12b281ab1031746b5f177b14a746143b1ab';
+const OPENCLAW_MODEL = process.env.OPENCLAW_MODEL || 'openclaw/trinity';
 
 const TOOL_BASE_URL = process.env.TOOL_BASE_URL
-  || 'https://cloner-funnel-builder.vercel.app';
+  || 'https://tool-wasabi-neo.netlify.app';
 
 const POLL_INTERVAL_MS = 3000;
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000;

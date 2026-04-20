@@ -1749,7 +1749,7 @@ export default function FrontEndFunnel() {
           });
         }
 
-        setCloneProgress({ phase: 'processing', totalTexts: 0, processedTexts: 0, message: cloneConfig.useOpenClaw ? 'Rewriting texts with OpenClaw (local)...' : 'Rewriting texts with Claude...' });
+        setCloneProgress({ phase: 'processing', totalTexts: 0, processedTexts: 0, message: cloneConfig.useOpenClaw ? 'Rewriting texts with OpenClaw (local)...' : 'Trinity sta riscrivendo...' });
 
         let rewriteData: { html: string; replacements: number; totalTexts: number; originalLength?: number; newLength?: number; provider?: string; error?: string };
 
@@ -1762,7 +1762,11 @@ export default function FrontEndFunnel() {
             onProgress: (done, total) => setCloneProgress({ phase: 'processing', totalTexts: total, processedTexts: done, message: `Rewriting via OpenClaw (${done}/${total} batches)...` }),
           });
         } else {
-          const rewriteRes = await fetch('/api/quiz-rewrite', {
+          // Async rewrite via Supabase queue (avoids Netlify 10s timeout)
+          setCloneProgress({ phase: 'processing', totalTexts: 0, processedTexts: 0, message: 'Trinity sta riscrivendo...' });
+
+          // Step 1: Enqueue the job (returns immediately with jobId)
+          const enqueueRes = await fetch('/api/quiz-rewrite', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -1772,13 +1776,40 @@ export default function FrontEndFunnel() {
               customPrompt: cloneConfig.customPrompt || undefined,
             }),
           });
-          const rawText = await rewriteRes.text();
-          try {
-            rewriteData = JSON.parse(rawText);
-          } catch {
-            throw new Error(`Server returned non-JSON response (likely timeout): ${rawText.substring(0, 200)}`);
+          const enqueueData = await enqueueRes.json() as { jobId?: string; status?: string; totalTexts?: number; error?: string };
+          if (!enqueueRes.ok || enqueueData.error) throw new Error(enqueueData.error || 'Failed to start rewrite job');
+          if (!enqueueData.jobId) throw new Error('No jobId returned from rewrite API');
+
+          const { jobId, totalTexts: jobTotalTexts } = enqueueData;
+          setCloneProgress({ phase: 'processing', totalTexts: jobTotalTexts || 0, processedTexts: 0, message: `Trinity sta riscrivendo... (job: ${jobId.substring(0, 8)})` });
+
+          // Step 2: Poll status endpoint until completed or timeout (5 minutes)
+          const POLL_INTERVAL_MS = 3000;
+          const MAX_WAIT_MS = 5 * 60 * 1000;
+          const pollStart = Date.now();
+          let pollResult: { html: string; replacements: number; totalTexts: number; originalLength: number; newLength: number; provider: string } | null = null;
+
+          while (!pollResult) {
+            if (Date.now() - pollStart > MAX_WAIT_MS) {
+              throw new Error('Rewrite timeout dopo 5 minuti. Controlla che openclaw-worker.js sia in esecuzione.');
+            }
+            await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+
+            const statusRes = await fetch(`/api/quiz-rewrite/status/${jobId}`);
+            const statusData = await statusRes.json() as { status: string; result?: typeof pollResult; error?: string };
+
+            if (statusData.status === 'completed' && statusData.result) {
+              pollResult = statusData.result;
+            } else if (statusData.status === 'error') {
+              throw new Error(statusData.error || 'Rewrite job failed');
+            } else {
+              // Still pending/processing — update progress message
+              const elapsed = Math.round((Date.now() - pollStart) / 1000);
+              setCloneProgress({ phase: 'processing', totalTexts: jobTotalTexts || 0, processedTexts: 0, message: `Trinity sta riscrivendo... (${elapsed}s)` });
+            }
           }
-          if (!rewriteRes.ok || rewriteData.error) throw new Error(rewriteData.error || 'Rewrite failed');
+
+          rewriteData = pollResult;
         }
 
         setCloneProgress(null);

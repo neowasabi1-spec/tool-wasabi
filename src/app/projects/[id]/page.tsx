@@ -30,8 +30,9 @@ const STATUS_COLOR: Record<string, string> = {
   archived: 'bg-gray-800 text-gray-500',
 };
 
-export default function ProjectDetailPage({ params }: { params: Promise<{ id: string }> }) {
-  const { id } = use(params);
+export default function ProjectDetailPage({ params }: { params: { id: string } | Promise<{ id: string }> }) {
+  const resolvedParams = params instanceof Promise ? use(params) : params;
+  const id = resolvedParams.id;
   const router = useRouter();
   const [project, setProject] = useState<Project | null>(null);
   const [flows, setFlows] = useState<Flow[]>([]);
