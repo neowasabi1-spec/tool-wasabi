@@ -1,0 +1,681 @@
+{
+  "bioma": {
+    "path": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bioma\\screenshots",
+    "screenshots": [
+      {
+        "filename": "step-0-desktop.png",
+        "step": 1,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bioma\\screenshots\\step-0-desktop.png"
+      },
+      {
+        "filename": "step-0-mobile.png",
+        "step": 2,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bioma\\screenshots\\step-0-mobile.png"
+      },
+      {
+        "filename": "step-1-desktop.png",
+        "step": 3,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bioma\\screenshots\\step-1-desktop.png"
+      },
+      {
+        "filename": "step-1-mobile.png",
+        "step": 4,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bioma\\screenshots\\step-1-mobile.png"
+      },
+      {
+        "filename": "step-10-desktop.png",
+        "step": 5,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bioma\\screenshots\\step-10-desktop.png"
+      },
+      {
+        "filename": "step-10-mobile.png",
+        "step": 6,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bioma\\screenshots\\step-10-mobile.png"
+      },
+      {
+        "filename": "step-11-desktop.png",
+        "step": 7,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bioma\\screenshots\\step-11-desktop.png"
+      },
+      {
+        "filename": "step-11-mobile.png",
+        "step": 8,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bioma\\screenshots\\step-11-mobile.png"
+      },
+      {
+        "filename": "step-12-desktop.png",
+        "step": 9,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bioma\\screenshots\\step-12-desktop.png"
+      },
+      {
+        "filename": "step-12-mobile.png",
+        "step": 10,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bioma\\screenshots\\step-12-mobile.png"
+      },
+      {
+        "filename": "step-13-desktop.png",
+        "step": 11,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bioma\\screenshots\\step-13-desktop.png"
+      },
+      {
+        "filename": "step-13-mobile.png",
+        "step": 12,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bioma\\screenshots\\step-13-mobile.png"
+      },
+      {
+        "filename": "step-14-desktop.png",
+        "step": 13,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bioma\\screenshots\\step-14-desktop.png"
+      },
+      {
+        "filename": "step-14-mobile.png",
+        "step": 14,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bioma\\screenshots\\step-14-mobile.png"
+      },
+      {
+        "filename": "step-15-desktop.png",
+        "step": 15,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bioma\\screenshots\\step-15-desktop.png"
+      },
+      {
+        "filename": "step-15-mobile.png",
+        "step": 16,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bioma\\screenshots\\step-15-mobile.png"
+      },
+      {
+        "filename": "step-16-desktop.png",
+        "step": 17,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bioma\\screenshots\\step-16-desktop.png"
+      },
+      {
+        "filename": "step-16-mobile.png",
+        "step": 18,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bioma\\screenshots\\step-16-mobile.png"
+      },
+      {
+        "filename": "step-17-desktop.png",
+        "step": 19,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bioma\\screenshots\\step-17-desktop.png"
+      },
+      {
+        "filename": "step-17-mobile.png",
+        "step": 20,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bioma\\screenshots\\step-17-mobile.png"
+      },
+      {
+        "filename": "step-18-desktop.png",
+        "step": 21,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bioma\\screenshots\\step-18-desktop.png"
+      },
+      {
+        "filename": "step-18-mobile.png",
+        "step": 22,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bioma\\screenshots\\step-18-mobile.png"
+      },
+      {
+        "filename": "step-19-desktop.png",
+        "step": 23,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bioma\\screenshots\\step-19-desktop.png"
+      },
+      {
+        "filename": "step-19-mobile.png",
+        "step": 24,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bioma\\screenshots\\step-19-mobile.png"
+      },
+      {
+        "filename": "step-2-desktop.png",
+        "step": 25,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bioma\\screenshots\\step-2-desktop.png"
+      },
+      {
+        "filename": "step-2-mobile.png",
+        "step": 26,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bioma\\screenshots\\step-2-mobile.png"
+      },
+      {
+        "filename": "step-3-desktop.png",
+        "step": 27,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bioma\\screenshots\\step-3-desktop.png"
+      },
+      {
+        "filename": "step-3-mobile.png",
+        "step": 28,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bioma\\screenshots\\step-3-mobile.png"
+      },
+      {
+        "filename": "step-4-desktop.png",
+        "step": 29,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bioma\\screenshots\\step-4-desktop.png"
+      },
+      {
+        "filename": "step-4-mobile.png",
+        "step": 30,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bioma\\screenshots\\step-4-mobile.png"
+      },
+      {
+        "filename": "step-5-desktop.png",
+        "step": 31,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bioma\\screenshots\\step-5-desktop.png"
+      },
+      {
+        "filename": "step-5-mobile.png",
+        "step": 32,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bioma\\screenshots\\step-5-mobile.png"
+      },
+      {
+        "filename": "step-6-desktop.png",
+        "step": 33,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bioma\\screenshots\\step-6-desktop.png"
+      },
+      {
+        "filename": "step-6-mobile.png",
+        "step": 34,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bioma\\screenshots\\step-6-mobile.png"
+      },
+      {
+        "filename": "step-7-desktop.png",
+        "step": 35,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bioma\\screenshots\\step-7-desktop.png"
+      },
+      {
+        "filename": "step-7-mobile.png",
+        "step": 36,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bioma\\screenshots\\step-7-mobile.png"
+      },
+      {
+        "filename": "step-8-desktop.png",
+        "step": 37,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bioma\\screenshots\\step-8-desktop.png"
+      },
+      {
+        "filename": "step-8-mobile.png",
+        "step": 38,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bioma\\screenshots\\step-8-mobile.png"
+      },
+      {
+        "filename": "step-9-desktop.png",
+        "step": 39,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bioma\\screenshots\\step-9-desktop.png"
+      },
+      {
+        "filename": "step-9-mobile.png",
+        "step": 40,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bioma\\screenshots\\step-9-mobile.png"
+      }
+    ]
+  },
+  "terrashell": {
+    "path": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\terrashell\\screenshots",
+    "screenshots": [
+      {
+        "filename": "landing-desktop.png",
+        "step": 1,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\terrashell\\screenshots\\landing-desktop.png"
+      },
+      {
+        "filename": "landing-mobile.png",
+        "step": 2,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\terrashell\\screenshots\\landing-mobile.png"
+      },
+      {
+        "filename": "step-0-desktop.png",
+        "step": 3,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\terrashell\\screenshots\\step-0-desktop.png"
+      },
+      {
+        "filename": "step-0-mobile.png",
+        "step": 4,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\terrashell\\screenshots\\step-0-mobile.png"
+      },
+      {
+        "filename": "step-1-desktop.png",
+        "step": 5,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\terrashell\\screenshots\\step-1-desktop.png"
+      },
+      {
+        "filename": "step-1-mobile.png",
+        "step": 6,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\terrashell\\screenshots\\step-1-mobile.png"
+      },
+      {
+        "filename": "step-2-desktop.png",
+        "step": 7,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\terrashell\\screenshots\\step-2-desktop.png"
+      },
+      {
+        "filename": "step-3-desktop.png",
+        "step": 8,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\terrashell\\screenshots\\step-3-desktop.png"
+      },
+      {
+        "filename": "step-4-desktop.png",
+        "step": 9,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\terrashell\\screenshots\\step-4-desktop.png"
+      }
+    ]
+  },
+  "mounjaro": {
+    "path": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\mounjaro\\screenshots",
+    "screenshots": [
+      {
+        "filename": "landing-desktop.png",
+        "step": 1,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\mounjaro\\screenshots\\landing-desktop.png"
+      },
+      {
+        "filename": "landing-mobile.png",
+        "step": 2,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\mounjaro\\screenshots\\landing-mobile.png"
+      },
+      {
+        "filename": "step-0-desktop.png",
+        "step": 3,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\mounjaro\\screenshots\\step-0-desktop.png"
+      },
+      {
+        "filename": "step-0-mobile.png",
+        "step": 4,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\mounjaro\\screenshots\\step-0-mobile.png"
+      },
+      {
+        "filename": "step-1-desktop.png",
+        "step": 5,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\mounjaro\\screenshots\\step-1-desktop.png"
+      },
+      {
+        "filename": "step-1-mobile.png",
+        "step": 6,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\mounjaro\\screenshots\\step-1-mobile.png"
+      },
+      {
+        "filename": "step-2-desktop.png",
+        "step": 7,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\mounjaro\\screenshots\\step-2-desktop.png"
+      },
+      {
+        "filename": "step-2-mobile.png",
+        "step": 8,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\mounjaro\\screenshots\\step-2-mobile.png"
+      },
+      {
+        "filename": "step-3-desktop.png",
+        "step": 9,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\mounjaro\\screenshots\\step-3-desktop.png"
+      },
+      {
+        "filename": "step-3-mobile.png",
+        "step": 10,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\mounjaro\\screenshots\\step-3-mobile.png"
+      }
+    ]
+  },
+  "magnetmind": {
+    "path": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\magnetmind\\screenshots",
+    "screenshots": [
+      {
+        "filename": "landing-desktop.png",
+        "step": 1,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\magnetmind\\screenshots\\landing-desktop.png"
+      },
+      {
+        "filename": "landing-mobile.png",
+        "step": 2,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\magnetmind\\screenshots\\landing-mobile.png"
+      },
+      {
+        "filename": "step-0-desktop.png",
+        "step": 3,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\magnetmind\\screenshots\\step-0-desktop.png"
+      },
+      {
+        "filename": "step-0-mobile.png",
+        "step": 4,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\magnetmind\\screenshots\\step-0-mobile.png"
+      },
+      {
+        "filename": "step-1-desktop.png",
+        "step": 5,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\magnetmind\\screenshots\\step-1-desktop.png"
+      },
+      {
+        "filename": "step-1-mobile.png",
+        "step": 6,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\magnetmind\\screenshots\\step-1-mobile.png"
+      },
+      {
+        "filename": "step-10-desktop.png",
+        "step": 7,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\magnetmind\\screenshots\\step-10-desktop.png"
+      },
+      {
+        "filename": "step-10-mobile.png",
+        "step": 8,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\magnetmind\\screenshots\\step-10-mobile.png"
+      },
+      {
+        "filename": "step-11-desktop.png",
+        "step": 9,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\magnetmind\\screenshots\\step-11-desktop.png"
+      },
+      {
+        "filename": "step-11-mobile.png",
+        "step": 10,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\magnetmind\\screenshots\\step-11-mobile.png"
+      },
+      {
+        "filename": "step-12-desktop.png",
+        "step": 11,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\magnetmind\\screenshots\\step-12-desktop.png"
+      },
+      {
+        "filename": "step-12-mobile.png",
+        "step": 12,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\magnetmind\\screenshots\\step-12-mobile.png"
+      },
+      {
+        "filename": "step-13-desktop.png",
+        "step": 13,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\magnetmind\\screenshots\\step-13-desktop.png"
+      },
+      {
+        "filename": "step-13-mobile.png",
+        "step": 14,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\magnetmind\\screenshots\\step-13-mobile.png"
+      },
+      {
+        "filename": "step-14-desktop.png",
+        "step": 15,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\magnetmind\\screenshots\\step-14-desktop.png"
+      },
+      {
+        "filename": "step-14-mobile.png",
+        "step": 16,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\magnetmind\\screenshots\\step-14-mobile.png"
+      },
+      {
+        "filename": "step-15-desktop.png",
+        "step": 17,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\magnetmind\\screenshots\\step-15-desktop.png"
+      },
+      {
+        "filename": "step-15-mobile.png",
+        "step": 18,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\magnetmind\\screenshots\\step-15-mobile.png"
+      },
+      {
+        "filename": "step-16-desktop.png",
+        "step": 19,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\magnetmind\\screenshots\\step-16-desktop.png"
+      },
+      {
+        "filename": "step-16-mobile.png",
+        "step": 20,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\magnetmind\\screenshots\\step-16-mobile.png"
+      },
+      {
+        "filename": "step-17-desktop.png",
+        "step": 21,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\magnetmind\\screenshots\\step-17-desktop.png"
+      },
+      {
+        "filename": "step-17-mobile.png",
+        "step": 22,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\magnetmind\\screenshots\\step-17-mobile.png"
+      },
+      {
+        "filename": "step-18-desktop.png",
+        "step": 23,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\magnetmind\\screenshots\\step-18-desktop.png"
+      },
+      {
+        "filename": "step-18-mobile.png",
+        "step": 24,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\magnetmind\\screenshots\\step-18-mobile.png"
+      },
+      {
+        "filename": "step-19-desktop.png",
+        "step": 25,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\magnetmind\\screenshots\\step-19-desktop.png"
+      },
+      {
+        "filename": "step-19-mobile.png",
+        "step": 26,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\magnetmind\\screenshots\\step-19-mobile.png"
+      },
+      {
+        "filename": "step-2-desktop.png",
+        "step": 27,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\magnetmind\\screenshots\\step-2-desktop.png"
+      },
+      {
+        "filename": "step-2-mobile.png",
+        "step": 28,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\magnetmind\\screenshots\\step-2-mobile.png"
+      },
+      {
+        "filename": "step-3-desktop.png",
+        "step": 29,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\magnetmind\\screenshots\\step-3-desktop.png"
+      },
+      {
+        "filename": "step-3-mobile.png",
+        "step": 30,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\magnetmind\\screenshots\\step-3-mobile.png"
+      },
+      {
+        "filename": "step-4-desktop.png",
+        "step": 31,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\magnetmind\\screenshots\\step-4-desktop.png"
+      },
+      {
+        "filename": "step-4-mobile.png",
+        "step": 32,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\magnetmind\\screenshots\\step-4-mobile.png"
+      },
+      {
+        "filename": "step-5-desktop.png",
+        "step": 33,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\magnetmind\\screenshots\\step-5-desktop.png"
+      },
+      {
+        "filename": "step-5-mobile.png",
+        "step": 34,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\magnetmind\\screenshots\\step-5-mobile.png"
+      },
+      {
+        "filename": "step-6-desktop.png",
+        "step": 35,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\magnetmind\\screenshots\\step-6-desktop.png"
+      },
+      {
+        "filename": "step-6-mobile.png",
+        "step": 36,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\magnetmind\\screenshots\\step-6-mobile.png"
+      },
+      {
+        "filename": "step-7-desktop.png",
+        "step": 37,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\magnetmind\\screenshots\\step-7-desktop.png"
+      },
+      {
+        "filename": "step-7-mobile.png",
+        "step": 38,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\magnetmind\\screenshots\\step-7-mobile.png"
+      },
+      {
+        "filename": "step-8-desktop.png",
+        "step": 39,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\magnetmind\\screenshots\\step-8-desktop.png"
+      },
+      {
+        "filename": "step-8-mobile.png",
+        "step": 40,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\magnetmind\\screenshots\\step-8-mobile.png"
+      },
+      {
+        "filename": "step-9-desktop.png",
+        "step": 41,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\magnetmind\\screenshots\\step-9-desktop.png"
+      },
+      {
+        "filename": "step-9-mobile.png",
+        "step": 42,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\magnetmind\\screenshots\\step-9-mobile.png"
+      }
+    ]
+  },
+  "bliz-german": {
+    "path": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bliz-german\\screenshots",
+    "screenshots": [
+      {
+        "filename": "landing-desktop.png",
+        "step": 1,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bliz-german\\screenshots\\landing-desktop.png"
+      },
+      {
+        "filename": "landing-mobile.png",
+        "step": 2,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bliz-german\\screenshots\\landing-mobile.png"
+      },
+      {
+        "filename": "step-0-desktop.png",
+        "step": 3,
+        "device": "desktop",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bliz-german\\screenshots\\step-0-desktop.png"
+      },
+      {
+        "filename": "step-0-mobile.png",
+        "step": 4,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bliz-german\\screenshots\\step-0-mobile.png"
+      },
+      {
+        "filename": "step-1-mobile.png",
+        "step": 5,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bliz-german\\screenshots\\step-1-mobile.png"
+      },
+      {
+        "filename": "step-2-mobile.png",
+        "step": 6,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bliz-german\\screenshots\\step-2-mobile.png"
+      },
+      {
+        "filename": "step-3-mobile.png",
+        "step": 7,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bliz-german\\screenshots\\step-3-mobile.png"
+      },
+      {
+        "filename": "step-4-mobile.png",
+        "step": 8,
+        "device": "mobile",
+        "fullPath": "C:\\Users\\Neo\\.openclaw\\workspace\\quiz-scraping\\bliz-german\\screenshots\\step-4-mobile.png"
+      }
+    ]
+  }
+}
