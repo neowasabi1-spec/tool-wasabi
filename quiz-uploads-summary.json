@@ -1,0 +1,681 @@
+{
+  "bioma": {
+    "screenshots": [
+      {
+        "filename": "step-0-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bioma/step-0-desktop.png",
+        "step": 0,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-0-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bioma/step-0-mobile.png",
+        "step": 0,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-1-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bioma/step-1-desktop.png",
+        "step": 1,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-1-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bioma/step-1-mobile.png",
+        "step": 1,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-10-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bioma/step-10-desktop.png",
+        "step": 10,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-10-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bioma/step-10-mobile.png",
+        "step": 10,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-11-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bioma/step-11-desktop.png",
+        "step": 11,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-11-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bioma/step-11-mobile.png",
+        "step": 11,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-12-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bioma/step-12-desktop.png",
+        "step": 12,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-12-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bioma/step-12-mobile.png",
+        "step": 12,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-13-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bioma/step-13-desktop.png",
+        "step": 13,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-13-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bioma/step-13-mobile.png",
+        "step": 13,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-14-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bioma/step-14-desktop.png",
+        "step": 14,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-14-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bioma/step-14-mobile.png",
+        "step": 14,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-15-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bioma/step-15-desktop.png",
+        "step": 15,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-15-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bioma/step-15-mobile.png",
+        "step": 15,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-16-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bioma/step-16-desktop.png",
+        "step": 16,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-16-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bioma/step-16-mobile.png",
+        "step": 16,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-17-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bioma/step-17-desktop.png",
+        "step": 17,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-17-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bioma/step-17-mobile.png",
+        "step": 17,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-18-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bioma/step-18-desktop.png",
+        "step": 18,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-18-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bioma/step-18-mobile.png",
+        "step": 18,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-19-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bioma/step-19-desktop.png",
+        "step": 19,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-19-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bioma/step-19-mobile.png",
+        "step": 19,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-2-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bioma/step-2-desktop.png",
+        "step": 2,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-2-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bioma/step-2-mobile.png",
+        "step": 2,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-3-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bioma/step-3-desktop.png",
+        "step": 3,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-3-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bioma/step-3-mobile.png",
+        "step": 3,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-4-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bioma/step-4-desktop.png",
+        "step": 4,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-4-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bioma/step-4-mobile.png",
+        "step": 4,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-5-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bioma/step-5-desktop.png",
+        "step": 5,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-5-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bioma/step-5-mobile.png",
+        "step": 5,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-6-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bioma/step-6-desktop.png",
+        "step": 6,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-6-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bioma/step-6-mobile.png",
+        "step": 6,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-7-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bioma/step-7-desktop.png",
+        "step": 7,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-7-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bioma/step-7-mobile.png",
+        "step": 7,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-8-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bioma/step-8-desktop.png",
+        "step": 8,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-8-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bioma/step-8-mobile.png",
+        "step": 8,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-9-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bioma/step-9-desktop.png",
+        "step": 9,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-9-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bioma/step-9-mobile.png",
+        "step": 9,
+        "device": "mobile"
+      }
+    ],
+    "htmlCount": 40
+  },
+  "terrashell": {
+    "screenshots": [
+      {
+        "filename": "landing-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/terrashell/landing-desktop.png",
+        "step": 0,
+        "device": "desktop"
+      },
+      {
+        "filename": "landing-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/terrashell/landing-mobile.png",
+        "step": 0,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-0-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/terrashell/step-0-desktop.png",
+        "step": 0,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-0-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/terrashell/step-0-mobile.png",
+        "step": 0,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-1-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/terrashell/step-1-desktop.png",
+        "step": 1,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-1-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/terrashell/step-1-mobile.png",
+        "step": 1,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-2-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/terrashell/step-2-desktop.png",
+        "step": 2,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-3-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/terrashell/step-3-desktop.png",
+        "step": 3,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-4-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/terrashell/step-4-desktop.png",
+        "step": 4,
+        "device": "desktop"
+      }
+    ],
+    "htmlCount": 9
+  },
+  "mounjaro": {
+    "screenshots": [
+      {
+        "filename": "landing-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/mounjaro/landing-desktop.png",
+        "step": 0,
+        "device": "desktop"
+      },
+      {
+        "filename": "landing-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/mounjaro/landing-mobile.png",
+        "step": 0,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-0-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/mounjaro/step-0-desktop.png",
+        "step": 0,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-0-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/mounjaro/step-0-mobile.png",
+        "step": 0,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-1-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/mounjaro/step-1-desktop.png",
+        "step": 1,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-1-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/mounjaro/step-1-mobile.png",
+        "step": 1,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-2-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/mounjaro/step-2-desktop.png",
+        "step": 2,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-2-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/mounjaro/step-2-mobile.png",
+        "step": 2,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-3-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/mounjaro/step-3-desktop.png",
+        "step": 3,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-3-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/mounjaro/step-3-mobile.png",
+        "step": 3,
+        "device": "mobile"
+      }
+    ],
+    "htmlCount": 10
+  },
+  "magnetmind": {
+    "screenshots": [
+      {
+        "filename": "landing-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/magnetmind/landing-desktop.png",
+        "step": 0,
+        "device": "desktop"
+      },
+      {
+        "filename": "landing-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/magnetmind/landing-mobile.png",
+        "step": 0,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-0-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/magnetmind/step-0-desktop.png",
+        "step": 0,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-0-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/magnetmind/step-0-mobile.png",
+        "step": 0,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-1-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/magnetmind/step-1-desktop.png",
+        "step": 1,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-1-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/magnetmind/step-1-mobile.png",
+        "step": 1,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-10-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/magnetmind/step-10-desktop.png",
+        "step": 10,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-10-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/magnetmind/step-10-mobile.png",
+        "step": 10,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-11-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/magnetmind/step-11-desktop.png",
+        "step": 11,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-11-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/magnetmind/step-11-mobile.png",
+        "step": 11,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-12-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/magnetmind/step-12-desktop.png",
+        "step": 12,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-12-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/magnetmind/step-12-mobile.png",
+        "step": 12,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-13-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/magnetmind/step-13-desktop.png",
+        "step": 13,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-13-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/magnetmind/step-13-mobile.png",
+        "step": 13,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-14-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/magnetmind/step-14-desktop.png",
+        "step": 14,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-14-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/magnetmind/step-14-mobile.png",
+        "step": 14,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-15-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/magnetmind/step-15-desktop.png",
+        "step": 15,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-15-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/magnetmind/step-15-mobile.png",
+        "step": 15,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-16-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/magnetmind/step-16-desktop.png",
+        "step": 16,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-16-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/magnetmind/step-16-mobile.png",
+        "step": 16,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-17-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/magnetmind/step-17-desktop.png",
+        "step": 17,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-17-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/magnetmind/step-17-mobile.png",
+        "step": 17,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-18-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/magnetmind/step-18-desktop.png",
+        "step": 18,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-18-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/magnetmind/step-18-mobile.png",
+        "step": 18,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-19-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/magnetmind/step-19-desktop.png",
+        "step": 19,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-19-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/magnetmind/step-19-mobile.png",
+        "step": 19,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-2-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/magnetmind/step-2-desktop.png",
+        "step": 2,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-2-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/magnetmind/step-2-mobile.png",
+        "step": 2,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-3-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/magnetmind/step-3-desktop.png",
+        "step": 3,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-3-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/magnetmind/step-3-mobile.png",
+        "step": 3,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-4-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/magnetmind/step-4-desktop.png",
+        "step": 4,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-4-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/magnetmind/step-4-mobile.png",
+        "step": 4,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-5-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/magnetmind/step-5-desktop.png",
+        "step": 5,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-5-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/magnetmind/step-5-mobile.png",
+        "step": 5,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-6-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/magnetmind/step-6-desktop.png",
+        "step": 6,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-6-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/magnetmind/step-6-mobile.png",
+        "step": 6,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-7-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/magnetmind/step-7-desktop.png",
+        "step": 7,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-7-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/magnetmind/step-7-mobile.png",
+        "step": 7,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-8-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/magnetmind/step-8-desktop.png",
+        "step": 8,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-8-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/magnetmind/step-8-mobile.png",
+        "step": 8,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-9-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/magnetmind/step-9-desktop.png",
+        "step": 9,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-9-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/magnetmind/step-9-mobile.png",
+        "step": 9,
+        "device": "mobile"
+      }
+    ],
+    "htmlCount": 42
+  },
+  "bliz-german": {
+    "screenshots": [
+      {
+        "filename": "landing-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bliz-german/landing-desktop.png",
+        "step": 0,
+        "device": "desktop"
+      },
+      {
+        "filename": "landing-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bliz-german/landing-mobile.png",
+        "step": 0,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-0-desktop.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bliz-german/step-0-desktop.png",
+        "step": 0,
+        "device": "desktop"
+      },
+      {
+        "filename": "step-0-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bliz-german/step-0-mobile.png",
+        "step": 0,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-1-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bliz-german/step-1-mobile.png",
+        "step": 1,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-2-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bliz-german/step-2-mobile.png",
+        "step": 2,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-3-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bliz-german/step-3-mobile.png",
+        "step": 3,
+        "device": "mobile"
+      },
+      {
+        "filename": "step-4-mobile.png",
+        "url": "https://sktpbizpckxldhxzezws.supabase.co/storage/v1/object/public/quiz-screenshots/bliz-german/step-4-mobile.png",
+        "step": 4,
+        "device": "mobile"
+      }
+    ],
+    "htmlCount": 8
+  }
+}
