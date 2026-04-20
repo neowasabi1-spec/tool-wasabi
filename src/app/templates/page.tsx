@@ -8,6 +8,7 @@ import { BUILT_IN_PAGE_TYPE_OPTIONS, PAGE_TYPE_CATEGORIES, PageType, PageTypeOpt
 import type { ArchivedFunnel } from '@/types/database';
 import { Plus, Trash2, Edit2, Save, X, FileCode, ExternalLink, Tag, Filter, Eye, EyeOff, Maximize2, Layers, HelpCircle, FolderPlus, Settings, Monitor, Smartphone, BookOpen, ChevronDown, ChevronRight, FolderOpen, Archive, CheckSquare, Square, Package, Sparkles, Send, Loader2, MessageCircle, Search } from 'lucide-react';
 import CachedScreenshot from '@/components/CachedScreenshot';
+import QuizArchiveView from './QuizArchiveView';
 
 interface SelectedPage {
   name: string;
@@ -1192,192 +1193,17 @@ export default function TemplatesPage() {
         )}
 
         {/* ============ QUIZ VIEW ============ */}
-        {mainView === 'quiz' && (() => {
-          const quizTemplates = (templates || []).filter(t => t.category === 'quiz');
-          const quizArchived = (archivedFunnels || []).filter(f => f.section === 'quiz');
-          const q = archiveSearch.toLowerCase();
-          const quizFiltered = archiveSearch.trim()
-            ? quizTemplates.filter(t =>
-                t.name.toLowerCase().includes(q) ||
-                (t.tags || []).some(tag => tag.toLowerCase().includes(q))
-              )
-            : quizTemplates;
-          const quizArchivedFiltered = archiveSearch.trim()
-            ? quizArchived.filter(f => f.name.toLowerCase().includes(q))
-            : quizArchived;
-          const totalCount = quizFiltered.length + quizArchivedFiltered.length;
-          return (
-          <div className="space-y-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <h2 className="text-xl font-bold text-gray-900">Quiz Templates</h2>
-                <p className="text-sm text-gray-500 mt-0.5">Start from a proven quiz funnel — fully built and ready to customise.</p>
-              </div>
-              <button
-                onClick={() => {
-                  setActiveTab('quiz');
-                  setShowAddForm(!showAddForm);
-                  setMainView('templates');
-                }}
-                className="flex items-center gap-1.5 px-4 py-2.5 bg-slate-800 text-white rounded-lg text-sm font-medium hover:bg-slate-700 transition-colors"
-              >
-                <Plus className="w-4 h-4" />
-                Add Quiz
-              </button>
-            </div>
-
-            {totalCount === 0 ? (
-              <div className="text-center py-16">
-                <HelpCircle className="w-16 h-16 text-gray-200 mx-auto mb-4" />
-                <h3 className="text-lg font-semibold text-gray-500 mb-2">
-                  {quizTemplates.length === 0 && quizArchived.length === 0 ? 'No quiz templates yet' : 'No results'}
-                </h3>
-                <p className="text-sm text-gray-400">
-                  {quizTemplates.length === 0 && quizArchived.length === 0
-                    ? 'Add your first quiz template or ask Merlino to save a funnel as quiz'
-                    : 'Try a different search term'}
-                </p>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {/* Create from Scratch card */}
-                <button
-                  onClick={() => {
-                    setActiveTab('quiz');
-                    setShowAddForm(true);
-                    setMainView('templates');
-                  }}
-                  className="border-2 border-dashed border-gray-300 rounded-2xl flex flex-col items-center justify-center py-16 hover:border-gray-400 hover:bg-gray-50 transition-all group min-h-[360px]"
-                >
-                  <div className="w-14 h-14 rounded-full bg-gray-100 flex items-center justify-center mb-4 group-hover:bg-gray-200 transition-colors">
-                    <Plus className="w-7 h-7 text-gray-400 group-hover:text-gray-600" />
-                  </div>
-                  <span className="text-sm font-bold text-gray-700">Create from Scratch</span>
-                  <span className="text-xs text-gray-400 mt-1">Start with a blank quiz funnel</span>
-                </button>
-
-                {/* Quiz Templates (from swipe_templates) */}
-                {quizFiltered.map((template) => {
-                  const previewUrl = template.screenshot_url || template.url_to_swipe;
-                  const niche = (template.tags || []).find(t => !['quiz', 'funnel', 'lead-magnet', 'survey'].includes(t.toLowerCase()));
-                  return (
-                    <div key={template.id} className="bg-white rounded-2xl border border-gray-200 overflow-hidden hover:shadow-xl transition-all group relative">
-                      <div className="relative">
-                        {previewUrl ? (
-                          <CachedScreenshot url={previewUrl} alt={template.name} height="280px" className="w-full" />
-                        ) : (
-                          <div className="h-[280px] bg-gradient-to-br from-slate-100 to-slate-200 flex items-center justify-center">
-                            <HelpCircle className="w-16 h-16 text-slate-300" />
-                          </div>
-                        )}
-                        <div className="absolute top-3 left-3 flex items-center gap-2">
-                          <span className="px-3 py-1 bg-purple-500/90 text-white rounded-lg text-xs font-semibold shadow-sm">Template</span>
-                          {niche && (
-                            <span className="px-3 py-1 bg-white/90 backdrop-blur-sm rounded-lg text-xs font-semibold text-gray-800 shadow-sm capitalize">{niche}</span>
-                          )}
-                        </div>
-                        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-all flex items-center justify-center opacity-0 group-hover:opacity-100">
-                          {template.url_to_swipe && (
-                            <button
-                              onClick={() => setPagePreview({ isOpen: true, url: template.url_to_swipe, name: template.name, pageType: 'quiz' })}
-                              className="flex items-center gap-2 px-4 py-2 bg-white rounded-lg shadow-lg text-sm font-medium text-gray-800 hover:bg-gray-50 transition-colors"
-                            >
-                              <Eye className="w-4 h-4" /> Preview
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                      <div className="p-5">
-                        <h3 className="text-base font-bold text-gray-900 mb-1 line-clamp-1">{template.name}</h3>
-                        {template.prompt && <p className="text-xs text-gray-500 line-clamp-2 mb-3 leading-relaxed">{template.prompt}</p>}
-                        {template.tags && template.tags.length > 0 && (
-                          <div className="flex flex-wrap gap-1.5 mb-4">
-                            {template.tags.slice(0, 4).map((tag, i) => (
-                              <span key={i} className="px-2 py-0.5 bg-slate-100 text-slate-600 text-[10px] font-medium rounded-full">{tag}</span>
-                            ))}
-                            {template.tags.length > 4 && <span className="px-2 py-0.5 bg-slate-100 text-slate-400 text-[10px] rounded-full">+{template.tags.length - 4}</span>}
-                          </div>
-                        )}
-                        {template.createdAt && (
-                          <p className="text-[10px] text-gray-400 mb-3">Created: {new Date(template.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</p>
-                        )}
-                        <div className="flex items-center gap-2">
-                          <button onClick={() => { setActiveTab('quiz'); setEditingId(template.id); setMainView('templates'); }}
-                            className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-slate-800 text-white rounded-xl text-sm font-semibold hover:bg-slate-700 transition-colors">
-                            Use this template <span className="text-xs">→</span>
-                          </button>
-                          <button onClick={() => { if (confirm('Delete this quiz template?')) deleteTemplate(template.id); }}
-                            className="p-2.5 bg-gray-100 text-gray-500 rounded-xl hover:bg-red-50 hover:text-red-500 transition-colors" title="Delete">
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-
-                {/* Archived Quiz Funnels (from archived_funnels with section='quiz') */}
-                {quizArchivedFiltered.map((funnel) => {
-                  const steps = (funnel.steps as { url_to_swipe?: string; name?: string; page_type?: string }[]) || [];
-                  const questionSteps = steps.filter(s => {
-                    const n = (s.name || '').toLowerCase();
-                    return n.includes('q') || n.includes('question') || n.includes('step') || s.page_type === 'quiz_funnel';
-                  });
-                  const displaySteps = questionSteps.length > 0 ? questionSteps : steps;
-                  return (
-                    <div key={funnel.id} className="bg-white rounded-2xl border border-gray-200 overflow-hidden hover:shadow-xl transition-all group relative">
-                      <div className="relative h-[280px] bg-gradient-to-br from-purple-600 via-indigo-600 to-blue-700 p-6 flex flex-col justify-between overflow-hidden">
-                        <div className="absolute inset-0 opacity-10">
-                          <div className="absolute top-4 right-4 w-32 h-32 border-2 border-white rounded-full" />
-                          <div className="absolute bottom-8 left-8 w-20 h-20 border-2 border-white rounded-full" />
-                          <div className="absolute top-1/2 left-1/2 w-48 h-48 border border-white rounded-full -translate-x-1/2 -translate-y-1/2" />
-                        </div>
-                        <div className="relative z-10">
-                          <div className="flex items-center gap-2 mb-3">
-                            <span className="px-3 py-1 bg-orange-500 text-white rounded-lg text-xs font-semibold shadow-sm">Saved Quiz</span>
-                            <span className="px-2 py-1 bg-white/20 backdrop-blur-sm rounded-lg text-[10px] font-medium text-white shadow-sm">{funnel.total_steps} steps</span>
-                          </div>
-                          <h3 className="text-white font-bold text-lg leading-tight line-clamp-2 drop-shadow-sm">{funnel.name}</h3>
-                        </div>
-                        <div className="relative z-10 space-y-1.5">
-                          {displaySteps.slice(0, 4).map((s, i) => (
-                            <div key={i} className="flex items-center gap-2">
-                              <span className="w-5 h-5 rounded-full bg-white/20 flex items-center justify-center text-[10px] font-bold text-white flex-shrink-0">{i + 1}</span>
-                              <span className="text-white/90 text-xs truncate">{s.name || `Step ${i + 1}`}</span>
-                            </div>
-                          ))}
-                          {displaySteps.length > 4 && (
-                            <span className="text-white/60 text-[10px] ml-7">+{displaySteps.length - 4} more steps</span>
-                          )}
-                        </div>
-                      </div>
-                      <div className="p-5">
-                        <p className="text-[10px] text-gray-400 mb-3">
-                          Saved: {new Date(funnel.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
-                        </p>
-                        <div className="flex items-center gap-2">
-                          <button
-                            onClick={() => {
-                              setExpandedFunnelIds(prev => prev.includes(funnel.id) ? prev : [...prev, funnel.id]);
-                              setMainView('funnels');
-                            }}
-                            className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-slate-800 text-white rounded-xl text-sm font-semibold hover:bg-slate-700 transition-colors"
-                          >
-                            View funnel <span className="text-xs">→</span>
-                          </button>
-                          <button onClick={() => { if (confirm('Delete this quiz funnel?')) deleteArchivedFunnel(funnel.id); }}
-                            className="p-2.5 bg-gray-100 text-gray-500 rounded-xl hover:bg-red-50 hover:text-red-500 transition-colors" title="Delete">
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>);
-        })()}
+        {mainView === 'quiz' && (
+          <QuizArchiveView 
+            searchTerm={archiveSearch}
+            onAddNew={() => {
+              setActiveTab('quiz');
+              setShowAddForm(!showAddForm);
+              setMainView('templates');
+            }}
+            onPreview={(quiz) => setPagePreview({ isOpen: true, url: quiz.url, name: quiz.name, pageType: 'quiz' })}
+          />
+        )}
 
         {/* ============ TEMPLATES VIEW ============ */}
         {mainView === 'templates' && <>
