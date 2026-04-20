@@ -119,7 +119,7 @@ export default function ProjectDetailPage({ params }: { params: { id: string } |
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="text-xl font-bold text-white">{project.name}</h2>
-                {project.description ? <p className="text-gray-400 text-sm mt-1">{project.description}</p> : null}
+                {project.description ? <p className="text-gray-400 text-sm mt-1 whitespace-pre-line">{project.description}</p> : null}
                 {project.domain ? <p className="text-blue-400 text-xs mt-1">{project.domain}</p> : null}
               </div>
               <span className="px-3 py-1 rounded-full text-xs font-medium bg-blue-900 text-blue-300">{project.status}</span>

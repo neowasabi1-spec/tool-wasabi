@@ -17,6 +17,7 @@
     "html2canvas": "^1.4.1",
     "lucide-react": "^0.294.0",
     "next": "^14.0.0",
+    "node-fetch": "^3.3.2",
     "openai": "^6.22.0",
     "pdfjs-dist": "^5.5.207",
     "playwright-core": "^1.50.1",

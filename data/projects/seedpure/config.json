@@ -3,9 +3,9 @@
     "id": "seedpure",
     "name": "SeedPure Microplastic Detox",
     "type": "supplement",
-    "status": "research-complete",
+    "status": "analyzed-bypassed",
     "createdAt": "2026-04-20T11:01:00Z",
-    "updatedAt": "2026-04-20T11:01:00Z"
+    "updatedAt": "2026-04-20T12:21:00Z"
   },
   "product": {
     "name": "SeedPure HER + HIM",
@@ -57,12 +57,56 @@
       "scientificBacking": true
     }
   },
+  "funnel_analysis": {
+    "competitor": "https://getseedpure.com",
+    "status": "bypassed",
+    "structure": {
+      "frontend": {
+        "domain": "getseedpure.com",
+        "flow": "advertorial → quiz → vsl/landing"
+      },
+      "backend": {
+        "domain": "buyseedpure.com",
+        "flow": "checkout → upsells → downsell → thankyou"
+      }
+    },
+    "urls": {
+      "advertorial": "https://getseedpure.com/",
+      "quiz": "https://getseedpure.com/quiz",
+      "vsl": "https://getseedpure.com/landing.html",
+      "checkout": "https://buyseedpure.com/checkout",
+      "upsell1": "https://buyseedpure.com/upsell",
+      "upsell2": "https://buyseedpure.com/upsell1",
+      "oto1": "https://buyseedpure.com/oto",
+      "oto2": "https://buyseedpure.com/oto1",
+      "special_offer": "https://buyseedpure.com/special-offer",
+      "downsell": "https://buyseedpure.com/downsell",
+      "thankyou": "https://buyseedpure.com/thank-you"
+    },
+    "tech_stack": {
+      "frontend": "React SPA",
+      "checkout": "CheckoutChamp",
+      "tracking": "RedTrack",
+      "database": "SheetDB",
+      "cdn": "Cloudflare"
+    },
+    "vulnerabilities": [
+      "No order_id validation",
+      "Session manipulation via JS",
+      "Product IDs exposed in client code"
+    ]
+  },
   "funnel": {
-    "type": "advertorial-vsl-checkout",
+    "type": "advertorial-quiz-vsl-checkout",
     "pages": {
       "advertorial": {
-        "status": "not-started",
-        "template": null
+        "status": "analyzed",
+        "template": "emotional-story"
+      },
+      "quiz": {
+        "status": "analyzed",
+        "steps": 8,
+        "features": ["segmentation", "email-capture", "timer"]
       },
       "vsl": {
         "status": "script-ready",
@@ -70,8 +114,8 @@
         "duration": "45-50 minutes"
       },
       "checkout": {
-        "status": "not-started",
-        "processor": null
+        "status": "analyzed",
+        "processor": "CheckoutChamp"
       }
     }
   },

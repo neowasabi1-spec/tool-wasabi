@@ -1,0 +1,84 @@
+{
+  "frontend": {
+    "domain": "getseedpure.com",
+    "pages": {
+      "advertorial": {
+        "url": "https://getseedpure.com/",
+        "type": "Advertorial",
+        "description": "Amanda Rivera emotional story",
+        "elements": ["Multiple CTAs", "Emotional hook", "Problem agitation"]
+      },
+      "quiz": {
+        "url": "https://getseedpure.com/quiz",
+        "type": "Quiz",
+        "steps": 8,
+        "features": ["Profile segmentation", "Email capture via SheetDB", "23-min timer"]
+      },
+      "vsl": {
+        "url": "https://getseedpure.com/landing.html",
+        "type": "VSL/Landing",
+        "features": ["55% off limited offer", "Media credibility", "Dynamic content"]
+      }
+    }
+  },
+  "backend": {
+    "domain": "buyseedpure.com",
+    "pages": {
+      "checkout": {
+        "url": "https://buyseedpure.com/checkout",
+        "type": "Checkout",
+        "processor": "CheckoutChamp",
+        "price": "$294 (6-month bundle)"
+      },
+      "upsells": [
+        { "url": "https://buyseedpure.com/upsell", "type": "Upsell 1" },
+        { "url": "https://buyseedpure.com/upsell1", "type": "Upsell 2" },
+        { "url": "https://buyseedpure.com/oto", "type": "OTO 1" },
+        { "url": "https://buyseedpure.com/oto1", "type": "OTO 2" },
+        { "url": "https://buyseedpure.com/special-offer", "type": "Special Offer" }
+      ],
+      "downsell": {
+        "url": "https://buyseedpure.com/downsell",
+        "type": "Downsell"
+      },
+      "thankyou": {
+        "url": "https://buyseedpure.com/thank-you",
+        "type": "Thank You Page"
+      }
+    }
+  },
+  "techStack": {
+    "frontend": "React SPA",
+    "checkout": "CheckoutChamp",
+    "tracking": "RedTrack",
+    "database": "SheetDB",
+    "cdn": "Cloudflare",
+    "hiddenBackend": "orders.luxuryconfidence.com"
+  },
+  "productIds": {
+    "her": { 
+      "oneTime": [343, 345, 347], 
+      "subscription": [361, 363, 377] 
+    },
+    "him": { 
+      "oneTime": [349, 351, 353], 
+      "subscription": [365, 367, 369] 
+    },
+    "bundle": { 
+      "oneTime": [355, 357, 359], 
+      "subscription": [371, 373] 
+    }
+  },
+  "vulnerabilities": {
+    "orderValidation": "No server-side validation - any order_id works",
+    "sessionSecurity": "Session can be manipulated via JavaScript",
+    "exposedData": "Product IDs and funnel structure visible in client code"
+  },
+  "flowDiagram": {
+    "steps": [
+      "ADVERTORIAL → QUIZ → VSL → CHECKOUT → UPSELLS → THANK YOU"
+    ],
+    "multiPath": true,
+    "sessionBased": true
+  }
+}
