@@ -13,6 +13,19 @@ interface ProductInfo {
   cta_url?: string;
   brand_name?: string;
   social_proof?: string;
+  /** Extra catalog fields when swiping via product_id */
+  sku?: string | null;
+  category?: string | null;
+  characteristics?: string[] | null;
+  geo_market?: string | null;
+  supplier?: string | null;
+  /** Long-form positioning / strategist output — injected into swipe prompt */
+  marketing_brief?: string;
+  /** Freeform angles, objections, proofs, swipe notes */
+  additional_marketing_notes?: string;
+  /** Aggregated from linked project rows (backend / MCP may set this) */
+  project_brief?: string;
+  market_research?: string;
 }
 
 interface ExtractedText {
@@ -110,6 +123,11 @@ function cleanAiOutput(text: string): string {
   return cleaned.trim();
 }
 
+const SWIPE_TEXT_BATCH_SIZE = Math.max(
+  8,
+  Math.min(40, Number.parseInt(process.env.SWIPE_TEXT_BATCH_SIZE || '28', 10) || 28),
+);
+
 async function callAnthropicFallback(systemPrompt: string, userPrompt: string): Promise<string> {
   const apiKey = requireAnthropicKey();
 
@@ -126,7 +144,7 @@ async function callAnthropicFallback(systemPrompt: string, userPrompt: string): 
       system: systemPrompt,
       messages: [{ role: 'user', content: userPrompt }],
     }),
-    signal: AbortSignal.timeout(90000),
+    signal: AbortSignal.timeout(150_000),
   });
 
   if (!res.ok) {
@@ -136,6 +154,138 @@ async function callAnthropicFallback(systemPrompt: string, userPrompt: string): 
 
   const data = await res.json();
   return data.content?.[0]?.text || '';
+}
+
+function buildProductContextMarkdown(product: ProductInfo): string {
+  const lines: string[] = [];
+  if (product.description) lines.push(`Description:\n${product.description}`);
+  if (product.benefits?.length) {
+    lines.push(`Benefits:\n${product.benefits.map((b) => `• ${String(b)}`).join('\n')}`);
+  }
+  if (product.category) lines.push(`Category: ${product.category}`);
+  if (product.sku) lines.push(`SKU: ${product.sku}`);
+  if (product.supplier) lines.push(`Supplier: ${product.supplier}`);
+  if (product.geo_market) lines.push(`Market: ${product.geo_market}`);
+  if (product.characteristics?.length) {
+    lines.push(`Characteristics:\n${product.characteristics.map((c) => `• ${String(c)}`).join('\n')}`);
+  }
+  if (product.brand_name) lines.push(`Brand: ${product.brand_name}`);
+  if (product.price != null && String(product.price).trim()) lines.push(`Price: ${product.price}`);
+  if (product.cta_text) lines.push(`Preferred CTA label: ${product.cta_text}`);
+  if (product.cta_url) lines.push(`CTA URL: ${product.cta_url}`);
+  if (product.target_audience) lines.push(`Target audience: ${product.target_audience}`);
+  if (product.social_proof) lines.push(`Social proof notes: ${product.social_proof}`);
+  if (product.marketing_brief?.trim()) {
+    lines.push(`MARKETING BRIEF / POSITIONING:\n${product.marketing_brief.trim()}`);
+  }
+  if (product.market_research?.trim()) {
+    lines.push(`MARKET RESEARCH:\n${product.market_research.trim()}`);
+  }
+  if (product.project_brief?.trim()) {
+    lines.push(`PROJECT CONTEXT:\n${product.project_brief.trim()}`);
+  }
+  if (product.additional_marketing_notes?.trim()) {
+    lines.push(`ADDITIONAL CONTEXT:\n${product.additional_marketing_notes.trim()}`);
+  }
+  return lines.join('\n\n');
+}
+
+/** Document <title> is easy to miss in tag-only extraction; prepend when distinct. */
+function prependDocumentTitle(texts: ExtractedText[], html: string): ExtractedText[] {
+  const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  const raw = titleMatch?.[1]
+    ?.replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!raw || raw.length < 3 || !/[a-zA-Z]/.test(raw)) return texts;
+  const seen = new Set(texts.map((t) => t.original));
+  if (seen.has(raw)) return texts;
+  const minPos = texts.length ? Math.min(...texts.map((t) => t.position)) : 0;
+  return [{ original: raw, tag: 'title', position: minPos - 1 }, ...texts];
+}
+
+async function anthropicRewriteBatch(
+  systemPrompt: string,
+  batch: Array<{ id: number; text: string; tag: string }>,
+  passLabel: string,
+): Promise<Array<{ id: number; rewritten: string }>> {
+  if (batch.length === 0) return [];
+  const userPrompt = `${passLabel}: You MUST return exactly one JSON object per input id (${batch.length} items). Never skip an id.
+
+Rewrite these texts so they sell ONLY the described product while keeping approximate length (±25%) and the same conversational energy. Plain text only in "rewritten" — no HTML or markdown.
+
+Input:
+${JSON.stringify(batch, null, 2)}
+
+Output shape: [{"id": number, "rewritten": "..."}, ...] — include EVERY id listed above (any order ok).`;
+
+  const aiText = await callAnthropicFallback(systemPrompt, userPrompt);
+  if (!aiText.trim()) throw new Error('Empty batch response from Anthropic');
+  const cleaned = cleanAiOutput(aiText);
+  const parsed: unknown = JSON.parse(cleaned);
+  const rewrites = parsed as Array<{ id: number; rewritten: string }>;
+  if (!Array.isArray(rewrites)) throw new Error('AI batch: expected JSON array');
+  return rewrites;
+}
+
+async function collectAllRewrites(
+  systemPrompt: string,
+  textsForAi: Array<{ id: number; text: string; tag: string }>,
+): Promise<Map<number, string>> {
+  const effective = new Map<number, string>();
+
+  const totalBatches = Math.ceil(textsForAi.length / SWIPE_TEXT_BATCH_SIZE);
+  for (let i = 0; i < textsForAi.length; i += SWIPE_TEXT_BATCH_SIZE) {
+    const slice = textsForAi.slice(i, i + SWIPE_TEXT_BATCH_SIZE);
+    const batchIdx = Math.floor(i / SWIPE_TEXT_BATCH_SIZE) + 1;
+    try {
+      const rewrites = await anthropicRewriteBatch(
+        systemPrompt,
+        slice,
+        `Batch ${batchIdx} of ${totalBatches}`,
+      );
+      for (const rw of rewrites) {
+        if (typeof rw.id !== 'number' || rw.rewritten === undefined || rw.rewritten === null) continue;
+        const trimmed = String(rw.rewritten).trim();
+        if (!trimmed) continue;
+        const originalText = textsForAi.find((t) => t.id === rw.id)?.text;
+        if (originalText && trimmed === originalText) continue;
+        effective.set(rw.id, trimmed);
+      }
+    } catch (e) {
+      console.error(`[swipe] batch failed at offset ${i}:`, e instanceof Error ? e.message : e);
+      throw e;
+    }
+  }
+
+  const maxSweep = 8;
+  for (let sweep = 0; sweep < maxSweep; sweep++) {
+    const missing = textsForAi.filter((t) => !effective.has(t.id));
+    if (missing.length === 0) break;
+    console.log(`[swipe] fill sweep ${sweep + 1}: ${missing.length} texts still outstanding`);
+
+    for (let j = 0; j < missing.length; j += SWIPE_TEXT_BATCH_SIZE) {
+      const slice = missing.slice(j, j + SWIPE_TEXT_BATCH_SIZE);
+      try {
+        const rewrites = await anthropicRewriteBatch(
+          systemPrompt,
+          slice,
+          `GAP-FILL — return ONLY ids [${slice.map((s) => s.id).join(', ')}]; every id mandatory`,
+        );
+        for (const rw of rewrites) {
+          if (typeof rw.id !== 'number' || rw.rewritten === undefined || rw.rewritten === null) continue;
+          const trimmed = String(rw.rewritten).trim();
+          if (!trimmed) continue;
+          effective.set(rw.id, trimmed);
+        }
+      } catch (e) {
+        console.error(`[swipe] gap-fill error:`, e instanceof Error ? e.message : e);
+      }
+    }
+  }
+
+  return effective;
 }
 
 async function clonePageHtml(url: string): Promise<string> {
@@ -230,79 +380,71 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'HTML too short' }, { status: 400 });
     }
 
-    const texts = extractTextsFromHtml(originalHtml);
+    let texts = extractTextsFromHtml(originalHtml);
+    texts = prependDocumentTitle(texts, originalHtml);
     if (texts.length === 0) {
       return NextResponse.json({ error: 'No text found in page' }, { status: 400 });
     }
 
     const textsForAi = texts.map((t, i) => ({ id: i, text: t.original, tag: t.tag }));
-
-    const productDesc = [
-      product.description || '',
-      product.benefits?.length ? `Benefits: ${product.benefits.join(', ')}` : '',
-      product.brand_name ? `Brand: ${product.brand_name}` : '',
-      product.price ? `Price: ${product.price}` : '',
-      product.cta_text ? `CTA: ${product.cta_text}` : '',
-      product.target_audience ? `Target: ${product.target_audience}` : '',
-    ].filter(Boolean).join('\n');
+    const productCtx = buildProductContextMarkdown(product);
 
     const lang = language || 'it';
     const toneStr = tone || 'professional';
 
-    const systemPrompt = `You are a world-class direct-response copywriter. You rewrite marketing texts to sell a SPECIFIC product while keeping the EXACT SAME structure, tone, style, length, and persuasion techniques.
+    const systemPrompt = `You are a world-class direct-response copywriter. You rewrite competitor-style marketing texts to sell ONE specific product/offering without changing HTML structure downstream.
 
-PRODUCT: ${product.name}
-${productDesc}
+PRODUCT NAME: ${product.name}
+
+FULL PRODUCT CONTEXT (use this everywhere you need facts, angles, benefits, proofs, objections, naming; if something is unknown, soften with honest uncertainty — avoid inventing medical/legal claims):
+${productCtx || `(minimal catalog data — derive only from product name: ${product.name})`}
 
 TONE: ${toneStr}
-LANGUAGE: ${lang === 'it' ? 'Italian' : lang === 'en' ? 'English' : lang}
+OUTPUT LANGUAGE FOR REWRITES: ${lang === 'it' ? 'Italian' : lang === 'en' ? 'English' : lang}
 
 CRITICAL RULES:
-1. Rewrite ONLY the text content. ALL images, videos, media, and HTML structure are preserved separately.
-2. Keep the same emotional angle, copywriting technique, and approximate length (±20%).
-3. Keep the same language/tone (casual→casual, urgent→urgent, formal→formal).
-4. Do NOT add markdown, HTML tags, or formatting — return PLAIN TEXT only.
-5. Button labels, CTAs, short phrases → keep short and punchy.
-6. Structural text ("Step 1", "FAQ", numbers) → keep unchanged or adapt minimally.
-7. Return a JSON array: [{"id": 0, "rewritten": "new text"}, ...]
-8. Return ONLY the JSON array, nothing else.`;
+1. Treat each input line as discrete visible copy — rewrite it completely for OUR product/offering whenever it is substantive marketing text.
+2. Keep the same conversational energy/medium (headline punchy stays punchy). Approximate length ±25%.
+3. Plain text ONLY in rewritten strings — NO HTML, markdown, or JSON escapes beyond normal string characters.
+4. Legal/compliance texts: rewrite only where safe; preserve mandatory disclosures when uncertainty exists.
+5. Every batch MUST return one {"id","rewritten"} object per supplied id — never omit ids.
+`;
 
-    const userPrompt = `Rewrite these ${texts.length} texts for "${product.name}":\n\n${JSON.stringify(textsForAi, null, 2)}`;
-
-    let aiText = '';
-    const usedProvider = 'anthropic';
-
+    let idToRewrite: Map<number, string>;
     try {
-      console.log(`[swipe] Sending to Anthropic, texts=${texts.length}`);
-      aiText = await callAnthropicFallback(systemPrompt, userPrompt);
-      if (!aiText.trim()) throw new Error('Empty response from Anthropic');
-      console.log(`[swipe] Anthropic OK, response: ${aiText.length} chars`);
+      console.log(`[swipe] Anthropic batched swipe, texts=${texts.length}, batch=${SWIPE_TEXT_BATCH_SIZE}`);
+      idToRewrite = await collectAllRewrites(systemPrompt, textsForAi);
     } catch (anthropicErr) {
       console.error(`[swipe] Anthropic failed: ${anthropicErr instanceof Error ? anthropicErr.message : 'Unknown'}`);
-      return NextResponse.json({
-        error: `Anthropic failed: ${anthropicErr instanceof Error ? anthropicErr.message : 'Unknown'}`,
-      }, { status: 502 });
+      return NextResponse.json(
+        {
+          error: `Anthropic failed: ${anthropicErr instanceof Error ? anthropicErr.message : 'Unknown'}`,
+        },
+        { status: 502 },
+      );
     }
 
-    const cleaned = cleanAiOutput(aiText);
-
-    let rewrites: Array<{ id: number; rewritten: string }>;
-    try {
-      rewrites = JSON.parse(cleaned);
-    } catch {
-      return NextResponse.json({ error: 'AI returned invalid JSON', raw: cleaned.substring(0, 500) }, { status: 500 });
+    const unresolvedIds = textsForAi.filter((t) => !idToRewrite.has(t.id)).map((t) => t.id);
+    if (unresolvedIds.length > 0) {
+      console.warn(`[swipe] unresolved text ids after sweeps: ${unresolvedIds.join(',')}`);
     }
 
     const replacementPairs: Array<{ from: string; to: string; attr?: string }> = [];
-    for (const rw of rewrites) {
-      const original = texts[rw.id];
-      if (!original || !rw.rewritten || original.original === rw.rewritten) continue;
+    for (const [id, rewritten] of idToRewrite) {
+      const original = texts[id];
+      if (!original || !rewritten || original.original === rewritten) continue;
       if (original.tag.startsWith('attr:')) {
-        replacementPairs.push({ from: original.original, to: rw.rewritten, attr: original.tag.replace('attr:', '') });
+        replacementPairs.push({
+          from: original.original,
+          to: rewritten,
+          attr: original.tag.replace('attr:', ''),
+        });
       } else {
-        replacementPairs.push({ from: original.original, to: rw.rewritten });
+        replacementPairs.push({ from: original.original, to: rewritten });
       }
     }
+
+    const usedProvider = 'anthropic';
 
     const swipeScript = `<script data-swipe-replacer>
 (function(){
@@ -363,9 +505,11 @@ CRITICAL RULES:
       new_length: resultHtml.length,
       totalTexts: texts.length,
       replacements: replacementPairs.length,
+      unresolved_text_ids: unresolvedIds,
+      coverage_ratio: texts.length ? replacementPairs.length / texts.length : 0,
       provider: usedProvider,
-      method_used: 'dom-replacement',
-      changes_made: replacementPairs.map(p => ({ from: p.from.substring(0, 50), to: p.to.substring(0, 50) })),
+      method_used: 'dom-replacement-batched',
+      changes_made: replacementPairs.map((p) => ({ from: p.from.substring(0, 50), to: p.to.substring(0, 50) })),
     });
   } catch (error) {
     console.error('Swipe error:', error);

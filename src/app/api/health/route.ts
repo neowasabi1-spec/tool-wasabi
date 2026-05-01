@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
 
+export const dynamic = 'force-dynamic';
+
 /**
  * Health & diagnostics endpoint - tests connectivity and configuration
  * Usa GET per semplicità (es. curl, browser)

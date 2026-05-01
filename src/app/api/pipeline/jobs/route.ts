@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+export const dynamic = 'force-dynamic';
+
 const PIPELINE_API_BASE = 'https://claude-code-agents.fly.dev';
 
 export async function GET(request: NextRequest) {
   try {
-    const { searchParams } = new URL(request.url);
+    const searchParams = request.nextUrl.searchParams;
     
     // Build query params for filtering
     const queryParams = new URLSearchParams();

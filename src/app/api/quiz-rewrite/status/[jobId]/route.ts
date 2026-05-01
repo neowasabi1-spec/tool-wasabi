@@ -105,13 +105,24 @@ export async function GET(
     }
 
     // Get original HTML and texts from chat_history
-    const chatHistory = job.chat_history;
+    let chatHistory = job.chat_history;
+    
+    // Parse chat_history if it's a string (Supabase returns JSON columns as strings)
+    if (typeof chatHistory === 'string') {
+      try {
+        chatHistory = JSON.parse(chatHistory);
+      } catch (e) {
+        return NextResponse.json({ status: 'error', error: 'Failed to parse chat_history' });
+      }
+    }
+    
     if (!chatHistory?.html || !chatHistory?.texts) {
       return NextResponse.json({ status: 'error', error: 'Original HTML not found in job data' });
     }
 
-    // Apply rewrites to original HTML
-    const { html: rewrittenHtml, replacements } = applyRewrites(chatHistory.html, chatHistory.texts, rewrites);
+    // L'HTML è già stato sostituito dal worker!
+    const rewrittenHtml = chatHistory.html; // Usa l'HTML già processato
+    const replacements = chatHistory.texts.length;
 
     return NextResponse.json({
       status: 'completed',

@@ -1783,15 +1783,21 @@ export default function FrontEndFunnel() {
           const { jobId, totalTexts: jobTotalTexts } = enqueueData;
           setCloneProgress({ phase: 'processing', totalTexts: jobTotalTexts || 0, processedTexts: 0, message: `Trinity sta riscrivendo... (job: ${jobId.substring(0, 8)})` });
 
-          // Step 2: Poll status endpoint until completed or timeout (5 minutes)
+          // Step 2: Poll status until done (long pages + queue can exceed 5m; align with OpenClaw path = 30m)
           const POLL_INTERVAL_MS = 3000;
-          const MAX_WAIT_MS = 5 * 60 * 1000;
+          const MAX_WAIT_MS = 30 * 60 * 1000;
           const pollStart = Date.now();
           let pollResult: { html: string; replacements: number; totalTexts: number; originalLength: number; newLength: number; provider: string } | null = null;
 
           while (!pollResult) {
             if (Date.now() - pollStart > MAX_WAIT_MS) {
-              throw new Error('Rewrite timeout dopo 5 minuti. Controlla che openclaw-worker.js sia in esecuzione.');
+              const mins = MAX_WAIT_MS / 60000;
+              throw new Error(
+                `Rewrite timeout dopo ${mins} minuti mentre il job restava pending/processing. ` +
+                  'Possibili cause: (1) il worker che legge Supabase (`openclaw-worker.js`) non è in esecuzione sul PC; ' +
+                  '(2) Gateway OpenClaw offline o porta errata; (3) job troppo lungo anche per il tempo limite della UI — riprova o usa «Use OpenClaw» dalla stessa modal. ' +
+                  `Job id: ${jobId}`,
+              );
             }
             await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
 
@@ -1805,7 +1811,16 @@ export default function FrontEndFunnel() {
             } else {
               // Still pending/processing — update progress message
               const elapsed = Math.round((Date.now() - pollStart) / 1000);
-              setCloneProgress({ phase: 'processing', totalTexts: jobTotalTexts || 0, processedTexts: 0, message: `Trinity sta riscrivendo... (${elapsed}s)` });
+              const maxMin = MAX_WAIT_MS / 60000;
+              setCloneProgress({
+                phase: 'processing',
+                totalTexts: jobTotalTexts || 0,
+                processedTexts: 0,
+                message:
+                  statusData.status === 'processing'
+                    ? `Trinity in elaborazione… ${elapsed}s (max ~${maxMin} min)`
+                    : `Trinity in coda (pending)… ${elapsed}s (max ~${maxMin} min)`,
+              });
             }
           }
 

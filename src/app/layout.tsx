@@ -1,8 +1,6 @@
 import type { Metadata } from 'next';
 import { Inter } from 'next/font/google';
 import './globals.css';
-import ConditionalLayout from '@/components/ConditionalLayout';
-import { SupabaseProvider } from '@/components/SupabaseProvider';
 
 const inter = Inter({ subsets: ['latin'] });
 
@@ -11,18 +9,16 @@ export const metadata: Metadata = {
   description: 'Gestione attività di swipe funnel',
 };
 
-export default function RootLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+/**
+ * Nessun Supabase/useStore nel root layout: durante `next build` su Netlify
+ * alcune pagine pubbliche (/login, /reverse-funnel) venivano prerenderizzate insieme
+ * al Provider e caricavano @supabase/supabase-js anche senza env.
+ * Dashboard e il resto stanno in `app/(main)/layout.tsx`.
+ */
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="it">
-      <body className={inter.className}>
-        <SupabaseProvider>
-          <ConditionalLayout>{children}</ConditionalLayout>
-        </SupabaseProvider>
-      </body>
+      <body className={inter.className}>{children}</body>
     </html>
   );
 }

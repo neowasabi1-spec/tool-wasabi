@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
 
+export const dynamic = 'force-dynamic';
+
 function getApiUrl() {
   return process.env.AGENTIC_BROWSER_API_URL || 'http://localhost:8000';
 }

@@ -6,6 +6,9 @@ const nextConfig = {
   typescript: { ignoreBuildErrors: true },
   eslint: { ignoreDuringBuilds: true },
 
+  /** Netlify/Vercel CI: some App Route GET handlers were pre-rendered at build and hit localhost (60s+). */
+  staticPageGenerationTimeout: 300,
+
 
   experimental: {
     serverActions: {

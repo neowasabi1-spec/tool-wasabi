@@ -9,6 +9,7 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@netlify/plugin-nextjs": "^5.15.9",
     "@anthropic-ai/sdk": "^0.74.0",
     "@sparticuz/chromium": "^133.0.0",
     "@supabase/supabase-js": "^2.93.3",
@@ -18,7 +19,7 @@
     "html2canvas": "^1.4.1",
     "lucide-react": "^0.294.0",
     "next": "^14.0.0",
-    "node-fetch": "^3.3.2",
+    "node-fetch": "^2.7.0",
     "openai": "^6.22.0",
     "pdfjs-dist": "^5.5.207",
     "playwright-core": "^1.50.1",
@@ -29,7 +30,6 @@
     "zustand": "^4.4.7"
   },
   "devDependencies": {
-    "@netlify/plugin-nextjs": "^5.15.9",
     "@types/node": "^20.10.0",
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.2.0",

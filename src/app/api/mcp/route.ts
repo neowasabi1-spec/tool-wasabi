@@ -28,6 +28,102 @@ function baseHeaders(extra: Record<string, string> = {}): Record<string, string>
   };
 }
 
+type CatalogProductRow = Record<string, unknown> & {
+  name: string;
+  description: string;
+  price?: unknown;
+  benefits?: unknown;
+  cta_text?: string;
+  cta_url?: string;
+  brand_name?: string;
+};
+
+function normalizeBenefitsList(benefits: unknown): string[] {
+  if (!benefits) return [];
+  if (Array.isArray(benefits)) return benefits.map((b) => String(b)).filter(Boolean);
+  return String(benefits)
+    .split(',')
+    .map((b: string) => b.trim())
+    .filter(Boolean);
+}
+
+/** Builds the `product` object for /api/landing/swipe incl. merged briefs from linked projects. */
+async function buildSwipeProductPayload(
+  prod: CatalogProductRow,
+  opts: {
+    marketing_brief?: string;
+    additional_marketing_notes?: string;
+    productIdForProjects?: string;
+  },
+): Promise<Record<string, unknown>> {
+  const briefParts: string[] = [];
+  if (opts.additional_marketing_notes?.trim()) briefParts.push(opts.additional_marketing_notes.trim());
+  if (opts.marketing_brief?.trim()) briefParts.push(opts.marketing_brief.trim());
+
+  if (opts.productIdForProjects) {
+    const { data: funnelRows } = await supabase
+      .from('funnel_pages')
+      .select('project_id')
+      .eq('product_id', opts.productIdForProjects)
+      .not('project_id', 'is', null)
+      .limit(25);
+
+    const projectIds = [
+      ...new Set((funnelRows ?? []).map((r: { project_id: string }) => r.project_id).filter(Boolean)),
+    ];
+
+    for (const pid of projectIds.slice(0, 5)) {
+      const { data: proj } = await supabase
+        .from('projects')
+        .select('name, brief, market_research')
+        .eq('id', pid)
+        .maybeSingle();
+      if (!proj) continue;
+      if (typeof proj.brief === 'string' && proj.brief.trim()) {
+        briefParts.push(`Project "${proj.name}":\n${proj.brief.trim()}`);
+      }
+      if (proj.market_research != null && proj.market_research !== '') {
+        const mr =
+          typeof proj.market_research === 'string'
+            ? proj.market_research
+            : JSON.stringify(proj.market_research);
+        if (mr && mr !== '{}' && mr !== 'null') {
+          briefParts.push(`Market research (${proj.name}):\n${mr}`);
+        }
+      }
+    }
+  }
+
+  const out: Record<string, unknown> = {
+    name: prod.name,
+    description: prod.description,
+    benefits: normalizeBenefitsList(prod.benefits),
+    price: prod.price != null && String(prod.price).trim() !== '' ? String(prod.price) : undefined,
+    cta_text: prod.cta_text,
+    cta_url: prod.cta_url,
+    brand_name: prod.brand_name,
+  };
+
+  const ta = prod.target_audience;
+  if (typeof ta === 'string' && ta.trim()) out.target_audience = ta;
+
+  const category = prod.category;
+  if (typeof category === 'string' && category.trim()) out.category = category;
+  const sku = prod.sku;
+  if (typeof sku === 'string' && sku.trim()) out.sku = sku;
+  const supplier = prod.supplier;
+  if (typeof supplier === 'string' && supplier.trim()) out.supplier = supplier;
+  const gm = prod.geo_market;
+  if (typeof gm === 'string' && gm.trim()) out.geo_market = gm;
+
+  const ch = prod.characteristics;
+  if (Array.isArray(ch) && ch.length > 0) out.characteristics = ch.map(String);
+
+  if (briefParts.length > 0) out.marketing_brief = briefParts.join('\n\n---\n\n');
+
+  return out;
+}
+
 const TOOLS = [
   {
     name: 'list_products',
@@ -357,6 +453,15 @@ const TOOLS = [
         cta_url: { type: 'string', description: 'CTA destination URL' },
         target_audience: { type: 'string', description: 'Target audience' },
         brand_name: { type: 'string', description: 'Brand name' },
+        marketing_brief: {
+          type: 'string',
+          description:
+            'Long positioning brief, strategist output, or funnel knowledge to ground rewrites (strongly recommended for full-page swipes)',
+        },
+        additional_marketing_notes: {
+          type: 'string',
+          description: 'Angles, objections, proofs, swipe notes merged into swipe context',
+        },
         tone: { type: 'string', description: 'Copy tone: professional, casual, urgent, luxury (default: professional)' },
         language: { type: 'string', description: 'Language code: it, en, es, de, fr (default: it)' },
       },
@@ -371,6 +476,11 @@ const TOOLS = [
       properties: {
         source_url: { type: 'string', description: 'URL of the landing page to swipe' },
         product_id: { type: 'string', description: 'ID of the product (from list_products) to swipe for' },
+        marketing_brief: {
+          type: 'string',
+          description: 'Extra brief / knowledge appended to swipe (in addition to DB product + linked project)',
+        },
+        additional_marketing_notes: { type: 'string', description: 'Optional notes merged into swipe context' },
         tone: { type: 'string', description: 'Copy tone (default: professional)' },
         language: { type: 'string', description: 'Language code (default: it)' },
       },
@@ -393,6 +503,8 @@ const TOOLS = [
         cta_url: { type: 'string' },
         target_audience: { type: 'string' },
         brand_name: { type: 'string' },
+        marketing_brief: { type: 'string', description: 'Positioning brief for inline swipe flows' },
+        additional_marketing_notes: { type: 'string', description: 'Angles, proofs, objections, extra context' },
         tone: { type: 'string', description: 'professional, casual, urgent, luxury (default: professional)' },
         language: { type: 'string', description: 'it, en, es, de, fr (default: it)' },
       },
@@ -1612,6 +1724,12 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
       if (args.cta_url) product.cta_url = args.cta_url;
       if (args.target_audience) product.target_audience = args.target_audience;
       if (args.brand_name) product.brand_name = args.brand_name;
+      if (typeof args.marketing_brief === 'string' && args.marketing_brief.trim()) {
+        product.marketing_brief = args.marketing_brief.trim();
+      }
+      if (typeof args.additional_marketing_notes === 'string' && args.additional_marketing_notes.trim()) {
+        product.additional_marketing_notes = args.additional_marketing_notes.trim();
+      }
       const res = await fetch(`${baseUrl}/api/landing/swipe`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1632,6 +1750,8 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
         new_title: result.new_title,
         total_texts: result.totalTexts,
         replacements: result.replacements,
+        unresolved_text_ids: result.unresolved_text_ids ?? [],
+        coverage_ratio: result.coverage_ratio,
         provider: result.provider,
         changes: result.changes_made,
         html: result.html,
@@ -1641,21 +1761,18 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
       const { data: prod, error: prodErr } = await supabase.from('products').select('*').eq('id', args.product_id).single();
       if (prodErr || !prod) throw new Error(`Product not found: ${args.product_id}`);
       const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || 'https://cloner-funnel-builder.vercel.app';
+      const productPayload = await buildSwipeProductPayload(prod as CatalogProductRow, {
+        productIdForProjects: String(args.product_id),
+        marketing_brief: typeof args.marketing_brief === 'string' ? args.marketing_brief : undefined,
+        additional_marketing_notes:
+          typeof args.additional_marketing_notes === 'string' ? args.additional_marketing_notes : undefined,
+      });
       const res = await fetch(`${baseUrl}/api/landing/swipe`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           source_url: args.source_url,
-          product: {
-            name: prod.name,
-            description: prod.description,
-            benefits: prod.benefits ? String(prod.benefits).split(',').map((b: string) => b.trim()) : [],
-            price: prod.price,
-            cta_text: prod.cta_text,
-            cta_url: prod.cta_url,
-            target_audience: prod.target_audience,
-            brand_name: prod.brand_name,
-          },
+          product: productPayload,
           tone: args.tone || 'professional',
           language: args.language || 'it',
         }),
@@ -1671,6 +1788,8 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
         new_title: result.new_title,
         total_texts: result.totalTexts,
         replacements: result.replacements,
+        unresolved_text_ids: result.unresolved_text_ids ?? [],
+        coverage_ratio: result.coverage_ratio,
         provider: result.provider,
         changes: result.changes_made,
         html: result.html,
@@ -1678,24 +1797,20 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
     }
     case 'swipe_landing_page_async': {
       // Resolve product (either by id or from inline fields)
-      let product: Record<string, unknown> = {};
+      let product: Record<string, unknown>;
       if (args.product_id) {
         const { data: prod, error: prodErr } = await supabase
           .from('products').select('*').eq('id', args.product_id).single();
         if (prodErr || !prod) throw new Error(`Product not found: ${args.product_id}`);
-        product = {
-          name: prod.name,
-          description: prod.description,
-          benefits: prod.benefits ? (Array.isArray(prod.benefits) ? prod.benefits : String(prod.benefits).split(',').map((b: string) => b.trim())) : [],
-          price: prod.price,
-          cta_text: prod.cta_text,
-          cta_url: prod.cta_url,
-          target_audience: prod.target_audience,
-          brand_name: prod.brand_name,
-        };
+        product = await buildSwipeProductPayload(prod as CatalogProductRow, {
+          productIdForProjects: String(args.product_id),
+          marketing_brief: typeof args.marketing_brief === 'string' ? args.marketing_brief : undefined,
+          additional_marketing_notes:
+            typeof args.additional_marketing_notes === 'string' ? args.additional_marketing_notes : undefined,
+        });
       } else {
         if (!args.product_name) throw new Error('Either product_id or product_name is required');
-        product = { name: args.product_name };
+        product = { name: String(args.product_name) };
         if (args.product_description) product.description = args.product_description;
         if (args.benefits) product.benefits = String(args.benefits).split(',').map((b: string) => b.trim());
         if (args.price) product.price = args.price;
@@ -1703,6 +1818,12 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
         if (args.cta_url) product.cta_url = args.cta_url;
         if (args.target_audience) product.target_audience = args.target_audience;
         if (args.brand_name) product.brand_name = args.brand_name;
+        if (typeof args.marketing_brief === 'string' && args.marketing_brief.trim()) {
+          product.marketing_brief = args.marketing_brief.trim();
+        }
+        if (typeof args.additional_marketing_notes === 'string' && args.additional_marketing_notes.trim()) {
+          product.additional_marketing_notes = args.additional_marketing_notes.trim();
+        }
       }
 
       const jobPayload = {

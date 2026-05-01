@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { extractAllTextsUniversal } from '@/lib/universal-text-extractor';
 
 export const maxDuration = 30;
 export const dynamic = 'force-dynamic';
@@ -6,70 +7,8 @@ export const dynamic = 'force-dynamic';
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-// Extract texts from HTML
-function extractTextsFromHtml(html: string): Array<{ original: string; tag: string; position: number }> {
-  const stripped = html
-    .replace(/<script[\s\S]*?<\/script>/gi, '')
-    .replace(/<style[\s\S]*?<\/style>/gi, '')
-    .replace(/<noscript[\s\S]*?<\/noscript>/gi, '')
-    .replace(/<svg[\s\S]*?<\/svg>/gi, '');
-
-  const bodyMatch = stripped.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
-  const bodyHtml = bodyMatch ? bodyMatch[1] : stripped;
-
-  const texts: Array<{ original: string; tag: string; position: number }> = [];
-  const seen = new Set<string>();
-
-  const blockTags = new Set(['div', 'section', 'article', 'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 'table', 'tr', 'td', 'th', 'blockquote', 'form', 'button']);
-  const textTags = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'li', 'td', 'th', 'label', 'a', 'button', 'details', 'summary'];
-
-  for (const tag of textTags) {
-    const regex = new RegExp(`<${tag}([^>]*)>([\\s\\S]*?)<\\/${tag}>`, 'gi');
-    let match;
-    while ((match = regex.exec(bodyHtml)) !== null) {
-      const innerHTML = match[2];
-      const plain = innerHTML.replace(/<[^>]*>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
-      if (plain.length < 2 || !/[a-zA-Z]/.test(plain)) continue;
-      if (seen.has(plain)) continue;
-      if (plain.includes('{') && plain.includes('}') && plain.includes('=>')) continue;
-
-      const hasBlockChild = Array.from(innerHTML.matchAll(/<(div|section|article|p|h[1-6]|ul|ol|li|table|tr|td|th|blockquote|form|button)[^>]*>/gi))
-        .some((m) => {
-          const childTag = m[1].toLowerCase();
-          if (!blockTags.has(childTag)) return false;
-          const childContent = innerHTML.slice(m.index! + m[0].length);
-          const closeIdx = childContent.indexOf(`</${childTag}`);
-          if (closeIdx === -1) return false;
-          const childText = childContent.slice(0, closeIdx).replace(/<[^>]*>/g, '').trim();
-          return childText.length >= 2;
-        });
-      if (hasBlockChild) continue;
-
-      seen.add(plain);
-      texts.push({ original: plain, tag, position: match.index || 0 });
-    }
-  }
-
-  const inlineRegex = /<(span|div|strong|em|b|i)([^>]*)>([^<]{3,500})<\/\1>/gi;
-  let inMatch;
-  while ((inMatch = inlineRegex.exec(bodyHtml)) !== null) {
-    const text = inMatch[3].replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
-    if (text.length < 3 || !/[a-zA-Z]/.test(text) || seen.has(text)) continue;
-    seen.add(text);
-    texts.push({ original: text, tag: inMatch[1], position: inMatch.index || 0 });
-  }
-
-  const attrRegex = /(alt|title|placeholder|aria-label)=["']([^"']{3,200})["']/gi;
-  let attrMatch;
-  while ((attrMatch = attrRegex.exec(bodyHtml)) !== null) {
-    const val = attrMatch[2].trim();
-    if (val.length < 3 || !/[a-zA-Z]/.test(val) || seen.has(val) || val.startsWith('http')) continue;
-    seen.add(val);
-    texts.push({ original: val, tag: `attr:${attrMatch[1]}`, position: 0 });
-  }
-
-  return texts;
-}
+// La funzione extractTextsFromHtml è stata rimossa.
+// Ora usiamo extractAllTextsUniversal dal modulo universal-text-extractor
 
 export async function POST(request: NextRequest) {
   try {
@@ -92,14 +31,26 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Supabase not configured' }, { status: 500 });
     }
 
-    // Extract texts from HTML
-    const texts = extractTextsFromHtml(html);
-    if (texts.length === 0) {
+    // Extract ALL texts from HTML using universal extractor
+    const extractedTexts = extractAllTextsUniversal(html);
+    if (extractedTexts.length === 0) {
       return NextResponse.json({ error: 'No text found in the HTML to rewrite' }, { status: 400 });
     }
 
-    // Limit to 80 texts to keep prompt manageable
-    const textsForAi = texts.slice(0, 80).map((t, i) => ({ id: i, text: t.original, tag: t.tag }));
+    // Convert to format expected by the rest of the code
+    const texts = extractedTexts.map(t => ({ 
+      original: t.text, 
+      tag: t.context, 
+      position: t.position 
+    }));
+    
+    const textsForAi = extractedTexts.map(t => ({ 
+      id: t.id, 
+      text: t.text, 
+      tag: t.context 
+    }));
+    
+    console.log(`[quiz-rewrite] Extracted ${texts.length} texts from HTML (universal extractor)`);
 
     // Build the Trinity rewrite prompt
     const userMessage = `Sei Trinity, la copywriter del Matrix Team. Devi riscrivere i testi di questa pagina HTML per il prodotto: ${productName}.
@@ -137,10 +88,10 @@ RULES:
         system_prompt: systemPrompt,
         section: 'Rewrite',
         status: 'pending',
-        // Store original HTML + texts in chat_history for reconstruction when job completes
+        // Store original HTML + ALL texts in chat_history for reconstruction when job completes
         chat_history: {
           html,
-          texts: texts.slice(0, 80).map(t => ({ original: t.original, tag: t.tag })),
+          texts: texts.map(t => ({ original: t.original, tag: t.tag })), // No more slice limit!
           productName,
           totalTextsInPage: texts.length,
         },

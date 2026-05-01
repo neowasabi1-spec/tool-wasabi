@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+export const dynamic = 'force-dynamic';
+
 const VISION_API_BASE = 'https://claude-code-agents.fly.dev/api/vision';
 
 export async function GET(request: NextRequest) {
   try {
-    const { searchParams } = new URL(request.url);
+    const searchParams = request.nextUrl.searchParams;
     const projectId = searchParams.get('project_id') || 'default';
     const limit = searchParams.get('limit') || '50';
     const status = searchParams.get('status'); // Optional filter by status

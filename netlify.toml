@@ -1,10 +1,11 @@
 [build]
   command = "npm run build"
-  publish = ".next"
+  # Let @netlify/plugin-nextjs set the correct publish/output; ".next" alone breaks the adapter.
 
 [build.environment]
   NEXT_TELEMETRY_DISABLED = "1"
   NODE_VERSION = "20"
+  NODE_OPTIONS = "--max-old-space-size=6144"
 
 [[plugins]]
   package = "@netlify/plugin-nextjs"

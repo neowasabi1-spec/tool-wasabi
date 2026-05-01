@@ -7,6 +7,8 @@ import {
   updateScheduledBrowserJob,
 } from '@/lib/supabase-operations';
 
+export const dynamic = 'force-dynamic';
+
 /**
  * GET /api/scheduled-jobs
  * List all scheduled jobs

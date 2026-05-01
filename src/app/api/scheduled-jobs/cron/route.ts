@@ -6,6 +6,9 @@ import {
   createAffiliateBrowserChat,
 } from '@/lib/supabase-operations';
 
+/** Never pre-render at build (Netlify CI); this route runs Supabase + remote fetches. */
+export const dynamic = 'force-dynamic';
+
 function getApiUrl() {
   return process.env.AGENTIC_BROWSER_API_URL || 'http://localhost:8000';
 }

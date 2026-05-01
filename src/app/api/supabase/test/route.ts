@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { supabase, checkSupabaseConnection } from '@/lib/supabase';
 
+export const dynamic = 'force-dynamic';
+
 export async function GET() {
   try {
     // Check basic connection

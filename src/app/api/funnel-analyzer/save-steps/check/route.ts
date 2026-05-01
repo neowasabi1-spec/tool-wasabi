@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
 
+export const dynamic = 'force-dynamic';
+
 /**
  * GET /api/funnel-analyzer/save-steps/check
  * Verify that Supabase is configured and the funnel_crawl_steps table exists.
