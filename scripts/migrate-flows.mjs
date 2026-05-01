@@ -1,8 +1,13 @@
 // Migration script for funnel_flows and flow_steps tables
 // Run: node scripts/migrate-flows.mjs
 
-const SUPABASE_URL = 'https://sktpbizpckxldhxzezws.supabase.co';
-const SERVICE_ROLE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNrdHBiaXpwY2t4bGRoeHplendzIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3NjU2MTI2NSwiZXhwIjoyMDkyMTM3MjY1fQ.-QjEUa871p0awne8UeMAyMZKTe8FyfBrMYISp1JGaDU';
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
+const SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+if (!SUPABASE_URL || !SERVICE_ROLE_KEY) {
+  console.error('Missing env: set NEXT_PUBLIC_SUPABASE_URL (or SUPABASE_URL) and SUPABASE_SERVICE_ROLE_KEY before running.');
+  process.exit(1);
+}
 
 const projectRef = SUPABASE_URL.replace('https://', '').replace('.supabase.co', '');
 
