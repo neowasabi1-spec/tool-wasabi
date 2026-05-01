@@ -120,9 +120,14 @@ export async function GET(
       return NextResponse.json({ status: 'error', error: 'Original HTML not found in job data' });
     }
 
-    // L'HTML è già stato sostituito dal worker!
-    const rewrittenHtml = chatHistory.html; // Usa l'HTML già processato
-    const replacements = chatHistory.texts.length;
+    // openclaw-worker.js scrive solo `response` (JSON di rewrites) e non tocca chat_history.html.
+    // Quindi qui dobbiamo applicare le rewrites all'HTML originale prima di restituirlo,
+    // altrimenti l'utente vede la pagina solo "clonata" senza testi riscritti.
+    const { html: rewrittenHtml, replacements } = applyRewrites(
+      chatHistory.html,
+      chatHistory.texts,
+      rewrites,
+    );
 
     return NextResponse.json({
       status: 'completed',
