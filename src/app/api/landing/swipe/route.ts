@@ -99,13 +99,31 @@ function extractTextsFromHtml(html: string): ExtractedText[] {
     texts.push({ original: text, tag: inMatch[1], position: inMatch.index || 0 });
   }
 
-  const attrRegex = /(alt|title|placeholder|aria-label)=["']([^"']{3,200})["']/gi;
+  const attrRegex = /(alt|title|placeholder|aria-label|value)=["']([^"']{3,200})["']/gi;
   let attrMatch;
   while ((attrMatch = attrRegex.exec(bodyHtml)) !== null) {
     const val = attrMatch[2].trim();
     if (val.length < 3 || !/[a-zA-Z]/.test(val) || seen.has(val) || val.startsWith('http')) continue;
+    // value="" only useful on form controls (button/input/option) where it's the visible label.
+    if (attrMatch[1].toLowerCase() === 'value') {
+      const before = bodyHtml.slice(Math.max(0, (attrMatch.index || 0) - 80), attrMatch.index || 0);
+      if (!/<(input|button|option)\b[^>]*$/i.test(before)) continue;
+    }
     seen.add(val);
     texts.push({ original: val, tag: `attr:${attrMatch[1]}`, position: 0 });
+  }
+
+  // Leaf <div> / <option> / <figcaption> with plain text and no block children.
+  const leafRegex = /<(div|option|figcaption)\b([^>]*)>([\s\S]*?)<\/\1>/gi;
+  let leafMatch;
+  while ((leafMatch = leafRegex.exec(bodyHtml)) !== null) {
+    const inner = leafMatch[3];
+    if (/<(div|section|article|p|h[1-6]|ul|ol|li|table|tr|td|th|blockquote|form|button)\b/i.test(inner)) continue;
+    const plain = inner.replace(/<[^>]*>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
+    if (plain.length < 3 || plain.length > 600 || !/[a-zA-Z]/.test(plain) || seen.has(plain)) continue;
+    if (plain.includes('{') && plain.includes('}') && plain.includes('=>')) continue;
+    seen.add(plain);
+    texts.push({ original: plain, tag: leafMatch[1], position: leafMatch.index || 0 });
   }
 
   return texts;
@@ -449,40 +467,89 @@ CRITICAL RULES:
     const swipeScript = `<script data-swipe-replacer>
 (function(){
   var pairs = ${JSON.stringify(replacementPairs)};
+  function escRx(s){return s.replace(/[.*+?^\${}()|[\\]\\\\]/g,'\\\\$&');}
+  function normWS(s){return (s||'').replace(/\\s+/g,' ').trim();}
+  // Pre-compute a normalized form + tolerant regex for every pair so we can
+  // match even when whitespace (newlines, double spaces, &nbsp;) differs.
+  var prepared = pairs.map(function(p){
+    var fn = normWS(p.from);
+    return {
+      from: p.from,
+      to: p.to,
+      attr: p.attr,
+      norm: fn,
+      rx: fn ? new RegExp(escRx(fn).replace(/ /g,'\\\\s+'),'g') : null
+    };
+  }).filter(function(p){return p.norm && p.norm.length>=2;});
+  function tryReplace(text){
+    if(!text) return text;
+    var out = text;
+    for(var i=0;i<prepared.length;i++){
+      var p = prepared[i];
+      if(p.attr) continue;
+      if(out.indexOf(p.from)!==-1){
+        out = out.split(p.from).join(p.to);
+      } else if(p.rx && p.rx.test(out)){
+        p.rx.lastIndex = 0;
+        out = out.replace(p.rx, p.to);
+      }
+    }
+    return out;
+  }
+  // Pass 1 — replace at the element level when full normalized textContent
+  // matches one of our normalized "from" strings. This handles texts that
+  // were split across inline children (<p>This <strong>is</strong> nice</p>).
+  var blockSel = 'h1,h2,h3,h4,h5,h6,p,li,td,th,dt,dd,button,a,label,figcaption,blockquote,summary,legend,span,strong,em,b,i';
+  var elems = document.body ? document.body.querySelectorAll(blockSel) : [];
+  for(var k=0;k<elems.length;k++){
+    var el = elems[k];
+    if(el.querySelector(blockSel)) continue; // skip containers, only leaf-ish blocks
+    var fullNorm = normWS(el.textContent);
+    if(!fullNorm) continue;
+    for(var p2=0;p2<prepared.length;p2++){
+      var pp = prepared[p2];
+      if(pp.attr) continue;
+      if(fullNorm === pp.norm){
+        el.textContent = pp.to;
+        break;
+      }
+    }
+  }
+  // Pass 2 — text-node level replacement for everything else.
   function walkText(node){
     if(node.nodeType===3){
-      var t=node.textContent;
-      for(var i=0;i<pairs.length;i++){
-        if(!pairs[i].attr&&t.indexOf(pairs[i].from)!==-1){
-          t=t.split(pairs[i].from).join(pairs[i].to);
-        }
-      }
-      if(t!==node.textContent)node.textContent=t;
-    }else if(node.nodeType===1&&node.tagName!=='SCRIPT'&&node.tagName!=='STYLE'){
-      for(var c=node.firstChild;c;c=c.nextSibling)walkText(c);
+      var t = node.textContent;
+      var nt = tryReplace(t);
+      if(nt !== t) node.textContent = nt;
+    } else if(node.nodeType===1 && node.tagName!=='SCRIPT' && node.tagName!=='STYLE'){
+      for(var c=node.firstChild;c;c=c.nextSibling) walkText(c);
     }
   }
-  walkText(document.body);
-  for(var i=0;i<pairs.length;i++){
-    if(pairs[i].attr){
-      var els=document.querySelectorAll('['+pairs[i].attr+']');
-      for(var j=0;j<els.length;j++){
-        var v=els[j].getAttribute(pairs[i].attr);
-        if(v&&v.indexOf(pairs[i].from)!==-1){
-          els[j].setAttribute(pairs[i].attr,v.split(pairs[i].from).join(pairs[i].to));
-        }
+  if(document.body) walkText(document.body);
+  // Pass 3 — attributes (alt/title/placeholder/aria-label).
+  for(var a=0;a<prepared.length;a++){
+    var pa = prepared[a];
+    if(!pa.attr) continue;
+    var els = document.querySelectorAll('['+pa.attr+']');
+    for(var j=0;j<els.length;j++){
+      var v = els[j].getAttribute(pa.attr);
+      if(!v) continue;
+      var nv = v;
+      if(v.indexOf(pa.from)!==-1){
+        nv = v.split(pa.from).join(pa.to);
+      } else if(pa.rx && pa.rx.test(v)){
+        pa.rx.lastIndex = 0;
+        nv = v.replace(pa.rx, pa.to);
       }
+      if(nv !== v) els[j].setAttribute(pa.attr, nv);
     }
   }
-  var titleEl=document.querySelector('title');
+  // Pass 4 — <title>.
+  var titleEl = document.querySelector('title');
   if(titleEl){
-    var tt=titleEl.textContent;
-    for(var i=0;i<pairs.length;i++){
-      if(!pairs[i].attr&&tt.indexOf(pairs[i].from)!==-1){
-        tt=tt.split(pairs[i].from).join(pairs[i].to);
-      }
-    }
-    titleEl.textContent=tt;
+    var tt = titleEl.textContent;
+    var ntt = tryReplace(tt);
+    if(ntt !== tt) titleEl.textContent = ntt;
   }
 })();
 <\/script>`;

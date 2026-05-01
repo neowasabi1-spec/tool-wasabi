@@ -140,6 +140,97 @@ function callToolApi(path, body, timeoutMs) {
   });
 }
 
+// ===== REWRITE BATCHING ==========================================
+// Quando il prompt è una richiesta di rewrite Trinity (section === 'Rewrite' o
+// 'Quiz Rewrite'), il userMessage contiene un JSON array `textsForAi` che può
+// essere troppo grande per la context window del modello locale. Lo splittiamo
+// in chunk e aggreghiamo i risultati.
+
+const REWRITE_BATCH_SIZE = parseInt(process.env.REWRITE_BATCH_SIZE || '15', 10);
+
+function isRewriteSection(section) {
+  return section === 'Rewrite' || section === 'Quiz Rewrite';
+}
+
+function parseTextsFromRewritePrompt(userMessage) {
+  // Cerca il blocco JSON tra "Testi da riscrivere (JSON):" e "Riscrivi".
+  const startMarker = 'Testi da riscrivere (JSON):';
+  const endMarker = 'Riscrivi';
+  const start = userMessage.indexOf(startMarker);
+  const end = userMessage.indexOf(endMarker, start >= 0 ? start : 0);
+  if (start < 0 || end < 0 || end <= start) return null;
+  const raw = userMessage.substring(start + startMarker.length, end).trim();
+  // Trova il primo '[' e l'ultimo ']' di quel sotto-blocco.
+  const a = raw.indexOf('[');
+  const b = raw.lastIndexOf(']');
+  if (a < 0 || b <= a) return null;
+  try {
+    const parsed = JSON.parse(raw.substring(a, b + 1));
+    if (!Array.isArray(parsed)) return null;
+    return { texts: parsed, beforeJson: userMessage.substring(0, start + startMarker.length), afterJson: userMessage.substring(end) };
+  } catch {
+    return null;
+  }
+}
+
+function extractRewritesFromAiResponse(text) {
+  if (typeof text !== 'string' || !text.trim()) return [];
+  let cleaned = text.trim().replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/i, '');
+  const a = cleaned.indexOf('[');
+  const b = cleaned.lastIndexOf(']');
+  if (a < 0 || b <= a) return [];
+  try {
+    const parsed = JSON.parse(cleaned.substring(a, b + 1));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+async function runRewriteInBatches(systemPrompt, userMessage) {
+  const parsed = parseTextsFromRewritePrompt(userMessage);
+  if (!parsed) {
+    // Non riusciamo a estrarre i testi: fallback al comportamento normale (best effort).
+    return await callOpenClaw([
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userMessage },
+    ]);
+  }
+
+  const { texts, beforeJson, afterJson } = parsed;
+  const total = texts.length;
+  if (total === 0) return JSON.stringify([]);
+
+  const allRewrites = [];
+  let batchCount = 0;
+  for (let i = 0; i < total; i += REWRITE_BATCH_SIZE) {
+    const batch = texts.slice(i, i + REWRITE_BATCH_SIZE);
+    batchCount++;
+    const batchUserMessage = `${beforeJson}\n${JSON.stringify(batch, null, 2)}\n${afterJson}`;
+    log(`  ▸ Rewrite batch ${batchCount} (${batch.length} testi, ${i + batch.length}/${total})`);
+    let raw = '';
+    try {
+      raw = await callOpenClaw([
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: batchUserMessage },
+      ]);
+    } catch (e) {
+      err(`  ✗ batch ${batchCount} failed:`, e.message);
+      // Continuiamo: i testi senza rewrite resteranno invariati lato client.
+      continue;
+    }
+    const rewrites = extractRewritesFromAiResponse(raw);
+    for (const rw of rewrites) {
+      if (rw && typeof rw.id === 'number' && typeof rw.rewritten === 'string') {
+        allRewrites.push(rw);
+      }
+    }
+  }
+
+  log(`  ▸ Rewrite done: ${allRewrites.length}/${total} testi riscritti in ${batchCount} batch`);
+  return JSON.stringify(allRewrites);
+}
+
 // ===== MESSAGE PROCESSING =========================================
 async function processMessage(msg) {
   const isSwipeJob = msg.section === 'swipe_job';
@@ -201,6 +292,11 @@ async function processMessage(msg) {
         default:
           throw new Error(`Unknown swipe_job action: ${job.action}`);
       }
+    } else if (isRewriteSection(msg.section)) {
+      // ─── REWRITE JOB (Trinity quiz-rewrite) ────────────────────────
+      // Splittiamo in batch per non far esplodere il context del modello.
+      const systemPrompt = msg.system_prompt || '';
+      responsePayload = await runRewriteInBatches(systemPrompt, msg.user_message || '');
     } else {
       // ─── CHAT MESSAGE (existing behavior) ───────────────────────────
       const systemPrompt = msg.system_prompt
