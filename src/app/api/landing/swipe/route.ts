@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAnthropicKey } from '@/lib/anthropic-key';
+import { extractAllTextsUniversal } from '@/lib/universal-text-extractor';
 
 export const maxDuration = 300;
 
@@ -34,7 +35,65 @@ interface ExtractedText {
   position: number;
 }
 
+// Categorie estratte dalla v2 (extractAllTextsUniversal) che SONO sicure da
+// passare all'AI per essere riscritte. Escludiamo url/email/phone/script/json-ld
+// e attributi `data-*` perché sostituirli rompe routing/widget/embed.
+const SAFE_TAG_CONTEXT = new Set([
+  'title',
+  // meta-description / og:description / twitter:description sono gestite separatamente
+  // nei rewrite server-side; qui comunque includiamo "meta:content" e poi filtriamo
+  // con il check sul name nell'HTML originale.
+  'meta:content',
+]);
+const SAFE_TAG_PREFIXES = [
+  'tag:h1', 'tag:h2', 'tag:h3', 'tag:h4', 'tag:h5', 'tag:h6',
+  'tag:p', 'tag:li', 'tag:td', 'tag:th', 'tag:dt', 'tag:dd',
+  'tag:button', 'tag:a', 'tag:label', 'tag:figcaption',
+  'tag:blockquote', 'tag:summary', 'tag:legend', 'tag:option',
+  'tag:span', 'tag:strong', 'tag:em', 'tag:b', 'tag:i', 'tag:u',
+  'tag:small', 'tag:mark', 'tag:cite', 'tag:q', 'tag:abbr',
+  'mixed:p', 'mixed:div', 'mixed:li', 'mixed:td', 'mixed:th',
+  'mixed:h1', 'mixed:h2', 'mixed:h3', 'mixed:h4', 'mixed:h5', 'mixed:h6',
+  'mixed:span', 'mixed:strong', 'mixed:em', 'mixed:a', 'mixed:b', 'mixed:i',
+  'attr:alt', 'attr:title', 'attr:placeholder', 'attr:aria-label', 'attr:value',
+];
+
+function isSafeContext(ctx: string): boolean {
+  if (SAFE_TAG_CONTEXT.has(ctx)) return true;
+  return SAFE_TAG_PREFIXES.some((p) => ctx === p || ctx.startsWith(p + ':'));
+}
+
 function extractTextsFromHtml(html: string): ExtractedText[] {
+  // Usiamo l'estrattore v2 ("universal") e mappiamo nel formato locale.
+  const universal = extractAllTextsUniversal(html);
+  const texts: ExtractedText[] = [];
+  const seen = new Set<string>();
+  for (const u of universal) {
+    if (!isSafeContext(u.context)) continue;
+    if (u.text.length < 2 || !/[a-zA-Z]/.test(u.text)) continue;
+    if (u.text.startsWith('http://') || u.text.startsWith('https://')) continue;
+    // Per meta:content accettiamo solo description / og:description / twitter:description /
+    // og:title / twitter:title (filtrato lato `replaceMetaContentForRewrites`).
+    if (seen.has(u.text)) continue;
+    seen.add(u.text);
+    let mappedTag = u.context;
+    if (u.context.startsWith('attr:')) {
+      mappedTag = u.context; // mantieni "attr:NAME"
+    } else if (u.context.startsWith('tag:')) {
+      mappedTag = u.context.slice(4); // "tag:p" → "p"
+    } else if (u.context.startsWith('mixed:')) {
+      mappedTag = u.context.slice(6); // "mixed:p" → "p"
+    } else if (u.context === 'title') {
+      mappedTag = 'title';
+    } else if (u.context === 'meta:content') {
+      mappedTag = 'attr:meta-content';
+    }
+    texts.push({ original: u.text, tag: mappedTag, position: u.position });
+  }
+  return texts;
+}
+
+function _legacyExtract(html: string): ExtractedText[] {
   const stripped = html
     .replace(/<script[\s\S]*?<\/script>/gi, '')
     .replace(/<style[\s\S]*?<\/style>/gi, '')
@@ -448,10 +507,22 @@ CRITICAL RULES:
     }
 
     const replacementPairs: Array<{ from: string; to: string; attr?: string }> = [];
+    const serverSideTitlePairs: Array<{ from: string; to: string }> = [];
+    const serverSideMetaPairs: Array<{ from: string; to: string }> = [];
     for (const [id, rewritten] of idToRewrite) {
       const original = texts[id];
       if (!original || !rewritten || original.original === rewritten) continue;
-      if (original.tag.startsWith('attr:')) {
+      if (original.tag === 'title') {
+        // Sostituiamo SIA server-side (per evitare il flash del titolo originale
+        // nel tab del browser e per SEO/social preview) sia client-side via lo
+        // script DOM-replacer (per gestire reload/SPA).
+        serverSideTitlePairs.push({ from: original.original, to: rewritten });
+        replacementPairs.push({ from: original.original, to: rewritten });
+      } else if (original.tag === 'attr:meta-content') {
+        // Solo server-side: i <meta> non sono nel DOM visibile, quindi lo script
+        // client-side non li tocca. Servono per og:description / twitter:card / SEO.
+        serverSideMetaPairs.push({ from: original.original, to: rewritten });
+      } else if (original.tag.startsWith('attr:')) {
         replacementPairs.push({
           from: original.original,
           to: rewritten,
@@ -460,6 +531,16 @@ CRITICAL RULES:
       } else {
         replacementPairs.push({ from: original.original, to: rewritten });
       }
+    }
+
+    function escRxLiteral(s: string): string {
+      return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+    function escAttr(s: string): string {
+      return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+    }
+    function escHtml(s: string): string {
+      return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     }
 
     const usedProvider = 'anthropic';
@@ -554,14 +635,52 @@ CRITICAL RULES:
 })();
 <\/script>`;
 
-    let resultHtml = originalHtml;
+    // Server-side replace: <title> e <meta content="..."> (il browser non li
+    // gestisce dallo script DOM-replacer).
+    let preparedHtml = originalHtml;
+    for (const tp of serverSideTitlePairs) {
+      const rx = new RegExp(`(<title[^>]*>)\\s*${escRxLiteral(escHtml(tp.from))}\\s*(<\\/title>)`, 'gi');
+      const before = preparedHtml;
+      preparedHtml = preparedHtml.replace(rx, `$1${escHtml(tp.to)}$2`);
+      // fallback: prova senza escape se il <title> originale conteneva caratteri raw
+      if (preparedHtml === before) {
+        const rxRaw = new RegExp(`(<title[^>]*>)\\s*${escRxLiteral(tp.from)}\\s*(<\\/title>)`, 'gi');
+        preparedHtml = preparedHtml.replace(rxRaw, `$1${escHtml(tp.to)}$2`);
+      }
+    }
+    for (const mp of serverSideMetaPairs) {
+      // <meta ... content="...">  e  <meta ... content='...'>
+      const rxDQ = new RegExp(
+        `(<meta\\b[^>]*\\bcontent=)"${escRxLiteral(escAttr(mp.from))}"`,
+        'gi',
+      );
+      const rxSQ = new RegExp(
+        `(<meta\\b[^>]*\\bcontent=)'${escRxLiteral(escAttr(mp.from))}'`,
+        'gi',
+      );
+      preparedHtml = preparedHtml.replace(rxDQ, `$1"${escAttr(mp.to)}"`);
+      preparedHtml = preparedHtml.replace(rxSQ, `$1'${escAttr(mp.to)}'`);
+      // fallback: alcuni siti scrivono content senza escapare
+      const rxRaw = new RegExp(
+        `(<meta\\b[^>]*\\bcontent=)(["'])${escRxLiteral(mp.from)}\\2`,
+        'gi',
+      );
+      preparedHtml = preparedHtml.replace(rxRaw, `$1$2${escAttr(mp.to)}$2`);
+    }
+
+    let resultHtml = preparedHtml;
     if (resultHtml.includes('</body>')) {
       resultHtml = resultHtml.replace('</body>', swipeScript + '</body>');
     } else {
       resultHtml += swipeScript;
     }
 
-    const newTitle = texts.length > 0 ? (replacementPairs.find(p => !p.attr)?.to || '') : '';
+    const newTitle =
+      serverSideTitlePairs[0]?.to ||
+      (texts.length > 0 ? (replacementPairs.find((p) => !p.attr)?.to || '') : '');
+
+    const totalReplacements =
+      replacementPairs.length + serverSideTitlePairs.length + serverSideMetaPairs.length;
 
     return NextResponse.json({
       success: true,
@@ -571,11 +690,14 @@ CRITICAL RULES:
       original_length: originalHtml.length,
       new_length: resultHtml.length,
       totalTexts: texts.length,
-      replacements: replacementPairs.length,
+      replacements: totalReplacements,
+      replacements_dom: replacementPairs.length,
+      replacements_title: serverSideTitlePairs.length,
+      replacements_meta: serverSideMetaPairs.length,
       unresolved_text_ids: unresolvedIds,
-      coverage_ratio: texts.length ? replacementPairs.length / texts.length : 0,
+      coverage_ratio: texts.length ? totalReplacements / texts.length : 0,
       provider: usedProvider,
-      method_used: 'dom-replacement-batched',
+      method_used: 'universal-extract+dom-replacement-batched',
       changes_made: replacementPairs.map((p) => ({ from: p.from.substring(0, 50), to: p.to.substring(0, 50) })),
     });
   } catch (error) {
