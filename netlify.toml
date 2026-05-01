@@ -1,6 +1,9 @@
 [build]
   command = "npm run build"
-  # Let @netlify/plugin-nextjs set the correct publish/output; ".next" alone breaks the adapter.
+  # Forziamo .next perché esiste un override "fantasma" salvato lato UI Netlify
+  # (publishOrigin: ui che punta a /opt/build/repo) che il pannello non mostra.
+  # Con publish qui in netlify.toml, il toml batte la UI.
+  publish = ".next"
 
 [build.environment]
   NEXT_TELEMETRY_DISABLED = "1"
