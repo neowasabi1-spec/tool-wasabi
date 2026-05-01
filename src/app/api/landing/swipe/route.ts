@@ -63,34 +63,81 @@ function isSafeContext(ctx: string): boolean {
   return SAFE_TAG_PREFIXES.some((p) => ctx === p || ctx.startsWith(p + ':'));
 }
 
+// Hard cap to keep Anthropic round-trip within Netlify's 300s function budget.
+// Big SaaS landings can produce 1000+ raw entries from the universal extractor;
+// after dedupe-by-text we usually stay around 200–400 unique strings.
+const MAX_TEXTS_FOR_AI = Math.max(
+  50,
+  Math.min(800, Number.parseInt(process.env.SWIPE_MAX_TEXTS_FOR_AI || '350', 10) || 350),
+);
+
+// Priority for keeping the most user-visible copy when we hit the cap.
+const TAG_PRIORITY: Record<string, number> = {
+  title: 0,
+  h1: 1, h2: 1, h3: 2, h4: 3, h5: 4, h6: 4,
+  p: 2, li: 2, button: 1, a: 3, label: 3,
+  td: 4, th: 4, dt: 4, dd: 4, blockquote: 4, summary: 4, legend: 4, figcaption: 4,
+  option: 5, span: 6, strong: 6, em: 6, b: 6, i: 6, u: 6,
+  small: 6, mark: 6, cite: 6, q: 6, abbr: 6,
+  div: 7,
+  'attr:alt': 5, 'attr:title': 5, 'attr:placeholder': 5,
+  'attr:aria-label': 5, 'attr:value': 5,
+  'attr:meta-content': 5,
+};
+function priorityOf(tag: string): number {
+  if (TAG_PRIORITY[tag] !== undefined) return TAG_PRIORITY[tag];
+  if (tag.startsWith('attr:')) return 5;
+  return 8;
+}
+
 function extractTextsFromHtml(html: string): ExtractedText[] {
-  // Usiamo l'estrattore v2 ("universal") e mappiamo nel formato locale.
+  // Usiamo l'estrattore v2 ("universal") e mappiamo nel formato locale,
+  // con dedupe-by-text e cap di sicurezza.
   const universal = extractAllTextsUniversal(html);
-  const texts: ExtractedText[] = [];
-  const seen = new Set<string>();
+  const collected: ExtractedText[] = [];
+  const seen = new Map<string, ExtractedText>();
   for (const u of universal) {
     if (!isSafeContext(u.context)) continue;
-    if (u.text.length < 2 || !/[a-zA-Z]/.test(u.text)) continue;
+    if (u.text.length < 2 || u.text.length > 800) continue;
+    if (!/[a-zA-Z]/.test(u.text)) continue;
     if (u.text.startsWith('http://') || u.text.startsWith('https://')) continue;
-    // Per meta:content accettiamo solo description / og:description / twitter:description /
-    // og:title / twitter:title (filtrato lato `replaceMetaContentForRewrites`).
-    if (seen.has(u.text)) continue;
-    seen.add(u.text);
+    // Salta junk tipico (json/code embed accidentale)
+    if (u.text.includes('{') && u.text.includes('}') && /[=:]\s*function|=>/.test(u.text)) continue;
+
     let mappedTag = u.context;
     if (u.context.startsWith('attr:')) {
-      mappedTag = u.context; // mantieni "attr:NAME"
+      mappedTag = u.context;
     } else if (u.context.startsWith('tag:')) {
-      mappedTag = u.context.slice(4); // "tag:p" → "p"
+      mappedTag = u.context.slice(4);
     } else if (u.context.startsWith('mixed:')) {
-      mappedTag = u.context.slice(6); // "mixed:p" → "p"
+      mappedTag = u.context.slice(6);
     } else if (u.context === 'title') {
       mappedTag = 'title';
     } else if (u.context === 'meta:content') {
       mappedTag = 'attr:meta-content';
     }
-    texts.push({ original: u.text, tag: mappedTag, position: u.position });
+
+    const existing = seen.get(u.text);
+    const newPrio = priorityOf(mappedTag);
+    if (existing) {
+      // tieni quello con priority più alta (numero più basso)
+      if (newPrio < priorityOf(existing.tag)) {
+        existing.tag = mappedTag;
+        existing.position = u.position;
+      }
+      continue;
+    }
+    const entry: ExtractedText = { original: u.text, tag: mappedTag, position: u.position };
+    seen.set(u.text, entry);
+    collected.push(entry);
   }
-  return texts;
+
+  // Cap: ordina per priorità (più importante = numero più basso) e taglia.
+  if (collected.length > MAX_TEXTS_FOR_AI) {
+    collected.sort((a, b) => priorityOf(a.tag) - priorityOf(b.tag));
+    return collected.slice(0, MAX_TEXTS_FOR_AI);
+  }
+  return collected;
 }
 
 function _legacyExtract(html: string): ExtractedText[] {
@@ -336,7 +383,10 @@ async function collectAllRewrites(
     }
   }
 
-  const maxSweep = 8;
+  // Solo 2 sweep di gap-fill: i sweep extra costano un round-trip Anthropic
+  // per ogni 28-40 testi e fanno saltare il limite Netlify (300s) su pagine
+  // grosse. 2 passi coprono >99% nei test reali.
+  const maxSweep = Math.max(0, Math.min(6, Number.parseInt(process.env.SWIPE_MAX_SWEEP || '2', 10) || 2));
   for (let sweep = 0; sweep < maxSweep; sweep++) {
     const missing = textsForAi.filter((t) => !effective.has(t.id));
     if (missing.length === 0) break;
@@ -490,7 +540,19 @@ CRITICAL RULES:
     let idToRewrite: Map<number, string>;
     try {
       console.log(`[swipe] Anthropic batched swipe, texts=${texts.length}, batch=${SWIPE_TEXT_BATCH_SIZE}`);
-      idToRewrite = await collectAllRewrites(systemPrompt, textsForAi);
+      // Hard wall: 240s for the whole AI loop. Netlify functions die at 300s,
+      // we leave 60s for response building, server-side meta/title rewrite, etc.
+      const aiBudgetMs = Math.max(
+        60_000,
+        Math.min(280_000, Number.parseInt(process.env.SWIPE_AI_BUDGET_MS || '240000', 10) || 240_000),
+      );
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error(`AI budget exceeded (${aiBudgetMs}ms)`)), aiBudgetMs);
+      });
+      idToRewrite = (await Promise.race([
+        collectAllRewrites(systemPrompt, textsForAi),
+        timeoutPromise,
+      ])) as Map<number, string>;
     } catch (anthropicErr) {
       console.error(`[swipe] Anthropic failed: ${anthropicErr instanceof Error ? anthropicErr.message : 'Unknown'}`);
       return NextResponse.json(
