@@ -17,7 +17,17 @@ export interface SwipeText {
 
 export const DEFAULT_MAX_TEXTS = 350;
 
-const SAFE_CONTEXT_EXACT = new Set(['title', 'meta:content']);
+const SAFE_CONTEXT_EXACT = new Set([
+  'title',
+  // meta tipizzati marketing-utili (description + og + twitter card title/description)
+  'meta:description',
+  'meta:og:title',
+  'meta:og:description',
+  'meta:twitter:title',
+  'meta:twitter:description',
+  // legacy: alcuni estrattori vecchi emettono solo "meta:content"
+  'meta:content',
+]);
 
 const SAFE_CONTEXT_PREFIXES = [
   'tag:h1', 'tag:h2', 'tag:h3', 'tag:h4', 'tag:h5', 'tag:h6',
@@ -72,7 +82,22 @@ export function filterAndCap(
     if (u.text.length < 2 || u.text.length > 800) continue;
     if (!/[a-zA-Z]/.test(u.text)) continue;
     if (u.text.startsWith('http://') || u.text.startsWith('https://')) continue;
+    // Code embed accidentale
     if (u.text.includes('{') && u.text.includes('}') && /[=:]\s*function|=>/.test(u.text)) continue;
+    // Template Liquid / Handlebars / Mustache: "{{var}}", "{{MMMM dd, yyyy}}",
+    // "{% if x %}". L'AI non sa cosa farne e li echeggia → scarto a monte.
+    if (/\{\{[^}]+\}\}/.test(u.text)) continue;
+    if (/\{%[^%]*%\}/.test(u.text)) continue;
+    // Stringhe di config tipiche dei meta che residuano se passate (paranoia):
+    // "width=device-width, initial-scale=1.0", "no-cache, no-store, must-revalidate",
+    // "no-referrer", "IE=edge", "telephone=no", ecc.
+    if (/^\s*(width=|initial-scale=|maximum-scale=|user-scalable=|telephone=|no-(cache|store|referrer|index|follow)\b|must-revalidate|IE=edge|chrome=|charset=|content-type)/i.test(u.text)) continue;
+    // Solo lettere se è proprio cortissimo: scarta token-only di 1-2 char alfa
+    // come "OK", "EN" da meta og:locale (NB: title 1-char già scartato sopra).
+    if (u.text.length < 4 && !/\s/.test(u.text)) {
+      // ammetti solo se è un tag visibile (non meta)
+      if (u.context.startsWith('meta:')) continue;
+    }
 
     let mappedTag = u.context;
     if (u.context.startsWith('attr:')) mappedTag = u.context;

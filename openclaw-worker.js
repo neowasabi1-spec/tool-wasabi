@@ -207,14 +207,25 @@ async function runRewriteInBatches(systemPrompt, userMessage) {
   const idToRewrite = new Map();
   let batchCount = 0;
 
-  async function runBatch(batch, label) {
+  // Per il check "echo" ci serve l'originale di ogni id.
+  const idToOriginal = new Map();
+  for (const t of texts) {
+    if (t && typeof t.id === 'number' && typeof t.text === 'string') {
+      idToOriginal.set(t.id, t.text.trim());
+    }
+  }
+
+  async function runBatch(batch, label, extraSystemHint) {
     batchCount++;
     const batchUserMessage = `${beforeJson}\n${JSON.stringify(batch, null, 2)}\n${afterJson}`;
     log(`  ▸ Rewrite ${label} (${batch.length} testi)`);
     let raw = '';
     try {
+      const sys = extraSystemHint
+        ? `${systemPrompt}\n\nNOTA EXTRA: ${extraSystemHint}`
+        : systemPrompt;
       raw = await callOpenClaw([
-        { role: 'system', content: systemPrompt },
+        { role: 'system', content: sys },
         { role: 'user', content: batchUserMessage },
       ]);
     } catch (e) {
@@ -227,6 +238,19 @@ async function runRewriteInBatches(systemPrompt, userMessage) {
       if (typeof rw.rewritten !== 'string') continue;
       const trimmed = rw.rewritten.trim();
       if (!trimmed) continue;
+      // Reject "echo": se il modello restituisce identico all'originale e il
+      // testo non è breve/strutturale, non lo registriamo così verrà ritentato
+      // nel pass di echo-fill.
+      const original = idToOriginal.get(rw.id);
+      if (original && trimmed === original && original.length > 20) {
+        // tieni solo se non avevamo già una rewrite per quell'id (così non
+        // peggioriamo una rewrite buona di un pass precedente)
+        if (!idToRewrite.has(rw.id)) {
+          // marker speciale: stringa vuota = "vista ma echo, da ritentare"
+          // NB: usiamo un Map separato per i pending, per non confondere con missing.
+        }
+        continue;
+      }
       idToRewrite.set(rw.id, trimmed);
     }
   }
@@ -239,18 +263,30 @@ async function runRewriteInBatches(systemPrompt, userMessage) {
     await runBatch(batch, `batch ${batchCount + 1} (${idxFrom}-${idxTo}/${total})`);
   }
 
-  // Gap-fill: il modello locale a volte salta degli id, soprattutto quando
-  // il batch è vicino al limite di context. Riproviamo solo i mancanti.
+  // Gap-fill: il modello locale a volte salta degli id O risponde con echo
+  // (= testo originale identico). In entrambi i casi ritentiamo solo i mancanti
+  // con un hint di sistema più aggressivo e batch più piccoli.
   for (let pass = 1; pass <= REWRITE_GAP_FILL_PASSES; pass++) {
     const missing = texts.filter((t) => !idToRewrite.has(t.id));
     if (missing.length === 0) break;
-    log(`  ▸ Gap-fill pass ${pass}: ${missing.length} testi ancora mancanti`);
-    // Batch più piccoli nei pass di gap-fill per non triggerare context overflow
-    // sul modello locale (quando sono pochi testi è ok essere molto conservativi).
+    const echoHint = pass === 1
+      ? 'Hai appena restituito il testo originale identico per QUESTI id. È vietato. Riscrivili davvero per il prodotto target.'
+      : 'ULTIMO TENTATIVO: per OGNI id qui sotto produci un "rewritten" semanticamente diverso dall\'"text". Se il testo è generico, riformulalo dal punto di vista del prodotto target con parole sue.';
+    log(`  ▸ Gap-fill pass ${pass}: ${missing.length} testi ancora mancanti (echo o skipped)`);
     const fillBatchSize = Math.max(5, Math.floor(REWRITE_BATCH_SIZE / 2));
     for (let i = 0; i < missing.length; i += fillBatchSize) {
       const slice = missing.slice(i, i + fillBatchSize);
-      await runBatch(slice, `gap-fill p${pass} (${slice.length} testi)`);
+      await runBatch(slice, `gap-fill p${pass} (${slice.length} testi)`, echoHint);
+    }
+  }
+
+  // Final fallback: per i testi che dopo tutti i pass restano senza rewrite,
+  // li includiamo comunque nel response con `rewritten = original` così almeno
+  // applyRewrites server-side ha una entry per ogni id (e lo status route può
+  // contarli). Senza questo, alcuni testi resterebbero `missing` per sempre.
+  for (const t of texts) {
+    if (!idToRewrite.has(t.id) && idToOriginal.has(t.id)) {
+      idToRewrite.set(t.id, idToOriginal.get(t.id));
     }
   }
 

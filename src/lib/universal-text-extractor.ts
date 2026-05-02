@@ -45,23 +45,23 @@ export function extractAllTextsUniversal(html: string): ExtractedText[] {
     addText(titleMatch[1], 'title', titleMatch.index || 0);
   }
 
-  // 2. META TAGS - tutti i tipi
+  // 2. META TAGS — tipizzati con name/property così a valle possiamo accettare
+  // solo i meta davvero marketing-utili (description, og:title/description,
+  // twitter:title/description) ed escludere viewport/cache-control/charset/ecc.
   const metaRegex = /<meta\s+([^>]*?)>/gi;
   let metaMatch;
   while ((metaMatch = metaRegex.exec(html)) !== null) {
     const attrs = metaMatch[1];
-    
-    // Estrai content
     const contentMatch = attrs.match(/content=["']([^"']+)["']/i);
-    if (contentMatch) {
-      addText(contentMatch[1], 'meta:content', metaMatch.index);
-    }
-    
-    // Estrai name
+    if (!contentMatch) continue;
     const nameMatch = attrs.match(/name=["']([^"']+)["']/i);
-    if (nameMatch) {
-      addText(nameMatch[1], 'meta:name', metaMatch.index);
-    }
+    const propertyMatch = attrs.match(/property=["']([^"']+)["']/i);
+    const httpEquivMatch = attrs.match(/http-equiv=["']([^"']+)["']/i);
+    if (httpEquivMatch) continue; // cache-control, content-type, refresh: mai copy
+    const key = (nameMatch?.[1] || propertyMatch?.[1] || '').toLowerCase();
+    if (!key) continue;
+    // emetti come "meta:NAME" così filterAndCap può whitelist-are
+    addText(contentMatch[1], `meta:${key}`, metaMatch.index);
   }
 
   // 3. TUTTI I CONTENUTI DI TAG (anche con HTML interno)
