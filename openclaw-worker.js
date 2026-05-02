@@ -187,10 +187,11 @@ function extractRewritesFromAiResponse(text) {
   }
 }
 
+const REWRITE_GAP_FILL_PASSES = parseInt(process.env.REWRITE_GAP_FILL_PASSES || '2', 10);
+
 async function runRewriteInBatches(systemPrompt, userMessage) {
   const parsed = parseTextsFromRewritePrompt(userMessage);
   if (!parsed) {
-    // Non riusciamo a estrarre i testi: fallback al comportamento normale (best effort).
     return await callOpenClaw([
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userMessage },
@@ -201,13 +202,15 @@ async function runRewriteInBatches(systemPrompt, userMessage) {
   const total = texts.length;
   if (total === 0) return JSON.stringify([]);
 
-  const allRewrites = [];
+  // Map id -> rewritten string. Usiamo una Map così l'ultima riscrittura buona
+  // sovrascrive eventuali risposte precedenti per lo stesso id (gap-fill).
+  const idToRewrite = new Map();
   let batchCount = 0;
-  for (let i = 0; i < total; i += REWRITE_BATCH_SIZE) {
-    const batch = texts.slice(i, i + REWRITE_BATCH_SIZE);
+
+  async function runBatch(batch, label) {
     batchCount++;
     const batchUserMessage = `${beforeJson}\n${JSON.stringify(batch, null, 2)}\n${afterJson}`;
-    log(`  ▸ Rewrite batch ${batchCount} (${batch.length} testi, ${i + batch.length}/${total})`);
+    log(`  ▸ Rewrite ${label} (${batch.length} testi)`);
     let raw = '';
     try {
       raw = await callOpenClaw([
@@ -215,19 +218,51 @@ async function runRewriteInBatches(systemPrompt, userMessage) {
         { role: 'user', content: batchUserMessage },
       ]);
     } catch (e) {
-      err(`  ✗ batch ${batchCount} failed:`, e.message);
-      // Continuiamo: i testi senza rewrite resteranno invariati lato client.
-      continue;
+      err(`  ✗ ${label} failed:`, e.message);
+      return;
     }
     const rewrites = extractRewritesFromAiResponse(raw);
     for (const rw of rewrites) {
-      if (rw && typeof rw.id === 'number' && typeof rw.rewritten === 'string') {
-        allRewrites.push(rw);
-      }
+      if (!rw || typeof rw.id !== 'number') continue;
+      if (typeof rw.rewritten !== 'string') continue;
+      const trimmed = rw.rewritten.trim();
+      if (!trimmed) continue;
+      idToRewrite.set(rw.id, trimmed);
     }
   }
 
-  log(`  ▸ Rewrite done: ${allRewrites.length}/${total} testi riscritti in ${batchCount} batch`);
+  // Pass principale.
+  for (let i = 0; i < total; i += REWRITE_BATCH_SIZE) {
+    const batch = texts.slice(i, i + REWRITE_BATCH_SIZE);
+    const idxFrom = i + 1;
+    const idxTo = Math.min(i + REWRITE_BATCH_SIZE, total);
+    await runBatch(batch, `batch ${batchCount + 1} (${idxFrom}-${idxTo}/${total})`);
+  }
+
+  // Gap-fill: il modello locale a volte salta degli id, soprattutto quando
+  // il batch è vicino al limite di context. Riproviamo solo i mancanti.
+  for (let pass = 1; pass <= REWRITE_GAP_FILL_PASSES; pass++) {
+    const missing = texts.filter((t) => !idToRewrite.has(t.id));
+    if (missing.length === 0) break;
+    log(`  ▸ Gap-fill pass ${pass}: ${missing.length} testi ancora mancanti`);
+    // Batch più piccoli nei pass di gap-fill per non triggerare context overflow
+    // sul modello locale (quando sono pochi testi è ok essere molto conservativi).
+    const fillBatchSize = Math.max(5, Math.floor(REWRITE_BATCH_SIZE / 2));
+    for (let i = 0; i < missing.length; i += fillBatchSize) {
+      const slice = missing.slice(i, i + fillBatchSize);
+      await runBatch(slice, `gap-fill p${pass} (${slice.length} testi)`);
+    }
+  }
+
+  const allRewrites = [];
+  for (const [id, rewritten] of idToRewrite) {
+    allRewrites.push({ id, rewritten });
+  }
+  const stillMissing = texts.length - idToRewrite.size;
+  log(
+    `  ▸ Rewrite done: ${idToRewrite.size}/${total} testi riscritti in ${batchCount} batch`
+    + (stillMissing > 0 ? ` (${stillMissing} ancora mancanti dopo gap-fill)` : ''),
+  );
   return JSON.stringify(allRewrites);
 }
 

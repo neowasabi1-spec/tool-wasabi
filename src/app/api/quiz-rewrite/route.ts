@@ -1,14 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { extractAllTextsUniversal } from '@/lib/universal-text-extractor';
+import { filterAndCap, DEFAULT_MAX_TEXTS } from '@/lib/swipe-text-filter';
 
-export const maxDuration = 30;
+export const maxDuration = 60;
 export const dynamic = 'force-dynamic';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-
-// La funzione extractTextsFromHtml è stata rimossa.
-// Ora usiamo extractAllTextsUniversal dal modulo universal-text-extractor
 
 export async function POST(request: NextRequest) {
   try {
@@ -31,48 +29,59 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Supabase not configured' }, { status: 500 });
     }
 
-    // Extract ALL texts from HTML using universal extractor
-    const extractedTexts = extractAllTextsUniversal(html);
-    if (extractedTexts.length === 0) {
+    const maxTexts = Math.max(
+      50,
+      Math.min(800, Number.parseInt(process.env.QUIZ_REWRITE_MAX_TEXTS || String(DEFAULT_MAX_TEXTS), 10) || DEFAULT_MAX_TEXTS),
+    );
+
+    const rawUniversal = extractAllTextsUniversal(html);
+    const filtered = filterAndCap(rawUniversal, { maxTexts });
+    if (filtered.length === 0) {
       return NextResponse.json({ error: 'No text found in the HTML to rewrite' }, { status: 400 });
     }
 
-    // Convert to format expected by the rest of the code
-    const texts = extractedTexts.map(t => ({ 
-      original: t.text, 
-      tag: t.context, 
-      position: t.position 
+    const texts = filtered.map((t) => ({
+      original: t.original,
+      tag: t.tag,
+      position: t.position,
     }));
-    
-    const textsForAi = extractedTexts.map(t => ({ 
-      id: t.id, 
-      text: t.text, 
-      tag: t.context 
+
+    const textsForAi = filtered.map((t, i) => ({
+      id: i,
+      text: t.original,
+      tag: t.tag,
     }));
-    
-    console.log(`[quiz-rewrite] Extracted ${texts.length} texts from HTML (universal extractor)`);
 
-    // Build the Trinity rewrite prompt
-    const userMessage = `Sei Trinity, la copywriter del Matrix Team. Devi riscrivere i testi di questa pagina HTML per il prodotto: ${productName}.
+    console.log(
+      `[quiz-rewrite] Extracted ${rawUniversal.length} raw -> ${filtered.length} marketing-safe texts`,
+    );
 
-DESCRIZIONE PRODOTTO: ${productDescription}
-ISTRUZIONI EXTRA: ${customPrompt || 'Nessuna'}
+    // IMPORTANTE: il brief del prodotto va nel SYSTEM prompt, non nello user message.
+    // Così sopravvive al batching che il worker fa per non far esplodere il context
+    // del modello locale: ogni batch ricrea SOLO il blocco "Testi da riscrivere
+    // (JSON):" ma riusa l'intero system prompt → il prodotto è sempre presente.
+    const productBrief = (productDescription || '').trim();
+    const customNotes = (customPrompt || '').trim();
+    const systemPrompt = `Sei Trinity, copywriter direct-response del Matrix Team. Riscrivi i testi marketing per UN prodotto specifico mantenendo tono, stile, lunghezza e struttura persuasiva del testo originale.
+
+PRODOTTO: ${productName}
+${productBrief ? `DESCRIZIONE/BRIEF PRODOTTO:\n${productBrief}\n` : ''}${customNotes ? `ISTRUZIONI EXTRA DELL'UTENTE:\n${customNotes}\n` : ''}
+REGOLE OBBLIGATORIE:
+1. Riscrivi OGNI testo per vendere ESATTAMENTE questo prodotto. Sostituisci nomi di prodotti competitor, tagline, benefici, prove sociali, autori e numeri specifici con quelli del prodotto qui sopra. Quando il dettaglio non è nel brief, usa formulazioni neutre ma sempre allineate al prodotto (mai inventare claim medici/legali).
+2. Mantieni stessa LUNGHEZZA (±25%) e stessa "energia" (headline punchy → headline punchy, paragrafo → paragrafo, microcopy → microcopy).
+3. Mantieni la stessa LINGUA del testo originale. Se l'originale è in italiano, scrivi italiano; se è in inglese, inglese; ecc.
+4. NON aggiungere markdown, HTML, virgolette extra. Plain text puro per ogni "rewritten".
+5. Se un testo è una CTA / button / etichetta breve, resta breve e punchy.
+6. Testi legali/compliance: riscrivi solo se sicuro, altrimenti mantieni l'originale.
+7. Per OGNI id ricevuto restituisci una voce {"id": N, "rewritten": "..."}. Non saltare mai un id, anche se cambia poco.
+8. Restituisci SOLO un JSON array: [{"id": 0, "rewritten": "..."}, ...]. Niente preambolo, niente spiegazioni.`;
+
+    const userMessage = `Riscrivi questi testi per il prodotto "${productName}".
 
 Testi da riscrivere (JSON):
 ${JSON.stringify(textsForAi, null, 2)}
 
-Riscrivi ogni testo per il prodotto ${productName}. Mantieni lunghezza simile, stesso tono persuasivo, stessa lingua.
-Restituisci SOLO un JSON array: [{"id": 0, "rewritten": "testo riscritto"}, ...]`;
-
-    const systemPrompt = `You are Trinity, a direct-response copywriter for the Matrix Team. You rewrite marketing texts for specific products while keeping the same tone, style, length, and persuasion structure.
-
-RULES:
-1. Rewrite each text to sell THE PRODUCT, keeping the same emotional angle and copywriting technique.
-2. Keep roughly the same length (±20%).
-3. Keep the same language/tone (if original is casual, stay casual; if urgent, stay urgent).
-4. Do NOT add markdown, HTML tags, or formatting — return plain text only for each item.
-5. If a text is a button label, CTA, or short phrase, keep it short and punchy.
-6. Return a JSON array ONLY: [{"id": 0, "rewritten": "new text"}, ...]`;
+Riscrivi ogni testo per il prodotto ${productName}. Restituisci SOLO un JSON array nella forma [{"id": 0, "rewritten": "..."}, ...] con UNA voce per OGNI id sopra.`;
 
     // Insert async job into openclaw_messages
     const insertRes = await fetch(`${SUPABASE_URL}/rest/v1/openclaw_messages`, {
@@ -88,11 +97,14 @@ RULES:
         system_prompt: systemPrompt,
         section: 'Rewrite',
         status: 'pending',
-        // Store original HTML + ALL texts in chat_history for reconstruction when job completes
+        // chat_history: HTML originale + lista testi (per applicare le rewrites
+        // nello status route) + brief prodotto (per debugging / gap-fill).
         chat_history: {
           html,
-          texts: texts.map(t => ({ original: t.original, tag: t.tag })), // No more slice limit!
+          texts: texts.map((t) => ({ original: t.original, tag: t.tag })),
           productName,
+          productDescription: productBrief,
+          customPrompt: customNotes,
           totalTextsInPage: texts.length,
         },
       }),
