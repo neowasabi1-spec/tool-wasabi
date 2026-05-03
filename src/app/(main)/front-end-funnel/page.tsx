@@ -1762,11 +1762,13 @@ export default function FrontEndFunnel() {
             onProgress: (done, total) => setCloneProgress({ phase: 'processing', totalTexts: total, processedTexts: done, message: `Rewriting via OpenClaw (${done}/${total} batches)...` }),
           });
         } else {
-          // Async rewrite via Supabase queue (avoids Netlify 10s timeout)
+          // Browser-orchestrated chunked rewrite via Anthropic.
+          // Why: Netlify caps sync functions at ~26s. We split work in 3 routes
+          // (init / anthropic-batch / finalize) and the browser drives the loop
+          // so each function call stays well under that limit.
           setCloneProgress({ phase: 'processing', totalTexts: 0, processedTexts: 0, message: 'Trinity sta riscrivendo...' });
 
-          // Step 1: Enqueue the job (returns immediately with jobId)
-          const enqueueRes = await fetch('/api/quiz-rewrite', {
+          const initRes = await fetch('/api/quiz-rewrite', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -1776,55 +1778,155 @@ export default function FrontEndFunnel() {
               customPrompt: cloneConfig.customPrompt || undefined,
             }),
           });
-          const enqueueData = await enqueueRes.json() as { jobId?: string; status?: string; totalTexts?: number; error?: string };
-          if (!enqueueRes.ok || enqueueData.error) throw new Error(enqueueData.error || 'Failed to start rewrite job');
-          if (!enqueueData.jobId) throw new Error('No jobId returned from rewrite API');
+          let initData: {
+            jobId?: string;
+            totalTexts?: number;
+            totalBatches?: number;
+            batchSize?: number;
+            batches?: Array<Array<{ id: number; text: string; tag: string }>>;
+            systemPrompt?: string;
+            error?: string;
+          };
+          try {
+            initData = await initRes.json();
+          } catch {
+            const t = await initRes.text();
+            throw new Error(`Init returned non-JSON (${initRes.status}): ${t.substring(0, 200)}`);
+          }
+          if (!initRes.ok || initData.error) throw new Error(initData.error || 'Failed to start rewrite job');
+          if (!initData.jobId || !initData.batches || !initData.systemPrompt) {
+            throw new Error('Init response missing jobId/batches/systemPrompt');
+          }
 
-          const { jobId, totalTexts: jobTotalTexts } = enqueueData;
-          setCloneProgress({ phase: 'processing', totalTexts: jobTotalTexts || 0, processedTexts: 0, message: `Trinity sta riscrivendo... (job: ${jobId.substring(0, 8)})` });
+          const { jobId, batches, systemPrompt, totalTexts: jobTotalTexts = 0, totalBatches = batches.length } = initData;
 
-          // Step 2: Poll status until done (long pages + queue can exceed 5m; align with OpenClaw path = 30m)
-          const POLL_INTERVAL_MS = 3000;
-          const MAX_WAIT_MS = 30 * 60 * 1000;
-          const pollStart = Date.now();
-          let pollResult: { html: string; replacements: number; totalTexts: number; originalLength: number; newLength: number; provider: string } | null = null;
+          setCloneProgress({
+            phase: 'processing',
+            totalTexts: jobTotalTexts,
+            processedTexts: 0,
+            message: `Trinity batch 0/${totalBatches} (job: ${jobId.substring(0, 8)})`,
+          });
 
-          while (!pollResult) {
-            if (Date.now() - pollStart > MAX_WAIT_MS) {
-              const mins = MAX_WAIT_MS / 60000;
-              throw new Error(
-                `Rewrite timeout dopo ${mins} minuti mentre il job restava pending/processing. ` +
-                  'Possibili cause: (1) il worker che legge Supabase (`openclaw-worker.js`) non è in esecuzione sul PC; ' +
-                  '(2) Gateway OpenClaw offline o porta errata; (3) job troppo lungo anche per il tempo limite della UI — riprova o usa «Use OpenClaw» dalla stessa modal. ' +
-                  `Job id: ${jobId}`,
-              );
+          const idToOriginal = new Map<number, string>();
+          for (const b of batches) for (const item of b) idToOriginal.set(item.id, item.text);
+          const idToRewrite = new Map<number, string>();
+          const allIds = Array.from(idToOriginal.keys());
+
+          const callBatch = async (
+            batch: Array<{ id: number; text: string; tag: string }>,
+            label: string,
+            strict: boolean,
+          ): Promise<Array<{ id: number; rewritten: string }>> => {
+            const res = await fetch('/api/quiz-rewrite/anthropic-batch', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ batch, systemPrompt, label, strict }),
+            });
+            let data: { rewrites?: Array<{ id: number; rewritten: string }>; error?: string };
+            try {
+              data = await res.json();
+            } catch {
+              const t = await res.text();
+              throw new Error(`Batch returned non-JSON (${res.status}): ${t.substring(0, 200)}`);
             }
-            await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+            if (!res.ok || data.error) throw new Error(data.error || `Batch HTTP ${res.status}`);
+            return data.rewrites || [];
+          };
 
-            const statusRes = await fetch(`/api/quiz-rewrite/status/${jobId}`);
-            const statusData = await statusRes.json() as { status: string; result?: typeof pollResult; error?: string };
+          // Pass 1: every batch sequentially (could be parallelized later).
+          for (let i = 0; i < batches.length; i++) {
+            const slice = batches[i];
+            try {
+              const rewrites = await callBatch(slice, `Batch ${i + 1}/${batches.length}`, false);
+              for (const rw of rewrites) {
+                if (typeof rw.id !== 'number' || typeof rw.rewritten !== 'string') continue;
+                const trimmed = rw.rewritten.trim();
+                if (!trimmed) continue;
+                const orig = idToOriginal.get(rw.id);
+                if (orig && trimmed === orig && orig.length > 20) continue; // anti-echo: lascia missing per gap-fill
+                idToRewrite.set(rw.id, trimmed);
+              }
+            } catch (err) {
+              console.error(`[rewrite] batch ${i + 1} failed:`, err);
+            }
+            setCloneProgress({
+              phase: 'processing',
+              totalTexts: jobTotalTexts,
+              processedTexts: idToRewrite.size,
+              message: `Trinity batch ${i + 1}/${totalBatches} (${idToRewrite.size}/${jobTotalTexts} testi)`,
+            });
+          }
 
-            if (statusData.status === 'completed' && statusData.result) {
-              pollResult = statusData.result;
-            } else if (statusData.status === 'error') {
-              throw new Error(statusData.error || 'Rewrite job failed');
-            } else {
-              // Still pending/processing — update progress message
-              const elapsed = Math.round((Date.now() - pollStart) / 1000);
-              const maxMin = MAX_WAIT_MS / 60000;
+          // Gap-fill passes for missed/echoed ids.
+          const GAP_PASSES = 2;
+          const GAP_BATCH = Math.max(8, Math.floor((initData.batchSize || 24) / 2));
+          for (let pass = 1; pass <= GAP_PASSES; pass++) {
+            const missing = allIds.filter((id) => !idToRewrite.has(id));
+            if (missing.length === 0) break;
+            setCloneProgress({
+              phase: 'processing',
+              totalTexts: jobTotalTexts,
+              processedTexts: idToRewrite.size,
+              message: `Gap-fill p${pass}: ${missing.length} testi rimasti`,
+            });
+            for (let j = 0; j < missing.length; j += GAP_BATCH) {
+              const ids = missing.slice(j, j + GAP_BATCH);
+              const slice = ids.map((id) => ({
+                id,
+                text: idToOriginal.get(id) || '',
+                tag: 'unknown',
+              }));
+              try {
+                const rewrites = await callBatch(slice, `Gap-fill p${pass}`, true);
+                for (const rw of rewrites) {
+                  if (typeof rw.id !== 'number' || typeof rw.rewritten !== 'string') continue;
+                  const trimmed = rw.rewritten.trim();
+                  if (!trimmed) continue;
+                  idToRewrite.set(rw.id, trimmed); // ultimo pass accetta anche output identico
+                }
+              } catch (err) {
+                console.error(`[rewrite] gap-fill p${pass} failed:`, err);
+              }
               setCloneProgress({
                 phase: 'processing',
-                totalTexts: jobTotalTexts || 0,
-                processedTexts: 0,
-                message:
-                  statusData.status === 'processing'
-                    ? `Trinity in elaborazione… ${elapsed}s (max ~${maxMin} min)`
-                    : `Trinity in coda (pending)… ${elapsed}s (max ~${maxMin} min)`,
+                totalTexts: jobTotalTexts,
+                processedTexts: idToRewrite.size,
+                message: `Gap-fill p${pass}: ${idToRewrite.size}/${jobTotalTexts} riscritti`,
               });
             }
           }
 
-          rewriteData = pollResult;
+          const rewritesArray = Array.from(idToRewrite, ([id, rewritten]) => ({ id, rewritten }));
+          const unresolvedIds = allIds.filter((id) => !idToRewrite.has(id));
+
+          setCloneProgress({
+            phase: 'processing',
+            totalTexts: jobTotalTexts,
+            processedTexts: idToRewrite.size,
+            message: 'Applying rewrites to HTML...',
+          });
+
+          const finalizeRes = await fetch('/api/quiz-rewrite/finalize', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ jobId, rewrites: rewritesArray, unresolvedIds }),
+          });
+          let finalizeData: {
+            status?: string;
+            result?: { html: string; replacements: number; totalTexts: number; originalLength: number; newLength: number; provider: string };
+            error?: string;
+          };
+          try {
+            finalizeData = await finalizeRes.json();
+          } catch {
+            const t = await finalizeRes.text();
+            throw new Error(`Finalize returned non-JSON (${finalizeRes.status}): ${t.substring(0, 200)}`);
+          }
+          if (!finalizeRes.ok || finalizeData.error || !finalizeData.result) {
+            throw new Error(finalizeData.error || 'Finalize failed');
+          }
+
+          rewriteData = finalizeData.result;
         }
 
         setCloneProgress(null);
