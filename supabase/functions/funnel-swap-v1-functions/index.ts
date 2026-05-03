@@ -632,6 +632,35 @@ serve(async (req) => {
           }
         }
 
+        // === FIX NEXT.JS NAVIGATION (preview SPA) ===
+        // I quiz Next.js usano client-side navigation tramite fetch a
+        // /_next/data/<buildId>/<page>.json per ottenere props della
+        // prossima pagina. Quando il preview gira fuori dal dominio
+        // originale (es. cute-cupcake.netlify.app invece di bioma.health)
+        // questi fetch danno 404 → 'Failed to load static props' → quiz
+        // si blocca al primo click "Next". Monkey-patch del fetch per
+        // ritornare props vuoti (la state del componente quiz mantiene
+        // comunque la domanda corrente in localStorage o state).
+        const navigationFix = `<script>(function(){
+  if (typeof window === 'undefined') return;
+  var origFetch = window.fetch ? window.fetch.bind(window) : null;
+  if (!origFetch) return;
+  window.fetch = function(input, init){
+    try {
+      var url = typeof input === 'string' ? input : (input && input.url) || '';
+      if (/\\/_next\\/data\\//.test(url)) {
+        return Promise.resolve(new Response(JSON.stringify({pageProps:{},__N_SSP:true}),{status:200,headers:{'Content-Type':'application/json'}}));
+      }
+    } catch(e){}
+    return origFetch(input, init);
+  };
+})();</script>`
+        if (clonedHTML.includes('<head>')) {
+          clonedHTML = clonedHTML.replace('<head>', '<head>' + navigationFix)
+        } else if (clonedHTML.includes('<body')) {
+          clonedHTML = clonedHTML.replace(/(<body[^>]*>)/, '$1' + navigationFix)
+        }
+
         console.log(`✅ Ricostruzione HTML completata: ${replacementCount} testi sostituiti`)
 
         await supabase
