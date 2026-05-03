@@ -1776,6 +1776,7 @@ export default function FrontEndFunnel() {
               productName: cloneConfig.productName,
               productDescription: cloneConfig.productDescription,
               customPrompt: cloneConfig.customPrompt || undefined,
+              targetLanguage: cloneConfig.language || 'it',
             }),
           });
           let initData: {

@@ -111,10 +111,14 @@ async function callAnthropicJSON(system: string, user: string, timeoutMs: number
   return data.content?.[0]?.text || '';
 }
 
-async function buildFactBox(productName: string, brief: string): Promise<FactBox | null> {
+async function buildFactBox(productName: string, brief: string, targetLanguage: string): Promise<FactBox | null> {
   if (!brief || brief.length < 200) return null;
+  const langName = targetLanguage === 'en' ? 'English' : targetLanguage === 'es' ? 'Spanish' : targetLanguage === 'fr' ? 'French' : targetLanguage === 'de' ? 'German' : 'Italiano';
   const sys = `Sei un assistente che estrae da un brief di marketing un FACT BOX strutturato in JSON.
-Restituisci SOLO un oggetto JSON valido (niente markdown, niente preambolo) con queste chiavi (stringhe brevi, italiano se il brief e in italiano, inglese altrimenti):
+
+REGOLA LINGUA: TUTTI i valori di stringa nel JSON devono essere scritti in ${langName}, indipendentemente dalla lingua del brief originale. Traduci se necessario.
+
+Restituisci SOLO un oggetto JSON valido (niente markdown, niente preambolo) con queste chiavi:
 {
   "productName": "...",
   "oneLiner": "una frase che sintetizza cos'e il prodotto",
@@ -130,7 +134,7 @@ Restituisci SOLO un oggetto JSON valido (niente markdown, niente preambolo) con 
   "numericFacts": ["fatti numerici chiave: 8 minuti, 90 giorni, $39, ecc."]
 }
 Se un campo non e nel brief, lascia stringa vuota o array vuoto. NIENTE invenzione.`;
-  const user = `PRODOTTO: ${productName}\n\nBRIEF:\n${brief}\n\nRestituisci il JSON.`;
+  const user = `PRODOTTO: ${productName}\nLINGUA OUTPUT: ${langName}\n\nBRIEF:\n${brief}\n\nRestituisci il JSON in ${langName}.`;
   try {
     const raw = await callAnthropicJSON(sys, user, 18_000);
     let cleaned = raw.trim().replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/i, '');
@@ -181,8 +185,17 @@ export async function POST(request: NextRequest) {
       productName: string;
       productDescription: string;
       customPrompt?: string;
+      targetLanguage?: string;
     };
     const { html, productName, productDescription, customPrompt } = body;
+    const targetLanguage = (body.targetLanguage || 'it').toLowerCase().substring(0, 2);
+    const langName =
+      targetLanguage === 'en' ? 'English' :
+      targetLanguage === 'es' ? 'Spanish' :
+      targetLanguage === 'fr' ? 'French' :
+      targetLanguage === 'de' ? 'German' :
+      targetLanguage === 'pt' ? 'Portuguese' :
+      'Italiano';
 
     if (!html || html.length < 50) {
       return NextResponse.json({ error: 'HTML too short or missing' }, { status: 400 });
@@ -232,7 +245,7 @@ export async function POST(request: NextRequest) {
     if (productBrief.length >= 200) {
       console.log(`[quiz-rewrite/init] Building FactBox from brief (${productBrief.length} chars)...`);
       const t0 = Date.now();
-      factBox = await buildFactBox(productName, productBrief);
+      factBox = await buildFactBox(productName, productBrief, targetLanguage);
       console.log(`[quiz-rewrite/init] FactBox built in ${Date.now() - t0}ms`, factBox ? '(ok)' : '(failed, fallback to raw brief)');
     }
 
@@ -254,36 +267,42 @@ REGOLA FERREA: ogni occorrenza di questi termini (anche varianti maiuscole/minus
     const systemPrompt = `Sei Trinity, copywriter direct-response del Matrix Team. Il tuo compito e' UNICO: riscrivere i testi di una pagina di vendita di un competitor perche vendano ESCLUSIVAMENTE il PRODOTTO TARGET. Non stai "adattando" — stai SOSTITUENDO la materia prima copy del competitor con quella del prodotto target.
 
 PRODOTTO TARGET: ${productName}
+LINGUA OUTPUT: ${langName} (${targetLanguage})
 
 ${competitorSection}
 
 ${factBoxSection}${briefSection}${notesSection}=== REGOLE OBBLIGATORIE ===
 
-1. **NON LASCIARE MAI IL TESTO ORIGINALE INVARIATO.** Ogni "rewritten" deve essere semanticamente diverso dall'"text" che ricevi e PARLARE DEL PRODOTTO TARGET. Se sembra "neutrale" o "tecnico", riformulalo comunque agganciandolo al meccanismo/avatar/promessa del prodotto target.
+1. **LINGUA OUTPUT FISSA: ${langName}**. TUTTI i "rewritten" devono essere scritti in ${langName}, SEMPRE, senza alcuna eccezione, anche se il testo originale e' in inglese o in un'altra lingua. NIENTE mix di lingue, NIENTE frasi mezze in inglese mezze in ${langName}. Se vedi una frase inglese, traducila e adattala completamente in ${langName}. Se vedi un termine tecnico inglese che non ha equivalente, mantienilo solo se e' usato comunemente in ${langName} (es. "smartphone", "online"). Termini come "BREAKTHROUGH", "ALERT", "SELLING OUT", "Lock in your order", "Try This", "If Your", "Reveals", "Discover", "Get", "NOW", "FREE", ecc. DEVONO essere tradotti in ${langName}.
 
-2. **SOSTITUZIONE OBBLIGATORIA DI BRAND, NUMERI, DURATE, PREZZI, EXPERT, GEO DEL COMPETITOR**:
-   - Brand/nome del competitor (vedi lista sopra) -> sostituisci con "${productName}" o variante adatta al contesto.
-   - Numeri specifici (es. "15-Min", "30 days", "$49", "%20"): sostituisci con i corrispettivi del FACT BOX ("Durata/Formato", "Prezzo & Offerta", "Fatti numerici"). Se il fact non e' nel brief, ometti il numero e usa una formulazione generica coerente col prodotto target.
-   - Nome di expert/dottore/autore citato: sostituisci con quello del FACT BOX ("Expert/Autore"). Se non c'e', usa formulazione generica ("uno dei principali esperti...").
-   - Citta'/luoghi/zone: sostituisci con un'altra citta' coerente con l'avatar del prodotto target.
+2. **NON LASCIARE MAI IL TESTO ORIGINALE INVARIATO.** Ogni "rewritten" deve essere semanticamente diverso dall'"text" che ricevi e PARLARE DEL PRODOTTO TARGET. Se sembra "neutrale" o "tecnico", riformulalo comunque agganciandolo al meccanismo/avatar/promessa del prodotto target.
 
-3. **ESEMPIO** (pagina del competitor "Nooro Foot Massager 15-Min"):
+3. **SOSTITUZIONE OBBLIGATORIA DI BRAND, NUMERI, DURATE, PREZZI, EXPERT, GEO DEL COMPETITOR**:
+   - Brand/nome del competitor (vedi lista "COMPETITOR DA NEUTRALIZZARE" sopra) -> sostituisci SEMPRE con "${productName}" o variante adatta al contesto. Mai lasciare il brand del competitor.
+   - Numeri specifici del competitor (es. "15-Min", "30 days", "$49", "20%", "10 years"): sostituisci con i corrispettivi del FACT BOX ("Durata/Formato", "Prezzo & Offerta", "Fatti numerici"). Se il fact specifico NON e' nel FACT BOX, OMETTI completamente il numero e usa una formulazione generica coerente col prodotto target. **NON LASCIARE MAI il numero del competitor**.
+   - Nome di expert/dottore/autore citato (es. "Dr. Campbell from Chicago"): sostituisci con quello del FACT BOX ("Expert/Autore"). Se non c'e', usa formulazione generica ("uno dei principali esperti", "specialisti del settore"). **MAI** lasciare il nome del medico/expert del competitor.
+   - Citta'/luoghi/zone (es. "Chicago", "Warsaw"): sostituisci con un'altra citta' coerente con l'avatar del prodotto target (Italia: Milano, Roma, Torino; USA: New York, Los Angeles; ecc.).
+   - Setting/contesto fisico (es. "physical therapy clinic", "gym"): adatta al setting del prodotto target descritto nel FACT BOX/brief.
+
+4. **ESEMPI** (pagina del competitor "Nooro Foot Massager", lingua output ${langName}):
    - Originale: "BREAKTHROUGH: Nooro Foot Massager is SELLING OUT faster than expected!"
-   - CATTIVO (lascia brand/numero competitor): "BREAKTHROUGH: Nooro Foot Massager is SELLING OUT..."
-   - BUONO (sostituisce brand): "BREAKTHROUGH: ${productName} sta esaurendo le scorte piu' velocemente del previsto!"
+     CATTIVO: "ALERT: Metabolic Wave spots are filling up rapidly faster than expected!" (mix EN/${langName}, "spots are filling up" e' inglese)
+     BUONO (se langName=Italiano): "ATTENZIONE: ${productName} sta andando esaurito molto piu' rapidamente del previsto!"
    - Originale: "Try This 15-Min Electric Massage If Your Feet Roll Inward"
-   - CATTIVO: "Try This 15-Min Electric Massage If Your Metabolism Slows Down" (numero del competitor sopravvive!)
-   - BUONO: "Prova questo protocollo da [DURATA-FACT-BOX] di ${productName} se il tuo metabolismo rallenta"
+     CATTIVO: "Prova questo Audio Activation da 15-Min se il tuo metabolismo rallenta" (numero competitor + termine inglese sopravvivono)
+     BUONO (se langName=Italiano e fact box dice "8 minuti"): "Prova questo protocollo audio da 8 minuti di ${productName} se il tuo metabolismo rallenta"
+     BUONO (se durata non e' nel FactBox): "Prova questo protocollo audio di ${productName} se il tuo metabolismo rallenta"
+   - Originale: "Hi, my name is Dr. Campbell and I'm a doctor of physical therapy from Chicago."
+     CATTIVO: "Hi, my name is Dr. Campbell and I'm a doctor of physical therapy from Chicago." (lasciato pari!)
+     BUONO (se langName=Italiano): "Ciao, sono [EXPERT del FactBox o "il Dott. Rossi"] e mi occupo di [meccanismo dal FactBox] a [citta' italiana]."
 
-4. Mantieni LUNGHEZZA simile (+/-25%) e stessa "energia" (headline punchy -> headline punchy, paragrafo -> paragrafo, microcopy -> microcopy).
-
-5. Mantieni la stessa LINGUA del testo originale (italiano resta italiano, inglese resta inglese). Eccezione: se il prodotto target e' italiano e l'originale e' inglese, riscrivi nella lingua del prodotto target (verra' specificato altrove se serve).
+5. Mantieni LUNGHEZZA simile (+/-25%) e stessa "energia" (headline punchy -> headline punchy, paragrafo -> paragrafo, microcopy -> microcopy).
 
 6. NO markdown, NO HTML, NO virgolette extra. Plain text puro nel campo "rewritten".
 
-7. CTA / button / etichette brevi: restano brevi e punchy ma orientate al prodotto target.
+7. CTA / button / etichette brevi: restano brevi e punchy ma orientate al prodotto target, in ${langName}.
 
-8. Testi LEGALI/COMPLIANCE (privacy, terms, copyright, refund policy): qui SI puoi mantenere l'originale o adattarlo minimamente - unica eccezione alla regola #1.
+8. Testi LEGALI/COMPLIANCE (privacy, terms, copyright, refund policy): puoi tradurli letteralmente in ${langName} mantenendo il senso. NON e' eccezione alla regola lingua.
 
 9. Per OGNI id ricevuto produci una voce {"id": N, "rewritten": "..."}. Mai saltare un id.
 
@@ -316,6 +335,7 @@ ${factBoxSection}${briefSection}${notesSection}=== REGOLE OBBLIGATORIE ===
           totalTextsInPage: texts.length,
           competitorSignals: signals,
           factBox,
+          targetLanguage,
         },
       }),
     });
@@ -335,7 +355,7 @@ ${factBoxSection}${briefSection}${notesSection}=== REGOLE OBBLIGATORIE ===
     }
 
     console.log(
-      `[quiz-rewrite/init] job=${inserted.id} texts=${textsForAi.length} batches=${batches.length} batchSize=${REWRITE_BATCH_SIZE}`,
+      `[quiz-rewrite/init] job=${inserted.id} texts=${textsForAi.length} batches=${batches.length} batchSize=${REWRITE_BATCH_SIZE} lang=${targetLanguage}`,
     );
 
     return NextResponse.json({
