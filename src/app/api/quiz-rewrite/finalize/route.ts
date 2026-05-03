@@ -17,6 +17,42 @@ interface JobRow {
   } | string | null;
 }
 
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Entity-aware regex: cerca il testo nell'HTML accettando varianti come &amp;
+// per & oppure &#39;/&apos; per ', dato che universal-text-extractor decodifica
+// queste entities ma l'HTML originale puo contenere ancora la forma codificata.
+// Inoltre rende il whitespace tollerante: un singolo spazio nel testo estratto
+// puo corrispondere a piu spazi, newline, &nbsp; o tag inline (<br>, <span>) nell'HTML.
+function buildTolerantPattern(text: string): string {
+  return text
+    .split(/(\s+)/)
+    .map((part) => {
+      if (/^\s+$/.test(part)) {
+        return '(?:\\s|&nbsp;|&#160;|<br\\s*\\/?\\s*>|<\\/?(?:span|b|i|em|strong|u|small|font)\\b[^>]*>)+';
+      }
+      let escaped = escapeRegex(part);
+      escaped = escaped.replace(/&/g, '(?:&|&amp;)');
+      escaped = escaped.replace(/'/g, "(?:'|&#39;|&apos;|\\u2019)");
+      escaped = escaped.replace(/"/g, '(?:"|&quot;|&#34;)');
+      escaped = escaped.replace(/</g, '(?:<|&lt;)');
+      escaped = escaped.replace(/>/g, '(?:>|&gt;)');
+      return escaped;
+    })
+    .join('');
+}
+
+function htmlEncode(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function applyRewrites(
   html: string,
   texts: Array<{ original: string; tag: string }>,
@@ -24,17 +60,52 @@ function applyRewrites(
 ): { html: string; replacements: number } {
   let resultHtml = html;
   let replacements = 0;
+  let exactHits = 0;
+  let tolerantHits = 0;
+  let misses = 0;
 
   for (const rw of rewrites) {
     const original = texts[rw.id];
     if (!original || !rw.rewritten) continue;
     const trimmed = rw.rewritten.trim();
     if (!trimmed || original.original === trimmed) continue;
-    const escaped = original.original.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    const o = original.original;
     const before = resultHtml;
-    resultHtml = resultHtml.replace(new RegExp(escaped, 'g'), trimmed);
-    if (resultHtml !== before) replacements++;
+
+    // 1) Match esatto su stringa (rapido, copre la maggior parte dei casi)
+    if (resultHtml.includes(o)) {
+      const re = new RegExp(escapeRegex(o), 'g');
+      resultHtml = resultHtml.replace(re, trimmed);
+      if (resultHtml !== before) {
+        exactHits++;
+        replacements++;
+        continue;
+      }
+    }
+
+    // 2) Match tollerante: entity-aware + whitespace flessibile.
+    //    Risolve casi tipo &amp;/&#39; e spazi multipli/<br>/<span> in mezzo.
+    try {
+      const tolerantPattern = buildTolerantPattern(o);
+      const reTol = new RegExp(tolerantPattern, 'gi');
+      const beforeTol = resultHtml;
+      resultHtml = resultHtml.replace(reTol, () => htmlEncode(trimmed));
+      if (resultHtml !== beforeTol) {
+        tolerantHits++;
+        replacements++;
+        continue;
+      }
+    } catch {
+      // pattern troppo complesso, ignora
+    }
+
+    misses++;
   }
+
+  console.log(
+    `[quiz-rewrite/finalize] applied: exact=${exactHits} tolerant=${tolerantHits} miss=${misses} of ${rewrites.length}`,
+  );
 
   return { html: resultHtml, replacements };
 }
