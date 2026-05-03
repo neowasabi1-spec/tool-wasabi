@@ -545,21 +545,24 @@ serve(async (req) => {
         //     <script src="..."> originale con uno inline contenente il JS
         //     riscritto. Così il preview esegue il bundle MODIFICATO e
         //     l'utente vede i testi nuovi nelle pagine quiz/funnel CSR.
+        // NB: campo del DB è `new_text` (non rewritten_text). Lo schema della
+        // tabella cloning_texts usa original_text/raw_text/new_text per
+        // motivi storici; il batch loop sopra fa update di new_text.
         const { data: jsBundleTexts } = await supabase
           .from('cloning_texts')
-          .select('original_text, rewritten_text, attributes')
+          .select('original_text, new_text, attributes')
           .eq('job_id', jobId)
           .eq('tag_name', 'js-bundle')
-          .not('rewritten_text', 'is', null)
+          .not('new_text', 'is', null)
 
         if (jsBundleTexts && jsBundleTexts.length > 0) {
           console.log(`📦 INLINE BUNDLE: ${jsBundleTexts.length} stringhe riscritte da reinserire nei bundle JS`)
           const replacementsByBundle = new Map<string, Array<{ orig: string; rewr: string }>>()
           for (const t of jsBundleTexts) {
-            if (!t.attributes || !t.original_text || !t.rewritten_text) continue
-            if (t.original_text === t.rewritten_text) continue
+            if (!t.attributes || !t.original_text || !t.new_text) continue
+            if (t.original_text === t.new_text) continue
             const arr = replacementsByBundle.get(t.attributes) || []
-            arr.push({ orig: t.original_text, rewr: t.rewritten_text })
+            arr.push({ orig: t.original_text, rewr: t.new_text })
             replacementsByBundle.set(t.attributes, arr)
           }
 
@@ -1543,7 +1546,14 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
       let bsMatch: RegExpExecArray | null
       while ((bsMatch = bundleScriptRegex.exec(originalHTML)) !== null) {
         const src = bsMatch[1]
-        if (/_(?:document|error|middleware)/.test(src)) continue
+        // Whitelist: solo bundle delle pagine specifiche (es. pages/[funnel]/quiz-HASH.js).
+        // Skippa main, webpack, polyfills, framework, runtime, _app, _document, _error
+        // perché contengono runtime Next.js (error messages, system text) e non
+        // testi specifici della pagina che vogliamo riscrivere.
+        const isPageBundle = /\/_next\/static\/chunks\/pages\//.test(src)
+        const isFrameworkBundle = /\/(?:main|webpack|polyfills|framework|runtime)[-.]/i.test(src) ||
+          /\/pages\/_(?:app|document|error|middleware)/.test(src)
+        if (!isPageBundle || isFrameworkBundle) continue
         let absUrl: string
         try {
           absUrl = new URL(src, url).href
