@@ -1007,12 +1007,16 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
           })
         }
 
-        // 3. Tag block-level con contenuto (incluso markup inline)
+        // 3. Tag block-level (semantici + contenitori generici).
+        // I container generici (div/section/...) catturano testi non avvolti
+        // in tag specifici; il sort discendente per length nel rebuild HTML
+        // gestisce le sovrapposizioni naturali.
         const blockTags = [
           'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
           'p', 'li', 'td', 'th', 'button', 'a', 'label',
           'span', 'strong', 'em', 'b', 'i', 'small', 'figcaption',
-          'blockquote', 'summary', 'dt', 'dd',
+          'blockquote', 'summary', 'dt', 'dd', 'caption', 'cite', 'q', 'mark',
+          'div', 'section', 'article', 'header', 'footer', 'nav', 'aside', 'main',
         ]
         for (const tag of blockTags) {
           const re = new RegExp(`<${tag}\\b([^>]*)>([\\s\\S]*?)<\\/${tag}>`, 'gi')
@@ -1020,7 +1024,6 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
           while ((m = re.exec(html)) !== null) {
             const attrStr = m[1] || ''
             const innerHtml = m[2] || ''
-            // Skip script/style nested
             if (/<(script|style)[\s>]/i.test(innerHtml)) continue
             const plainText = innerHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
             if (plainText.length < 2) continue
@@ -1037,8 +1040,9 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
           }
         }
 
-        // 4. Attributi marketing-utili (alt, title, placeholder, aria-label, value su input)
-        const attrRegex = /<(\w+)\b([^>]*?)\s(alt|title|placeholder|aria-label)=["']([^"']{2,})["']([^>]*)>/gi
+        // 4. Attributi marketing-utili (alt, title, placeholder, aria-label,
+        // data-text, data-content, data-title, data-tooltip)
+        const attrRegex = /<(\w+)\b([^>]*?)\s(alt|title|placeholder|aria-label|data-text|data-content|data-title|data-tooltip)=["']([^"']{2,})["']([^>]*)>/gi
         let aMatch: RegExpExecArray | null
         while ((aMatch = attrRegex.exec(html)) !== null) {
           const tagName = aMatch[1].toLowerCase()
@@ -1057,7 +1061,7 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
           })
         }
 
-        // 5. Input value (solo button submit / hidden non interessano: prendiamo testo visibile)
+        // 5. Input value (submit/button)
         const inputValRegex = /<input\b([^>]*?)\stype=["'](submit|button)["']([^>]*?)\svalue=["']([^"']+)["']([^>]*)>/gi
         let iMatch: RegExpExecArray | null
         while ((iMatch = inputValRegex.exec(html)) !== null) {
@@ -1069,6 +1073,85 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
             attributes: `${iMatch[1]}${iMatch[3]}${iMatch[5]}`.trim(),
             classes: '',
             position: iMatch.index,
+          })
+        }
+
+        // 6. <noscript> content (testi visibili ai bot/screen reader)
+        const noscriptRegex = /<noscript[^>]*>([\s\S]*?)<\/noscript>/gi
+        let nMatch: RegExpExecArray | null
+        while ((nMatch = noscriptRegex.exec(html)) !== null) {
+          const inner = nMatch[1]
+          const plain = inner.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+          if (plain.length < 2) continue
+          push({
+            original_text: plain,
+            raw_text: inner.replace(/\s+/g, ' ').trim(),
+            tag_name: 'noscript',
+            full_tag: '<noscript>',
+            attributes: '',
+            classes: '',
+            position: nMatch.index,
+          })
+        }
+
+        // 7. JSON-LD: estrai stringhe semanticamente utili (name, description, headline, ecc.)
+        const jsonLdRegex = /<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi
+        let jMatch: RegExpExecArray | null
+        while ((jMatch = jsonLdRegex.exec(html)) !== null) {
+          try {
+            const jsonData = JSON.parse(jMatch[1].trim())
+            const usefulKeys = new Set([
+              'name', 'description', 'headline', 'alternativename', 'disambiguatingdescription',
+              'caption', 'text', 'abstract', 'review', 'reviewbody', 'comment',
+              'slogan', 'keywords', 'genre', 'category',
+            ])
+            const visit = (obj: any, path: string = ''): void => {
+              if (typeof obj === 'string') {
+                if (obj.length >= 3 && obj.length < 1000 && /[a-zA-ZàèéìòùÀÈÉÌÒÙ]/.test(obj) && !/^https?:\/\//.test(obj)) {
+                  const lastKey = path.split('.').pop()?.toLowerCase() || ''
+                  if (usefulKeys.has(lastKey)) {
+                    push({
+                      original_text: obj,
+                      raw_text: obj,
+                      tag_name: `jsonld:${lastKey}`,
+                      full_tag: `<script type="application/ld+json">`,
+                      attributes: '',
+                      classes: '',
+                      position: jMatch!.index,
+                    })
+                  }
+                }
+              } else if (Array.isArray(obj)) {
+                obj.forEach((item, i) => visit(item, `${path}[${i}]`))
+              } else if (obj && typeof obj === 'object') {
+                Object.entries(obj).forEach(([k, v]) => visit(v, path ? `${path}.${k}` : k))
+              }
+            }
+            visit(jsonData)
+          } catch {}
+        }
+
+        // 8. Text nodes "nudi" tra tag chiusura e prossimo tag.
+        // Cattura es. `<br>Bonus testo<br>` o testi diretti dentro contenitori non
+        // catturati altrimenti. Filtro pesante per evitare CSS/JS residuo.
+        const textNodeRegex = />([^<>{}\n]{4,300})</g
+        let tMatch: RegExpExecArray | null
+        while ((tMatch = textNodeRegex.exec(html)) !== null) {
+          const content = tMatch[1]
+          const trimmed = content.trim()
+          if (trimmed.length < 4) continue
+          // Skip se sembra puro CSS, codice, o numeri/simboli
+          if (/^[\s\d.,;:|()\-+*/=<>!?@#%^&]+$/.test(trimmed)) continue
+          if (/^[a-zA-Z_-]+\s*:\s*[^;]+;?$/.test(trimmed)) continue // CSS rule
+          if (!/[a-zA-ZàèéìòùÀÈÉÌÒÙ]{2,}/.test(trimmed)) continue // serve almeno 2 lettere
+          push({
+            original_text: trimmed,
+            raw_text: content,
+            tag_name: 'text-node',
+            full_tag: '',
+            attributes: '',
+            classes: '',
+            position: tMatch.index,
           })
         }
 
