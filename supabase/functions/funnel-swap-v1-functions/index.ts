@@ -548,12 +548,41 @@ serve(async (req) => {
         // NB: campo del DB è `new_text` (non rewritten_text). Lo schema della
         // tabella cloning_texts usa original_text/raw_text/new_text per
         // motivi storici; il batch loop sopra fa update di new_text.
-        const { data: jsBundleTexts } = await supabase
-          .from('cloning_texts')
-          .select('original_text, new_text, attributes')
-          .eq('job_id', jobId)
-          .eq('tag_name', 'js-bundle')
-          .not('new_text', 'is', null)
+        // TUTTO il blocco INLINE BUNDLE è in try/catch top-level così un
+        // errore qui non blocca il save dell'HTML né la response al client.
+        const inlineBundleStats: {
+          reached: boolean;
+          jsBundleTextsCount: number;
+          bundlesFound: number;
+          inlineSuccess: number;
+          inlineFailed: number;
+          totalReplaced: number;
+          errors: string[];
+        } = {
+          reached: false,
+          jsBundleTextsCount: 0,
+          bundlesFound: 0,
+          inlineSuccess: 0,
+          inlineFailed: 0,
+          totalReplaced: 0,
+          errors: [],
+        }
+        try {
+          inlineBundleStats.reached = true
+          const { data: jsBundleTexts, error: bundleQueryErr } = await supabase
+            .from('cloning_texts')
+            .select('original_text, new_text, attributes')
+            .eq('job_id', jobId)
+            .eq('tag_name', 'js-bundle')
+            .not('new_text', 'is', null)
+            .limit(5000)
+
+          if (bundleQueryErr) {
+            inlineBundleStats.errors.push(`bundle query: ${bundleQueryErr.message}`)
+            console.error('❌ INLINE BUNDLE query error:', bundleQueryErr)
+          }
+          inlineBundleStats.jsBundleTextsCount = jsBundleTexts?.length || 0
+          console.log(`📦 INLINE BUNDLE: query returned ${inlineBundleStats.jsBundleTextsCount} testi js-bundle riscritti`)
 
         if (jsBundleTexts && jsBundleTexts.length > 0) {
           console.log(`📦 INLINE BUNDLE: ${jsBundleTexts.length} stringhe riscritte da reinserire nei bundle JS`)
@@ -565,6 +594,7 @@ serve(async (req) => {
             arr.push({ orig: t.original_text, rewr: t.new_text })
             replacementsByBundle.set(t.attributes, arr)
           }
+          inlineBundleStats.bundlesFound = replacementsByBundle.size
 
           for (const [bundleUrl, replacements] of replacementsByBundle.entries()) {
             try {
@@ -622,14 +652,26 @@ serve(async (req) => {
               const replaced = clonedHTML.replace(scriptInlineRegex, inlineTag)
               if (replaced === clonedHTML) {
                 console.warn(`  ⚠️ Bundle ${bundleUrl}: <script src> non trovato nell'HTML (forse già modificato)`)
+                inlineBundleStats.inlineFailed++
+                inlineBundleStats.errors.push(`bundle script tag not found in HTML: ${bundleUrl.substring(bundleUrl.lastIndexOf('/'))}`)
               } else {
                 clonedHTML = replaced
+                inlineBundleStats.inlineSuccess++
+                inlineBundleStats.totalReplaced += appliedCount
                 console.log(`  📦 ${bundleUrl.substring(bundleUrl.lastIndexOf('/'))}: ${appliedCount}/${replacements.length} replace, HTML +${clonedHTML.length - beforeLen}b`)
               }
             } catch (e) {
-              console.warn(`  ⚠️ Errore inline bundle ${bundleUrl}:`, (e as Error).message)
+              const msg = (e as Error).message
+              console.warn(`  ⚠️ Errore inline bundle ${bundleUrl}:`, msg)
+              inlineBundleStats.inlineFailed++
+              inlineBundleStats.errors.push(`${bundleUrl.substring(bundleUrl.lastIndexOf('/'))}: ${msg}`)
             }
           }
+        }
+        } catch (topErr) {
+          const msg = (topErr as Error).message
+          console.error('❌ INLINE BUNDLE top-level error:', msg, (topErr as Error).stack)
+          inlineBundleStats.errors.push(`top-level: ${msg}`)
         }
 
         // === FIX NEXT.JS NAVIGATION (preview SPA) ===
@@ -700,7 +742,9 @@ serve(async (req) => {
             format: job.output_format || 'html',
             textsProcessed: allProcessedTexts.length,
             replacements: replacementCount,
-            report: reportData
+            report: reportData,
+            inlineBundleStats,
+            finalHtmlLength: clonedHTML.length,
           }),
           { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         )
