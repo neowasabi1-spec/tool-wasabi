@@ -161,7 +161,7 @@ serve(async (req) => {
 
       const { data: job, error: jobError } = await supabase
         .from('cloning_jobs')
-        .select('*, cloning_texts(*)')
+        .select('*')
         .eq('id', jobId)
         .eq('user_id', userId)
         .single()
