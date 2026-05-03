@@ -1897,6 +1897,77 @@ export default function FrontEndFunnel() {
             }
           }
 
+          // Language gate: rileva i rewrite "troppo inglesi" e li ri-traduce.
+          // Funziona perche' anche dopo gap-fill, Claude a volte mantiene
+          // strutture inglesi nei testi che il client vede arrivare in lingua
+          // sbagliata. Si filtrano solo le frasi >=4 parole con >=40% di stop-
+          // words inglesi: cosi' non si traducono microcopy/numeri/CTA brevi.
+          const targetLang = (cloneConfig.language || 'it').toLowerCase().substring(0, 2);
+          if (targetLang === 'it') {
+            const enStopwords = new Set([
+              'the', 'and', 'or', 'of', 'to', 'in', 'for', 'with', 'on', 'at', 'from', 'by', 'as', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+              'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might', 'must', 'can',
+              'this', 'that', 'these', 'those', 'your', 'you', 'our', 'we', 'they', 'them', 'his', 'her', 'their', 'its',
+              'try', 'get', 'now', 'here', 'there', 'how', 'why', 'when', 'where', 'what', 'which', 'who',
+              'free', 'order', 'today', 'just', 'only', 'more', 'most', 'less', 'best', 'new', 'all', 'any', 'each',
+              'click', 'shop', 'buy', 'discover', 'reveals', 'lock', 'about', 'because', 'before', 'after',
+              'than', 'so', 'if', 'then', 'also', 'still', 'even', 'too', 'very',
+              'doctor', 'physical', 'therapist', 'therapy', 'expert', 'reveal',
+              'breakthrough', 'alert', 'warning', 'update', 'breaking', 'selling', 'sold', 'out',
+              'massage', 'massager', 'electric', 'foot', 'feet', 'pain', 'relief', 'instant',
+              'min', 'mins', 'minute', 'minutes', 'hour', 'hours', 'day', 'days', 'week', 'weeks',
+            ]);
+            const isLikelyEnglish = (s: string): boolean => {
+              const tokens = s.toLowerCase().match(/[a-zA-Zàèéìòù']+/g) || [];
+              if (tokens.length < 4) return false; // microcopy: tollerate
+              let hits = 0;
+              for (const t of tokens) if (enStopwords.has(t)) hits++;
+              return hits / tokens.length >= 0.35;
+            };
+
+            const langSuspectIds: number[] = [];
+            for (const [id, rewritten] of idToRewrite) {
+              if (isLikelyEnglish(rewritten)) langSuspectIds.push(id);
+            }
+
+            if (langSuspectIds.length > 0) {
+              console.log(`[rewrite] language-fix: ${langSuspectIds.length} testi con sospetto inglese`);
+              setCloneProgress({
+                phase: 'processing',
+                totalTexts: jobTotalTexts,
+                processedTexts: idToRewrite.size,
+                message: `Lingua: traduco ${langSuspectIds.length} testi rimasti in inglese...`,
+              });
+
+              const TRANSLATE_BATCH = 12;
+              const langSystem = `Sei un traduttore. Ricevi testi che dovevano essere in italiano ma sono ancora in inglese (o un mix). Per OGNI id, restituisci il testo in italiano puro, senza una sola parola inglese (eccetto termini ormai italiani come 'smartphone', 'online', 'web'). Mantieni il placeholder \`[PRODOTTO_TARGET]\` se presente. Mantieni numeri italianizzati ($->€ se opportuno). Stessa lunghezza ±20%. NIENTE markdown.
+
+Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
+
+              for (let k = 0; k < langSuspectIds.length; k += TRANSLATE_BATCH) {
+                const ids = langSuspectIds.slice(k, k + TRANSLATE_BATCH);
+                const slice = ids.map((id) => ({
+                  id,
+                  text: idToRewrite.get(id) || '',
+                  tag: 'lang-fix',
+                }));
+                try {
+                  const fixed = await callBatch(slice, `Lang-fix ${k / TRANSLATE_BATCH + 1}`, true);
+                  for (const rw of fixed) {
+                    if (typeof rw.id !== 'number' || typeof rw.rewritten !== 'string') continue;
+                    const trimmed = rw.rewritten.trim();
+                    if (!trimmed) continue;
+                    if (!isLikelyEnglish(trimmed)) {
+                      idToRewrite.set(rw.id, trimmed);
+                    }
+                  }
+                } catch (err) {
+                  console.error('[rewrite] lang-fix batch failed:', err);
+                }
+              }
+            }
+          }
+
           const rewritesArray = Array.from(idToRewrite, ([id, rewritten]) => ({ id, rewritten }));
           const unresolvedIds = allIds.filter((id) => !idToRewrite.has(id));
 

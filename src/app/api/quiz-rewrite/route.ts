@@ -149,6 +149,79 @@ Se un campo non e nel brief, lascia stringa vuota o array vuoto. NIENTE invenzio
   }
 }
 
+// Costruisce la lista di pattern (case-insensitive, multi-word first) da
+// neutralizzare nel testo prima di mandarlo a Claude. Sostituendo i brand del
+// competitor con un placeholder, Anthropic non puo' "appoggiarsi" al brand
+// originale e' costretto a riscrivere la frase intera.
+function buildBrandPatterns(signals: CompetitorSignals, productName: string): string[] {
+  const productLower = productName.toLowerCase();
+  const stopBrands = new Set([
+    'home', 'shop', 'blog', 'about', 'contact', 'privacy', 'terms', 'login', 'cart',
+    'free', 'order', 'today', 'now', 'limited', 'official', 'site', 'page', 'product',
+    'review', 'reviews', 'menu', 'search', 'cookie', 'cookies',
+  ]);
+
+  const candidates = new Set<string>();
+
+  const addClean = (raw: string) => {
+    if (!raw) return;
+    // Tieni solo segmenti prima di separatori comuni nei title (- | : ·)
+    const first = raw.split(/[-|:·•]/)[0].trim();
+    const cleaned = first.replace(/[^\p{L}\p{N}\s.&'-]/gu, '').trim();
+    if (cleaned.length >= 3 && cleaned.length <= 50) {
+      const lower = cleaned.toLowerCase();
+      if (!stopBrands.has(lower) && !productLower.includes(lower) && !lower.includes(productLower)) {
+        candidates.add(cleaned);
+      }
+    }
+  };
+
+  addClean(signals.title);
+  addClean(signals.ogTitle);
+  addClean(signals.ogSiteName);
+
+  // domain senza tld
+  if (signals.domain) {
+    const host = signals.domain.split('.')[0];
+    if (host && host.length >= 3 && !stopBrands.has(host.toLowerCase())) {
+      candidates.add(host);
+    }
+  }
+
+  for (const w of signals.brandCandidates) {
+    if (w.length >= 3 && !stopBrands.has(w.toLowerCase()) && !productLower.includes(w.toLowerCase())) {
+      candidates.add(w);
+    }
+  }
+
+  // Sort: multi-word prima (per matching greedy), poi per lunghezza desc
+  return Array.from(candidates).sort((a, b) => {
+    const wa = a.split(/\s+/).length;
+    const wb = b.split(/\s+/).length;
+    if (wa !== wb) return wb - wa;
+    return b.length - a.length;
+  });
+}
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function neutralizeBrands(text: string, patterns: string[]): { neutralized: string; replacementCount: number } {
+  if (!patterns.length) return { neutralized: text, replacementCount: 0 };
+  let out = text;
+  let count = 0;
+  for (const p of patterns) {
+    const re = new RegExp(`\\b${escapeRegex(p)}(?:'s|s|es)?\\b`, 'gi');
+    const before = out;
+    out = out.replace(re, '[PRODOTTO_TARGET]');
+    if (out !== before) count++;
+  }
+  // collassa multiple [PRODOTTO_TARGET] adiacenti separati da spazi
+  out = out.replace(/(\[PRODOTTO_TARGET\][\s,.-]+){2,}/g, '[PRODOTTO_TARGET] ');
+  return { neutralized: out.trim(), replacementCount: count };
+}
+
 function renderFactBox(fb: FactBox): string {
   const list = (a: string[] | undefined) => (a && a.length ? a.map((x) => `  - ${x}`).join('\n') : '  (nessuno)');
   return `=== FACT BOX PRODOTTO TARGET (USARE COME FONTE DI VERITA' NELLA RISCRITTURA) ===
@@ -224,20 +297,27 @@ export async function POST(request: NextRequest) {
       position: t.position,
     }));
 
-    const textsForAi = filtered.map((t, i) => ({
-      id: i,
-      text: t.original,
-      tag: t.tag,
-    }));
+    // Estrai segnali del competitor PRIMA per neutralizzare i brand nei testi
+    const signals = extractCompetitorSignals(html);
+    const brandPatterns = buildBrandPatterns(signals, productName);
+    console.log(
+      `[quiz-rewrite/init] competitor signals title="${signals.title}" og="${signals.ogTitle}" site="${signals.ogSiteName}" domain="${signals.domain}" brands=${signals.brandCandidates.join(',')} patterns=${brandPatterns.join(' | ')}`,
+    );
+
+    let totalNeutralized = 0;
+    const textsForAi = filtered.map((t, i) => {
+      const { neutralized, replacementCount } = neutralizeBrands(t.original, brandPatterns);
+      if (replacementCount > 0) totalNeutralized++;
+      return {
+        id: i,
+        text: neutralized,
+        tag: t.tag,
+      };
+    });
+    console.log(`[quiz-rewrite/init] neutralized brand in ${totalNeutralized}/${filtered.length} texts`);
 
     const productBrief = (productDescription || '').trim();
     const customNotes = (customPrompt || '').trim();
-
-    // Estrai segnali del competitor dall'HTML clonato (brand da NON lasciare invariato)
-    const signals = extractCompetitorSignals(html);
-    console.log(
-      `[quiz-rewrite/init] competitor signals title="${signals.title}" og="${signals.ogTitle}" site="${signals.ogSiteName}" domain="${signals.domain}" brands=${signals.brandCandidates.join(',')}`,
-    );
 
     // Pre-genera FACT BOX strutturato dal brief (1 sola call, ~5-15s).
     // Senza FactBox il brief verboso veniva ignorato sui dettagli specifici.
@@ -249,14 +329,20 @@ export async function POST(request: NextRequest) {
       console.log(`[quiz-rewrite/init] FactBox built in ${Date.now() - t0}ms`, factBox ? '(ok)' : '(failed, fallback to raw brief)');
     }
 
-    const competitorSection = `=== COMPETITOR DA NEUTRALIZZARE (questi sono nomi/brand/persone/segnali del prodotto ORIGINALE che NON DEVONO MAI restare invariati) ===
+    const competitorSection = `=== COMPETITOR (questi sono nomi/brand/persone/segnali del prodotto ORIGINALE) ===
 - Page title: "${signals.title}"
 - og:title: "${signals.ogTitle}"
 - og:site_name: "${signals.ogSiteName}"
 - Dominio: "${signals.domain}"
 - Brand/nomi propri ricorrenti: ${signals.brandCandidates.length ? signals.brandCandidates.join(', ') : '(nessuno rilevato)'}
 
-REGOLA FERREA: ogni occorrenza di questi termini (anche varianti maiuscole/minuscole/plurali/possessivi) DEVE essere sostituita con il nome del prodotto target o con un riferimento al meccanismo/benefit del prodotto target. Mai lasciare il brand del competitor nel testo riscritto.`;
+NOTA TECNICA SUL PLACEHOLDER \`[PRODOTTO_TARGET]\`:
+Nei testi che ricevi, ogni occorrenza del brand del competitor (vedi lista sopra) e' GIA' STATA sostituita con il placeholder letterale \`[PRODOTTO_TARGET]\`. Il tuo job e' MANTENERE \`[PRODOTTO_TARGET]\` nel rewrite (sara' rimpiazzato col nome reale del prodotto in post-processing). Esempio:
+- text in input: "Discover the secret behind [PRODOTTO_TARGET] success!"
+- rewritten OK: "Scopri il segreto del successo di [PRODOTTO_TARGET]!"
+- rewritten KO: "Scopri il segreto del successo di Nooro!" (non hai mai visto Nooro nel input — non inventarlo)
+
+Se incontri brand del competitor che NON sono stati neutralizzati (es. l'estrattore ha sbagliato), comunque sostituiscili con \`[PRODOTTO_TARGET]\`.`;
 
     const factBoxSection = factBox ? `${renderFactBox(factBox)}\n` : '';
     const briefSection = productBrief
@@ -277,24 +363,26 @@ ${factBoxSection}${briefSection}${notesSection}=== REGOLE OBBLIGATORIE ===
 
 2. **NON LASCIARE MAI IL TESTO ORIGINALE INVARIATO.** Ogni "rewritten" deve essere semanticamente diverso dall'"text" che ricevi e PARLARE DEL PRODOTTO TARGET. Se sembra "neutrale" o "tecnico", riformulalo comunque agganciandolo al meccanismo/avatar/promessa del prodotto target.
 
-3. **SOSTITUZIONE OBBLIGATORIA DI BRAND, NUMERI, DURATE, PREZZI, EXPERT, GEO DEL COMPETITOR**:
-   - Brand/nome del competitor (vedi lista "COMPETITOR DA NEUTRALIZZARE" sopra) -> sostituisci SEMPRE con "${productName}" o variante adatta al contesto. Mai lasciare il brand del competitor.
+3. **SOSTITUZIONE OBBLIGATORIA DI NUMERI, DURATE, PREZZI, EXPERT, GEO DEL COMPETITOR** (i brand sono gia' neutralizzati come \`[PRODOTTO_TARGET]\`, mantienili cosi'):
    - Numeri specifici del competitor (es. "15-Min", "30 days", "$49", "20%", "10 years"): sostituisci con i corrispettivi del FACT BOX ("Durata/Formato", "Prezzo & Offerta", "Fatti numerici"). Se il fact specifico NON e' nel FACT BOX, OMETTI completamente il numero e usa una formulazione generica coerente col prodotto target. **NON LASCIARE MAI il numero del competitor**.
    - Nome di expert/dottore/autore citato (es. "Dr. Campbell from Chicago"): sostituisci con quello del FACT BOX ("Expert/Autore"). Se non c'e', usa formulazione generica ("uno dei principali esperti", "specialisti del settore"). **MAI** lasciare il nome del medico/expert del competitor.
    - Citta'/luoghi/zone (es. "Chicago", "Warsaw"): sostituisci con un'altra citta' coerente con l'avatar del prodotto target (Italia: Milano, Roma, Torino; USA: New York, Los Angeles; ecc.).
    - Setting/contesto fisico (es. "physical therapy clinic", "gym"): adatta al setting del prodotto target descritto nel FACT BOX/brief.
 
-4. **ESEMPI** (pagina del competitor "Nooro Foot Massager", lingua output ${langName}):
-   - Originale: "BREAKTHROUGH: Nooro Foot Massager is SELLING OUT faster than expected!"
-     CATTIVO: "ALERT: Metabolic Wave spots are filling up rapidly faster than expected!" (mix EN/${langName}, "spots are filling up" e' inglese)
-     BUONO (se langName=Italiano): "ATTENZIONE: ${productName} sta andando esaurito molto piu' rapidamente del previsto!"
-   - Originale: "Try This 15-Min Electric Massage If Your Feet Roll Inward"
-     CATTIVO: "Prova questo Audio Activation da 15-Min se il tuo metabolismo rallenta" (numero competitor + termine inglese sopravvivono)
-     BUONO (se langName=Italiano e fact box dice "8 minuti"): "Prova questo protocollo audio da 8 minuti di ${productName} se il tuo metabolismo rallenta"
-     BUONO (se durata non e' nel FactBox): "Prova questo protocollo audio di ${productName} se il tuo metabolismo rallenta"
-   - Originale: "Hi, my name is Dr. Campbell and I'm a doctor of physical therapy from Chicago."
-     CATTIVO: "Hi, my name is Dr. Campbell and I'm a doctor of physical therapy from Chicago." (lasciato pari!)
-     BUONO (se langName=Italiano): "Ciao, sono [EXPERT del FactBox o "il Dott. Rossi"] e mi occupo di [meccanismo dal FactBox] a [citta' italiana]."
+4. **ESEMPI** (lingua output ${langName}, nei testi in input \`[PRODOTTO_TARGET]\` e' un placeholder fisso da mantenere):
+   - text input: "BREAKTHROUGH: [PRODOTTO_TARGET] is SELLING OUT faster than expected!"
+     KO (mix EN/${langName}): "ALERT: [PRODOTTO_TARGET] spots are filling up rapidly faster than expected!"
+     OK: "ATTENZIONE: [PRODOTTO_TARGET] sta andando esaurito molto piu' rapidamente del previsto!"
+   - text input: "Try This 15-Min Electric Massage If Your Feet Roll Inward"
+     KO (numero competitor + termine inglese sopravvivono): "Prova questo Audio Activation da 15-Min se il tuo metabolismo rallenta"
+     OK (con durata dal FactBox): "Prova questo protocollo audio da 8 minuti di [PRODOTTO_TARGET] se il tuo metabolismo rallenta"
+     OK (senza durata nel FactBox): "Prova il protocollo audio di [PRODOTTO_TARGET] se il tuo metabolismo rallenta"
+   - text input: "Hi, my name is Dr. Campbell and I'm a doctor of physical therapy from Chicago."
+     KO (lasciato pari!): "Hi, my name is Dr. Campbell and I'm a doctor of physical therapy from Chicago."
+     OK: "Ciao, sono [EXPERT del FactBox o "il Dott. Rossi"] e lavoro come [meccanismo dal FactBox] a [citta' italiana]."
+   - text input: "Top Physical Therapist Reveals" (frammento di headline)
+     KO: "Top Physical Therapist Reveals"
+     OK: "Il principale esperto rivela" oppure "Esperto top svela"
 
 5. Mantieni LUNGHEZZA simile (+/-25%) e stessa "energia" (headline punchy -> headline punchy, paragrafo -> paragrafo, microcopy -> microcopy).
 
@@ -334,6 +422,7 @@ ${factBoxSection}${briefSection}${notesSection}=== REGOLE OBBLIGATORIE ===
           customPrompt: customNotes,
           totalTextsInPage: texts.length,
           competitorSignals: signals,
+          brandPatterns,
           factBox,
           targetLanguage,
         },

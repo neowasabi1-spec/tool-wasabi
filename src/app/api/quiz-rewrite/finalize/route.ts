@@ -14,6 +14,7 @@ interface JobRow {
     texts: Array<{ original: string; tag: string }>;
     productName: string;
     totalTextsInPage: number;
+    brandPatterns?: string[];
   } | string | null;
 }
 
@@ -162,13 +163,40 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Original HTML/texts not found in job' }, { status: 500 });
     }
 
+    // Post-process placeholder: sostituisci [PRODOTTO_TARGET] con il nome reale
+    // del prodotto (case insensitive). Inoltre, come safety net, sostituisci
+    // residui di brand del competitor che potrebbero essere sfuggiti alla
+    // neutralizzazione iniziale (Anthropic li avrebbe lasciati passare nei
+    // rewrite se la frase originale li conteneva).
+    const productName = chatHistory.productName || 'il prodotto';
+    const brandPatterns = (chatHistory.brandPatterns || []).filter((p) => p && p.length >= 3);
+    const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const placeholderRe = /\[PRODOTTO_TARGET\]/gi;
+    const brandRes = brandPatterns.map((p) => new RegExp(`\\b${escapeRe(p)}(?:'s|s|es)?\\b`, 'gi'));
+
     const dedup = new Map<number, string>();
+    let placeholderHits = 0;
+    let residualBrandHits = 0;
     for (const rw of rewrites) {
-      if (typeof rw.id === 'number' && typeof rw.rewritten === 'string') {
-        dedup.set(rw.id, rw.rewritten);
+      if (typeof rw.id !== 'number' || typeof rw.rewritten !== 'string') continue;
+      let cleaned = rw.rewritten;
+      if (placeholderRe.test(cleaned)) {
+        placeholderHits++;
+        cleaned = cleaned.replace(placeholderRe, productName);
       }
+      for (const re of brandRes) {
+        if (re.test(cleaned)) {
+          residualBrandHits++;
+          cleaned = cleaned.replace(re, productName);
+        }
+      }
+      cleaned = cleaned.replace(new RegExp(`(?:${escapeRe(productName)}\\s+){2,}`, 'g'), `${productName} `);
+      dedup.set(rw.id, cleaned);
     }
     const cleanRewrites = Array.from(dedup, ([id, rewritten]) => ({ id, rewritten }));
+    console.log(
+      `[quiz-rewrite/finalize] post-process placeholder=${placeholderHits} residualBrand=${residualBrandHits} brandPatterns=${brandPatterns.length}`,
+    );
 
     const { html: rewrittenHtml, replacements } = applyRewrites(
       chatHistory.html,
