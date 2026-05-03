@@ -1628,10 +1628,15 @@ export default function FrontEndFunnel() {
     'quizzes', 'quiz', 'tryinteract', 'leadquizzes', 'bucket.io',
   ];
 
-  const isQuizPage = (page: { pageType: string; urlToSwipe: string }) => {
-    if (page.pageType === 'quiz_funnel') return true;
-    const urlLower = (page.urlToSwipe || '').toLowerCase();
+  const isQuizUrl = (rawUrl: string | undefined | null): boolean => {
+    if (!rawUrl) return false;
+    const urlLower = rawUrl.toLowerCase();
     return QUIZ_URL_PATTERNS.some(p => urlLower.includes(p));
+  };
+
+  const isQuizPage = (page: { pageType: string; urlToSwipe?: string; url?: string }) => {
+    if (page.pageType === 'quiz_funnel') return true;
+    return isQuizUrl(page.urlToSwipe) || isQuizUrl(page.url);
   };
 
   // Clone via smooth-responder Edge Function
@@ -1666,7 +1671,12 @@ export default function FrontEndFunnel() {
     setCloningIds(prev => [...prev, pageId]);
 
     const currentPage = (funnelPages || []).find(p => p.id === pageId);
-    const pageIsQuiz = currentPage && isQuizPage(currentPage);
+    // Riconoscimento quiz: privilegia l'URL del modal (che è quello effettivo
+    // in fase di clone). currentPage.urlToSwipe potrebbe non essere popolato
+    // per pagine importate da altre fonti, e senza il flag quiz `keepScripts`
+    // resta false → sanitize strippa __NEXT_DATA__/altri script SPA → l'Edge
+    // Function riceve solo lo scheletro HTML e estrae 0 testi.
+    const pageIsQuiz = isQuizUrl(url) || !!(currentPage && isQuizPage(currentPage));
 
     updateFunnelPage(pageId, {
       swipeStatus: 'in_progress',
@@ -1727,9 +1737,25 @@ export default function FrontEndFunnel() {
         // All rewrites go through /api/quiz-rewrite (Anthropic Claude)
         let htmlToRewrite = currentPage?.clonedData?.html || currentPage?.swipedData?.html || '';
 
-        // If no HTML exists, first clone the page to get it
-        if (!htmlToRewrite) {
-          setCloneProgress({ phase: 'extract', totalTexts: 0, processedTexts: 0, message: 'Cloning page first...' });
+        // Soglia: sotto 5000 char è quasi sicuramente uno scheletro SPA
+        // (`<div id="root"></div>` + `<script>`), inutile per il rewrite.
+        // In quel caso forziamo un nuovo clone server-side con Playwright.
+        const HTML_MIN_BYTES_FOR_REWRITE = 5000;
+        const needsRecloning = !htmlToRewrite || htmlToRewrite.length < HTML_MIN_BYTES_FOR_REWRITE;
+
+        if (needsRecloning) {
+          const reason = !htmlToRewrite
+            ? 'No HTML cached'
+            : `Cached HTML too small (${htmlToRewrite.length} char) — likely SPA shell`;
+          console.log(`[rewrite] ${reason}. Cloning page with Playwright (waitUntil=networkidle)...`);
+          setCloneProgress({
+            phase: 'extract',
+            totalTexts: 0,
+            processedTexts: 0,
+            message: htmlToRewrite
+              ? 'HTML troppo piccolo: ri-clono con browser...'
+              : 'Clono prima la pagina...',
+          });
           const cloneRes = await fetch('/api/clone-funnel', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1738,6 +1764,14 @@ export default function FrontEndFunnel() {
           const cloneData = await cloneRes.json();
           if (!cloneRes.ok || cloneData.error) throw new Error(cloneData.error || 'Clone failed — cannot rewrite without HTML');
           htmlToRewrite = sanitizeClonedHtml(cloneData.content, url, { keepScripts: pageIsQuiz });
+
+          if (htmlToRewrite.length < HTML_MIN_BYTES_FOR_REWRITE) {
+            throw new Error(
+              `Pagina troppo piccola dopo il render (${htmlToRewrite.length} char). ` +
+              `Il quiz/funnel potrebbe richiedere interazione (click "Start") prima di mostrare i testi, ` +
+              `oppure il render JS è bloccato. Prova a clonare prima manualmente con Identical e verifica il risultato.`
+            );
+          }
 
           updateFunnelPage(pageId, {
             clonedData: {
@@ -1840,7 +1874,7 @@ export default function FrontEndFunnel() {
           let sbProcessed = 0;
           let sbFinalHtml = '';
           let sbReplacements = 0;
-          const SB_MAX_BATCHES = 200;
+          const SB_MAX_BATCHES = 400;
 
           while (sbBatch < SB_MAX_BATCHES) {
             const procRes = await fetch(SUPABASE_FN_URL, {
