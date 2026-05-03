@@ -1768,6 +1768,157 @@ export default function FrontEndFunnel() {
           // so each function call stays well under that limit.
           setCloneProgress({ phase: 'processing', totalTexts: 0, processedTexts: 0, message: 'Trinity sta riscrivendo...' });
 
+          // === Rewrite via Supabase Edge Function (funnel-swap-v1-functions) ===
+          // Logica matura: estrae testi server-side, batch da 10 con Claude
+          // (anti-mix lingue, anti-brand competitor), replace tollerante a 5
+          // strategie con distribuzione proporzionale fra tag inline.
+          // Brief, framework, target, customPrompt sono tutti usati nel system
+          // prompt di Claude. Il browser fa solo il loop di poll.
+          const SUPABASE_FN_URL = 'https://sktpbizpckxldhxzezws.supabase.co/functions/v1/funnel-swap-v1-functions';
+          const SUPABASE_ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+          const DEFAULT_USER_ID = '00000000-0000-0000-0000-000000000001';
+          const sourceUrlForSwap = url || '';
+          if (!sourceUrlForSwap) throw new Error('Manca URL competitor per il rewrite via Supabase Edge Function');
+
+          // Brief inviato alla function = productDescription + (customPrompt come knowledge swipe).
+          // La function legge anche framework / target / customPrompt separatamente.
+          const briefParts: string[] = [];
+          if (cloneConfig.productDescription?.trim()) briefParts.push(cloneConfig.productDescription.trim());
+          if (cloneConfig.customPrompt?.trim()) {
+            briefParts.push(`KNOWLEDGE COPYWRITING / ISTRUZIONI SWIPE:\n${cloneConfig.customPrompt.trim()}`);
+          }
+
+          setCloneProgress({
+            phase: 'processing',
+            totalTexts: 0,
+            processedTexts: 0,
+            message: 'Estrazione testi dal competitor...',
+          });
+
+          const extractRes = await fetch(SUPABASE_FN_URL, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(SUPABASE_ANON ? { Authorization: `Bearer ${SUPABASE_ANON}`, apikey: SUPABASE_ANON } : {}),
+            },
+            body: JSON.stringify({
+              phase: 'extract',
+              url: sourceUrlForSwap,
+              cloneMode: 'rewrite',
+              productName: cloneConfig.productName,
+              productDescription: briefParts.join('\n\n---\n\n'),
+              framework: cloneConfig.framework || '',
+              target: cloneConfig.target || '',
+              customPrompt: cloneConfig.customPrompt || '',
+              targetLanguage: cloneConfig.language || 'it',
+              userId: DEFAULT_USER_ID,
+              renderedHtml: htmlToRewrite,
+            }),
+          });
+
+          let extractData: {
+            jobId?: string;
+            success?: boolean;
+            totalTexts?: number;
+            error?: string;
+            details?: string;
+          };
+          try {
+            extractData = await extractRes.json();
+          } catch {
+            const t = await extractRes.text();
+            throw new Error(`Extract returned non-JSON (${extractRes.status}): ${t.substring(0, 300)}`);
+          }
+          if (!extractRes.ok || extractData.error) {
+            throw new Error(extractData.error || extractData.details || `Extract HTTP ${extractRes.status}`);
+          }
+          if (!extractData.jobId) throw new Error('Extract: nessun jobId restituito');
+
+          const sbJobId = extractData.jobId;
+          const sbTotal = extractData.totalTexts || 0;
+          let sbBatch = 0;
+          let sbProcessed = 0;
+          let sbFinalHtml = '';
+          let sbReplacements = 0;
+          const SB_MAX_BATCHES = 200;
+
+          while (sbBatch < SB_MAX_BATCHES) {
+            const procRes = await fetch(SUPABASE_FN_URL, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                ...(SUPABASE_ANON ? { Authorization: `Bearer ${SUPABASE_ANON}`, apikey: SUPABASE_ANON } : {}),
+              },
+              body: JSON.stringify({
+                phase: 'process',
+                jobId: sbJobId,
+                batchNumber: sbBatch,
+                userId: DEFAULT_USER_ID,
+              }),
+            });
+            let procData: {
+              success?: boolean;
+              phase?: string;
+              jobId?: string;
+              content?: string;
+              batchProcessed?: number;
+              remainingTexts?: number;
+              continue?: boolean;
+              replacements?: number;
+              error?: string;
+            };
+            try {
+              procData = await procRes.json();
+            } catch {
+              const t = await procRes.text();
+              throw new Error(`Process batch ${sbBatch} non-JSON (${procRes.status}): ${t.substring(0, 300)}`);
+            }
+            if (!procRes.ok || procData.error) {
+              throw new Error(procData.error || `Process batch ${sbBatch} HTTP ${procRes.status}`);
+            }
+
+            if (procData.phase === 'completed' && procData.content) {
+              sbFinalHtml = procData.content;
+              sbReplacements = procData.replacements || 0;
+              setCloneProgress({
+                phase: 'processing',
+                totalTexts: sbTotal,
+                processedTexts: sbTotal,
+                message: `Trinity completato (${sbReplacements} sostituzioni)`,
+              });
+              break;
+            }
+
+            sbProcessed += procData.batchProcessed || 0;
+            const remaining = procData.remainingTexts ?? Math.max(0, sbTotal - sbProcessed);
+            setCloneProgress({
+              phase: 'processing',
+              totalTexts: sbTotal,
+              processedTexts: sbProcessed,
+              message: `Trinity batch ${sbBatch + 1} (${sbProcessed}/${sbTotal}, ${remaining} rimasti)`,
+            });
+
+            if (!procData.continue && !remaining) break;
+            sbBatch++;
+          }
+
+          if (!sbFinalHtml) {
+            throw new Error(`Edge Function non ha restituito HTML completato dopo ${sbBatch + 1} batch`);
+          }
+
+          rewriteData = {
+            html: sbFinalHtml,
+            replacements: sbReplacements || sbTotal,
+            totalTexts: sbTotal,
+            originalLength: htmlToRewrite.length,
+            newLength: sbFinalHtml.length,
+            provider: 'supabase-edge',
+          };
+        }
+
+        // === Legacy quiz-rewrite chunked path (disattivato) ===
+        // Mantenuto per fallback rapido ma non eseguito.
+        if (false) {
           const initRes = await fetch('/api/quiz-rewrite', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
