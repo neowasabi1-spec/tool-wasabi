@@ -62,6 +62,44 @@ function distributeTextProportionally(
   }
 }
 
+// Estrae candidati brand dal dominio in modo robusto:
+// - try.nooro-us.com  → ["nooro-us", "nooro", "us"]
+// - www.nooro.com     → ["nooro"]
+// - shop.brand.co.uk  → ["brand"]
+// - try.foo-bar.io    → ["foo-bar", "foo", "bar"]
+function extractBrandCandidatesFromDomain(originalUrl: string): string[] {
+  const out: string[] = []
+  try {
+    const urlObj = new URL(originalUrl)
+    const host = urlObj.hostname.replace(/^www\./, '').toLowerCase()
+    const parts = host.split('.')
+    // TLD comuni a 2 livelli (es. .co.uk, .com.au)
+    const twoLevelTlds = new Set(['co.uk', 'co.nz', 'com.au', 'com.br', 'co.jp', 'co.in'])
+    let sldIdx = parts.length - 2
+    if (parts.length >= 3 && twoLevelTlds.has(`${parts[parts.length - 2]}.${parts[parts.length - 1]}`)) {
+      sldIdx = parts.length - 3
+    }
+    const sld = parts[sldIdx]
+    if (sld && sld.length >= 3) {
+      out.push(sld)
+      // Se c'è un hyphen (nooro-us), aggiungi le parti singole
+      if (sld.includes('-')) {
+        for (const piece of sld.split('-')) {
+          if (piece.length >= 3) out.push(piece)
+        }
+      }
+    }
+    // Aggiungi anche subdomini significativi (es. shop.brand.com → "shop" non vale)
+    for (let i = 0; i < sldIdx; i++) {
+      const sub = parts[i]
+      if (sub.length >= 4 && !['try', 'app', 'www', 'shop', 'store', 'go', 'buy', 'get', 'my', 'web'].includes(sub)) {
+        out.push(sub)
+      }
+    }
+  } catch {}
+  return out
+}
+
 function replaceBrandInTextContent(
   html: string,
   originalUrl: string,
@@ -72,14 +110,7 @@ function replaceBrandInTextContent(
 
   const brandsToReplace: string[] = []
 
-  try {
-    const urlObj = new URL(originalUrl)
-    const domain = urlObj.hostname.replace(/^www\./, '').split('.')[0]
-    if (domain && domain.length > 3) {
-      brandsToReplace.push(domain)
-      brandsToReplace.push(domain.charAt(0).toUpperCase() + domain.slice(1))
-    }
-  } catch {}
+  brandsToReplace.push(...extractBrandCandidatesFromDomain(originalUrl))
 
   const origTitleMatch = originalHtml.match(/<title[^>]*>([^<]+)<\/title>/i)
   if (origTitleMatch) {
@@ -98,8 +129,44 @@ function replaceBrandInTextContent(
     brandsToReplace.push(ogMatch[1].trim())
   }
 
-  const uniqueBrands = [...new Set(brandsToReplace)]
+  // FALLBACK AUTO-DISCOVERY: se nel testo visibile dell'HTML originale c'è una
+  // parola Capitalized (3+ char, no spazi) che ricorre 3+ volte e non è il
+  // productName, è quasi sicuramente il brand del competitor.
+  try {
+    const visibleText = originalHtml
+      .replace(/<script\b[\s\S]*?<\/script>/gi, '')
+      .replace(/<style\b[\s\S]*?<\/style>/gi, '')
+      .replace(/<[^>]+>/g, ' ')
+    const wordCounts = new Map<string, number>()
+    const wordRegex = /\b([A-Z][a-zA-Z]{2,20})\b/g
+    let wm: RegExpExecArray | null
+    while ((wm = wordRegex.exec(visibleText)) !== null) {
+      const w = wm[1]
+      wordCounts.set(w, (wordCounts.get(w) || 0) + 1)
+    }
+    // Stop-words (parole capitalized comuni che NON sono brand)
+    const STOP = new Set([
+      'The', 'And', 'For', 'You', 'Your', 'This', 'That', 'With', 'From', 'Have',
+      'Are', 'Was', 'Will', 'Can', 'But', 'Not', 'All', 'New', 'One', 'Two',
+      'How', 'Why', 'When', 'What', 'Who', 'May', 'June', 'July', 'August',
+      'September', 'October', 'November', 'December', 'January', 'February',
+      'March', 'April', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday',
+      'Saturday', 'Sunday', 'Update', 'Important', 'Limited', 'Time', 'Free',
+      'Get', 'Order', 'Buy', 'Now', 'Today', 'Trending', 'Breakthrough',
+      'Amazon', 'Ebay', 'Google', 'Facebook', 'Instagram', 'Trustpilot',
+      'America', 'Europe', 'Italy', 'France', 'Spain', 'Germany', 'Warsaw',
+      'Like', 'Reply', 'Share', 'Comment', 'Home', 'About', 'Contact',
+    ])
+    for (const [word, count] of wordCounts.entries()) {
+      if (count >= 3 && !STOP.has(word) && word.toLowerCase() !== productName.toLowerCase()) {
+        brandsToReplace.push(word)
+      }
+    }
+  } catch {}
+
+  const uniqueBrands = [...new Set(brandsToReplace.map(b => b.trim()))]
     .filter(b => b.length > 3 && b.toLowerCase() !== productName.toLowerCase())
+    // ordino per length desc così "nooro-us" viene prima di "nooro"
     .sort((a, b) => b.length - a.length)
 
   if (uniqueBrands.length === 0) return html
@@ -110,11 +177,47 @@ function replaceBrandInTextContent(
     if (!htmlParts[i].startsWith('<')) {
       for (const brand of uniqueBrands) {
         const escaped = brand.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-        htmlParts[i] = htmlParts[i].replace(new RegExp(escaped, 'gi'), productName)
+        // \b non funziona con caratteri unicode in modo affidabile in Deno;
+        // uso lookaround approssimato: non-letter prima/dopo
+        htmlParts[i] = htmlParts[i].replace(
+          new RegExp(`(^|[^a-zA-Z0-9])${escaped}(?=[^a-zA-Z0-9]|$)`, 'gi'),
+          (match, prefix) => `${prefix}${productName}`
+        )
       }
     }
   }
   return htmlParts.join('')
+}
+
+// Sostituisce placeholder template Liquid/Jinja noti con valori reali.
+// Es: `{{MMMM dd, yyyy}}` → "May 03, 2026"
+// Senza questo, restano letterali nell'HTML finale (orribile UX).
+function replaceLiquidPlaceholders(html: string): string {
+  const now = new Date()
+  const monthNames = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December',
+  ]
+  const monthShort = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+  const fullDate = `${monthNames[now.getMonth()]} ${String(now.getDate()).padStart(2, '0')}, ${now.getFullYear()}`
+  const shortDate = `${monthShort[now.getMonth()]} ${now.getDate()}, ${now.getFullYear()}`
+  const dayName = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][now.getDay()]
+
+  return html
+    // Date placeholders (più frequenti nei page builder)
+    .replace(/\{\{\s*MMMM\s+dd,?\s+yyyy\s*\}\}/gi, fullDate)
+    .replace(/\{\{\s*MMM\s+dd,?\s+yyyy\s*\}\}/gi, shortDate)
+    .replace(/\{\{\s*dd[\/\-]MM[\/\-]yyyy\s*\}\}/gi, now.toISOString().substring(0, 10))
+    .replace(/\{\{\s*yyyy[\/\-]MM[\/\-]dd\s*\}\}/gi, now.toISOString().substring(0, 10))
+    .replace(/\{\{\s*today\s*\}\}/gi, fullDate)
+    .replace(/\{\{\s*current[\s_-]?date\s*\}\}/gi, fullDate)
+    .replace(/\{\{\s*day[\s_-]?name\s*\}\}/gi, dayName)
+    // Location placeholder generici → vuoto
+    .replace(/\{\{\s*[Ll]ocation\s*\}\}/g, '')
+    .replace(/\{\{\s*[Cc]ity\s*\}\}/g, '')
+    .replace(/\{\{\s*[Cc]ountry\s*\}\}/g, '')
+    // Cleanup di doppi spazi residui
+    .replace(/  +/g, ' ')
 }
 
 serve(async (req) => {
@@ -182,7 +285,7 @@ serve(async (req) => {
         )
       }
 
-      const BATCH_SIZE = 10
+      const BATCH_SIZE = 25
       const { data: textsToProcess, error: textsError } = await supabase
         .from('cloning_texts')
         .select('*')
@@ -430,6 +533,175 @@ serve(async (req) => {
         }
 
         clonedHTML = replaceBrandInTextContent(clonedHTML, job.url, job.original_html, job.product_name)
+        clonedHTML = replaceLiquidPlaceholders(clonedHTML)
+
+        // === INLINE BUNDLE JS MODIFICATI ===
+        // Per ogni testo riscritto con tag_name 'js-bundle' (estratto da
+        // bundle Webpack di Next.js per quiz CSR puri tipo Bioma):
+        //  1. raggruppa replacements per bundle URL (campo `attributes`)
+        //  2. scarica il bundle originale dal CDN del competitor
+        //  3. applica replace SAFE (solo su string literal "...", '...', `...`)
+        //  4. inline il bundle modificato nell'HTML, sostituendo lo
+        //     <script src="..."> originale con uno inline contenente il JS
+        //     riscritto. Così il preview esegue il bundle MODIFICATO e
+        //     l'utente vede i testi nuovi nelle pagine quiz/funnel CSR.
+        // NB: campo del DB è `new_text` (non rewritten_text). Lo schema della
+        // tabella cloning_texts usa original_text/raw_text/new_text per
+        // motivi storici; il batch loop sopra fa update di new_text.
+        // TUTTO il blocco INLINE BUNDLE è in try/catch top-level così un
+        // errore qui non blocca il save dell'HTML né la response al client.
+        const inlineBundleStats: {
+          reached: boolean;
+          jsBundleTextsCount: number;
+          bundlesFound: number;
+          inlineSuccess: number;
+          inlineFailed: number;
+          totalReplaced: number;
+          errors: string[];
+        } = {
+          reached: false,
+          jsBundleTextsCount: 0,
+          bundlesFound: 0,
+          inlineSuccess: 0,
+          inlineFailed: 0,
+          totalReplaced: 0,
+          errors: [],
+        }
+        try {
+          inlineBundleStats.reached = true
+          const { data: jsBundleTexts, error: bundleQueryErr } = await supabase
+            .from('cloning_texts')
+            .select('original_text, new_text, attributes')
+            .eq('job_id', jobId)
+            .eq('tag_name', 'js-bundle')
+            .not('new_text', 'is', null)
+            .limit(5000)
+
+          if (bundleQueryErr) {
+            inlineBundleStats.errors.push(`bundle query: ${bundleQueryErr.message}`)
+            console.error('❌ INLINE BUNDLE query error:', bundleQueryErr)
+          }
+          inlineBundleStats.jsBundleTextsCount = jsBundleTexts?.length || 0
+          console.log(`📦 INLINE BUNDLE: query returned ${inlineBundleStats.jsBundleTextsCount} testi js-bundle riscritti`)
+
+        if (jsBundleTexts && jsBundleTexts.length > 0) {
+          console.log(`📦 INLINE BUNDLE: ${jsBundleTexts.length} stringhe riscritte da reinserire nei bundle JS`)
+          const replacementsByBundle = new Map<string, Array<{ orig: string; rewr: string }>>()
+          for (const t of jsBundleTexts) {
+            if (!t.attributes || !t.original_text || !t.new_text) continue
+            if (t.original_text === t.new_text) continue
+            const arr = replacementsByBundle.get(t.attributes) || []
+            arr.push({ orig: t.original_text, rewr: t.new_text })
+            replacementsByBundle.set(t.attributes, arr)
+          }
+          inlineBundleStats.bundlesFound = replacementsByBundle.size
+
+          for (const [bundleUrl, replacements] of replacementsByBundle.entries()) {
+            try {
+              const ctrl = new AbortController()
+              const tid = setTimeout(() => ctrl.abort(), 15000)
+              const r = await fetch(bundleUrl, {
+                headers: { 'User-Agent': 'Mozilla/5.0 (Compatible; FunnelSwap/1.0)' },
+                signal: ctrl.signal,
+              })
+              clearTimeout(tid)
+              if (!r.ok) {
+                console.warn(`  ⚠️ ${bundleUrl}: HTTP ${r.status}`)
+                continue
+              }
+              let bundleJs = await r.text()
+              if (bundleJs.length > 5_000_000) {
+                console.warn(`  ⚠️ ${bundleUrl}: troppo grande, skip inline`)
+                continue
+              }
+
+              let appliedCount = 0
+              for (const { orig, rewr } of replacements) {
+                const escOrig = orig.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+                let replacedHere = false
+                for (const quote of ['"', "'", '`']) {
+                  const re = new RegExp(`${quote}${escOrig}${quote}`, 'g')
+                  if (re.test(bundleJs)) {
+                    const escRewr = rewr.replace(new RegExp(quote === '\\' ? '\\\\' : quote, 'g'), `\\${quote}`)
+                    bundleJs = bundleJs.replace(re, `${quote}${escRewr}${quote}`)
+                    appliedCount++
+                    replacedHere = true
+                    break
+                  }
+                }
+                if (!replacedHere) {
+                  // Fallback: replace senza quote (caso template literal con interpolazione)
+                  // → MOLTO conservativo, solo se la stringa è univoca nel bundle
+                  const occurrences = (bundleJs.match(new RegExp(escOrig, 'g')) || []).length
+                  if (occurrences === 1) {
+                    bundleJs = bundleJs.replace(orig, rewr)
+                    appliedCount++
+                  }
+                }
+              }
+
+              const escBundleUrl = bundleUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+              const scriptInlineRegex = new RegExp(
+                `<script\\b[^>]*\\bsrc=["']${escBundleUrl}["'][^>]*>\\s*<\\/script>`,
+                'gi'
+              )
+              const safeJs = bundleJs.replace(/<\/script/gi, '<\\/script')
+              const inlineTag = `<script>/* inline bundle ${bundleUrl.substring(bundleUrl.lastIndexOf('/'))} */\n${safeJs}\n</script>`
+
+              const beforeLen = clonedHTML.length
+              const replaced = clonedHTML.replace(scriptInlineRegex, inlineTag)
+              if (replaced === clonedHTML) {
+                console.warn(`  ⚠️ Bundle ${bundleUrl}: <script src> non trovato nell'HTML (forse già modificato)`)
+                inlineBundleStats.inlineFailed++
+                inlineBundleStats.errors.push(`bundle script tag not found in HTML: ${bundleUrl.substring(bundleUrl.lastIndexOf('/'))}`)
+              } else {
+                clonedHTML = replaced
+                inlineBundleStats.inlineSuccess++
+                inlineBundleStats.totalReplaced += appliedCount
+                console.log(`  📦 ${bundleUrl.substring(bundleUrl.lastIndexOf('/'))}: ${appliedCount}/${replacements.length} replace, HTML +${clonedHTML.length - beforeLen}b`)
+              }
+            } catch (e) {
+              const msg = (e as Error).message
+              console.warn(`  ⚠️ Errore inline bundle ${bundleUrl}:`, msg)
+              inlineBundleStats.inlineFailed++
+              inlineBundleStats.errors.push(`${bundleUrl.substring(bundleUrl.lastIndexOf('/'))}: ${msg}`)
+            }
+          }
+        }
+        } catch (topErr) {
+          const msg = (topErr as Error).message
+          console.error('❌ INLINE BUNDLE top-level error:', msg, (topErr as Error).stack)
+          inlineBundleStats.errors.push(`top-level: ${msg}`)
+        }
+
+        // === FIX NEXT.JS NAVIGATION (preview SPA) ===
+        // I quiz Next.js usano client-side navigation tramite fetch a
+        // /_next/data/<buildId>/<page>.json per ottenere props della
+        // prossima pagina. Quando il preview gira fuori dal dominio
+        // originale (es. cute-cupcake.netlify.app invece di bioma.health)
+        // questi fetch danno 404 → 'Failed to load static props' → quiz
+        // si blocca al primo click "Next". Monkey-patch del fetch per
+        // ritornare props vuoti (la state del componente quiz mantiene
+        // comunque la domanda corrente in localStorage o state).
+        const navigationFix = `<script>(function(){
+  if (typeof window === 'undefined') return;
+  var origFetch = window.fetch ? window.fetch.bind(window) : null;
+  if (!origFetch) return;
+  window.fetch = function(input, init){
+    try {
+      var url = typeof input === 'string' ? input : (input && input.url) || '';
+      if (/\\/_next\\/data\\//.test(url)) {
+        return Promise.resolve(new Response(JSON.stringify({pageProps:{},__N_SSP:true}),{status:200,headers:{'Content-Type':'application/json'}}));
+      }
+    } catch(e){}
+    return origFetch(input, init);
+  };
+})();</script>`
+        if (clonedHTML.includes('<head>')) {
+          clonedHTML = clonedHTML.replace('<head>', '<head>' + navigationFix)
+        } else if (clonedHTML.includes('<body')) {
+          clonedHTML = clonedHTML.replace(/(<body[^>]*>)/, '$1' + navigationFix)
+        }
 
         console.log(`✅ Ricostruzione HTML completata: ${replacementCount} testi sostituiti`)
 
@@ -470,7 +742,9 @@ serve(async (req) => {
             format: job.output_format || 'html',
             textsProcessed: allProcessedTexts.length,
             replacements: replacementCount,
-            report: reportData
+            report: reportData,
+            inlineBundleStats,
+            finalHtmlLength: clonedHTML.length,
           }),
           { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         )
@@ -800,6 +1074,7 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
         }
 
         clonedHTML = replaceBrandInTextContent(clonedHTML, job.url, job.original_html, job.product_name)
+        clonedHTML = replaceLiquidPlaceholders(clonedHTML)
 
         console.log(`✅ Ricostruzione HTML completata: ${replacementCount} testi sostituiti`)
 
@@ -854,15 +1129,23 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
         )
       }
 
-      // STEP 1: Get HTML - use pre-rendered HTML from Playwright if available, otherwise fetch
+      // STEP 1: Get HTML - use pre-rendered HTML from Playwright if available, otherwise fetch.
+      // Soglia: 5000 char. Sotto è quasi sicuramente uno scheletro SPA (es. <div id="root">+<script>)
+      // che non serve a niente: meglio fallback a fetch grezzo che almeno prende qualcosa,
+      // anche se per quiz JS-only nemmeno quello basta.
       let originalHTML = ''
-      if (renderedHtml && typeof renderedHtml === 'string' && renderedHtml.length > 100) {
-        // Pre-rendered by Playwright (handles JS-rendered pages)
+      let htmlSource = ''
+      const RENDERED_MIN_BYTES = 5000
+      if (renderedHtml && typeof renderedHtml === 'string' && renderedHtml.length >= RENDERED_MIN_BYTES) {
         console.log(`📥 STEP 1: Using pre-rendered HTML from Playwright (${renderedHtml.length} chars)`)
         originalHTML = renderedHtml
           .replace(/"\s*==\s*\$\d+/g, '"')
           .replace(/\s*==\s*\$\d+/g, '')
+        htmlSource = 'rendered'
       } else {
+        if (renderedHtml && typeof renderedHtml === 'string') {
+          console.warn(`⚠️ renderedHtml ricevuto ma troppo piccolo (${renderedHtml.length} char < ${RENDERED_MIN_BYTES}) — sembra scheletro SPA. Fallback a fetch grezzo.`)
+        }
         console.log('📥 STEP 1: Fetching original HTML from:', url)
         try {
           const htmlResponse = await fetch(url, {
@@ -881,6 +1164,7 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
             .replace(/\s*==\s*\$\d+/g, '')
           
           console.log(`✅ HTML fetched and cleaned, size: ${originalHTML.length} characters`)
+          htmlSource = 'fetch'
         } catch (error) {
           console.error('❌ Error fetching HTML:', error)
           return new Response(
@@ -890,7 +1174,7 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
         }
       }
 
-      console.log(`📥 HTML originale ricevuto, dimensione: ${originalHTML.length} caratteri`)
+      console.log(`📥 HTML originale ricevuto, dimensione: ${originalHTML.length} caratteri (source=${htmlSource})`)
 
       // STEP 2: Estrai TUTTI i testi rilevanti dall'HTML.
       // Estrattore unificato: per ogni testo cattura anche tag_name, full_tag,
@@ -922,6 +1206,30 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
         const seen = new Set<string>()
         let nextIdx = 0
 
+        // Valori-segnaposto comuni dei page builder (Funnels.fm, ClickFunnels,
+        // ecc.): sono marker tecnici, non copy reale.
+        const BUILDER_MARKER_VALUES = new Set([
+          'text', 'title', 'link', 'button', 'image', 'submit',
+          'placeholder', 'none', 'default', 'block', 'div', 'span',
+          'true', 'false', 'on', 'off', 'yes', 'no',
+          'lorem ipsum', 'sample text', 'click here',
+        ])
+
+        const isBuilderMarker = (s: string): boolean => {
+          return BUILDER_MARKER_VALUES.has(s.toLowerCase().trim())
+        }
+
+        const isTemplatePlaceholder = (s: string): boolean => {
+          // Liquid/Jinja/Handlebars/Mustache/JS template literals
+          if (/^\s*\{\{[\s\S]*\}\}\s*$/.test(s)) return true
+          if (/^\s*\{%[\s\S]*%\}\s*$/.test(s)) return true
+          if (/^\s*\$\{[\s\S]*\}\s*$/.test(s)) return true
+          // pattern composto da SOLO {{ }} segments (es. "{{a}} {{b}}")
+          const stripped = s.replace(/\{\{[\s\S]*?\}\}/g, '').replace(/\{%[\s\S]*?%\}/g, '').trim()
+          if (stripped.length === 0 && /\{\{|\{%/.test(s)) return true
+          return false
+        }
+
         const push = (params: {
           original_text: string
           raw_text: string
@@ -935,6 +1243,10 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
           if (cleaned.length < 2) return
           // Skip puro CSS/JS/HTML residuo
           if (/^[{};:|()<>=]+$/.test(cleaned)) return
+          // Skip valori-segnaposto del page builder (es. data-text="text")
+          if (isBuilderMarker(cleaned)) return
+          // Skip placeholder template ({{...}}, {%...%}, ${...})
+          if (isTemplatePlaceholder(cleaned)) return
           const key = `${cleaned}::${params.tag_name}::${params.position}`
           if (seen.has(key)) return
           seen.add(key)
@@ -1007,18 +1319,16 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
           })
         }
 
-        // 3. Tag block-level (semantici + contenitori generici).
-        // I container generici (div/section/...) catturano testi non avvolti
-        // in tag specifici; il sort discendente per length nel rebuild HTML
-        // gestisce le sovrapposizioni naturali.
-        const blockTags = [
+        // 3. Tag block-level semantici. Catturano sempre il loro testo (anche se
+        // hanno figli inline come <strong>/<em>): il rebuild fa sort discendente
+        // per length quindi il container vince sui figli inline.
+        const semanticBlockTags = [
           'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
           'p', 'li', 'td', 'th', 'button', 'a', 'label',
           'span', 'strong', 'em', 'b', 'i', 'small', 'figcaption',
           'blockquote', 'summary', 'dt', 'dd', 'caption', 'cite', 'q', 'mark',
-          'div', 'section', 'article', 'header', 'footer', 'nav', 'aside', 'main',
         ]
-        for (const tag of blockTags) {
+        for (const tag of semanticBlockTags) {
           const re = new RegExp(`<${tag}\\b([^>]*)>([\\s\\S]*?)<\\/${tag}>`, 'gi')
           let m: RegExpExecArray | null
           while ((m = re.exec(html)) !== null) {
@@ -1031,6 +1341,36 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
             push({
               original_text: plainText,
               raw_text: innerHtml.replace(/\s+/g, ' ').trim(),
+              tag_name: tag,
+              full_tag: `<${tag}${attrStr}>`,
+              attributes,
+              classes,
+              position: m.index,
+            })
+          }
+        }
+
+        // 3b. Container generici (div/section/article/header/footer/nav/aside/main):
+        // catturano SOLO se "leaf" (no tag figli). Se hanno figli, il loro testo è
+        // già in altri tag (semantici o testo nudo) → evitiamo i duplicati che
+        // gonfiano gli estratti senza aggiungere copy nuovo.
+        const genericContainerTags = [
+          'div', 'section', 'article', 'header', 'footer', 'nav', 'aside', 'main',
+        ]
+        for (const tag of genericContainerTags) {
+          const re = new RegExp(`<${tag}\\b([^>]*)>([\\s\\S]*?)<\\/${tag}>`, 'gi')
+          let m: RegExpExecArray | null
+          while ((m = re.exec(html)) !== null) {
+            const attrStr = m[1] || ''
+            const innerHtml = m[2] || ''
+            // Skip se contiene altri tag (i figli sono già coperti)
+            if (innerHtml.includes('<')) continue
+            const plainText = innerHtml.replace(/\s+/g, ' ').trim()
+            if (plainText.length < 2) continue
+            const { attributes, classes } = parseAttrs(attrStr)
+            push({
+              original_text: plainText,
+              raw_text: plainText,
               tag_name: tag,
               full_tag: `<${tag}${attrStr}>`,
               attributes,
@@ -1131,12 +1471,118 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
           } catch {}
         }
 
+        // 7.5 SPA framework JSON inline (Next.js __NEXT_DATA__, Nuxt __NUXT__,
+        // SvelteKit __sveltekit_data, Remix __remixContext, plus qualsiasi
+        // <script type="application/json">). Per SPA che non hanno SSR
+        // dei tag visibili (Bioma quiz, Typeform-like, ecc.) i testi reali
+        // (domande, opzioni, label bottoni, headline) vivono solo qui.
+        const spaJsonRegex = /<script\b([^>]*?)\stype=["']application\/json["']([^>]*)>([\s\S]*?)<\/script>/gi
+        const usefulKeysSpa = new Set([
+          'title', 'subtitle', 'heading', 'subheading', 'headline', 'tagline',
+          'label', 'text', 'content', 'body', 'message', 'description',
+          'placeholder', 'value', 'name', 'caption', 'copy', 'note', 'helptext',
+          'question', 'questions', 'answer', 'answers', 'option', 'options',
+          'choice', 'choices', 'button', 'buttontext', 'cta', 'ctatext',
+          'submitlabel', 'nextlabel', 'backlabel', 'errormessage',
+          'hero', 'subhero', 'benefit', 'benefits', 'feature', 'features',
+          'testimonial', 'testimonials', 'faq', 'question_text', 'answer_text',
+          'price', 'pricelabel', 'discount', 'badge', 'tag', 'eyebrow',
+          'disclaimer', 'footer', 'legal',
+        ])
+        const blacklistKeysSpa = new Set([
+          'id', 'key', '_id', 'uid', 'guid', 'slug', 'href', 'url', 'src',
+          'image', 'imageurl', 'imagesrc', 'asset', 'avatar', 'icon', 'iconname',
+          'type', 'kind', 'variant', 'classname', 'classnames', 'tag_name',
+          'color', 'bgcolor', 'fontfamily', 'fontsize', 'theme',
+          'aspath', 'path', 'route', 'pathname', 'search', 'query', 'querystring',
+          'token', 'csrftoken', 'apikey', 'sessionid', 'visitorid',
+          'event', 'eventname', 'analyticsid', 'gtmid', 'pixelid',
+          'lang', 'locale', 'language', 'timezone', 'currency', 'country',
+          'createdat', 'updatedat', 'timestamp', 'expiresat', 'date',
+          'width', 'height', 'size', 'maxlength', 'minlength', 'min', 'max',
+          'order', 'position', 'index', 'ordinal', 'step', 'count',
+          'enabled', 'disabled', 'visible', 'hidden', 'required', 'active',
+          'mime', 'mimetype', 'format', 'encoding', 'extension',
+        ])
+        const looksLikeCode = (s: string): boolean => {
+          if (/^https?:\/\//i.test(s)) return true
+          if (/^data:[a-z]+\//i.test(s)) return true
+          if (/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(s)) return true
+          if (/^#[0-9a-f]{3,8}$/i.test(s)) return true
+          if (/^[a-z][a-z0-9_-]{0,40}$/i.test(s) && s.length < 25 && !/\s/.test(s)) return true
+          if (/^[A-Z_]+$/.test(s) && s.length < 30) return true
+          if (/\{\{|\$\{|\bvar\b|\bfunction\b|\breturn\b|=>|\bconst\b|\blet\b/.test(s)) return true
+          if (/^[\d.,\s%/()\-+*=<>!?]+$/.test(s)) return true
+          return false
+        }
+        const isHumanText = (s: string): boolean => {
+          if (s.length < 3 || s.length > 800) return false
+          const letters = s.match(/[a-zA-ZàèéìòùÀÈÉÌÒÙáéíóúÁÉÍÓÚñÑ]/g)?.length || 0
+          if (letters < 3) return false
+          if (letters / s.length < 0.4) return false
+          const words = s.trim().split(/\s+/)
+          if (words.length === 1 && s.length < 4) return false
+          return true
+        }
+        let spaMatch: RegExpExecArray | null
+        while ((spaMatch = spaJsonRegex.exec(html)) !== null) {
+          const rawJson = spaMatch[3].trim()
+          if (rawJson.length < 50) continue
+          let parsed: any
+          try {
+            parsed = JSON.parse(rawJson)
+          } catch {
+            continue
+          }
+          const seenInThisScript = new Set<string>()
+          const visitSpa = (node: any, parentKey: string, depth: number): void => {
+            if (depth > 25) return
+            if (node === null || node === undefined) return
+            if (typeof node === 'string') {
+              const lkey = parentKey.toLowerCase()
+              if (blacklistKeysSpa.has(lkey)) return
+              if (lkey.endsWith('id') || lkey.endsWith('url') || lkey.endsWith('src') || lkey.endsWith('href') || lkey.endsWith('class')) return
+              const trimmed = node.trim()
+              if (!isHumanText(trimmed)) return
+              if (looksLikeCode(trimmed)) return
+              const useful = usefulKeysSpa.has(lkey) ||
+                /text|label|title|content|copy|description|question|answer|option|button|cta|message|hero|head/i.test(parentKey)
+              if (!useful) {
+                if (trimmed.length < 12 || !/\s/.test(trimmed)) return
+              }
+              const dedupeKey = `${lkey}::${trimmed}`
+              if (seenInThisScript.has(dedupeKey)) return
+              seenInThisScript.add(dedupeKey)
+              push({
+                original_text: trimmed,
+                raw_text: trimmed,
+                tag_name: `spa-json:${lkey || 'value'}`,
+                full_tag: '<script type="application/json">',
+                attributes: '',
+                classes: '',
+                position: spaMatch!.index,
+              })
+            } else if (Array.isArray(node)) {
+              for (const item of node) visitSpa(item, parentKey, depth + 1)
+            } else if (typeof node === 'object') {
+              for (const [k, v] of Object.entries(node)) visitSpa(v, k, depth + 1)
+            }
+          }
+          visitSpa(parsed, '', 0)
+        }
+
         // 8. Text nodes "nudi" tra tag chiusura e prossimo tag.
         // Cattura es. `<br>Bonus testo<br>` o testi diretti dentro contenitori non
         // catturati altrimenti. Filtro pesante per evitare CSS/JS residuo.
+        // PRIMA: strippa <script>, <style>, <!--...--> e JSON-LD per evitare di
+        // catturare codice/CSS/json come fosse copy.
+        const htmlForTextNodes = html
+          .replace(/<script\b[\s\S]*?<\/script>/gi, '')
+          .replace(/<style\b[\s\S]*?<\/style>/gi, '')
+          .replace(/<!--[\s\S]*?-->/g, '')
         const textNodeRegex = />([^<>{}\n]{4,300})</g
         let tMatch: RegExpExecArray | null
-        while ((tMatch = textNodeRegex.exec(html)) !== null) {
+        while ((tMatch = textNodeRegex.exec(htmlForTextNodes)) !== null) {
           const content = tMatch[1]
           const trimmed = content.trim()
           if (trimmed.length < 4) continue
@@ -1158,12 +1604,152 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
         return out
       }
 
-      const extractedRows = extractTextsFromHTML(originalHTML)
-      console.log(`✅ Estratti ${extractedRows.length} testi unici dall'HTML`)
+      const htmlExtracted = extractTextsFromHTML(originalHTML)
+
+      // === ESTRAI STRINGHE DAI BUNDLE JS NEXT.JS / SPA ===
+      // Per quiz/funnel CSR puro (es. Bioma Health) i testi sono hardcoded
+      // dentro i bundle JS Webpack di Next.js. __NEXT_DATA__ è quasi vuoto e
+      // l'HTML è solo lo shell. Scarichiamo i bundle referenziati e estraiamo
+      // stringhe "umane" (frase con maiuscola+spazi+lettere). Verranno
+      // riscritte come testi normali e poi inline-ate nell'HTML al posto
+      // del <script src="..."> originale (vedi blocco "INLINE BUNDLE JS"
+      // nella fase PROCESS).
+      const bundleScriptRegex = /<script\b[^>]*\bsrc=["']([^"']*\/_next\/static\/chunks\/[^"']+\.js[^"']*)["'][^>]*>/gi
+      const bundleUrls = new Set<string>()
+      let bsMatch: RegExpExecArray | null
+      while ((bsMatch = bundleScriptRegex.exec(originalHTML)) !== null) {
+        const src = bsMatch[1]
+        // Whitelist: solo bundle delle pagine specifiche (es. pages/[funnel]/quiz-HASH.js).
+        // Skippa main, webpack, polyfills, framework, runtime, _app, _document, _error
+        // perché contengono runtime Next.js (error messages, system text) e non
+        // testi specifici della pagina che vogliamo riscrivere.
+        const isPageBundle = /\/_next\/static\/chunks\/pages\//.test(src)
+        const isFrameworkBundle = /\/(?:main|webpack|polyfills|framework|runtime)[-.]/i.test(src) ||
+          /\/pages\/_(?:app|document|error|middleware)/.test(src)
+        if (!isPageBundle || isFrameworkBundle) continue
+        let absUrl: string
+        try {
+          absUrl = new URL(src, url).href
+        } catch {
+          continue
+        }
+        bundleUrls.add(absUrl)
+      }
+
+      const bundleExtracted: ExtractedTextRow[] = []
+      if (bundleUrls.size > 0) {
+        console.log(`📦 BUNDLE: trovati ${bundleUrls.size} script Next.js. Scarico per estrazione testi...`)
+        const fetchPromises = Array.from(bundleUrls).slice(0, 8).map(async (bundleUrl) => {
+          try {
+            const ctrl = new AbortController()
+            const timeoutId = setTimeout(() => ctrl.abort(), 15000)
+            const r = await fetch(bundleUrl, {
+              headers: { 'User-Agent': 'Mozilla/5.0 (Compatible; FunnelSwap/1.0)' },
+              signal: ctrl.signal,
+            })
+            clearTimeout(timeoutId)
+            if (!r.ok) {
+              console.warn(`  ⚠️ ${bundleUrl}: HTTP ${r.status}`)
+              return
+            }
+            const js = await r.text()
+            if (js.length > 5_000_000) {
+              console.warn(`  ⚠️ ${bundleUrl}: troppo grande (${js.length}b), skip`)
+              return
+            }
+            const seen = new Set<string>()
+            // Match string literals: "text" 'text' `text` (escape-aware-ish)
+            const stringRegex = /(["'`])((?:\\.|(?!\1)[^\\])*?)\1/g
+            let sMatch: RegExpExecArray | null
+            let kept = 0
+            while ((sMatch = stringRegex.exec(js)) !== null) {
+              const s = sMatch[2]
+              if (s.length < 10 || s.length > 280) continue
+              if (!/[A-Za-z]/.test(s.charAt(0))) continue
+              if (!/\s/.test(s)) continue
+              if (!/[a-zA-Z]{3,}\s+[a-zA-Z]{2,}/.test(s)) continue
+              if (/[<>{}\\=;|]/.test(s)) continue
+              if (/^https?:\/\//i.test(s)) continue
+              if (/\.(js|css|png|jpe?g|svg|webp|woff2?|ttf|json)(\?|$)/i.test(s)) continue
+              if (s.includes('node_modules')) continue
+              if (s.includes('webpack')) continue
+              if (/^[A-Z_][A-Z0-9_]+$/.test(s)) continue
+              if (/^[a-z]+([A-Z][a-z]+){2,}$/.test(s) && !s.includes(' ')) continue
+              if (seen.has(s)) continue
+              seen.add(s)
+              bundleExtracted.push({
+                original_text: s,
+                raw_text: s,
+                tag_name: 'js-bundle',
+                full_tag: `<script src="${bundleUrl.substring(bundleUrl.lastIndexOf('/'))}">`,
+                attributes: bundleUrl,
+                classes: '',
+                position: 90000 + bundleExtracted.length,
+              })
+              kept++
+            }
+            console.log(`  📦 ${bundleUrl.substring(bundleUrl.lastIndexOf('/'))}: ${kept} stringhe estratte (size=${js.length}b)`)
+          } catch (e) {
+            console.warn(`  ⚠️ Errore scarico bundle ${bundleUrl}:`, (e as Error).message)
+          }
+        })
+        await Promise.all(fetchPromises)
+        console.log(`📦 BUNDLE: estratti ${bundleExtracted.length} testi unici dai ${bundleUrls.size} bundle JS`)
+      }
+
+      const rawExtracted = [...htmlExtracted, ...bundleExtracted]
+
+      // Post-pass: dedupe `tag@attr` redundancies.
+      // Es: `<button data-text="Buy">Buy</button>` produce sia `tag_name='button'`
+      // che `tag_name='button@data-text'` con lo stesso testo. Teniamo solo quello
+      // del tag base (più affidabile per il replace).
+      const baseSeenAtPos = new Map<number, Set<string>>()
+      for (const r of rawExtracted) {
+        if (!r.tag_name.includes('@')) {
+          const set = baseSeenAtPos.get(r.position) || new Set<string>()
+          set.add(r.original_text)
+          baseSeenAtPos.set(r.position, set)
+        }
+      }
+
+      // Globalmente: skip text-node se quel testo appare già altrove (qualunque tag).
+      // I text-node sono catch-all volutamente loose, va bene perderli quando ridondanti.
+      const allTextsExceptNodes = new Set<string>()
+      for (const r of rawExtracted) {
+        if (r.tag_name !== 'text-node') allTextsExceptNodes.add(r.original_text)
+      }
+
+      const extractedRows = rawExtracted
+        .filter(r => {
+          if (r.tag_name === 'text-node') {
+            return !allTextsExceptNodes.has(r.original_text)
+          }
+          if (r.tag_name.includes('@')) {
+            const set = baseSeenAtPos.get(r.position)
+            return !(set && set.has(r.original_text))
+          }
+          return true
+        })
+        .map((r, i) => ({ ...r, index: i }))
+
+      console.log(
+        `✅ Estratti ${extractedRows.length} testi unici dall'HTML ` +
+        `(prima del dedupe: ${rawExtracted.length})`
+      )
 
       if (extractedRows.length === 0) {
+        const isJsOnly = htmlSource === 'fetch' && originalHTML.length < 30000 &&
+          /<div[^>]*\bid=["'](root|app|__next|main)["']/i.test(originalHTML)
+        const detail = isJsOnly
+          ? `La pagina sembra essere un'app JavaScript (SPA): l'HTML grezzo (${originalHTML.length} char) contiene solo lo scheletro. Il client deve pre-renderizzarla con Playwright e passare il risultato come "renderedHtml". Per quiz/funnel JS-only assicurati di clonare prima con cloneMode=identical e keepScripts=true.`
+          : `HTML ricevuto: ${originalHTML.length} char (source=${htmlSource}). Estratti raw=${rawExtracted.length} unici=0. Probabile pagina vuota o template senza contenuto testuale.`
         return new Response(
-          JSON.stringify({ error: 'Nessun testo estraibile dall\'HTML del competitor (pagina vuota o JS-only?)' }),
+          JSON.stringify({
+            error: `Nessun testo estraibile dall'HTML del competitor. ${detail}`,
+            htmlLength: originalHTML.length,
+            htmlSource,
+            isJsOnly,
+          }),
           { status: 422, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         )
       }
