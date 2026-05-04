@@ -943,6 +943,26 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   };
 
   /* ── AI Image Generation ── */
+  // Helper: parse JSON safely. The backend route always returns JSON, but
+  // serverless platforms (Netlify) may surface their own HTML error pages on
+  // function timeout / 5xx. In that case, json() throws "Unexpected token <".
+  // We rebuild a sane error message instead of leaking the SyntaxError.
+  const safeJson = async (res: Response): Promise<{ ok: true; data: Record<string, unknown> } | { ok: false; error: string }> => {
+    const raw = await res.text();
+    try {
+      return { ok: true, data: JSON.parse(raw) as Record<string, unknown> };
+    } catch {
+      const snippet = raw.replace(/\s+/g, ' ').slice(0, 180);
+      return {
+        ok: false,
+        error:
+          res.status === 504 || res.status === 502
+            ? `Timeout della funzione (${res.status}). Riprova: il modello ci ha messo troppo.`
+            : `Risposta non-JSON (${res.status}): ${snippet}`,
+      };
+    }
+  };
+
   const handleAiGenerate = useCallback(async () => {
     if (aiGenerating) return;
     let finalPrompt = aiPrompt.trim();
@@ -957,13 +977,51 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     setAiError('');
     setAiRevisedPrompt('');
     try {
-      const res = await fetch('/api/generate-image', {
+      // 1) Submit. The route either returns the result immediately (fast
+      //    path, ~5-7s) or hands back a requestId for client-side polling.
+      const submitRes = await fetch('/api/generate-image', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt: finalPrompt, size: aiSize, style: aiStyle }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Error generating image');
+      const submitParsed = await safeJson(submitRes);
+      if (!submitParsed.ok) throw new Error(submitParsed.error);
+      let data = submitParsed.data as {
+        status?: string;
+        url?: string;
+        revisedPrompt?: string;
+        requestId?: string;
+        statusUrl?: string;
+        responseUrl?: string;
+        error?: string;
+      };
+      if (!submitRes.ok || data.status === 'error') {
+        throw new Error(data.error || 'Error generating image');
+      }
+
+      // 2) If pending, poll the route until completion (up to ~3 minutes).
+      const POLL_DEADLINE = Date.now() + 3 * 60_000;
+      while (data.status === 'pending' && data.requestId) {
+        if (Date.now() > POLL_DEADLINE) {
+          throw new Error('Timeout: la generazione ha richiesto piu di 3 minuti.');
+        }
+        await new Promise((r) => setTimeout(r, 2000));
+        const pollRes = await fetch('/api/generate-image', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'poll',
+            requestId: data.requestId,
+            statusUrl: data.statusUrl,
+            responseUrl: data.responseUrl,
+          }),
+        });
+        const pollParsed = await safeJson(pollRes);
+        if (!pollParsed.ok) throw new Error(pollParsed.error);
+        data = pollParsed.data as typeof data;
+        if (data.status === 'error') throw new Error(data.error || 'Polling error');
+      }
+
       if (data.url) {
         setAttr('src', data.url);
         if (data.revisedPrompt) {
@@ -971,6 +1029,8 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
           setAttr('alt', data.revisedPrompt.substring(0, 120));
         }
         setShowAiImagePopup(false);
+      } else {
+        throw new Error('Nessuna immagine ritornata dal modello');
       }
     } catch (err) {
       setAiError(err instanceof Error ? err.message : 'Unknown error');

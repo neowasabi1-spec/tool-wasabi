@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
-export const maxDuration = 120;
+export const maxDuration = 30;
 export const dynamic = 'force-dynamic';
 
 const BUCKET_NAME = 'generated-images';
@@ -9,10 +9,16 @@ const BUCKET_NAME = 'generated-images';
 // Nano Banana 2 = Gemini 3.1 Flash Image, hosted on fal.ai.
 // Docs: https://fal.ai/models/fal-ai/nano-banana-2/api
 const FAL_MODEL = 'fal-ai/nano-banana-2';
-// Sync endpoint blocks until generation completes (typically 5–10s).
-const FAL_SYNC_ENDPOINT = `https://fal.run/${FAL_MODEL}`;
-// Queue fallback for environments with tight HTTP timeouts.
-const FAL_QUEUE_SUBMIT_ENDPOINT = `https://queue.fal.run/${FAL_MODEL}`;
+const FAL_QUEUE_BASE = `https://queue.fal.run/${FAL_MODEL}`;
+
+// Inner sync polling budget. We must finish well below Netlify's serverless
+// function wall (10s on Free, 26s on Pro). 8s leaves room for cold start +
+// network. If fal hasn't finished by then we hand back a `requestId` and the
+// client polls.
+const SYNC_BUDGET_MS = 8_000;
+// Poll budget when the client explicitly asks us to keep polling.
+const POLL_BUDGET_MS = 8_000;
+const POLL_INTERVAL_MS = 1_000;
 
 function getSupabase() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -29,8 +35,6 @@ async function ensureBucket(sb: any) {
   }
 }
 
-// fal-ai/nano-banana-2 supports:
-// auto, 21:9, 16:9, 3:2, 4:3, 5:4, 1:1, 4:5, 3:4, 2:3, 9:16, 4:1, 1:4, 8:1, 1:8
 function sizeToAspectRatio(size: unknown): string {
   switch (size) {
     case '1792x1024':
@@ -61,7 +65,7 @@ interface FalImage {
   height?: number;
 }
 
-interface FalSyncResponse {
+interface FalResult {
   images?: FalImage[];
   description?: string;
 }
@@ -78,201 +82,224 @@ interface FalQueueStatusResponse {
   logs?: { message: string }[];
 }
 
-async function callFalSync(
-  body: Record<string, unknown>,
-  apiKey: string,
-  signal?: AbortSignal,
-): Promise<FalSyncResponse> {
-  const res = await fetch(FAL_SYNC_ENDPOINT, {
+function getFalKey(): string | null {
+  return process.env.FAL_KEY || process.env.FAL_AI_API_KEY || null;
+}
+
+async function falSubmit(body: Record<string, unknown>, apiKey: string): Promise<FalQueueSubmitResponse> {
+  const res = await fetch(FAL_QUEUE_BASE, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Key ${apiKey}`,
     },
     body: JSON.stringify(body),
-    signal,
   });
-
   if (!res.ok) {
     const errText = await res.text();
-    throw new Error(`fal.ai ${res.status}: ${errText.substring(0, 500)}`);
+    throw new Error(`fal.ai submit ${res.status}: ${errText.substring(0, 500)}`);
   }
   return res.json();
 }
 
-async function callFalQueue(
-  body: Record<string, unknown>,
-  apiKey: string,
-): Promise<FalSyncResponse> {
-  // Submit
-  const submitRes = await fetch(FAL_QUEUE_SUBMIT_ENDPOINT, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Key ${apiKey}`,
-    },
-    body: JSON.stringify(body),
+async function falStatus(statusUrl: string, apiKey: string): Promise<FalQueueStatusResponse> {
+  const res = await fetch(statusUrl, {
+    headers: { Authorization: `Key ${apiKey}` },
   });
-  if (!submitRes.ok) {
-    const errText = await submitRes.text();
-    throw new Error(`fal.ai queue submit ${submitRes.status}: ${errText.substring(0, 500)}`);
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`fal.ai status ${res.status}: ${errText.substring(0, 300)}`);
   }
-  const submission = (await submitRes.json()) as FalQueueSubmitResponse;
+  return res.json();
+}
 
-  // Poll status (up to ~90s with exponential-ish backoff)
+async function falResult(responseUrl: string, apiKey: string): Promise<FalResult> {
+  const res = await fetch(responseUrl, {
+    headers: { Authorization: `Key ${apiKey}` },
+  });
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`fal.ai result ${res.status}: ${errText.substring(0, 300)}`);
+  }
+  return res.json();
+}
+
+// Poll fal until COMPLETED or until budget is exceeded. Returns either the
+// final result or null (caller should hand the requestId back to the client
+// for further polling).
+async function pollWithBudget(
+  statusUrl: string,
+  responseUrl: string,
+  apiKey: string,
+  budgetMs: number,
+): Promise<FalResult | null> {
   const start = Date.now();
-  const MAX_WAIT_MS = 90_000;
-  let wait = 1000;
-  while (Date.now() - start < MAX_WAIT_MS) {
-    await new Promise((r) => setTimeout(r, wait));
-    wait = Math.min(wait + 500, 3000);
-
-    const statusRes = await fetch(submission.status_url, {
-      headers: { Authorization: `Key ${apiKey}` },
-    });
-    if (!statusRes.ok) continue;
-    const statusData = (await statusRes.json()) as FalQueueStatusResponse;
-
-    if (statusData.status === 'COMPLETED') {
-      const resultRes = await fetch(submission.response_url, {
-        headers: { Authorization: `Key ${apiKey}` },
-      });
-      if (!resultRes.ok) {
-        const errText = await resultRes.text();
-        throw new Error(`fal.ai queue result ${resultRes.status}: ${errText.substring(0, 500)}`);
-      }
-      return resultRes.json();
+  while (Date.now() - start < budgetMs) {
+    const status = await falStatus(statusUrl, apiKey);
+    if (status.status === 'COMPLETED') {
+      return falResult(responseUrl, apiKey);
     }
-    if (statusData.status === 'ERROR') {
-      throw new Error(`fal.ai queue ERROR: ${JSON.stringify(statusData.logs || [])}`);
+    if (status.status === 'ERROR') {
+      throw new Error(`fal.ai ERROR: ${JSON.stringify(status.logs || [])}`);
     }
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
   }
-  throw new Error('fal.ai queue: timeout aspettando il completamento (>90s)');
+  return null;
+}
+
+// Best-effort: download the fal image and upload to Supabase Storage so the
+// asset is hosted on a stable origin we control. If anything fails, we just
+// return the fal CDN URL — fal.media URLs are persistent.
+async function persistOrPassthrough(
+  result: FalResult,
+): Promise<{ url: string; revisedPrompt?: string; storage: 'supabase' | 'fal' }> {
+  const imageEntry = result.images?.[0];
+  if (!imageEntry?.url) {
+    throw new Error(
+      result.description
+        ? `fal.ai non ha restituito un'immagine: ${result.description}`
+        : "fal.ai non ha restituito un'immagine",
+    );
+  }
+  const falUrl = imageEntry.url;
+  const revisedPrompt = result.description?.trim() || undefined;
+
+  try {
+    const downloadRes = await fetch(falUrl);
+    if (!downloadRes.ok) throw new Error(`download ${downloadRes.status}`);
+    const buffer = Buffer.from(await downloadRes.arrayBuffer());
+    const mimeType = imageEntry.content_type || 'image/png';
+    const ext = mimeType.includes('jpeg') ? 'jpg' : mimeType.includes('webp') ? 'webp' : 'png';
+
+    const sb = getSupabase();
+    await ensureBucket(sb);
+    const filename = `ai-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+    const filePath = `editor/${filename}`;
+
+    const { error: uploadError } = await sb.storage
+      .from(BUCKET_NAME)
+      .upload(filePath, buffer, { contentType: mimeType, upsert: false });
+
+    if (uploadError) {
+      console.warn('[generate-image] Supabase upload failed:', uploadError.message);
+      return { url: falUrl, revisedPrompt, storage: 'fal' };
+    }
+
+    const { data: publicUrlData } = sb.storage.from(BUCKET_NAME).getPublicUrl(filePath);
+    return { url: publicUrlData.publicUrl, revisedPrompt, storage: 'supabase' };
+  } catch (mirrorErr) {
+    console.warn('[generate-image] mirror failed, returning fal URL:', mirrorErr);
+    return { url: falUrl, revisedPrompt, storage: 'fal' };
+  }
 }
 
 export async function POST(req: NextRequest) {
+  let body: {
+    prompt?: string;
+    size?: string;
+    style?: string;
+    action?: 'submit' | 'poll';
+    requestId?: string;
+    statusUrl?: string;
+    responseUrl?: string;
+  };
   try {
-    const { prompt, size, style, useQueue } = await req.json();
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: 'Body non valido' }, { status: 400 });
+  }
 
-    if (!prompt || typeof prompt !== 'string') {
-      return NextResponse.json({ error: 'Prompt is required' }, { status: 400 });
+  const apiKey = getFalKey();
+  if (!apiKey) {
+    return NextResponse.json(
+      { error: 'FAL_KEY non configurata. Settala nelle env var (Netlify > Site configuration > Environment variables).' },
+      { status: 500 },
+    );
+  }
+
+  // ── PHASE: poll a previously submitted job ────────────────────────────────
+  if (body.action === 'poll') {
+    if (!body.requestId) {
+      return NextResponse.json({ error: 'Missing requestId' }, { status: 400 });
     }
-
-    const apiKey = process.env.FAL_KEY || process.env.FAL_AI_API_KEY;
-    if (!apiKey) {
-      return NextResponse.json(
-        { error: 'FAL_KEY non configurata. Settala nelle env var (Netlify > Site configuration > Environment variables).' },
-        { status: 500 },
-      );
-    }
-
-    const aspectRatio = sizeToAspectRatio(size);
-    const styleHint =
-      style === 'natural'
-        ? 'Style: natural, photorealistic, accurate colors and lighting.'
-        : 'Style: vivid, saturated colors, high contrast, cinematic lighting.';
-    const finalPrompt = `${prompt.trim()}\n\n${styleHint}`;
-
-    const body = {
-      prompt: finalPrompt,
-      num_images: 1,
-      aspect_ratio: aspectRatio,
-      resolution: '1K',
-      output_format: 'png',
-      limit_generations: true,
-    };
-
-    let falResult: FalSyncResponse;
+    const statusUrl = body.statusUrl || `${FAL_QUEUE_BASE}/requests/${body.requestId}/status`;
+    const responseUrl = body.responseUrl || `${FAL_QUEUE_BASE}/requests/${body.requestId}`;
     try {
-      if (useQueue) {
-        falResult = await callFalQueue(body, apiKey);
-      } else {
-        falResult = await callFalSync(body, apiKey);
-      }
-    } catch (callErr) {
-      const msg = callErr instanceof Error ? callErr.message : String(callErr);
-      console.error('[generate-image] fal.ai call failed:', msg);
-      // If sync timed out at the network layer (uncommon at 5-10s), retry via queue.
-      if (!useQueue && /aborted|timeout|ETIMEDOUT/i.test(msg)) {
-        console.warn('[generate-image] retrying via queue endpoint');
-        try {
-          falResult = await callFalQueue(body, apiKey);
-        } catch (retryErr) {
-          const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
-          return NextResponse.json({ error: retryMsg }, { status: 504 });
-        }
-      } else {
-        return NextResponse.json({ error: msg }, { status: 502 });
-      }
-    }
-
-    const imageEntry = falResult.images?.[0];
-    if (!imageEntry?.url) {
-      console.error('[generate-image] fal.ai returned no image:', falResult);
-      return NextResponse.json(
-        {
-          error: falResult.description
-            ? `fal.ai non ha restituito un'immagine: ${falResult.description}`
-            : "fal.ai non ha restituito un'immagine",
-        },
-        { status: 502 },
-      );
-    }
-
-    const falUrl = imageEntry.url;
-    const revisedPrompt = falResult.description?.trim() || undefined;
-
-    // Mirror to Supabase Storage as best effort. If it fails, return the
-    // fal.media URL directly — fal CDN URLs are persistent.
-    try {
-      const downloadRes = await fetch(falUrl);
-      if (!downloadRes.ok) throw new Error(`download ${downloadRes.status}`);
-      const arrayBuf = await downloadRes.arrayBuffer();
-      const buffer = Buffer.from(arrayBuf);
-      const mimeType = imageEntry.content_type || 'image/png';
-      const ext = mimeType.includes('jpeg') ? 'jpg' : mimeType.includes('webp') ? 'webp' : 'png';
-
-      const sb = getSupabase();
-      await ensureBucket(sb);
-      const filename = `ai-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
-      const filePath = `editor/${filename}`;
-
-      const { error: uploadError } = await sb.storage
-        .from(BUCKET_NAME)
-        .upload(filePath, buffer, {
-          contentType: mimeType,
-          upsert: false,
-        });
-
-      if (uploadError) {
-        console.warn('[generate-image] Supabase upload failed, returning fal URL:', uploadError.message);
+      const result = await pollWithBudget(statusUrl, responseUrl, apiKey, POLL_BUDGET_MS);
+      if (!result) {
         return NextResponse.json({
-          url: falUrl,
-          revisedPrompt,
-          storage: 'fal',
-          model: FAL_MODEL,
+          status: 'pending',
+          requestId: body.requestId,
+          statusUrl,
+          responseUrl,
         });
       }
-
-      const { data: publicUrlData } = sb.storage.from(BUCKET_NAME).getPublicUrl(filePath);
+      const persisted = await persistOrPassthrough(result);
       return NextResponse.json({
-        url: publicUrlData.publicUrl,
-        revisedPrompt,
-        storage: 'supabase',
+        status: 'completed',
+        ...persisted,
         model: FAL_MODEL,
       });
-    } catch (mirrorErr) {
-      console.warn('[generate-image] Supabase mirror failed, returning fal URL directly:', mirrorErr);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown poll error';
+      console.error('[generate-image] poll error:', message);
+      return NextResponse.json({ status: 'error', error: message }, { status: 502 });
+    }
+  }
+
+  // ── PHASE: submit (default) ───────────────────────────────────────────────
+  const prompt = body.prompt;
+  if (!prompt || typeof prompt !== 'string') {
+    return NextResponse.json({ error: 'Prompt is required' }, { status: 400 });
+  }
+
+  const aspectRatio = sizeToAspectRatio(body.size);
+  const styleHint =
+    body.style === 'natural'
+      ? 'Style: natural, photorealistic, accurate colors and lighting.'
+      : 'Style: vivid, saturated colors, high contrast, cinematic lighting.';
+  const finalPrompt = `${prompt.trim()}\n\n${styleHint}`;
+
+  const falInput = {
+    prompt: finalPrompt,
+    num_images: 1,
+    aspect_ratio: aspectRatio,
+    resolution: '1K',
+    output_format: 'png',
+    limit_generations: true,
+  };
+
+  try {
+    const submission = await falSubmit(falInput, apiKey);
+    // Try to wait for completion within the sync budget. If it finishes in
+    // time, return the URL directly (fast path).
+    const result = await pollWithBudget(
+      submission.status_url,
+      submission.response_url,
+      apiKey,
+      SYNC_BUDGET_MS,
+    );
+
+    if (result) {
+      const persisted = await persistOrPassthrough(result);
       return NextResponse.json({
-        url: falUrl,
-        revisedPrompt,
-        storage: 'fal',
+        status: 'completed',
+        ...persisted,
         model: FAL_MODEL,
       });
     }
-  } catch (err: unknown) {
-    console.error('[generate-image] error:', err);
+
+    // Slow path: hand the requestId back, the client will poll.
+    return NextResponse.json({
+      status: 'pending',
+      requestId: submission.request_id,
+      statusUrl: submission.status_url,
+      responseUrl: submission.response_url,
+      model: FAL_MODEL,
+    });
+  } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error';
-    return NextResponse.json({ error: message }, { status: 500 });
+    console.error('[generate-image] submit error:', message);
+    return NextResponse.json({ status: 'error', error: message }, { status: 502 });
   }
 }
