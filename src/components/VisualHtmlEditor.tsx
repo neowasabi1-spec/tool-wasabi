@@ -627,16 +627,49 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     setCodeSearchIdx(0);
   }, [codeSearchTerm, codeReplaceTerm, codeSearchCount, activeCode, editorViewport, mobileHtml]);
 
-  /* ── AI Image Generation ── */
+  /* ── AI Image / Video Generation ── */
+  type AiMode = 'text2image' | 'image2image' | 'image2video';
+  const [aiMode, setAiMode] = useState<AiMode>('text2image');
+  const [aiModel, setAiModel] = useState<string>('nano-banana-2');
   const [aiPrompt, setAiPrompt] = useState('');
   const [aiSize, setAiSize] = useState<'1024x1024' | '1792x1024' | '1024x1792'>('1024x1024');
   const [aiStyle, setAiStyle] = useState<'vivid' | 'natural'>('vivid');
+  const [aiSourceImage, setAiSourceImage] = useState<string>('');
+  const [aiSourceUploading, setAiSourceUploading] = useState(false);
+  const [aiVideoDuration, setAiVideoDuration] = useState<5 | 10>(5);
+  const [aiVideoLoop, setAiVideoLoop] = useState<boolean>(true);
   const [aiGenerating, setAiGenerating] = useState(false);
   const [aiError, setAiError] = useState('');
   const [aiRevisedPrompt, setAiRevisedPrompt] = useState('');
   const [showAiPanel, setShowAiPanel] = useState(false);
   const [showAiImagePopup, setShowAiImagePopup] = useState(false);
   const [aiContextText, setAiContextText] = useState('');
+
+  const AI_MODELS: Record<AiMode, { id: string; label: string; hint: string }[]> = {
+    text2image: [
+      { id: 'nano-banana-2', label: 'Nano Banana 2 (Gemini 3.1 Flash)', hint: 'Veloce, qualita alta, default' },
+      { id: 'flux-schnell', label: 'FLUX Schnell', hint: 'Super rapido (~2s), economico' },
+      { id: 'flux-dev', label: 'FLUX Dev', hint: 'Qualita superiore, piu lento' },
+      { id: 'imagen4', label: 'Google Imagen 4 Fast', hint: 'Buono per realismo' },
+    ],
+    image2image: [
+      { id: 'nano-banana-2-edit', label: 'Nano Banana 2 Edit', hint: 'Edit mirato, conserva soggetto' },
+      { id: 'flux-kontext', label: 'FLUX Pro Kontext', hint: 'Riedit avanzato' },
+    ],
+    image2video: [
+      { id: 'seedance-lite', label: 'Bytedance Seedance Lite', hint: 'Veloce ed economico, 5/10s' },
+      { id: 'veo3-fast', label: 'Google Veo 3 Fast', hint: 'Qualita top, 5/8s' },
+      { id: 'kling-21', label: 'Kling 2.1 Standard', hint: '5/10s, naturalezza alta' },
+    ],
+  };
+
+  // Whenever the user switches mode, snap aiModel to the first valid option
+  // for that mode (so we don't end up with e.g. mode=video + model=flux).
+  useEffect(() => {
+    const valid = AI_MODELS[aiMode].some((m) => m.id === aiModel);
+    if (!valid) setAiModel(AI_MODELS[aiMode][0].id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [aiMode]);
 
   /* ── AI Code Editor ── */
   const [aiEditPrompt, setAiEditPrompt] = useState('');
@@ -963,26 +996,59 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     }
   };
 
+  // Upload of the source image used by image2image / image2video. Reuses the
+  // existing Supabase direct uploader, then stashes the public URL in state.
+  const handleAiSourceUpload = useCallback(async (file: File) => {
+    if (aiSourceUploading) return;
+    setAiSourceUploading(true);
+    setAiError('');
+    try {
+      const url = await directSupabaseUpload(file);
+      setAiSourceImage(url);
+    } catch (err) {
+      setAiError(err instanceof Error ? `Upload fallito: ${err.message}` : 'Upload fallito');
+    } finally {
+      setAiSourceUploading(false);
+    }
+  }, [aiSourceUploading]);
+
   const handleAiGenerate = useCallback(async () => {
     if (aiGenerating) return;
     let finalPrompt = aiPrompt.trim();
-    if (!finalPrompt && aiContextText.trim()) {
+    if (!finalPrompt && aiMode === 'text2image' && aiContextText.trim()) {
       finalPrompt = `Create a professional, high-quality image that visually represents the following content. Make it suitable for a landing page or marketing material. Context: "${aiContextText.trim().substring(0, 500)}"`;
     }
     if (!finalPrompt) {
-      setAiError('Inserisci un prompt o seleziona un elemento con testo vicino');
+      setAiError(
+        aiMode === 'image2video'
+          ? "Inserisci una descrizione di come animare l'immagine"
+          : aiMode === 'image2image'
+            ? "Descrivi la modifica da applicare all'immagine"
+            : 'Inserisci un prompt o seleziona un elemento con testo vicino',
+      );
       return;
     }
+    if ((aiMode === 'image2image' || aiMode === 'image2video') && !aiSourceImage) {
+      setAiError("Carica prima un'immagine sorgente.");
+      return;
+    }
+
     setAiGenerating(true);
     setAiError('');
     setAiRevisedPrompt('');
     try {
-      // 1) Submit. The route enqueues the job on fal and returns immediately
-      //    with { status: 'pending', requestId, statusUrl, responseUrl }.
       const submitRes = await fetch('/api/generate-image', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: finalPrompt, size: aiSize, style: aiStyle }),
+        body: JSON.stringify({
+          mode: aiMode,
+          model: aiModel,
+          prompt: finalPrompt,
+          size: aiSize,
+          style: aiStyle,
+          imageUrl: aiSourceImage || undefined,
+          duration: aiMode === 'image2video' ? aiVideoDuration : undefined,
+        }),
       });
       const submitParsed = await safeJson(submitRes);
       if (!submitParsed.ok) throw new Error(submitParsed.error);
@@ -990,21 +1056,22 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
         status?: string;
         url?: string;
         revisedPrompt?: string;
+        mediaType?: 'image' | 'video';
         requestId?: string;
         statusUrl?: string;
         responseUrl?: string;
+        modelKey?: string;
+        falStatus?: string;
         error?: string;
       };
       if (!submitRes.ok || data.status === 'error') {
-        throw new Error(data.error || 'Error generating image');
+        throw new Error(data.error || 'Errore generazione');
       }
 
-      // 2) Poll the route every ~1.5s until the job completes. Each poll
-      //    request is a single fast call to fal — no timeout risk on Netlify.
-      const POLL_DEADLINE = Date.now() + 3 * 60_000;
+      const POLL_DEADLINE = Date.now() + 5 * 60_000;
       while (data.status === 'pending' && data.requestId) {
         if (Date.now() > POLL_DEADLINE) {
-          throw new Error('Timeout: la generazione ha richiesto piu di 3 minuti.');
+          throw new Error('Timeout: la generazione ha richiesto piu di 5 minuti.');
         }
         await new Promise((r) => setTimeout(r, 1500));
         const pollRes = await fetch('/api/generate-image', {
@@ -1015,37 +1082,70 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
             requestId: data.requestId,
             statusUrl: data.statusUrl,
             responseUrl: data.responseUrl,
+            modelKey: data.modelKey,
           }),
         });
         const pollParsed = await safeJson(pollRes);
         if (!pollParsed.ok) throw new Error(pollParsed.error);
         const next = pollParsed.data as typeof data;
         if (next.status === 'error') throw new Error(next.error || 'Polling error');
-        // Carry forward the URLs in case the route only echoes them on submit.
         data = {
           ...data,
           ...next,
           statusUrl: next.statusUrl || data.statusUrl,
           responseUrl: next.responseUrl || data.responseUrl,
+          modelKey: next.modelKey || data.modelKey,
         };
       }
 
-      if (data.status === 'completed' && data.url) {
-        setAttr('src', data.url);
+      if (data.status !== 'completed' || !data.url) {
+        throw new Error(data.error || 'Nessun media ritornato dal modello');
+      }
+
+      const url = data.url;
+      const mediaType = data.mediaType || 'image';
+
+      if (mediaType === 'video') {
+        // Replace the selected <img> with a looping muted <video> tag so the
+        // result behaves like a GIF on the page.
+        const loopAttr = aiVideoLoop ? ' loop' : '';
+        const tag = selectedElement?.tagName;
+        const videoHtml = `<video src="${url}" autoplay${loopAttr} muted playsinline class="w-full h-auto rounded-lg" style="max-width:100%;height:auto;"></video>`;
+        if (tag === 'img' || tag === 'video') {
+          sendToIframe({ type: 'cmd-replace-outer-html', html: videoHtml });
+        } else {
+          // Nothing suitable selected — insert as a new section after the body.
+          sendToIframe({ type: 'cmd-insert-section', html: videoHtml });
+        }
+      } else {
+        setAttr('src', url);
         if (data.revisedPrompt) {
           setAiRevisedPrompt(data.revisedPrompt);
           setAttr('alt', data.revisedPrompt.substring(0, 120));
         }
-        setShowAiImagePopup(false);
-      } else {
-        throw new Error(data.error || 'Nessuna immagine ritornata dal modello');
       }
+
+      setShowAiImagePopup(false);
     } catch (err) {
       setAiError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
       setAiGenerating(false);
     }
-  }, [aiPrompt, aiSize, aiStyle, aiGenerating, aiContextText, setAttr]);
+  }, [
+    aiMode,
+    aiModel,
+    aiPrompt,
+    aiSize,
+    aiStyle,
+    aiSourceImage,
+    aiVideoDuration,
+    aiVideoLoop,
+    aiGenerating,
+    aiContextText,
+    selectedElement,
+    setAttr,
+    sendToIframe,
+  ]);
 
   /* ── Media Upload ── */
   const [uploading, setUploading] = useState(false);
@@ -1802,7 +1902,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                   </div>
                 )}
 
-                {/* AI Image Generation */}
+                {/* AI Image / Video Generation */}
                 {el.tagName === 'img' && (
                   <div className="p-3">
                     <button
@@ -1810,6 +1910,13 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                         setAiError('');
                         setAiRevisedPrompt('');
                         setAiContextText('');
+                        setAiPrompt('');
+                        setAiMode('text2image');
+                        setAiModel('nano-banana-2');
+                        // Pre-fill source image with the currently selected img,
+                        // useful if the user immediately switches to Modifica/Anima.
+                        const currentSrc = el.src;
+                        setAiSourceImage(currentSrc && /^https?:\/\//.test(currentSrc) ? currentSrc : '');
                         sendToIframe({ type: 'cmd-get-context-text' });
                         setShowAiImagePopup(true);
                       }}
@@ -2205,18 +2312,18 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
         </div>);
       })()}
 
-      {/* ═══ AI Image Generation Popup ═══ */}
+      {/* ═══ AI Image / Video Generation Popup ═══ */}
       {showAiImagePopup && (
         <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={() => !aiGenerating && setShowAiImagePopup(false)}>
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 overflow-hidden" onClick={e => e.stopPropagation()}>
-            <div className="bg-gradient-to-r from-violet-600 to-purple-600 px-5 py-4 flex items-center justify-between">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
+            <div className="bg-gradient-to-r from-violet-600 to-purple-600 px-5 py-4 flex items-center justify-between shrink-0">
               <div className="flex items-center gap-2.5">
                 <div className="w-8 h-8 rounded-lg bg-white/20 flex items-center justify-center">
                   <Sparkles className="h-4 w-4 text-white" />
                 </div>
                 <div>
-                  <h3 className="text-sm font-bold text-white">Genera Immagine con AI</h3>
-                  <p className="text-[10px] text-violet-200">Nano Banana 2 (fal.ai) — lascia vuoto per auto-generare dal contesto</p>
+                  <h3 className="text-sm font-bold text-white">Genera Media con AI</h3>
+                  <p className="text-[10px] text-violet-200">fal.ai — text-to-image, image edit e image-to-video</p>
                 </div>
               </div>
               <button onClick={() => !aiGenerating && setShowAiImagePopup(false)} className="p-1.5 rounded-lg hover:bg-white/20 transition-colors" disabled={aiGenerating}>
@@ -2224,8 +2331,90 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
               </button>
             </div>
 
-            <div className="p-5 space-y-4">
-              {aiContextText && (
+            {/* Tabs */}
+            <div className="flex border-b border-slate-200 bg-slate-50 shrink-0">
+              {([
+                { id: 'text2image', label: 'Genera', icon: ImagePlus },
+                { id: 'image2image', label: 'Modifica', icon: Wand2 },
+                { id: 'image2video', label: 'Anima', icon: Film },
+              ] as const).map((tab) => {
+                const Icon = tab.icon;
+                const active = aiMode === tab.id;
+                return (
+                  <button
+                    key={tab.id}
+                    onClick={() => !aiGenerating && setAiMode(tab.id)}
+                    disabled={aiGenerating}
+                    className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 text-xs font-semibold transition-colors disabled:opacity-50 ${
+                      active
+                        ? 'text-violet-700 bg-white border-b-2 border-violet-600'
+                        : 'text-slate-500 hover:text-slate-700'
+                    }`}
+                  >
+                    <Icon className="h-3.5 w-3.5" />
+                    {tab.label}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="p-5 space-y-4 overflow-y-auto">
+              {/* Model selector */}
+              <div>
+                <label className="text-[10px] text-violet-500 font-medium mb-1 block uppercase tracking-wider">Modello AI</label>
+                <select
+                  value={aiModel}
+                  onChange={(e) => setAiModel(e.target.value)}
+                  disabled={aiGenerating}
+                  className="w-full px-2.5 py-2 text-xs border border-violet-200 rounded-lg focus:border-violet-400 outline-none bg-white"
+                >
+                  {AI_MODELS[aiMode].map((m) => (
+                    <option key={m.id} value={m.id}>{m.label} — {m.hint}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Source image upload (image2image / image2video) */}
+              {(aiMode === 'image2image' || aiMode === 'image2video') && (
+                <div>
+                  <label className="text-[10px] text-violet-500 font-medium mb-1 block uppercase tracking-wider">Immagine sorgente</label>
+                  {aiSourceImage ? (
+                    <div className="relative">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={aiSourceImage} alt="source" className="w-full max-h-40 object-contain rounded-lg border border-violet-200 bg-slate-50" />
+                      <button
+                        onClick={() => !aiGenerating && setAiSourceImage('')}
+                        className="absolute top-1.5 right-1.5 p-1 rounded-md bg-black/60 hover:bg-black/80 text-white"
+                        disabled={aiGenerating}
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                  ) : (
+                    <label className={`flex items-center justify-center gap-2 px-4 py-3 rounded-xl border-2 border-dashed border-violet-300 hover:border-violet-500 hover:bg-violet-50 transition-colors cursor-pointer text-xs text-violet-600 font-medium ${aiSourceUploading ? 'opacity-60 cursor-wait' : ''}`}>
+                      {aiSourceUploading ? (
+                        <><Loader2 className="h-4 w-4 animate-spin" /> Caricamento…</>
+                      ) : (
+                        <><Upload className="h-4 w-4" /> Carica immagine sorgente</>
+                      )}
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        disabled={aiSourceUploading || aiGenerating}
+                        onChange={(e) => {
+                          const f = e.target.files?.[0];
+                          if (f) handleAiSourceUpload(f);
+                          e.target.value = '';
+                        }}
+                      />
+                    </label>
+                  )}
+                </div>
+              )}
+
+              {/* Context (text2image only) */}
+              {aiMode === 'text2image' && aiContextText && (
                 <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
                   <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Contesto rilevato automaticamente</p>
                   <p className="text-xs text-slate-600 leading-relaxed line-clamp-3">{aiContextText}</p>
@@ -2234,60 +2423,114 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
 
               <div>
                 <label className="text-xs text-violet-700 font-semibold mb-1.5 block">
-                  Prompt (opzionale)
+                  {aiMode === 'text2image'
+                    ? 'Prompt (opzionale)'
+                    : aiMode === 'image2image'
+                      ? 'Cosa modificare'
+                      : 'Come animare'}
                 </label>
                 <textarea
                   value={aiPrompt}
                   onChange={(e) => setAiPrompt(e.target.value)}
-                  placeholder={aiContextText ? 'Lascia vuoto per generare dal contesto sopra, oppure descrivi l\'immagine...' : 'Descrivi l\'immagine che vuoi generare...'}
+                  placeholder={
+                    aiMode === 'text2image'
+                      ? (aiContextText ? "Lascia vuoto per generare dal contesto sopra, oppure descrivi l'immagine..." : "Descrivi l'immagine che vuoi generare...")
+                      : aiMode === 'image2image'
+                        ? "Es: cambia lo sfondo in una spiaggia tropicale, aggiungi occhiali da sole..."
+                        : "Es: la persona sorride e fa l'occhiolino, leggero zoom in..."
+                  }
                   rows={3}
                   className="w-full px-3 py-2.5 text-sm border border-violet-200 rounded-xl focus:border-violet-400 focus:ring-2 focus:ring-violet-100 outline-none resize-none transition-all placeholder:text-slate-400"
                   disabled={aiGenerating}
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="text-[10px] text-violet-500 font-medium mb-1 block">Formato</label>
-                  <select
-                    value={aiSize}
-                    onChange={(e) => setAiSize(e.target.value as typeof aiSize)}
-                    className="w-full px-2.5 py-2 text-xs border border-violet-200 rounded-lg focus:border-violet-400 outline-none bg-white"
-                    disabled={aiGenerating}
-                  >
-                    <option value="1024x1024">Quadrato (1:1)</option>
-                    <option value="1792x1024">Landscape (16:9)</option>
-                    <option value="1024x1792">Portrait (9:16)</option>
-                  </select>
+              {/* Format + style for text2image */}
+              {aiMode === 'text2image' && (
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-[10px] text-violet-500 font-medium mb-1 block">Formato</label>
+                    <select
+                      value={aiSize}
+                      onChange={(e) => setAiSize(e.target.value as typeof aiSize)}
+                      className="w-full px-2.5 py-2 text-xs border border-violet-200 rounded-lg focus:border-violet-400 outline-none bg-white"
+                      disabled={aiGenerating}
+                    >
+                      <option value="1024x1024">Quadrato (1:1)</option>
+                      <option value="1792x1024">Landscape (16:9)</option>
+                      <option value="1024x1792">Portrait (9:16)</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-violet-500 font-medium mb-1 block">Stile</label>
+                    <select
+                      value={aiStyle}
+                      onChange={(e) => setAiStyle(e.target.value as typeof aiStyle)}
+                      className="w-full px-2.5 py-2 text-xs border border-violet-200 rounded-lg focus:border-violet-400 outline-none bg-white"
+                      disabled={aiGenerating}
+                    >
+                      <option value="vivid">Vivid (colori intensi)</option>
+                      <option value="natural">Natural (fotorealistico)</option>
+                    </select>
+                  </div>
                 </div>
-                <div>
-                  <label className="text-[10px] text-violet-500 font-medium mb-1 block">Stile</label>
-                  <select
-                    value={aiStyle}
-                    onChange={(e) => setAiStyle(e.target.value as typeof aiStyle)}
-                    className="w-full px-2.5 py-2 text-xs border border-violet-200 rounded-lg focus:border-violet-400 outline-none bg-white"
-                    disabled={aiGenerating}
-                  >
-                    <option value="vivid">Vivid (colori intensi)</option>
-                    <option value="natural">Natural (fotorealistico)</option>
-                  </select>
+              )}
+
+              {/* Duration + loop for image2video */}
+              {aiMode === 'image2video' && (
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-[10px] text-violet-500 font-medium mb-1 block">Durata</label>
+                    <select
+                      value={aiVideoDuration}
+                      onChange={(e) => setAiVideoDuration(Number(e.target.value) as 5 | 10)}
+                      className="w-full px-2.5 py-2 text-xs border border-violet-200 rounded-lg focus:border-violet-400 outline-none bg-white"
+                      disabled={aiGenerating}
+                    >
+                      <option value={5}>5 secondi</option>
+                      <option value={10}>10 secondi</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-violet-500 font-medium mb-1 block">Riproduzione</label>
+                    <label className="flex items-center gap-2 px-2.5 py-2 text-xs border border-violet-200 rounded-lg bg-white cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={aiVideoLoop}
+                        onChange={(e) => setAiVideoLoop(e.target.checked)}
+                        disabled={aiGenerating}
+                        className="accent-violet-600"
+                      />
+                      <span className="text-slate-700">Loop (come GIF)</span>
+                    </label>
+                  </div>
                 </div>
-              </div>
+              )}
 
               <button
                 onClick={handleAiGenerate}
-                disabled={aiGenerating}
+                disabled={aiGenerating || aiSourceUploading}
                 className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-sm font-bold text-white bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-500 hover:to-purple-500 disabled:opacity-60 disabled:cursor-not-allowed transition-all shadow-md hover:shadow-lg"
               >
                 {aiGenerating ? (
                   <>
                     <Loader2 className="h-4 w-4 animate-spin" />
-                    Generando immagine...
+                    {aiMode === 'image2video' ? 'Generando video... (puo richiedere 1-2 min)' : 'Generando...'}
                   </>
-                ) : (
+                ) : aiMode === 'text2image' ? (
                   <>
                     <ImagePlus className="h-4 w-4" />
                     {aiPrompt.trim() ? 'Genera Immagine' : aiContextText ? 'Genera dal Contesto' : 'Genera Immagine'}
+                  </>
+                ) : aiMode === 'image2image' ? (
+                  <>
+                    <Wand2 className="h-4 w-4" />
+                    Modifica Immagine
+                  </>
+                ) : (
+                  <>
+                    <Film className="h-4 w-4" />
+                    Anima Immagine
                   </>
                 )}
               </button>
