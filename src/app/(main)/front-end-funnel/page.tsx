@@ -359,9 +359,14 @@ function sanitizeClonedHtml(html: string, originalUrl: string, options?: { keepS
       clean = clean.replace(/\s+on[a-z]+\s*=\s*"[^"]*"/gi, '');
       clean = clean.replace(/\s+on[a-z]+\s*=\s*'[^']*'/gi, '');
     } else {
-      // Quiz: remove entire <noscript> blocks (tags + content) — they show
-      // "Activate JavaScript" messages that are misleading in the preview
+      // keepScripts=true: preserviamo i runtime (Swiper, FAQ accordion, sticky bar,
+      // image gallery, ecc.) ma rimuoviamo comunque i pezzi pericolosi/rumorosi:
+      //  - <noscript> blocks (mostrano messaggi "Activate JavaScript")
+      //  - inline event handlers (onclick=, onerror=, ...) che possono nascondere
+      //    redirect verso il dominio originale o leak di referer.
       clean = clean.replace(/<noscript[^>]*>[\s\S]*?<\/noscript>/gi, '');
+      clean = clean.replace(/\s+on[a-z]+\s*=\s*"[^"]*"/gi, '');
+      clean = clean.replace(/\s+on[a-z]+\s*=\s*'[^']*'/gi, '');
     }
     clean = clean.replace(/(href|src)\s*=\s*"javascript:[^"]*"/gi, '$1=""');
     clean = clean.replace(/(href|src)\s*=\s*'javascript:[^']*'/gi, "$1=''");
@@ -1708,6 +1713,11 @@ export default function FrontEndFunnel() {
     // resta false → sanitize strippa __NEXT_DATA__/altri script SPA → l'Edge
     // Function riceve solo lo scheletro HTML e estrae 0 testi.
     const pageIsQuiz = isQuizUrl(url) || !!(currentPage && isQuizPage(currentPage));
+    // Per le landing page non-quiz dobbiamo COMUNQUE preservare gli <script>
+    // di runtime (Swiper init, accordion FAQ, sticky bar, image gallery, ...).
+    // Senza di essi gli accordion non si aprono e le gallerie non sono cliccabili.
+    // Gli script appartengono al competitor, sono già pubblici, non c'è XSS reale.
+    const preserveScripts = true;
 
     updateFunnelPage(pageId, {
       swipeStatus: 'in_progress',
@@ -1720,7 +1730,7 @@ export default function FrontEndFunnel() {
         const response = await fetch('/api/clone-funnel', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url, cloneMode: 'identical', viewport: cloneMobile ? 'both' : 'desktop', keepScripts: pageIsQuiz }),
+          body: JSON.stringify({ url, cloneMode: 'identical', viewport: cloneMobile ? 'both' : 'desktop', keepScripts: preserveScripts }),
         });
         const data = await response.json();
         if (!response.ok || data.error) throw new Error(data.error || 'Clone failed');
@@ -1729,8 +1739,8 @@ export default function FrontEndFunnel() {
           console.warn('⚠️ Clone warning:', data.warning);
         }
 
-        const clonedHtml = sanitizeClonedHtml(data.content, url, { keepScripts: pageIsQuiz });
-        const clonedMobileHtml = data.mobileContent ? sanitizeClonedHtml(data.mobileContent, url, { keepScripts: pageIsQuiz }) : '';
+        const clonedHtml = sanitizeClonedHtml(data.content, url, { keepScripts: preserveScripts });
+        const clonedMobileHtml = data.mobileContent ? sanitizeClonedHtml(data.mobileContent, url, { keepScripts: preserveScripts }) : '';
         const mobileInfo = clonedMobileHtml ? ` + mobile ${(data.mobileFinalSize || 0).toLocaleString()}` : '';
         const statusMsg = data.jsRendered
           ? `⚠️ JS-rendered page (${(data.finalSize || 0).toLocaleString()} chars) - content might be incomplete`
@@ -1790,11 +1800,11 @@ export default function FrontEndFunnel() {
           const cloneRes = await fetch('/api/clone-funnel', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url, cloneMode: 'identical', viewport: 'desktop', keepScripts: pageIsQuiz }),
+            body: JSON.stringify({ url, cloneMode: 'identical', viewport: 'desktop', keepScripts: preserveScripts }),
           });
           const cloneData = await cloneRes.json();
           if (!cloneRes.ok || cloneData.error) throw new Error(cloneData.error || 'Clone failed — cannot rewrite without HTML');
-          htmlToRewrite = sanitizeClonedHtml(cloneData.content, url, { keepScripts: pageIsQuiz });
+          htmlToRewrite = sanitizeClonedHtml(cloneData.content, url, { keepScripts: preserveScripts });
 
           if (htmlToRewrite.length < HTML_MIN_BYTES_FOR_REWRITE) {
             throw new Error(
@@ -2274,7 +2284,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
         if (!response.ok || data.error) throw new Error(data.error || 'Translate failed');
 
         setCloneProgress(null);
-        const translatedHtml = sanitizeClonedHtml(data.content, url, { keepScripts: pageIsQuiz });
+        const translatedHtml = sanitizeClonedHtml(data.content, url, { keepScripts: preserveScripts });
         updateFunnelPage(pageId, {
           swipeStatus: 'completed',
           swipeResult: `Translated (${data.textsTranslated || 0} texts → ${data.targetLanguage})`,

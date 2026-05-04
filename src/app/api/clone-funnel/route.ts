@@ -486,8 +486,18 @@ async function cloneWithBrowser(url: string, viewport: 'desktop' | 'mobile' = 'd
           });
         });
       } else {
-        // For quiz: only remove noscript (shows fallback error messages)
+        // keepScripts=true: preserviamo gli <script> di runtime (Swiper init,
+        // FAQ accordion, sticky bar, image gallery, ...) ma rimuoviamo comunque:
+        //  - <noscript> (mostrano messaggi "Activate JavaScript")
+        //  - inline event handlers (onclick=, onerror=, ...) per ridurre la
+        //    superficie di attacco senza buttare il JS sano della pagina.
         docClone.querySelectorAll('noscript').forEach(s => s.remove());
+        docClone.querySelectorAll('*').forEach(el => {
+          const attrs = Array.from(el.attributes);
+          attrs.forEach(attr => {
+            if (attr.name.startsWith('on')) el.removeAttribute(attr.name);
+          });
+        });
       }
 
       // 5. Handle stylesheet links
