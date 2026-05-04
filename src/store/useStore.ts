@@ -670,11 +670,14 @@ export const useStore = create<Store>()((set, get) => ({
     const page = get().funnelPages.find((p) => p.id === id);
     if (!page || !page.urlToSwipe) return;
 
-    const product = get().products.find((p) => p.id === page.productId);
-    if (!product) {
+    // Source of truth is now My Projects. The funnel page's `productId` field
+    // (legacy name) holds a project id. We pass name + description + brief +
+    // domain to the rewriter; the brief is the most important signal.
+    const project = get().projects.find((p) => p.id === page.productId);
+    if (!project) {
       await get().updateFunnelPage(id, {
         swipeStatus: 'failed',
-        swipeResult: 'Select a product before launching the swipe',
+        swipeResult: 'Select a project before launching the swipe',
       });
       return;
     }
@@ -690,12 +693,20 @@ export const useStore = create<Store>()((set, get) => ({
           source_url: page.urlToSwipe,
           html: clonedHtml || undefined,
           product: {
-            name: product.name,
-            description: product.description,
-            benefits: product.benefits,
-            cta_text: product.ctaText,
-            cta_url: product.ctaUrl,
-            brand_name: product.brandName,
+            name: project.name,
+            description: project.description,
+            benefits: [],
+            cta_text: 'BUY NOW',
+            cta_url: project.domain,
+            brand_name: project.name,
+          },
+          brief: project.brief || '',
+          project: {
+            id: project.id,
+            name: project.name,
+            description: project.description,
+            brief: project.brief,
+            domain: project.domain,
           },
           language: 'it',
         }),
@@ -799,11 +810,12 @@ export const useStore = create<Store>()((set, get) => ({
     const page = get().postPurchasePages.find((p) => p.id === id);
     if (!page || !page.urlToSwipe) return;
 
-    const product = get().products.find((p) => p.id === page.productId);
-    if (!product) {
+    // See `launchSwipe` for rationale: project replaces the legacy product.
+    const project = get().projects.find((p) => p.id === page.productId);
+    if (!project) {
       await get().updatePostPurchasePage(id, {
         swipeStatus: 'failed',
-        swipeResult: 'Select a product before launching the swipe',
+        swipeResult: 'Select a project before launching the swipe',
       });
       return;
     }
@@ -819,12 +831,20 @@ export const useStore = create<Store>()((set, get) => ({
           source_url: page.urlToSwipe,
           html: ppClonedHtml || undefined,
           product: {
-            name: product.name,
-            description: product.description,
-            benefits: product.benefits,
-            cta_text: product.ctaText,
-            cta_url: product.ctaUrl,
-            brand_name: product.brandName,
+            name: project.name,
+            description: project.description,
+            benefits: [],
+            cta_text: 'BUY NOW',
+            cta_url: project.domain,
+            brand_name: project.name,
+          },
+          brief: project.brief || '',
+          project: {
+            id: project.id,
+            name: project.name,
+            description: project.description,
+            brief: project.brief,
+            domain: project.domain,
           },
           language: 'it',
         }),
@@ -879,7 +899,8 @@ export const useStore = create<Store>()((set, get) => ({
 
   saveCurrentFunnelAsArchive: async (name: string, section?: string) => {
     const pages = get().funnelPages;
-    const products = get().products;
+    // funnelPages.productId now references a Project (My Projects).
+    const projects = get().projects;
     const templates = get().templates;
     if (!pages || pages.length === 0) return;
 
@@ -888,7 +909,7 @@ export const useStore = create<Store>()((set, get) => ({
       name: p.name,
       page_type: p.pageType,
       template_name: templates.find(t => t.id === p.templateId)?.name || '',
-      product_name: products.find(pr => pr.id === p.productId)?.name || '',
+      product_name: projects.find(pr => pr.id === p.productId)?.name || '',
       url_to_swipe: p.urlToSwipe,
       prompt: p.prompt || '',
       feedback: p.feedback || '',

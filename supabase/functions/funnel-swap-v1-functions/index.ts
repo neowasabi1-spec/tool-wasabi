@@ -241,6 +241,10 @@ serve(async (req) => {
       framework,
       target,
       customPrompt,
+      // Optional explicit project brief. When provided, it is injected into
+      // the Claude prompt as the primary source of truth for tone, positioning
+      // and value props. Sourced from My Projects (`Project.brief`).
+      brief,
       userId,
       htmlContent,
       targetLanguage,
@@ -1777,7 +1781,17 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
         )
       }
 
-      // STEP 3: Crea il job in cloning_jobs
+      // STEP 3: Crea il job in cloning_jobs.
+      // If a Project brief is provided, append it to product_description so
+      // it travels with the job and gets injected into the Claude prompt
+      // later (see batch processing). The DB column stays the same.
+      const briefBlock =
+        typeof brief === 'string' && brief.trim()
+          ? `\n\n---\n📚 BRIEF DEL PROGETTO (fonte di verità per tono, posizionamento e value props):\n${brief.trim()}`
+          : ''
+      const productDescriptionWithBrief =
+        (productDescription || '') + briefBlock
+
       const { data: insertedJob, error: jobInsertError } = await supabase
         .from('cloning_jobs')
         .insert({
@@ -1786,7 +1800,7 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
           clone_mode: cloneMode,
           original_html: originalHTML,
           product_name: productName,
-          product_description: productDescription,
+          product_description: productDescriptionWithBrief,
           framework: framework || null,
           target: target || null,
           custom_prompt: customPrompt || null,

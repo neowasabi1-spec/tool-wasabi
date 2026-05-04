@@ -677,7 +677,7 @@ function DebouncedInput({
 export default function FrontEndFunnel() {
   const searchParams = useSearchParams();
   const {
-    products,
+    projects,
     templates,
     funnelPages,
     addFunnelPage,
@@ -1133,13 +1133,37 @@ export default function FrontEndFunnel() {
     window.history.replaceState({}, '', url.toString());
   }, [searchParams, affiliateFunnels, affiliateFunnelsLoading, addFunnelPage]);
 
-  // Bulk product selection for all rows
+  // Bulk Project selection for all rows. Field name kept for backward
+  // compatibility with `funnelPages.productId` (it now stores a project id).
   const handleBulkProductChange = useCallback((productId: string) => {
     if (!productId) return;
     for (const page of funnelPages) {
       updateFunnelPage(page.id, { productId });
     }
   }, [funnelPages, updateFunnelPage]);
+
+  // Build a labelled context block from a Project so the rewriter (Claude)
+  // can treat the brief as the source of truth, separate from description /
+  // domain / etc.
+  type ProjectLike = {
+    name?: string;
+    description?: string;
+    brief?: string;
+    domain?: string;
+  };
+  const buildProjectContext = (project: ProjectLike | undefined): string => {
+    if (!project) return '';
+    const parts: string[] = [];
+    if (project.name) parts.push(`PROJECT: ${project.name}`);
+    if (project.domain) parts.push(`DOMAIN: ${project.domain}`);
+    if (project.description?.trim()) {
+      parts.push(`DESCRIPTION:\n${project.description.trim()}`);
+    }
+    if (project.brief?.trim()) {
+      parts.push(`BRIEF (use this as the primary source of truth for tone, positioning and value props):\n${project.brief.trim()}`);
+    }
+    return parts.join('\n\n');
+  };
 
   const handleUseAffiliateStepForSwipe = (step: AffiliateFunnelStep, funnelName: string) => {
     const stepType = step.step_type || 'landing';
@@ -1150,7 +1174,7 @@ export default function FrontEndFunnel() {
         ? `${funnelName} - Step ${step.step_index}: ${step.title}`.slice(0, 80)
         : `${funnelName} - Step ${step.step_index}`,
       pageType,
-      productId: products[0]?.id || '',
+      productId: projects[0]?.id || '',
       urlToSwipe: step.url || '',
       prompt: step.description || '',
       swipeStatus: 'pending',
@@ -1310,7 +1334,7 @@ export default function FrontEndFunnel() {
     addFunnelPage({
       name: `Step ${stepNum}`,
       pageType: 'landing',
-      productId: products[0]?.id || '',
+      productId: projects[0]?.id || '',
       urlToSwipe: '',
       prompt: '',
       swipeStatus: 'pending',
@@ -1324,7 +1348,8 @@ export default function FrontEndFunnel() {
 
     const typeLabels = allPageTypeOptions.map(o => o.label);
     const templateNames = (templates || []).map(t => t.name);
-    const productNames = (products || []).map(p => p.name);
+    // Now sourced from My Projects rather than the legacy Products catalog.
+    const productNames = (projects || []).map(p => p.name);
 
     // Main sheet
     const ws = wb.addWorksheet('Funnel Steps');
@@ -1481,14 +1506,17 @@ export default function FrontEndFunnel() {
         return 'landing';
       };
 
+      // Resolve a Project by name. The CSV column is still labelled "product"
+      // for backward compatibility, but it now refers to a project from
+      // "My Projects" (whose `brief` is what the rewrite agent receives).
       const resolveProduct = (raw: string): string => {
-        if (!raw) return products[0]?.id || '';
+        if (!raw) return projects[0]?.id || '';
         const lower = raw.toLowerCase().trim();
-        const exact = products.find(p => p.name.toLowerCase() === lower);
+        const exact = projects.find(p => p.name.toLowerCase() === lower);
         if (exact) return exact.id;
-        const partial = products.find(p => p.name.toLowerCase().includes(lower) || lower.includes(p.name.toLowerCase()));
+        const partial = projects.find(p => p.name.toLowerCase().includes(lower) || lower.includes(p.name.toLowerCase()));
         if (partial) return partial.id;
-        return products[0]?.id || '';
+        return projects[0]?.id || '';
       };
 
       const resolveTemplate = (raw: string): string | undefined => {
@@ -1532,19 +1560,20 @@ export default function FrontEndFunnel() {
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  // Open swipe config modal
+  // Open swipe config modal. Source of truth is now My Projects: name +
+  // brief + description are pulled from the selected Project. The brief is
+  // labelled explicitly so Claude treats it as authoritative.
   const openSwipeConfig = (page: typeof funnelPages[0]) => {
-    const product = (products || []).find(p => p.id === page.productId);
-    
+    const project = (projects || []).find(p => p.id === page.productId);
     setSwipeConfig({
       url: page.urlToSwipe,
-      product_name: product?.name || '',
-      product_description: product?.description || '',
-      cta_text: product?.ctaText || 'BUY NOW',
-      cta_url: product?.ctaUrl || '',
+      product_name: project?.name || '',
+      product_description: buildProjectContext(project),
+      cta_text: 'BUY NOW',
+      cta_url: project?.domain || '',
       language: 'en',
-      benefits: product?.benefits || [],
-      brand_name: product?.brandName || '',
+      benefits: [],
+      brand_name: project?.name || '',
       prompt: page.prompt || '',
     });
 
@@ -1639,12 +1668,14 @@ export default function FrontEndFunnel() {
     return isQuizUrl(page.urlToSwipe) || isQuizUrl(page.url);
   };
 
-  // Clone via smooth-responder Edge Function
+  // Clone via smooth-responder Edge Function. Project (from My Projects)
+  // provides name + description + brief + domain; we wrap them into a single
+  // labelled context block so Claude sees the brief as the source of truth.
   const openCloneModal = (page: typeof funnelPages[0]) => {
-    const product = (products || []).find(p => p.id === page.productId);
+    const project = (projects || []).find(p => p.id === page.productId);
     setCloneConfig({
-      productName: product?.name || '',
-      productDescription: product?.description || '',
+      productName: project?.name || '',
+      productDescription: buildProjectContext(project),
       framework: '',
       target: '',
       customPrompt: page.prompt || '',
@@ -2515,20 +2546,20 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                 <FileSpreadsheet className="w-4 h-4" />
                 Template
               </button>
-              {/* Bulk Product Selector */}
+              {/* Bulk Project Selector */}
               {(funnelPages || []).length > 0 && (
                 <div className="flex items-center gap-2 px-3 py-1.5 bg-amber-50 border border-amber-200 rounded-lg">
                   <Target className="w-4 h-4 text-amber-600" />
-                  <span className="text-sm font-medium text-amber-800 whitespace-nowrap">Product for all:</span>
+                  <span className="text-sm font-medium text-amber-800 whitespace-nowrap">Project for all:</span>
                   <select
                     value=""
                     onChange={(e) => handleBulkProductChange(e.target.value)}
                     className="min-w-[160px] px-2 py-1 border border-amber-300 rounded-md text-sm bg-white focus:ring-2 focus:ring-amber-400 focus:border-amber-400"
                   >
                     <option value="">— Select —</option>
-                    {(products || []).map((prod) => (
-                      <option key={prod.id} value={prod.id}>
-                        {prod.name}
+                    {(projects || []).map((proj) => (
+                      <option key={proj.id} value={proj.id}>
+                        {proj.name}
                       </option>
                     ))}
                   </select>
@@ -3045,7 +3076,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                   <th className="min-w-[120px]">Template</th>
                   <th className="min-w-[180px]">URL</th>
                   <th className="min-w-[140px]">Prompt</th>
-                  <th className="min-w-[100px]">Product</th>
+                  <th className="min-w-[100px]">Project</th>
                   <th className="w-20">Status</th>
                   <th className="min-w-[120px]">Result</th>
                   <th className="min-w-[100px]">Feedback</th>
@@ -3279,7 +3310,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                         </div>
                       </td>
 
-                      {/* Product */}
+                      {/* Project */}
                       <td>
                         <select
                           value={page.productId}
@@ -3290,10 +3321,10 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                           }
                           className="truncate"
                         >
-                          <option value="">Product...</option>
-                          {(products || []).map((prod) => (
-                            <option key={prod.id} value={prod.id}>
-                              {prod.name}
+                          <option value="">Project...</option>
+                          {(projects || []).map((proj) => (
+                            <option key={proj.id} value={proj.id}>
+                              {proj.name}
                             </option>
                           ))}
                         </select>
