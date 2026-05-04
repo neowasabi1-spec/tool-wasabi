@@ -977,8 +977,8 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     setAiError('');
     setAiRevisedPrompt('');
     try {
-      // 1) Submit. The route either returns the result immediately (fast
-      //    path, ~5-7s) or hands back a requestId for client-side polling.
+      // 1) Submit. The route enqueues the job on fal and returns immediately
+      //    with { status: 'pending', requestId, statusUrl, responseUrl }.
       const submitRes = await fetch('/api/generate-image', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -999,13 +999,14 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
         throw new Error(data.error || 'Error generating image');
       }
 
-      // 2) If pending, poll the route until completion (up to ~3 minutes).
+      // 2) Poll the route every ~1.5s until the job completes. Each poll
+      //    request is a single fast call to fal — no timeout risk on Netlify.
       const POLL_DEADLINE = Date.now() + 3 * 60_000;
       while (data.status === 'pending' && data.requestId) {
         if (Date.now() > POLL_DEADLINE) {
           throw new Error('Timeout: la generazione ha richiesto piu di 3 minuti.');
         }
-        await new Promise((r) => setTimeout(r, 2000));
+        await new Promise((r) => setTimeout(r, 1500));
         const pollRes = await fetch('/api/generate-image', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1018,11 +1019,18 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
         });
         const pollParsed = await safeJson(pollRes);
         if (!pollParsed.ok) throw new Error(pollParsed.error);
-        data = pollParsed.data as typeof data;
-        if (data.status === 'error') throw new Error(data.error || 'Polling error');
+        const next = pollParsed.data as typeof data;
+        if (next.status === 'error') throw new Error(next.error || 'Polling error');
+        // Carry forward the URLs in case the route only echoes them on submit.
+        data = {
+          ...data,
+          ...next,
+          statusUrl: next.statusUrl || data.statusUrl,
+          responseUrl: next.responseUrl || data.responseUrl,
+        };
       }
 
-      if (data.url) {
+      if (data.status === 'completed' && data.url) {
         setAttr('src', data.url);
         if (data.revisedPrompt) {
           setAiRevisedPrompt(data.revisedPrompt);
@@ -1030,7 +1038,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
         }
         setShowAiImagePopup(false);
       } else {
-        throw new Error('Nessuna immagine ritornata dal modello');
+        throw new Error(data.error || 'Nessuna immagine ritornata dal modello');
       }
     } catch (err) {
       setAiError(err instanceof Error ? err.message : 'Unknown error');

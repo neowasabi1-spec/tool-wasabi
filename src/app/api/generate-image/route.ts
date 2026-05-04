@@ -8,13 +8,10 @@ export const dynamic = 'force-dynamic';
 const FAL_MODEL = 'fal-ai/nano-banana-2';
 const FAL_QUEUE_BASE = `https://queue.fal.run/${FAL_MODEL}`;
 
-// We must finish well below Netlify's serverless function wall (10s on Free,
-// 26s on Pro). 6s leaves room for cold start + submit + persistOrPassthrough +
-// network. If fal hasn't finished by then we hand back a `requestId` and the
-// client polls.
-const SYNC_BUDGET_MS = 6_000;
-const POLL_BUDGET_MS = 6_000;
-const POLL_INTERVAL_MS = 1_000;
+// Single-shot route: every request does ONE call to fal (submit OR status+result).
+// This means each function invocation completes in well under 2s — there is no
+// way it can ever hit Netlify's serverless function wall (10s on Free, 26s on
+// Pro). The client side is responsible for polling.
 
 function sizeToAspectRatio(size: unknown): string {
   switch (size) {
@@ -61,6 +58,8 @@ interface FalQueueStatusResponse {
   status: 'IN_QUEUE' | 'IN_PROGRESS' | 'COMPLETED' | 'ERROR';
   response_url?: string;
   logs?: { message: string }[];
+  error?: string;
+  error_type?: string;
 }
 
 function getFalKey(): string | null {
@@ -86,6 +85,7 @@ async function falSubmit(body: Record<string, unknown>, apiKey: string): Promise
 async function falStatus(statusUrl: string, apiKey: string): Promise<FalQueueStatusResponse> {
   const res = await fetch(statusUrl, {
     headers: { Authorization: `Key ${apiKey}` },
+    cache: 'no-store',
   });
   if (!res.ok) {
     const errText = await res.text();
@@ -97,6 +97,7 @@ async function falStatus(statusUrl: string, apiKey: string): Promise<FalQueueSta
 async function falResult(responseUrl: string, apiKey: string): Promise<FalResult> {
   const res = await fetch(responseUrl, {
     headers: { Authorization: `Key ${apiKey}` },
+    cache: 'no-store',
   });
   if (!res.ok) {
     const errText = await res.text();
@@ -105,37 +106,7 @@ async function falResult(responseUrl: string, apiKey: string): Promise<FalResult
   return res.json();
 }
 
-// Poll fal until COMPLETED or until budget is exceeded. Returns either the
-// final result or null (caller should hand the requestId back to the client
-// for further polling).
-async function pollWithBudget(
-  statusUrl: string,
-  responseUrl: string,
-  apiKey: string,
-  budgetMs: number,
-): Promise<FalResult | null> {
-  const start = Date.now();
-  while (Date.now() - start < budgetMs) {
-    const status = await falStatus(statusUrl, apiKey);
-    if (status.status === 'COMPLETED') {
-      return falResult(responseUrl, apiKey);
-    }
-    if (status.status === 'ERROR') {
-      throw new Error(`fal.ai ERROR: ${JSON.stringify(status.logs || [])}`);
-    }
-    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-  }
-  return null;
-}
-
-// Return the fal CDN URL directly. We used to mirror to Supabase Storage but
-// that download+upload roundtrip ate 2-3s on the function wall and caused
-// silent timeouts on Netlify Free. fal.media URLs are persistent so it's safe
-// to use them directly. (If we ever want a self-hosted mirror, do it from a
-// background job, not in the request path.)
-function persistOrPassthrough(
-  result: FalResult,
-): { url: string; revisedPrompt?: string; storage: 'fal' } {
+function unwrapImage(result: FalResult): { url: string; revisedPrompt?: string } {
   const imageEntry = result.images?.[0];
   if (!imageEntry?.url) {
     throw new Error(
@@ -147,7 +118,6 @@ function persistOrPassthrough(
   return {
     url: imageEntry.url,
     revisedPrompt: result.description?.trim() || undefined,
-    storage: 'fal',
   };
 }
 
@@ -170,33 +140,53 @@ export async function POST(req: NextRequest) {
   const apiKey = getFalKey();
   if (!apiKey) {
     return NextResponse.json(
-      { error: 'FAL_KEY non configurata. Settala nelle env var (Netlify > Site configuration > Environment variables).' },
+      {
+        status: 'error',
+        error:
+          'FAL_KEY non configurata. Settala nelle env var (Netlify > Site configuration > Environment variables) e ridepoia.',
+      },
       { status: 500 },
     );
   }
 
-  // ── PHASE: poll a previously submitted job ────────────────────────────────
+  // ── POLL phase: one shot status check + (if ready) result fetch ─────────────
   if (body.action === 'poll') {
     if (!body.requestId) {
-      return NextResponse.json({ error: 'Missing requestId' }, { status: 400 });
+      return NextResponse.json({ status: 'error', error: 'Missing requestId' }, { status: 400 });
     }
     const statusUrl = body.statusUrl || `${FAL_QUEUE_BASE}/requests/${body.requestId}/status`;
     const responseUrl = body.responseUrl || `${FAL_QUEUE_BASE}/requests/${body.requestId}`;
     try {
-      const result = await pollWithBudget(statusUrl, responseUrl, apiKey, POLL_BUDGET_MS);
-      if (!result) {
+      const status = await falStatus(statusUrl, apiKey);
+
+      if (status.status === 'COMPLETED') {
+        const result = await falResult(responseUrl, apiKey);
+        const { url, revisedPrompt } = unwrapImage(result);
         return NextResponse.json({
-          status: 'pending',
-          requestId: body.requestId,
-          statusUrl,
-          responseUrl,
+          status: 'completed',
+          url,
+          revisedPrompt,
+          storage: 'fal',
+          model: FAL_MODEL,
         });
       }
-      const persisted = persistOrPassthrough(result);
+
+      if (status.status === 'ERROR') {
+        return NextResponse.json(
+          {
+            status: 'error',
+            error: status.error || `fal.ai job failed (${status.error_type || 'unknown'})`,
+          },
+          { status: 502 },
+        );
+      }
+
       return NextResponse.json({
-        status: 'completed',
-        ...persisted,
-        model: FAL_MODEL,
+        status: 'pending',
+        falStatus: status.status,
+        requestId: body.requestId,
+        statusUrl,
+        responseUrl,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown poll error';
@@ -205,10 +195,10 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // ── PHASE: submit (default) ───────────────────────────────────────────────
+  // ── SUBMIT phase: enqueue and return immediately ───────────────────────────
   const prompt = body.prompt;
   if (!prompt || typeof prompt !== 'string') {
-    return NextResponse.json({ error: 'Prompt is required' }, { status: 400 });
+    return NextResponse.json({ status: 'error', error: 'Prompt is required' }, { status: 400 });
   }
 
   const aspectRatio = sizeToAspectRatio(body.size);
@@ -229,25 +219,6 @@ export async function POST(req: NextRequest) {
 
   try {
     const submission = await falSubmit(falInput, apiKey);
-    // Try to wait for completion within the sync budget. If it finishes in
-    // time, return the URL directly (fast path).
-    const result = await pollWithBudget(
-      submission.status_url,
-      submission.response_url,
-      apiKey,
-      SYNC_BUDGET_MS,
-    );
-
-    if (result) {
-      const persisted = persistOrPassthrough(result);
-      return NextResponse.json({
-        status: 'completed',
-        ...persisted,
-        model: FAL_MODEL,
-      });
-    }
-
-    // Slow path: hand the requestId back, the client will poll.
     return NextResponse.json({
       status: 'pending',
       requestId: submission.request_id,
