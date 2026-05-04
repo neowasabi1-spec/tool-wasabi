@@ -1,39 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
 
 export const maxDuration = 30;
 export const dynamic = 'force-dynamic';
-
-const BUCKET_NAME = 'generated-images';
 
 // Nano Banana 2 = Gemini 3.1 Flash Image, hosted on fal.ai.
 // Docs: https://fal.ai/models/fal-ai/nano-banana-2/api
 const FAL_MODEL = 'fal-ai/nano-banana-2';
 const FAL_QUEUE_BASE = `https://queue.fal.run/${FAL_MODEL}`;
 
-// Inner sync polling budget. We must finish well below Netlify's serverless
-// function wall (10s on Free, 26s on Pro). 8s leaves room for cold start +
+// We must finish well below Netlify's serverless function wall (10s on Free,
+// 26s on Pro). 6s leaves room for cold start + submit + persistOrPassthrough +
 // network. If fal hasn't finished by then we hand back a `requestId` and the
 // client polls.
-const SYNC_BUDGET_MS = 8_000;
-// Poll budget when the client explicitly asks us to keep polling.
-const POLL_BUDGET_MS = 8_000;
+const SYNC_BUDGET_MS = 6_000;
+const POLL_BUDGET_MS = 6_000;
 const POLL_INTERVAL_MS = 1_000;
-
-function getSupabase() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  if (!url || !key) throw new Error('Missing Supabase credentials');
-  return createClient(url, key);
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function ensureBucket(sb: any) {
-  const { data } = await sb.storage.getBucket(BUCKET_NAME);
-  if (!data) {
-    await sb.storage.createBucket(BUCKET_NAME, { public: true });
-  }
-}
 
 function sizeToAspectRatio(size: unknown): string {
   switch (size) {
@@ -147,12 +128,14 @@ async function pollWithBudget(
   return null;
 }
 
-// Best-effort: download the fal image and upload to Supabase Storage so the
-// asset is hosted on a stable origin we control. If anything fails, we just
-// return the fal CDN URL — fal.media URLs are persistent.
-async function persistOrPassthrough(
+// Return the fal CDN URL directly. We used to mirror to Supabase Storage but
+// that download+upload roundtrip ate 2-3s on the function wall and caused
+// silent timeouts on Netlify Free. fal.media URLs are persistent so it's safe
+// to use them directly. (If we ever want a self-hosted mirror, do it from a
+// background job, not in the request path.)
+function persistOrPassthrough(
   result: FalResult,
-): Promise<{ url: string; revisedPrompt?: string; storage: 'supabase' | 'fal' }> {
+): { url: string; revisedPrompt?: string; storage: 'fal' } {
   const imageEntry = result.images?.[0];
   if (!imageEntry?.url) {
     throw new Error(
@@ -161,36 +144,11 @@ async function persistOrPassthrough(
         : "fal.ai non ha restituito un'immagine",
     );
   }
-  const falUrl = imageEntry.url;
-  const revisedPrompt = result.description?.trim() || undefined;
-
-  try {
-    const downloadRes = await fetch(falUrl);
-    if (!downloadRes.ok) throw new Error(`download ${downloadRes.status}`);
-    const buffer = Buffer.from(await downloadRes.arrayBuffer());
-    const mimeType = imageEntry.content_type || 'image/png';
-    const ext = mimeType.includes('jpeg') ? 'jpg' : mimeType.includes('webp') ? 'webp' : 'png';
-
-    const sb = getSupabase();
-    await ensureBucket(sb);
-    const filename = `ai-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
-    const filePath = `editor/${filename}`;
-
-    const { error: uploadError } = await sb.storage
-      .from(BUCKET_NAME)
-      .upload(filePath, buffer, { contentType: mimeType, upsert: false });
-
-    if (uploadError) {
-      console.warn('[generate-image] Supabase upload failed:', uploadError.message);
-      return { url: falUrl, revisedPrompt, storage: 'fal' };
-    }
-
-    const { data: publicUrlData } = sb.storage.from(BUCKET_NAME).getPublicUrl(filePath);
-    return { url: publicUrlData.publicUrl, revisedPrompt, storage: 'supabase' };
-  } catch (mirrorErr) {
-    console.warn('[generate-image] mirror failed, returning fal URL:', mirrorErr);
-    return { url: falUrl, revisedPrompt, storage: 'fal' };
-  }
+  return {
+    url: imageEntry.url,
+    revisedPrompt: result.description?.trim() || undefined,
+    storage: 'fal',
+  };
 }
 
 export async function POST(req: NextRequest) {
@@ -234,7 +192,7 @@ export async function POST(req: NextRequest) {
           responseUrl,
         });
       }
-      const persisted = await persistOrPassthrough(result);
+      const persisted = persistOrPassthrough(result);
       return NextResponse.json({
         status: 'completed',
         ...persisted,
@@ -281,7 +239,7 @@ export async function POST(req: NextRequest) {
     );
 
     if (result) {
-      const persisted = await persistOrPassthrough(result);
+      const persisted = persistOrPassthrough(result);
       return NextResponse.json({
         status: 'completed',
         ...persisted,

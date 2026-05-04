@@ -2208,7 +2208,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                 </div>
                 <div>
                   <h3 className="text-sm font-bold text-white">Genera Immagine con AI</h3>
-                  <p className="text-[10px] text-violet-200">DALL-E 3 — lascia vuoto per auto-generare dal contesto</p>
+                  <p className="text-[10px] text-violet-200">Nano Banana 2 (fal.ai) — lascia vuoto per auto-generare dal contesto</p>
                 </div>
               </div>
               <button onClick={() => !aiGenerating && setShowAiImagePopup(false)} className="p-1.5 rounded-lg hover:bg-white/20 transition-colors" disabled={aiGenerating}>
@@ -2292,7 +2292,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
 
               {aiRevisedPrompt && (
                 <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200">
-                  <p className="text-[10px] text-emerald-600 font-semibold mb-0.5">Prompt usato da DALL-E:</p>
+                  <p className="text-[10px] text-emerald-600 font-semibold mb-0.5">Descrizione generata dal modello:</p>
                   <p className="text-xs text-emerald-700 leading-relaxed">{aiRevisedPrompt}</p>
                 </div>
               )}
