@@ -173,33 +173,34 @@ function replaceBrandInTextContent(
 // notably consecutive duplicates of the new product name like
 // "Reset Patch Reset Patch" and "PATCH DARIO PATCH DARIO" that emerge
 // when two different `cloning_texts` sit next to each other in the DOM.
+//
+// IMPORTANT: this function MUST NEVER cross HTML tag boundaries, or it
+// can swallow tag closures (e.g. "<a>Reset Patch</a><a>Reset Patch</a>"
+// would become "Reset Patch" with no anchor closures, breaking event
+// handlers on FAQs, accordions, sliders, etc.). We operate text-segment
+// by text-segment via split on tags.
 function collapseConsecutiveBrandRuns(html: string, productName: string): string {
   if (!productName || productName.length < 3) return html
   const escaped = productName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  // Pattern: brand, optionally followed by a tiny gap (whitespace, &nbsp;,
-  // a single inline tag like </span>, a thin separator), then brand again.
-  // Repeats until idempotent.
-  const gap = `(?:\\s|&nbsp;|&\\#160;|<\\/?(?:strong|em|span|b|i|sup|sub|a|small|font)[^>]{0,200}>|[\\-–—:|·•†*])*`
+  // Inside a single text node only: brand + small gap (whitespace, NBSP,
+  // simple separators — NEVER tags) + brand. Iterated to fixed point so
+  // chains "A A A A" collapse fully.
+  const gap = `(?:[\\s\\u00A0]|&nbsp;|&\\#160;|[\\-–—:|·•†*])*`
   const dup = new RegExp(`(${escaped})${gap}\\1`, 'gi')
-  let prev = html
-  for (let i = 0; i < 6; i++) {
-    const next = prev.replace(dup, '$1')
-    if (next === prev) break
-    prev = next
+
+  const segments = html.split(/(<[^>]+>)/)
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i]
+    if (!seg || seg.startsWith('<')) continue
+    let prev = seg
+    for (let pass = 0; pass < 6; pass++) {
+      const next = prev.replace(dup, '$1')
+      if (next === prev) break
+      prev = next
+    }
+    segments[i] = prev
   }
-  // Also catch X xxx X xxx X (triple) within a short window of < 40 chars
-  // that should never have 3 brand mentions in a row.
-  const tripleWindow = new RegExp(`(${escaped})([\\s\\S]{1,40}?)\\1([\\s\\S]{1,40}?)\\1`, 'gi')
-  prev = prev.replace(tripleWindow, (_m, b, mid1, mid2) => {
-    // Keep the brand only at the start, drop subsequent mentions, preserve
-    // intermediate text but trim stranded separators.
-    const middle = `${mid1} ${mid2}`
-      .replace(/\s*[\-–—:|·•]\s*/g, ' ')
-      .replace(/\s{2,}/g, ' ')
-      .trim()
-    return middle ? `${b} ${middle}` : b
-  })
-  return prev
+  return segments.join('')
 }
 
 // Sostituisce placeholder template Liquid/Jinja noti con valori reali.
@@ -894,6 +895,7 @@ REGOLA D'ORO: se NON sapresti come pronunciarlo ad alta voce in un'inserzione TV
 - Se il testo originale è in italiano, scrivi tutto in italiano
 - NON copiare NESSUNA parola dal testo originale - riscrivi tutto da zero
 - Se trovi nomi di brand, aziende o siti web del COMPETITOR (NON il nuovo prodotto) nel testo originale, RIMUOVILI o sostituiscili con un termine generico ("the formula", "the supplement", "il prodotto"). NON sostituirli automaticamente con "${job.product_name}" — quello produce stuffing.
+- INGREDIENTI/SOSTANZE specifiche del competitor (es. "Moringa", "Berberine", "Resveratrol", ingredienti esotici) NON devono finire nel copy del nuovo prodotto a meno che non siano esplicitamente menzionati nella descrizione del prodotto qui sopra. Se il testo originale dice "What can Moringa help with?" e il nuovo prodotto NON contiene Moringa, riscrivi come "What can it help with?" o "How does it work?".
 ${detectedBrand ? `- Il brand del competitor e probabilmente "${detectedBrand}". Quando lo incontri, sostituiscilo con un termine generico ("the formula", "il prodotto") o ometti la menzione. Cita "${job.product_name}" SOLO una volta nel testo, non in ogni occorrenza.` : ''}
 
 📝 TESTI DA RISCRIVERE (usa solo per capire lunghezza/tipo/formattazione - IGNORA completamente il contenuto):
