@@ -219,7 +219,10 @@ function dbFunnelPageToApp(p: FunnelPage): AppFunnelPage {
     name: p.name,
     pageType: p.page_type,
     templateId: p.template_id || undefined,
-    productId: p.product_id,
+    // The dropdown is now bound to My Projects (`project_id`). Older rows that
+    // only have the legacy `product_id` keep falling back to it so they don't
+    // disappear from the UI; the user just needs to re-pick the project.
+    productId: p.project_id || p.product_id || '',
     urlToSwipe: p.url_to_swipe,
     prompt: (p as Record<string, unknown>).prompt as string | undefined,
     swipeStatus: p.swipe_status,
@@ -583,11 +586,18 @@ export const useStore = create<Store>()((set, get) => ({
 
   addFunnelPage: async (page) => {
     try {
+      // The client-side field `productId` actually carries a Project id since
+      // the dropdown was rebound to My Projects. We persist it on the
+      // `project_id` column (FK -> projects, ON DELETE SET NULL) and leave
+      // `product_id` null. Requires the `funnel_pages.product_id` NOT NULL
+      // constraint to be dropped (see
+      // supabase-migration-funnel-pages-product-id-nullable.sql).
       const created = await supabaseOps.createFunnelPage({
         name: page.name,
         page_type: page.pageType,
         template_id: page.templateId,
-        product_id: page.productId,
+        project_id: page.productId || null,
+        product_id: null,
         url_to_swipe: page.urlToSwipe,
         prompt: page.prompt,
         swipe_status: page.swipeStatus,
@@ -618,11 +628,16 @@ export const useStore = create<Store>()((set, get) => ({
       ),
     }));
     try {
+      // See `addFunnelPage`: write the selected Project id on `project_id`.
+      // We only touch `product_id` if the caller explicitly cleared it
+      // (page.productId === '') — otherwise the legacy value is preserved.
       const updated = await supabaseOps.updateFunnelPage(id, {
         name: page.name,
         page_type: page.pageType,
         template_id: page.templateId,
-        product_id: page.productId,
+        ...(page.productId !== undefined
+          ? { project_id: page.productId || null }
+          : {}),
         url_to_swipe: page.urlToSwipe,
         prompt: page.prompt,
         swipe_status: page.swipeStatus,
