@@ -129,9 +129,11 @@ function replaceBrandInTextContent(
     brandsToReplace.push(ogMatch[1].trim())
   }
 
-  // FALLBACK AUTO-DISCOVERY: se nel testo visibile dell'HTML originale c'è una
-  // parola Capitalized (3+ char, no spazi) che ricorre 3+ volte e non è il
-  // productName, è quasi sicuramente il brand del competitor.
+  // FALLBACK AUTO-DISCOVERY: parole Capitalized che ricorrono molte volte
+  // nel testo visibile dell'HTML originale sono PROBABILMENTE il brand
+  // competitor. Soglia volutamente alta (5 occorrenze) per evitare di
+  // catturare termini comuni del template e finire per duplicare il
+  // productName ovunque (problema "PATCH DARIO Appetite PATCH DARIO").
   try {
     const visibleText = originalHtml
       .replace(/<script\b[\s\S]*?<\/script>/gi, '')
@@ -156,16 +158,43 @@ function replaceBrandInTextContent(
       'Amazon', 'Ebay', 'Google', 'Facebook', 'Instagram', 'Trustpilot',
       'America', 'Europe', 'Italy', 'France', 'Spain', 'Germany', 'Warsaw',
       'Like', 'Reply', 'Share', 'Comment', 'Home', 'About', 'Contact',
+      // Common product-page nouns that should never be auto-replaced
+      'Patch', 'Patches', 'Formula', 'Capsule', 'Capsules', 'Supplement',
+      'Supplements', 'Pill', 'Pills', 'Tablet', 'Tablets', 'Cream', 'Serum',
+      'Spray', 'Drop', 'Drops', 'Powder', 'Oil', 'Bottle', 'Pack', 'Box',
+      'Daily', 'Morning', 'Evening', 'Natural', 'Pure', 'Premium', 'Advanced',
+      'Customer', 'Customers', 'Reviews', 'Review', 'Stars', 'Rating',
+      'Health', 'Energy', 'Body', 'Mind', 'Sleep', 'Weight', 'Skin',
     ])
+    // Tokens contained inside the new productName must never be candidates
+    // for replacement — that's exactly how we ended up with stuffing like
+    // "PATCH DARIO Patch" → "PATCH DARIO PATCH DARIO".
+    const productTokens = new Set(
+      productName
+        .split(/\s+/)
+        .map((t) => t.toLowerCase())
+        .filter((t) => t.length > 0),
+    )
     for (const [word, count] of wordCounts.entries()) {
-      if (count >= 3 && !STOP.has(word) && word.toLowerCase() !== productName.toLowerCase()) {
-        brandsToReplace.push(word)
-      }
+      if (count < 5) continue
+      if (STOP.has(word)) continue
+      if (word.toLowerCase() === productName.toLowerCase()) continue
+      if (productTokens.has(word.toLowerCase())) continue
+      brandsToReplace.push(word)
     }
   } catch {}
 
+  const productLower = productName.toLowerCase()
+  const productTokensLower = new Set(
+    productName.split(/\s+/).map((t) => t.toLowerCase()).filter(Boolean),
+  )
   const uniqueBrands = [...new Set(brandsToReplace.map(b => b.trim()))]
-    .filter(b => b.length > 3 && b.toLowerCase() !== productName.toLowerCase())
+    // Length floor 5 (was 3) + skip anything that overlaps the product
+    // name. Prevents catching short generic words like "Oil", "Pack", or
+    // tokens inside the product name itself.
+    .filter((b) => b.length >= 5)
+    .filter((b) => b.toLowerCase() !== productLower)
+    .filter((b) => !productTokensLower.has(b.toLowerCase()))
     // ordino per length desc così "nooro-us" viene prima di "nooro"
     .sort((a, b) => b.length - a.length)
 
@@ -825,9 +854,21 @@ ${job.custom_prompt ? `Istruzioni copy personalizzate: ${job.custom_prompt}` : '
 - I testi originali sono SOLO per capire: lunghezza approssimativa, tipo di testo (titolo/bottone/descrizione), formattazione
 - IGNORA completamente il contenuto dei testi originali - NON copiare NESSUNA parola dal testo originale
 - CREA nuovi testi da zero usando SOLO: nome prodotto, descrizione, framework, istruzioni copy
-- Ogni testo deve parlare SOLO del nuovo prodotto "${job.product_name}"
+- Ogni testo deve essere COERENTE con il nuovo prodotto, ma NON deve necessariamente CITARE il suo nome
 - Se il testo originale contiene &nbsp; o spazi all'inizio, mantieni la stessa formattazione ma riscrivi TUTTO il contenuto DOPO &nbsp; usando SOLO le informazioni del nuovo prodotto
 - IMPORTANTE: Riscrivi TUTTO il testo dopo &nbsp; con testo completamente nuovo adattato al prodotto - non lasciare parti del testo originale
+
+🚫 REGOLE ANTI-RIPETIZIONE DEL NOME PRODOTTO (IMPORTANTE):
+- NON ripetere il nome del prodotto in ogni heading, feature, bullet o paragrafo
+- Il nome prodotto va citato MASSIMO 1 volta per testo, e SOLO se ha senso editoriale (es: H1 hero, CTA principale, opening line)
+- Per le features / bullet / sotto-titoli: usa SOLO il beneficio, NIENTE nome prodotto. Esempio:
+   ✓ DO:  "Appetite Control"
+   ✗ DON'T: "${job.product_name} Appetite ${job.product_name}"
+   ✓ DO:  "Evening Craving Control"
+   ✗ DON'T: "${job.product_name} Evening Craving ${job.product_name}"
+- Quando devi riferirti al prodotto in modo generico, usa pronomi (it / this / our / the formula / la formula / il supplemento) invece di ripetere il nome
+- Se un testo originale ripeteva il brand del competitor 3+ volte, NON replicare lo stesso pattern: scrivi UNA SOLA menzione del nuovo nome
+- Headers di sezione (es: "How it works", "Benefits", "Ingredients") devono restare BRAND-NEUTRI: niente nome prodotto
 
 📐 FORMATTAZIONE HTML OBBLIGATORIA:
 - Se il testo originale è LUNGO (più di 100 caratteri), DEVI formattarlo con tag HTML
@@ -842,8 +883,8 @@ ${job.custom_prompt ? `Istruzioni copy personalizzate: ${job.custom_prompt}` : '
 - Se il testo originale è in inglese, scrivi tutto in inglese
 - Se il testo originale è in italiano, scrivi tutto in italiano
 - NON copiare NESSUNA parola dal testo originale - riscrivi tutto da zero
-- Se trovi nomi di brand, aziende o siti web del competitor nel testo originale, sostituiscili SEMPRE con "${job.product_name}"
-${detectedBrand ? `- ATTENZIONE: il brand originale è probabilmente "${detectedBrand}" - sostituisci OGNI sua occorrenza con "${job.product_name}"` : ''}
+- Se trovi nomi di brand, aziende o siti web del COMPETITOR (NON il nuovo prodotto) nel testo originale, RIMUOVILI o sostituiscili con un termine generico ("the formula", "the supplement", "il prodotto"). NON sostituirli automaticamente con "${job.product_name}" — quello produce stuffing.
+${detectedBrand ? `- Il brand del competitor e probabilmente "${detectedBrand}". Quando lo incontri, sostituiscilo con un termine generico ("the formula", "il prodotto") o ometti la menzione. Cita "${job.product_name}" SOLO una volta nel testo, non in ogni occorrenza.` : ''}
 
 📝 TESTI DA RISCRIVERE (usa solo per capire lunghezza/tipo/formattazione - IGNORA completamente il contenuto):
 ${JSON.stringify(batchTexts, null, 2)}
@@ -990,13 +1031,41 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
         }))
       }
 
+      // Anti-stuffing pass: even with the new prompt instructions, Claude
+      // occasionally repeats the product name 3+ times in a single short
+      // text (especially on heading-like inputs). Strip duplicates beyond
+      // the first occurrence per text. Conservative: only triggers on
+      // 3+ occurrences, never removes the first one.
+      const stripStuffing = (text: string, brand: string): string => {
+        if (!text || !brand || brand.length < 3) return text
+        const escaped = brand.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+        // Count occurrences (case-insensitive)
+        const occRegex = new RegExp(escaped, 'gi')
+        const matches = text.match(occRegex)
+        if (!matches || matches.length < 3) return text
+        // Replace 2nd, 3rd, ... occurrences with empty space (collapse later)
+        let seen = 0
+        const cleaned = text.replace(occRegex, (m) => {
+          seen += 1
+          return seen === 1 ? m : ''
+        })
+        // Tidy up resulting double spaces / dangling punctuation
+        return cleaned
+          .replace(/\s+([,.;:!?)])/g, '$1')
+          .replace(/\(\s+/g, '(')
+          .replace(/\s{2,}/g, ' ')
+          .replace(/\s+(<\/(?:strong|em|p|span)>)/gi, '$1')
+          .trim()
+      }
+
       for (const rewritten of rewrittenTexts) {
         const originalText = textsToProcess.find(t => t.index === rewritten.index)
         if (originalText) {
+          const cleanedText = stripStuffing(rewritten.text || '', job.product_name)
           await supabase
             .from('cloning_texts')
             .update({
-              new_text: rewritten.text,
+              new_text: cleanedText,
               processed: true,
               processed_at: new Date().toISOString()
             })
