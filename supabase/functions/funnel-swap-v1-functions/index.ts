@@ -129,69 +129,19 @@ function replaceBrandInTextContent(
     brandsToReplace.push(ogMatch[1].trim())
   }
 
-  // FALLBACK AUTO-DISCOVERY: parole Capitalized che ricorrono molte volte
-  // nel testo visibile dell'HTML originale sono PROBABILMENTE il brand
-  // competitor. Soglia volutamente alta (5 occorrenze) per evitare di
-  // catturare termini comuni del template e finire per duplicare il
-  // productName ovunque (problema "PATCH DARIO Appetite PATCH DARIO").
-  try {
-    const visibleText = originalHtml
-      .replace(/<script\b[\s\S]*?<\/script>/gi, '')
-      .replace(/<style\b[\s\S]*?<\/style>/gi, '')
-      .replace(/<[^>]+>/g, ' ')
-    const wordCounts = new Map<string, number>()
-    const wordRegex = /\b([A-Z][a-zA-Z]{2,20})\b/g
-    let wm: RegExpExecArray | null
-    while ((wm = wordRegex.exec(visibleText)) !== null) {
-      const w = wm[1]
-      wordCounts.set(w, (wordCounts.get(w) || 0) + 1)
-    }
-    // Stop-words (parole capitalized comuni che NON sono brand)
-    const STOP = new Set([
-      'The', 'And', 'For', 'You', 'Your', 'This', 'That', 'With', 'From', 'Have',
-      'Are', 'Was', 'Will', 'Can', 'But', 'Not', 'All', 'New', 'One', 'Two',
-      'How', 'Why', 'When', 'What', 'Who', 'May', 'June', 'July', 'August',
-      'September', 'October', 'November', 'December', 'January', 'February',
-      'March', 'April', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday',
-      'Saturday', 'Sunday', 'Update', 'Important', 'Limited', 'Time', 'Free',
-      'Get', 'Order', 'Buy', 'Now', 'Today', 'Trending', 'Breakthrough',
-      'Amazon', 'Ebay', 'Google', 'Facebook', 'Instagram', 'Trustpilot',
-      'America', 'Europe', 'Italy', 'France', 'Spain', 'Germany', 'Warsaw',
-      'Like', 'Reply', 'Share', 'Comment', 'Home', 'About', 'Contact',
-      // Common product-page nouns that should never be auto-replaced
-      'Patch', 'Patches', 'Formula', 'Capsule', 'Capsules', 'Supplement',
-      'Supplements', 'Pill', 'Pills', 'Tablet', 'Tablets', 'Cream', 'Serum',
-      'Spray', 'Drop', 'Drops', 'Powder', 'Oil', 'Bottle', 'Pack', 'Box',
-      'Daily', 'Morning', 'Evening', 'Natural', 'Pure', 'Premium', 'Advanced',
-      'Customer', 'Customers', 'Reviews', 'Review', 'Stars', 'Rating',
-      'Health', 'Energy', 'Body', 'Mind', 'Sleep', 'Weight', 'Skin',
-    ])
-    // Tokens contained inside the new productName must never be candidates
-    // for replacement — that's exactly how we ended up with stuffing like
-    // "PATCH DARIO Patch" → "PATCH DARIO PATCH DARIO".
-    const productTokens = new Set(
-      productName
-        .split(/\s+/)
-        .map((t) => t.toLowerCase())
-        .filter((t) => t.length > 0),
-    )
-    for (const [word, count] of wordCounts.entries()) {
-      if (count < 5) continue
-      if (STOP.has(word)) continue
-      if (word.toLowerCase() === productName.toLowerCase()) continue
-      if (productTokens.has(word.toLowerCase())) continue
-      brandsToReplace.push(word)
-    }
-  } catch {}
-
+  // CONSERVATIVE STRATEGY: only replace the domain-derived brand candidates
+  // (e.g. "resilia" from resilia.com) and og:site_name. We INTENTIONALLY do
+  // NOT do auto-discovery of frequent capitalized words anymore — that path
+  // was the root cause of "Reset Patch Reset Patch" / "PATCH DARIO Appetite
+  // PATCH DARIO" because it would catch ingredient names, recurring nouns,
+  // or words that overlap the new product name and rewrite them all to the
+  // product name. Claude is now responsible (via prompt) for omitting or
+  // neutralising competitor brand mentions in the texts it generates.
   const productLower = productName.toLowerCase()
   const productTokensLower = new Set(
     productName.split(/\s+/).map((t) => t.toLowerCase()).filter(Boolean),
   )
   const uniqueBrands = [...new Set(brandsToReplace.map(b => b.trim()))]
-    // Length floor 5 (was 3) + skip anything that overlaps the product
-    // name. Prevents catching short generic words like "Oil", "Pack", or
-    // tokens inside the product name itself.
     .filter((b) => b.length >= 5)
     .filter((b) => b.toLowerCase() !== productLower)
     .filter((b) => !productTokensLower.has(b.toLowerCase()))
@@ -200,7 +150,7 @@ function replaceBrandInTextContent(
 
   if (uniqueBrands.length === 0) return html
 
-  console.log(`🏷️ Brand post-processing: [${uniqueBrands.join(', ')}] → "${productName}"`)
+  console.log(`🏷️ Brand post-processing (domain/og only): [${uniqueBrands.join(', ')}] → "${productName}"`)
   const htmlParts = html.split(/(<[^>]+>)/)
   for (let i = 0; i < htmlParts.length; i++) {
     if (!htmlParts[i].startsWith('<')) {
@@ -216,6 +166,40 @@ function replaceBrandInTextContent(
     }
   }
   return htmlParts.join('')
+}
+
+// Final-pass anti-stuffing on the assembled HTML. Catches patterns that
+// slipped past stripStuffing (which only sees individual texts) — most
+// notably consecutive duplicates of the new product name like
+// "Reset Patch Reset Patch" and "PATCH DARIO PATCH DARIO" that emerge
+// when two different `cloning_texts` sit next to each other in the DOM.
+function collapseConsecutiveBrandRuns(html: string, productName: string): string {
+  if (!productName || productName.length < 3) return html
+  const escaped = productName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  // Pattern: brand, optionally followed by a tiny gap (whitespace, &nbsp;,
+  // a single inline tag like </span>, a thin separator), then brand again.
+  // Repeats until idempotent.
+  const gap = `(?:\\s|&nbsp;|&\\#160;|<\\/?(?:strong|em|span|b|i|sup|sub|a|small|font)[^>]{0,200}>|[\\-–—:|·•†*])*`
+  const dup = new RegExp(`(${escaped})${gap}\\1`, 'gi')
+  let prev = html
+  for (let i = 0; i < 6; i++) {
+    const next = prev.replace(dup, '$1')
+    if (next === prev) break
+    prev = next
+  }
+  // Also catch X xxx X xxx X (triple) within a short window of < 40 chars
+  // that should never have 3 brand mentions in a row.
+  const tripleWindow = new RegExp(`(${escaped})([\\s\\S]{1,40}?)\\1([\\s\\S]{1,40}?)\\1`, 'gi')
+  prev = prev.replace(tripleWindow, (_m, b, mid1, mid2) => {
+    // Keep the brand only at the start, drop subsequent mentions, preserve
+    // intermediate text but trim stranded separators.
+    const middle = `${mid1} ${mid2}`
+      .replace(/\s*[\-–—:|·•]\s*/g, ' ')
+      .replace(/\s{2,}/g, ' ')
+      .trim()
+    return middle ? `${b} ${middle}` : b
+  })
+  return prev
 }
 
 // Sostituisce placeholder template Liquid/Jinja noti con valori reali.
@@ -584,6 +568,7 @@ serve(async (req) => {
         }
 
         clonedHTML = replaceBrandInTextContent(clonedHTML, job.url, job.original_html, job.product_name)
+        clonedHTML = collapseConsecutiveBrandRuns(clonedHTML, job.product_name)
         clonedHTML = replaceLiquidPlaceholders(clonedHTML)
 
         // === INLINE BUNDLE JS MODIFICATI ===
@@ -1085,16 +1070,20 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
         })
 
         // Tidy up resulting double spaces / dangling punctuation / empty
-        // separators (e.g. "Welcome Gift -  $18" -> "Welcome Gift - $18").
+        // separators left where the brand was removed.
         cleaned = cleaned
           .replace(/\s+([,.;:!?)])/g, '$1')
           .replace(/\(\s+/g, '(')
-          // collapse "  -  " or "  –  " left over from removed mentions
-          .replace(/\s+([\-–—])\s+(?=\s|$)/g, '')
-          .replace(/(^|\s)([\-–—])\s+/g, '$1')
-          .replace(/\s+([\-–—])(\s|$)/g, '$2')
+          // dash now leading the string (e.g. "- $18.00") -> drop
+          .replace(/^\s*[\-–—]\s+/, '')
+          // dash now trailing the string (e.g. "Welcome Gift -") -> drop
+          .replace(/\s+[\-–—]\s*$/, '')
+          // collapse repeated whitespace
           .replace(/\s{2,}/g, ' ')
+          // remove stray whitespace before closing inline tags
           .replace(/\s+(<\/(?:strong|em|p|span|h[1-6]|li|td|th|a|button)>)/gi, '$1')
+          // empty paragraph/strong/em wrappers left over -> drop
+          .replace(/<(strong|em|span|p|h[1-6])>\s*<\/\1>/gi, '')
           .trim()
 
         // If after stripping the text is now suspiciously empty/garbage
@@ -1218,6 +1207,7 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
         }
 
         clonedHTML = replaceBrandInTextContent(clonedHTML, job.url, job.original_html, job.product_name)
+        clonedHTML = collapseConsecutiveBrandRuns(clonedHTML, job.product_name)
         clonedHTML = replaceLiquidPlaceholders(clonedHTML)
 
         console.log(`✅ Ricostruzione HTML completata: ${replacementCount} testi sostituiti`)
