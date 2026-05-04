@@ -81,6 +81,21 @@ const MODELS: Record<string, ModelDef> = {
     }),
     parseResult: parseImagesResult,
   },
+  // OpenAI's GPT Image 2 (ChatGPT Image 2). Hosted via fal as `openai/...`.
+  // Note: this model is priced significantly higher than Nano Banana / Flux,
+  // so we default `quality` to "medium" to keep cost predictable.
+  'gpt-image-2': {
+    endpoint: 'openai/gpt-image-2',
+    mediaType: 'image',
+    buildInput: ({ prompt, aspectRatio }) => ({
+      prompt,
+      image_size: aspectRatioToFluxSize(aspectRatio),
+      quality: 'medium',
+      num_images: 1,
+      output_format: 'png',
+    }),
+    parseResult: parseImagesResult,
+  },
 
   // ── IMAGE → IMAGE (edit) ─────────────────────────────────────────────────
   'nano-banana-2-edit': {
@@ -100,6 +115,19 @@ const MODELS: Record<string, ModelDef> = {
     buildInput: ({ prompt, imageUrl }) => ({
       prompt,
       image_url: imageUrl,
+      num_images: 1,
+      output_format: 'png',
+    }),
+    parseResult: parseImagesResult,
+  },
+  'gpt-image-2-edit': {
+    endpoint: 'openai/gpt-image-2/edit',
+    mediaType: 'image',
+    buildInput: ({ prompt, imageUrl }) => ({
+      prompt,
+      image_urls: imageUrl ? [imageUrl] : [],
+      image_size: 'auto',
+      quality: 'medium',
       num_images: 1,
       output_format: 'png',
     }),

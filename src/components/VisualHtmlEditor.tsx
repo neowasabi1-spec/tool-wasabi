@@ -648,12 +648,14 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   const AI_MODELS: Record<AiMode, { id: string; label: string; hint: string }[]> = {
     text2image: [
       { id: 'nano-banana-2', label: 'Nano Banana 2 (Gemini 3.1 Flash)', hint: 'Veloce, qualita alta, default' },
+      { id: 'gpt-image-2', label: 'ChatGPT Image 2 (OpenAI)', hint: 'Top per testo nelle immagini, costoso' },
       { id: 'flux-schnell', label: 'FLUX Schnell', hint: 'Super rapido (~2s), economico' },
       { id: 'flux-dev', label: 'FLUX Dev', hint: 'Qualita superiore, piu lento' },
       { id: 'imagen4', label: 'Google Imagen 4 Fast', hint: 'Buono per realismo' },
     ],
     image2image: [
       { id: 'nano-banana-2-edit', label: 'Nano Banana 2 Edit', hint: 'Edit mirato, conserva soggetto' },
+      { id: 'gpt-image-2-edit', label: 'ChatGPT Image 2 Edit (OpenAI)', hint: 'Editing fine, costoso' },
       { id: 'flux-kontext', label: 'FLUX Pro Kontext', hint: 'Riedit avanzato' },
     ],
     image2video: [
