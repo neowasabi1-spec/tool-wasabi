@@ -283,6 +283,11 @@ serve(async (req) => {
       Math.min(140_000, Number(claudeTimeoutMsOverride) || CLAUDE_TIMEOUT_MS_DEFAULT),
     )
 
+    // BUILD MARKER — bump on every deploy so we can verify in Supabase logs
+    // which version of the function is actually serving requests. Critical
+    // because GitHub pushes don't auto-deploy; if you don't see this exact
+    // string in the logs you're still on the old build.
+    console.log(`🔖 funnel-swap build: v3.1-anti-stuffing (commit 8f50fdd / 2026-05-04)`)
     console.log(`📋 Richiesta ricevuta: phase=${phase}, cloneMode=${cloneMode}, url=${url?.substring(0, 50)}...`)
 
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!
