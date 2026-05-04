@@ -858,17 +858,42 @@ ${job.custom_prompt ? `Istruzioni copy personalizzate: ${job.custom_prompt}` : '
 - Se il testo originale contiene &nbsp; o spazi all'inizio, mantieni la stessa formattazione ma riscrivi TUTTO il contenuto DOPO &nbsp; usando SOLO le informazioni del nuovo prodotto
 - IMPORTANTE: Riscrivi TUTTO il testo dopo &nbsp; con testo completamente nuovo adattato al prodotto - non lasciare parti del testo originale
 
-🚫 REGOLE ANTI-RIPETIZIONE DEL NOME PRODOTTO (IMPORTANTE):
-- NON ripetere il nome del prodotto in ogni heading, feature, bullet o paragrafo
-- Il nome prodotto va citato MASSIMO 1 volta per testo, e SOLO se ha senso editoriale (es: H1 hero, CTA principale, opening line)
-- Per le features / bullet / sotto-titoli: usa SOLO il beneficio, NIENTE nome prodotto. Esempio:
-   ✓ DO:  "Appetite Control"
-   ✗ DON'T: "${job.product_name} Appetite ${job.product_name}"
-   ✓ DO:  "Evening Craving Control"
-   ✗ DON'T: "${job.product_name} Evening Craving ${job.product_name}"
-- Quando devi riferirti al prodotto in modo generico, usa pronomi (it / this / our / the formula / la formula / il supplemento) invece di ripetere il nome
-- Se un testo originale ripeteva il brand del competitor 3+ volte, NON replicare lo stesso pattern: scrivi UNA SOLA menzione del nuovo nome
-- Headers di sezione (es: "How it works", "Benefits", "Ingredients") devono restare BRAND-NEUTRI: niente nome prodotto
+🚫 REGOLE ANTI-RIPETIZIONE DEL NOME PRODOTTO (CRITICAL — VIOLATION = REWRITE):
+- Il nome prodotto "${job.product_name}" può apparire MASSIMO 1 volta per testo se il testo è breve (heading, bottone, label, bullet, feature card).
+- Nei testi lunghi (paragrafi 100+ caratteri) può apparire MASSIMO 2 volte, in punti diversi e mai consecutivi.
+- Non inserire MAI il nome prodotto due volte nello stesso heading o nella stessa frase.
+- Nei feature-block / bullet / sotto-titoli scrivi SOLO il beneficio, MAI il nome prodotto.
+- Negli header di sezione ("How it works", "Benefits", "Ingredients", "FAQs") il nome NON deve comparire.
+- Nelle label commerciali ("Welcome Gift", "30-Day Protocol", "You Save", "Add to Cart", prezzi, sconti, "30-Day Money Back") il nome NON deve comparire.
+- Quando devi riferirti al prodotto in modo generico: usa pronomi o termini neutri ("it", "this", "the formula", "the supplement", "il prodotto", "la formula").
+
+ESEMPI CONCRETI (copia questo stile):
+
+Heading hero (lungo):
+  ✗ "${job.product_name} Appetite ${job.product_name} Control"
+  ✗ "${job.product_name} ${job.product_name} Reset"
+  ✓ "Take Back Control of Your Cravings with ${job.product_name}"
+  ✓ "Reset Your Routine in 90 Days"
+
+Feature card / bullet:
+  ✗ "${job.product_name} Weight Management"
+  ✗ "Weight ${job.product_name} ${job.product_name}"
+  ✓ "Weight Management"
+  ✓ "Evening Craving Control"
+
+Label commerciali:
+  ✗ "Welcome Gift - ${job.product_name} \\$18.00"
+  ✗ "You ${job.product_name}"
+  ✓ "Welcome Gift - \\$18.00"
+  ✓ "You Save"
+  ✓ "30-Day Protocol"
+
+Body copy (frase intera):
+  ✗ "The ${job.product_name} appetite ${job.product_name} your changing body has been waiting for."
+  ✓ "The appetite formula your changing body has been waiting for."
+  ✓ "${job.product_name} is the appetite formula your changing body has been waiting for."
+
+REGOLA D'ORO: se NON sapresti come pronunciarlo ad alta voce in un'inserzione TV, è stuffing. Riscrivi.
 
 📐 FORMATTAZIONE HTML OBBLIGATORIA:
 - Se il testo originale è LUNGO (più di 100 caratteri), DEVI formattarlo con tag HTML
@@ -1031,31 +1056,54 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
         }))
       }
 
-      // Anti-stuffing pass: even with the new prompt instructions, Claude
-      // occasionally repeats the product name 3+ times in a single short
-      // text (especially on heading-like inputs). Strip duplicates beyond
-      // the first occurrence per text. Conservative: only triggers on
-      // 3+ occurrences, never removes the first one.
-      const stripStuffing = (text: string, brand: string): string => {
-        if (!text || !brand || brand.length < 3) return text
+      // Anti-stuffing pass: Claude (or upstream substitutions) sometimes
+      // repeats the product name 2-3 times in short headings/buttons and
+      // 3+ times in body copy. Strip occurrences beyond a length-aware
+      // budget. Headings and buttons get max 1 mention; body copy gets
+      // max 2.
+      const stripStuffing = (rawText: string, brand: string): string => {
+        if (!rawText || !brand || brand.length < 3) return rawText
         const escaped = brand.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-        // Count occurrences (case-insensitive)
         const occRegex = new RegExp(escaped, 'gi')
-        const matches = text.match(occRegex)
-        if (!matches || matches.length < 3) return text
-        // Replace 2nd, 3rd, ... occurrences with empty space (collapse later)
+        const matches = rawText.match(occRegex)
+        if (!matches) return rawText
+
+        // Strip HTML tags to evaluate the visible text length only
+        const visibleLen = rawText.replace(/<[^>]+>/g, '').trim().length
+        // Heading / button / short label heuristic: <= 60 visible chars OR
+        // no sentence-ending punctuation. These should mention the brand
+        // 0-1 times maximum.
+        const isShort = visibleLen <= 60 || !/[.!?]/.test(rawText)
+        const maxAllowed = isShort ? 1 : 2
+
+        if (matches.length <= maxAllowed) return rawText
+
         let seen = 0
-        const cleaned = text.replace(occRegex, (m) => {
+        let cleaned = rawText.replace(occRegex, (m) => {
           seen += 1
-          return seen === 1 ? m : ''
+          return seen <= maxAllowed ? m : ''
         })
-        // Tidy up resulting double spaces / dangling punctuation
-        return cleaned
+
+        // Tidy up resulting double spaces / dangling punctuation / empty
+        // separators (e.g. "Welcome Gift -  $18" -> "Welcome Gift - $18").
+        cleaned = cleaned
           .replace(/\s+([,.;:!?)])/g, '$1')
           .replace(/\(\s+/g, '(')
+          // collapse "  -  " or "  –  " left over from removed mentions
+          .replace(/\s+([\-–—])\s+(?=\s|$)/g, '')
+          .replace(/(^|\s)([\-–—])\s+/g, '$1')
+          .replace(/\s+([\-–—])(\s|$)/g, '$2')
           .replace(/\s{2,}/g, ' ')
-          .replace(/\s+(<\/(?:strong|em|p|span)>)/gi, '$1')
+          .replace(/\s+(<\/(?:strong|em|p|span|h[1-6]|li|td|th|a|button)>)/gi, '$1')
           .trim()
+
+        // If after stripping the text is now suspiciously empty/garbage
+        // (e.g. became just "†" or " "), keep the original — we'd rather
+        // ship a stuffed text than a broken one.
+        const visibleAfter = cleaned.replace(/<[^>]+>/g, '').trim()
+        if (visibleAfter.length < 3) return rawText
+
+        return cleaned
       }
 
       for (const rewritten of rewrittenTexts) {
