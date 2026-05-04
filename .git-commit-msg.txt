@@ -1,0 +1,43 @@
+fix(swap): SPA hydration safety — never inject tags into Vue/React/Svelte pages
+
+Root cause of "accordion non si apre" + "thumbnails non cliccabili"
+after a Rosabella-style swipe: the source page is a Vue.js component
+(every node carries data-v-7000fbd6, the Vue component scope id).
+When Claude returns rewritten text wrapped in <p>/<strong>/<br> as
+mandated by the prompt, the rebuild path injects those tags into the
+DOM. On client side Vue tries to hydrate against the static markup
+checksum, sees a mismatch (extra <p> wrappers where the template had
+plain text, or vice versa), bails hydration, and crucially STOPS
+attaching event handlers. Result: the page renders fine but every
+click handler — accordion toggle, gallery thumbnail switch, modal
+opener — silently no-ops. Same failure mode reproduces on any
+hydrated framework: React with data-reactroot, Next.js __NEXT_DATA__,
+Nuxt __NUXT__, SvelteKit, AngularJS ng-app, and on hydrated page
+builders (Funnelytics, ClickFunnels 2.0, Convertri, Shogun, Replo).
+
+Three-layer fix:
+
+1. SPA detection on the source HTML: cheap regex against a 50KB
+   sample looks for data-v-<hash>, data-reactroot, __NEXT_DATA__,
+   __NUXT__, __sveltekit_data, svelte-<hash>, <div id=root>,
+   <div id=__next>, v-cloak, ng-app/controller/view. One log line
+   when triggered so it's visible in Supabase logs.
+
+2. Conditional prompt: when SPA is detected, the entire HTML
+   formatting section is replaced with a hard ban on adding any
+   tag (<p>, <strong>, <em>, <br>, <span>, <ul>, <li>). Claude
+   must return plain text and preserve the EXACT tag skeleton of
+   the original if the original had tags. Reason is spelled out
+   so Claude doesn't second-guess.
+
+3. Server-side enforcement (enforceSpaSafety): even if Claude
+   ignores the instruction, we strip any tag the model added when
+   isSpaPage is true. <br> becomes \n, </p> becomes \n\n, &nbsp;
+   becomes space. Original-with-tags is downgraded to plain text
+   so distributeTextProportionally can re-inject the new copy into
+   the original tag skeleton at rebuild time.
+
+Effect: on Rosabella-style Vue pages the rewritten text now matches
+the original tag structure exactly, hydration succeeds, and FAQ +
+gallery interactivity is preserved. On non-SPA pages (classic
+Shopify, WordPress, plain HTML) behaviour is unchanged.

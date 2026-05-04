@@ -831,7 +831,33 @@ serve(async (req) => {
         detectedBrand = urlObj.hostname.replace(/^www\./, '').split('.')[0]
         if (detectedBrand.length <= 3) detectedBrand = ''
       } catch {}
-      
+
+      // SPA detection: pages built with Vue (data-v-*), React (data-reactroot,
+      // __NEXT_DATA__), Svelte (svelte-* class), Nuxt (__NUXT__), or page
+      // builders that compile to a Vue/React component (Funnelytics, Clickfunnels
+      // 2.0, Convertri, Shogun, Replo) hydrate the static markup at runtime.
+      // If the rewritten text introduces NEW HTML tags (<p>, <strong>, <br>)
+      // that weren't in the original DOM, the hydration mismatch causes the
+      // framework to BAIL and skip attaching event handlers — accordions,
+      // sliders, gallery thumbnails, modals stop responding to clicks even
+      // though they still render. Detection: cheap regex on a 50KB sample.
+      const htmlSample = (job.original_html || '').substring(0, 50_000)
+      const isSpaPage =
+        /\bdata-v-[a-f0-9]{6,}/.test(htmlSample) ||
+        /\bdata-reactroot\b/.test(htmlSample) ||
+        /__NEXT_DATA__/.test(htmlSample) ||
+        /__NUXT__/.test(htmlSample) ||
+        /__sveltekit_data/.test(htmlSample) ||
+        /\bsvelte-[a-z0-9]{6,}/.test(htmlSample) ||
+        /<div[^>]+id=["']root["'][^>]*>\s*<\/div>/.test(htmlSample) ||
+        /<div[^>]+id=["']__next["'][^>]*>/.test(htmlSample) ||
+        /\bv-cloak\b/.test(htmlSample) ||
+        /\bng-(?:app|controller|view)\b/.test(htmlSample)
+
+      if (isSpaPage) {
+        console.log(`🧬 SPA page detected — disabling HTML markup in rewrites to avoid hydration mismatch`)
+      }
+
       const rewritePrompt = `La landing page è un TEMPLATE strutturale. Il tuo compito è riscrivere TUTTI i testi usando SOLO le informazioni del nuovo prodotto.
 
 📋 INFORMAZIONI DEL NUOVO PRODOTTO (USA SOLO QUESTE):
@@ -886,13 +912,18 @@ Body copy (frase intera):
 
 REGOLA D'ORO: se NON sapresti come pronunciarlo ad alta voce in un'inserzione TV, è stuffing. Riscrivi.
 
-📐 FORMATTAZIONE HTML OBBLIGATORIA:
+${isSpaPage ? `📐 FORMATTAZIONE HTML — DIVIETO ASSOLUTO (pagina SPA Vue/React/Svelte rilevata):
+- 🚨 NON aggiungere MAI alcun tag HTML al testo riscritto. NIENTE <p>, <strong>, <em>, <br>, <span>, <ul>, <li>.
+- Restituisci SEMPRE plain text. Se il testo originale aveva newline o &nbsp;, mantienili IDENTICI nelle stesse posizioni.
+- Se il testo originale conteneva tag HTML (es. <strong>...</strong>), preservali ESATTAMENTE: stessi tag, stessa posizione relativa, stessa nidificazione. Cambia SOLO il testo dentro i tag.
+- Motivo: questa pagina è un componente Vue/React idratato dal browser. Aggiungere o togliere un solo tag rompe l'hydration e disabilita TUTTI i click handler (accordion FAQ, gallery prodotto, modal). Nessuna eccezione.
+- Per testi lunghi senza HTML originale: scrivi testo continuo separato solo da \\n (newline) dove servono pause logiche, mai con <br>.` : `📐 FORMATTAZIONE HTML OBBLIGATORIA:
 - Se il testo originale è LUNGO (più di 100 caratteri), DEVI formattarlo con tag HTML
 - Usa <p>...</p> per separare i paragrafi (ogni 2-3 frasi)
 - Usa <strong>...</strong> per parole/frasi importanti da evidenziare
 - Usa <br> per andare a capo quando serve
 - NON creare muri di testo - dividi SEMPRE in paragrafi leggibili
-- Per testi CORTI (titoli, bottoni, meno di 100 caratteri): NON usare tag HTML
+- Per testi CORTI (titoli, bottoni, meno di 100 caratteri): NON usare tag HTML`}
 
 ⚠️ REGOLE CRITICHE:
 - NON mescolare lingue diverse nello stesso testo
@@ -1048,6 +1079,44 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
         }))
       }
 
+      // SPA safety: when the source page is a hydrated Vue/React/Svelte
+      // component, the rewritten text MUST keep exactly the same tag
+      // structure as the original — adding or removing tags causes the
+      // framework to bail hydration and disable all event handlers
+      // (broken accordions, sliders, gallery thumbnails, modals).
+      // We enforce it server-side: if the original text has no tags,
+      // strip every tag from the rewrite. If the original had tags, we
+      // can't easily realign Claude's tags to the original positions, so
+      // we fall back to plain text (slightly worse formatting, fully
+      // working interactivity).
+      const enforceSpaSafety = (originalText: string, rewrittenText: string): string => {
+        if (!isSpaPage) return rewrittenText
+        const originalHasTags = /<[a-zA-Z\/]/.test(originalText)
+        const rewrittenHasTags = /<[a-zA-Z\/]/.test(rewrittenText)
+        if (!rewrittenHasTags) return rewrittenText
+        if (!originalHasTags) {
+          // Strip all tags. Decode common entities introduced by tag stripping.
+          return rewrittenText
+            .replace(/<br\s*\/?>/gi, '\n')
+            .replace(/<\/p>/gi, '\n\n')
+            .replace(/<[^>]+>/g, '')
+            .replace(/&nbsp;/g, ' ')
+            .replace(/\n{3,}/g, '\n\n')
+            .trim()
+        }
+        // Original had tags AND rewritten has tags. Conservative path:
+        // strip rewritten tags down to text, then we still preserve the
+        // original tag skeleton in distributeTextProportionally during
+        // rebuild. This avoids any tag mismatch on hydration.
+        return rewrittenText
+          .replace(/<br\s*\/?>/gi, '\n')
+          .replace(/<\/p>/gi, '\n\n')
+          .replace(/<[^>]+>/g, '')
+          .replace(/&nbsp;/g, ' ')
+          .replace(/\n{3,}/g, '\n\n')
+          .trim()
+      }
+
       // Anti-stuffing pass: Claude (or upstream substitutions) sometimes
       // repeats the product name 2-3 times in short headings/buttons and
       // 3+ times in body copy. Strip occurrences beyond a length-aware
@@ -1105,7 +1174,8 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
       for (const rewritten of rewrittenTexts) {
         const originalText = textsToProcess.find(t => t.index === rewritten.index)
         if (originalText) {
-          const cleanedText = stripStuffing(rewritten.text || '', job.product_name)
+          const safeText = enforceSpaSafety(originalText.original_text || '', rewritten.text || '')
+          const cleanedText = stripStuffing(safeText, job.product_name)
           await supabase
             .from('cloning_texts')
             .update({
