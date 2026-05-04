@@ -244,8 +244,26 @@ serve(async (req) => {
       userId,
       htmlContent,
       targetLanguage,
-      renderedHtml // Pre-rendered HTML from Playwright (sent by Next.js API for JS-rendered pages)
+      renderedHtml, // Pre-rendered HTML from Playwright (sent by Next.js API for JS-rendered pages)
+      // Tunables (optional). The legacy defaults (BATCH_SIZE=25, timeout=60s)
+      // were too aggressive: complex rewrites of 25 texts routinely exceeded
+      // 60s on Claude Sonnet and surfaced as "Timeout chiamata Claude API
+      // (60s). Ridurre batch size...". New defaults: 12 texts per batch and
+      // 120s timeout (still well within Supabase Edge Functions' 150s wall).
+      batchSize: batchSizeOverride,
+      claudeTimeoutMs: claudeTimeoutMsOverride,
     } = await req.json()
+
+    const BATCH_SIZE_DEFAULT = 12
+    const CLAUDE_TIMEOUT_MS_DEFAULT = 120_000
+    const BATCH_SIZE_RUNTIME = Math.max(
+      1,
+      Math.min(50, Number(batchSizeOverride) || BATCH_SIZE_DEFAULT),
+    )
+    const CLAUDE_TIMEOUT_MS_RUNTIME = Math.max(
+      15_000,
+      Math.min(140_000, Number(claudeTimeoutMsOverride) || CLAUDE_TIMEOUT_MS_DEFAULT),
+    )
 
     console.log(`📋 Richiesta ricevuta: phase=${phase}, cloneMode=${cloneMode}, url=${url?.substring(0, 50)}...`)
 
@@ -285,7 +303,7 @@ serve(async (req) => {
         )
       }
 
-      const BATCH_SIZE = 25
+      const BATCH_SIZE = BATCH_SIZE_RUNTIME
       const { data: textsToProcess, error: textsError } = await supabase
         .from('cloning_texts')
         .select('*')
@@ -833,8 +851,8 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
 
       let claudeResponse
       const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 60000)
-      
+      const timeoutId = setTimeout(() => controller.abort(), CLAUDE_TIMEOUT_MS_RUNTIME)
+
       try {
         claudeResponse = await fetch('https://api.anthropic.com/v1/messages', {
           method: 'POST',
@@ -856,8 +874,13 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
       } catch (fetchError) {
         clearTimeout(timeoutId)
         if (fetchError.name === 'AbortError' || controller.signal.aborted) {
+          const tSec = Math.round(CLAUDE_TIMEOUT_MS_RUNTIME / 1000)
           return new Response(
-            JSON.stringify({ error: 'Timeout chiamata Claude API (60s). Ridurre batch size o verificare connessione.' }),
+            JSON.stringify({
+              error: `Timeout chiamata Claude API (${tSec}s) sul batch di ${BATCH_SIZE_RUNTIME} testi. Riduci batchSize nel body della richiesta (es. 6-8) o aumenta claudeTimeoutMs (max 140000).`,
+              batchSize: BATCH_SIZE_RUNTIME,
+              claudeTimeoutMs: CLAUDE_TIMEOUT_MS_RUNTIME,
+            }),
             { status: 504, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
           )
         }
