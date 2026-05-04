@@ -6,10 +6,13 @@ export const dynamic = 'force-dynamic';
 
 const BUCKET_NAME = 'generated-images';
 
-// Nano Banana 2 = Gemini 3.1 Flash Image Preview.
-// Endpoint: https://ai.google.dev/gemini-api/docs/image-generation
-const GEMINI_MODEL = 'gemini-3.1-flash-image-preview';
-const GEMINI_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
+// Nano Banana 2 = Gemini 3.1 Flash Image, hosted on fal.ai.
+// Docs: https://fal.ai/models/fal-ai/nano-banana-2/api
+const FAL_MODEL = 'fal-ai/nano-banana-2';
+// Sync endpoint blocks until generation completes (typically 5–10s).
+const FAL_SYNC_ENDPOINT = `https://fal.run/${FAL_MODEL}`;
+// Queue fallback for environments with tight HTTP timeouts.
+const FAL_QUEUE_SUBMIT_ENDPOINT = `https://queue.fal.run/${FAL_MODEL}`;
 
 function getSupabase() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -26,8 +29,8 @@ async function ensureBucket(sb: any) {
   }
 }
 
-// Map legacy DALL-E size strings to Gemini aspect ratios. The front-end
-// (VisualHtmlEditor.tsx) still sends `1024x1024` / `1792x1024` / `1024x1792`.
+// fal-ai/nano-banana-2 supports:
+// auto, 21:9, 16:9, 3:2, 4:3, 5:4, 1:1, 4:5, 3:4, 2:3, 9:16, 4:1, 1:4, 8:1, 1:8
 function sizeToAspectRatio(size: unknown): string {
   switch (size) {
     case '1792x1024':
@@ -40,126 +43,197 @@ function sizeToAspectRatio(size: unknown): string {
       return '4:3';
     case '3:4':
       return '3:4';
+    case '21:9':
+      return '21:9';
     case '1024x1024':
     case '1:1':
-    default:
       return '1:1';
+    default:
+      return 'auto';
   }
 }
 
-interface GeminiPart {
-  text?: string;
-  inlineData?: { mimeType?: string; data?: string };
-  inline_data?: { mime_type?: string; data?: string };
+interface FalImage {
+  url: string;
+  content_type?: string;
+  file_name?: string;
+  width?: number;
+  height?: number;
+}
+
+interface FalSyncResponse {
+  images?: FalImage[];
+  description?: string;
+}
+
+interface FalQueueSubmitResponse {
+  request_id: string;
+  status_url: string;
+  response_url: string;
+}
+
+interface FalQueueStatusResponse {
+  status: 'IN_QUEUE' | 'IN_PROGRESS' | 'COMPLETED' | 'ERROR';
+  response_url?: string;
+  logs?: { message: string }[];
+}
+
+async function callFalSync(
+  body: Record<string, unknown>,
+  apiKey: string,
+  signal?: AbortSignal,
+): Promise<FalSyncResponse> {
+  const res = await fetch(FAL_SYNC_ENDPOINT, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Key ${apiKey}`,
+    },
+    body: JSON.stringify(body),
+    signal,
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`fal.ai ${res.status}: ${errText.substring(0, 500)}`);
+  }
+  return res.json();
+}
+
+async function callFalQueue(
+  body: Record<string, unknown>,
+  apiKey: string,
+): Promise<FalSyncResponse> {
+  // Submit
+  const submitRes = await fetch(FAL_QUEUE_SUBMIT_ENDPOINT, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Key ${apiKey}`,
+    },
+    body: JSON.stringify(body),
+  });
+  if (!submitRes.ok) {
+    const errText = await submitRes.text();
+    throw new Error(`fal.ai queue submit ${submitRes.status}: ${errText.substring(0, 500)}`);
+  }
+  const submission = (await submitRes.json()) as FalQueueSubmitResponse;
+
+  // Poll status (up to ~90s with exponential-ish backoff)
+  const start = Date.now();
+  const MAX_WAIT_MS = 90_000;
+  let wait = 1000;
+  while (Date.now() - start < MAX_WAIT_MS) {
+    await new Promise((r) => setTimeout(r, wait));
+    wait = Math.min(wait + 500, 3000);
+
+    const statusRes = await fetch(submission.status_url, {
+      headers: { Authorization: `Key ${apiKey}` },
+    });
+    if (!statusRes.ok) continue;
+    const statusData = (await statusRes.json()) as FalQueueStatusResponse;
+
+    if (statusData.status === 'COMPLETED') {
+      const resultRes = await fetch(submission.response_url, {
+        headers: { Authorization: `Key ${apiKey}` },
+      });
+      if (!resultRes.ok) {
+        const errText = await resultRes.text();
+        throw new Error(`fal.ai queue result ${resultRes.status}: ${errText.substring(0, 500)}`);
+      }
+      return resultRes.json();
+    }
+    if (statusData.status === 'ERROR') {
+      throw new Error(`fal.ai queue ERROR: ${JSON.stringify(statusData.logs || [])}`);
+    }
+  }
+  throw new Error('fal.ai queue: timeout aspettando il completamento (>90s)');
 }
 
 export async function POST(req: NextRequest) {
   try {
-    const { prompt, size, style } = await req.json();
+    const { prompt, size, style, useQueue } = await req.json();
 
     if (!prompt || typeof prompt !== 'string') {
       return NextResponse.json({ error: 'Prompt is required' }, { status: 400 });
     }
 
-    const apiKey = process.env.GOOGLE_GEMINI_API_KEY || process.env.GEMINI_API_KEY;
+    const apiKey = process.env.FAL_KEY || process.env.FAL_AI_API_KEY;
     if (!apiKey) {
       return NextResponse.json(
-        { error: 'GOOGLE_GEMINI_API_KEY not configured' },
+        { error: 'FAL_KEY non configurata. Settala nelle env var (Netlify > Site configuration > Environment variables).' },
         { status: 500 },
       );
     }
 
     const aspectRatio = sizeToAspectRatio(size);
-    // Gemini doesn't expose a "style" enum like DALL-E. Inline a hint into the
-    // prompt so vivid/natural still has an effect on the output.
     const styleHint =
       style === 'natural'
         ? 'Style: natural, photorealistic, accurate colors and lighting.'
         : 'Style: vivid, saturated colors, high contrast, cinematic lighting.';
-
     const finalPrompt = `${prompt.trim()}\n\n${styleHint}`;
 
-    const requestBody = {
-      contents: [
-        {
-          role: 'user',
-          parts: [{ text: finalPrompt }],
-        },
-      ],
-      generationConfig: {
-        responseModalities: ['IMAGE'],
-        imageConfig: {
-          aspectRatio,
-          imageSize: '1K',
-        },
-      },
+    const body = {
+      prompt: finalPrompt,
+      num_images: 1,
+      aspect_ratio: aspectRatio,
+      resolution: '1K',
+      output_format: 'png',
+      limit_generations: true,
     };
 
-    const geminiRes = await fetch(GEMINI_ENDPOINT, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': apiKey,
-      },
-      body: JSON.stringify(requestBody),
-    });
-
-    if (!geminiRes.ok) {
-      const errText = await geminiRes.text();
-      let parsed: { error?: { message?: string; status?: string } } | null = null;
-      try {
-        parsed = JSON.parse(errText);
-      } catch {
-        /* not JSON */
+    let falResult: FalSyncResponse;
+    try {
+      if (useQueue) {
+        falResult = await callFalQueue(body, apiKey);
+      } else {
+        falResult = await callFalSync(body, apiKey);
       }
-      const msg = parsed?.error?.message || errText.substring(0, 500) || 'Unknown Gemini error';
-      console.error('[generate-image] Gemini error', geminiRes.status, msg);
-      return NextResponse.json(
-        { error: `Gemini ${GEMINI_MODEL} ${geminiRes.status}: ${msg}` },
-        { status: geminiRes.status >= 400 && geminiRes.status < 600 ? geminiRes.status : 500 },
-      );
-    }
-
-    const geminiData = await geminiRes.json();
-    const parts: GeminiPart[] = geminiData?.candidates?.[0]?.content?.parts || [];
-
-    let b64: string | undefined;
-    let mimeType = 'image/png';
-    const textChunks: string[] = [];
-
-    for (const part of parts) {
-      const inline = part.inlineData ?? part.inline_data;
-      if (inline?.data) {
-        b64 = inline.data;
-        mimeType = inline.mimeType ?? inline.mime_type ?? mimeType;
-      } else if (part.text) {
-        textChunks.push(part.text);
+    } catch (callErr) {
+      const msg = callErr instanceof Error ? callErr.message : String(callErr);
+      console.error('[generate-image] fal.ai call failed:', msg);
+      // If sync timed out at the network layer (uncommon at 5-10s), retry via queue.
+      if (!useQueue && /aborted|timeout|ETIMEDOUT/i.test(msg)) {
+        console.warn('[generate-image] retrying via queue endpoint');
+        try {
+          falResult = await callFalQueue(body, apiKey);
+        } catch (retryErr) {
+          const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+          return NextResponse.json({ error: retryMsg }, { status: 504 });
+        }
+      } else {
+        return NextResponse.json({ error: msg }, { status: 502 });
       }
     }
 
-    if (!b64) {
-      const fallbackText = textChunks.join('\n').substring(0, 500);
-      console.error('[generate-image] No image returned by Gemini, text:', fallbackText);
+    const imageEntry = falResult.images?.[0];
+    if (!imageEntry?.url) {
+      console.error('[generate-image] fal.ai returned no image:', falResult);
       return NextResponse.json(
         {
-          error: fallbackText
-            ? `Gemini non ha restituito un'immagine. Risposta testuale: ${fallbackText}`
-            : 'Nessuna immagine generata',
+          error: falResult.description
+            ? `fal.ai non ha restituito un'immagine: ${falResult.description}`
+            : "fal.ai non ha restituito un'immagine",
         },
         { status: 502 },
       );
     }
 
-    const revisedPrompt = textChunks.length > 0 ? textChunks.join(' ').trim() : undefined;
+    const falUrl = imageEntry.url;
+    const revisedPrompt = falResult.description?.trim() || undefined;
 
-    // Try to upload to Supabase Storage; fall back to inline data URL if the
-    // bucket / RLS isn't configured.
+    // Mirror to Supabase Storage as best effort. If it fails, return the
+    // fal.media URL directly — fal CDN URLs are persistent.
     try {
+      const downloadRes = await fetch(falUrl);
+      if (!downloadRes.ok) throw new Error(`download ${downloadRes.status}`);
+      const arrayBuf = await downloadRes.arrayBuffer();
+      const buffer = Buffer.from(arrayBuf);
+      const mimeType = imageEntry.content_type || 'image/png';
+      const ext = mimeType.includes('jpeg') ? 'jpg' : mimeType.includes('webp') ? 'webp' : 'png';
+
       const sb = getSupabase();
       await ensureBucket(sb);
-
-      const buffer = Buffer.from(b64, 'base64');
-      const ext = mimeType.includes('jpeg') ? 'jpg' : 'png';
       const filename = `ai-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
       const filePath = `editor/${filename}`;
 
@@ -171,32 +245,29 @@ export async function POST(req: NextRequest) {
         });
 
       if (uploadError) {
-        console.warn('[generate-image] Supabase upload failed, falling back to data URL:', uploadError.message);
-        const dataUrl = `data:${mimeType};base64,${b64}`;
+        console.warn('[generate-image] Supabase upload failed, returning fal URL:', uploadError.message);
         return NextResponse.json({
-          url: dataUrl,
+          url: falUrl,
           revisedPrompt,
-          storage: 'inline',
-          model: GEMINI_MODEL,
+          storage: 'fal',
+          model: FAL_MODEL,
         });
       }
 
       const { data: publicUrlData } = sb.storage.from(BUCKET_NAME).getPublicUrl(filePath);
-
       return NextResponse.json({
         url: publicUrlData.publicUrl,
         revisedPrompt,
         storage: 'supabase',
-        model: GEMINI_MODEL,
+        model: FAL_MODEL,
       });
-    } catch (storageErr) {
-      console.warn('[generate-image] Storage path errored, returning data URL:', storageErr);
-      const dataUrl = `data:${mimeType};base64,${b64}`;
+    } catch (mirrorErr) {
+      console.warn('[generate-image] Supabase mirror failed, returning fal URL directly:', mirrorErr);
       return NextResponse.json({
-        url: dataUrl,
+        url: falUrl,
         revisedPrompt,
-        storage: 'inline',
-        model: GEMINI_MODEL,
+        storage: 'fal',
+        model: FAL_MODEL,
       });
     }
   } catch (err: unknown) {
