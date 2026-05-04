@@ -12,6 +12,7 @@ import type {
   FunnelPage,
   FunnelPageInsert,
   FunnelPageUpdate,
+  PageType,
   PostPurchasePage,
   PostPurchasePageInsert,
   PostPurchasePageUpdate,
@@ -226,28 +227,116 @@ export async function fetchFunnelPages(): Promise<FunnelPage[]> {
   return data || [];
 }
 
+// =====================================================
+// PAGE TYPE SANITIZATION
+// =====================================================
+// The Supabase enum `page_type` only allows 8 values, but the app's PageType
+// union (src/types/index.ts BuiltInPageType) has 32+ values plus arbitrary
+// custom strings. Inserting an unsupported value causes Postgres error 22P02:
+// `invalid input value for enum page_type: "vsl"`.
+//
+// Until we extend the DB enum (see supabase-migration-page-type-enum.sql) we
+// must MAP every app PageType to one of the 8 valid DB values before any
+// insert/update on funnel_pages.
+
+const VALID_DB_PAGE_TYPES = new Set<PageType>([
+  '5_reasons_listicle',
+  'quiz_funnel',
+  'landing',
+  'product_page',
+  'safe_page',
+  'checkout',
+  'advertorial',
+  'altro',
+]);
+
+const PAGE_TYPE_FALLBACK: Record<string, PageType> = {
+  // Pre-sell / top-of-funnel grouped under advertorial
+  listicle: '5_reasons_listicle',
+  '5_reasons_listicle': '5_reasons_listicle',
+  native_ad: 'advertorial',
+  advertorial: 'advertorial',
+  blog: 'advertorial',
+  article: 'advertorial',
+  content_page: 'advertorial',
+  review: 'advertorial',
+  // Video / webinar / bridge → landing
+  vsl: 'landing',
+  webinar: 'landing',
+  bridge_page: 'landing',
+  // Landing & opt-in → landing
+  landing: 'landing',
+  opt_in: 'landing',
+  squeeze_page: 'landing',
+  lead_magnet: 'landing',
+  // Quiz family
+  quiz_funnel: 'quiz_funnel',
+  survey: 'quiz_funnel',
+  assessment: 'quiz_funnel',
+  // Sales pages → product_page
+  sales_letter: 'product_page',
+  product_page: 'product_page',
+  offer_page: 'product_page',
+  // Checkout family
+  checkout: 'checkout',
+  order_confirmation: 'checkout',
+  // Post-purchase has no dedicated DB enum value → altro
+  thank_you: 'altro',
+  upsell: 'altro',
+  downsell: 'altro',
+  oto: 'altro',
+  membership: 'altro',
+  // Compliance → safe_page
+  safe_page: 'safe_page',
+  privacy: 'safe_page',
+  terms: 'safe_page',
+  disclaimer: 'safe_page',
+  // Other
+  other: 'altro',
+  altro: 'altro',
+};
+
+export function sanitizePageTypeForDb(value: PageType | undefined | null): PageType {
+  if (!value) return 'landing';
+  if (VALID_DB_PAGE_TYPES.has(value as PageType)) return value as PageType;
+  const mapped = PAGE_TYPE_FALLBACK[String(value).toLowerCase()];
+  return mapped ?? 'altro';
+}
+
 export async function createFunnelPage(page: FunnelPageInsert): Promise<FunnelPage> {
+  const safePage: FunnelPageInsert = {
+    ...page,
+    page_type: sanitizePageTypeForDb(page.page_type),
+  };
+
   const { data, error } = await supabase
     .from('funnel_pages')
-    .insert(page)
+    .insert(safePage)
     .select()
     .single();
-  
+
   if (error) {
-    console.error('Error creating funnel page:', error);
+    console.error('Error creating funnel page:', error, '\nOriginal page_type:', page.page_type, '→ sanitized:', safePage.page_type);
     throw error;
   }
   return data;
 }
 
 export async function updateFunnelPage(id: string, updates: FunnelPageUpdate): Promise<FunnelPage> {
+  const safeUpdates: FunnelPageUpdate = {
+    ...updates,
+    ...(updates.page_type !== undefined
+      ? { page_type: sanitizePageTypeForDb(updates.page_type) }
+      : {}),
+  };
+
   const { data, error } = await supabase
     .from('funnel_pages')
-    .update(updates)
+    .update(safeUpdates)
     .eq('id', id)
     .select()
     .single();
-  
+
   if (error) {
     console.error('Error updating funnel page:', error);
     throw error;

@@ -227,7 +227,10 @@ export default function TemplatesPage() {
       router.push('/front-end-funnel');
     } catch (error) {
       console.error('Error importing pages:', error);
-      alert('Import error');
+      const msg = error instanceof Error
+        ? error.message
+        : (error as { message?: string })?.message || JSON.stringify(error);
+      alert(`Import error: ${msg}`);
     } finally {
       setIsImporting(false);
     }
@@ -278,7 +281,10 @@ export default function TemplatesPage() {
       router.push('/front-end-funnel');
     } catch (error) {
       console.error('Error importing staged pages:', error);
-      alert('Import error');
+      const msg = error instanceof Error
+        ? error.message
+        : (error as { message?: string })?.message || JSON.stringify(error);
+      alert(`Import error: ${msg}`);
     } finally {
       setIsImporting(false);
     }

@@ -625,19 +625,31 @@ export async function buildHTML(
 
   const ds = landingAnalysis.design_system;
 
+  // Extract a compact CSS / structure reference from the original HTML so the
+  // builder can faithfully replicate the visual aesthetic (fonts, gradients,
+  // button shapes, spacing) of the source landing instead of inventing a
+  // generic Tailwind page.
+  const designReference = extractDesignReference(originalHtml);
+
   const userMessage = `Build a complete, production-ready HTML landing page.
 
 ## CRO BLUEPRINT (follow this EXACTLY for structure and content):
 ${JSON.stringify(compactPlan, null, 2)}
 
-## DESIGN SYSTEM:
+## DESIGN SYSTEM (extracted from the SOURCE landing — replicate this look):
 Colors: primary ${ds.primary_color}, secondary ${ds.secondary_color}, accent ${ds.accent_color}, bg ${ds.background_color}, text ${ds.text_color}, CTA ${ds.cta_color}
 Style: ${ds.visual_style}, ${ds.font_style} fonts, ${ds.heading_style} headings, ${ds.spacing_density} spacing
 Corners: ${ds.border_radius}, shadows: ${ds.shadow_usage}, images: ${ds.image_style}
 
+## SOURCE LANDING DESIGN REFERENCE (CSS + above-fold structure of the original page):
+Use this ONLY to replicate the VISUAL style (fonts, gradients, button shapes, card styles, spacing rhythm, animations).
+DO NOT copy the original copy/headlines/CTAs — those must come from the CRO BLUEPRINT above.
+${designReference}
+
 Build the complete HTML page. Requirements:
-- Use Tailwind CSS via CDN
-- Implement EVERY section from the blueprint with all copy
+- Use Tailwind CSS via CDN, plus inline <style> for any CSS pulled from the source reference above
+- Implement EVERY section from the CRO blueprint with the EXACT copy provided in the blueprint (headlines, body_copy, CTAs)
+- The look-and-feel must match the SOURCE LANDING DESIGN REFERENCE — do NOT generate a generic Tailwind page
 - Mark sections with <!-- SECTION: type --> comments
 - Language: ${croPlan.copy_tone?.language || 'en'}
 - Responsive, mobile-first, professional

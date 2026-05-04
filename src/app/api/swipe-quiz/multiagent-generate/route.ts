@@ -275,6 +275,14 @@ function buildFallbackBranding(
   funnelName: string,
   funnelSteps?: AffiliateFunnelStep[],
 ): GeneratedBranding {
+  // IMPORTANT: This fallback runs when no pre-crawled branding data is available
+  // for this funnel. We must NOT leak the original funnel's texts (s.title,
+  // s.description, s.cta_text, s.options) into branding.funnelSteps — otherwise
+  // the unified prompt feeds them to Claude as "use these EXACT texts" and the
+  // generated quiz ends up with the ORIGINAL competitor copy instead of new
+  // copy for the user's product. We keep only the structural metadata
+  // (stepIndex, originalPageType, options count) so the prompt can adapt
+  // structure without re-using texts.
   return {
     brandIdentity: {
       brandName: product.brandName,
@@ -288,18 +296,18 @@ function buildFallbackBranding(
     funnelSteps: (funnelSteps || []).map((s, i) => ({
       stepIndex: i,
       originalPageType: s.step_type || 'other',
-      headline: s.title || '',
+      headline: '',
       subheadline: '',
-      bodyCopy: s.description || '',
-      ctaTexts: s.cta_text ? [s.cta_text] : [product.ctaText],
+      bodyCopy: '',
+      ctaTexts: [],
       nextStepCtas: [],
       offerDetails: null,
       pricePresentation: `€${product.price}`,
       urgencyElements: [],
       socialProof: [],
       persuasionTechniques: [],
-      quizQuestion: s.step_type === 'quiz_question' ? s.title : undefined,
-      quizOptions: s.options,
+      quizQuestion: undefined,
+      quizOptions: s.options ? new Array(s.options.length).fill('') : undefined,
     })),
     globalElements: {
       socialProofStatements: [],
@@ -470,36 +478,72 @@ function buildUnifiedPrompt(
   prompt += `USP: ${bi.uniqueSellingProposition}\n`;
   prompt += `Brand colors: primary=${bi.colorPalette.primary}, secondary=${bi.colorPalette.secondary}, accent=${bi.colorPalette.accent}, cta_bg=${bi.colorPalette.ctaBackground}, cta_text=${bi.colorPalette.ctaText}\n\n`;
 
+  // Detect fallback mode: when no AI-generated branding is available for the
+  // funnel steps, we must instruct Claude to INVENT new copy from the product
+  // info, NOT to "use these EXACT texts" (which would either be empty or, in
+  // the legacy buggy fallback, leak the original competitor's texts).
+  const isFallback = branding.metadata?.provider === 'fallback';
+  const hasStepCopy = branding.funnelSteps.some(
+    (s) =>
+      (s.headline && s.headline.length > 0) ||
+      (s.bodyCopy && s.bodyCopy.length > 0) ||
+      (s.quizQuestion && s.quizQuestion.length > 0) ||
+      (s.quizOptions && s.quizOptions.some((o) => o && o.length > 0)),
+  );
+
   if (branding.quizBranding) {
     const qb = branding.quizBranding;
     prompt += `QUIZ COPY (use EXACTLY these texts):\n`;
-    prompt += `  Quiz title: "${qb.quizTitle}"\n`;
-    prompt += `  Subtitle: "${qb.quizSubtitle}"\n`;
-    prompt += `  Intro text: "${qb.quizIntroText}"\n`;
-    prompt += `  Progress label: "${qb.progressBarLabel}"\n`;
-    prompt += `  Result headline: "${qb.resultPageHeadline}"\n`;
-    prompt += `  Result subheadline: "${qb.resultPageSubheadline}"\n`;
-    prompt += `  Result body: "${qb.resultPageBodyCopy}"\n`;
-    prompt += `  Personalization hook: "${qb.personalizationHook}"\n\n`;
+    if (qb.quizTitle) prompt += `  Quiz title: "${qb.quizTitle}"\n`;
+    if (qb.quizSubtitle) prompt += `  Subtitle: "${qb.quizSubtitle}"\n`;
+    if (qb.quizIntroText) prompt += `  Intro text: "${qb.quizIntroText}"\n`;
+    if (qb.progressBarLabel) prompt += `  Progress label: "${qb.progressBarLabel}"\n`;
+    if (qb.resultPageHeadline) prompt += `  Result headline: "${qb.resultPageHeadline}"\n`;
+    if (qb.resultPageSubheadline) prompt += `  Result subheadline: "${qb.resultPageSubheadline}"\n`;
+    if (qb.resultPageBodyCopy) prompt += `  Result body: "${qb.resultPageBodyCopy}"\n`;
+    if (qb.personalizationHook) prompt += `  Personalization hook: "${qb.personalizationHook}"\n`;
+    prompt += `\n`;
   }
 
-  prompt += `DETAILED CONTENT FOR EACH STEP (use these texts):\n`;
-  for (const step of branding.funnelSteps) {
-    prompt += `\n--- Step ${step.stepIndex} [${step.originalPageType}] ---\n`;
-    prompt += `  Headline: "${step.headline}"\n`;
-    if (step.subheadline) prompt += `  Subheadline: "${step.subheadline}"\n`;
-    if (step.bodyCopy) prompt += `  Body: "${step.bodyCopy}"\n`;
-    if (step.ctaTexts?.length) prompt += `  CTA: ${step.ctaTexts.map(t => `"${t}"`).join(', ')}\n`;
-    if (step.quizQuestion) prompt += `  Question: "${step.quizQuestion}"\n`;
-    if (step.quizOptions?.length) {
-      prompt += `  Options:\n`;
-      step.quizOptions.forEach((opt, i) => {
-        const sub = step.quizOptionSubtexts?.[i];
-        prompt += `    ${i + 1}. ${opt}${sub ? ` — ${sub}` : ''}\n`;
-      });
+  if (isFallback || !hasStepCopy) {
+    prompt += `\n=== STEP COPY GENERATION MODE ===\n`;
+    prompt += `No pre-generated copy is available for the individual steps.\n`;
+    prompt += `You MUST INVENT every headline, subheadline, body copy, question, answer option and CTA from scratch, based on:\n`;
+    prompt += `  - The PRODUCT info above (name, description, benefits, brand voice)\n`;
+    prompt += `  - The ORIGINAL QUIZ STRUCTURE (number of screens, type per screen, options count)\n`;
+    prompt += `  - The voice tone "${bi.voiceTone}" and language italiano\n`;
+    prompt += `Do NOT copy any text from the original screenshots — they are visual reference only.\n`;
+    prompt += `For each screen below, generate copy that:\n`;
+    prompt += `  - Speaks directly to the avatar of "${product.name}"\n`;
+    prompt += `  - Asks questions whose answers segment the user toward recommending "${product.name}"\n`;
+    prompt += `  - Uses the brand colors and voice from the branding section above\n\n`;
+    prompt += `STRUCTURAL REFERENCE PER STEP (no texts — invent them):\n`;
+    for (const step of branding.funnelSteps) {
+      const optionsCount = step.quizOptions?.length ?? 0;
+      prompt += `  Step ${step.stepIndex} [${step.originalPageType}]`;
+      if (optionsCount > 0) prompt += ` — ${optionsCount} options to invent`;
+      prompt += `\n`;
     }
-    if (step.socialProof?.length) prompt += `  Social proof: ${step.socialProof.join('; ')}\n`;
-    if (step.urgencyElements?.length) prompt += `  Urgency: ${step.urgencyElements.join('; ')}\n`;
+  } else {
+    prompt += `DETAILED CONTENT FOR EACH STEP (use these texts):\n`;
+    for (const step of branding.funnelSteps) {
+      prompt += `\n--- Step ${step.stepIndex} [${step.originalPageType}] ---\n`;
+      if (step.headline) prompt += `  Headline: "${step.headline}"\n`;
+      if (step.subheadline) prompt += `  Subheadline: "${step.subheadline}"\n`;
+      if (step.bodyCopy) prompt += `  Body: "${step.bodyCopy}"\n`;
+      if (step.ctaTexts?.length) prompt += `  CTA: ${step.ctaTexts.map(t => `"${t}"`).join(', ')}\n`;
+      if (step.quizQuestion) prompt += `  Question: "${step.quizQuestion}"\n`;
+      if (step.quizOptions?.length && step.quizOptions.some((o) => o && o.length > 0)) {
+        prompt += `  Options:\n`;
+        step.quizOptions.forEach((opt, i) => {
+          if (!opt) return;
+          const sub = step.quizOptionSubtexts?.[i];
+          prompt += `    ${i + 1}. ${opt}${sub ? ` — ${sub}` : ''}\n`;
+        });
+      }
+      if (step.socialProof?.length) prompt += `  Social proof: ${step.socialProof.join('; ')}\n`;
+      if (step.urgencyElements?.length) prompt += `  Urgency: ${step.urgencyElements.join('; ')}\n`;
+    }
   }
 
   const ge = branding.globalElements;
