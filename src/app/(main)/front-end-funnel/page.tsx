@@ -4083,11 +4083,19 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
     try{
       var n=0;
       document.querySelectorAll('.faq, .faq-wrapper, .faq-item, .accordion-item, details').forEach(function(p){
-        p.classList.add('fb-open','active','open','expanded','is-open','show');
+        p.classList.remove('fb-collapsed');
+        p.classList.add('active','open','expanded','is-open','show');
         if(p.tagName==='DETAILS') p.setAttribute('open','');
         n++;
       });
-      console.log('[preview] force-opened',n,'FAQ parents (.fb-open class)');
+      // Brutal: rimuove anche eventuali style inline display:none ai content
+      document.querySelectorAll('.faq-content, .faq-content-wrapper, .faq-body, .faq-answer, .accordion-content, .accordion-body').forEach(function(c){
+        c.style.removeProperty('display');
+        c.style.removeProperty('max-height');
+        c.style.removeProperty('height');
+        c.removeAttribute('hidden');
+      });
+      console.log('[preview] force-opened',n,'FAQs (removed .fb-collapsed)');
       try{ (window.parent||window).postMessage({__funnelPreviewClick:true,target:'forceOpen',contents:n,newOpen:true},'*'); }catch(_){}
       paintHud('FORCED-OPEN', document.querySelectorAll('.faq-header').length, document.querySelectorAll('.swiper').length, document.querySelectorAll('.swiper-slide').length, document.querySelectorAll('.thumbImage img,.swiper-thumbs img').length);
     }catch(e){STATE.lastError='forceOpen:'+String(e);}
@@ -4130,22 +4138,25 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
   function findFaqParent(header){
     return header.closest('.faq,.faq-wrapper,.faq-item,.accordion-item,[data-faq],details') || header.parentElement;
   }
-  function toggleFaqContent(header, forceState){
+  function toggleFaqContent(header){
     var p = findFaqParent(header);
     if(!p) return;
-    var newOpen = (typeof forceState==='boolean') ? forceState : !p.classList.contains('fb-open');
-    if(newOpen){
-      p.classList.add('fb-open','active','open','expanded','is-open','show');
-      if(p.tagName==='DETAILS') p.setAttribute('open','');
-    } else {
-      p.classList.remove('fb-open','active','open','expanded','is-open','show');
+    // FAQ aperte di default: toggle = add/remove .fb-collapsed
+    var willCollapse = !p.classList.contains('fb-collapsed');
+    if(willCollapse){
+      p.classList.add('fb-collapsed');
+      p.classList.remove('active','open','expanded','is-open','show');
       if(p.tagName==='DETAILS') p.removeAttribute('open');
+    } else {
+      p.classList.remove('fb-collapsed');
+      p.classList.add('active','open','expanded','is-open','show');
+      if(p.tagName==='DETAILS') p.setAttribute('open','');
     }
-    header.setAttribute('aria-expanded', newOpen?'true':'false');
+    header.setAttribute('aria-expanded', willCollapse?'false':'true');
     var icon = header.querySelector('.faq-icon, .accordion-icon, svg');
-    if(icon){ if(newOpen) icon.classList.add('fb-icon-rotated'); else icon.classList.remove('fb-icon-rotated'); }
+    if(icon){ if(willCollapse) icon.classList.remove('fb-icon-rotated'); else icon.classList.add('fb-icon-rotated'); }
     try{
-      (window.parent||window).postMessage({__funnelPreviewClick:true,target:'faq',headerText:(header.textContent||'').trim().slice(0,40),newOpen:newOpen,parentClass:p.className.slice(0,80)},'*');
+      (window.parent||window).postMessage({__funnelPreviewClick:true,target:'faq',headerText:(header.textContent||'').trim().slice(0,40),collapsed:willCollapse,parentClass:p.className.slice(0,80)},'*');
     }catch(_){}
   }
   function activateFaq(){
@@ -4322,8 +4333,11 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
     activateSwiper();
     activateThumbs();
     activateStickyShow();
-    postDiag('after-fallback');
-    setTimeout(function(){ activateFaq(); activateSwiper(); activateThumbs(); activateStickyShow(); postDiag('retry'); },1500);
+    postDiag('ready');
+    // Una sola retry silenziosa dopo 1.5s per coprire DOM tardivo. Non
+    // ripostiamo diag così l'HUD resta su 'ready' e l'utente non pensa
+    // che siamo in loop.
+    setTimeout(function(){ activateSwiper(); activateThumbs(); activateStickyShow(); }, 1500);
   }
   window.addEventListener('message',function(ev){
     var d=ev.data;
@@ -4349,8 +4363,10 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                 safeHtml = safeHtml.replace(/\s+on[a-z]+="[^"]*"/gi, '');
                                 safeHtml = safeHtml.replace(/\s+on[a-z]+='[^']*'/gi, '');
                               }
-                              // Inietta anche il CSS hard-override .fb-open se manca
-                              const fbStyleClient = `<style data-fallback="client-v5-style">.fb-open > .faq-content-wrapper,.fb-open > .faq-content,.fb-open .faq-content-wrapper,.fb-open .faq-content,.fb-open .faq-body,.fb-open .faq-answer,.fb-open .accordion-content,.fb-open .accordion-body,.fb-open .accordion-collapse{display:block !important;max-height:99999px !important;height:auto !important;min-height:0 !important;overflow:visible !important;visibility:visible !important;opacity:1 !important;transform:none !important;}.faq-header,.faq-question,.faq-title,.accordion-header,.accordion-button,.accordion-question,.accordion-toggle,summary{cursor:pointer !important;}.fb-icon-rotated{transform:rotate(180deg) !important;transition:transform .2s !important;}</style>`;
+                              // Inietta CSS hard-override: FAQ aperte di default,
+                              // .fb-collapsed le richiude (toggle inverso). Sticky CTA
+                              // sempre visibile.
+                              const fbStyleClient = `<style data-fallback="client-v5-style">html body .faq .faq-content-wrapper,html body .faq .faq-content,html body .faq-wrapper .faq-content-wrapper,html body .faq-wrapper .faq-content,html body .faq-item .faq-body,html body .faq-item .faq-answer,html body .accordion-item .accordion-content,html body .accordion-item .accordion-body,html body .accordion-item .accordion-collapse,html body details > *:not(summary){display:block !important;max-height:none !important;height:auto !important;min-height:0 !important;overflow:visible !important;visibility:visible !important;opacity:1 !important;transform:none !important;pointer-events:auto !important;}html body .faq.fb-collapsed .faq-content-wrapper,html body .faq.fb-collapsed .faq-content,html body .faq-wrapper.fb-collapsed .faq-content-wrapper,html body .faq-wrapper.fb-collapsed .faq-content,html body .faq-item.fb-collapsed .faq-body,html body .faq-item.fb-collapsed .faq-answer,html body .accordion-item.fb-collapsed .accordion-content,html body .accordion-item.fb-collapsed .accordion-body{display:none !important;}.faq-header,.faq-question,.faq-title,.accordion-header,.accordion-button,.accordion-question,.accordion-toggle,summary{cursor:pointer !important;}.fb-icon-rotated{transform:rotate(180deg) !important;transition:transform .2s !important;}html body .stickSection{display:block !important;visibility:visible !important;opacity:1 !important;}</style>`;
                               if (!/data-fallback=".*style"/i.test(safeHtml)) {
                                 if (safeHtml.includes('</head>')) {
                                   safeHtml = safeHtml.replace('</head>', fbStyleClient + '</head>');

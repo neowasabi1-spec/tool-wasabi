@@ -766,32 +766,48 @@ serve(async (req) => {
         console.log(`🧹 Script strippati: ${scriptCountBefore} → ${scriptCountAfter} (manteniamo solo data-fallback)`)
 
         // === CSS HARD-OVERRIDE per FAQ ===
-        // Inietta uno <style> con altissima specificity che forza la
-        // visibilità del content quando il parent ha .fb-open. Vince su
-        // qualsiasi CSS originale Vue/Funnelish che usa max-height:0/
-        // display:none/etc. perché abbiamo specificity alta + !important.
+        // Strategia pragmatica: tutte le FAQ visibili DI DEFAULT (no JS
+        // necessario per leggerle). Il toggle JS aggiunge/rimuove
+        // .fb-collapsed per richiuderle se l'utente clicca, ma se per
+        // qualche motivo il JS non gira o è bloccato, l'utente vede
+        // comunque tutto il contenuto. Stesso principio per .stickSection
+        // (sticky CTA bar) che resta sempre visibile.
+        // Specificity alta (più classi + !important) per battere Vue
+        // scoped CSS [data-v-X].
         const fbStyle = `<style data-fallback="server-v1-style">
-.fb-open > .faq-content-wrapper,
-.fb-open > .faq-content,
-.fb-open .faq-content-wrapper,
-.fb-open .faq-content,
-.fb-open .faq-body,
-.fb-open .faq-answer,
-.fb-open .accordion-content,
-.fb-open .accordion-body,
-.fb-open .accordion-collapse,
-.fb-open[data-fb-content="true"]{
+html body .faq .faq-content-wrapper,
+html body .faq .faq-content,
+html body .faq-wrapper .faq-content-wrapper,
+html body .faq-wrapper .faq-content,
+html body .faq-item .faq-body,
+html body .faq-item .faq-answer,
+html body .accordion-item .accordion-content,
+html body .accordion-item .accordion-body,
+html body .accordion-item .accordion-collapse,
+html body details > *:not(summary){
   display:block !important;
-  max-height:99999px !important;
+  max-height:none !important;
   height:auto !important;
   min-height:0 !important;
   overflow:visible !important;
   visibility:visible !important;
   opacity:1 !important;
   transform:none !important;
+  pointer-events:auto !important;
+}
+html body .faq.fb-collapsed .faq-content-wrapper,
+html body .faq.fb-collapsed .faq-content,
+html body .faq-wrapper.fb-collapsed .faq-content-wrapper,
+html body .faq-wrapper.fb-collapsed .faq-content,
+html body .faq-item.fb-collapsed .faq-body,
+html body .faq-item.fb-collapsed .faq-answer,
+html body .accordion-item.fb-collapsed .accordion-content,
+html body .accordion-item.fb-collapsed .accordion-body{
+  display:none !important;
 }
 .faq-header,.faq-question,.faq-title,.accordion-header,.accordion-button,.accordion-question,.accordion-toggle,summary{cursor:pointer !important;}
 .fb-icon-rotated{transform:rotate(180deg) !important;transition:transform .2s !important;}
+html body .stickSection{display:block !important;visibility:visible !important;opacity:1 !important;}
 </style>`
         if (clonedHTML.includes('</head>')) {
           clonedHTML = clonedHTML.replace('</head>', fbStyle + '</head>')
@@ -814,23 +830,26 @@ serve(async (req) => {
   function toggleFaq(header){
     var p = findContents(header);
     if(!p) return;
-    var newOpen = !p.classList.contains('fb-open');
-    if(newOpen){
-      p.classList.add('fb-open','active','open','expanded','is-open');
-      if(p.tagName==='DETAILS') p.setAttribute('open','');
-    } else {
-      p.classList.remove('fb-open','active','open','expanded','is-open');
+    // FAQ aperte di default. Toggle = aggiunge/rimuove .fb-collapsed
+    var willCollapse = !p.classList.contains('fb-collapsed');
+    if(willCollapse){
+      p.classList.add('fb-collapsed');
+      p.classList.remove('active','open','expanded','is-open','show');
       if(p.tagName==='DETAILS') p.removeAttribute('open');
+    } else {
+      p.classList.remove('fb-collapsed');
+      p.classList.add('active','open','expanded','is-open','show');
+      if(p.tagName==='DETAILS') p.setAttribute('open','');
     }
-    header.setAttribute('aria-expanded',newOpen?'true':'false');
+    header.setAttribute('aria-expanded', willCollapse?'false':'true');
     var icon = header.querySelector('.faq-icon,.accordion-icon,svg');
-    if(icon){ if(newOpen) icon.classList.add('fb-icon-rotated'); else icon.classList.remove('fb-icon-rotated'); }
+    if(icon){ if(willCollapse) icon.classList.remove('fb-icon-rotated'); else icon.classList.add('fb-icon-rotated'); }
   }
   function bindFaq(){ if(document.body.__faqDelegateBound)return; document.body.__faqDelegateBound=true; document.body.addEventListener('click',function(ev){ var t=ev.target; if(!t||!t.closest)return; var header=t.closest('.faq-header,.faq-question,.faq-title,.accordion-header,.accordion-question,.accordion-toggle,.accordion-button,[data-faq-toggle],[data-toggle="collapse"],summary'); if(!header){ var fr=t.closest('.faq,.faq-wrapper,.faq-item,.accordion-item'); if(fr){ var ic=t.closest('.faq-content-wrapper,.faq-content,.faq-body,.faq-answer,.accordion-content,.accordion-body'); if(!ic) header=fr.querySelector('.faq-header,.faq-question,.faq-title,.accordion-header,.accordion-button')||fr.firstElementChild; } } if(!header)return; ev.preventDefault(); ev.stopPropagation(); try{ toggleFaq(header); }catch(e){} },true); document.querySelectorAll('.faq-header,.faq-question,.faq-title,.accordion-header,.accordion-button,summary').forEach(function(h){ h.style.cursor='pointer'; }); }
   function bindThumbs(){ if(document.body.__thumbDelegateBound)return; document.body.__thumbDelegateBound=true; document.body.addEventListener('click',function(ev){ var t=ev.target; if(!t||!t.closest)return; var tc=t.closest('.thumbImage,.swiper-thumbs,[data-thumb-container]'); if(!tc)return; var ti=t.closest('.swiper-slide,[data-thumb],img'); if(!ti)return; var sib=Array.prototype.slice.call(tc.querySelectorAll('.swiper-slide,[data-thumb]')); if(!sib.length) sib=Array.prototype.slice.call(tc.querySelectorAll('img')); var idx=sib.indexOf(ti); if(idx<0){ var p=ti; while(p&&idx<0){ idx=sib.indexOf(p); p=p.parentElement; } } var mainEl=document.querySelector('.swiper.mainImage'); if(mainEl&&mainEl.swiper&&idx>=0){ try{ mainEl.swiper.slideTo(idx); }catch(_){} } var img=ti.tagName==='IMG'?ti:ti.querySelector('img'); if(img){ var src=img.currentSrc||img.src||img.getAttribute('data-src'); if(src){ var m=document.querySelector('.swiper.mainImage .swiper-slide-active img,.swiper.mainImage .swiper-slide img,.mainImage img:not(.thumb),.product-image img'); if(m){ m.src=src; m.removeAttribute('srcset'); } } } },true); }
   function initSwipers(){ if(typeof window.Swiper!=='function')return false; var thumbs=[]; document.querySelectorAll('.swiper.thumbImage,.swiper.swiper-thumbs').forEach(function(el){ if(el.swiper||el.__swBound)return; el.__swBound=true; try{ thumbs.push(new window.Swiper(el,{slidesPerView:'auto',spaceBetween:10,watchSlidesProgress:true,freeMode:true,slideToClickedSlide:true})); }catch(_){} }); document.querySelectorAll('.swiper.mainImage').forEach(function(el){ if(el.swiper||el.__swBound)return; el.__swBound=true; var opts={slidesPerView:1,spaceBetween:10,navigation:{nextEl:el.querySelector('.swiper-button-next'),prevEl:el.querySelector('.swiper-button-prev')},pagination:{el:el.querySelector('.swiper-pagination'),clickable:true}}; if(thumbs[0]) opts.thumbs={swiper:thumbs[0]}; try{ new window.Swiper(el,opts); }catch(_){} }); document.querySelectorAll('.swiper').forEach(function(el){ if(el.swiper||el.__swBound)return; el.__swBound=true; var ann=el.classList.contains('announcement_bar'); try{ new window.Swiper(el,{slidesPerView:1,spaceBetween:10,loop:ann,autoplay:ann?{delay:3500}:false,navigation:{nextEl:el.querySelector('.swiper-button-next'),prevEl:el.querySelector('.swiper-button-prev')},pagination:{el:el.querySelector('.swiper-pagination'),clickable:true}}); }catch(_){} }); document.querySelectorAll('.stickSection').forEach(function(s){ s.style.display=''; }); return true; }
   function bootstrap(){ console.log('[fb-server]',FB_VERSION,'boot'); bindFaq(); bindThumbs(); var hasJq=typeof window.jQuery!=='undefined'; var hasSw=typeof window.Swiper==='function'; loadCss('https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.css'); var pending=0; function done(){ if(--pending<=0) finalize(); } if(!hasJq){ pending++; loadScript('https://code.jquery.com/jquery-3.5.1.min.js',done); } if(!hasSw){ pending++; loadScript('https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.js',done); } if(pending===0) finalize(); }
-  function finalize(){ initSwipers(); setTimeout(function(){ initSwipers(); bindFaq(); bindThumbs(); },1500); console.log('[fb-server]',FB_VERSION,'finalized'); }
+  function finalize(){ initSwipers(); bindFaq(); bindThumbs(); setTimeout(function(){ initSwipers(); },1500); console.log('[fb-server]',FB_VERSION,'finalized'); }
   if(document.readyState==='loading'){ document.addEventListener('DOMContentLoaded',bootstrap); } else { setTimeout(bootstrap,50); }
 })();</script>`
         if (clonedHTML.includes('</body>')) {
