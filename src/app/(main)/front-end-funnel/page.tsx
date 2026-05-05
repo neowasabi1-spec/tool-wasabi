@@ -4082,17 +4082,12 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
   function forceOpenAllFaqs(){
     try{
       var n=0;
-      document.querySelectorAll('.faq-content-wrapper, .faq-content, .faq-body, .faq-answer, .accordion-content, .accordion-body').forEach(function(c){
-        ['display:block','max-height:none','height:auto','min-height:0','overflow:visible','visibility:visible','opacity:1','padding-top:','padding-bottom:','transform:none']
-          .forEach(function(p){ var pr=p.split(':'); c.style.setProperty(pr[0], pr[1]||'', 'important'); });
-        c.removeAttribute('hidden'); c.removeAttribute('aria-hidden');
-        c.classList.add('show','open','active','expanded','is-open','is-active');
+      document.querySelectorAll('.faq, .faq-wrapper, .faq-item, .accordion-item, details').forEach(function(p){
+        p.classList.add('fb-open','active','open','expanded','is-open','show');
+        if(p.tagName==='DETAILS') p.setAttribute('open','');
         n++;
       });
-      document.querySelectorAll('.faq, .faq-wrapper, .faq-item, .accordion-item').forEach(function(p){
-        p.classList.add('show','open','active','expanded','is-open','is-active');
-      });
-      console.log('[preview] force-opened',n,'FAQ contents');
+      console.log('[preview] force-opened',n,'FAQ parents (.fb-open class)');
       try{ (window.parent||window).postMessage({__funnelPreviewClick:true,target:'forceOpen',contents:n,newOpen:true},'*'); }catch(_){}
       paintHud('FORCED-OPEN', document.querySelectorAll('.faq-header').length, document.querySelectorAll('.swiper').length, document.querySelectorAll('.swiper-slide').length, document.querySelectorAll('.thumbImage img,.swiper-thumbs img').length);
     }catch(e){STATE.lastError='forceOpen:'+String(e);}
@@ -4132,80 +4127,25 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
     s.addEventListener('error',function(){ STATE.lastError='loadFail:'+src; cb(); });
     (document.head||document.documentElement).appendChild(s);
   }
-  function showFaqContent(content){
-    // Brutal force: rimuove TUTTE le proprietà che possono nascondere.
-    var props = [
-      ['display','block'],['max-height','none'],['height','auto'],
-      ['min-height','0'],['overflow','visible'],['visibility','visible'],
-      ['opacity','1'],['padding-top',''],['padding-bottom',''],
-      ['margin-top',''],['margin-bottom',''],['transform','none']
-    ];
-    props.forEach(function(p){ content.style.setProperty(p[0],p[1],'important'); });
-    content.removeAttribute('hidden');
-    content.removeAttribute('aria-hidden');
-    content.classList.add('show','open','active','expanded','is-open','is-active');
-    content.classList.remove('hidden','collapsed','closed');
-    content.__fbOpen = true;
-  }
-  function hideFaqContent(content){
-    // Reset agli stili "naturali" del CSS originale togliendo i nostri inline.
-    ['display','max-height','height','min-height','overflow','visibility','opacity','padding-top','padding-bottom','margin-top','margin-bottom','transform']
-      .forEach(function(p){ content.style.removeProperty(p); });
-    content.classList.remove('show','open','active','expanded','is-open','is-active');
-    content.__fbOpen = false;
-  }
-  function findFaqContents(header){
-    // Trova tutti i possibili "content" associati a questo header.
-    var p = header.closest('.faq,.faq-wrapper,.faq-item,.accordion-item,[data-faq],details') || header.parentElement;
-    var contents = [];
-    var contentSelectors = [
-      '.faq-content-wrapper','.faq-content','.faq-body','.faq-answer',
-      '.accordion-content','.accordion-body','.accordion-collapse',
-      '.answer','[data-faq-content]','[data-faq-body]'
-    ];
-    if(p){
-      contentSelectors.forEach(function(s){
-        p.querySelectorAll(s).forEach(function(c){ if(contents.indexOf(c)<0) contents.push(c); });
-      });
-    }
-    // Fratello successivo dell'header
-    var sib = header.nextElementSibling;
-    if(sib && contents.indexOf(sib)<0 && !sib.classList.contains('faq-header') && !sib.classList.contains('faq-title') && !sib.classList.contains('faq-question')){
-      contents.push(sib);
-    }
-    return { parent: p, contents: contents };
+  function findFaqParent(header){
+    return header.closest('.faq,.faq-wrapper,.faq-item,.accordion-item,[data-faq],details') || header.parentElement;
   }
   function toggleFaqContent(header, forceState){
-    var info = findFaqContents(header);
-    var p = info.parent;
-    var contents = info.contents;
-    // Stato corrente: aperto se almeno un content è aperto
-    var anyOpen = contents.some(function(c){ return c.__fbOpen===true; });
-    if(!contents.length && p){
-      anyOpen = p.classList.contains('active')||p.classList.contains('open')||p.classList.contains('expanded')||p.classList.contains('is-open');
+    var p = findFaqParent(header);
+    if(!p) return;
+    var newOpen = (typeof forceState==='boolean') ? forceState : !p.classList.contains('fb-open');
+    if(newOpen){
+      p.classList.add('fb-open','active','open','expanded','is-open','show');
+      if(p.tagName==='DETAILS') p.setAttribute('open','');
+    } else {
+      p.classList.remove('fb-open','active','open','expanded','is-open','show');
+      if(p.tagName==='DETAILS') p.removeAttribute('open');
     }
-    var newOpen = (typeof forceState==='boolean') ? forceState : !anyOpen;
-    // Toggle classes sul parent
-    if(p){
-      ['active','open','expanded','show','is-open','is-active'].forEach(function(c){
-        if(newOpen) p.classList.add(c); else p.classList.remove(c);
-      });
-      if(p.tagName==='DETAILS'){ if(newOpen) p.setAttribute('open',''); else p.removeAttribute('open'); }
-    }
-    // Toggle on contents
-    contents.forEach(function(c){
-      if(newOpen) showFaqContent(c); else hideFaqContent(c);
-    });
     header.setAttribute('aria-expanded', newOpen?'true':'false');
-    // Aggiorna icona freccia (rotate)
     var icon = header.querySelector('.faq-icon, .accordion-icon, svg');
-    if(icon){
-      icon.style.setProperty('transform', newOpen?'rotate(180deg)':'rotate(0)','important');
-      icon.style.setProperty('transition','transform .2s','important');
-    }
-    // Diag postMessage
+    if(icon){ if(newOpen) icon.classList.add('fb-icon-rotated'); else icon.classList.remove('fb-icon-rotated'); }
     try{
-      (window.parent||window).postMessage({__funnelPreviewClick:true,target:'faq',headerText:(header.textContent||'').trim().slice(0,40),contents:contents.length,newOpen:newOpen},'*');
+      (window.parent||window).postMessage({__funnelPreviewClick:true,target:'faq',headerText:(header.textContent||'').trim().slice(0,40),newOpen:newOpen,parentClass:p.className.slice(0,80)},'*');
     }catch(_){}
   }
   function activateFaq(){
@@ -4408,6 +4348,15 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                 safeHtml = safeHtml.replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, '');
                                 safeHtml = safeHtml.replace(/\s+on[a-z]+="[^"]*"/gi, '');
                                 safeHtml = safeHtml.replace(/\s+on[a-z]+='[^']*'/gi, '');
+                              }
+                              // Inietta anche il CSS hard-override .fb-open se manca
+                              const fbStyleClient = `<style data-fallback="client-v5-style">.fb-open > .faq-content-wrapper,.fb-open > .faq-content,.fb-open .faq-content-wrapper,.fb-open .faq-content,.fb-open .faq-body,.fb-open .faq-answer,.fb-open .accordion-content,.fb-open .accordion-body,.fb-open .accordion-collapse{display:block !important;max-height:99999px !important;height:auto !important;min-height:0 !important;overflow:visible !important;visibility:visible !important;opacity:1 !important;transform:none !important;}.faq-header,.faq-question,.faq-title,.accordion-header,.accordion-button,.accordion-question,.accordion-toggle,summary{cursor:pointer !important;}.fb-icon-rotated{transform:rotate(180deg) !important;transition:transform .2s !important;}</style>`;
+                              if (!/data-fallback=".*style"/i.test(safeHtml)) {
+                                if (safeHtml.includes('</head>')) {
+                                  safeHtml = safeHtml.replace('</head>', fbStyleClient + '</head>');
+                                } else if (safeHtml.includes('<body')) {
+                                  safeHtml = safeHtml.replace(/(<body[^>]*>)/, fbStyleClient + '$1');
+                                }
                               }
                               if (safeHtml.includes('</body>')) {
                                 safeHtml = safeHtml.replace('</body>', fallbackInit + '</body>');

@@ -765,6 +765,40 @@ serve(async (req) => {
         const scriptCountAfter = (clonedHTML.match(/<script\b/gi) || []).length
         console.log(`🧹 Script strippati: ${scriptCountBefore} → ${scriptCountAfter} (manteniamo solo data-fallback)`)
 
+        // === CSS HARD-OVERRIDE per FAQ ===
+        // Inietta uno <style> con altissima specificity che forza la
+        // visibilità del content quando il parent ha .fb-open. Vince su
+        // qualsiasi CSS originale Vue/Funnelish che usa max-height:0/
+        // display:none/etc. perché abbiamo specificity alta + !important.
+        const fbStyle = `<style data-fallback="server-v1-style">
+.fb-open > .faq-content-wrapper,
+.fb-open > .faq-content,
+.fb-open .faq-content-wrapper,
+.fb-open .faq-content,
+.fb-open .faq-body,
+.fb-open .faq-answer,
+.fb-open .accordion-content,
+.fb-open .accordion-body,
+.fb-open .accordion-collapse,
+.fb-open[data-fb-content="true"]{
+  display:block !important;
+  max-height:99999px !important;
+  height:auto !important;
+  min-height:0 !important;
+  overflow:visible !important;
+  visibility:visible !important;
+  opacity:1 !important;
+  transform:none !important;
+}
+.faq-header,.faq-question,.faq-title,.accordion-header,.accordion-button,.accordion-question,.accordion-toggle,summary{cursor:pointer !important;}
+.fb-icon-rotated{transform:rotate(180deg) !important;transition:transform .2s !important;}
+</style>`
+        if (clonedHTML.includes('</head>')) {
+          clonedHTML = clonedHTML.replace('</head>', fbStyle + '</head>')
+        } else if (clonedHTML.includes('<body')) {
+          clonedHTML = clonedHTML.replace(/(<body[^>]*>)/, fbStyle + '$1')
+        }
+
         // === FALLBACK INIT (FAQ + Swiper + thumb gallery) ===
         // Iniettato server-side in modo che la pagina sia interattiva
         // INDIPENDENTEMENTE dalla cache del bundle Next.js client. Carica
@@ -776,10 +810,22 @@ serve(async (req) => {
   window.__FB_FALLBACK_INSTALLED=FB_VERSION;
   function loadCss(href){ if(document.querySelector('link[data-fb-css="'+href+'"]'))return; var l=document.createElement('link'); l.rel='stylesheet'; l.href=href; l.dataset.fbCss=href; document.head.appendChild(l); }
   function loadScript(src,cb){ var existing=document.querySelector('script[data-fb-src="'+src+'"]'); if(existing){ if(existing.__loaded){cb();} else { existing.addEventListener('load',cb); existing.addEventListener('error',cb); } return; } var s=document.createElement('script'); s.src=src; s.async=false; s.dataset.fbSrc=src; s.addEventListener('load',function(){s.__loaded=true; cb();}); s.addEventListener('error',function(){cb();}); (document.head||document.documentElement).appendChild(s); }
-  function showFaq(c){ ['display:block','max-height:none','height:auto','min-height:0','overflow:visible','visibility:visible','opacity:1','transform:none'].forEach(function(p){ var pp=p.split(':'); c.style.setProperty(pp[0],pp[1]||'','important'); }); c.removeAttribute('hidden'); c.removeAttribute('aria-hidden'); c.classList.add('show','open','active','expanded','is-open'); c.__fbOpen=true; }
-  function hideFaq(c){ ['display','max-height','height','min-height','overflow','visibility','opacity','transform'].forEach(function(p){ c.style.removeProperty(p); }); c.classList.remove('show','open','active','expanded','is-open'); c.__fbOpen=false; }
-  function findContents(header){ var p=header.closest('.faq,.faq-wrapper,.faq-item,.accordion-item,details')||header.parentElement; var out=[]; var sels=['.faq-content-wrapper','.faq-content','.faq-body','.faq-answer','.accordion-content','.accordion-body','.accordion-collapse']; if(p){ sels.forEach(function(s){ p.querySelectorAll(s).forEach(function(c){ if(out.indexOf(c)<0) out.push(c); }); }); } var sib=header.nextElementSibling; if(sib && out.indexOf(sib)<0 && !sib.classList.contains('faq-header') && !sib.classList.contains('faq-title') && !sib.classList.contains('faq-question')) out.push(sib); return {parent:p,contents:out}; }
-  function toggleFaq(header){ var info=findContents(header); var anyOpen=info.contents.some(function(c){return c.__fbOpen;}); if(!info.contents.length && info.parent) anyOpen=info.parent.classList.contains('active')||info.parent.classList.contains('open'); var newOpen=!anyOpen; if(info.parent){ ['active','open','expanded','show','is-open'].forEach(function(c){ if(newOpen) info.parent.classList.add(c); else info.parent.classList.remove(c); }); if(info.parent.tagName==='DETAILS'){ if(newOpen) info.parent.setAttribute('open',''); else info.parent.removeAttribute('open'); } } info.contents.forEach(function(c){ if(newOpen) showFaq(c); else hideFaq(c); }); header.setAttribute('aria-expanded',newOpen?'true':'false'); var icon=header.querySelector('.faq-icon,.accordion-icon,svg'); if(icon){ icon.style.setProperty('transform',newOpen?'rotate(180deg)':'rotate(0)','important'); icon.style.setProperty('transition','transform .2s','important'); } }
+  function findContents(header){ var p=header.closest('.faq,.faq-wrapper,.faq-item,.accordion-item,details')||header.parentElement; return p; }
+  function toggleFaq(header){
+    var p = findContents(header);
+    if(!p) return;
+    var newOpen = !p.classList.contains('fb-open');
+    if(newOpen){
+      p.classList.add('fb-open','active','open','expanded','is-open');
+      if(p.tagName==='DETAILS') p.setAttribute('open','');
+    } else {
+      p.classList.remove('fb-open','active','open','expanded','is-open');
+      if(p.tagName==='DETAILS') p.removeAttribute('open');
+    }
+    header.setAttribute('aria-expanded',newOpen?'true':'false');
+    var icon = header.querySelector('.faq-icon,.accordion-icon,svg');
+    if(icon){ if(newOpen) icon.classList.add('fb-icon-rotated'); else icon.classList.remove('fb-icon-rotated'); }
+  }
   function bindFaq(){ if(document.body.__faqDelegateBound)return; document.body.__faqDelegateBound=true; document.body.addEventListener('click',function(ev){ var t=ev.target; if(!t||!t.closest)return; var header=t.closest('.faq-header,.faq-question,.faq-title,.accordion-header,.accordion-question,.accordion-toggle,.accordion-button,[data-faq-toggle],[data-toggle="collapse"],summary'); if(!header){ var fr=t.closest('.faq,.faq-wrapper,.faq-item,.accordion-item'); if(fr){ var ic=t.closest('.faq-content-wrapper,.faq-content,.faq-body,.faq-answer,.accordion-content,.accordion-body'); if(!ic) header=fr.querySelector('.faq-header,.faq-question,.faq-title,.accordion-header,.accordion-button')||fr.firstElementChild; } } if(!header)return; ev.preventDefault(); ev.stopPropagation(); try{ toggleFaq(header); }catch(e){} },true); document.querySelectorAll('.faq-header,.faq-question,.faq-title,.accordion-header,.accordion-button,summary').forEach(function(h){ h.style.cursor='pointer'; }); }
   function bindThumbs(){ if(document.body.__thumbDelegateBound)return; document.body.__thumbDelegateBound=true; document.body.addEventListener('click',function(ev){ var t=ev.target; if(!t||!t.closest)return; var tc=t.closest('.thumbImage,.swiper-thumbs,[data-thumb-container]'); if(!tc)return; var ti=t.closest('.swiper-slide,[data-thumb],img'); if(!ti)return; var sib=Array.prototype.slice.call(tc.querySelectorAll('.swiper-slide,[data-thumb]')); if(!sib.length) sib=Array.prototype.slice.call(tc.querySelectorAll('img')); var idx=sib.indexOf(ti); if(idx<0){ var p=ti; while(p&&idx<0){ idx=sib.indexOf(p); p=p.parentElement; } } var mainEl=document.querySelector('.swiper.mainImage'); if(mainEl&&mainEl.swiper&&idx>=0){ try{ mainEl.swiper.slideTo(idx); }catch(_){} } var img=ti.tagName==='IMG'?ti:ti.querySelector('img'); if(img){ var src=img.currentSrc||img.src||img.getAttribute('data-src'); if(src){ var m=document.querySelector('.swiper.mainImage .swiper-slide-active img,.swiper.mainImage .swiper-slide img,.mainImage img:not(.thumb),.product-image img'); if(m){ m.src=src; m.removeAttribute('srcset'); } } } },true); }
   function initSwipers(){ if(typeof window.Swiper!=='function')return false; var thumbs=[]; document.querySelectorAll('.swiper.thumbImage,.swiper.swiper-thumbs').forEach(function(el){ if(el.swiper||el.__swBound)return; el.__swBound=true; try{ thumbs.push(new window.Swiper(el,{slidesPerView:'auto',spaceBetween:10,watchSlidesProgress:true,freeMode:true,slideToClickedSlide:true})); }catch(_){} }); document.querySelectorAll('.swiper.mainImage').forEach(function(el){ if(el.swiper||el.__swBound)return; el.__swBound=true; var opts={slidesPerView:1,spaceBetween:10,navigation:{nextEl:el.querySelector('.swiper-button-next'),prevEl:el.querySelector('.swiper-button-prev')},pagination:{el:el.querySelector('.swiper-pagination'),clickable:true}}; if(thumbs[0]) opts.thumbs={swiper:thumbs[0]}; try{ new window.Swiper(el,opts); }catch(_){} }); document.querySelectorAll('.swiper').forEach(function(el){ if(el.swiper||el.__swBound)return; el.__swBound=true; var ann=el.classList.contains('announcement_bar'); try{ new window.Swiper(el,{slidesPerView:1,spaceBetween:10,loop:ann,autoplay:ann?{delay:3500}:false,navigation:{nextEl:el.querySelector('.swiper-button-next'),prevEl:el.querySelector('.swiper-button-prev')},pagination:{el:el.querySelector('.swiper-pagination'),clickable:true}}); }catch(_){} }); document.querySelectorAll('.stickSection').forEach(function(s){ s.style.display=''; }); return true; }
