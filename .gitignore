@@ -58,3 +58,7 @@ service-account*.json
 
 # Local Netlify folder
 .netlify
+
+# Temp commit-message scratchpads
+.tmp_*
+*.tmp
