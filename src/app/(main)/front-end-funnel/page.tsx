@@ -1095,6 +1095,7 @@ export default function FrontEndFunnel() {
     swipers: number;
     slides: number;
     thumbs: number;
+    version: string;
     ts: number;
   } | null>(null);
 
@@ -1113,6 +1114,7 @@ export default function FrontEndFunnel() {
           swipers: Number(d.swipers || 0),
           slides: Number(d.slides || 0),
           thumbs: Number(d.thumbs || 0),
+          version: String(d.version || 'old'),
           ts: Date.now(),
         });
       }
@@ -3959,13 +3961,13 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                     className={`ml-2 px-2 py-1 rounded text-[11px] font-mono ${
                       previewDiag.swipers === 0 && previewDiag.faqHeaders === 0
                         ? 'bg-red-100 text-red-800'
-                        : previewDiag.label === 'after-fallback' || previewDiag.label === 'retry'
+                        : previewDiag.label === 'after-fallback' || previewDiag.label === 'retry' || previewDiag.label === 'FORCED-OPEN'
                           ? 'bg-green-100 text-green-800'
                           : 'bg-amber-100 text-amber-800'
                     }`}
-                    title="Live diag from preview iframe"
+                    title={`Live diag from preview iframe — fb ${previewDiag.version}`}
                   >
-                    {previewDiag.label} · scr={previewDiag.scripts} · faq={previewDiag.faqHeaders} · sw={previewDiag.swipers}/{previewDiag.slides} · th={previewDiag.thumbs}
+                    {previewDiag.label} · scr={previewDiag.scripts} · faq={previewDiag.faqHeaders} · sw={previewDiag.swipers}/{previewDiag.slides} · th={previewDiag.thumbs} · {previewDiag.version}
                   </div>
                 )}
 
@@ -4062,19 +4064,38 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                             // postMessage 'rerun-fallback' dal parent per ri-eseguire.
                             const fallbackInit = `
 <script>(function(){
+  var FB_VERSION = 'v4-2026-05-05';
   var STATE = { jq:false, sw:false, lastError:null, fired:0 };
   function postDiag(label){
     try{
       var s=document.scripts.length;
-      var fq=document.querySelectorAll('.faq .faq-header,.faq-question,.accordion-header,[data-faq-toggle]').length;
+      var fq=document.querySelectorAll('.faq .faq-header,.faq-header,.faq-question,.accordion-header,[data-faq-toggle]').length;
       var sw=document.querySelectorAll('.swiper').length;
       var sl=document.querySelectorAll('.swiper-slide').length;
       var tb=document.querySelectorAll('.thumbImage img, .swiper-thumbs img').length;
-      var msg={__funnelPreviewDiag:true,label:label,scripts:s,faqHeaders:fq,swipers:sw,slides:sl,thumbs:tb,jq:STATE.jq,swLib:STATE.sw,lastError:STATE.lastError};
+      var msg={__funnelPreviewDiag:true,label:label,scripts:s,faqHeaders:fq,swipers:sw,slides:sl,thumbs:tb,jq:STATE.jq,swLib:STATE.sw,lastError:STATE.lastError,version:FB_VERSION};
       try{ (window.parent||window).postMessage(msg,'*'); }catch(_){}
-      console.log('[preview]',label,JSON.stringify({s:s,fq:fq,sw:sw,sl:sl,tb:tb,jq:STATE.jq,swLib:STATE.sw}));
+      console.log('[preview]',label,JSON.stringify({v:FB_VERSION,s:s,fq:fq,sw:sw,sl:sl,tb:tb,jq:STATE.jq,swLib:STATE.sw}));
       paintHud(label, fq, sw, sl, tb);
     }catch(e){STATE.lastError=String(e);}
+  }
+  function forceOpenAllFaqs(){
+    try{
+      var n=0;
+      document.querySelectorAll('.faq-content-wrapper, .faq-content, .faq-body, .faq-answer, .accordion-content, .accordion-body').forEach(function(c){
+        ['display:block','max-height:none','height:auto','min-height:0','overflow:visible','visibility:visible','opacity:1','padding-top:','padding-bottom:','transform:none']
+          .forEach(function(p){ var pr=p.split(':'); c.style.setProperty(pr[0], pr[1]||'', 'important'); });
+        c.removeAttribute('hidden'); c.removeAttribute('aria-hidden');
+        c.classList.add('show','open','active','expanded','is-open','is-active');
+        n++;
+      });
+      document.querySelectorAll('.faq, .faq-wrapper, .faq-item, .accordion-item').forEach(function(p){
+        p.classList.add('show','open','active','expanded','is-open','is-active');
+      });
+      console.log('[preview] force-opened',n,'FAQ contents');
+      try{ (window.parent||window).postMessage({__funnelPreviewClick:true,target:'forceOpen',contents:n,newOpen:true},'*'); }catch(_){}
+      paintHud('FORCED-OPEN', document.querySelectorAll('.faq-header').length, document.querySelectorAll('.swiper').length, document.querySelectorAll('.swiper-slide').length, document.querySelectorAll('.thumbImage img,.swiper-thumbs img').length);
+    }catch(e){STATE.lastError='forceOpen:'+String(e);}
   }
   function paintHud(label, fq, sw, sl, tb){
     try{
@@ -4082,16 +4103,19 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
       if(!h){
         h=document.createElement('div');
         h.id='__fnHud';
-        h.style.cssText='position:fixed;top:8px;right:8px;z-index:2147483647;background:rgba(0,0,0,.78);color:#fff;font:12px/1.3 system-ui,sans-serif;padding:6px 10px;border-radius:6px;pointer-events:auto;max-width:340px;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.3)';
-        h.title='Click to dismiss';
-        h.addEventListener('click',function(){ h.remove(); });
+        h.style.cssText='position:fixed;top:8px;right:8px;z-index:2147483647;background:rgba(0,0,0,.85);color:#fff;font:12px/1.3 system-ui,sans-serif;padding:8px 12px;border-radius:6px;pointer-events:auto;max-width:360px;box-shadow:0 4px 14px rgba(0,0,0,.4)';
         (document.body||document.documentElement).appendChild(h);
       }
       var color = STATE.lastError ? '#ff7676' : (STATE.sw && fq>0 ? '#7ce58a' : '#ffd166');
-      h.innerHTML='<div style="font-weight:700;color:'+color+'">FB '+label+'</div>'+
+      h.innerHTML='<div style="font-weight:700;color:'+color+'">FB '+label+' <span style="float:right;font-weight:400;font-size:10px;opacity:.7">'+FB_VERSION+'</span></div>'+
         '<div>jq='+STATE.jq+' Swiper='+STATE.sw+'</div>'+
         '<div>faq='+fq+' swiper='+sw+' slide='+sl+' thumb='+tb+'</div>'+
-        (STATE.lastError?'<div style="color:#ff7676;word-break:break-all">'+STATE.lastError+'</div>':'');
+        (STATE.lastError?'<div style="color:#ff7676;word-break:break-all;margin-top:4px">'+STATE.lastError+'</div>':'')+
+        '<div style="margin-top:6px;display:flex;gap:6px"><button id="__fnHudOpen" style="flex:1;padding:4px 8px;background:#3b82f6;color:#fff;border:0;border-radius:4px;cursor:pointer;font-size:11px">Open all FAQs</button><button id="__fnHudClose" style="padding:4px 8px;background:#666;color:#fff;border:0;border-radius:4px;cursor:pointer;font-size:11px">×</button></div>';
+      var bOpen=document.getElementById('__fnHudOpen');
+      if(bOpen) bOpen.addEventListener('click',function(ev){ ev.stopPropagation(); forceOpenAllFaqs(); });
+      var bClose=document.getElementById('__fnHudClose');
+      if(bClose) bClose.addEventListener('click',function(ev){ ev.stopPropagation(); h.remove(); });
     }catch(e){}
   }
   window.addEventListener('error',function(ev){ STATE.lastError = (ev.message||'err')+' @ '+(ev.filename||'?')+':'+(ev.lineno||0); });
