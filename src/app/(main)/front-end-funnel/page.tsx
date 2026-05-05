@@ -4102,21 +4102,95 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
     s.addEventListener('error',function(){ STATE.lastError='loadFail:'+src; cb(); });
     (document.head||document.documentElement).appendChild(s);
   }
+  function toggleFaqContent(header){
+    // Trova il "body" dell'item FAQ con strategie multiple e ne forza visibilità.
+    var p=header.closest('.faq,.faq-item,.accordion-item,[data-faq],details')||header.parentElement;
+    var wasOpen = false;
+    if(p){
+      wasOpen = p.classList.contains('active')||p.classList.contains('open')||p.classList.contains('expanded')||p.classList.contains('is-open')||p.classList.contains('is-active')||p.hasAttribute('open');
+    }
+    var newOpen = !wasOpen;
+    // 1. Class toggle (per stili che dipendono da .active/.open)
+    if(p){
+      ['active','open','expanded','show','is-open','is-active'].forEach(function(c){
+        if(newOpen) p.classList.add(c); else p.classList.remove(c);
+      });
+      if(p.tagName==='DETAILS'){ if(newOpen) p.setAttribute('open',''); else p.removeAttribute('open'); }
+    }
+    // 2. Trova candidati "body/answer/content"
+    var candidates=[];
+    if(p){
+      ['.faq-body','.faq-content','.faq-answer','.accordion-content','.accordion-body','.answer','.content','[data-faq-content]','[data-faq-body]'].forEach(function(s){
+        p.querySelectorAll(s).forEach(function(c){ candidates.push(c); });
+      });
+    }
+    // 3. Fratello successivo dell'header (pattern molto comune)
+    var sib = header.nextElementSibling;
+    if(sib && candidates.indexOf(sib)<0) candidates.push(sib);
+    // 4. Bambino del parent che NON contiene l'header (esclude header stesso)
+    if(p){
+      Array.prototype.forEach.call(p.children,function(c){
+        if(c!==header && !c.contains(header) && candidates.indexOf(c)<0){
+          // se è un possibile content (non un titolo)
+          var tag=c.tagName.toLowerCase();
+          if(tag!=='button' && tag!=='summary' && !c.classList.contains('faq-header') && !c.classList.contains('faq-title') && !c.classList.contains('faq-question') && !c.classList.contains('accordion-header')){
+            candidates.push(c);
+          }
+        }
+      });
+    }
+    // 5. Forza display
+    candidates.forEach(function(c){
+      if(newOpen){
+        c.style.setProperty('display','block','important');
+        c.style.setProperty('max-height','none','important');
+        c.style.setProperty('opacity','1','important');
+        c.style.setProperty('visibility','visible','important');
+        c.removeAttribute('hidden');
+        c.removeAttribute('aria-hidden');
+      } else {
+        c.style.removeProperty('display');
+        c.style.removeProperty('max-height');
+        c.style.removeProperty('opacity');
+        c.style.removeProperty('visibility');
+      }
+    });
+    // 6. Aria
+    header.setAttribute('aria-expanded', newOpen?'true':'false');
+  }
   function activateFaq(){
     try{
-      var sels=['.faq .faq-header','.faq-question','.accordion-header','[data-faq-toggle]','.faq-item .faq-title','.faq-item > div:first-child','.accordion-item > button','details > summary'];
+      var sels=[
+        '.faq .faq-header','.faq-header','.faq-question','.faq-title',
+        '.accordion-header','.accordion-question','.accordion-toggle','.accordion-button',
+        '[data-faq-toggle]','[data-toggle="collapse"]','[data-bs-toggle="collapse"]',
+        '.faq-item > div:first-child','.faq-item > button','.faq-item > summary',
+        '.accordion-item > button','.accordion-item > div:first-child',
+        'details > summary'
+      ];
+      var seen=new Set();
       sels.forEach(function(sel){
         document.querySelectorAll(sel).forEach(function(h){
-          if(h.__faqBound)return; h.__faqBound=true;
+          if(seen.has(h)||h.__faqBound)return; seen.add(h); h.__faqBound=true;
           h.style.cursor='pointer';
           h.addEventListener('click',function(ev){
             ev.preventDefault(); ev.stopPropagation();
-            var p=h.closest('.faq,.faq-item,.accordion-item,[data-faq],details')||h.parentElement;
-            if(!p)return;
-            var was=p.classList.contains('active')||p.classList.contains('open')||p.classList.contains('expanded')||p.hasAttribute('open');
-            if(was){ p.classList.remove('active','open','expanded','show'); p.removeAttribute('open'); }
-            else { p.classList.add('active'); if(p.tagName==='DETAILS') p.setAttribute('open',''); }
+            try{ toggleFaqContent(h); }catch(e){ STATE.lastError='faqTog:'+String(e); }
           },true);
+        });
+      });
+      // Inizia chiuse: forza display:none ai content non aperti per consistenza
+      document.querySelectorAll('.faq,.faq-item,.accordion-item').forEach(function(p){
+        if(p.classList.contains('active')||p.classList.contains('open')||p.classList.contains('expanded')||p.classList.contains('is-open')||p.classList.contains('is-active')||p.hasAttribute('open')) return;
+        ['.faq-body','.faq-content','.faq-answer','.accordion-content','.accordion-body'].forEach(function(s){
+          p.querySelectorAll(s).forEach(function(c){
+            if(c.__faqInitClosed) return; c.__faqInitClosed=true;
+            // Solo se NON ha già un display esplicito dal CSS originale
+            var cs = window.getComputedStyle(c);
+            if(cs.display !== 'none'){
+              // Lascia stare: il CSS originale potrebbe gestirlo
+            }
+          });
         });
       });
     }catch(e){STATE.lastError='faq:'+String(e);}
@@ -4126,36 +4200,72 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
       if(typeof window.Swiper!=='function'){ return false; }
       STATE.sw=true;
       var initialized=0;
-      var thumbsInstances={};
+      // 1. Init thumb swipers per primi (servono come riferimento ai main)
+      var thumbsInstances=[];
       document.querySelectorAll('.swiper.thumbImage, .swiper.swiper-thumbs').forEach(function(el){
         if(el.swiper||el.__swiperBound)return; el.__swiperBound=true;
-        try{ thumbsInstances[el.id||('t'+initialized)]=new window.Swiper(el,{slidesPerView:'auto',spaceBetween:10,watchSlidesProgress:true,freeMode:true}); initialized++; }
-        catch(e){STATE.lastError='thumbInit:'+String(e);}
+        try{
+          var inst=new window.Swiper(el,{
+            slidesPerView:'auto', spaceBetween:10, watchSlidesProgress:true, freeMode:true,
+            slideToClickedSlide:true
+          });
+          thumbsInstances.push(inst); initialized++;
+        }catch(e){STATE.lastError='thumbInit:'+String(e);}
       });
+      // 2. Init main swiper e collega thumbs
+      var mainSwipers=[];
+      document.querySelectorAll('.swiper.mainImage').forEach(function(el){
+        if(el.swiper||el.__swiperBound)return; el.__swiperBound=true;
+        var opts={
+          slidesPerView:1, spaceBetween:10,
+          navigation:{ nextEl: el.querySelector('.swiper-button-next')||document.querySelector('.swiper-button-next'), prevEl: el.querySelector('.swiper-button-prev')||document.querySelector('.swiper-button-prev') },
+          pagination:{ el: el.querySelector('.swiper-pagination'), clickable:true }
+        };
+        if(thumbsInstances[0]) opts.thumbs={ swiper: thumbsInstances[0] };
+        try{ var ms=new window.Swiper(el,opts); mainSwipers.push(ms); initialized++; }
+        catch(e){STATE.lastError='mainInit:'+String(e);}
+      });
+      // 3. Init resto degli swiper (announcement bar, generici)
       document.querySelectorAll('.swiper').forEach(function(el){
         if(el.swiper||el.__swiperBound)return; el.__swiperBound=true;
         var isAnnouncement=el.classList.contains('announcement_bar');
-        var isMain=el.classList.contains('mainImage');
         var opts={
           slidesPerView:1, spaceBetween:10, loop:isAnnouncement, autoplay: isAnnouncement?{delay:3500}:false,
           navigation:{ nextEl: el.querySelector('.swiper-button-next'), prevEl: el.querySelector('.swiper-button-prev') },
           pagination:{ el: el.querySelector('.swiper-pagination'), clickable:true }
         };
-        if(isMain){ var firstThumb = Object.values(thumbsInstances)[0]; if(firstThumb) opts.thumbs={swiper: firstThumb}; }
         try{ new window.Swiper(el,opts); initialized++; }catch(e){STATE.lastError='swInit:'+String(e);}
+      });
+      // 4. Brutal click handler: ogni thumb-slide chiama slideTo sul main swiper
+      //    (Swiper.thumbs a volte non si attacca se il DOM cambia post-init)
+      var firstMain = mainSwipers[0] || (document.querySelector('.swiper.mainImage') && document.querySelector('.swiper.mainImage').swiper);
+      document.querySelectorAll('.swiper.thumbImage .swiper-slide, .swiper.swiper-thumbs .swiper-slide').forEach(function(slide,idx){
+        if(slide.__thumbClickBound)return; slide.__thumbClickBound=true;
+        slide.style.cursor='pointer';
+        slide.addEventListener('click',function(){
+          if(firstMain && typeof firstMain.slideTo==='function'){ firstMain.slideTo(idx); }
+          // fallback img copy comunque
+          var img = slide.querySelector('img');
+          if(img){
+            var src=img.currentSrc||img.src||img.getAttribute('data-src');
+            var main = document.querySelector('.swiper.mainImage .swiper-slide-active img, .swiper.mainImage img:not(.thumb), .mainImage img, .product-image img');
+            if(main && src){ main.src=src; main.removeAttribute('srcset'); }
+          }
+        });
       });
       return initialized>0;
     }catch(e){STATE.lastError='sw:'+String(e); return false;}
   }
   function activateThumbs(){
     try{
-      var thumbs=document.querySelectorAll('.thumbImage img, .swiper-thumbs img, .thumbImage .swiper-slide img, [data-thumb] img');
+      // Pure-DOM fallback: thumb img → main img.src (nel caso non ci siano .swiper-slide wrap)
+      var thumbs=document.querySelectorAll('.thumbImage img, .swiper-thumbs img, [data-thumb] img');
       thumbs.forEach(function(t){
         if(t.__thumbBound)return; t.__thumbBound=true;
         t.style.cursor='pointer';
-        t.addEventListener('click',function(){
+        t.addEventListener('click',function(ev){
           var src=t.currentSrc||t.src||t.getAttribute('data-src'); if(!src)return;
-          var m=document.querySelector('.mainImage .swiper-slide-active img, .mainImage img, .product-image img, [data-main-image] img');
+          var m=document.querySelector('.mainImage .swiper-slide-active img, .mainImage img:not(.thumb), .product-image img, [data-main-image] img');
           if(m){ m.src=src; m.removeAttribute('srcset'); }
         });
       });

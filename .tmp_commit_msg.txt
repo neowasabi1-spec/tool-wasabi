@@ -1,0 +1,24 @@
+fix(funnel-preview): aggressive FAQ toggle + thumb→main slideTo
+
+The fallback HUD confirmed libs/elements are detected (jq=true, Swiper=true,
+faq=17, sw=4/30, th=12) yet FAQ accordions and image gallery were inert.
+
+Root causes:
+- FAQ items in this template hide content via inline style/Vue v-show, so
+  toggling parent classes (.active/.open) wasn't enough — the original
+  Vue runtime was stripped and never re-paints the content node.
+- Swiper thumb→main link relied solely on `thumbs.swiper` config which
+  doesn't always fire when both swipers are inited at slightly different
+  ticks; clicking a thumb-slide had no slideTo handler.
+
+Fixes:
+- New toggleFaqContent() walks 5 strategies (class toggle, .faq-body /
+  .faq-content / .accordion-body selectors, next sibling, parent's
+  non-header children) and forces display:block !important / max-height:
+  none / opacity:1 / visibility:visible on every found candidate when
+  opening, then restores on close. Also flips aria-expanded.
+- activateSwiper() now inits thumbs first, then main with thumbs:{swiper}
+  AND adds slideToClickedSlide:true. Adds explicit click handler on each
+  thumb .swiper-slide that calls firstMainSwiper.slideTo(idx) plus an
+  img-src copy as a final fallback.
+- Broadened FAQ selectors (data-bs-toggle, accordion-toggle, etc.).
