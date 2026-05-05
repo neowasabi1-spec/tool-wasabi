@@ -4394,10 +4394,15 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
   if(document.readyState==='loading'){ document.addEventListener('DOMContentLoaded',bootstrap); } else { setTimeout(bootstrap,50); }
 })();<\/script>
 `;
-                            if (safeHtml.includes('</body>')) {
-                              safeHtml = safeHtml.replace('</body>', fallbackInit + '</body>');
-                            } else {
-                              safeHtml = safeHtml + fallbackInit;
+                            // Skip client-side fallback se l'HTML server-side
+                            // ha già il suo (server-v1+). Evita doppia iniezione.
+                            const hasServerFallback = /data-fallback="server-v\d+"/i.test(safeHtml) || /__FB_FALLBACK_INSTALLED/.test(safeHtml);
+                            if (!hasServerFallback) {
+                              if (safeHtml.includes('</body>')) {
+                                safeHtml = safeHtml.replace('</body>', fallbackInit + '</body>');
+                              } else {
+                                safeHtml = safeHtml + fallbackInit;
+                              }
                             }
                             doc.write(safeHtml);
                             doc.close();
