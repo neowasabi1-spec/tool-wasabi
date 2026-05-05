@@ -1082,6 +1082,24 @@ export default function FrontEndFunnel() {
     return () => document.removeEventListener('click', handleClickOutside);
   }, []);
 
+  // Riceve diagnostica dal preview iframe (vedi fallbackInit script in modal preview).
+  // Logga sulla console del tool quanti <script>, FAQ headers e Swiper sono presenti
+  // nell'HTML clonato — utile per capire al volo se il fix di preservazione script
+  // sta funzionando senza dover aprire il sorgente dell'iframe.
+  useEffect(() => {
+    const onMsg = (ev: MessageEvent) => {
+      const d = ev.data;
+      if (d && typeof d === 'object' && d.__funnelPreviewDiag) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[funnel-preview-diag] ${d.label}: scripts=${d.scripts}, faqHeaders=${d.faqHeaders}, swipers=${d.swipers}`
+        );
+      }
+    };
+    window.addEventListener('message', onMsg);
+    return () => window.removeEventListener('message', onMsg);
+  }, []);
+
   const handleSelectSavedPrompt = useCallback((prompt: SavedPrompt, target: 'swipe' | 'clone') => {
     if (target === 'swipe') {
       setSwipeConfig(prev => ({ ...prev, prompt: prompt.content }));
@@ -3971,6 +3989,17 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                               safeHtml = safeHtml.includes('<head>') ? safeHtml.replace('<head>', '<head>' + refTag) : refTag + safeHtml;
                             }
                             safeHtml = safeHtml.replace(/loading=["']lazy["']/gi, 'loading="eager"');
+                            // Fallback init: rinforza FAQ accordion + Swiper nel preview se gli
+                            // script originali del competitor non si sono attaccati (succede con
+                            // page builder Vue-based tipo Funnelish dove il DOM clonato perde i
+                            // listener Vue). Sicuro: usa flag idempotenti, non rompe gli script
+                            // originali se hanno già fatto il loro lavoro.
+                            const fallbackInit = `\n<script>(function(){\n  function diag(label){\n    try{ var s=document.scripts.length, fq=document.querySelectorAll('.faq .faq-header,.faq-question,.accordion-header,[data-faq-toggle]').length, sw=document.querySelectorAll('.swiper').length; (window.parent||window).postMessage({__funnelPreviewDiag:true,label:label,scripts:s,faqHeaders:fq,swipers:sw},'*'); console.log('[preview]',label,'scripts='+s,'faqHeaders='+fq,'swipers='+sw);}catch(e){}\n  }\n  function activateFaq(){\n    try{\n      var sels=['.faq .faq-header','.faq-question','.accordion-header','[data-faq-toggle]'];\n      sels.forEach(function(sel){\n        document.querySelectorAll(sel).forEach(function(h){\n          if(h.__faqFallbackBound)return; h.__faqFallbackBound=true;\n          h.style.cursor='pointer';\n          h.addEventListener('click',function(){\n            var p=h.closest('.faq, .faq-item, .accordion-item, [data-faq]')||h.parentElement;\n            if(!p)return;\n            var was=p.classList.contains('active')||p.classList.contains('open')||p.classList.contains('expanded');\n            ['active','open','expanded','show'].forEach(function(c){p.classList.toggle(c, !was);});\n            var body=p.querySelector('.faq-body, .faq-content, .accordion-body, .accordion-content, [data-faq-body]');\n            if(body){ body.style.display = was ? 'none' : ''; body.style.maxHeight = was ? '0' : (body.scrollHeight+'px'); }\n          });\n        });\n      });\n    }catch(e){console.warn('[preview] FAQ fallback failed',e);}\n  }\n  function activateSwiper(){\n    try{\n      if(typeof window.Swiper!=='function')return;\n      document.querySelectorAll('.swiper').forEach(function(el){\n        if(el.swiper||el.__swiperFallbackBound)return; el.__swiperFallbackBound=true;\n        try{\n          new window.Swiper(el,{\n            slidesPerView: el.classList.contains('thumbImage')?'auto':1,\n            spaceBetween: 10,\n            loop: false,\n            navigation:{ nextEl: el.querySelector('.swiper-button-next'), prevEl: el.querySelector('.swiper-button-prev') },\n            pagination:{ el: el.querySelector('.swiper-pagination'), clickable: true },\n          });\n        }catch(e){}\n      });\n    }catch(e){}\n  }\n  function activateThumbs(){\n    try{\n      // Image gallery click: thumb click → mostra immagine principale\n      document.querySelectorAll('.thumbImage img, .swiper-thumbs img, [data-thumb]').forEach(function(t){\n        if(t.__thumbFallbackBound)return; t.__thumbFallbackBound=true;\n        t.style.cursor='pointer';\n        t.addEventListener('click',function(){\n          var src = t.currentSrc || t.src; if(!src) return;\n          var main = document.querySelector('.mainImage img, .product-image img, .gallery-main img');\n          if(main){ main.src = src; }\n        });\n      });\n    }catch(e){}\n  }\n  function run(){ diag('init'); activateFaq(); activateSwiper(); activateThumbs(); diag('after-fallback'); }\n  if(document.readyState==='loading'){ document.addEventListener('DOMContentLoaded',function(){ setTimeout(run,300); }); } else { setTimeout(run,300); }\n  setTimeout(run,1500);\n})();<\/script>\n`;
+                            if (safeHtml.includes('</body>')) {
+                              safeHtml = safeHtml.replace('</body>', fallbackInit + '</body>');
+                            } else {
+                              safeHtml = safeHtml + fallbackInit;
+                            }
                             doc.write(safeHtml);
                             doc.close();
                           }
