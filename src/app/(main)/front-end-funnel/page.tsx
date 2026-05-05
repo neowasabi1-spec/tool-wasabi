@@ -4398,6 +4398,17 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                             // ha già il suo (server-v1+). Evita doppia iniezione.
                             const hasServerFallback = /data-fallback="server-v\d+"/i.test(safeHtml) || /__FB_FALLBACK_INSTALLED/.test(safeHtml);
                             if (!hasServerFallback) {
+                              // Job vecchio salvato prima della migration server-side:
+                              // strippiamo gli script originali Vue/Funnelish ZOMBIE
+                              // (montano a metà, lasciano la pagina inerte) e
+                              // iniettiamo il fallback client.
+                              const scriptCountBefore = (safeHtml.match(/<script\b/gi) || []).length;
+                              if (scriptCountBefore > 1) {
+                                safeHtml = safeHtml.replace(/<script\b(?![^>]*data-fallback=)[^>]*>[\s\S]*?<\/script>/gi, '');
+                                safeHtml = safeHtml.replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, '');
+                                safeHtml = safeHtml.replace(/\s+on[a-z]+="[^"]*"/gi, '');
+                                safeHtml = safeHtml.replace(/\s+on[a-z]+='[^']*'/gi, '');
+                              }
                               if (safeHtml.includes('</body>')) {
                                 safeHtml = safeHtml.replace('</body>', fallbackInit + '</body>');
                               } else {

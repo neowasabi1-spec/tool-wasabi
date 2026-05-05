@@ -745,6 +745,26 @@ serve(async (req) => {
           clonedHTML = clonedHTML.replace(/(<body[^>]*>)/, '$1' + navigationFix)
         }
 
+        // === STRIP SCRIPT ORIGINALI ===
+        // I funnel Funnelish/CheckoutChamp girano su Vue.js + custom runtime.
+        // Quando li cloniamo, gli script tentano di montare ma falliscono
+        // (mancano endpoint API originali, dati di sessione, ecc.) e lasciano
+        // la pagina in uno stato inerte: i bottoni non rispondono, FAQ non
+        // si aprono, thumb gallery non funziona, ecc. Soluzione: rimuovere
+        // TUTTI gli <script> originali e affidarsi al fallback init che
+        // iniettiamo subito dopo. Manteniamo solo data-fallback (i nostri
+        // script di fix navigationFix + fallbackInitServerSide).
+        const scriptCountBefore = (clonedHTML.match(/<script\b/gi) || []).length
+        clonedHTML = clonedHTML.replace(/<script\b(?![^>]*data-fallback=)[^>]*>[\s\S]*?<\/script>/gi, '')
+        clonedHTML = clonedHTML.replace(/<script\b(?![^>]*data-fallback=)[^>]*\/>/gi, '')
+        // Rimuoviamo anche <noscript> e attributi on* che possono fare
+        // riferimento a global Vue/Funnelish handlers ormai assenti.
+        clonedHTML = clonedHTML.replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, '')
+        clonedHTML = clonedHTML.replace(/\s+on[a-z]+="[^"]*"/gi, '')
+        clonedHTML = clonedHTML.replace(/\s+on[a-z]+='[^']*'/gi, '')
+        const scriptCountAfter = (clonedHTML.match(/<script\b/gi) || []).length
+        console.log(`🧹 Script strippati: ${scriptCountBefore} → ${scriptCountAfter} (manteniamo solo data-fallback)`)
+
         // === FALLBACK INIT (FAQ + Swiper + thumb gallery) ===
         // Iniettato server-side in modo che la pagina sia interattiva
         // INDIPENDENTEMENTE dalla cache del bundle Next.js client. Carica
