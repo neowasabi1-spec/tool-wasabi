@@ -455,6 +455,10 @@ function prepareEditorHtml(html: string): string {
   let clean = html;
   clean = clean.replace(/<meta[^>]*content-security-policy[^>]*>/gi, '');
   clean = clean.replace(/loading=["']lazy["']/gi, 'loading="eager"');
+  // Strip server/client fallback init che installano click-delegate FAQ/Swiper
+  // e un HUD: dentro l'editor visuale rubano i click di selezione.
+  clean = clean.replace(/<script\b[^>]*data-fallback=[^>]*>[\s\S]*?<\/script>/gi, '');
+  clean = clean.replace(/<style\b[^>]*data-fallback=[^>]*>[\s\S]*?<\/style>/gi, '');
   if (!clean.includes('referrer')) {
     const referrerMeta = '<meta name="referrer" content="no-referrer">';
     if (clean.includes('<head>')) clean = clean.replace('<head>', '<head>' + referrerMeta);

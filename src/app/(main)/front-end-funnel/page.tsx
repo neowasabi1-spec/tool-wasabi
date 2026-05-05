@@ -4056,6 +4056,11 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                               safeHtml = safeHtml.includes('<head>') ? safeHtml.replace('<head>', '<head>' + refTag) : refTag + safeHtml;
                             }
                             safeHtml = safeHtml.replace(/loading=["']lazy["']/gi, 'loading="eager"');
+                            // Strip vecchi fallback bake-ati nell'HTML (server-v1 aveva
+                            // un click-delegate FAQ troppo aggressivo che killava le CTA).
+                            // Riapplichiamo SEMPRE il fallback client v5+ qui sotto.
+                            safeHtml = safeHtml.replace(/<script\b[^>]*data-fallback=[^>]*>[\s\S]*?<\/script>/gi, '');
+                            safeHtml = safeHtml.replace(/<style\b[^>]*data-fallback=[^>]*>[\s\S]*?<\/style>/gi, '');
                             // Fallback init: rende interattiva la pagina clonata anche se gli
                             // <script> originali sono stati strippati a monte. Carica
                             // jQuery+Swiper dal CDN se mancano, inizializza Swiper, lega
@@ -4064,7 +4069,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                             // postMessage 'rerun-fallback' dal parent per ri-eseguire.
                             const fallbackInit = `
 <script>(function(){
-  var FB_VERSION = 'v4-2026-05-05';
+  var FB_VERSION = 'v5-2026-05-05';
   var STATE = { jq:false, sw:false, lastError:null, fired:0 };
   function postDiag(label){
     try{
@@ -4175,28 +4180,22 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
           h.style.cursor='pointer';
         });
       });
-      // STRATEGIA 2: click delegate GLOBAL (più resiliente di bind diretto)
-      // Questo cattura QUALSIASI click dentro un'area FAQ-like, anche se i
-      // selettori sopra non corrispondono al template specifico.
+      // STRATEGIA 2: click delegate GLOBAL — SOLO su header espliciti.
+      // ATTENZIONE: NON usiamo più il fallback "click in .faq → toggle primo
+      // header" perché matchava CTA/link/bottoni dentro sezioni FAQ-like e
+      // killava i click utente (preventDefault). Inoltre saltiamo se il click
+      // è su un <a>/<button>/<input> per non rompere navigazione e form.
       if(!document.body.__faqDelegateBound){
         document.body.__faqDelegateBound = true;
         document.body.addEventListener('click', function(ev){
           var t = ev.target;
           if(!t || !t.closest) return;
-          // Trova un possibile header risalendo l'albero
+          var actionable = t.closest('a,button,input,select,textarea,label,[role="button"],[onclick]');
           var header = t.closest('.faq-header,.faq-question,.faq-title,.accordion-header,.accordion-question,.accordion-toggle,.accordion-button,[data-faq-toggle],[data-toggle="collapse"],[data-bs-toggle="collapse"],summary');
-          // Fallback: se il click è dentro .faq o .faq-wrapper ma fuori dal content, considera "header"
-          if(!header){
-            var faqRoot = t.closest('.faq,.faq-wrapper,.faq-item,.accordion-item');
-            if(faqRoot){
-              var insideContent = t.closest('.faq-content-wrapper,.faq-content,.faq-body,.faq-answer,.accordion-content,.accordion-body');
-              if(!insideContent){
-                // Trova il primo elemento "header-like" dentro il faqRoot
-                header = faqRoot.querySelector('.faq-header,.faq-question,.faq-title,.accordion-header,.accordion-button') || faqRoot.firstElementChild;
-              }
-            }
-          }
           if(!header) return;
+          // Se l'header contiene un <a>/<button> e l'utente ha cliccato proprio
+          // su quello, lasciamo passare (potrebbe essere un link reale).
+          if(actionable && header.contains(actionable) && actionable !== header) return;
           ev.preventDefault();
           ev.stopPropagation();
           try{ toggleFaqContent(header); }catch(e){ STATE.lastError='faqDel:'+String(e); }
