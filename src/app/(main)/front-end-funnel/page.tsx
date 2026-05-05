@@ -1082,23 +1082,49 @@ export default function FrontEndFunnel() {
     return () => document.removeEventListener('click', handleClickOutside);
   }, []);
 
-  // Riceve diagnostica dal preview iframe (vedi fallbackInit script in modal preview).
-  // Logga sulla console del tool quanti <script>, FAQ headers e Swiper sono presenti
-  // nell'HTML clonato — utile per capire al volo se il fix di preservazione script
-  // sta funzionando senza dover aprire il sorgente dell'iframe.
+  // Ref all'iframe del preview così possiamo postare comandi (es. rerun fallback)
+  const previewIframeRef = useRef<HTMLIFrameElement | null>(null);
+
+  // Diagnostica live ricevuta dal preview iframe (vedi fallbackInit script).
+  // Tracciata in stato così possiamo mostrarla all'utente nel header del modal,
+  // utile per debuggare in produzione senza chiedere di aprire DevTools.
+  const [previewDiag, setPreviewDiag] = useState<{
+    label: string;
+    scripts: number;
+    faqHeaders: number;
+    swipers: number;
+    slides: number;
+    thumbs: number;
+    ts: number;
+  } | null>(null);
+
   useEffect(() => {
     const onMsg = (ev: MessageEvent) => {
       const d = ev.data;
       if (d && typeof d === 'object' && d.__funnelPreviewDiag) {
         // eslint-disable-next-line no-console
         console.log(
-          `[funnel-preview-diag] ${d.label}: scripts=${d.scripts}, faqHeaders=${d.faqHeaders}, swipers=${d.swipers}`
+          `[funnel-preview-diag] ${d.label}: scripts=${d.scripts}, faqHeaders=${d.faqHeaders}, swipers=${d.swipers}, slides=${d.slides ?? '?'}, thumbs=${d.thumbs ?? '?'}`
         );
+        setPreviewDiag({
+          label: String(d.label || ''),
+          scripts: Number(d.scripts || 0),
+          faqHeaders: Number(d.faqHeaders || 0),
+          swipers: Number(d.swipers || 0),
+          slides: Number(d.slides || 0),
+          thumbs: Number(d.thumbs || 0),
+          ts: Date.now(),
+        });
       }
     };
     window.addEventListener('message', onMsg);
     return () => window.removeEventListener('message', onMsg);
   }, []);
+
+  // Reset diag quando il modal si chiude
+  useEffect(() => {
+    if (!htmlPreviewModal.isOpen) setPreviewDiag(null);
+  }, [htmlPreviewModal.isOpen]);
 
   const handleSelectSavedPrompt = useCallback((prompt: SavedPrompt, target: 'swipe' | 'clone') => {
     if (target === 'swipe') {
@@ -3905,6 +3931,38 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                   </a>
                 )}
 
+                {htmlPreviewModal.html && previewTab === 'preview' && (
+                  <button
+                    onClick={() => {
+                      try {
+                        previewIframeRef.current?.contentWindow?.postMessage(
+                          { __funnelPreviewCmd: 'rerun' },
+                          '*'
+                        );
+                      } catch {}
+                    }}
+                    className="px-3 py-1.5 ml-2 text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white rounded"
+                    title="Re-run init scripts (jQuery/Swiper/FAQ)"
+                  >
+                    Re-run fallback
+                  </button>
+                )}
+
+                {previewDiag && previewTab === 'preview' && (
+                  <div
+                    className={`ml-2 px-2 py-1 rounded text-[11px] font-mono ${
+                      previewDiag.swipers === 0 && previewDiag.faqHeaders === 0
+                        ? 'bg-red-100 text-red-800'
+                        : previewDiag.label === 'after-fallback' || previewDiag.label === 'retry'
+                          ? 'bg-green-100 text-green-800'
+                          : 'bg-amber-100 text-amber-800'
+                    }`}
+                    title="Live diag from preview iframe"
+                  >
+                    {previewDiag.label} · scr={previewDiag.scripts} · faq={previewDiag.faqHeaders} · sw={previewDiag.swipers}/{previewDiag.slides} · th={previewDiag.thumbs}
+                  </div>
+                )}
+
                 {/* Desktop/Mobile viewport switcher */}
                 {htmlPreviewModal.mobileHtml && (
                   <div className="ml-auto mr-3 flex items-center bg-gray-100 rounded-lg p-0.5 border border-gray-200">
@@ -3973,6 +4031,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                   <iframe
                     key={`${previewViewport}-${htmlPreviewModal.html?.length || ''}-${htmlPreviewModal.iframeSrc || 'empty'}`}
                     ref={(iframe) => {
+                      previewIframeRef.current = iframe;
                       if (!iframe) return;
                       if (htmlPreviewModal.iframeSrc) {
                         iframe.src = htmlPreviewModal.iframeSrc;
@@ -3990,14 +4049,150 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                             }
                             safeHtml = safeHtml.replace(/loading=["']lazy["']/gi, 'loading="eager"');
                             // Fallback init: rende interattiva la pagina clonata anche se gli
-                            // <script> originali sono stati strippati a monte (è il caso di
-                            // Funnelish/CheckoutChamp clonati con keepScripts:false in versioni
-                            // precedenti del tool). Carica jQuery+Swiper dal CDN se mancano,
-                            // poi inizializza Swiper su ogni .swiper (announcement bar, main
-                            // image, thumb gallery), collega click thumb → main image e
-                            // attacca FAQ accordion. Idempotente, non rompe nulla se gli
-                            // script originali ci sono già.
-                            const fallbackInit = `\n<script>(function(){\n  function loadCss(href){\n    if(document.querySelector('link[href="'+href+'"]'))return;\n    var l=document.createElement('link'); l.rel='stylesheet'; l.href=href; document.head.appendChild(l);\n  }\n  function loadScript(src,cb){\n    var existing=document.querySelector('script[data-fallback-src="'+src+'"]');\n    if(existing){ if(existing.__loaded){cb();} else { existing.addEventListener('load',cb); existing.addEventListener('error',cb); } return; }\n    var s=document.createElement('script'); s.src=src; s.async=false; s.dataset.fallbackSrc=src;\n    s.addEventListener('load',function(){s.__loaded=true; cb();});\n    s.addEventListener('error',function(){console.warn('[preview] failed to load',src); cb();});\n    document.head.appendChild(s);\n  }\n  function diag(label){\n    try{ var s=document.scripts.length, fq=document.querySelectorAll('.faq .faq-header,.faq-question,.accordion-header,[data-faq-toggle]').length, sw=document.querySelectorAll('.swiper').length, sl=document.querySelectorAll('.swiper-slide').length, tb=document.querySelectorAll('.thumbImage img, .swiper-thumbs img').length; (window.parent||window).postMessage({__funnelPreviewDiag:true,label:label,scripts:s,faqHeaders:fq,swipers:sw,slides:sl,thumbs:tb},'*'); console.log('[preview]',label,'scripts='+s,'faqHeaders='+fq,'swipers='+sw,'slides='+sl,'thumbs='+tb);}catch(e){}\n  }\n  function activateFaq(){\n    try{\n      var sels=['.faq .faq-header','.faq-question','.accordion-header','[data-faq-toggle]'];\n      sels.forEach(function(sel){\n        document.querySelectorAll(sel).forEach(function(h){\n          if(h.__faqFallbackBound)return; h.__faqFallbackBound=true;\n          h.style.cursor='pointer';\n          h.addEventListener('click',function(ev){\n            ev.preventDefault();\n            var p=h.closest('.faq, .faq-item, .accordion-item, [data-faq]')||h.parentElement;\n            if(!p)return;\n            var was=p.classList.contains('active')||p.classList.contains('open')||p.classList.contains('expanded');\n            if(was){ p.classList.remove('active','open','expanded','show'); } else { p.classList.add('active'); }\n          });\n        });\n      });\n    }catch(e){console.warn('[preview] FAQ fallback failed',e);}\n  }\n  function activateSwiper(){\n    try{\n      if(typeof window.Swiper!=='function'){console.warn('[preview] Swiper not loaded yet'); return false;}\n      var initialized=0;\n      // Prima: thumbnails (servono come thumbs ai main slider)\n      var thumbsInstances={};\n      document.querySelectorAll('.swiper.thumbImage, .swiper.swiper-thumbs').forEach(function(el){\n        if(el.swiper||el.__swiperFallbackBound)return; el.__swiperFallbackBound=true;\n        try{\n          var inst=new window.Swiper(el,{ slidesPerView:'auto', spaceBetween:10, watchSlidesProgress:true, freeMode:true });\n          thumbsInstances[el.id||'thumb']=inst; initialized++;\n        }catch(e){console.warn('[preview] thumb swiper init failed',e);}\n      });\n      // Poi: tutti gli altri swiper\n      document.querySelectorAll('.swiper').forEach(function(el){\n        if(el.swiper||el.__swiperFallbackBound)return; el.__swiperFallbackBound=true;\n        var isAnnouncement=el.classList.contains('announcement_bar');\n        var isMain=el.classList.contains('mainImage');\n        var opts={\n          slidesPerView:1, spaceBetween:10, loop:isAnnouncement, autoplay: isAnnouncement?{delay:3500}:false,\n          navigation:{ nextEl: el.querySelector('.swiper-button-next'), prevEl: el.querySelector('.swiper-button-prev') },\n          pagination:{ el: el.querySelector('.swiper-pagination'), clickable:true },\n        };\n        if(isMain){\n          // collega al primo thumbsInstance disponibile\n          var firstThumb = Object.values(thumbsInstances)[0];\n          if(firstThumb) opts.thumbs={swiper: firstThumb};\n        }\n        try{ new window.Swiper(el,opts); initialized++; }catch(e){console.warn('[preview] swiper init failed',e);}\n      });\n      console.log('[preview] Swiper instances initialized:',initialized);\n      return initialized>0;\n    }catch(e){console.warn('[preview] Swiper fallback failed',e); return false;}\n  }\n  function activateThumbs(){\n    try{\n      // Fallback puro click thumb → main img.src (per quando Swiper thumbs non bastano)\n      var thumbs=document.querySelectorAll('.thumbImage img, .swiper-thumbs img, .thumbImage .swiper-slide img');\n      var mainImg=document.querySelector('.mainImage .swiper-slide-active img, .mainImage img, .product-image img');\n      thumbs.forEach(function(t){\n        if(t.__thumbFallbackBound)return; t.__thumbFallbackBound=true;\n        t.style.cursor='pointer';\n        t.addEventListener('click',function(){\n          var src=t.currentSrc||t.src||t.getAttribute('data-src'); if(!src)return;\n          var m=document.querySelector('.mainImage .swiper-slide-active img, .mainImage img, .product-image img');\n          if(m){ m.src=src; m.removeAttribute('srcset'); }\n        });\n      });\n    }catch(e){console.warn('[preview] thumb click fallback failed',e);}\n  }\n  function activateStickyShow(){\n    // Le sticky section di Funnelish hanno display:none di default e si\n    // mostrano via JS dopo scroll. Forziamo visibilità così la sticky CTA\n    // appare comunque.\n    try{ document.querySelectorAll('.stickSection').forEach(function(s){ s.style.display=''; }); }catch(e){}\n  }\n  function bootstrap(){\n    diag('boot');\n    var hasJq=typeof window.jQuery!=='undefined';\n    var hasSw=typeof window.Swiper==='function';\n    // CSS Swiper\n    loadCss('https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.css');\n    var pending=0; function done(){ if(--pending<=0) finalize(); }\n    if(!hasJq){ pending++; loadScript('https://code.jquery.com/jquery-3.5.1.min.js',done); }\n    if(!hasSw){ pending++; loadScript('https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.js',done); }\n    if(pending===0) finalize();\n  }\n  function finalize(){\n    diag('libs-ready');\n    activateFaq();\n    activateSwiper();\n    activateThumbs();\n    activateStickyShow();\n    diag('after-fallback');\n    // retry una volta dopo 1.5s per coprire DOM tardivo\n    setTimeout(function(){ activateFaq(); activateSwiper(); activateThumbs(); diag('retry'); },1500);\n  }\n  if(document.readyState==='loading'){ document.addEventListener('DOMContentLoaded',bootstrap); } else { setTimeout(bootstrap,50); }\n})();<\/script>\n`;
+                            // <script> originali sono stati strippati a monte. Carica
+                            // jQuery+Swiper dal CDN se mancano, inizializza Swiper, lega
+                            // click thumb→main image, FAQ accordion, sticky CTA. Mostra
+                            // anche un HUD di stato visibile dentro l'iframe e ascolta
+                            // postMessage 'rerun-fallback' dal parent per ri-eseguire.
+                            const fallbackInit = `
+<script>(function(){
+  var STATE = { jq:false, sw:false, lastError:null, fired:0 };
+  function postDiag(label){
+    try{
+      var s=document.scripts.length;
+      var fq=document.querySelectorAll('.faq .faq-header,.faq-question,.accordion-header,[data-faq-toggle]').length;
+      var sw=document.querySelectorAll('.swiper').length;
+      var sl=document.querySelectorAll('.swiper-slide').length;
+      var tb=document.querySelectorAll('.thumbImage img, .swiper-thumbs img').length;
+      var msg={__funnelPreviewDiag:true,label:label,scripts:s,faqHeaders:fq,swipers:sw,slides:sl,thumbs:tb,jq:STATE.jq,swLib:STATE.sw,lastError:STATE.lastError};
+      try{ (window.parent||window).postMessage(msg,'*'); }catch(_){}
+      console.log('[preview]',label,JSON.stringify({s:s,fq:fq,sw:sw,sl:sl,tb:tb,jq:STATE.jq,swLib:STATE.sw}));
+      paintHud(label, fq, sw, sl, tb);
+    }catch(e){STATE.lastError=String(e);}
+  }
+  function paintHud(label, fq, sw, sl, tb){
+    try{
+      var h=document.getElementById('__fnHud');
+      if(!h){
+        h=document.createElement('div');
+        h.id='__fnHud';
+        h.style.cssText='position:fixed;top:8px;right:8px;z-index:2147483647;background:rgba(0,0,0,.78);color:#fff;font:12px/1.3 system-ui,sans-serif;padding:6px 10px;border-radius:6px;pointer-events:auto;max-width:340px;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.3)';
+        h.title='Click to dismiss';
+        h.addEventListener('click',function(){ h.remove(); });
+        (document.body||document.documentElement).appendChild(h);
+      }
+      var color = STATE.lastError ? '#ff7676' : (STATE.sw && fq>0 ? '#7ce58a' : '#ffd166');
+      h.innerHTML='<div style="font-weight:700;color:'+color+'">FB '+label+'</div>'+
+        '<div>jq='+STATE.jq+' Swiper='+STATE.sw+'</div>'+
+        '<div>faq='+fq+' swiper='+sw+' slide='+sl+' thumb='+tb+'</div>'+
+        (STATE.lastError?'<div style="color:#ff7676;word-break:break-all">'+STATE.lastError+'</div>':'');
+    }catch(e){}
+  }
+  window.addEventListener('error',function(ev){ STATE.lastError = (ev.message||'err')+' @ '+(ev.filename||'?')+':'+(ev.lineno||0); });
+  window.addEventListener('unhandledrejection',function(ev){ STATE.lastError = 'rej:'+(ev.reason && ev.reason.message || ev.reason || 'unknown'); });
+  function loadCss(href){
+    if(document.querySelector('link[data-fb-css="'+href+'"]'))return;
+    var l=document.createElement('link'); l.rel='stylesheet'; l.href=href; l.dataset.fbCss=href; document.head.appendChild(l);
+  }
+  function loadScript(src,cb){
+    var existing=document.querySelector('script[data-fb-src="'+src+'"]');
+    if(existing){ if(existing.__loaded){cb();} else { existing.addEventListener('load',cb); existing.addEventListener('error',cb); } return; }
+    var s=document.createElement('script'); s.src=src; s.async=false; s.dataset.fbSrc=src;
+    s.addEventListener('load',function(){s.__loaded=true; cb();});
+    s.addEventListener('error',function(){ STATE.lastError='loadFail:'+src; cb(); });
+    (document.head||document.documentElement).appendChild(s);
+  }
+  function activateFaq(){
+    try{
+      var sels=['.faq .faq-header','.faq-question','.accordion-header','[data-faq-toggle]','.faq-item .faq-title','.faq-item > div:first-child','.accordion-item > button','details > summary'];
+      sels.forEach(function(sel){
+        document.querySelectorAll(sel).forEach(function(h){
+          if(h.__faqBound)return; h.__faqBound=true;
+          h.style.cursor='pointer';
+          h.addEventListener('click',function(ev){
+            ev.preventDefault(); ev.stopPropagation();
+            var p=h.closest('.faq,.faq-item,.accordion-item,[data-faq],details')||h.parentElement;
+            if(!p)return;
+            var was=p.classList.contains('active')||p.classList.contains('open')||p.classList.contains('expanded')||p.hasAttribute('open');
+            if(was){ p.classList.remove('active','open','expanded','show'); p.removeAttribute('open'); }
+            else { p.classList.add('active'); if(p.tagName==='DETAILS') p.setAttribute('open',''); }
+          },true);
+        });
+      });
+    }catch(e){STATE.lastError='faq:'+String(e);}
+  }
+  function activateSwiper(){
+    try{
+      if(typeof window.Swiper!=='function'){ return false; }
+      STATE.sw=true;
+      var initialized=0;
+      var thumbsInstances={};
+      document.querySelectorAll('.swiper.thumbImage, .swiper.swiper-thumbs').forEach(function(el){
+        if(el.swiper||el.__swiperBound)return; el.__swiperBound=true;
+        try{ thumbsInstances[el.id||('t'+initialized)]=new window.Swiper(el,{slidesPerView:'auto',spaceBetween:10,watchSlidesProgress:true,freeMode:true}); initialized++; }
+        catch(e){STATE.lastError='thumbInit:'+String(e);}
+      });
+      document.querySelectorAll('.swiper').forEach(function(el){
+        if(el.swiper||el.__swiperBound)return; el.__swiperBound=true;
+        var isAnnouncement=el.classList.contains('announcement_bar');
+        var isMain=el.classList.contains('mainImage');
+        var opts={
+          slidesPerView:1, spaceBetween:10, loop:isAnnouncement, autoplay: isAnnouncement?{delay:3500}:false,
+          navigation:{ nextEl: el.querySelector('.swiper-button-next'), prevEl: el.querySelector('.swiper-button-prev') },
+          pagination:{ el: el.querySelector('.swiper-pagination'), clickable:true }
+        };
+        if(isMain){ var firstThumb = Object.values(thumbsInstances)[0]; if(firstThumb) opts.thumbs={swiper: firstThumb}; }
+        try{ new window.Swiper(el,opts); initialized++; }catch(e){STATE.lastError='swInit:'+String(e);}
+      });
+      return initialized>0;
+    }catch(e){STATE.lastError='sw:'+String(e); return false;}
+  }
+  function activateThumbs(){
+    try{
+      var thumbs=document.querySelectorAll('.thumbImage img, .swiper-thumbs img, .thumbImage .swiper-slide img, [data-thumb] img');
+      thumbs.forEach(function(t){
+        if(t.__thumbBound)return; t.__thumbBound=true;
+        t.style.cursor='pointer';
+        t.addEventListener('click',function(){
+          var src=t.currentSrc||t.src||t.getAttribute('data-src'); if(!src)return;
+          var m=document.querySelector('.mainImage .swiper-slide-active img, .mainImage img, .product-image img, [data-main-image] img');
+          if(m){ m.src=src; m.removeAttribute('srcset'); }
+        });
+      });
+    }catch(e){STATE.lastError='thumbs:'+String(e);}
+  }
+  function activateStickyShow(){
+    try{ document.querySelectorAll('.stickSection').forEach(function(s){ s.style.display=''; s.style.visibility='visible'; }); }catch(e){}
+  }
+  function bootstrap(){
+    STATE.fired++;
+    postDiag('boot');
+    STATE.jq = typeof window.jQuery!=='undefined';
+    STATE.sw = typeof window.Swiper==='function';
+    loadCss('https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.css');
+    var pending=0; function done(){ if(--pending<=0) finalize(); }
+    if(!STATE.jq){ pending++; loadScript('https://code.jquery.com/jquery-3.5.1.min.js',function(){STATE.jq=typeof window.jQuery!=='undefined'; done();}); }
+    if(!STATE.sw){ pending++; loadScript('https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.js',function(){STATE.sw=typeof window.Swiper==='function'; done();}); }
+    if(pending===0) finalize();
+  }
+  function finalize(){
+    postDiag('libs-ready');
+    activateFaq();
+    activateSwiper();
+    activateThumbs();
+    activateStickyShow();
+    postDiag('after-fallback');
+    setTimeout(function(){ activateFaq(); activateSwiper(); activateThumbs(); activateStickyShow(); postDiag('retry'); },1500);
+  }
+  window.addEventListener('message',function(ev){
+    var d=ev.data;
+    if(d && typeof d==='object' && d.__funnelPreviewCmd==='rerun'){
+      console.log('[preview] rerun cmd received'); bootstrap();
+    }
+  });
+  if(document.readyState==='loading'){ document.addEventListener('DOMContentLoaded',bootstrap); } else { setTimeout(bootstrap,50); }
+})();<\/script>
+`;
                             if (safeHtml.includes('</body>')) {
                               safeHtml = safeHtml.replace('</body>', fallbackInit + '</body>');
                             } else {
