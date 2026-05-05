@@ -547,6 +547,24 @@ function sanitizeClonedHtml(html: string, originalUrl: string, options?: { keepS
       clean = `${metaTags}\n${clean}`;
     }
 
+    // 11. Strip <li> vuoti che rendono come "punti orfani" nelle bullet list
+    //     (es. <li>&nbsp;</li>, <li><br></li>, <li>  </li>). Spesso lasciati
+    //     dal builder originale come spaziature, oppure introdotti dalla
+    //     pipeline di clone/rewrite quando l'<li> conteneva solo whitespace
+    //     o tag inline svuotati (icone <i>, <span> rimossi, ecc.).
+    //     Esegui in loop perche dopo aver tolto un <li> vuoto, l'<li>
+    //     successivo potrebbe diventare "vuoto" se conteneva solo l'altro.
+    {
+      const emptyLiRe = /<li\b[^>]*>(?:\s|&nbsp;|&#160;|<br\s*\/?\s*>|<(?:span|i|b|em|strong|small|font|p)\b[^>]*>\s*(?:&nbsp;|&#160;)?\s*<\/(?:span|i|b|em|strong|small|font|p)>)*\s*<\/li>/gi;
+      let prev = '';
+      let guard = 0;
+      while (clean !== prev && guard < 4) {
+        prev = clean;
+        clean = clean.replace(emptyLiRe, '');
+        guard++;
+      }
+    }
+
     return clean;
   } catch {
     return html;
@@ -4061,6 +4079,18 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                             // Riapplichiamo SEMPRE il fallback client v5+ qui sotto.
                             safeHtml = safeHtml.replace(/<script\b[^>]*data-fallback=[^>]*>[\s\S]*?<\/script>/gi, '');
                             safeHtml = safeHtml.replace(/<style\b[^>]*data-fallback=[^>]*>[\s\S]*?<\/style>/gi, '');
+                            // Strip <li> vuoti orfani (punti senza testo) che certi builder
+                            // lasciano per spaziatura. Loop finche stabile.
+                            {
+                              const emptyLiRe = /<li\b[^>]*>(?:\s|&nbsp;|&#160;|<br\s*\/?\s*>|<(?:span|i|b|em|strong|small|font|p)\b[^>]*>\s*(?:&nbsp;|&#160;)?\s*<\/(?:span|i|b|em|strong|small|font|p)>)*\s*<\/li>/gi;
+                              let prev = '';
+                              let guard = 0;
+                              while (safeHtml !== prev && guard < 4) {
+                                prev = safeHtml;
+                                safeHtml = safeHtml.replace(emptyLiRe, '');
+                                guard++;
+                              }
+                            }
                             // Fallback init: rende interattiva la pagina clonata anche se gli
                             // <script> originali sono stati strippati a monte. Carica
                             // jQuery+Swiper dal CDN se mancano, inizializza Swiper, lega

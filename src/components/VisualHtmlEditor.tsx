@@ -459,6 +459,18 @@ function prepareEditorHtml(html: string): string {
   // e un HUD: dentro l'editor visuale rubano i click di selezione.
   clean = clean.replace(/<script\b[^>]*data-fallback=[^>]*>[\s\S]*?<\/script>/gi, '');
   clean = clean.replace(/<style\b[^>]*data-fallback=[^>]*>[\s\S]*?<\/style>/gi, '');
+  // Strip <li> vuoti orfani (punti senza testo). Loop finche stabile per
+  // gestire bullet annidate e <li> che diventano vuoti dopo aver tolto altri.
+  {
+    const emptyLiRe = /<li\b[^>]*>(?:\s|&nbsp;|&#160;|<br\s*\/?\s*>|<(?:span|i|b|em|strong|small|font|p)\b[^>]*>\s*(?:&nbsp;|&#160;)?\s*<\/(?:span|i|b|em|strong|small|font|p)>)*\s*<\/li>/gi;
+    let prev = '';
+    let guard = 0;
+    while (clean !== prev && guard < 4) {
+      prev = clean;
+      clean = clean.replace(emptyLiRe, '');
+      guard++;
+    }
+  }
   if (!clean.includes('referrer')) {
     const referrerMeta = '<meta name="referrer" content="no-referrer">';
     if (clean.includes('<head>')) clean = clean.replace('<head>', '<head>' + referrerMeta);
