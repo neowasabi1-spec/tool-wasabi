@@ -1116,6 +1116,12 @@ export default function FrontEndFunnel() {
           ts: Date.now(),
         });
       }
+      if (d && typeof d === 'object' && d.__funnelPreviewClick) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[funnel-preview-click] ${d.target}: ${d.target === 'faq' ? `"${d.headerText}" contents=${d.contents} open=${d.newOpen}` : `idx=${d.idx}/${d.siblings}`}`
+        );
+      }
     };
     window.addEventListener('message', onMsg);
     return () => window.removeEventListener('message', onMsg);
@@ -4102,97 +4108,126 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
     s.addEventListener('error',function(){ STATE.lastError='loadFail:'+src; cb(); });
     (document.head||document.documentElement).appendChild(s);
   }
-  function toggleFaqContent(header){
-    // Trova il "body" dell'item FAQ con strategie multiple e ne forza visibilità.
-    var p=header.closest('.faq,.faq-item,.accordion-item,[data-faq],details')||header.parentElement;
-    var wasOpen = false;
+  function showFaqContent(content){
+    // Brutal force: rimuove TUTTE le proprietà che possono nascondere.
+    var props = [
+      ['display','block'],['max-height','none'],['height','auto'],
+      ['min-height','0'],['overflow','visible'],['visibility','visible'],
+      ['opacity','1'],['padding-top',''],['padding-bottom',''],
+      ['margin-top',''],['margin-bottom',''],['transform','none']
+    ];
+    props.forEach(function(p){ content.style.setProperty(p[0],p[1],'important'); });
+    content.removeAttribute('hidden');
+    content.removeAttribute('aria-hidden');
+    content.classList.add('show','open','active','expanded','is-open','is-active');
+    content.classList.remove('hidden','collapsed','closed');
+    content.__fbOpen = true;
+  }
+  function hideFaqContent(content){
+    // Reset agli stili "naturali" del CSS originale togliendo i nostri inline.
+    ['display','max-height','height','min-height','overflow','visibility','opacity','padding-top','padding-bottom','margin-top','margin-bottom','transform']
+      .forEach(function(p){ content.style.removeProperty(p); });
+    content.classList.remove('show','open','active','expanded','is-open','is-active');
+    content.__fbOpen = false;
+  }
+  function findFaqContents(header){
+    // Trova tutti i possibili "content" associati a questo header.
+    var p = header.closest('.faq,.faq-wrapper,.faq-item,.accordion-item,[data-faq],details') || header.parentElement;
+    var contents = [];
+    var contentSelectors = [
+      '.faq-content-wrapper','.faq-content','.faq-body','.faq-answer',
+      '.accordion-content','.accordion-body','.accordion-collapse',
+      '.answer','[data-faq-content]','[data-faq-body]'
+    ];
     if(p){
-      wasOpen = p.classList.contains('active')||p.classList.contains('open')||p.classList.contains('expanded')||p.classList.contains('is-open')||p.classList.contains('is-active')||p.hasAttribute('open');
+      contentSelectors.forEach(function(s){
+        p.querySelectorAll(s).forEach(function(c){ if(contents.indexOf(c)<0) contents.push(c); });
+      });
     }
-    var newOpen = !wasOpen;
-    // 1. Class toggle (per stili che dipendono da .active/.open)
+    // Fratello successivo dell'header
+    var sib = header.nextElementSibling;
+    if(sib && contents.indexOf(sib)<0 && !sib.classList.contains('faq-header') && !sib.classList.contains('faq-title') && !sib.classList.contains('faq-question')){
+      contents.push(sib);
+    }
+    return { parent: p, contents: contents };
+  }
+  function toggleFaqContent(header, forceState){
+    var info = findFaqContents(header);
+    var p = info.parent;
+    var contents = info.contents;
+    // Stato corrente: aperto se almeno un content è aperto
+    var anyOpen = contents.some(function(c){ return c.__fbOpen===true; });
+    if(!contents.length && p){
+      anyOpen = p.classList.contains('active')||p.classList.contains('open')||p.classList.contains('expanded')||p.classList.contains('is-open');
+    }
+    var newOpen = (typeof forceState==='boolean') ? forceState : !anyOpen;
+    // Toggle classes sul parent
     if(p){
       ['active','open','expanded','show','is-open','is-active'].forEach(function(c){
         if(newOpen) p.classList.add(c); else p.classList.remove(c);
       });
       if(p.tagName==='DETAILS'){ if(newOpen) p.setAttribute('open',''); else p.removeAttribute('open'); }
     }
-    // 2. Trova candidati "body/answer/content"
-    var candidates=[];
-    if(p){
-      ['.faq-body','.faq-content','.faq-answer','.accordion-content','.accordion-body','.answer','.content','[data-faq-content]','[data-faq-body]'].forEach(function(s){
-        p.querySelectorAll(s).forEach(function(c){ candidates.push(c); });
-      });
-    }
-    // 3. Fratello successivo dell'header (pattern molto comune)
-    var sib = header.nextElementSibling;
-    if(sib && candidates.indexOf(sib)<0) candidates.push(sib);
-    // 4. Bambino del parent che NON contiene l'header (esclude header stesso)
-    if(p){
-      Array.prototype.forEach.call(p.children,function(c){
-        if(c!==header && !c.contains(header) && candidates.indexOf(c)<0){
-          // se è un possibile content (non un titolo)
-          var tag=c.tagName.toLowerCase();
-          if(tag!=='button' && tag!=='summary' && !c.classList.contains('faq-header') && !c.classList.contains('faq-title') && !c.classList.contains('faq-question') && !c.classList.contains('accordion-header')){
-            candidates.push(c);
-          }
-        }
-      });
-    }
-    // 5. Forza display
-    candidates.forEach(function(c){
-      if(newOpen){
-        c.style.setProperty('display','block','important');
-        c.style.setProperty('max-height','none','important');
-        c.style.setProperty('opacity','1','important');
-        c.style.setProperty('visibility','visible','important');
-        c.removeAttribute('hidden');
-        c.removeAttribute('aria-hidden');
-      } else {
-        c.style.removeProperty('display');
-        c.style.removeProperty('max-height');
-        c.style.removeProperty('opacity');
-        c.style.removeProperty('visibility');
-      }
+    // Toggle on contents
+    contents.forEach(function(c){
+      if(newOpen) showFaqContent(c); else hideFaqContent(c);
     });
-    // 6. Aria
     header.setAttribute('aria-expanded', newOpen?'true':'false');
+    // Aggiorna icona freccia (rotate)
+    var icon = header.querySelector('.faq-icon, .accordion-icon, svg');
+    if(icon){
+      icon.style.setProperty('transform', newOpen?'rotate(180deg)':'rotate(0)','important');
+      icon.style.setProperty('transition','transform .2s','important');
+    }
+    // Diag postMessage
+    try{
+      (window.parent||window).postMessage({__funnelPreviewClick:true,target:'faq',headerText:(header.textContent||'').trim().slice(0,40),contents:contents.length,newOpen:newOpen},'*');
+    }catch(_){}
   }
   function activateFaq(){
     try{
+      // STRATEGIA 1: bind diretto sui selettori noti
       var sels=[
-        '.faq .faq-header','.faq-header','.faq-question','.faq-title',
+        '.faq-header','.faq-question','.faq-title',
         '.accordion-header','.accordion-question','.accordion-toggle','.accordion-button',
         '[data-faq-toggle]','[data-toggle="collapse"]','[data-bs-toggle="collapse"]',
-        '.faq-item > div:first-child','.faq-item > button','.faq-item > summary',
-        '.accordion-item > button','.accordion-item > div:first-child',
         'details > summary'
       ];
-      var seen=new Set();
+      var bound=0;
       sels.forEach(function(sel){
         document.querySelectorAll(sel).forEach(function(h){
-          if(seen.has(h)||h.__faqBound)return; seen.add(h); h.__faqBound=true;
+          if(h.__faqBound)return; h.__faqBound=true; bound++;
           h.style.cursor='pointer';
-          h.addEventListener('click',function(ev){
-            ev.preventDefault(); ev.stopPropagation();
-            try{ toggleFaqContent(h); }catch(e){ STATE.lastError='faqTog:'+String(e); }
-          },true);
         });
       });
-      // Inizia chiuse: forza display:none ai content non aperti per consistenza
-      document.querySelectorAll('.faq,.faq-item,.accordion-item').forEach(function(p){
-        if(p.classList.contains('active')||p.classList.contains('open')||p.classList.contains('expanded')||p.classList.contains('is-open')||p.classList.contains('is-active')||p.hasAttribute('open')) return;
-        ['.faq-body','.faq-content','.faq-answer','.accordion-content','.accordion-body'].forEach(function(s){
-          p.querySelectorAll(s).forEach(function(c){
-            if(c.__faqInitClosed) return; c.__faqInitClosed=true;
-            // Solo se NON ha già un display esplicito dal CSS originale
-            var cs = window.getComputedStyle(c);
-            if(cs.display !== 'none'){
-              // Lascia stare: il CSS originale potrebbe gestirlo
+      // STRATEGIA 2: click delegate GLOBAL (più resiliente di bind diretto)
+      // Questo cattura QUALSIASI click dentro un'area FAQ-like, anche se i
+      // selettori sopra non corrispondono al template specifico.
+      if(!document.body.__faqDelegateBound){
+        document.body.__faqDelegateBound = true;
+        document.body.addEventListener('click', function(ev){
+          var t = ev.target;
+          if(!t || !t.closest) return;
+          // Trova un possibile header risalendo l'albero
+          var header = t.closest('.faq-header,.faq-question,.faq-title,.accordion-header,.accordion-question,.accordion-toggle,.accordion-button,[data-faq-toggle],[data-toggle="collapse"],[data-bs-toggle="collapse"],summary');
+          // Fallback: se il click è dentro .faq o .faq-wrapper ma fuori dal content, considera "header"
+          if(!header){
+            var faqRoot = t.closest('.faq,.faq-wrapper,.faq-item,.accordion-item');
+            if(faqRoot){
+              var insideContent = t.closest('.faq-content-wrapper,.faq-content,.faq-body,.faq-answer,.accordion-content,.accordion-body');
+              if(!insideContent){
+                // Trova il primo elemento "header-like" dentro il faqRoot
+                header = faqRoot.querySelector('.faq-header,.faq-question,.faq-title,.accordion-header,.accordion-button') || faqRoot.firstElementChild;
+              }
             }
-          });
-        });
-      });
+          }
+          if(!header) return;
+          ev.preventDefault();
+          ev.stopPropagation();
+          try{ toggleFaqContent(header); }catch(e){ STATE.lastError='faqDel:'+String(e); }
+        }, true);
+      }
+      console.log('[preview] FAQ headers bound:', bound, '+ global delegate active');
     }catch(e){STATE.lastError='faq:'+String(e);}
   }
   function activateSwiper(){
@@ -4258,17 +4293,49 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
   }
   function activateThumbs(){
     try{
-      // Pure-DOM fallback: thumb img → main img.src (nel caso non ci siano .swiper-slide wrap)
-      var thumbs=document.querySelectorAll('.thumbImage img, .swiper-thumbs img, [data-thumb] img');
-      thumbs.forEach(function(t){
-        if(t.__thumbBound)return; t.__thumbBound=true;
-        t.style.cursor='pointer';
-        t.addEventListener('click',function(ev){
-          var src=t.currentSrc||t.src||t.getAttribute('data-src'); if(!src)return;
-          var m=document.querySelector('.mainImage .swiper-slide-active img, .mainImage img:not(.thumb), .product-image img, [data-main-image] img');
-          if(m){ m.src=src; m.removeAttribute('srcset'); }
-        });
-      });
+      // Click delegate global sui thumbnail. Resiliente al fatto che il DOM
+      // possa cambiare dopo init Swiper.
+      if(!document.body.__thumbDelegateBound){
+        document.body.__thumbDelegateBound = true;
+        document.body.addEventListener('click', function(ev){
+          var t = ev.target;
+          if(!t || !t.closest) return;
+          var thumbContainer = t.closest('.thumbImage, .swiper-thumbs, [data-thumb-container]');
+          if(!thumbContainer) return;
+          // Trova il "thumb item" cliccato (slide o img)
+          var thumbItem = t.closest('.swiper-slide, [data-thumb], img');
+          if(!thumbItem) return;
+          // Indice del thumb nella sua lista
+          var siblings = Array.prototype.slice.call(thumbContainer.querySelectorAll('.swiper-slide, [data-thumb]'));
+          if(siblings.length===0){
+            // No swiper-slide? Lista di img
+            siblings = Array.prototype.slice.call(thumbContainer.querySelectorAll('img'));
+          }
+          var idx = siblings.indexOf(thumbItem);
+          if(idx<0){
+            // Trova l'antenato che è in siblings
+            var p=thumbItem;
+            while(p && idx<0){ idx = siblings.indexOf(p); p = p.parentElement; }
+          }
+          // 1. Prova ad usare il main Swiper se esiste
+          var mainEl = document.querySelector('.swiper.mainImage');
+          if(mainEl && mainEl.swiper && idx>=0){
+            try{ mainEl.swiper.slideTo(idx); }catch(_){}
+          }
+          // 2. Fallback puro: copia src dal thumb-img al main-img
+          var thumbImg = thumbItem.tagName==='IMG' ? thumbItem : thumbItem.querySelector('img');
+          if(thumbImg){
+            var src = thumbImg.currentSrc || thumbImg.src || thumbImg.getAttribute('data-src');
+            if(src){
+              var mainImg = document.querySelector('.swiper.mainImage .swiper-slide-active img, .swiper.mainImage .swiper-slide img, .mainImage img:not(.thumb), .product-image img, [data-main-image] img');
+              if(mainImg){ mainImg.src = src; mainImg.removeAttribute('srcset'); }
+            }
+          }
+          try{
+            (window.parent||window).postMessage({__funnelPreviewClick:true,target:'thumb',idx:idx,siblings:siblings.length},'*');
+          }catch(_){}
+        }, true);
+      }
     }catch(e){STATE.lastError='thumbs:'+String(e);}
   }
   function activateStickyShow(){
