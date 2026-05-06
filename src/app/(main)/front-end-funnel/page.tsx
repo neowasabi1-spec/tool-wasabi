@@ -826,6 +826,11 @@ export default function FrontEndFunnel() {
   const [cloneMobile, setCloneMobile] = useState(true);
   const [previewViewport, setPreviewViewport] = useState<'desktop' | 'mobile'>('desktop');
   const [previewTab, setPreviewTab] = useState<'preview' | 'html'>('preview');
+  // Spinner overlay durante remount dell'iframe preview. doc.write(safeHtml)
+  // su HTML grandi blocca il main thread (~500-2000ms). Mostriamo "Caricamento
+  // anteprima…" mentre la doc.write avviene in setTimeout(0) cosi' il
+  // browser puo' almeno disegnare lo spinner prima del freeze.
+  const [previewLoading, setPreviewLoading] = useState(false);
   const [editableHtml, setEditableHtml] = useState('');
   const [cloneConfig, setCloneConfig] = useState({
     productName: '',
@@ -3936,7 +3941,13 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
             <div className="flex-1 overflow-hidden flex flex-col">
               <div className="flex items-center border-b border-gray-200">
                 <button
-                  onClick={() => setPreviewTab('preview')}
+                  onClick={() => {
+                    if (previewTab === 'preview') return;
+                    // Spinner immediato: il switch html→preview rimonta
+                    // l'iframe e ri-esegue doc.write con tutti gli script.
+                    setPreviewLoading(true);
+                    setPreviewTab('preview');
+                  }}
                   className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
                     previewTab === 'preview'
                       ? 'text-blue-600 border-blue-600'
@@ -4032,7 +4043,16 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                 {htmlPreviewModal.mobileHtml && (
                   <div className="ml-auto mr-3 flex items-center bg-gray-100 rounded-lg p-0.5 border border-gray-200">
                     <button
-                      onClick={() => setPreviewViewport('desktop')}
+                      onClick={() => {
+                        if (previewViewport === 'desktop' || previewLoading) return;
+                        // Spinner attivo nel render corrente; React batcha le 2
+                        // setState in un solo render → iframe ri-monta gia' con
+                        // overlay sopra. La doc.write e' deferita (setTimeout 0
+                        // nel ref-cb) cosi' il browser disegna spinner+iframe
+                        // empty prima del freeze.
+                        setPreviewLoading(true);
+                        setPreviewViewport('desktop');
+                      }}
                       className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
                         previewViewport === 'desktop'
                           ? 'bg-white text-blue-700 shadow-sm border border-blue-200'
@@ -4043,7 +4063,11 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                       Desktop
                     </button>
                     <button
-                      onClick={() => setPreviewViewport('mobile')}
+                      onClick={() => {
+                        if (previewViewport === 'mobile' || previewLoading) return;
+                        setPreviewLoading(true);
+                        setPreviewViewport('mobile');
+                      }}
                       className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
                         previewViewport === 'mobile'
                           ? 'bg-white text-blue-700 shadow-sm border border-blue-200'
@@ -4074,6 +4098,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                       </button>
                       <button
                         onClick={() => {
+                          setPreviewLoading(true);
                           setHtmlPreviewModal(prev => ({ ...prev, html: editableHtml }));
                           setPreviewTab('preview');
                         }}
@@ -4092,7 +4117,18 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                   />
                 </div>
               ) : (
-                <div className="flex-1 overflow-hidden bg-gray-100 p-2 flex items-start justify-center">
+                <div className="flex-1 overflow-hidden bg-gray-100 p-2 flex items-start justify-center relative">
+                  {previewLoading && (
+                    <div className="absolute inset-0 z-10 flex items-center justify-center bg-gray-100/80 backdrop-blur-sm pointer-events-none">
+                      <div className="flex items-center gap-2 text-gray-600 bg-white px-4 py-2 rounded-lg shadow border border-gray-200">
+                        <svg className="animate-spin h-4 w-4 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
+                        </svg>
+                        <span className="text-sm font-medium">Caricamento anteprima…</span>
+                      </div>
+                    </div>
+                  )}
                   <iframe
                     key={`${previewViewport}-${htmlPreviewModal.html?.length || ''}-${htmlPreviewModal.iframeSrc || 'empty'}`}
                     ref={(iframe) => {
@@ -4106,7 +4142,16 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                       previewInitedRef.current = iframe;
                       if (htmlPreviewModal.iframeSrc) {
                         iframe.src = htmlPreviewModal.iframeSrc;
+                        setPreviewLoading(false);
                       } else {
+                        // Difer la doc.write a un macrotask successivo: cosi'
+                        // il browser puo' completare il commit React e
+                        // disegnare lo spinner overlay PRIMA che la sync
+                        // doc.write su HTML grandi blocchi il main thread
+                        // (~500-2000ms con scripts pesanti come Swiper, YT,
+                        // ipinfo, snowplow). Dopo la doc.close() l'overlay
+                        // viene rimosso.
+                        setTimeout(() => {
                         const htmlToShow = previewViewport === 'mobile' && htmlPreviewModal.mobileHtml
                           ? htmlPreviewModal.mobileHtml : htmlPreviewModal.html;
                         if (htmlToShow) {
@@ -4458,6 +4503,8 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                             doc.close();
                           }
                         }
+                        setPreviewLoading(false);
+                        }, 0);
                       }
                     }}
                     className={`bg-white rounded border border-gray-300 transition-all duration-300 ${
