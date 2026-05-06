@@ -1565,6 +1565,31 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   const stableSrcDoc = useMemo(() => prepareEditorHtml(activeHtml), [iframeVersion, editorViewport]);
   const el = selectedElement;
 
+  // Preview mode: il <iframe srcDoc={activeHtml}> esegue TUTTI gli script
+  // della landing (jQuery, Swiper, embed YouTube, fallback diag, etc.)
+  // sincronamente al mount, bloccando il main thread per centinaia di ms.
+  // Per non far percepire un "freeze" all'utente, prima mostriamo uno
+  // spinner (30ms - 1 frame); solo dopo montiamo l'iframe.
+  // - Lo srcDoc e' uno SNAPSHOT preso al momento dell'ingresso in preview
+  //   (previewSnapshot), cosi' modifiche a currentHtml/mobileHtml in
+  //   background non causano reload dell'iframe (re-parsing di megabytes).
+  const [previewReady, setPreviewReady] = useState(false);
+  const [previewSnapshot, setPreviewSnapshot] = useState('');
+  useEffect(() => {
+    if (mode !== 'preview') {
+      setPreviewReady(false);
+      return;
+    }
+    setPreviewReady(false);
+    setPreviewSnapshot(activeHtml);
+    const t = setTimeout(() => setPreviewReady(true), 30);
+    return () => clearTimeout(t);
+    // Volutamente NO dependency su activeHtml: lo snapshot si fa solo
+    // quando si entra in preview mode. Per "ricaricare" l'utente puo'
+    // tornare a Visual e ri-cliccare Preview.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode]);
+
   return (
     <div className="fixed inset-0 z-[60] flex flex-col bg-white">
       {/* ═══ Top Bar ═══ */}
@@ -1931,17 +1956,27 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
           )}
 
           {mode === 'preview' && (
-            <div className="w-full h-full flex items-start justify-center bg-gray-100 overflow-auto">
-              <iframe
-                srcDoc={activeHtml}
-                className={`h-full border-0 transition-all duration-300 ${
-                  editorViewport === 'mobile'
-                    ? 'w-[390px] shadow-2xl border-2 border-gray-300 rounded-[2rem] my-4'
-                    : 'w-full'
-                }`}
-                title="Preview"
-                sandbox="allow-scripts allow-same-origin"
-              />
+            <div className="w-full h-full flex items-start justify-center bg-gray-100 overflow-auto relative">
+              {!previewReady ? (
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <div className="flex items-center gap-2 text-slate-500">
+                    <Loader2 className="h-5 w-5 animate-spin" />
+                    <span className="text-sm">Preparing preview…</span>
+                  </div>
+                </div>
+              ) : (
+                <iframe
+                  key={`preview-${editorViewport}`}
+                  srcDoc={previewSnapshot}
+                  className={`h-full border-0 transition-all duration-300 ${
+                    editorViewport === 'mobile'
+                      ? 'w-[390px] shadow-2xl border-2 border-gray-300 rounded-[2rem] my-4'
+                      : 'w-full'
+                  }`}
+                  title="Preview"
+                  sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+                />
+              )}
             </div>
           )}
         </div>
