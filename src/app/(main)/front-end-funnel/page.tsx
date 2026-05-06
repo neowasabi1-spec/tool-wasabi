@@ -841,6 +841,12 @@ export default function FrontEndFunnel() {
     language: 'it',
     targetLanguage: 'Italiano',
     useOpenClaw: false,
+    // Optional: pulled from the linked Project (My Projects → Brief tab and
+    // Market Research tab). Sent to the rewrite proxy so Claude can use the
+    // project brief as primary source of truth for tone/positioning and the
+    // research as ground truth for pains/desires/language.
+    brief: '',
+    marketResearch: '',
   });
   const [cloningIds, setCloningIds] = useState<string[]>([]);
   const [cloneProgress, setCloneProgress] = useState<{
@@ -1790,8 +1796,22 @@ export default function FrontEndFunnel() {
   // Clone via smooth-responder Edge Function. Project (from My Projects)
   // provides name + description + brief + domain; we wrap them into a single
   // labelled context block so Claude sees the brief as the source of truth.
+  // brief and marketResearch are also forwarded as separate fields to the
+  // rewrite proxy so the Edge Function can frame them explicitly.
   const openCloneModal = (page: typeof funnelPages[0]) => {
     const project = (projects || []).find(p => p.id === page.productId);
+
+    // marketResearch is a JSONB blob in DB → typically { content: string, ... }
+    let researchText = '';
+    const mr = project?.marketResearch as { content?: unknown } | undefined;
+    if (mr) {
+      if (typeof mr === 'string') {
+        researchText = mr as unknown as string;
+      } else if (typeof mr.content === 'string') {
+        researchText = mr.content;
+      }
+    }
+
     setCloneConfig({
       productName: project?.name || '',
       productDescription: buildProjectContext(project),
@@ -1800,6 +1820,9 @@ export default function FrontEndFunnel() {
       customPrompt: page.prompt || '',
       language: 'it',
       targetLanguage: 'Italiano',
+      useOpenClaw: false,
+      brief: project?.brief?.trim() || '',
+      marketResearch: researchText.trim(),
     });
     setCloneMode('identical');
     setCloneProgress(null);
@@ -1999,6 +2022,8 @@ export default function FrontEndFunnel() {
               targetLanguage: cloneConfig.language || 'it',
               userId: DEFAULT_USER_ID,
               renderedHtml: htmlToRewrite,
+              brief: cloneConfig.brief || undefined,
+              market_research: cloneConfig.marketResearch || undefined,
             }),
           });
 
@@ -2038,6 +2063,13 @@ export default function FrontEndFunnel() {
                 cloneMode: 'rewrite',
                 batchNumber: sbBatch,
                 userId: DEFAULT_USER_ID,
+                // brief / market_research are read by the Edge Function from
+                // the request body of every process call (they're not stored
+                // in the cloning_jobs row). Forwarding them on every batch is
+                // cheap (~10KB) and keeps the rewrite consistent across
+                // batches of the same job.
+                brief: cloneConfig.brief || undefined,
+                market_research: cloneConfig.marketResearch || undefined,
               }),
             });
             let procData: {
@@ -5148,6 +5180,41 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                       </div>
                     );
                   })()}
+
+                  {/* What Claude will receive — transparency panel */}
+                  <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3 text-xs text-emerald-900">
+                    <div className="font-semibold mb-1.5 flex items-center gap-1.5">
+                      <Sparkles className="w-3.5 h-3.5" /> Sent to Claude on Rewrite
+                    </div>
+                    <ul className="space-y-0.5">
+                      <li>
+                        <span className="font-medium">Knowledge base:</span>{' '}
+                        <span className="text-emerald-700">
+                          ON (cached) · COS, Tony Flores, Evaldo, Anghelache, Savage, 108 split tests
+                        </span>
+                      </li>
+                      <li>
+                        <span className="font-medium">Project brief:</span>{' '}
+                        {cloneConfig.brief ? (
+                          <span className="text-emerald-700">
+                            {cloneConfig.brief.length.toLocaleString()} chars
+                          </span>
+                        ) : (
+                          <span className="text-amber-700">—  add it in My Projects → Brief</span>
+                        )}
+                      </li>
+                      <li>
+                        <span className="font-medium">Market research:</span>{' '}
+                        {cloneConfig.marketResearch ? (
+                          <span className="text-emerald-700">
+                            {cloneConfig.marketResearch.length.toLocaleString()} chars
+                          </span>
+                        ) : (
+                          <span className="text-amber-700">—  add it in My Projects → Market Research</span>
+                        )}
+                      </li>
+                    </ul>
+                  </div>
 
                   <div className="grid grid-cols-2 gap-4">
                     <div>
