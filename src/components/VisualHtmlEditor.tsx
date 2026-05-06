@@ -1920,6 +1920,34 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                   </div>
                 )}
 
+                {/* Iframe / Embed (YouTube, Vimeo, ecc.) */}
+                {el.tagName === 'iframe' && (
+                  <div className="p-3">
+                    <PropLabel icon={Film}>Embed</PropLabel>
+                    <label className="text-[10px] text-slate-500 mb-0.5 block">Embed URL</label>
+                    <input
+                      type="url"
+                      defaultValue={el.src}
+                      placeholder="https://www.youtube.com/embed/VIDEO_ID"
+                      className="prop-input"
+                      onBlur={(e) => {
+                        const raw = e.target.value.trim();
+                        if (!raw) { setAttr('src', ''); return; }
+                        let url = raw;
+                        const yt = raw.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)([\w-]{6,})/i);
+                        if (yt) url = `https://www.youtube.com/embed/${yt[1]}`;
+                        const vm = raw.match(/vimeo\.com\/(?!.*player\.)(\d+)/i);
+                        if (vm) url = `https://player.vimeo.com/video/${vm[1]}`;
+                        setAttr('src', url);
+                      }}
+                      onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                    />
+                    <p className="text-[10px] text-slate-400 mt-1">
+                      Incolla un URL YouTube/Vimeo (anche /watch?v=) o un embed pronto.
+                    </p>
+                  </div>
+                )}
+
                 {/* AI Image / Video Generation */}
                 {el.tagName === 'img' && (
                   <div className="p-3">
@@ -2227,7 +2255,8 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
         const BUILTIN_BLOCKS = [
           { id: 'b-text', icon: '📝', label: 'Text Block', html: '<div style="padding:40px 20px;max-width:800px;margin:0 auto"><h2 style="font-size:28px;font-weight:700;margin-bottom:16px;color:#1a1a1a">Your Headline Here</h2><p style="font-size:16px;line-height:1.7;color:#444">Write your paragraph text here. You can edit this directly in the visual editor by double-clicking.</p></div>' },
           { id: 'b-image', icon: '🖼️', label: 'Image', html: '<div style="padding:24px 20px;text-align:center"><img src="https://placehold.co/800x400/e2e8f0/64748b?text=Your+Image+Here" alt="Image" style="max-width:100%;height:auto;border-radius:8px" /></div>' },
-          { id: 'b-video', icon: '🎬', label: 'Video', html: '<div style="padding:24px 20px;max-width:800px;margin:0 auto"><div style="position:relative;padding-bottom:56.25%;height:0;overflow:hidden;border-radius:8px;background:#000"><iframe src="https://www.youtube.com/embed/dQw4w9WgXcQ" style="position:absolute;top:0;left:0;width:100%;height:100%;border:0" allow="autoplay;encrypted-media" allowfullscreen></iframe></div></div>' },
+          { id: 'b-video', icon: '🎬', label: 'Video (Upload)', html: '<div style="padding:24px 20px;max-width:800px;margin:0 auto;text-align:center"><video controls preload="metadata" playsinline poster="https://placehold.co/1280x720/0f172a/94a3b8?text=Click+the+video%2C+then+%22Upload+Video%22+in+the+sidebar" style="width:100%;max-width:800px;aspect-ratio:16/9;border-radius:8px;background:#000;display:block;margin:0 auto;cursor:pointer"></video></div>' },
+          { id: 'b-video-embed', icon: '📺', label: 'Video Embed (YouTube/Vimeo)', html: '<div style="padding:24px 20px;max-width:800px;margin:0 auto"><div style="position:relative;padding-bottom:56.25%;height:0;overflow:hidden;border-radius:8px;background:#000"><iframe src="" data-placeholder="paste-youtube-or-vimeo-embed-url" style="position:absolute;top:0;left:0;width:100%;height:100%;border:0" allow="autoplay;encrypted-media;picture-in-picture;fullscreen" allowfullscreen></iframe></div><p style="margin-top:8px;font-size:12px;color:#64748b;text-align:center">Click the iframe and paste an embed URL (e.g. https://www.youtube.com/embed/VIDEO_ID) in the sidebar.</p></div>' },
           { id: 'b-2col', icon: '▥', label: '2 Columns', html: '<div style="padding:40px 20px;max-width:960px;margin:0 auto;display:flex;gap:32px;flex-wrap:wrap"><div style="flex:1;min-width:280px"><img src="https://placehold.co/460x300/e2e8f0/64748b?text=Image" alt="" style="width:100%;border-radius:8px" /></div><div style="flex:1;min-width:280px"><h3 style="font-size:22px;font-weight:700;margin-bottom:12px;color:#1a1a1a">Column Title</h3><p style="font-size:15px;line-height:1.7;color:#555">Description text goes here. Edit it in the visual editor.</p><a href="#" style="display:inline-block;margin-top:16px;padding:12px 28px;background:#3b82f6;color:#fff;text-decoration:none;border-radius:8px;font-weight:600;font-size:14px">Learn More</a></div></div>' },
           { id: 'b-offer', icon: '🏷️', label: 'Offer / CTA', html: '<div style="padding:48px 20px;background:linear-gradient(135deg,#1e40af,#7c3aed);text-align:center"><h2 style="font-size:32px;font-weight:800;color:#fff;margin-bottom:8px">Special Offer</h2><p style="font-size:18px;color:rgba(255,255,255,.85);margin-bottom:24px">Get 50% off for a limited time only</p><div style="display:inline-block;background:#fff;border-radius:12px;padding:24px 40px;margin-bottom:20px"><div style="font-size:14px;color:#6b7280;text-decoration:line-through">$197.00</div><div style="font-size:40px;font-weight:800;color:#1e40af">$97</div></div><br/><a href="#" style="display:inline-block;padding:16px 48px;background:#f59e0b;color:#1a1a1a;text-decoration:none;border-radius:10px;font-weight:800;font-size:18px;text-transform:uppercase;letter-spacing:1px">Buy Now</a><p style="font-size:12px;color:rgba(255,255,255,.6);margin-top:16px">60-day money-back guarantee</p></div>' },
           { id: 'b-testimonial', icon: '💬', label: 'Testimonials', html: '<div style="padding:48px 20px;background:#f8fafc"><div style="max-width:960px;margin:0 auto"><h2 style="text-align:center;font-size:26px;font-weight:700;margin-bottom:32px;color:#1a1a1a">What Our Customers Say</h2><div style="display:flex;gap:20px;flex-wrap:wrap"><div style="flex:1;min-width:260px;background:#fff;border-radius:12px;padding:24px;box-shadow:0 1px 4px rgba(0,0,0,.08)"><div style="font-size:20px;color:#f59e0b;margin-bottom:12px">★★★★★</div><p style="font-size:14px;line-height:1.6;color:#555;font-style:italic">"This product completely changed my life. I can\'t recommend it enough to anyone looking for real results."</p><div style="margin-top:16px;font-size:13px;font-weight:600;color:#1a1a1a">— Sarah J.</div></div><div style="flex:1;min-width:260px;background:#fff;border-radius:12px;padding:24px;box-shadow:0 1px 4px rgba(0,0,0,.08)"><div style="font-size:20px;color:#f59e0b;margin-bottom:12px">★★★★★</div><p style="font-size:14px;line-height:1.6;color:#555;font-style:italic">"Amazing results in just a few weeks. The quality exceeded all my expectations. Highly recommended!"</p><div style="margin-top:16px;font-size:13px;font-weight:600;color:#1a1a1a">— Mike R.</div></div><div style="flex:1;min-width:260px;background:#fff;border-radius:12px;padding:24px;box-shadow:0 1px 4px rgba(0,0,0,.08)"><div style="font-size:20px;color:#f59e0b;margin-bottom:12px">★★★★★</div><p style="font-size:14px;line-height:1.6;color:#555;font-style:italic">"Best purchase I\'ve made this year. Customer service was also outstanding!"</p><div style="margin-top:16px;font-size:13px;font-weight:600;color:#1a1a1a">— Lisa T.</div></div></div></div></div>' },
