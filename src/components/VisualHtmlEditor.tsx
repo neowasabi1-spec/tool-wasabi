@@ -1643,13 +1643,6 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
 
           <div className="flex-1" />
 
-          {/* Add Block (apre Insert Panel anche senza elemento selezionato) */}
-          <button onClick={() => setShowInsertPanel(true)}
-            className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium text-blue-600 hover:bg-blue-50 transition-colors"
-            title="Insert a block (text, image, video, etc.)">
-            <span className="text-base leading-none mr-0.5">+</span>Add Block
-          </button>
-
           {/* Section Library + Save + Sections toggles */}
           {el && (
             <button onClick={handleRequestSaveSection}
