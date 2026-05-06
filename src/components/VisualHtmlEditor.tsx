@@ -130,6 +130,15 @@ const EDITOR_SCRIPT = `
       outerHTML:el.outerHTML?(el.outerHTML).substring(0,300):'',
       href:el.getAttribute('href')||'',src:el.getAttribute('src')||'',
       alt:el.getAttribute('alt')||'',
+      videoAttrs:(el.tagName==='VIDEO'?{
+        controls:el.hasAttribute('controls'),
+        autoplay:el.hasAttribute('autoplay'),
+        loop:el.hasAttribute('loop'),
+        muted:el.hasAttribute('muted'),
+        playsinline:el.hasAttribute('playsinline')||el.hasAttribute('webkit-playsinline'),
+        preload:el.getAttribute('preload')||'metadata',
+        poster:el.getAttribute('poster')||'',
+      }:null),
       rect:{x:r.x,y:r.y,width:r.width,height:r.height},
       isTextNode:el.childNodes.length===1&&el.childNodes[0].nodeType===3,
       hasChildren:el.children.length>0,childCount:el.children.length,
@@ -349,6 +358,8 @@ const EDITOR_SCRIPT = `
       case 'cmd-exec':document.execCommand(m.command,false,m.value||null);sendHtml();
         if(sel)window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');break;
       case 'cmd-set-style':if(sel){sel.style[m.property]=m.value;sendHtml();
+        window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');}break;
+      case 'cmd-remove-attr':if(sel){sel.removeAttribute(m.name);sendHtml();
         window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');}break;
       case 'cmd-set-attr':if(sel){sel.setAttribute(m.name,m.value);sendHtml();
         window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');}break;
@@ -1053,6 +1064,13 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   const execCmd = (cmd: string, val?: string) => sendToIframe({ type: 'cmd-exec', command: cmd, value: val });
   const setStyle = (prop: string, val: string) => sendToIframe({ type: 'cmd-set-style', property: prop, value: val });
   const setAttr = (name: string, val: string) => sendToIframe({ type: 'cmd-set-attr', name, value: val });
+  const removeAttr = (name: string) => sendToIframe({ type: 'cmd-remove-attr', name });
+  // Toggle di un attributo booleano HTML (es. loop, controls, muted...).
+  // Aggiunge l'attributo (value="") se ON, lo rimuove se OFF.
+  const setBoolAttr = (name: string, on: boolean) => {
+    if (on) setAttr(name, '');
+    else removeAttr(name);
+  };
 
   /* ── Export ── */
   const handleSave = () => {
@@ -2008,6 +2026,129 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                       {uploading ? 'Uploading...' : 'Upload Video'}
                     </button>
                     {uploadError && <p className="text-[10px] text-red-500 mt-1">{uploadError}</p>}
+
+                    {/* Playback options (solo per <video>, non per <source>) */}
+                    {el.tagName === 'video' && (() => {
+                      const va = (el as unknown as { videoAttrs?: { controls: boolean; autoplay: boolean; loop: boolean; muted: boolean; playsinline: boolean; preload: string; poster: string } }).videoAttrs;
+                      if (!va) return null;
+                      const Toggle = ({ label, hint, on, onChange }: { label: string; hint?: string; on: boolean; onChange: (v: boolean) => void }) => (
+                        <button
+                          type="button"
+                          onClick={() => onChange(!on)}
+                          title={hint}
+                          className={`flex items-center justify-between gap-2 px-2 py-1.5 rounded-md text-[11px] font-medium border transition-colors ${
+                            on
+                              ? 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100'
+                              : 'bg-slate-50 border-slate-200 text-slate-500 hover:bg-slate-100'
+                          }`}
+                        >
+                          <span>{label}</span>
+                          <span className={`text-[9px] uppercase tracking-wider font-bold ${on ? 'text-emerald-600' : 'text-slate-400'}`}>
+                            {on ? 'ON' : 'OFF'}
+                          </span>
+                        </button>
+                      );
+                      return (
+                        <div className="mt-3 pt-3 border-t border-slate-100 space-y-2">
+                          <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Playback</p>
+                          <div className="grid grid-cols-2 gap-1.5">
+                            <Toggle
+                              label="Controls"
+                              hint="Mostra/nascondi i comandi (play, volume, ecc.) sul video"
+                              on={va.controls}
+                              onChange={(v) => setBoolAttr('controls', v)}
+                            />
+                            <Toggle
+                              label="Loop"
+                              hint="Riavvia automaticamente il video alla fine"
+                              on={va.loop}
+                              onChange={(v) => setBoolAttr('loop', v)}
+                            />
+                            <Toggle
+                              label="Autoplay"
+                              hint="Parte automaticamente al caricamento (di solito serve anche Muted)"
+                              on={va.autoplay}
+                              onChange={(v) => {
+                                setBoolAttr('autoplay', v);
+                                if (v && !va.muted) setBoolAttr('muted', true);
+                              }}
+                            />
+                            <Toggle
+                              label="Muted"
+                              hint="Audio disattivato di default. Necessario per autoplay sui browser moderni."
+                              on={va.muted}
+                              onChange={(v) => setBoolAttr('muted', v)}
+                            />
+                            <Toggle
+                              label="Inline (mobile)"
+                              hint="Riproduzione in linea su iPhone (senza fullscreen forzato)"
+                              on={va.playsinline}
+                              onChange={(v) => setBoolAttr('playsinline', v)}
+                            />
+                            <div>
+                              <label className="text-[10px] text-slate-400 block mb-0.5">Preload</label>
+                              <select
+                                value={va.preload}
+                                className="prop-select"
+                                onChange={(e) => setAttr('preload', e.target.value)}
+                                title="Quanto del video pre-caricare prima del play"
+                              >
+                                <option value="none">none (lazy)</option>
+                                <option value="metadata">metadata</option>
+                                <option value="auto">auto (full)</option>
+                              </select>
+                            </div>
+                          </div>
+                          <div>
+                            <label className="text-[10px] text-slate-400 block mb-0.5 mt-1">Poster (immagine prima del play)</label>
+                            <input
+                              type="url"
+                              defaultValue={va.poster}
+                              key={`poster-${va.poster}`}
+                              placeholder="https://... (oppure lascia vuoto)"
+                              className="prop-input"
+                              onBlur={(e) => {
+                                const v = e.target.value.trim();
+                                if (v) setAttr('poster', v);
+                                else removeAttr('poster');
+                              }}
+                              onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                            />
+                          </div>
+                          {/* Preset rapidi: GIF-like (autoplay+loop+muted+no controls)
+                              e Reset (controls only). */}
+                          <div className="pt-1 grid grid-cols-2 gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setBoolAttr('autoplay', true);
+                                setBoolAttr('loop', true);
+                                setBoolAttr('muted', true);
+                                setBoolAttr('playsinline', true);
+                                setBoolAttr('controls', false);
+                              }}
+                              className="text-[10px] py-1.5 rounded-md bg-amber-50 border border-amber-200 text-amber-700 hover:bg-amber-100 font-medium"
+                              title="Autoplay + Loop + Muted, senza barra controlli — come una GIF"
+                            >
+                              GIF-like
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setBoolAttr('controls', true);
+                                setBoolAttr('autoplay', false);
+                                setBoolAttr('loop', false);
+                                setBoolAttr('muted', false);
+                              }}
+                              className="text-[10px] py-1.5 rounded-md bg-slate-50 border border-slate-200 text-slate-600 hover:bg-slate-100 font-medium"
+                              title="Solo controlli visibili, niente autoplay/loop/muted"
+                            >
+                              Standard
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })()}
                   </div>
                 )}
 
