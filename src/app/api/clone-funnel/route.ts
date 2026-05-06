@@ -1,10 +1,25 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getCoreKnowledge } from '@/knowledge/copywriting';
 
 export const maxDuration = 300;
 export const dynamic = 'force-dynamic';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+// Cached at module init — read once per server process. ~28K tokens.
+let _kbCache: string | null = null;
+function getKb(): string {
+  if (_kbCache === null) {
+    try {
+      _kbCache = getCoreKnowledge();
+    } catch (err) {
+      console.warn('[clone-funnel] knowledge base load failed:', err);
+      _kbCache = '';
+    }
+  }
+  return _kbCache;
+}
 
 const IS_SERVERLESS = !!process.env.VERCEL || !!process.env.AWS_LAMBDA_FUNCTION_NAME;
 
@@ -1249,6 +1264,23 @@ export async function POST(request: NextRequest) {
 
     const edgeFunctionUrl = `${SUPABASE_URL}/functions/v1/smooth-responder`;
 
+    // Inject the copywriting knowledge base into the request body so the Edge
+    // Function can pass it to Claude as a cached system block (cache_control:
+    // ephemeral). Only meaningful for AI rewrite/translate phases — for other
+    // calls (extract, status checks) it's harmless extra payload, so we only
+    // add it when the call is actually going to hit Claude.
+    const willCallClaude =
+      (body.cloneMode === 'rewrite' && body.phase === 'process') ||
+      body.cloneMode === 'translate';
+
+    const enrichedBody: Record<string, unknown> = { ...body };
+    if (willCallClaude) {
+      const kb = getKb();
+      if (kb && !enrichedBody.system_kb) {
+        enrichedBody.system_kb = kb;
+      }
+    }
+
     const response = await fetch(edgeFunctionUrl, {
       method: 'POST',
       headers: {
@@ -1256,7 +1288,7 @@ export async function POST(request: NextRequest) {
         'apikey': SUPABASE_ANON_KEY,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify(enrichedBody),
     });
 
     const contentType = response.headers.get('content-type') || '';

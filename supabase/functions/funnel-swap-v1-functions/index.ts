@@ -259,6 +259,13 @@ serve(async (req) => {
       // the Claude prompt as the primary source of truth for tone, positioning
       // and value props. Sourced from My Projects (`Project.brief`).
       brief,
+      // Optional market research notes (free-form). Same flow as `brief`.
+      market_research,
+      // Optional copywriting knowledge base — injected by the Next.js API
+      // route (/api/clone-funnel) from src/knowledge/copywriting/. Sent as a
+      // cached system block (cache_control: ephemeral) so the cost is paid
+      // once per ~5 minutes across all batches of the same job.
+      system_kb,
       userId,
       htmlContent,
       targetLanguage,
@@ -287,8 +294,14 @@ serve(async (req) => {
     // which version of the function is actually serving requests. Critical
     // because GitHub pushes don't auto-deploy; if you don't see this exact
     // string in the logs you're still on the old build.
-    console.log(`🔖 funnel-swap build: v3.1-anti-stuffing (commit 8f50fdd / 2026-05-04)`)
+    console.log(`🔖 funnel-swap build: v4.0-knowledge-base (2026-05-06)`)
     console.log(`📋 Richiesta ricevuta: phase=${phase}, cloneMode=${cloneMode}, url=${url?.substring(0, 50)}...`)
+    if (system_kb) {
+      const kbChars = String(system_kb).length
+      console.log(`🧠 Knowledge base ricevuta: ${kbChars.toLocaleString()} chars (~${Math.round(kbChars / 4).toLocaleString()} tokens, cached)`)
+    }
+    if (brief) console.log(`📄 Brief ricevuto: ${String(brief).length} chars`)
+    if (market_research) console.log(`🔬 Market research ricevuta: ${String(market_research).length} chars`)
 
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -971,6 +984,11 @@ html body .stickSection{display:block !important;visibility:visible !important;o
         console.log(`🧬 SPA page detected — disabling HTML markup in rewrites to avoid hydration mismatch`)
       }
 
+      // Trim brief / research so a giant payload doesn't blow the Claude
+      // context. 6K chars ≈ 1.5K tokens each is plenty for guidance.
+      const briefTrimmed = brief ? String(brief).slice(0, 6000) : ''
+      const researchTrimmed = market_research ? String(market_research).slice(0, 6000) : ''
+
       const rewritePrompt = `La landing page è un TEMPLATE strutturale. Il tuo compito è riscrivere TUTTI i testi usando SOLO le informazioni del nuovo prodotto.
 
 📋 INFORMAZIONI DEL NUOVO PRODOTTO (USA SOLO QUESTE):
@@ -979,6 +997,8 @@ Descrizione prodotto: ${job.product_description}
 ${job.framework ? `Framework copywriting: ${job.framework}` : ''}
 ${job.target ? `Target audience: ${job.target}` : ''}
 ${job.custom_prompt ? `Istruzioni copy personalizzate: ${job.custom_prompt}` : ''}
+${briefTrimmed ? `\n📄 PROJECT BRIEF (fonte primaria di verità per tono, posizionamento e value props):\n${briefTrimmed}\n` : ''}
+${researchTrimmed ? `\n🔬 MARKET RESEARCH (insight su pubblico, dolori, desideri, linguaggio):\n${researchTrimmed}\n` : ''}
 
 🎯 COSA DEVI FARE:
 - I testi originali sono SOLO per capire: lunghezza approssimativa, tipo di testo (titolo/bottone/descrizione), formattazione
@@ -1055,6 +1075,29 @@ ${needsItalianTranslation ? '\n🇮🇹 TRADUZIONE OBBLIGATORIA:\n- Scrivi TUTTI
 RESTITUISCI SOLO JSON ARRAY (stesso ordine):
 [{"index": 0, "text": "testo riscritto per il nuovo prodotto"}, ...]`
 
+      // Build the system prompt as multi-block array so we can mark the
+      // copywriting knowledge base with cache_control: ephemeral. Claude will
+      // cache the KB block for ~5 minutes; subsequent batches of the same job
+      // pay only 10% of input cost on the cached portion.
+      const systemBlocks: Array<{
+        type: 'text'
+        text: string
+        cache_control?: { type: 'ephemeral' }
+      }> = [
+        {
+          type: 'text',
+          text: `You are an expert senior direct-response copywriter integrated into the "Funnel Cloner Builder" tool. You rewrite landing-page copy from a structural template, applying proven direct-response frameworks (COS Engine, Tony Flores' Million Dollar Mechanisms, Evaldo's 16-Word Sales Letter, Anghelache's Crash Course, Peter Kell's Savage System, Brunson's 108 Split Test Winners). Apply the techniques naturally — do NOT name them in the output. Always reply in the language requested by the user. Never output anything other than the JSON array specified.`,
+        },
+      ]
+
+      if (system_kb && typeof system_kb === 'string' && system_kb.length > 200) {
+        systemBlocks.push({
+          type: 'text',
+          text: system_kb,
+          cache_control: { type: 'ephemeral' },
+        })
+      }
+
       let claudeResponse
       const controller = new AbortController()
       const timeoutId = setTimeout(() => controller.abort(), CLAUDE_TIMEOUT_MS_RUNTIME)
@@ -1071,11 +1114,12 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
             model: 'claude-sonnet-4-20250514',
             max_tokens: 6000,
             temperature: 0.6,
+            system: systemBlocks,
             messages: [{ role: 'user', content: rewritePrompt }]
           }),
           signal: controller.signal
         })
-        
+
         clearTimeout(timeoutId)
       } catch (fetchError) {
         clearTimeout(timeoutId)
@@ -1106,7 +1150,22 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
 
       const claudeData = await claudeResponse.json()
       let rewrittenTexts = []
-      
+
+      // Log usage with cache hit/miss so we can verify the KB cache is
+      // actually working in production (Supabase Function logs).
+      try {
+        const u = claudeData?.usage || {}
+        const cacheRead = u.cache_read_input_tokens || 0
+        const cacheWrite = u.cache_creation_input_tokens || 0
+        const inputTokens = u.input_tokens || 0
+        const outputTokens = u.output_tokens || 0
+        console.log(
+          `💰 Claude usage batch ${batchNumber + 1}: ` +
+          `input=${inputTokens} | cache_write=${cacheWrite} | cache_read=${cacheRead} | output=${outputTokens}` +
+          (cacheRead > 0 ? ` | 🎯 CACHE HIT (paying 10%)` : cacheWrite > 0 ? ` | 🆕 cache primed` : '')
+        )
+      } catch { /* best-effort logging */ }
+
       try {
         let responseText = claudeData.content[0].text
         responseText = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim()

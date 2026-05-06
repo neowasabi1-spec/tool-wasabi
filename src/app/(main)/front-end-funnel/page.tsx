@@ -1957,14 +1957,14 @@ export default function FrontEndFunnel() {
           // so each function call stays well under that limit.
           setCloneProgress({ phase: 'processing', totalTexts: 0, processedTexts: 0, message: 'Trinity sta riscrivendo...' });
 
-          // === Rewrite via Supabase Edge Function (funnel-swap-v1-functions) ===
-          // Logica matura: estrae testi server-side, batch da 10 con Claude
-          // (anti-mix lingue, anti-brand competitor), replace tollerante a 5
-          // strategie con distribuzione proporzionale fra tag inline.
-          // Brief, framework, target, customPrompt sono tutti usati nel system
-          // prompt di Claude. Il browser fa solo il loop di poll.
-          const SUPABASE_FN_URL = 'https://sktpbizpckxldhxzezws.supabase.co/functions/v1/funnel-swap-v1-functions';
-          const SUPABASE_ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+          // === Rewrite via Next.js proxy (/api/funnel-swap-proxy) ===
+          // Il proxy server-side inietta la knowledge base copywriting (COS,
+          // Tony Flores, Evaldo, Anghelache, Savage, 108 split tests) come
+          // blocco system con cache_control: ephemeral. Costo della KB pagato
+          // 1 volta sola per job (cache hit sui batch successivi del job).
+          // Logica del rewrite (estrazione testi, batching da 12, anti-mix
+          // lingue, anti-brand competitor) resta nell'Edge Function Supabase.
+          const SUPABASE_FN_URL = '/api/funnel-swap-proxy';
           const DEFAULT_USER_ID = '00000000-0000-0000-0000-000000000001';
           const sourceUrlForSwap = url || '';
           if (!sourceUrlForSwap) throw new Error('Manca URL competitor per il rewrite via Supabase Edge Function');
@@ -1986,10 +1986,7 @@ export default function FrontEndFunnel() {
 
           const extractRes = await fetch(SUPABASE_FN_URL, {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              ...(SUPABASE_ANON ? { Authorization: `Bearer ${SUPABASE_ANON}`, apikey: SUPABASE_ANON } : {}),
-            },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               phase: 'extract',
               url: sourceUrlForSwap,
@@ -2034,13 +2031,11 @@ export default function FrontEndFunnel() {
           while (sbBatch < SB_MAX_BATCHES) {
             const procRes = await fetch(SUPABASE_FN_URL, {
               method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                ...(SUPABASE_ANON ? { Authorization: `Bearer ${SUPABASE_ANON}`, apikey: SUPABASE_ANON } : {}),
-              },
+              headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 phase: 'process',
                 jobId: sbJobId,
+                cloneMode: 'rewrite',
                 batchNumber: sbBatch,
                 userId: DEFAULT_USER_ID,
               }),
