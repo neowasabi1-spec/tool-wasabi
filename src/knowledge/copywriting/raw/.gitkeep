@@ -1,0 +1,16 @@
+# Knowledge base files go here.
+#
+# Run: pwsh ./scripts/setup-knowledge.ps1
+# to populate this folder from C:\Users\Neo\Downloads.
+#
+# Expected files (canonical names):
+#   - cos-engine.md                        (Conversion Operating System, Tier 1 core)
+#   - tony-flores-mechanisms.md            (Million Dollar Mechanisms, Tier 1)
+#   - evaldo-16-word.md                    (16-Word Sales Letter, Tier 1)
+#   - anghelache-crash-course.md           (Anghelache Crash Course distilled, Tier 1)
+#   - savage-system.md                     (Savage Advertising System, Tier 1)
+#   - 108-split-tests.md                   (DotComSecrets split tests, Tier 1)
+#   - swipe-mastery-full-book.md           (full Anghelache PDF text, archive only)
+#   - rmbc-full-course.md                  (full RMBC II course, archive only)
+#
+# Files marked "archive only" are NOT loaded at runtime. They're for future RAG.

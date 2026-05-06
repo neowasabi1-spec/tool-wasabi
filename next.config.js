@@ -18,6 +18,12 @@ const nextConfig = {
       'playwright-core',
       '@sparticuz/chromium',
     ],
+    // Make the copywriting knowledge base available to API routes at runtime
+    // on Netlify (otherwise readFileSync fails because the .md files in
+    // src/knowledge/copywriting/raw/ are not traced as dependencies).
+    outputFileTracingIncludes: {
+      '/api/**/*': ['./src/knowledge/**/*'],
+    },
   },
 
   webpack: (config) => {
