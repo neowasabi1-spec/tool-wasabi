@@ -210,7 +210,13 @@ const EDITOR_SCRIPT = `
     positionPlus();positionDel(el);
   }
 
-  function sendHtml(){
+  // sendHtml fa outerHTML del documento intero + structuredClone via
+  // postMessage. Su landing grandi (centinaia di KB) blocca il main thread
+  // ad ogni operazione. Coalesco con debounce: se in 200ms arrivano altre
+  // mutazioni (typing, MutationObserver, plusBtn drag, ecc.) faccio un solo
+  // invio. Per save/finishEdit espongo sendHtmlNow() che bypassa il debounce.
+  var __sendHtmlTimer=null;
+  function _sendHtmlImmediate(){
     var saved=null,so=null;
     if(sel){saved=sel.style.outline;so=sel.style.outlineOffset;sel.style.outline='';sel.style.outlineOffset='';}
     if(editEl){editEl.contentEditable='false';}
@@ -222,6 +228,14 @@ const EDITOR_SCRIPT = `
     delBtn.style.opacity=delVis;
     if(editEl){editEl.contentEditable='true';}
     window.parent.postMessage({type:'html-updated',data:h},'*');
+  }
+  function sendHtml(){
+    if(__sendHtmlTimer) clearTimeout(__sendHtmlTimer);
+    __sendHtmlTimer=setTimeout(function(){__sendHtmlTimer=null;_sendHtmlImmediate();},200);
+  }
+  function sendHtmlNow(){
+    if(__sendHtmlTimer){clearTimeout(__sendHtmlTimer);__sendHtmlTimer=null;}
+    _sendHtmlImmediate();
   }
 
   function finishEdit(){
@@ -238,18 +252,34 @@ const EDITOR_SCRIPT = `
 
   document.addEventListener('dragstart',function(e){e.preventDefault();},true);
 
-  // Disable draggable on all images and future images
-  document.querySelectorAll('img').forEach(function(img){img.setAttribute('draggable','false');});
-  new MutationObserver(function(muts){
-    muts.forEach(function(m){
-      m.addedNodes.forEach(function(n){
-        if(n.nodeType===1){
-          if(n.tagName==='IMG')n.setAttribute('draggable','false');
-          if(n.querySelectorAll)n.querySelectorAll('img').forEach(function(i){i.setAttribute('draggable','false');});
+  // Disable draggable on all images and future images.
+  // L'observer skippa <img> che hanno gia' draggable=false: senza skip,
+  // setAttribute scatena una nuova mutation → l'observer si auto-richiama,
+  // potenzialmente in loop su DOM molto dinamici (slider/swiper che
+  // ri-creano img). Disconnect su unload per non lasciare lavoro pendente.
+  document.querySelectorAll('img').forEach(function(img){
+    if(img.getAttribute('draggable')!=='false') img.setAttribute('draggable','false');
+  });
+  var __imgObs=new MutationObserver(function(muts){
+    for(var mi=0;mi<muts.length;mi++){
+      var m=muts[mi];
+      for(var ai=0;ai<m.addedNodes.length;ai++){
+        var n=m.addedNodes[ai];
+        if(n.nodeType!==1)continue;
+        if(n.tagName==='IMG'){
+          if(n.getAttribute('draggable')!=='false') n.setAttribute('draggable','false');
         }
-      });
-    });
-  }).observe(document.body,{childList:true,subtree:true});
+        if(n.querySelectorAll){
+          var imgs=n.querySelectorAll('img');
+          for(var ii=0;ii<imgs.length;ii++){
+            if(imgs[ii].getAttribute('draggable')!=='false') imgs[ii].setAttribute('draggable','false');
+          }
+        }
+      }
+    }
+  });
+  __imgObs.observe(document.body,{childList:true,subtree:true});
+  window.addEventListener('unload',function(){ try{__imgObs.disconnect();}catch(_){} },{once:true});
 
   function isUI(el){return el===plusBtn||el===delBtn||plusBtn.contains(el)||delBtn.contains(el);}
 
@@ -338,6 +368,11 @@ const EDITOR_SCRIPT = `
         var ch='<!DOCTYPE html>'+document.documentElement.outerHTML;
         if(sel){sel.style.outline=SS;sel.style.outlineOffset='2px';}
         window.parent.postMessage({type:'clean-html',data:ch},'*');break;
+      case 'cmd-flush-html':
+        // Forza l'invio sincrono dell'HTML correntemente nell'iframe,
+        // bypassando il debounce di sendHtml. Usato da handleSave per non
+        // perdere le ultime mutazioni in coda.
+        sendHtmlNow();break;
       case 'cmd-deselect':if(editing)finishEdit();if(sel)co(sel);sel=null;hover=null;
         plusBtn.style.display='none';hideDel();
         window.parent.postMessage({type:'element-deselected'},'*');break;
@@ -573,6 +608,11 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   const [saved, setSaved] = useState(false);
 
   const [currentHtml, setCurrentHtml] = useState(initialHtml);
+  // Ref sempre aggiornato a currentHtml: usato da handleSave per leggere
+  // il valore PIU' recente (anche se appena arrivato da cmd-flush-html)
+  // senza dipendere dalla closure del momento in cui handleSave e' definita.
+  const currentHtmlRef = useRef(initialHtml);
+  currentHtmlRef.current = currentHtml;
   const [codeHtml, setCodeHtml] = useState(initialHtml);
   const undoStack = useRef<string[]>([initialHtml]);
   const redoStack = useRef<string[]>([]);
@@ -972,9 +1012,16 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
 
   /* ── Export ── */
   const handleSave = () => {
-    onSave(currentHtml, mobileHtml || undefined);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+    // Forza il flush dell'HTML dall'iframe (sendHtml e' debounce-ato a 200ms,
+    // se l'utente clicca Salva subito dopo un'edit le ultime mutazioni
+    // sarebbero perse). Aspetto un microtask + un piccolo timeout per
+    // lasciar arrivare la risposta html-updated prima di chiamare onSave.
+    sendToIframe({ type: 'cmd-flush-html' });
+    setTimeout(() => {
+      onSave(currentHtmlRef.current, mobileHtml || undefined);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    }, 50);
   };
 
   const handleDownload = () => {

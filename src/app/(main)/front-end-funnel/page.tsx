@@ -782,6 +782,16 @@ export default function FrontEndFunnel() {
   // Active Jobs tracking
   const [activeJobs, setActiveJobs] = useState<ActiveJob[]>([]);
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
+  // Guard: evita tick di polling sovrapposti se una passata supera l'intervallo.
+  // Senza questo, su rete lenta o tanti job, setInterval lancia tick paralleli
+  // → cascata di fetch + setState che congela il browser.
+  const pollingInFlightRef = useRef(false);
+  // Snapshot di activeJobs/funnelPages aggiornati a ogni render. Usati dentro
+  // il poll loop per non dover ricreare l'interval ogni volta che lo store
+  // cambia (ogni updateFunnelPage cambiava funnelPages → pollJobStatus
+  // ricreata → effect re-run → clearInterval+setInterval ad ogni 5s).
+  const activeJobsRef = useRef<ActiveJob[]>([]);
+  activeJobsRef.current = activeJobs;
 
   // Save Funnel Modal
   const [showSaveModal, setShowSaveModal] = useState(false);
@@ -1310,6 +1320,11 @@ export default function FrontEndFunnel() {
     URL.revokeObjectURL(url);
   };
 
+  // funnelPages letti via ref dentro pollJobStatus, così la callback non si
+  // ricrea ad ogni cambio dello store (vedi sopra per il razionale).
+  const funnelPagesRef = useRef(funnelPages);
+  funnelPagesRef.current = funnelPages;
+
   // Poll job status
   const pollJobStatus = useCallback(async (jobId: string, pageId: string) => {
     try {
@@ -1346,7 +1361,7 @@ export default function FrontEndFunnel() {
           setActiveJobs(prev => prev.filter(job => job.jobId !== jobId));
         }, 5000);
 
-        const page = (funnelPages || []).find(p => p.id === pageId);
+        const page = (funnelPagesRef.current || []).find(p => p.id === pageId);
         setHtmlPreviewModal({
           isOpen: true,
           title: page?.name || 'Swipe Result',
@@ -1377,11 +1392,17 @@ export default function FrontEndFunnel() {
       ));
       return false;
     }
-  }, [api, funnelPages, updateFunnelPage]);
+  }, [api, updateFunnelPage]);
 
-  // Polling effect
+  // Polling effect — registrato UNA volta. Si ferma solo quando non ci sono
+  // più job attivi. Non si ricrea per ogni cambio di funnelPages/activeJobs:
+  // legge la lista via ref, così niente clear+set dell'interval ad ogni
+  // updateFunnelPage. Inoltre `pollingInFlightRef` skippa i tick se la
+  // passata precedente non è ancora finita (rete lenta + tanti job).
   useEffect(() => {
-    if (activeJobs.length === 0) {
+    const hasActive = activeJobs.length > 0;
+
+    if (!hasActive) {
       if (pollingRef.current) {
         clearInterval(pollingRef.current);
         pollingRef.current = null;
@@ -1389,20 +1410,32 @@ export default function FrontEndFunnel() {
       return;
     }
 
+    if (pollingRef.current) return; // già attivo, non re-installare
+
     pollingRef.current = setInterval(async () => {
-      for (const job of activeJobs) {
-        if (job.status === 'pending' || job.status === 'running') {
-          await pollJobStatus(job.jobId, job.pageId);
+      if (pollingInFlightRef.current) return; // tick precedente ancora in corso
+      pollingInFlightRef.current = true;
+      try {
+        const jobs = activeJobsRef.current;
+        for (const job of jobs) {
+          if (job.status === 'pending' || job.status === 'running') {
+            await pollJobStatus(job.jobId, job.pageId);
+          }
         }
+      } finally {
+        pollingInFlightRef.current = false;
       }
     }, 5000);
 
     return () => {
       if (pollingRef.current) {
         clearInterval(pollingRef.current);
+        pollingRef.current = null;
       }
     };
-  }, [activeJobs, pollJobStatus]);
+    // pollJobStatus ora è stabile (non dipende più da funnelPages),
+    // quindi questo effect si esegue solo quando si passa da 0 → >0 job.
+  }, [activeJobs.length === 0, pollJobStatus]);
 
   const handleAddPage = () => {
     const stepNum = (funnelPages || []).length + 1;
