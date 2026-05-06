@@ -434,6 +434,34 @@ const EDITOR_SCRIPT = `
               window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');}
           }
         }break;
+      case 'cmd-convert-iframe-to-video':
+        // Sostituisce un <iframe> embed (YouTube/Vimeo) con un <video> nativo
+        // pronto per upload. Gestisce il caso comune dei builder Funnelish dove
+        // l'iframe e' wrappato in un div 16:9 (position:relative;
+        // padding-bottom:56.25%; height:0): in quel caso sostituisce ANCHE il
+        // wrapper, altrimenti il video sarebbe invisibile (parent height:0).
+        if(sel && sel.tagName==='IFRAME'){
+          var civ_target=sel;
+          var civ_p=sel.parentElement;
+          if(civ_p){
+            var civ_pb=(civ_p.style.paddingBottom||'').trim();
+            var civ_pos=(civ_p.style.position||'').trim();
+            var civ_h=(civ_p.style.height||'').trim();
+            // Wrapper 16:9 responsivo tipico: position:relative + padding-bottom:%
+            // (altezza fittizia in % della larghezza) + height:0.
+            if(civ_pos==='relative' && /\d+(\.\d+)?\s*%/.test(civ_pb) && (civ_h==='0'||civ_h==='0px'||civ_h==='')){
+              civ_target=civ_p;
+            }
+          }
+          var civ_html='<video controls preload="metadata" playsinline poster="https://placehold.co/1280x720/0f172a/94a3b8?text=Click+the+video%2C+then+%22Upload+Video%22+in+the+sidebar" style="width:100%;max-width:800px;aspect-ratio:16/9;border-radius:8px;background:#000;display:block;margin:0 auto;cursor:pointer"></video>';
+          var civ_w=document.createElement('div');civ_w.innerHTML=civ_html;
+          var civ_ne=civ_w.firstElementChild;
+          if(civ_ne && civ_target.parentElement){
+            civ_target.parentElement.replaceChild(civ_ne,civ_target);
+            sel=civ_ne;sel.style.outline=SS;sel.style.outlineOffset='2px';sendHtml();
+            window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');
+          }
+        }break;
       case 'cmd-insert-section':
         if(m.html){
           var tmp=document.createElement('div');tmp.innerHTML=m.html;
@@ -2008,6 +2036,22 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                     <p className="text-[10px] text-slate-400 mt-1">
                       Incolla un URL YouTube/Vimeo (anche /watch?v=) o un embed pronto.
                     </p>
+
+                    {/* Convert iframe → native <video>: cosi' diventa un upload
+                        diretto. Sostituisce l'intero iframe (e il wrapper 16/9
+                        dei builder Funnelish, perche' l'iframe sta dentro un
+                        div con padding-bottom:56.25% che rimarrebbe vuoto). */}
+                    <div className="mt-3 pt-3 border-t border-slate-100">
+                      <p className="text-[10px] text-slate-500 mb-1.5">Vuoi caricare un tuo video invece di usare un embed?</p>
+                      <button
+                        type="button"
+                        onClick={() => sendToIframe({ type: 'cmd-convert-iframe-to-video' })}
+                        className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-700 text-[11px] font-medium"
+                        title="Sostituisce l'embed con un &lt;video&gt; nativo. Dopo, il pulsante 'Upload Video' apparira' qui sotto per caricare il tuo file."
+                      >
+                        <Upload className="h-3 w-3" /> Upload your own video instead
+                      </button>
+                    </div>
                   </div>
                 )}
 
