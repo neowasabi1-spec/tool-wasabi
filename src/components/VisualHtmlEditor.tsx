@@ -12,6 +12,7 @@ import {
   Smartphone, Monitor, Upload, Film, Paperclip,
   BookmarkPlus, Library, Tag, Clock, FileCode, Search,
   BookOpen, ArrowDownToLine, Eye as EyeIcon,
+  Link2, Link2Off,
 } from 'lucide-react';
 import { SavedSection, SECTION_TYPE_OPTIONS, OUTPUT_STACK_OPTIONS, type OutputStack } from '@/types';
 import { createClient } from '@supabase/supabase-js';
@@ -138,6 +139,8 @@ const EDITOR_SCRIPT = `
         fontStyle:cs.fontStyle,textDecoration:cs.textDecoration,
         textAlign:cs.textAlign,lineHeight:cs.lineHeight,
         padding:cs.padding,margin:cs.margin,borderRadius:cs.borderRadius,
+        paddingTop:cs.paddingTop,paddingRight:cs.paddingRight,paddingBottom:cs.paddingBottom,paddingLeft:cs.paddingLeft,
+        marginTop:cs.marginTop,marginRight:cs.marginRight,marginBottom:cs.marginBottom,marginLeft:cs.marginLeft,
         border:cs.border,display:cs.display,opacity:cs.opacity,
         backgroundImage:cs.backgroundImage,
         width:cs.width,height:cs.height,
@@ -576,6 +579,14 @@ function rgbToHex(rgb: string): string {
   return '#' + match.slice(0, 3).map(n => parseInt(n).toString(16).padStart(2, '0')).join('');
 }
 
+// Estrae il numero (px) da un valore di computed style tipo "12px" / "0px" /
+// "auto" / "12.5px". Ritorna 0 se non parsabile (margin: auto / em / % ecc.).
+function pxToNum(v: string | undefined | null): number {
+  if (!v) return 0;
+  const n = parseFloat(v);
+  return Number.isFinite(n) ? Math.round(n) : 0;
+}
+
 const TAG_LABELS: Record<string, string> = {
   h1: 'Heading H1', h2: 'Heading H2', h3: 'Heading H3', h4: 'Heading H4',
   p: 'Paragraph', span: 'Text', a: 'Link', button: 'Button',
@@ -606,6 +617,11 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   const [showSections, setShowSections] = useState(false);
   const [editorReady, setEditorReady] = useState(false);
   const [saved, setSaved] = useState(false);
+
+  // UI state per controlli spacing per-lato (sidebar). Quando "linked" e'
+  // attivo, modificare un lato applica lo stesso valore a tutti e 4.
+  const [paddingLinked, setPaddingLinked] = useState(false);
+  const [marginLinked, setMarginLinked] = useState(false);
 
   const [currentHtml, setCurrentHtml] = useState(initialHtml);
   // Ref sempre aggiornato a currentHtml: usato da handleSave per leggere
@@ -2152,20 +2168,130 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                   </div>
                 </div>
 
-                {/* Spacing */}
+                {/* Spacing — controlli per-lato Padding/Margin */}
                 <div className="p-3">
                   <PropLabel>Spacing</PropLabel>
-                  <div className="grid grid-cols-2 gap-2 mt-1">
-                    <div>
-                      <label className="text-[10px] text-slate-400">Padding</label>
-                      <input type="text" defaultValue={el.styles.padding} className="prop-input"
-                        onBlur={(e) => setStyle('padding', e.target.value)} />
+
+                  {/* PADDING — interno (spazio tra bordo e contenuto) */}
+                  <div className="mt-1">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-[10px] font-semibold text-slate-500">Padding (interno)</span>
+                      <button
+                        type="button"
+                        onClick={() => setPaddingLinked((v) => !v)}
+                        title={paddingLinked ? 'Lati legati — modifica uno = applica a tutti' : 'Lati indipendenti — clicca per legare'}
+                        className={`p-1 rounded ${paddingLinked ? 'bg-amber-100 text-amber-700' : 'text-slate-400 hover:bg-slate-100'}`}
+                      >
+                        {paddingLinked ? <Link2 className="h-3 w-3" /> : <Link2Off className="h-3 w-3" />}
+                      </button>
                     </div>
-                    <div>
-                      <label className="text-[10px] text-slate-400">Margin</label>
-                      <input type="text" defaultValue={el.styles.margin} className="prop-input"
-                        onBlur={(e) => setStyle('margin', e.target.value)} />
+                    <div className="grid grid-cols-4 gap-1">
+                      {([
+                        ['T', 'paddingTop', el.styles.paddingTop],
+                        ['R', 'paddingRight', el.styles.paddingRight],
+                        ['B', 'paddingBottom', el.styles.paddingBottom],
+                        ['L', 'paddingLeft', el.styles.paddingLeft],
+                      ] as const).map(([lab, prop, val]) => (
+                        <div key={prop}>
+                          <label className="text-[10px] text-slate-400 text-center block">{lab}</label>
+                          <input
+                            type="number"
+                            min={0}
+                            step={1}
+                            defaultValue={pxToNum(val)}
+                            key={`pad-${prop}-${pxToNum(val)}`}
+                            className="prop-input text-center px-1"
+                            onBlur={(e) => {
+                              const n = parseInt(e.target.value || '0', 10);
+                              const px = `${Number.isFinite(n) && n >= 0 ? n : 0}px`;
+                              if (paddingLinked) setStyle('padding', px);
+                              else setStyle(prop, px);
+                            }}
+                            onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                          />
+                        </div>
+                      ))}
                     </div>
+                  </div>
+
+                  {/* MARGIN — esterno (spazio tra elemento e vicini) */}
+                  <div className="mt-3">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-[10px] font-semibold text-slate-500">Margin (esterno)</span>
+                      <button
+                        type="button"
+                        onClick={() => setMarginLinked((v) => !v)}
+                        title={marginLinked ? 'Lati legati — modifica uno = applica a tutti' : 'Lati indipendenti — clicca per legare'}
+                        className={`p-1 rounded ${marginLinked ? 'bg-amber-100 text-amber-700' : 'text-slate-400 hover:bg-slate-100'}`}
+                      >
+                        {marginLinked ? <Link2 className="h-3 w-3" /> : <Link2Off className="h-3 w-3" />}
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-4 gap-1">
+                      {([
+                        ['T', 'marginTop', el.styles.marginTop],
+                        ['R', 'marginRight', el.styles.marginRight],
+                        ['B', 'marginBottom', el.styles.marginBottom],
+                        ['L', 'marginLeft', el.styles.marginLeft],
+                      ] as const).map(([lab, prop, val]) => (
+                        <div key={prop}>
+                          <label className="text-[10px] text-slate-400 text-center block">{lab}</label>
+                          <input
+                            type="number"
+                            step={1}
+                            defaultValue={pxToNum(val)}
+                            key={`mar-${prop}-${pxToNum(val)}`}
+                            className="prop-input text-center px-1"
+                            onBlur={(e) => {
+                              const raw = e.target.value.trim();
+                              if (raw === '' || raw.toLowerCase() === 'auto') {
+                                if (marginLinked) setStyle('margin', 'auto');
+                                else setStyle(prop, 'auto');
+                                return;
+                              }
+                              const n = parseInt(raw, 10);
+                              const px = `${Number.isFinite(n) ? n : 0}px`;
+                              if (marginLinked) setStyle('margin', px);
+                              else setStyle(prop, px);
+                            }}
+                            onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                    <p className="text-[10px] text-slate-400 mt-1">Tip: scrivi <code>auto</code> per centrare orizzontalmente.</p>
+                  </div>
+
+                  {/* Preset rapidi spaziatura verticale (top+bottom) — utile per
+                      aumentare/ridurre l'aria sopra/sotto un blocco con un click. */}
+                  <div className="mt-3">
+                    <div className="text-[10px] font-semibold text-slate-500 mb-1">Preset verticale (T+B)</div>
+                    <div className="grid grid-cols-5 gap-1">
+                      {([
+                        ['0', 0],
+                        ['8', 8],
+                        ['16', 16],
+                        ['32', 32],
+                        ['64', 64],
+                      ] as const).map(([lab, n]) => (
+                        <button
+                          key={`pp-${n}`}
+                          type="button"
+                          onClick={() => {
+                            setStyle('paddingTop', `${n}px`);
+                            setStyle('paddingBottom', `${n}px`);
+                          }}
+                          className="text-[10px] py-1 rounded bg-slate-100 hover:bg-amber-100 hover:text-amber-700 text-slate-600"
+                          title={`Padding T+B = ${n}px`}
+                        >
+                          {lab}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Border radius / Border / Opacity */}
+                  <div className="grid grid-cols-2 gap-2 mt-3">
                     <div>
                       <label className="text-[10px] text-slate-400">Border radius</label>
                       <input type="text" defaultValue={el.styles.borderRadius} className="prop-input"
