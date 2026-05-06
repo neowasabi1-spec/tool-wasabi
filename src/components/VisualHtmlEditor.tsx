@@ -1590,8 +1590,44 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode]);
 
+  /* ── Close handler ──
+   * Smontare l'editor sincronicamente blocca il main thread per ~1-2s su
+   * pagine grandi (Swiper + jQuery + DOM clonato): React deve fare il
+   * teardown di un iframe con migliaia di nodi e di tutti gli script
+   * attivi al suo interno.
+   *
+   * Workaround: appena clicco la X mostro un overlay "Closing…" (paint
+   * immediato dell'overlay), poi su rAF svuoto le srcDoc degli iframe
+   * (reset su DOM vuoto = teardown rapido), e SOLO DOPO chiamo onClose.
+   * Cosi' l'utente vede subito feedback e React smonta nodi gia' leggeri.
+   */
+  const [closing, setClosing] = useState(false);
+  const handleClose = useCallback(() => {
+    if (closing) return;
+    setClosing(true);
+    requestAnimationFrame(() => {
+      try {
+        if (iframeRef.current) {
+          iframeRef.current.srcdoc = '<!doctype html><html><body></body></html>';
+        }
+      } catch { /* iframe gia' detached */ }
+      setTimeout(() => onClose(), 0);
+    });
+  }, [closing, onClose]);
+
   return (
     <div className="fixed inset-0 z-[60] flex flex-col bg-white">
+      {/* Overlay mostrato durante il close per dare feedback immediato
+          mentre svuotiamo l'iframe e prima che React smonti l'editor. */}
+      {closing && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-slate-900/85 backdrop-blur-sm">
+          <div className="flex items-center gap-3 px-5 py-3 rounded-lg bg-slate-800 text-white text-sm font-medium shadow-2xl border border-slate-700">
+            <Loader2 className="h-4 w-4 animate-spin text-amber-400" />
+            Closing editor…
+          </div>
+        </div>
+      )}
+
       {/* ═══ Top Bar ═══ */}
       <div className="flex items-center justify-between px-4 py-2 bg-slate-900 text-white shrink-0">
         <div className="flex items-center gap-3 min-w-0">
@@ -1690,7 +1726,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
               saved ? 'bg-emerald-500 text-white' : 'bg-amber-500 hover:bg-amber-400 text-white'}`}>
             {saved ? <><CheckCircle className="h-3.5 w-3.5" />Saved</> : <><Save className="h-3.5 w-3.5" />Save</>}
           </button>
-          <button onClick={onClose} className="ml-1 p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-700 transition-colors" title="Close editor">
+          <button onClick={handleClose} disabled={closing} className="ml-1 p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-700 transition-colors disabled:opacity-50 disabled:cursor-wait" title="Close editor">
             <X className="h-5 w-5" />
           </button>
         </div>
