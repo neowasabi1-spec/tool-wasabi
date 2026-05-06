@@ -1112,6 +1112,12 @@ export default function FrontEndFunnel() {
 
   // Ref all'iframe del preview così possiamo postare comandi (es. rerun fallback)
   const previewIframeRef = useRef<HTMLIFrameElement | null>(null);
+  // Iframe gia' inizializzato (doc.write fatto). Senza questo guard il ref
+  // callback inline si richiama ad ogni render del parent (es. quando arriva
+  // __funnelPreviewDiag → setPreviewDiag → re-render → React invoca di nuovo
+  // ref(elem) sullo stesso DOM node → doc.write riparte → script reinietta
+  // → diag → loop infinito = freeze browser + 100 violation document.write).
+  const previewInitedRef = useRef<HTMLIFrameElement | null>(null);
 
   // Diagnostica live ricevuta dal preview iframe (vedi fallbackInit script).
   // Tracciata in stato così possiamo mostrarla all'utente nel header del modal,
@@ -4091,7 +4097,13 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                     key={`${previewViewport}-${htmlPreviewModal.html?.length || ''}-${htmlPreviewModal.iframeSrc || 'empty'}`}
                     ref={(iframe) => {
                       previewIframeRef.current = iframe;
-                      if (!iframe) return;
+                      if (!iframe) { previewInitedRef.current = null; return; }
+                      // Skip se l'iframe e' gia' stato inizializzato in un render
+                      // precedente: il key prop garantisce un nuovo elemento solo
+                      // quando cambiano viewport/html/iframeSrc. Senza questo skip
+                      // ogni setState del parent rieseguiva doc.write → loop.
+                      if (previewInitedRef.current === iframe) return;
+                      previewInitedRef.current = iframe;
                       if (htmlPreviewModal.iframeSrc) {
                         iframe.src = htmlPreviewModal.iframeSrc;
                       } else {
