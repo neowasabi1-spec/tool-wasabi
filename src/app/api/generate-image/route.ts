@@ -136,11 +136,18 @@ const MODELS: Record<string, ModelDef> = {
 
   // ── IMAGE → VIDEO ────────────────────────────────────────────────────────
   'seedance-2': {
-    endpoint: 'fal-ai/bytedance/seedance-2.0/image-to-video',
+    // I modelli Bytedance NON usano il prefisso `fal-ai/` (riservato ai
+    // modelli first-party fal). Con `fal-ai/...` il submit girava ma il
+    // response_url ritornato puntava a `/seedance-2.0/image-to-video`,
+    // generando 404 al polling: "Path /seedance-2.0/image-to-video not found".
+    endpoint: 'bytedance/seedance-2.0/image-to-video',
     mediaType: 'video',
     buildInput: ({ prompt, imageUrl, duration }) => ({
       prompt,
       image_url: imageUrl,
+      // L'API si aspetta una stringa enum ("4"..."15" oppure "auto"),
+      // non un number — passargli un numero faceva fallire la validazione
+      // su alcuni endpoint.
       duration: clampSeedanceDuration(duration),
       resolution: '720p',
       // Disabilitiamo l'audio sintetico (default true su Seedance 2.0):
@@ -198,15 +205,14 @@ function aspectRatioToFluxSize(aspectRatio: string): string {
   }
 }
 
-function clampSeedanceDuration(d?: number): number {
-  // Seedance 2.0 supports 4-15s. La UI espone 5 o 10; manteniamo lo stesso
-  // bucket (>=8 → 10s, altrimenti 5s) ma il modello accetta anche valori
-  // intermedi se in futuro si vuole esporre uno slider 4-15.
-  if (!d) return 5;
-  if (d >= 15) return 15;
-  if (d >= 8) return 10;
-  if (d >= 4) return 5;
-  return 5;
+function clampSeedanceDuration(d?: number): string {
+  // Seedance 2.0 wants a STRING enum: "auto" | "4".."15".
+  // La UI espone 5 o 10, qui mappiamo (>=8 → "10", altrimenti "5").
+  if (!d) return '5';
+  if (d >= 15) return '15';
+  if (d >= 8) return '10';
+  if (d >= 4) return '5';
+  return '5';
 }
 
 function clampVeoDuration(d?: number): number {
