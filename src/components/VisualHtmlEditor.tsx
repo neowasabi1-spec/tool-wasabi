@@ -1372,13 +1372,19 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   const handleSwipeVideoForProduct = useCallback(() => {
     if (!selectedElement || selectedElement.tagName !== 'video') return;
 
-    const currentAlt = String(
-      selectedElement.attributes.alt ||
-        selectedElement.attributes['aria-label'] ||
-        ''
-    );
-    const heading = String(selectedElement.attributes['data-near-heading'] || '');
-    const surroundingText = [currentAlt, heading, pageTitle || '']
+    /* ElementInfo espone direttamente alt/src/textContent/className.
+       Non ha un map "attributes": andare a leggere selectedElement.attributes
+       a runtime dà undefined → TypeError, motivo per cui in v1 il bottone
+       sembrava "non fare nulla". Usiamo solo i field tipizzati. */
+    const currentAlt = String(selectedElement.alt || '').trim();
+    /* className/textContent vicini possono dare un piccolo segnale di
+       contesto (es. "hero-video", "demo before-after"). Non è perfetto ma
+       è sufficiente come hint per il prompt — il pageTitle resta la
+       fonte primaria. */
+    const classHint = String(selectedElement.className || '')
+      .replace(/[-_]/g, ' ')
+      .trim();
+    const surroundingText = [currentAlt, classHint, pageTitle || '']
       .filter(Boolean)
       .join(' · ');
 
