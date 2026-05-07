@@ -2297,11 +2297,13 @@ export default function FrontEndFunnel() {
             error?: string;
             details?: string;
           };
-          try {
-            extractData = await extractRes.json();
-          } catch {
-            const t = await extractRes.text();
-            throw new Error(`Extract returned non-JSON (${extractRes.status}): ${t.substring(0, 300)}`);
+          {
+            const raw = await extractRes.text();
+            try {
+              extractData = raw ? JSON.parse(raw) : {};
+            } catch {
+              throw new Error(`Extract returned non-JSON (${extractRes.status}): ${raw.substring(0, 300)}`);
+            }
           }
           if (!extractRes.ok || extractData.error) {
             throw new Error(extractData.error || extractData.details || `Extract HTTP ${extractRes.status}`);
@@ -2346,11 +2348,13 @@ export default function FrontEndFunnel() {
               replacements?: number;
               error?: string;
             };
-            try {
-              procData = await procRes.json();
-            } catch {
-              const t = await procRes.text();
-              throw new Error(`Process batch ${sbBatch} non-JSON (${procRes.status}): ${t.substring(0, 300)}`);
+            {
+              const raw = await procRes.text();
+              try {
+                procData = raw ? JSON.parse(raw) : {};
+              } catch {
+                throw new Error(`Process batch ${sbBatch} non-JSON (${procRes.status}): ${raw.substring(0, 300)}`);
+              }
             }
             if (!procRes.ok || procData.error) {
               throw new Error(procData.error || `Process batch ${sbBatch} HTTP ${procRes.status}`);
@@ -2418,11 +2422,13 @@ export default function FrontEndFunnel() {
             systemPrompt?: string;
             error?: string;
           };
-          try {
-            initData = await initRes.json();
-          } catch {
-            const t = await initRes.text();
-            throw new Error(`Init returned non-JSON (${initRes.status}): ${t.substring(0, 200)}`);
+          {
+            const raw = await initRes.text();
+            try {
+              initData = raw ? JSON.parse(raw) : {};
+            } catch {
+              throw new Error(`Init returned non-JSON (${initRes.status}): ${raw.substring(0, 200)}`);
+            }
           }
           if (!initRes.ok || initData.error) throw new Error(initData.error || 'Failed to start rewrite job');
           if (!initData.jobId || !initData.batches || !initData.systemPrompt) {
@@ -2454,11 +2460,13 @@ export default function FrontEndFunnel() {
               body: JSON.stringify({ batch, systemPrompt, label, strict }),
             });
             let data: { rewrites?: Array<{ id: number; rewritten: string }>; error?: string };
-            try {
-              data = await res.json();
-            } catch {
-              const t = await res.text();
-              throw new Error(`Batch returned non-JSON (${res.status}): ${t.substring(0, 200)}`);
+            {
+              const raw = await res.text();
+              try {
+                data = raw ? JSON.parse(raw) : {};
+              } catch {
+                throw new Error(`Batch returned non-JSON (${res.status}): ${raw.substring(0, 200)}`);
+              }
             }
             if (!res.ok || data.error) throw new Error(data.error || `Batch HTTP ${res.status}`);
             return data.rewrites || [];
@@ -2618,11 +2626,13 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
             result?: { html: string; replacements: number; totalTexts: number; originalLength: number; newLength: number; provider: string };
             error?: string;
           };
-          try {
-            finalizeData = await finalizeRes.json();
-          } catch {
-            const t = await finalizeRes.text();
-            throw new Error(`Finalize returned non-JSON (${finalizeRes.status}): ${t.substring(0, 200)}`);
+          {
+            const raw = await finalizeRes.text();
+            try {
+              finalizeData = raw ? JSON.parse(raw) : {};
+            } catch {
+              throw new Error(`Finalize returned non-JSON (${finalizeRes.status}): ${raw.substring(0, 200)}`);
+            }
           }
           if (!finalizeRes.ok || finalizeData.error || !finalizeData.result) {
             throw new Error(finalizeData.error || 'Finalize failed');
