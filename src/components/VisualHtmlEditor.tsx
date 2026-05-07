@@ -783,15 +783,21 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   const [swipeVisionMode, setSwipeVisionMode] = useState<'vision' | 'text' | null>(null);
   const [swipeVisionIntent, setSwipeVisionIntent] = useState('');
   const [swipeVisionError, setSwipeVisionError] = useState('');
+  /** 'video' quando il modal Swipe è stato aperto da un <video>,
+   *  'image' quando è stato aperto da un <img>. Cambia il copy del
+   *  banner, l'endpoint analyzer e il modello di default. */
+  const [swipeMediaKind, setSwipeMediaKind] = useState<'video' | 'image' | null>(null);
   /** Indicazioni extra che l'utente può scrivere per guidare la
    *  rigenerazione del prompt (es. "fai vedere persona prima grassa con
    *  cuffie e poi magra"). */
   const [swipeExtraGuidance, setSwipeExtraGuidance] = useState('');
-  /** Snapshot del contesto in cui è stato avviato lo Swipe (alt, poster,
-   *  brief…), così il bottone "Rigenera prompt" può rifare la chiamata
-   *  anche dopo che selectedElement è cambiato. */
+  /** Snapshot del contesto in cui è stato avviato lo Swipe (alt, URL del
+   *  poster/img, brief…), così il bottone "Rigenera prompt" può rifare la
+   *  chiamata anche dopo che selectedElement è cambiato. */
   const swipeAnalysisCtxRef = useRef<{
-    posterUrl: string;
+    mediaKind: 'video' | 'image';
+    /** Per i video è il poster, per le immagini è la src. */
+    sourceImageUrl: string;
     currentAlt: string;
     pageTitle: string;
     productName: string;
@@ -1339,6 +1345,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
       }
 
       setShowAiImagePopup(false);
+      setSwipeMediaKind(null);
     } catch (err) {
       setAiError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
@@ -1403,20 +1410,38 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
       setAiError('');
 
       try {
-        const resp = await fetch('/api/swipe-video/analyze', {
+        const endpoint =
+          ctx.mediaKind === 'image'
+            ? '/api/swipe-image/analyze'
+            : '/api/swipe-video/analyze';
+        const payload =
+          ctx.mediaKind === 'image'
+            ? {
+                imageUrl: ctx.sourceImageUrl,
+                currentAlt: ctx.currentAlt,
+                pageTitle: ctx.pageTitle,
+                productContext: {
+                  name: ctx.productName,
+                  description: ctx.productDesc,
+                  brief: ctx.productBrief,
+                },
+                userGuidance: extraGuidance || undefined,
+              }
+            : {
+                posterUrl: ctx.sourceImageUrl,
+                currentAlt: ctx.currentAlt,
+                pageTitle: ctx.pageTitle,
+                productContext: {
+                  name: ctx.productName,
+                  description: ctx.productDesc,
+                  brief: ctx.productBrief,
+                },
+                userGuidance: extraGuidance || undefined,
+              };
+        const resp = await fetch(endpoint, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            posterUrl: ctx.posterUrl,
-            currentAlt: ctx.currentAlt,
-            pageTitle: ctx.pageTitle,
-            productContext: {
-              name: ctx.productName,
-              description: ctx.productDesc,
-              brief: ctx.productBrief,
-            },
-            userGuidance: extraGuidance || undefined,
-          }),
+          body: JSON.stringify(payload),
         });
         const data = (await resp.json()) as {
           ok: boolean;
@@ -1445,11 +1470,13 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
         if (ctxParts.length > 0) setAiContextText(ctxParts.join(' • '));
         setSwipeVisionMode(data.mode || 'text');
         setSwipeVisionIntent(data.intent || '');
-        const duration =
-          data.suggestedDuration === 10 || data.suggestedDuration === 5
-            ? (data.suggestedDuration as 5 | 10)
-            : 10;
-        setAiVideoDuration(duration);
+        if (ctx.mediaKind === 'video') {
+          const duration =
+            data.suggestedDuration === 10 || data.suggestedDuration === 5
+              ? (data.suggestedDuration as 5 | 10)
+              : 10;
+          setAiVideoDuration(duration);
+        }
         if (autoFire) setSwipeAutoMode(true);
       } catch (err) {
         if (!aiPrompt.trim()) {
@@ -1554,7 +1581,8 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     /* Salviamo il contesto in un ref così il bottone "Rigenera prompt"
        può rifare la chiamata Claude senza ricalcolare nulla. */
     swipeAnalysisCtxRef.current = {
-      posterUrl,
+      mediaKind: 'video',
+      sourceImageUrl: posterUrl,
       currentAlt,
       pageTitle: pageTitle || '',
       productName,
@@ -1581,6 +1609,95 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     setSwipeVisionIntent('');
     setSwipeVisionError('');
     setSwipeExtraGuidance('');
+    setSwipeMediaKind('video');
+    setShowAiImagePopup(true);
+
+    await runSwipeAnalysis({ extraGuidance: '', autoFire: true });
+  }, [selectedElement, productContext, pageTitle, runSwipeAnalysis]);
+
+  /* ── Swipe Image for Product ──
+   * Equivalente di handleSwipeVideoForProduct ma per <img>: usa
+   * text-to-image (Nano Banana 2 / FLUX / GPT Image) invece di T2V.
+   * Stesso modal, stessa UX. Claude analizza l'immagine competitor e
+   * propone un prompt che mostra il MECCANISMO del nostro prodotto e/o
+   * la trasformazione promessa dal brief, evitando il "packshot su
+   * sfondo bianco" generico. */
+  const handleSwipeImageForProduct = useCallback(async () => {
+    if (!selectedElement || selectedElement.tagName !== 'img') return;
+
+    const currentAlt = String(selectedElement.alt || '').trim();
+    const imageSrc = String(selectedElement.src || '').trim();
+
+    const productName = (productContext?.name || '').trim();
+    const productDesc = (productContext?.description || '').trim();
+    const productBrief = (productContext?.brief || '').trim().slice(0, 600);
+
+    /* Fallback prompt T2I — scegli automaticamente split-frame se l'alt
+       suggerisce before/after, altrimenti hero con hint del meccanismo. */
+    const altLower = currentAlt.toLowerCase();
+    const looksLikeBeforeAfter =
+      /before|after|prima|dopo|transformation|trasformaz/i.test(altLower);
+    const fallbackLines: string[] = [];
+    if (looksLikeBeforeAfter) {
+      fallbackLines.push(
+        productName
+          ? `Photorealistic split-frame promotional image for ${productName}.`
+          : 'Photorealistic split-frame promotional image for our product.'
+      );
+      if (productDesc) fallbackLines.push(`What it is: ${productDesc}.`);
+      if (productBrief) fallbackLines.push(`Brief snippet: ${productBrief}`);
+      fallbackLines.push(
+        'Left half: the SAME person experiencing the problem the product solves (matching the original framing/mood).'
+      );
+      fallbackLines.push(
+        'Right half: the SAME person, same pose, same framing and lighting, after the transformation promised by the brief (e.g. slimmer, pain-free, confident).'
+      );
+      fallbackLines.push(
+        'Visualize the unique mechanism subtly between the two halves (a glow, audio waves, energy flow — match the brief).'
+      );
+    } else {
+      fallbackLines.push(
+        productName
+          ? `Photorealistic hero image for ${productName}.`
+          : 'Photorealistic hero image for our product.'
+      );
+      if (productDesc) fallbackLines.push(`What it is: ${productDesc}.`);
+      if (productBrief) fallbackLines.push(`Brief snippet: ${productBrief}`);
+      if (currentAlt) fallbackLines.push(`Original image context (keep the same persuasive intent): "${currentAlt}".`);
+      fallbackLines.push(
+        'Show the product naturally integrated in a real-world scene, with a subtle visual cue of its unique mechanism (e.g. glowing audio waves around the head, a soft halo of energy, a delicate infographic overlay) — the mechanism must be hinted at visually, not just implied.'
+      );
+    }
+    fallbackLines.push(
+      'Photorealistic, sharp focus, professional studio lighting, clean composition, no on-image text, no competitor logos.'
+    );
+    const fallbackPrompt = fallbackLines.join('\n');
+
+    swipeAnalysisCtxRef.current = {
+      mediaKind: 'image',
+      sourceImageUrl: imageSrc,
+      currentAlt,
+      pageTitle: pageTitle || '',
+      productName,
+      productDesc,
+      productBrief,
+      fallbackPrompt,
+    };
+
+    setAiMode('text2image');
+    setAiPrompt('');
+    setAiSourceImage('');
+    setAiContextText(currentAlt || pageTitle || '');
+    setAiError('');
+    setAiRevisedPrompt('');
+    setShowAiPanel(false);
+    setSwipeAutoMode(false);
+    setSwipeVisionLoading(true);
+    setSwipeVisionMode(null);
+    setSwipeVisionIntent('');
+    setSwipeVisionError('');
+    setSwipeExtraGuidance('');
+    setSwipeMediaKind('image');
     setShowAiImagePopup(true);
 
     await runSwipeAnalysis({ extraGuidance: '', autoFire: true });
@@ -2526,6 +2643,21 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                     </button>
                     {uploadError && <p className="text-[10px] text-red-500 mt-1">{uploadError}</p>}
 
+                    {/* Swipe for Product (immagini): Claude vision analizza
+                        l'immagine competitor e genera un prompt T2I che
+                        mostra il meccanismo unico del nostro prodotto e/o
+                        un before/after split-frame, evitando il classico
+                        packshot generico. */}
+                    <button
+                      onClick={handleSwipeImageForProduct}
+                      disabled={uploading}
+                      title="Sostituisce l'immagine con una coerente per il tuo prodotto, generata con AI (text-to-image). Pre-compila il prompt usando il contesto della pagina e i dati del Project."
+                      className="mt-1.5 w-full flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-lg bg-gradient-to-r from-violet-500 via-fuchsia-500 to-pink-500 hover:from-violet-600 hover:via-fuchsia-600 hover:to-pink-600 transition-all text-xs font-semibold text-white shadow-sm disabled:opacity-50"
+                    >
+                      <Sparkles className="h-3.5 w-3.5" />
+                      Swipe for Product
+                    </button>
+
                     <label className="text-[10px] text-slate-500 mt-2 mb-0.5 block">Alt text</label>
                     <input type="text" defaultValue={el.alt} className="prop-input"
                       onBlur={(e) => setAttr('alt', e.target.value)} />
@@ -2772,6 +2904,9 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                         setAiPrompt('');
                         setAiMode('text2image');
                         setAiModel('nano-banana-2');
+                        // Reset Swipe banner: questo è il flusso AI normale,
+                        // non lo Swipe-for-Product.
+                        setSwipeMediaKind(null);
                         // Pre-fill source image with the currently selected img,
                         // useful if the user immediately switches to Modifica/Anima.
                         const currentSrc = el.src;
@@ -3284,7 +3419,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
 
       {/* ═══ AI Image / Video Generation Popup ═══ */}
       {showAiImagePopup && (
-        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={() => !aiGenerating && setShowAiImagePopup(false)}>
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={() => { if (aiGenerating) return; setShowAiImagePopup(false); setSwipeMediaKind(null); }}>
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
             <div className="bg-gradient-to-r from-violet-600 to-purple-600 px-5 py-4 flex items-center justify-between shrink-0">
               <div className="flex items-center gap-2.5">
@@ -3296,7 +3431,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                   <p className="text-[10px] text-violet-200">fal.ai — text-to-image, image edit e image-to-video</p>
                 </div>
               </div>
-              <button onClick={() => !aiGenerating && setShowAiImagePopup(false)} className="p-1.5 rounded-lg hover:bg-white/20 transition-colors" disabled={aiGenerating}>
+              <button onClick={() => { if (aiGenerating) return; setShowAiImagePopup(false); setSwipeMediaKind(null); }} className="p-1.5 rounded-lg hover:bg-white/20 transition-colors" disabled={aiGenerating}>
                 <X className="h-4 w-4 text-white" />
               </button>
             </div>
@@ -3392,8 +3527,8 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                 </div>
               )}
 
-              {/* Swipe-for-Product banner (text2video aperto dal bottone Swipe) */}
-              {aiMode === 'text2video' && (swipeVisionLoading || aiContextText || swipeVisionError) && (
+              {/* Swipe-for-Product banner (text2video o text2image aperto dal bottone Swipe) */}
+              {swipeMediaKind && (aiMode === 'text2video' || aiMode === 'text2image') && (swipeVisionLoading || aiContextText || swipeVisionError) && (
                 <div className="p-3 rounded-lg bg-gradient-to-r from-violet-50 via-fuchsia-50 to-pink-50 border border-fuchsia-200">
                   <div className="flex items-start gap-2">
                     {(swipeVisionLoading || aiGenerating) ? (
@@ -3405,10 +3540,16 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                       <div className="flex items-center gap-1.5 flex-wrap">
                         <p className="text-[11px] font-bold text-fuchsia-800">
                           {swipeVisionLoading
-                            ? 'Sto guardando il video originale…'
+                            ? swipeMediaKind === 'image'
+                              ? 'Sto guardando l\u2019immagine originale\u2026'
+                              : 'Sto guardando il video originale\u2026'
                             : aiGenerating
-                              ? 'Sto facendo lo swipe del video per il tuo prodotto…'
-                              : 'Swipe Video for Product'}
+                              ? swipeMediaKind === 'image'
+                                ? 'Sto facendo lo swipe dell\u2019immagine per il tuo prodotto\u2026'
+                                : 'Sto facendo lo swipe del video per il tuo prodotto\u2026'
+                              : swipeMediaKind === 'image'
+                                ? 'Swipe Image for Product'
+                                : 'Swipe Video for Product'}
                         </p>
                         {swipeVisionIntent && !swipeVisionLoading && (
                           <span className="px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wider font-bold bg-fuchsia-100 text-fuchsia-700">
@@ -3421,24 +3562,35 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                           </span>
                         )}
                         {swipeVisionMode === 'text' && !swipeVisionLoading && (
-                          <span className="text-[9px] uppercase tracking-wider font-medium text-slate-500" title="Poster non disponibile, analisi solo testuale">
+                          <span className="text-[9px] uppercase tracking-wider font-medium text-slate-500" title="Sorgente non disponibile, analisi solo testuale">
                             text-only
                           </span>
                         )}
-                        <span className="text-[9px] uppercase tracking-wider font-medium text-violet-600 ml-auto" title="Text-to-Video: l'AI inventa la scena da prompt, senza foto sorgente">
-                          T2V
+                        <span
+                          className="text-[9px] uppercase tracking-wider font-medium text-violet-600 ml-auto"
+                          title={
+                            swipeMediaKind === 'image'
+                              ? "Text-to-Image: l'AI inventa la composizione da prompt, senza foto sorgente"
+                              : "Text-to-Video: l'AI inventa la scena da prompt, senza foto sorgente"
+                          }
+                        >
+                          {swipeMediaKind === 'image' ? 'T2I' : 'T2V'}
                         </span>
                       </div>
 
                       {swipeVisionLoading ? (
                         <p className="text-[11px] text-slate-600 leading-relaxed mt-0.5">
-                          Claude sta analizzando il poster del clip per capire l&apos;intent (demo / before-after / lifestyle…) e suggerire un prompt mirato per il tuo prodotto.
+                          {swipeMediaKind === 'image'
+                            ? 'Claude sta analizzando l\u2019immagine per capire l\u2019intent (hero / before-after / lifestyle / diagram\u2026) e suggerire un prompt mirato per il tuo prodotto.'
+                            : 'Claude sta analizzando il poster del clip per capire l\u2019intent (demo / before-after / lifestyle\u2026) e suggerire un prompt mirato per il tuo prodotto.'}
                         </p>
                       ) : (
                         <>
                           {aiContextText && (
                             <p className="text-[11px] text-slate-600 leading-relaxed mt-0.5">
-                              <span className="text-slate-500">Clip originale:</span>{' '}
+                              <span className="text-slate-500">
+                                {swipeMediaKind === 'image' ? 'Immagine originale:' : 'Clip originale:'}
+                              </span>{' '}
                               <span className="italic text-slate-700">&ldquo;{aiContextText.substring(0, 200)}{aiContextText.length > 200 ? '…' : ''}&rdquo;</span>
                             </p>
                           )}
@@ -3448,7 +3600,15 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                             </p>
                           ) : (
                             <p className="text-[11px] text-slate-600 leading-relaxed mt-1">
-                              Il prompt qui sotto descrive l&apos;<strong>intera scena</strong> per Seedance 2.0 text-to-video — niente foto sorgente, l&apos;AI ricrea il setting (con il TUO prodotto al centro) coerente con l&apos;intent del clip originale. Modificalo se vuoi.
+                              {swipeMediaKind === 'image' ? (
+                                <>
+                                  Il prompt qui sotto descrive la <strong>composizione completa</strong> per il modello text-to-image — niente foto sorgente, l&apos;AI ricrea la scena (con il TUO prodotto e il TUO meccanismo) coerente con l&apos;intent dell&apos;immagine originale. Modificalo se vuoi.
+                                </>
+                              ) : (
+                                <>
+                                  Il prompt qui sotto descrive l&apos;<strong>intera scena</strong> per Seedance 2.0 text-to-video — niente foto sorgente, l&apos;AI ricrea il setting (con il TUO prodotto al centro) coerente con l&apos;intent del clip originale. Modificalo se vuoi.
+                                </>
+                              )}
                             </p>
                           )}
 
