@@ -43,6 +43,13 @@ interface SurroundingCtx {
 
 interface RequestBody {
   imageUrl?: string;
+  /** Data URL JPEG/PNG dell'immagine, estratta lato client. Se presente
+   *  ha precedenza sul fetch lato server di `imageUrl` (utile quando il
+   *  server non riesce a scaricare l'immagine per CORS, blocco UA, URL
+   *  relativo non risolvibile, ecc.). Il browser ha sempre l'immagine
+   *  in cache dal preview iframe, quindi questo fallback è molto più
+   *  affidabile del fetch server-side. */
+  imageDataUrl?: string;
   currentAlt?: string;
   pageTitle?: string;
   productContext?: ProductCtx;
@@ -243,12 +250,28 @@ export async function POST(req: NextRequest) {
   const currentAlt = (body.currentAlt || '').trim();
   const pageTitle = (body.pageTitle || '').trim();
   const imageUrl = (body.imageUrl || '').trim();
+  const imageDataUrl = (body.imageDataUrl || '').trim();
 
   let imageBlock: {
     data: string;
     mediaType: string;
   } | null = null;
-  if (imageUrl && /^https?:\/\//i.test(imageUrl)) {
+
+  /* Priorità 1: data URL inviata dal client (più affidabile, bypassa CORS). */
+  if (imageDataUrl) {
+    const m = /^data:(image\/(?:jpeg|png|webp|jpg));base64,(.+)$/i.exec(imageDataUrl);
+    if (m) {
+      const mediaType = m[1].toLowerCase().replace('image/jpg', 'image/jpeg');
+      const data = m[2];
+      /* Limit: 5MB base64 (~ 3.7MB di immagine). */
+      if (data.length > 0 && data.length <= 5 * 1024 * 1024) {
+        imageBlock = { data, mediaType };
+      }
+    }
+  }
+
+  /* Priorità 2: fetch via URL (fallback se il client non ha estratto la data URL). */
+  if (!imageBlock && imageUrl && /^https?:\/\//i.test(imageUrl)) {
     imageBlock = await fetchImageAsBase64(imageUrl);
   }
 

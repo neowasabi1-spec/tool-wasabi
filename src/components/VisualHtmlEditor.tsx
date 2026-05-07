@@ -143,7 +143,14 @@ const EDITOR_SCRIPT = `
       textContent:el.childNodes.length<=3?(el.textContent||'').substring(0,300):'',
       innerHTML:el.innerHTML?(el.innerHTML).substring(0,2000):'',
       outerHTML:el.outerHTML?(el.outerHTML).substring(0,300):'',
-      href:el.getAttribute('href')||'',src:el.getAttribute('src')||'',
+      /* IMPORTANTE: per i media usiamo le proprietà DOM (.currentSrc/.src/.href)
+         che il browser absolutizza automaticamente rispetto al baseURI.
+         getAttribute('src') restituirebbe la stringa raw (può essere relativa
+         es. "/img/foo.jpg") che poi il server non riesce a fetchare. */
+      href:(el.tagName==='A'?(el.href||''):'')||el.getAttribute('href')||'',
+      src:(el.tagName==='IMG'||el.tagName==='VIDEO'||el.tagName==='SOURCE'||el.tagName==='AUDIO'||el.tagName==='IFRAME')
+        ? (el.currentSrc||el.src||el.getAttribute('src')||'')
+        : (el.getAttribute('src')||''),
       alt:el.getAttribute('alt')||'',
       videoAttrs:(el.tagName==='VIDEO'?{
         controls:el.hasAttribute('controls'),
@@ -152,7 +159,8 @@ const EDITOR_SCRIPT = `
         muted:el.hasAttribute('muted'),
         playsinline:el.hasAttribute('playsinline')||el.hasAttribute('webkit-playsinline'),
         preload:el.getAttribute('preload')||'metadata',
-        poster:el.getAttribute('poster')||'',
+        /* el.poster è la prop DOM absolutizzata (vs getAttribute che è raw). */
+        poster:el.poster||el.getAttribute('poster')||'',
       }:null),
       rect:{x:r.x,y:r.y,width:r.width,height:r.height},
       isTextNode:el.childNodes.length===1&&el.childNodes[0].nodeType===3,
@@ -693,6 +701,94 @@ function pxToNum(v: string | undefined | null): number {
   if (!v) return 0;
   const n = parseFloat(v);
   return Number.isFinite(n) ? Math.round(n) : 0;
+}
+
+/* ── Image data URL extraction (fallback affidabile) ──
+ * Scarica l'immagine lato BROWSER (sfrutta il fatto che la pagina di
+ * preview l'ha già caricata in cache) e la converte in data URL JPEG.
+ * Strategia 1: <img crossOrigin="anonymous"> + canvas.toDataURL.
+ *              Funziona se il server abilita CORS per asset statici
+ *              (Shopify CDN, Cloudfront, R2, ecc.).
+ * Strategia 2 (no-CORS): in molti casi il browser ha l'asset in cache
+ *              dal preview iframe; ritentiamo con `cache: 'force-cache'`
+ *              come ultimo tentativo.
+ *
+ * Ritorna data URL JPEG (max 1280px sul lato lungo) o null se entrambi
+ * i tentativi falliscono. Hard timeout 8s. */
+async function extractImageAsDataUrl(
+  imageUrl: string,
+  maxDim: number = 1280,
+  quality: number = 0.85,
+): Promise<string | null> {
+  if (!imageUrl || !/^https?:\/\//i.test(imageUrl)) return null;
+
+  /* Strategia 1: Image element + canvas (richiede CORS sul server). */
+  const viaCanvas = await new Promise<string | null>((resolve) => {
+    let resolved = false;
+    const finish = (v: string | null) => {
+      if (resolved) return;
+      resolved = true;
+      resolve(v);
+    };
+    const img = new window.Image();
+    img.crossOrigin = 'anonymous';
+    const t = window.setTimeout(() => finish(null), 8000);
+    img.onload = () => {
+      try {
+        const w = img.naturalWidth || img.width;
+        const h = img.naturalHeight || img.height;
+        if (!w || !h) {
+          window.clearTimeout(t);
+          finish(null);
+          return;
+        }
+        const scale = Math.min(1, maxDim / Math.max(w, h));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(w * scale));
+        canvas.height = Math.max(1, Math.round(h * scale));
+        const ctx2d = canvas.getContext('2d');
+        if (!ctx2d) {
+          window.clearTimeout(t);
+          finish(null);
+          return;
+        }
+        ctx2d.drawImage(img, 0, 0, canvas.width, canvas.height);
+        const url = canvas.toDataURL('image/jpeg', quality);
+        window.clearTimeout(t);
+        finish(url.startsWith('data:image/') ? url : null);
+      } catch {
+        /* Canvas tainted (CORS). */
+        window.clearTimeout(t);
+        finish(null);
+      }
+    };
+    img.onerror = () => {
+      window.clearTimeout(t);
+      finish(null);
+    };
+    img.src = imageUrl;
+  });
+  if (viaCanvas) return viaCanvas;
+
+  /* Strategia 2: fetch con cache forzata (a volte il browser ha già
+     il blob in cache dal preview iframe e supera il blocco CORS strict). */
+  try {
+    const res = await fetch(imageUrl, { cache: 'force-cache' });
+    if (!res.ok) return null;
+    const blob = await res.blob();
+    if (blob.size === 0 || blob.size > 6 * 1024 * 1024) return null;
+    return await new Promise<string | null>((resolve) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const v = typeof reader.result === 'string' ? reader.result : null;
+        resolve(v && v.startsWith('data:image/') ? v : null);
+      };
+      reader.onerror = () => resolve(null);
+      reader.readAsDataURL(blob);
+    });
+  } catch {
+    return null;
+  }
 }
 
 /* ── Multi-frame extraction per video competitor ──
@@ -1673,6 +1769,12 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
           ctx.mediaKind === 'image'
             ? {
                 imageUrl: ctx.sourceImageUrl,
+                /* Per le immagini riusiamo posterFrames[0] come imageDataUrl:
+                   se presente ha PRIORITÀ sul fetch via URL lato server. */
+                imageDataUrl:
+                  ctx.posterFrames && ctx.posterFrames.length > 0
+                    ? ctx.posterFrames[0]
+                    : undefined,
                 currentAlt: ctx.currentAlt,
                 pageTitle: ctx.pageTitle,
                 productContext: {
@@ -1888,11 +1990,21 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
        surrounding context (heading, paragrafo, CTA, posizione).
        Frame extraction richiede 3-8s per video normali; il context
        arriva in <1.5s. extractVideoFrames può ritornare [] in caso
-       di CORS — server farà fallback al solo posterUrl. */
-    const [posterFrames, surroundingContext] = await Promise.all([
+       di CORS. */
+    const [videoFrames, surroundingContext] = await Promise.all([
       videoSrc ? extractVideoFrames(videoSrc, 3) : Promise.resolve<string[]>([]),
       requestSwipeContext(),
     ]);
+
+    /* 2b. Fallback: se l'estrazione frame del video è fallita (CORS o
+       no src) ma esiste il poster, estraggo il poster come dataURL via
+       canvas. Stessa logica delle immagini: il browser HA il poster in
+       cache dal preview iframe, quindi è molto affidabile. */
+    let posterFrames = videoFrames;
+    if (posterFrames.length === 0 && posterUrl) {
+      const posterDataUrl = await extractImageAsDataUrl(posterUrl, 1280, 0.85);
+      if (posterDataUrl) posterFrames = [posterDataUrl];
+    }
 
     /* 3. Salvataggio context completo nel ref per "Rigenera prompt". */
     swipeAnalysisCtxRef.current = {
@@ -1997,15 +2109,21 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     setSwipeMediaKind('image');
     setShowAiImagePopup(true);
 
-    /* Recupero context strutturato (heading vicino, paragrafo, CTA,
-       posizione) attorno all'<img> selezionato. Per le immagini non
-       serve frame extraction. */
-    const surroundingContext = await requestSwipeContext();
+    /* Recupero in parallelo:
+       - context strutturato (heading vicino, paragrafo, CTA, posizione)
+       - dataURL dell'immagine SORGENTE estratta lato client (fallback
+         per quando il server non riesce a fetcharla per CORS / UA block /
+         URL relativo non risolvibile server-side). */
+    const [surroundingContext, imageDataUrl] = await Promise.all([
+      requestSwipeContext(),
+      imageSrc ? extractImageAsDataUrl(imageSrc, 1280, 0.85) : Promise.resolve<string | null>(null),
+    ]);
 
     swipeAnalysisCtxRef.current = {
       mediaKind: 'image',
       sourceImageUrl: imageSrc,
-      posterFrames: [],
+      /* Riusiamo posterFrames anche per le immagini: 0 o 1 elemento. */
+      posterFrames: imageDataUrl ? [imageDataUrl] : [],
       surroundingContext,
       currentAlt,
       pageTitle: pageTitle || '',
