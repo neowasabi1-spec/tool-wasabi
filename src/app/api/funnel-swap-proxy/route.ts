@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getCoreKnowledge } from '@/knowledge/copywriting';
+import { getKnowledgeBundleForTask } from '@/knowledge/copywriting';
 
 export const maxDuration = 300;
 export const dynamic = 'force-dynamic';
@@ -9,15 +9,22 @@ const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
 const EDGE_FUNCTION_NAME = 'funnel-swap-v1-functions';
 
-// Knowledge base loaded lazily and memoised at module level. ~28K tokens
-// always-on copywriting frameworks (COS Engine, Tony Flores, Evaldo,
-// Anghelache, Savage System, 108 split tests). Sent as a cached system block
-// so the cost is paid once per ~5 min across all batches of the same job.
+// Knowledge base loaded lazily and memoised at module level.
+// Tier 1 (~28K tok): COS Engine, Tony Flores, Evaldo, Anghelache, Savage,
+// 108 split tests — always loaded.
+// Tier 2 for 'pdp' (~18K tok): landing-page copy recipes by HTML tag,
+// 27 AI Copy Codes (headlines), Stefan Georgi big ideas + income market
+// psychographics. Total bundle ~46K tokens, sent as a single cached
+// system block so the cost is paid once per ~5 min across all batches.
 let _kbCache: string | null = null;
 function getKb(): string {
   if (_kbCache === null) {
     try {
-      _kbCache = getCoreKnowledge();
+      _kbCache = getKnowledgeBundleForTask('pdp');
+      const approxTokens = Math.round((_kbCache?.length ?? 0) / 4);
+      console.log(
+        `[funnel-swap-proxy] KB loaded: ${_kbCache?.length ?? 0} chars / ~${approxTokens} tokens`,
+      );
     } catch (err) {
       console.warn('[funnel-swap-proxy] knowledge base load failed:', err);
       _kbCache = '';
