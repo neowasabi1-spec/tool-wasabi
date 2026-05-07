@@ -94,6 +94,21 @@ interface VisualHtmlEditorProps {
   onSave: (html: string, mobileHtml?: string) => void;
   onClose: () => void;
   pageTitle?: string;
+  /** Project context: passato dal parent (front-end-funnel) e usato per
+   *  pre-compilare il prompt quando l'utente clicca "Swipe for Product"
+   *  su un video. Senza questo, il bottone esiste comunque e usa solo
+   *  il contesto della pagina (alt del video + heading vicino). */
+  productContext?: {
+    name?: string;
+    description?: string;
+    brief?: string;
+    /** URL di una foto del prodotto (es. logo[0].url del Project).
+     *  Quando presente, "Swipe for Product" parte in modalità FULLY AUTO:
+     *  l'AI usa direttamente questa immagine come prima frame, scrive il
+     *  prompt da sola, lancia Seedance 2.0 e sostituisce il <video>
+     *  senza nessun altro click dell'utente. */
+    imageUrl?: string;
+  };
 }
 
 type EditorMode = 'visual' | 'code' | 'preview';
@@ -648,7 +663,7 @@ const TEXT_EDITABLE_TAGS = new Set([
 
 /* ─────────── Component ─────────── */
 
-export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSave, onClose, pageTitle }: VisualHtmlEditorProps) {
+export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSave, onClose, pageTitle, productContext }: VisualHtmlEditorProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [mode, setMode] = useState<EditorMode>('visual');
   const [selectedElement, setSelectedElement] = useState<ElementInfo | null>(null);
@@ -757,6 +772,11 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   const [showAiPanel, setShowAiPanel] = useState(false);
   const [showAiImagePopup, setShowAiImagePopup] = useState(false);
   const [aiContextText, setAiContextText] = useState('');
+  /** True quando il modal AI è stato aperto dal bottone "Swipe for Product"
+   *  con un'immagine prodotto già disponibile: appena il modal monta e
+   *  l'aiSourceImage è impostato, parte automaticamente Seedance 2.0
+   *  senza che l'utente debba toccare null'altro. */
+  const [swipeAutoMode, setSwipeAutoMode] = useState(false);
 
   const AI_MODELS: Record<AiMode, { id: string; label: string; hint: string }[]> = {
     text2image: [
@@ -1331,6 +1351,100 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
       setUploading(false);
     }
   }, [uploading, setAttr]);
+
+  /* ── Swipe Video for Product ──
+   * Sostituisce il video selezionato con un nuovo video AI-generato
+   * COERENTE col nostro prodotto. Riusa il modal AI esistente
+   * (`showAiImagePopup` con `aiMode = 'image2video'` → Seedance 2.0)
+   * pre-compilando il prompt con:
+   *   - contesto della pagina (alt del video + heading vicino) per
+   *     "capire cosa è" il clip originale;
+   *   - dati del Project (nome, descrizione, brief) per orientare la
+   *     scena verso il NOSTRO prodotto.
+   *
+   * Nota: NON pre-compiliamo l'immagine sorgente col poster del clip
+   * originale, perché è una frame del PRODOTTO COMPETITOR. L'utente
+   * dovrà caricare un'immagine del proprio prodotto come prima frame.
+   *
+   * Il flow di replace già esistente nel modal (vedi `handleAiGenerate`)
+   * sostituirà l'<video> selezionato con il nuovo URL via
+   * cmd-replace-outer-html, quindi qui non c'è altro da fare. */
+  const handleSwipeVideoForProduct = useCallback(() => {
+    if (!selectedElement || selectedElement.tagName !== 'video') return;
+
+    const currentAlt = String(
+      selectedElement.attributes.alt ||
+        selectedElement.attributes['aria-label'] ||
+        ''
+    );
+    const heading = String(selectedElement.attributes['data-near-heading'] || '');
+    const surroundingText = [currentAlt, heading, pageTitle || '']
+      .filter(Boolean)
+      .join(' · ');
+
+    const productName = (productContext?.name || '').trim();
+    const productDesc = (productContext?.description || '').trim();
+    const productBrief = (productContext?.brief || '').trim().slice(0, 600);
+
+    const lines: string[] = [];
+    lines.push(
+      productName
+        ? `Create a high-quality product video for: ${productName}.`
+        : 'Create a high-quality product video for our product.'
+    );
+    if (productDesc) lines.push(`What it is: ${productDesc}.`);
+    lines.push(
+      surroundingText
+        ? `It must replace an existing clip on the page whose context is: "${surroundingText}". Keep the same intent (e.g. demo / before-after / lifestyle / hero shot) but featuring OUR product instead.`
+        : 'Replace the original clip on the page with an equivalent shot for OUR product.'
+    );
+    if (productBrief) lines.push(`Brief snippet: ${productBrief}`);
+    lines.push(
+      'Smooth professional motion, realistic, well-lit, no on-screen text, no audio.'
+    );
+
+    const productImage = (productContext?.imageUrl || '').trim();
+
+    setAiMode('image2video');
+    setAiPrompt(lines.join('\n'));
+    setAiSourceImage(productImage);
+    setAiContextText(surroundingText);
+    setAiVideoLoop(true);
+    setAiError('');
+    setAiRevisedPrompt('');
+    setShowAiPanel(false);
+    /* Se abbiamo già un'immagine del prodotto (es. Project.logo[0].url),
+       passiamo direttamente alla generazione: 1 click → video sostituito.
+       Altrimenti il modal si apre normalmente e l'utente carica la foto. */
+    setSwipeAutoMode(Boolean(productImage));
+    setShowAiImagePopup(true);
+  }, [selectedElement, productContext, pageTitle]);
+
+  /* Auto-fire della generazione quando "Swipe for Product" parte in
+   * modalità automatica. Aspettiamo un frame in modo che il modal
+   * abbia il tempo di renderizzare lo state di loading prima che il
+   * job parta sul main thread. */
+  useEffect(() => {
+    if (!swipeAutoMode) return;
+    if (!showAiImagePopup) return;
+    if (!aiSourceImage) return;
+    if (aiGenerating) return;
+
+    const t = window.setTimeout(() => {
+      // Consume the auto-mode token so successive opens of the modal
+      // (manual generation, retry) don't accidentally re-trigger.
+      setSwipeAutoMode(false);
+      handleAiGenerate();
+    }, 250);
+    return () => window.clearTimeout(t);
+  }, [swipeAutoMode, showAiImagePopup, aiSourceImage, aiGenerating, handleAiGenerate]);
+
+  // Se l'utente chiude il modal manualmente prima che parta il job auto,
+  // azzeriamo la flag così la prossima apertura è "manuale" e non
+  // triggera generazioni non richieste.
+  useEffect(() => {
+    if (!showAiImagePopup && swipeAutoMode) setSwipeAutoMode(false);
+  }, [showAiImagePopup, swipeAutoMode]);
 
   // Apre il file picker, carica il video, e SOLO dopo l'upload sostituisce
   // l'iframe selezionato con un <video> nativo che ha gia' src valido.
@@ -2266,6 +2380,21 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                     </button>
                     {uploadError && <p className="text-[10px] text-red-500 mt-1">{uploadError}</p>}
 
+                    {/* Swipe for Product: l'AI capisce cosa rappresenta il
+                       video corrente e lo sostituisce con un video coerente
+                       per il NOSTRO prodotto, riusando Seedance 2.0 (image2video). */}
+                    {el.tagName === 'video' && (
+                      <button
+                        onClick={handleSwipeVideoForProduct}
+                        disabled={uploading}
+                        title="Sostituisce il video con uno coerente per il tuo prodotto, generato con AI (Seedance 2.0). Pre-compila il prompt usando il contesto della pagina e i dati del Project."
+                        className="mt-1.5 w-full flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-lg bg-gradient-to-r from-violet-500 via-fuchsia-500 to-pink-500 hover:from-violet-600 hover:via-fuchsia-600 hover:to-pink-600 transition-all text-xs font-semibold text-white shadow-sm disabled:opacity-50"
+                      >
+                        <Sparkles className="h-3.5 w-3.5" />
+                        Swipe for Product
+                      </button>
+                    )}
+
                     {/* Playback options (solo per <video>, non per <source>) */}
                     {el.tagName === 'video' && (() => {
                       const va = (el as unknown as { videoAttrs?: { controls: boolean; autoplay: boolean; loop: boolean; muted: boolean; playsinline: boolean; preload: string; poster: string } }).videoAttrs;
@@ -3077,6 +3206,39 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                 <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
                   <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Contesto rilevato automaticamente</p>
                   <p className="text-xs text-slate-600 leading-relaxed line-clamp-3">{aiContextText}</p>
+                </div>
+              )}
+
+              {/* Swipe-for-Product banner (image2video aperto dal bottone Swipe) */}
+              {aiMode === 'image2video' && aiContextText && (
+                <div className="p-3 rounded-lg bg-gradient-to-r from-violet-50 via-fuchsia-50 to-pink-50 border border-fuchsia-200">
+                  <div className="flex items-start gap-2">
+                    {(swipeAutoMode || (aiGenerating && aiSourceImage)) ? (
+                      <Loader2 className="h-3.5 w-3.5 text-fuchsia-600 mt-0.5 shrink-0 animate-spin" />
+                    ) : (
+                      <Sparkles className="h-3.5 w-3.5 text-fuchsia-600 mt-0.5 shrink-0" />
+                    )}
+                    <div className="min-w-0">
+                      <p className="text-[11px] font-bold text-fuchsia-800">
+                        {swipeAutoMode || (aiGenerating && aiSourceImage)
+                          ? 'Sto facendo lo swipe del video per il tuo prodotto…'
+                          : 'Swipe Video for Product'}
+                      </p>
+                      <p className="text-[11px] text-slate-600 leading-relaxed mt-0.5">
+                        Clip originale:{' '}
+                        <span className="italic text-slate-700">&ldquo;{aiContextText.substring(0, 160)}{aiContextText.length > 160 ? '…' : ''}&rdquo;</span>
+                      </p>
+                      {aiSourceImage ? (
+                        <p className="text-[11px] text-slate-600 leading-relaxed mt-1">
+                          Sto usando la foto del tuo prodotto come prima frame e la sto animando con Seedance 2.0 mantenendo lo stesso intent del clip originale. Bastano 30-60s, poi il video viene sostituito automaticamente.
+                        </p>
+                      ) : (
+                        <p className="text-[11px] text-slate-600 leading-relaxed mt-1">
+                          Per la modalità <strong>completamente automatica</strong>, aggiungi una foto del prodotto al Project (sezione Logo). Per ora puoi caricarla qui sopra e cliccare Genera.
+                        </p>
+                      )}
+                    </div>
+                  </div>
                 </div>
               )}
 

@@ -5499,11 +5499,29 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
       )}
 
       {/* Visual HTML Editor */}
-      {showVisualEditor && htmlPreviewModal.html && (
+      {showVisualEditor && htmlPreviewModal.html && (() => {
+        // Risolve il Project legato alla pagina aperta nell'editor.
+        // Serve per pre-compilare il prompt di "Swipe for Product" sui video
+        // (e in futuro su altri media) con nome, descrizione e brief reali.
+        const editorPage = htmlPreviewModal.pageId
+          ? (funnelPages || []).find(p => p.id === htmlPreviewModal.pageId)
+          : null;
+        const editorProject = editorPage
+          ? (projects || []).find(p => p.id === editorPage.productId)
+          : null;
+        return (
         <VisualHtmlEditor
           initialHtml={htmlPreviewModal.html}
           initialMobileHtml={htmlPreviewModal.mobileHtml || undefined}
           pageTitle={htmlPreviewModal.title || 'Edit Landing'}
+          productContext={editorProject ? {
+            name: editorProject.name,
+            description: editorProject.description || '',
+            brief: editorProject.brief || '',
+            imageUrl:
+              (Array.isArray(editorProject.logo) && editorProject.logo[0]?.url) ||
+              '',
+          } : undefined}
           onSave={(html, mobileHtml) => {
             setHtmlPreviewModal(prev => ({ ...prev, html, mobileHtml: mobileHtml || prev.mobileHtml }));
 
@@ -5530,7 +5548,8 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
           }}
           onClose={() => setShowVisualEditor(false)}
         />
-      )}
+        );
+      })()}
       {/* Save Funnel Modal */}
       {showSaveModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
