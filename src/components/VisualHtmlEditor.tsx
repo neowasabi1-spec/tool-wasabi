@@ -783,6 +783,22 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   const [swipeVisionMode, setSwipeVisionMode] = useState<'vision' | 'text' | null>(null);
   const [swipeVisionIntent, setSwipeVisionIntent] = useState('');
   const [swipeVisionError, setSwipeVisionError] = useState('');
+  /** Indicazioni extra che l'utente può scrivere per guidare la
+   *  rigenerazione del prompt (es. "fai vedere persona prima grassa con
+   *  cuffie e poi magra"). */
+  const [swipeExtraGuidance, setSwipeExtraGuidance] = useState('');
+  /** Snapshot del contesto in cui è stato avviato lo Swipe (alt, poster,
+   *  brief…), così il bottone "Rigenera prompt" può rifare la chiamata
+   *  anche dopo che selectedElement è cambiato. */
+  const swipeAnalysisCtxRef = useRef<{
+    posterUrl: string;
+    currentAlt: string;
+    pageTitle: string;
+    productName: string;
+    productDesc: string;
+    productBrief: string;
+    fallbackPrompt: string;
+  } | null>(null);
 
   const AI_MODELS: Record<AiMode, { id: string; label: string; hint: string }[]> = {
     text2image: [
@@ -1367,10 +1383,107 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     }
   }, [uploading, setAttr]);
 
+  /* runSwipeAnalysis — chiama l'analyzer Claude e, se va a buon fine,
+   * popola aiPrompt / aiContextText / intent / duration. È usata sia in
+   * apertura iniziale (autoFire=true → l'utente clicca solo "Swipe" e
+   * il video parte da solo) sia dal bottone "Rigenera prompt" del banner
+   * (autoFire=false, l'utente legge prima e poi conferma con Genera).
+   * Legge il contesto da swipeAnalysisCtxRef così non dipende da
+   * selectedElement (che potrebbe essere cambiato). */
+  const runSwipeAnalysis = useCallback(
+    async (opts: { extraGuidance?: string; autoFire?: boolean }) => {
+      const ctx = swipeAnalysisCtxRef.current;
+      if (!ctx) return;
+      const extraGuidance = (opts.extraGuidance ?? '').trim();
+      const autoFire = Boolean(opts.autoFire);
+
+      setSwipeVisionLoading(true);
+      setSwipeVisionError('');
+      setSwipeAutoMode(false);
+      setAiError('');
+
+      try {
+        const resp = await fetch('/api/swipe-video/analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            posterUrl: ctx.posterUrl,
+            currentAlt: ctx.currentAlt,
+            pageTitle: ctx.pageTitle,
+            productContext: {
+              name: ctx.productName,
+              description: ctx.productDesc,
+              brief: ctx.productBrief,
+            },
+            userGuidance: extraGuidance || undefined,
+          }),
+        });
+        const data = (await resp.json()) as {
+          ok: boolean;
+          intent?: string;
+          originalDescription?: string;
+          uniqueMechanism?: string;
+          transformation?: string;
+          suggestedPrompt?: string;
+          suggestedDuration?: number;
+          mode?: 'vision' | 'text';
+          error?: string;
+        };
+        if (!resp.ok || !data.ok) {
+          throw new Error(data.error || `analyze ${resp.status}`);
+        }
+        const suggested =
+          (data.suggestedPrompt || '').trim() || ctx.fallbackPrompt;
+        const desc = (data.originalDescription || '').trim();
+        const mech = (data.uniqueMechanism || '').trim();
+        const transf = (data.transformation || '').trim();
+        setAiPrompt(suggested);
+        const ctxParts: string[] = [];
+        if (desc) ctxParts.push(`Originale: ${desc}`);
+        if (mech) ctxParts.push(`Meccanismo: ${mech}`);
+        if (transf) ctxParts.push(`Trasformazione: ${transf}`);
+        if (ctxParts.length > 0) setAiContextText(ctxParts.join(' • '));
+        setSwipeVisionMode(data.mode || 'text');
+        setSwipeVisionIntent(data.intent || '');
+        const duration =
+          data.suggestedDuration === 10 || data.suggestedDuration === 5
+            ? (data.suggestedDuration as 5 | 10)
+            : 10;
+        setAiVideoDuration(duration);
+        if (autoFire) setSwipeAutoMode(true);
+      } catch (err) {
+        if (!aiPrompt.trim()) {
+          /* Solo al primo tentativo lasciamo il fallback. Per un retry
+             manuale teniamo quello che c'è già nel textarea, così l'utente
+             non perde le sue modifiche. */
+          setAiPrompt(ctx.fallbackPrompt);
+        }
+        setSwipeVisionMode(null);
+        setSwipeVisionError(
+          err instanceof Error ? err.message : 'Analisi non disponibile'
+        );
+      } finally {
+        setSwipeVisionLoading(false);
+      }
+    },
+    [aiPrompt],
+  );
+
+  /* Rigenera il prompt usando le indicazioni extra dell'utente. Non
+   * fa partire automaticamente la generazione: l'utente prima legge il
+   * nuovo prompt, eventualmente lo modifica, e poi clicca Genera. */
+  const handleRegenerateSwipePrompt = useCallback(() => {
+    if (swipeVisionLoading) return;
+    void runSwipeAnalysis({
+      extraGuidance: swipeExtraGuidance,
+      autoFire: false,
+    });
+  }, [runSwipeAnalysis, swipeExtraGuidance, swipeVisionLoading]);
+
   /* ── Swipe Video for Product ──
    * Sostituisce il video selezionato con un nuovo video AI-generato
    * COERENTE col nostro prodotto. Riusa il modal AI esistente
-   * (`showAiImagePopup` con `aiMode = 'image2video'` → Seedance 2.0)
+   * (`showAiImagePopup` con `aiMode = 'text2video'` → Seedance 2.0)
    * pre-compilando il prompt con:
    *   - contesto della pagina (alt del video + heading vicino) per
    *     "capire cosa è" il clip originale;
@@ -1378,8 +1491,8 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
    *     scena verso il NOSTRO prodotto.
    *
    * Nota: NON pre-compiliamo l'immagine sorgente col poster del clip
-   * originale, perché è una frame del PRODOTTO COMPETITOR. L'utente
-   * dovrà caricare un'immagine del proprio prodotto come prima frame.
+   * originale, perché è una frame del PRODOTTO COMPETITOR. Lo Swipe
+   * usa text-to-video — l'AI inventa la scena da zero dal prompt.
    *
    * Il flow di replace già esistente nel modal (vedi `handleAiGenerate`)
    * sostituirà l'<video> selezionato con il nuovo URL via
@@ -1412,20 +1525,43 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
        lifestyle shot, ecc.) coerente con l'intent del clip competitor. */
 
     /* Prompt fallback in caso l'analisi vision di Claude fallisca:
-       generico ma in inglese, costruito dai dati locali. */
+       struttura before → product-in-action → after (multi-shot Seedance 2.0)
+       per non cadere mai in un generico "beauty shot" che non racconta
+       niente del prodotto. Tutto in inglese (Seedance preferisce EN). */
     const fallbackLines: string[] = [];
     fallbackLines.push(
       productName
-        ? `Create a high-quality product video for: ${productName}.`
-        : 'Create a high-quality product video for our product.'
+        ? `Create a 10-second multi-shot product video for ${productName}.`
+        : 'Create a 10-second multi-shot product video for our product.'
     );
     if (productDesc) fallbackLines.push(`What it is: ${productDesc}.`);
-    if (currentAlt) fallbackLines.push(`Original clip context: "${currentAlt}".`);
     if (productBrief) fallbackLines.push(`Brief snippet: ${productBrief}`);
+    if (currentAlt) fallbackLines.push(`Original clip context (keep the same persuasive intent): "${currentAlt}".`);
     fallbackLines.push(
-      'Smooth professional motion, realistic, well-lit, no on-screen text, no audio.'
+      'Shot 1 (0-3s): the protagonist visibly experiencing the problem the product solves (frustrated, in pain, struggling — pick the most relevant from the brief).'
+    );
+    fallbackLines.push(
+      'Shot 2 (3-7s): SAME protagonist using the product, with its unique mechanism shown VISUALLY (e.g. glowing audio waves entering the head, a glowing serum spreading, a device working) — the mechanism must be visible, not just implied.'
+    );
+    fallbackLines.push(
+      'Shot 3 (7-10s): SAME protagonist after the transformation promised by the brief (slimmer, smiling, pain-free, energetic — match what the brief promises).'
+    );
+    fallbackLines.push(
+      'Camera: slow push-in on shot 1, static medium on shot 2, slow pull-back on shot 3. Consistent character across shots. Realistic, professional, cinematic lighting, smooth motion, no on-screen text, no audio.'
     );
     const fallbackPrompt = fallbackLines.join('\n');
+
+    /* Salviamo il contesto in un ref così il bottone "Rigenera prompt"
+       può rifare la chiamata Claude senza ricalcolare nulla. */
+    swipeAnalysisCtxRef.current = {
+      posterUrl,
+      currentAlt,
+      pageTitle: pageTitle || '',
+      productName,
+      productDesc,
+      productBrief,
+      fallbackPrompt,
+    };
 
     /* 1. Apriamo il modal subito con uno stato di "analisi in corso", così
        l'utente vede feedback istantaneo. Disattiviamo l'auto-fire della
@@ -1444,56 +1580,11 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     setSwipeVisionMode(null);
     setSwipeVisionIntent('');
     setSwipeVisionError('');
+    setSwipeExtraGuidance('');
     setShowAiImagePopup(true);
 
-    /* 2. Chiediamo a Claude (vision) di guardare il poster del clip
-       competitor e proporre un prompt mirato. */
-    try {
-      const resp = await fetch('/api/swipe-video/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          posterUrl,
-          currentAlt,
-          pageTitle: pageTitle || '',
-          productContext: {
-            name: productName,
-            description: productDesc,
-            brief: productBrief,
-          },
-        }),
-      });
-      const data = (await resp.json()) as {
-        ok: boolean;
-        intent?: string;
-        originalDescription?: string;
-        suggestedPrompt?: string;
-        mode?: 'vision' | 'text';
-        error?: string;
-      };
-      if (!resp.ok || !data.ok) {
-        throw new Error(data.error || `analyze ${resp.status}`);
-      }
-      const suggested = (data.suggestedPrompt || '').trim() || fallbackPrompt;
-      const desc = (data.originalDescription || '').trim();
-      setAiPrompt(suggested);
-      if (desc) setAiContextText(desc);
-      setSwipeVisionMode(data.mode || 'text');
-      setSwipeVisionIntent(data.intent || '');
-      /* Text-to-Video non richiede foto: appena Claude propone il prompt
-         partiamo da soli — 1 click → 30-60s → video sostituito. */
-      setSwipeAutoMode(true);
-    } catch (err) {
-      setAiPrompt(fallbackPrompt);
-      setSwipeVisionMode(null);
-      setSwipeVisionError(
-        err instanceof Error ? err.message : 'Analisi non disponibile'
-      );
-      /* Niente auto-fire quando l'analisi fallisce: l'utente decide. */
-    } finally {
-      setSwipeVisionLoading(false);
-    }
-  }, [selectedElement, productContext, pageTitle]);
+    await runSwipeAnalysis({ extraGuidance: '', autoFire: true });
+  }, [selectedElement, productContext, pageTitle, runSwipeAnalysis]);
 
   /* Auto-fire della generazione quando "Swipe for Product" parte in
    * modalità automatica. Per text-to-video basta avere il prompt; per
@@ -3359,6 +3450,35 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                             <p className="text-[11px] text-slate-600 leading-relaxed mt-1">
                               Il prompt qui sotto descrive l&apos;<strong>intera scena</strong> per Seedance 2.0 text-to-video — niente foto sorgente, l&apos;AI ricrea il setting (con il TUO prodotto al centro) coerente con l&apos;intent del clip originale. Modificalo se vuoi.
                             </p>
+                          )}
+
+                          {/* Rigenera prompt con guidance utente */}
+                          {!aiGenerating && (
+                            <div className="mt-2 pt-2 border-t border-fuchsia-200/60">
+                              <label className="text-[10px] font-bold uppercase tracking-wider text-fuchsia-700 block mb-1">
+                                Vuoi guidare lo swipe? (opzionale)
+                              </label>
+                              <textarea
+                                value={swipeExtraGuidance}
+                                onChange={(e) => setSwipeExtraGuidance(e.target.value)}
+                                disabled={swipeVisionLoading}
+                                placeholder="Es: fai vedere il meccanismo unico — una persona grassa che ascolta la frequenza con le cuffie e poi è dimagrita."
+                                rows={2}
+                                className="w-full px-2 py-1.5 text-[11px] rounded-md border border-fuchsia-200 bg-white text-slate-700 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-fuchsia-400 resize-none"
+                              />
+                              <button
+                                type="button"
+                                onClick={handleRegenerateSwipePrompt}
+                                disabled={swipeVisionLoading}
+                                className="mt-1.5 inline-flex items-center gap-1 px-2 py-1 text-[10px] font-semibold rounded-md bg-fuchsia-600 hover:bg-fuchsia-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white transition-colors"
+                              >
+                                {swipeVisionLoading ? (
+                                  <><Loader2 className="h-3 w-3 animate-spin" /> Rigenero…</>
+                                ) : (
+                                  <><Sparkles className="h-3 w-3" /> Rigenera prompt</>
+                                )}
+                              </button>
+                            </div>
                           )}
                         </>
                       )}

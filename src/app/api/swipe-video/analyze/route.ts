@@ -34,28 +34,42 @@ interface RequestBody {
   currentAlt?: string;
   pageTitle?: string;
   productContext?: ProductCtx;
+  /** Indicazioni libere fornite dall'utente per guidare la rigenerazione del
+   *  prompt (es. "fai vedere persona prima grassa con cuffie e poi magra"). */
+  userGuidance?: string;
 }
 
 interface AnalyzeResult {
   intent: string;
   originalDescription: string;
+  uniqueMechanism: string;
+  transformation: string;
   suggestedPrompt: string;
 }
 
-const SYSTEM_PROMPT = `You are a senior copywriter + art director. You help replace the videos used on a competitor's landing page with equivalent videos featuring the user's own product, keeping the SAME visual intent (demo / before-after / lifestyle / testimonial / hero / explainer / social-proof).
+const SYSTEM_PROMPT = `You are a senior direct-response copywriter + art director. You help replace the videos used on a competitor's landing page with equivalent videos for the user's own product, KEEPING the same persuasive intent (demo / before-after / lifestyle / testimonial / hero / explainer / social-proof) but VISUALIZING the unique mechanism and the transformation promised by OUR product — not just a generic aesthetic shot.
 
 You will receive:
 - (optionally) a single image — it is the POSTER or a frame of a video clip used on a competitor landing page
 - the textual context (alt text, page title)
 - the brief of OUR product (the one that should appear in the replacement clip)
 
-The replacement clip will be generated with a TEXT-TO-VIDEO model (Bytedance Seedance 2.0 text-to-video). The model has NO source image: it invents the entire scene from the prompt alone. So the prompt must describe the WHOLE scene (subject, setting, action, camera, lighting, mood) — not just an animation of a still frame.
+The replacement clip will be generated with a TEXT-TO-VIDEO model (Bytedance Seedance 2.0 text-to-video). The model has NO source image: it invents the entire scene from the prompt alone. It also supports MULTI-SHOT prompts (it can render 2–3 connected beats inside a single 5–10s clip), so use this to tell a tiny story instead of giving back a single static beauty shot.
+
+CRITICAL — what makes a prompt good:
+- It MUST visualize the unique mechanism of OUR product (extract this from the brief: how the product actually works), not just somebody using it.
+- It MUST show the transformation promised by the brief (the before-state, the trigger, the after-state). If the brief promises weight loss, show before/after body. If it promises pain relief, show the pain disappearing. If it's a fat-burning audio mechanism, show the sound waves activating something visible (brain, body silhouette, energy) and a clear before→after arc.
+- The original clip's intent stays the same (if it was before/after, you write before/after; if it was a doctor explainer, you write a doctor explainer) but with OUR product's mechanism in it.
+- NEVER mention the competitor product or its claims. Refer to OUR product by name if useful.
+- Use 2–3 shots (timecoded) when the intent is before-after / demo / explainer. Use a single elegant shot only for hero / lifestyle.
 
 Return ONLY a valid JSON object with these exact keys:
 {
   "intent": "one of: demo, before-after, lifestyle, testimonial, hero, explainer, social-proof",
   "originalDescription": "1-2 short sentences describing what the ORIGINAL clip shows (subject, action, mood, type of shot). If you couldn't see the image, summarize from the textual context.",
-  "suggestedPrompt": "A text-to-video prompt in ENGLISH for Bytedance Seedance 2.0 text-to-video. It must:\\n- describe the FULL scene from scratch (subject, setting, props, lighting, mood)\\n- preserve the original clip's intent (e.g. before/after recovery, lifestyle in-use shot, doctor explainer, hero close-up)\\n- show OUR product naturally integrated in the scene (refer to it by name if useful) — NEVER mention the competitor product\\n- specify camera move (e.g. slow push-in, static medium shot, slow pan)\\n- end with: 'realistic, professional, cinematic lighting, no on-screen text, no audio.'\\n- target duration ~5 seconds"
+  "uniqueMechanism": "Pull from OUR product's brief: the specific mechanism the product uses to deliver the result (1 short phrase). Empty string if truly not specified.",
+  "transformation": "Pull from OUR product's brief: the before -> after transformation it promises (1 short phrase). Empty string if truly not specified.",
+  "suggestedPrompt": "A text-to-video prompt in ENGLISH for Bytedance Seedance 2.0 text-to-video that VISUALIZES the unique mechanism and the transformation. It must:\\n- when intent is before-after / demo / explainer: be structured in 2–3 timecoded beats, e.g. 'Shot 1 (0-3s): <before state, the pain>. Shot 2 (3-7s): <product in use showing the mechanism — make the mechanism visually concrete: glowing audio waves entering the head, fat melting, joints unswelling, etc.>. Shot 3 (7-10s): <after state, the transformation, same person now improved>.'\\n- when intent is lifestyle / hero: write a single elegant shot that still hints at the mechanism (a halo of audio waves, a smile of relief, etc.).\\n- specify camera moves (slow push-in, static medium shot, slow pan, jump-cut between beats).\\n- consistent character continuity across shots when the same person is shown before and after.\\n- end with: 'realistic, professional, cinematic lighting, smooth motion, no on-screen text, no audio.'\\n- target duration: 10 seconds for before-after / demo / explainer, 5 seconds for hero / lifestyle."
 }
 
 No markdown, no code blocks, no commentary outside the JSON.`;
@@ -99,6 +113,10 @@ function parseClaudeJson(raw: string): AnalyzeResult | null {
       intent: typeof o.intent === 'string' ? o.intent : 'lifestyle',
       originalDescription:
         typeof o.originalDescription === 'string' ? o.originalDescription : '',
+      uniqueMechanism:
+        typeof o.uniqueMechanism === 'string' ? o.uniqueMechanism : '',
+      transformation:
+        typeof o.transformation === 'string' ? o.transformation : '',
       suggestedPrompt:
         typeof o.suggestedPrompt === 'string' ? o.suggestedPrompt : '',
     };
@@ -112,6 +130,7 @@ function buildUserMessage(
   currentAlt: string,
   pageTitle: string,
   hasImage: boolean,
+  userGuidance: string,
 ): string {
   const lines: string[] = [];
   lines.push(
@@ -122,13 +141,20 @@ function buildUserMessage(
   if (currentAlt) lines.push(`Original clip alt text: "${currentAlt}".`);
   if (pageTitle) lines.push(`Landing page title: "${pageTitle}".`);
   lines.push('---');
-  lines.push('OUR PRODUCT (this must appear in the replacement clip):');
+  lines.push('OUR PRODUCT (must be the protagonist of the replacement clip):');
   if (productContext.name) lines.push(`- Name: ${productContext.name}`);
   if (productContext.description)
     lines.push(`- What it is: ${productContext.description}`);
   if (productContext.brief)
-    lines.push(`- Brief: ${productContext.brief.slice(0, 800)}`);
+    lines.push(`- Brief (read CAREFULLY — extract from here BOTH the unique mechanism AND the transformation it promises; the video must visualize them):\n${productContext.brief.slice(0, 2000)}`);
   lines.push('---');
+  lines.push('Reminder: do NOT default to a generic beauty/lifestyle shot. Visualize the mechanism (e.g. if it works through audio frequencies, render the audio waves entering the head/body and the body responding; if it works through ingredients, render the molecules acting; if it works through a device, render the device working) AND show a clear before -> after transformation arc with the SAME character, when the intent is before-after / demo / explainer.');
+  if (userGuidance && userGuidance.trim()) {
+    lines.push('---');
+    lines.push(
+      `EXPLICIT USER GUIDANCE for this rewrite (highest priority — bake this into the suggestedPrompt):\n"${userGuidance.trim().slice(0, 600)}"`,
+    );
+  }
   lines.push('Return the JSON described in the system instructions.');
   return lines.join('\n');
 }
@@ -166,11 +192,13 @@ export async function POST(req: NextRequest) {
     imageBlock = await fetchPosterAsBase64(posterUrl);
   }
 
+  const userGuidance = (body.userGuidance || '').trim();
   const userText = buildUserMessage(
     productContext,
     currentAlt,
     pageTitle,
     Boolean(imageBlock),
+    userGuidance,
   );
 
   type ContentPart =
@@ -256,7 +284,15 @@ export async function POST(req: NextRequest) {
     ok: true,
     intent: parsed.intent,
     originalDescription: parsed.originalDescription,
+    uniqueMechanism: parsed.uniqueMechanism,
+    transformation: parsed.transformation,
     suggestedPrompt: parsed.suggestedPrompt,
     mode: imageBlock ? 'vision' : 'text',
+    suggestedDuration:
+      parsed.intent === 'before-after' ||
+      parsed.intent === 'demo' ||
+      parsed.intent === 'explainer'
+        ? 10
+        : 5,
   });
 }
