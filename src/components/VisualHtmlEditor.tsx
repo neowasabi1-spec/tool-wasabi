@@ -877,6 +877,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
         case 'editor-ready':
           setEditorReady(true);
           setSwitchingViewport(false);
+          setSwitchingMode(false);
           sendToIframe({ type: 'cmd-get-sections' });
           break;
         case 'element-selected':
@@ -1546,7 +1547,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && codeSearchOpen) { setCodeSearchOpen(false); setCodeSearchTerm(''); setCodeSearchCount(0); return; }
-      if (e.key === 'Escape' && mode !== 'visual') { switchMode('visual'); return; }
+      if (e.key === 'Escape' && mode !== 'visual') { handleSwitchMode('visual'); return; }
       if ((e.metaKey || e.ctrlKey) && e.key === 'f' && mode === 'code') { e.preventDefault(); setCodeSearchOpen(true); return; }
       if ((e.metaKey || e.ctrlKey) && e.key === 'h' && mode === 'code') { e.preventDefault(); setCodeSearchOpen(true); setCodeShowReplace(true); return; }
       if ((e.metaKey || e.ctrlKey) && e.key === 'z' && !e.shiftKey) { e.preventDefault(); handleUndo(); }
@@ -1654,6 +1655,45 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     });
   }, [editorViewport, switchingViewport]);
 
+  /* ── Mode switch (Visual / Code / Preview) ──
+   * Stessa root-cause: entrare in `visual` o `preview` monta un iframe
+   * con la srcDoc completa (HTML clonato + Swiper + jQuery), che il
+   * browser parsa sincronicamente nello stesso commit React → freeze
+   * 1-2s. visual ↔ code in piu' bumpa `iframeVersion` per forzare il
+   * remount dell'iframe e prendere le modifiche fatte in code mode.
+   *
+   * Wrappo switchMode con lo stesso pattern di handleSwitchViewport:
+   * overlay-first paint, poi defer del cambio mode. visual→code (e
+   * preview→code) sono leggeri ma li gestisce comunque la stessa
+   * funzione: lo spinner si vedra' per ~1 frame, niente di grave.
+   */
+  const [switchingMode, setSwitchingMode] = useState(false);
+  const handleSwitchMode = useCallback((newMode: EditorMode) => {
+    if (newMode === mode || switchingMode) return;
+    const willMountIframe = newMode === 'visual' || newMode === 'preview';
+    if (!willMountIframe) {
+      // Verso 'code' nessun iframe pesante da montare → switch diretto.
+      switchMode(newMode);
+      return;
+    }
+    setSwitchingMode(true);
+    if (newMode === 'visual') setEditorReady(false);
+    requestAnimationFrame(() => {
+      try {
+        if (iframeRef.current) {
+          iframeRef.current.srcdoc = '<!doctype html><html><body></body></html>';
+        }
+      } catch { /* iframe detached */ }
+      setTimeout(() => {
+        switchMode(newMode);
+        // Per 'preview' c'e' gia' un setTimeout(30) interno che imposta
+        // previewReady → l'overlay locale di preview gestisce la sua
+        // attesa. Per 'visual' aspettiamo 'editor-ready' o 4s defensivi.
+        setTimeout(() => setSwitchingMode(false), newMode === 'visual' ? 4000 : 200);
+      }, 0);
+    });
+  }, [mode, switchingMode, switchMode]);
+
   return (
     <div className="fixed inset-0 z-[60] flex flex-col bg-white">
       {/* Overlay mostrato durante il close per dare feedback immediato
@@ -1698,8 +1738,8 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
           {/* Mode switcher */}
           <div className="flex bg-slate-800 rounded-lg p-0.5 gap-0.5">
             {([['visual', Paintbrush, 'Visual'], ['code', Code, 'Code'], ['preview', Eye, 'Preview']] as const).map(([m, Icon, label]) => (
-              <button key={m} onClick={() => switchMode(m)}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
+              <button key={m} onClick={() => handleSwitchMode(m)} disabled={switchingMode}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all disabled:opacity-50 disabled:cursor-wait ${
                   mode === m ? 'bg-amber-500 text-white shadow' : 'text-slate-400 hover:text-white hover:bg-slate-700'
                 }`}>
                 <Icon className="h-3.5 w-3.5" />{label}
@@ -1862,7 +1902,20 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
       )}
 
       {/* ═══ Main Area ═══ */}
-      <div className="flex-1 flex overflow-hidden">
+      <div className="flex-1 flex overflow-hidden relative">
+        {/* Mode-switch overlay: dipinto subito quando l'utente clicca
+            Visual / Code / Preview, mentre il React commit del nuovo
+            mode (e l'eventuale parsing della srcDoc dell'iframe) avviene
+            in background. */}
+        {switchingMode && (
+          <div className="absolute inset-0 z-50 flex items-center justify-center bg-white/85 backdrop-blur-sm pointer-events-auto">
+            <div className="flex items-center gap-2 px-4 py-2 rounded-lg bg-white shadow border border-slate-200 text-slate-700">
+              <Loader2 className="h-4 w-4 animate-spin text-amber-500" />
+              <span className="text-sm font-medium">Switching mode…</span>
+            </div>
+          </div>
+        )}
+
         {/* Sections panel */}
         {mode === 'visual' && showSections && (
           <div className="w-56 border-r border-slate-200 bg-slate-50 overflow-y-auto shrink-0">
