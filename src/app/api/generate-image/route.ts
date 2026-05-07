@@ -135,14 +135,18 @@ const MODELS: Record<string, ModelDef> = {
   },
 
   // ── IMAGE → VIDEO ────────────────────────────────────────────────────────
-  'seedance-lite': {
-    endpoint: 'fal-ai/bytedance/seedance/v1/lite/image-to-video',
+  'seedance-2': {
+    endpoint: 'fal-ai/bytedance/seedance-2.0/image-to-video',
     mediaType: 'video',
     buildInput: ({ prompt, imageUrl, duration }) => ({
       prompt,
       image_url: imageUrl,
       duration: clampSeedanceDuration(duration),
       resolution: '720p',
+      // Disabilitiamo l'audio sintetico (default true su Seedance 2.0):
+      // l'animazione sostituisce un'immagine in pagina, audio non serve
+      // e rischia di sorprendere l'utente con voiceover/SFX random.
+      generate_audio: false,
     }),
     parseResult: parseVideoResult,
   },
@@ -172,7 +176,7 @@ const MODELS: Record<string, ModelDef> = {
 const DEFAULT_MODELS: Record<Mode, string> = {
   text2image: 'nano-banana-2',
   image2image: 'nano-banana-2-edit',
-  image2video: 'seedance-lite',
+  image2video: 'seedance-2',
 };
 
 // ── helpers ────────────────────────────────────────────────────────────────
@@ -195,8 +199,14 @@ function aspectRatioToFluxSize(aspectRatio: string): string {
 }
 
 function clampSeedanceDuration(d?: number): number {
-  // Seedance Lite supports 5 or 10 seconds.
-  return d && d >= 8 ? 10 : 5;
+  // Seedance 2.0 supports 4-15s. La UI espone 5 o 10; manteniamo lo stesso
+  // bucket (>=8 → 10s, altrimenti 5s) ma il modello accetta anche valori
+  // intermedi se in futuro si vuole esporre uno slider 4-15.
+  if (!d) return 5;
+  if (d >= 15) return 15;
+  if (d >= 8) return 10;
+  if (d >= 4) return 5;
+  return 5;
 }
 
 function clampVeoDuration(d?: number): number {

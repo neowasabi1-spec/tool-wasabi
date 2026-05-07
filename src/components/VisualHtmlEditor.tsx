@@ -772,7 +772,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
       { id: 'flux-kontext', label: 'FLUX Pro Kontext', hint: 'Riedit avanzato' },
     ],
     image2video: [
-      { id: 'seedance-lite', label: 'Bytedance Seedance Lite', hint: 'Veloce ed economico, 5/10s' },
+      { id: 'seedance-2', label: 'Bytedance Seedance 2.0', hint: '5/10s, qualità top, multi-resolution' },
       { id: 'veo3-fast', label: 'Google Veo 3 Fast', hint: 'Qualita top, 5/8s' },
       { id: 'kling-21', label: 'Kling 2.1 Standard', hint: '5/10s, naturalezza alta' },
     ],
