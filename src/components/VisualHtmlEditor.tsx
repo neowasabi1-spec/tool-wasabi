@@ -426,6 +426,58 @@ const EDITOR_SCRIPT = `
           }}
           window.parent.postMessage({type:'context-text',data:ctx.trim().substring(0,800)},'*');
         }break;
+      case 'cmd-get-swipe-context':
+        /* Contesto strutturato attorno al media selezionato:
+           - heading più vicino (h1/h2/h3 SOPRA l'elemento, escludendo i navi)
+           - testo della sezione parent (paragrafi)
+           - prima CTA della stessa sezione (button o link "compra/order/get")
+           - posizione approssimativa nella pagina (above/mid/below) */
+        if(sel){
+          var swH='',swT='',swC='',swPos='mid';
+          /* Heading più vicino — risali fino alla section/article/main e cerca h1-h3 */
+          var sec=sel;var hops=0;
+          while(sec&&hops<6&&!/^(section|article|main|header|footer)$/i.test(sec.tagName||'')){sec=sec.parentElement;hops++;}
+          if(!sec)sec=sel.parentElement||document.body;
+          var hCand=sec.querySelectorAll&&sec.querySelectorAll('h1,h2,h3');
+          if(hCand&&hCand.length>0){
+            for(var hi=0;hi<hCand.length;hi++){
+              var ht=(hCand[hi].textContent||'').trim();
+              if(ht.length>3&&ht.length<200){swH=ht;break;}
+            }
+          }
+          /* Paragrafi della sezione (escluso il testo dei figli del selezionato) */
+          var pCand=sec.querySelectorAll&&sec.querySelectorAll('p,li,blockquote');
+          var pBuf=[];
+          if(pCand){
+            for(var pi=0;pi<pCand.length&&pBuf.length<3;pi++){
+              if(sel.contains(pCand[pi]))continue;
+              var pt=(pCand[pi].textContent||'').trim();
+              if(pt.length>15)pBuf.push(pt.substring(0,250));
+            }
+          }
+          swT=pBuf.join(' • ');
+          /* CTA — primo button/link della section con testo tipico CTA */
+          var btnCand=sec.querySelectorAll&&sec.querySelectorAll('a,button');
+          if(btnCand){
+            for(var bi=0;bi<btnCand.length;bi++){
+              var bt=(btnCand[bi].textContent||'').trim();
+              if(bt.length>2&&bt.length<80&&/buy|order|get|claim|start|begin|try|shop|add|join|continue|next|sign|purchase|compra|ordina|inizia/i.test(bt)){
+                swC=bt;break;
+              }
+            }
+          }
+          /* Posizione: above-fold se y < viewportHeight, below-fold se > 2*viewportHeight */
+          try{
+            var rr=sel.getBoundingClientRect();
+            var sy=window.scrollY||document.documentElement.scrollTop||0;
+            var top=rr.top+sy;
+            var vh=window.innerHeight||720;
+            if(top<vh*0.9)swPos='above-fold';
+            else if(top>vh*2)swPos='below-fold';
+            else swPos='mid';
+          }catch(_e){}
+          window.parent.postMessage({type:'swipe-context',data:{heading:swH.substring(0,200),nearbyText:swT.substring(0,800),cta:swC.substring(0,80),position:swPos}},'*');
+        }break;
       case 'cmd-get-sections':
         var b=document.body,secs=[];
         for(var i=0;i<b.children.length;i++){var c=b.children[i];var tg=c.tagName.toLowerCase();
@@ -643,6 +695,151 @@ function pxToNum(v: string | undefined | null): number {
   return Number.isFinite(n) ? Math.round(n) : 0;
 }
 
+/* ── Multi-frame extraction per video competitor ──
+ * Estrae N frame (di default 3: inizio / metà / fine) da un URL video
+ * usando un <video> nascosto + canvas. Ritorna data URL JPEG.
+ * Se il video è cross-origin senza CORS o non si carica, ritorna [].
+ * Hard-timeout di 12s per evitare di bloccare la UI in caso di video
+ * gigantesco o server lento. */
+async function extractVideoFrames(
+  videoUrl: string,
+  count: number = 3,
+): Promise<string[]> {
+  if (!videoUrl || !/^https?:\/\//i.test(videoUrl)) return [];
+  return new Promise((resolve) => {
+    let resolved = false;
+    const finish = (arr: string[]) => {
+      if (resolved) return;
+      resolved = true;
+      try {
+        video.pause();
+      } catch {}
+      try {
+        video.removeAttribute('src');
+        video.load();
+      } catch {}
+      resolve(arr);
+    };
+
+    const video = document.createElement('video');
+    video.crossOrigin = 'anonymous';
+    video.muted = true;
+    video.preload = 'auto';
+    video.playsInline = true;
+    video.style.position = 'fixed';
+    video.style.left = '-99999px';
+    video.style.top = '-99999px';
+    video.style.opacity = '0';
+    video.style.pointerEvents = 'none';
+    document.body.appendChild(video);
+
+    const cleanup = () => {
+      if (video.parentNode) video.parentNode.removeChild(video);
+    };
+
+    const hardTimeout = window.setTimeout(() => {
+      cleanup();
+      finish([]);
+    }, 12000);
+
+    video.addEventListener('error', () => {
+      window.clearTimeout(hardTimeout);
+      cleanup();
+      finish([]);
+    });
+
+    video.addEventListener(
+      'loadedmetadata',
+      async () => {
+        try {
+          const duration = Number.isFinite(video.duration) ? video.duration : 0;
+          if (!(duration > 0)) {
+            window.clearTimeout(hardTimeout);
+            cleanup();
+            finish([]);
+            return;
+          }
+          const w = video.videoWidth || 1280;
+          const h = video.videoHeight || 720;
+          const canvas = document.createElement('canvas');
+          /* Limit canvas size to keep base64 small (Claude 5MB limit). */
+          const maxDim = 720;
+          const scale = Math.min(1, maxDim / Math.max(w, h));
+          canvas.width = Math.max(1, Math.round(w * scale));
+          canvas.height = Math.max(1, Math.round(h * scale));
+          const ctx2d = canvas.getContext('2d');
+          if (!ctx2d) {
+            window.clearTimeout(hardTimeout);
+            cleanup();
+            finish([]);
+            return;
+          }
+
+          const timestamps: number[] = [];
+          if (count <= 1) {
+            timestamps.push(duration / 2);
+          } else {
+            for (let i = 0; i < count; i++) {
+              const t =
+                i === 0
+                  ? Math.min(0.3, duration * 0.05)
+                  : i === count - 1
+                    ? Math.max(0, duration - Math.min(0.3, duration * 0.05))
+                    : (duration * i) / (count - 1);
+              timestamps.push(t);
+            }
+          }
+
+          const frames: string[] = [];
+          for (const ts of timestamps) {
+            await new Promise<void>((res) => {
+              const onSeeked = () => {
+                video.removeEventListener('seeked', onSeeked);
+                res();
+              };
+              video.addEventListener('seeked', onSeeked, { once: true });
+              try {
+                video.currentTime = ts;
+              } catch {
+                res();
+              }
+            });
+            try {
+              ctx2d.drawImage(video, 0, 0, canvas.width, canvas.height);
+              const dataUrl = canvas.toDataURL('image/jpeg', 0.78);
+              if (dataUrl.startsWith('data:image/')) frames.push(dataUrl);
+            } catch {
+              /* canvas tainted (CORS) — abort, server avrà fallback al poster. */
+              window.clearTimeout(hardTimeout);
+              cleanup();
+              finish([]);
+              return;
+            }
+          }
+
+          window.clearTimeout(hardTimeout);
+          cleanup();
+          finish(frames);
+        } catch {
+          window.clearTimeout(hardTimeout);
+          cleanup();
+          finish([]);
+        }
+      },
+      { once: true },
+    );
+
+    try {
+      video.src = videoUrl;
+      video.load();
+    } catch {
+      window.clearTimeout(hardTimeout);
+      cleanup();
+      finish([]);
+    }
+  });
+}
+
 const TAG_LABELS: Record<string, string> = {
   h1: 'Heading H1', h2: 'Heading H2', h3: 'Heading H3', h4: 'Heading H4',
   p: 'Paragraph', span: 'Text', a: 'Link', button: 'Button',
@@ -783,6 +980,20 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   const [swipeVisionMode, setSwipeVisionMode] = useState<'vision' | 'text' | null>(null);
   const [swipeVisionIntent, setSwipeVisionIntent] = useState('');
   const [swipeVisionError, setSwipeVisionError] = useState('');
+  /** Stage del lavoro Claude: extracting | analyzing | done. Permette al
+   *  banner di mostrare un feedback più granulare durante i 5-15s in cui
+   *  il poster viene decodificato in 3 frame e poi mandato a Claude. */
+  const [swipeStage, setSwipeStage] = useState<
+    'idle' | 'extracting' | 'analyzing' | 'done'
+  >('idle');
+  /** Numero di frame effettivamente analizzati da Claude (1 = solo poster,
+   *  3 = multi-frame chronological). */
+  const [swipeFramesUsed, setSwipeFramesUsed] = useState(0);
+  /** Output approfondito dell'analyzer (chain-of-thought condensata). */
+  const [swipeAnalysis, setSwipeAnalysis] = useState('');
+  const [swipeBigIdea, setSwipeBigIdea] = useState('');
+  const [swipeTargetAudience, setSwipeTargetAudience] = useState('');
+  const [swipeNegativePrompt, setSwipeNegativePrompt] = useState('');
   /** 'video' quando il modal Swipe è stato aperto da un <video>,
    *  'image' quando è stato aperto da un <img>. Cambia il copy del
    *  banner, l'endpoint analyzer e il modello di default. */
@@ -798,6 +1009,15 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     mediaKind: 'video' | 'image';
     /** Per i video è il poster, per le immagini è la src. */
     sourceImageUrl: string;
+    /** Solo per video: 0-3 frame (data URL JPEG) estratti dal clip. */
+    posterFrames: string[];
+    /** Heading vicino, paragrafo, CTA. */
+    surroundingContext: {
+      heading?: string;
+      nearbyText?: string;
+      cta?: string;
+      position?: string;
+    };
     currentAlt: string;
     pageTitle: string;
     productName: string;
@@ -1390,6 +1610,40 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     }
   }, [uploading, setAttr]);
 
+  /* requestSwipeContext — chiede all'iframe il contesto strutturato
+   * (heading + paragrafo + CTA + posizione) attorno all'elemento
+   * selezionato. Wrap della postMessage in una Promise con timeout 1500ms:
+   * il banner non deve aspettare in eterno se l'iframe non risponde. */
+  const requestSwipeContext = useCallback((): Promise<{
+    heading?: string;
+    nearbyText?: string;
+    cta?: string;
+    position?: string;
+  }> => {
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (data: {
+        heading?: string;
+        nearbyText?: string;
+        cta?: string;
+        position?: string;
+      }) => {
+        if (done) return;
+        done = true;
+        window.removeEventListener('message', onMsg);
+        window.clearTimeout(t);
+        resolve(data);
+      };
+      const onMsg = (e: MessageEvent) => {
+        if (!e.data || e.data.type !== 'swipe-context') return;
+        finish(e.data.data || {});
+      };
+      window.addEventListener('message', onMsg);
+      const t = window.setTimeout(() => finish({}), 1500);
+      sendToIframe({ type: 'cmd-get-swipe-context' });
+    });
+  }, [sendToIframe]);
+
   /* runSwipeAnalysis — chiama l'analyzer Claude e, se va a buon fine,
    * popola aiPrompt / aiContextText / intent / duration. È usata sia in
    * apertura iniziale (autoFire=true → l'utente clicca solo "Swipe" e
@@ -1409,6 +1663,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
       setSwipeAutoMode(false);
       setAiError('');
 
+      setSwipeStage('analyzing');
       try {
         const endpoint =
           ctx.mediaKind === 'image'
@@ -1425,10 +1680,12 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                   description: ctx.productDesc,
                   brief: ctx.productBrief,
                 },
+                surroundingContext: ctx.surroundingContext,
                 userGuidance: extraGuidance || undefined,
               }
             : {
                 posterUrl: ctx.sourceImageUrl,
+                posterFrames: ctx.posterFrames,
                 currentAlt: ctx.currentAlt,
                 pageTitle: ctx.pageTitle,
                 productContext: {
@@ -1436,6 +1693,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                   description: ctx.productDesc,
                   brief: ctx.productBrief,
                 },
+                surroundingContext: ctx.surroundingContext,
                 userGuidance: extraGuidance || undefined,
               };
         const resp = await fetch(endpoint, {
@@ -1445,12 +1703,17 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
         });
         const data = (await resp.json()) as {
           ok: boolean;
+          analysis?: string;
+          bigIdea?: string;
+          targetAudience?: string;
           intent?: string;
           originalDescription?: string;
           uniqueMechanism?: string;
           transformation?: string;
           suggestedPrompt?: string;
+          negativePrompt?: string;
           suggestedDuration?: number;
+          framesUsed?: number;
           mode?: 'vision' | 'text';
           error?: string;
         };
@@ -1462,7 +1725,14 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
         const desc = (data.originalDescription || '').trim();
         const mech = (data.uniqueMechanism || '').trim();
         const transf = (data.transformation || '').trim();
-        setAiPrompt(suggested);
+        const neg = (data.negativePrompt || '').trim();
+        /* Append del negative prompt come "Avoid: …" perché Nano Banana,
+           Imagen 4 e Seedance 2.0 T2V non hanno un campo negative_prompt
+           separato — Claude scrive le indicazioni nel prompt principale. */
+        const finalPrompt = neg
+          ? `${suggested}\n\nAvoid: ${neg}.`
+          : suggested;
+        setAiPrompt(finalPrompt);
         const ctxParts: string[] = [];
         if (desc) ctxParts.push(`Originale: ${desc}`);
         if (mech) ctxParts.push(`Meccanismo: ${mech}`);
@@ -1470,6 +1740,13 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
         if (ctxParts.length > 0) setAiContextText(ctxParts.join(' • '));
         setSwipeVisionMode(data.mode || 'text');
         setSwipeVisionIntent(data.intent || '');
+        setSwipeAnalysis((data.analysis || '').trim());
+        setSwipeBigIdea((data.bigIdea || '').trim());
+        setSwipeTargetAudience((data.targetAudience || '').trim());
+        setSwipeNegativePrompt((data.negativePrompt || '').trim());
+        if (typeof data.framesUsed === 'number') {
+          setSwipeFramesUsed(data.framesUsed);
+        }
         if (ctx.mediaKind === 'video') {
           const duration =
             data.suggestedDuration === 10 || data.suggestedDuration === 5
@@ -1477,6 +1754,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
               : 10;
           setAiVideoDuration(duration);
         }
+        setSwipeStage('done');
         if (autoFire) setSwipeAutoMode(true);
       } catch (err) {
         if (!aiPrompt.trim()) {
@@ -1486,6 +1764,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
           setAiPrompt(ctx.fallbackPrompt);
         }
         setSwipeVisionMode(null);
+        setSwipeStage('idle');
         setSwipeVisionError(
           err instanceof Error ? err.message : 'Analisi non disponibile'
         );
@@ -1538,6 +1817,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
       }).videoAttrs;
       return String(va?.poster || '').trim();
     })();
+    const videoSrc = String(selectedElement.src || '').trim();
 
     const productName = (productContext?.name || '').trim();
     const productDesc = (productContext?.description || '').trim();
@@ -1578,23 +1858,9 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     );
     const fallbackPrompt = fallbackLines.join('\n');
 
-    /* Salviamo il contesto in un ref così il bottone "Rigenera prompt"
-       può rifare la chiamata Claude senza ricalcolare nulla. */
-    swipeAnalysisCtxRef.current = {
-      mediaKind: 'video',
-      sourceImageUrl: posterUrl,
-      currentAlt,
-      pageTitle: pageTitle || '',
-      productName,
-      productDesc,
-      productBrief,
-      fallbackPrompt,
-    };
-
-    /* 1. Apriamo il modal subito con uno stato di "analisi in corso", così
-       l'utente vede feedback istantaneo. Disattiviamo l'auto-fire della
-       generazione (resterà disabilitato finché l'analisi non finisce o
-       l'utente non sceglie di procedere). */
+    /* 1. Apriamo il modal subito con stato "analisi in corso" (UI
+       responsive). Lo stage va a 'extracting' mentre raccogliamo
+       frame multipli + context strutturato dalla pagina. */
     setAiMode('text2video');
     setAiPrompt('');
     setAiSourceImage('');
@@ -1609,11 +1875,47 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     setSwipeVisionIntent('');
     setSwipeVisionError('');
     setSwipeExtraGuidance('');
+    setSwipeAnalysis('');
+    setSwipeBigIdea('');
+    setSwipeTargetAudience('');
+    setSwipeNegativePrompt('');
+    setSwipeFramesUsed(0);
+    setSwipeStage('extracting');
     setSwipeMediaKind('video');
     setShowAiImagePopup(true);
 
+    /* 2. Estraggo in parallelo: 3 frame del video sorgente +
+       surrounding context (heading, paragrafo, CTA, posizione).
+       Frame extraction richiede 3-8s per video normali; il context
+       arriva in <1.5s. extractVideoFrames può ritornare [] in caso
+       di CORS — server farà fallback al solo posterUrl. */
+    const [posterFrames, surroundingContext] = await Promise.all([
+      videoSrc ? extractVideoFrames(videoSrc, 3) : Promise.resolve<string[]>([]),
+      requestSwipeContext(),
+    ]);
+
+    /* 3. Salvataggio context completo nel ref per "Rigenera prompt". */
+    swipeAnalysisCtxRef.current = {
+      mediaKind: 'video',
+      sourceImageUrl: posterUrl,
+      posterFrames,
+      surroundingContext,
+      currentAlt,
+      pageTitle: pageTitle || '',
+      productName,
+      productDesc,
+      productBrief,
+      fallbackPrompt,
+    };
+
     await runSwipeAnalysis({ extraGuidance: '', autoFire: true });
-  }, [selectedElement, productContext, pageTitle, runSwipeAnalysis]);
+  }, [
+    selectedElement,
+    productContext,
+    pageTitle,
+    runSwipeAnalysis,
+    requestSwipeContext,
+  ]);
 
   /* ── Swipe Image for Product ──
    * Equivalente di handleSwipeVideoForProduct ma per <img>: usa
@@ -1673,17 +1975,6 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     );
     const fallbackPrompt = fallbackLines.join('\n');
 
-    swipeAnalysisCtxRef.current = {
-      mediaKind: 'image',
-      sourceImageUrl: imageSrc,
-      currentAlt,
-      pageTitle: pageTitle || '',
-      productName,
-      productDesc,
-      productBrief,
-      fallbackPrompt,
-    };
-
     setAiMode('text2image');
     setAiPrompt('');
     setAiSourceImage('');
@@ -1697,11 +1988,41 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     setSwipeVisionIntent('');
     setSwipeVisionError('');
     setSwipeExtraGuidance('');
+    setSwipeAnalysis('');
+    setSwipeBigIdea('');
+    setSwipeTargetAudience('');
+    setSwipeNegativePrompt('');
+    setSwipeFramesUsed(0);
+    setSwipeStage('extracting');
     setSwipeMediaKind('image');
     setShowAiImagePopup(true);
 
+    /* Recupero context strutturato (heading vicino, paragrafo, CTA,
+       posizione) attorno all'<img> selezionato. Per le immagini non
+       serve frame extraction. */
+    const surroundingContext = await requestSwipeContext();
+
+    swipeAnalysisCtxRef.current = {
+      mediaKind: 'image',
+      sourceImageUrl: imageSrc,
+      posterFrames: [],
+      surroundingContext,
+      currentAlt,
+      pageTitle: pageTitle || '',
+      productName,
+      productDesc,
+      productBrief,
+      fallbackPrompt,
+    };
+
     await runSwipeAnalysis({ extraGuidance: '', autoFire: true });
-  }, [selectedElement, productContext, pageTitle, runSwipeAnalysis]);
+  }, [
+    selectedElement,
+    productContext,
+    pageTitle,
+    runSwipeAnalysis,
+    requestSwipeContext,
+  ]);
 
   /* Auto-fire della generazione quando "Swipe for Product" parte in
    * modalità automatica. Per text-to-video basta avere il prompt; per
@@ -3540,9 +3861,13 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                       <div className="flex items-center gap-1.5 flex-wrap">
                         <p className="text-[11px] font-bold text-fuchsia-800">
                           {swipeVisionLoading
-                            ? swipeMediaKind === 'image'
-                              ? 'Sto guardando l\u2019immagine originale\u2026'
-                              : 'Sto guardando il video originale\u2026'
+                            ? swipeStage === 'extracting'
+                              ? swipeMediaKind === 'image'
+                                ? 'Estraggo il contesto dell\u2019immagine\u2026'
+                                : 'Estraggo 3 frame dal video\u2026'
+                              : swipeMediaKind === 'image'
+                                ? 'Claude sta esaminando l\u2019immagine\u2026'
+                                : 'Claude sta esaminando i frame\u2026'
                             : aiGenerating
                               ? swipeMediaKind === 'image'
                                 ? 'Sto facendo lo swipe dell\u2019immagine per il tuo prodotto\u2026'
@@ -3551,6 +3876,11 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                                 ? 'Swipe Image for Product'
                                 : 'Swipe Video for Product'}
                         </p>
+                        {!swipeVisionLoading && swipeFramesUsed > 0 && swipeMediaKind === 'video' && (
+                          <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-emerald-100 text-emerald-700" title="Numero di frame del clip originale che Claude ha analizzato">
+                            {swipeFramesUsed} frame
+                          </span>
+                        )}
                         {swipeVisionIntent && !swipeVisionLoading && (
                           <span className="px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wider font-bold bg-fuchsia-100 text-fuchsia-700">
                             {swipeVisionIntent}
@@ -3599,24 +3929,79 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                               Analisi vision non riuscita ({swipeVisionError}). Ti ho lasciato un prompt generico — modificalo pure prima di generare.
                             </p>
                           ) : (
-                            <p className="text-[11px] text-slate-600 leading-relaxed mt-1">
-                              {swipeMediaKind === 'image' ? (
-                                <>
-                                  Il prompt qui sotto descrive la <strong>composizione completa</strong> per il modello text-to-image — niente foto sorgente, l&apos;AI ricrea la scena (con il TUO prodotto e il TUO meccanismo) coerente con l&apos;intent dell&apos;immagine originale. Modificalo se vuoi.
-                                </>
-                              ) : (
-                                <>
-                                  Il prompt qui sotto descrive l&apos;<strong>intera scena</strong> per Seedance 2.0 text-to-video — niente foto sorgente, l&apos;AI ricrea il setting (con il TUO prodotto al centro) coerente con l&apos;intent del clip originale. Modificalo se vuoi.
-                                </>
+                            <>
+                              {/* Insights estratti da Claude (chain-of-thought) */}
+                              {(swipeBigIdea || swipeTargetAudience || swipeAnalysis) && (
+                                <div className="mt-2 space-y-1">
+                                  {swipeBigIdea && (
+                                    <div className="rounded-md bg-white/60 border border-fuchsia-200/70 px-2 py-1.5">
+                                      <p className="text-[9px] font-bold uppercase tracking-wider text-fuchsia-700">Big Idea</p>
+                                      <p className="text-[11px] text-slate-700 leading-snug mt-0.5 italic">&ldquo;{swipeBigIdea}&rdquo;</p>
+                                    </div>
+                                  )}
+                                  {swipeTargetAudience && (
+                                    <div className="rounded-md bg-white/40 border border-fuchsia-200/50 px-2 py-1">
+                                      <p className="text-[9px] font-bold uppercase tracking-wider text-fuchsia-700 inline">Audience </p>
+                                      <span className="text-[11px] text-slate-700 leading-snug">{swipeTargetAudience}</span>
+                                    </div>
+                                  )}
+                                  {swipeAnalysis && (
+                                    <details className="group">
+                                      <summary className="cursor-pointer text-[10px] font-semibold text-fuchsia-700 hover:text-fuchsia-900 select-none">
+                                        ▸ Analisi tecnica
+                                      </summary>
+                                      <p className="text-[10px] text-slate-600 leading-snug mt-1 pl-3 border-l-2 border-fuchsia-200">
+                                        {swipeAnalysis}
+                                      </p>
+                                    </details>
+                                  )}
+                                </div>
                               )}
-                            </p>
+                              <p className="text-[11px] text-slate-600 leading-relaxed mt-2">
+                                {swipeMediaKind === 'image' ? (
+                                  <>
+                                    Il prompt qui sotto descrive la <strong>composizione completa</strong> per il modello text-to-image. Modificalo o usa i preset qui sotto.
+                                  </>
+                                ) : (
+                                  <>
+                                    Il prompt qui sotto descrive l&apos;<strong>intera scena</strong> per Seedance 2.0 text-to-video. Modificalo o usa i preset qui sotto.
+                                  </>
+                                )}
+                              </p>
+                            </>
                           )}
 
-                          {/* Rigenera prompt con guidance utente */}
+                          {/* Rigenera prompt con guidance utente + preset angle */}
                           {!aiGenerating && (
                             <div className="mt-2 pt-2 border-t border-fuchsia-200/60">
+                              {/* Preset rapidi: angolazioni narrative pronte */}
+                              <div className="flex flex-wrap gap-1 mb-2">
+                                {[
+                                  { key: 'dramatic', label: 'Più drammatico', tip: 'Make it more dramatic and emotional. Bigger contrast between the before-pain and the after-relief, more visible suffering in the before, more visible joy/freedom in the after.' },
+                                  { key: 'scientific', label: 'Più scientifico', tip: 'Make it more scientific and clinical: a doctor or expert visible, lab/clinic setting, infographic overlays of the mechanism (cross-section, glowing pathways), confident expert voice in the framing.' },
+                                  { key: 'emotional', label: 'Più emotivo', tip: 'Make it more emotional and human: tears of relief, hugging family members, real human moments — the transformation must hit the heart, not just the eyes.' },
+                                  { key: 'mechanism', label: 'Mostra meccanismo', tip: 'Make the unique mechanism the absolute hero of the visual: zoom into the mechanism in action (audio waves, ingredient stream, device glow) for the longest middle beat. Make it impossible to miss what makes this product different.' },
+                                  { key: 'lifestyle', label: 'Più lifestyle', tip: 'Tone it down — make it a confident lifestyle vibe instead of a clinical demo: real-life setting, golden hour, the protagonist living their best life with the product naturally integrated.' },
+                                ].map((p) => (
+                                  <button
+                                    key={p.key}
+                                    type="button"
+                                    onClick={() => {
+                                      if (swipeVisionLoading) return;
+                                      setSwipeExtraGuidance(p.tip);
+                                      void runSwipeAnalysis({ extraGuidance: p.tip, autoFire: false });
+                                    }}
+                                    disabled={swipeVisionLoading}
+                                    className="px-1.5 py-0.5 text-[10px] font-medium rounded-md bg-white/60 border border-fuchsia-200 text-fuchsia-700 hover:bg-fuchsia-100 hover:border-fuchsia-300 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                                    title={p.tip}
+                                  >
+                                    {p.label}
+                                  </button>
+                                ))}
+                              </div>
+
                               <label className="text-[10px] font-bold uppercase tracking-wider text-fuchsia-700 block mb-1">
-                                Vuoi guidare lo swipe? (opzionale)
+                                Oppure scrivi tu (opzionale)
                               </label>
                               <textarea
                                 value={swipeExtraGuidance}

@@ -34,51 +34,81 @@ interface ProductCtx {
   brief?: string;
 }
 
+interface SurroundingCtx {
+  heading?: string;
+  nearbyText?: string;
+  cta?: string;
+  position?: string;
+}
+
 interface RequestBody {
   imageUrl?: string;
   currentAlt?: string;
   pageTitle?: string;
   productContext?: ProductCtx;
+  surroundingContext?: SurroundingCtx;
   /** Indicazioni libere fornite dall'utente per guidare la rigenerazione del
    *  prompt (es. "fai vedere persona prima grassa con cuffie e poi magra"). */
   userGuidance?: string;
 }
 
 interface AnalyzeResult {
+  analysis: string;
+  bigIdea: string;
+  targetAudience: string;
   intent: string;
   originalDescription: string;
   uniqueMechanism: string;
   transformation: string;
   suggestedPrompt: string;
+  negativePrompt: string;
 }
 
-const SYSTEM_PROMPT = `You are a senior direct-response copywriter + art director. You help replace the images used on a competitor's landing page with equivalent images for the user's own product, KEEPING the same persuasive intent (hero / before-after / lifestyle / ingredient / diagram / testimonial / icon / chart / social-proof) but VISUALIZING the unique mechanism and the transformation promised by OUR product — not just a generic aesthetic photo.
+const SYSTEM_PROMPT = `You are a senior direct-response creative director who has art-directed thousands of static landing-page images for supplements, devices, beauty and weight-loss brands. You translate competitor landing-page images into equivalent images for OUR product — keeping the same persuasive INTENT and the same EMOTIONAL beat, while visualizing the MECHANISM and TRANSFORMATION promised by OUR product.
 
 You will receive:
-- (optionally) a single image — it is the original image used on the competitor landing page
-- the textual context (alt text, page title)
-- the brief of OUR product (the one that should appear in the replacement image)
+- (optionally) a single image — the ORIGINAL image used on the competitor landing page
+- the textual context (alt text, page title, surrounding heading + nearby paragraph + CTA)
+- the brief of OUR product (must appear in the replacement image)
 
-The replacement image will be generated with a TEXT-TO-IMAGE model (Nano Banana 2 / FLUX / Imagen / GPT Image). The model has NO source image: it invents the entire scene from the prompt alone. So the prompt must describe the WHOLE composition (subject, setting, props, lighting, style, color palette, framing) — not just an animation of a still frame and not just "our product on a white background".
+The replacement image will be generated with a TEXT-TO-IMAGE model (Nano Banana 2 / FLUX / Imagen / GPT Image). The model has NO source image — it invents the entire composition from the prompt alone — so describe the WHOLE composition (subject, setting, props, lighting, style, palette, framing).
 
-CRITICAL — what makes a prompt good:
-- It MUST visualize the unique mechanism of OUR product (extract this from the brief: how the product actually works), not just somebody holding it.
-- It MUST show, when the intent allows it, the transformation promised by the brief. For "before-after" intents use a SPLIT-FRAME composition (left = before, right = after) of the SAME person, identical pose/framing, only the result changes. For "hero" / "lifestyle" embed a visual hint of the mechanism (glowing audio waves around the head, a halo of energy on the body, a subtle infographic overlay, etc.).
-- The original image's intent stays the same (if it was a hero close-up, you write a hero close-up; if it was a before-after split, you write a before-after split; if it was a doctor testimonial portrait, you write a doctor portrait) but with OUR product / OUR mechanism in it.
-- NEVER mention the competitor product or its claims. Refer to OUR product by name if useful.
-- Specify framing, lens feel, lighting, style (photorealistic / 3D render / clean infographic, depending on the original) and exact color palette when relevant.
-- End the prompt with constraints: "photorealistic, sharp focus, professional studio lighting, no on-image text unless explicitly requested, no logos other than our product, square aspect ratio if no aspect is implied by the original."
+═══ HOW YOU MUST THINK (chain-of-thought, condensed into JSON fields) ═══
 
-Return ONLY a valid JSON object with these exact keys:
+1) ANALYZE the original in detail (NOT a one-line caption). What demographic is the subject (age range, gender, body type, ethnicity vibe)? What is the framing (close-up / medium / wide / split-frame)? Lighting (studio / golden hour / clinical / dramatic)? Era/style (photoreal / 3D / clean infographic / illustrated / 90s editorial)? Color palette? What is the visual hierarchy (where does the eye land)? Be specific — vague analysis produces vague prompts.
+
+2) NAME the BIG IDEA in DR-copywriter terms. Not "a photo of a woman" — but "you can shrink belly fat just by listening to the right frequency" or "your gut is the real cause of joint pain". The Big Idea is the ONE concept the image is meant to plant in the viewer's brain.
+
+3) IDENTIFY the visible TARGET AUDIENCE. Demographics + body type + vibe of the protagonist. This locks character continuity in before/after split-frames (same age/body/skin/hair across both halves).
+
+4) MAP the Big Idea onto OUR product's mechanism + transformation (read CAREFULLY from the brief). The new image must land the SAME emotional beat but with OUR mechanism as visible cause and OUR brief's promise as visible result.
+
+5) DRAFT a text-to-image prompt in ENGLISH that is:
+   • For intent = before-after → a SPLIT-FRAME composition. Describe both halves explicitly:
+     "Photorealistic split-frame, vertical split. LEFT HALF: <SAME character description: age/gender/body/skin/hair>, in <before state, the pain/problem from the brief>, identical framing and lighting to the right. RIGHT HALF: <SAME character — repeat the description verbatim>, after <transformation from the brief>, identical pose/framing/lighting; only the body and the expression change."
+     Add a subtle visual cue of the mechanism between/around the two halves (e.g. glowing audio waves, a soft halo of energy, a delicate ingredient stream).
+   • For intent = diagram / ingredient / chart → a clean infographic-style composition that VISUALIZES the mechanism (e.g. cross-section of the body with audio waves traveling from headphones to brain to belly fat dissolving; ingredient molecules acting on cell receptors; a labeled but minimal flow). Mention the art style explicitly (clean editorial vector / 3D render / cross-section illustration).
+   • For intent = hero / lifestyle / testimonial → a single elegant photoreal composition that hints at the mechanism (subtle halo of audio waves, glow of energy, a confident transformed look that reads "this just worked").
+   • For intent = icon / social-proof → a clean iconic composition (badge, ribbon, stars + faces) on the same background style as the original.
+   • CINEMATOGRAPHY: always specify framing (close-up / medium / wide / split-frame), camera angle, lens feel (35mm / 85mm portrait / macro), lighting (soft beauty / clinical white / golden hour / cinematic side light), color palette (warm desaturated / clean editorial / cinematic teal-orange / pastel) and art style.
+   • CHARACTER CONTINUITY: when same character must appear twice (before/after), repeat the EXACT same character description on both halves so the model keeps it consistent.
+   • End with: "Photorealistic, sharp focus, professional studio lighting, clean composition, no on-image text, no competitor logos, no watermark."
+
+6) ADD a NEGATIVE PROMPT against typical T2I failure modes: distorted hands, extra fingers, warped faces, two different people across the split-frame, on-image text, watermark, low resolution, artifacts.
+
+═══ OUTPUT — ONLY this JSON, no markdown, no code blocks, no commentary ═══
+
 {
+  "analysis": "2–4 sentences of detailed compositional analysis of the original (subject demographics, framing, lighting, mood, era, palette, visual hierarchy).",
+  "bigIdea": "One sentence in DR-copywriter voice: the single emotional concept the original image plants in the viewer.",
+  "targetAudience": "Visible demographic of the protagonist (age, gender, body type, ethnicity vibe, mood) — to be repeated verbatim on both sides of a split-frame for continuity.",
   "intent": "one of: hero, before-after, lifestyle, ingredient, diagram, testimonial, icon, chart, social-proof",
-  "originalDescription": "1-2 short sentences describing what the ORIGINAL image shows (subject, framing, mood, style). If you couldn't see the image, summarize from the textual context.",
-  "uniqueMechanism": "Pull from OUR product's brief: the specific mechanism the product uses to deliver the result (1 short phrase). Empty string if truly not specified.",
-  "transformation": "Pull from OUR product's brief: the before -> after transformation it promises (1 short phrase). Empty string if truly not specified.",
-  "suggestedPrompt": "A text-to-image prompt in ENGLISH for Nano Banana / FLUX / Imagen that VISUALIZES the unique mechanism and (when applicable) the transformation. It must:\\n- when intent is before-after: be a SPLIT-FRAME describing both sides explicitly ('left half: <before, the pain/problem state>. right half: <after, the transformation promised by the brief>. Same person, same pose, same framing, same lighting; only the body/state changes.').\\n- when intent is diagram / ingredient / chart: be a clean infographic-style composition that explicitly visualizes how the product works (e.g. cross-section of the body with audio waves entering the brain and reaching the body, ingredient molecules acting on cells), label-free unless explicitly needed.\\n- when intent is hero / lifestyle / testimonial: a single elegant photo-realistic composition that still hints at the mechanism (a subtle halo of audio waves, a glow of energy, a confident transformed look).\\n- always specify: framing (close-up / medium / wide), camera angle, lighting, color palette, art style.\\n- end with: 'photorealistic, sharp focus, professional studio lighting, clean composition, no on-image text, no competitor logos.'"
-}
-
-No markdown, no code blocks, no commentary outside the JSON.`;
+  "originalDescription": "1 short sentence summarizing what the original image shows.",
+  "uniqueMechanism": "From OUR brief: the specific mechanism the product uses (1 phrase). Empty string if truly not specified.",
+  "transformation": "From OUR brief: the before -> after transformation it promises (1 phrase). Empty string if truly not specified.",
+  "suggestedPrompt": "The full text-to-image prompt as described in step 5.",
+  "negativePrompt": "Comma-separated list of artifacts/things to avoid in this image."
+}`;
 
 async function fetchImageAsBase64(
   url: string,
@@ -115,6 +145,10 @@ function parseClaudeJson(raw: string): AnalyzeResult | null {
     const o = JSON.parse(text) as Partial<AnalyzeResult>;
     if (!o || typeof o !== 'object') return null;
     return {
+      analysis: typeof o.analysis === 'string' ? o.analysis : '',
+      bigIdea: typeof o.bigIdea === 'string' ? o.bigIdea : '',
+      targetAudience:
+        typeof o.targetAudience === 'string' ? o.targetAudience : '',
       intent: typeof o.intent === 'string' ? o.intent : 'hero',
       originalDescription:
         typeof o.originalDescription === 'string' ? o.originalDescription : '',
@@ -124,6 +158,8 @@ function parseClaudeJson(raw: string): AnalyzeResult | null {
         typeof o.transformation === 'string' ? o.transformation : '',
       suggestedPrompt:
         typeof o.suggestedPrompt === 'string' ? o.suggestedPrompt : '',
+      negativePrompt:
+        typeof o.negativePrompt === 'string' ? o.negativePrompt : '',
     };
   } catch {
     return null;
@@ -132,6 +168,7 @@ function parseClaudeJson(raw: string): AnalyzeResult | null {
 
 function buildUserMessage(
   productContext: ProductCtx,
+  surroundingContext: SurroundingCtx,
   currentAlt: string,
   pageTitle: string,
   hasImage: boolean,
@@ -145,6 +182,23 @@ function buildUserMessage(
   );
   if (currentAlt) lines.push(`Original image alt text: "${currentAlt}".`);
   if (pageTitle) lines.push(`Landing page title: "${pageTitle}".`);
+
+  const sc = surroundingContext || {};
+  const surroundingLines: string[] = [];
+  if (sc.heading) surroundingLines.push(`Section heading: "${sc.heading}".`);
+  if (sc.nearbyText)
+    surroundingLines.push(
+      `Nearby copy (gives the role of the image in the funnel narrative): "${sc.nearbyText.slice(0, 600)}".`,
+    );
+  if (sc.cta) surroundingLines.push(`Section CTA: "${sc.cta}".`);
+  if (sc.position)
+    surroundingLines.push(`Position on the page: ${sc.position}.`);
+  if (surroundingLines.length > 0) {
+    lines.push('---');
+    lines.push('CONTEXT AROUND THE IMAGE (use this to infer the role the image plays in the funnel):');
+    surroundingLines.forEach((l) => lines.push(`- ${l}`));
+  }
+
   lines.push('---');
   lines.push('OUR PRODUCT (must be the protagonist of the replacement image):');
   if (productContext.name) lines.push(`- Name: ${productContext.name}`);
@@ -153,14 +207,14 @@ function buildUserMessage(
   if (productContext.brief)
     lines.push(`- Brief (read CAREFULLY — extract from here BOTH the unique mechanism AND the transformation it promises; the image must visualize them):\n${productContext.brief.slice(0, 2000)}`);
   lines.push('---');
-  lines.push('Reminder: do NOT default to a generic beauty/lifestyle photo with our packshot floating in the air. Visualize the mechanism (e.g. if it works through audio frequencies, render the audio waves entering the head/body and the body responding; if it works through ingredients, render the molecules acting on the target tissue; if it works through a device, render the device working) AND show a clear before -> after transformation arc with the SAME person and SAME framing on both halves of a split-frame, when the intent is before-after.');
+  lines.push('Reminder: follow the 6-step thinking from the system instructions (Analyze → Big Idea → Audience → Map → Draft → Negative). Do NOT default to a generic beauty/lifestyle photo with our packshot floating in the air. Visualize the mechanism (audio waves, ingredient stream, device cross-section, glow of energy) AND for before/after intents force a SPLIT-FRAME with the SAME character description repeated on both halves.');
   if (userGuidance && userGuidance.trim()) {
     lines.push('---');
     lines.push(
-      `EXPLICIT USER GUIDANCE for this rewrite (highest priority — bake this into the suggestedPrompt):\n"${userGuidance.trim().slice(0, 600)}"`,
+      `EXPLICIT USER GUIDANCE for this rewrite (highest priority — bake this into the suggestedPrompt, override defaults if needed):\n"${userGuidance.trim().slice(0, 600)}"`,
     );
   }
-  lines.push('Return the JSON described in the system instructions.');
+  lines.push('Return ONLY the JSON described in the system instructions.');
   return lines.join('\n');
 }
 
@@ -185,6 +239,7 @@ export async function POST(req: NextRequest) {
   }
 
   const productContext = body.productContext || {};
+  const surroundingContext = body.surroundingContext || {};
   const currentAlt = (body.currentAlt || '').trim();
   const pageTitle = (body.pageTitle || '').trim();
   const imageUrl = (body.imageUrl || '').trim();
@@ -200,6 +255,7 @@ export async function POST(req: NextRequest) {
   const userGuidance = (body.userGuidance || '').trim();
   const userText = buildUserMessage(
     productContext,
+    surroundingContext,
     currentAlt,
     pageTitle,
     Boolean(imageBlock),
@@ -236,7 +292,7 @@ export async function POST(req: NextRequest) {
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
-        max_tokens: 1024,
+        max_tokens: 2048,
         system: SYSTEM_PROMPT,
         messages: [
           {
@@ -287,11 +343,15 @@ export async function POST(req: NextRequest) {
 
   return NextResponse.json({
     ok: true,
+    analysis: parsed.analysis,
+    bigIdea: parsed.bigIdea,
+    targetAudience: parsed.targetAudience,
     intent: parsed.intent,
     originalDescription: parsed.originalDescription,
     uniqueMechanism: parsed.uniqueMechanism,
     transformation: parsed.transformation,
     suggestedPrompt: parsed.suggestedPrompt,
+    negativePrompt: parsed.negativePrompt,
     mode: imageBlock ? 'vision' : 'text',
   });
 }
