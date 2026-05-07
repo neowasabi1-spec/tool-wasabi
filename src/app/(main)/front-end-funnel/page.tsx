@@ -1897,7 +1897,6 @@ export default function FrontEndFunnel() {
     });
 
     const DEFAULT_USER_ID = '00000000-0000-0000-0000-000000000001';
-    const HTML_MIN_BYTES_FOR_REWRITE = 5000;
     const SB_MAX_BATCHES = 400;
     const funnelNarrativeBlocks: string[] = [];
 
@@ -1930,7 +1929,7 @@ export default function FrontEndFunnel() {
       try {
         // === Step 1: clone identical (or reuse existing) ============
         let html = page.clonedData?.html || page.swipedData?.html || '';
-        if (!html || html.length < HTML_MIN_BYTES_FOR_REWRITE) {
+        if (!html) {
           const cloneRes = await fetch('/api/clone-funnel', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1946,11 +1945,6 @@ export default function FrontEndFunnel() {
             throw new Error(cloneData.error || 'Clone fallito');
           }
           html = sanitizeClonedHtml(cloneData.content, url, { keepScripts: true });
-          if (html.length < HTML_MIN_BYTES_FOR_REWRITE) {
-            throw new Error(
-              `Pagina troppo piccola dopo render (${html.length} char) — probabilmente SPA shell o quiz interattivo`
-            );
-          }
         }
         if (swipeAllCancelRef.current) break;
 
@@ -2199,24 +2193,15 @@ export default function FrontEndFunnel() {
         // All rewrites go through /api/quiz-rewrite (Anthropic Claude)
         let htmlToRewrite = currentPage?.clonedData?.html || currentPage?.swipedData?.html || '';
 
-        // Soglia: sotto 5000 char è quasi sicuramente uno scheletro SPA
-        // (`<div id="root"></div>` + `<script>`), inutile per il rewrite.
-        // In quel caso forziamo un nuovo clone server-side con Playwright.
-        const HTML_MIN_BYTES_FOR_REWRITE = 5000;
-        const needsRecloning = !htmlToRewrite || htmlToRewrite.length < HTML_MIN_BYTES_FOR_REWRITE;
-
-        if (needsRecloning) {
-          const reason = !htmlToRewrite
-            ? 'No HTML cached'
-            : `Cached HTML too small (${htmlToRewrite.length} char) — likely SPA shell`;
-          console.log(`[rewrite] ${reason}. Cloning page with Playwright (waitUntil=networkidle)...`);
+        // No size threshold — if there's no cached HTML at all we clone first;
+        // anything else (even small SPA shells) is forwarded to Claude.
+        if (!htmlToRewrite) {
+          console.log('[rewrite] No HTML cached — cloning page first...');
           setCloneProgress({
             phase: 'extract',
             totalTexts: 0,
             processedTexts: 0,
-            message: htmlToRewrite
-              ? 'HTML troppo piccolo: ri-clono con browser...'
-              : 'Clono prima la pagina...',
+            message: 'Clono prima la pagina...',
           });
           const cloneRes = await fetch('/api/clone-funnel', {
             method: 'POST',
@@ -2224,16 +2209,10 @@ export default function FrontEndFunnel() {
             body: JSON.stringify({ url, cloneMode: 'identical', viewport: 'desktop', keepScripts: preserveScripts }),
           });
           const cloneData = await cloneRes.json();
-          if (!cloneRes.ok || cloneData.error) throw new Error(cloneData.error || 'Clone failed — cannot rewrite without HTML');
-          htmlToRewrite = sanitizeClonedHtml(cloneData.content, url, { keepScripts: preserveScripts });
-
-          if (htmlToRewrite.length < HTML_MIN_BYTES_FOR_REWRITE) {
-            throw new Error(
-              `Pagina troppo piccola dopo il render (${htmlToRewrite.length} char). ` +
-              `Il quiz/funnel potrebbe richiedere interazione (click "Start") prima di mostrare i testi, ` +
-              `oppure il render JS è bloccato. Prova a clonare prima manualmente con Identical e verifica il risultato.`
-            );
+          if (!cloneRes.ok || cloneData.error) {
+            throw new Error(cloneData.error || 'Clone failed — cannot rewrite without HTML');
           }
+          htmlToRewrite = sanitizeClonedHtml(cloneData.content, url, { keepScripts: preserveScripts });
 
           updateFunnelPage(pageId, {
             clonedData: {
