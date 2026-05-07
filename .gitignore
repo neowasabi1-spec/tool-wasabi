@@ -62,3 +62,10 @@ service-account*.json
 # Temp commit-message scratchpads
 .tmp_*
 *.tmp
+.git-commit-msg-tmp.txt
+
+# Runtime job state (per-process, regenerated on each request)
+jobs.json
+
+# Supabase CLI local cache
+supabase/.temp/
