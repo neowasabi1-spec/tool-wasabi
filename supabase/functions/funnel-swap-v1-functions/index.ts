@@ -151,21 +151,52 @@ function replaceBrandInTextContent(
   if (uniqueBrands.length === 0) return html
 
   console.log(`🏷️ Brand post-processing (domain/og only): [${uniqueBrands.join(', ')}] → "${productName}"`)
-  const htmlParts = html.split(/(<[^>]+>)/)
+
+  // Protect <style>, <script>, <link>, <meta> blocks from brand replacement.
+  // Their inner text (between the open/close tags) IS picked up by the
+  // <[^>]+> split and would be treated as a text node, so brand names that
+  // appear inside CSS @font-face / url(...) / inline JS strings would get
+  // rewritten — turning e.g. "metabolicwave.com/font.woff2" into
+  // "Metabolic Wave.com/font.woff2" which fails DNS as "metabolic%20wave.com"
+  // (browser percent-encodes the space). Same risk for src URLs in <noscript>.
+  const protectedBlocks: string[] = []
+  let working = html.replace(
+    /<(style|script|noscript)[^>]*>[\s\S]*?<\/\1>/gi,
+    (m) => {
+      const idx = protectedBlocks.length
+      protectedBlocks.push(m)
+      return `\u0000PROTECTED_BRAND_${idx}\u0000`
+    },
+  )
+
+  // Common TLDs to guard against breaking URLs that survived the protection
+  // above (e.g. raw domain mentions inside text like "Visit acme.com today").
+  // Replacing "acme" -> "ACME Corp" there would break the dotted domain too.
+  const TLD_GUARD = `(?!\\.(?:com|org|net|io|co|us|uk|de|fr|es|it|me|info|ai|app|shop|store|biz|tv|live|xyz|pro|club|space|website))`
+
+  const htmlParts = working.split(/(<[^>]+>)/)
   for (let i = 0; i < htmlParts.length; i++) {
     if (!htmlParts[i].startsWith('<')) {
       for (const brand of uniqueBrands) {
         const escaped = brand.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
         // \b non funziona con caratteri unicode in modo affidabile in Deno;
-        // uso lookaround approssimato: non-letter prima/dopo
+        // uso lookaround approssimato: non-letter prima/dopo + TLD guard
         htmlParts[i] = htmlParts[i].replace(
-          new RegExp(`(^|[^a-zA-Z0-9])${escaped}(?=[^a-zA-Z0-9]|$)`, 'gi'),
-          (match, prefix) => `${prefix}${productName}`
+          new RegExp(`(^|[^a-zA-Z0-9])${escaped}(?=[^a-zA-Z0-9]|$)${TLD_GUARD}`, 'gi'),
+          (_match, prefix) => `${prefix}${productName}`
         )
       }
     }
   }
-  return htmlParts.join('')
+  working = htmlParts.join('')
+
+  // Restore protected blocks
+  working = working.replace(
+    /\u0000PROTECTED_BRAND_(\d+)\u0000/g,
+    (_m, idx) => protectedBlocks[Number(idx)] ?? '',
+  )
+
+  return working
 }
 
 // Final-pass anti-stuffing on the assembled HTML. Catches patterns that
@@ -188,7 +219,19 @@ function collapseConsecutiveBrandRuns(html: string, productName: string): string
   const gap = `(?:[\\s\\u00A0]|&nbsp;|&\\#160;|[\\-–—:|·•†*])*`
   const dup = new RegExp(`(${escaped})${gap}\\1`, 'gi')
 
-  const segments = html.split(/(<[^>]+>)/)
+  // Same guard as replaceBrandInTextContent: don't touch <style>/<script>/
+  // <noscript> bodies, where this would mangle CSS url(...) and JS strings.
+  const protectedBlocks: string[] = []
+  let working = html.replace(
+    /<(style|script|noscript)[^>]*>[\s\S]*?<\/\1>/gi,
+    (m) => {
+      const idx = protectedBlocks.length
+      protectedBlocks.push(m)
+      return `\u0000PROTECTED_COLLAPSE_${idx}\u0000`
+    },
+  )
+
+  const segments = working.split(/(<[^>]+>)/)
   for (let i = 0; i < segments.length; i++) {
     const seg = segments[i]
     if (!seg || seg.startsWith('<')) continue
@@ -200,7 +243,14 @@ function collapseConsecutiveBrandRuns(html: string, productName: string): string
     }
     segments[i] = prev
   }
-  return segments.join('')
+  working = segments.join('')
+
+  working = working.replace(
+    /\u0000PROTECTED_COLLAPSE_(\d+)\u0000/g,
+    (_m, idx) => protectedBlocks[Number(idx)] ?? '',
+  )
+
+  return working
 }
 
 // Sostituisce placeholder template Liquid/Jinja noti con valori reali.
