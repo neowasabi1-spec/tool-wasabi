@@ -847,23 +847,53 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   const canUndo = undoIdx.current > 0;
   const canRedo = undoIdx.current < undoStack.current.length - 1;
 
-  const handleUndo = useCallback(() => {
-    if (undoIdx.current <= 0) return;
-    undoIdx.current--;
-    setIframeVersion(v => v + 1);
-    const html = undoStack.current[undoIdx.current];
-    setCurrentHtml(html);
-    setCodeHtml(html);
+  /*
+   * Undo/Redo: stesso pattern dei fix freeze precedenti.
+   *
+   * Il problema: bumpiamo `iframeVersion` per forzare l'iframe a ricaricare
+   * la nuova srcDoc dallo stack di history. La srcDoc e' pesante (HTML
+   * clonato + Swiper + jQuery) e React la passa al browser sincronicamente
+   * dentro lo stesso commit → main thread bloccato 1-2s.
+   *
+   * Soluzione: paint immediato dell'overlay "Restoring…", svuoto del
+   * vecchio iframe su rAF, poi su setTimeout(0) applico davvero la
+   * versione storica (l'iframe remonta, parser blocca, ma l'overlay e'
+   * gia' visibile). Il messaggio 'editor-ready' del nuovo iframe pulira'
+   * il flag.
+   */
+  const [restoringHistory, setRestoringHistory] = useState(false);
+  const applyHistorySnapshot = useCallback((html: string) => {
+    setRestoringHistory(true);
+    setEditorReady(false);
+    requestAnimationFrame(() => {
+      try {
+        if (iframeRef.current) {
+          iframeRef.current.srcdoc = '<!doctype html><html><body></body></html>';
+        }
+      } catch { /* iframe detached */ }
+      setTimeout(() => {
+        setIframeVersion(v => v + 1);
+        setCurrentHtml(html);
+        setCodeHtml(html);
+        // Defensive: l'iframe potrebbe non rispondere con 'editor-ready'.
+        setTimeout(() => setRestoringHistory(false), 4000);
+      }, 0);
+    });
   }, []);
 
-  const handleRedo = useCallback(() => {
-    if (undoIdx.current >= undoStack.current.length - 1) return;
-    undoIdx.current++;
-    setIframeVersion(v => v + 1);
+  const handleUndo = useCallback(() => {
+    if (undoIdx.current <= 0 || restoringHistory) return;
+    undoIdx.current--;
     const html = undoStack.current[undoIdx.current];
-    setCurrentHtml(html);
-    setCodeHtml(html);
-  }, []);
+    applyHistorySnapshot(html);
+  }, [restoringHistory, applyHistorySnapshot]);
+
+  const handleRedo = useCallback(() => {
+    if (undoIdx.current >= undoStack.current.length - 1 || restoringHistory) return;
+    undoIdx.current++;
+    const html = undoStack.current[undoIdx.current];
+    applyHistorySnapshot(html);
+  }, [restoringHistory, applyHistorySnapshot]);
 
   /* ── Iframe communication ── */
   const sendToIframe = useCallback((msg: Record<string, unknown>) => {
@@ -878,6 +908,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
           setEditorReady(true);
           setSwitchingViewport(false);
           setSwitchingMode(false);
+          setRestoringHistory(false);
           sendToIframe({ type: 'cmd-get-sections' });
           break;
         case 'element-selected':
@@ -1725,12 +1756,12 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
         <div className="flex items-center gap-2">
           {/* Undo/Redo */}
           <div className="flex items-center gap-0.5 mr-2">
-            <button onClick={handleUndo} disabled={!canUndo}
-              className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-700 disabled:opacity-30 disabled:hover:bg-transparent transition-colors" title="Undo (Ctrl+Z)">
+            <button onClick={handleUndo} disabled={!canUndo || restoringHistory}
+              className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-700 disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-wait transition-colors" title="Undo (Ctrl+Z)">
               <Undo2 className="h-4 w-4" />
             </button>
-            <button onClick={handleRedo} disabled={!canRedo}
-              className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-700 disabled:opacity-30 disabled:hover:bg-transparent transition-colors" title="Redo (Ctrl+Shift+Z)">
+            <button onClick={handleRedo} disabled={!canRedo || restoringHistory}
+              className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-700 disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-wait transition-colors" title="Redo (Ctrl+Shift+Z)">
               <Redo2 className="h-4 w-4" />
             </button>
           </div>
@@ -1969,10 +2000,15 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                 title="Visual Editor Canvas"
                 sandbox="allow-scripts allow-same-origin"
               />
-              {(!editorReady || switchingViewport) && (
+              {(!editorReady || switchingViewport || restoringHistory) && (
                 <div className="absolute inset-0 flex items-center justify-center bg-white/85 backdrop-blur-sm z-30">
                   <div className="flex items-center gap-2 px-4 py-2 rounded-lg bg-white shadow border border-slate-200 text-slate-700">
-                    {switchingViewport ? (
+                    {restoringHistory ? (
+                      <>
+                        <Loader2 className="h-4 w-4 animate-spin text-amber-500" />
+                        <span className="text-sm font-medium">Restoring…</span>
+                      </>
+                    ) : switchingViewport ? (
                       <>
                         <Loader2 className="h-4 w-4 animate-spin text-blue-600" />
                         <span className="text-sm font-medium">Switching viewport…</span>
