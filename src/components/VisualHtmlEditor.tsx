@@ -756,7 +756,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   }, [codeSearchTerm, codeReplaceTerm, codeSearchCount, activeCode, editorViewport, mobileHtml]);
 
   /* ── AI Image / Video Generation ── */
-  type AiMode = 'text2image' | 'image2image' | 'image2video';
+  type AiMode = 'text2image' | 'image2image' | 'image2video' | 'text2video';
   const [aiMode, setAiMode] = useState<AiMode>('text2image');
   const [aiModel, setAiModel] = useState<string>('nano-banana-2');
   const [aiPrompt, setAiPrompt] = useState('');
@@ -801,6 +801,10 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
       { id: 'seedance-2', label: 'Bytedance Seedance 2.0', hint: '5/10s, qualità top, multi-resolution' },
       { id: 'veo3-fast', label: 'Google Veo 3 Fast', hint: 'Qualita top, 5/8s' },
       { id: 'kling-21', label: 'Kling 2.1 Standard', hint: '5/10s, naturalezza alta' },
+    ],
+    text2video: [
+      { id: 'seedance-2-t2v', label: 'Bytedance Seedance 2.0 (T2V)', hint: '5/10s, scena inventata da prompt, qualità top' },
+      { id: 'seedance-2-t2v-fast', label: 'Bytedance Seedance 2.0 Fast (T2V)', hint: '5/10s, più economico, render più rapido' },
     ],
   };
 
@@ -1212,7 +1216,9 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
           ? "Inserisci una descrizione di come animare l'immagine"
           : aiMode === 'image2image'
             ? "Descrivi la modifica da applicare all'immagine"
-            : 'Inserisci un prompt o seleziona un elemento con testo vicino',
+            : aiMode === 'text2video'
+              ? 'Descrivi la scena del video da generare'
+              : 'Inserisci un prompt o seleziona un elemento con testo vicino',
       );
       return;
     }
@@ -1235,7 +1241,10 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
           size: aiSize,
           style: aiStyle,
           imageUrl: aiSourceImage || undefined,
-          duration: aiMode === 'image2video' ? aiVideoDuration : undefined,
+          duration:
+            aiMode === 'image2video' || aiMode === 'text2video'
+              ? aiVideoDuration
+              : undefined,
         }),
       });
       const submitParsed = await safeJson(submitRes);
@@ -1393,7 +1402,14 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     const productName = (productContext?.name || '').trim();
     const productDesc = (productContext?.description || '').trim();
     const productBrief = (productContext?.brief || '').trim().slice(0, 600);
-    const productImage = (productContext?.imageUrl || '').trim();
+    /* Swipe for Product = TEXT-to-VIDEO: l'AI inventa la scena DA ZERO da
+       prompt, senza foto sorgente obbligatoria. Differente da "Anima" che è
+       image-to-video (animazione di una foto fissa). Il vincolo della foto
+       prodotto come prima frame produceva risultati limitati: l'output era
+       sempre l'animazione del logo/box, mai una scena equivalente al clip
+       originale. Con text2video Seedance 2.0 può ricreare il setting
+       (es. before/after piedi sani, persona rilassata con il prodotto in mano,
+       lifestyle shot, ecc.) coerente con l'intent del clip competitor. */
 
     /* Prompt fallback in caso l'analisi vision di Claude fallisca:
        generico ma in inglese, costruito dai dati locali. */
@@ -1415,9 +1431,9 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
        l'utente vede feedback istantaneo. Disattiviamo l'auto-fire della
        generazione (resterà disabilitato finché l'analisi non finisce o
        l'utente non sceglie di procedere). */
-    setAiMode('image2video');
+    setAiMode('text2video');
     setAiPrompt('');
-    setAiSourceImage(productImage);
+    setAiSourceImage('');
     setAiContextText(currentAlt || pageTitle || '');
     setAiVideoLoop(true);
     setAiError('');
@@ -1464,9 +1480,9 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
       if (desc) setAiContextText(desc);
       setSwipeVisionMode(data.mode || 'text');
       setSwipeVisionIntent(data.intent || '');
-      /* L'auto-fire parte SOLO se abbiamo già la foto prodotto e Claude
-         ha proposto un prompt: 1 click → 30-60s → video sostituito. */
-      setSwipeAutoMode(Boolean(productImage));
+      /* Text-to-Video non richiede foto: appena Claude propone il prompt
+         partiamo da soli — 1 click → 30-60s → video sostituito. */
+      setSwipeAutoMode(true);
     } catch (err) {
       setAiPrompt(fallbackPrompt);
       setSwipeVisionMode(null);
@@ -1480,14 +1496,21 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   }, [selectedElement, productContext, pageTitle]);
 
   /* Auto-fire della generazione quando "Swipe for Product" parte in
-   * modalità automatica. Aspettiamo un frame in modo che il modal
-   * abbia il tempo di renderizzare lo state di loading prima che il
-   * job parta sul main thread. */
+   * modalità automatica. Per text-to-video basta avere il prompt; per
+   * image-to-video servirebbe anche aiSourceImage (oggi però lo Swipe
+   * usa sempre text2video, quindi qui ci appoggiamo solo al prompt).
+   * Aspettiamo un frame in modo che il modal abbia il tempo di
+   * renderizzare lo state di loading prima che il job parta sul main
+   * thread. */
   useEffect(() => {
     if (!swipeAutoMode) return;
     if (!showAiImagePopup) return;
-    if (!aiSourceImage) return;
+    if (!aiPrompt.trim()) return;
+    if (swipeVisionLoading) return;
     if (aiGenerating) return;
+    if (aiMode === 'image2image' || aiMode === 'image2video') {
+      if (!aiSourceImage) return;
+    }
 
     const t = window.setTimeout(() => {
       // Consume the auto-mode token so successive opens of the modal
@@ -1496,7 +1519,16 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
       handleAiGenerate();
     }, 250);
     return () => window.clearTimeout(t);
-  }, [swipeAutoMode, showAiImagePopup, aiSourceImage, aiGenerating, handleAiGenerate]);
+  }, [
+    swipeAutoMode,
+    showAiImagePopup,
+    aiPrompt,
+    aiMode,
+    aiSourceImage,
+    swipeVisionLoading,
+    aiGenerating,
+    handleAiGenerate,
+  ]);
 
   // Se l'utente chiude il modal manualmente prima che parta il job auto,
   // azzeriamo la flag così la prossima apertura è "manuale" e non
@@ -3184,6 +3216,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                 { id: 'text2image', label: 'Genera', icon: ImagePlus },
                 { id: 'image2image', label: 'Modifica', icon: Wand2 },
                 { id: 'image2video', label: 'Anima', icon: Film },
+                { id: 'text2video', label: 'Swipe', icon: Sparkles },
               ] as const).map((tab) => {
                 const Icon = tab.icon;
                 const active = aiMode === tab.id;
@@ -3268,11 +3301,11 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                 </div>
               )}
 
-              {/* Swipe-for-Product banner (image2video aperto dal bottone Swipe) */}
-              {aiMode === 'image2video' && (swipeVisionLoading || aiContextText || swipeVisionError) && (
+              {/* Swipe-for-Product banner (text2video aperto dal bottone Swipe) */}
+              {aiMode === 'text2video' && (swipeVisionLoading || aiContextText || swipeVisionError) && (
                 <div className="p-3 rounded-lg bg-gradient-to-r from-violet-50 via-fuchsia-50 to-pink-50 border border-fuchsia-200">
                   <div className="flex items-start gap-2">
-                    {(swipeVisionLoading || swipeAutoMode || (aiGenerating && aiSourceImage)) ? (
+                    {(swipeVisionLoading || aiGenerating) ? (
                       <Loader2 className="h-3.5 w-3.5 text-fuchsia-600 mt-0.5 shrink-0 animate-spin" />
                     ) : (
                       <Sparkles className="h-3.5 w-3.5 text-fuchsia-600 mt-0.5 shrink-0" />
@@ -3282,7 +3315,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                         <p className="text-[11px] font-bold text-fuchsia-800">
                           {swipeVisionLoading
                             ? 'Sto guardando il video originale…'
-                            : (swipeAutoMode || (aiGenerating && aiSourceImage))
+                            : aiGenerating
                               ? 'Sto facendo lo swipe del video per il tuo prodotto…'
                               : 'Swipe Video for Product'}
                         </p>
@@ -3301,6 +3334,9 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                             text-only
                           </span>
                         )}
+                        <span className="text-[9px] uppercase tracking-wider font-medium text-violet-600 ml-auto" title="Text-to-Video: l'AI inventa la scena da prompt, senza foto sorgente">
+                          T2V
+                        </span>
                       </div>
 
                       {swipeVisionLoading ? (
@@ -3319,13 +3355,9 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                             <p className="text-[11px] text-amber-700 leading-relaxed mt-1">
                               Analisi vision non riuscita ({swipeVisionError}). Ti ho lasciato un prompt generico — modificalo pure prima di generare.
                             </p>
-                          ) : aiSourceImage ? (
-                            <p className="text-[11px] text-slate-600 leading-relaxed mt-1">
-                              Il prompt qui sotto è già pronto: tra qualche secondo Seedance 2.0 anima la foto del tuo prodotto e sostituisce il video. Modificalo se vuoi un&apos;azione diversa.
-                            </p>
                           ) : (
                             <p className="text-[11px] text-slate-600 leading-relaxed mt-1">
-                              Carica una foto del tuo prodotto come prima frame, oppure aggiungila al Project (Logo) per attivare la modalità completamente automatica.
+                              Il prompt qui sotto descrive l&apos;<strong>intera scena</strong> per Seedance 2.0 text-to-video — niente foto sorgente, l&apos;AI ricrea il setting (con il TUO prodotto al centro) coerente con l&apos;intent del clip originale. Modificalo se vuoi.
                             </p>
                           )}
                         </>
@@ -3341,7 +3373,9 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                     ? 'Prompt (opzionale)'
                     : aiMode === 'image2image'
                       ? 'Cosa modificare'
-                      : 'Come animare'}
+                      : aiMode === 'text2video'
+                        ? 'Descrivi la scena del video'
+                        : 'Come animare'}
                 </label>
                 <textarea
                   value={aiPrompt}
@@ -3351,7 +3385,9 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                       ? (aiContextText ? "Lascia vuoto per generare dal contesto sopra, oppure descrivi l'immagine..." : "Descrivi l'immagine che vuoi generare...")
                       : aiMode === 'image2image'
                         ? "Es: cambia lo sfondo in una spiaggia tropicale, aggiungi occhiali da sole..."
-                        : "Es: la persona sorride e fa l'occhiolino, leggero zoom in..."
+                        : aiMode === 'text2video'
+                          ? "Es: medium shot di una donna sul divano che indossa Metabolic Wave headphones, luce calda, slow push-in di 5s, cinematic, no text, no audio."
+                          : "Es: la persona sorride e fa l'occhiolino, leggero zoom in..."
                   }
                   rows={3}
                   className="w-full px-3 py-2.5 text-sm border border-violet-200 rounded-xl focus:border-violet-400 focus:ring-2 focus:ring-violet-100 outline-none resize-none transition-all placeholder:text-slate-400"
@@ -3429,7 +3465,9 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                 {aiGenerating ? (
                   <>
                     <Loader2 className="h-4 w-4 animate-spin" />
-                    {aiMode === 'image2video' ? 'Generando video... (puo richiedere 1-2 min)' : 'Generando...'}
+                    {aiMode === 'image2video' || aiMode === 'text2video'
+                      ? 'Generando video... (puo richiedere 1-2 min)'
+                      : 'Generando...'}
                   </>
                 ) : aiMode === 'text2image' ? (
                   <>
@@ -3440,6 +3478,11 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                   <>
                     <Wand2 className="h-4 w-4" />
                     Modifica Immagine
+                  </>
+                ) : aiMode === 'text2video' ? (
+                  <>
+                    <Sparkles className="h-4 w-4" />
+                    Genera Video (Swipe)
                   </>
                 ) : (
                   <>

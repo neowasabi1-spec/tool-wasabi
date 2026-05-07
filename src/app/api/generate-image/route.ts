@@ -4,10 +4,14 @@ export const maxDuration = 30;
 export const dynamic = 'force-dynamic';
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Generic media-generation route. Supports 3 modes:
+// Generic media-generation route. Supports 4 modes:
 //   • text2image  — prompt -> image
 //   • image2image — image + prompt -> edited image
-//   • image2video — image + prompt -> short video clip
+//   • image2video — image + prompt -> short video clip animating that image
+//   • text2video  — prompt -> short video clip generated from scratch
+//                   (used by "Swipe Video for Product" when the user wants
+//                   the AI to invent a brand-new scene without supplying a
+//                   first frame)
 //
 // Each mode exposes a curated list of fal.ai models. The route is single-shot:
 // every invocation does ONE call to fal (submit OR status+result). Wait time
@@ -15,7 +19,7 @@ export const dynamic = 'force-dynamic';
 // 10s function wall.
 // ═══════════════════════════════════════════════════════════════════════════
 
-type Mode = 'text2image' | 'image2image' | 'image2video';
+type Mode = 'text2image' | 'image2image' | 'image2video' | 'text2video';
 type MediaType = 'image' | 'video';
 
 interface ModelDef {
@@ -178,12 +182,41 @@ const MODELS: Record<string, ModelDef> = {
     }),
     parseResult: parseVideoResult,
   },
+
+  // ── TEXT → VIDEO (no source image — AI invents the scene) ────────────────
+  // Stesso pattern di endpoint Bytedance: NO prefisso `fal-ai/`, duration
+  // come stringa enum.
+  'seedance-2-t2v': {
+    endpoint: 'bytedance/seedance-2.0/text-to-video',
+    mediaType: 'video',
+    buildInput: ({ prompt, aspectRatio, duration }) => ({
+      prompt,
+      duration: clampSeedanceDuration(duration),
+      resolution: '720p',
+      aspect_ratio: aspectRatio === 'auto' ? '16:9' : aspectRatio,
+      generate_audio: false,
+    }),
+    parseResult: parseVideoResult,
+  },
+  'seedance-2-t2v-fast': {
+    endpoint: 'bytedance/seedance-2.0/fast/text-to-video',
+    mediaType: 'video',
+    buildInput: ({ prompt, aspectRatio, duration }) => ({
+      prompt,
+      duration: clampSeedanceDuration(duration),
+      resolution: '720p',
+      aspect_ratio: aspectRatio === 'auto' ? '16:9' : aspectRatio,
+      generate_audio: false,
+    }),
+    parseResult: parseVideoResult,
+  },
 };
 
 const DEFAULT_MODELS: Record<Mode, string> = {
   text2image: 'nano-banana-2',
   image2image: 'nano-banana-2-edit',
   image2video: 'seedance-2',
+  text2video: 'seedance-2-t2v',
 };
 
 // ── helpers ────────────────────────────────────────────────────────────────

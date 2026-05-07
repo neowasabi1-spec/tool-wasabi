@@ -49,11 +49,13 @@ You will receive:
 - the textual context (alt text, page title)
 - the brief of OUR product (the one that should appear in the replacement clip)
 
+The replacement clip will be generated with a TEXT-TO-VIDEO model (Bytedance Seedance 2.0 text-to-video). The model has NO source image: it invents the entire scene from the prompt alone. So the prompt must describe the WHOLE scene (subject, setting, action, camera, lighting, mood) — not just an animation of a still frame.
+
 Return ONLY a valid JSON object with these exact keys:
 {
   "intent": "one of: demo, before-after, lifestyle, testimonial, hero, explainer, social-proof",
   "originalDescription": "1-2 short sentences describing what the ORIGINAL clip shows (subject, action, mood, type of shot). If you couldn't see the image, summarize from the textual context.",
-  "suggestedPrompt": "An image-to-video prompt in ENGLISH for Bytedance Seedance 2.0. It must:\\n- describe the action/motion to apply to the FIRST FRAME (which will be a photo of OUR product)\\n- keep the same intent of the original clip\\n- mention OUR product by name if useful, NEVER the competitor's product\\n- be specific about camera move, mood, lighting\\n- end with: 'realistic, professional, no on-screen text, no audio.'\\n- target duration ~5 seconds"
+  "suggestedPrompt": "A text-to-video prompt in ENGLISH for Bytedance Seedance 2.0 text-to-video. It must:\\n- describe the FULL scene from scratch (subject, setting, props, lighting, mood)\\n- preserve the original clip's intent (e.g. before/after recovery, lifestyle in-use shot, doctor explainer, hero close-up)\\n- show OUR product naturally integrated in the scene (refer to it by name if useful) — NEVER mention the competitor product\\n- specify camera move (e.g. slow push-in, static medium shot, slow pan)\\n- end with: 'realistic, professional, cinematic lighting, no on-screen text, no audio.'\\n- target duration ~5 seconds"
 }
 
 No markdown, no code blocks, no commentary outside the JSON.`;
