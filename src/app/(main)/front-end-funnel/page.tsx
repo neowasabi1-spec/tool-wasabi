@@ -305,6 +305,52 @@ async function rewriteWithOpenClawFromBrowser(args: {
   };
 }
 
+/**
+ * Fetch wrapper that retries on transient gateway errors (502/503/504/408/429).
+ * Long rewrite jobs (e.g. 100+ sequential batches against the Edge Function)
+ * occasionally hit Netlify edge "Inactivity Timeout 504" or upstream 502
+ * because Claude latency for that single batch went above ~26s. A single
+ * retry recovers in the vast majority of cases.
+ *
+ * Reads the response as text exactly once (avoids the "body stream already
+ * read" foot-gun) and gives the caller back both the Response and the raw
+ * body string.
+ */
+async function fetchWithRetry(
+  url: string,
+  init: RequestInit,
+  opts?: { retries?: number; baseDelayMs?: number; label?: string },
+): Promise<{ res: Response; raw: string }> {
+  const retries = opts?.retries ?? 2;
+  const baseDelay = opts?.baseDelayMs ?? 1500;
+  const label = opts?.label || 'fetch';
+  const RETRYABLE = new Set([408, 425, 429, 500, 502, 503, 504]);
+
+  let lastErr: unknown = null;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const res = await fetch(url, init);
+      const raw = await res.text();
+      if (res.ok || !RETRYABLE.has(res.status) || attempt === retries) {
+        return { res, raw };
+      }
+      console.warn(
+        `[${label}] HTTP ${res.status} on attempt ${attempt + 1}/${retries + 1}; retrying after ${baseDelay * (attempt + 1)}ms`,
+      );
+    } catch (err) {
+      lastErr = err;
+      if (attempt === retries) throw err;
+      console.warn(
+        `[${label}] network error on attempt ${attempt + 1}/${retries + 1}; retrying after ${baseDelay * (attempt + 1)}ms`,
+        err,
+      );
+    }
+    await new Promise((r) => setTimeout(r, baseDelay * (attempt + 1)));
+  }
+  // Defensive: shouldn't reach here given the loop guard above.
+  throw lastErr instanceof Error ? lastErr : new Error(`${label}: retry loop exhausted`);
+}
+
 function sanitizeClonedHtml(html: string, originalUrl: string, options?: { keepScripts?: boolean }): string {
   try {
     const base = new URL(originalUrl);
@@ -2013,21 +2059,40 @@ export default function FrontEndFunnel() {
 
         while (sbBatch < SB_MAX_BATCHES) {
           if (swipeAllCancelRef.current) break;
-          const procRes = await fetch(SUPABASE_FN_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              phase: 'process',
-              jobId: sbJobId,
-              cloneMode: 'rewrite',
-              batchNumber: sbBatch,
-              userId: DEFAULT_USER_ID,
-              brief: briefStr || undefined,
-              market_research: researchStr || undefined,
-              funnel_context: funnelContextStr || undefined,
-            }),
-          });
-          const procData = await procRes.json();
+          const { res: procRes, raw } = await fetchWithRetry(
+            SUPABASE_FN_URL,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                phase: 'process',
+                jobId: sbJobId,
+                cloneMode: 'rewrite',
+                batchNumber: sbBatch,
+                userId: DEFAULT_USER_ID,
+                brief: briefStr || undefined,
+                market_research: researchStr || undefined,
+                funnel_context: funnelContextStr || undefined,
+              }),
+            },
+            { retries: 2, baseDelayMs: 2000, label: `swipeall-proc-${i}-${sbBatch}` },
+          );
+          let procData: {
+            success?: boolean;
+            phase?: string;
+            jobId?: string;
+            content?: string;
+            batchProcessed?: number;
+            remainingTexts?: number;
+            continue?: boolean;
+            replacements?: number;
+            error?: string;
+          };
+          try {
+            procData = raw ? JSON.parse(raw) : {};
+          } catch {
+            throw new Error(`Process batch ${sbBatch} non-JSON (${procRes.status}): ${raw.substring(0, 300)}`);
+          }
           if (!procRes.ok || procData.error) {
             throw new Error(procData.error || `Process batch ${sbBatch} HTTP ${procRes.status}`);
           }
@@ -2319,24 +2384,28 @@ export default function FrontEndFunnel() {
           const SB_MAX_BATCHES = 400;
 
           while (sbBatch < SB_MAX_BATCHES) {
-            const procRes = await fetch(SUPABASE_FN_URL, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                phase: 'process',
-                jobId: sbJobId,
-                cloneMode: 'rewrite',
-                batchNumber: sbBatch,
-                userId: DEFAULT_USER_ID,
-                // brief / market_research are read by the Edge Function from
-                // the request body of every process call (they're not stored
-                // in the cloning_jobs row). Forwarding them on every batch is
-                // cheap (~10KB) and keeps the rewrite consistent across
-                // batches of the same job.
-                brief: cloneConfig.brief || undefined,
-                market_research: cloneConfig.marketResearch || undefined,
-              }),
-            });
+            const { res: procRes, raw } = await fetchWithRetry(
+              SUPABASE_FN_URL,
+              {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  phase: 'process',
+                  jobId: sbJobId,
+                  cloneMode: 'rewrite',
+                  batchNumber: sbBatch,
+                  userId: DEFAULT_USER_ID,
+                  // brief / market_research are read by the Edge Function from
+                  // the request body of every process call (they're not stored
+                  // in the cloning_jobs row). Forwarding them on every batch is
+                  // cheap (~10KB) and keeps the rewrite consistent across
+                  // batches of the same job.
+                  brief: cloneConfig.brief || undefined,
+                  market_research: cloneConfig.marketResearch || undefined,
+                }),
+              },
+              { retries: 2, baseDelayMs: 2000, label: `proc-batch-${sbBatch}` },
+            );
             let procData: {
               success?: boolean;
               phase?: string;
@@ -2348,13 +2417,10 @@ export default function FrontEndFunnel() {
               replacements?: number;
               error?: string;
             };
-            {
-              const raw = await procRes.text();
-              try {
-                procData = raw ? JSON.parse(raw) : {};
-              } catch {
-                throw new Error(`Process batch ${sbBatch} non-JSON (${procRes.status}): ${raw.substring(0, 300)}`);
-              }
+            try {
+              procData = raw ? JSON.parse(raw) : {};
+            } catch {
+              throw new Error(`Process batch ${sbBatch} non-JSON (${procRes.status}): ${raw.substring(0, 300)}`);
             }
             if (!procRes.ok || procData.error) {
               throw new Error(procData.error || `Process batch ${sbBatch} HTTP ${procRes.status}`);
