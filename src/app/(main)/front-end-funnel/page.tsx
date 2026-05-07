@@ -798,6 +798,28 @@ export default function FrontEndFunnel() {
   const [saveFunnelName, setSaveFunnelName] = useState('');
   const [isSaving, setIsSaving] = useState(false);
 
+  /* ────────── Swipe All ──────────
+   * Orchestratore che riscrive in sequenza TUTTE le pagine eligibili del
+   * funnel, accumulando un "funnel narrative" tra una pagina e l'altra
+   * (estratto via Claude da ciascuna pagina riscritta) per garantire
+   * coerenza di voce, angle, big promise, pain point e CTA logic
+   * lungo tutto il funnel. */
+  type SwipeAllStep = 'idle' | 'cloning' | 'rewriting' | 'narrative';
+  interface SwipeAllErr { pageId: string; pageName: string; message: string }
+  const [swipeAllJob, setSwipeAllJob] = useState<{
+    isRunning: boolean;
+    cancelRequested: boolean;
+    currentIndex: number;
+    totalCount: number;
+    currentStep: SwipeAllStep;
+    currentPageName: string;
+    batchInfo: string;
+    completed: number;
+    errors: SwipeAllErr[];
+    startedAt: number;
+  } | null>(null);
+  const swipeAllCancelRef = useRef(false);
+
   // API Mode
   const [apiMode, setApiMode] = useState<ApiMode>('localDev');
   const api = API_ENDPOINTS[apiMode];
@@ -1834,6 +1856,268 @@ export default function FrontEndFunnel() {
     });
   };
 
+  /* ───────────── Swipe All orchestrator ─────────────
+   * Per ogni pagina eligibile del funnel:
+   *   1. clona identical (se non già clonata)
+   *   2. rewrite via Edge function passando funnel_context accumulato
+   *   3. estrae narrative summary dalla pagina riscritta (Claude)
+   *   4. lo concatena al funnel_context per le pagine successive
+   *
+   * Pagine eligibili = hanno urlToSwipe + productId valido. */
+  const runSwipeAll = useCallback(async () => {
+    const allPages = funnelPages || [];
+    const eligible = allPages.filter(
+      (p) => p.urlToSwipe && p.productId
+    );
+    if (!eligible.length) {
+      alert('Nessuna pagina eligibile (servono URL competitor + Project su ogni riga).');
+      return;
+    }
+    const ok = window.confirm(
+      `Avvio Swipe All su ${eligible.length} pagine.\n\n` +
+        `Verranno riscritte in sequenza, mantenendo coerenza narrativa ` +
+        `tra una pagina e l'altra (Claude vede il riassunto delle pagine ` +
+        `già fatte). Tempo stimato: ${Math.max(1, Math.round(eligible.length * 1.2))}-` +
+        `${Math.max(2, Math.round(eligible.length * 2.5))} minuti.\n\nProcedere?`
+    );
+    if (!ok) return;
+
+    swipeAllCancelRef.current = false;
+    setSwipeAllJob({
+      isRunning: true,
+      cancelRequested: false,
+      currentIndex: 0,
+      totalCount: eligible.length,
+      currentStep: 'idle',
+      currentPageName: '',
+      batchInfo: '',
+      completed: 0,
+      errors: [],
+      startedAt: Date.now(),
+    });
+
+    const DEFAULT_USER_ID = '00000000-0000-0000-0000-000000000001';
+    const HTML_MIN_BYTES_FOR_REWRITE = 5000;
+    const SB_MAX_BATCHES = 400;
+    const funnelNarrativeBlocks: string[] = [];
+
+    for (let i = 0; i < eligible.length; i++) {
+      if (swipeAllCancelRef.current) break;
+      const page = eligible[i];
+      const project = (projects || []).find((p) => p.id === page.productId);
+      const url = page.urlToSwipe || '';
+      const pageName = page.name || `Step ${i + 1}`;
+
+      setSwipeAllJob((s) =>
+        s
+          ? { ...s, currentIndex: i + 1, currentPageName: pageName, currentStep: 'cloning', batchInfo: '' }
+          : s
+      );
+      updateFunnelPage(page.id, {
+        swipeStatus: 'in_progress',
+        swipeResult: `Swipe All ${i + 1}/${eligible.length} — Cloning...`,
+      });
+
+      if (!project) {
+        const msg = `Project non trovato per la pagina (productId=${page.productId})`;
+        updateFunnelPage(page.id, { swipeStatus: 'failed', swipeResult: msg });
+        setSwipeAllJob((s) =>
+          s ? { ...s, errors: [...s.errors, { pageId: page.id, pageName, message: msg }] } : s
+        );
+        continue;
+      }
+
+      try {
+        // === Step 1: clone identical (or reuse existing) ============
+        let html = page.clonedData?.html || page.swipedData?.html || '';
+        if (!html || html.length < HTML_MIN_BYTES_FOR_REWRITE) {
+          const cloneRes = await fetch('/api/clone-funnel', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              url,
+              cloneMode: 'identical',
+              viewport: 'desktop',
+              keepScripts: true,
+            }),
+          });
+          const cloneData = await cloneRes.json();
+          if (!cloneRes.ok || cloneData.error) {
+            throw new Error(cloneData.error || 'Clone fallito');
+          }
+          html = sanitizeClonedHtml(cloneData.content, url, { keepScripts: true });
+          if (html.length < HTML_MIN_BYTES_FOR_REWRITE) {
+            throw new Error(
+              `Pagina troppo piccola dopo render (${html.length} char) — probabilmente SPA shell o quiz interattivo`
+            );
+          }
+        }
+        if (swipeAllCancelRef.current) break;
+
+        // === Step 2: rewrite via Edge function ======================
+        setSwipeAllJob((s) => (s ? { ...s, currentStep: 'rewriting', batchInfo: 'estrazione testi…' } : s));
+        updateFunnelPage(page.id, {
+          swipeStatus: 'in_progress',
+          swipeResult: `Swipe All ${i + 1}/${eligible.length} — Estrazione testi...`,
+        });
+
+        const funnelContextStr = funnelNarrativeBlocks.length
+          ? [
+              `Funnel position of CURRENT page: step ${i + 1}/${eligible.length} — ${pageName}${
+                page.pageType ? ` (${page.pageType})` : ''
+              }.`,
+              '',
+              'Pages already rewritten in this same funnel (keep voice, angle, big promise, pain point and CTA logic CONSISTENT with these — do not contradict, do not restart the argument from scratch):',
+              '',
+              ...funnelNarrativeBlocks,
+            ].join('\n')
+          : '';
+
+        const briefStr = (project.brief || '').trim();
+        const researchVal = project.marketResearch as unknown;
+        const researchStr =
+          typeof researchVal === 'string'
+            ? researchVal
+            : researchVal
+              ? JSON.stringify(researchVal).slice(0, 6000)
+              : '';
+
+        const SUPABASE_FN_URL = '/api/funnel-swap-proxy';
+
+        const extractRes = await fetch(SUPABASE_FN_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            phase: 'extract',
+            url,
+            cloneMode: 'rewrite',
+            productName: project.name,
+            productDescription: project.description || '',
+            framework: '',
+            target: '',
+            customPrompt: '',
+            targetLanguage: 'it',
+            userId: DEFAULT_USER_ID,
+            renderedHtml: html,
+            brief: briefStr || undefined,
+            market_research: researchStr || undefined,
+            funnel_context: funnelContextStr || undefined,
+          }),
+        });
+        const extractData = await extractRes.json();
+        if (!extractRes.ok || extractData.error) {
+          throw new Error(extractData.error || extractData.details || 'Extract fallito');
+        }
+        if (!extractData.jobId) throw new Error('Extract: nessun jobId');
+
+        const sbJobId = extractData.jobId as string;
+        const sbTotal = (extractData.totalTexts as number) || 0;
+        let sbBatch = 0;
+        let sbProcessed = 0;
+        let sbFinalHtml = '';
+        let sbReplacements = 0;
+
+        while (sbBatch < SB_MAX_BATCHES) {
+          if (swipeAllCancelRef.current) break;
+          const procRes = await fetch(SUPABASE_FN_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              phase: 'process',
+              jobId: sbJobId,
+              cloneMode: 'rewrite',
+              batchNumber: sbBatch,
+              userId: DEFAULT_USER_ID,
+              brief: briefStr || undefined,
+              market_research: researchStr || undefined,
+              funnel_context: funnelContextStr || undefined,
+            }),
+          });
+          const procData = await procRes.json();
+          if (!procRes.ok || procData.error) {
+            throw new Error(procData.error || `Process batch ${sbBatch} HTTP ${procRes.status}`);
+          }
+
+          if (procData.phase === 'completed' && procData.content) {
+            sbFinalHtml = procData.content;
+            sbReplacements = procData.replacements || 0;
+            break;
+          }
+
+          sbProcessed += procData.batchProcessed || 0;
+          const batchInfo = `batch ${sbBatch + 1} (${sbProcessed}/${sbTotal})`;
+          setSwipeAllJob((s) => (s ? { ...s, batchInfo } : s));
+          updateFunnelPage(page.id, {
+            swipeStatus: 'in_progress',
+            swipeResult: `Swipe All ${i + 1}/${eligible.length} — ${batchInfo}`,
+          });
+          if (!procData.continue && !procData.remainingTexts) break;
+          sbBatch++;
+        }
+
+        if (swipeAllCancelRef.current) break;
+        if (!sbFinalHtml) throw new Error('Edge function non ha restituito HTML completato');
+
+        updateFunnelPage(page.id, {
+          swipeStatus: 'completed',
+          swipeResult: `Rewrite OK (${sbReplacements} sostituzioni)`,
+          clonedData: {
+            html: sbFinalHtml,
+            mobileHtml: page.clonedData?.mobileHtml,
+            title: page.clonedData?.title || pageName,
+            method_used: 'rewrite',
+            content_length: sbFinalHtml.length,
+            duration_seconds: 0,
+            cloned_at: new Date(),
+          },
+        });
+
+        // === Step 3: extract narrative for next pages ===============
+        setSwipeAllJob((s) =>
+          s ? { ...s, currentStep: 'narrative', batchInfo: 'analisi narrative…' } : s
+        );
+        try {
+          const narrativeRes = await fetch('/api/swipe-all/extract-narrative', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              html: sbFinalHtml,
+              pageName,
+              pageType: page.pageType || '',
+              stepIndex: i + 1,
+              totalSteps: eligible.length,
+            }),
+          });
+          const narrativeData = await narrativeRes.json();
+          if (narrativeData.ok && typeof narrativeData.blockText === 'string') {
+            funnelNarrativeBlocks.push(narrativeData.blockText);
+          }
+        } catch {
+          /* narrative extraction is best-effort: a failure here does not
+             block the rest of the swipe-all run, the next pages just won't
+             get this page's summary in their context. */
+        }
+
+        setSwipeAllJob((s) => (s ? { ...s, completed: s.completed + 1 } : s));
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Errore sconosciuto';
+        updateFunnelPage(page.id, { swipeStatus: 'failed', swipeResult: `Swipe All: ${msg}` });
+        setSwipeAllJob((s) =>
+          s ? { ...s, errors: [...s.errors, { pageId: page.id, pageName, message: msg }] } : s
+        );
+      }
+    }
+
+    setSwipeAllJob((s) =>
+      s ? { ...s, isRunning: false, currentStep: 'idle', batchInfo: '' } : s
+    );
+  }, [funnelPages, projects, updateFunnelPage]);
+
+  const cancelSwipeAll = useCallback(() => {
+    swipeAllCancelRef.current = true;
+    setSwipeAllJob((s) => (s ? { ...s, cancelRequested: true } : s));
+  }, []);
+
   const handleClone = async () => {
     const pageId = cloneModal.pageId;
     const url = cloneModal.url;
@@ -2790,6 +3074,44 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                 ))}
               </div>
 
+              {/* Swipe All — riscrive in sequenza tutte le pagine eligibili
+                 mantenendo coerenza narrativa tra una pagina e l'altra
+                 (Claude vede il riassunto delle pagine già fatte). */}
+              <button
+                onClick={() => {
+                  if (swipeAllJob?.isRunning) {
+                    if (window.confirm('Annullare lo Swipe All in corso? La pagina attuale finirà comunque.')) {
+                      cancelSwipeAll();
+                    }
+                    return;
+                  }
+                  void runSwipeAll();
+                }}
+                disabled={!funnelPages || funnelPages.length === 0}
+                className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-semibold transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
+                  swipeAllJob?.isRunning
+                    ? 'bg-amber-100 text-amber-800 hover:bg-amber-200 border border-amber-300'
+                    : 'bg-gradient-to-r from-violet-600 via-fuchsia-600 to-pink-600 hover:from-violet-700 hover:via-fuchsia-700 hover:to-pink-700 text-white shadow-sm'
+                }`}
+                title={
+                  swipeAllJob?.isRunning
+                    ? 'Click per annullare lo Swipe All in corso'
+                    : 'Swipe sequenziale di tutte le pagine, mantenendo coerenza narrativa tra una pagina e l\'altra (Claude vede il riassunto delle pagine già riscritte)'
+                }
+              >
+                {swipeAllJob?.isRunning ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Swiping {swipeAllJob.currentIndex}/{swipeAllJob.totalCount}…
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="w-4 h-4" />
+                    Swipe All
+                  </>
+                )}
+              </button>
+
               {/* Save Funnel */}
               <button
                 onClick={() => {
@@ -2824,6 +3146,84 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
               </button>
             </div>
           </div>
+
+          {/* Swipe All Progress Panel — visibile finché il job è in corso o
+             ha appena finito con errori da rivedere. */}
+          {swipeAllJob && (swipeAllJob.isRunning || swipeAllJob.errors.length > 0 || swipeAllJob.completed > 0) && (
+            <div className="mt-4 pt-4 border-t border-gray-200">
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="font-semibold text-gray-900 flex items-center gap-2">
+                  {swipeAllJob.isRunning ? (
+                    <Loader2 className="w-4 h-4 animate-spin text-fuchsia-600" />
+                  ) : (
+                    <Sparkles className="w-4 h-4 text-fuchsia-600" />
+                  )}
+                  Swipe All
+                  {swipeAllJob.cancelRequested && (
+                    <span className="text-[10px] uppercase tracking-wider text-amber-700 bg-amber-100 border border-amber-200 px-1.5 py-0.5 rounded">Cancel requested</span>
+                  )}
+                </h3>
+                <div className="flex items-center gap-3">
+                  <span className="text-xs text-gray-600">
+                    {swipeAllJob.completed}/{swipeAllJob.totalCount} done
+                    {swipeAllJob.errors.length > 0 && (
+                      <span className="text-red-600 ml-1">· {swipeAllJob.errors.length} error{swipeAllJob.errors.length > 1 ? 's' : ''}</span>
+                    )}
+                  </span>
+                  {!swipeAllJob.isRunning && (
+                    <button
+                      onClick={() => setSwipeAllJob(null)}
+                      className="text-xs text-gray-500 hover:text-gray-700"
+                      title="Chiudi pannello"
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Progress bar */}
+              <div className="h-2 rounded-full bg-gray-100 overflow-hidden mb-2">
+                <div
+                  className="h-full bg-gradient-to-r from-violet-500 via-fuchsia-500 to-pink-500 transition-all duration-300"
+                  style={{
+                    width: `${
+                      swipeAllJob.totalCount > 0
+                        ? Math.round((swipeAllJob.completed / swipeAllJob.totalCount) * 100)
+                        : 0
+                    }%`,
+                  }}
+                />
+              </div>
+
+              {swipeAllJob.isRunning && (
+                <p className="text-xs text-gray-600">
+                  <span className="font-medium text-gray-800">
+                    {swipeAllJob.currentIndex}/{swipeAllJob.totalCount} — {swipeAllJob.currentPageName || '…'}
+                  </span>
+                  {swipeAllJob.currentStep === 'cloning' && ' · cloning…'}
+                  {swipeAllJob.currentStep === 'rewriting' && ` · rewriting${swipeAllJob.batchInfo ? ` (${swipeAllJob.batchInfo})` : ''}`}
+                  {swipeAllJob.currentStep === 'narrative' && ' · estrazione narrative per coerenza con le prossime pagine…'}
+                </p>
+              )}
+
+              {!swipeAllJob.isRunning && swipeAllJob.errors.length === 0 && swipeAllJob.completed > 0 && (
+                <p className="text-xs text-emerald-700">
+                  ✓ Tutte e {swipeAllJob.completed} le pagine sono state riscritte con coerenza narrativa.
+                </p>
+              )}
+
+              {swipeAllJob.errors.length > 0 && (
+                <div className="mt-2 space-y-1">
+                  {swipeAllJob.errors.map((e, idx) => (
+                    <p key={idx} className="text-[11px] text-red-700">
+                      <span className="font-semibold">{e.pageName}:</span> {e.message}
+                    </p>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Active Jobs Panel */}
           {showJobsPanel && activeJobs.length > 0 && (

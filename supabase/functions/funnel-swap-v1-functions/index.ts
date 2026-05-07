@@ -261,6 +261,14 @@ serve(async (req) => {
       brief,
       // Optional market research notes (free-form). Same flow as `brief`.
       market_research,
+      // Optional funnel narrative — populated by the "Swipe All" orchestrator
+      // when rewriting multiple pages of the same funnel in sequence. It's a
+      // stringified JSON or plain text describing the headline / hook /
+      // big promise / primary CTA / angle of pages already rewritten in this
+      // funnel, plus the funnel position of the current page (e.g. "step 2/4
+      // — Landing Page after the Advertorial"). Goal: keep voice, angle,
+      // pain points and CTA logic CONSISTENT across all the funnel pages.
+      funnel_context,
       // Optional copywriting knowledge base — injected by the Next.js API
       // route (/api/clone-funnel) from src/knowledge/copywriting/. Sent as a
       // cached system block (cache_control: ephemeral) so the cost is paid
@@ -294,7 +302,7 @@ serve(async (req) => {
     // which version of the function is actually serving requests. Critical
     // because GitHub pushes don't auto-deploy; if you don't see this exact
     // string in the logs you're still on the old build.
-    console.log(`🔖 funnel-swap build: v4.0-knowledge-base (2026-05-06)`)
+    console.log(`🔖 funnel-swap build: v4.1-funnel-context (2026-05-07)`)
     console.log(`📋 Richiesta ricevuta: phase=${phase}, cloneMode=${cloneMode}, url=${url?.substring(0, 50)}...`)
     if (system_kb) {
       const kbChars = String(system_kb).length
@@ -302,6 +310,7 @@ serve(async (req) => {
     }
     if (brief) console.log(`📄 Brief ricevuto: ${String(brief).length} chars`)
     if (market_research) console.log(`🔬 Market research ricevuta: ${String(market_research).length} chars`)
+    if (funnel_context) console.log(`🧵 Funnel context ricevuto: ${String(funnel_context).length} chars (Swipe All narrative)`)
 
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -984,10 +993,13 @@ html body .stickSection{display:block !important;visibility:visible !important;o
         console.log(`🧬 SPA page detected — disabling HTML markup in rewrites to avoid hydration mismatch`)
       }
 
-      // Trim brief / research so a giant payload doesn't blow the Claude
-      // context. 6K chars ≈ 1.5K tokens each is plenty for guidance.
+      // Trim brief / research / funnel context so a giant payload doesn't
+      // blow the Claude context. 6K chars ≈ 1.5K tokens each is plenty for
+      // guidance; funnel context is capped slightly higher (8K) because it
+      // can grow linearly with the number of already-rewritten pages.
       const briefTrimmed = brief ? String(brief).slice(0, 6000) : ''
       const researchTrimmed = market_research ? String(market_research).slice(0, 6000) : ''
+      const funnelContextTrimmed = funnel_context ? String(funnel_context).slice(0, 8000) : ''
 
       const rewritePrompt = `La landing page è un TEMPLATE strutturale. Il tuo compito è riscrivere TUTTI i testi usando SOLO le informazioni del nuovo prodotto.
 
@@ -999,6 +1011,7 @@ ${job.target ? `Target audience: ${job.target}` : ''}
 ${job.custom_prompt ? `Istruzioni copy personalizzate: ${job.custom_prompt}` : ''}
 ${briefTrimmed ? `\n📄 PROJECT BRIEF (fonte primaria di verità per tono, posizionamento e value props):\n${briefTrimmed}\n` : ''}
 ${researchTrimmed ? `\n🔬 MARKET RESEARCH (insight su pubblico, dolori, desideri, linguaggio):\n${researchTrimmed}\n` : ''}
+${funnelContextTrimmed ? `\n🧵 FUNNEL NARRATIVE (pagine già riscritte di questo stesso funnel — DEVI mantenere COERENZA su tono di voce, angle/grande idea, big promise, pain point principale, audience, CTA logic. NON contraddire ciò che è stato detto prima; aggiungi profondità coerente con la posizione di questa pagina nel funnel):\n${funnelContextTrimmed}\n` : ''}
 
 🎯 COSA DEVI FARE:
 - I testi originali sono SOLO per capire: lunghezza approssimativa, tipo di testo (titolo/bottone/descrizione), formattazione
