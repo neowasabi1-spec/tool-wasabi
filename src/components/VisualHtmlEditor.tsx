@@ -777,6 +777,12 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
    *  l'aiSourceImage è impostato, parte automaticamente Seedance 2.0
    *  senza che l'utente debba toccare null'altro. */
   const [swipeAutoMode, setSwipeAutoMode] = useState(false);
+  /** Stati relativi all'analisi vision del clip originale (Claude vede
+   *  il poster del <video> e propone un prompt mirato per Seedance). */
+  const [swipeVisionLoading, setSwipeVisionLoading] = useState(false);
+  const [swipeVisionMode, setSwipeVisionMode] = useState<'vision' | 'text' | null>(null);
+  const [swipeVisionIntent, setSwipeVisionIntent] = useState('');
+  const [swipeVisionError, setSwipeVisionError] = useState('');
 
   const AI_MODELS: Record<AiMode, { id: string; label: string; hint: string }[]> = {
     text2image: [
@@ -1369,7 +1375,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
    * Il flow di replace già esistente nel modal (vedi `handleAiGenerate`)
    * sostituirà l'<video> selezionato con il nuovo URL via
    * cmd-replace-outer-html, quindi qui non c'è altro da fare. */
-  const handleSwipeVideoForProduct = useCallback(() => {
+  const handleSwipeVideoForProduct = useCallback(async () => {
     if (!selectedElement || selectedElement.tagName !== 'video') return;
 
     /* ElementInfo espone direttamente alt/src/textContent/className.
@@ -1377,53 +1383,100 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
        a runtime dà undefined → TypeError, motivo per cui in v1 il bottone
        sembrava "non fare nulla". Usiamo solo i field tipizzati. */
     const currentAlt = String(selectedElement.alt || '').trim();
-    /* className/textContent vicini possono dare un piccolo segnale di
-       contesto (es. "hero-video", "demo before-after"). Non è perfetto ma
-       è sufficiente come hint per il prompt — il pageTitle resta la
-       fonte primaria. */
-    const classHint = String(selectedElement.className || '')
-      .replace(/[-_]/g, ' ')
-      .trim();
-    const surroundingText = [currentAlt, classHint, pageTitle || '']
-      .filter(Boolean)
-      .join(' · ');
+    const posterUrl = (() => {
+      const va = (selectedElement as unknown as {
+        videoAttrs?: { poster?: string };
+      }).videoAttrs;
+      return String(va?.poster || '').trim();
+    })();
 
     const productName = (productContext?.name || '').trim();
     const productDesc = (productContext?.description || '').trim();
     const productBrief = (productContext?.brief || '').trim().slice(0, 600);
+    const productImage = (productContext?.imageUrl || '').trim();
 
-    const lines: string[] = [];
-    lines.push(
+    /* Prompt fallback in caso l'analisi vision di Claude fallisca:
+       generico ma in inglese, costruito dai dati locali. */
+    const fallbackLines: string[] = [];
+    fallbackLines.push(
       productName
         ? `Create a high-quality product video for: ${productName}.`
         : 'Create a high-quality product video for our product.'
     );
-    if (productDesc) lines.push(`What it is: ${productDesc}.`);
-    lines.push(
-      surroundingText
-        ? `It must replace an existing clip on the page whose context is: "${surroundingText}". Keep the same intent (e.g. demo / before-after / lifestyle / hero shot) but featuring OUR product instead.`
-        : 'Replace the original clip on the page with an equivalent shot for OUR product.'
-    );
-    if (productBrief) lines.push(`Brief snippet: ${productBrief}`);
-    lines.push(
+    if (productDesc) fallbackLines.push(`What it is: ${productDesc}.`);
+    if (currentAlt) fallbackLines.push(`Original clip context: "${currentAlt}".`);
+    if (productBrief) fallbackLines.push(`Brief snippet: ${productBrief}`);
+    fallbackLines.push(
       'Smooth professional motion, realistic, well-lit, no on-screen text, no audio.'
     );
+    const fallbackPrompt = fallbackLines.join('\n');
 
-    const productImage = (productContext?.imageUrl || '').trim();
-
+    /* 1. Apriamo il modal subito con uno stato di "analisi in corso", così
+       l'utente vede feedback istantaneo. Disattiviamo l'auto-fire della
+       generazione (resterà disabilitato finché l'analisi non finisce o
+       l'utente non sceglie di procedere). */
     setAiMode('image2video');
-    setAiPrompt(lines.join('\n'));
+    setAiPrompt('');
     setAiSourceImage(productImage);
-    setAiContextText(surroundingText);
+    setAiContextText(currentAlt || pageTitle || '');
     setAiVideoLoop(true);
     setAiError('');
     setAiRevisedPrompt('');
     setShowAiPanel(false);
-    /* Se abbiamo già un'immagine del prodotto (es. Project.logo[0].url),
-       passiamo direttamente alla generazione: 1 click → video sostituito.
-       Altrimenti il modal si apre normalmente e l'utente carica la foto. */
-    setSwipeAutoMode(Boolean(productImage));
+    setSwipeAutoMode(false);
+    setSwipeVisionLoading(true);
+    setSwipeVisionMode(null);
+    setSwipeVisionIntent('');
+    setSwipeVisionError('');
     setShowAiImagePopup(true);
+
+    /* 2. Chiediamo a Claude (vision) di guardare il poster del clip
+       competitor e proporre un prompt mirato. */
+    try {
+      const resp = await fetch('/api/swipe-video/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          posterUrl,
+          currentAlt,
+          pageTitle: pageTitle || '',
+          productContext: {
+            name: productName,
+            description: productDesc,
+            brief: productBrief,
+          },
+        }),
+      });
+      const data = (await resp.json()) as {
+        ok: boolean;
+        intent?: string;
+        originalDescription?: string;
+        suggestedPrompt?: string;
+        mode?: 'vision' | 'text';
+        error?: string;
+      };
+      if (!resp.ok || !data.ok) {
+        throw new Error(data.error || `analyze ${resp.status}`);
+      }
+      const suggested = (data.suggestedPrompt || '').trim() || fallbackPrompt;
+      const desc = (data.originalDescription || '').trim();
+      setAiPrompt(suggested);
+      if (desc) setAiContextText(desc);
+      setSwipeVisionMode(data.mode || 'text');
+      setSwipeVisionIntent(data.intent || '');
+      /* L'auto-fire parte SOLO se abbiamo già la foto prodotto e Claude
+         ha proposto un prompt: 1 click → 30-60s → video sostituito. */
+      setSwipeAutoMode(Boolean(productImage));
+    } catch (err) {
+      setAiPrompt(fallbackPrompt);
+      setSwipeVisionMode(null);
+      setSwipeVisionError(
+        err instanceof Error ? err.message : 'Analisi non disponibile'
+      );
+      /* Niente auto-fire quando l'analisi fallisce: l'utente decide. */
+    } finally {
+      setSwipeVisionLoading(false);
+    }
   }, [selectedElement, productContext, pageTitle]);
 
   /* Auto-fire della generazione quando "Swipe for Product" parte in
@@ -3216,32 +3269,66 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
               )}
 
               {/* Swipe-for-Product banner (image2video aperto dal bottone Swipe) */}
-              {aiMode === 'image2video' && aiContextText && (
+              {aiMode === 'image2video' && (swipeVisionLoading || aiContextText || swipeVisionError) && (
                 <div className="p-3 rounded-lg bg-gradient-to-r from-violet-50 via-fuchsia-50 to-pink-50 border border-fuchsia-200">
                   <div className="flex items-start gap-2">
-                    {(swipeAutoMode || (aiGenerating && aiSourceImage)) ? (
+                    {(swipeVisionLoading || swipeAutoMode || (aiGenerating && aiSourceImage)) ? (
                       <Loader2 className="h-3.5 w-3.5 text-fuchsia-600 mt-0.5 shrink-0 animate-spin" />
                     ) : (
                       <Sparkles className="h-3.5 w-3.5 text-fuchsia-600 mt-0.5 shrink-0" />
                     )}
-                    <div className="min-w-0">
-                      <p className="text-[11px] font-bold text-fuchsia-800">
-                        {swipeAutoMode || (aiGenerating && aiSourceImage)
-                          ? 'Sto facendo lo swipe del video per il tuo prodotto…'
-                          : 'Swipe Video for Product'}
-                      </p>
-                      <p className="text-[11px] text-slate-600 leading-relaxed mt-0.5">
-                        Clip originale:{' '}
-                        <span className="italic text-slate-700">&ldquo;{aiContextText.substring(0, 160)}{aiContextText.length > 160 ? '…' : ''}&rdquo;</span>
-                      </p>
-                      {aiSourceImage ? (
-                        <p className="text-[11px] text-slate-600 leading-relaxed mt-1">
-                          Sto usando la foto del tuo prodotto come prima frame e la sto animando con Seedance 2.0 mantenendo lo stesso intent del clip originale. Bastano 30-60s, poi il video viene sostituito automaticamente.
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <p className="text-[11px] font-bold text-fuchsia-800">
+                          {swipeVisionLoading
+                            ? 'Sto guardando il video originale…'
+                            : (swipeAutoMode || (aiGenerating && aiSourceImage))
+                              ? 'Sto facendo lo swipe del video per il tuo prodotto…'
+                              : 'Swipe Video for Product'}
+                        </p>
+                        {swipeVisionIntent && !swipeVisionLoading && (
+                          <span className="px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wider font-bold bg-fuchsia-100 text-fuchsia-700">
+                            {swipeVisionIntent}
+                          </span>
+                        )}
+                        {swipeVisionMode === 'vision' && !swipeVisionLoading && (
+                          <span className="text-[9px] uppercase tracking-wider font-semibold text-emerald-600">
+                            ◉ vision on
+                          </span>
+                        )}
+                        {swipeVisionMode === 'text' && !swipeVisionLoading && (
+                          <span className="text-[9px] uppercase tracking-wider font-medium text-slate-500" title="Poster non disponibile, analisi solo testuale">
+                            text-only
+                          </span>
+                        )}
+                      </div>
+
+                      {swipeVisionLoading ? (
+                        <p className="text-[11px] text-slate-600 leading-relaxed mt-0.5">
+                          Claude sta analizzando il poster del clip per capire l&apos;intent (demo / before-after / lifestyle…) e suggerire un prompt mirato per il tuo prodotto.
                         </p>
                       ) : (
-                        <p className="text-[11px] text-slate-600 leading-relaxed mt-1">
-                          Per la modalità <strong>completamente automatica</strong>, aggiungi una foto del prodotto al Project (sezione Logo). Per ora puoi caricarla qui sopra e cliccare Genera.
-                        </p>
+                        <>
+                          {aiContextText && (
+                            <p className="text-[11px] text-slate-600 leading-relaxed mt-0.5">
+                              <span className="text-slate-500">Clip originale:</span>{' '}
+                              <span className="italic text-slate-700">&ldquo;{aiContextText.substring(0, 200)}{aiContextText.length > 200 ? '…' : ''}&rdquo;</span>
+                            </p>
+                          )}
+                          {swipeVisionError ? (
+                            <p className="text-[11px] text-amber-700 leading-relaxed mt-1">
+                              Analisi vision non riuscita ({swipeVisionError}). Ti ho lasciato un prompt generico — modificalo pure prima di generare.
+                            </p>
+                          ) : aiSourceImage ? (
+                            <p className="text-[11px] text-slate-600 leading-relaxed mt-1">
+                              Il prompt qui sotto è già pronto: tra qualche secondo Seedance 2.0 anima la foto del tuo prodotto e sostituisce il video. Modificalo se vuoi un&apos;azione diversa.
+                            </p>
+                          ) : (
+                            <p className="text-[11px] text-slate-600 leading-relaxed mt-1">
+                              Carica una foto del tuo prodotto come prima frame, oppure aggiungila al Project (Logo) per attivare la modalità completamente automatica.
+                            </p>
+                          )}
+                        </>
                       )}
                     </div>
                   </div>
