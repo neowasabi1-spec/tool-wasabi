@@ -876,6 +876,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
       switch (e.data.type) {
         case 'editor-ready':
           setEditorReady(true);
+          setSwitchingViewport(false);
           sendToIframe({ type: 'cmd-get-sections' });
           break;
         case 'element-selected':
@@ -1615,6 +1616,44 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     });
   }, [closing, onClose]);
 
+  /* ── Viewport switch (Desktop ↔ Mobile) ──
+   * Stesso problema del close: cambiare editorViewport fa cambiare la
+   * `key` dell'<iframe srcDoc=...>, React lo remounta nello stesso
+   * commit e il browser parsa sincronicamente la nuova srcDoc (pesante:
+   * Swiper, jQuery, centinaia di nodi). Senza yield al browser, la UI
+   * freeza per 1-2s prima che lo spinner appaia.
+   *
+   * Fix:
+   *   1) flippa `switchingViewport=true` + `editorReady=false` → React
+   *      rerender SOLO con l'overlay (l'iframe ha ancora il vecchio key,
+   *      quindi non remounta) → il browser dipinge lo spinner.
+   *   2) su rAF svuoto la srcDoc del vecchio iframe (teardown leggero
+   *      del DOM grande prima del remount).
+   *   3) su setTimeout(0) cambio davvero editorViewport: il key cambia,
+   *      l'iframe remounta, il parser blocca il main thread MA stavolta
+   *      l'overlay e' gia' visibile.
+   *   4) il messaggio 'editor-ready' dall'iframe nuova clearera' il flag.
+   */
+  const [switchingViewport, setSwitchingViewport] = useState(false);
+  const handleSwitchViewport = useCallback((next: 'desktop' | 'mobile') => {
+    if (next === editorViewport || switchingViewport) return;
+    setSwitchingViewport(true);
+    setEditorReady(false);
+    requestAnimationFrame(() => {
+      try {
+        if (iframeRef.current) {
+          iframeRef.current.srcdoc = '<!doctype html><html><body></body></html>';
+        }
+      } catch { /* iframe detached */ }
+      setTimeout(() => {
+        setEditorViewport(next);
+        // Defensive: l'iframe potrebbe non rispondere con 'editor-ready'
+        // (es. errori di parsing). Sgancia il flag dopo 4s comunque.
+        setTimeout(() => setSwitchingViewport(false), 4000);
+      }, 0);
+    });
+  }, [editorViewport, switchingViewport]);
+
   return (
     <div className="fixed inset-0 z-[60] flex flex-col bg-white">
       {/* Overlay mostrato durante il close per dare feedback immediato
@@ -1672,8 +1711,9 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
           <div className="w-px h-6 bg-slate-700 mx-1" />
           <div className="flex bg-slate-800 rounded-lg p-0.5 gap-0.5">
             <button
-              onClick={() => setEditorViewport('desktop')}
-              className={`flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-medium transition-all ${
+              onClick={() => handleSwitchViewport('desktop')}
+              disabled={switchingViewport}
+              className={`flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-medium transition-all disabled:opacity-50 disabled:cursor-wait ${
                 editorViewport === 'desktop'
                   ? 'bg-blue-500 text-white shadow'
                   : 'text-slate-400 hover:text-white hover:bg-slate-700'
@@ -1682,8 +1722,9 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
               <Monitor className="h-3.5 w-3.5" />Desktop
             </button>
             <button
-              onClick={() => setEditorViewport('mobile')}
-              className={`flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-medium transition-all ${
+              onClick={() => handleSwitchViewport('mobile')}
+              disabled={switchingViewport}
+              className={`flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-medium transition-all disabled:opacity-50 disabled:cursor-wait ${
                 editorViewport === 'mobile'
                   ? 'bg-blue-500 text-white shadow'
                   : 'text-slate-400 hover:text-white hover:bg-slate-700'
@@ -1875,11 +1916,20 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                 title="Visual Editor Canvas"
                 sandbox="allow-scripts allow-same-origin"
               />
-              {!editorReady && (
-                <div className="absolute inset-0 flex items-center justify-center bg-white/80">
-                  <div className="flex items-center gap-2 text-slate-500">
-                    <MousePointer className="h-5 w-5 animate-pulse" />
-                    <span className="text-sm">Loading editor...</span>
+              {(!editorReady || switchingViewport) && (
+                <div className="absolute inset-0 flex items-center justify-center bg-white/85 backdrop-blur-sm z-30">
+                  <div className="flex items-center gap-2 px-4 py-2 rounded-lg bg-white shadow border border-slate-200 text-slate-700">
+                    {switchingViewport ? (
+                      <>
+                        <Loader2 className="h-4 w-4 animate-spin text-blue-600" />
+                        <span className="text-sm font-medium">Switching viewport…</span>
+                      </>
+                    ) : (
+                      <>
+                        <MousePointer className="h-5 w-5 animate-pulse" />
+                        <span className="text-sm">Loading editor…</span>
+                      </>
+                    )}
                   </div>
                 </div>
               )}
