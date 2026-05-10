@@ -6,8 +6,12 @@ import Header from '@/components/Header';
 import { supabase } from '@/lib/supabase';
 import {
   Plus, FolderOpen, ChevronRight, ChevronDown, Layers,
-  Trash2, Search, Save, X, Upload, Loader2,
+  Trash2, Search, Save, X, Upload, Loader2, FileText, Eye,
 } from 'lucide-react';
+import {
+  parseSectionData, buildSectionBlob, formatFileSize,
+  type SectionFile, type SectionData,
+} from '@/lib/project-sections';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -27,9 +31,11 @@ interface Project {
   notes: string;
   created_at: string;
   updated_at: string;
-  // JSONB columns – raw from DB
+  // brief is TEXT; brief_files is JSONB with the file list.
+  brief?: string | null;
+  brief_files?: any;
+  // The other section columns are JSONB.
   market_research?: any;
-  brief?: any;
   front_end?: any;
   back_end?: any;
   compliance_funnel?: any;
@@ -50,13 +56,6 @@ const STATUS_COLOR: Record<string, string> = {
 };
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
-
-function extractText(val: any): string {
-  if (!val) return '';
-  if (typeof val === 'string') return val;
-  if (typeof val === 'object' && val.content) return String(val.content);
-  return '';
-}
 
 function extractRows(val: any): FunnelRow[] {
   if (!val) return [];
@@ -153,7 +152,7 @@ async function parseFileToRows(file: File): Promise<FunnelRow[]> {
   }).filter(r => r.step || r.url || r.price || r.offerType);
 }
 
-// ─── Sub-component: Upload Button ────────────────────────────────────────────
+// ─── Sub-component: Upload Button (single file, used by Front/Back End table) ─
 
 function UploadButton({
   accept,
@@ -202,6 +201,189 @@ function UploadButton({
         {busy ? 'Reading...' : label}
       </button>
       {error && <span className="text-xs text-red-400">{error}</span>}
+    </div>
+  );
+}
+
+// ─── Sub-component: Section Files Editor (multi-file folder view) ────────────
+
+function SectionFilesEditor({
+  data,
+  onChange,
+  notesPlaceholder,
+}: {
+  data: SectionData;
+  onChange: (next: SectionData) => void;
+  notesPlaceholder?: string;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [previewIdx, setPreviewIdx] = useState<number | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+
+  const ACCEPT = '.txt,.md,.markdown,.pdf,.docx,.csv,.json,.html,.htm,.rtf,.xml,.yaml,.yml,.log,text/*';
+
+  async function ingestFiles(fileList: FileList | File[]) {
+    const arr = Array.from(fileList);
+    if (arr.length === 0) return;
+    setError(null);
+    setBusy(true);
+    const next: SectionFile[] = [...data.files];
+    const errors: string[] = [];
+    for (const file of arr) {
+      try {
+        const content = await parseFileToText(file);
+        if (!content.trim()) {
+          errors.push(`${file.name}: empty`);
+          continue;
+        }
+        next.push({
+          name: file.name,
+          content,
+          size: file.size,
+          type: file.type || (file.name.split('.').pop() || ''),
+          uploadedAt: new Date().toISOString(),
+        });
+      } catch (err) {
+        errors.push(`${file.name}: ${err instanceof Error ? err.message : 'failed'}`);
+      }
+    }
+    onChange({ ...data, files: next });
+    setBusy(false);
+    if (errors.length) setError(errors.join(' · '));
+    if (inputRef.current) inputRef.current.value = '';
+  }
+
+  function removeFile(idx: number) {
+    const next = data.files.filter((_, i) => i !== idx);
+    onChange({ ...data, files: next });
+    if (previewIdx === idx) setPreviewIdx(null);
+  }
+
+  function setNotes(notes: string) {
+    onChange({ ...data, notes });
+  }
+
+  const totalChars = data.files.reduce((acc, f) => acc + f.content.length, 0)
+    + (data.notes?.length || 0);
+
+  return (
+    <div className="space-y-3">
+      {/* Drop zone + upload */}
+      <div
+        onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragOver(false);
+          if (e.dataTransfer.files?.length) ingestFiles(e.dataTransfer.files);
+        }}
+        className={`border-2 border-dashed rounded-lg p-4 transition-colors ${
+          dragOver ? 'border-blue-500 bg-blue-500/5' : 'border-[#2A2D3A] bg-[#0F1117]'
+        }`}
+      >
+        <input
+          ref={inputRef}
+          type="file"
+          accept={ACCEPT}
+          multiple
+          onChange={(e) => e.target.files && ingestFiles(e.target.files)}
+          className="hidden"
+        />
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2 text-sm text-gray-400">
+            <Upload className="w-4 h-4" />
+            <span>Drop files here or click to upload (PDF, DOCX, TXT, MD, CSV...)</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => inputRef.current?.click()}
+            disabled={busy}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-blue-600 hover:bg-blue-700 text-white transition-colors disabled:opacity-50 flex-shrink-0"
+          >
+            {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Upload className="w-3 h-3" />}
+            {busy ? 'Reading...' : 'Upload Files'}
+          </button>
+        </div>
+        {error && <div className="mt-2 text-xs text-red-400">{error}</div>}
+      </div>
+
+      {/* File list */}
+      {data.files.length === 0 ? (
+        <div className="text-center text-gray-500 text-xs py-4 border border-[#2A2D3A] rounded-lg bg-[#0F1117]/50">
+          No files uploaded yet.
+        </div>
+      ) : (
+        <div className="border border-[#2A2D3A] rounded-lg overflow-hidden">
+          <div className="px-3 py-2 bg-[#1A1D27] border-b border-[#2A2D3A] flex items-center justify-between">
+            <span className="text-xs text-gray-400 font-medium">
+              {data.files.length} file{data.files.length !== 1 ? 's' : ''} · {totalChars.toLocaleString()} chars total
+            </span>
+          </div>
+          <ul className="divide-y divide-[#2A2D3A]">
+            {data.files.map((f, i) => (
+              <li key={i} className="px-3 py-2 hover:bg-[#1A1D27]/50 transition-colors">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                    <FileText className="w-4 h-4 text-blue-400 flex-shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm text-white truncate">{f.name}</div>
+                      <div className="text-xs text-gray-500 flex items-center gap-2 mt-0.5">
+                        <span>{formatFileSize(f.size)}</span>
+                        <span>·</span>
+                        <span>{f.content.length.toLocaleString()} chars</span>
+                        {f.uploadedAt && (
+                          <>
+                            <span>·</span>
+                            <span>{new Date(f.uploadedAt).toLocaleString()}</span>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1 flex-shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setPreviewIdx(previewIdx === i ? null : i)}
+                      className="p-1.5 text-gray-500 hover:text-blue-400 hover:bg-[#2A2D3A] rounded transition-colors"
+                      title="Preview extracted text"
+                    >
+                      <Eye className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => removeFile(i)}
+                      className="p-1.5 text-gray-500 hover:text-red-400 hover:bg-red-900/20 rounded transition-colors"
+                      title="Remove file"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+                {previewIdx === i && (
+                  <pre className="mt-2 ml-6 p-2 bg-[#0F1117] border border-[#2A2D3A] rounded text-xs text-gray-300 max-h-48 overflow-auto whitespace-pre-wrap break-words">
+                    {f.content.slice(0, 4000)}
+                    {f.content.length > 4000 && '\n\n... (truncated, full text is sent to Claude)'}
+                  </pre>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Free-form notes */}
+      <div>
+        <label className="block text-xs text-gray-500 mb-1">Additional notes (optional)</label>
+        <textarea
+          value={data.notes}
+          onChange={(e) => setNotes(e.target.value)}
+          placeholder={notesPlaceholder || 'Quick notes appended after the uploaded files...'}
+          rows={3}
+          className="w-full bg-[#0F1117] border border-[#2A2D3A] rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500 resize-y"
+        />
+      </div>
     </div>
   );
 }
@@ -287,11 +469,23 @@ function ProjectPanel({
   const [description, setDescription] = useState(String(project.description || ''));
   const [notes, setNotes] = useState(String(project.notes || ''));
 
-  // JSONB text fields
-  const [marketResearch, setMarketResearch] = useState(extractText(project.market_research));
-  const [brief, setBrief] = useState(extractText(project.brief));
-  const [compliance, setCompliance] = useState(extractText(project.compliance_funnel));
-  const [funnelText, setFunnelText] = useState(extractText(project.funnel));
+  // Multi-file sections (Brief uses TEXT `brief` + JSONB `brief_files`;
+  // the others are pure JSONB columns).
+  const [marketResearch, setMarketResearch] = useState<SectionData>(
+    parseSectionData(project.market_research),
+  );
+  const [briefData, setBriefData] = useState<SectionData>(() => {
+    const fromFiles = parseSectionData(project.brief_files);
+    if (fromFiles.files.length > 0 || fromFiles.notes) return fromFiles;
+    // Fallback: legacy projects only had the TEXT `brief` column.
+    return parseSectionData(project.brief || '');
+  });
+  const [compliance, setCompliance] = useState<SectionData>(
+    parseSectionData(project.compliance_funnel),
+  );
+  const [funnelData, setFunnelData] = useState<SectionData>(
+    parseSectionData(project.funnel),
+  );
 
   // Table fields
   const [frontEndRows, setFrontEndRows] = useState<FunnelRow[]>(extractRows(project.front_end));
@@ -299,18 +493,22 @@ function ProjectPanel({
 
   async function save() {
     setSaving(true);
+    const briefBlob = buildSectionBlob(briefData.files, briefData.notes);
     await onUpdate(project.id, {
       name,
       status,
       domain,
       description,
       notes,
-      market_research: { content: marketResearch },
-      brief: brief,
+      market_research: buildSectionBlob(marketResearch.files, marketResearch.notes),
+      // Mirror concatenated text into the legacy TEXT column so every existing
+      // reader (rewrite pipeline, MCP, etc.) keeps working unchanged.
+      brief: briefBlob.content,
+      brief_files: { files: briefBlob.files, notes: briefBlob.notes },
       front_end: { rows: frontEndRows },
       back_end: { rows: backEndRows },
-      compliance_funnel: { content: compliance },
-      funnel: { content: funnelText },
+      compliance_funnel: buildSectionBlob(compliance.files, compliance.notes),
+      funnel: buildSectionBlob(funnelData.files, funnelData.notes),
     });
     setSaving(false);
   }
@@ -321,21 +519,7 @@ function ProjectPanel({
     'w-full bg-[#0F1117] border border-[#2A2D3A] rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500 resize-y min-h-[160px]';
   const labelCls = 'block text-xs text-gray-400 mb-1 font-medium';
 
-  // Helper: load text from a file into a setter, asking before overwriting non-empty content.
-  function loadIntoText(current: string, setter: (v: string) => void) {
-    return async (file: File) => {
-      const text = await parseFileToText(file);
-      if (!text.trim()) throw new Error('File appears to be empty.');
-      if (current.trim()) {
-        const replace = confirm('Replace existing content?\n\nOK = Replace · Cancel = Append');
-        setter(replace ? text : `${current}\n\n${text}`);
-      } else {
-        setter(text);
-      }
-    };
-  }
-
-  // Helper: section header with label + upload button on the right.
+  // Section header (label on the left, optional actions on the right).
   function SectionHeader({ title, children }: { title: string; children?: React.ReactNode }) {
     return (
       <div className="flex items-end justify-between mb-1">
@@ -405,36 +589,22 @@ function ProjectPanel({
 
         {tab === 'Market Research' && (
           <div>
-            <SectionHeader title="Market Research Notes">
-              <UploadButton
-                accept=".txt,.md,.markdown,.pdf,.docx,.csv,.json,.html,.htm,.rtf,text/*"
-                onFile={loadIntoText(marketResearch, setMarketResearch)}
-              />
-            </SectionHeader>
-            <textarea
-              value={marketResearch}
-              onChange={e => setMarketResearch(e.target.value)}
-              className={textareaCls}
-              rows={10}
-              placeholder="Enter market research, competitor notes, target audience analysis..."
+            <SectionHeader title="Market Research" />
+            <SectionFilesEditor
+              data={marketResearch}
+              onChange={setMarketResearch}
+              notesPlaceholder="Extra context, observations, target audience notes..."
             />
           </div>
         )}
 
         {tab === 'Brief' && (
           <div>
-            <SectionHeader title="Brief">
-              <UploadButton
-                accept=".txt,.md,.markdown,.pdf,.docx,.csv,.json,.html,.htm,.rtf,text/*"
-                onFile={loadIntoText(brief, setBrief)}
-              />
-            </SectionHeader>
-            <textarea
-              value={brief}
-              onChange={e => setBrief(e.target.value)}
-              className={textareaCls}
-              rows={10}
-              placeholder="Enter project brief, goals, requirements..."
+            <SectionHeader title="Brief" />
+            <SectionFilesEditor
+              data={briefData}
+              onChange={setBriefData}
+              notesPlaceholder="Goals, requirements, must-haves, tone of voice..."
             />
           </div>
         )}
@@ -485,36 +655,22 @@ function ProjectPanel({
 
         {tab === 'Compliance' && (
           <div>
-            <SectionHeader title="Compliance Notes">
-              <UploadButton
-                accept=".txt,.md,.markdown,.pdf,.docx,.csv,.json,.html,.htm,.rtf,text/*"
-                onFile={loadIntoText(compliance, setCompliance)}
-              />
-            </SectionHeader>
-            <textarea
-              value={compliance}
-              onChange={e => setCompliance(e.target.value)}
-              className={textareaCls}
-              rows={10}
-              placeholder="Enter compliance requirements, disclaimers, legal notes..."
+            <SectionHeader title="Compliance" />
+            <SectionFilesEditor
+              data={compliance}
+              onChange={setCompliance}
+              notesPlaceholder="Compliance requirements, disclaimers, legal notes..."
             />
           </div>
         )}
 
         {tab === 'Funnel' && (
           <div>
-            <SectionHeader title="Funnel Description">
-              <UploadButton
-                accept=".txt,.md,.markdown,.pdf,.docx,.csv,.json,.html,.htm,.rtf,text/*"
-                onFile={loadIntoText(funnelText, setFunnelText)}
-              />
-            </SectionHeader>
-            <textarea
-              value={funnelText}
-              onChange={e => setFunnelText(e.target.value)}
-              className={textareaCls}
-              rows={10}
-              placeholder="Describe the funnel strategy, flow, and objectives..."
+            <SectionHeader title="Funnel" />
+            <SectionFilesEditor
+              data={funnelData}
+              onChange={setFunnelData}
+              notesPlaceholder="Funnel strategy, flow, objectives, narrative..."
             />
           </div>
         )}
@@ -559,14 +715,24 @@ export default function ProjectsPage() {
 
   async function loadProjects() {
     setLoading(true);
-    const { data } = await supabase
+    const COLS = 'id, name, status, description, domain, notes, created_at, updated_at, market_research, brief, brief_files, front_end, back_end, compliance_funnel, funnel';
+    const { data, error } = await supabase
       .from('projects')
-      .select('id, name, status, description, domain, notes, created_at, updated_at, market_research, brief, front_end, back_end, compliance_funnel, funnel')
+      .select(COLS)
       .order('created_at', { ascending: false });
 
-    if (data) {
+    // brief_files was added in a later migration; if it's missing fall back
+    // to selecting without it so the page still renders.
+    const rows = !error
+      ? data
+      : (await supabase
+          .from('projects')
+          .select('id, name, status, description, domain, notes, created_at, updated_at, market_research, brief, front_end, back_end, compliance_funnel, funnel')
+          .order('created_at', { ascending: false })).data;
+
+    if (rows) {
       setProjects(
-        data.map((p: any) => ({
+        rows.map((p: any) => ({
           id: String(p.id || ''),
           name: typeof p.name === 'string' ? p.name : 'Untitled',
           status: typeof p.status === 'string' ? p.status : 'active',
@@ -575,8 +741,9 @@ export default function ProjectsPage() {
           notes: typeof p.notes === 'string' ? p.notes : '',
           created_at: typeof p.created_at === 'string' ? p.created_at : '',
           updated_at: typeof p.updated_at === 'string' ? p.updated_at : '',
+          brief: typeof p.brief === 'string' ? p.brief : '',
+          brief_files: p.brief_files ?? null,
           market_research: p.market_research ?? null,
-          brief: p.brief ?? null,
           front_end: p.front_end ?? null,
           back_end: p.back_end ?? null,
           compliance_funnel: p.compliance_funnel ?? null,
@@ -590,10 +757,11 @@ export default function ProjectsPage() {
   async function addProject() {
     if (!newName.trim()) return;
     setAdding(true);
+    const COLS = 'id, name, status, description, domain, notes, created_at, updated_at, market_research, brief, brief_files, front_end, back_end, compliance_funnel, funnel';
     const { data, error } = await supabase
       .from('projects')
       .insert({ name: newName.trim(), status: 'active', description: '' })
-      .select('id, name, status, description, domain, notes, created_at, updated_at, market_research, brief, front_end, back_end, compliance_funnel, funnel')
+      .select(COLS)
       .single();
     if (!error && data) {
       const newProject: Project = {
@@ -605,8 +773,9 @@ export default function ProjectsPage() {
         notes: '',
         created_at: String(data.created_at || ''),
         updated_at: String(data.updated_at || ''),
+        brief: '',
+        brief_files: null,
         market_research: null,
-        brief: null,
         front_end: null,
         back_end: null,
         compliance_funnel: null,
@@ -621,12 +790,24 @@ export default function ProjectsPage() {
   }
 
   async function updateProject(id: string, fields: Partial<Project>) {
-    const { error } = await supabase.from('projects').update(fields).eq('id', id);
-    if (!error) {
-      setProjects(prev =>
-        prev.map(p => (p.id === id ? { ...p, ...fields } : p)),
-      );
+    let { error } = await supabase.from('projects').update(fields).eq('id', id);
+    // Migration `brief_files` may not be applied yet — retry without it.
+    if (error && /brief_files/i.test(String(error.message || ''))) {
+      const { brief_files: _omit, ...rest } = fields;
+      void _omit;
+      const retry = await supabase.from('projects').update(rest).eq('id', id);
+      error = retry.error;
+      if (!error) {
+        console.warn('[projects] brief_files column missing — run supabase-migration-projects-section-files.sql');
+      }
     }
+    if (error) {
+      alert(`Save failed: ${error.message}`);
+      return;
+    }
+    setProjects(prev =>
+      prev.map(p => (p.id === id ? { ...p, ...fields } : p)),
+    );
   }
 
   async function deleteProject(id: string) {

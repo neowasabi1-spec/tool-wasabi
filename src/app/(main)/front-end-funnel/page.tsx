@@ -5,6 +5,7 @@ import { useSearchParams } from 'next/navigation';
 import Header from '@/components/Header';
 import { useStore } from '@/store/useStore';
 import { fetchAffiliateSavedFunnels } from '@/lib/supabase-operations';
+import { extractSectionContent } from '@/lib/project-sections';
 import type { AffiliateSavedFunnel, SavedPrompt } from '@/types/database';
 import {
   BUILT_IN_PAGE_TYPE_OPTIONS,
@@ -1869,16 +1870,10 @@ export default function FrontEndFunnel() {
   const openCloneModal = (page: typeof funnelPages[0]) => {
     const project = (projects || []).find(p => p.id === page.productId);
 
-    // marketResearch is a JSONB blob in DB → typically { content: string, ... }
-    let researchText = '';
-    const mr = project?.marketResearch as { content?: unknown } | undefined;
-    if (mr) {
-      if (typeof mr === 'string') {
-        researchText = mr as unknown as string;
-      } else if (typeof mr.content === 'string') {
-        researchText = mr.content;
-      }
-    }
+    // marketResearch is a multi-file blob now: { files, notes, content }.
+    // We hand Claude the pre-built `content` string so the prompt is
+    // human-readable and we don't ship raw file metadata into the LLM.
+    const researchText = extractSectionContent(project?.marketResearch);
 
     setCloneConfig({
       productName: project?.name || '',
@@ -2014,13 +2009,11 @@ export default function FrontEndFunnel() {
           : '';
 
         const briefStr = (project.brief || '').trim();
-        const researchVal = project.marketResearch as unknown;
-        const researchStr =
-          typeof researchVal === 'string'
-            ? researchVal
-            : researchVal
-              ? JSON.stringify(researchVal).slice(0, 6000)
-              : '';
+        // marketResearch is now a multi-file blob: { files, notes, content }.
+        // We feed Claude the pre-built `content` (concatenated file text +
+        // notes) so the prompt stays human-readable and we don't ship raw
+        // JSON/files metadata into the LLM context.
+        const researchStr = extractSectionContent(project.marketResearch);
 
         const SUPABASE_FN_URL = '/api/funnel-swap-proxy';
 
