@@ -352,7 +352,7 @@ serve(async (req) => {
     // which version of the function is actually serving requests. Critical
     // because GitHub pushes don't auto-deploy; if you don't see this exact
     // string in the logs you're still on the old build.
-    console.log(`🔖 funnel-swap build: v4.2-cached-brief-research (2026-05-10)`)
+    console.log(`🔖 funnel-swap build: v4.3-200k-section-limit (2026-05-10)`)
     console.log(`📋 Richiesta ricevuta: phase=${phase}, cloneMode=${cloneMode}, url=${url?.substring(0, 50)}...`)
     if (system_kb) {
       const kbChars = String(system_kb).length
@@ -1043,19 +1043,33 @@ html body .stickSection{display:block !important;visibility:visible !important;o
         console.log(`🧬 SPA page detected — disabling HTML markup in rewrites to avoid hydration mismatch`)
       }
 
-      // Brief and market_research used to be inlined into the user prompt
-      // and aggressively truncated to 6KB each. With multi-file uploads in
-      // My Projects a single brief easily reaches 50-100KB, so we now move
-      // them into the cached system block (cache_control: ephemeral): they
-      // are paid full-price exactly once per job and 90% off on every
-      // subsequent batch. We can therefore afford much larger limits
-      // (~80KB ≈ 20K tokens each) without exploding cost.
+      // Brief and market_research live in cached system blocks
+      // (cache_control: ephemeral) so we pay full-price exactly once per
+      // job and 90% off on every subsequent batch. Limit per section:
+      // 200KB ≈ 50K tokens. Budget per Claude call:
+      //   ~46K  knowledge base
+      //   ~50K  brief
+      //   ~50K  market research
+      //   ~15K  user prompt (extracted texts batch)
+      //   ~16K  output
+      //   ─────
+      //   ~177K tokens, safely under Sonnet 4's 200K context window.
       //
       // Funnel context still stays in the user prompt because it changes
       // between pages of the same Swipe-All run (different cache key).
-      const briefTrimmed = brief ? String(brief).slice(0, 80000) : ''
-      const researchTrimmed = market_research ? String(market_research).slice(0, 80000) : ''
+      const SECTION_CHAR_LIMIT = 200_000
+      const briefTrimmed = brief ? String(brief).slice(0, SECTION_CHAR_LIMIT) : ''
+      const researchTrimmed = market_research ? String(market_research).slice(0, SECTION_CHAR_LIMIT) : ''
       const funnelContextTrimmed = funnel_context ? String(funnel_context).slice(0, 8000) : ''
+      // Surface truncation explicitly in logs so operators can spot when a
+      // project's brief or research is hitting the cap and not all the
+      // uploaded files are reaching Claude.
+      if (brief && String(brief).length > SECTION_CHAR_LIMIT) {
+        console.warn(`✂️  brief truncated: ${String(brief).length.toLocaleString()} → ${SECTION_CHAR_LIMIT.toLocaleString()} chars (lost ${(String(brief).length - SECTION_CHAR_LIMIT).toLocaleString()})`)
+      }
+      if (market_research && String(market_research).length > SECTION_CHAR_LIMIT) {
+        console.warn(`✂️  market_research truncated: ${String(market_research).length.toLocaleString()} → ${SECTION_CHAR_LIMIT.toLocaleString()} chars (lost ${(String(market_research).length - SECTION_CHAR_LIMIT).toLocaleString()})`)
+      }
 
       const rewritePrompt = `La landing page è un TEMPLATE strutturale. Il tuo compito è riscrivere TUTTI i testi usando SOLO le informazioni del nuovo prodotto.
 

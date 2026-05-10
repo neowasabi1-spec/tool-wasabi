@@ -146,3 +146,8 @@ export function formatFileSize(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
+
+/** Per-section character cap enforced by the rewrite Edge Function before
+ *  forwarding to Claude. KEEP IN SYNC with `SECTION_CHAR_LIMIT` in
+ *  supabase/functions/funnel-swap-v1-functions/index.ts. */
+export const CLAUDE_SECTION_CHAR_LIMIT = 200_000;
