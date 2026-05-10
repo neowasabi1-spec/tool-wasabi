@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCoreKnowledge } from '@/knowledge/copywriting';
+import { isSpaShell, rescueViaJina } from '@/lib/spa-rescue';
 
 export const maxDuration = 300;
 export const dynamic = 'force-dynamic';
@@ -34,31 +35,6 @@ async function getBrowser() {
  *   2) native fetch with a Googlebot UA (bypasses some anti-bot walls)
  *   3) r.jina.ai proxy (returns readable content) — last resort
  */
-/**
- * Heuristic: detect when an HTML payload is a JS-rendered SPA shell with
- * essentially no server-rendered text. Catches Vite/CRA/React-Router/Vue/
- * Svelte builds that ship "<div id='root'></div>" and inject everything
- * client-side. We compute the visible text inside <body> after stripping
- * scripts/styles/svgs/tags — if there are fewer than 200 chars of human
- * text, the fetch is useless and we should fall through to the next
- * attempt (chrome → googlebot → r.jina.ai which renders the JS for us).
- */
-function isSpaShell(html: string): boolean {
-  if (!html || html.length < 100) return true;
-  const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
-  const body = bodyMatch ? bodyMatch[1] : html;
-  const visibleText = body
-    .replace(/<script[\s\S]*?<\/script>/gi, '')
-    .replace(/<style[\s\S]*?<\/style>/gi, '')
-    .replace(/<noscript[\s\S]*?<\/noscript>/gi, '')
-    .replace(/<svg[\s\S]*?<\/svg>/gi, '')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;|&#160;/gi, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  return visibleText.length < 200;
-}
-
 async function fetchPageWithFallbacks(url: string): Promise<
   | { ok: true; html: string; method: string }
   | { ok: false; error: string; details: string[] }
@@ -126,182 +102,18 @@ async function fetchPageWithFallbacks(url: string): Promise<
     }
   }
 
-  // Final fallback: r.jina.ai returns the JS-rendered page content as
-  // markdown. We then convert the markdown to a minimal pseudo-HTML so the
-  // downstream extractor (which scans <h1>..<h6>/<p>/<li>/<button>/<a>...)
-  // still works without any change.
-  try {
-    const jinaUrl = `https://r.jina.ai/${url}`;
-    const res = await fetch(jinaUrl, {
-      headers: {
-        // Default Jina format = markdown (which DOES render the JS server
-        // side). Asking for `X-Return-Format: html` returns the raw shell,
-        // which is useless for SPAs — that's the original bug we're fixing.
-        'Accept': 'text/plain',
-      },
-      redirect: 'follow',
-      signal: AbortSignal.timeout(30000),
-    });
-    if (res.ok) {
-      const md = await res.text();
-      if (md && md.length > 200) {
-        const html = jinaMarkdownToHtml(md, url);
-        if (html && !isSpaShell(html)) {
-          console.log(`[clone-funnel] jina-proxy rescued SPA: ${md.length} md → ${html.length} html`);
-          return { ok: true, html, method: 'jina-proxy' };
-        }
-        details.push(`jina-proxy: markdown converted but still empty`);
-      } else {
-        details.push(`jina-proxy: empty response (${md.length} chars)`);
-      }
-    } else {
-      details.push(`jina-proxy: HTTP ${res.status}`);
-    }
-  } catch (err) {
-    const e = err as { message?: string; cause?: { code?: string } };
-    details.push(`jina-proxy: ${e?.message || String(err)}${e?.cause?.code ? ` (${e.cause.code})` : ''}`);
+  // Final fallback: r.jina.ai renders the JS server-side and returns
+  // markdown which we convert to a minimal HTML the extractor can scan.
+  // Logic lives in src/lib/spa-rescue.ts so the funnel-swap-proxy can
+  // reuse it as a defence-in-depth layer.
+  const rescued = await rescueViaJina(url);
+  if (rescued) {
+    console.log(`[clone-funnel] jina-proxy rescued SPA: ${rescued.length} html`);
+    return { ok: true, html: rescued, method: 'jina-proxy' };
   }
+  details.push('jina-proxy: rescue returned null');
 
   return { ok: false, error: details[0] || 'all fetch attempts failed', details };
-}
-
-/**
- * Convert r.jina.ai markdown output into minimal HTML that
- * `extractTextsFromHtml` can scan. We deliberately keep the converter
- * tiny — no markdown library — because all we need is structural tags
- * (h1..h6, p, ul/li, ol/li, a, button) so the extractor finds the texts.
- *
- * Jina's response begins with a small header block (Title / URL Source /
- * Published Time / Markdown Content:) which we strip before converting.
- */
-function jinaMarkdownToHtml(md: string, url: string): string {
-  // Strip Jina header block
-  const startIdx = md.indexOf('Markdown Content:');
-  const body = startIdx >= 0 ? md.slice(startIdx + 'Markdown Content:'.length) : md;
-  const lines = body.split(/\r?\n/);
-
-  const out: string[] = [];
-  let listType: 'ul' | 'ol' | null = null;
-  let paragraphBuf: string[] = [];
-
-  function flushParagraph() {
-    if (paragraphBuf.length === 0) return;
-    const text = paragraphBuf.join(' ').trim();
-    if (text) out.push(`<p>${escapeHtml(stripMdInline(text))}</p>`);
-    paragraphBuf = [];
-  }
-  function closeList() {
-    if (listType) {
-      out.push(`</${listType}>`);
-      listType = null;
-    }
-  }
-
-  for (const rawLine of lines) {
-    const line = rawLine.trimEnd();
-
-    // Blank line → end of paragraph / list
-    if (!line.trim()) {
-      flushParagraph();
-      closeList();
-      continue;
-    }
-
-    // Strip standalone image lines: ![alt](url)  (we don't extract images)
-    if (/^!\[[^\]]*\]\([^)]*\)\s*$/.test(line)) continue;
-
-    // Headers
-    const hMatch = line.match(/^(#{1,6})\s+(.+?)\s*$/);
-    if (hMatch) {
-      flushParagraph();
-      closeList();
-      const level = hMatch[1].length;
-      out.push(`<h${level}>${escapeHtml(stripMdInline(hMatch[2]))}</h${level}>`);
-      continue;
-    }
-
-    // Unordered list
-    const ulMatch = line.match(/^[-*+]\s+(.+?)\s*$/);
-    if (ulMatch) {
-      flushParagraph();
-      if (listType !== 'ul') { closeList(); out.push('<ul>'); listType = 'ul'; }
-      out.push(`<li>${escapeHtml(stripMdInline(ulMatch[1]))}</li>`);
-      continue;
-    }
-
-    // Ordered list
-    const olMatch = line.match(/^(\d+)[.)]\s+(.+?)\s*$/);
-    if (olMatch) {
-      flushParagraph();
-      if (listType !== 'ol') { closeList(); out.push('<ol>'); listType = 'ol'; }
-      out.push(`<li>${escapeHtml(stripMdInline(olMatch[2]))}</li>`);
-      continue;
-    }
-
-    // Blockquote
-    const bqMatch = line.match(/^>\s?(.*)$/);
-    if (bqMatch) {
-      flushParagraph();
-      closeList();
-      out.push(`<blockquote>${escapeHtml(stripMdInline(bqMatch[1]))}</blockquote>`);
-      continue;
-    }
-
-    // Horizontal rule — ignore
-    if (/^[-*_]{3,}\s*$/.test(line)) {
-      flushParagraph();
-      closeList();
-      continue;
-    }
-
-    // Default: append to current paragraph buffer (next blank line flushes it)
-    closeList();
-    paragraphBuf.push(line.trim());
-  }
-
-  flushParagraph();
-  closeList();
-
-  return [
-    '<!DOCTYPE html>',
-    '<html lang="en">',
-    '<head>',
-    '<meta charset="UTF-8">',
-    `<title>${escapeHtml(stripMdInline(extractFirstHeading(body) || url))}</title>`,
-    '</head>',
-    '<body>',
-    out.join('\n'),
-    '</body>',
-    '</html>',
-  ].join('\n');
-}
-
-function extractFirstHeading(md: string): string {
-  const m = md.match(/^#{1,6}\s+(.+)$/m);
-  return m ? m[1].trim() : '';
-}
-
-function stripMdInline(s: string): string {
-  return s
-    // images first (so we don't keep the alt text as a link)
-    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
-    // links: keep text only
-    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
-    // bold / italic / code markers
-    .replace(/\*\*([^*]+)\*\*/g, '$1')
-    .replace(/__([^_]+)__/g, '$1')
-    .replace(/\*([^*]+)\*/g, '$1')
-    .replace(/_([^_]+)_/g, '$1')
-    .replace(/`([^`]+)`/g, '$1');
-}
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
 }
 
 interface ExtractedText {

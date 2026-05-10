@@ -6,6 +6,7 @@ import {
   type CopywritingTask,
 } from '@/lib/section-routing';
 import type { SectionFile } from '@/lib/project-sections';
+import { isSpaShell, rescueViaJina } from '@/lib/spa-rescue';
 
 export const maxDuration = 300;
 export const dynamic = 'force-dynamic';
@@ -110,6 +111,47 @@ export async function POST(request: NextRequest) {
   delete enrichedBody.brief_notes;
   delete enrichedBody.research_files;
   delete enrichedBody.research_notes;
+
+  // ─── SPA rescue (defence in depth) ────────────────────────────────────────
+  // The Edge Function expects `renderedHtml` to be the JS-rendered page
+  // payload (so it can extract texts to rewrite). On Netlify the upstream
+  // /api/clone-funnel call already tries Jina when the chrome/googlebot
+  // attempts return an SPA shell — but if anything went wrong (cached
+  // shell HTML on the page object, direct call without prior cloning,
+  // legacy clients) `renderedHtml` may still be missing or look like a
+  // shell. We rescue it here via Jina markdown→HTML so the Edge Function
+  // never sees an empty SPA. Only runs on the 'extract' phase to avoid
+  // double-work on the per-batch 'process' calls.
+  if (phase === 'extract' && (cloneMode === 'rewrite' || cloneMode === 'translate')) {
+    const url = typeof body.url === 'string' ? body.url.trim() : '';
+    const renderedHtmlRaw = body.renderedHtml;
+    const renderedHtml = typeof renderedHtmlRaw === 'string' ? renderedHtmlRaw : '';
+    const needsRescue =
+      url && (!renderedHtml || isSpaShell(renderedHtml));
+    if (needsRescue) {
+      const reason = !renderedHtml
+        ? 'missing'
+        : `looks like SPA shell (${renderedHtml.length} chars, body text < 200)`;
+      console.warn(
+        `[funnel-swap-proxy] renderedHtml ${reason} for ${url} — rescuing via Jina before extract`,
+      );
+      const t = Date.now();
+      const rescued = await rescueViaJina(url);
+      const ms = Date.now() - t;
+      if (rescued && rescued.length > 1000) {
+        enrichedBody.renderedHtml = rescued;
+        console.log(
+          `[funnel-swap-proxy] Jina rescued ${rescued.length} chars in ${ms}ms — forwarding to Edge Function`,
+        );
+      } else {
+        console.error(
+          `[funnel-swap-proxy] Jina rescue FAILED in ${ms}ms — Edge Function will likely return "No text found"`,
+        );
+        // Keep the original (broken) renderedHtml so the Edge Function returns
+        // its informative error message rather than us synthesising one.
+      }
+    }
+  }
 
   if (willCallClaude) {
     const pageType = (body.pageType as string) || 'pdp';
