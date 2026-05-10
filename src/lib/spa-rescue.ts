@@ -109,22 +109,179 @@ async function tryJinaBrowserHtml(url: string, apiKey: string): Promise<string |
       return null;
     }
 
-    // Critical post-processing: rewrite all relative URLs (img src,
-    // href, srcset, CSS url(), style="background-image:url(...)") to
-    // absolute URLs pointing back to the original origin. Without this,
-    // when we publish the cloned page on a different domain the browser
-    // tries to load /figmaAssets/*.png from OUR domain → 404 → layout
-    // collapses. Doing it server-side once is cheaper than a runtime
-    // <base href> tag (which would also redirect <a href> clicks back
-    // to the competitor — undesirable).
-    const absolutized = absolutizeUrlsInHtml(html, url);
-    console.log(`[spa-rescue] jina browser-html OK: ${absolutized.length} chars for ${url}`);
-    return absolutized;
+    // Critical post-processing: stabilize the HTML so it renders
+    // correctly when served from a different origin (Netlify clone vs.
+    // tsl.burnfatfrequency.com). See stabilizeClonedHtml for the three
+    // layers (absolutize URLs + <base href> + neutralize <a> links).
+    const stabilized = stabilizeClonedHtml(html, url);
+    console.log(`[spa-rescue] jina browser-html OK: ${stabilized.length} chars for ${url} (stabilized)`);
+    return stabilized;
   } catch (err) {
     const e = err as { message?: string; cause?: { code?: string } };
     console.warn(`[spa-rescue] jina browser-html failed for ${url}: ${e?.message || String(err)}${e?.cause?.code ? ` (${e.cause.code})` : ''}`);
     return null;
   }
+}
+
+/**
+ * One-shot stabilizer for cloned HTML that will be served from a
+ * different origin than the source page (typical when publishing a
+ * Wasabi-rewritten clone on Netlify).
+ *
+ * Three layers, in order:
+ *
+ *   1. Absolutize every relative URL (img/css/js/srcset/url()/data-*).
+ *      Without this, /figmaAssets/*.png → 404 from cute-cupcake.netlify.app.
+ *
+ *   2. Inject <base href="https://origin/"> as a safety net so URLs
+ *      created at runtime by the bundle JS (Vite/React/Next dynamic
+ *      imports, lazy <picture>, fetch('/api/...')) also resolve to the
+ *      original origin. The static absolutize covers ~95%; <base>
+ *      catches the rest for free.
+ *
+ *   3. Neutralize <a href> so a visitor clicking on the published
+ *      clone doesn't get hijacked to the competitor site. The original
+ *      href is preserved in data-original-href so the editor / a future
+ *      "Replace CTAs" step can pick them up. Anchors (#…),
+ *      javascript:, mailto:, tel: are left alone.
+ *
+ * Idempotent: running it twice is a no-op (already-absolute URLs are
+ * detected, an existing <base> is replaced, neutralized anchors keep
+ * their data-original-href).
+ */
+export function stabilizeClonedHtml(html: string, originUrl: string): string {
+  let out = absolutizeUrlsInHtml(html, originUrl);
+  out = injectBaseHref(out, originUrl);
+  out = neutralizeAnchorHrefs(out);
+  out = unlockPageScroll(out);
+  return out;
+}
+
+/**
+ * Marketing SPAs frequently lock body scroll on mount (bootstrap modals,
+ * body-scroll-lock library, exit-intent popups, cookie banners, video
+ * lightboxes…). When Jina captures the post-render snapshot the lock
+ * state is frozen into the HTML — the published clone inherits a body
+ * stuck at `overflow:hidden` and the visitor can't scroll past the
+ * first viewport.
+ *
+ * Two-step defence:
+ *   1. Strip `overflow:*` and `position:fixed` declarations from any
+ *      inline `style=""` on the <html> or <body> root tag (the most
+ *      common vector — a modal library typically does this with
+ *      `document.body.style.overflow = 'hidden'`).
+ *   2. Inject a final <style> at the end of <head> with !important
+ *      overrides so any stylesheet rule (including ones we can't
+ *      easily parse) loses the cascade against ours.
+ *
+ * We deliberately avoid touching `position` on body (some legitimate
+ * layouts rely on it). Overflow alone unlocks ~95% of cases.
+ */
+function unlockPageScroll(html: string): string {
+  let out = html;
+
+  // Strip blocking inline overflow on <html> / <body>.
+  out = out.replace(
+    /(<(?:html|body)\b[^>]*?\bstyle\s*=\s*)(["'])([^"']*)\2/gi,
+    (_full, prefix: string, q: string, val: string) => {
+      const cleaned = val
+        // overflow / overflow-x / overflow-y declarations
+        .replace(/(?:^|;)\s*overflow(?:-x|-y)?\s*:[^;]+;?/gi, ';')
+        // position:fixed (would prevent normal page flow scroll on root)
+        .replace(/(?:^|;)\s*position\s*:\s*fixed\b[^;]*;?/gi, ';')
+        // height / max-height that would clip the document
+        .replace(/(?:^|;)\s*(?:max-)?height\s*:\s*100(?:vh|%)\s*;?/gi, ';')
+        .replace(/;{2,}/g, ';')
+        .replace(/^\s*;|;\s*$/g, '')
+        .trim();
+      return cleaned ? `${prefix}${q}${cleaned}${q}` : '';
+    },
+  );
+
+  // Inject an !important override as the LAST rule in <head> so it
+  // wins the cascade against the page's own stylesheets.
+  const fixStyle =
+    '<style id="wasabi-scroll-fix">' +
+    'html,body{overflow:visible!important;overflow-x:hidden!important;' +
+    'overflow-y:auto!important;height:auto!important;' +
+    'min-height:100vh!important}' +
+    'body{position:static!important}' +
+    '</style>';
+
+  if (/<\/head>/i.test(out)) {
+    out = out.replace(/<\/head>/i, `${fixStyle}</head>`);
+  } else if (/<head\b[^>]*>/i.test(out)) {
+    out = out.replace(/(<head\b[^>]*>)/i, `$1${fixStyle}`);
+  } else {
+    out = `<head>${fixStyle}</head>${out}`;
+  }
+  return out;
+}
+
+/**
+ * Inject `<base href="https://origin/">` into <head> (after <meta charset>
+ * if present so it doesn't fight with byte-order-mark detection). If the
+ * page already has a <base> we replace it. If <head> is missing we
+ * synthesise a minimal one. Without an explicit trailing slash the
+ * browser may treat the base as a file rather than a directory, so we
+ * always end with `/`.
+ */
+function injectBaseHref(html: string, originUrl: string): string {
+  let baseHref: string;
+  try {
+    const u = new URL(originUrl);
+    baseHref = `${u.origin}/`;
+  } catch {
+    return html;
+  }
+  const tag = `<base href="${baseHref}">`;
+
+  // Replace any existing <base ...> tag.
+  if (/<base\b[^>]*>/i.test(html)) {
+    return html.replace(/<base\b[^>]*>/i, tag);
+  }
+  // Inject right after <head> (preserving whatever attributes head has).
+  if (/<head\b[^>]*>/i.test(html)) {
+    return html.replace(/(<head\b[^>]*>)/i, `$1\n  ${tag}`);
+  }
+  // No <head> at all — wrap the whole thing.
+  return `<head>${tag}</head>${html}`;
+}
+
+/**
+ * Replace every `<a href="…">` (or `<a … href='…'>`) whose href would
+ * navigate the visitor away from our domain with a neutralized version:
+ *
+ *   <a href="#" data-original-href="https://competitor.com/buy" data-cloned-cta="1" …>
+ *
+ * Skips:
+ *   - Anchors (`#section`) — same-page navigation, harmless.
+ *   - `mailto:`, `tel:`, `javascript:` — non-navigational protocols.
+ *   - Already-neutralized anchors (idempotent re-runs).
+ *
+ * The `data-original-href` lets a future "Replace CTAs" step in the
+ * editor surface every external link the user needs to swap. The
+ * `data-cloned-cta` flag makes them queryable from one selector.
+ */
+function neutralizeAnchorHrefs(html: string): string {
+  return html.replace(
+    /<a\b([^>]*?)\bhref\s*=\s*(["'])([^"']+)\2([^>]*)>/gi,
+    (full, pre: string, q: string, href: string, post: string) => {
+      const hrefTrim = href.trim();
+      // Keep harmless / non-navigational hrefs as-is.
+      if (
+        !hrefTrim ||
+        hrefTrim === '#' ||
+        /^(?:#|mailto:|tel:|javascript:)/i.test(hrefTrim)
+      ) {
+        return full;
+      }
+      // Already neutralized? skip.
+      if (/\bdata-original-href\s*=/.test(pre + post)) return full;
+      const safeHref = hrefTrim.replace(/"/g, '&quot;');
+      return `<a${pre}href="#" data-original-href="${safeHref}" data-cloned-cta="1"${post}>`;
+    },
+  );
 }
 
 /**

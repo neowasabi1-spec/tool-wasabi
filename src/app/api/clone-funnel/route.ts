@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCoreKnowledge } from '@/knowledge/copywriting';
-import { isSpaShell, rescueViaJina } from '@/lib/spa-rescue';
+import { isSpaShell, rescueViaJina, stabilizeClonedHtml } from '@/lib/spa-rescue';
 
 export const maxDuration = 300;
 export const dynamic = 'force-dynamic';
@@ -85,7 +85,13 @@ async function fetchPageWithFallbacks(url: string): Promise<
             details.push(`${attempt.name}: SPA shell detected (${html.length} chars, no body text) — falling through to JS-rendering proxy`);
             console.warn(`[clone-funnel] ${attempt.name} returned SPA shell for ${url} — trying next attempt`);
           } else {
-            return { ok: true, html, method: attempt.name };
+            // Stabilize for cross-origin publishing: absolutize URLs +
+            // <base href> + neutralize <a href>. Universal because
+            // even non-SPA pages with relative img/css URLs break when
+            // served from cute-cupcake-XXX.netlify.app instead of the
+            // original domain. See src/lib/spa-rescue.ts.
+            const stabilized = stabilizeClonedHtml(html, url);
+            return { ok: true, html: stabilized, method: attempt.name };
           }
         } else {
           details.push(`${attempt.name}: empty response (${html.length} chars)`);
@@ -105,7 +111,8 @@ async function fetchPageWithFallbacks(url: string): Promise<
   // Final fallback: r.jina.ai renders the JS server-side and returns
   // markdown which we convert to a minimal HTML the extractor can scan.
   // Logic lives in src/lib/spa-rescue.ts so the funnel-swap-proxy can
-  // reuse it as a defence-in-depth layer.
+  // reuse it as a defence-in-depth layer. The Jina path already runs
+  // stabilizeClonedHtml internally, no need to re-apply here.
   const rescued = await rescueViaJina(url);
   if (rescued) {
     console.log(`[clone-funnel] jina-proxy rescued SPA: ${rescued.length} html`);
@@ -673,10 +680,18 @@ async function cloneWithBrowser(url: string, viewport: 'desktop' | 'mobile' = 'd
       };
     }, { pageUrl: url, corsFixedCss, keepScripts, liveImgSrc: liveImageSources });
 
+    // The Playwright path already does fine-grained URL absolutization
+    // inside page.evaluate. We still run stabilizeClonedHtml on the
+    // result for the two extra layers it brings: a <base href> safety
+    // net for runtime-created DOM nodes, and <a href> neutralization
+    // so visitors of the published clone don't get hijacked to the
+    // competitor. The absolutize step is a no-op here because every
+    // URL is already absolute. (Idempotent design — see spa-rescue.ts)
+    const stabilized = stabilizeClonedHtml(result.html, url);
     return {
-      html: result.html,
+      html: stabilized,
       title: result.title,
-      renderedSize: result.html.length,
+      renderedSize: stabilized.length,
       cssCount: result.cssCount,
       imgCount: result.imgCount,
       isJsRendered: false,
