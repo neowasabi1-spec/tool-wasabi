@@ -12,6 +12,10 @@ import {
   parseSectionData, buildSectionBlob, formatFileSize,
   type SectionFile, type SectionData,
 } from '@/lib/project-sections';
+import {
+  paletteFromSection, roleLabel,
+  type BrandPalette,
+} from '@/lib/brand-colors';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -201,6 +205,92 @@ function UploadButton({
         {busy ? 'Reading...' : label}
       </button>
       {error && <span className="text-xs text-red-400">{error}</span>}
+    </div>
+  );
+}
+
+// ─── Sub-component: Brand Palette Preview ────────────────────────────────────
+
+function BrandPalettePreview({ data }: { data: SectionData }) {
+  const palette: BrandPalette = paletteFromSection(data.files, data.notes);
+  const total = palette.all.length;
+  if (total === 0) return null;
+
+  // Build the grid of canonical roles + extras.
+  const canonicalEntries: { label: string; hex: string }[] = [];
+  const ROLE_ORDER: (keyof BrandPalette)[] = [
+    'primary', 'secondary', 'accent', 'ctaBackground', 'ctaText',
+    'background', 'text',
+  ];
+  for (const role of ROLE_ORDER) {
+    const hex = palette[role];
+    if (typeof hex === 'string') {
+      canonicalEntries.push({ label: roleLabel(role as never), hex });
+    }
+  }
+  const extraEntries = Object.entries(palette.extras).map(([label, hex]) => ({
+    label, hex,
+  }));
+
+  return (
+    <div className="mt-3 border border-emerald-900/40 bg-emerald-950/20 rounded-lg p-3">
+      <div className="flex items-center justify-between mb-2">
+        <div className="text-xs font-medium text-emerald-300">
+          Detected brand colors ({total})
+        </div>
+        <div className="text-[10px] text-gray-500 uppercase tracking-wide">
+          Auto-parsed from uploaded files
+        </div>
+      </div>
+      {canonicalEntries.length > 0 && (
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 mb-2">
+          {canonicalEntries.map(({ label, hex }) => (
+            <div
+              key={label + hex}
+              className="flex items-center gap-2 bg-[#0F1117] border border-[#2A2D3A] rounded-md px-2 py-1.5"
+            >
+              <div
+                className="w-6 h-6 rounded border border-black/40 flex-shrink-0"
+                style={{ backgroundColor: hex }}
+                title={hex}
+              />
+              <div className="min-w-0 flex-1">
+                <div className="text-xs text-white font-medium truncate">{label}</div>
+                <div className="text-[10px] text-gray-500 font-mono">{hex}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {extraEntries.length > 0 && (
+        <details className="text-xs text-gray-400">
+          <summary className="cursor-pointer hover:text-gray-200">
+            + {extraEntries.length} other color{extraEntries.length !== 1 ? 's' : ''} (unlabelled)
+          </summary>
+          <div className="mt-2 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
+            {extraEntries.map(({ label, hex }) => (
+              <div
+                key={label + hex}
+                className="flex items-center gap-2 bg-[#0F1117] border border-[#2A2D3A] rounded-md px-2 py-1.5"
+              >
+                <div
+                  className="w-5 h-5 rounded border border-black/40 flex-shrink-0"
+                  style={{ backgroundColor: hex }}
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="text-[11px] text-gray-300 truncate" title={label}>{label}</div>
+                  <div className="text-[10px] text-gray-500 font-mono">{hex}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+      <div className="mt-2 text-[10px] text-gray-500 leading-relaxed">
+        These will be used in Step 2 (color detection on the swiped page) and
+        Step 3 (CSS replacement). For now they&apos;re just shown so you can verify
+        the parser caught the right hex codes from your brand book.
+      </div>
     </div>
   );
 }
@@ -595,6 +685,7 @@ function ProjectPanel({
               onChange={setMarketResearch}
               notesPlaceholder="Extra context, observations, target audience notes..."
             />
+            <BrandPalettePreview data={marketResearch} />
           </div>
         )}
 
@@ -606,6 +697,7 @@ function ProjectPanel({
               onChange={setBriefData}
               notesPlaceholder="Goals, requirements, must-haves, tone of voice..."
             />
+            <BrandPalettePreview data={briefData} />
           </div>
         )}
 
