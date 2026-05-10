@@ -154,6 +154,8 @@ export function stabilizeClonedHtml(html: string, originUrl: string): string {
   out = injectBaseHref(out, originUrl);
   out = neutralizeAnchorHrefs(out);
   out = unlockPageScroll(out);
+  out = resetAccordionState(out);
+  out = injectInteractivityRescue(out);
   return out;
 }
 
@@ -200,12 +202,18 @@ function unlockPageScroll(html: string): string {
 
   // Inject an !important override as the LAST rule in <head> so it
   // wins the cascade against the page's own stylesheets.
+  // NOTE: deliberately NOT touching `position` on body — many
+  // legitimate layouts use position:relative on body to anchor
+  // absolute children. Forcing static was an overreach that broke
+  // sticky bars and side panels on some pages.
   const fixStyle =
     '<style id="wasabi-scroll-fix">' +
     'html,body{overflow:visible!important;overflow-x:hidden!important;' +
     'overflow-y:auto!important;height:auto!important;' +
     'min-height:100vh!important}' +
-    'body{position:static!important}' +
+    // Keep clickable elements clickable even if a fullscreen overlay
+    // captured pointer-events: none at render time.
+    'a,button,summary,[role="button"]{pointer-events:auto!important;cursor:pointer}' +
     '</style>';
 
   if (/<\/head>/i.test(out)) {
@@ -216,6 +224,126 @@ function unlockPageScroll(html: string): string {
     out = `<head>${fixStyle}</head>${out}`;
   }
   return out;
+}
+
+/**
+ * Jina opens collapsible widgets (details/summary, FAQ accordions,
+ * tabs) at render time so it can extract the inner text. The captured
+ * snapshot therefore has every panel stuck in the "expanded" state:
+ *
+ *   - `<details open>` everywhere
+ *   - buttons with `aria-expanded="true"` whose linked `aria-controls`
+ *     panel is visible
+ *   - Bootstrap `.collapse.show`, `.accordion-item.active`
+ *   - generic `.is-open`, `.is-active`, `.expanded` classes
+ *
+ * We reset all of this server-side so the page loads in the natural
+ * "all closed" state, and `injectInteractivityRescue` below wires up
+ * the click handlers to toggle them again.
+ *
+ * Heuristic — we only touch elements that are clearly accordion-like
+ * (have a sibling/related panel or aria-controls). Toggling EVERY
+ * `.active` would break navigation menus and tab bars.
+ */
+function resetAccordionState(html: string): string {
+  return html
+    // <details open> → <details>
+    .replace(/(<details\b[^>]*?)\sopen(\s|>|=)/gi, '$1$2')
+    // aria-expanded="true" → "false" — the rescue script will toggle it
+    // on click. Non-accordion buttons rarely use aria-expanded so this
+    // is safe.
+    .replace(/\baria-expanded\s*=\s*(["'])true\1/gi, 'aria-expanded="false"')
+    // Bootstrap collapse: ".collapse show" → ".collapse"
+    .replace(
+      /(\bclass\s*=\s*["'][^"']*?\bcollapse)\s+show\b/gi,
+      '$1',
+    )
+    // Bootstrap accordion: ".accordion-collapse.show" → just collapse
+    .replace(
+      /(\bclass\s*=\s*["'][^"']*?\baccordion-collapse)\s+show\b/gi,
+      '$1',
+    );
+}
+
+/**
+ * Tiny client-side script (~1.2 KB minified) injected at the end of
+ * <body> that re-arms accordion toggling for the four most common
+ * patterns found on marketing/landing pages:
+ *
+ *   1. Native <details>/<summary> — browsers already toggle these,
+ *      we just make sure summary stays clickable (some pages disable
+ *      it via pointer-events: none on parents).
+ *   2. ARIA pattern: button[aria-expanded] + element[id=aria-controls
+ *      target]. Toggle aria-expanded and the target's display.
+ *   3. Bootstrap pattern: [data-bs-toggle="collapse"][data-bs-target]
+ *      or [data-toggle="collapse"][href]. Toggle .show on target.
+ *   4. Generic pattern: .accordion-header / .faq-question siblings to
+ *      .accordion-content / .faq-answer. Toggle .is-open on the parent
+ *      and inline display on the next-sibling content.
+ *
+ * Event-delegated on document so dynamically-added accordions also
+ * work. Runs once on DOMContentLoaded.
+ */
+function injectInteractivityRescue(html: string): string {
+  const script = `<script id="wasabi-accordion-rescue">(function(){
+function $(s,r){return (r||document).querySelectorAll(s)}
+function once(){
+  // 2. ARIA pattern
+  document.addEventListener('click',function(ev){
+    var t=ev.target;
+    if(!(t instanceof Element))return;
+    var btn=t.closest('[aria-expanded][aria-controls]');
+    if(btn){
+      var open=btn.getAttribute('aria-expanded')==='true';
+      btn.setAttribute('aria-expanded',open?'false':'true');
+      var pid=btn.getAttribute('aria-controls');
+      var p=pid?document.getElementById(pid):null;
+      if(p){p.style.display=open?'none':'';p.hidden=open;}
+      return;
+    }
+    // 3. Bootstrap collapse
+    var bs=t.closest('[data-bs-toggle="collapse"],[data-toggle="collapse"]');
+    if(bs){
+      var sel=bs.getAttribute('data-bs-target')||bs.getAttribute('data-target')||bs.getAttribute('href');
+      if(sel){var el=document.querySelector(sel);if(el){el.classList.toggle('show');}}
+      return;
+    }
+    // 4. Generic .accordion-header / .faq-question / [data-accordion-trigger]
+    var gh=t.closest('.accordion-header,.faq-question,.accordion-toggle,.toggle-header,[data-accordion-trigger]');
+    if(gh){
+      var item=gh.closest('.accordion-item,.faq-item,.accordion,.toggle-item')||gh.parentElement;
+      if(item){
+        item.classList.toggle('is-open');
+        item.classList.toggle('active');
+        item.classList.toggle('expanded');
+        // Look for the content panel that follows.
+        var content=gh.nextElementSibling;
+        if(!content||!/content|answer|panel|body/i.test(content.className)){
+          content=item.querySelector('.accordion-content,.faq-answer,.accordion-body,.toggle-content,.collapse-content');
+        }
+        if(content){
+          var hidden=content.style.display==='none'||getComputedStyle(content).display==='none';
+          content.style.display=hidden?'':'none';
+        }
+      }
+    }
+  },true);
+  // Initial pass: hide every panel that the snapshot left visible but
+  // whose trigger we just reset (aria-expanded=false).
+  $('[aria-controls]').forEach(function(b){
+    if(b.getAttribute('aria-expanded')==='false'){
+      var pid=b.getAttribute('aria-controls');
+      var p=pid?document.getElementById(pid):null;
+      if(p){p.style.display='none';}
+    }
+  });
+}
+if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',once)}else{once()}
+})();</script>`;
+  if (/<\/body>/i.test(html)) {
+    return html.replace(/<\/body>/i, `${script}</body>`);
+  }
+  return html + script;
 }
 
 /**
