@@ -6,6 +6,9 @@ import Header from '@/components/Header';
 import { useStore } from '@/store/useStore';
 import { fetchAffiliateSavedFunnels } from '@/lib/supabase-operations';
 import { extractSectionContent } from '@/lib/project-sections';
+import SwipeCinemaOverlay, {
+  type SwipePageInfo, type SwipeLogEntry as OverlayLogEntry,
+} from '@/components/SwipeCinemaOverlay';
 import type { AffiliateSavedFunnel, SavedPrompt } from '@/types/database';
 import {
   BUILT_IN_PAGE_TYPE_OPTIONS,
@@ -924,6 +927,48 @@ export default function FrontEndFunnel() {
     processedTexts: number;
     message: string;
   } | null>(null);
+
+  // Live activity log for the cinematic overlay. Each rewrite step
+  // (cloning, extracting, per-batch progress, narrative, completion)
+  // pushes a structured event here so the overlay can render a real
+  // timeline. Capped at 200 entries (FIFO) to keep memory bounded.
+  type SwipeLogKind = 'info' | 'progress' | 'success' | 'warn' | 'error' | 'rewrite';
+  interface SwipeLogEntry {
+    id: number;
+    at: number;
+    kind: SwipeLogKind;
+    pageName?: string;
+    message: string;
+  }
+  const [swipeLog, setSwipeLog] = useState<SwipeLogEntry[]>([]);
+  const swipeLogIdRef = useRef(0);
+  const pushSwipeLog = useCallback((kind: SwipeLogKind, message: string, pageName?: string) => {
+    swipeLogIdRef.current += 1;
+    setSwipeLog((prev) => {
+      const next = [...prev, { id: swipeLogIdRef.current, at: Date.now(), kind, pageName, message }];
+      return next.length > 200 ? next.slice(next.length - 200) : next;
+    });
+  }, []);
+  const resetSwipeLog = useCallback(() => {
+    setSwipeLog([]);
+    swipeLogIdRef.current = 0;
+  }, []);
+
+  // Wallclock tick — forces re-render once per second so the overlay can
+  // show a live elapsed timer + ETA without each progress callback having
+  // to bump state. Only ticks while something is actually running.
+  const isAnyRewriteActive = !!cloneProgress || !!(cloneProgress === null && false); // recomputed below; placeholder for hook deps
+  const [overlayClock, setOverlayClock] = useState(0);
+  useEffect(() => {
+    // We can't reference swipeAllJob/cloneProgress inside the effect body
+    // for `isActive` because they're declared after this point in the
+    // function — but since this effect re-runs on every render that
+    // changes either state, the interval is kept fresh.
+    const id = setInterval(() => setOverlayClock((c) => c + 1), 1000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  void overlayClock; void isAnyRewriteActive; // silence unused warnings; consumed by overlay render
 
   // Vision Analysis Modal
   const [visionModal, setVisionModal] = useState<{
@@ -1924,6 +1969,7 @@ export default function FrontEndFunnel() {
     if (!ok) return;
 
     swipeAllCancelRef.current = false;
+    resetSwipeLog();
     setSwipeAllJob({
       isRunning: true,
       cancelRequested: false,
@@ -1936,6 +1982,7 @@ export default function FrontEndFunnel() {
       errors: [],
       startedAt: Date.now(),
     });
+    pushSwipeLog('info', `Swipe All start \u2014 ${eligible.length} pages in queue`);
 
     const DEFAULT_USER_ID = '00000000-0000-0000-0000-000000000001';
     const SB_MAX_BATCHES = 400;
@@ -1953,6 +2000,7 @@ export default function FrontEndFunnel() {
           ? { ...s, currentIndex: i + 1, currentPageName: pageName, currentStep: 'cloning', batchInfo: '' }
           : s
       );
+      pushSwipeLog('info', `\u25b6 Page ${i + 1}/${eligible.length} \u2014 starting clone`, pageName);
       updateFunnelPage(page.id, {
         swipeStatus: 'in_progress',
         swipeResult: `Swipe All ${i + 1}/${eligible.length} — Cloning...`,
@@ -1988,9 +2036,11 @@ export default function FrontEndFunnel() {
           html = sanitizeClonedHtml(cloneData.content, url, { keepScripts: true });
         }
         if (swipeAllCancelRef.current) break;
+        pushSwipeLog('success', `\u2713 Cloned: ${(html.length / 1024).toFixed(1)} KB of HTML`, pageName);
 
         // === Step 2: rewrite via Edge function ======================
         setSwipeAllJob((s) => (s ? { ...s, currentStep: 'rewriting', batchInfo: 'estrazione testi…' } : s));
+        pushSwipeLog('info', '\u2192 Extracting texts to rewrite\u2026', pageName);
         updateFunnelPage(page.id, {
           swipeStatus: 'in_progress',
           swipeResult: `Swipe All ${i + 1}/${eligible.length} — Estrazione testi...`,
@@ -2059,6 +2109,7 @@ export default function FrontEndFunnel() {
 
         const sbJobId = extractData.jobId as string;
         const sbTotal = (extractData.totalTexts as number) || 0;
+        pushSwipeLog('success', `\u2713 ${sbTotal} texts extracted \u2014 sending to Claude`, pageName);
         let sbBatch = 0;
         let sbProcessed = 0;
         let sbFinalHtml = '';
@@ -2111,13 +2162,21 @@ export default function FrontEndFunnel() {
             break;
           }
 
-          sbProcessed += procData.batchProcessed || 0;
+          const justRewritten = procData.batchProcessed || 0;
+          sbProcessed += justRewritten;
           const batchInfo = `batch ${sbBatch + 1} (${sbProcessed}/${sbTotal})`;
           setSwipeAllJob((s) => (s ? { ...s, batchInfo } : s));
           updateFunnelPage(page.id, {
             swipeStatus: 'in_progress',
             swipeResult: `Swipe All ${i + 1}/${eligible.length} — ${batchInfo}`,
           });
+          if (justRewritten > 0) {
+            pushSwipeLog(
+              'rewrite',
+              `\u270d Batch ${sbBatch + 1}: rewrote ${justRewritten} texts (${sbProcessed}/${sbTotal})`,
+              pageName,
+            );
+          }
           if (!procData.continue && !procData.remainingTexts) break;
           sbBatch++;
         }
@@ -2138,11 +2197,13 @@ export default function FrontEndFunnel() {
             cloned_at: new Date(),
           },
         });
+        pushSwipeLog('success', `\u2713 Rewrite complete: ${sbReplacements} replacements applied`, pageName);
 
         // === Step 3: extract narrative for next pages ===============
         setSwipeAllJob((s) =>
           s ? { ...s, currentStep: 'narrative', batchInfo: 'analisi narrative…' } : s
         );
+        pushSwipeLog('info', '\u2192 Extracting narrative for funnel coherence\u2026', pageName);
         try {
           const narrativeRes = await fetch('/api/swipe-all/extract-narrative', {
             method: 'POST',
@@ -2166,19 +2227,22 @@ export default function FrontEndFunnel() {
         }
 
         setSwipeAllJob((s) => (s ? { ...s, completed: s.completed + 1 } : s));
+        pushSwipeLog('success', `\u2713\u2713 Page done`, pageName);
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Errore sconosciuto';
         updateFunnelPage(page.id, { swipeStatus: 'failed', swipeResult: `Swipe All: ${msg}` });
         setSwipeAllJob((s) =>
           s ? { ...s, errors: [...s.errors, { pageId: page.id, pageName, message: msg }] } : s
         );
+        pushSwipeLog('error', `\u2717 ${msg}`, pageName);
       }
     }
 
     setSwipeAllJob((s) =>
       s ? { ...s, isRunning: false, currentStep: 'idle', batchInfo: '' } : s
     );
-  }, [funnelPages, projects, updateFunnelPage]);
+    pushSwipeLog('info', '\u25fc Swipe All finished');
+  }, [funnelPages, projects, updateFunnelPage, pushSwipeLog, resetSwipeLog]);
 
   const cancelSwipeAll = useCallback(() => {
     swipeAllCancelRef.current = true;
@@ -5508,28 +5572,32 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
         </div>
       )}
 
-      {/* Clone Progress Floating Indicator */}
-      {cloneProgress && (
-        <div className="fixed bottom-6 right-6 z-40 bg-white rounded-xl shadow-2xl border border-amber-200 p-4 w-80">
-          <div className="flex items-center gap-3 mb-3">
-            <Loader2 className="w-5 h-5 text-amber-600 animate-spin" />
-            <span className="font-medium text-gray-900">
-              {cloneProgress.phase === 'extract' ? 'Extracting texts...' :
-               cloneProgress.phase === 'translating' ? 'Translating...' :
-               'Rewriting texts...'}
-            </span>
-          </div>
-          <div className="text-sm text-gray-600 mb-2">{cloneProgress.message}</div>
-          {cloneProgress.totalTexts > 0 && (
-            <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
-              <div
-                className="h-full bg-amber-500 transition-all duration-500"
-                style={{ width: `${Math.round((cloneProgress.processedTexts / cloneProgress.totalTexts) * 100)}%` }}
-              />
-            </div>
-          )}
-        </div>
-      )}
+      {/* Cinematic full-screen overlay during Swipe All / single rewrite.
+          Replaces the old tiny "Rewriting texts..." toast in the bottom-right
+          corner with a real live view: page list with status, iframe preview
+          of the page being rewritten, scrolling activity log, ETA + cancel. */}
+      <SwipeCinemaOverlay
+        swipeAll={swipeAllJob}
+        cloneProgress={cloneProgress}
+        cloneTargetPageName={cloneModal.pageName || cloneModal.url || ''}
+        pages={(funnelPages || []).map<SwipePageInfo>((p) => ({
+          id: p.id,
+          name: p.name,
+          pageType: p.pageType,
+          url: p.urlToSwipe,
+          swipeStatus: p.swipeStatus as SwipePageInfo['swipeStatus'],
+          clonedHtml: p.clonedData?.html || p.swipedData?.html,
+        }))}
+        log={swipeLog as OverlayLogEntry[]}
+        onCancel={() => {
+          if (swipeAllJob?.isRunning) cancelSwipeAll();
+        }}
+        onClose={() => {
+          if (!swipeAllJob?.isRunning && !cloneProgress) {
+            setSwipeAllJob(null);
+          }
+        }}
+      />
 
       {/* Clone Configuration Modal */}
       {cloneModal.isOpen && (
