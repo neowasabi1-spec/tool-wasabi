@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Loader2, X, CheckCircle2, AlertCircle, Sparkles,
-  PenLine, Layers, Zap, Clock, ArrowRight,
+  PenLine, Layers, Zap, Clock, ArrowRight, Minimize2, Maximize2,
 } from 'lucide-react';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -147,7 +147,56 @@ export default function SwipeCinemaOverlay({
     return null;
   }, [isSingle, cloneProgress, isSwipeAll, swipeAll?.batchInfo]);
 
+  // Minimize/maximize state — when minimized, the overlay collapses
+  // into a small floating widget in the bottom-right corner so the user
+  // can keep working in the rest of the tool while the rewrite runs in
+  // the background. Persisted in sessionStorage so accidental page
+  // refreshes don't lose the choice (and so it doesn't fight the
+  // cinematic re-open every time a new page starts).
+  const [minimized, setMinimized] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.sessionStorage.getItem('wasabi.swipeOverlay.minimized') === '1';
+  });
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.sessionStorage.setItem('wasabi.swipeOverlay.minimized', minimized ? '1' : '0');
+  }, [minimized]);
+  // Auto-restore the cinematic view when the run ends or fails so the
+  // user gets the success/error summary in their face — they can still
+  // click Close to dismiss.
+  const lastIsRunning = useRef(isRunning);
+  useEffect(() => {
+    if (lastIsRunning.current && !isRunning) {
+      setMinimized(false);
+    }
+    lastIsRunning.current = isRunning;
+  }, [isRunning]);
+
   if (!open) return null;
+
+  // ── MINIMIZED MODE ─────────────────────────────────────────
+  // Compact floating widget in the bottom-right. Shows the same
+  // headline metrics + a tiny progress bar + click-to-restore.
+  if (minimized) {
+    return (
+      <MinimizedWidget
+        isRunning={isRunning}
+        isSwipeAll={isSwipeAll}
+        currentPageName={currentPageName}
+        completed={completed}
+        total={total}
+        overallPct={overallPct}
+        elapsedSec={elapsedSec}
+        etaSec={etaSec}
+        errorCount={swipeAll?.errors?.length ?? 0}
+        rewritesCount={rewrites.length}
+        cancelRequested={cancelRequested}
+        onRestore={() => setMinimized(false)}
+        onCancel={onCancel}
+        onClose={onClose}
+      />
+    );
+  }
 
   return (
     <div className="fixed inset-0 z-50 bg-[#05070d]/97 backdrop-blur-md flex flex-col text-white">
@@ -182,18 +231,29 @@ export default function SwipeCinemaOverlay({
             <Stat icon={<AlertCircle className="w-3.5 h-3.5" />} label="Errors" value={String(swipeAll!.errors.length)} danger />
           )}
 
+          {/* Minimize — collapse to floating widget so the rest of the
+              tool is usable while the rewrite keeps running in background. */}
+          <button
+            onClick={() => setMinimized(true)}
+            title="Minimizza in basso a destra (continua a girare in background)"
+            className="ml-2 inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-md bg-white/5 hover:bg-white/10 text-white/80 hover:text-white transition-colors"
+          >
+            <Minimize2 className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Minimize</span>
+          </button>
+
           {isRunning ? (
             <button
               onClick={onCancel}
               disabled={cancelRequested}
-              className="ml-2 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-red-600/90 hover:bg-red-600 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-red-600/90 hover:bg-red-600 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {cancelRequested ? 'Cancelling\u2026' : 'Cancel'}
             </button>
           ) : (
             <button
               onClick={onClose}
-              className="ml-2 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-white/10 hover:bg-white/15 text-white transition-colors"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-white/10 hover:bg-white/15 text-white transition-colors"
             >
               <X className="w-3.5 h-3.5" /> Close
             </button>
@@ -278,6 +338,136 @@ function Stat({
       <span className="opacity-80">{icon}</span>
       <span className="text-[10px] uppercase tracking-wider opacity-60">{label}</span>
       <span className="text-xs font-mono font-semibold">{value}</span>
+    </div>
+  );
+}
+
+/**
+ * Compact floating widget shown when the user clicks "Minimize". The
+ * heavy rewrite job keeps running in the parent component (state lives
+ * upstream); this is purely a presentation collapse so the rest of the
+ * tool becomes interactive again. Click anywhere on the body of the
+ * widget to restore the full cinematic view.
+ */
+function MinimizedWidget({
+  isRunning, isSwipeAll, currentPageName,
+  completed, total, overallPct,
+  elapsedSec, etaSec, errorCount, rewritesCount,
+  cancelRequested,
+  onRestore, onCancel, onClose,
+}: {
+  isRunning: boolean;
+  isSwipeAll: boolean;
+  currentPageName: string;
+  completed: number;
+  total: number;
+  overallPct: number;
+  elapsedSec: number;
+  etaSec: number | null;
+  errorCount: number;
+  rewritesCount: number;
+  cancelRequested: boolean;
+  onRestore: () => void;
+  onCancel: () => void;
+  onClose?: () => void;
+}) {
+  const finished = !isRunning;
+  return (
+    <div
+      className={`fixed bottom-4 right-4 z-50 w-[340px] rounded-xl border shadow-2xl shadow-black/50 backdrop-blur-md text-white transition-all ${
+        finished
+          ? errorCount > 0
+            ? 'border-amber-500/40 bg-[#1a0e08]/95'
+            : 'border-emerald-500/40 bg-[#08140e]/95'
+          : 'border-fuchsia-500/30 bg-[#0b0716]/95'
+      }`}
+    >
+      {/* Header — clickable to restore */}
+      <button
+        type="button"
+        onClick={onRestore}
+        className="w-full flex items-center gap-2.5 px-3 py-2.5 border-b border-white/10 hover:bg-white/[0.03] transition-colors text-left rounded-t-xl"
+        title="Espandi"
+      >
+        <div className="w-7 h-7 rounded-md bg-gradient-to-br from-fuchsia-500 to-violet-600 flex items-center justify-center shadow shadow-fuchsia-500/30 flex-shrink-0">
+          {isRunning ? (
+            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+          ) : errorCount > 0 ? (
+            <AlertCircle className="w-3.5 h-3.5" />
+          ) : (
+            <CheckCircle2 className="w-3.5 h-3.5" />
+          )}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="text-xs font-semibold truncate">
+            {isSwipeAll ? 'Swipe All' : 'Rewrite'}
+            <span className="ml-1.5 text-white/50 font-normal">
+              {isRunning
+                ? `${completed}/${total}`
+                : cancelRequested
+                  ? 'cancelled'
+                  : errorCount > 0
+                    ? `done with ${errorCount} err`
+                    : 'done'}
+            </span>
+          </div>
+          <div className="text-[10px] text-white/55 truncate">
+            {currentPageName || '\u2014'}
+          </div>
+        </div>
+        <Maximize2 className="w-3.5 h-3.5 text-white/40 flex-shrink-0" />
+      </button>
+
+      {/* Progress bar */}
+      <div className="px-3 pt-2 pb-1">
+        <div className="h-1 rounded-full bg-white/5 overflow-hidden">
+          <div
+            className="h-full bg-gradient-to-r from-fuchsia-500 via-violet-500 to-indigo-500 transition-all duration-500"
+            style={{ width: `${overallPct}%` }}
+          />
+        </div>
+      </div>
+
+      {/* Mini stats row */}
+      <div className="px-3 pb-2 flex items-center justify-between text-[10px] font-mono text-white/50">
+        <span>{overallPct}%</span>
+        <span className="flex items-center gap-2">
+          <span title="Elapsed">{fmtDuration(elapsedSec)}</span>
+          {etaSec !== null && (
+            <span className="text-fuchsia-300/80" title="ETA">~{fmtDuration(etaSec)}</span>
+          )}
+          <span className="text-emerald-300/70" title="Live rewrites streamed">
+            {rewritesCount} rw
+          </span>
+        </span>
+      </div>
+
+      {/* Action row */}
+      <div className="px-3 pb-3 flex items-center gap-2">
+        <button
+          onClick={onRestore}
+          className="flex-1 px-2.5 py-1.5 text-[11px] font-medium rounded-md bg-white/10 hover:bg-white/15 text-white transition-colors flex items-center justify-center gap-1.5"
+        >
+          <Maximize2 className="w-3 h-3" />
+          Espandi
+        </button>
+        {isRunning ? (
+          <button
+            onClick={onCancel}
+            disabled={cancelRequested}
+            className="px-2.5 py-1.5 text-[11px] font-medium rounded-md bg-red-600/85 hover:bg-red-600 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {cancelRequested ? 'Cancelling\u2026' : 'Cancel'}
+          </button>
+        ) : (
+          <button
+            onClick={onClose}
+            className="px-2.5 py-1.5 text-[11px] font-medium rounded-md bg-white/10 hover:bg-white/15 text-white transition-colors flex items-center gap-1.5"
+          >
+            <X className="w-3 h-3" /> Close
+          </button>
+        )}
+      </div>
     </div>
   );
 }
