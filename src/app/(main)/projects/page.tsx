@@ -10,7 +10,6 @@ import {
 } from 'lucide-react';
 import {
   parseSectionData, buildSectionBlob, formatFileSize,
-  buildSectionContent, CLAUDE_SECTION_CHAR_LIMIT,
   type SectionFile, type SectionData,
 } from '@/lib/project-sections';
 import {
@@ -479,16 +478,14 @@ function SectionFilesEditor({
     onChange({ ...data, notes });
   }
 
-  // Total chars Claude actually receives = the concatenated `content` of the
-  // section (file divider headers + per-file text + notes block), capped at
-  // CLAUDE_SECTION_CHAR_LIMIT by the Edge Function. Compute it the same way
-  // here so the UI shows the truth, not just the raw file char sum.
-  const concatLen = buildSectionContent(data.files, data.notes).length;
+  // Total chars across all files (raw, before routing). The actual chars
+  // sent to Claude depend on the page-type being rewritten — that breakdown
+  // lives in the <RoutingPreview> panel above, which is the source of truth.
+  // We deliberately do NOT show a global "X truncated" warning here because
+  // it would lie: a 290K total can fit comfortably on a VSL page once OTO/
+  // Landing-only files are routed away.
   const totalChars = data.files.reduce((acc, f) => acc + f.content.length, 0)
     + (data.notes?.length || 0);
-  const willTruncate = concatLen > CLAUDE_SECTION_CHAR_LIMIT;
-  const sentChars = Math.min(concatLen, CLAUDE_SECTION_CHAR_LIMIT);
-  const lostChars = Math.max(0, concatLen - CLAUDE_SECTION_CHAR_LIMIT);
 
   return (
     <div className="space-y-3">
@@ -540,24 +537,11 @@ function SectionFilesEditor({
           No files uploaded yet.
         </div>
       ) : (
-        <div className={`border rounded-lg overflow-hidden ${willTruncate ? 'border-amber-700/60' : 'border-[#2A2D3A]'}`}>
-          <div className={`px-3 py-2 border-b flex items-center justify-between gap-3 flex-wrap ${
-            willTruncate ? 'bg-amber-950/30 border-amber-700/40' : 'bg-[#1A1D27] border-[#2A2D3A]'
-          }`}>
+        <div className="border border-[#2A2D3A] rounded-lg overflow-hidden">
+          <div className="px-3 py-2 border-b bg-[#1A1D27] border-[#2A2D3A]">
             <span className="text-xs text-gray-400 font-medium">
               {data.files.length} file{data.files.length !== 1 ? 's' : ''} · {totalChars.toLocaleString()} chars total
-            </span>
-            <span
-              className={`text-[11px] font-mono ${willTruncate ? 'text-amber-300' : 'text-emerald-400'}`}
-              title={willTruncate
-                ? `${sentChars.toLocaleString()} chars will reach Claude. ${lostChars.toLocaleString()} chars (the bottom of the file list / notes) will be truncated. Reduce file count or split into smaller projects to send everything.`
-                : `All ${sentChars.toLocaleString()} chars will reach Claude on every rewrite (cached after first batch).`
-              }
-            >
-              {willTruncate
-                ? `⚠ ${sentChars.toLocaleString()} → Claude · ${lostChars.toLocaleString()} truncated`
-                : `✓ ${sentChars.toLocaleString()} → Claude`
-              }
+              <span className="text-gray-600"> · see &ldquo;Smart routing preview&rdquo; above for what reaches Claude per page type</span>
             </span>
           </div>
           <ul className="divide-y divide-[#2A2D3A]">
