@@ -311,6 +311,9 @@ function SectionFilesEditor({
   const [error, setError] = useState<string | null>(null);
   const [previewIdx, setPreviewIdx] = useState<number | null>(null);
   const [dragOver, setDragOver] = useState(false);
+  // Notes textarea hidden by default — section is folder-first. The toggle
+  // auto-opens when there's already content in notes (legacy migration).
+  const [showNotes, setShowNotes] = useState(() => Boolean(data.notes?.trim()));
 
   const ACCEPT = '.txt,.md,.markdown,.pdf,.docx,.csv,.json,.html,.htm,.rtf,.xml,.yaml,.yml,.log,text/*';
 
@@ -463,16 +466,40 @@ function SectionFilesEditor({
         </div>
       )}
 
-      {/* Free-form notes */}
+      {/* Free-form notes (collapsed by default — section is folder-first) */}
       <div>
-        <label className="block text-xs text-gray-500 mb-1">Additional notes (optional)</label>
-        <textarea
-          value={data.notes}
-          onChange={(e) => setNotes(e.target.value)}
-          placeholder={notesPlaceholder || 'Quick notes appended after the uploaded files...'}
-          rows={3}
-          className="w-full bg-[#0F1117] border border-[#2A2D3A] rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500 resize-y"
-        />
+        {!showNotes ? (
+          <button
+            type="button"
+            onClick={() => setShowNotes(true)}
+            className="text-xs text-gray-500 hover:text-gray-300 transition-colors flex items-center gap-1"
+          >
+            <Plus className="w-3 h-3" />
+            Add notes
+          </button>
+        ) : (
+          <>
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-xs text-gray-500">Additional notes (optional)</label>
+              {!data.notes?.trim() && (
+                <button
+                  type="button"
+                  onClick={() => setShowNotes(false)}
+                  className="text-[10px] text-gray-600 hover:text-gray-400 transition-colors"
+                >
+                  Hide
+                </button>
+              )}
+            </div>
+            <textarea
+              value={data.notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder={notesPlaceholder || 'Quick notes appended after the uploaded files...'}
+              rows={3}
+              className="w-full bg-[#0F1117] border border-[#2A2D3A] rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500 resize-y"
+            />
+          </>
+        )}
       </div>
     </div>
   );
