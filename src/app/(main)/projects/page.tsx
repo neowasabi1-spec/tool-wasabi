@@ -17,6 +17,7 @@ import {
   paletteFromSection, roleLabel,
   type BrandPalette,
 } from '@/lib/brand-colors';
+import { classifyFile } from '@/lib/section-routing';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -296,6 +297,125 @@ function BrandPalettePreview({ data }: { data: SectionData }) {
   );
 }
 
+// ─── Sub-component: per-file routing tags ────────────────────────────────────
+// Renders the "Always · VSL only · OTO only" badges next to each file so the
+// user can see which page-types Claude will actually receive that file for.
+// Mirrors the rules in src/lib/section-routing.ts.
+
+function FileRoutingTags({ file }: { file: SectionFile }) {
+  const c = classifyFile(file);
+  if (c.matched.length === 0) {
+    return (
+      <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-800 text-gray-400 font-medium">
+        Always (no rule matched)
+      </span>
+    );
+  }
+  // Foundational badges first, then page-type-specific ones.
+  return (
+    <div className="flex flex-wrap items-center gap-1">
+      {c.matched.map((rule, idx) => {
+        const isFoundational = rule.pageTypes.length === 0;
+        const cls = isFoundational
+          ? 'bg-emerald-900/40 text-emerald-300 border-emerald-800/60'
+          : 'bg-blue-900/40 text-blue-300 border-blue-800/60';
+        const title = isFoundational
+          ? `Always loaded — every page receives this file (matched rule: "${rule.label}")`
+          : `Loaded only when pageType ∈ [${rule.pageTypes.join(', ')}]`;
+        return (
+          <span
+            key={idx}
+            title={title}
+            className={`text-[10px] px-1.5 py-0.5 rounded border font-medium ${cls}`}
+          >
+            {isFoundational ? '★ ' : ''}{rule.label}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── Sub-component: routing preview panel ────────────────────────────────────
+// Compact table showing, for each common page type, how many of the user's
+// uploaded files would actually reach Claude. Helps the user verify the
+// routing rules before kicking off a swipe.
+
+function RoutingPreview({ files }: { files: SectionFile[] }) {
+  const PREVIEW_PAGE_TYPES: { key: string; label: string }[] = [
+    { key: 'vsl', label: 'VSL' },
+    { key: 'landing', label: 'Landing / PDP' },
+    { key: 'advertorial', label: 'Advertorial' },
+    { key: 'quiz_funnel', label: 'Quiz' },
+    { key: 'checkout', label: 'Checkout' },
+    { key: 'upsell', label: 'Upsell / OTO' },
+  ];
+  const [expanded, setExpanded] = useState(false);
+  if (files.length === 0) return null;
+
+  const classified = files.map((f) => ({ f, c: classifyFile(f) }));
+
+  function isRelevant(c: ReturnType<typeof classifyFile>, pt: string): boolean {
+    if (c.matched.length === 0) return true;
+    if (c.isFoundational) return true;
+    if (c.pageTypes.length === 0) return true;
+    return c.pageTypes.includes(pt);
+  }
+
+  return (
+    <div className="border border-[#2A2D3A] rounded-lg overflow-hidden bg-[#0F1117]/70">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="w-full px-3 py-2 flex items-center justify-between gap-2 hover:bg-[#1A1D27]/50 transition-colors"
+      >
+        <span className="text-xs text-gray-400 font-medium">
+          Smart routing preview · how many files reach Claude per page type
+        </span>
+        <span className="text-[10px] text-gray-500">
+          {expanded ? 'Hide' : 'Show'}
+        </span>
+      </button>
+      {expanded && (
+        <div className="px-3 pb-3 pt-1 space-y-1">
+          <div className="text-[10px] text-gray-500 mb-2 leading-relaxed">
+            Foundational files (★) are always sent. Page-type files are sent
+            only when their tag matches the page being rewritten. Rename a
+            file to change how it&apos;s classified (e.g. add <code>VSL</code>,
+            <code>OTO</code>, <code>AVATAR</code>, <code>BRIEF</code>...).
+          </div>
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-gray-500 border-b border-[#2A2D3A]">
+                <th className="text-left py-1 pr-2 font-medium">Page type</th>
+                <th className="text-right py-1 pl-2 font-medium">Files sent</th>
+                <th className="text-right py-1 pl-2 font-medium">Chars</th>
+              </tr>
+            </thead>
+            <tbody>
+              {PREVIEW_PAGE_TYPES.map((pt) => {
+                const sent = classified.filter((x) => isRelevant(x.c, pt.key));
+                const chars = sent.reduce((acc, x) => acc + x.f.content.length, 0);
+                return (
+                  <tr key={pt.key} className="border-b border-[#1A1D27] last:border-b-0">
+                    <td className="py-1 pr-2 text-gray-300">{pt.label}</td>
+                    <td className="py-1 pl-2 text-right font-mono text-gray-300">
+                      {sent.length} / {files.length}
+                    </td>
+                    <td className="py-1 pl-2 text-right font-mono text-gray-400">
+                      {chars.toLocaleString()}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Sub-component: Section Files Editor (multi-file folder view) ────────────
 
 function SectionFilesEditor({
@@ -411,6 +531,9 @@ function SectionFilesEditor({
         {error && <div className="mt-2 text-xs text-red-400">{error}</div>}
       </div>
 
+      {/* Smart routing preview */}
+      <RoutingPreview files={data.files} />
+
       {/* File list */}
       {data.files.length === 0 ? (
         <div className="text-center text-gray-500 text-xs py-4 border border-[#2A2D3A] rounded-lg bg-[#0F1117]/50">
@@ -455,6 +578,9 @@ function SectionFilesEditor({
                             <span>{new Date(f.uploadedAt).toLocaleString()}</span>
                           </>
                         )}
+                      </div>
+                      <div className="mt-1.5">
+                        <FileRoutingTags file={f} />
                       </div>
                     </div>
                   </div>

@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getKnowledgeBundleForTask } from '@/knowledge/copywriting';
+import {
+  buildRoutedSectionContent,
+  pageTypeToTask,
+  type CopywritingTask,
+} from '@/lib/section-routing';
+import type { SectionFile } from '@/lib/project-sections';
 
 export const maxDuration = 300;
 export const dynamic = 'force-dynamic';
@@ -9,39 +15,66 @@ const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
 const EDGE_FUNCTION_NAME = 'funnel-swap-v1-functions';
 
-// Knowledge base loaded lazily and memoised at module level.
-// Tier 1 (~28K tok): COS Engine, Tony Flores, Evaldo, Anghelache, Savage,
-// 108 split tests — always loaded.
-// Tier 2 for 'pdp' (~18K tok): landing-page copy recipes by HTML tag,
-// 27 AI Copy Codes (headlines), Stefan Georgi big ideas + income market
-// psychographics. Total bundle ~46K tokens, sent as a single cached
-// system block so the cost is paid once per ~5 min across all batches.
-let _kbCache: string | null = null;
-function getKb(): string {
-  if (_kbCache === null) {
-    try {
-      _kbCache = getKnowledgeBundleForTask('pdp');
-      const approxTokens = Math.round((_kbCache?.length ?? 0) / 4);
-      console.log(
-        `[funnel-swap-proxy] KB loaded: ${_kbCache?.length ?? 0} chars / ~${approxTokens} tokens`,
-      );
-    } catch (err) {
-      console.warn('[funnel-swap-proxy] knowledge base load failed:', err);
-      _kbCache = '';
-    }
+// Hard char cap per section sent to Claude. Mirrors SECTION_CHAR_LIMIT in
+// the Edge Function so we never overflow once we add KB + system overhead.
+const SECTION_CHAR_BUDGET = 200_000;
+
+// Knowledge base bundles, memoised per task. Tier 1 (~28K tok) is shared by
+// every task (loaded once); Tier 2 differs per task and is selected from
+// SOURCES via priority + budget. Anthropic Prompt Caching makes the bundle
+// cost ~10% on hits within ~5 min, so per-task caches are still cheap.
+const _kbCache = new Map<CopywritingTask, string>();
+function getKbForTask(task: CopywritingTask): string {
+  const cached = _kbCache.get(task);
+  if (cached !== undefined) return cached;
+  let kb = '';
+  try {
+    kb = getKnowledgeBundleForTask(task);
+    const approxTokens = Math.round(kb.length / 4);
+    console.log(
+      `[funnel-swap-proxy] KB loaded for task=${task}: ${kb.length} chars / ~${approxTokens} tokens`,
+    );
+  } catch (err) {
+    console.warn(`[funnel-swap-proxy] KB load failed for task=${task}:`, err);
   }
-  return _kbCache;
+  _kbCache.set(task, kb);
+  return kb;
+}
+
+interface RoutingPayload {
+  files?: SectionFile[];
+  notes?: string;
+}
+
+function asFiles(val: unknown): SectionFile[] {
+  if (!Array.isArray(val)) return [];
+  return val.filter(
+    (f): f is SectionFile =>
+      !!f && typeof f === 'object' && typeof (f as SectionFile).name === 'string' &&
+      typeof (f as SectionFile).content === 'string',
+  );
 }
 
 /**
  * Thin proxy that forwards the incoming JSON body to the Supabase Edge
- * Function `funnel-swap-v1-functions` and injects, server-side:
- *   - `system_kb`      : copywriting knowledge base (cached system block)
- *   - `brief`          : optional project brief (passed-through)
- *   - `market_research`: optional market research notes (passed-through)
+ * Function `funnel-swap-v1-functions`. The proxy is responsible for the
+ * server-side intelligence layer:
  *
- * The browser never sees the KB content; only the Next.js server reads it
- * from disk (src/knowledge/copywriting/raw/*.md) and forwards it to Supabase.
+ *   1. Loads and injects the copywriting Knowledge Base (`system_kb`)
+ *      sized for the current pageType (Tier 1 always + Tier 2 task add-ons).
+ *   2. Routes the project's Brief and Market Research files based on the
+ *      pageType being rewritten — only relevant docs reach Claude.
+ *   3. Caps every section to SECTION_CHAR_BUDGET so we never overflow the
+ *      Edge Function input limits.
+ *
+ * Body fields read (all optional):
+ *   - pageType            : string  — drives KB Tier 2 + file routing
+ *   - brief_files         : SectionFile[]
+ *   - brief_notes         : string
+ *   - research_files      : SectionFile[]
+ *   - research_notes      : string
+ *   - brief               : string  — legacy fallback (no routing)
+ *   - market_research     : string  — legacy fallback (no routing)
  */
 export async function POST(request: NextRequest) {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
@@ -61,8 +94,8 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // Only inject the KB when the call will hit Claude. The extract phase is
-  // pure HTML scraping (no Claude call) so adding the KB would just bloat
+  // Only inject KB / route files when we'll actually call Claude. The extract
+  // phase is pure HTML scraping (no Claude) so adding the KB would just bloat
   // the request payload.
   const phase = (body.phase as string) || '';
   const cloneMode = (body.cloneMode as string) || '';
@@ -71,10 +104,66 @@ export async function POST(request: NextRequest) {
     cloneMode === 'translate';
 
   const enrichedBody: Record<string, unknown> = { ...body };
+  // Strip the routing-only fields before forwarding so they don't leak into
+  // the Edge Function payload (it doesn't read them).
+  delete enrichedBody.brief_files;
+  delete enrichedBody.brief_notes;
+  delete enrichedBody.research_files;
+  delete enrichedBody.research_notes;
 
-  if (willCallClaude && !enrichedBody.system_kb) {
-    const kb = getKb();
-    if (kb) enrichedBody.system_kb = kb;
+  if (willCallClaude) {
+    const pageType = (body.pageType as string) || 'pdp';
+    const task = pageTypeToTask(pageType);
+
+    // 1) Knowledge base sized for the current pageType (cached per task).
+    if (!enrichedBody.system_kb) {
+      const kb = getKbForTask(task);
+      if (kb) enrichedBody.system_kb = kb;
+    }
+
+    // 2) Brief routing (when the client sent a structured payload).
+    const briefPayload: RoutingPayload = {
+      files: asFiles((body as { brief_files?: unknown }).brief_files),
+      notes: typeof body.brief_notes === 'string' ? body.brief_notes : '',
+    };
+    if (briefPayload.files && briefPayload.files.length > 0) {
+      const { content, selection } = buildRoutedSectionContent(
+        briefPayload.files,
+        briefPayload.notes ?? '',
+        pageType,
+        SECTION_CHAR_BUDGET,
+      );
+      enrichedBody.brief = content;
+      console.log(
+        `[funnel-swap-proxy] brief routing pageType=${pageType} task=${task} ` +
+        `selected=${selection.selected.length}/${briefPayload.files.length} ` +
+        `chars=${selection.totalChars}/${selection.budgetChars} ` +
+        `kept=[${selection.selected.map((f) => f.name).join(', ')}] ` +
+        `skipped=[${selection.skipped.map((s) => `${s.file.name}(${s.reason})`).join(', ')}]`,
+      );
+    }
+
+    // 3) Market research routing.
+    const researchPayload: RoutingPayload = {
+      files: asFiles((body as { research_files?: unknown }).research_files),
+      notes: typeof body.research_notes === 'string' ? body.research_notes : '',
+    };
+    if (researchPayload.files && researchPayload.files.length > 0) {
+      const { content, selection } = buildRoutedSectionContent(
+        researchPayload.files,
+        researchPayload.notes ?? '',
+        pageType,
+        SECTION_CHAR_BUDGET,
+      );
+      enrichedBody.market_research = content;
+      console.log(
+        `[funnel-swap-proxy] research routing pageType=${pageType} task=${task} ` +
+        `selected=${selection.selected.length}/${researchPayload.files.length} ` +
+        `chars=${selection.totalChars}/${selection.budgetChars} ` +
+        `kept=[${selection.selected.map((f) => f.name).join(', ')}] ` +
+        `skipped=[${selection.skipped.map((s) => `${s.file.name}(${s.reason})`).join(', ')}]`,
+      );
+    }
   }
 
   const edgeFunctionUrl = `${SUPABASE_URL}/functions/v1/${EDGE_FUNCTION_NAME}`;
@@ -103,9 +192,14 @@ export async function POST(request: NextRequest) {
 
   const elapsedMs = Date.now() - t0;
   const kbInjected = !!enrichedBody.system_kb;
+  const briefChars = typeof enrichedBody.brief === 'string' ? enrichedBody.brief.length : 0;
+  const researchChars =
+    typeof enrichedBody.market_research === 'string' ? enrichedBody.market_research.length : 0;
   console.log(
     `[funnel-swap-proxy] phase=${phase || '?'} cloneMode=${cloneMode || '?'} ` +
-    `kb=${kbInjected ? 'yes' : 'no'} status=${response.status} time=${elapsedMs}ms`,
+    `pageType=${(body.pageType as string) || '?'} kb=${kbInjected ? 'yes' : 'no'} ` +
+    `briefChars=${briefChars} researchChars=${researchChars} ` +
+    `status=${response.status} time=${elapsedMs}ms`,
   );
 
   const contentType = response.headers.get('content-type') || '';

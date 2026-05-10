@@ -2015,6 +2015,19 @@ export default function FrontEndFunnel() {
         // JSON/files metadata into the LLM context.
         const researchStr = extractSectionContent(project.marketResearch);
 
+        // Smart routing payload. The proxy uses these (when present) to:
+        //   1. Pick the right copywriting KB Tier 2 for this pageType
+        //   2. Select only the brief/research files that match this pageType
+        //      (always-include foundational docs + page-type-specific docs)
+        // If either is missing, the proxy falls back to brief/market_research.
+        const routingPayload = {
+          pageType: page.pageType || 'other',
+          brief_files: project.briefData?.files ?? [],
+          brief_notes: project.briefData?.notes ?? '',
+          research_files: project.marketResearchData?.files ?? [],
+          research_notes: project.marketResearchData?.notes ?? '',
+        };
+
         const SUPABASE_FN_URL = '/api/funnel-swap-proxy';
 
         const extractRes = await fetch(SUPABASE_FN_URL, {
@@ -2035,6 +2048,7 @@ export default function FrontEndFunnel() {
             brief: briefStr || undefined,
             market_research: researchStr || undefined,
             funnel_context: funnelContextStr || undefined,
+            ...routingPayload,
           }),
         });
         const extractData = await extractRes.json();
@@ -2066,6 +2080,7 @@ export default function FrontEndFunnel() {
                 brief: briefStr || undefined,
                 market_research: researchStr || undefined,
                 funnel_context: funnelContextStr || undefined,
+                ...routingPayload,
               }),
             },
             { retries: 2, baseDelayMs: 2000, label: `swipeall-proc-${i}-${sbBatch}` },
@@ -2328,6 +2343,18 @@ export default function FrontEndFunnel() {
             message: 'Estrazione testi dal competitor...',
           });
 
+          // Smart routing payload (see runSwipeAll for explanation).
+          // We re-derive pageType + structured files from the linked
+          // project at request time so we always send the freshest data.
+          const cloneProject = (projects || []).find((pr) => pr.id === currentPage?.productId);
+          const cloneRoutingPayload = {
+            pageType: currentPage?.pageType || 'other',
+            brief_files: cloneProject?.briefData?.files ?? [],
+            brief_notes: cloneProject?.briefData?.notes ?? '',
+            research_files: cloneProject?.marketResearchData?.files ?? [],
+            research_notes: cloneProject?.marketResearchData?.notes ?? '',
+          };
+
           const extractRes = await fetch(SUPABASE_FN_URL, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -2345,6 +2372,7 @@ export default function FrontEndFunnel() {
               renderedHtml: htmlToRewrite,
               brief: cloneConfig.brief || undefined,
               market_research: cloneConfig.marketResearch || undefined,
+              ...cloneRoutingPayload,
             }),
           });
 
@@ -2395,6 +2423,7 @@ export default function FrontEndFunnel() {
                   // batches of the same job.
                   brief: cloneConfig.brief || undefined,
                   market_research: cloneConfig.marketResearch || undefined,
+                  ...cloneRoutingPayload,
                 }),
               },
               { retries: 2, baseDelayMs: 2000, label: `proc-batch-${sbBatch}` },

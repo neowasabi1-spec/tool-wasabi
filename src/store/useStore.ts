@@ -14,6 +14,7 @@ import type {
   PostPurchaseType,
 } from '@/types/database';
 import * as supabaseOps from '@/lib/supabase-operations';
+import { parseSectionData, type SectionData } from '@/lib/project-sections';
 
 const SWIPE_API_URL = '/api/landing/swipe';
 
@@ -61,6 +62,11 @@ interface AppProject {
   backEnd: ProjectSectionData;
   complianceFunnel: ProjectSectionData;
   funnel: ProjectSectionData;
+  // Parsed multi-file payloads — same data as `marketResearch` / `brief`
+  // but normalised through parseSectionData() so consumers (e.g. the rewrite
+  // proxy) can pick individual files instead of a giant concatenated blob.
+  briefData: SectionData;
+  marketResearchData: SectionData;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -177,6 +183,14 @@ function dbProductToApp(p: Product): AppProduct {
 }
 
 function dbProjectToApp(p: Project): AppProject {
+  // brief lives in TWO columns for backwards compat:
+  //   - p.brief         (TEXT, legacy concatenated content)
+  //   - p.brief_files   (JSONB, new SectionData with file array)
+  // Prefer the JSONB blob when present; fall back to the TEXT column.
+  const briefRaw =
+    (p as Project & { brief_files?: unknown }).brief_files ?? p.brief;
+  const briefData = parseSectionData(briefRaw);
+  const marketResearchData = parseSectionData(p.market_research);
   return {
     id: p.id,
     name: p.name,
@@ -192,6 +206,8 @@ function dbProjectToApp(p: Project): AppProject {
     backEnd: (p.back_end as ProjectSectionData) || {},
     complianceFunnel: (p.compliance_funnel as ProjectSectionData) || {},
     funnel: (p.funnel as ProjectSectionData) || {},
+    briefData,
+    marketResearchData,
     createdAt: new Date(p.created_at),
     updatedAt: new Date(p.updated_at),
   };
