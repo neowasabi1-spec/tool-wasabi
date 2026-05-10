@@ -108,12 +108,112 @@ async function tryJinaBrowserHtml(url: string, apiKey: string): Promise<string |
       console.warn(`[spa-rescue] jina browser-html still SPA shell (${html.length} chars) for ${url} — JS likely failed to execute`);
       return null;
     }
-    console.log(`[spa-rescue] jina browser-html OK: ${html.length} chars for ${url}`);
-    return html;
+
+    // Critical post-processing: rewrite all relative URLs (img src,
+    // href, srcset, CSS url(), style="background-image:url(...)") to
+    // absolute URLs pointing back to the original origin. Without this,
+    // when we publish the cloned page on a different domain the browser
+    // tries to load /figmaAssets/*.png from OUR domain → 404 → layout
+    // collapses. Doing it server-side once is cheaper than a runtime
+    // <base href> tag (which would also redirect <a href> clicks back
+    // to the competitor — undesirable).
+    const absolutized = absolutizeUrlsInHtml(html, url);
+    console.log(`[spa-rescue] jina browser-html OK: ${absolutized.length} chars for ${url}`);
+    return absolutized;
   } catch (err) {
     const e = err as { message?: string; cause?: { code?: string } };
     console.warn(`[spa-rescue] jina browser-html failed for ${url}: ${e?.message || String(err)}${e?.cause?.code ? ` (${e.cause.code})` : ''}`);
     return null;
+  }
+}
+
+/**
+ * Rewrite every relative URL in `html` to an absolute URL using
+ * `originUrl` as the base. Operates on:
+ *   - src=  on <img>, <script>, <source>, <video>, <audio>, <iframe>, <embed>
+ *   - href= on <a>, <link>, <area>, <use>
+ *   - srcset= on <img> and <source>  (comma-separated descriptors)
+ *   - url(...) inside <style>...</style>
+ *   - url(...) inside inline style="..." attributes
+ *   - data-bg, data-src, data-image, data-original (lazy-load conventions)
+ *
+ * Skips URLs that are already absolute (http://, https://, //), data:,
+ * blob:, mailto:, tel:, javascript:, or pure anchors (#xxx).
+ *
+ * Exported because the same logic is useful for any cloned-HTML pipeline
+ * (e.g. /api/clone-funnel could opt in for non-SPA pages too if needed).
+ */
+export function absolutizeUrlsInHtml(html: string, originUrl: string): string {
+  let base: URL;
+  try { base = new URL(originUrl); } catch { return html; }
+
+  const out = html
+    // src= on common asset-bearing tags
+    .replace(
+      /(<(?:img|script|source|video|audio|iframe|embed|track|input)\b[^>]*?\bsrc\s*=\s*)(["'])([^"']+)\2/gi,
+      (_m, prefix: string, q: string, val: string) => `${prefix}${q}${absolutize(val, base)}${q}`,
+    )
+    // href= on link/anchor/area/use/base
+    .replace(
+      /(<(?:a|link|area|use|base|form)\b[^>]*?\bhref\s*=\s*)(["'])([^"']+)\2/gi,
+      (_m, prefix: string, q: string, val: string) => `${prefix}${q}${absolutize(val, base)}${q}`,
+    )
+    // <form action="...">
+    .replace(
+      /(<form\b[^>]*?\baction\s*=\s*)(["'])([^"']+)\2/gi,
+      (_m, prefix: string, q: string, val: string) => `${prefix}${q}${absolutize(val, base)}${q}`,
+    )
+    // srcset="x.png 1x, y.png 2x"
+    .replace(
+      /(<(?:img|source)\b[^>]*?\bsrcset\s*=\s*)(["'])([^"']+)\2/gi,
+      (_m, prefix: string, q: string, val: string) => {
+        const fixed = val.split(',').map((part) => {
+          const trimmed = part.trim();
+          if (!trimmed) return part;
+          const segments = trimmed.split(/\s+/);
+          const u = segments[0];
+          const rest = segments.slice(1);
+          return [absolutize(u, base), ...rest].join(' ');
+        }).join(', ');
+        return `${prefix}${q}${fixed}${q}`;
+      },
+    )
+    // url(...) inside <style>...</style>
+    .replace(
+      /<style\b([^>]*)>([\s\S]*?)<\/style>/gi,
+      (_m, attrs: string, css: string) => `<style${attrs}>${rewriteCssUrls(css, base)}</style>`,
+    )
+    // url(...) inside inline style="" attributes
+    .replace(
+      /(\bstyle\s*=\s*)(["'])([^"']*)\2/gi,
+      (_m, prefix: string, q: string, val: string) => `${prefix}${q}${rewriteCssUrls(val, base)}${q}`,
+    )
+    // Lazy-load attributes: data-src, data-bg, data-image, data-original,
+    // data-lazy-src — covers the most common JS lazy-loaders.
+    .replace(
+      /(\bdata-(?:src|bg|image|original|lazy-src)\s*=\s*)(["'])([^"']+)\2/gi,
+      (_m, prefix: string, q: string, val: string) => `${prefix}${q}${absolutize(val, base)}${q}`,
+    );
+
+  return out;
+}
+
+function rewriteCssUrls(css: string, base: URL): string {
+  return css.replace(
+    /url\(\s*(["']?)([^"')]+)\1\s*\)/g,
+    (_m, q: string, u: string) => `url(${q}${absolutize(u, base)}${q})`,
+  );
+}
+
+function absolutize(u: string, base: URL): string {
+  if (!u) return u;
+  const trimmed = u.trim();
+  // Already absolute, protocol-relative, data/blob/mailto/tel/js, or pure anchor
+  if (/^(?:https?:\/\/|\/\/|data:|blob:|mailto:|tel:|javascript:|#)/i.test(trimmed)) return u;
+  try {
+    return new URL(trimmed, base).href;
+  } catch {
+    return u;
   }
 }
 
