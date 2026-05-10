@@ -36,30 +36,110 @@ export function isSpaShell(html: string): boolean {
 }
 
 /**
- * Render a JS-only page via r.jina.ai (markdown mode = real JS rendering)
- * and convert the response into a minimal HTML payload the downstream
- * extractor can scan. Returns null when Jina is unreachable or returns
- * something useless. Timeout: 30s.
+ * Render a JS-only page via r.jina.ai. Tries two strategies in order so
+ * that we ALWAYS prefer the highest-fidelity output available:
+ *
+ *   1) `X-Engine: browser` + `X-Return-Format: html`
+ *      Jina spins up a real headless Chromium, executes the JS, then
+ *      serialises the post-render DOM. The result preserves images,
+ *      CSS classes, attributes and the original tag structure — i.e. it
+ *      looks like a Playwright snapshot. Slower (10-30s) but allows the
+ *      downstream rewrite to keep the visual identity of the page.
+ *
+ *   2) Markdown fallback (default Jina mode)
+ *      If the browser-engine attempt fails (rate-limited, timeout,
+ *      Jina free-tier limits, etc.) we fall back to the markdown reader
+ *      which is fast and reliable but text-only. We then convert that
+ *      markdown into a minimal HTML so the rewrite extractor still
+ *      finds <h1>/<p>/<li>/... — the user gets the COPY but loses the
+ *      design (no images, no original layout).
+ *
+ * Returns null when both strategies fail. Optionally pass an
+ * `apiKey` (or set JINA_API_KEY env var) to lift Jina's free-tier rate
+ * limits and unlock faster browser-mode renders.
  */
 export async function rescueViaJina(url: string): Promise<string | null> {
+  const apiKey = process.env.JINA_API_KEY?.trim() || '';
+  const html = await tryJinaBrowserHtml(url, apiKey);
+  if (html) return html;
+  const md = await tryJinaMarkdown(url, apiKey);
+  if (md) return md;
+  return null;
+}
+
+/**
+ * Strategy 1: Real browser render → full post-render HTML.
+ * Preserves visual identity (images, CSS classes, structure).
+ */
+async function tryJinaBrowserHtml(url: string, apiKey: string): Promise<string | null> {
   try {
-    const jinaUrl = `https://r.jina.ai/${url}`;
-    const res = await fetch(jinaUrl, {
-      headers: {
-        // Default Jina format = markdown (which DOES render the JS server
-        // side). `X-Return-Format: html` returns the raw shell, useless.
-        'Accept': 'text/plain',
-      },
+    const headers: Record<string, string> = {
+      'Accept': 'text/html',
+      'X-Return-Format': 'html',
+      // Force a real headless Chromium server-side. Without this header
+      // Jina uses a "direct" fetch which returns the raw SPA shell.
+      'X-Engine': 'browser',
+      // Bypass cache so we always get a fresh render — competitors update
+      // pricing, dates and offers daily and we want the latest copy.
+      'X-No-Cache': 'true',
+      // Auto-generate alt text for images so the downstream extractor can
+      // pick up image-only content too (testimonial photos, badges, ...).
+      'X-With-Generated-Alt': 'true',
+    };
+    if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+
+    const res = await fetch(`https://r.jina.ai/${url}`, {
+      headers,
+      redirect: 'follow',
+      // Real browser renders are slow — give them up to 60s before we
+      // fall back to the markdown path (which is much faster).
+      signal: AbortSignal.timeout(60000),
+    });
+    if (!res.ok) {
+      console.warn(`[spa-rescue] jina browser-html HTTP ${res.status} for ${url}`);
+      return null;
+    }
+    const html = await res.text();
+    if (!html || html.length < 1000) {
+      console.warn(`[spa-rescue] jina browser-html returned ${html?.length ?? 0} chars for ${url}`);
+      return null;
+    }
+    if (isSpaShell(html)) {
+      console.warn(`[spa-rescue] jina browser-html still SPA shell (${html.length} chars) for ${url} — JS likely failed to execute`);
+      return null;
+    }
+    console.log(`[spa-rescue] jina browser-html OK: ${html.length} chars for ${url}`);
+    return html;
+  } catch (err) {
+    const e = err as { message?: string; cause?: { code?: string } };
+    console.warn(`[spa-rescue] jina browser-html failed for ${url}: ${e?.message || String(err)}${e?.cause?.code ? ` (${e.cause.code})` : ''}`);
+    return null;
+  }
+}
+
+/**
+ * Strategy 2: Markdown fallback → text-only HTML. Used when the browser
+ * render times out or hits rate limits. Loses design but keeps the copy.
+ */
+async function tryJinaMarkdown(url: string, apiKey: string): Promise<string | null> {
+  try {
+    const headers: Record<string, string> = {
+      'Accept': 'text/plain',
+    };
+    if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+
+    const res = await fetch(`https://r.jina.ai/${url}`, {
+      headers,
       redirect: 'follow',
       signal: AbortSignal.timeout(30000),
     });
     if (!res.ok) {
-      console.warn(`[spa-rescue] jina HTTP ${res.status} for ${url}`);
+      console.warn(`[spa-rescue] jina markdown HTTP ${res.status} for ${url}`);
       return null;
     }
     const md = await res.text();
     if (!md || md.length < 200) {
-      console.warn(`[spa-rescue] jina returned ${md?.length ?? 0} chars for ${url}`);
+      console.warn(`[spa-rescue] jina markdown returned ${md?.length ?? 0} chars for ${url}`);
       return null;
     }
     const html = jinaMarkdownToHtml(md, url);
@@ -67,10 +147,11 @@ export async function rescueViaJina(url: string): Promise<string | null> {
       console.warn(`[spa-rescue] jina markdown converted but still empty for ${url}`);
       return null;
     }
+    console.log(`[spa-rescue] jina markdown fallback: ${md.length} md → ${html.length} html for ${url}`);
     return html;
   } catch (err) {
     const e = err as { message?: string; cause?: { code?: string } };
-    console.warn(`[spa-rescue] jina failed for ${url}: ${e?.message || String(err)}${e?.cause?.code ? ` (${e.cause.code})` : ''}`);
+    console.warn(`[spa-rescue] jina markdown failed for ${url}: ${e?.message || String(err)}${e?.cause?.code ? ` (${e.cause.code})` : ''}`);
     return null;
   }
 }
