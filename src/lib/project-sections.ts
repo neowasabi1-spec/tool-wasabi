@@ -44,22 +44,63 @@ export function buildSectionContent(files: SectionFile[], notes: string): string
   return parts.join('\n').trim();
 }
 
+/** If the given string looks like a JSON-serialized SectionData, parse it
+ *  and return the parsed SectionData. Otherwise return null. We detect it
+ *  by requiring `files` to be present as an array — a much stricter check
+ *  than "starts with {" so we don't accidentally swallow user JSON notes. */
+function tryParseAsSectionShape(s: unknown): SectionData | null {
+  if (typeof s !== 'string') return null;
+  const trimmed = s.trim();
+  if (!trimmed.startsWith('{')) return null;
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (
+      parsed &&
+      typeof parsed === 'object' &&
+      Array.isArray((parsed as Record<string, unknown>).files)
+    ) {
+      return parseSectionData(parsed);
+    }
+  } catch { /* not JSON */ }
+  return null;
+}
+
 /** Normalize whatever shape we read back from the DB into the canonical
  *  SectionData. Supports:
  *    - null/undefined         → empty
- *    - plain string           → treated as notes (legacy)
- *    - { content: string }    → treated as notes (legacy single-textarea)
+ *    - plain string           → treated as notes (legacy textarea)
+ *    - { content: string }    → legacy single-textarea shape
  *    - { files, notes, ... }  → new shape, used as-is
+ *
+ *  Bonus: any string field that is itself a JSON-serialized SectionData
+ *  (shape with `files` array) is detected and recursively parsed. This
+ *  rescues legacy rows where the multi-file blob ended up stringified
+ *  into `.notes` or `.content` by mistake — without this the UI would
+ *  show raw JSON inside the notes textarea and the file list would be
+ *  empty.
  */
 export function parseSectionData(val: unknown): SectionData {
   if (val == null || val === '') {
     return { files: [], notes: '', content: '' };
   }
+
+  // String path: maybe it's our own shape stringified, otherwise legacy
+  // free-form notes.
   if (typeof val === 'string') {
+    const reparsed = tryParseAsSectionShape(val);
+    if (reparsed) return reparsed;
     return { files: [], notes: val, content: val };
   }
+
   if (typeof val === 'object') {
     const obj = val as Record<string, unknown>;
+
+    // Object path: notes or content might still hold a stringified shape.
+    const reparsedNotes = tryParseAsSectionShape(obj.notes);
+    if (reparsedNotes) return reparsedNotes;
+    const reparsedContent = tryParseAsSectionShape(obj.content);
+    if (reparsedContent) return reparsedContent;
+
     const filesRaw = Array.isArray(obj.files) ? (obj.files as unknown[]) : [];
     const files: SectionFile[] = filesRaw
       .map((f) => {
@@ -76,14 +117,10 @@ export function parseSectionData(val: unknown): SectionData {
       .filter((f): f is SectionFile => f !== null);
     const notes = typeof obj.notes === 'string' ? obj.notes : '';
     let content = typeof obj.content === 'string' ? obj.content : '';
-    // Legacy rows had only `content` (a textarea). Treat that as notes when
-    // there are no files yet, so the UI shows it in the notes field.
-    if (!content && files.length === 0 && notes === '') {
-      // nothing
-    }
     if (!content) content = buildSectionContent(files, notes);
     return { files, notes, content };
   }
+
   return { files: [], notes: '', content: '' };
 }
 
