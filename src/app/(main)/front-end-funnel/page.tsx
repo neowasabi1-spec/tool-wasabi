@@ -949,9 +949,54 @@ export default function FrontEndFunnel() {
       return next.length > 200 ? next.slice(next.length - 200) : next;
     });
   }, []);
+
+  // Live "before → after" rewrite stream for the cinematic overlay's
+  // central panel. The Edge Function returns a `rewrites` array with each
+  // process-batch response (since v2026-05-10) containing the actual
+  // (original, rewritten) pairs Claude produced for the batch. We push
+  // them here in the order they arrive so the overlay can scroll through
+  // them like a film reel. Capped at 250 (FIFO) to bound memory on long
+  // Swipe-All runs across dozens of pages.
+  interface RewriteStreamEntry {
+    id: number;
+    at: number;
+    pageName: string;
+    original: string;
+    rewritten: string;
+  }
+  const [rewriteStream, setRewriteStream] = useState<RewriteStreamEntry[]>([]);
+  const rewriteStreamIdRef = useRef(0);
+  const pushRewrites = useCallback(
+    (rewrites: Array<{ original?: string; rewritten?: string }> | undefined, pageName: string) => {
+      if (!rewrites || rewrites.length === 0) return;
+      const now = Date.now();
+      const additions: RewriteStreamEntry[] = [];
+      for (const r of rewrites) {
+        const original = (r?.original ?? '').trim();
+        const rewritten = (r?.rewritten ?? '').trim();
+        if (!original || !rewritten || original === rewritten) continue;
+        rewriteStreamIdRef.current += 1;
+        additions.push({
+          id: rewriteStreamIdRef.current,
+          at: now,
+          pageName,
+          original,
+          rewritten,
+        });
+      }
+      if (additions.length === 0) return;
+      setRewriteStream((prev) => {
+        const next = prev.concat(additions);
+        return next.length > 250 ? next.slice(next.length - 250) : next;
+      });
+    },
+    [],
+  );
   const resetSwipeLog = useCallback(() => {
     setSwipeLog([]);
     swipeLogIdRef.current = 0;
+    setRewriteStream([]);
+    rewriteStreamIdRef.current = 0;
   }, []);
 
   // Wallclock tick — forces re-render once per second so the overlay can
@@ -2146,6 +2191,7 @@ export default function FrontEndFunnel() {
             continue?: boolean;
             replacements?: number;
             error?: string;
+            rewrites?: Array<{ original?: string; rewritten?: string }>;
           };
           try {
             procData = raw ? JSON.parse(raw) : {};
@@ -2155,6 +2201,12 @@ export default function FrontEndFunnel() {
           if (!procRes.ok || procData.error) {
             throw new Error(procData.error || `Process batch ${sbBatch} HTTP ${procRes.status}`);
           }
+
+          // Push the per-batch (original → rewritten) preview pairs into
+          // the live rewrite stream so the cinematic overlay can show the
+          // actual copy changes as they happen. Works for both 'process'
+          // (intermediate) and 'completed' (final batch) responses.
+          pushRewrites(procData.rewrites, pageName);
 
           if (procData.phase === 'completed' && procData.content) {
             sbFinalHtml = procData.content;
@@ -2242,7 +2294,7 @@ export default function FrontEndFunnel() {
       s ? { ...s, isRunning: false, currentStep: 'idle', batchInfo: '' } : s
     );
     pushSwipeLog('info', '\u25fc Swipe All finished');
-  }, [funnelPages, projects, updateFunnelPage, pushSwipeLog, resetSwipeLog]);
+  }, [funnelPages, projects, updateFunnelPage, pushSwipeLog, pushRewrites, resetSwipeLog]);
 
   const cancelSwipeAll = useCallback(() => {
     swipeAllCancelRef.current = true;
@@ -2257,6 +2309,10 @@ export default function FrontEndFunnel() {
 
     setCloneModal({ isOpen: false, pageId: '', pageName: '', url: '' });
     setCloningIds(prev => [...prev, pageId]);
+    // Reset the live activity log + rewrite stream so the cinematic
+    // overlay starts from a clean slate for this clone (otherwise it
+    // would still show entries from the previous Swipe All / Rewrite).
+    resetSwipeLog();
 
     const currentPage = (funnelPages || []).find(p => p.id === pageId);
     // Riconoscimento quiz: privilegia l'URL del modal (che è quello effettivo
@@ -2502,6 +2558,7 @@ export default function FrontEndFunnel() {
               continue?: boolean;
               replacements?: number;
               error?: string;
+              rewrites?: Array<{ original?: string; rewritten?: string }>;
             };
             try {
               procData = raw ? JSON.parse(raw) : {};
@@ -2511,6 +2568,10 @@ export default function FrontEndFunnel() {
             if (!procRes.ok || procData.error) {
               throw new Error(procData.error || `Process batch ${sbBatch} HTTP ${procRes.status}`);
             }
+
+            // Feed the live (before → after) preview pairs into the rewrite
+            // stream powering the cinematic overlay's central panel.
+            pushRewrites(procData.rewrites, pageName);
 
             if (procData.phase === 'completed' && procData.content) {
               sbFinalHtml = procData.content;
@@ -5589,6 +5650,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
           clonedHtml: p.clonedData?.html || p.swipedData?.html,
         }))}
         log={swipeLog as OverlayLogEntry[]}
+        rewrites={rewriteStream}
         onCancel={() => {
           if (swipeAllJob?.isRunning) cancelSwipeAll();
         }}

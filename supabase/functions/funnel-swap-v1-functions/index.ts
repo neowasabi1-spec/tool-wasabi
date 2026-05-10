@@ -1499,6 +1499,29 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
         return cleaned
       }
 
+      // Per-batch (original → rewritten) preview pairs returned to the
+      // client so the cinematic overlay can show the user the actual
+      // copy changes happening live, batch by batch — not just a counter.
+      // We strip HTML, collapse whitespace and cap length to keep the
+      // payload light (~25 entries × ~280 chars = ~14 KB max per batch).
+      const stripHtmlForPreview = (s: string): string =>
+        (s || '')
+          .replace(/<br\s*\/?>(\s|&nbsp;)*/gi, ' ')
+          .replace(/<\/(p|div|li|h[1-6])>/gi, ' ')
+          .replace(/<[^>]+>/g, '')
+          .replace(/&nbsp;/gi, ' ')
+          .replace(/&amp;/g, '&')
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>')
+          .replace(/&quot;/g, '"')
+          .replace(/&#39;/g, "'")
+          .replace(/\s+/g, ' ')
+          .trim()
+      const cap = (s: string, n: number): string =>
+        s.length <= n ? s : s.slice(0, n - 1).trimEnd() + '…'
+
+      const rewritesPreview: Array<{ index: number; original: string; rewritten: string }> = []
+
       for (const rewritten of rewrittenTexts) {
         const originalText = textsToProcess.find(t => t.index === rewritten.index)
         if (originalText) {
@@ -1512,6 +1535,23 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
               processed_at: new Date().toISOString()
             })
             .eq('id', originalText.id)
+
+          const beforeStr = stripHtmlForPreview(originalText.raw_text || originalText.original_text || '')
+          const afterStr = stripHtmlForPreview(cleanedText)
+          // Filter out micro-texts (single chars, currency symbols, dashes,
+          // pure digits) — they are visual noise in the live stream and
+          // don't carry meaningful copy changes.
+          if (
+            beforeStr.length >= 3 &&
+            afterStr.length >= 3 &&
+            beforeStr !== afterStr
+          ) {
+            rewritesPreview.push({
+              index: originalText.index,
+              original: cap(beforeStr, 280),
+              rewritten: cap(afterStr, 280),
+            })
+          }
         }
       }
 
@@ -1631,7 +1671,11 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
             format: job.output_format || 'html',
             textsProcessed: allProcessedTexts.length,
             replacements: replacementCount,
-            report: { totalTexts: allProcessedTexts.length, replaced: replacementCount }
+            report: { totalTexts: allProcessedTexts.length, replaced: replacementCount },
+            // Include the LAST batch's preview pairs even on the completion
+            // response so the cinematic overlay shows them too (otherwise
+            // the final batch's rewrites would never reach the UI).
+            rewrites: rewritesPreview,
           }),
           { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         )
@@ -1644,7 +1688,11 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
           jobId: jobId,
           batchProcessed: textsToProcess.length,
           remainingTexts: remainingCount || 0,
-          continue: true
+          continue: true,
+          // Live preview pairs for the cinematic overlay (see preview
+          // pipeline above). Capped to ~25 per batch by upstream batch
+          // sizing.
+          rewrites: rewritesPreview,
         }),
         { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       )

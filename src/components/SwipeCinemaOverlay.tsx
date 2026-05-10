@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Loader2, X, CheckCircle2, AlertCircle, Sparkles,
-  PenLine, Layers, Zap, FileCode2, Clock,
+  PenLine, Layers, Zap, Clock, ArrowRight,
 } from 'lucide-react';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -50,12 +50,24 @@ export interface SwipePageInfo {
   clonedHtml?: string;
 }
 
+/** A single (original → rewritten) pair produced by Claude during one
+ *  process batch. Streamed into the overlay so the user can see the
+ *  actual copy changes happening live, not just a numeric counter. */
+export interface RewriteStreamEntry {
+  id: number;
+  at: number;
+  pageName: string;
+  original: string;
+  rewritten: string;
+}
+
 export interface SwipeCinemaOverlayProps {
   swipeAll: SwipeAllJobShape | null;
   cloneProgress: CloneProgressShape | null;
   cloneTargetPageName?: string;
   pages: SwipePageInfo[];
   log: SwipeLogEntry[];
+  rewrites?: RewriteStreamEntry[];
   onCancel: () => void;
   onClose?: () => void;
 }
@@ -68,6 +80,7 @@ export default function SwipeCinemaOverlay({
   cloneTargetPageName,
   pages,
   log,
+  rewrites = [],
   onCancel,
   onClose,
 }: SwipeCinemaOverlayProps) {
@@ -133,36 +146,6 @@ export default function SwipeCinemaOverlay({
     }
     return null;
   }, [isSingle, cloneProgress, isSwipeAll, swipeAll?.batchInfo]);
-
-  // Live preview HTML for the iframe. Use the most up-to-date clonedHtml
-  // for the current page (or the only page in single mode).
-  const currentPage = useMemo(() => {
-    if (isSwipeAll && swipeAll?.currentPageName) {
-      return pages.find((p) => p.name === swipeAll.currentPageName);
-    }
-    if (isSingle && cloneTargetPageName) {
-      return pages.find((p) => p.name === cloneTargetPageName);
-    }
-    return undefined;
-  }, [isSwipeAll, isSingle, swipeAll?.currentPageName, cloneTargetPageName, pages]);
-
-  const previewHtml = currentPage?.clonedHtml || '';
-
-  // Build a srcdoc-friendly HTML payload. For very large HTML we truncate
-  // to 1MB so the iframe doesn't choke; the user sees enough to confirm.
-  const iframeSrcDoc = useMemo(() => {
-    if (!previewHtml) return '';
-    const truncated = previewHtml.length > 1_000_000
-      ? previewHtml.slice(0, 1_000_000) + '<!-- truncated for preview -->'
-      : previewHtml;
-    // Inject a tiny CSS to keep the embedded page from interfering with our
-    // overlay (no scroll lock), and a non-interactive overlay to prevent
-    // accidental clicks while it's still being rewritten.
-    return truncated.replace(
-      /<head[^>]*>/i,
-      (m) => `${m}<style>html,body{margin:0;padding:0}body{pointer-events:none;user-select:none}</style>`,
-    );
-  }, [previewHtml]);
 
   if (!open) return null;
 
@@ -245,9 +228,13 @@ export default function SwipeCinemaOverlay({
           />
         )}
 
-        {/* CENTER — live preview iframe */}
-        <PreviewPanel
-          srcDoc={iframeSrcDoc}
+        {/* CENTER — live (before → after) rewrite stream
+            Replaces the old iframe preview, which was useless because it
+            either showed the un-rewritten clone (confusing) or stayed
+            empty for most of the process. The user wants to SEE the
+            actual copy changes. */}
+        <RewriteStreamPanel
+          rewrites={rewrites}
           batchProgress={batchProgress}
           stepLabel={stepLabel}
           isRunning={isRunning}
@@ -348,60 +335,92 @@ function PageStatusIcon({ status, isCurrent }: { status: string; isCurrent: bool
   return <div className="w-3.5 h-3.5 rounded-full border border-white/20 flex-shrink-0" />;
 }
 
-function PreviewPanel({
-  srcDoc, batchProgress, stepLabel, isRunning,
+function RewriteStreamPanel({
+  rewrites, batchProgress, stepLabel, isRunning,
 }: {
-  srcDoc: string;
+  rewrites: RewriteStreamEntry[];
   batchProgress: { done: number; total: number; pct: number } | null;
   stepLabel: string;
   isRunning: boolean;
 }) {
+  // Show the most recent rewrites at the top so the latest copy change
+  // is always above the fold. We slice to the last ~80 to avoid huge
+  // DOM trees on long Swipe-All runs. Memoised so we only re-reverse
+  // when the array length changes.
+  const recent = useMemo(() => {
+    const sliced = rewrites.length > 80 ? rewrites.slice(rewrites.length - 80) : rewrites;
+    return sliced.slice().reverse();
+  }, [rewrites]);
+
+  // Auto-scroll the stream container to the top on every new entry
+  // (newest entries appear at the top, so scrollTop=0 is correct).
+  const streamRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (streamRef.current) streamRef.current.scrollTop = 0;
+  }, [rewrites.length]);
+
+  // Pulse animation for the very first entry — gives the user a "fresh"
+  // visual signal so they immediately notice each new copy change.
+  const newestId = rewrites.length > 0 ? rewrites[rewrites.length - 1].id : -1;
+
   return (
     <div className="rounded-xl border border-white/10 bg-white/[0.02] overflow-hidden flex flex-col min-h-0 relative">
       <div className="px-3 py-2 border-b border-white/10 bg-white/[0.04] flex items-center gap-2">
-        <FileCode2 className="w-3.5 h-3.5 text-white/60" />
-        <span className="text-xs font-medium text-white/80">Live preview</span>
+        <Sparkles className="w-3.5 h-3.5 text-fuchsia-300" />
+        <span className="text-xs font-medium text-white/80">Live rewrites</span>
         <span className="text-[10px] text-white/40">{stepLabel}</span>
-        {batchProgress && (
-          <span className="ml-auto text-[10px] font-mono text-white/60">
-            {batchProgress.done}/{batchProgress.total} texts
-          </span>
-        )}
+        <span className="ml-auto text-[10px] font-mono text-white/60">
+          {rewrites.length} change{rewrites.length === 1 ? '' : 's'} streamed
+        </span>
       </div>
 
-      {/* Iframe area */}
-      <div className="relative flex-1 bg-white">
-        {srcDoc ? (
-          <>
-            <iframe
-              srcDoc={srcDoc}
-              className="absolute inset-0 w-full h-full border-0"
-              sandbox="allow-same-origin"
-              title="Live preview"
-            />
-            {isRunning && (
-              <>
-                {/* Animated scanning line — feels like the page is being analysed */}
-                <div className="pointer-events-none absolute inset-0 overflow-hidden">
-                  <div className="absolute left-0 right-0 h-[120px] bg-gradient-to-b from-transparent via-fuchsia-400/15 to-transparent animate-[scan_3s_ease-in-out_infinite]" />
-                </div>
-                {/* Subtle dim overlay */}
-                <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-fuchsia-500/[0.02] via-transparent to-violet-500/[0.02]" />
-              </>
-            )}
-          </>
-        ) : (
-          <div className="absolute inset-0 flex items-center justify-center text-gray-400 text-sm bg-[#0a0d18]">
-            <div className="text-center">
-              <Zap className="w-10 h-10 mx-auto mb-2 text-fuchsia-400/60 animate-pulse" />
-              <div className="text-white/60">Cloning competitor page\u2026</div>
-              <div className="text-[11px] text-white/30 mt-1">Preview will appear once the HTML is captured</div>
+      <div ref={streamRef} className="relative flex-1 overflow-auto bg-[#0a0d18]">
+        {recent.length === 0 ? (
+          <div className="absolute inset-0 flex items-center justify-center text-sm">
+            <div className="text-center max-w-sm px-6">
+              {isRunning ? (
+                <>
+                  <Zap className="w-10 h-10 mx-auto mb-3 text-fuchsia-400/70 animate-pulse" />
+                  <div className="text-white/70 font-medium">Waiting for the first batch</div>
+                  <div className="text-[11px] text-white/40 mt-1.5 leading-relaxed">
+                    Claude is reading the page. As soon as the first batch
+                    of texts is rewritten you&apos;ll see them stream in
+                    here, before&nbsp;→&nbsp;after.
+                  </div>
+                </>
+              ) : (
+                <>
+                  <CheckCircle2 className="w-10 h-10 mx-auto mb-3 text-emerald-400/70" />
+                  <div className="text-white/70 font-medium">No copy changes captured</div>
+                  <div className="text-[11px] text-white/40 mt-1.5">
+                    Either the page had nothing to rewrite, or the Edge
+                    Function ran an older version that doesn&apos;t emit
+                    per-batch previews.
+                  </div>
+                </>
+              )}
             </div>
           </div>
+        ) : (
+          <div className="px-3 py-3 space-y-2.5">
+            {recent.map((r) => {
+              const isNewest = r.id === newestId;
+              return (
+                <RewritePair
+                  key={r.id}
+                  entry={r}
+                  highlight={isNewest && isRunning}
+                />
+              );
+            })}
+          </div>
+        )}
+
+        {isRunning && recent.length > 0 && (
+          <div className="pointer-events-none absolute inset-x-0 top-0 h-12 bg-gradient-to-b from-fuchsia-500/[0.06] to-transparent" />
         )}
       </div>
 
-      {/* Per-batch progress */}
       {batchProgress && (
         <div className="px-3 py-2 border-t border-white/10 bg-black/40">
           <div className="h-1.5 rounded-full bg-white/5 overflow-hidden">
@@ -416,14 +435,40 @@ function PreviewPanel({
           </div>
         </div>
       )}
+    </div>
+  );
+}
 
-      <style jsx>{`
-        @keyframes scan {
-          0%   { top: -120px; }
-          50%  { top: 100%; }
-          100% { top: -120px; }
-        }
-      `}</style>
+function RewritePair({ entry, highlight }: { entry: RewriteStreamEntry; highlight: boolean }) {
+  const time = new Date(entry.at);
+  const ts = `${pad(time.getHours())}:${pad(time.getMinutes())}:${pad(time.getSeconds())}`;
+  return (
+    <div
+      className={`rounded-lg border p-2.5 transition-all duration-300 ${
+        highlight
+          ? 'border-fuchsia-400/50 bg-fuchsia-500/[0.06] shadow-[0_0_24px_-12px_rgba(232,121,249,0.6)]'
+          : 'border-white/5 bg-white/[0.02] hover:bg-white/[0.04]'
+      }`}
+    >
+      <div className="flex items-center gap-2 mb-1.5 text-[10px] font-mono text-white/40">
+        <span>{ts}</span>
+        {entry.pageName && (
+          <>
+            <span className="text-white/20">·</span>
+            <span className="truncate max-w-[200px]" title={entry.pageName}>{entry.pageName}</span>
+          </>
+        )}
+      </div>
+      <div className="text-[12px] leading-relaxed text-red-200/85 line-through decoration-red-400/40 break-words">
+        {entry.original}
+      </div>
+      <div className="my-1 flex items-center gap-1.5 text-[10px] text-fuchsia-300/70">
+        <ArrowRight className="w-3 h-3" />
+        <span className="uppercase tracking-wider">rewritten</span>
+      </div>
+      <div className="text-[12px] leading-relaxed text-emerald-100 font-medium break-words">
+        {entry.rewritten}
+      </div>
     </div>
   );
 }
