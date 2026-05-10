@@ -352,7 +352,7 @@ serve(async (req) => {
     // which version of the function is actually serving requests. Critical
     // because GitHub pushes don't auto-deploy; if you don't see this exact
     // string in the logs you're still on the old build.
-    console.log(`🔖 funnel-swap build: v4.1-funnel-context (2026-05-07)`)
+    console.log(`🔖 funnel-swap build: v4.2-cached-brief-research (2026-05-10)`)
     console.log(`📋 Richiesta ricevuta: phase=${phase}, cloneMode=${cloneMode}, url=${url?.substring(0, 50)}...`)
     if (system_kb) {
       const kbChars = String(system_kb).length
@@ -1043,12 +1043,18 @@ html body .stickSection{display:block !important;visibility:visible !important;o
         console.log(`🧬 SPA page detected — disabling HTML markup in rewrites to avoid hydration mismatch`)
       }
 
-      // Trim brief / research / funnel context so a giant payload doesn't
-      // blow the Claude context. 6K chars ≈ 1.5K tokens each is plenty for
-      // guidance; funnel context is capped slightly higher (8K) because it
-      // can grow linearly with the number of already-rewritten pages.
-      const briefTrimmed = brief ? String(brief).slice(0, 6000) : ''
-      const researchTrimmed = market_research ? String(market_research).slice(0, 6000) : ''
+      // Brief and market_research used to be inlined into the user prompt
+      // and aggressively truncated to 6KB each. With multi-file uploads in
+      // My Projects a single brief easily reaches 50-100KB, so we now move
+      // them into the cached system block (cache_control: ephemeral): they
+      // are paid full-price exactly once per job and 90% off on every
+      // subsequent batch. We can therefore afford much larger limits
+      // (~80KB ≈ 20K tokens each) without exploding cost.
+      //
+      // Funnel context still stays in the user prompt because it changes
+      // between pages of the same Swipe-All run (different cache key).
+      const briefTrimmed = brief ? String(brief).slice(0, 80000) : ''
+      const researchTrimmed = market_research ? String(market_research).slice(0, 80000) : ''
       const funnelContextTrimmed = funnel_context ? String(funnel_context).slice(0, 8000) : ''
 
       const rewritePrompt = `La landing page è un TEMPLATE strutturale. Il tuo compito è riscrivere TUTTI i testi usando SOLO le informazioni del nuovo prodotto.
@@ -1059,8 +1065,7 @@ Descrizione prodotto: ${job.product_description}
 ${job.framework ? `Framework copywriting: ${job.framework}` : ''}
 ${job.target ? `Target audience: ${job.target}` : ''}
 ${job.custom_prompt ? `Istruzioni copy personalizzate: ${job.custom_prompt}` : ''}
-${briefTrimmed ? `\n📄 PROJECT BRIEF (fonte primaria di verità per tono, posizionamento e value props):\n${briefTrimmed}\n` : ''}
-${researchTrimmed ? `\n🔬 MARKET RESEARCH (insight su pubblico, dolori, desideri, linguaggio):\n${researchTrimmed}\n` : ''}
+${(briefTrimmed || researchTrimmed) ? `\n👉 Il PROJECT BRIEF e la MARKET RESEARCH completi (con tutti i file caricati su My Projects) sono stati forniti nel SYSTEM PROMPT come fonti primarie di verità. Usali attivamente per tono, positioning, pain points, value props, linguaggio del pubblico.\n` : ''}
 ${funnelContextTrimmed ? `\n🧵 FUNNEL NARRATIVE (pagine già riscritte di questo stesso funnel — DEVI mantenere COERENZA su tono di voce, angle/grande idea, big promise, pain point principale, audience, CTA logic. NON contraddire ciò che è stato detto prima; aggiungi profondità coerente con la posizione di questa pagina nel funnel):\n${funnelContextTrimmed}\n` : ''}
 
 🎯 COSA DEVI FARE:
@@ -1161,6 +1166,32 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
         })
       }
 
+      // Project brief + market research as cached system blocks. They live
+      // in the system prompt (not the per-batch user prompt) so we pay the
+      // tokens once per job and get a 90% discount on every subsequent
+      // batch. This lets users upload large multi-file briefs without
+      // wrecking cost or context budget.
+      if (briefTrimmed) {
+        systemBlocks.push({
+          type: 'text',
+          text:
+            `📄 PROJECT BRIEF — fonte primaria di verità per tono, posizionamento e value props del nuovo prodotto. ` +
+            `Tutti i file caricati su My Projects sono concatenati qui (separati da "=== FILE: ... ===").\n\n` +
+            briefTrimmed,
+          cache_control: { type: 'ephemeral' },
+        })
+      }
+      if (researchTrimmed) {
+        systemBlocks.push({
+          type: 'text',
+          text:
+            `🔬 MARKET RESEARCH — insight su pubblico target, dolori, desideri, linguaggio, obiezioni. ` +
+            `Tutti i file caricati su My Projects sono concatenati qui (separati da "=== FILE: ... ===").\n\n` +
+            researchTrimmed,
+          cache_control: { type: 'ephemeral' },
+        })
+      }
+
       let claudeResponse
       const controller = new AbortController()
       const timeoutId = setTimeout(() => controller.abort(), CLAUDE_TIMEOUT_MS_RUNTIME)
@@ -1175,7 +1206,12 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
           },
           body: JSON.stringify({
             model: 'claude-sonnet-4-20250514',
-            max_tokens: 6000,
+            // 6000 was too tight: 12 texts × ~500 tok avg = 6000 tok, so any
+            // single long body paragraph would cut the JSON mid-way and the
+            // parser would fall back to the ORIGINAL text for the entire
+            // batch (12 texts unchanged). Bumping to 16000 gives ~1300 tok
+            // per text — comfortable headroom for long body copy.
+            max_tokens: 16000,
             temperature: 0.6,
             system: systemBlocks,
             messages: [{ role: 'user', content: rewritePrompt }]
@@ -1292,26 +1328,69 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
         if (rewrittenTexts.length === 0) {
           throw new Error('Nessun testo valido trovato nella risposta Claude')
         }
-        
-        console.log(`\n✅ BATCH ${batchNumber + 1} - TESTI RISCRITTI DA CLAUDE (${rewrittenTexts.length} testi):`)
-        rewrittenTexts.forEach((t, idx) => {
+
+        // Partial-recovery: Claude may have returned fewer items than the
+        // batch (truncation, filtering). Fill the gaps with the ORIGINAL
+        // text so the page still renders, and log how many were lost.
+        const returnedIndexes = new Set<number>(rewrittenTexts.map((t: { index: number }) => t.index))
+        const missingFromClaude = textsToProcess.filter(t => !returnedIndexes.has(t.index))
+        if (missingFromClaude.length > 0) {
+          console.warn(
+            `⚠️ Batch ${batchNumber + 1}: Claude ha restituito ${rewrittenTexts.length}/${textsToProcess.length} testi. ` +
+            `${missingFromClaude.length} mancanti, fallback all'originale per: ` +
+            missingFromClaude.map(t => t.index).join(', ')
+          )
+          for (const m of missingFromClaude) {
+            rewrittenTexts.push({ index: m.index, text: m.original_text })
+          }
+        }
+
+        const changedCount = rewrittenTexts.filter((t: { index: number; text: string }) => {
+          const orig = batchTexts.find(b => b.index === t.index)
+          return orig && orig.text !== t.text
+        }).length
+        console.log(
+          `\n✅ BATCH ${batchNumber + 1} - ${rewrittenTexts.length} testi totali, ` +
+          `${changedCount} riscritti, ${rewrittenTexts.length - changedCount} invariati ` +
+          `(${missingFromClaude.length} fallback su originale)`
+        )
+        rewrittenTexts.forEach((t: { index: number; text: string }, idx: number) => {
           const original = batchTexts.find(b => b.index === t.index)
           console.log(`  [${idx + 1}] Index: ${t.index}`)
-          console.log(`      ORIGINALE: "${original?.text.substring(0, 80)}${original?.text.length > 80 ? '...' : ''}"`)
+          console.log(`      ORIGINALE: "${original?.text.substring(0, 80)}${original && original.text.length > 80 ? '...' : ''}"`)
           console.log(`      RISCRITTO: "${t.text.substring(0, 80)}${t.text.length > 80 ? '...' : ''}"`)
           console.log(`      CAMBIATO: ${original?.text !== t.text ? '✅ SÌ' : '❌ NO'}`)
         })
         console.log(`\n`)
-        
+
       } catch (parseError) {
         console.error('❌ Errore parsing risposta Claude:', parseError)
         console.error('Risposta raw (primi 500 caratteri):', claudeData.content[0].text.substring(0, 500))
-        
-        console.warn('⚠️ Usando testi originali come fallback per questo batch')
-        rewrittenTexts = textsToProcess.map(t => ({
-          index: t.index,
-          text: t.original_text
-        }))
+
+        // Last-resort regex sweep: salvage as many `{"index": N, "text": "..."}`
+        // pairs as possible from the raw response, even if the surrounding
+        // JSON envelope is malformed. This is much better than dropping the
+        // entire batch back to the original text (which is what used to
+        // happen and caused "many texts unchanged" reports).
+        const rawText: string = claudeData.content[0].text || ''
+        const salvaged: Array<{ index: number; text: string }> = []
+        const itemRe = /"index"\s*:\s*(\d+)\s*,\s*"text"\s*:\s*"((?:[^"\\]|\\.)*)"/g
+        let m: RegExpExecArray | null
+        while ((m = itemRe.exec(rawText)) !== null) {
+          try {
+            const text = JSON.parse(`"${m[2]}"`)
+            salvaged.push({ index: parseInt(m[1], 10), text })
+          } catch { /* skip malformed item */ }
+        }
+        const salvagedIdx = new Set(salvaged.map(s => s.index))
+        const fallbacks = textsToProcess
+          .filter(t => !salvagedIdx.has(t.index))
+          .map(t => ({ index: t.index, text: t.original_text }))
+        rewrittenTexts = [...salvaged, ...fallbacks]
+        console.warn(
+          `⚠️ Recovery batch ${batchNumber + 1}: ${salvaged.length} riscritture salvate via regex, ` +
+          `${fallbacks.length} fallback su originale.`
+        )
       }
 
       // SPA safety: when the source page is a hydrated Vue/React/Svelte
