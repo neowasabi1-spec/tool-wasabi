@@ -1192,13 +1192,18 @@ export default function ProjectsPage() {
                       <div className="w-10 h-10 rounded-lg bg-blue-600/20 flex items-center justify-center flex-shrink-0">
                         <FolderOpen className="w-5 h-5 text-blue-400" />
                       </div>
-                      <div className="min-w-0">
+                      <div className="min-w-0 flex-1">
                         <h3 className="text-white font-semibold text-base truncate">{project.name}</h3>
                         {project.description ? (
-                          <p className="text-gray-400 text-sm whitespace-pre-line mt-0.5" style={{ whiteSpace: 'pre-line' }}>{project.description}</p>
+                          <p
+                            className="text-gray-400 text-sm mt-0.5 truncate"
+                            title={project.description}
+                          >
+                            {project.description.replace(/\s+/g, ' ').trim()}
+                          </p>
                         ) : null}
                         {project.domain ? (
-                          <p className="text-blue-400 text-xs mt-0.5">{project.domain}</p>
+                          <p className="text-blue-400 text-xs mt-0.5 truncate">{project.domain}</p>
                         ) : null}
                       </div>
                     </div>
