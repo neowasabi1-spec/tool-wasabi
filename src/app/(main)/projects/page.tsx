@@ -1,12 +1,12 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import Header from '@/components/Header';
 import { supabase } from '@/lib/supabase';
 import {
   Plus, FolderOpen, ChevronRight, ChevronDown, Layers,
-  Trash2, Search, Save, X,
+  Trash2, Search, Save, X, Upload, Loader2,
 } from 'lucide-react';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -67,6 +67,143 @@ function extractRows(val: any): FunnelRow[] {
 
 function emptyRow(): FunnelRow {
   return { step: '', url: '', price: '', offerType: '' };
+}
+
+// ─── File parsing helpers ────────────────────────────────────────────────────
+
+const TEXT_EXTS = ['txt', 'md', 'markdown', 'csv', 'tsv', 'json', 'log', 'rtf', 'html', 'htm', 'xml', 'yaml', 'yml'];
+
+async function parseFileToText(file: File): Promise<string> {
+  const ext = (file.name.split('.').pop() || '').toLowerCase();
+
+  if (ext === 'pdf') {
+    const { getDocument, GlobalWorkerOptions } = await import('pdfjs-dist');
+    GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
+    const buffer = await file.arrayBuffer();
+    const pdf = await getDocument({ data: new Uint8Array(buffer) }).promise;
+    let allText = '';
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i);
+      const content = await page.getTextContent();
+      const pageText = content.items
+        .filter((item): item is Extract<typeof item, { str: string }> => 'str' in item)
+        .map(item => item.str)
+        .join(' ');
+      allText += pageText + '\n\n';
+    }
+    return allText.trim();
+  }
+
+  if (ext === 'docx') {
+    // Best-effort: extract <w:t> text from word/document.xml inside the docx (zip).
+    // This avoids a heavy dependency. For richer parsing the user can paste the text.
+    try {
+      const buffer = await file.arrayBuffer();
+      const text = new TextDecoder().decode(new Uint8Array(buffer));
+      const matches = text.match(/<w:t[^>]*>([\s\S]*?)<\/w:t>/g);
+      if (matches && matches.length > 0) {
+        return matches.map(m => m.replace(/<[^>]+>/g, '')).join(' ');
+      }
+    } catch { /* fall through */ }
+    throw new Error('Could not parse .docx — please save as .txt or .pdf and try again.');
+  }
+
+  if (['xlsx', 'xls', 'ods'].includes(ext)) {
+    const XLSX = await import('xlsx');
+    const buffer = await file.arrayBuffer();
+    const wb = XLSX.read(new Uint8Array(buffer), { type: 'array' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    return XLSX.utils.sheet_to_csv(ws);
+  }
+
+  if (TEXT_EXTS.includes(ext) || file.type.startsWith('text/') || !ext) {
+    return await file.text();
+  }
+
+  throw new Error(`Unsupported file type: .${ext}. Please use .txt, .md, .pdf, .docx, .csv or .xlsx`);
+}
+
+async function parseFileToRows(file: File): Promise<FunnelRow[]> {
+  const ext = (file.name.split('.').pop() || '').toLowerCase();
+  const XLSX = await import('xlsx');
+  let raw: Record<string, unknown>[] = [];
+
+  if (['xlsx', 'xls', 'ods', 'csv', 'tsv'].includes(ext)) {
+    const buffer = await file.arrayBuffer();
+    const wb = XLSX.read(new Uint8Array(buffer), { type: 'array' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    raw = XLSX.utils.sheet_to_json(ws, { defval: '' }) as Record<string, unknown>[];
+  } else if (ext === 'json') {
+    const text = await file.text();
+    const parsed = JSON.parse(text);
+    raw = Array.isArray(parsed) ? parsed : (parsed?.rows || parsed?.steps || []);
+  } else {
+    throw new Error(`Unsupported file type for table: .${ext}. Please use .csv, .xlsx or .json`);
+  }
+
+  return raw.map(r => {
+    const lc: Record<string, string> = {};
+    for (const [k, v] of Object.entries(r)) lc[k.toLowerCase().trim()] = String(v ?? '');
+    return {
+      step: lc.step || lc.name || lc.page || '',
+      url: lc.url || lc.link || lc.href || '',
+      price: lc.price || lc.cost || lc.amount || '',
+      offerType: lc.offertype || lc['offer type'] || lc.offer || lc.type || '',
+    };
+  }).filter(r => r.step || r.url || r.price || r.offerType);
+}
+
+// ─── Sub-component: Upload Button ────────────────────────────────────────────
+
+function UploadButton({
+  accept,
+  onFile,
+  label = 'Upload File',
+}: {
+  accept: string;
+  onFile: (file: File) => Promise<void>;
+  label?: string;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setError(null);
+    setBusy(true);
+    try {
+      await onFile(file);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to read file');
+    } finally {
+      setBusy(false);
+      if (inputRef.current) inputRef.current.value = '';
+    }
+  }
+
+  return (
+    <div className="inline-flex items-center gap-2">
+      <input
+        ref={inputRef}
+        type="file"
+        accept={accept}
+        onChange={handleChange}
+        className="hidden"
+      />
+      <button
+        type="button"
+        onClick={() => inputRef.current?.click()}
+        disabled={busy}
+        className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-md bg-[#2A2D3A] hover:bg-[#3A3D4A] text-gray-200 transition-colors disabled:opacity-50"
+      >
+        {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Upload className="w-3 h-3" />}
+        {busy ? 'Reading...' : label}
+      </button>
+      {error && <span className="text-xs text-red-400">{error}</span>}
+    </div>
+  );
 }
 
 // ─── Sub-component: Table Editor ─────────────────────────────────────────────
@@ -184,6 +321,30 @@ function ProjectPanel({
     'w-full bg-[#0F1117] border border-[#2A2D3A] rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500 resize-y min-h-[160px]';
   const labelCls = 'block text-xs text-gray-400 mb-1 font-medium';
 
+  // Helper: load text from a file into a setter, asking before overwriting non-empty content.
+  function loadIntoText(current: string, setter: (v: string) => void) {
+    return async (file: File) => {
+      const text = await parseFileToText(file);
+      if (!text.trim()) throw new Error('File appears to be empty.');
+      if (current.trim()) {
+        const replace = confirm('Replace existing content?\n\nOK = Replace · Cancel = Append');
+        setter(replace ? text : `${current}\n\n${text}`);
+      } else {
+        setter(text);
+      }
+    };
+  }
+
+  // Helper: section header with label + upload button on the right.
+  function SectionHeader({ title, children }: { title: string; children?: React.ReactNode }) {
+    return (
+      <div className="flex items-end justify-between mb-1">
+        <label className={labelCls + ' mb-0'}>{title}</label>
+        {children}
+      </div>
+    );
+  }
+
   return (
     <div className="border-t border-[#2A2D3A] mt-4 pt-4">
       {/* Tabs */}
@@ -244,7 +405,12 @@ function ProjectPanel({
 
         {tab === 'Market Research' && (
           <div>
-            <label className={labelCls}>Market Research Notes</label>
+            <SectionHeader title="Market Research Notes">
+              <UploadButton
+                accept=".txt,.md,.markdown,.pdf,.docx,.csv,.json,.html,.htm,.rtf,text/*"
+                onFile={loadIntoText(marketResearch, setMarketResearch)}
+              />
+            </SectionHeader>
             <textarea
               value={marketResearch}
               onChange={e => setMarketResearch(e.target.value)}
@@ -257,7 +423,12 @@ function ProjectPanel({
 
         {tab === 'Brief' && (
           <div>
-            <label className={labelCls}>Brief</label>
+            <SectionHeader title="Brief">
+              <UploadButton
+                accept=".txt,.md,.markdown,.pdf,.docx,.csv,.json,.html,.htm,.rtf,text/*"
+                onFile={loadIntoText(brief, setBrief)}
+              />
+            </SectionHeader>
             <textarea
               value={brief}
               onChange={e => setBrief(e.target.value)}
@@ -270,21 +441,56 @@ function ProjectPanel({
 
         {tab === 'Front End' && (
           <div>
-            <label className={labelCls}>Front End Funnel Steps</label>
+            <SectionHeader title="Front End Funnel Steps">
+              <UploadButton
+                accept=".csv,.tsv,.xlsx,.xls,.ods,.json"
+                label="Upload CSV / Excel"
+                onFile={async (file) => {
+                  const rows = await parseFileToRows(file);
+                  if (rows.length === 0) throw new Error('No rows found in file.');
+                  if (frontEndRows.some(r => r.step || r.url || r.price || r.offerType)) {
+                    const replace = confirm('Replace existing rows?\n\nOK = Replace · Cancel = Append');
+                    setFrontEndRows(replace ? rows : [...frontEndRows, ...rows]);
+                  } else {
+                    setFrontEndRows(rows);
+                  }
+                }}
+              />
+            </SectionHeader>
             <TableEditor rows={frontEndRows} onChange={setFrontEndRows} />
           </div>
         )}
 
         {tab === 'Back End' && (
           <div>
-            <label className={labelCls}>Back End Funnel Steps</label>
+            <SectionHeader title="Back End Funnel Steps">
+              <UploadButton
+                accept=".csv,.tsv,.xlsx,.xls,.ods,.json"
+                label="Upload CSV / Excel"
+                onFile={async (file) => {
+                  const rows = await parseFileToRows(file);
+                  if (rows.length === 0) throw new Error('No rows found in file.');
+                  if (backEndRows.some(r => r.step || r.url || r.price || r.offerType)) {
+                    const replace = confirm('Replace existing rows?\n\nOK = Replace · Cancel = Append');
+                    setBackEndRows(replace ? rows : [...backEndRows, ...rows]);
+                  } else {
+                    setBackEndRows(rows);
+                  }
+                }}
+              />
+            </SectionHeader>
             <TableEditor rows={backEndRows} onChange={setBackEndRows} />
           </div>
         )}
 
         {tab === 'Compliance' && (
           <div>
-            <label className={labelCls}>Compliance Notes</label>
+            <SectionHeader title="Compliance Notes">
+              <UploadButton
+                accept=".txt,.md,.markdown,.pdf,.docx,.csv,.json,.html,.htm,.rtf,text/*"
+                onFile={loadIntoText(compliance, setCompliance)}
+              />
+            </SectionHeader>
             <textarea
               value={compliance}
               onChange={e => setCompliance(e.target.value)}
@@ -297,7 +503,12 @@ function ProjectPanel({
 
         {tab === 'Funnel' && (
           <div>
-            <label className={labelCls}>Funnel Description</label>
+            <SectionHeader title="Funnel Description">
+              <UploadButton
+                accept=".txt,.md,.markdown,.pdf,.docx,.csv,.json,.html,.htm,.rtf,text/*"
+                onFile={loadIntoText(funnelText, setFunnelText)}
+              />
+            </SectionHeader>
             <textarea
               value={funnelText}
               onChange={e => setFunnelText(e.target.value)}
