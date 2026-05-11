@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCoreKnowledge } from '@/knowledge/copywriting';
-import { isSpaShell, rescueViaJina, stabilizeClonedHtml } from '@/lib/spa-rescue';
+import { rescueViaJina, stabilizeClonedHtml } from '@/lib/spa-rescue';
 import { inlineExternalAssets } from '@/lib/inline-assets';
+import { fetchHtmlSmart, looksLikeSpaShell } from '@/lib/fetch-html-smart';
 
 export const maxDuration = 300;
 export const dynamic = 'force-dynamic';
@@ -31,10 +32,19 @@ async function getBrowser() {
 }
 
 /**
- * Tries multiple strategies to fetch a remote HTML page from a serverless env.
- *   1) native fetch with a realistic browser UA
- *   2) native fetch with a Googlebot UA (bypasses some anti-bot walls)
- *   3) r.jina.ai proxy (returns readable content) — last resort
+ * Strategy:
+ *   1) chrome-desktop UA fetch  → if not SPA, stabilize+inline, done.
+ *   2) googlebot UA fetch       → same.
+ *   3) fetchHtmlSmart('full')   → centralised SPA-aware path (Playwright
+ *      → Jina), with [SPA-CHECK] / [SPA-FALLBACK] logging. We then
+ *      stabilize + inline its result so the cloned HTML still survives
+ *      cross-origin publishing.
+ *
+ * Previously this function used the old `isSpaShell` detector which
+ * never logged anything and missed open `<div id="root">` shells, so
+ * the user couldn't tell from the logs whether SPA detection ran at
+ * all on Netlify. fetchHtmlSmart logs every step and matches modern
+ * Vite/CRA/SvelteKit shells.
  */
 async function fetchPageWithFallbacks(url: string): Promise<
   | { ok: true; html: string; method: string }
@@ -80,20 +90,13 @@ async function fetchPageWithFallbacks(url: string): Promise<
       if (res.ok) {
         const html = await res.text();
         if (html && html.length > 50) {
-          // Reject SPA shells (e.g. Vite/CRA pages with empty <body>) so the
-          // loop falls through to r.jina.ai which renders the JS for us.
-          if (isSpaShell(html)) {
-            details.push(`${attempt.name}: SPA shell detected (${html.length} chars, no body text) — falling through to JS-rendering proxy`);
+          // Use the new SPA detector — it logs `[SPA-CHECK]` and matches
+          // open `<div id="root">`, Vite `/assets/index-`, and the rest
+          // of the modern marker set. Old `isSpaShell` missed these.
+          if (looksLikeSpaShell(html)) {
+            details.push(`${attempt.name}: SPA shell detected (${html.length} chars) — falling through to fetchHtmlSmart (Playwright → Jina)`);
             console.warn(`[clone-funnel] ${attempt.name} returned SPA shell for ${url} — trying next attempt`);
           } else {
-            // Stabilize for cross-origin publishing: absolutize URLs +
-            // <base href> + neutralize <a href>. Universal because
-            // even non-SPA pages with relative img/css URLs break when
-            // served from cute-cupcake-XXX.netlify.app instead of the
-            // original domain. See src/lib/spa-rescue.ts.
-            // Then inline external stylesheets + fonts so the snapshot
-            // survives source-side changes (Vite hash rotation, Replit
-            // sleep, CORS-restricted asset CDNs). See src/lib/inline-assets.ts.
             const stabilized = stabilizeClonedHtml(html, url);
             const inlined = await inlineExternalAssets(stabilized, url);
             return { ok: true, html: inlined, method: attempt.name };
@@ -113,18 +116,34 @@ async function fetchPageWithFallbacks(url: string): Promise<
     }
   }
 
-  // Final fallback: r.jina.ai renders the JS server-side and returns
-  // markdown which we convert to a minimal HTML the extractor can scan.
-  // Logic lives in src/lib/spa-rescue.ts so the funnel-swap-proxy can
-  // reuse it as a defence-in-depth layer. The Jina path already runs
-  // stabilizeClonedHtml internally, no need to re-apply here.
+  // SPA path: hand off to the centralised smart fetcher. It already
+  // does its own SPA sniff (with [SPA-CHECK] logs), Playwright launch
+  // (with [SPA-FALLBACK] logs in get-browser.ts), and Jina last-resort.
+  // We only have to layer stabilize + inline on top of what it returns.
+  console.log('[clone-funnel] handing off to fetchHtmlSmart for SPA-aware fetch');
+  const smart = await fetchHtmlSmart(url, {
+    mode: 'full',
+    fetchTimeoutMs: 20000,
+    playwrightTimeoutMs: 45000,
+  });
+  details.push(`fetchHtmlSmart: source=${smart.source} ok=${smart.ok} length=${smart.html.length} attempts=${smart.attempts.join(' | ')}`);
+
+  if (smart.ok && smart.html && smart.html.length > 50) {
+    const stabilized = stabilizeClonedHtml(smart.html, url);
+    const inlined = await inlineExternalAssets(stabilized, url);
+    console.log(`[clone-funnel] fetchHtmlSmart succeeded via ${smart.source}: ${inlined.length} html (after asset inline)`);
+    return { ok: true, html: inlined, method: smart.source ?? 'fetch-html-smart' };
+  }
+
+  // Last-resort: legacy Jina path (kept as defence in depth in case
+  // fetchHtmlSmart's own Jina call gets rate-limited).
   const rescued = await rescueViaJina(url);
   if (rescued) {
     const inlined = await inlineExternalAssets(rescued, url);
-    console.log(`[clone-funnel] jina-proxy rescued SPA: ${inlined.length} html (after asset inline)`);
-    return { ok: true, html: inlined, method: 'jina-proxy' };
+    console.log(`[clone-funnel] legacy jina-proxy rescued SPA: ${inlined.length} html (after asset inline)`);
+    return { ok: true, html: inlined, method: 'jina-proxy-legacy' };
   }
-  details.push('jina-proxy: rescue returned null');
+  details.push('jina-proxy-legacy: rescue returned null');
 
   return { ok: false, error: details[0] || 'all fetch attempts failed', details };
 }
@@ -788,27 +807,27 @@ export async function POST(request: NextRequest) {
         });
       } catch (playwrightErr) {
         console.error('❌ Playwright error:', playwrightErr);
-        
-        // Fallback: simple fetch if Playwright fails
-        console.log('⚠️ Fallback to simple fetch...');
+
+        // Fallback: SPA-aware smart fetch instead of plain fetch — so
+        // even when our local Playwright path dies the smart fetcher
+        // can still try its own Playwright (different code path) or
+        // the Jina renderer for SPA shells.
+        console.log('⚠️ Fallback to fetchHtmlSmart...');
         try {
-          const htmlResponse = await fetch(url, {
-            headers: {
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            },
-            redirect: 'follow',
-            signal: AbortSignal.timeout(15000),
+          const smart = await fetchHtmlSmart(url, {
+            mode: 'full',
+            fetchTimeoutMs: 15000,
+            playwrightTimeoutMs: 30000,
           });
 
-          if (!htmlResponse.ok) {
+          if (!smart.ok || !smart.html) {
             return NextResponse.json(
-              { error: `Download error: HTTP ${htmlResponse.status}` },
+              { error: `Download error: ${smart.error ?? 'all fetch strategies failed'}` },
               { status: 502 }
             );
           }
 
-          const fallbackHTML = await htmlResponse.text();
+          const fallbackHTML = smart.html;
           return NextResponse.json({
             success: true,
             content: fallbackHTML,
@@ -1176,26 +1195,23 @@ export async function POST(request: NextRequest) {
         });
       } catch (err) {
         console.error('❌ Playwright rewrite extract error:', err);
-        console.log('⚠️ Fallback: extracting texts via fetch + regex (no browser)...');
+        console.log('⚠️ Fallback: extracting texts via fetchHtmlSmart (SPA-aware) + regex...');
 
         try {
-          const htmlResponse = await fetch(url.trim(), {
-            headers: {
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            },
-            redirect: 'follow',
-            signal: AbortSignal.timeout(20000),
+          const smart = await fetchHtmlSmart(url.trim(), {
+            mode: 'full',
+            fetchTimeoutMs: 20000,
+            playwrightTimeoutMs: 30000,
           });
 
-          if (!htmlResponse.ok) {
+          if (!smart.ok || !smart.html) {
             return NextResponse.json(
-              { error: `Unable to fetch page: HTTP ${htmlResponse.status}` },
+              { error: `Unable to fetch page: ${smart.error ?? 'all fetch strategies failed'}` },
               { status: 502 }
             );
           }
 
-          let rawHtml = await htmlResponse.text();
+          let rawHtml = smart.html;
           rawHtml = rawHtml.replace(/"\s*==\s*\$\d+/g, '"').replace(/\s*==\s*\$\d+/g, '');
 
           const extractResult = extractTextsFromHtml(rawHtml);
