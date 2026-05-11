@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAnthropicKey } from '@/lib/anthropic-key';
 import { extractAllTextsUniversal } from '@/lib/universal-text-extractor';
+import { fetchHtmlSmart } from '@/lib/fetch-html-smart';
 
 export const maxDuration = 300;
 
@@ -416,16 +417,23 @@ async function collectAllRewrites(
 }
 
 async function clonePageHtml(url: string): Promise<string> {
-  const res = await fetch(url, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    },
-    signal: AbortSignal.timeout(15000),
+  // Smart fetch: plain → SPA detection → Playwright → Jina.
+  // Required because many target landing pages are React/Vue/Next SPAs
+  // that ship a ~3KB shell and inject content client-side.
+  const fetched = await fetchHtmlSmart(url, {
+    mode: 'full',
+    fetchTimeoutMs: 15000,
+    playwrightTimeoutMs: 30000,
   });
-  if (!res.ok) throw new Error(`Failed to fetch page: HTTP ${res.status}`);
-  let html = await res.text();
-  return absolutizeUrls(html, url);
+  if (!fetched.ok || !fetched.html) {
+    throw new Error(`Failed to fetch page: ${fetched.error ?? 'no HTML returned'}`);
+  }
+  if (fetched.wasSpa) {
+    console.log(
+      `[landing/swipe] SPA detected, rendered via ${fetched.source} (${fetched.html.length} chars, ${fetched.durationMs}ms)`,
+    );
+  }
+  return absolutizeUrls(fetched.html, url);
 }
 
 function makeAbsolute(path: string, origin: string, basePath: string, protocol: string): string {

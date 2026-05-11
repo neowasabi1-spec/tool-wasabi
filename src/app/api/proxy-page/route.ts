@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { fetchHtmlSmart } from '@/lib/fetch-html-smart';
 
-export const maxDuration = 30;
+export const maxDuration = 60;
 
 function absolutizeUrls(html: string, sourceUrl: string): string {
   try {
@@ -63,20 +64,26 @@ export async function GET(request: NextRequest) {
     return new NextResponse('<html><body>Missing url</body></html>', { status: 400, headers: { 'Content-Type': 'text/html' } });
   }
   try {
-    const res = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-      },
-      redirect: 'follow',
-      signal: AbortSignal.timeout(15000),
+    const fetched = await fetchHtmlSmart(url, {
+      mode: 'full',
+      fetchTimeoutMs: 15000,
+      playwrightTimeoutMs: 25000,
     });
-    const rawHtml = await res.text();
-    const html = absolutizeUrls(rawHtml, url);
+    if (!fetched.ok || !fetched.html) {
+      return new NextResponse(
+        `<html><body>Could not load page: ${fetched.error ?? 'unknown error'}</body></html>`,
+        { status: 502, headers: { 'Content-Type': 'text/html' } },
+      );
+    }
+    const html = absolutizeUrls(fetched.html, url);
     return new NextResponse(html, {
       status: 200,
-      headers: { 'Content-Type': 'text/html; charset=utf-8', 'Access-Control-Allow-Origin': '*' },
+      headers: {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Access-Control-Allow-Origin': '*',
+        'X-Wasabi-Source': fetched.source ?? 'unknown',
+        'X-Wasabi-Was-Spa': String(fetched.wasSpa),
+      },
     });
   } catch {
     return new NextResponse('<html><body>Could not load page</body></html>', { status: 502, headers: { 'Content-Type': 'text/html' } });
@@ -90,24 +97,25 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Missing url' }, { status: 400 });
     }
 
-    const res = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-      },
-      redirect: 'follow',
-      signal: AbortSignal.timeout(15000),
+    const fetched = await fetchHtmlSmart(url, {
+      mode: 'full',
+      fetchTimeoutMs: 15000,
+      playwrightTimeoutMs: 25000,
     });
-
-    if (!res.ok) {
-      return NextResponse.json({ error: `HTTP ${res.status}` }, { status: 502 });
+    if (!fetched.ok || !fetched.html) {
+      return NextResponse.json(
+        { error: fetched.error ?? 'Fetch failed', attempts: fetched.attempts },
+        { status: 502 },
+      );
     }
+    const html = absolutizeUrls(fetched.html, url);
 
-    const rawHtml = await res.text();
-    const html = absolutizeUrls(rawHtml, url);
-
-    return NextResponse.json({ html, url });
+    return NextResponse.json({
+      html,
+      url,
+      method_used: fetched.source,
+      was_spa: fetched.wasSpa,
+    });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Fetch failed';
     return NextResponse.json({ error: message }, { status: 502 });

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { fetchHtmlSmart } from '@/lib/fetch-html-smart';
 
 export const maxDuration = 120;
 export const dynamic = 'force-dynamic';
@@ -233,19 +234,18 @@ For each red-flag keyword found, provide the exact text context and page where i
 };
 
 async function fetchPageContent(url: string): Promise<string> {
-  try {
-    const res = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      },
-      signal: AbortSignal.timeout(15000),
-    });
-    const html = await res.text();
-    return html.substring(0, 30000);
-  } catch (e) {
-    return `[Error fetching ${url}: ${e instanceof Error ? e.message : 'unknown'}]`;
+  // text-only mode: skips Playwright (compliance check needs only text,
+  // not visual fidelity) but keeps Jina as SPA fallback.
+  const fetched = await fetchHtmlSmart(url, {
+    mode: 'text-only',
+    fetchTimeoutMs: 15000,
+    userAgent:
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  });
+  if (!fetched.ok) {
+    return `[Error fetching ${url}: ${fetched.error ?? 'unknown'}]`;
   }
+  return fetched.html.substring(0, 30000);
 }
 
 async function callGemini(prompt: string, apiKey: string): Promise<string> {

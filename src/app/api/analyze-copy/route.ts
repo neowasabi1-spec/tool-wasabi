@@ -3,6 +3,7 @@ import {
   callClaudeWithKnowledge,
   summarizeUsage,
 } from '@/lib/anthropic-with-knowledge';
+import { fetchHtmlSmart } from '@/lib/fetch-html-smart';
 
 const PERSONA_PROMPT = `You are an expert in copywriting and direct response marketing. You have direct access to a curated knowledge base of frameworks (COS Engine, Tony Flores' Million Dollar Mechanisms, Evaldo's 16-Word Sales Letter, Anghelache's Crash Course, Peter Kell's Savage System, Brunson's 108 Split Test Winners). Apply them naturally — name the principle when it materially helps the user understand a recommendation, otherwise just use it.
 
@@ -183,26 +184,26 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const pageResponse = await fetch(url, {
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9,it;q=0.8',
-      },
-      redirect: 'follow',
+    // text-only mode: copy analysis only needs the rendered text, so
+    // we skip the heavy Playwright path but keep Jina as SPA fallback.
+    const fetched = await fetchHtmlSmart(url, {
+      mode: 'text-only',
+      fetchTimeoutMs: 20000,
+      userAgent:
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     });
 
-    if (!pageResponse.ok) {
+    if (!fetched.ok || !fetched.html) {
       return NextResponse.json(
         {
-          error: `Unable to load the page: ${pageResponse.status} ${pageResponse.statusText}`,
+          error: `Unable to load the page: ${fetched.error ?? 'no HTML returned'}`,
+          attempts: fetched.attempts,
         },
         { status: 400 },
       );
     }
 
-    const html = await pageResponse.text();
+    const html = fetched.html;
     const pageContent = extractPageContent(html);
 
     if (!pageContent.bodyText && !pageContent.headline) {

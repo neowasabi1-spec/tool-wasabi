@@ -13,7 +13,13 @@ export type { Browser, Page, BrowserContext };
 const IS_SERVERLESS =
   !!process.env.VERCEL ||
   !!process.env.AWS_LAMBDA_FUNCTION_NAME ||
-  !!process.env.AWS_EXECUTION_ENV;
+  !!process.env.AWS_EXECUTION_ENV ||
+  // Netlify Functions: NETLIFY=true is set both at build time and at
+  // runtime inside the function, NETLIFY_LOCAL is used by `netlify dev`.
+  // We only flip to the @sparticuz/chromium binary when we're actually
+  // running inside the deployed function, never for the local `next dev`
+  // server or `netlify dev` (which can use the system Chromium).
+  (!!process.env.NETLIFY && !process.env.NETLIFY_LOCAL && !process.env.NETLIFY_DEV);
 
 const DEFAULT_ARGS = [
   '--no-sandbox',

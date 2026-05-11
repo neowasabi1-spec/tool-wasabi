@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { fetchHtmlSmart } from '@/lib/fetch-html-smart';
 
 export async function POST(request: NextRequest) {
   try {
@@ -11,21 +12,22 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Fetch the page to extract content
-    const pageResponse = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; FunnelAnalyzer/1.0)',
-      },
+    // text-only mode: this analyzer extracts headline/CTA/price from
+    // the rendered DOM — Jina is enough as SPA fallback.
+    const fetched = await fetchHtmlSmart(url, {
+      mode: 'text-only',
+      fetchTimeoutMs: 20000,
+      userAgent: 'Mozilla/5.0 (compatible; FunnelAnalyzer/1.0)',
     });
 
-    if (!pageResponse.ok) {
+    if (!fetched.ok || !fetched.html) {
       return NextResponse.json(
-        { error: `Unable to load the page: ${pageResponse.status}` },
+        { error: `Unable to load the page: ${fetched.error ?? 'no HTML returned'}` },
         { status: 400 }
       );
     }
 
-    const html = await pageResponse.text();
+    const html = fetched.html;
 
     // Extract key elements from the page
     const extractedData: {

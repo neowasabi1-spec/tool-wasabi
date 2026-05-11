@@ -1,4 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { fetchHtmlSmart } from '@/lib/fetch-html-smart';
+
+export const maxDuration = 60;
 
 export async function POST(request: NextRequest) {
   try {
@@ -11,21 +14,24 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Fetch the quiz page to extract content
-    const pageResponse = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; QuizAnalyzer/1.0)',
-      },
+    // FULL mode: quiz analyzer counts <form>, <input>, radio/checkbox
+    // elements that React quiz builders inject client-side. Jina would
+    // strip them in markdown mode, so we need a real Playwright render.
+    const fetched = await fetchHtmlSmart(url, {
+      mode: 'full',
+      fetchTimeoutMs: 15000,
+      playwrightTimeoutMs: 30000,
+      userAgent: 'Mozilla/5.0 (compatible; QuizAnalyzer/1.0)',
     });
 
-    if (!pageResponse.ok) {
+    if (!fetched.ok || !fetched.html) {
       return NextResponse.json(
-        { success: false, error: `Unable to load the page: ${pageResponse.status}` },
+        { success: false, error: `Unable to load the page: ${fetched.error ?? 'no HTML returned'}` },
         { status: 400 }
       );
     }
 
-    const html = await pageResponse.text();
+    const html = fetched.html;
     const contentLength = html.length;
 
     // Extract quiz-specific elements from the page

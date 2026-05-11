@@ -10,6 +10,144 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
+// ─── SPA-aware fetch (Deno-compatible) ──────────────────────────────────
+// The Edge Function runs in Deno and CAN'T spawn Playwright. But many
+// landing pages today are React/Vue/Next SPAs that ship a ~3KB shell
+// and inject content client-side. When we receive `renderedHtml` from
+// the Next.js side that's already pre-rendered, but when the function
+// is called directly (or `renderedHtml` is missing), we still want a
+// chance at getting real content.
+//
+// Strategy:
+//   1) plain fetch + Chrome UA
+//   2) sniff SPA shell (small body, framework markers, empty body text)
+//   3) if SPA → fetch via r.jina.ai (Jina renders the JS server-side
+//      using its own headless Chromium and returns the post-render HTML)
+//
+// Mirrors the Node-side helper in src/lib/fetch-html-smart.ts so the
+// behaviour stays consistent across both runtimes.
+
+const SPA_FRAMEWORK_MARKERS = [
+  '<div id="root"></div>',
+  "<div id='root'></div>",
+  '<div id="app"></div>',
+  "<div id='app'></div>",
+  '<div id="__next"></div>',
+  '<div id="__nuxt"></div>',
+  '<div id="svelte"></div>',
+  '<noscript>you need to enable javascript',
+  '<noscript>this website requires javascript',
+]
+
+function looksLikeSpaShell(html: string, sizeThreshold = 10000): boolean {
+  if (!html || html.length < 100) return true
+  const lower = html.toLowerCase()
+  for (const marker of SPA_FRAMEWORK_MARKERS) {
+    if (lower.includes(marker)) return true
+  }
+  const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i)
+  const body = bodyMatch ? bodyMatch[1] : html
+  const visibleText = body
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, '')
+    .replace(/<svg[\s\S]*?<\/svg>/gi, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;|&#160;/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (html.length < sizeThreshold && visibleText.length < 200) return true
+  if (visibleText.length < 200) return true
+  return false
+}
+
+async function tryJinaRender(url: string): Promise<string | null> {
+  try {
+    // @ts-ignore Deno global
+    const apiKey = Deno.env.get('JINA_API_KEY')?.trim() || ''
+    const headers: Record<string, string> = {
+      Accept: 'text/html',
+      'X-Return-Format': 'html',
+      'X-Engine': 'browser',
+      'X-No-Cache': 'true',
+    }
+    if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
+
+    const ctrl = new AbortController()
+    const t = setTimeout(() => ctrl.abort(), 60000)
+    const res = await fetch(`https://r.jina.ai/${url}`, {
+      headers,
+      redirect: 'follow',
+      signal: ctrl.signal,
+    })
+    clearTimeout(t)
+    if (!res.ok) {
+      console.warn(`[edge:jina] HTTP ${res.status} for ${url}`)
+      return null
+    }
+    const html = await res.text()
+    if (!html || html.length < 1000) {
+      console.warn(`[edge:jina] returned ${html?.length ?? 0} chars for ${url}`)
+      return null
+    }
+    if (looksLikeSpaShell(html)) {
+      console.warn(`[edge:jina] still SPA shell (${html.length} chars) for ${url}`)
+      return null
+    }
+    return html
+  } catch (err) {
+    const msg = (err as { message?: string })?.message ?? String(err)
+    console.warn(`[edge:jina] error for ${url}: ${msg}`)
+    return null
+  }
+}
+
+/**
+ * SPA-aware fetcher. Returns { html, source } where source is one of
+ * 'fetch' | 'jina' | null. The Deno runtime can't run Playwright, so
+ * the only fallback for SPAs is Jina Reader (server-side headless
+ * Chromium provided by jina.ai).
+ */
+async function fetchHtmlSpaAware(url: string): Promise<{ html: string; source: 'fetch' | 'jina' | null; wasSpa: boolean }> {
+  let plainHtml = ''
+  let plainOk = false
+  try {
+    const ctrl = new AbortController()
+    const t = setTimeout(() => ctrl.abort(), 20000)
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      },
+      signal: ctrl.signal,
+    })
+    clearTimeout(t)
+    if (res.ok) {
+      plainHtml = await res.text()
+      plainOk = true
+    }
+  } catch (err) {
+    console.warn(`[edge:fetch] ${url}: ${(err as { message?: string })?.message ?? err}`)
+  }
+
+  const wasSpa = plainOk ? looksLikeSpaShell(plainHtml) : true
+  if (plainOk && !wasSpa) {
+    return { html: plainHtml, source: 'fetch', wasSpa: false }
+  }
+
+  // SPA detected (or fetch failed) → try Jina rescue.
+  const rescued = await tryJinaRender(url)
+  if (rescued) {
+    console.log(`[edge:jina] SPA rendered via Jina (${rescued.length} chars) for ${url}`)
+    return { html: rescued, source: 'jina', wasSpa: true }
+  }
+
+  // Last resort: return whatever fetch gave us, even if SPA.
+  if (plainOk) {
+    return { html: plainHtml, source: 'fetch', wasSpa }
+  }
+  return { html: '', source: null, wasSpa }
+}
+
 // Helper: distribuisce il nuovo testo proporzionalmente tra i segmenti di testo
 // preservando la posizione relativa dei tag HTML inline (bold, link, ecc.)
 // Block-level tags. When the matched text span is split by ANY of these
@@ -1775,25 +1913,22 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
         if (renderedHtml && typeof renderedHtml === 'string') {
           console.warn(`⚠️ renderedHtml ricevuto ma troppo piccolo (${renderedHtml.length} char < ${RENDERED_MIN_BYTES}) — sembra scheletro SPA. Fallback a fetch grezzo.`)
         }
-        console.log('📥 STEP 1: Fetching original HTML from:', url)
+        console.log('📥 STEP 1: Fetching original HTML (SPA-aware) from:', url)
         try {
-          const htmlResponse = await fetch(url, {
-            headers: {
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            }
-          })
-
-          if (!htmlResponse.ok) {
-            throw new Error(`Failed to fetch HTML: ${htmlResponse.status} ${htmlResponse.statusText}`)
+          const fetched = await fetchHtmlSpaAware(url)
+          if (!fetched.html) {
+            throw new Error('Failed to fetch HTML (fetch + Jina entrambi falliti)')
           }
-
-          originalHTML = await htmlResponse.text()
-          originalHTML = originalHTML
+          originalHTML = fetched.html
             .replace(/"\s*==\s*\$\d+/g, '"')
             .replace(/\s*==\s*\$\d+/g, '')
-          
-          console.log(`✅ HTML fetched and cleaned, size: ${originalHTML.length} characters`)
-          htmlSource = 'fetch'
+
+          htmlSource = fetched.source ?? 'fetch'
+          if (fetched.wasSpa) {
+            console.log(`⚠️ SPA detected → recovered via ${htmlSource} (${originalHTML.length} chars)`)
+          } else {
+            console.log(`✅ HTML fetched and cleaned, size: ${originalHTML.length} characters`)
+          }
         } catch (error) {
           console.error('❌ Error fetching HTML:', error)
           return new Response(
@@ -2551,18 +2686,16 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
 
     let originalHTML = ''
     try {
-      const htmlResponse = await fetch(url, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        }
-      })
-
-      if (!htmlResponse.ok) {
-        throw new Error(`Failed to fetch HTML: ${htmlResponse.status} ${htmlResponse.statusText}`)
+      const fetched = await fetchHtmlSpaAware(url)
+      if (!fetched.html) {
+        throw new Error('Failed to fetch HTML (fetch + Jina entrambi falliti)')
       }
-
-      originalHTML = await htmlResponse.text()
-      console.log(`✅ HTML fetched, size: ${originalHTML.length} characters`)
+      originalHTML = fetched.html
+      if (fetched.wasSpa) {
+        console.log(`⚠️ SPA detected → recovered via ${fetched.source} (${originalHTML.length} chars)`)
+      } else {
+        console.log(`✅ HTML fetched, size: ${originalHTML.length} characters`)
+      }
     } catch (error) {
       console.error('❌ Error fetching HTML:', error)
       return new Response(

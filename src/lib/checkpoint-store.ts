@@ -6,6 +6,7 @@
 // fetch). Keep this file thin — orchestration lives in the API routes.
 
 import { supabase } from '@/lib/supabase';
+import { fetchHtmlSmart } from '@/lib/fetch-html-smart';
 import type {
   CheckpointFunnel,
   CheckpointLogEntry,
@@ -311,28 +312,29 @@ export async function listRecentRuns(limit = 200): Promise<CheckpointLogEntry[]>
 }
 
 /** Fetch the live HTML of a funnel's URL. Returns null when the URL
- *  doesn't respond or isn't reachable. */
+ *  doesn't respond or isn't reachable.
+ *
+ *  Uses fetchHtmlSmart so SPAs (React/Vue/Next/Nuxt landing pages) get
+ *  rendered via Playwright before the AI audit runs — otherwise the
+ *  AI would only see "<div id=root></div>" and report empty findings. */
 export async function fetchFunnelHtml(url: string): Promise<string | null> {
   if (!url) return null;
-  try {
-    const res = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Wasabi Checkpoint Bot)',
-        'Accept': 'text/html,application/xhtml+xml',
-      },
-      redirect: 'follow',
-      signal: AbortSignal.timeout(20000),
-    });
-    if (!res.ok) {
-      console.warn(`[checkpoint-store] fetchFunnelHtml ${res.status} for ${url}`);
-      return null;
-    }
-    const html = await res.text();
-    if (!html || html.length < 200) return null;
-    return html;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.warn(`[checkpoint-store] fetchFunnelHtml error: ${msg}`);
+  const fetched = await fetchHtmlSmart(url, {
+    mode: 'full',
+    fetchTimeoutMs: 20000,
+    playwrightTimeoutMs: 30000,
+    userAgent: 'Mozilla/5.0 (Wasabi Checkpoint Bot)',
+  });
+  if (!fetched.ok || !fetched.html || fetched.html.length < 200) {
+    console.warn(
+      `[checkpoint-store] fetchFunnelHtml failed for ${url}: ${fetched.error ?? 'too short'} (attempts: ${fetched.attempts.join(' | ')})`,
+    );
     return null;
   }
+  if (fetched.wasSpa) {
+    console.log(
+      `[checkpoint-store] fetchFunnelHtml: SPA rendered via ${fetched.source} for ${url} (${fetched.html.length} chars, ${fetched.durationMs}ms)`,
+    );
+  }
+  return fetched.html;
 }

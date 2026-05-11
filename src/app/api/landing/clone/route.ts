@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { inlineExternalAssets } from '@/lib/inline-assets';
+import { fetchHtmlSmart } from '@/lib/fetch-html-smart';
 
 export const maxDuration = 60;
 
@@ -67,24 +68,28 @@ export async function POST(request: NextRequest) {
 
     const start = Date.now();
 
-    const pageRes = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9,it;q=0.8',
-      },
-      redirect: 'follow',
-      signal: AbortSignal.timeout(20000),
+    // Smart fetch: plain fetch → SPA detection → Playwright → Jina.
+    // Same helper used by every other clone/swipe/audit code path so
+    // OpenClaw inherits SPA support automatically (it just hits this
+    // route internally).
+    const fetched = await fetchHtmlSmart(url, {
+      mode: 'full',
+      fetchTimeoutMs: 20000,
+      playwrightTimeoutMs: 30000,
+      userAgent:
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     });
-
-    if (!pageRes.ok) {
+    if (!fetched.ok || !fetched.html) {
       return NextResponse.json(
-        { success: false, error: `Unable to clone the page: HTTP ${pageRes.status} ${pageRes.statusText}` },
+        {
+          success: false,
+          error: `Unable to clone the page: ${fetched.error ?? 'no HTML returned'}`,
+          attempts: fetched.attempts,
+        },
         { status: 400 },
       );
     }
-
-    let html = await pageRes.text();
+    let html = fetched.html;
     const duration = (Date.now() - start) / 1000;
 
     if (remove_scripts !== false) {
@@ -103,7 +108,9 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       success: true,
       url,
-      method_used: 'direct-fetch',
+      method_used: fetched.source ?? 'direct-fetch',
+      was_spa: fetched.wasSpa,
+      attempts: fetched.attempts,
       content_length: selfContainedHtml.length,
       title,
       duration_seconds: duration,

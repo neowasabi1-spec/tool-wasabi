@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import OpenAI from 'openai';
+import { fetchHtmlSmart } from '@/lib/fetch-html-smart';
 
 export const maxDuration = 120;
 export const dynamic = 'force-dynamic';
@@ -133,15 +134,20 @@ function parseJsonResponse(text: string): Record<string, unknown> | null {
 
 async function fetchUrlContent(url: string): Promise<string> {
   try {
-    const res = await fetch(url, {
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      },
-      signal: AbortSignal.timeout(15000),
+    // text-only mode: this analyzer immediately strips HTML to text,
+    // so we don't need the heavy Playwright path; Jina markdown is
+    // perfect as the SPA fallback and is even pre-stripped to text.
+    const fetched = await fetchHtmlSmart(url, {
+      mode: 'text-only',
+      fetchTimeoutMs: 15000,
+      userAgent:
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     });
-    const html = await res.text();
+    if (!fetched.ok || !fetched.html) {
+      console.warn(`[reverse-funnel] fetchUrlContent failed for ${url}: ${fetched.error}`);
+      return '';
+    }
+    const html = fetched.html;
     const text = html
       .replace(/<script[\s\S]*?<\/script>/gi, '')
       .replace(/<style[\s\S]*?<\/style>/gi, '')
