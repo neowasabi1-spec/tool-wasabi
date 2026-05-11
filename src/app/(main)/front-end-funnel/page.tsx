@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useSearchParams, useRouter } from 'next/navigation';
 import Header from '@/components/Header';
 import { useStore } from '@/store/useStore';
 import { fetchAffiliateSavedFunnels } from '@/lib/supabase-operations';
@@ -57,6 +57,7 @@ import {
   Rocket,
   Link2,
   Send,
+  ShieldCheck,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import VisualHtmlEditor from '@/components/VisualHtmlEditor';
@@ -1033,6 +1034,12 @@ export default function FrontEndFunnel() {
   const [stepSlugs, setStepSlugs] = useState<Record<string, string>>({});
   const [publishingIds, setPublishingIds] = useState<Record<string, 'repli' | 'checkoutchamp'>>({});
 
+  // Checkpoint import — tracks which row is currently being added to
+  // the audit library so we can show a spinner per-button.
+  const router = useRouter();
+  const [checkpointingIds, setCheckpointingIds] = useState<string[]>([]);
+  const [bulkCheckpointing, setBulkCheckpointing] = useState(false);
+
   const generateSlug = useCallback((name: string, index: number) => {
     const base = name
       .toLowerCase()
@@ -1205,6 +1212,118 @@ export default function FrontEndFunnel() {
       });
     }
   }, [funnelPages, funnelDomain, stepSlugs, getNextStepUrl, injectCtaLinks, getStepUrl, generateSlug, updateFunnelPage]);
+
+  /**
+   * Sends a single funnel step into the Checkpoint audit library and
+   * jumps straight to its detail page so the user can run the audit.
+   * Reuses the same /api/checkpoint/funnels/import endpoint that the
+   * Projects page modal uses, so dedup-per-project comes for free.
+   */
+  const handleCheckpointSingle = useCallback(
+    async (pageId: string) => {
+      const page = funnelPages.find((p) => p.id === pageId);
+      if (!page) return;
+      const url = (page.urlToSwipe || '').trim();
+      if (!url) {
+        alert('Questa riga non ha un URL: aggiungilo prima di mandarlo al Checkpoint.');
+        return;
+      }
+      setCheckpointingIds((prev) => [...prev, pageId]);
+      try {
+        const res = await fetch('/api/checkpoint/funnels/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            projectId: page.productId || undefined,
+            items: [{ name: page.name || undefined, url }],
+          }),
+        });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
+        const created = (body.created ?? []) as { id: string }[];
+        const skipped = (body.skipped ?? []) as { reason: string }[];
+        if (created[0]) {
+          router.push(`/checkpoint/${created[0].id}`);
+          return;
+        }
+        // Already-imported case: surface the existing entry in the list.
+        if (skipped[0]?.reason?.includes('già presente')) {
+          router.push('/checkpoint');
+          return;
+        }
+        throw new Error(skipped[0]?.reason ?? 'Import non riuscito.');
+      } catch (err) {
+        alert(`Errore Checkpoint: ${err instanceof Error ? err.message : String(err)}`);
+      } finally {
+        setCheckpointingIds((prev) => prev.filter((id) => id !== pageId));
+      }
+    },
+    [funnelPages, router],
+  );
+
+  /**
+   * Bulk variant: imports every step that has a URL into the audit
+   * library, grouping by project so the dedup logic can scope its
+   * per-project URL set. Lands on /checkpoint with the import banner.
+   */
+  const handleCheckpointAll = useCallback(async () => {
+    const pages = (funnelPages || []).filter((p) => (p.urlToSwipe || '').trim());
+    if (pages.length === 0) {
+      alert('Nessuno step con URL valido da importare.');
+      return;
+    }
+    if (
+      !confirm(
+        `Importare ${pages.length} pagina${pages.length === 1 ? '' : 'e'} nel Checkpoint?`,
+      )
+    ) {
+      return;
+    }
+
+    setBulkCheckpointing(true);
+    try {
+      // Group by projectId so each batch hits the dedup correctly.
+      const groups = new Map<string, typeof pages>();
+      for (const p of pages) {
+        const key = p.productId || '__no_project__';
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key)!.push(p);
+      }
+
+      const allCreated: string[] = [];
+      let allSkipped = 0;
+      for (const [key, group] of groups) {
+        const res = await fetch('/api/checkpoint/funnels/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            projectId: key === '__no_project__' ? undefined : key,
+            items: group.map((p) => ({
+              name: p.name || undefined,
+              url: (p.urlToSwipe || '').trim(),
+            })),
+          }),
+        });
+        const body = await res.json();
+        if (!res.ok) {
+          throw new Error(body?.error ?? `HTTP ${res.status}`);
+        }
+        for (const c of (body.created ?? []) as { id: string }[]) {
+          allCreated.push(c.id);
+        }
+        allSkipped += (body.skipped ?? []).length;
+      }
+
+      const params = new URLSearchParams();
+      if (allCreated.length > 0) params.set('imported', allCreated.join(','));
+      if (allSkipped > 0) params.set('skipped', String(allSkipped));
+      router.push(`/checkpoint?${params.toString()}`);
+    } catch (err) {
+      alert(`Errore Checkpoint bulk: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setBulkCheckpointing(false);
+    }
+  }, [funnelPages, router]);
 
   // Quiz Generation
   const [quizGenerating, setQuizGenerating] = useState(false);
@@ -3183,6 +3302,23 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                 <FileSpreadsheet className="w-4 h-4" />
                 Template
               </button>
+              {/* Bulk Checkpoint — imports every step into the audit
+                  library in one click. */}
+              {(funnelPages || []).filter((p) => (p.urlToSwipe || '').trim()).length > 0 && (
+                <button
+                  onClick={handleCheckpointAll}
+                  disabled={bulkCheckpointing}
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 transition-colors disabled:opacity-60"
+                  title="Importa tutti gli step nel Checkpoint"
+                >
+                  {bulkCheckpointing ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <ShieldCheck className="w-4 h-4" />
+                  )}
+                  {bulkCheckpointing ? 'Importo...' : 'Checkpoint All'}
+                </button>
+              )}
               {/* Bulk Project Selector */}
               {(funnelPages || []).length > 0 && (
                 <div className="flex items-center gap-2 px-3 py-1.5 bg-amber-50 border border-amber-200 rounded-lg">
@@ -4233,6 +4369,30 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                               <Loader2 className="w-3.5 h-3.5 animate-spin" />
                             ) : (
                               <Copy className="w-3.5 h-3.5" />
+                            )}
+                          </button>
+                          {/* Checkpoint Button — sends this single
+                              step to the audit library and jumps to
+                              its detail so the user can run it. */}
+                          <button
+                            onClick={() => handleCheckpointSingle(page.id)}
+                            disabled={
+                              checkpointingIds.includes(page.id) ||
+                              !page.urlToSwipe
+                            }
+                            className={`p-1 rounded transition-colors ${
+                              checkpointingIds.includes(page.id)
+                                ? 'bg-emerald-100 text-emerald-700'
+                                : !page.urlToSwipe
+                                ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                                : 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200'
+                            }`}
+                            title="Audita questa pagina nel Checkpoint"
+                          >
+                            {checkpointingIds.includes(page.id) ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              <ShieldCheck className="w-3.5 h-3.5" />
                             )}
                           </button>
                           {/* Delete Button */}
