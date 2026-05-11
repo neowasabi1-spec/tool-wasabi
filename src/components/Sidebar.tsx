@@ -26,6 +26,7 @@ import {
   Swords,
   Brain,
   FolderOpen,
+  ClipboardCheck,
 } from 'lucide-react';
 
 const menuItems = [
@@ -59,6 +60,11 @@ const menuItems = [
     name: 'My Projects',
     href: '/projects',
     icon: FolderOpen,
+  },
+  {
+    name: 'Checkpoint',
+    href: '/checkpoint',
+    icon: ClipboardCheck,
   },
 
   {
