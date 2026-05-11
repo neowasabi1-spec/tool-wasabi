@@ -69,3 +69,7 @@ jobs.json
 
 # Supabase CLI local cache
 supabase/.temp/
+
+# One-off patched HTML artifacts produced by scripts/patch-funnelish-faq.mjs
+# (manual deploy fixes for already-published clones — do not version)
+*-FIXED.html

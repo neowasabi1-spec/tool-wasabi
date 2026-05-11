@@ -262,6 +262,15 @@ function resetAccordionState(html: string): string {
     .replace(
       /(\bclass\s*=\s*["'][^"']*?\baccordion-collapse)\s+show\b/gi,
       '$1',
+    )
+    // Funnelish/generic FAQ: strip "open" state classes from .faq /
+    // .faq-item / .accordion-item containers so the rescue script can
+    // re-toggle them. We only touch classes ON elements that ALSO have
+    // a .faq* / .accordion* base class to avoid hitting unrelated
+    // navigation menus that share .is-active.
+    .replace(
+      /(\bclass\s*=\s*["'][^"']*?\b(?:faq|faq-item|faq-wrapper|accordion-item)\b[^"']*?)\s+(?:is-open|is-active|active|expanded|open|show)\b/gi,
+      '$1',
     );
 }
 
@@ -285,15 +294,74 @@ function resetAccordionState(html: string): string {
  * work. Runs once on DOMContentLoaded.
  */
 function injectInteractivityRescue(html: string): string {
+  // CSS guard: only kicks in when the rescue script has tagged <html>
+  // with `data-wasabi-rescue="1"`. This avoids hiding/clobbering FAQs
+  // on pages whose own runtime is fine — the script only sets the
+  // flag if it actually finds accordion-shaped DOM and binds to it.
+  // Funnelish/.faq pattern: panel hidden by default, opened when the
+  // .faq parent (or nearest accordion container) gets .is-open.
+  const styleTag =
+    '<style id="wasabi-accordion-rescue-style">' +
+    'html[data-wasabi-rescue="1"] .faq .faq-content-wrapper,' +
+    'html[data-wasabi-rescue="1"] .faq .faq-content,' +
+    'html[data-wasabi-rescue="1"] .faq-wrapper .faq-content-wrapper,' +
+    'html[data-wasabi-rescue="1"] .faq-wrapper .faq-content,' +
+    'html[data-wasabi-rescue="1"] .faq-item .faq-body,' +
+    'html[data-wasabi-rescue="1"] .faq-item .faq-answer{display:none}' +
+    'html[data-wasabi-rescue="1"] .faq.is-open>.faq-content-wrapper,' +
+    'html[data-wasabi-rescue="1"] .faq.is-open .faq-content-wrapper,' +
+    'html[data-wasabi-rescue="1"] .faq.is-open .faq-content,' +
+    'html[data-wasabi-rescue="1"] .faq-wrapper.is-open .faq-content-wrapper,' +
+    'html[data-wasabi-rescue="1"] .faq-wrapper.is-open .faq-content,' +
+    'html[data-wasabi-rescue="1"] .faq-item.is-open .faq-body,' +
+    'html[data-wasabi-rescue="1"] .faq-item.is-open .faq-answer{display:block}' +
+    'html[data-wasabi-rescue="1"] .faq-header,' +
+    'html[data-wasabi-rescue="1"] .faq-title,' +
+    'html[data-wasabi-rescue="1"] .faq-question,' +
+    'html[data-wasabi-rescue="1"] .accordion-header,' +
+    'html[data-wasabi-rescue="1"] .accordion-button,' +
+    'html[data-wasabi-rescue="1"] .accordion-toggle,' +
+    'html[data-wasabi-rescue="1"] .toggle-header{cursor:pointer}' +
+    'html[data-wasabi-rescue="1"] .faq.is-open .faq-icon,' +
+    'html[data-wasabi-rescue="1"] .faq-wrapper.is-open .faq-icon,' +
+    'html[data-wasabi-rescue="1"] .faq-item.is-open .faq-icon{transform:rotate(180deg);transition:transform .2s}' +
+    // Funnelish leftover noise: empty <li> items used as vertical
+    // spacers in the original page. Without Funnelish's CSS they show
+    // as bare `•` bullets between real list items. Hide them.
+    'html[data-wasabi-rescue="1"] li:empty,' +
+    'html[data-wasabi-rescue="1"] li>br:only-child{display:none}' +
+    '</style>';
+
   const script = `<script id="wasabi-accordion-rescue">(function(){
 function $(s,r){return (r||document).querySelectorAll(s)}
+// Trigger selectors: includes Funnelish (.faq-header/.faq-title) +
+// generic accordion patterns. Order matters only for code clarity.
+var TRIG='.faq-header,.faq-title,.faq-question,.accordion-header,.accordion-button,.accordion-toggle,.toggle-header,[data-accordion-trigger],[data-faq-toggle]';
+var CONT='.faq,.faq-wrapper,.faq-item,.accordion-item,.accordion,.toggle-item,[data-faq],details';
+var PANEL='.faq-content-wrapper,.faq-content,.accordion-content,.accordion-body,.accordion-collapse,.faq-body,.faq-answer,.toggle-content,.collapse-content';
+function findPanel(trigger,container){
+  var n=trigger.nextElementSibling;
+  while(n){
+    if(n.matches&&n.matches(PANEL))return n;
+    n=n.nextElementSibling;
+  }
+  return container.querySelector(PANEL);
+}
 function once(){
+  // Tag <html> only if there's at least one Funnelish/accordion shape
+  // in the DOM. This prevents the CSS hide rule from blanking pages
+  // that don't have FAQs at all.
+  var hasShape=document.querySelector(TRIG)||document.querySelector('.faq-content-wrapper');
+  if(hasShape){document.documentElement.setAttribute('data-wasabi-rescue','1');}
   // 2. ARIA pattern
   document.addEventListener('click',function(ev){
     var t=ev.target;
     if(!(t instanceof Element))return;
+    // Don't hijack actual links/buttons/form controls inside a header
+    var actionable=t.closest('a[href]:not([href="#"]):not([href=""]),button[type="submit"],input,select,textarea');
     var btn=t.closest('[aria-expanded][aria-controls]');
     if(btn){
+      if(actionable&&btn.contains(actionable)&&actionable!==btn)return;
       var open=btn.getAttribute('aria-expanded')==='true';
       btn.setAttribute('aria-expanded',open?'false':'true');
       var pid=btn.getAttribute('aria-controls');
@@ -304,32 +372,40 @@ function once(){
     // 3. Bootstrap collapse
     var bs=t.closest('[data-bs-toggle="collapse"],[data-toggle="collapse"]');
     if(bs){
+      if(actionable&&bs.contains(actionable)&&actionable!==bs)return;
       var sel=bs.getAttribute('data-bs-target')||bs.getAttribute('data-target')||bs.getAttribute('href');
       if(sel){var el=document.querySelector(sel);if(el){el.classList.toggle('show');}}
       return;
     }
-    // 4. Generic .accordion-header / .faq-question / [data-accordion-trigger]
-    var gh=t.closest('.accordion-header,.faq-question,.accordion-toggle,.toggle-header,[data-accordion-trigger]');
+    // 4. Generic / Funnelish header
+    var gh=t.closest(TRIG);
     if(gh){
-      var item=gh.closest('.accordion-item,.faq-item,.accordion,.toggle-item')||gh.parentElement;
+      if(actionable&&gh.contains(actionable)&&actionable!==gh)return;
+      var item=gh.closest(CONT)||gh.parentElement;
       if(item){
-        item.classList.toggle('is-open');
-        item.classList.toggle('active');
-        item.classList.toggle('expanded');
-        // Look for the content panel that follows.
-        var content=gh.nextElementSibling;
-        if(!content||!/content|answer|panel|body/i.test(content.className)){
-          content=item.querySelector('.accordion-content,.faq-answer,.accordion-body,.toggle-content,.collapse-content');
+        var willOpen=!item.classList.contains('is-open');
+        item.classList.toggle('is-open',willOpen);
+        item.classList.toggle('active',willOpen);
+        item.classList.toggle('expanded',willOpen);
+        if(item.tagName==='DETAILS'){
+          if(willOpen)item.setAttribute('open','');else item.removeAttribute('open');
         }
+        gh.setAttribute('aria-expanded',willOpen?'true':'false');
+        // Inline display fallback for sites whose CSS we can't reach.
+        var content=findPanel(gh,item);
         if(content){
-          var hidden=content.style.display==='none'||getComputedStyle(content).display==='none';
-          content.style.display=hidden?'':'none';
+          // Clear any inline display so the CSS rule wins; only force
+          // display when the CSS rule didn't take effect.
+          content.style.display='';
+          var cs=getComputedStyle(content);
+          if(willOpen&&cs.display==='none')content.style.display='block';
+          if(!willOpen&&cs.display!=='none')content.style.display='none';
         }
+        ev.preventDefault();ev.stopPropagation();
       }
     }
   },true);
-  // Initial pass: hide every panel that the snapshot left visible but
-  // whose trigger we just reset (aria-expanded=false).
+  // Initial pass: hide every ARIA panel that we just reset.
   $('[aria-controls]').forEach(function(b){
     if(b.getAttribute('aria-expanded')==='false'){
       var pid=b.getAttribute('aria-controls');
@@ -340,10 +416,18 @@ function once(){
 }
 if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',once)}else{once()}
 })();</script>`;
-  if (/<\/body>/i.test(html)) {
-    return html.replace(/<\/body>/i, `${script}</body>`);
+  let out = html;
+  if (/<\/head>/i.test(out)) {
+    out = out.replace(/<\/head>/i, `${styleTag}</head>`);
+  } else if (/<head\b[^>]*>/i.test(out)) {
+    out = out.replace(/(<head\b[^>]*>)/i, `$1${styleTag}`);
+  } else {
+    out = `<head>${styleTag}</head>${out}`;
   }
-  return html + script;
+  if (/<\/body>/i.test(out)) {
+    return out.replace(/<\/body>/i, `${script}</body>`);
+  }
+  return out + script;
 }
 
 /**
