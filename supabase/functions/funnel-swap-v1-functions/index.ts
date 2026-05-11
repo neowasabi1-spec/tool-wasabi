@@ -12,6 +12,35 @@ const corsHeaders = {
 
 // Helper: distribuisce il nuovo testo proporzionalmente tra i segmenti di testo
 // preservando la posizione relativa dei tag HTML inline (bold, link, ecc.)
+// Block-level tags. When the matched text span is split by ANY of these
+// (i.e. the original text was spread across multiple BLOCK siblings —
+// typical of Funnelish .scraped-container-box layouts where each box is
+// a flex/grid column), proportional distribution destroys the layout:
+// the new sentence ends up fragmented across columns/cells. In that case
+// we collapse: put the whole rewritten text in the FIRST text segment
+// and blank the others. The boxes still exist (no structural break),
+// but the text reads coherently in the first one.
+//
+// Inline styling tags (strong, em, span, b, i, u, a, br, sub, sup, mark,
+// small, code, abbr) are intentionally NOT in this list — splitting
+// across them is fine and preserves the original styling.
+const BLOCK_TAG_RE =
+  /<\/?(?:div|section|article|p|li|ul|ol|tr|td|th|table|thead|tbody|tfoot|h[1-6]|blockquote|figure|figcaption|main|aside|header|footer|nav|form|fieldset|details|summary|hr|dl|dt|dd|address|pre)\b/i
+
+function segmentsCrossBlockBoundary(
+  segments: string[],
+  textSegments: { index: number }[]
+): boolean {
+  if (textSegments.length <= 1) return false
+  const first = textSegments[0].index
+  const last = textSegments[textSegments.length - 1].index
+  for (let i = first + 1; i < last; i++) {
+    const seg = segments[i]
+    if (seg && seg.startsWith('<') && BLOCK_TAG_RE.test(seg)) return true
+  }
+  return false
+}
+
 function distributeTextProportionally(
   segments: string[], 
   textSegments: { index: number; content: string }[], 
@@ -20,6 +49,19 @@ function distributeTextProportionally(
   if (textSegments.length <= 1) {
     if (textSegments.length === 1) {
       segments[textSegments[0].index] = newText
+    }
+    return
+  }
+  
+  // GUARD: if the segments cross block boundaries, do NOT distribute
+  // proportionally — would shred the rewrite across columns/rows of the
+  // page layout (Funnelish 3-column box layouts, list items, table
+  // cells, ...). Collapse instead: full text into segment 0, blank the
+  // rest. Preserves structural HTML, keeps text coherent.
+  if (segmentsCrossBlockBoundary(segments, textSegments)) {
+    segments[textSegments[0].index] = newText
+    for (let si = 1; si < textSegments.length; si++) {
+      segments[textSegments[si].index] = ''
     }
     return
   }
