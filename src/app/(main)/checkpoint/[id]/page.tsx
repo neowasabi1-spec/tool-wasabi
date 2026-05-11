@@ -19,7 +19,6 @@ import {
 } from 'lucide-react';
 import {
   type CheckpointCategory,
-  type CheckpointCategoryResult,
   type CheckpointResults,
   type CheckpointRun,
   type CheckpointFunnel,
@@ -63,7 +62,7 @@ export default function CheckpointDetailPage({
   const [runError, setRunError] = useState<string | null>(null);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
 
-  // Live state during an active SSE-driven run.
+  // Live state during a polling-driven run.
   const [liveSteps, setLiveSteps] = useState<LiveStep[]>(() =>
     buildSteps(CATEGORIES),
   );
@@ -71,6 +70,7 @@ export default function CheckpointDetailPage({
   const [liveResults, setLiveResults] = useState<CheckpointResults>({});
   const [liveStartedAt, setLiveStartedAt] = useState<number | undefined>();
   const abortRef = useRef<AbortController | null>(null);
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const refetch = async (preserveActive = false) => {
     setLoading(true);
@@ -98,10 +98,104 @@ export default function CheckpointDetailPage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [funnelId]);
 
+  // Cleanup polling timer on unmount.
+  useEffect(() => {
+    return () => {
+      if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
+      abortRef.current?.abort();
+    };
+  }, []);
+
   /**
-   * Open the SSE stream and drive the live dashboard. Each event from
-   * the server moves a step from pending → running → done so the user
-   * literally watches the bot work through the queue.
+   * Polling loop. Reads the in-progress run row every `intervalMs`
+   * and translates `results` JSONB into the LiveStep[] dashboard.
+   * Stops when the row's status leaves `running` (or after `maxMs`
+   * as a safety net so we never poll forever).
+   */
+  const pollRun = async (
+    runId: string,
+    intervalMs = 1500,
+    maxMs = 6 * 60 * 1000,
+  ): Promise<void> => {
+    const startedPolling = Date.now();
+    const tick = async (): Promise<void> => {
+      if (Date.now() - startedPolling > maxMs) {
+        console.warn(`[checkpoint poll] giving up on ${runId} after ${maxMs}ms`);
+        return;
+      }
+      try {
+        const res = await fetch(`/api/checkpoint/runs/${runId}`, {
+          cache: 'no-store',
+        });
+        if (!res.ok) {
+          // Run not found yet (race) → try again.
+          pollTimerRef.current = setTimeout(tick, intervalMs);
+          return;
+        }
+        const { run } = (await res.json()) as { run: CheckpointRun | null };
+        if (!run) {
+          pollTimerRef.current = setTimeout(tick, intervalMs);
+          return;
+        }
+        applyRunSnapshot(run);
+        if (run.status === 'running') {
+          pollTimerRef.current = setTimeout(tick, intervalMs);
+        }
+      } catch (err) {
+        console.warn('[checkpoint poll] tick failed', err);
+        pollTimerRef.current = setTimeout(tick, intervalMs * 2);
+      }
+    };
+    return tick();
+  };
+
+  /**
+   * Translate a polled run row into the dashboard's local state.
+   * Each category in `results` becomes a `done`/`error` step; the
+   * first category that hasn't reported yet is treated as the one
+   * the bot is currently working on.
+   */
+  const applyRunSnapshot = (run: CheckpointRun) => {
+    setActiveRunId(run.id);
+    setLiveResults(run.results ?? {});
+
+    const stillRunning = run.status === 'running';
+    const next: LiveStep[] = CATEGORIES.map((category) => {
+      const result = run.results?.[category];
+      if (!result) {
+        return { category, state: 'pending' as const };
+      }
+      return {
+        category,
+        state:
+          result.status === 'error' ? ('error' as const) : ('done' as const),
+        result,
+      };
+    });
+
+    let activeIdx = -1;
+    if (stillRunning) {
+      activeIdx = next.findIndex((s) => s.state === 'pending');
+      if (activeIdx >= 0) {
+        next[activeIdx] = {
+          ...next[activeIdx],
+          state: 'running',
+          startedAt:
+            liveSteps[activeIdx]?.startedAt ?? Date.now(),
+        };
+      }
+    }
+
+    setLiveSteps(next);
+    setLiveActiveIdx(activeIdx);
+  };
+
+  /**
+   * Click handler. Kicks off the POST /run (which blocks until the
+   * full audit completes) AND a polling loop in parallel. The
+   * polling loop discovers the runId from /latest-run within ~1s of
+   * the POST landing on the server, then tracks incremental DB
+   * updates so the UI lights up step-by-step in near real time.
    */
   const handleRun = async () => {
     setRunning(true);
@@ -114,6 +208,11 @@ export default function CheckpointDetailPage({
     const ctrl = new AbortController();
     abortRef.current = ctrl;
 
+    // Start polling in parallel — it'll discover the runId via
+    // /latest-run as soon as the server inserts the row, even if the
+    // POST response is still pending (or buffered by the platform).
+    const pollerStarted = startPollingForLatestRun(ctrl.signal);
+
     try {
       const res = await fetch(`/api/checkpoint/${funnelId}/run`, {
         method: 'POST',
@@ -124,129 +223,78 @@ export default function CheckpointDetailPage({
         signal: ctrl.signal,
       });
 
-      if (!res.ok || !res.body) {
-        const text = await res.text().catch(() => '');
-        let message = `HTTP ${res.status}`;
-        try {
-          const parsed = JSON.parse(text);
-          if (parsed?.error) message = parsed.error;
-        } catch {
-          if (text) message = text.slice(0, 300);
-        }
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const message = (json as { error?: string }).error ?? `HTTP ${res.status}`;
         throw new Error(message);
       }
-
-      // Read SSE events from the body stream. Server frames each event
-      // as `data: <json>\n\n`. Buffer across chunks because reads can
-      // split mid-event.
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-
-        let sep: number;
-        while ((sep = buffer.indexOf('\n\n')) >= 0) {
-          const frame = buffer.slice(0, sep);
-          buffer = buffer.slice(sep + 2);
-          // Each frame may have multiple `data:` lines; concatenate them.
-          const json = frame
-            .split('\n')
-            .filter((l) => l.startsWith('data:'))
-            .map((l) => l.slice(5).trim())
-            .join('');
-          if (!json) continue;
-          try {
-            const evt = JSON.parse(json);
-            handleEvent(evt);
-          } catch (err) {
-            console.warn('[checkpoint stream] bad JSON frame', err, json);
-          }
-        }
-      }
+      // POST returned with the final state — ensure the polled view
+      // reflects it (in case the last poll tick was missed).
+      const final = json as {
+        runId?: string;
+        status?: string;
+        score_overall?: number | null;
+        results?: CheckpointResults;
+      };
+      if (final.results) setLiveResults(final.results);
+      if (final.runId) setActiveRunId(final.runId);
     } catch (err) {
       if ((err as Error).name === 'AbortError') {
-        setRunError('Run interrotta dall\'utente.');
+        setRunError("Run interrotta dall'utente.");
       } else {
         setRunError(err instanceof Error ? err.message : String(err));
       }
     } finally {
+      // Stop polling, allow any in-flight final tick to settle.
+      await pollerStarted;
+      stopPolling();
       setRunning(false);
+      setLiveActiveIdx(-1);
       abortRef.current = null;
-      // Reload history so the new run appears in the selector.
       await refetch(true);
     }
   };
 
-  const handleEvent = (evt: {
-    phase: string;
-    runId?: string;
-    category?: CheckpointCategory;
-    index?: number;
-    total?: number;
-    result?: CheckpointCategoryResult;
-    status?: string;
-    score_overall?: number | null;
-    results?: CheckpointResults;
-    message?: string;
-  }) => {
-    switch (evt.phase) {
-      case 'opened':
-        if (evt.runId) setActiveRunId(evt.runId);
-        break;
-      case 'category_start':
-        if (typeof evt.index === 'number') {
-          const idx = evt.index;
-          setLiveActiveIdx(idx);
-          setLiveSteps((prev) =>
-            prev.map((s, i) =>
-              i === idx ? { ...s, state: 'running', startedAt: Date.now() } : s,
-            ),
-          );
+  /**
+   * Look up the most recent run for this funnel until we find one
+   * created after we clicked "Run". Then switch to per-runId polling.
+   */
+  const startPollingForLatestRun = async (signal: AbortSignal) => {
+    const clickedAt = Date.now();
+    const giveUpAt = clickedAt + 30_000;
+    while (!signal.aborted && Date.now() < giveUpAt) {
+      try {
+        const res = await fetch(
+          `/api/checkpoint/${funnelId}/latest-run`,
+          { cache: 'no-store', signal },
+        );
+        if (res.ok) {
+          const { run } = (await res.json()) as { run: CheckpointRun | null };
+          // Only accept a run whose created_at is fresher than the
+          // moment we clicked — otherwise we'd attach to an old run.
+          if (run && new Date(run.created_at).getTime() >= clickedAt - 2000) {
+            applyRunSnapshot(run);
+            await pollRun(run.id);
+            return;
+          }
         }
-        break;
-      case 'category_done':
-        if (
-          typeof evt.index === 'number' &&
-          evt.category &&
-          evt.result
-        ) {
-          const idx = evt.index;
-          const cat = evt.category;
-          const result = evt.result;
-          setLiveResults((prev) => ({ ...prev, [cat]: result }));
-          setLiveSteps((prev) =>
-            prev.map((s, i) =>
-              i === idx
-                ? {
-                    ...s,
-                    state: result.status === 'error' ? 'error' : 'done',
-                    result,
-                    finishedAt: Date.now(),
-                  }
-                : s,
-            ),
-          );
-          setLiveActiveIdx(-1);
-        }
-        break;
-      case 'complete':
-        if (evt.results) setLiveResults(evt.results);
-        setLiveActiveIdx(-1);
-        break;
-      case 'error':
-        setRunError(evt.message ?? 'Errore stream sconosciuto');
-        break;
-      default:
-        break;
+      } catch {
+        // Abort or network blip — fall through to the delay.
+      }
+      await new Promise((r) => setTimeout(r, 800));
+    }
+  };
+
+  const stopPolling = () => {
+    if (pollTimerRef.current) {
+      clearTimeout(pollTimerRef.current);
+      pollTimerRef.current = null;
     }
   };
 
   const handleStop = () => {
     abortRef.current?.abort();
+    stopPolling();
   };
 
   const activeRun = useMemo(() => {

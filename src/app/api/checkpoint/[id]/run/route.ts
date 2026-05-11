@@ -34,27 +34,30 @@ const ALL_CATEGORIES: CheckpointCategory[] = [
   'copy',
 ];
 
-const sseEncoder = new TextEncoder();
-function sseEvent(data: Record<string, unknown>): Uint8Array {
-  return sseEncoder.encode(`data: ${JSON.stringify(data)}\n\n`);
-}
-
 /**
- * POST /api/checkpoint/[id]/run  (Server-Sent Events)
+ * POST /api/checkpoint/[id]/run
  *
  * Body (optional):
  *   { categories?, brandProfile?, productType?, triggeredByName?, triggeredByUserId? }
  *
- * Stream of `data:` events:
- *   { phase: 'opened',          runId, categories }
- *   { phase: 'category_start',  category, index, total }
- *   { phase: 'category_done',   category, index, total, result }
- *   { phase: 'complete',        runId, status, score_overall, results }
- *   { phase: 'error',           message }       (fatal, terminates the stream)
+ * Lifecycle:
+ *   1. Insert a `funnel_checkpoints` row in `running` state IMMEDIATELY
+ *      (within ~200ms of receiving the request) so the client polling
+ *      `/api/checkpoint/[id]/latest-run` can discover the runId before
+ *      the heavy work even starts.
+ *   2. Fetch the live HTML.
+ *   3. Run categories sequentially. After each one, UPDATE the row's
+ *      `results` JSONB and the per-category score column → polling
+ *      surfaces step-by-step progress in real time.
+ *   4. Compute aggregate score + final status, UPDATE the row, sync
+ *      the `last_run_*` snapshot on the parent funnel, return JSON.
  *
- * The DB row is inserted right after the 'opened' event and updated
- * incrementally after each category so a refresh during a run still
- * shows partial results.
+ * Why polling instead of SSE:
+ *   Netlify (and several other proxies) buffer streaming responses
+ *   from Next.js API routes, so the client sees nothing until the
+ *   function completes — defeating the whole point of streaming.
+ *   Polling against the same DB row that's being updated incrementally
+ *   gives us live UX with zero buffering risk.
  */
 export async function POST(
   req: NextRequest,
@@ -88,27 +91,10 @@ export async function POST(
       : ALL_CATEGORIES;
   const productType = body.productType ?? funnel.product_type ?? 'both';
   const brandProfile = body.brandProfile ?? funnel.brand_profile ?? undefined;
-  // Audit log fields. Until the users table exists, we trust the
-  // client-supplied name (single-tenant tool). Once auth lands,
-  // resolve from the session here and ignore body fields.
   const triggeredByName = (body.triggeredByName ?? '').trim().slice(0, 120) || null;
   const triggeredByUserId = body.triggeredByUserId?.trim() || null;
 
-  // Pre-flight HTML fetch must succeed before we even open the row,
-  // otherwise we'd pollute history with empty failed runs every time
-  // the user mistypes a URL.
-  const html = await fetchFunnelHtml(funnel.url);
-  if (!html) {
-    return NextResponse.json(
-      {
-        error:
-          "Impossibile scaricare l'HTML del funnel. URL irraggiungibile o risposta vuota.",
-      },
-      { status: 422 },
-    );
-  }
-  const auditText = htmlToAuditText(html);
-
+  // Open the row FIRST so polling can pick up the runId immediately.
   const { data: insertedRow, error: insertErr } = await supabase
     .from('funnel_checkpoints')
     .insert({
@@ -133,183 +119,126 @@ export async function POST(
   const checkpointId = insertedRow.id as string;
 
   console.log(
-    `[checkpoint/run] start runId=${checkpointId} funnel="${funnel.name}" categories=${categories.join(',')} html_len=${html.length} audit_text_len=${auditText.length}`,
+    `[checkpoint/run] start runId=${checkpointId} funnel="${funnel.name}" categories=${categories.join(',')}`,
   );
 
-  // The work happens inside the stream so each step yields output the
-  // moment it finishes — drives the live dashboard on the frontend.
-  const stream = new ReadableStream<Uint8Array>({
-    async start(controller) {
-      let closed = false;
-      const send = (payload: Record<string, unknown>) => {
-        if (closed) return;
-        try {
-          controller.enqueue(sseEvent(payload));
-        } catch {
-          // Client disconnected; further sends will throw too. Bail
-          // out — the DB has the partial row so the user can refresh
-          // and see the (still-running) state.
-          closed = true;
-        }
+  // Fetch HTML AFTER opening the row. If it fails, we close the row
+  // as failed so the client (which is already polling) gets a clean
+  // error instead of a row stuck in "running" forever.
+  const html = await fetchFunnelHtml(funnel.url);
+  if (!html) {
+    const msg =
+      "Impossibile scaricare l'HTML del funnel. URL irraggiungibile o risposta vuota.";
+    await supabase
+      .from('funnel_checkpoints')
+      .update({
+        status: 'failed' as CheckpointRunStatus,
+        error: msg,
+        completed_at: new Date().toISOString(),
+      })
+      .eq('id', checkpointId);
+    return NextResponse.json(
+      { runId: checkpointId, error: msg },
+      { status: 422 },
+    );
+  }
+  const auditText = htmlToAuditText(html);
+
+  const results: CheckpointResults = {};
+  let errored = 0;
+  let succeeded = 0;
+  const total = categories.length;
+
+  for (let i = 0; i < total; i++) {
+    const cat = categories[i];
+    const tStart = Date.now();
+    console.log(`[checkpoint/run] ▶ ${cat} (${i + 1}/${total})`);
+
+    try {
+      if (cat === 'compliance') {
+        results[cat] = await runCompliance({
+          html,
+          url: funnel.url,
+          productType,
+          requestUrl: req.url,
+        });
+      } else {
+        results[cat] = await runClaudeCategory({
+          category: cat,
+          funnelName: funnel.name,
+          funnelUrl: funnel.url,
+          pageText: auditText,
+          brandProfile,
+        });
+      }
+      if (results[cat]?.status === 'error') errored++;
+      else succeeded++;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[checkpoint/run] ✗ ${cat} crashed:`, msg);
+      results[cat] = {
+        score: null,
+        status: 'error',
+        summary: `Audit failed: ${msg}`,
+        issues: [],
+        suggestions: [],
+        error: msg,
       };
-      // SSE comment lines (starting with `:`) are ignored by the
-      // browser's EventSource and any custom parser, but they keep
-      // the connection alive through proxies (Netlify, nginx, …)
-      // that would otherwise close idle streams. Critical when a
-      // single Claude call takes 30-60s with no other output.
-      const heartbeat = setInterval(() => {
-        if (closed) return;
-        try {
-          controller.enqueue(sseEncoder.encode(`: heartbeat ${Date.now()}\n\n`));
-        } catch {
-          closed = true;
-        }
-      }, 15_000);
+      errored++;
+    }
 
-      send({
-        phase: 'opened',
-        runId: checkpointId,
-        categories,
-        funnelName: funnel.name,
-        funnelUrl: funnel.url,
-      });
+    const elapsed = Date.now() - tStart;
+    console.log(
+      `[checkpoint/run] ◀ ${cat} done in ${elapsed}ms · score=${results[cat]?.score ?? 'null'} · status=${results[cat]?.status}`,
+    );
 
-      const results: CheckpointResults = {};
-      let errored = 0;
-      let succeeded = 0;
-      const total = categories.length;
+    // The polling endpoint reads exactly this row, so each persist
+    // here makes the corresponding step "light up" in the UI.
+    await persistCategory(checkpointId, results, cat);
+  }
 
-      for (let i = 0; i < categories.length; i++) {
-        const cat = categories[i];
-        const tStart = Date.now();
-        console.log(`[checkpoint/run] ▶ ${cat} (${i + 1}/${total})`);
-        send({
-          phase: 'category_start',
-          category: cat,
-          index: i,
-          total,
-        });
+  const numericScores = Object.values(results)
+    .map((r) => r?.score)
+    .filter((s): s is number => typeof s === 'number');
+  const overall =
+    numericScores.length > 0
+      ? Math.round(
+          numericScores.reduce((a, b) => a + b, 0) / numericScores.length,
+        )
+      : null;
+  const finalStatus: CheckpointRunStatus =
+    succeeded === 0 ? 'failed' : errored === 0 ? 'completed' : 'partial';
+  const completedAt = new Date().toISOString();
 
-        try {
-          if (cat === 'compliance') {
-            results[cat] = await runCompliance({
-              html,
-              url: funnel.url,
-              productType,
-              requestUrl: req.url,
-            });
-          } else {
-            results[cat] = await runClaudeCategory({
-              category: cat,
-              funnelName: funnel.name,
-              funnelUrl: funnel.url,
-              pageText: auditText,
-              brandProfile,
-            });
-          }
-          if (results[cat]?.status === 'error') errored++;
-          else succeeded++;
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          console.error(`[checkpoint/run] ✗ ${cat} crashed:`, msg);
-          results[cat] = {
-            score: null,
-            status: 'error',
-            summary: `Audit failed: ${msg}`,
-            issues: [],
-            suggestions: [],
-            error: msg,
-          };
-          errored++;
-        }
-        const elapsed = Date.now() - tStart;
-        console.log(
-          `[checkpoint/run] ◀ ${cat} done in ${elapsed}ms · score=${results[cat]?.score ?? 'null'} · status=${results[cat]?.status}`,
-        );
+  const { error: updErr } = await supabase
+    .from('funnel_checkpoints')
+    .update({
+      score_overall: overall,
+      status: finalStatus,
+      completed_at: completedAt,
+    })
+    .eq('id', checkpointId);
+  if (updErr) {
+    console.error('[checkpoint/run] final update failed:', updErr.message);
+  }
 
-        // Persist incrementally so refreshes during a long run see
-        // partial state. We only update the JSONB blob + the per-cat
-        // score column; the global aggregate is recomputed at the end.
-        await persistCategory(checkpointId, results, cat);
-
-        send({
-          phase: 'category_done',
-          category: cat,
-          index: i,
-          total,
-          result: results[cat],
-        });
-      }
-
-      clearInterval(heartbeat);
-
-      const numericScores = Object.values(results)
-        .map((r) => r?.score)
-        .filter((s): s is number => typeof s === 'number');
-      const overall =
-        numericScores.length > 0
-          ? Math.round(
-              numericScores.reduce((a, b) => a + b, 0) / numericScores.length,
-            )
-          : null;
-      const finalStatus: CheckpointRunStatus =
-        succeeded === 0 ? 'failed' : errored === 0 ? 'completed' : 'partial';
-      const completedAt = new Date().toISOString();
-
-      const { error: updErr } = await supabase
-        .from('funnel_checkpoints')
-        .update({
-          score_overall: overall,
-          status: finalStatus,
-          completed_at: completedAt,
-        })
-        .eq('id', checkpointId);
-      if (updErr) {
-        console.error('[checkpoint/run] final update failed:', updErr.message);
-      }
-
-      await syncLastRunSnapshot({
-        funnelId: funnel.id,
-        runId: checkpointId,
-        scoreOverall: overall,
-        status: finalStatus,
-        ranAt: completedAt,
-      });
-
-      send({
-        phase: 'complete',
-        runId: checkpointId,
-        status: finalStatus,
-        score_overall: overall,
-        results,
-      });
-
-      console.log(
-        `[checkpoint/run] ✔ done runId=${checkpointId} status=${finalStatus} overall=${overall} succeeded=${succeeded} errored=${errored}`,
-      );
-
-      closed = true;
-      try {
-        controller.close();
-      } catch {
-        // already closed by client disconnect
-      }
-    },
-
-    cancel() {
-      // Browser navigated away or aborted; the server-side iteration
-      // keeps running so the run still lands in the DB and history.
-      console.log(`[checkpoint/run] stream cancelled by client (runId=${checkpointId})`);
-    },
+  await syncLastRunSnapshot({
+    funnelId: funnel.id,
+    runId: checkpointId,
+    scoreOverall: overall,
+    status: finalStatus,
+    ranAt: completedAt,
   });
 
-  return new Response(stream, {
-    headers: {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache, no-transform',
-      Connection: 'keep-alive',
-      'X-Accel-Buffering': 'no',
-    },
+  console.log(
+    `[checkpoint/run] ✔ done runId=${checkpointId} status=${finalStatus} overall=${overall} succeeded=${succeeded} errored=${errored}`,
+  );
+
+  return NextResponse.json({
+    runId: checkpointId,
+    status: finalStatus,
+    score_overall: overall,
+    results,
   });
 }
 

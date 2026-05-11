@@ -131,6 +131,40 @@ export async function syncLastRunSnapshot(args: {
   }
 }
 
+/** Single run row. Used by the polling endpoint to surface
+ *  partial-state updates while a run is in progress. */
+export async function getRun(runId: string): Promise<CheckpointRun | null> {
+  const { data, error } = await supabase
+    .from('funnel_checkpoints')
+    .select('*')
+    .eq('id', runId)
+    .maybeSingle();
+  if (error) {
+    console.warn(`[checkpoint-store] getRun: ${error.message}`);
+    return null;
+  }
+  return (data as unknown as CheckpointRun | null) ?? null;
+}
+
+/** Most recent run for a funnel. Used right after the user clicks
+ *  "Run" to discover the runId without needing the POST to return. */
+export async function getLatestRunForFunnel(
+  funnelId: string,
+): Promise<CheckpointRun | null> {
+  const { data, error } = await supabase
+    .from('funnel_checkpoints')
+    .select('*')
+    .eq('checkpoint_funnel_id', funnelId)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) {
+    console.warn(`[checkpoint-store] getLatestRunForFunnel: ${error.message}`);
+    return null;
+  }
+  return (data as unknown as CheckpointRun | null) ?? null;
+}
+
 /** History of runs for a funnel, newest first. */
 export async function listRunsForFunnel(
   funnelId: string,
