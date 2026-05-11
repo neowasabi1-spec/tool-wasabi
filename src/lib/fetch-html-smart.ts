@@ -94,54 +94,56 @@ export function looksLikeSpaShell(
   html: string,
   sizeThreshold = 15000,
 ): boolean {
-  if (!html) return true;
+  if (!html) {
+    console.log('[SPA-CHECK] isSPA: true (empty html) | html length: 0');
+    return true;
+  }
   const lower = html.toLowerCase();
 
-  // Common framework root markers — any of these alone is a strong signal.
-  // We deliberately match only the *empty* `<div id=root></div>` form,
-  // not the open `<div id="root">` tag, because the open tag is also
-  // present in fully server-rendered React/Next pages and would cause
-  // false positives that needlessly trigger Playwright.
-  const FRAMEWORK_MARKERS = [
-    '<div id="root"></div>',
-    "<div id='root'></div>",
-    '<div id="app"></div>',
-    "<div id='app'></div>",
-    '<div id="__next"></div>',  // Next.js static export shell
-    '<div id="__nuxt"></div>',  // Nuxt
-    '<div id="svelte"></div>',  // SvelteKit
-    '<noscript>you need to enable javascript to run this app',
-    '<noscript>this website requires javascript',
-  ];
-  for (const marker of FRAMEWORK_MARKERS) {
-    if (lower.includes(marker)) return true;
-  }
+  // Aggressive marker list — any single hit triggers Playwright.
+  // False positive cost = one slower fetch (still correct).
+  // False negative cost = audit reads an empty <div id="root"> shell.
+  // We match the OPEN form `<div id="root">` (not just the empty
+  // self-closed form) because real-world Vite/CRA/SvelteKit shells
+  // ship `<div id="root">\n</div>` or `<div id="root"></div>` with
+  // attributes in any order. We also match the Vite asset pattern
+  // unconditionally — a server-rendered page using Vite still loads
+  // its bundle but will normally have content tags too, so even if
+  // we false-positive, Playwright just reconfirms the same HTML.
+  const isSPA =
+    lower.includes('<div id="root">') ||
+    lower.includes("<div id='root'>") ||
+    lower.includes('<div id="root"></div>') ||
+    lower.includes('<div id="app">') ||
+    lower.includes("<div id='app'>") ||
+    lower.includes('<div id="__next"></div>') ||
+    lower.includes('<div id="__nuxt"></div>') ||
+    lower.includes('<div id="svelte"></div>') ||
+    lower.includes('<noscript>you need to enable javascript to run this app') ||
+    lower.includes('<noscript>this website requires javascript') ||
+    lower.includes('/assets/index-') ||
+    (html.length < sizeThreshold && lower.includes('<script type="module"'));
 
-  // Vite / Rollup signature: when the asset bundler ships the typical
-  // `/assets/index-<hash>.{js,css}` and the body has no real content
-  // tags, we're looking at a JS-only shell. Combining the two avoids
-  // false positives on Vite-built but server-rendered pages (rare but
-  // possible).
-  if (
-    /src=["']\/assets\/index-[A-Za-z0-9_-]+\.(?:js|mjs)["']/.test(lower) &&
-    !hasContentTags(lower)
-  ) {
+  console.log(
+    `[SPA-CHECK] isSPA: ${isSPA} | html length: ${html.length} | content-tags: ${hasContentTags(lower)}`,
+  );
+
+  if (isSPA) return true;
+
+  // Belt-and-braces: even when none of the explicit markers hit, an
+  // HTML body with zero content-bearing tags is almost certainly
+  // waiting for client-side hydration.
+  if (!hasContentTags(lower)) {
+    console.log('[SPA-CHECK] isSPA: true (no content tags fallback)');
     return true;
   }
 
-  // Tiny payload (now 15KB to align with observed shell sizes from
-  // Vite/CRA/Next-export) → defer to the visible-text heuristic.
-  if (html.length < sizeThreshold && isSpaShell(html)) return true;
-
-  // Larger payload but visible text is genuinely empty → SPA.
-  if (html.length >= sizeThreshold && isSpaShell(html)) return true;
-
-  // Last-resort: even with a larger payload, if the body contains
-  // ZERO content-bearing tags (no `<p`, no `<h1>...<h6>`, no
-  // `<article>`, no `<section>`) the page is almost certainly waiting
-  // for client-side hydration. The user-suggested heuristic, fixed:
-  // matches `<p>` / `<p ` / `<P>` and the headings family equally.
-  if (!hasContentTags(lower)) return true;
+  // Tiny payload + visible-text heuristic — the older `isSpaShell`
+  // strips scripts/styles and checks remaining visible text length.
+  if (html.length < sizeThreshold && isSpaShell(html)) {
+    console.log('[SPA-CHECK] isSPA: true (tiny payload + isSpaShell)');
+    return true;
+  }
 
   return false;
 }
