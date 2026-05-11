@@ -286,6 +286,10 @@ async function tryPlaywright(
   timeoutMs: number,
   attempts: string[],
 ): Promise<string | null> {
+  // Loud, distinctive log so it's easy to grep in Netlify Function
+  // logs to confirm the SPA fallback path is actually being hit
+  // ("Functions" tab → filter by "[fetch-html-smart] SPA fallback").
+  console.log('[fetch-html-smart] Using Playwright SPA fallback for:', url);
   let browser: Awaited<
     ReturnType<typeof import('@/lib/get-browser').launchBrowser>
   > | null = null;

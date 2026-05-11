@@ -84,6 +84,9 @@ export async function launchBrowser(options?: {
   if (IS_SERVERLESS) {
     const sparticuz = (await import('@sparticuz/chromium-min')).default;
     const executablePath = await getServerlessExecutablePath();
+    console.log(
+      `[get-browser] Launching serverless Chromium via @sparticuz/chromium-min (executablePath=${executablePath})`,
+    );
 
     return chromium.launch({
       args: sparticuz.args,
@@ -92,6 +95,7 @@ export async function launchBrowser(options?: {
     });
   }
 
+  console.log('[get-browser] Launching local Chromium (system playwright-core)');
   return chromium.launch({
     headless: options?.headless ?? true,
     args: options?.args ?? DEFAULT_ARGS,
