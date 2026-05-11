@@ -16,6 +16,8 @@ import {
   Clock,
   AlertCircle,
   StopCircle,
+  Stethoscope,
+  X,
 } from 'lucide-react';
 import {
   type CheckpointCategory,
@@ -60,6 +62,23 @@ export default function CheckpointDetailPage({
 
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
+
+  // Visual fetch diagnostic — lets the user see WHICH path the
+  // SPA-aware fetcher took (plain fetch / Playwright / Jina / failed)
+  // without having to dig into Netlify Function logs.
+  interface DiagResult {
+    ok: boolean;
+    source: string | null;
+    wasSpa: boolean;
+    htmlLength: number;
+    durationMs: number;
+    attempts: string[];
+    error: string | null;
+    htmlPreview: string;
+  }
+  const [diag, setDiag] = useState<DiagResult | null>(null);
+  const [diagLoading, setDiagLoading] = useState(false);
+  const [diagOpen, setDiagOpen] = useState(false);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
 
   // Live state during a polling-driven run.
@@ -197,6 +216,35 @@ export default function CheckpointDetailPage({
    * the POST landing on the server, then tracks incremental DB
    * updates so the UI lights up step-by-step in near real time.
    */
+  const handleDiagnose = async () => {
+    if (!data?.funnel.url) return;
+    setDiagLoading(true);
+    setDiagOpen(true);
+    setDiag(null);
+    try {
+      const res = await fetch('/api/checkpoint/diagnose-fetch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: data.funnel.url }),
+      });
+      const body = (await res.json()) as DiagResult & { error?: string };
+      setDiag(body);
+    } catch (err) {
+      setDiag({
+        ok: false,
+        source: null,
+        wasSpa: false,
+        htmlLength: 0,
+        durationMs: 0,
+        attempts: [],
+        error: err instanceof Error ? err.message : String(err),
+        htmlPreview: '',
+      });
+    } finally {
+      setDiagLoading(false);
+    }
+  };
+
   const handleRun = async () => {
     setRunning(true);
     setRunError(null);
@@ -379,6 +427,25 @@ export default function CheckpointDetailPage({
                 <ExternalLink className="w-4 h-4" /> Apri pagina
               </a>
             )}
+            {/* Diagnose: shows whether the SPA fallback is needed for
+                this URL, which strategy worked (fetch / Playwright /
+                Jina) and how many chars the audit will see. Surface
+                level for the user — no Netlify-log digging. */}
+            {!running && (
+              <button
+                onClick={handleDiagnose}
+                disabled={diagLoading}
+                className="inline-flex items-center gap-2 px-3 py-2 bg-white border border-gray-300 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-50 disabled:opacity-50"
+                title="Verifica come viene scaricato l'HTML di questa pagina"
+              >
+                {diagLoading ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Stethoscope className="w-4 h-4" />
+                )}
+                Diagnosi
+              </button>
+            )}
             {running ? (
               <button
                 onClick={handleStop}
@@ -500,6 +567,121 @@ export default function CheckpointDetailPage({
           </>
         )}
       </div>
+
+      {diagOpen && (
+        <div
+          className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4"
+          onClick={() => setDiagOpen(false)}
+        >
+          <div
+            className="bg-white rounded-xl max-w-2xl w-full max-h-[85vh] overflow-y-auto shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-5 py-3 border-b">
+              <h3 className="font-semibold text-gray-900 flex items-center gap-2">
+                <Stethoscope className="w-5 h-5" /> Diagnosi fetch HTML
+              </h3>
+              <button
+                onClick={() => setDiagOpen(false)}
+                className="p-1 hover:bg-gray-100 rounded"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-5 space-y-3 text-sm">
+              <div className="text-gray-600">
+                URL:{' '}
+                <span className="font-mono text-xs break-all">
+                  {data?.funnel.url}
+                </span>
+              </div>
+              {diagLoading && (
+                <div className="flex items-center gap-2 text-gray-700">
+                  <Loader2 className="w-4 h-4 animate-spin" /> Sto provando a
+                  scaricare l&apos;HTML…
+                </div>
+              )}
+              {!diagLoading && diag && (
+                <>
+                  <div
+                    className={`rounded-lg p-3 border ${
+                      diag.ok
+                        ? 'bg-green-50 border-green-200 text-green-900'
+                        : 'bg-red-50 border-red-200 text-red-900'
+                    }`}
+                  >
+                    {diag.ok ? (
+                      <>
+                        <div className="font-semibold">
+                          Fetch riuscito ({diag.htmlLength.toLocaleString()}{' '}
+                          caratteri in {(diag.durationMs / 1000).toFixed(1)}s)
+                        </div>
+                        <div className="mt-1">
+                          Strategia usata: <strong>{diag.source}</strong>
+                          {diag.wasSpa && ' — pagina rilevata come SPA'}
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="font-semibold">Fetch fallito</div>
+                        <div className="mt-1">{diag.error || 'Errore sconosciuto.'}</div>
+                      </>
+                    )}
+                  </div>
+
+                  {diag.attempts.length > 0 && (
+                    <div>
+                      <div className="font-medium text-gray-800 mb-1">
+                        Tentativi:
+                      </div>
+                      <ol className="list-decimal pl-5 space-y-1 text-gray-700">
+                        {diag.attempts.map((a, i) => (
+                          <li key={i} className="font-mono text-xs">
+                            {a}
+                          </li>
+                        ))}
+                      </ol>
+                    </div>
+                  )}
+
+                  {diag.htmlPreview && (
+                    <details className="bg-gray-50 rounded-lg p-3">
+                      <summary className="cursor-pointer text-gray-700 font-medium">
+                        Anteprima HTML (primi 1500 caratteri)
+                      </summary>
+                      <pre className="mt-2 text-xs bg-white p-2 rounded border overflow-x-auto whitespace-pre-wrap">
+                        {diag.htmlPreview}
+                      </pre>
+                    </details>
+                  )}
+
+                  <div className="text-xs text-gray-500 border-t pt-2">
+                    <strong>Cosa significa:</strong>
+                    <ul className="list-disc pl-5 mt-1 space-y-0.5">
+                      <li>
+                        <code>fetch</code> = la pagina è server-rendered, fetch
+                        normale OK
+                      </li>
+                      <li>
+                        <code>playwright-spa</code> = la pagina è una SPA, il
+                        browser headless ha funzionato
+                      </li>
+                      <li>
+                        <code>jina-spa-fallback</code> = Playwright è fallito,
+                        Jina Reader ha salvato il giorno
+                      </li>
+                      <li>
+                        <code>fetch-spa-failed</code> = SPA ma nessun fallback
+                        ha funzionato (audit avrà solo la shell vuota)
+                      </li>
+                    </ul>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
