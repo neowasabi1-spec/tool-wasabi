@@ -20,10 +20,16 @@
 import { isSpaShell, rescueViaJina } from '@/lib/spa-rescue';
 
 export type FetchHtmlSource =
+  /** Plain fetch returned non-SPA HTML — used as-is. */
   | 'fetch'
-  | 'playwright'
+  /** Plain fetch returned SPA shell + all fallbacks failed. */
+  | 'fetch-spa-failed'
+  /** SPA detected, Playwright successfully rendered the page. */
+  | 'playwright-spa'
+  /** SPA detected, Playwright disabled (text-only mode), Jina recovered. */
   | 'jina'
-  | 'jina-fallback';
+  /** SPA detected, Playwright failed, Jina recovered the page. */
+  | 'jina-spa-fallback';
 
 export interface FetchHtmlResult {
   ok: boolean;
@@ -243,10 +249,13 @@ export async function fetchHtmlSmart(
       attempts,
     );
     if (pwHtml && !looksLikeSpaShell(pwHtml, sizeThreshold)) {
+      console.log(
+        `[fetch-html-smart] ✅ Playwright recovered SPA for ${normalised} (${pwHtml.length} chars, ${Date.now() - start}ms total)`,
+      );
       return {
         ok: true,
         html: pwHtml,
-        source: 'playwright',
+        source: 'playwright-spa',
         wasSpa,
         durationMs: Date.now() - start,
         attempts,
@@ -260,10 +269,17 @@ export async function fetchHtmlSmart(
       const rescued = await rescueViaJina(normalised);
       if (rescued && rescued.length > 200) {
         attempts.push(`jina: OK ${rescued.length} chars`);
+        const jinaSource: FetchHtmlSource =
+          mode === 'text-only' || opts.skipPlaywright
+            ? 'jina'
+            : 'jina-spa-fallback';
+        console.log(
+          `[fetch-html-smart] ✅ Jina recovered (${jinaSource}) for ${normalised} (${rescued.length} chars, ${Date.now() - start}ms total)`,
+        );
         return {
           ok: true,
           html: rescued,
-          source: fetchOk ? 'jina-fallback' : 'jina',
+          source: jinaSource,
           wasSpa,
           durationMs: Date.now() - start,
           attempts,
@@ -278,10 +294,13 @@ export async function fetchHtmlSmart(
 
   // ── 4. Last resort: return whatever fetch gave us, even if SPA shell.
   if (fetchOk && fetchedHtml.length > 0) {
+    console.warn(
+      `[fetch-html-smart] ⚠️ SPA detected but ALL fallbacks failed for ${normalised} — returning raw shell. Attempts: ${attempts.join(' | ')}`,
+    );
     return {
       ok: true,
       html: fetchedHtml,
-      source: 'fetch',
+      source: 'fetch-spa-failed',
       wasSpa,
       durationMs: Date.now() - start,
       attempts,
@@ -321,16 +340,27 @@ async function tryPlaywright(
   timeoutMs: number,
   attempts: string[],
 ): Promise<string | null> {
-  // Loud, distinctive log so it's easy to grep in Netlify Function
-  // logs to confirm the SPA fallback path is actually being hit
-  // ("Functions" tab → filter by "[fetch-html-smart] SPA fallback").
-  console.log('[fetch-html-smart] Using Playwright SPA fallback for:', url);
+  // Loud, distinctive log so it's easy to grep Netlify Function logs.
+  // Filter the Functions tab by "[SPA-FALLBACK]" to see the whole
+  // launch sequence (detect → executablePath → launched → goto → done).
+  const t0 = Date.now();
+  console.log('[SPA-FALLBACK] Detected SPA, launching Playwright for:', url);
+
   let browser: Awaited<
     ReturnType<typeof import('@/lib/get-browser').launchBrowser>
   > | null = null;
+
   try {
+    // Step 1: import + launch (this internally resolves executablePath
+    // for serverless and downloads the chromium-min binary if needed).
     const { launchBrowser } = await import('@/lib/get-browser');
+    const tLaunch = Date.now();
     browser = await launchBrowser();
+    console.log(
+      `[SPA-FALLBACK] Browser launched in ${Date.now() - tLaunch}ms`,
+    );
+
+    // Step 2: context + page setup.
     const context = await browser.newContext({
       userAgent: DEFAULT_UA,
       viewport: { width: 1440, height: 900 },
@@ -338,19 +368,37 @@ async function tryPlaywright(
       bypassCSP: true,
     });
     const page = await context.newPage();
+
     try {
+      // Step 3: navigation. Try networkidle first (best for SPA), then
+      // fall back to 'load' which is more tolerant on noisy sites.
+      const tGoto = Date.now();
       try {
         await page.goto(url, { waitUntil: 'networkidle', timeout: timeoutMs });
-      } catch {
-        // networkidle is fragile on noisy analytics sites; fall back to load.
+        console.log(
+          `[SPA-FALLBACK] page.goto(networkidle) OK in ${Date.now() - tGoto}ms`,
+        );
+      } catch (gotoErr) {
+        const m =
+          gotoErr instanceof Error ? gotoErr.message : String(gotoErr);
+        console.warn(
+          `[SPA-FALLBACK] networkidle failed (${m}), retrying with waitUntil=load`,
+        );
         await page.goto(url, {
           waitUntil: 'load',
           timeout: Math.max(15000, timeoutMs - 5000),
         });
+        console.log(
+          `[SPA-FALLBACK] page.goto(load) OK in ${Date.now() - tGoto}ms`,
+        );
       }
-      // Give SPAs a moment to hydrate after the initial paint.
+
+      // Step 4: hydration grace + capture.
       await page.waitForTimeout(1500);
       const html = await page.content();
+      console.log(
+        `[SPA-FALLBACK] page.content() captured ${html.length} chars (total Playwright path: ${Date.now() - t0}ms)`,
+      );
       attempts.push(`playwright: OK ${html.length} chars`);
       return html;
     } finally {
@@ -359,6 +407,14 @@ async function tryPlaywright(
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    // Distinct, scary error log so we never fail silently in production.
+    // The cascade above will then try Jina before giving up.
+    console.error(
+      `[SPA-FALLBACK] ❌ ERROR after ${Date.now() - t0}ms: ${msg}`,
+    );
+    if (err instanceof Error && err.stack) {
+      console.error('[SPA-FALLBACK] stack:', err.stack);
+    }
     attempts.push(`playwright: ${msg}`);
     return null;
   } finally {
