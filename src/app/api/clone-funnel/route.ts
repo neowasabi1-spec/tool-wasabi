@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCoreKnowledge } from '@/knowledge/copywriting';
 import { isSpaShell, rescueViaJina, stabilizeClonedHtml } from '@/lib/spa-rescue';
+import { inlineExternalAssets } from '@/lib/inline-assets';
 
 export const maxDuration = 300;
 export const dynamic = 'force-dynamic';
@@ -90,8 +91,12 @@ async function fetchPageWithFallbacks(url: string): Promise<
             // even non-SPA pages with relative img/css URLs break when
             // served from cute-cupcake-XXX.netlify.app instead of the
             // original domain. See src/lib/spa-rescue.ts.
+            // Then inline external stylesheets + fonts so the snapshot
+            // survives source-side changes (Vite hash rotation, Replit
+            // sleep, CORS-restricted asset CDNs). See src/lib/inline-assets.ts.
             const stabilized = stabilizeClonedHtml(html, url);
-            return { ok: true, html: stabilized, method: attempt.name };
+            const inlined = await inlineExternalAssets(stabilized, url);
+            return { ok: true, html: inlined, method: attempt.name };
           }
         } else {
           details.push(`${attempt.name}: empty response (${html.length} chars)`);
@@ -115,8 +120,9 @@ async function fetchPageWithFallbacks(url: string): Promise<
   // stabilizeClonedHtml internally, no need to re-apply here.
   const rescued = await rescueViaJina(url);
   if (rescued) {
-    console.log(`[clone-funnel] jina-proxy rescued SPA: ${rescued.length} html`);
-    return { ok: true, html: rescued, method: 'jina-proxy' };
+    const inlined = await inlineExternalAssets(rescued, url);
+    console.log(`[clone-funnel] jina-proxy rescued SPA: ${inlined.length} html (after asset inline)`);
+    return { ok: true, html: inlined, method: 'jina-proxy' };
   }
   details.push('jina-proxy: rescue returned null');
 

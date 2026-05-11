@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo, use } from 'react';
+import { useState, useEffect, useMemo, useRef, use } from 'react';
 import Link from 'next/link';
 import Header from '@/components/Header';
 import {
@@ -13,20 +13,23 @@ import {
   AlertTriangle,
   XCircle,
   HelpCircle,
-  ChevronDown,
-  ChevronUp,
   Clock,
   AlertCircle,
+  StopCircle,
 } from 'lucide-react';
 import {
-  CHECKPOINT_CATEGORY_LABELS,
-  CHECKPOINT_CATEGORY_DESCRIPTIONS,
   type CheckpointCategory,
   type CheckpointCategoryResult,
+  type CheckpointResults,
   type CheckpointRun,
   type CheckpointFunnel,
 } from '@/types/checkpoint';
 import { getCurrentUserName } from '@/lib/current-user';
+import LiveStepDashboard, {
+  buildSteps,
+  type LiveStep,
+} from '@/components/checkpoint/LiveStepDashboard';
+import FindingsTable from '@/components/checkpoint/FindingsTable';
 
 const CATEGORIES: CheckpointCategory[] = [
   'cro',
@@ -55,7 +58,15 @@ export default function CheckpointDetailPage({
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
-  const [showRaw, setShowRaw] = useState<Record<string, boolean>>({});
+
+  // Live state during an active SSE-driven run.
+  const [liveSteps, setLiveSteps] = useState<LiveStep[]>(() =>
+    buildSteps(CATEGORIES),
+  );
+  const [liveActiveIdx, setLiveActiveIdx] = useState(-1);
+  const [liveResults, setLiveResults] = useState<CheckpointResults>({});
+  const [liveStartedAt, setLiveStartedAt] = useState<number | undefined>();
+  const abortRef = useRef<AbortController | null>(null);
 
   const refetch = async (preserveActive = false) => {
     setLoading(true);
@@ -83,9 +94,22 @@ export default function CheckpointDetailPage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [funnelId]);
 
+  /**
+   * Open the SSE stream and drive the live dashboard. Each event from
+   * the server moves a step from pending → running → done so the user
+   * literally watches the bot work through the queue.
+   */
   const handleRun = async () => {
     setRunning(true);
     setRunError(null);
+    setLiveResults({});
+    setLiveSteps(buildSteps(CATEGORIES));
+    setLiveActiveIdx(-1);
+    setLiveStartedAt(Date.now());
+
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+
     try {
       const res = await fetch(`/api/checkpoint/${funnelId}/run`, {
         method: 'POST',
@@ -93,20 +117,129 @@ export default function CheckpointDetailPage({
         body: JSON.stringify({
           triggeredByName: getCurrentUserName(),
         }),
+        signal: ctrl.signal,
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body?.error ?? `HTTP ${res.status}`);
+
+      if (!res.ok || !res.body) {
+        const text = await res.text().catch(() => '');
+        let message = `HTTP ${res.status}`;
+        try {
+          const parsed = JSON.parse(text);
+          if (parsed?.error) message = parsed.error;
+        } catch {
+          if (text) message = text.slice(0, 300);
+        }
+        throw new Error(message);
       }
-      const payload = (await res.json()) as { id: string };
-      // Reload the full detail so the new run appears at top.
-      await refetch();
-      if (payload.id) setActiveRunId(payload.id);
+
+      // Read SSE events from the body stream. Server frames each event
+      // as `data: <json>\n\n`. Buffer across chunks because reads can
+      // split mid-event.
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        let sep: number;
+        while ((sep = buffer.indexOf('\n\n')) >= 0) {
+          const frame = buffer.slice(0, sep);
+          buffer = buffer.slice(sep + 2);
+          // Each frame may have multiple `data:` lines; concatenate them.
+          const json = frame
+            .split('\n')
+            .filter((l) => l.startsWith('data:'))
+            .map((l) => l.slice(5).trim())
+            .join('');
+          if (!json) continue;
+          try {
+            const evt = JSON.parse(json);
+            handleEvent(evt);
+          } catch (err) {
+            console.warn('[checkpoint stream] bad JSON frame', err, json);
+          }
+        }
+      }
     } catch (err) {
-      setRunError(err instanceof Error ? err.message : String(err));
+      if ((err as Error).name === 'AbortError') {
+        setRunError('Run interrotta dall\'utente.');
+      } else {
+        setRunError(err instanceof Error ? err.message : String(err));
+      }
     } finally {
       setRunning(false);
+      abortRef.current = null;
+      // Reload history so the new run appears in the selector.
+      await refetch(true);
     }
+  };
+
+  const handleEvent = (evt: {
+    phase: string;
+    runId?: string;
+    category?: CheckpointCategory;
+    index?: number;
+    total?: number;
+    result?: CheckpointCategoryResult;
+    status?: string;
+    score_overall?: number | null;
+    results?: CheckpointResults;
+    message?: string;
+  }) => {
+    switch (evt.phase) {
+      case 'opened':
+        if (evt.runId) setActiveRunId(evt.runId);
+        break;
+      case 'category_start':
+        if (typeof evt.index === 'number') {
+          setLiveActiveIdx(evt.index);
+          setLiveSteps((prev) =>
+            prev.map((s, i) =>
+              i === evt.index ? { ...s, state: 'running' } : s,
+            ),
+          );
+        }
+        break;
+      case 'category_done':
+        if (
+          typeof evt.index === 'number' &&
+          evt.category &&
+          evt.result
+        ) {
+          const cat = evt.category;
+          const result = evt.result;
+          setLiveResults((prev) => ({ ...prev, [cat]: result }));
+          setLiveSteps((prev) =>
+            prev.map((s, i) =>
+              i === evt.index
+                ? {
+                    ...s,
+                    state: result.status === 'error' ? 'error' : 'done',
+                    result,
+                  }
+                : s,
+            ),
+          );
+          setLiveActiveIdx(-1);
+        }
+        break;
+      case 'complete':
+        if (evt.results) setLiveResults(evt.results);
+        setLiveActiveIdx(-1);
+        break;
+      case 'error':
+        setRunError(evt.message ?? 'Errore stream sconosciuto');
+        break;
+      default:
+        break;
+    }
+  };
+
+  const handleStop = () => {
+    abortRef.current?.abort();
   };
 
   const activeRun = useMemo(() => {
@@ -115,6 +248,22 @@ export default function CheckpointDetailPage({
       data.runs.find((r) => r.id === activeRunId) ?? data.runs[0] ?? null
     );
   }, [data, activeRunId]);
+
+  // The dashboard always has SOMETHING to show:
+  //   - if a run is in progress, show the live state
+  //   - else if a historical run is selected, show its frozen state
+  //   - else show 5 pending placeholders
+  const dashboardSteps: LiveStep[] = useMemo(() => {
+    if (running) return liveSteps;
+    if (activeRun) return buildSteps(CATEGORIES, activeRun.results);
+    return buildSteps(CATEGORIES);
+  }, [running, liveSteps, activeRun]);
+
+  const dashboardResults: CheckpointResults = useMemo(() => {
+    if (running) return liveResults;
+    if (activeRun) return activeRun.results;
+    return {};
+  }, [running, liveResults, activeRun]);
 
   if (loading && !data) {
     return (
@@ -147,13 +296,13 @@ export default function CheckpointDetailPage({
   }
 
   const { funnel } = data;
+  const overallScore = running
+    ? computeOverall(liveResults)
+    : activeRun?.score_overall ?? null;
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <Header
-        title={funnel.name}
-        subtitle={funnel.url || 'Senza URL'}
-      />
+      <Header title={funnel.name} subtitle={funnel.url || 'Senza URL'} />
 
       <div className="px-6 py-6 space-y-6">
         {/* Top bar */}
@@ -175,26 +324,30 @@ export default function CheckpointDetailPage({
                 <ExternalLink className="w-4 h-4" /> Apri pagina
               </a>
             )}
-            <button
-              onClick={handleRun}
-              disabled={running}
-              className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed"
-            >
-              {running ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  Sto eseguendo le 5 categorie...
-                </>
-              ) : data.runs.length > 0 ? (
-                <>
-                  <RefreshCw className="w-4 h-4" /> Ri-esegui Checkpoint
-                </>
-              ) : (
-                <>
-                  <Play className="w-4 h-4" /> Esegui Checkpoint
-                </>
-              )}
-            </button>
+            {running ? (
+              <button
+                onClick={handleStop}
+                className="inline-flex items-center gap-2 px-4 py-2 bg-red-600 text-white text-sm font-medium rounded-lg hover:bg-red-700"
+              >
+                <StopCircle className="w-4 h-4" />
+                Interrompi
+              </button>
+            ) : (
+              <button
+                onClick={handleRun}
+                className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700"
+              >
+                {data.runs.length > 0 ? (
+                  <>
+                    <RefreshCw className="w-4 h-4" /> Ri-esegui Checkpoint
+                  </>
+                ) : (
+                  <>
+                    <Play className="w-4 h-4" /> Esegui Checkpoint
+                  </>
+                )}
+              </button>
+            )}
           </div>
         </div>
 
@@ -224,8 +377,9 @@ export default function CheckpointDetailPage({
           </span>
         </div>
 
-        {/* History selector */}
-        {data.runs.length > 1 && (
+        {/* History selector — hidden during active runs to keep the
+            dashboard front-and-center. */}
+        {!running && data.runs.length > 1 && (
           <div className="bg-white rounded-lg border border-gray-200 p-3">
             <div className="text-xs text-gray-500 uppercase tracking-wide mb-2">
               Storico run
@@ -248,6 +402,9 @@ export default function CheckpointDetailPage({
                     </span>{' '}
                     · {formatDateTime(r.created_at)} ·{' '}
                     {r.score_overall ?? '–'}/100
+                    {r.triggered_by_name && (
+                      <span className="opacity-70"> · {r.triggered_by_name}</span>
+                    )}
                   </button>
                 );
               })}
@@ -255,278 +412,102 @@ export default function CheckpointDetailPage({
           </div>
         )}
 
-        {!activeRun ? (
+        {/* Empty state when there are no runs yet AND we're not running. */}
+        {!running && !activeRun && data.runs.length === 0 ? (
           <div className="bg-white rounded-lg border border-gray-200 p-12 text-center">
             <HelpCircle className="w-10 h-10 mx-auto text-gray-300" />
             <h3 className="mt-3 font-medium text-gray-700">
               Nessun checkpoint ancora
             </h3>
             <p className="text-sm text-gray-500 mt-1 max-w-md mx-auto">
-              Premi <strong>Esegui Checkpoint</strong> per lanciare l'audit
+              Premi <strong>Esegui Checkpoint</strong> per lanciare l&apos;audit
               su CRO, Coerenza, Tone of Voice, Compliance e Copy Quality.
-              Tipicamente impiega 30-90 secondi.
+              Vedrai il bot lavorare step-by-step.
             </p>
           </div>
         ) : (
-          <CheckpointResultsView run={activeRun} showRaw={showRaw} setShowRaw={setShowRaw} />
+          <>
+            {/* Score banner */}
+            {!running && activeRun && (
+              <ScoreBanner run={activeRun} />
+            )}
+
+            {/* Live / frozen step dashboard */}
+            <LiveStepDashboard
+              steps={dashboardSteps}
+              isRunning={running}
+              activeIndex={liveActiveIdx}
+              startedAt={liveStartedAt}
+            />
+
+            {/* Aggregated findings */}
+            <FindingsTable results={dashboardResults} />
+          </>
         )}
       </div>
     </div>
   );
 }
 
-function CheckpointResultsView({
-  run,
-  showRaw,
-  setShowRaw,
-}: {
-  run: CheckpointRun;
-  showRaw: Record<string, boolean>;
-  setShowRaw: (v: Record<string, boolean>) => void;
-}) {
+function ScoreBanner({ run }: { run: CheckpointRun }) {
   const overall = run.score_overall;
+  const Icon =
+    overall === null
+      ? HelpCircle
+      : overall >= 80
+        ? CheckCircle2
+        : overall >= 50
+          ? AlertTriangle
+          : XCircle;
+  const cls =
+    overall === null
+      ? 'from-gray-50 to-white text-gray-600'
+      : overall >= 80
+        ? 'from-emerald-50 to-white text-emerald-700'
+        : overall >= 50
+          ? 'from-amber-50 to-white text-amber-700'
+          : 'from-red-50 to-white text-red-700';
 
   return (
-    <div className="space-y-4">
-      {/* Aggregate banner */}
-      <div className="bg-white rounded-lg border border-gray-200 p-6">
-        <div className="flex flex-wrap items-center gap-6">
-          <div>
-            <div className="text-xs text-gray-500 uppercase tracking-wide">
-              Score complessivo
-            </div>
-            <div className="text-4xl font-bold mt-1">
-              {overall !== null ? `${overall}` : '–'}
-              <span className="text-lg text-gray-400 font-normal">/100</span>
-            </div>
-            <div className="mt-2">
-              <StatusBadge status={statusFromScore(overall)} />
-            </div>
-          </div>
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-3 flex-1 min-w-[300px]">
-            {CATEGORIES.map((cat) => {
-              const result = run.results?.[cat];
-              return (
-                <div
-                  key={cat}
-                  className="border border-gray-200 rounded-lg p-3"
-                >
-                  <div className="text-xs text-gray-500 uppercase tracking-wide truncate">
-                    {CHECKPOINT_CATEGORY_LABELS[cat]}
-                  </div>
-                  <div className="text-xl font-semibold mt-1">
-                    {result?.score ?? '–'}
-                    <span className="text-xs text-gray-400 font-normal">
-                      /100
-                    </span>
-                  </div>
-                  <StatusBadge
-                    status={result?.status ?? 'skipped'}
-                    compact
-                  />
-                </div>
-              );
-            })}
-          </div>
-        </div>
-        <div className="mt-4 text-xs text-gray-500 flex flex-wrap items-center gap-x-2 gap-y-1">
-          <span className="inline-flex items-center gap-1">
-            <Clock className="w-3 h-3" /> Eseguito {formatDateTime(run.created_at)}
-          </span>
-          {run.completed_at && (
-            <span>
-              · completato {formatDateTime(run.completed_at)} (
-              {durationSec(run.created_at, run.completed_at)}s)
-            </span>
-          )}
-          {run.triggered_by_name && (
-            <span>
-              · da <strong className="text-gray-700">{run.triggered_by_name}</strong>
-            </span>
-          )}
-        </div>
-      </div>
-
-      {/* Per-category cards */}
-      {CATEGORIES.map((cat) => {
-        const result = run.results?.[cat];
-        if (!result) {
-          return (
-            <CategoryCard key={cat} category={cat}>
-              <div className="text-sm text-gray-500 italic">
-                Categoria non eseguita.
-              </div>
-            </CategoryCard>
-          );
-        }
-        const isRawOpen = !!showRaw[cat];
-        return (
-          <CategoryCard key={cat} category={cat} result={result}>
-            <p className="text-sm text-gray-700">{result.summary}</p>
-
-            {result.issues.length > 0 && (
-              <div className="mt-4">
-                <div className="text-xs uppercase text-gray-500 tracking-wide mb-2">
-                  Issues ({result.issues.length})
-                </div>
-                <ul className="space-y-2">
-                  {result.issues.map((iss, i) => (
-                    <li
-                      key={i}
-                      className={`border rounded-md p-3 text-sm ${severityClass(iss.severity)}`}
-                    >
-                      <div className="flex items-start gap-2">
-                        {severityIcon(iss.severity)}
-                        <div className="flex-1 min-w-0">
-                          <div className="font-semibold">{iss.title}</div>
-                          {iss.detail && (
-                            <p className="text-xs mt-1 opacity-90">
-                              {iss.detail}
-                            </p>
-                          )}
-                          {iss.evidence && (
-                            <blockquote className="mt-2 text-xs italic bg-white/60 border-l-2 border-current pl-2 py-1">
-                              {iss.evidence}
-                            </blockquote>
-                          )}
-                        </div>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-
-            {result.suggestions.length > 0 && (
-              <div className="mt-4">
-                <div className="text-xs uppercase text-gray-500 tracking-wide mb-2">
-                  Suggerimenti ({result.suggestions.length})
-                </div>
-                <ul className="space-y-2">
-                  {result.suggestions.map((sug, i) => (
-                    <li
-                      key={i}
-                      className="border border-blue-200 bg-blue-50 rounded-md p-3 text-sm text-blue-900"
-                    >
-                      <div className="font-semibold">→ {sug.title}</div>
-                      {sug.detail && (
-                        <p className="text-xs mt-1 opacity-90">{sug.detail}</p>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-
-            {(result.rawReply || result.error) && (
-              <div className="mt-4">
-                <button
-                  onClick={() =>
-                    setShowRaw({ ...showRaw, [cat]: !isRawOpen })
-                  }
-                  className="text-xs text-gray-500 hover:text-gray-700 inline-flex items-center gap-1"
-                >
-                  {isRawOpen ? (
-                    <ChevronUp className="w-3 h-3" />
-                  ) : (
-                    <ChevronDown className="w-3 h-3" />
-                  )}
-                  {isRawOpen ? 'Nascondi' : 'Mostra'} raw AI reply
-                </button>
-                {isRawOpen && (
-                  <pre className="mt-2 text-xs bg-gray-50 border border-gray-200 rounded p-3 overflow-x-auto whitespace-pre-wrap max-h-60">
-                    {result.error ?? result.rawReply}
-                  </pre>
-                )}
-              </div>
-            )}
-          </CategoryCard>
-        );
-      })}
-    </div>
-  );
-}
-
-function CategoryCard({
-  category,
-  result,
-  children,
-}: {
-  category: CheckpointCategory;
-  result?: CheckpointCategoryResult;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
-      <div className="px-5 py-3 border-b border-gray-100 bg-gray-50 flex items-center justify-between">
-        <div>
-          <div className="font-semibold text-gray-900 flex items-center gap-2">
-            {CHECKPOINT_CATEGORY_LABELS[category]}
-            {result && <StatusBadge status={result.status} compact />}
-            {result?.score !== null && result?.score !== undefined && (
-              <span className="text-sm text-gray-400">
-                {result.score}/100
-              </span>
-            )}
-          </div>
-          <div className="text-xs text-gray-500 mt-0.5">
-            {CHECKPOINT_CATEGORY_DESCRIPTIONS[category]}
-          </div>
-        </div>
-      </div>
-      <div className="p-5">{children}</div>
-    </div>
-  );
-}
-
-function StatusBadge({
-  status,
-  compact,
-}: {
-  status: 'pass' | 'warn' | 'fail' | 'error' | 'skipped';
-  compact?: boolean;
-}) {
-  const map: Record<typeof status, { label: string; cls: string; Icon: typeof CheckCircle2 }> = {
-    pass: { label: 'PASS', cls: 'bg-emerald-100 text-emerald-700 border-emerald-200', Icon: CheckCircle2 },
-    warn: { label: 'WARN', cls: 'bg-amber-100 text-amber-700 border-amber-200', Icon: AlertTriangle },
-    fail: { label: 'FAIL', cls: 'bg-red-100 text-red-700 border-red-200', Icon: XCircle },
-    error: { label: 'ERROR', cls: 'bg-gray-100 text-gray-600 border-gray-200', Icon: AlertCircle },
-    skipped: { label: 'SKIP', cls: 'bg-gray-50 text-gray-400 border-gray-200', Icon: HelpCircle },
-  };
-  const { label, cls, Icon } = map[status];
-  return (
-    <span
-      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border font-medium ${cls} ${compact ? 'text-[10px]' : 'text-xs'}`}
+    <div
+      className={`bg-gradient-to-r ${cls} rounded-xl border border-gray-200 p-5 flex flex-wrap items-center gap-6`}
     >
-      <Icon className={compact ? 'w-2.5 h-2.5' : 'w-3 h-3'} />
-      {label}
-    </span>
+      <Icon className="w-10 h-10 shrink-0" />
+      <div>
+        <div className="text-xs uppercase tracking-wide text-gray-500">
+          Score complessivo · ultima run
+        </div>
+        <div className="text-4xl font-bold">
+          {overall !== null ? overall : '–'}
+          <span className="text-base text-gray-400 font-normal">/100</span>
+        </div>
+      </div>
+      <div className="text-xs text-gray-500 flex flex-col gap-1 ml-auto">
+        <span className="inline-flex items-center gap-1">
+          <Clock className="w-3 h-3" />
+          Eseguito {formatDateTime(run.created_at)}
+        </span>
+        {run.completed_at && (
+          <span>
+            Completato in {durationSec(run.created_at, run.completed_at)}s
+          </span>
+        )}
+        {run.triggered_by_name && (
+          <span>
+            Da <strong className="text-gray-700">{run.triggered_by_name}</strong>
+          </span>
+        )}
+      </div>
+    </div>
   );
 }
 
-function severityClass(s: 'critical' | 'warning' | 'info'): string {
-  if (s === 'critical')
-    return 'border-red-300 bg-red-50 text-red-900';
-  if (s === 'warning')
-    return 'border-amber-300 bg-amber-50 text-amber-900';
-  return 'border-blue-200 bg-blue-50 text-blue-900';
-}
-
-function severityIcon(s: 'critical' | 'warning' | 'info') {
-  if (s === 'critical')
-    return <XCircle className="w-4 h-4 mt-0.5 shrink-0 text-red-600" />;
-  if (s === 'warning')
-    return <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-amber-600" />;
-  return <HelpCircle className="w-4 h-4 mt-0.5 shrink-0 text-blue-600" />;
-}
-
-function statusFromScore(
-  score: number | null,
-): 'pass' | 'warn' | 'fail' | 'error' | 'skipped' {
-  if (score === null) return 'skipped';
-  if (score >= 80) return 'pass';
-  if (score >= 50) return 'warn';
-  return 'fail';
+function computeOverall(results: CheckpointResults): number | null {
+  const scores = Object.values(results)
+    .map((r) => r?.score)
+    .filter((s): s is number => typeof s === 'number');
+  if (scores.length === 0) return null;
+  return Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
 }
 
 function formatDateTime(iso: string): string {

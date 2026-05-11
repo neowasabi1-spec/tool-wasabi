@@ -34,24 +34,27 @@ const ALL_CATEGORIES: CheckpointCategory[] = [
   'copy',
 ];
 
+const sseEncoder = new TextEncoder();
+function sseEvent(data: Record<string, unknown>): Uint8Array {
+  return sseEncoder.encode(`data: ${JSON.stringify(data)}\n\n`);
+}
+
 /**
- * POST /api/checkpoint/[id]/run
+ * POST /api/checkpoint/[id]/run  (Server-Sent Events)
  *
  * Body (optional):
- *   {
- *     categories?: CheckpointCategory[],   // default: all
- *     brandProfile?: string,                // override row value
- *     productType?: 'supplement'|'digital'|'both',
- *     triggeredByName?: string,             // who clicked "Run" (audit log)
- *     triggeredByUserId?: string,           // future users.id
- *   }
+ *   { categories?, brandProfile?, productType?, triggeredByName?, triggeredByUserId? }
  *
- * Lifecycle:
- *   1. Resolve target funnel from checkpoint_funnels.
- *   2. Fetch live HTML.
- *   3. Insert a row in funnel_checkpoints with status='running'.
- *   4. Run categories sequentially.
- *   5. Update the run row + sync the last_run_* snapshot on the parent funnel.
+ * Stream of `data:` events:
+ *   { phase: 'opened',          runId, categories }
+ *   { phase: 'category_start',  category, index, total }
+ *   { phase: 'category_done',   category, index, total, result }
+ *   { phase: 'complete',        runId, status, score_overall, results }
+ *   { phase: 'error',           message }       (fatal, terminates the stream)
+ *
+ * The DB row is inserted right after the 'opened' event and updated
+ * incrementally after each category so a refresh during a run still
+ * shows partial results.
  */
 export async function POST(
   req: NextRequest,
@@ -91,7 +94,9 @@ export async function POST(
   const triggeredByName = (body.triggeredByName ?? '').trim().slice(0, 120) || null;
   const triggeredByUserId = body.triggeredByUserId?.trim() || null;
 
-  // 1) Live fetch the URL.
+  // Pre-flight HTML fetch must succeed before we even open the row,
+  // otherwise we'd pollute history with empty failed runs every time
+  // the user mistypes a URL.
   const html = await fetchFunnelHtml(funnel.url);
   if (!html) {
     return NextResponse.json(
@@ -104,7 +109,6 @@ export async function POST(
   }
   const auditText = htmlToAuditText(html);
 
-  // 2) Open the run row.
   const { data: insertedRow, error: insertErr } = await supabase
     .from('funnel_checkpoints')
     .insert({
@@ -128,96 +132,172 @@ export async function POST(
   }
   const checkpointId = insertedRow.id as string;
 
-  // 3) Run categories sequentially.
-  const results: CheckpointResults = {};
-  let errored = 0;
-  let succeeded = 0;
+  // The work happens inside the stream so each step yields output the
+  // moment it finishes — drives the live dashboard on the frontend.
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const send = (payload: Record<string, unknown>) => {
+        try {
+          controller.enqueue(sseEvent(payload));
+        } catch {
+          // Client disconnected; further sends will throw too. Bail
+          // out — the DB has the partial row so the user can refresh
+          // and see the (still-running) state.
+        }
+      };
 
-  for (const cat of categories) {
-    try {
-      if (cat === 'compliance') {
-        results[cat] = await runCompliance({
-          html,
-          url: funnel.url,
-          productType,
-          requestUrl: req.url,
-        });
-      } else {
-        results[cat] = await runClaudeCategory({
+      send({
+        phase: 'opened',
+        runId: checkpointId,
+        categories,
+        funnelName: funnel.name,
+        funnelUrl: funnel.url,
+      });
+
+      const results: CheckpointResults = {};
+      let errored = 0;
+      let succeeded = 0;
+      const total = categories.length;
+
+      for (let i = 0; i < categories.length; i++) {
+        const cat = categories[i];
+        send({
+          phase: 'category_start',
           category: cat,
-          funnelName: funnel.name,
-          funnelUrl: funnel.url,
-          pageText: auditText,
-          brandProfile,
+          index: i,
+          total,
+        });
+
+        try {
+          if (cat === 'compliance') {
+            results[cat] = await runCompliance({
+              html,
+              url: funnel.url,
+              productType,
+              requestUrl: req.url,
+            });
+          } else {
+            results[cat] = await runClaudeCategory({
+              category: cat,
+              funnelName: funnel.name,
+              funnelUrl: funnel.url,
+              pageText: auditText,
+              brandProfile,
+            });
+          }
+          if (results[cat]?.status === 'error') errored++;
+          else succeeded++;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.error(`[checkpoint/run] category ${cat} crashed:`, msg);
+          results[cat] = {
+            score: null,
+            status: 'error',
+            summary: `Audit failed: ${msg}`,
+            issues: [],
+            suggestions: [],
+            error: msg,
+          };
+          errored++;
+        }
+
+        // Persist incrementally so refreshes during a long run see
+        // partial state. We only update the JSONB blob + the per-cat
+        // score column; the global aggregate is recomputed at the end.
+        await persistCategory(checkpointId, results, cat);
+
+        send({
+          phase: 'category_done',
+          category: cat,
+          index: i,
+          total,
+          result: results[cat],
         });
       }
-      if (results[cat]?.status === 'error') errored++;
-      else succeeded++;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[checkpoint/run] category ${cat} crashed:`, msg);
-      results[cat] = {
-        score: null,
-        status: 'error',
-        summary: `Audit failed: ${msg}`,
-        issues: [],
-        suggestions: [],
-        error: msg,
-      };
-      errored++;
-    }
-  }
 
-  // 4) Aggregate score.
-  const numericScores = Object.values(results)
-    .map((r) => r?.score)
-    .filter((s): s is number => typeof s === 'number');
-  const overall =
-    numericScores.length > 0
-      ? Math.round(
-          numericScores.reduce((a, b) => a + b, 0) / numericScores.length,
-        )
-      : null;
+      const numericScores = Object.values(results)
+        .map((r) => r?.score)
+        .filter((s): s is number => typeof s === 'number');
+      const overall =
+        numericScores.length > 0
+          ? Math.round(
+              numericScores.reduce((a, b) => a + b, 0) / numericScores.length,
+            )
+          : null;
+      const finalStatus: CheckpointRunStatus =
+        succeeded === 0 ? 'failed' : errored === 0 ? 'completed' : 'partial';
+      const completedAt = new Date().toISOString();
 
-  const finalStatus: CheckpointRunStatus =
-    succeeded === 0 ? 'failed' : errored === 0 ? 'completed' : 'partial';
-  const completedAt = new Date().toISOString();
+      const { error: updErr } = await supabase
+        .from('funnel_checkpoints')
+        .update({
+          score_overall: overall,
+          status: finalStatus,
+          completed_at: completedAt,
+        })
+        .eq('id', checkpointId);
+      if (updErr) {
+        console.error('[checkpoint/run] final update failed:', updErr.message);
+      }
 
-  // 5) Persist final state on the run row.
-  const { error: updErr } = await supabase
-    .from('funnel_checkpoints')
-    .update({
-      results,
-      score_cro: results.cro?.score ?? null,
-      score_coherence: results.coherence?.score ?? null,
-      score_tov: results.tov?.score ?? null,
-      score_compliance: results.compliance?.score ?? null,
-      score_copy: results.copy?.score ?? null,
-      score_overall: overall,
-      status: finalStatus,
-      completed_at: completedAt,
-    })
-    .eq('id', checkpointId);
+      await syncLastRunSnapshot({
+        funnelId: funnel.id,
+        runId: checkpointId,
+        scoreOverall: overall,
+        status: finalStatus,
+        ranAt: completedAt,
+      });
 
-  if (updErr) {
-    console.error('[checkpoint/run] update failed:', updErr.message);
-  }
+      send({
+        phase: 'complete',
+        runId: checkpointId,
+        status: finalStatus,
+        score_overall: overall,
+        results,
+      });
 
-  // 6) Sync denormalised snapshot on the parent funnel.
-  await syncLastRunSnapshot({
-    funnelId: funnel.id,
-    runId: checkpointId,
-    scoreOverall: overall,
-    status: finalStatus,
-    ranAt: completedAt,
+      controller.close();
+    },
   });
 
-  return NextResponse.json({
-    id: checkpointId,
-    status: finalStatus,
-    score_overall: overall,
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    },
+  });
+}
+
+/**
+ * Persist a single category's result + its dedicated score column.
+ * The JSONB is replaced wholesale (Supabase JS doesn't expose a
+ * jsonb_set helper) which is fine for our payload size.
+ */
+async function persistCategory(
+  checkpointId: string,
+  results: CheckpointResults,
+  cat: CheckpointCategory,
+): Promise<void> {
+  const scoreCol: Record<CheckpointCategory, string> = {
+    cro: 'score_cro',
+    coherence: 'score_coherence',
+    tov: 'score_tov',
+    compliance: 'score_compliance',
+    copy: 'score_copy',
+  };
+  const update: Record<string, unknown> = {
     results,
-  });
+    [scoreCol[cat]]: results[cat]?.score ?? null,
+  };
+  const { error } = await supabase
+    .from('funnel_checkpoints')
+    .update(update)
+    .eq('id', checkpointId);
+  if (error) {
+    console.warn(`[checkpoint/run] partial update for ${cat}: ${error.message}`);
+  }
 }
 
 async function runClaudeCategory(args: {
