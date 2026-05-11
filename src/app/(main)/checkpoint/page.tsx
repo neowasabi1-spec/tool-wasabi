@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
+import { useSearchParams, useRouter } from 'next/navigation';
 import Header from '@/components/Header';
 import {
   ShieldCheck,
@@ -22,6 +23,7 @@ import {
   User as UserIcon,
   Pencil,
   Check,
+  Sparkles,
 } from 'lucide-react';
 import type {
   CheckpointFunnel,
@@ -83,6 +85,32 @@ function shortDomain(url: string): string {
 type StatusFilter = 'all' | 'never' | 'pass' | 'warn' | 'fail';
 
 export default function CheckpointPage() {
+  const searchParams = useSearchParams();
+  const router = useRouter();
+
+  // Track which IDs were just imported via the Projects page modal so
+  // we can surface a banner + faint highlight in the table.
+  const importedIds = useMemo(() => {
+    const raw = searchParams?.get('imported') ?? '';
+    return raw
+      ? raw
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : [];
+  }, [searchParams]);
+  const skippedCount = useMemo(() => {
+    const raw = searchParams?.get('skipped') ?? '';
+    const n = parseInt(raw, 10);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }, [searchParams]);
+  const [bannerDismissed, setBannerDismissed] = useState(false);
+  const dismissBanner = () => {
+    setBannerDismissed(true);
+    // Strip the query params so a refresh doesn't re-show the banner.
+    router.replace('/checkpoint');
+  };
+
   const [funnels, setFunnels] = useState<CheckpointFunnel[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -244,6 +272,40 @@ export default function CheckpointPage() {
       />
 
       <div className="px-6 py-6 space-y-6">
+        {/* Import-success banner — shown after a "Checkpoint" import
+            from the Projects page redirects here. */}
+        {!bannerDismissed && (importedIds.length > 0 || skippedCount > 0) && (
+          <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-4 py-3 flex items-start gap-3">
+            <Sparkles className="w-5 h-5 text-emerald-600 mt-0.5 flex-shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-emerald-900">
+                {importedIds.length > 0
+                  ? `${importedIds.length} pagina${importedIds.length === 1 ? '' : 'e'} importata${importedIds.length === 1 ? '' : 'e'} dal progetto.`
+                  : 'Import completato.'}
+                {skippedCount > 0 && (
+                  <span className="text-emerald-700 font-normal">
+                    {' '}
+                    {skippedCount} ignorat{skippedCount === 1 ? 'a' : 'e'} (URL
+                    duplicat{skippedCount === 1 ? 'o' : 'i'} o non valid
+                    {skippedCount === 1 ? 'o' : 'i'}).
+                  </span>
+                )}
+              </p>
+              <p className="text-xs text-emerald-700 mt-0.5">
+                Ora puoi avviare il checkpoint su una singola pagina cliccandola
+                qui sotto.
+              </p>
+            </div>
+            <button
+              onClick={dismissBanner}
+              className="p-1 text-emerald-700 hover:bg-emerald-100 rounded"
+              title="Chiudi"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
         {/* Stats strip */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <StatCard label="Totale" value={stats.total} />
@@ -383,10 +445,16 @@ export default function CheckpointPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {filtered.map((f) => (
+                {filtered.map((f) => {
+                  const justImported = importedIds.includes(f.id);
+                  return (
                   <tr
                     key={f.id}
-                    className="hover:bg-gray-50 transition-colors"
+                    className={`transition-colors ${
+                      justImported
+                        ? 'bg-emerald-50/60 hover:bg-emerald-50'
+                        : 'hover:bg-gray-50'
+                    }`}
                   >
                     <td className="px-4 py-3">
                       <div className="font-medium text-gray-900 truncate max-w-[420px]">
@@ -440,7 +508,8 @@ export default function CheckpointPage() {
                       </div>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>

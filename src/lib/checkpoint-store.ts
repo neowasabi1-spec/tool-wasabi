@@ -108,6 +108,91 @@ export async function deleteFunnel(
   return { ok: true };
 }
 
+/**
+ * Batch import multiple funnels (typically from a project's funnel
+ * steps). Each item is validated like `createFunnel`. Items that are
+ * either invalid or already present (same URL within the same project)
+ * are returned in `skipped` instead of `created`, so the caller can
+ * surface a clean "X imported, Y skipped" summary.
+ */
+export async function createFunnelsBatch(
+  items: CreateCheckpointFunnelInput[],
+): Promise<{
+  created: CheckpointFunnel[];
+  skipped: { input: CreateCheckpointFunnelInput; reason: string }[];
+}> {
+  const created: CheckpointFunnel[] = [];
+  const skipped: { input: CreateCheckpointFunnelInput; reason: string }[] = [];
+
+  // Pre-load existing URLs scoped per project so we can dedup before
+  // hitting the DB (cheaper + clearer "skipped" reasons for the user).
+  const projectIds = Array.from(
+    new Set(items.map((i) => i.project_id).filter((p): p is string => !!p)),
+  );
+  const existingByProject = new Map<string, Set<string>>();
+  if (projectIds.length > 0) {
+    const { data, error } = await supabase
+      .from('checkpoint_funnels')
+      .select('project_id,url')
+      .in('project_id', projectIds);
+    if (!error && data) {
+      for (const row of data as { project_id: string; url: string }[]) {
+        if (!existingByProject.has(row.project_id)) {
+          existingByProject.set(row.project_id, new Set());
+        }
+        existingByProject.get(row.project_id)!.add(row.url);
+      }
+    }
+  }
+
+  for (const item of items) {
+    const trimmedUrl = (item.url ?? '').trim();
+    if (!trimmedUrl) {
+      skipped.push({ input: item, reason: 'URL mancante' });
+      continue;
+    }
+    // Cheap dedup before round-tripping to the DB.
+    if (item.project_id) {
+      const existing = existingByProject.get(item.project_id);
+      // Try both the raw URL and a normalised version so dups still
+      // catch cases where the user typed the URL with/without trailing
+      // slash etc. Normalisation logic mirrors createFunnel().
+      let normalised: string | null = null;
+      try {
+        const u = new URL(
+          trimmedUrl.startsWith('http') ? trimmedUrl : `https://${trimmedUrl}`,
+        );
+        normalised = u.toString();
+      } catch {
+        /* invalid URL — let createFunnel surface the proper error */
+      }
+      if (
+        existing &&
+        (existing.has(trimmedUrl) ||
+          (normalised !== null && existing.has(normalised)))
+      ) {
+        skipped.push({ input: item, reason: 'già presente nel progetto' });
+        continue;
+      }
+    }
+
+    const result = await createFunnel(item);
+    if ('error' in result) {
+      skipped.push({ input: item, reason: result.error });
+    } else {
+      created.push(result);
+      if (item.project_id) {
+        if (!existingByProject.has(item.project_id)) {
+          existingByProject.set(item.project_id, new Set());
+        }
+        existingByProject.get(item.project_id)!.add(result.url);
+      }
+    }
+  }
+
+  return { created, skipped };
+}
+
 /** Update the denormalised "last run" snapshot on the parent funnel.
  *  Called by the run endpoint after a checkpoint completes. */
 export async function syncLastRunSnapshot(args: {

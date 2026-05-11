@@ -7,6 +7,7 @@ import { supabase } from '@/lib/supabase';
 import {
   Plus, FolderOpen, ChevronRight, ChevronDown, Layers,
   Trash2, Search, Save, X, Upload, Loader2, FileText, Eye,
+  ShieldCheck,
 } from 'lucide-react';
 import {
   parseSectionData, buildSectionBlob, formatFileSize,
@@ -17,6 +18,7 @@ import {
   type BrandPalette,
 } from '@/lib/brand-colors';
 import { classifyFile } from '@/lib/section-routing';
+import ImportCheckpointModal from '@/components/projects/ImportCheckpointModal';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -71,6 +73,69 @@ function extractRows(val: any): FunnelRow[] {
 
 function emptyRow(): FunnelRow {
   return { step: '', url: '', price: '', offerType: '' };
+}
+
+interface DetectedUrl {
+  name: string;
+  url: string;
+  source: 'front_end' | 'back_end' | 'domain';
+}
+
+/**
+ * Build the URL list shown by the "Import to Checkpoint" modal.
+ * Pulls from front_end + back_end rows first (with their step labels)
+ * and falls back to project.domain when nothing else is available.
+ * Dedupes on URL so the same page isn't imported twice if it appears
+ * in both tables.
+ */
+function detectFunnelUrls(project: Project): DetectedUrl[] {
+  const out: DetectedUrl[] = [];
+  const seen = new Set<string>();
+
+  const ingest = (
+    rows: FunnelRow[],
+    source: 'front_end' | 'back_end',
+  ) => {
+    for (const r of rows) {
+      const url = (r.url || '').trim();
+      if (!url) continue;
+      if (seen.has(url)) continue;
+      seen.add(url);
+      out.push({
+        name:
+          (r.step || '').trim() ||
+          safeHostname(url) ||
+          `Step ${out.length + 1}`,
+        url,
+        source,
+      });
+    }
+  };
+
+  ingest(extractRows(project.front_end), 'front_end');
+  ingest(extractRows(project.back_end), 'back_end');
+
+  // Final fallback: the project's domain field.
+  const domain = (project.domain || '').trim();
+  if (domain && !seen.has(domain)) {
+    seen.add(domain);
+    out.push({
+      name: project.name || safeHostname(domain) || 'Homepage',
+      url: domain,
+      source: 'domain',
+    });
+  }
+
+  return out;
+}
+
+function safeHostname(url: string): string {
+  try {
+    const u = new URL(url.startsWith('http') ? url : `https://${url}`);
+    return u.hostname.replace(/^www\./, '');
+  } catch {
+    return '';
+  }
 }
 
 // ─── File parsing helpers ────────────────────────────────────────────────────
@@ -960,6 +1025,7 @@ export default function ProjectsPage() {
   const [adding, setAdding] = useState(false);
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
+  const [checkpointTarget, setCheckpointTarget] = useState<Project | null>(null);
 
   useEffect(() => {
     loadProjects();
@@ -1217,6 +1283,20 @@ export default function ProjectsPage() {
                         {project.status}
                       </span>
 
+                      {/* Checkpoint button — imports the project's
+                          funnel pages into the audit library. */}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setCheckpointTarget(project);
+                        }}
+                        className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-medium rounded-lg transition-colors"
+                        title="Importa le pagine di questo progetto nel Checkpoint"
+                      >
+                        <ShieldCheck className="w-3.5 h-3.5" />
+                        Checkpoint
+                      </button>
+
                       {/* Flows button */}
                       <Link
                         href={'/projects/' + project.id}
@@ -1253,6 +1333,16 @@ export default function ProjectsPage() {
           </div>
         )}
       </div>
+
+      {/* Import to Checkpoint modal — opened by the green
+          "Checkpoint" button on each project card. */}
+      <ImportCheckpointModal
+        open={checkpointTarget !== null}
+        onClose={() => setCheckpointTarget(null)}
+        projectId={checkpointTarget?.id ?? ''}
+        projectName={checkpointTarget?.name ?? ''}
+        detectedUrls={checkpointTarget ? detectFunnelUrls(checkpointTarget) : []}
+      />
     </div>
   );
 }
