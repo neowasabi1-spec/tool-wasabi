@@ -75,6 +75,13 @@ export default function CheckpointDetailPage({
     attempts: string[];
     error: string | null;
     htmlPreview: string;
+    env?: {
+      NETLIFY: string | null;
+      VERCEL: string | null;
+      AWS_LAMBDA_FUNCTION_NAME: string | null;
+      NODE_VERSION: string;
+      isServerless: boolean;
+    };
   }
   const [diag, setDiag] = useState<DiagResult | null>(null);
   const [diagLoading, setDiagLoading] = useState(false);
@@ -628,6 +635,21 @@ export default function CheckpointDetailPage({
                       </>
                     )}
                   </div>
+
+                  {diag.env && (
+                    <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-xs">
+                      <div className="font-semibold text-blue-900 mb-1">
+                        Ambiente:{' '}
+                        {diag.env.isServerless
+                          ? 'serverless (Netlify/Lambda)'
+                          : 'locale (npm run dev)'}
+                      </div>
+                      <div className="text-blue-800 font-mono">
+                        NETLIFY={String(diag.env.NETLIFY)} | NODE=
+                        {diag.env.NODE_VERSION}
+                      </div>
+                    </div>
+                  )}
 
                   {diag.attempts.length > 0 && (
                     <div>

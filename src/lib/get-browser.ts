@@ -87,17 +87,49 @@ export async function launchBrowser(options?: {
   args?: string[];
 }): Promise<Browser> {
   if (IS_SERVERLESS) {
-    const sparticuz = (await import('@sparticuz/chromium-min')).default;
-    const executablePath = await getServerlessExecutablePath();
+    const t0 = Date.now();
     console.log(
-      `[get-browser] Launching serverless Chromium via @sparticuz/chromium-min (executablePath=${executablePath})`,
+      `[get-browser] SERVERLESS env detected (NETLIFY=${process.env.NETLIFY ?? 'unset'} VERCEL=${process.env.VERCEL ?? 'unset'} AWS_LAMBDA_FUNCTION_NAME=${process.env.AWS_LAMBDA_FUNCTION_NAME ?? 'unset'}) — resolving @sparticuz/chromium-min…`,
+    );
+    let sparticuz: { args: string[]; executablePath: (url?: string) => Promise<string> };
+    try {
+      sparticuz = (await import('@sparticuz/chromium-min')).default as unknown as typeof sparticuz;
+    } catch (err) {
+      console.error(
+        '[get-browser] FATAL: @sparticuz/chromium-min not present in function bundle. Check netlify.toml [functions] external_node_modules and included_files.',
+        err,
+      );
+      throw err;
+    }
+    let executablePath: string;
+    try {
+      executablePath = await getServerlessExecutablePath();
+    } catch (err) {
+      console.error(
+        `[get-browser] FATAL: failed to resolve Chromium binary from remote tar (${REMOTE_TAR_URL}). Likely cause: outbound network blocked, /tmp full, or download timed out.`,
+        err,
+      );
+      throw err;
+    }
+    console.log(
+      `[get-browser] Chromium resolved in ${Date.now() - t0}ms (executablePath=${executablePath}) — launching…`,
     );
 
-    return chromium.launch({
-      args: sparticuz.args,
-      executablePath,
-      headless: true,
-    });
+    try {
+      const browser = await chromium.launch({
+        args: sparticuz.args,
+        executablePath,
+        headless: true,
+      });
+      console.log(`[get-browser] Browser launched in ${Date.now() - t0}ms total`);
+      return browser;
+    } catch (err) {
+      console.error(
+        '[get-browser] FATAL: chromium.launch failed in serverless. Common causes: (1) /tmp out of space, (2) sandbox issue (sparticuz.args missing --no-sandbox), (3) memory limit hit (Netlify Functions default 1024MB — Chromium needs ~512MB).',
+        err,
+      );
+      throw err;
+    }
   }
 
   console.log('[get-browser] Launching local Chromium (system playwright-core)');

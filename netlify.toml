@@ -10,5 +10,27 @@
   NODE_VERSION = "20"
   NODE_OPTIONS = "--max-old-space-size=6144"
 
+# Default per TUTTE le Netlify Functions generate da @netlify/plugin-nextjs.
+# Il plugin avvolge ogni route Next.js in una unica function chiamata
+# `___netlify-server-handler`. Senza questi due pezzi:
+# - external_node_modules: @sparticuz/chromium-min e playwright-core
+#   restano fuori dal bundle (richiesto perché serverComponentsExternalPackages
+#   in next.config.js li tratta come "external" lato Next, ma Netlify
+#   ha la sua propria fase di bundling con esbuild che li toglie).
+# - included_files: forza l'inclusione del codice JS di chromium-min nel
+#   working directory della function (il binario Chromium NON viene
+#   bundleato, viene scaricato a runtime dal remote tar URL).
+[functions]
+  external_node_modules = ["@sparticuz/chromium-min", "playwright-core"]
+  included_files = ["node_modules/@sparticuz/chromium-min/**"]
+
+# Override timeout solo per la function unica del Next adapter, così le
+# route con maxDuration alto (clone/swipe/checkpoint/diagnose-fetch) hanno
+# spazio per scaricare Chromium + lanciarlo + navigare. Richiede piano
+# Pro+ su Netlify per superare i 26 s. Le altre function restano sul
+# default — non rallentiamo niente, alziamo solo il tetto disponibile.
+[functions."___netlify-server-handler"]
+  timeout = 120
+
 [[plugins]]
   package = "@netlify/plugin-nextjs"

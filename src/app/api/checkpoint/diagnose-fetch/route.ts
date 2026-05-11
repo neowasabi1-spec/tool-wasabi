@@ -32,8 +32,24 @@ export async function POST(req: NextRequest) {
   const fetched = await fetchHtmlSmart(url, {
     mode: 'full',
     fetchTimeoutMs: 20000,
-    playwrightTimeoutMs: 30000,
+    playwrightTimeoutMs: 45000,
   });
+
+  // Surface env-level info so the user can see, from the UI, whether
+  // they are hitting a Netlify Function vs local dev — and which
+  // Chromium-related env vars are set.
+  const env = {
+    NETLIFY: process.env.NETLIFY ?? null,
+    VERCEL: process.env.VERCEL ?? null,
+    AWS_LAMBDA_FUNCTION_NAME: process.env.AWS_LAMBDA_FUNCTION_NAME ?? null,
+    NODE_VERSION: process.version,
+    isServerless:
+      !!process.env.VERCEL ||
+      !!process.env.AWS_LAMBDA_FUNCTION_NAME ||
+      (!!process.env.NETLIFY &&
+        !process.env.NETLIFY_LOCAL &&
+        !process.env.NETLIFY_DEV),
+  };
 
   return NextResponse.json({
     ok: fetched.ok,
@@ -44,5 +60,6 @@ export async function POST(req: NextRequest) {
     attempts: fetched.attempts,
     error: fetched.error ?? null,
     htmlPreview: fetched.html.slice(0, 1500),
+    env,
   });
 }
