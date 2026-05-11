@@ -47,9 +47,13 @@ interface DetailResponse {
 export default function CheckpointDetailPage({
   params,
 }: {
-  params: Promise<{ id: string }>;
+  params: { id: string } | Promise<{ id: string }>;
 }) {
-  const { id: funnelId } = use(params);
+  // Next.js 14 hands a plain object here; Next.js 15 will hand a
+  // Promise. Calling `use()` on a non-Promise throws React #438, so
+  // we guard explicitly.
+  const resolvedParams = params instanceof Promise ? use(params) : params;
+  const funnelId = resolvedParams.id;
 
   const [data, setData] = useState<DetailResponse | null>(null);
   const [loading, setLoading] = useState(true);
