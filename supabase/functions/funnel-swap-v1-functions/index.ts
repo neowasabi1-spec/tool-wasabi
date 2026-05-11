@@ -39,11 +39,27 @@ const SPA_FRAMEWORK_MARKERS = [
   '<noscript>this website requires javascript',
 ]
 
-function looksLikeSpaShell(html: string, sizeThreshold = 10000): boolean {
+function hasContentTagsLower(lower: string): boolean {
+  if (/<p[\s>]/.test(lower)) return true
+  if (/<h[1-6][\s>]/.test(lower)) return true
+  if (/<article[\s>]/.test(lower)) return true
+  if (/<section[\s>]/.test(lower)) return true
+  if (/<main[\s>]/.test(lower)) return true
+  return false
+}
+
+function looksLikeSpaShell(html: string, sizeThreshold = 15000): boolean {
   if (!html || html.length < 100) return true
   const lower = html.toLowerCase()
   for (const marker of SPA_FRAMEWORK_MARKERS) {
     if (lower.includes(marker)) return true
+  }
+  // Vite / Rollup signature, only flag when the body has no real content tags.
+  if (
+    /src=["']\/assets\/index-[A-Za-z0-9_-]+\.(?:js|mjs)["']/.test(lower) &&
+    !hasContentTagsLower(lower)
+  ) {
+    return true
   }
   const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i)
   const body = bodyMatch ? bodyMatch[1] : html
@@ -58,6 +74,9 @@ function looksLikeSpaShell(html: string, sizeThreshold = 10000): boolean {
     .trim()
   if (html.length < sizeThreshold && visibleText.length < 200) return true
   if (visibleText.length < 200) return true
+  // Last-resort: no content tags at all → almost certainly SPA waiting
+  // for client-side hydration.
+  if (!hasContentTagsLower(lower)) return true
   return false
 }
 

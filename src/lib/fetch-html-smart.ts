@@ -59,8 +59,9 @@ export interface FetchHtmlOptions {
   /** Additional Accept header (rarely needed). */
   accept?: string;
   /** Extra threshold under which we treat the body as SPA shell.
-   *  Defaults to 10000 to match the original spec
-   *  (`<10KB → likely React/Vue/Next shell`). */
+   *  Defaults to 15000 — observed shell sizes from Vite/CRA/Next
+   *  static-export pages routinely sit in the 10-15KB range due to
+   *  inlined preamble scripts. */
   spaSizeThreshold?: number;
   /** Disable the Playwright step even in 'full' mode. Used when the
    *  caller has already rendered the page elsewhere. */
@@ -85,18 +86,22 @@ const DEFAULT_ACCEPT =
  */
 export function looksLikeSpaShell(
   html: string,
-  sizeThreshold = 10000,
+  sizeThreshold = 15000,
 ): boolean {
   if (!html) return true;
   const lower = html.toLowerCase();
 
   // Common framework root markers — any of these alone is a strong signal.
+  // We deliberately match only the *empty* `<div id=root></div>` form,
+  // not the open `<div id="root">` tag, because the open tag is also
+  // present in fully server-rendered React/Next pages and would cause
+  // false positives that needlessly trigger Playwright.
   const FRAMEWORK_MARKERS = [
     '<div id="root"></div>',
     "<div id='root'></div>",
     '<div id="app"></div>',
     "<div id='app'></div>",
-    '<div id="__next"></div>',  // Next.js export
+    '<div id="__next"></div>',  // Next.js static export shell
     '<div id="__nuxt"></div>',  // Nuxt
     '<div id="svelte"></div>',  // SvelteKit
     '<noscript>you need to enable javascript to run this app',
@@ -106,17 +111,47 @@ export function looksLikeSpaShell(
     if (lower.includes(marker)) return true;
   }
 
-  // Tiny payload + has a root div with no inner text → almost certainly SPA.
-  if (html.length < sizeThreshold) {
-    // But not all small pages are SPAs: tiny landing pages exist.
-    // Defer to the more accurate `isSpaShell` heuristic from spa-rescue.ts
-    // which actually strips tags and counts visible text.
-    if (isSpaShell(html)) return true;
+  // Vite / Rollup signature: when the asset bundler ships the typical
+  // `/assets/index-<hash>.{js,css}` and the body has no real content
+  // tags, we're looking at a JS-only shell. Combining the two avoids
+  // false positives on Vite-built but server-rendered pages (rare but
+  // possible).
+  if (
+    /src=["']\/assets\/index-[A-Za-z0-9_-]+\.(?:js|mjs)["']/.test(lower) &&
+    !hasContentTags(lower)
+  ) {
+    return true;
   }
 
-  // Larger payload — only flag as SPA if visible text is genuinely empty.
+  // Tiny payload (now 15KB to align with observed shell sizes from
+  // Vite/CRA/Next-export) → defer to the visible-text heuristic.
+  if (html.length < sizeThreshold && isSpaShell(html)) return true;
+
+  // Larger payload but visible text is genuinely empty → SPA.
   if (html.length >= sizeThreshold && isSpaShell(html)) return true;
 
+  // Last-resort: even with a larger payload, if the body contains
+  // ZERO content-bearing tags (no `<p`, no `<h1>...<h6>`, no
+  // `<article>`, no `<section>`) the page is almost certainly waiting
+  // for client-side hydration. The user-suggested heuristic, fixed:
+  // matches `<p>` / `<p ` / `<P>` and the headings family equally.
+  if (!hasContentTags(lower)) return true;
+
+  return false;
+}
+
+/**
+ * Returns true if the HTML contains at least one of the structural
+ * content tags a real article/landing page would carry. We check both
+ * the bare form (`<p>`, `<h1>`) and the with-attributes form (`<p `,
+ * `<h1 `) so single-element pages aren't false-flagged.
+ */
+function hasContentTags(lowercaseHtml: string): boolean {
+  if (/<p[\s>]/.test(lowercaseHtml)) return true;
+  if (/<h[1-6][\s>]/.test(lowercaseHtml)) return true;
+  if (/<article[\s>]/.test(lowercaseHtml)) return true;
+  if (/<section[\s>]/.test(lowercaseHtml)) return true;
+  if (/<main[\s>]/.test(lowercaseHtml)) return true;
   return false;
 }
 
@@ -130,7 +165,7 @@ export async function fetchHtmlSmart(
   const start = Date.now();
   const attempts: string[] = [];
   const mode = opts.mode ?? 'full';
-  const sizeThreshold = opts.spaSizeThreshold ?? 10000;
+  const sizeThreshold = opts.spaSizeThreshold ?? 15000;
 
   if (!url || typeof url !== 'string') {
     return {
