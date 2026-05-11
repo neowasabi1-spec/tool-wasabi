@@ -694,10 +694,11 @@ async function cloneWithBrowser(url: string, viewport: 'desktop' | 'mobile' = 'd
     // competitor. The absolutize step is a no-op here because every
     // URL is already absolute. (Idempotent design — see spa-rescue.ts)
     const stabilized = stabilizeClonedHtml(result.html, url);
+    const inlined = await inlineExternalAssets(stabilized, url);
     return {
-      html: stabilized,
+      html: inlined,
       title: result.title,
-      renderedSize: stabilized.length,
+      renderedSize: inlined.length,
       cssCount: result.cssCount,
       imgCount: result.imgCount,
       isJsRendered: false,

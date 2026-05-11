@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { inlineExternalAssets } from '@/lib/inline-assets';
 
 export const maxDuration = 60;
 
@@ -94,16 +95,20 @@ export async function POST(request: NextRequest) {
     const title = titleMatch ? titleMatch[1].replace(/<[^>]*>/g, '').trim() : '';
 
     const cleanHtml = fixClonedHtml(html, url);
+    // Inline external stylesheets + fonts so the snapshot is self-contained
+    // and survives source-side changes (CDN rotation, server outage, CORS).
+    // See src/lib/inline-assets.ts.
+    const selfContainedHtml = await inlineExternalAssets(cleanHtml, url);
 
     return NextResponse.json({
       success: true,
       url,
       method_used: 'direct-fetch',
-      content_length: cleanHtml.length,
+      content_length: selfContainedHtml.length,
       title,
       duration_seconds: duration,
-      html: cleanHtml,
-      html_preview: cleanHtml.substring(0, 500) + '...',
+      html: selfContainedHtml,
+      html_preview: selfContainedHtml.substring(0, 500) + '...',
     });
   } catch (error) {
     console.error('Clone API error:', error);
