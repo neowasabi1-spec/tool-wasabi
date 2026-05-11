@@ -6,7 +6,8 @@
  *   2) sniff for "SPA shell" (<10KB body, `<div id="root">`, etc.)
  *   3) if SPA → render with Playwright (`@/lib/get-browser`)
  *      - works locally with system Chromium
- *      - works on Netlify / Vercel via `@sparticuz/chromium`
+ *      - works on Netlify / Vercel via `@sparticuz/chromium-min`
+ *        (binary downloaded from a remote tar at runtime)
  *   4) if Playwright fails or isn't viable → `rescueViaJina()`
  *      (Jina Reader; defence-in-depth for serverless cold-start failures
  *      and the Supabase Edge Function which can't run Playwright)

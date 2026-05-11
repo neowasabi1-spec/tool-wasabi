@@ -11,7 +11,7 @@
   "dependencies": {
     "@netlify/plugin-nextjs": "^5.15.9",
     "@anthropic-ai/sdk": "^0.74.0",
-    "@sparticuz/chromium": "^133.0.0",
+    "@sparticuz/chromium-min": "^131.0.0",
     "@supabase/supabase-js": "^2.93.3",
     "@vercel/functions": "^3.4.2",
     "exceljs": "^4.4.0",

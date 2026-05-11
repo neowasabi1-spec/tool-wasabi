@@ -16,7 +16,7 @@ const nextConfig = {
     },
     serverComponentsExternalPackages: [
       'playwright-core',
-      '@sparticuz/chromium',
+      '@sparticuz/chromium-min',
     ],
     // Make the copywriting knowledge base available to API routes at runtime
     // on Netlify (otherwise readFileSync fails because the .md files in
