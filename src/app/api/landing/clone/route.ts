@@ -79,12 +79,35 @@ export async function POST(request: NextRequest) {
       userAgent:
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     });
+    // Surface SPA-related diagnostics directly in the JSON response.
+    // We can't rely on console.log on Netlify because the function
+    // sometimes terminates before stdout is flushed — so we ship the
+    // full picture as response fields. Same shape on success and error
+    // so OpenClaw / curl / the diagnose modal can introspect either.
+    const spaPlaywrightAttempt = fetched.attempts.find((a) => a.startsWith('playwright')) ?? null;
+    const spaJinaAttempt = fetched.attempts.find((a) => a.startsWith('jina')) ?? null;
+    const env = {
+      NETLIFY: process.env.NETLIFY ?? null,
+      VERCEL: process.env.VERCEL ?? null,
+      AWS_LAMBDA_FUNCTION_NAME: process.env.AWS_LAMBDA_FUNCTION_NAME ?? null,
+      isServerless:
+        !!process.env.VERCEL ||
+        !!process.env.AWS_LAMBDA_FUNCTION_NAME ||
+        (!!process.env.NETLIFY &&
+          !process.env.NETLIFY_LOCAL &&
+          !process.env.NETLIFY_DEV),
+    };
     if (!fetched.ok || !fetched.html) {
       return NextResponse.json(
         {
           success: false,
           error: `Unable to clone the page: ${fetched.error ?? 'no HTML returned'}`,
           attempts: fetched.attempts,
+          spa_detected: fetched.wasSpa,
+          spa_attempted: spaPlaywrightAttempt !== null,
+          spa_playwright_result: spaPlaywrightAttempt,
+          spa_jina_result: spaJinaAttempt,
+          env,
         },
         { status: 400 },
       );
@@ -110,7 +133,15 @@ export async function POST(request: NextRequest) {
       url,
       method_used: fetched.source ?? 'direct-fetch',
       was_spa: fetched.wasSpa,
+      // Explicit SPA-flow diagnostics (mirrors the error branch above).
+      // Lets the caller see WHICH stage of the cascade ran without
+      // having to read Netlify Function logs.
+      spa_detected: fetched.wasSpa,
+      spa_attempted: spaPlaywrightAttempt !== null,
+      spa_playwright_result: spaPlaywrightAttempt,
+      spa_jina_result: spaJinaAttempt,
       attempts: fetched.attempts,
+      env,
       content_length: selfContainedHtml.length,
       title,
       duration_seconds: duration,
