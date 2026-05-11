@@ -16,7 +16,6 @@ import {
   ChevronDown,
   ChevronUp,
   Clock,
-  Sparkles,
   AlertCircle,
 } from 'lucide-react';
 import {
@@ -25,7 +24,7 @@ import {
   type CheckpointCategory,
   type CheckpointCategoryResult,
   type CheckpointRun,
-  type UnifiedFunnel,
+  type CheckpointFunnel,
 } from '@/types/checkpoint';
 
 const CATEGORIES: CheckpointCategory[] = [
@@ -37,7 +36,7 @@ const CATEGORIES: CheckpointCategory[] = [
 ];
 
 interface DetailResponse {
-  funnel: UnifiedFunnel;
+  funnel: CheckpointFunnel;
   runs: CheckpointRun[];
 }
 
@@ -46,8 +45,7 @@ export default function CheckpointDetailPage({
 }: {
   params: Promise<{ id: string }>;
 }) {
-  const { id: encodedId } = use(params);
-  const compositeId = decodeURIComponent(encodedId);
+  const { id: funnelId } = use(params);
 
   const [data, setData] = useState<DetailResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -62,9 +60,7 @@ export default function CheckpointDetailPage({
     setLoading(true);
     setLoadError(null);
     try {
-      const res = await fetch(
-        `/api/checkpoint/${encodeURIComponent(compositeId)}`,
-      );
+      const res = await fetch(`/api/checkpoint/${funnelId}`);
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body?.error ?? `HTTP ${res.status}`);
@@ -84,20 +80,17 @@ export default function CheckpointDetailPage({
   useEffect(() => {
     refetch();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [compositeId]);
+  }, [funnelId]);
 
   const handleRun = async () => {
     setRunning(true);
     setRunError(null);
     try {
-      const res = await fetch(
-        `/api/checkpoint/${encodeURIComponent(compositeId)}/run`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({}),
-        },
-      );
+      const res = await fetch(`/api/checkpoint/${funnelId}/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body?.error ?? `HTTP ${res.status}`);
@@ -213,19 +206,15 @@ export default function CheckpointDetailPage({
 
         {/* Funnel meta strip */}
         <div className="bg-white rounded-lg border border-gray-200 p-4 flex flex-wrap items-center gap-3 text-sm">
-          <span className="text-gray-500">Sorgente:</span>
-          <code className="text-xs bg-gray-100 px-2 py-0.5 rounded">
-            {funnel.source_table}
+          <span className="text-gray-500">URL:</span>
+          <code className="text-xs bg-gray-100 px-2 py-0.5 rounded truncate max-w-[460px]">
+            {funnel.url}
           </code>
           <span className="text-gray-300">·</span>
-          <span className="text-gray-500">Swipe:</span>
-          {funnel.was_swiped ? (
-            <span className="inline-flex items-center gap-1 text-violet-600 font-medium">
-              <Sparkles className="w-3.5 h-3.5" /> swipato
-            </span>
-          ) : (
-            <span className="text-gray-600">originale</span>
-          )}
+          <span className="text-gray-500">Aggiunto:</span>
+          <span className="text-gray-700">
+            {formatDateTime(funnel.created_at)}
+          </span>
           <span className="text-gray-300">·</span>
           <span className="text-gray-500">
             {data.runs.length} run in storia

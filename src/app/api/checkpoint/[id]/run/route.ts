@@ -5,9 +5,10 @@ import {
   summarizeUsage,
 } from '@/lib/anthropic-with-knowledge';
 import {
-  loadFunnelById,
-  loadFunnelHtml,
-} from '@/lib/checkpoint-sources';
+  getFunnel,
+  fetchFunnelHtml,
+  syncLastRunSnapshot,
+} from '@/lib/checkpoint-store';
 import {
   CATEGORY_PROMPT_CONFIG,
   buildUserMessage,
@@ -23,7 +24,7 @@ import type {
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
-export const maxDuration = 300; // 5 min — multi-category Claude call.
+export const maxDuration = 300; // multi-category Claude calls
 
 const ALL_CATEGORIES: CheckpointCategory[] = [
   'cro',
@@ -39,31 +40,31 @@ const ALL_CATEGORIES: CheckpointCategory[] = [
  * Body (optional):
  *   {
  *     categories?: CheckpointCategory[],   // default: all
- *     brandProfile?: string,                // optional brand voice context
- *     productType?: 'supplement'|'digital'|'both', // for compliance routing
+ *     brandProfile?: string,                // override row value
+ *     productType?: 'supplement'|'digital'|'both',
  *   }
  *
  * Lifecycle:
- *   1. Insert a row with status='running'
- *   2. Run categories sequentially (one Claude call each + 1 compliance fetch)
- *   3. Update the row with results, scores, status='completed' | 'partial'
+ *   1. Resolve target funnel from checkpoint_funnels.
+ *   2. Fetch live HTML.
+ *   3. Insert a row in funnel_checkpoints with status='running'.
+ *   4. Run categories sequentially.
+ *   5. Update the run row + sync the last_run_* snapshot on the parent funnel.
  */
 export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  const { id: compositeId } = await params;
-  if (!compositeId) {
+  const { id } = await params;
+  if (!id) {
     return NextResponse.json({ error: 'Missing funnel id' }, { status: 400 });
   }
 
-  // Resolve target funnel.
-  const funnel = await loadFunnelById(decodeURIComponent(compositeId));
+  const funnel = await getFunnel(id);
   if (!funnel) {
     return NextResponse.json({ error: 'Funnel not found' }, { status: 404 });
   }
 
-  // Parse body.
   let body: {
     categories?: CheckpointCategory[];
     brandProfile?: string;
@@ -78,34 +79,29 @@ export async function POST(
     body.categories && body.categories.length > 0
       ? body.categories.filter((c) => ALL_CATEGORIES.includes(c))
       : ALL_CATEGORIES;
-  const productType = body.productType ?? 'both';
-  const brandProfile = body.brandProfile;
+  const productType = body.productType ?? funnel.product_type ?? 'both';
+  const brandProfile = body.brandProfile ?? funnel.brand_profile ?? undefined;
 
-  // Pull HTML to audit.
-  const htmlBundle = await loadFunnelHtml(funnel);
-  if (!htmlBundle) {
+  // 1) Live fetch the URL.
+  const html = await fetchFunnelHtml(funnel.url);
+  if (!html) {
     return NextResponse.json(
       {
         error:
-          'No HTML available for this funnel — neither swiped/cloned data nor live URL responded',
+          "Impossibile scaricare l'HTML del funnel. URL irraggiungibile o risposta vuota.",
       },
       { status: 422 },
     );
   }
+  const auditText = htmlToAuditText(html);
 
-  // Prepare audit text once, reuse across categories.
-  const auditText = htmlToAuditText(htmlBundle.html);
-
-  // 1) Open the checkpoint row in `running` state so the UI can poll.
+  // 2) Open the run row.
   const { data: insertedRow, error: insertErr } = await supabase
     .from('funnel_checkpoints')
     .insert({
-      source_table: funnel.source_table,
-      source_id: funnel.source_id,
+      checkpoint_funnel_id: funnel.id,
       funnel_name: funnel.name,
       funnel_url: funnel.url,
-      was_swiped: funnel.was_swiped,
-      project_id: funnel.project_id,
       status: 'running' as CheckpointRunStatus,
     })
     .select('id')
@@ -121,7 +117,7 @@ export async function POST(
   }
   const checkpointId = insertedRow.id as string;
 
-  // 2) Run categories sequentially.
+  // 3) Run categories sequentially.
   const results: CheckpointResults = {};
   let errored = 0;
   let succeeded = 0;
@@ -130,7 +126,7 @@ export async function POST(
     try {
       if (cat === 'compliance') {
         results[cat] = await runCompliance({
-          html: htmlBundle.html,
+          html,
           url: funnel.url,
           productType,
           requestUrl: req.url,
@@ -161,7 +157,7 @@ export async function POST(
     }
   }
 
-  // 3) Compute aggregate score (avg of numeric scores, ignoring null/error).
+  // 4) Aggregate score.
   const numericScores = Object.values(results)
     .map((r) => r?.score)
     .filter((s): s is number => typeof s === 'number');
@@ -174,8 +170,9 @@ export async function POST(
 
   const finalStatus: CheckpointRunStatus =
     succeeded === 0 ? 'failed' : errored === 0 ? 'completed' : 'partial';
+  const completedAt = new Date().toISOString();
 
-  // 4) Persist final state.
+  // 5) Persist final state on the run row.
   const { error: updErr } = await supabase
     .from('funnel_checkpoints')
     .update({
@@ -187,32 +184,28 @@ export async function POST(
       score_copy: results.copy?.score ?? null,
       score_overall: overall,
       status: finalStatus,
-      completed_at: new Date().toISOString(),
+      completed_at: completedAt,
     })
     .eq('id', checkpointId);
 
   if (updErr) {
     console.error('[checkpoint/run] update failed:', updErr.message);
-    // Row exists but final state didn't persist — surface to client so it
-    // can refetch and recover.
-    return NextResponse.json(
-      {
-        id: checkpointId,
-        status: finalStatus,
-        score_overall: overall,
-        results,
-        warning: `Persistence partial: ${updErr.message}`,
-      },
-      { status: 200 },
-    );
   }
+
+  // 6) Sync denormalised snapshot on the parent funnel.
+  await syncLastRunSnapshot({
+    funnelId: funnel.id,
+    runId: checkpointId,
+    scoreOverall: overall,
+    status: finalStatus,
+    ranAt: completedAt,
+  });
 
   return NextResponse.json({
     id: checkpointId,
     status: finalStatus,
     score_overall: overall,
     results,
-    htmlSource: htmlBundle.source,
   });
 }
 
@@ -320,17 +313,12 @@ async function runCompliance(args: {
   productType: 'supplement' | 'digital' | 'both';
   requestUrl: string;
 }): Promise<CheckpointCategoryResult> {
-  // Reuse the existing /api/compliance-ai/check endpoint. We call it
-  // server-to-server (absolute URL derived from req.url) so we don't
-  // duplicate its 200+ lines of section logic.
+  // Reuse the existing /api/compliance-ai/check endpoint server-to-server.
   const origin = new URL(args.requestUrl).origin;
   const targetUrl = `${origin}/api/compliance-ai/check`;
-
-  // The existing endpoint runs ONE section at a time. We pick the
-  // most generic / most-impactful section ("A1") which audits the
-  // overall offer/refund/footer surface; the dedicated /compliance-ai
-  // page can still run the full A1-E1 sweep.
-  // TODO: extend to multi-section once the run endpoint supports it.
+  // The endpoint runs ONE section at a time. We pick A1 (offer / refund /
+  // footer surface) as the most generic. The dedicated /compliance-ai page
+  // can still run the full A1-E1 sweep.
   const sectionId = 'A1';
 
   const res = await fetch(targetUrl, {
@@ -368,7 +356,6 @@ async function runCompliance(args: {
   };
   const items = data.items ?? [];
 
-  // Map compliance items → our shared issue/suggestion shape.
   const issues = items
     .filter((it) => it.status === 'fail' || it.status === 'warning')
     .map((it) => ({
@@ -385,7 +372,6 @@ async function runCompliance(args: {
       detail: it.recommendation,
     }));
 
-  // Score: pass=100 - 15*fails - 5*warnings (clamped 0-100).
   const fails = items.filter((it) => it.status === 'fail').length;
   const warnings = items.filter((it) => it.status === 'warning').length;
   const score = Math.max(0, Math.min(100, 100 - 15 * fails - 5 * warnings));
