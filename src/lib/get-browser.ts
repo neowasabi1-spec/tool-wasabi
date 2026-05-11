@@ -24,12 +24,17 @@ const IS_SERVERLESS =
   // are inside `netlify dev` and should keep using system Chromium.
   (!!process.env.NETLIFY && !process.env.NETLIFY_LOCAL && !process.env.NETLIFY_DEV);
 
-const DEFAULT_ARGS = [
-  '--no-sandbox',
-  '--disable-setuid-sandbox',
+/**
+ * Launch flags for local Chromium (Windows / macOS / Linux dev box).
+ * Intentionally minimal — `--single-process` and `--no-sandbox` are
+ * REQUIRED on AWS Lambda / Netlify Functions but CRASH the browser
+ * on Windows (the renderer dies as soon as you try to navigate, with
+ * "Target page, context or browser has been closed"). Keep them only
+ * in the serverless code path.
+ */
+const LOCAL_DEFAULT_ARGS = [
   '--disable-dev-shm-usage',
   '--disable-gpu',
-  '--single-process',
 ];
 
 /**
@@ -98,7 +103,7 @@ export async function launchBrowser(options?: {
   console.log('[get-browser] Launching local Chromium (system playwright-core)');
   return chromium.launch({
     headless: options?.headless ?? true,
-    args: options?.args ?? DEFAULT_ARGS,
+    args: options?.args ?? LOCAL_DEFAULT_ARGS,
   });
 }
 
