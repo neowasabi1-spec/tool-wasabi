@@ -229,7 +229,15 @@ function StepCard({
       {isActive && (
         <div className="mt-3 flex items-center gap-1.5 text-[11px] text-blue-700 bg-blue-100/70 rounded px-2 py-1">
           <Sparkles className="w-3 h-3 animate-pulse" />
-          <span>Il bot sta analizzando...</span>
+          <span>
+            Il bot sta analizzando{step.startedAt ? '' : '...'}
+            {step.startedAt && (
+              <>
+                {' · '}
+                <ElapsedTimer startedAt={step.startedAt} running={true} />
+              </>
+            )}
+          </span>
         </div>
       )}
 

@@ -199,10 +199,11 @@ export default function CheckpointDetailPage({
         break;
       case 'category_start':
         if (typeof evt.index === 'number') {
-          setLiveActiveIdx(evt.index);
+          const idx = evt.index;
+          setLiveActiveIdx(idx);
           setLiveSteps((prev) =>
             prev.map((s, i) =>
-              i === evt.index ? { ...s, state: 'running' } : s,
+              i === idx ? { ...s, state: 'running', startedAt: Date.now() } : s,
             ),
           );
         }
@@ -213,16 +214,18 @@ export default function CheckpointDetailPage({
           evt.category &&
           evt.result
         ) {
+          const idx = evt.index;
           const cat = evt.category;
           const result = evt.result;
           setLiveResults((prev) => ({ ...prev, [cat]: result }));
           setLiveSteps((prev) =>
             prev.map((s, i) =>
-              i === evt.index
+              i === idx
                 ? {
                     ...s,
                     state: result.status === 'error' ? 'error' : 'done',
                     result,
+                    finishedAt: Date.now(),
                   }
                 : s,
             ),

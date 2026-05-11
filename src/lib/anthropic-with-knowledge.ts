@@ -56,6 +56,14 @@ export interface CallClaudeOptions {
   apiKey?: string;
   /** Disable KB injection (for debugging cost-free). */
   skipKnowledge?: boolean;
+  /**
+   * Hard timeout for the API call in milliseconds. Defaults to 90s.
+   * If the upstream hangs longer than this we abort and throw, so a
+   * single slow call can't freeze a multi-step pipeline.
+   */
+  timeoutMs?: number;
+  /** External AbortSignal to cancel the in-flight request. */
+  signal?: AbortSignal;
 }
 
 export interface ClaudeUsage {
@@ -166,20 +174,39 @@ export async function callClaudeWithKnowledge(
   );
   const messages = buildMessages(opts.messages, opts.brief, opts.marketResearch);
 
-  const response = await fetch(ANTHROPIC_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': ANTHROPIC_VERSION,
-    },
-    body: JSON.stringify({
-      model,
-      max_tokens: maxTokens,
-      system,
-      messages,
-    }),
-  });
+  // Compose timeout + caller signal so either can abort the request.
+  const timeoutMs = opts.timeoutMs ?? 90_000;
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  const composedSignal = opts.signal
+    ? anySignal([opts.signal, timeoutSignal])
+    : timeoutSignal;
+
+  let response: Response;
+  try {
+    response = await fetch(ANTHROPIC_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': ANTHROPIC_VERSION,
+      },
+      body: JSON.stringify({
+        model,
+        max_tokens: maxTokens,
+        system,
+        messages,
+      }),
+      signal: composedSignal,
+    });
+  } catch (err) {
+    const e = err as Error;
+    if (e.name === 'TimeoutError' || e.name === 'AbortError') {
+      throw new Error(
+        `Anthropic API call aborted after ${timeoutMs}ms (model=${model}).`,
+      );
+    }
+    throw err;
+  }
 
   if (!response.ok) {
     const errBody = await response.text();
@@ -206,4 +233,26 @@ export function summarizeUsage(usage: ClaudeUsage): string {
   }
   if (usage.output_tokens != null) parts.push(`out: ${usage.output_tokens}`);
   return parts.join(' | ');
+}
+
+/**
+ * Combine multiple AbortSignals into one — fired when ANY input fires.
+ * Polyfill for AbortSignal.any (still flagged on some Node versions).
+ */
+function anySignal(signals: AbortSignal[]): AbortSignal {
+  // Prefer the platform implementation when available.
+  type AnyFn = (signals: AbortSignal[]) => AbortSignal;
+  const native = (AbortSignal as unknown as { any?: AnyFn }).any;
+  if (typeof native === 'function') return native.call(AbortSignal, signals);
+
+  const ctrl = new AbortController();
+  const onAbort = (sig: AbortSignal) => () => ctrl.abort(sig.reason);
+  for (const sig of signals) {
+    if (sig.aborted) {
+      ctrl.abort(sig.reason);
+      break;
+    }
+    sig.addEventListener('abort', onAbort(sig), { once: true });
+  }
+  return ctrl.signal;
 }

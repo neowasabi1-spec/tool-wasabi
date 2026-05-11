@@ -132,19 +132,39 @@ export async function POST(
   }
   const checkpointId = insertedRow.id as string;
 
+  console.log(
+    `[checkpoint/run] start runId=${checkpointId} funnel="${funnel.name}" categories=${categories.join(',')} html_len=${html.length} audit_text_len=${auditText.length}`,
+  );
+
   // The work happens inside the stream so each step yields output the
   // moment it finishes — drives the live dashboard on the frontend.
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
+      let closed = false;
       const send = (payload: Record<string, unknown>) => {
+        if (closed) return;
         try {
           controller.enqueue(sseEvent(payload));
         } catch {
           // Client disconnected; further sends will throw too. Bail
           // out — the DB has the partial row so the user can refresh
           // and see the (still-running) state.
+          closed = true;
         }
       };
+      // SSE comment lines (starting with `:`) are ignored by the
+      // browser's EventSource and any custom parser, but they keep
+      // the connection alive through proxies (Netlify, nginx, …)
+      // that would otherwise close idle streams. Critical when a
+      // single Claude call takes 30-60s with no other output.
+      const heartbeat = setInterval(() => {
+        if (closed) return;
+        try {
+          controller.enqueue(sseEncoder.encode(`: heartbeat ${Date.now()}\n\n`));
+        } catch {
+          closed = true;
+        }
+      }, 15_000);
 
       send({
         phase: 'opened',
@@ -161,6 +181,8 @@ export async function POST(
 
       for (let i = 0; i < categories.length; i++) {
         const cat = categories[i];
+        const tStart = Date.now();
+        console.log(`[checkpoint/run] ▶ ${cat} (${i + 1}/${total})`);
         send({
           phase: 'category_start',
           category: cat,
@@ -189,7 +211,7 @@ export async function POST(
           else succeeded++;
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          console.error(`[checkpoint/run] category ${cat} crashed:`, msg);
+          console.error(`[checkpoint/run] ✗ ${cat} crashed:`, msg);
           results[cat] = {
             score: null,
             status: 'error',
@@ -200,6 +222,10 @@ export async function POST(
           };
           errored++;
         }
+        const elapsed = Date.now() - tStart;
+        console.log(
+          `[checkpoint/run] ◀ ${cat} done in ${elapsed}ms · score=${results[cat]?.score ?? 'null'} · status=${results[cat]?.status}`,
+        );
 
         // Persist incrementally so refreshes during a long run see
         // partial state. We only update the JSONB blob + the per-cat
@@ -214,6 +240,8 @@ export async function POST(
           result: results[cat],
         });
       }
+
+      clearInterval(heartbeat);
 
       const numericScores = Object.values(results)
         .map((r) => r?.score)
@@ -256,7 +284,22 @@ export async function POST(
         results,
       });
 
-      controller.close();
+      console.log(
+        `[checkpoint/run] ✔ done runId=${checkpointId} status=${finalStatus} overall=${overall} succeeded=${succeeded} errored=${errored}`,
+      );
+
+      closed = true;
+      try {
+        controller.close();
+      } catch {
+        // already closed by client disconnect
+      }
+    },
+
+    cancel() {
+      // Browser navigated away or aborted; the server-side iteration
+      // keeps running so the run still lands in the DB and history.
+      console.log(`[checkpoint/run] stream cancelled by client (runId=${checkpointId})`);
     },
   });
 
