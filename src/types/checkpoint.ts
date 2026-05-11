@@ -108,6 +108,28 @@ export interface CheckpointRun {
   started_at: string;
   completed_at: string | null;
   created_at: string;
+  /** Audit log: who pressed "Run Checkpoint". null until users land. */
+  triggered_by_user_id: string | null;
+  /** Snapshot of the user's name at run time (kept readable even if
+   *  the user is later renamed or deleted). */
+  triggered_by_name: string | null;
+}
+
+/** A flattened "global log" row used by the Log modal: a run with
+ *  the parent funnel's id/name attached for display. */
+export interface CheckpointLogEntry {
+  id: string;
+  checkpoint_funnel_id: string;
+  funnel_name: string;
+  funnel_url: string;
+  score_overall: number | null;
+  status: CheckpointRunStatus;
+  triggered_by_user_id: string | null;
+  triggered_by_name: string | null;
+  created_at: string;
+  completed_at: string | null;
+  /** ms between created_at and completed_at, null if still running. */
+  duration_ms: number | null;
 }
 
 /** A funnel the user added to the Checkpoint library. */

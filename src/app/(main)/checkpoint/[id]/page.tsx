@@ -26,6 +26,7 @@ import {
   type CheckpointRun,
   type CheckpointFunnel,
 } from '@/types/checkpoint';
+import { getCurrentUserName } from '@/lib/current-user';
 
 const CATEGORIES: CheckpointCategory[] = [
   'cro',
@@ -89,7 +90,9 @@ export default function CheckpointDetailPage({
       const res = await fetch(`/api/checkpoint/${funnelId}/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
+        body: JSON.stringify({
+          triggeredByName: getCurrentUserName(),
+        }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -326,14 +329,20 @@ function CheckpointResultsView({
             })}
           </div>
         </div>
-        <div className="mt-4 text-xs text-gray-500 flex items-center gap-1">
-          <Clock className="w-3 h-3" /> Eseguito {formatDateTime(run.created_at)}
+        <div className="mt-4 text-xs text-gray-500 flex flex-wrap items-center gap-x-2 gap-y-1">
+          <span className="inline-flex items-center gap-1">
+            <Clock className="w-3 h-3" /> Eseguito {formatDateTime(run.created_at)}
+          </span>
           {run.completed_at && (
-            <>
-              {' '}
+            <span>
               · completato {formatDateTime(run.completed_at)} (
               {durationSec(run.created_at, run.completed_at)}s)
-            </>
+            </span>
+          )}
+          {run.triggered_by_name && (
+            <span>
+              · da <strong className="text-gray-700">{run.triggered_by_name}</strong>
+            </span>
           )}
         </div>
       </div>

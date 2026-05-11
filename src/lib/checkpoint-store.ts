@@ -8,7 +8,9 @@
 import { supabase } from '@/lib/supabase';
 import type {
   CheckpointFunnel,
+  CheckpointLogEntry,
   CheckpointRun,
+  CheckpointRunStatus,
   CreateCheckpointFunnelInput,
 } from '@/types/checkpoint';
 
@@ -145,6 +147,48 @@ export async function listRunsForFunnel(
     return [];
   }
   return (data as unknown as CheckpointRun[] | null) ?? [];
+}
+
+/** Global "log" view across all funnels, newest first.
+ *
+ *  We keep the columns lean (no JSON results blob) because this feeds
+ *  the Log modal, where the user only needs an at-a-glance summary
+ *  (when, who, which funnel, score, status).
+ */
+export async function listRecentRuns(limit = 200): Promise<CheckpointLogEntry[]> {
+  const { data, error } = await supabase
+    .from('funnel_checkpoints')
+    .select(
+      'id,checkpoint_funnel_id,funnel_name,funnel_url,' +
+        'score_overall,status,triggered_by_user_id,triggered_by_name,' +
+        'created_at,completed_at',
+    )
+    .order('created_at', { ascending: false })
+    .limit(limit);
+  if (error) {
+    console.warn(`[checkpoint-store] listRecentRuns: ${error.message}`);
+    return [];
+  }
+  type Row = {
+    id: string;
+    checkpoint_funnel_id: string;
+    funnel_name: string;
+    funnel_url: string;
+    score_overall: number | null;
+    status: CheckpointRunStatus;
+    triggered_by_user_id: string | null;
+    triggered_by_name: string | null;
+    created_at: string;
+    completed_at: string | null;
+  };
+  const rows = (data as unknown as Row[] | null) ?? [];
+  return rows.map((r) => ({
+    ...r,
+    duration_ms:
+      r.completed_at && r.created_at
+        ? new Date(r.completed_at).getTime() - new Date(r.created_at).getTime()
+        : null,
+  }));
 }
 
 /** Fetch the live HTML of a funnel's URL. Returns null when the URL

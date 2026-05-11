@@ -42,6 +42,8 @@ const ALL_CATEGORIES: CheckpointCategory[] = [
  *     categories?: CheckpointCategory[],   // default: all
  *     brandProfile?: string,                // override row value
  *     productType?: 'supplement'|'digital'|'both',
+ *     triggeredByName?: string,             // who clicked "Run" (audit log)
+ *     triggeredByUserId?: string,           // future users.id
  *   }
  *
  * Lifecycle:
@@ -69,6 +71,8 @@ export async function POST(
     categories?: CheckpointCategory[];
     brandProfile?: string;
     productType?: 'supplement' | 'digital' | 'both';
+    triggeredByName?: string;
+    triggeredByUserId?: string;
   } = {};
   try {
     body = await req.json();
@@ -81,6 +85,11 @@ export async function POST(
       : ALL_CATEGORIES;
   const productType = body.productType ?? funnel.product_type ?? 'both';
   const brandProfile = body.brandProfile ?? funnel.brand_profile ?? undefined;
+  // Audit log fields. Until the users table exists, we trust the
+  // client-supplied name (single-tenant tool). Once auth lands,
+  // resolve from the session here and ignore body fields.
+  const triggeredByName = (body.triggeredByName ?? '').trim().slice(0, 120) || null;
+  const triggeredByUserId = body.triggeredByUserId?.trim() || null;
 
   // 1) Live fetch the URL.
   const html = await fetchFunnelHtml(funnel.url);
@@ -103,6 +112,8 @@ export async function POST(
       funnel_name: funnel.name,
       funnel_url: funnel.url,
       status: 'running' as CheckpointRunStatus,
+      triggered_by_name: triggeredByName,
+      triggered_by_user_id: triggeredByUserId,
     })
     .select('id')
     .single();

@@ -86,8 +86,25 @@ CREATE TABLE IF NOT EXISTS funnel_checkpoints (
   started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   completed_at TIMESTAMPTZ,
 
+  -- Audit log: who pressed "Run Checkpoint".
+  -- triggered_by_user_id is left FK-less for now because the users
+  -- table doesn't exist yet — when it lands, add:
+  --   ALTER TABLE funnel_checkpoints
+  --   ADD CONSTRAINT funnel_checkpoints_triggered_by_user_id_fkey
+  --   FOREIGN KEY (triggered_by_user_id) REFERENCES users(id) ON DELETE SET NULL;
+  -- We always also store the name as a snapshot so the log stays
+  -- readable even if the user is later renamed/deleted.
+  triggered_by_user_id UUID,
+  triggered_by_name    TEXT,
+
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Idempotent: also add the audit columns when the table already
+-- exists from an earlier run of this migration.
+ALTER TABLE funnel_checkpoints
+  ADD COLUMN IF NOT EXISTS triggered_by_user_id UUID,
+  ADD COLUMN IF NOT EXISTS triggered_by_name    TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_funnel_checkpoints_funnel
   ON funnel_checkpoints(checkpoint_funnel_id, created_at DESC);
@@ -95,3 +112,8 @@ CREATE INDEX IF NOT EXISTS idx_funnel_checkpoints_status
   ON funnel_checkpoints(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_funnel_checkpoints_score
   ON funnel_checkpoints(score_overall DESC NULLS LAST);
+CREATE INDEX IF NOT EXISTS idx_funnel_checkpoints_triggered_by
+  ON funnel_checkpoints(triggered_by_user_id, created_at DESC);
+-- Global "log" view: newest first, all funnels.
+CREATE INDEX IF NOT EXISTS idx_funnel_checkpoints_created
+  ON funnel_checkpoints(created_at DESC);
