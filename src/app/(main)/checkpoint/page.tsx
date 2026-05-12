@@ -523,14 +523,15 @@ export default function CheckpointPage() {
       const jobId = startBody.jobId as string;
       setAutoJobId(jobId);
 
-      // Poll until 'completed' or 'failed'. Cap the loop at the lambda's
-      // 300s ceiling (see netlify.toml maxDuration on /crawl/start) plus
-      // a 30s grace window for the final updateJob() to land in Supabase.
-      // Keeping the client cap = lambda cap means we never give up before
-      // the server itself does — the user gets the real failure reason
-      // (most often "Crawl runner error: <something>") instead of a
-      // generic client-side "timeout".
-      const giveUpAt = Date.now() + 5.5 * 60 * 1000;
+      // Poll for up to 15 minutes. The crawl now runs on the local
+      // openclaw-worker (Neo on PC / Morfeo on Mac), not on Netlify,
+      // so there is no lambda time budget — the only cap is how long
+      // we want the modal to stay open. Each LLM-driven click decision
+      // takes ~30s on Trinity (Neo) and ~3-5s on Anthropic (Morfeo),
+      // so a 9-step quiz funnel is anywhere from 1 to 6 minutes
+      // depending on which worker grabbed the job.
+      const giveUpAt = Date.now() + 15 * 60 * 1000;
+      let lastSeenStep = 0;
       while (Date.now() < giveUpAt) {
         await new Promise((r) => setTimeout(r, 1500));
         const statusRes = await fetch(
@@ -539,12 +540,24 @@ export default function CheckpointPage() {
         );
         const statusBody = await statusRes.json();
         if (!statusRes.ok) {
+          // 404 means the row hasn't been created yet (rare race) —
+          // keep polling instead of failing.
+          if (statusRes.status === 404) continue;
           throw new Error(statusBody?.error ?? `HTTP ${statusRes.status}`);
         }
         setAutoProgress({
           current: statusBody.currentStep ?? 0,
           total: statusBody.totalSteps ?? 0,
         });
+        // Surface progress whenever the worker advances a step. The user
+        // sees the modal "tick" (1/25 → 2/25 → …) instead of staring at
+        // the same number for minutes wondering if it's stuck.
+        if (
+          typeof statusBody.currentStep === 'number' &&
+          statusBody.currentStep > lastSeenStep
+        ) {
+          lastSeenStep = statusBody.currentStep;
+        }
         if (statusBody.status === 'completed') {
           const steps = (statusBody.result?.steps ?? []) as {
             url: string;
@@ -566,8 +579,12 @@ export default function CheckpointPage() {
         if (statusBody.status === 'failed') {
           throw new Error(statusBody.error ?? 'Crawl fallito.');
         }
+        // status === 'pending' (worker hasn't claimed it yet) or
+        // 'running' (worker is mid-flight) → keep polling silently.
       }
-      throw new Error('Timeout: il crawler ha impiegato troppo. Riprova.');
+      throw new Error(
+        `Timeout: il worker non ha completato in 15 minuti. Lo step più alto raggiunto è ${lastSeenStep}. Controlla i log del worker (Neo / Morfeo) per il motivo, oppure passa alla modalità manuale.`,
+      );
     } catch (err) {
       setAddError(err instanceof Error ? err.message : String(err));
     } finally {
