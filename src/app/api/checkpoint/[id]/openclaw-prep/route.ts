@@ -115,14 +115,13 @@ export async function POST(
   const prompts: { category: CheckpointCategory; system: string; user: string }[] = [];
   const skipped: { category: CheckpointCategory; reason: string }[] = [];
   for (const cat of categories) {
-    if (cat === 'navigation' && reachable.length < 2) {
-      skipped.push({
-        category: cat,
-        reason:
-          "Il check Navigazione richiede almeno 2 pagine raggiungibili nel funnel.",
-      });
-      continue;
-    }
+    // NOTE: 'navigation' = Tech/Detail QC audit. Almost every check
+    // (swipe residuals, brand consistency, mechanism naming, broken
+    // CTAs, prices, guarantees, footer, …) is single-page. Only the
+    // 1B/1C "across pages" sub-sections need ≥2 steps and the
+    // prompt itself tells the model to mark those NOT VERIFIED on
+    // a 1-page funnel rather than bailing out. So we run it
+    // unconditionally — same as the Claude pipeline.
     const cfg =
       (quizMode ? QUIZ_CATEGORY_PROMPT_OVERRIDES[cat] : undefined) ??
       CATEGORY_PROMPT_CONFIG[cat];

@@ -263,27 +263,23 @@ export async function POST(
       const tStart = Date.now();
       console.log(`[checkpoint/run] ▶ ${cat} (parallel start)`);
       try {
-        let result: CheckpointCategoryResult;
-        // Navigation requires >= 2 reachable pages — record a clean
-        // "skipped" with a clear reason instead of running the prompt
-        // and hoping the model bails out on its own.
-        if (cat === 'navigation' && reachable.length < 2) {
-          result = {
-            score: null,
-            status: 'skipped',
-            summary:
-              "Il check Navigazione richiede almeno 2 pagine raggiungibili nel funnel.",
-            issues: [],
-            suggestions: [],
-          };
-        } else {
-          result = await runClaudeCategory({
-            category: cat,
-            funnelName: funnel.name,
-            steps: auditSteps,
-            brandProfile,
-          });
-        }
+        // NOTE: previously we hard-skipped 'navigation' when
+        // reachable.length < 2. That gate dates back to the OLD
+        // "page-flow / navigation transitions" prompt. The current
+        // 'navigation' category is the Tech/Detail QC audit (swipe
+        // residuals, brand consistency, mechanism naming, broken
+        // CTAs, missing legal, prices/guarantees, etc) — and almost
+        // every check is single-page. Only the 1B/1C "across pages"
+        // sub-sections need ≥2 steps; the prompt itself instructs
+        // the model to mark those as NOT VERIFIED on a single-page
+        // funnel instead of bailing out. So we run navigation
+        // unconditionally here.
+        const result = await runClaudeCategory({
+          category: cat,
+          funnelName: funnel.name,
+          steps: auditSteps,
+          brandProfile,
+        });
         results[cat] = result;
         const elapsed = Date.now() - tStart;
         console.log(
