@@ -12,9 +12,11 @@ import {
 } from '@/lib/checkpoint-store';
 import {
   CATEGORY_PROMPT_CONFIG,
+  QUIZ_CATEGORY_PROMPT_OVERRIDES,
   buildMultiPageUserMessage,
   htmlToAuditText,
   extractJsonFromReply,
+  isAllQuizSteps,
   pageTypeToTask,
   type MultiPagePromptStep,
 } from '@/lib/checkpoint-prompts';
@@ -445,7 +447,24 @@ async function runClaudeCategory(args: {
   brandProfile?: string;
 }): Promise<CheckpointCategoryResult> {
   const { category } = args;
-  const cfg = CATEGORY_PROMPT_CONFIG[category];
+
+  // Quiz funnel specialisation: when every step is a quiz-type page
+  // (page_type ∈ {quiz_funnel, survey, assessment}) we swap the
+  // category's default prompt with the QUIZ COPY CHIEF override —
+  // the four overrides fan the QUIZ FUNNEL COPY CHIEF AGENT mega-
+  // prompt across the existing four columns (Tech/Detail · Marketing
+  // · Visual · Copy Chief) so the user sees the same UI but each
+  // column runs the quiz-specific rubric.
+  const quizMode = isAllQuizSteps(args.steps);
+  const cfg =
+    (quizMode && QUIZ_CATEGORY_PROMPT_OVERRIDES[category]) ||
+    CATEGORY_PROMPT_CONFIG[category];
+  if (quizMode && QUIZ_CATEGORY_PROMPT_OVERRIDES[category]) {
+    console.log(
+      `[checkpoint/run] ${category} QUIZ MODE active — using QUIZ_CATEGORY_PROMPT_OVERRIDES.${category} (maxTokens=${cfg.maxTokens})`,
+    );
+  }
+
   const userMessage = buildMultiPageUserMessage(args);
 
   // When every step shares the same page type, override the category's
