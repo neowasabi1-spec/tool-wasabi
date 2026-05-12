@@ -16,6 +16,20 @@ const https = require('https');
 const os = require('os');
 const { URL } = require('url');
 
+// Playwright is optional — only needed when this worker also processes
+// funnel_crawl_jobs rows (agentic auto-discover for the checkpoint UI).
+// If `playwright-core` is missing or no system Chromium is installed
+// (`npx playwright install chromium`), the chat / rewrite / checkpoint
+// audit pipelines keep working — only the crawl poller is disabled
+// at startup with a clear warning.
+let playwrightChromium = null;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  playwrightChromium = require('playwright-core').chromium;
+} catch (_e) {
+  playwrightChromium = null;
+}
+
 // ===== CONFIG =====================================================
 const SUPABASE_URL = process.env.SUPABASE_URL
   || 'https://sktpbizpckxldhxzezws.supabase.co';
@@ -818,6 +832,350 @@ async function cleanup() {
   }
 }
 
+// ===== FUNNEL CRAWL POLLER ========================================
+// Runs locally with Playwright so we don't have to fight Netlify's
+// lambda timeout for Playwright + SPA-render workloads. Mirrors the
+// quizMode branch of src/lib/crawl-runner.ts (agentic: open page,
+// fill required fields, click most-likely-CTA, capture URL+title,
+// repeat until checkout / no progress). Kept intentionally simpler:
+// no screenshots, no network capture — the checkpoint flow only
+// needs the list of URLs to seed funnel_pages.
+
+const QUIZ_NEXT_PATTERN_SOURCE =
+  'next|continue|avanti|continua|→|submit|get\\s*(my|your)?\\s*result|see\\s*result|claim|claim\\s*discount|start|inizia|scopri|prossimo|vai\\s*avanti|ottieni|scopri\\s*(la\\s*)?(tua\\s*)?(offerta|risultato)|next\\s*step|go|vai|proceed|siguiente|siguir|weiter|suivant|continuer|próximo|continuar';
+
+const CRAWL_NAV_TIMEOUT_MS = 120_000;
+const CRAWL_STEP_WAIT_MS = 2500;
+const CRAWL_TRANSITION_MS = 1500;
+const CRAWL_SAME_FINGERPRINT_MAX = 3;
+const CRAWL_DEFAULT_MAX_STEPS = 25;
+const CRAWL_POLL_INTERVAL_MS = 4000;
+let isCrawling = false;
+
+async function updateCrawlJob(jobId, patch) {
+  const dbPatch = { updated_at: new Date().toISOString() };
+  if (patch.status !== undefined) dbPatch.status = patch.status;
+  if (patch.result !== undefined) dbPatch.result = patch.result;
+  if (patch.error !== undefined) dbPatch.error = patch.error;
+  if (patch.currentStep !== undefined) dbPatch.current_step = patch.currentStep;
+  if (patch.totalSteps !== undefined) dbPatch.total_steps = patch.totalSteps;
+  const { error } = await supabase
+    .from('funnel_crawl_jobs')
+    .update(dbPatch)
+    .eq('id', jobId);
+  if (error) {
+    err(`updateCrawlJob ${jobId} failed: ${error.message}`);
+  }
+}
+
+async function getQuizFingerprint(page) {
+  return page.evaluate(() => {
+    const main =
+      document.querySelector(
+        'main, [role="main"], .quiz-container, .quiz-content, [class*="quiz"], #quiz, .content, [class*="content"]',
+      ) || document.body;
+    const text = (main.innerText || '').slice(0, 5000);
+    const h1 = (document.querySelector('h1') || {}).innerText || '';
+    const h2 = (document.querySelector('h2') || {}).innerText || '';
+    const stepEl = document.querySelector(
+      '[data-step], [data-question], .step, .slide, [class*="step"]',
+    );
+    const stepAttr = stepEl
+      ? stepEl.getAttribute('data-step') ||
+        stepEl.getAttribute('data-question') ||
+        stepEl.className
+      : '';
+    return `${h1}|${h2}|${stepAttr}|${text.length}|${text.slice(0, 800)}`;
+  });
+}
+
+async function fillCrawlFormFields(page) {
+  return page.evaluate(() => {
+    let filled = 0;
+    const inputs = Array.from(
+      document.querySelectorAll(
+        'input:not([type="radio"]):not([type="checkbox"]):not([type="submit"]):not([type="button"]):not([type="hidden"]):not([type="file"]), textarea, select',
+      ),
+    );
+    for (const el of inputs) {
+      if (el.value && String(el.value).trim().length > 0) continue;
+      const rect = el.getBoundingClientRect();
+      if (rect.width < 5 || rect.height < 5) continue;
+      const style = window.getComputedStyle(el);
+      if (style.visibility === 'hidden' || style.display === 'none') continue;
+
+      const type = (el.type || '').toLowerCase();
+      const hint = `${el.name || ''} ${el.id || ''} ${el.placeholder || ''} ${el.getAttribute('aria-label') || ''}`.toLowerCase();
+      let value = '';
+
+      if (el.tagName === 'SELECT') {
+        const firstReal = Array.from(el.options).find(
+          (o) =>
+            o.value && o.value !== '0' && !/seleziona|select|choose|---/i.test(o.text),
+        );
+        if (firstReal) {
+          el.value = firstReal.value;
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+          filled++;
+        }
+        continue;
+      }
+
+      if (type === 'email' || /email|e-mail|mail/.test(hint)) value = 'test@example.com';
+      else if (type === 'tel' || /phone|tel|cell|mobile|telefono/.test(hint)) value = '3331234567';
+      else if (type === 'number' || /age|year|amount|peso|weight|altezza|height|importo/.test(hint)) value = '30';
+      else if (/zip|postal|cap/.test(hint)) value = '00100';
+      else if (/first.*name|nome|prenom|given.*name/.test(hint)) value = 'Mario';
+      else if (/last.*name|surname|cognome|family.*name/.test(hint)) value = 'Rossi';
+      else if (/full.*name|name/.test(hint)) value = 'Mario Rossi';
+      else if (type === 'date') value = '1990-01-01';
+      else if (type === 'url') value = 'https://example.com';
+      else if (type === 'text' || type === 'search' || type === '' || el.tagName === 'TEXTAREA') value = 'Test';
+      else continue;
+
+      el.value = value;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      filled++;
+    }
+
+    const cb = Array.from(
+      document.querySelectorAll('input[type="checkbox"]:not(:checked)'),
+    ).find((c) => {
+      const r = c.getBoundingClientRect();
+      const s = window.getComputedStyle(c);
+      return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
+    });
+    if (cb) {
+      cb.checked = true;
+      cb.dispatchEvent(new Event('change', { bubbles: true }));
+      cb.dispatchEvent(new Event('click', { bubbles: true }));
+    }
+
+    return filled;
+  });
+}
+
+async function clickCrawlAdvance(page, patternSource) {
+  return page.evaluate((src) => {
+    const pattern = new RegExp(src, 'i');
+    const candidates = [];
+    const els = document.querySelectorAll(
+      'button, [role="button"], input[type="submit"], a[class*="btn"], a[class*="button"], label[for], input[type="radio"]:not(:checked), [class*="option"]:not([aria-selected="true"]), [class*="answer"], [class*="choice"], [class*="cta"], [class*="next"]',
+    );
+    els.forEach((el) => {
+      const text = (el.innerText || '').trim() || el.value || el.placeholder || '';
+      if (!text || text.length > 200) return;
+      const rect = el.getBoundingClientRect();
+      if (rect.width < 5 || rect.height < 5) return;
+      const style = window.getComputedStyle(el);
+      if (style.visibility === 'hidden' || style.display === 'none') return;
+      let priority = 0;
+      if (pattern.test(text)) priority = 10;
+      else if (el.tagName === 'BUTTON' || el.getAttribute('role') === 'button') priority = 6;
+      else if (el.type === 'radio') priority = 5;
+      else if (el.type === 'submit') priority = 7;
+      else if (/btn|button|cta|next|submit/i.test(el.className || '')) priority = 4;
+      else if (el.tagName === 'LABEL') priority = 3;
+      else if (/option|answer|choice/i.test(el.className || '')) priority = 2;
+      else priority = 1;
+      candidates.push({ el, priority });
+    });
+    candidates.sort((a, b) => b.priority - a.priority);
+    for (const { el } of candidates) {
+      try {
+        el.click();
+        return true;
+      } catch {
+        /* try next */
+      }
+    }
+    return false;
+  }, patternSource);
+}
+
+function isCheckoutLikePage(url, title) {
+  const u = (`${url} ${title || ''}`).toLowerCase();
+  return /checkout|carrello|cart|pagamento|payment|acquista|buy\s*now|ordine|order\s*summary|pay\s*now/i.test(u);
+}
+
+async function processCrawlJob(row) {
+  const startedAt = Date.now();
+  const jobId = row.id;
+  const params = row.params || {};
+  const entryUrl = params.entryUrl || row.entry_url;
+  const maxSteps = Math.min(
+    Math.max(1, Number(params.quizMaxSteps || params.maxSteps || CRAWL_DEFAULT_MAX_STEPS)),
+    50,
+  );
+
+  log(`crawl #${jobId}: starting (entry=${entryUrl}, maxSteps=${maxSteps})`);
+  await updateCrawlJob(jobId, { status: 'running', currentStep: 0, totalSteps: maxSteps });
+
+  let browser = null;
+  const steps = [];
+  try {
+    browser = await playwrightChromium.launch({
+      headless: params.headless !== false,
+      args: ['--disable-dev-shm-usage', '--disable-gpu'],
+    });
+    const context = await browser.newContext({
+      viewport: {
+        width: params.viewportWidth || 1280,
+        height: params.viewportHeight || 720,
+      },
+      userAgent:
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      ignoreHTTPSErrors: true,
+    });
+    const page = await context.newPage();
+    page.setDefaultTimeout(CRAWL_NAV_TIMEOUT_MS);
+
+    let normalizedEntry = entryUrl;
+    try {
+      const u = new URL(entryUrl);
+      normalizedEntry = u.origin + u.pathname + u.search;
+    } catch {
+      /* keep raw */
+    }
+
+    const goResp = await page.goto(normalizedEntry, {
+      waitUntil: 'domcontentloaded',
+      timeout: CRAWL_NAV_TIMEOUT_MS,
+    });
+    if (!goResp) throw new Error('Initial navigation returned no response');
+    await page.waitForLoadState('networkidle').catch(() => {});
+
+    let consecutiveSame = 0;
+
+    while (steps.length < maxSteps) {
+      const fp = await getQuizFingerprint(page).catch(() => '');
+      const title = await page.title().catch(() => '');
+      const url = page.url();
+
+      steps.push({
+        stepIndex: steps.length + 1,
+        url,
+        title,
+        timestamp: new Date().toISOString(),
+        isQuizStep: true,
+      });
+      log(`  · step ${steps.length}/${maxSteps}: ${url}`);
+      await updateCrawlJob(jobId, {
+        currentStep: steps.length,
+        totalSteps: maxSteps,
+      });
+
+      if (isCheckoutLikePage(url, title)) {
+        log(`  · checkout-like page detected, stopping`);
+        break;
+      }
+
+      await fillCrawlFormFields(page).catch(() => 0);
+      const clicked = await clickCrawlAdvance(page, QUIZ_NEXT_PATTERN_SOURCE).catch(
+        () => false,
+      );
+      if (!clicked) {
+        log(`  · no clickable advance found, stopping`);
+        break;
+      }
+
+      await new Promise((r) => setTimeout(r, CRAWL_STEP_WAIT_MS));
+      const newFp = await getQuizFingerprint(page).catch(() => '');
+      if (newFp === fp) {
+        await new Promise((r) => setTimeout(r, CRAWL_TRANSITION_MS));
+        const retry = await getQuizFingerprint(page).catch(() => '');
+        if (retry === fp) {
+          consecutiveSame++;
+          if (consecutiveSame >= CRAWL_SAME_FINGERPRINT_MAX) {
+            log(`  · stuck on same fingerprint ${consecutiveSame}× — stopping`);
+            break;
+          }
+        } else {
+          consecutiveSame = 0;
+        }
+      } else {
+        consecutiveSame = 0;
+      }
+    }
+
+    await page.close().catch(() => {});
+
+    const result = {
+      success: true,
+      entryUrl,
+      steps,
+      totalSteps: steps.length,
+      durationMs: Date.now() - startedAt,
+      visitedUrls: steps.map((s) => s.url),
+      isQuizFunnel: true,
+    };
+    await updateCrawlJob(jobId, {
+      status: 'completed',
+      result,
+      currentStep: steps.length,
+      totalSteps: steps.length,
+    });
+    log(`✅ crawl #${jobId}: completed ${steps.length} step in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
+  } catch (e) {
+    err(`crawl #${jobId} failed:`, e.message);
+    await updateCrawlJob(jobId, {
+      status: 'failed',
+      error: e.message,
+      result: {
+        success: false,
+        entryUrl,
+        steps,
+        totalSteps: steps.length,
+        durationMs: Date.now() - startedAt,
+        visitedUrls: steps.map((s) => s.url),
+        isQuizFunnel: true,
+      },
+    });
+  } finally {
+    if (browser) await browser.close().catch(() => {});
+  }
+}
+
+async function pollCrawlJobs() {
+  if (isCrawling) return;
+  if (!playwrightChromium) return;
+  isCrawling = true;
+  try {
+    const { data, error } = await supabase
+      .from('funnel_crawl_jobs')
+      .select('*')
+      .eq('status', 'pending')
+      .order('created_at', { ascending: true })
+      .limit(1);
+    if (error) {
+      err(`crawl poll error: ${error.message}`);
+      return;
+    }
+    if (!data || data.length === 0) return;
+    const row = data[0];
+
+    // Atomic claim: only proceed if our update flips status from pending → running.
+    const { data: claimed, error: claimErr } = await supabase
+      .from('funnel_crawl_jobs')
+      .update({ status: 'running', updated_at: new Date().toISOString() })
+      .eq('id', row.id)
+      .eq('status', 'pending')
+      .select('id')
+      .maybeSingle();
+    if (claimErr || !claimed) {
+      // Lost the race to another worker / already taken — try next tick.
+      return;
+    }
+
+    await processCrawlJob(row);
+  } catch (e) {
+    err(`crawl poll exception: ${e.message}`);
+  } finally {
+    isCrawling = false;
+  }
+}
+
 // ===== STARTUP ====================================================
 function printBanner() {
   console.log('╔════════════════════════════════════════════╗');
@@ -840,6 +1198,9 @@ function printBanner() {
     `║  Agent:         ${(OPENCLAW_AGENT || '(unset → legacy any-job mode)').padEnd(28).substring(0, 28)}║`,
   );
   console.log(`║  Poll:          every ${POLL_INTERVAL_MS / 1000}s`.padEnd(45) + '║');
+  console.log(
+    `║  Crawl poller:  ${(playwrightChromium ? `enabled (every ${CRAWL_POLL_INTERVAL_MS / 1000}s)` : 'disabled (no playwright-core)').padEnd(28).substring(0, 28)}║`,
+  );
   console.log('╚════════════════════════════════════════════╝');
   if (OPENCLAW_BACKEND === 'anthropic' && !ANTHROPIC_API_KEY) {
     err(
@@ -850,6 +1211,15 @@ function printBanner() {
     log(`Routing: this worker only claims jobs targeted at "${OPENCLAW_AGENT}" (or untagged legacy jobs).`);
   } else {
     log('Routing: legacy mode — claims ANY pending job (set OPENCLAW_AGENT or rename the OS user to enable explicit routing).');
+  }
+  if (!playwrightChromium) {
+    log(
+      'Funnel crawl poller DISABLED: playwright-core not found. Run `npm install` then `npx playwright install chromium` if you want this worker to also process auto-discover funnel jobs.',
+    );
+  } else {
+    log(
+      `Funnel crawl poller enabled — claiming pending rows from funnel_crawl_jobs every ${CRAWL_POLL_INTERVAL_MS / 1000}s.`,
+    );
   }
   log('Worker started. Waiting for messages...');
 }
@@ -877,3 +1247,8 @@ printBanner();
 setInterval(poll, POLL_INTERVAL_MS);
 setInterval(cleanup, CLEANUP_INTERVAL_MS);
 poll();
+
+if (playwrightChromium) {
+  setInterval(pollCrawlJobs, CRAWL_POLL_INTERVAL_MS);
+  pollCrawlJobs();
+}
