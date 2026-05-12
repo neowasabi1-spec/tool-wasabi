@@ -4,21 +4,11 @@ import { useEffect, useState } from 'react';
 import {
   Loader2,
   CheckCircle2,
-  XCircle,
-  AlertTriangle,
   Clock,
-  Sparkles,
   Bot,
-  Target,
-  Layers,
-  Mic,
-  Shield,
-  PenLine,
-  ArrowDownUp,
 } from 'lucide-react';
 import {
   CHECKPOINT_CATEGORY_LABELS,
-  CHECKPOINT_CATEGORY_DESCRIPTIONS,
   type CheckpointCategory,
   type CheckpointCategoryResult,
   type CheckpointResults,
@@ -42,24 +32,6 @@ export interface LiveStep {
   startedAt?: number; // epoch ms
   finishedAt?: number;
 }
-
-const CATEGORY_ICON: Record<CheckpointCategory, React.ComponentType<{ className?: string }>> = {
-  navigation: ArrowDownUp,
-  coherence: Layers,
-  copy: PenLine,
-  cro: Target,
-  tov: Mic,
-  compliance: Shield,
-};
-
-const CATEGORY_BOT_NAME: Record<CheckpointCategory, string> = {
-  navigation: 'Navigator Bot',
-  coherence: 'Coherence Bot',
-  copy: 'Copy Bot',
-  cro: 'CRO Bot',
-  tov: 'Voice Bot',
-  compliance: 'Compliance Bot',
-};
 
 interface Props {
   steps: LiveStep[];
@@ -126,18 +98,77 @@ export default function LiveStepDashboard({
         )}
       </div>
 
-      {/* Progress bar */}
-      <div className="px-5 pt-3">
-        <div className="h-1.5 w-full bg-gray-100 rounded-full overflow-hidden">
+      {/* Progress bar — sostituisce la griglia di card per step.
+          Tick verticali sopra la barra segnano i confini di ciascun
+          step così si capisce a colpo d'occhio dove siamo nel run. */}
+      <div className="px-5 py-4">
+        {/* Tick row: una tacca per ogni categoria, colorata in base
+            allo stato (done/error/active/pending). */}
+        {total > 1 && (
+          <div className="flex items-center gap-1 mb-2 px-px">
+            {steps.map((s, i) => {
+              const isActiveTick = isRunning && i === activeIndex;
+              let cls = 'bg-gray-200';
+              if (s.state === 'done') {
+                if (s.result?.status === 'fail') cls = 'bg-red-400';
+                else if (s.result?.status === 'warn') cls = 'bg-amber-400';
+                else cls = 'bg-emerald-400';
+              } else if (s.state === 'error') cls = 'bg-red-400';
+              else if (isActiveTick) cls = 'bg-blue-500 animate-pulse';
+              return (
+                <div
+                  key={s.category}
+                  title={CHECKPOINT_CATEGORY_LABELS[s.category]}
+                  className={`flex-1 h-1 rounded-full ${cls}`}
+                />
+              );
+            })}
+          </div>
+        )}
+
+        <div className="h-2.5 w-full bg-gray-100 rounded-full overflow-hidden">
           <div
             className={`h-full transition-all duration-500 ease-out ${
               isRunning
                 ? 'bg-gradient-to-r from-blue-500 via-indigo-500 to-blue-500 bg-[length:200%_100%] animate-[shimmer_2s_linear_infinite]'
-                : 'bg-emerald-500'
+                : doneCount === total && total > 0
+                  ? 'bg-emerald-500'
+                  : 'bg-blue-500'
             }`}
             style={{ width: `${percent}%` }}
           />
         </div>
+
+        <div className="mt-2 flex items-center justify-between text-xs">
+          <span className="text-gray-500">
+            {isRunning && activeIndex >= 0 && steps[activeIndex] ? (
+              <span className="inline-flex items-center gap-1.5">
+                <Loader2 className="w-3 h-3 animate-spin text-blue-600" />
+                <span>
+                  Step {activeIndex + 1} di {total} ·{' '}
+                  <strong className="text-gray-700">
+                    {CHECKPOINT_CATEGORY_LABELS[steps[activeIndex].category]}
+                  </strong>{' '}
+                  in analisi
+                </span>
+              </span>
+            ) : doneCount === total && total > 0 ? (
+              <span className="inline-flex items-center gap-1.5 text-emerald-700">
+                <CheckCircle2 className="w-3 h-3" />
+                Tutti gli step completati
+              </span>
+            ) : (
+              <span>
+                {doneCount} di {total} step
+                {total === 1 ? '' : ''} completat{doneCount === 1 ? 'o' : 'i'}
+              </span>
+            )}
+          </span>
+          <span className="font-mono text-gray-400 tabular-nums">
+            {percent}%
+          </span>
+        </div>
+
         <style jsx>{`
           @keyframes shimmer {
             0% { background-position: 200% 0; }
@@ -145,194 +176,7 @@ export default function LiveStepDashboard({
           }
         `}</style>
       </div>
-
-      {/* Step grid — auto-fits 1-N categories. With the v2 default of
-          3 (navigation, coherence, copy) we get 3 wide cards on lg+;
-          legacy runs with all 5 (or 6) categories still wrap cleanly. */}
-      <div className="p-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-        {steps.map((step, i) => (
-          <StepCard
-            key={step.category}
-            step={step}
-            position={i + 1}
-            isActive={isRunning && i === activeIndex}
-          />
-        ))}
-      </div>
     </div>
-  );
-}
-
-function StepCard({
-  step,
-  position,
-  isActive,
-}: {
-  step: LiveStep;
-  position: number;
-  isActive: boolean;
-}) {
-  const Icon = CATEGORY_ICON[step.category];
-  const label = CHECKPOINT_CATEGORY_LABELS[step.category];
-  const description = CHECKPOINT_CATEGORY_DESCRIPTIONS[step.category];
-  const botName = CATEGORY_BOT_NAME[step.category];
-
-  // Visual state.
-  const cardCls = (() => {
-    if (isActive)
-      return 'border-blue-400 bg-blue-50 ring-2 ring-blue-200 shadow-lg scale-[1.02]';
-    if (step.state === 'done') {
-      const score = step.result?.score ?? 0;
-      if (step.result?.status === 'pass')
-        return 'border-emerald-300 bg-emerald-50';
-      if (step.result?.status === 'warn' || (score >= 50 && score < 80))
-        return 'border-amber-300 bg-amber-50';
-      if (step.result?.status === 'fail' || score < 50)
-        return 'border-red-300 bg-red-50';
-      return 'border-gray-200 bg-white';
-    }
-    if (step.state === 'error') return 'border-red-200 bg-red-50';
-    return 'border-gray-200 bg-gray-50/50';
-  })();
-
-  return (
-    <div
-      className={`rounded-lg border p-4 transition-all duration-300 relative ${cardCls}`}
-    >
-      <div className="absolute top-2 right-2 text-[10px] text-gray-400 font-mono">
-        {String(position).padStart(2, '0')}
-      </div>
-
-      <div className="flex items-start gap-2 mb-2">
-        <div
-          className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
-            isActive
-              ? 'bg-blue-600 text-white'
-              : step.state === 'done'
-                ? 'bg-white text-gray-700 border border-gray-200'
-                : step.state === 'error'
-                  ? 'bg-red-100 text-red-600'
-                  : 'bg-gray-100 text-gray-400'
-          }`}
-        >
-          <Icon className="w-4 h-4" />
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="text-sm font-semibold text-gray-900 truncate">
-            {label}
-          </div>
-          <div className="text-[10px] text-gray-500 truncate">{botName}</div>
-        </div>
-      </div>
-
-      <StateBadge step={step} isActive={isActive} />
-
-      <p className="mt-2 text-[11px] text-gray-500 line-clamp-2 leading-snug">
-        {description}
-      </p>
-
-      {isActive && (
-        <div className="mt-3 flex items-center gap-1.5 text-[11px] text-blue-700 bg-blue-100/70 rounded px-2 py-1">
-          <Sparkles className="w-3 h-3 animate-pulse" />
-          <span>
-            Il bot sta analizzando{step.startedAt ? '' : '...'}
-            {step.startedAt && (
-              <>
-                {' · '}
-                <ElapsedTimer startedAt={step.startedAt} running={true} />
-              </>
-            )}
-          </span>
-        </div>
-      )}
-
-      {step.state === 'done' && step.result && (
-        <div className="mt-3 text-[11px] text-gray-600">
-          {step.result.issues.length > 0 ? (
-            <span>
-              <strong className="text-red-600">{step.result.issues.length}</strong>{' '}
-              problemi
-            </span>
-          ) : (
-            <span className="text-emerald-700">Nessun problema</span>
-          )}
-          {step.result.suggestions.length > 0 && (
-            <>
-              {' · '}
-              <strong className="text-blue-600">
-                {step.result.suggestions.length}
-              </strong>{' '}
-              spunti
-            </>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function StateBadge({
-  step,
-  isActive,
-}: {
-  step: LiveStep;
-  isActive: boolean;
-}) {
-  if (isActive) {
-    return (
-      <span className="inline-flex items-center gap-1 text-xs font-medium text-blue-700">
-        <Loader2 className="w-3 h-3 animate-spin" />
-        In analisi...
-      </span>
-    );
-  }
-  if (step.state === 'pending') {
-    return (
-      <span className="inline-flex items-center gap-1 text-xs text-gray-400 font-medium">
-        <Clock className="w-3 h-3" />
-        In coda
-      </span>
-    );
-  }
-  if (step.state === 'error') {
-    return (
-      <span className="inline-flex items-center gap-1 text-xs font-medium text-red-700">
-        <XCircle className="w-3 h-3" />
-        Errore
-      </span>
-    );
-  }
-  if (step.state === 'skipped') {
-    return (
-      <span className="inline-flex items-center gap-1 text-xs text-gray-400">
-        Saltato
-      </span>
-    );
-  }
-  // done
-  const score = step.result?.score ?? null;
-  const status = step.result?.status;
-  if (status === 'pass' || (score !== null && score >= 80)) {
-    return (
-      <span className="inline-flex items-center gap-1 text-xs font-bold text-emerald-700">
-        <CheckCircle2 className="w-3 h-3" />
-        {score}/100
-      </span>
-    );
-  }
-  if (status === 'fail' || (score !== null && score < 50)) {
-    return (
-      <span className="inline-flex items-center gap-1 text-xs font-bold text-red-700">
-        <XCircle className="w-3 h-3" />
-        {score}/100
-      </span>
-    );
-  }
-  return (
-    <span className="inline-flex items-center gap-1 text-xs font-bold text-amber-700">
-      <AlertTriangle className="w-3 h-3" />
-      {score !== null ? `${score}/100` : 'Done'}
-    </span>
   );
 }
 
