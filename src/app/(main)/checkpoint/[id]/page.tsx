@@ -625,6 +625,41 @@ export default function CheckpointDetailPage({
     stopPolling();
   };
 
+  /** Last-resort kill switch for runs stuck in `running`. Used when
+   *  the worker died mid-job (or never picked it up) and the row
+   *  hasn't been finalized — without this the badge stays on
+   *  "in corso (in background)" forever. */
+  const handleForceFail = async (runId: string, reason?: string) => {
+    try {
+      pushEvent('warn', 'Marco la run come fallita su richiesta utente…');
+      const res = await fetch(
+        `/api/checkpoint/runs/${runId}/force-fail`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reason }),
+        },
+      );
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as {
+          error?: string;
+        };
+        throw new Error(body.error ?? `HTTP ${res.status}`);
+      }
+      pushEvent('error', 'Run marcata come fallita.');
+      // Stop the polling loop and refresh the row so the badge
+      // and history flip to the new state immediately.
+      abortRef.current?.abort();
+      stopPolling();
+      stopQueuePolling();
+      setRunning(false);
+      await refetch(true);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      pushEvent('error', `force-fail fallita: ${msg}`);
+    }
+  };
+
   const activeRun = useMemo(() => {
     if (!data) return null;
     return (
@@ -927,6 +962,8 @@ export default function CheckpointDetailPage({
               startedAt={liveStartedAt ?? null}
               queueStatus={queueStatus}
               runStatus={activeRun?.status ?? null}
+              runId={activeRun?.id ?? null}
+              onForceFail={handleForceFail}
             />
 
             {/* Live / frozen step dashboard */}
@@ -1236,6 +1273,8 @@ function RunActivityMonitor({
   startedAt,
   queueStatus,
   runStatus,
+  runId,
+  onForceFail,
 }: {
   isRunning: boolean;
   auditor: 'claude' | 'openclaw:neo' | 'openclaw:morfeo';
@@ -1247,6 +1286,10 @@ function RunActivityMonitor({
    *  pick the right "completata / fallita / parziale" badge instead
    *  of always showing "completata" green when isRunning flips false. */
   runStatus: 'running' | 'completed' | 'partial' | 'failed' | null;
+  /** Active run id, needed to wire the "Marca come fallita" kill
+   *  switch in the stalled banner. */
+  runId: string | null;
+  onForceFail: (runId: string, reason?: string) => Promise<void> | void;
 }) {
   // Tick every second to keep the elapsed clock fresh.
   const [nowTs, setNowTs] = useState(() => Date.now());
@@ -1369,12 +1412,47 @@ function RunActivityMonitor({
       {stalled && (
         <div className="px-4 py-2 border-b border-amber-200 bg-amber-50 text-xs text-amber-800 flex items-start gap-2">
           <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-          <div>
+          <div className="flex-1">
             <strong>Nessun aggiornamento da {formatHmsShort(sinceLastMs)}.</strong>{' '}
             {auditor.startsWith('openclaw:')
               ? `Verifica che il worker ${queueStatus?.target_agent ?? auditor.split(':')[1]} sia avviato (terminale Cursor con "node openclaw-worker.js"). Se è online il job potrebbe richiedere ancora qualche secondo.`
               : "L'API Claude potrebbe essere lenta o la function su Netlify è andata in timeout (504). Il run continua in background, riprova fra poco a refreshare la pagina."}
           </div>
+          {runId && sinceLastMs > 90_000 && (
+            <button
+              onClick={() => onForceFail(runId, `Run interrotta dall'utente dopo ${formatHmsShort(sinceLastMs)} di inattività.`)}
+              className="shrink-0 inline-flex items-center gap-1 px-2 py-1 rounded bg-red-600 text-white text-[11px] font-semibold hover:bg-red-700"
+              title="Marca questa run come fallita nel DB così la UI smette di mostrarla 'in corso'"
+            >
+              <XCircle className="w-3 h-3" />
+              Marca come fallita
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Polling exited but DB still says 'running' (e.g. user
+          reloaded the page, or the page-fetch ate the worker's
+          node process and openclaw-finalize never landed). Offer
+          a force-fail so the orphan row doesn't stay 'running'
+          forever. */}
+      {!isRunning && runStatus === 'running' && runId && (
+        <div className="px-4 py-2 border-b border-blue-200 bg-blue-50 text-xs text-blue-800 flex items-start gap-2">
+          <Loader2 className="w-4 h-4 shrink-0 mt-0.5 animate-spin" />
+          <div className="flex-1">
+            <strong>Questa run risulta ancora in corso nel DB.</strong>{' '}
+            Il polling client si è chiuso ma il worker potrebbe ancora
+            essere vivo (controlla il terminale dove gira{' '}
+            <code className="px-1 py-0.5 rounded bg-white/70 font-mono text-[10px]">node openclaw-worker.js</code>).
+            Se sei certa che sia bloccato, chiudila a forza qui sotto.
+          </div>
+          <button
+            onClick={() => onForceFail(runId, 'Run marcata come fallita dall\'utente — DB ancora in stato running ma worker presumibilmente morto.')}
+            className="shrink-0 inline-flex items-center gap-1 px-2 py-1 rounded bg-red-600 text-white text-[11px] font-semibold hover:bg-red-700"
+          >
+            <XCircle className="w-3 h-3" />
+            Marca come fallita
+          </button>
         </div>
       )}
 

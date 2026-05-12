@@ -408,11 +408,38 @@ async function processMessage(msg) {
       catch { throw new Error('Invalid checkpoint_audit payload (not valid JSON)'); }
 
       const { runId, funnelId, categories, brandProfile } = payload;
+      log(`  · checkpoint_audit payload: runId=${runId || '(missing)'} funnelId=${funnelId || '(missing)'} categories=${Array.isArray(categories) ? categories.join(',') : '(missing)'}`);
       if (!runId) throw new Error('checkpoint_audit missing runId');
+
+      // The categories the run was enqueued with — used as the
+      // "expected" set for openclaw-finalize (so the server can
+      // mark any never-reported category as `error` instead of
+      // leaving the dashboard column on "In attesa di analisi…").
+      // Falls back to whatever the server's default category set
+      // is when the payload omits it (older /run versions).
+      const requestedCategories = Array.isArray(categories) && categories.length > 0
+        ? categories
+        : ['navigation', 'coherence', 'copy', 'cro'];
 
       let prompts = Array.isArray(payload.prompts) ? payload.prompts : null;
       if (!prompts) {
-        if (!funnelId) throw new Error('checkpoint_audit missing funnelId (and no prompts inline)');
+        if (!funnelId) {
+          // Don't just throw — also tell the server so the run
+          // doesn't sit on `running` forever. The catch at the
+          // bottom of this block handles other crashes the same
+          // way, but this one fires before we have anything to
+          // pass to it.
+          await callToolApi(
+            `/api/checkpoint/runs/${runId}/openclaw-finalize`,
+            {
+              status: 'failed',
+              error: 'checkpoint_audit payload was missing funnelId — worker probably running an old version. Stop the worker, `git pull`, restart with `node openclaw-worker.js`.',
+              expectedCategories: requestedCategories,
+            },
+            60_000,
+          ).catch(() => {});
+          throw new Error('checkpoint_audit missing funnelId (and no prompts inline)');
+        }
         log(`  · prep: fetching pages + building prompts for funnel ${funnelId}`);
         let prep;
         try {
@@ -431,7 +458,11 @@ async function processMessage(msg) {
           err(`  ✗ openclaw-prep failed: ${e.message}`);
           await callToolApi(
             `/api/checkpoint/runs/${runId}/openclaw-finalize`,
-            { status: 'failed', error: `Prep step failed: ${e.message}` },
+            {
+              status: 'failed',
+              error: `Prep step failed: ${e.message}`,
+              expectedCategories: requestedCategories,
+            },
             60_000,
           ).catch(() => {});
           throw e;
