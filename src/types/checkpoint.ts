@@ -21,18 +21,22 @@
  *                    legacy "internal coherence" prompt)
  *    3. copy       — Marketing audit (Macro-section 2: 3-expert copy
  *                    QC, Sultanich · Hormozi · Georgi)
+ *    4. cro        — Copy Chief audit (Copy Chief Agent v1.0 — single
+ *                    senior copy chief: hook, verbatim, IF-THEN, DRE,
+ *                    mechanism, Evaldo 10Q, proof, offer, narrative
+ *                    coherence, Satir 6+15). Re-uses the legacy 'cro'
+ *                    SQL column (score_cro) to avoid a migration.
  *
- *  Legacy categories ('cro' | 'tov' | 'compliance') are kept in the
- *  union so historical runs still type-check, but new runs only
- *  populate the three above. The legacy ones are intentionally
- *  excluded from CHECKPOINT_RUN_CATEGORIES below — that's the source
- *  of truth for which categories the run pipeline executes.
+ *  Legacy categories ('tov' | 'compliance') are kept in the union so
+ *  historical runs still type-check, but new runs no longer populate
+ *  them. CHECKPOINT_RUN_CATEGORIES below is the source of truth for
+ *  which categories the run pipeline executes.
  */
 export type CheckpointCategory =
   | 'navigation'
   | 'coherence'
   | 'copy'
-  | 'cro'        // legacy
+  | 'cro'        // re-purposed: Copy Chief audit
   | 'tov'        // legacy
   | 'compliance'; // legacy
 
@@ -42,13 +46,14 @@ export const CHECKPOINT_RUN_CATEGORIES: ReadonlyArray<CheckpointCategory> = [
   'navigation',
   'coherence',
   'copy',
+  'cro',
 ] as const;
 
 export const CHECKPOINT_CATEGORY_LABELS: Record<CheckpointCategory, string> = {
   navigation: 'Tech/Detail',
   coherence: 'Visual',
   copy: 'Marketing',
-  cro: 'CRO',
+  cro: 'Copy Chief',
   tov: 'Tone of Voice',
   compliance: 'Compliance',
 };
@@ -64,7 +69,7 @@ export const CHECKPOINT_CATEGORY_DESCRIPTIONS: Record<
   copy:
     'Marketing audit (Macro-section 2): tre esperti in uno (Sultanich systems · Hormozi offer · Georgi RMBC). Funnel ID, narrative fit, IF-THEN, One Big Idea, Value Equation, Grand Slam Offer, Avatar DRE, mechanism depth, Evaldo 10Q, pain triplets, Satir 6 layers, social proof, LIFT.',
   cro:
-    '(Legacy) CTA chiarezza, value prop above-the-fold, urgency, social proof, friction.',
+    'Copy Chief audit (Copy Chief Agent v1.0): hook quality, verbatim test, IF-THEN logic, Avatar DRE, mechanism depth, Evaldo 10 questions, proof & credibility, offer copy, closing, narrative coherence cross-page, Satir 6 layers + 15-step. Verdetto APPROVED / WITH FIXES / NOT APPROVED.',
   tov:
     '(Legacy) Tone of voice rispetto al brand profile.',
   compliance:

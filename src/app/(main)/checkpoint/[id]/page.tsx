@@ -22,6 +22,7 @@ import {
   Megaphone,
   Eye,
   ListChecks,
+  Crown,
 } from 'lucide-react';
 import {
   type CheckpointCategory,
@@ -656,13 +657,14 @@ export default function CheckpointDetailPage({
               startedAt={liveStartedAt}
             />
 
-            {/* "Foglio" findings: 4 colonne, una per step di analisi.
+            {/* "Foglio" findings: 5 colonne, una per step di analisi.
                 Si popolano in tempo reale durante l'audit con le
                 criticità (issues critical/warning) trovate per ogni
                 categoria. Mapping di partenza:
                   Tech/Detail → navigation
                   Marketing   → copy
                   Visual      → coherence
+                  Copy Chief  → cro (legacy column re-purposed)
                   All Step    → unione di tutte le categorie eseguite */}
             <FindingsSheet
               results={dashboardResults}
@@ -898,14 +900,14 @@ function durationSec(startIso: string, endIso: string): number {
  *  Per popolarsi senza ulteriore polling, usa direttamente
  *  `results` (CheckpointResults) e `isRunning`, gli stessi dati che
  *  alimentavano FindingsTable e LiveStepDashboard. */
-type SheetAccent = 'blue' | 'emerald' | 'violet' | 'gray';
+type SheetAccent = 'blue' | 'emerald' | 'violet' | 'amber' | 'gray';
 
 interface SheetColumnConfig {
-  id: 'tech' | 'marketing' | 'visual' | 'all';
+  id: 'tech' | 'marketing' | 'visual' | 'copychief' | 'all';
   title: string;
   icon: React.ReactNode;
   accent: SheetAccent;
-  /** Categorie sorgenti da cui pescare le issues. 'all' include
+  /** Categorie sorgenti da cui pescare le issues. '*' include
    *  qualunque categoria presente in results (deduplicato per titolo). */
   sources: CheckpointCategory[] | '*';
 }
@@ -933,6 +935,13 @@ const SHEET_COLUMNS: SheetColumnConfig[] = [
     sources: ['coherence'],
   },
   {
+    id: 'copychief',
+    title: 'Copy Chief',
+    icon: <Crown className="w-4 h-4" />,
+    accent: 'amber',
+    sources: ['cro'],
+  },
+  {
     id: 'all',
     title: 'All Step',
     icon: <ListChecks className="w-4 h-4" />,
@@ -957,7 +966,7 @@ function FindingsSheet({
 }) {
   return (
     <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 divide-y sm:divide-y-0 sm:divide-x divide-gray-200">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 divide-y sm:divide-y-0 sm:divide-x divide-gray-200">
         {SHEET_COLUMNS.map((col) => (
           <SheetColumn
             key={col.id}
@@ -1038,7 +1047,9 @@ function SheetColumn({
         ? 'bg-emerald-50 text-emerald-700'
         : config.accent === 'violet'
           ? 'bg-violet-50 text-violet-700'
-          : 'bg-gray-50 text-gray-700';
+          : config.accent === 'amber'
+            ? 'bg-amber-50 text-amber-700'
+            : 'bg-gray-50 text-gray-700';
 
   return (
     <div className="flex flex-col min-h-[320px]">
