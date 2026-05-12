@@ -363,6 +363,60 @@ async function processMessage(msg) {
         default:
           throw new Error(`Unknown swipe_job action: ${job.action}`);
       }
+    } else if (msg.section === 'checkpoint_audit') {
+      // ─── CHECKPOINT AUDIT (qualitative funnel audit, multi-step) ───
+      // Payload (in user_message, JSON-encoded):
+      //   { runId, funnelId, prompts: [{category, system, user}, ...] }
+      // For each category we ask the local model for a JSON verdict,
+      // post the partial result back to the tool so the live dashboard
+      // can stream it, then finalise the run when all categories are
+      // done. Errors per-category don't abort the whole run — we mark
+      // the offending category as 'error' and keep going (matches the
+      // built-in Claude pipeline).
+      let payload;
+      try { payload = JSON.parse(msg.user_message); }
+      catch { throw new Error('Invalid checkpoint_audit payload (not valid JSON)'); }
+
+      const { runId, prompts } = payload;
+      if (!runId) throw new Error('checkpoint_audit missing runId');
+      if (!Array.isArray(prompts) || prompts.length === 0) {
+        throw new Error('checkpoint_audit missing prompts[]');
+      }
+
+      const summary = { ok: 0, errored: 0, total: prompts.length };
+      for (const p of prompts) {
+        const cat = p.category;
+        log(`  ▸ checkpoint ${cat}`);
+        try {
+          const reply = await callOpenClaw([
+            { role: 'system', content: p.system },
+            { role: 'user', content: p.user },
+          ]);
+          await callToolApi(
+            `/api/checkpoint/runs/${runId}/openclaw-category`,
+            { category: cat, reply, ok: true },
+            120_000,
+          );
+          summary.ok++;
+        } catch (e) {
+          err(`  ✗ checkpoint ${cat} failed:`, e.message);
+          await callToolApi(
+            `/api/checkpoint/runs/${runId}/openclaw-category`,
+            { category: cat, ok: false, error: e.message },
+            60_000,
+          ).catch(() => { /* don't crash on follow-up failure */ });
+          summary.errored++;
+        }
+      }
+
+      const finalStatus =
+        summary.ok === 0 ? 'failed' : summary.errored === 0 ? 'completed' : 'partial';
+      await callToolApi(
+        `/api/checkpoint/runs/${runId}/openclaw-finalize`,
+        { status: finalStatus },
+        60_000,
+      );
+      responsePayload = JSON.stringify({ runId, ...summary, status: finalStatus });
     } else if (isRewriteSection(msg.section)) {
       // ─── REWRITE JOB (Trinity quiz-rewrite) ────────────────────────
       // Splittiamo in batch per non far esplodere il context del modello.
@@ -427,10 +481,17 @@ async function poll() {
   isProcessing = true;
 
   try {
+    // Filter so that ONLY rows targeted at this worker (or untargeted
+    // legacy rows) are claimed. Without this, with two workers running
+    // (Neo + Morfeo) the queue is first-come-first-served and the user
+    // can't choose which agent processes a job. The .or() clause keeps
+    // backward compatibility with rows inserted before this column
+    // existed (target_agent IS NULL → anyone can grab them).
     const { data, error } = await supabase
       .from('openclaw_messages')
       .select('*')
       .eq('status', 'pending')
+      .or(`target_agent.is.null,target_agent.eq.${OPENCLAW_MODEL}`)
       .order('created_at', { ascending: true })
       .limit(1);
 

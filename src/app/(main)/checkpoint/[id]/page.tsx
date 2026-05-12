@@ -60,6 +60,27 @@ export default function CheckpointDetailPage({
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
 
+  // Which engine performs the audit. 'claude' = built-in Anthropic
+  // pipeline (in-process, blocking, bound by the platform's serverless
+  // timeout). 'openclaw:neo' / 'openclaw:morfeo' = enqueue the work to
+  // the matching local OpenClaw worker via openclaw_messages
+  // (target_agent column does the routing — no race between Neo and
+  // Morfeo). Persisted in localStorage so refreshes don't reset the
+  // user's choice.
+  type AuditorOption = 'claude' | 'openclaw:neo' | 'openclaw:morfeo';
+  const [auditor, setAuditor] = useState<AuditorOption>('claude');
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const saved = window.localStorage.getItem('checkpoint:auditor');
+    if (saved === 'claude' || saved === 'openclaw:neo' || saved === 'openclaw:morfeo') {
+      setAuditor(saved);
+    }
+  }, []);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem('checkpoint:auditor', auditor);
+  }, [auditor]);
+
   // Visual fetch diagnostic — lets the user see WHICH path the
   // SPA-aware fetcher took (plain fetch / Playwright / Jina / failed)
   // without having to dig into Netlify Function logs.
@@ -271,6 +292,7 @@ export default function CheckpointDetailPage({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           triggeredByName: getCurrentUserName(),
+          auditor,
         }),
         signal: ctrl.signal,
       });
@@ -512,20 +534,32 @@ export default function CheckpointDetailPage({
                 Interrompi
               </button>
             ) : (
-              <button
-                onClick={handleRun}
-                className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700"
-              >
-                {data.runs.length > 0 ? (
-                  <>
-                    <RefreshCw className="w-4 h-4" /> Ri-esegui Checkpoint
-                  </>
-                ) : (
-                  <>
-                    <Play className="w-4 h-4" /> Esegui Checkpoint
-                  </>
-                )}
-              </button>
+              <div className="inline-flex rounded-lg shadow-sm overflow-hidden">
+                <select
+                  value={auditor}
+                  onChange={(e) => setAuditor(e.target.value as AuditorOption)}
+                  className="px-3 py-2 bg-white border border-r-0 border-gray-300 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500 rounded-l-lg"
+                  title="Chi esegue l'audit (Neo/Morfeo girano sui PC OpenClaw)"
+                >
+                  <option value="claude">Claude (built-in)</option>
+                  <option value="openclaw:neo">Neo (OpenClaw)</option>
+                  <option value="openclaw:morfeo">Morfeo (OpenClaw)</option>
+                </select>
+                <button
+                  onClick={handleRun}
+                  className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 rounded-r-lg"
+                >
+                  {data.runs.length > 0 ? (
+                    <>
+                      <RefreshCw className="w-4 h-4" /> Ri-esegui Checkpoint
+                    </>
+                  ) : (
+                    <>
+                      <Play className="w-4 h-4" /> Esegui Checkpoint
+                    </>
+                  )}
+                </button>
+              </div>
             )}
           </div>
         </div>

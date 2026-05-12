@@ -9,7 +9,7 @@ export const maxDuration = 300;
 
 const SERVER_INFO = {
   name: 'funnel-swiper-mcp',
-  version: '1.2.0',
+  version: '1.3.0',
 };
 
 // MCP Streamable HTTP protocol version (2025-03-26 introduced Streamable HTTP)
@@ -1534,7 +1534,7 @@ const TOOLS = [
   },
   {
     name: 'checkpoint_run_start',
-    description: 'Trigger the built-in Claude-powered audit on a funnel. BLOCKS until the run completes (can take 1-5 minutes for multi-step funnels). For long funnels prefer checkpoint_fetch_pages + checkpoint_save_run so the auditor (eg. OpenClaw) does the analysis itself.',
+    description: 'Trigger an audit on a funnel. With the default `auditor: "claude"` this BLOCKS until the run completes (built-in Anthropic pipeline, capped by the platform timeout). With `auditor: "openclaw:neo"` or `"openclaw:morfeo"` the work is enqueued for the SPECIFIC OpenClaw worker (target_agent routing — Neo and Morfeo never race on the same job) and the call returns IMMEDIATELY with the runId; poll checkpoint_run_status to watch the per-category results stream in.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1546,6 +1546,11 @@ const TOOLS = [
         },
         brandProfile: { type: 'string' },
         triggeredByName: { type: 'string', description: 'Name shown in the Log modal — defaults to the API key label.' },
+        auditor: {
+          type: 'string',
+          description: 'Who runs the audit. "claude" = built-in Anthropic, blocking. "openclaw:neo" / "openclaw:morfeo" = enqueue for that specific local worker via openclaw_messages.target_agent (non-blocking, returns the runId immediately).',
+          enum: ['claude', 'openclaw:neo', 'openclaw:morfeo'],
+        },
       },
       required: ['id'],
     },
@@ -2607,11 +2612,12 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
     case 'checkpoint_delete_funnel':
       return await proxyApiCall('DELETE', `/api/checkpoint/${String(args.id)}`, {}, {}, 30_000);
     case 'checkpoint_run_start': {
-      // Built-in Claude pipeline. Caps at 300s — same as the underlying
-      // route's maxDuration. For long funnels prefer the
-      // checkpoint_fetch_pages + checkpoint_save_run combo so the
-      // external auditor (eg. OpenClaw) does the analysis with its
-      // own context window.
+      // Built-in Claude pipeline if `auditor` is omitted or 'claude'
+      // (BLOCKING, capped at 300s by the underlying route). Otherwise
+      // (`auditor: 'openclaw:neo'|'openclaw:morfeo'`) the route
+      // enqueues the work for that specific worker via target_agent
+      // and returns immediately — the proxy timeout of 300s is then
+      // wildly more than needed but harmless.
       const { id, ...body } = args as Record<string, unknown>;
       return await proxyApiCall(
         'POST',
@@ -2808,11 +2814,13 @@ const API_ENDPOINTS = [
   { path: '/api/checkpoint/funnels', methods: ['GET', 'POST'], description: 'List or create Checkpoint funnels' },
   { path: '/api/checkpoint/funnels/import', methods: ['POST'], description: 'Bulk import funnels (eg. from a project)' },
   { path: '/api/checkpoint/[id]', methods: ['GET', 'DELETE'], description: 'Get a Checkpoint funnel + recent runs, or delete it' },
-  { path: '/api/checkpoint/[id]/run', methods: ['POST'], description: 'Trigger the built-in Claude audit on a funnel (blocks 1-5min)' },
+  { path: '/api/checkpoint/[id]/run', methods: ['POST'], description: 'Trigger an audit (auditor: claude=blocking | openclaw:neo|openclaw:morfeo=enqueue)' },
   { path: '/api/checkpoint/[id]/runs', methods: ['POST'], description: 'Save an external audit result (used by OpenClaw via MCP)' },
   { path: '/api/checkpoint/[id]/latest-run', methods: ['GET'], description: 'Most recent run for a funnel (polling-friendly)' },
   { path: '/api/checkpoint/[id]/fetch-pages', methods: ['POST'], description: 'Fetch live HTML/text of all funnel pages for external audits' },
   { path: '/api/checkpoint/runs/[runId]', methods: ['GET'], description: 'Single run by id (live partial results during a run)' },
+  { path: '/api/checkpoint/runs/[runId]/openclaw-category', methods: ['POST'], description: 'OpenClaw worker callback: stream a per-category result into a running audit' },
+  { path: '/api/checkpoint/runs/[runId]/openclaw-finalize', methods: ['POST'], description: 'OpenClaw worker callback: close a streaming audit (recomputes overall score server-side)' },
   { path: '/api/checkpoint/logs', methods: ['GET'], description: 'Global Checkpoint log (newest 200)' },
   { path: '/api/checkpoint/diagnose-fetch', methods: ['POST'], description: 'Diagnose the SPA fallback chain on a single URL' },
 
