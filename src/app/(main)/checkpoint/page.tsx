@@ -383,7 +383,7 @@ export default function CheckpointPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           entryUrl: autoEntryUrl.trim(),
-          maxSteps: 15,
+          maxSteps: 100,
           captureScreenshots: false,
           captureNetwork: false,
           captureCookies: false,
@@ -830,10 +830,10 @@ export default function CheckpointPage() {
                     type="button"
                     onClick={() =>
                       setManualPages((prev) =>
-                        prev.length < 50 ? [...prev, ''] : prev,
+                        prev.length < 100 ? [...prev, ''] : prev,
                       )
                     }
-                    disabled={manualPages.length >= 50}
+                    disabled={manualPages.length >= 100}
                     className="mt-2 inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-700 disabled:opacity-50"
                   >
                     <Plus className="w-3 h-3" />
@@ -841,7 +841,7 @@ export default function CheckpointPage() {
                   </button>
                   <p className="text-xs text-gray-400 mt-2">
                     Il check &quot;Navigazione&quot; richiede almeno 2 step.
-                    Massimo 50.
+                    Massimo 100.
                   </p>
                 </div>
                 <NameField value={formName} onChange={setFormName} />
@@ -899,8 +899,9 @@ export default function CheckpointPage() {
                     </div>
                     <p className="text-xs text-gray-400 -mt-2">
                       Il bot apre la pagina con un browser reale, segue le
-                      CTA e raccoglie fino a 15 step. Tipicamente impiega
-                      30-90s.
+                      CTA e raccoglie fino a 100 step (si ferma da solo
+                      quando il funnel finisce). Su funnel lunghi può
+                      richiedere qualche minuto.
                     </p>
 
                     {autoCrawling && (

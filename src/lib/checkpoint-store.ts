@@ -21,7 +21,7 @@ const SELECT_FUNNEL_FIELDS =
   'last_run_id,last_score_overall,last_run_status,last_run_at,' +
   'created_at,updated_at';
 
-const MAX_PAGES_PER_FUNNEL = 50;
+const MAX_PAGES_PER_FUNNEL = 100;
 
 /** Normalise + validate a single page entry. */
 function normalisePage(input: { url?: string; name?: string }):
