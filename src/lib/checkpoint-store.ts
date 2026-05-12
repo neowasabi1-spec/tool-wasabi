@@ -299,6 +299,52 @@ export async function syncLastRunSnapshot(args: {
   }
 }
 
+/** A run is considered "stale" (= the worker lambda died mid-flight)
+ *  when it stayed in `running` for longer than this. After that we
+ *  flip it to `failed` so the polling UI can stop spinning forever.
+ *  Tuned to comfortably exceed the slowest legitimate run (multi-step
+ *  funnel with Playwright cold starts) but well under "user already
+ *  gave up". */
+const RUN_STALE_AFTER_MS = 10 * 60 * 1000; // 10 minutes
+
+/** If `row` is a `running` checkpoint older than the stale threshold,
+ *  flip it to `failed` in-place (both in the DB and on the returned
+ *  object). This prevents the live dashboard from spinning forever
+ *  when the serverless function gets killed mid-run by the platform
+ *  (Netlify free tier 10s, Pro 26s/300s, etc.). */
+async function reapStaleRun(
+  row: CheckpointRun | null,
+): Promise<CheckpointRun | null> {
+  if (!row) return row;
+  if (row.status !== 'running') return row;
+  const startedAt = new Date(row.started_at ?? row.created_at).getTime();
+  if (!Number.isFinite(startedAt)) return row;
+  if (Date.now() - startedAt < RUN_STALE_AFTER_MS) return row;
+
+  const completedAt = new Date().toISOString();
+  const errorMsg =
+    'Run interrotta dal server (timeout della funzione). Riprova: il fetch delle pagine ora gira in parallelo, ma una run molto lunga può ancora superare il limite della piattaforma.';
+  const { error } = await supabase
+    .from('funnel_checkpoints')
+    .update({
+      status: 'failed' as CheckpointRunStatus,
+      error: errorMsg,
+      completed_at: completedAt,
+    })
+    .eq('id', row.id)
+    .eq('status', 'running'); // CAS-like: don't clobber a row that just finished
+  if (error) {
+    console.warn(`[checkpoint-store] reapStaleRun: ${error.message}`);
+    return row;
+  }
+  return {
+    ...row,
+    status: 'failed' as CheckpointRunStatus,
+    error: errorMsg,
+    completed_at: completedAt,
+  };
+}
+
 /** Single run row. Used by the polling endpoint to surface
  *  partial-state updates while a run is in progress. */
 export async function getRun(runId: string): Promise<CheckpointRun | null> {
@@ -311,7 +357,7 @@ export async function getRun(runId: string): Promise<CheckpointRun | null> {
     console.warn(`[checkpoint-store] getRun: ${error.message}`);
     return null;
   }
-  return (data as unknown as CheckpointRun | null) ?? null;
+  return reapStaleRun((data as unknown as CheckpointRun | null) ?? null);
 }
 
 /** Most recent run for a funnel. Used right after the user clicks
@@ -330,7 +376,7 @@ export async function getLatestRunForFunnel(
     console.warn(`[checkpoint-store] getLatestRunForFunnel: ${error.message}`);
     return null;
   }
-  return (data as unknown as CheckpointRun | null) ?? null;
+  return reapStaleRun((data as unknown as CheckpointRun | null) ?? null);
 }
 
 /** History of runs for a funnel, newest first. */
@@ -418,11 +464,17 @@ export async function fetchFunnelHtml(url: string): Promise<string | null> {
   return fetched.html;
 }
 
-/** v2: fetch HTML for ALL pages of a multi-step funnel, in order.
- *  Returns one entry per page, with html=null when that specific page
- *  failed (so the caller can decide whether to abort or continue).
- *  Pages are fetched sequentially to be gentle on the source servers
- *  and to keep memory bounded — Playwright is heavy. */
+/** v2: fetch HTML for ALL pages of a multi-step funnel.
+ *  Returns one entry per page (in input order), with html=null when
+ *  that specific page failed (so the caller can decide whether to
+ *  abort or continue).
+ *
+ *  Pages are fetched in PARALLEL with bounded concurrency. Sequential
+ *  fetching used to put the whole run over Netlify's function timeout
+ *  on funnels with >5 steps (each Playwright render can take 15-30s).
+ *  Concurrency is capped to avoid exhausting Lambda memory — Playwright
+ *  spawns one Chromium instance per concurrent fetch.
+ */
 export interface FunnelPageHtml {
   index: number;
   url: string;
@@ -432,32 +484,43 @@ export interface FunnelPageHtml {
   error: string | null;
 }
 
+const FETCH_CONCURRENCY = 3;
+
 export async function fetchFunnelPagesHtml(
   pages: CheckpointFunnelPage[],
 ): Promise<FunnelPageHtml[]> {
-  const out: FunnelPageHtml[] = [];
-  for (let i = 0; i < pages.length; i++) {
-    const p = pages[i];
-    try {
-      const html = await fetchFunnelHtml(p.url);
-      out.push({
-        index: i,
-        url: p.url,
-        name: p.name,
-        html,
-        htmlLength: html?.length ?? 0,
-        error: html ? null : 'fetch returned null',
-      });
-    } catch (err) {
-      out.push({
-        index: i,
-        url: p.url,
-        name: p.name,
-        html: null,
-        htmlLength: 0,
-        error: err instanceof Error ? err.message : String(err),
-      });
+  const out: FunnelPageHtml[] = new Array(pages.length);
+  let cursor = 0;
+
+  async function worker(): Promise<void> {
+    while (true) {
+      const i = cursor++;
+      if (i >= pages.length) return;
+      const p = pages[i];
+      try {
+        const html = await fetchFunnelHtml(p.url);
+        out[i] = {
+          index: i,
+          url: p.url,
+          name: p.name,
+          html,
+          htmlLength: html?.length ?? 0,
+          error: html ? null : 'fetch returned null',
+        };
+      } catch (err) {
+        out[i] = {
+          index: i,
+          url: p.url,
+          name: p.name,
+          html: null,
+          htmlLength: 0,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
     }
   }
+
+  const workerCount = Math.min(FETCH_CONCURRENCY, pages.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
   return out;
 }

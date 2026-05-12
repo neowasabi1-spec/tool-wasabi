@@ -11,6 +11,7 @@ import {
   Search,
   Filter,
   ArrowRight,
+  ArrowLeft,
   CheckCircle2,
   AlertTriangle,
   XCircle,
@@ -24,6 +25,11 @@ import {
   Pencil,
   Check,
   Sparkles,
+  Globe,
+  Layers,
+  Wand2,
+  MousePointer2,
+  RefreshCw,
 } from 'lucide-react';
 import type {
   CheckpointFunnel,
@@ -118,11 +124,81 @@ export default function CheckpointPage() {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
 
-  const [showAdd, setShowAdd] = useState(false);
+  // Inline "add" panel under the toolbar. The two top-level buttons
+  // (Landing / Funnel) toggle which sub-form is visible.
+  //   - closed        → no panel visible
+  //   - landing       → single URL form
+  //   - funnel-pick   → 2 cards: manual vs auto-discover
+  //   - funnel-manual → list of URL inputs the user fills in by hand
+  //   - funnel-auto   → one entry URL → crawl → pick discovered steps
+  type AddMode =
+    | 'closed'
+    | 'landing'
+    | 'funnel-pick'
+    | 'funnel-manual'
+    | 'funnel-auto';
+  const [addMode, setAddMode] = useState<AddMode>('closed');
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
-  const [formUrl, setFormUrl] = useState('');
   const [formName, setFormName] = useState('');
+
+  // Landing mode: single URL.
+  const [landingUrl, setLandingUrl] = useState('');
+
+  // Funnel manual mode: one URL per row, +/- buttons to manage rows.
+  const [manualPages, setManualPages] = useState<string[]>(['', '']);
+
+  // Funnel auto mode: enter one URL → crawl → choose which steps to keep.
+  const [autoEntryUrl, setAutoEntryUrl] = useState('');
+  const [autoCrawling, setAutoCrawling] = useState(false);
+  const [autoJobId, setAutoJobId] = useState<string | null>(null);
+  const [autoProgress, setAutoProgress] = useState<{
+    current: number;
+    total: number;
+  } | null>(null);
+  const [autoSteps, setAutoSteps] = useState<
+    { url: string; title: string }[] | null
+  >(null);
+  const [autoSelected, setAutoSelected] = useState<Set<number>>(new Set());
+
+  const resetAddState = () => {
+    setAddError(null);
+    setFormName('');
+    setLandingUrl('');
+    setManualPages(['', '']);
+    setAutoEntryUrl('');
+    setAutoJobId(null);
+    setAutoProgress(null);
+    setAutoSteps(null);
+    setAutoSelected(new Set());
+  };
+
+  const closeAddPanel = () => {
+    if (adding || autoCrawling) return;
+    setAddMode('closed');
+    resetAddState();
+  };
+
+  /** Toggle helper used by the two top-level toolbar buttons. Clicking
+   *  the same button twice closes the inline panel; clicking the other
+   *  swaps to it (resetting per-mode form state in between). */
+  const toggleAddMode = (target: 'landing' | 'funnel-pick') => {
+    if (adding || autoCrawling) return;
+    setAddError(null);
+    if (
+      (target === 'landing' && addMode === 'landing') ||
+      (target === 'funnel-pick' &&
+        (addMode === 'funnel-pick' ||
+          addMode === 'funnel-manual' ||
+          addMode === 'funnel-auto'))
+    ) {
+      setAddMode('closed');
+      resetAddState();
+      return;
+    }
+    resetAddState();
+    setAddMode(target);
+  };
 
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
@@ -219,43 +295,161 @@ export default function CheckpointPage() {
     return { total, checked, passing, failing };
   }, [funnels]);
 
-  const handleAdd = async (e: React.FormEvent) => {
+  /** Shared submitter used by all three add modes. Each mode resolves
+   *  its own `urls` list and delegates here so name handling, error
+   *  handling and reload-on-success live in one place. */
+  const submitFunnel = async (urls: string[]) => {
+    const cleaned = urls.map((u) => u.trim()).filter(Boolean);
+    if (cleaned.length === 0) {
+      throw new Error('Inserisci almeno una URL.');
+    }
+    const pages = cleaned.map((url) => ({ url }));
+    const res = await fetch('/api/checkpoint/funnels', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        pages,
+        name: formName.trim() || undefined,
+      }),
+    });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
+  };
+
+  const handleAddLanding = async (e: React.FormEvent) => {
     e.preventDefault();
     setAdding(true);
     setAddError(null);
     try {
-      // Parse the textarea: one URL per line, ignore empty lines and
-      // surrounding whitespace. The category 'navigation' needs at
-      // least 2 URLs to actually run, but we accept 1 here so the
-      // user can still create a single-page audit (only coherence +
-      // copy will execute).
-      const urls = formUrl
-        .split(/\r?\n/)
-        .map((s) => s.trim())
-        .filter(Boolean);
-      if (urls.length === 0) {
-        throw new Error('Inserisci almeno una URL.');
-      }
-      const pages = urls.map((url) => ({ url }));
-      const res = await fetch('/api/checkpoint/funnels', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          pages,
-          name: formName.trim() || undefined,
-        }),
-      });
-      const body = await res.json();
-      if (!res.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
-      setFormUrl('');
-      setFormName('');
-      setShowAdd(false);
+      await submitFunnel([landingUrl]);
+      closeAddPanel();
       reload();
     } catch (err) {
       setAddError(err instanceof Error ? err.message : String(err));
     } finally {
       setAdding(false);
     }
+  };
+
+  const handleAddManual = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAdding(true);
+    setAddError(null);
+    try {
+      await submitFunnel(manualPages);
+      closeAddPanel();
+      reload();
+    } catch (err) {
+      setAddError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const handleAddAuto = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!autoSteps || autoSteps.length === 0) return;
+    setAdding(true);
+    setAddError(null);
+    try {
+      const urls = Array.from(autoSelected)
+        .sort((a, b) => a - b)
+        .map((i) => autoSteps[i]?.url)
+        .filter((u): u is string => !!u);
+      await submitFunnel(urls);
+      closeAddPanel();
+      reload();
+    } catch (err) {
+      setAddError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  /** Kick off the funnel crawler and poll for completion. The crawl
+   *  job lives in `/api/funnel-analyzer/crawl/*` and runs Playwright
+   *  in the background, so the only thing we have to do here is poll
+   *  every ~1.5s and surface progress in the modal. */
+  const startAutoCrawl = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAddError(null);
+    setAutoSteps(null);
+    setAutoSelected(new Set());
+    setAutoProgress(null);
+    setAutoCrawling(true);
+    try {
+      const startRes = await fetch('/api/funnel-analyzer/crawl/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          entryUrl: autoEntryUrl.trim(),
+          maxSteps: 15,
+          captureScreenshots: false,
+          captureNetwork: false,
+          captureCookies: false,
+        }),
+      });
+      const startBody = await startRes.json();
+      if (!startRes.ok || !startBody?.jobId) {
+        throw new Error(startBody?.error ?? `HTTP ${startRes.status}`);
+      }
+      const jobId = startBody.jobId as string;
+      setAutoJobId(jobId);
+
+      // Poll until 'completed' or 'failed'. Cap the loop at ~3 min so
+      // a wedged crawl can't spin the modal forever.
+      const giveUpAt = Date.now() + 3 * 60 * 1000;
+      while (Date.now() < giveUpAt) {
+        await new Promise((r) => setTimeout(r, 1500));
+        const statusRes = await fetch(
+          `/api/funnel-analyzer/crawl/status/${jobId}`,
+          { cache: 'no-store' },
+        );
+        const statusBody = await statusRes.json();
+        if (!statusRes.ok) {
+          throw new Error(statusBody?.error ?? `HTTP ${statusRes.status}`);
+        }
+        setAutoProgress({
+          current: statusBody.currentStep ?? 0,
+          total: statusBody.totalSteps ?? 0,
+        });
+        if (statusBody.status === 'completed') {
+          const steps = (statusBody.result?.steps ?? []) as {
+            url: string;
+            title?: string;
+          }[];
+          if (steps.length === 0) {
+            throw new Error(
+              "Il crawler non ha trovato pagine. Prova in modalità manuale.",
+            );
+          }
+          const cleaned = steps.map((s) => ({
+            url: s.url,
+            title: s.title || s.url,
+          }));
+          setAutoSteps(cleaned);
+          setAutoSelected(new Set(cleaned.map((_, i) => i)));
+          return;
+        }
+        if (statusBody.status === 'failed') {
+          throw new Error(statusBody.error ?? 'Crawl fallito.');
+        }
+      }
+      throw new Error('Timeout: il crawler ha impiegato troppo. Riprova.');
+    } catch (err) {
+      setAddError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAutoCrawling(false);
+    }
+  };
+
+  const toggleAutoStep = (i: number) => {
+    setAutoSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(i)) next.delete(i);
+      else next.add(i);
+      return next;
+    });
   };
 
   const handleDelete = async (id: string, name: string) => {
@@ -363,13 +557,37 @@ export default function CheckpointPage() {
               Log
             </button>
 
-            <button
-              onClick={() => setShowAdd(true)}
-              className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors"
-            >
-              <Plus className="w-4 h-4" />
-              Aggiungi funnel
-            </button>
+            <div className="inline-flex rounded-lg overflow-hidden border border-gray-200 shadow-sm">
+              <button
+                onClick={() => toggleAddMode('landing')}
+                disabled={adding || autoCrawling}
+                className={`inline-flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors disabled:opacity-50 ${
+                  addMode === 'landing'
+                    ? 'bg-emerald-600 text-white hover:bg-emerald-700'
+                    : 'bg-white text-gray-700 hover:bg-emerald-50 hover:text-emerald-700'
+                }`}
+                title="Audit di una singola pagina"
+              >
+                <Globe className="w-4 h-4" />
+                Landing
+              </button>
+              <div className="w-px bg-gray-200" />
+              <button
+                onClick={() => toggleAddMode('funnel-pick')}
+                disabled={adding || autoCrawling}
+                className={`inline-flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors disabled:opacity-50 ${
+                  addMode === 'funnel-pick' ||
+                  addMode === 'funnel-manual' ||
+                  addMode === 'funnel-auto'
+                    ? 'bg-blue-600 text-white hover:bg-blue-700'
+                    : 'bg-white text-gray-700 hover:bg-blue-50 hover:text-blue-700'
+                }`}
+                title="Audit di un funnel multi-step"
+              >
+                <Layers className="w-4 h-4" />
+                Funnel
+              </button>
+            </div>
           </div>
 
           {/* "Who am I" strip. Will be replaced by auth session lookup
@@ -426,6 +644,377 @@ export default function CheckpointPage() {
             )}
           </div>
         </div>
+
+        {/* Inline add panel — shown right under the toolbar when the
+            user clicks the Landing or Funnel button. */}
+        {addMode !== 'closed' && (
+          <div
+            className={`bg-white rounded-lg border p-5 ${
+              addMode === 'landing'
+                ? 'border-emerald-200 shadow-emerald-100/40'
+                : 'border-blue-200 shadow-blue-100/40'
+            } shadow-sm`}
+          >
+            {/* Header strip with title + close (X) */}
+            <div className="flex items-start justify-between mb-4">
+              <div className="flex items-center gap-2">
+                {addMode === 'landing' && (
+                  <Globe className="w-4 h-4 text-emerald-600" />
+                )}
+                {(addMode === 'funnel-pick' ||
+                  addMode === 'funnel-manual' ||
+                  addMode === 'funnel-auto') && (
+                  <Layers className="w-4 h-4 text-blue-600" />
+                )}
+                <h3 className="text-sm font-semibold text-gray-900">
+                  {addMode === 'landing' && 'Aggiungi una landing'}
+                  {addMode === 'funnel-pick' && 'Aggiungi un funnel'}
+                  {addMode === 'funnel-manual' &&
+                    'Funnel multi-step (manuale)'}
+                  {addMode === 'funnel-auto' &&
+                    'Funnel da URL iniziale (auto)'}
+                </h3>
+                {(addMode === 'funnel-manual' ||
+                  addMode === 'funnel-auto') && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (adding || autoCrawling) return;
+                      setAddError(null);
+                      setAddMode('funnel-pick');
+                    }}
+                    className="ml-2 inline-flex items-center gap-1 text-xs text-gray-500 hover:text-blue-600"
+                  >
+                    <ArrowLeft className="w-3 h-3" />
+                    Cambia modalità
+                  </button>
+                )}
+              </div>
+              <button
+                onClick={closeAddPanel}
+                disabled={adding || autoCrawling}
+                className="p-1 text-gray-400 hover:text-gray-600 disabled:opacity-50"
+                title="Chiudi"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Screen: landing (single URL) */}
+            {addMode === 'landing' && (
+              <form
+                onSubmit={handleAddLanding}
+                className="flex flex-wrap items-end gap-3"
+              >
+                <div className="flex-1 min-w-[260px]">
+                  <label className="block text-xs font-medium text-gray-700 mb-1">
+                    URL della landing{' '}
+                    <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    required
+                    type="url"
+                    value={landingUrl}
+                    onChange={(e) => setLandingUrl(e.target.value)}
+                    placeholder="https://esempio.com/landing"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    autoFocus
+                  />
+                </div>
+                <div className="w-56">
+                  <label className="block text-xs font-medium text-gray-700 mb-1">
+                    Nome (opzionale)
+                  </label>
+                  <input
+                    type="text"
+                    value={formName}
+                    onChange={(e) => setFormName(e.target.value)}
+                    placeholder="Es: Landing v3"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  disabled={adding || !landingUrl.trim()}
+                  className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white text-sm font-medium rounded-lg hover:bg-emerald-700 disabled:opacity-50"
+                >
+                  {adding ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Aggiungo...
+                    </>
+                  ) : (
+                    <>
+                      <Plus className="w-4 h-4" />
+                      Aggiungi
+                    </>
+                  )}
+                </button>
+                {addError && (
+                  <div className="w-full">
+                    <ErrorBanner message={addError} />
+                  </div>
+                )}
+              </form>
+            )}
+
+            {/* Screen: funnel pick (manual / auto) */}
+            {addMode === 'funnel-pick' && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <ModeCard
+                  icon={<MousePointer2 className="w-5 h-5" />}
+                  title="Multi-step manuale"
+                  description="Incolla a mano tutti gli URL del funnel, in ordine."
+                  onClick={() => setAddMode('funnel-manual')}
+                />
+                <ModeCard
+                  icon={<Wand2 className="w-5 h-5" />}
+                  title="Da URL iniziale"
+                  description="Dai solo il primo URL: il bot naviga il funnel e ti mostra gli step trovati."
+                  onClick={() => setAddMode('funnel-auto')}
+                  accent="violet"
+                />
+              </div>
+            )}
+
+            {/* Screen: funnel manual (list of URL inputs) */}
+            {addMode === 'funnel-manual' && (
+              <form onSubmit={handleAddManual} className="space-y-4">
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 mb-1">
+                    URL degli step <span className="text-red-500">*</span>{' '}
+                    <span className="text-gray-400 font-normal">
+                      — in ordine, dal primo all&apos;ultimo
+                    </span>
+                  </label>
+                  <div className="space-y-2">
+                    {manualPages.map((url, i) => (
+                      <div key={i} className="flex items-center gap-2">
+                        <span className="text-xs text-gray-400 font-mono w-6 text-right">
+                          {i + 1}.
+                        </span>
+                        <input
+                          type="url"
+                          value={url}
+                          onChange={(e) => {
+                            const next = [...manualPages];
+                            next[i] = e.target.value;
+                            setManualPages(next);
+                          }}
+                          placeholder={
+                            i === 0
+                              ? 'https://esempio.com/landing'
+                              : i === 1
+                                ? 'https://esempio.com/checkout'
+                                : 'https://esempio.com/...'
+                          }
+                          className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          autoFocus={i === 0 && url === ''}
+                        />
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setManualPages((prev) =>
+                              prev.length > 1
+                                ? prev.filter((_, idx) => idx !== i)
+                                : prev,
+                            )
+                          }
+                          disabled={manualPages.length <= 1}
+                          className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded disabled:opacity-30 disabled:cursor-not-allowed"
+                          title="Rimuovi step"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setManualPages((prev) =>
+                        prev.length < 50 ? [...prev, ''] : prev,
+                      )
+                    }
+                    disabled={manualPages.length >= 50}
+                    className="mt-2 inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-700 disabled:opacity-50"
+                  >
+                    <Plus className="w-3 h-3" />
+                    Aggiungi step
+                  </button>
+                  <p className="text-xs text-gray-400 mt-2">
+                    Il check &quot;Navigazione&quot; richiede almeno 2 step.
+                    Massimo 50.
+                  </p>
+                </div>
+                <NameField value={formName} onChange={setFormName} />
+                {addError && <ErrorBanner message={addError} />}
+                <SubmitBar
+                  onCancel={closeAddPanel}
+                  disabled={
+                    adding ||
+                    manualPages.filter((u) => u.trim()).length === 0
+                  }
+                  loading={adding}
+                />
+              </form>
+            )}
+
+            {/* Screen: funnel auto (entry URL → crawl → pick steps) */}
+            {addMode === 'funnel-auto' && (
+              <div className="space-y-4">
+                {!autoSteps && (
+                  <form onSubmit={startAutoCrawl} className="space-y-4">
+                    <div className="flex flex-wrap items-end gap-3">
+                      <div className="flex-1 min-w-[280px]">
+                        <label className="block text-xs font-medium text-gray-700 mb-1">
+                          URL iniziale del funnel{' '}
+                          <span className="text-red-500">*</span>
+                        </label>
+                        <input
+                          required
+                          type="url"
+                          value={autoEntryUrl}
+                          onChange={(e) => setAutoEntryUrl(e.target.value)}
+                          placeholder="https://esempio.com/landing"
+                          disabled={autoCrawling}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-violet-500 disabled:bg-gray-50"
+                          autoFocus
+                        />
+                      </div>
+                      <button
+                        type="submit"
+                        disabled={autoCrawling || !autoEntryUrl.trim()}
+                        className="inline-flex items-center gap-2 px-4 py-2 bg-violet-600 text-white text-sm font-medium rounded-lg hover:bg-violet-700 disabled:opacity-50"
+                      >
+                        {autoCrawling ? (
+                          <>
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            Sto esplorando...
+                          </>
+                        ) : (
+                          <>
+                            <Wand2 className="w-4 h-4" />
+                            Scopri pagine
+                          </>
+                        )}
+                      </button>
+                    </div>
+                    <p className="text-xs text-gray-400 -mt-2">
+                      Il bot apre la pagina con un browser reale, segue le
+                      CTA e raccoglie fino a 15 step. Tipicamente impiega
+                      30-90s.
+                    </p>
+
+                    {autoCrawling && (
+                      <div className="bg-violet-50 border border-violet-200 rounded-lg p-3">
+                        <div className="flex items-center gap-2 text-sm text-violet-800">
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          <span className="font-medium">
+                            Esploro il funnel...
+                          </span>
+                        </div>
+                        {autoProgress && autoProgress.current > 0 && (
+                          <div className="mt-2 text-xs text-violet-700">
+                            Step trovati finora:{' '}
+                            <strong>{autoProgress.current}</strong>
+                          </div>
+                        )}
+                        {autoJobId && (
+                          <div className="mt-1 text-[10px] text-violet-500 font-mono truncate">
+                            job: {autoJobId}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {addError && <ErrorBanner message={addError} />}
+                  </form>
+                )}
+
+                {autoSteps && (
+                  <form onSubmit={handleAddAuto} className="space-y-4">
+                    <div className="flex items-center justify-between">
+                      <div className="text-sm">
+                        <strong className="text-gray-900">
+                          {autoSteps.length}
+                        </strong>{' '}
+                        <span className="text-gray-600">step trovati · </span>
+                        <strong className="text-violet-700">
+                          {autoSelected.size}
+                        </strong>
+                        <span className="text-gray-600"> selezionati</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAutoSteps(null);
+                          setAutoSelected(new Set());
+                          setAutoProgress(null);
+                          setAddError(null);
+                        }}
+                        className="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700"
+                      >
+                        <RefreshCw className="w-3 h-3" />
+                        Riprova
+                      </button>
+                    </div>
+
+                    <div className="border border-gray-200 rounded-lg divide-y divide-gray-100 max-h-72 overflow-y-auto">
+                      {autoSteps.map((s, i) => {
+                        const checked = autoSelected.has(i);
+                        return (
+                          <label
+                            key={i}
+                            className={`flex items-start gap-3 px-3 py-2 cursor-pointer hover:bg-gray-50 ${
+                              checked ? 'bg-violet-50/50' : ''
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => toggleAutoStep(i)}
+                              className="mt-1 accent-violet-600"
+                            />
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs font-mono text-gray-400">
+                                  {i + 1}.
+                                </span>
+                                <span className="text-sm font-medium text-gray-800 truncate">
+                                  {s.title}
+                                </span>
+                              </div>
+                              <a
+                                href={s.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                onClick={(e) => e.stopPropagation()}
+                                className="text-xs text-gray-500 hover:text-blue-600 flex items-center gap-1 mt-0.5 truncate"
+                              >
+                                <ExternalLink className="w-3 h-3 shrink-0" />
+                                {s.url}
+                              </a>
+                            </div>
+                          </label>
+                        );
+                      })}
+                    </div>
+
+                    <NameField value={formName} onChange={setFormName} />
+                    {addError && <ErrorBanner message={addError} />}
+                    <SubmitBar
+                      onCancel={closeAddPanel}
+                      disabled={adding || autoSelected.size === 0}
+                      loading={adding}
+                      label={`Aggiungi ${autoSelected.size} step`}
+                    />
+                  </form>
+                )}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* List */}
         {loading ? (
@@ -549,108 +1138,6 @@ export default function CheckpointPage() {
           </div>
         )}
       </div>
-
-      {/* Add modal */}
-      {showAdd && (
-        <div
-          className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4"
-          onClick={() => !adding && setShowAdd(false)}
-        >
-          <div
-            className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-start justify-between mb-4">
-              <div>
-                <h2 className="text-lg font-semibold text-gray-900">
-                  Aggiungi funnel
-                </h2>
-                <p className="text-xs text-gray-500 mt-0.5">
-                  Incolla l&apos;URL della pagina da auditare.
-                </p>
-              </div>
-              <button
-                onClick={() => !adding && setShowAdd(false)}
-                className="p-1 text-gray-400 hover:text-gray-600"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <form onSubmit={handleAdd} className="space-y-4">
-              <div>
-                <label className="block text-xs font-medium text-gray-700 mb-1">
-                  URL del funnel <span className="text-red-500">*</span>{' '}
-                  <span className="text-gray-400 font-normal">— una per riga, in ordine</span>
-                </label>
-                <textarea
-                  required
-                  rows={6}
-                  value={formUrl}
-                  onChange={(e) => setFormUrl(e.target.value)}
-                  placeholder={'https://esempio.com/landing\nhttps://esempio.com/checkout\nhttps://esempio.com/upsell\nhttps://esempio.com/thank-you'}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  autoFocus
-                />
-                <p className="text-xs text-gray-400 mt-1">
-                  Inserisci tutti gli step del funnel, dal primo (landing)
-                  all&apos;ultimo (thank-you). Il check &quot;Navigazione&quot;
-                  richiede almeno 2 step. Massimo 50.
-                </p>
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-gray-700 mb-1">
-                  Nome del funnel (opzionale)
-                </label>
-                <input
-                  type="text"
-                  value={formName}
-                  onChange={(e) => setFormName(e.target.value)}
-                  placeholder="Es: Nooro – Funnel completo v3"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-                <p className="text-xs text-gray-400 mt-1">
-                  Se vuoto, useremo il dominio della prima pagina.
-                </p>
-              </div>
-
-              {addError && (
-                <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-md px-3 py-2">
-                  {addError}
-                </div>
-              )}
-
-              <div className="flex items-center justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setShowAdd(false)}
-                  disabled={adding}
-                  className="px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-lg disabled:opacity-50"
-                >
-                  Annulla
-                </button>
-                <button
-                  type="submit"
-                  disabled={adding || !formUrl.trim()}
-                  className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50"
-                >
-                  {adding ? (
-                    <>
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      Aggiungo...
-                    </>
-                  ) : (
-                    <>
-                      <Plus className="w-4 h-4" />
-                      Aggiungi
-                    </>
-                  )}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
 
       {/* Log modal */}
       {showLog && (
@@ -853,6 +1340,127 @@ function StatCard({
         {label}
       </div>
       <div className={`text-2xl font-bold mt-1 ${accentClass}`}>{value}</div>
+    </div>
+  );
+}
+
+/** Tile-style picker used by both the top-level Landing/Funnel choice
+ *  and the Manual/Auto sub-choice inside Funnel. Keeps the wizard feel
+ *  consistent across screens. */
+function ModeCard({
+  icon,
+  title,
+  description,
+  onClick,
+  accent = 'gray',
+}: {
+  icon: React.ReactNode;
+  title: string;
+  description: string;
+  onClick: () => void;
+  accent?: 'gray' | 'blue' | 'violet';
+}) {
+  const accentRing =
+    accent === 'blue'
+      ? 'hover:border-blue-400 hover:ring-blue-100 hover:bg-blue-50/40'
+      : accent === 'violet'
+        ? 'hover:border-violet-400 hover:ring-violet-100 hover:bg-violet-50/40'
+        : 'hover:border-gray-400 hover:ring-gray-100 hover:bg-gray-50';
+  const iconBg =
+    accent === 'blue'
+      ? 'bg-blue-100 text-blue-600'
+      : accent === 'violet'
+        ? 'bg-violet-100 text-violet-600'
+        : 'bg-gray-100 text-gray-600';
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`text-left p-4 border border-gray-200 rounded-xl transition-all hover:ring-4 ${accentRing}`}
+    >
+      <div className={`w-10 h-10 rounded-lg flex items-center justify-center mb-3 ${iconBg}`}>
+        {icon}
+      </div>
+      <div className="font-semibold text-gray-900 text-sm">{title}</div>
+      <div className="text-xs text-gray-500 mt-1 leading-snug">
+        {description}
+      </div>
+    </button>
+  );
+}
+
+function NameField({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <div>
+      <label className="block text-xs font-medium text-gray-700 mb-1">
+        Nome del funnel (opzionale)
+      </label>
+      <input
+        type="text"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="Es: Nooro – Funnel completo v3"
+        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+      />
+      <p className="text-xs text-gray-400 mt-1">
+        Se vuoto, useremo il dominio della prima pagina.
+      </p>
+    </div>
+  );
+}
+
+function ErrorBanner({ message }: { message: string }) {
+  return (
+    <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-md px-3 py-2">
+      {message}
+    </div>
+  );
+}
+
+function SubmitBar({
+  onCancel,
+  disabled,
+  loading,
+  label = 'Aggiungi',
+}: {
+  onCancel: () => void;
+  disabled: boolean;
+  loading: boolean;
+  label?: string;
+}) {
+  return (
+    <div className="flex items-center justify-end gap-2 pt-2">
+      <button
+        type="button"
+        onClick={onCancel}
+        disabled={loading}
+        className="px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-lg disabled:opacity-50"
+      >
+        Annulla
+      </button>
+      <button
+        type="submit"
+        disabled={disabled}
+        className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50"
+      >
+        {loading ? (
+          <>
+            <Loader2 className="w-4 h-4 animate-spin" />
+            Aggiungo...
+          </>
+        ) : (
+          <>
+            <Plus className="w-4 h-4" />
+            {label}
+          </>
+        )}
+      </button>
     </div>
   );
 }
