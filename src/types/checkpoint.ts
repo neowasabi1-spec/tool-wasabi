@@ -16,9 +16,16 @@
  *    1. navigation — Tech/Detail audit (Macro-section 1: Technical QA
  *                    of the funnel: swipe residuals, brand & mechanism
  *                    consistency, pricing, links, etc.)
- *    2. coherence  — Visual audit (placeholder until the dedicated
- *                    Visual prompt arrives — currently still runs the
- *                    legacy "internal coherence" prompt)
+ *    2. coherence  — Visual / UX audit (Visual & UX Audit Agent v1.0).
+ *                    NOTA: la maggior parte delle check del prompt
+ *                    originale (typography, color, screenshots, hero
+ *                    image quality, padding) richiede vision model +
+ *                    Playwright screenshots e qui viene emessa come
+ *                    info NOT VERIFIED. Operative oggi solo le check
+ *                    text-deducibili (banner blindness, wall-of-text,
+ *                    CTA labels, sales page section flow, headline-
+ *                    body congruence). Iterazione futura: catturare
+ *                    screenshots e usare un vision model.
  *    3. copy       — Marketing audit (Macro-section 2: 3-expert copy
  *                    QC, Sultanich · Hormozi · Georgi)
  *    4. cro        — Copy Chief audit (Copy Chief Agent v1.0 — single
@@ -65,7 +72,7 @@ export const CHECKPOINT_CATEGORY_DESCRIPTIONS: Record<
   navigation:
     'Technical QA del funnel (Macro-section 1): swipe residuals, brand & mechanism consistency (1C critico), prezzi, numeri/claims, date, links/flow, urgency. Mark NOT VERIFIED per check che richiedono browser/JS/mobile/screenshots.',
   coherence:
-    'Coerenza interna across tutta la sequenza: claim vs proof, promesse vs garanzie, mechanism vs benefit, contraddizioni tra step.',
+    'Visual / UX audit (Visual & UX Audit Agent v1.0): banner blindness, wall-of-text density, CTA label quality + supporting copy, sales page section flow, social proof copy, headline↔body congruence. Limiti del sistema: typography/contrast/screenshots/mobile sono NOT VERIFIED finché non si aggiunge un vision model.',
   copy:
     'Marketing audit (Macro-section 2): tre esperti in uno (Sultanich systems · Hormozi offer · Georgi RMBC). Funnel ID, narrative fit, IF-THEN, One Big Idea, Value Equation, Grand Slam Offer, Avatar DRE, mechanism depth, Evaldo 10Q, pain triplets, Satir 6 layers, social proof, LIFT.',
   cro:
