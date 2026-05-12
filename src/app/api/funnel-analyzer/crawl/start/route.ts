@@ -39,10 +39,37 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Strip Facebook / ad-network placeholders like {{ad.id}}, {{adset.id}},
+    // {{campaign.name}}, {{site_source_name}}, {{placement}}.  These are
+    // resolved by Facebook *at click time*; if we hand them straight to
+    // Playwright the tracking domain often 400s or 302-loops while waiting
+    // for variables that will never show up, and the job sits at "running"
+    // until we hit the lambda timeout.  Strip-and-go is way better than
+    // erroring, so we replace the whole `{{…}}` token with an empty
+    // string and let the tracker do its best with empty UTMs.
+    let cleanedEntryUrl = entryUrl.trim();
+    const placeholderRe = /\{\{[^{}]+\}\}/g;
+    if (placeholderRe.test(cleanedEntryUrl)) {
+      const stripped = cleanedEntryUrl.match(placeholderRe) || [];
+      cleanedEntryUrl = cleanedEntryUrl.replace(placeholderRe, '');
+      console.log(
+        `[crawl/start] stripped ${stripped.length} placeholder(s) from entryUrl: ${stripped.join(', ')}`,
+      );
+    }
+
+    // Hard ceiling on steps. Each Playwright navigation takes 30-120s on
+    // a real site, and the Netlify lambda dies after 300s (see netlify.toml).
+    // A maxSteps higher than ~30 cannot physically finish before the
+    // lambda is recycled, leaving the row stuck on `running` forever and
+    // the polling client erroring out with "Timeout: il crawler ha
+    // impiegato troppo".  If you need more than 30 pages, use the manual
+    // entry mode instead of auto-discovery.
+    const cappedMaxSteps = Math.min(Math.max(1, Number(maxSteps) || 15), 30);
+
     const params = {
-      entryUrl: entryUrl.trim(),
+      entryUrl: cleanedEntryUrl,
       headless: true,
-      maxSteps,
+      maxSteps: cappedMaxSteps,
       maxDepth,
       followSameOriginOnly,
       captureScreenshots,
@@ -55,6 +82,9 @@ export async function POST(request: NextRequest) {
     };
 
     const jobId = await createJob(params.entryUrl, params);
+    console.log(
+      `[crawl/start] queued job ${jobId} for ${params.entryUrl} (maxSteps=${params.maxSteps}, quizMode=${params.quizMode})`,
+    );
 
     // Run the crawl INSIDE this lambda's lifetime. We deliberately
     // skip awaiting the promise so the response goes back to the

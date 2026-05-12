@@ -499,7 +499,13 @@ export default function CheckpointPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           entryUrl: autoEntryUrl.trim(),
-          maxSteps: 100,
+          // Capped at 25 to fit inside the Netlify 300s lambda window
+          // (each Playwright nav can take 30-120s on slow funnels).
+          // Higher values never actually completed — the lambda would
+          // die mid-crawl and the polling client below would always
+          // time out at 3-5 min waiting for a row that no one was
+          // updating any more. Use the manual mode for >25 step funnels.
+          maxSteps: 25,
           captureScreenshots: false,
           captureNetwork: false,
           captureCookies: false,
@@ -512,9 +518,14 @@ export default function CheckpointPage() {
       const jobId = startBody.jobId as string;
       setAutoJobId(jobId);
 
-      // Poll until 'completed' or 'failed'. Cap the loop at ~3 min so
-      // a wedged crawl can't spin the modal forever.
-      const giveUpAt = Date.now() + 3 * 60 * 1000;
+      // Poll until 'completed' or 'failed'. Cap the loop at the lambda's
+      // 300s ceiling (see netlify.toml maxDuration on /crawl/start) plus
+      // a 30s grace window for the final updateJob() to land in Supabase.
+      // Keeping the client cap = lambda cap means we never give up before
+      // the server itself does — the user gets the real failure reason
+      // (most often "Crawl runner error: <something>") instead of a
+      // generic client-side "timeout".
+      const giveUpAt = Date.now() + 5.5 * 60 * 1000;
       while (Date.now() < giveUpAt) {
         await new Promise((r) => setTimeout(r, 1500));
         const statusRes = await fetch(
