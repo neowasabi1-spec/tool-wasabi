@@ -7,8 +7,15 @@
 //   CheckpointRun    = a single "Run Checkpoint" execution (1 row in
 //                      funnel_checkpoints; many per funnel).
 
-/** Audit categories. Three-step model:
- *    1. navigation — funnel-level nav check (link integrity + flow logic)
+/** Audit categories. Three-step model (transitioning to a 4-step
+ *  "Tech/Detail · Marketing · Visual · All Step" sheet — the keys
+ *  below are kept stable so SQL columns / historical runs / OpenClaw
+ *  workers don't break. Re-mapping happens via labels + the
+ *  SHEET_COLUMNS config in the checkpoint detail page):
+ *
+ *    1. navigation — Tech/Detail audit (Macro-section 1: Technical QA
+ *                    of the funnel: swipe residuals, brand & mechanism
+ *                    consistency, pricing, links, etc.)
  *    2. coherence  — internal consistency across the entire sequence
  *    3. copy       — copy quality (PAS/AIDA, hook, mechanism, etc.)
  *
@@ -35,7 +42,7 @@ export const CHECKPOINT_RUN_CATEGORIES: ReadonlyArray<CheckpointCategory> = [
 ] as const;
 
 export const CHECKPOINT_CATEGORY_LABELS: Record<CheckpointCategory, string> = {
-  navigation: 'Navigazione funnel',
+  navigation: 'Tech/Detail',
   coherence: 'Coerenza interna',
   copy: 'Copy Quality',
   cro: 'CRO',
@@ -48,7 +55,7 @@ export const CHECKPOINT_CATEGORY_DESCRIPTIONS: Record<
   string
 > = {
   navigation:
-    'Naviga il funnel dal primo all\'ultimo step: integrità di CTA/link/redirect e logica del flusso (ogni pagina porta naturalmente alla successiva).',
+    'Technical QA del funnel (Macro-section 1): swipe residuals, brand & mechanism consistency (1C critico), prezzi, numeri/claims, date, links/flow, urgency. Mark NOT VERIFIED per check che richiedono browser/JS/mobile/screenshots.',
   coherence:
     'Coerenza interna across tutta la sequenza: claim vs proof, promesse vs garanzie, mechanism vs benefit, contraddizioni tra step.',
   copy:
