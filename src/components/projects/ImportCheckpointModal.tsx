@@ -95,10 +95,15 @@ export default function ImportCheckpointModal({
         throw new Error('Nessun URL selezionato.');
       }
 
+      // v2: 'all' mode now collapses every selected step into ONE
+      // multi-step checkpoint funnel (so the new 'navigation' check
+      // can walk the full sequence). 'single' mode still creates one
+      // standalone funnel for the chosen page.
+      const importMode: 'multi' | 'single' = mode === 'single' ? 'single' : 'multi';
       const res = await fetch('/api/checkpoint/funnels/import', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projectId, items }),
+        body: JSON.stringify({ projectId, items, mode: importMode }),
       });
       const body = (await res.json()) as {
         created?: CheckpointFunnel[];
@@ -112,14 +117,17 @@ export default function ImportCheckpointModal({
       const created = body.created ?? [];
       const skipped = body.skipped ?? [];
 
-      // Single-page mode → jump straight into the funnel detail.
-      if (mode === 'single' && created.length === 1) {
+      // Both 'multi' (one funnel containing N pages) and 'single' (one
+      // funnel = one page) end up with exactly one created row when
+      // successful → jump straight into the funnel detail.
+      if (created.length === 1) {
         onClose();
         router.push(`/checkpoint/${created[0].id}`);
         return;
       }
 
-      // Bulk mode → land on the list with a banner.
+      // Fallback (legacy bulk paths or partial success) → land on the
+      // list with a banner.
       const ids = created.map((c) => c.id).join(',');
       const params = new URLSearchParams();
       if (ids) params.set('imported', ids);
@@ -184,7 +192,7 @@ export default function ImportCheckpointModal({
             onClick={() => setMode('all')}
             icon={<Layers className="w-4 h-4" />}
             title="Tutto il funnel"
-            subtitle={`Audita ${rows.length || 'tutte le'} pagine separatamente.`}
+            subtitle={`Crea UN funnel multi-step con tutte le ${rows.length || ''} pagine in sequenza (per il check Navigazione).`}
           />
           <ModeCard
             active={mode === 'single'}

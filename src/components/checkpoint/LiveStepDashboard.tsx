@@ -14,6 +14,7 @@ import {
   Mic,
   Shield,
   PenLine,
+  ArrowDownUp,
 } from 'lucide-react';
 import {
   CHECKPOINT_CATEGORY_LABELS,
@@ -43,19 +44,21 @@ export interface LiveStep {
 }
 
 const CATEGORY_ICON: Record<CheckpointCategory, React.ComponentType<{ className?: string }>> = {
-  cro: Target,
+  navigation: ArrowDownUp,
   coherence: Layers,
+  copy: PenLine,
+  cro: Target,
   tov: Mic,
   compliance: Shield,
-  copy: PenLine,
 };
 
 const CATEGORY_BOT_NAME: Record<CheckpointCategory, string> = {
-  cro: 'CRO Bot',
+  navigation: 'Navigator Bot',
   coherence: 'Coherence Bot',
+  copy: 'Copy Bot',
+  cro: 'CRO Bot',
   tov: 'Voice Bot',
   compliance: 'Compliance Bot',
-  copy: 'Copy Bot',
 };
 
 interface Props {
@@ -143,8 +146,10 @@ export default function LiveStepDashboard({
         `}</style>
       </div>
 
-      {/* Step grid */}
-      <div className="p-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+      {/* Step grid — auto-fits 1-N categories. With the v2 default of
+          3 (navigation, coherence, copy) we get 3 wide cards on lg+;
+          legacy runs with all 5 (or 6) categories still wrap cleanly. */}
+      <div className="p-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
         {steps.map((step, i) => (
           <StepCard
             key={step.category}

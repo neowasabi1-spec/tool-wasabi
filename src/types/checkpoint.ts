@@ -7,36 +7,58 @@
 //   CheckpointRun    = a single "Run Checkpoint" execution (1 row in
 //                      funnel_checkpoints; many per funnel).
 
-/** Audit categories. Add new ones here only. */
+/** Audit categories. Three-step model:
+ *    1. navigation — funnel-level nav check (link integrity + flow logic)
+ *    2. coherence  — internal consistency across the entire sequence
+ *    3. copy       — copy quality (PAS/AIDA, hook, mechanism, etc.)
+ *
+ *  Legacy categories ('cro' | 'tov' | 'compliance') are kept in the
+ *  union so historical runs still type-check, but new runs only
+ *  populate the three above. The legacy ones are intentionally
+ *  excluded from CHECKPOINT_RUN_CATEGORIES below — that's the source
+ *  of truth for which categories the run pipeline executes.
+ */
 export type CheckpointCategory =
-  | 'cro'
+  | 'navigation'
   | 'coherence'
-  | 'tov'
-  | 'compliance'
-  | 'copy';
+  | 'copy'
+  | 'cro'        // legacy
+  | 'tov'        // legacy
+  | 'compliance'; // legacy
+
+/** Categories the audit pipeline runs for every new checkpoint.
+ *  Order matters — drives the LiveStepDashboard step order. */
+export const CHECKPOINT_RUN_CATEGORIES: ReadonlyArray<CheckpointCategory> = [
+  'navigation',
+  'coherence',
+  'copy',
+] as const;
 
 export const CHECKPOINT_CATEGORY_LABELS: Record<CheckpointCategory, string> = {
+  navigation: 'Navigazione funnel',
+  coherence: 'Coerenza interna',
+  copy: 'Copy Quality',
   cro: 'CRO',
-  coherence: 'Coerenza',
   tov: 'Tone of Voice',
   compliance: 'Compliance',
-  copy: 'Copy Quality',
 };
 
 export const CHECKPOINT_CATEGORY_DESCRIPTIONS: Record<
   CheckpointCategory,
   string
 > = {
-  cro:
-    'CTA chiarezza, value prop above-the-fold, urgency, social proof, friction, gerarchia visiva.',
+  navigation:
+    'Naviga il funnel dal primo all\'ultimo step: integrità di CTA/link/redirect e logica del flusso (ogni pagina porta naturalmente alla successiva).',
   coherence:
-    'Coerenza interna: claim vs proof, promesse vs garanzie, mechanism vs benefit, contraddizioni.',
-  tov:
-    'Tone of voice rispetto al brand profile (o competitor di riferimento se brand assente).',
-  compliance:
-    'Pass/fail su sezioni A1-E1: refund, scarcity onesta, testimonial, claims, footer legale.',
+    'Coerenza interna across tutta la sequenza: claim vs proof, promesse vs garanzie, mechanism vs benefit, contraddizioni tra step.',
   copy:
-    'Qualità della copy: framework (PAS/AIDA), big idea, mechanism strength, hook, headline.',
+    'Qualità della copy step-by-step: framework (PAS/AIDA), big idea, mechanism strength, hook, headline su tutti i pages.',
+  cro:
+    '(Legacy) CTA chiarezza, value prop above-the-fold, urgency, social proof, friction.',
+  tov:
+    '(Legacy) Tone of voice rispetto al brand profile.',
+  compliance:
+    '(Legacy) Pass/fail su sezioni A1-E1: refund, testimonial, claims.',
 };
 
 /** Per-issue severity. */
@@ -96,11 +118,14 @@ export interface CheckpointRun {
   checkpoint_funnel_id: string;
   funnel_name: string;
   funnel_url: string;
-  score_cro: number | null;
+  /** New (v2): per-step nav/flow score. */
+  score_navigation: number | null;
   score_coherence: number | null;
+  score_copy: number | null;
+  /** Legacy columns, kept so older runs still load. */
+  score_cro: number | null;
   score_tov: number | null;
   score_compliance: number | null;
-  score_copy: number | null;
   score_overall: number | null;
   results: CheckpointResults;
   status: CheckpointRunStatus;
@@ -132,11 +157,21 @@ export interface CheckpointLogEntry {
   duration_ms: number | null;
 }
 
-/** A funnel the user added to the Checkpoint library. */
+/** Single ordered step inside a multi-step funnel. */
+export interface CheckpointFunnelPage {
+  url: string;
+  name?: string;
+}
+
+/** A funnel the user added to the Checkpoint library. v2: a funnel
+ *  is a SEQUENCE of pages. The legacy single-`url` field is kept as
+ *  a quick-display "first page" mirror of pages[0].url. */
 export interface CheckpointFunnel {
   id: string;
   name: string;
   url: string;
+  /** Ordered list of pages in the funnel (>= 1). New in v2. */
+  pages: CheckpointFunnelPage[];
   notes: string | null;
   brand_profile: string | null;
   product_type: 'supplement' | 'digital' | 'both';
@@ -150,9 +185,13 @@ export interface CheckpointFunnel {
   updated_at: string;
 }
 
-/** Body for POST /api/checkpoint/funnels. */
+/** Body for POST /api/checkpoint/funnels.
+ *  Either `url` (single-page) or `pages` (multi-step). If both are
+ *  supplied, `pages` wins and `url` is treated as legacy noise. */
 export interface CreateCheckpointFunnelInput {
-  url: string;
+  url?: string;
+  /** Multi-step funnel: ordered list of pages. Min 1, max 50. */
+  pages?: CheckpointFunnelPage[];
   name?: string;
   notes?: string;
   brand_profile?: string;

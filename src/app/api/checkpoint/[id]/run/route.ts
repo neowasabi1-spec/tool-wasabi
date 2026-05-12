@@ -6,58 +6,40 @@ import {
 } from '@/lib/anthropic-with-knowledge';
 import {
   getFunnel,
-  fetchFunnelHtml,
+  fetchFunnelPagesHtml,
   syncLastRunSnapshot,
+  type FunnelPageHtml,
 } from '@/lib/checkpoint-store';
 import {
   CATEGORY_PROMPT_CONFIG,
-  buildUserMessage,
+  buildMultiPageUserMessage,
   htmlToAuditText,
   extractJsonFromReply,
+  type MultiPagePromptStep,
 } from '@/lib/checkpoint-prompts';
-import type {
-  CheckpointCategory,
-  CheckpointCategoryResult,
-  CheckpointResults,
-  CheckpointRunStatus,
+import {
+  CHECKPOINT_RUN_CATEGORIES,
+  type CheckpointCategory,
+  type CheckpointCategoryResult,
+  type CheckpointResults,
+  type CheckpointRunStatus,
 } from '@/types/checkpoint';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
-export const maxDuration = 300; // multi-category Claude calls
-
-const ALL_CATEGORIES: CheckpointCategory[] = [
-  'cro',
-  'coherence',
-  'tov',
-  'compliance',
-  'copy',
-];
+export const maxDuration = 300; // multi-page Playwright fetch + Claude calls
 
 /**
  * POST /api/checkpoint/[id]/run
  *
- * Body (optional):
- *   { categories?, brandProfile?, productType?, triggeredByName?, triggeredByUserId? }
+ * v2: the funnel is a SEQUENCE of pages. We fetch all of them once
+ * (HTML for navigation + audit text for AI), then for each category
+ * we ship the entire ordered sequence to Claude.
  *
- * Lifecycle:
- *   1. Insert a `funnel_checkpoints` row in `running` state IMMEDIATELY
- *      (within ~200ms of receiving the request) so the client polling
- *      `/api/checkpoint/[id]/latest-run` can discover the runId before
- *      the heavy work even starts.
- *   2. Fetch the live HTML.
- *   3. Run categories sequentially. After each one, UPDATE the row's
- *      `results` JSONB and the per-category score column → polling
- *      surfaces step-by-step progress in real time.
- *   4. Compute aggregate score + final status, UPDATE the row, sync
- *      the `last_run_*` snapshot on the parent funnel, return JSON.
- *
- * Why polling instead of SSE:
- *   Netlify (and several other proxies) buffer streaming responses
- *   from Next.js API routes, so the client sees nothing until the
- *   function completes — defeating the whole point of streaming.
- *   Polling against the same DB row that's being updated incrementally
- *   gives us live UX with zero buffering risk.
+ * Categories run by default: navigation, coherence, copy.
+ * Legacy categories (cro / tov / compliance) are intentionally NOT
+ * in the default list — pass them explicitly in `body.categories` if
+ * the caller still wants them.
  */
 export async function POST(
   req: NextRequest,
@@ -72,6 +54,12 @@ export async function POST(
   if (!funnel) {
     return NextResponse.json({ error: 'Funnel not found' }, { status: 404 });
   }
+  if (!funnel.pages || funnel.pages.length === 0) {
+    return NextResponse.json(
+      { error: 'Funnel has no pages configured.' },
+      { status: 422 },
+    );
+  }
 
   let body: {
     categories?: CheckpointCategory[];
@@ -85,11 +73,12 @@ export async function POST(
   } catch {
     body = {};
   }
-  const categories =
+  // Default = the v2 three-step list. Caller can still opt into the
+  // legacy categories by listing them explicitly.
+  const categories: CheckpointCategory[] =
     body.categories && body.categories.length > 0
-      ? body.categories.filter((c) => ALL_CATEGORIES.includes(c))
-      : ALL_CATEGORIES;
-  const productType = body.productType ?? funnel.product_type ?? 'both';
+      ? body.categories
+      : [...CHECKPOINT_RUN_CATEGORIES];
   const brandProfile = body.brandProfile ?? funnel.brand_profile ?? undefined;
   const triggeredByName = (body.triggeredByName ?? '').trim().slice(0, 120) || null;
   const triggeredByUserId = body.triggeredByUserId?.trim() || null;
@@ -119,16 +108,18 @@ export async function POST(
   const checkpointId = insertedRow.id as string;
 
   console.log(
-    `[checkpoint/run] start runId=${checkpointId} funnel="${funnel.name}" categories=${categories.join(',')}`,
+    `[checkpoint/run] start runId=${checkpointId} funnel="${funnel.name}" pages=${funnel.pages.length} categories=${categories.join(',')}`,
   );
 
-  // Fetch HTML AFTER opening the row. If it fails, we close the row
-  // as failed so the client (which is already polling) gets a clean
-  // error instead of a row stuck in "running" forever.
-  const html = await fetchFunnelHtml(funnel.url);
-  if (!html) {
+  // Fetch HTML for ALL pages, in order, AFTER opening the row. If
+  // every page fails we close the row as failed; if at least one
+  // succeeded we keep going (the AI prompts are designed to surface
+  // [FETCH-ERROR] pages as missing).
+  const pagesHtml = await fetchFunnelPagesHtml(funnel.pages);
+  const reachable = pagesHtml.filter((p) => p.html && p.html.length > 0);
+  if (reachable.length === 0) {
     const msg =
-      "Impossibile scaricare l'HTML del funnel. URL irraggiungibile o risposta vuota.";
+      "Nessuna pagina del funnel è stata scaricata. URL irraggiungibili o tutte le risposte vuote.";
     await supabase
       .from('funnel_checkpoints')
       .update({
@@ -138,11 +129,30 @@ export async function POST(
       })
       .eq('id', checkpointId);
     return NextResponse.json(
-      { runId: checkpointId, error: msg },
+      {
+        runId: checkpointId,
+        error: msg,
+        pages: pagesHtml.map((p) => ({
+          index: p.index,
+          url: p.url,
+          ok: false,
+          error: p.error,
+        })),
+      },
       { status: 422 },
     );
   }
-  const auditText = htmlToAuditText(html);
+
+  // Convert each fetched HTML into the compact audit text once, so
+  // every category reuses the same input (saves on htmlToAuditText
+  // cost when categories > 1).
+  const auditSteps: MultiPagePromptStep[] = pagesHtml.map((p) => ({
+    index: p.index + 1,
+    url: p.url,
+    name: p.name,
+    pageText: p.html ? htmlToAuditText(p.html) : '',
+    fetchError: p.error ?? null,
+  }));
 
   const results: CheckpointResults = {};
   let errored = 0;
@@ -155,24 +165,29 @@ export async function POST(
     console.log(`[checkpoint/run] ▶ ${cat} (${i + 1}/${total})`);
 
     try {
-      if (cat === 'compliance') {
-        results[cat] = await runCompliance({
-          html,
-          url: funnel.url,
-          productType,
-          requestUrl: req.url,
-        });
+      // Navigation requires >= 2 reachable pages — record a clean
+      // "skipped" with a clear reason instead of running the prompt
+      // and hoping the model bails out on its own.
+      if (cat === 'navigation' && reachable.length < 2) {
+        results[cat] = {
+          score: null,
+          status: 'skipped',
+          summary:
+            "Il check Navigazione richiede almeno 2 pagine raggiungibili nel funnel.",
+          issues: [],
+          suggestions: [],
+        };
       } else {
         results[cat] = await runClaudeCategory({
           category: cat,
           funnelName: funnel.name,
-          funnelUrl: funnel.url,
-          pageText: auditText,
+          steps: auditSteps,
           brandProfile,
         });
       }
-      if (results[cat]?.status === 'error') errored++;
-      else succeeded++;
+      const status = results[cat]?.status;
+      if (status === 'error') errored++;
+      else if (status !== 'skipped') succeeded++;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`[checkpoint/run] ✗ ${cat} crashed:`, msg);
@@ -192,8 +207,6 @@ export async function POST(
       `[checkpoint/run] ◀ ${cat} done in ${elapsed}ms · score=${results[cat]?.score ?? 'null'} · status=${results[cat]?.status}`,
     );
 
-    // The polling endpoint reads exactly this row, so each persist
-    // here makes the corresponding step "light up" in the UI.
     await persistCategory(checkpointId, results, cat);
   }
 
@@ -239,6 +252,13 @@ export async function POST(
     status: finalStatus,
     score_overall: overall,
     results,
+    pages: pagesHtml.map((p: FunnelPageHtml) => ({
+      index: p.index,
+      url: p.url,
+      ok: !!p.html,
+      htmlLength: p.htmlLength,
+      error: p.error,
+    })),
   });
 }
 
@@ -253,11 +273,12 @@ async function persistCategory(
   cat: CheckpointCategory,
 ): Promise<void> {
   const scoreCol: Record<CheckpointCategory, string> = {
-    cro: 'score_cro',
+    navigation: 'score_navigation',
     coherence: 'score_coherence',
+    copy: 'score_copy',
+    cro: 'score_cro',
     tov: 'score_tov',
     compliance: 'score_compliance',
-    copy: 'score_copy',
   };
   const update: Record<string, unknown> = {
     results,
@@ -275,13 +296,12 @@ async function persistCategory(
 async function runClaudeCategory(args: {
   category: CheckpointCategory;
   funnelName: string;
-  funnelUrl: string;
-  pageText: string;
+  steps: MultiPagePromptStep[];
   brandProfile?: string;
 }): Promise<CheckpointCategoryResult> {
   const { category } = args;
   const cfg = CATEGORY_PROMPT_CONFIG[category];
-  const userMessage = buildUserMessage(args);
+  const userMessage = buildMultiPageUserMessage(args);
 
   const { reply, usage } = await callClaudeWithKnowledge({
     task: cfg.task,
@@ -367,90 +387,5 @@ function normaliseCategoryResult(
     suggestions,
     rawReply: rawReply.slice(0, 4000),
     usage,
-  };
-}
-
-async function runCompliance(args: {
-  html: string;
-  url: string;
-  productType: 'supplement' | 'digital' | 'both';
-  requestUrl: string;
-}): Promise<CheckpointCategoryResult> {
-  // Reuse the existing /api/compliance-ai/check endpoint server-to-server.
-  const origin = new URL(args.requestUrl).origin;
-  const targetUrl = `${origin}/api/compliance-ai/check`;
-  // The endpoint runs ONE section at a time. We pick A1 (offer / refund /
-  // footer surface) as the most generic. The dedicated /compliance-ai page
-  // can still run the full A1-E1 sweep.
-  const sectionId = 'A1';
-
-  const res = await fetch(targetUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      sectionId,
-      funnelUrls: args.url ? [args.url] : [],
-      funnelHtml: args.html.slice(0, 30000),
-      productType: args.productType,
-    }),
-  });
-
-  if (!res.ok) {
-    const txt = await res.text();
-    return {
-      score: null,
-      status: 'error',
-      summary: `Compliance endpoint returned HTTP ${res.status}`,
-      issues: [],
-      suggestions: [],
-      error: txt.slice(0, 500),
-    };
-  }
-
-  const data = (await res.json()) as {
-    items?: Array<{
-      title?: string;
-      status?: 'pass' | 'fail' | 'warning' | 'not_applicable';
-      explanation?: string;
-      recommendation?: string;
-    }>;
-    summary?: string;
-    overallStatus?: string;
-  };
-  const items = data.items ?? [];
-
-  const issues = items
-    .filter((it) => it.status === 'fail' || it.status === 'warning')
-    .map((it) => ({
-      severity: (it.status === 'fail' ? 'critical' : 'warning') as
-        | 'critical'
-        | 'warning',
-      title: it.title ?? 'Compliance check',
-      detail: it.explanation,
-    }));
-  const suggestions = items
-    .filter((it) => it.recommendation)
-    .map((it) => ({
-      title: it.title ?? 'Recommendation',
-      detail: it.recommendation,
-    }));
-
-  const fails = items.filter((it) => it.status === 'fail').length;
-  const warnings = items.filter((it) => it.status === 'warning').length;
-  const score = Math.max(0, Math.min(100, 100 - 15 * fails - 5 * warnings));
-
-  let status: CheckpointCategoryResult['status'];
-  if (fails > 0) status = 'fail';
-  else if (warnings > 0) status = 'warn';
-  else status = 'pass';
-
-  return {
-    score,
-    status,
-    summary:
-      data.summary ??
-      `${items.length} checks (${fails} fail / ${warnings} warning).`,
-    issues,
-    suggestions,
   };
 }

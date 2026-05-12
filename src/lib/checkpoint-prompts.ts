@@ -73,6 +73,33 @@ export const CATEGORY_PROMPT_CONFIG: Record<
   CheckpointCategory,
   CategoryPromptConfig
 > = {
+  navigation: {
+    task: 'general',
+    maxTokens: 3000,
+    instructions: `You are a senior funnel architect auditing the END-TO-END NAVIGATION of a multi-step sales funnel.
+
+You receive an ORDERED sequence of pages (step 1 = landing, step N = thank-you / final). For EACH transition between consecutive steps you verify two layers:
+
+(A) TECHNICAL INTEGRITY — link/CTA reachability
+- The primary CTA on step K visibly points to step K+1 (or to a checkout / external processor that logically belongs at that position).
+- No CTA on a non-final step is dead, anchor-only (#), mailto:, javascript:void(0), or pointing back to the same step.
+- No 404-shaped link text ("page not found", "coming soon", lorem placeholders).
+- Tracking parameters / domains stay consistent across steps (no leak from www.brand.com to a Replit preview URL on step 3).
+- If step K is a checkout, it carries a price / button / form — not just marketing copy.
+
+(B) FLOW LOGIC — does each step set up the next?
+- The headline / promise on step K+1 echoes the offer on step K (no abrupt change of product, audience, or angle).
+- The CTA verb on step K matches what step K+1 actually delivers ("Get my free guide" → step K+1 shows the guide download, not a generic sales letter).
+- Awareness ladder: solution-aware copy on step K is followed by buying-decision copy on step K+1, not a regression to problem-aware.
+- No duplicate / wasted steps (two consecutive "thank you" pages, two consecutive sales letters with the same offer, etc.).
+- The final step actually closes the loop (confirmation, next-action, upsell only if positioned as such).
+
+Quote the EXACT CTA text and the EXACT next-step headline you compared. When a transition fails, say which transition (e.g. "step 2 → step 3").
+
+If only ONE step was supplied, you cannot audit transitions: return score=null with one warning issue ("Navigazione richiede almeno 2 step nel funnel.") and zero suggestions.
+${SHARED_OUTPUT_FORMAT}`,
+  },
+
   cro: {
     task: 'general',
     maxTokens: 2500,
@@ -94,18 +121,19 @@ ${SHARED_OUTPUT_FORMAT}`,
 
   coherence: {
     task: 'general',
-    maxTokens: 2500,
-    instructions: `You are an editor checking a sales funnel page for INTERNAL COHERENCE.
+    maxTokens: 3000,
+    instructions: `You are an editor checking a multi-step sales funnel for INTERNAL COHERENCE — across ALL pages provided, not just one.
 
-You verify:
-- Claim vs proof: every bold claim ("X% reduction", "4.3/5 stars", "scientifically proven") has nearby supporting evidence (study link, citation, data source).
-- Promise vs guarantee: the headline promise matches what the guarantee actually covers (timeframe, scope, conditions).
-- Mechanism vs benefit: when the page mentions WHY the product works, the mechanism is consistent across sections (no "EMS" in section 1 and "vibration therapy" in section 5 with no link).
-- Audience consistency: the "who is this for" stays stable (no "for athletes" + "for grandmas with arthritis" without a unifying frame).
-- Pricing/offer consistency: the price, bonuses, and shipping claims match across CTAs, sticky bars, and FAQ.
-- Tone consistency: no clinical "GLP-1 receptor agonist" paragraphs next to "OMG you have to try this!".
+You verify (BOTH within each step AND across steps):
+- Claim vs proof: every bold claim ("X% reduction", "4.3/5 stars", "scientifically proven") has supporting evidence on the same page or a clearly-referenced earlier step.
+- Promise vs guarantee: the headline promise on step 1 matches what the guarantee on the checkout / final step actually covers (timeframe, scope, conditions).
+- Mechanism vs benefit: the "WHY it works" mechanism is the SAME label across steps (no "EMS" on step 1 and "vibration therapy" on step 3 with no bridge).
+- Audience consistency: the "who is this for" stays stable across the whole funnel (no "for athletes" on step 1 + "for grandmas with arthritis" on step 4 without a unifying frame).
+- Offer / pricing consistency: price, bonuses, shipping, refund window MUST match across every step that mentions them. Mismatches between landing-quoted price and checkout-displayed price are CRITICAL.
+- Tone consistency across steps: no clinical "GLP-1 receptor agonist" paragraph on step 2 next to "OMG you have to try this!" on step 3.
+- Brand identity: name, logo positioning, brand colors / hero imagery don't drift between steps (often a sign of leftover template content).
 
-Quote contradictions verbatim — show the two clashing snippets in the issues.
+When you flag a contradiction, name BOTH steps and quote the two clashing snippets verbatim (e.g. 'Step 1 says "$67 lifetime", Step 4 checkout shows "$97/month"').
 ${SHARED_OUTPUT_FORMAT}`,
   },
 
@@ -139,27 +167,33 @@ ${SHARED_OUTPUT_FORMAT}`,
 
   copy: {
     task: 'vsl',
-    maxTokens: 2800,
-    instructions: `You are a senior direct-response copywriter auditing a sales funnel page for COPY QUALITY.
+    maxTokens: 3200,
+    instructions: `You are a senior direct-response copywriter auditing a multi-step sales funnel for COPY QUALITY across ALL steps provided.
 
-You evaluate:
-- Big idea: is there ONE memorable, contrarian, ownable mechanism / promise? Or just generic claims?
-- Headline craft: specificity, curiosity, benefit-loaded, avoids "everything for everyone"?
-- Hook: does the opening hold attention in the first 50 words?
-- Mechanism strength: is the "how it works" novel and concretely explained, or vague hand-waving?
-- Framework fit: does the page follow a clear structure (PAS / AIDA / 4Ps / 5-stage)? Where does it break?
-- Specificity: numbers, names, sources, dates — vs vague filler ("many people", "studies show")?
-- Sensory / emotional language: visceral verbs, internal monologue, before/after states?
-- Storytelling: founder story, transformation story, dimensional discovery — present and well-paced?
-- Objection handling: the FAQ / guarantee section addresses the REAL objections, not strawmen?
+For EACH step you evaluate the same fundamentals, but you give the audit weight per step's role (landing > checkout > thank-you for headline craft; checkout > all for objection handling; etc.):
 
-You must reference at least 2 well-known direct-response principles by name (e.g. "Halbert's market specificity", "Schwartz's awareness ladder", "Kennedy's reason-why advertising") in the suggestions.
+- Big idea: is there ONE memorable, contrarian, ownable mechanism / promise that appears consistently across the funnel?
+- Headline craft per step: specificity, curiosity, benefit-loaded, avoids "everything for everyone".
+- Hook: does the opening of step 1 (and of any subsequent long-copy step) hold attention in the first 50 words?
+- Mechanism strength: is the "how it works" novel, concretely explained, and reinforced — not vague — across steps?
+- Framework fit: does the funnel as a whole follow a clear structure (e.g. PAS on step 1 → mechanism reveal on step 2 → offer/CTA on step 3 → upsell on step 4)? Where does the structure break?
+- Specificity: numbers, names, sources, dates — vs vague filler ("many people", "studies show") — score per step.
+- Sensory / emotional language: visceral verbs, internal monologue, before/after states.
+- Storytelling progression: founder story, transformation story, dimensional discovery — does the narrative escalate step-by-step or repeat itself?
+- Objection handling: the FAQ / guarantee on the checkout / final step addresses the REAL objections seeded by earlier steps, not strawmen.
+- Step-to-step momentum: does each step's last paragraph naturally pull the reader into the next step's opening, or are there cold restarts?
+
+When you cite an issue or evidence, prefix it with the step label (e.g. 'Step 2 hook is generic: "Are you tired of...?"'). Reference at least 2 well-known direct-response principles by name (e.g. "Halbert's market specificity", "Schwartz's awareness ladder", "Kennedy's reason-why advertising") in the suggestions.
 ${SHARED_OUTPUT_FORMAT}`,
   },
 };
 
 /** Build the user message for a given category. The page text/html is
- *  passed as the analyte; brand profile is optional context. */
+ *  passed as the analyte; brand profile is optional context.
+ *
+ *  Single-page version — kept for backward compat. v2 callers should
+ *  use buildMultiPageUserMessage so the prompt is identical between
+ *  navigation / coherence / copy and the model gets the full sequence. */
 export function buildUserMessage(args: {
   category: CheckpointCategory;
   funnelName: string;
@@ -187,6 +221,73 @@ export function buildUserMessage(args: {
   sections.push(
     '# YOUR TASK',
     `Run the audit defined in your system prompt and return ONLY the JSON object.`,
+  );
+  return sections.join('\n');
+}
+
+/** Build a user message that lists ALL pages of a multi-step funnel
+ *  in order, each with its URL, optional name, and audit text.
+ *  Used by the navigation/coherence/copy categories in v2. */
+export interface MultiPagePromptStep {
+  index: number; // 1-based, for display
+  url: string;
+  name?: string;
+  pageText: string;
+  fetchError?: string | null;
+}
+
+export function buildMultiPageUserMessage(args: {
+  category: CheckpointCategory;
+  funnelName: string;
+  steps: MultiPagePromptStep[];
+  brandProfile?: string;
+  perStepCharBudget?: number;
+}): string {
+  const { category, funnelName, steps, brandProfile } = args;
+  // We split a fixed character budget across steps so a 50-step funnel
+  // doesn't blow Claude's context. Default 6000 chars / step ≈ ~1.5K
+  // tokens / step → 50 steps ≈ 75K tokens (still fits 200K window).
+  const perStepBudget = args.perStepCharBudget ?? 6000;
+
+  const sections: string[] = [];
+  sections.push(`# AUDIT TARGET`);
+  sections.push(`Funnel name: ${funnelName}`);
+  sections.push(`Audit category: ${category.toUpperCase()}`);
+  sections.push(`Total steps in this funnel: ${steps.length}`);
+  if (brandProfile?.trim()) {
+    sections.push('');
+    sections.push('# BRAND PROFILE');
+    sections.push(brandProfile.trim());
+  }
+  sections.push('');
+  sections.push('# FUNNEL PAGES (ordered, step 1 = first / step N = last)');
+  for (const s of steps) {
+    sections.push('');
+    const heading = s.name
+      ? `## STEP ${s.index} — ${s.name}`
+      : `## STEP ${s.index}`;
+    sections.push(heading);
+    sections.push(`URL: ${s.url}`);
+    if (s.fetchError) {
+      sections.push(
+        `[FETCH-ERROR] Could not load this page: ${s.fetchError}. Treat as MISSING in your audit.`,
+      );
+      continue;
+    }
+    sections.push('');
+    sections.push('```');
+    const truncated =
+      s.pageText.length > perStepBudget
+        ? s.pageText.slice(0, perStepBudget) +
+          `\n\n[... step ${s.index} truncated, ${s.pageText.length - perStepBudget} more chars omitted]`
+        : s.pageText;
+    sections.push(truncated);
+    sections.push('```');
+  }
+  sections.push('');
+  sections.push(
+    '# YOUR TASK',
+    `Run the audit defined in your system prompt across the WHOLE sequence and return ONLY the JSON object.`,
   );
   return sections.join('\n');
 }

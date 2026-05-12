@@ -1,12 +1,25 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createFunnelsBatch } from '@/lib/checkpoint-store';
-import type { CreateCheckpointFunnelInput } from '@/types/checkpoint';
+import { createFunnel, createFunnelsBatch } from '@/lib/checkpoint-store';
+import type {
+  CheckpointFunnelPage,
+  CreateCheckpointFunnelInput,
+} from '@/types/checkpoint';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 interface ImportBody {
   projectId?: string;
+  /**
+   * 'multi'  (default v2) — collapse all items into a single
+   *                          checkpoint_funnels row with pages = items.
+   *                          One funnel = one ordered sequence.
+   * 'single' (legacy)     — create one checkpoint_funnels row per item.
+   *                          Each page becomes its own audit entry.
+   */
+  mode?: 'multi' | 'single';
+  /** Optional name for the resulting funnel (only honoured in 'multi' mode). */
+  name?: string;
   items?: Array<{
     name?: string;
     url?: string;
@@ -17,14 +30,17 @@ interface ImportBody {
 /**
  * POST /api/checkpoint/funnels/import
  *
- * Body: { projectId?: string, items: [{ name?, url, notes? }] }
+ * Bulk-import a list of funnel-step URLs from a project / front-end-funnel
+ * row into the Checkpoint library.
  *
- * Bulk-creates `checkpoint_funnels` rows from an arbitrary URL list.
- * Used by the "Import to Checkpoint" modal in the Projects page so
- * the user can pull all the front-end + back-end funnel steps into
- * the audit library in one click.
+ * v2 behaviour: by default we collapse the items into ONE multi-page
+ * checkpoint funnel (the "navigation" check needs the full sequence).
+ * Pass `mode: 'single'` to keep the legacy "one row per page" import
+ * for cases where the user wants per-page audits.
  *
- * Returns: { created: CheckpointFunnel[], skipped: [...] }
+ * Returns:
+ *   - mode 'multi'  → { created: [oneFunnel], skipped: [] }
+ *   - mode 'single' → { created: CheckpointFunnel[], skipped: [...] }
  */
 export async function POST(req: NextRequest) {
   let body: ImportBody;
@@ -41,6 +57,39 @@ export async function POST(req: NextRequest) {
   }
 
   const projectId = body.projectId?.trim() || undefined;
+  const mode: 'multi' | 'single' = body.mode === 'single' ? 'single' : 'multi';
+
+  if (mode === 'multi') {
+    const pages: CheckpointFunnelPage[] = body.items
+      .map((it) => ({
+        url: (it.url ?? '').trim(),
+        name: it.name?.trim() || undefined,
+      }))
+      .filter((p) => p.url);
+    if (pages.length === 0) {
+      return NextResponse.json(
+        { error: 'Tutti gli item passati hanno URL vuoto.' },
+        { status: 400 },
+      );
+    }
+    const result = await createFunnel({
+      pages,
+      name: body.name?.trim() || undefined,
+      project_id: projectId,
+    });
+    if ('error' in result) {
+      return NextResponse.json(
+        { error: result.error, created: [], skipped: [] },
+        { status: 400 },
+      );
+    }
+    return NextResponse.json(
+      { created: [result], skipped: [] },
+      { status: 201 },
+    );
+  }
+
+  // Legacy single-mode: one row per item.
   const inputs: CreateCheckpointFunnelInput[] = body.items.map((it) => ({
     name: it.name?.trim() || undefined,
     url: (it.url ?? '').trim(),

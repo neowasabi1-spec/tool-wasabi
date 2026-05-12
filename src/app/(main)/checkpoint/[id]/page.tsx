@@ -32,13 +32,10 @@ import LiveStepDashboard, {
 } from '@/components/checkpoint/LiveStepDashboard';
 import FindingsTable from '@/components/checkpoint/FindingsTable';
 
-const CATEGORIES: CheckpointCategory[] = [
-  'cro',
-  'coherence',
-  'tov',
-  'compliance',
-  'copy',
-];
+// v2: the audit pipeline runs three categories. The legacy ones
+// (cro, tov, compliance) are still in the type union for historical
+// runs but we don't queue them by default any more.
+const CATEGORIES: CheckpointCategory[] = ['navigation', 'coherence', 'copy'];
 
 interface DetailResponse {
   funnel: CheckpointFunnel;
@@ -410,11 +407,64 @@ export default function CheckpointDetailPage({
     ? computeOverall(liveResults)
     : activeRun?.score_overall ?? null;
 
+  const pageCount = funnel.pages?.length ?? 0;
+
   return (
     <div className="min-h-screen bg-gray-50">
-      <Header title={funnel.name} subtitle={funnel.url || 'Senza URL'} />
+      <Header
+        title={funnel.name}
+        subtitle={
+          pageCount > 1
+            ? `Funnel multi-step · ${pageCount} pagine in sequenza`
+            : funnel.url || 'Senza URL'
+        }
+      />
 
       <div className="px-6 py-6 space-y-6">
+        {/* Funnel steps overview — visible whenever the funnel has
+            more than one page so the user can see the full sequence
+            the audit will walk through. */}
+        {pageCount > 1 && (
+          <div className="bg-white rounded-xl border border-gray-200 p-4">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-semibold text-gray-900">
+                Sequenza del funnel ({pageCount} step)
+              </h3>
+              <span className="text-xs text-gray-500">
+                Il check &quot;Navigazione&quot; verifica le transizioni 1→{pageCount}.
+              </span>
+            </div>
+            <ol className="space-y-1.5">
+              {funnel.pages.map((p, i) => (
+                <li
+                  key={`${i}-${p.url}`}
+                  className="flex items-start gap-3 text-sm"
+                >
+                  <span className="flex-shrink-0 w-6 h-6 rounded-full bg-indigo-100 text-indigo-700 text-xs font-bold flex items-center justify-center mt-0.5">
+                    {i + 1}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    {p.name && (
+                      <div className="font-medium text-gray-800 truncate">
+                        {p.name}
+                      </div>
+                    )}
+                    <a
+                      href={p.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xs text-gray-500 hover:text-blue-600 break-all flex items-start gap-1"
+                    >
+                      <ExternalLink className="w-3 h-3 shrink-0 mt-0.5" />
+                      <span className="break-all">{p.url}</span>
+                    </a>
+                  </div>
+                </li>
+              ))}
+            </ol>
+          </div>
+        )}
+
         {/* Top bar */}
         <div className="flex flex-wrap items-center gap-3 justify-between">
           <Link

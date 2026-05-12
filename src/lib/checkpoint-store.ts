@@ -9,6 +9,7 @@ import { supabase } from '@/lib/supabase';
 import { fetchHtmlSmart } from '@/lib/fetch-html-smart';
 import type {
   CheckpointFunnel,
+  CheckpointFunnelPage,
   CheckpointLogEntry,
   CheckpointRun,
   CheckpointRunStatus,
@@ -16,9 +17,85 @@ import type {
 } from '@/types/checkpoint';
 
 const SELECT_FUNNEL_FIELDS =
-  'id,name,url,notes,brand_profile,product_type,project_id,' +
+  'id,name,url,pages,notes,brand_profile,product_type,project_id,' +
   'last_run_id,last_score_overall,last_run_status,last_run_at,' +
   'created_at,updated_at';
+
+const MAX_PAGES_PER_FUNNEL = 50;
+
+/** Normalise + validate a single page entry. */
+function normalisePage(input: { url?: string; name?: string }):
+  | { ok: true; page: CheckpointFunnelPage }
+  | { ok: false; error: string } {
+  const raw = (input.url ?? '').trim();
+  if (!raw) return { ok: false, error: 'URL mancante.' };
+  let parsed: URL;
+  try {
+    parsed = new URL(raw.startsWith('http') ? raw : `https://${raw}`);
+    if (!parsed.hostname.includes('.')) {
+      return { ok: false, error: `URL non valido (manca il dominio): ${raw}` };
+    }
+  } catch {
+    return { ok: false, error: `URL non valido: ${raw}` };
+  }
+  return {
+    ok: true,
+    page: {
+      url: parsed.toString(),
+      name: input.name?.trim() || undefined,
+    },
+  };
+}
+
+/** Resolve the input (single url OR pages[]) into a normalised
+ *  ordered list of pages. Source of truth for createFunnel. */
+function resolvePagesFromInput(
+  input: CreateCheckpointFunnelInput,
+):
+  | { ok: true; pages: CheckpointFunnelPage[] }
+  | { ok: false; error: string } {
+  const raw: { url?: string; name?: string }[] = [];
+  if (input.pages && Array.isArray(input.pages) && input.pages.length > 0) {
+    for (const p of input.pages) raw.push({ url: p.url, name: p.name });
+  } else if (input.url) {
+    raw.push({ url: input.url, name: input.name });
+  } else {
+    return { ok: false, error: 'Nessuna URL fornita.' };
+  }
+  if (raw.length > MAX_PAGES_PER_FUNNEL) {
+    return {
+      ok: false,
+      error: `Massimo ${MAX_PAGES_PER_FUNNEL} pagine per funnel (ne hai passate ${raw.length}).`,
+    };
+  }
+  const out: CheckpointFunnelPage[] = [];
+  for (const entry of raw) {
+    const r = normalisePage(entry);
+    if (!r.ok) return { ok: false, error: r.error };
+    out.push(r.page);
+  }
+  return { ok: true, pages: out };
+}
+
+/** Coerce a row coming from Supabase into a fully-typed CheckpointFunnel.
+ *  Older rows (pre-v2) have empty pages[]; we synthesise pages = [{url}]
+ *  so downstream code can always rely on pages[] being populated. */
+function rowToFunnel(row: Record<string, unknown>): CheckpointFunnel {
+  const rawPages = row.pages as unknown;
+  let pages: CheckpointFunnelPage[] = [];
+  if (Array.isArray(rawPages) && rawPages.length > 0) {
+    pages = (rawPages as CheckpointFunnelPage[])
+      .map((p) => ({
+        url: typeof p?.url === 'string' ? p.url : '',
+        name: typeof p?.name === 'string' ? p.name : undefined,
+      }))
+      .filter((p) => p.url);
+  }
+  if (pages.length === 0 && typeof row.url === 'string' && row.url) {
+    pages = [{ url: row.url, name: (row.name as string) || undefined }];
+  }
+  return { ...(row as unknown as CheckpointFunnel), pages };
+}
 
 /** Read the whole library, newest first. */
 export async function listFunnels(opts: {
@@ -36,7 +113,8 @@ export async function listFunnels(opts: {
     console.warn(`[checkpoint-store] listFunnels: ${error.message}`);
     return [];
   }
-  return (data as unknown as CheckpointFunnel[] | null) ?? [];
+  const rows = (data as unknown as Record<string, unknown>[] | null) ?? [];
+  return rows.map(rowToFunnel);
 }
 
 export async function getFunnel(
@@ -51,39 +129,43 @@ export async function getFunnel(
     console.warn(`[checkpoint-store] getFunnel: ${error.message}`);
     return null;
   }
-  return (data as unknown as CheckpointFunnel | null) ?? null;
+  if (!data) return null;
+  return rowToFunnel(data as unknown as Record<string, unknown>);
 }
 
-/** Create a funnel. The `name` defaults to the URL hostname when
- *  the caller didn't supply one. */
+/** Create a funnel — accepts either single-url or multi-page input.
+ *
+ *  Storage rule: pages[] is the source of truth (JSONB array). The
+ *  legacy `url` column is mirrored to pages[0].url so old code paths
+ *  that still read `url` keep working.
+ *
+ *  The `name` defaults to the first URL's hostname when not supplied.
+ */
 export async function createFunnel(
   input: CreateCheckpointFunnelInput,
 ): Promise<CheckpointFunnel | { error: string }> {
-  const url = (input.url ?? '').trim();
-  if (!url) return { error: 'URL mancante.' };
-  // Soft URL validation — accept any scheme but require a dot in the
-  // host so we catch "asdfasdf" mistakes early.
-  let parsedUrl: URL;
-  try {
-    parsedUrl = new URL(url.startsWith('http') ? url : `https://${url}`);
-    if (!parsedUrl.hostname.includes('.')) {
-      return { error: 'URL non valido (manca il dominio).' };
+  const resolved = resolvePagesFromInput(input);
+  if (!resolved.ok) return { error: resolved.error };
+  const pages = resolved.pages;
+  const firstUrl = pages[0].url;
+  const firstHost = (() => {
+    try {
+      return new URL(firstUrl).hostname.replace(/^www\./, '');
+    } catch {
+      return firstUrl;
     }
-  } catch {
-    return { error: 'URL non valido.' };
-  }
-
-  const finalUrl = parsedUrl.toString();
+  })();
   const finalName =
     (input.name?.trim() && input.name.trim()) ||
-    parsedUrl.hostname.replace(/^www\./, '');
+    (pages.length > 1 ? `${firstHost} (${pages.length} step)` : firstHost);
   const productType = input.product_type ?? 'both';
 
   const { data, error } = await supabase
     .from('checkpoint_funnels')
     .insert({
       name: finalName,
-      url: finalUrl,
+      url: firstUrl,
+      pages: pages,
       notes: input.notes?.trim() || null,
       brand_profile: input.brand_profile?.trim() || null,
       product_type: productType,
@@ -95,7 +177,7 @@ export async function createFunnel(
   if (error || !data) {
     return { error: error?.message ?? 'Insert returned no row.' };
   }
-  return data as unknown as CheckpointFunnel;
+  return rowToFunnel(data as unknown as Record<string, unknown>);
 }
 
 export async function deleteFunnel(
@@ -311,12 +393,9 @@ export async function listRecentRuns(limit = 200): Promise<CheckpointLogEntry[]>
   }));
 }
 
-/** Fetch the live HTML of a funnel's URL. Returns null when the URL
- *  doesn't respond or isn't reachable.
- *
- *  Uses fetchHtmlSmart so SPAs (React/Vue/Next/Nuxt landing pages) get
- *  rendered via Playwright before the AI audit runs — otherwise the
- *  AI would only see "<div id=root></div>" and report empty findings. */
+/** Fetch the live HTML of a single funnel page. Returns null when
+ *  the URL doesn't respond. Uses fetchHtmlSmart so SPAs are rendered
+ *  via Playwright before the AI audit runs. */
 export async function fetchFunnelHtml(url: string): Promise<string | null> {
   if (!url) return null;
   const fetched = await fetchHtmlSmart(url, {
@@ -337,4 +416,48 @@ export async function fetchFunnelHtml(url: string): Promise<string | null> {
     );
   }
   return fetched.html;
+}
+
+/** v2: fetch HTML for ALL pages of a multi-step funnel, in order.
+ *  Returns one entry per page, with html=null when that specific page
+ *  failed (so the caller can decide whether to abort or continue).
+ *  Pages are fetched sequentially to be gentle on the source servers
+ *  and to keep memory bounded — Playwright is heavy. */
+export interface FunnelPageHtml {
+  index: number;
+  url: string;
+  name?: string;
+  html: string | null;
+  htmlLength: number;
+  error: string | null;
+}
+
+export async function fetchFunnelPagesHtml(
+  pages: CheckpointFunnelPage[],
+): Promise<FunnelPageHtml[]> {
+  const out: FunnelPageHtml[] = [];
+  for (let i = 0; i < pages.length; i++) {
+    const p = pages[i];
+    try {
+      const html = await fetchFunnelHtml(p.url);
+      out.push({
+        index: i,
+        url: p.url,
+        name: p.name,
+        html,
+        htmlLength: html?.length ?? 0,
+        error: html ? null : 'fetch returned null',
+      });
+    } catch (err) {
+      out.push({
+        index: i,
+        url: p.url,
+        name: p.name,
+        html: null,
+        htmlLength: 0,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  return out;
 }

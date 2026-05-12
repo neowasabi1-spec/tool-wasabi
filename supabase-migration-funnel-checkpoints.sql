@@ -117,3 +117,33 @@ CREATE INDEX IF NOT EXISTS idx_funnel_checkpoints_triggered_by
 -- Global "log" view: newest first, all funnels.
 CREATE INDEX IF NOT EXISTS idx_funnel_checkpoints_created
   ON funnel_checkpoints(created_at DESC);
+
+-- ─────────────────────────────────────────────────────────────────────
+-- v2 migration: multi-step funnels + new "navigation" category
+-- ─────────────────────────────────────────────────────────────────────
+-- A funnel is now a SEQUENCE of pages, not a single URL. The legacy
+-- `url` column stays as "first page URL" for backward compatibility
+-- and as a quick-access display field. The new `pages` JSONB column
+-- is the source of truth: an ordered array of `{url, name}` objects.
+--
+-- Categories are simplified to: navigation, coherence, copy.
+-- The legacy score_cro / score_tov / score_compliance columns stay
+-- so historical runs remain readable; new runs leave them NULL and
+-- populate score_navigation instead.
+
+ALTER TABLE checkpoint_funnels
+  ADD COLUMN IF NOT EXISTS pages JSONB NOT NULL DEFAULT '[]'::jsonb;
+
+-- Backfill `pages` from the legacy single-URL row so existing entries
+-- keep working without manual intervention. Idempotent: only fills
+-- empty arrays.
+UPDATE checkpoint_funnels
+SET    pages = jsonb_build_array(
+         jsonb_build_object('url', url, 'name', name)
+       )
+WHERE  pages = '[]'::jsonb
+   OR  pages IS NULL
+   OR  jsonb_array_length(pages) = 0;
+
+ALTER TABLE funnel_checkpoints
+  ADD COLUMN IF NOT EXISTS score_navigation INTEGER;

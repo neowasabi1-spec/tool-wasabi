@@ -224,11 +224,24 @@ export default function CheckpointPage() {
     setAdding(true);
     setAddError(null);
     try {
+      // Parse the textarea: one URL per line, ignore empty lines and
+      // surrounding whitespace. The category 'navigation' needs at
+      // least 2 URLs to actually run, but we accept 1 here so the
+      // user can still create a single-page audit (only coherence +
+      // copy will execute).
+      const urls = formUrl
+        .split(/\r?\n/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (urls.length === 0) {
+        throw new Error('Inserisci almeno una URL.');
+      }
+      const pages = urls.map((url) => ({ url }));
       const res = await fetch('/api/checkpoint/funnels', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          url: formUrl.trim(),
+          pages,
           name: formName.trim() || undefined,
         }),
       });
@@ -268,7 +281,7 @@ export default function CheckpointPage() {
     <div className="min-h-screen bg-gray-50">
       <Header
         title="Checkpoint"
-        subtitle="Audit qualitativo dei funnel: CRO, coerenza, tone of voice, compliance, copy"
+        subtitle="Audit qualitativo dei funnel multi-step: navigazione, coerenza interna, copy quality"
       />
 
       <div className="px-6 py-6 space-y-6">
@@ -457,8 +470,29 @@ export default function CheckpointPage() {
                     }`}
                   >
                     <td className="px-4 py-3">
-                      <div className="font-medium text-gray-900 truncate max-w-[420px]">
-                        {f.name}
+                      <div className="flex items-center gap-2 max-w-[420px]">
+                        <div className="font-medium text-gray-900 truncate">
+                          {f.name}
+                        </div>
+                        {/* v2: badge with the number of pages in the
+                            funnel sequence. >= 2 = "Navigation" check is
+                            available; 1 = single-page audit only. */}
+                        {f.pages && f.pages.length > 0 && (
+                          <span
+                            className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide shrink-0 ${
+                              f.pages.length >= 2
+                                ? 'bg-indigo-100 text-indigo-700'
+                                : 'bg-gray-100 text-gray-600'
+                            }`}
+                            title={
+                              f.pages.length >= 2
+                                ? `Funnel multi-step (${f.pages.length} pagine in sequenza)`
+                                : 'Singola pagina'
+                            }
+                          >
+                            {f.pages.length} step
+                          </span>
+                        )}
                       </div>
                       {f.url && (
                         <a
@@ -546,31 +580,37 @@ export default function CheckpointPage() {
             <form onSubmit={handleAdd} className="space-y-4">
               <div>
                 <label className="block text-xs font-medium text-gray-700 mb-1">
-                  URL <span className="text-red-500">*</span>
+                  URL del funnel <span className="text-red-500">*</span>{' '}
+                  <span className="text-gray-400 font-normal">— una per riga, in ordine</span>
                 </label>
-                <input
-                  type="url"
+                <textarea
                   required
+                  rows={6}
                   value={formUrl}
                   onChange={(e) => setFormUrl(e.target.value)}
-                  placeholder="https://esempio.com/landing"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder={'https://esempio.com/landing\nhttps://esempio.com/checkout\nhttps://esempio.com/upsell\nhttps://esempio.com/thank-you'}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
                   autoFocus
                 />
+                <p className="text-xs text-gray-400 mt-1">
+                  Inserisci tutti gli step del funnel, dal primo (landing)
+                  all&apos;ultimo (thank-you). Il check &quot;Navigazione&quot;
+                  richiede almeno 2 step. Massimo 50.
+                </p>
               </div>
               <div>
                 <label className="block text-xs font-medium text-gray-700 mb-1">
-                  Nome (opzionale)
+                  Nome del funnel (opzionale)
                 </label>
                 <input
                   type="text"
                   value={formName}
                   onChange={(e) => setFormName(e.target.value)}
-                  placeholder="Es: Nooro – Sales Page v3"
+                  placeholder="Es: Nooro – Funnel completo v3"
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
                 <p className="text-xs text-gray-400 mt-1">
-                  Se vuoto, useremo il dominio.
+                  Se vuoto, useremo il dominio della prima pagina.
                 </p>
               </div>
 
