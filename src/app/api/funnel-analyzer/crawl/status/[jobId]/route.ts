@@ -18,7 +18,7 @@ export async function GET(
       );
     }
 
-    const job = getJob(jobId);
+    const job = await getJob(jobId);
     if (!job) {
       return NextResponse.json(
         { success: false, error: 'Job not found', status: 'not_found' },

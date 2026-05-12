@@ -127,7 +127,7 @@ export async function runCrawl(jobId: string, params: CrawlParams): Promise<void
   const quizMaxSteps = params.quizMaxSteps ?? QUIZ_MAX_STEPS;
 
   try {
-    updateJob(jobId, { status: 'running', currentStep: 0, totalSteps: maxSteps });
+    await updateJob(jobId, { status: 'running', currentStep: 0, totalSteps: maxSteps });
 
     const normalizedEntry = new URL(entryUrl).origin + new URL(entryUrl).pathname;
     const visited = new Set<string>();
@@ -173,7 +173,7 @@ export async function runCrawl(jobId: string, params: CrawlParams): Promise<void
         });
         if (!response) {
           await quizPage.close();
-          updateJob(jobId, {
+          await updateJob(jobId, {
             status: 'failed',
             error: 'Failed to load quiz page',
           });
@@ -261,7 +261,7 @@ export async function runCrawl(jobId: string, params: CrawlParams): Promise<void
 
           const step = await captureQuizStep();
           steps.push(step);
-          updateJob(jobId, { currentStep: steps.length, totalSteps: maxQuizSteps });
+          await updateJob(jobId, { currentStep: steps.length, totalSteps: maxQuizSteps });
 
           if (isCheckoutLikePage(quizPage.url(), step.title)) break;
 
@@ -295,11 +295,11 @@ export async function runCrawl(jobId: string, params: CrawlParams): Promise<void
           isQuizFunnel: true,
         };
         await quizPage.close();
-        updateJob(jobId, { status: 'completed', result, currentStep: steps.length, totalSteps: steps.length });
+        await updateJob(jobId, { status: 'completed', result, currentStep: steps.length, totalSteps: steps.length });
       } catch (err) {
         console.error('Quiz crawl error:', err);
         await quizPage?.close().catch(() => {});
-        updateJob(jobId, {
+        await updateJob(jobId, {
           status: 'failed',
           error: err instanceof Error ? err.message : 'Error during quiz crawl',
           result: { success: false, entryUrl, steps, totalSteps: steps.length, durationMs: Date.now() - startTime, visitedUrls: [normalizedEntry], isQuizFunnel: true },
@@ -315,7 +315,7 @@ export async function runCrawl(jobId: string, params: CrawlParams): Promise<void
       if (visited.has(currentUrl) || depth > maxDepth) continue;
       visited.add(currentUrl);
 
-      updateJob(jobId, { currentStep: steps.length + 1, totalSteps: maxSteps });
+      await updateJob(jobId, { currentStep: steps.length + 1, totalSteps: maxSteps });
       networkRequests.length = 0;
 
       const page = await context.newPage();
@@ -448,10 +448,10 @@ export async function runCrawl(jobId: string, params: CrawlParams): Promise<void
       durationMs: Date.now() - startTime,
       visitedUrls: Array.from(visited),
     };
-    updateJob(jobId, { status: 'completed', result, currentStep: steps.length, totalSteps: steps.length });
+    await updateJob(jobId, { status: 'completed', result, currentStep: steps.length, totalSteps: steps.length });
   } catch (error) {
     console.error('Crawl runner error:', error);
-    updateJob(jobId, {
+    await updateJob(jobId, {
       status: 'failed',
       error: error instanceof Error ? error.message : 'Unknown error',
     });
