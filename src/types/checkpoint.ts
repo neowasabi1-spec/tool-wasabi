@@ -16,8 +16,11 @@
  *    1. navigation — Tech/Detail audit (Macro-section 1: Technical QA
  *                    of the funnel: swipe residuals, brand & mechanism
  *                    consistency, pricing, links, etc.)
- *    2. coherence  — internal consistency across the entire sequence
- *    3. copy       — copy quality (PAS/AIDA, hook, mechanism, etc.)
+ *    2. coherence  — Visual audit (placeholder until the dedicated
+ *                    Visual prompt arrives — currently still runs the
+ *                    legacy "internal coherence" prompt)
+ *    3. copy       — Marketing audit (Macro-section 2: 3-expert copy
+ *                    QC, Sultanich · Hormozi · Georgi)
  *
  *  Legacy categories ('cro' | 'tov' | 'compliance') are kept in the
  *  union so historical runs still type-check, but new runs only
@@ -43,8 +46,8 @@ export const CHECKPOINT_RUN_CATEGORIES: ReadonlyArray<CheckpointCategory> = [
 
 export const CHECKPOINT_CATEGORY_LABELS: Record<CheckpointCategory, string> = {
   navigation: 'Tech/Detail',
-  coherence: 'Coerenza interna',
-  copy: 'Copy Quality',
+  coherence: 'Visual',
+  copy: 'Marketing',
   cro: 'CRO',
   tov: 'Tone of Voice',
   compliance: 'Compliance',
@@ -59,7 +62,7 @@ export const CHECKPOINT_CATEGORY_DESCRIPTIONS: Record<
   coherence:
     'Coerenza interna across tutta la sequenza: claim vs proof, promesse vs garanzie, mechanism vs benefit, contraddizioni tra step.',
   copy:
-    'Qualità della copy step-by-step: framework (PAS/AIDA), big idea, mechanism strength, hook, headline su tutti i pages.',
+    'Marketing audit (Macro-section 2): tre esperti in uno (Sultanich systems · Hormozi offer · Georgi RMBC). Funnel ID, narrative fit, IF-THEN, One Big Idea, Value Equation, Grand Slam Offer, Avatar DRE, mechanism depth, Evaldo 10Q, pain triplets, Satir 6 layers, social proof, LIFT.',
   cro:
     '(Legacy) CTA chiarezza, value prop above-the-fold, urgency, social proof, friction.',
   tov:
