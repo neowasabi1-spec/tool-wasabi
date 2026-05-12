@@ -100,7 +100,13 @@ export const CATEGORY_PROMPT_CONFIG: Record<
   // sezione 1 (Technical QA) del MEGA PROMPT v2.0.
   navigation: {
     task: 'general',
-    maxTokens: 4000,
+    // Bumped from 4000: with 6-12 issues × 2-4 sentence detail +
+    // verbatim evidence + 3-6 suggestions with currentText/targetText
+    // + summary, the JSON easily reaches 6-8k tokens. Truncated JSON
+    // is the #1 reason the Tech/Detail column looks "superficial" —
+    // the parser then either errors out or silently drops the cut-off
+    // issues mid-stream.
+    maxTokens: 8000,
     instructions: `You are a Quality Control Specialist for direct response marketing funnels. Your ONLY job is to read every page text supplied below, analyze every TECHNICAL detail, and produce a precise, complete audit with zero omissions and zero invented conclusions.
 
 ABSOLUTE RULE — DO NOT INVENT:
@@ -233,7 +239,12 @@ ${SHARED_OUTPUT_FORMAT}`,
   // Approved with fixes / Not approved).
   cro: {
     task: 'vsl',
-    maxTokens: 5500,
+    // Copy Chief is the most output-heavy column: 13 sub-checks
+    // (CC1-CC13) × 1+ issue each + 3-6 detailed rewrite suggestions
+    // with currentText/targetText. Was choking at 5500 — JSON
+    // truncated halfway through CC-9, dashboard then either errored
+    // or rendered ~4 issues max. 12k gives the chief room to breathe.
+    maxTokens: 12000,
     instructions: `You are the COPY CHIEF — a senior direct-response copy chief who has reviewed hundreds of million-dollar funnels.
 
 You are not a cheerleader. You are not gentle. You call things exactly as they are. When something is wrong, you say WHY and you show exactly HOW to fix it (foolproof rewrite directions). When something works, you say why and you say "do not touch".
@@ -394,7 +405,11 @@ ${SHARED_OUTPUT_FORMAT}`,
   //   il modello deve mantenere i NOT VERIFIED legacy.
   coherence: {
     task: 'vsl',
-    maxTokens: 5000,
+    // Visual audit produces a lot when vision mode is active:
+    // typography, contrast, hero, layout, trust, congruence, banner-
+    // blindness, wall-of-text, CTA inventory… × per-step detail.
+    // 5000 was truncating roughly at section 2 — bumped to 9000.
+    maxTokens: 9000,
     instructions: `You are a Senior UX/CRO Specialist auditing a multi-step direct-response funnel for VISUAL & UX QUALITY. Mobile is the primary device (90%+ cold FB/TT traffic): everything must work on a 390×844 viewport for a 50+ audience with reduced visual acuity.
 
 You are not looking for "nice" — you are looking for "converts". Be brutally honest. The visual layer kills or converts.
@@ -512,7 +527,10 @@ ${SHARED_OUTPUT_FORMAT}`,
   // (Sultanich · Hormozi · Georgi) con verdetto unico in JSON.
   copy: {
     task: 'vsl',
-    maxTokens: 5500,
+    // Three experts (Sultanich + Hormozi + Georgi) each producing
+    // their own findings = lots of output. 5500 was capping the
+    // Marketing column at ~4 visible issues — bumped to 10k.
+    maxTokens: 10000,
     instructions: `You are simultaneously playing THREE senior experts auditing a multi-step direct-response funnel for MARKETING & COPY quality. Each expert has a specific lens — DO NOT blend their voices, DO NOT skip any of them. They often disagree and that is fine.
 
 THREE EXPERTS:
@@ -872,7 +890,10 @@ export const QUIZ_CATEGORY_PROMPT_OVERRIDES: Partial<Record<
   // they degrade gracefully to NOT VERIFIED with a clear reason.
   navigation: {
     task: 'general',
-    maxTokens: 4000,
+    // Quiz overrides ask for 8-14 issues (denser than the default
+    // 6-12) → bumped from 4000 to 8000 for the same reason as the
+    // default Tech/Detail prompt: avoid mid-stream JSON truncation.
+    maxTokens: 8000,
     instructions: `You are a Quality Control Specialist auditing a QUIZ FUNNEL for funnel-integration QA. The quiz is being used as a Landing-page audit (page_type = quiz_funnel / survey / assessment), so your scope is the technical/brand-coherence layer — NOT the copy or psychology (those run in separate columns).
 
 Your job: detect mechanical mismatches that destroy conversions even when the copy is great. Mechanism-name drift between quiz info slides and the result page kills more sales than weak hooks.
@@ -939,7 +960,10 @@ ${SHARED_OUTPUT_FORMAT}`,
   // convert is in the question copy, info slides, and result page.
   copy: {
     task: 'vsl',
-    maxTokens: 6500,
+    // Quiz Marketing column = Step 0 + 6 QC sections + 5 Sultanich
+    // sub-sections, each producing 1+ detailed issue. 6500 was the
+    // tightest budget of the four — bumped to 11k.
+    maxTokens: 11000,
     instructions: `You are a Senior QUIZ FUNNEL Copy Chief. You have audited 57+ quiz funnels across weight loss (bioma, colonbroom, noom, metabolic-wave), hair loss (try-spartan), wellness (gethappyo), astrology (moon-reading, nebula), relationships (affemity), fitness (betterme, madmuscles), beauty (spoiled-child).
 
 You know quiz funnels are NOT a list of questions. They are an INTERACTIVE VSL — a micro-commitment chain that turns ICE-COLD prospects into someone who has self-diagnosed, blamed the right villain, and DESIRES the solution before the product is even revealed.
@@ -1042,7 +1066,9 @@ ${SHARED_OUTPUT_FORMAT}`,
   // content blocks for `coherence` regardless of override).
   coherence: {
     task: 'vsl',
-    maxTokens: 5500,
+    // 9 visual sections (4A-4I) × per-step verdict in vision mode.
+    // 5500 was capping after section 4F — bumped to 9k.
+    maxTokens: 9000,
     instructions: `You are a Senior QUIZ FUNNEL UX/Visual QC Specialist. The single device that matters for cold traffic is mobile (390×844 logical viewport). If a quiz doesn't convert on a 390px iPhone, it doesn't convert.
 
 Your scope in this column = STEP 4 of the QUIZ FUNNEL COPY CHIEF mega-prompt — the visual/UX layer (entry screen, progress bar, question UX, info slide design, loading screens, result page visuals, typography & colors, mobile friction). You do NOT audit copy quality (Marketing column) or psychological mechanisms (Copy Chief column).
@@ -1146,7 +1172,10 @@ ${SHARED_OUTPUT_FORMAT}`,
   // Quizzes missing 3+ of these will not convert cold traffic at scale.
   cro: {
     task: 'vsl',
-    maxTokens: 5500,
+    // 7 psychological mechanisms × 1+ detailed issue + 3-6 rewrite
+    // suggestions. 5500 was the same too-tight budget as the default
+    // Copy Chief — bumped to 12k.
+    maxTokens: 12000,
     instructions: `You are a senior QUIZ FUNNEL Psychology Auditor. You audit the 7 psychological mechanisms that are the invisible architecture of every converting quiz: Zeigarnik Effect Loop, Future Pacing, Progressive Revelation Pacing, Social Proof Anchoring / Statistical Mirroring, Yes Ladder (Cialdini Commitment & Consistency), "It's Not Your Fault" Frame, and Social Proof Integration throughout (not just on the result page).
 
 A quiz missing 3+ of these will NOT convert cold traffic at scale. Your job is to find every missing or weak mechanism and prescribe the precise placement to fix it.

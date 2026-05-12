@@ -30,6 +30,9 @@ import {
   Bot,
   SkipForward,
   Ban,
+  ChevronUp,
+  ChevronDown,
+  Info,
 } from 'lucide-react';
 import {
   type CheckpointCategory,
@@ -1599,8 +1602,24 @@ const SHEET_COLUMNS: SheetColumnConfig[] = [
 
 interface SheetRow {
   severity: 'critical' | 'warning' | 'info';
+  /** Section code parsed from the leading "[CC1] …" / "[1A] …" /
+   *  "[QV-4A] …" prefix the prompts force on every issue title.
+   *  When present we render it as a small uppercase pill so the
+   *  user can scan the audit by checklist code (e.g. all CC* are
+   *  Copy Chief findings). null when the title doesn't follow the
+   *  convention. */
+  sectionCode: string | null;
+  /** Title with the [code] prefix stripped — used as the visible
+   *  bold headline. The original raw title stays in `rawTitle`
+   *  for dedup keys. */
   title: string;
+  rawTitle: string;
   detail?: string;
+  /** Verbatim quote of the on-page copy the issue references.
+   *  Rendered as a left-bordered grey blockquote under detail
+   *  when present. The prompts require this for almost every
+   *  finding — without it the whole audit feels hand-wavy. */
+  evidence?: string;
   sourceCategory: CheckpointCategory;
 }
 
@@ -1613,6 +1632,22 @@ interface SheetActionRow {
   currentText?: string;
   targetText?: string;
   sourceCategory: CheckpointCategory;
+}
+
+/** Pull "[CC1]" / "[1A]" / "[QV-4A]" / "[NOT VERIFIED — 1B]" out
+ *  of the leading bracket, return both the bare code and the
+ *  cleaned-up title so the renderer can put the code in a pill
+ *  and the rest as the headline. */
+function parseSectionCode(rawTitle: string): {
+  sectionCode: string | null;
+  cleanTitle: string;
+} {
+  const m = rawTitle.match(/^\[([^\]]{1,40})\]\s*/);
+  if (!m) return { sectionCode: null, cleanTitle: rawTitle };
+  return {
+    sectionCode: m[1].trim(),
+    cleanTitle: rawTitle.slice(m[0].length).trim() || rawTitle,
+  };
 }
 
 function FindingsSheet({
@@ -1653,25 +1688,37 @@ function SheetColumn({
       ? (Object.keys(results) as CheckpointCategory[])
       : config.sources;
 
-  // Aggrega tutte le issues critical+warning dalle categorie sorgenti.
-  // Per "All Step" deduplichiamo per titolo per non ripetere lo stesso
-  // problema due volte se più categorie l'hanno sollevato.
+  // Aggrega tutte le issues dalle categorie sorgenti, separando
+  // critical+warning ("rows" = ciò che mostriamo sempre) dagli
+  // info ("infoRows" = collassabili sotto un toggle "+ N punti
+  // non verificati / info"). Per "All Step" deduplichiamo per
+  // titolo per non ripetere lo stesso problema due volte se più
+  // categorie l'hanno sollevato.
   const seen = new Set<string>();
   const rows: SheetRow[] = [];
+  const infoRows: SheetRow[] = [];
   for (const cat of sourceCats) {
     const r = results[cat];
     if (!r || !Array.isArray(r.issues)) continue;
     for (const iss of r.issues) {
-      if (iss.severity === 'info') continue;
       const dedupeKey = `${iss.severity}::${iss.title.toLowerCase()}`;
       if (config.sources === '*' && seen.has(dedupeKey)) continue;
       seen.add(dedupeKey);
-      rows.push({
+      const { sectionCode, cleanTitle } = parseSectionCode(iss.title);
+      const row: SheetRow = {
         severity: iss.severity,
-        title: iss.title,
+        sectionCode,
+        title: cleanTitle,
+        rawTitle: iss.title,
         detail: iss.detail,
+        evidence: iss.evidence,
         sourceCategory: cat,
-      });
+      };
+      if (iss.severity === 'info') {
+        infoRows.push(row);
+      } else {
+        rows.push(row);
+      }
     }
   }
   rows.sort(
@@ -1679,6 +1726,31 @@ function SheetColumn({
       severityRank(a.severity) - severityRank(b.severity) ||
       a.title.localeCompare(b.title),
   );
+
+  // Aggrega anche le rewrite suggestions a livello colonna così
+  // possiamo mostrarle DENTRO la stessa colonna invece di tenerle
+  // sepolte nell'aggregato "Cose da fare". Questo è metà della
+  // densità che mancava: il modello produce currentText/targetText
+  // ma fino a ieri li vedevi solo nell'altra sezione, e quindi le
+  // colonne sembravano "scarne".
+  const suggestionRows: SheetActionRow[] = [];
+  const seenSuggestions = new Set<string>();
+  for (const cat of sourceCats) {
+    const r = results[cat];
+    if (!r || !Array.isArray(r.suggestions)) continue;
+    for (const s of r.suggestions) {
+      const key = `${s.title.toLowerCase()}::${(s.currentText || '').slice(0, 80)}`;
+      if (config.sources === '*' && seenSuggestions.has(key)) continue;
+      seenSuggestions.add(key);
+      suggestionRows.push({
+        title: s.title,
+        detail: s.detail,
+        currentText: s.currentText,
+        targetText: s.targetText,
+        sourceCategory: cat,
+      });
+    }
+  }
 
   // Stato della colonna per il badge in header.
   //
@@ -1750,9 +1822,9 @@ function SheetColumn({
       {/* Body: ANALISI (righe stile foglio con le criticità) */}
       <div className="flex-1">
         <div
-          className={`divide-y ${palette.divide} overflow-y-auto max-h-[320px]`}
+          className={`overflow-y-auto max-h-[640px] ${palette.divide}`}
         >
-          {rows.length === 0 ? (
+          {rows.length === 0 && infoRows.length === 0 ? (
             <div className="px-3 py-6 text-center text-xs">
               {status === 'idle' && (
                 <span className="text-gray-500/80">In attesa di analisi…</span>
@@ -1792,17 +1864,183 @@ function SheetColumn({
               )}
             </div>
           ) : (
-            rows.map((row, i) => (
-              <SheetRowView
-                key={`${config.id}-${i}`}
-                index={i + 1}
-                row={row}
-                hoverBg={palette.rowHover}
-              />
-            ))
+            <>
+              {rows.length > 0 && (
+                <div className={`divide-y ${palette.divide}`}>
+                  {rows.map((row, i) => (
+                    <SheetRowView
+                      key={`${config.id}-iss-${i}`}
+                      index={i + 1}
+                      row={row}
+                      hoverBg={palette.rowHover}
+                    />
+                  ))}
+                </div>
+              )}
+
+              {/* Suggestions: i fix proposti dal modello (currentText
+                  → targetText) per QUESTA colonna. Il modello li
+                  produce sempre ma fino a ieri venivano sepolti
+                  nell'aggregato "Cose da fare" — qui li mostriamo
+                  in linea sotto le criticità così la colonna è
+                  completamente azionabile da sola. */}
+              {suggestionRows.length > 0 && (
+                <ColumnSuggestionsBlock
+                  rows={suggestionRows}
+                  paletteBorder={palette.headerBorder}
+                />
+              )}
+
+              {/* "Punti non verificati / info" — collassabili così non
+                  saturano la colonna ma sono comunque accessibili. Il
+                  modello segnala con severity='info' tutti i check che
+                  non riesce a verificare (head stripped, screenshot
+                  assente, single-page funnel, ecc.) e averli a portata
+                  di mano dimostra che l'audit è stato esaustivo, non
+                  superficiale. */}
+              {infoRows.length > 0 && (
+                <ColumnInfoBlock
+                  rows={infoRows}
+                  paletteBorder={palette.headerBorder}
+                  hoverBg={palette.rowHover}
+                />
+              )}
+            </>
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/** Collapsible block under the issues that lists the rewrite
+ *  suggestions for the same column. Each suggestion is rendered
+ *  as a "Now → Change to" pair when both currentText and
+ *  targetText are present (the high-value case), or as a plain
+ *  title + detail otherwise (structural fixes). Open by default
+ *  whenever there's at least one before/after pair so the user
+ *  immediately sees the actionable copy changes. */
+function ColumnSuggestionsBlock({
+  rows,
+  paletteBorder,
+}: {
+  rows: SheetActionRow[];
+  paletteBorder: string;
+}) {
+  const hasRewrite = rows.some((r) => r.currentText && r.targetText);
+  const [open, setOpen] = useState<boolean>(hasRewrite);
+  return (
+    <div className={`border-t-2 ${paletteBorder}`}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="w-full px-3 py-2 flex items-center justify-between gap-2 bg-white/60 hover:bg-white/90 transition-colors text-left"
+      >
+        <div className="flex items-center gap-2">
+          <Lightbulb className="w-3.5 h-3.5 text-amber-600" />
+          <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-700">
+            Fix proposti · {rows.length}
+          </span>
+        </div>
+        {open ? (
+          <ChevronUp className="w-3.5 h-3.5 text-gray-500" />
+        ) : (
+          <ChevronDown className="w-3.5 h-3.5 text-gray-500" />
+        )}
+      </button>
+      {open && (
+        <div className="divide-y divide-gray-200 bg-white/40">
+          {rows.map((s, i) => (
+            <div key={`sug-${i}`} className="px-3 py-2">
+              <div className="text-xs font-semibold text-gray-900 leading-snug">
+                {s.title}
+              </div>
+              {s.detail && (
+                <div className="text-[11px] text-gray-600 mt-1 leading-relaxed whitespace-pre-line">
+                  {s.detail}
+                </div>
+              )}
+              {s.currentText && s.targetText && (
+                <div className="mt-2 grid grid-cols-1 gap-1.5">
+                  <div className="rounded border border-red-200 bg-red-50/60 px-2 py-1.5">
+                    <div className="text-[9px] font-bold uppercase tracking-wider text-red-700 mb-0.5">
+                      Adesso
+                    </div>
+                    <div className="text-[11px] text-red-900 leading-snug whitespace-pre-line">
+                      {s.currentText}
+                    </div>
+                  </div>
+                  <div className="rounded border border-emerald-200 bg-emerald-50/60 px-2 py-1.5">
+                    <div className="text-[9px] font-bold uppercase tracking-wider text-emerald-700 mb-0.5">
+                      Sostituisci con
+                    </div>
+                    <div className="text-[11px] text-emerald-900 leading-snug whitespace-pre-line">
+                      {s.targetText}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Collapsible block under the issues + suggestions that lists the
+ *  info-severity findings (NOT VERIFIED items, low-priority nits).
+ *  Closed by default so the column stays focused on what matters,
+ *  but still discoverable so the user can confirm "yes the model
+ *  did think about meta tags / pixels / mobile rendering / etc." */
+function ColumnInfoBlock({
+  rows,
+  paletteBorder,
+  hoverBg,
+}: {
+  rows: SheetRow[];
+  paletteBorder: string;
+  hoverBg: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const notVerifiedCount = rows.filter(
+    (r) =>
+      r.title.toLowerCase().includes('not verified') ||
+      r.detail?.toLowerCase().startsWith('not verified'),
+  ).length;
+  return (
+    <div className={`border-t-2 ${paletteBorder}`}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="w-full px-3 py-2 flex items-center justify-between gap-2 bg-white/60 hover:bg-white/90 transition-colors text-left"
+      >
+        <div className="flex items-center gap-2">
+          <Info className="w-3.5 h-3.5 text-blue-600" />
+          <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-700">
+            {notVerifiedCount > 0
+              ? `${notVerifiedCount} non verificati · ${rows.length - notVerifiedCount} info`
+              : `${rows.length} note informative`}
+          </span>
+        </div>
+        {open ? (
+          <ChevronUp className="w-3.5 h-3.5 text-gray-500" />
+        ) : (
+          <ChevronDown className="w-3.5 h-3.5 text-gray-500" />
+        )}
+      </button>
+      {open && (
+        <div className="divide-y divide-gray-200 bg-white/40">
+          {rows.map((row, i) => (
+            <SheetRowView
+              key={`info-${i}`}
+              index={i + 1}
+              row={row}
+              hoverBg={hoverBg}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -2191,12 +2429,30 @@ function SheetRowView({
    *  per-row hover stays in the same pastel family as the column. */
   hoverBg?: string;
 }) {
-  const sevColor =
+  // Severity-driven palette: the badge, the icon, and the left
+  // border all use the same colour so the user can scan the
+  // column at a glance and spot critical rows immediately.
+  const sevPalette =
     row.severity === 'critical'
-      ? 'text-red-600'
+      ? {
+          icon: 'text-red-600',
+          badge: 'bg-red-100 text-red-800 border-red-200',
+          stripe: 'border-l-red-400',
+          label: 'CRITICA',
+        }
       : row.severity === 'warning'
-        ? 'text-amber-600'
-        : 'text-blue-600';
+        ? {
+            icon: 'text-amber-600',
+            badge: 'bg-amber-100 text-amber-800 border-amber-200',
+            stripe: 'border-l-amber-400',
+            label: 'WARNING',
+          }
+        : {
+            icon: 'text-blue-600',
+            badge: 'bg-blue-100 text-blue-800 border-blue-200',
+            stripe: 'border-l-blue-300',
+            label: 'INFO',
+          };
   const SevIcon =
     row.severity === 'critical'
       ? AlertCircle
@@ -2204,24 +2460,57 @@ function SheetRowView({
         ? AlertTriangle
         : CheckCircle2;
   return (
-    <div className={`px-3 py-2 flex items-start gap-2 transition-colors ${hoverBg}`}>
-      <span className="text-[10px] font-mono text-gray-300 w-5 text-right pt-0.5 select-none shrink-0">
-        {index}
-      </span>
-      <SevIcon className={`w-3.5 h-3.5 mt-0.5 shrink-0 ${sevColor}`} />
-      <div className="flex-1 min-w-0">
-        <div className="text-xs font-medium text-gray-900 leading-snug">
-          {row.title}
-        </div>
-        {row.detail && (
-          <div className="text-[11px] text-gray-500 mt-0.5 line-clamp-2 leading-snug">
-            {row.detail}
-          </div>
+    <div
+      className={`px-3 py-3 border-l-4 ${sevPalette.stripe} transition-colors ${hoverBg}`}
+    >
+      {/* Header riga: numero · severity badge · section code pill */}
+      <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+        <span className="text-[10px] font-mono text-gray-400 select-none">
+          #{index}
+        </span>
+        <span
+          className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider border ${sevPalette.badge}`}
+        >
+          <SevIcon className={`w-3 h-3 ${sevPalette.icon}`} />
+          {sevPalette.label}
+        </span>
+        {row.sectionCode && (
+          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold font-mono uppercase tracking-wider bg-gray-900 text-white">
+            {row.sectionCode}
+          </span>
         )}
-        <div className="text-[10px] text-gray-400 uppercase tracking-wide mt-1">
+        <span className="text-[9px] text-gray-400 uppercase tracking-wide ml-auto">
           {row.sourceCategory}
-        </div>
+        </span>
       </div>
+
+      {/* Title — bold headline, no clamp */}
+      <div className="text-[13px] font-semibold text-gray-900 leading-snug">
+        {row.title}
+      </div>
+
+      {/* Detail — FULL TEXT, no line-clamp. The model is instructed
+          to write 2-4 sentences with problem + WHY + impact + fix
+          direction; clamping it to 2 lines was the single biggest
+          reason the audit looked "superficial" even when the AI
+          had produced a dense paragraph. */}
+      {row.detail && (
+        <div className="text-[12px] text-gray-700 mt-1.5 leading-relaxed whitespace-pre-line">
+          {row.detail}
+        </div>
+      )}
+
+      {/* Evidence — verbatim quote of the on-page copy the issue
+          references. Rendered as a left-bordered blockquote so it
+          looks like the snippet of source it actually is. The
+          prompts mandate this for almost every finding; without
+          surfacing it, the audit reads as opinion instead of
+          observation. */}
+      {row.evidence && (
+        <blockquote className="mt-2 px-2 py-1.5 border-l-2 border-gray-300 bg-gray-50/60 text-[11px] italic text-gray-600 leading-snug">
+          “{row.evidence}”
+        </blockquote>
+      )}
     </div>
   );
 }
