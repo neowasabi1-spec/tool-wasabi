@@ -37,7 +37,9 @@ import type {
   CheckpointLogEntry,
 } from '@/types/checkpoint';
 import { getCurrentUserName, setCurrentUserName } from '@/lib/current-user';
-import ImportFromProjectsModal from '@/components/checkpoint/ImportFromProjectsModal';
+import ImportFromProjectsModal, {
+  type PickedProject,
+} from '@/components/checkpoint/ImportFromProjectsModal';
 
 function ScorePill({ score }: { score: number | null }) {
   if (score === null || score === undefined) {
@@ -183,7 +185,13 @@ export default function CheckpointPage() {
 
   /** Toggle helper used by the two top-level toolbar buttons. Clicking
    *  the same button twice closes the inline panel; clicking the other
-   *  swaps to it (resetting per-mode form state in between). */
+   *  swaps to it (resetting per-mode form state in between).
+   *
+   *  When a project is currently selected (`selectedProject` !== null)
+   *  we pre-fill the form: Landing seeds the URL with the project's
+   *  first detected URL (the radio list lets the user switch); Funnel
+   *  skips the manual/auto pick and jumps straight into the manual
+   *  list pre-populated with all project URLs. */
   const toggleAddMode = (target: 'landing' | 'funnel-pick') => {
     if (adding || autoCrawling) return;
     setAddError(null);
@@ -199,7 +207,59 @@ export default function CheckpointPage() {
       return;
     }
     resetAddState();
-    setAddMode(target);
+
+    if (target === 'landing') {
+      if (selectedProject && selectedProject.detectedUrls.length > 0) {
+        setProjectLandingIdx(0);
+        setLandingUrl(selectedProject.detectedUrls[0]?.url ?? '');
+        setFormName(selectedProject.name);
+      }
+      setAddMode('landing');
+      return;
+    }
+
+    // target === 'funnel-pick'
+    if (selectedProject && selectedProject.detectedUrls.length > 0) {
+      setManualPages(
+        selectedProject.detectedUrls.map((u) => u.url).filter(Boolean),
+      );
+      setFormName(selectedProject.name);
+      setAddMode('funnel-manual');
+      return;
+    }
+    setAddMode('funnel-pick');
+  };
+
+  /** Called by the "My Projects" modal when the user picks a project.
+   *  Stores the project so the existing Landing / Funnel buttons
+   *  inherit its URLs on next click. */
+  const handlePickProject = (p: PickedProject) => {
+    setSelectedProject(p);
+    setProjectLandingIdx(0);
+    // If the user already has a panel open, refresh its content so it
+    // reflects the new project. Closing+reopening is the cheapest way
+    // to re-run the pre-fill logic in toggleAddMode.
+    if (addMode !== 'closed' && !adding && !autoCrawling) {
+      const wasFunnel =
+        addMode === 'funnel-pick' ||
+        addMode === 'funnel-manual' ||
+        addMode === 'funnel-auto';
+      resetAddState();
+      if (wasFunnel) {
+        setManualPages(p.detectedUrls.map((u) => u.url).filter(Boolean));
+        setFormName(p.name);
+        setAddMode(p.detectedUrls.length > 0 ? 'funnel-manual' : 'funnel-pick');
+      } else {
+        setLandingUrl(p.detectedUrls[0]?.url ?? '');
+        setFormName(p.name);
+        setAddMode('landing');
+      }
+    }
+  };
+
+  const clearSelectedProject = () => {
+    setSelectedProject(null);
+    setProjectLandingIdx(0);
   };
 
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -210,10 +270,17 @@ export default function CheckpointPage() {
   const [logLoading, setLogLoading] = useState(false);
   const [logError, setLogError] = useState<string | null>(null);
 
-  // "Import from My Projects" modal — picker over Supabase projects
-  // that re-uses /api/checkpoint/funnels/import (same flow as the
-  // Projects page, just kicked off from inside Checkpoint).
+  // "My Projects" picker. Selecting a project here doesn't import
+  // anything by itself — it just stores the project in
+  // `selectedProject` so the existing Landing / Funnel buttons can
+  // pre-fill their forms with that project's detected URLs.
   const [showProjectsImport, setShowProjectsImport] = useState(false);
+  const [selectedProject, setSelectedProject] =
+    useState<PickedProject | null>(null);
+  /** Index of which project URL is the chosen one in the Landing form
+   *  (only used when `selectedProject` is set; the radio list above
+   *  the URL input drives this). */
+  const [projectLandingIdx, setProjectLandingIdx] = useState<number>(0);
 
   // "Who am I" — placeholder until auth lands.
   const [userName, setUserName] = useState<string>('Owner');
@@ -304,7 +371,9 @@ export default function CheckpointPage() {
 
   /** Shared submitter used by all three add modes. Each mode resolves
    *  its own `urls` list and delegates here so name handling, error
-   *  handling and reload-on-success live in one place. */
+   *  handling and reload-on-success live in one place. When a project
+   *  is selected, its id is forwarded so the new funnel is linked to
+   *  the project for back-references. */
   const submitFunnel = async (urls: string[]) => {
     const cleaned = urls.map((u) => u.trim()).filter(Boolean);
     if (cleaned.length === 0) {
@@ -317,6 +386,7 @@ export default function CheckpointPage() {
       body: JSON.stringify({
         pages,
         name: formName.trim() || undefined,
+        project_id: selectedProject?.id,
       }),
     });
     const body = await res.json();
@@ -567,11 +637,19 @@ export default function CheckpointPage() {
             <button
               onClick={() => setShowProjectsImport(true)}
               disabled={adding || autoCrawling}
-              className="inline-flex items-center gap-2 px-4 py-2 bg-white border border-indigo-300 text-indigo-700 text-sm font-medium rounded-lg hover:bg-indigo-50 transition-colors disabled:opacity-50"
-              title="Importa un funnel o una pagina dai My Projects"
+              className={`inline-flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg transition-colors disabled:opacity-50 ${
+                selectedProject
+                  ? 'bg-indigo-600 text-white hover:bg-indigo-700 shadow-sm'
+                  : 'bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-50'
+              }`}
+              title={
+                selectedProject
+                  ? `Progetto attivo: ${selectedProject.name} — clicca per cambiarlo`
+                  : 'Scegli un progetto, poi usa Landing o Funnel'
+              }
             >
               <FolderOpen className="w-4 h-4" />
-              My Projects
+              {selectedProject ? selectedProject.name : 'My Projects'}
             </button>
 
             <button
@@ -603,6 +681,42 @@ export default function CheckpointPage() {
               Funnel
             </button>
           </div>
+
+          {/* Active project context strip. Visible only when the user
+              has selected a project via the "My Projects" picker —
+              tells them the next Landing/Funnel click will operate on
+              that project's pages. */}
+          {selectedProject && (
+            <div className="mt-3 flex items-center gap-2 text-xs px-3 py-2 bg-indigo-50 border border-indigo-200 rounded-lg">
+              <FolderOpen className="w-3.5 h-3.5 text-indigo-600" />
+              <span className="text-indigo-900">
+                Operando su:{' '}
+                <strong className="font-semibold">
+                  {selectedProject.name}
+                </strong>{' '}
+                <span className="text-indigo-600 font-normal">
+                  · {selectedProject.detectedUrls.length} URL rilevat
+                  {selectedProject.detectedUrls.length === 1 ? 'o' : 'i'} ·
+                  Landing = singola pagina · Funnel = tutto il flusso
+                </span>
+              </span>
+              <button
+                type="button"
+                onClick={() => setShowProjectsImport(true)}
+                className="ml-auto text-indigo-600 hover:text-indigo-800 hover:underline"
+              >
+                Cambia
+              </button>
+              <button
+                type="button"
+                onClick={clearSelectedProject}
+                className="p-0.5 text-indigo-500 hover:bg-indigo-100 rounded"
+                title="Rimuovi progetto attivo"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
 
           {/* "Who am I" strip. Will be replaced by auth session lookup
               once the users table lands. */}
@@ -714,61 +828,111 @@ export default function CheckpointPage() {
               </button>
             </div>
 
-            {/* Screen: landing (single URL) */}
+            {/* Screen: landing (single URL).
+                When a project is selected and has detected URLs, we
+                show a radio list of the project's pages above the URL
+                input — clicking a row pre-fills the URL so the user
+                can still tweak it before saving. */}
             {addMode === 'landing' && (
               <form
                 onSubmit={handleAddLanding}
-                className="flex flex-wrap items-end gap-3"
+                className="space-y-3"
               >
-                <div className="flex-1 min-w-[260px]">
-                  <label className="block text-xs font-medium text-gray-700 mb-1">
-                    URL della landing{' '}
-                    <span className="text-red-500">*</span>
-                  </label>
-                  <input
-                    required
-                    type="url"
-                    value={landingUrl}
-                    onChange={(e) => setLandingUrl(e.target.value)}
-                    placeholder="https://esempio.com/landing"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                    autoFocus
-                  />
-                </div>
-                <div className="w-56">
-                  <label className="block text-xs font-medium text-gray-700 mb-1">
-                    Nome (opzionale)
-                  </label>
-                  <input
-                    type="text"
-                    value={formName}
-                    onChange={(e) => setFormName(e.target.value)}
-                    placeholder="Es: Landing v3"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                  />
-                </div>
-                <button
-                  type="submit"
-                  disabled={adding || !landingUrl.trim()}
-                  className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white text-sm font-medium rounded-lg hover:bg-emerald-700 disabled:opacity-50"
-                >
-                  {adding ? (
-                    <>
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      Aggiungo...
-                    </>
-                  ) : (
-                    <>
-                      <Plus className="w-4 h-4" />
-                      Aggiungi
-                    </>
+                {selectedProject &&
+                  selectedProject.detectedUrls.length > 0 && (
+                    <div className="border border-indigo-200 bg-indigo-50/40 rounded-lg p-3">
+                      <div className="text-xs font-medium text-indigo-700 mb-2">
+                        Pagine di{' '}
+                        <strong>{selectedProject.name}</strong>{' '}
+                        <span className="text-indigo-500 font-normal">
+                          — scegli quale audire
+                        </span>
+                      </div>
+                      <ul className="space-y-1 max-h-48 overflow-y-auto">
+                        {selectedProject.detectedUrls.map((u, i) => {
+                          const checked = projectLandingIdx === i;
+                          return (
+                            <li key={i}>
+                              <label
+                                className={`flex items-start gap-2 px-2 py-1.5 rounded cursor-pointer ${
+                                  checked
+                                    ? 'bg-white border border-indigo-300'
+                                    : 'hover:bg-white/60'
+                                }`}
+                              >
+                                <input
+                                  type="radio"
+                                  name="project-landing-url"
+                                  checked={checked}
+                                  onChange={() => {
+                                    setProjectLandingIdx(i);
+                                    setLandingUrl(u.url);
+                                  }}
+                                  className="mt-1 accent-indigo-600"
+                                />
+                                <div className="flex-1 min-w-0">
+                                  <div className="text-sm text-gray-800 font-medium truncate">
+                                    {u.name}
+                                  </div>
+                                  <div className="text-[11px] text-gray-500 font-mono truncate">
+                                    {u.url}
+                                  </div>
+                                </div>
+                              </label>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </div>
                   )}
-                </button>
-                {addError && (
-                  <div className="w-full">
-                    <ErrorBanner message={addError} />
+
+                <div className="flex flex-wrap items-end gap-3">
+                  <div className="flex-1 min-w-[260px]">
+                    <label className="block text-xs font-medium text-gray-700 mb-1">
+                      URL della landing{' '}
+                      <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      required
+                      type="url"
+                      value={landingUrl}
+                      onChange={(e) => setLandingUrl(e.target.value)}
+                      placeholder="https://esempio.com/landing"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                      autoFocus={!selectedProject}
+                    />
                   </div>
-                )}
+                  <div className="w-56">
+                    <label className="block text-xs font-medium text-gray-700 mb-1">
+                      Nome (opzionale)
+                    </label>
+                    <input
+                      type="text"
+                      value={formName}
+                      onChange={(e) => setFormName(e.target.value)}
+                      placeholder="Es: Landing v3"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={adding || !landingUrl.trim()}
+                    className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white text-sm font-medium rounded-lg hover:bg-emerald-700 disabled:opacity-50"
+                  >
+                    {adding ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Aggiungo...
+                      </>
+                    ) : (
+                      <>
+                        <Plus className="w-4 h-4" />
+                        Aggiungi
+                      </>
+                    )}
+                  </button>
+                </div>
+                {addError && <ErrorBanner message={addError} />}
               </form>
             )}
 
@@ -791,9 +955,20 @@ export default function CheckpointPage() {
               </div>
             )}
 
-            {/* Screen: funnel manual (list of URL inputs) */}
+            {/* Screen: funnel manual (list of URL inputs).
+                When toggled with a project selected, this list comes
+                pre-populated with that project's detected URLs (the
+                inline note below makes that explicit). */}
             {addMode === 'funnel-manual' && (
               <form onSubmit={handleAddManual} className="space-y-4">
+                {selectedProject &&
+                  selectedProject.detectedUrls.length > 0 && (
+                    <div className="text-xs text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-md px-3 py-2">
+                      Pre-compilato dalle pagine di{' '}
+                      <strong>{selectedProject.name}</strong>. Puoi
+                      rimuovere o riordinare gli step come preferisci.
+                    </div>
+                  )}
                 <div>
                   <label className="block text-xs font-medium text-gray-700 mb-1">
                     URL degli step <span className="text-red-500">*</span>{' '}
@@ -1279,11 +1454,14 @@ export default function CheckpointPage() {
         </div>
       )}
 
-      {/* Import from My Projects — opens a 2-step picker: project →
-          mode (all pages / single page) → confirm. */}
+      {/* "My Projects" picker — selects a project and stores it in
+          `selectedProject`. Doesn't import anything itself; the
+          existing Landing / Funnel buttons read the selected project
+          and pre-fill their forms with its detected URLs. */}
       <ImportFromProjectsModal
         open={showProjectsImport}
         onClose={() => setShowProjectsImport(false)}
+        onPick={handlePickProject}
       />
     </div>
   );
