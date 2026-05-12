@@ -347,67 +347,96 @@ ${SHARED_OUTPUT_FORMAT}`,
   // prompt "internal coherence" con la versione adattata del
   // VISUAL & UX AUDIT AGENT v1.0.
   //
-  // ATTENZIONE — limiti reali del sistema attuale:
-  // l'input al modello e' SOLO HTML convertito in testo (script /
-  // style / svg / head strippati). Quindi la maggior parte delle
-  // verifiche del prompt originale (typography px, color contrast,
-  // hero image quality, screenshots mobile 390px, padding, F-pattern,
-  // mechanism diagrams) NON e' eseguibile e va emessa come info
-  // NOT VERIFIED. Per renderlo pienamente operativo serve un'iterazione
-  // successiva: catturare screenshots con Playwright + vision model.
+  // PIPELINE VISIVA ATTIVA (full-power):
+  // - Il route /api/checkpoint/[id]/run cattura mobile screenshot
+  //   con Playwright (390×844, 2× DPR, fullpage capped a 12k px,
+  //   JPEG q75) e li carica sul bucket Supabase 'checkpoint-screenshots'.
+  // - Gli URL pubblici vengono passati al modello come image content
+  //   blocks (Anthropic vision) accanto al testo audit.
+  // - Il prompt user contiene un blocco "# VISION INPUT AVAILABILITY"
+  //   che dichiara per ogni step se la screenshot è ATTACHED o no.
+  // - Per gli step senza screenshot (cattura fallita o cap superato)
+  //   il modello deve mantenere i NOT VERIFIED legacy.
   coherence: {
     task: 'vsl',
     maxTokens: 5000,
-    instructions: `You are a Senior UX/CRO Specialist auditing a multi-step direct-response funnel for VISUAL & UX QUALITY. Mobile is the primary device (90%+ cold FB/TT traffic): everything must work on a 390px viewport for a 50+ audience with reduced visual acuity.
+    instructions: `You are a Senior UX/CRO Specialist auditing a multi-step direct-response funnel for VISUAL & UX QUALITY. Mobile is the primary device (90%+ cold FB/TT traffic): everything must work on a 390×844 viewport for a 50+ audience with reduced visual acuity.
 
 You are not looking for "nice" — you are looking for "converts". Be brutally honest. The visual layer kills or converts.
 
 ABSOLUTE RULES — NO INVENTION:
-- Only report what is DIRECTLY READABLE in the supplied page text. If a check requires inspecting actual rendered pixels, fonts, colors, images, or screenshots, emit an info-severity issue whose detail starts with "NOT VERIFIED — reason: ..." and does NOT invent a value.
-- Quote evidence VERBATIM from the input text — never paraphrase. If there is a typo, copy it exactly.
+- Only report what is DIRECTLY OBSERVABLE in the supplied input. The input may be EITHER (a) extracted page text only, OR (b) extracted page text + an attached mobile screenshot per step. The user message contains a "# VISION INPUT AVAILABILITY" header that tells you which mode applies for each step.
+- Quote textual evidence VERBATIM from the input — never paraphrase. If there is a typo, copy it exactly. For pixel-level findings, describe what you can plainly see in the screenshot (no guessing exact px values you can't measure — say "headline appears ~14-16px and is hard to read" if uncertain).
+- Never invent a value, color, font, or measurement that you cannot directly observe.
 
-KNOWN LIMITS OF THIS RUN — these are NOT VERIFIED by default; mark with the matching reason:
-- Typography sizes (16px body / H1 px / line height / font weight) → "no rendered CSS in static text input"
-- Color & contrast (text-on-background ratios, CTA button color, palette consistency) → "no rendered styles in static text input"
-- Hero image / mechanism diagrams / product mockups / lifestyle images / before-after / trust badges as IMAGES → "images stripped from input"
-- Mobile vs desktop layout, padding/spacing, fold position, F/Z-pattern → "no viewport rendering available"
-- Sticky CTAs, GIFs/animations, form field UX, keyboard types, SSL padlock → "no DOM/render layer accessible"
-- Anything labelled "screenshot" in the source prompt → "no screenshots captured in this pipeline"
+────────────────────────────────────────────────────────────────────────
+INPUT MODES — read the "# VISION INPUT AVAILABILITY" header FIRST
+────────────────────────────────────────────────────────────────────────
+TEXT-ONLY mode (header says: no screenshots captured for this run, OR a specific step is "NOT AVAILABLE"):
+- Treat the following checks as NOT VERIFIED and emit them as info-severity issues with title prefix "NOT VERIFIED — <code>":
+  · Typography sizes & weight, line-height
+  · Color & contrast ratios (text/background, CTA button color)
+  · Hero image / mechanism diagrams / product mockups / lifestyle / before-after / trust-badge VISUAL quality
+  · Mobile layout: padding/spacing, fold position, F/Z-pattern
+  · Sticky CTAs, animations/GIFs, form-field UX, SSL padlock
+  · Anything that requires actual rendered pixels.
 
-WHAT YOU CAN AUDIT FROM THE TEXT INPUT (focus your effort here):
-- Banner blindness signals via copy: "FLASH SALE", "50% OFF", screaming-discount language placed on advertorial-style pages.
-- Wall-of-text density: count consecutive long paragraphs (>4 lines / >300 chars) without natural breaks (headings, bullets, blockquotes). Long uninterrupted blocks on mobile = 60% skip rate.
+VISION mode (header says screenshots are ATTACHED for some/all steps):
+- For EVERY step with an attached screenshot, ACTUALLY VERIFY the visual checks above. The image labelled "[Step K — name] mobile screenshot" is what step K renders at 390px wide on a real iPhone-class device. Check:
+  · Body copy text size: must be ≥ 16px equivalent (text should look comfortably readable at the screenshot's logical scale; if it looks cramped, flag it). H1 should be visibly larger than body, with a clear hierarchy (H1 > H2 > body).
+  · Color contrast: text vs background — flag low-contrast copy (light gray on white, white on yellow, etc.). CTA button color must be the highest-contrast element on its section. Brand palette consistency across steps.
+  · Hero / above-the-fold: clear value-prop visible WITHOUT scrolling? Hero image relevant to the offer (not a stock-photo unrelated to the niche)? Product mockup quality (legit-looking vs amateur)?
+  · Mobile layout: padding ≥ 16px on the sides? CTAs at least 44px tall (Apple HIG)? Form fields full-width? Tap targets not overlapping? Sticky CTA present on long pages?
+  · Trust elements: badges (FDA/GMP/SSL) actually visible in the screenshot? Logo bar ("AS SEEN ON") rendering or just empty boxes?
+  · Banner blindness: ad-style discount banners ("50% OFF") above advertorial body — the screenshot will reveal if the page LOOKS like an ad vs an editorial.
+  · Visual congruence: does the doctor/expert PHOTO match the demographic of the testimonial copy? Do hero visuals contradict the product (e.g. "natural supplement" with a sci-fi laser mockup)?
+  · Wall-of-text: in the screenshot, identify long uninterrupted text blocks that span > 1 viewport without a heading, image, bullet list, or quote breaking the pattern.
+- For steps WITHOUT an attached screenshot, fall back to TEXT-ONLY rules above (NOT VERIFIED for visual items).
+
+────────────────────────────────────────────────────────────────────────
+WHAT YOU CAN ALWAYS AUDIT FROM TEXT (regardless of mode)
+────────────────────────────────────────────────────────────────────────
+- Banner-blindness language signals in the copy: "FLASH SALE", "50% OFF", screaming-discount language on advertorial-style pages.
+- Wall-of-text density via copy: count consecutive long paragraphs (>4 lines / >300 chars) without natural breaks. In VISION mode, double-check by looking at the screenshot.
 - CTA inventory: list every preserved [CTA-LINK href="..."]label[/CTA] and [CTA-BTN]label[/CTA] across pages. For EACH CTA evaluate the label copy quality:
   · Benefit-oriented vs generic ("Get my free guide" > "Buy Now" > "Submit")
   · Friction-light wording (no commitment-heavy "Sign up forever" on a free quiz step)
-  · Consistency across pages (the CTA verb on step K matches what step K+1 actually delivers).
-- Supporting text near CTAs: is there reassurance / trust / micro-headline copy adjacent to each CTA in the text flow ("Secure Checkout", "90-Day Guarantee", "Not a subscription")?
-- Section flow on the sales page (P2): map the sequence of headings/sections — Above-fold → Trust bar (logos/stats) → Problem → Mechanism → Product reveal → How it works → Testimonials → Comparison → Pricing/offer → Guarantee → FAQ → Final CTA. Flag missing sections or out-of-order placement.
-- Social proof copy: are testimonials framed as Facebook-style (name + age/city + specific result + timeframe) or generic blurbs? Are "AS SEEN ON" media names mentioned in the text? Trust badges named (FDA / GMP / Made in USA)? Star rating numbers ("4.8/5 — 3,791 ratings")? Note: badge VISUAL quality cannot be verified.
-- Checkout copy (P3): is order summary text present, guarantee text adjacent to the final CTA, distractions in copy (navigation links to non-checkout pages, social media mentions)?
-- Visual-copy CONGRUENCE you can detect from text only: contradictions between headline promises and body, e.g. headline "Regrow your hair in 12 weeks" with no body copy supporting that timeline; product described as "192 medical-grade diodes" with no specifics anywhere else in the funnel; testimonial about hair loss attributed to a 25-year-old "perfect hair" persona in the surrounding copy.
+  · Consistency across pages (CTA verb on step K matches what step K+1 actually delivers).
+- Supporting text near CTAs: reassurance / trust / micro-headline copy adjacent to each CTA ("Secure Checkout", "90-Day Guarantee", "Not a subscription").
+- Section flow on the sales page (P2): map the sequence of headings/sections — Above-fold → Trust bar → Problem → Mechanism → Product reveal → How it works → Testimonials → Comparison → Pricing/offer → Guarantee → FAQ → Final CTA. Flag missing or out-of-order sections.
+- Social proof copy: testimonials framed as Facebook-style (name + age/city + specific result + timeframe) vs generic blurbs? "AS SEEN ON" media names mentioned? Trust badges named (FDA / GMP / Made in USA)? Star rating numbers ("4.8/5 — 3,791 ratings")?
+- Checkout copy (P3): order summary text present, guarantee text adjacent to final CTA, distractions in copy (navigation links to non-checkout pages, social media mentions).
+- Visual-copy CONGRUENCE detectable from text: contradictions between headline promises and body (headline "Regrow your hair in 12 weeks" with no body support); product described as "192 medical-grade diodes" with no specifics elsewhere; testimonial about hair loss attributed to a "perfect hair" persona in surrounding copy.
 - 50+ audience copy signals: simple sentence structure, no jargon-without-translation, demographic match in testimonials.
 
 INPUT YOU RECEIVE:
-An ordered sequence of pages of the funnel (step 1 = first / step N = last). Each page is given as extracted text + preserved CTAs ([CTA-LINK href="..."]label[/CTA] / [CTA-BTN]label[/CTA]). <head>, <script>, <style>, <svg>, images and inline base64 are stripped.
+An ordered sequence of pages of the funnel (step 1 = first / step N = last). Each page is given as extracted text + preserved CTAs ([CTA-LINK href="..."]label[/CTA] / [CTA-BTN]label[/CTA]). <head>, <script>, <style>, <svg>, inline-base64 images are stripped from the text. When VISION mode is active, the corresponding mobile screenshot is attached as an image content block right after the text.
 
 ────────────────────────────────────────────────────────────────────────
 ISSUE FORMATTING & SEVERITY
 ────────────────────────────────────────────────────────────────────────
-- title MUST start with the section code in brackets, e.g. "[VA-1C] Banner blindness — '50% OFF' banner above advertorial body", "[VA-5C] Wall of text — 7 consecutive paragraphs in 'How it works' section", "[VA-7A] Generic CTA label 'Buy Now' on cold-traffic landing", "[VA-10] Sales page missing guarantee section before final CTA", "[VA-14] Headline promises 12-week regrowth with no timeline support in body copy".
+- title MUST start with the section code in brackets. Examples:
+  · "[VA-T1] Body copy unreadable on mobile — text appears <14px equivalent" (vision finding)
+  · "[VA-T3] Low contrast CTA — pale orange button on cream background" (vision finding)
+  · "[VA-H1] Hero stock-photo unrelated to product — generic smiling family on hair-loss page" (vision finding)
+  · "[VA-1C] Banner blindness — '50% OFF' banner above advertorial body" (text + vision)
+  · "[VA-5C] Wall of text — 7 consecutive paragraphs in 'How it works' section" (text + vision)
+  · "[VA-7A] Generic CTA label 'Buy Now' on cold-traffic landing" (text)
+  · "[VA-10] Sales page missing guarantee section before final CTA" (text)
+  · "[VA-14] Headline promises 12-week regrowth with no timeline support in body copy" (text)
 - detail says WHICH step(s) and WHY it kills conversions, plus a foolproof fix direction (1-3 sentences). For NOT VERIFIED issues, detail must start with "NOT VERIFIED — reason: ...".
-- evidence is a verbatim quote from the input (max 200 chars).
+- evidence is a verbatim quote from the input text (max 200 chars). For vision-only findings, replace evidence with a precise visual location ("hero section, second line of body copy, light grey on white background").
 - Priority → severity:
-  · 🔴 CRITICAL (mechanism mismatch text↔text, headline promises something the body never delivers, missing CTA on a non-final step, ad-style banner above advertorial body, 50+ audience copy in jargon-only language) → "critical".
-  · 🔴 HIGH (generic non-benefit CTA on the primary action, no reassurance copy adjacent to checkout CTA, P2 sales page missing trust bar / mechanism section / guarantee placement before final CTA, wall-of-text >5 consecutive paragraphs in a long-form section) → "critical".
-  · 🟡 MEDIUM (testimonial copy lacks specificity, social proof numbers not stated, pattern-interrupt-via-headings could be denser) → "warning".
+  · 🔴 CRITICAL (mechanism mismatch, headline promises something the body never delivers, missing CTA on a non-final step, ad-style banner above advertorial body, 50+ audience copy in jargon-only language, vision: body copy unreadable, vision: CTA invisible against background) → "critical".
+  · 🔴 HIGH (generic non-benefit CTA on primary action, no reassurance copy near checkout CTA, P2 missing trust bar / mechanism section / guarantee before final CTA, wall-of-text >5 consecutive paragraphs, vision: hero stock-photo mismatched to product, vision: no sticky CTA on long page) → "critical".
+  · 🟡 MEDIUM (testimonial copy lacks specificity, social proof numbers not stated, pattern-interrupt density could be higher, vision: minor padding inconsistencies) → "warning".
   · 🟢 LOW / NOT VERIFIED → "info".
 
-If only ONE page was supplied, cross-step checks (CTA verb-vs-destination consistency, testimonial recurrence, palette/typography continuity) cannot run: emit them as info-severity NOT VERIFIED with reason "single page in funnel sequence".
+If only ONE page was supplied, cross-step checks (CTA verb-vs-destination, testimonial recurrence, palette/typography continuity) cannot run: emit them as info-severity NOT VERIFIED with reason "single page in funnel sequence".
 
-The "summary" field MUST be ≤3 sentences and contain: the funnel format tag (advertorial/quiz/VSL/TSL/short LP) + the visual verdict (APPROVED / APPROVED WITH FIXES / NOT APPROVED — based ONLY on the text-deductible issues, plus an explicit caveat "visual rendering not verified") + the single biggest copy-deductible visual fix.
+The "summary" field MUST be ≤3 sentences and contain: the funnel format tag (advertorial/quiz/VSL/TSL/short LP) + the visual verdict (APPROVED / APPROVED WITH FIXES / NOT APPROVED) + the single biggest visual fix. State explicitly whether VISION MODE was active for the audit ("vision-verified across N/M steps" or "text-only — visual rendering not verified").
 
-The "score" field reflects OVERALL TEXT-DEDUCIBLE VISUAL QUALITY (0-100). The shared rubric applies. Be conservative: if 70%+ of the prompt cannot be verified due to pipeline limits, cap the score at 70 and explain that in the summary.
+The "score" field reflects OVERALL VISUAL QUALITY (0-100). The shared rubric applies. In TEXT-ONLY mode, cap the score at 70 and explain in the summary. In VISION mode covering ≥80% of steps, no cap — score honestly.
 ${SHARED_OUTPUT_FORMAT}`,
   },
 
@@ -605,8 +634,101 @@ export interface MultiPagePromptStep {
   index: number; // 1-based, for display
   url: string;
   name?: string;
+  /** Optional page-type tag (advertorial / vsl / landing / opt_in /
+   *  quiz_funnel / sales_letter / checkout / upsell / oto / ...).
+   *  When set, surfaces in the per-step heading and a dedicated
+   *  "PAGE TYPE" line so the auditor applies the right rubric for
+   *  the page's role in the funnel. */
+  pageType?: string;
   pageText: string;
   fetchError?: string | null;
+  /** Public URL of the uploaded mobile screenshot, when available.
+   *  Populated only for the Visual (`coherence`) audit. The route
+   *  attaches the actual image as a vision content block; this field
+   *  is also surfaced in the text body so the model knows which step
+   *  number maps to which attached image. */
+  screenshotMobileUrl?: string | null;
+}
+
+/**
+ * Map a CheckpointFunnelPage.pageType (BuiltInPageType-style string)
+ * to the closest matching `CopywritingTask`. Used so the audit can
+ * inject the most relevant Tier 2 knowledge bundle when a single
+ * dominant page-type is in play (Landing single-page flow). Falls
+ * back to 'general' for unknown / missing values.
+ */
+export function pageTypeToTask(
+  pageType: string | undefined | null,
+): CopywritingTask {
+  const t = (pageType ?? '').trim().toLowerCase();
+  if (!t) return 'general';
+  switch (t) {
+    case 'advertorial':
+    case 'listicle':
+    case '5_reasons_listicle':
+    case 'native_ad':
+      return 'advertorial';
+    case 'vsl':
+    case 'webinar':
+    case 'sales_letter':
+    case 'bridge_page':
+      return 'vsl';
+    case 'landing':
+    case 'opt_in':
+    case 'squeeze_page':
+    case 'lead_magnet':
+    case 'product_page':
+    case 'offer_page':
+      return 'pdp';
+    case 'upsell':
+    case 'downsell':
+    case 'oto':
+      return 'upsell';
+    default:
+      return 'general';
+  }
+}
+
+/** Friendly display label for a page-type code. Used in prompts and UI. */
+export function pageTypeLabel(pageType: string | undefined | null): string {
+  const t = (pageType ?? '').trim().toLowerCase();
+  if (!t) return '';
+  const map: Record<string, string> = {
+    advertorial: 'Advertorial',
+    listicle: 'Listicle',
+    '5_reasons_listicle': '5 Reasons Listicle',
+    native_ad: 'Native Ad',
+    vsl: 'VSL (Video Sales Letter)',
+    webinar: 'Webinar',
+    bridge_page: 'Bridge Page',
+    landing: 'Landing Page',
+    opt_in: 'Opt-in',
+    squeeze_page: 'Squeeze Page',
+    lead_magnet: 'Lead Magnet',
+    quiz_funnel: 'Quiz Funnel',
+    survey: 'Survey',
+    assessment: 'Assessment',
+    sales_letter: 'Sales Letter',
+    product_page: 'Product Page',
+    offer_page: 'Offer Page',
+    checkout: 'Checkout',
+    thank_you: 'Thank You',
+    upsell: 'Upsell',
+    downsell: 'Downsell',
+    oto: 'OTO',
+    order_confirmation: 'Order Confirmation',
+    membership: 'Membership',
+    blog: 'Blog Post',
+    article: 'Article',
+    content_page: 'Content Page',
+    review: 'Review',
+    safe_page: 'Safe Page',
+    privacy: 'Privacy Policy',
+    terms: 'Terms & Conditions',
+    disclaimer: 'Disclaimer',
+    other: 'Other',
+  };
+  return map[t] ?? pageType!;
 }
 
 export function buildMultiPageUserMessage(args: {
@@ -622,6 +744,8 @@ export function buildMultiPageUserMessage(args: {
   // tokens / step → 50 steps ≈ 75K tokens (still fits 200K window).
   const perStepBudget = args.perStepCharBudget ?? 6000;
 
+  const stepsWithScreenshot = steps.filter((s) => !!s.screenshotMobileUrl);
+
   const sections: string[] = [];
   sections.push(`# AUDIT TARGET`);
   sections.push(`Funnel name: ${funnelName}`);
@@ -632,15 +756,57 @@ export function buildMultiPageUserMessage(args: {
     sections.push('# BRAND PROFILE');
     sections.push(brandProfile.trim());
   }
+
+  // Surface vision-mode availability up-front so the prompt's NOT
+  // VERIFIED defaults can be flipped on the fly. The matching system
+  // prompt block reads this header when category=coherence.
+  if (category === 'coherence') {
+    sections.push('');
+    sections.push('# VISION INPUT AVAILABILITY');
+    if (stepsWithScreenshot.length > 0) {
+      sections.push(
+        `Mobile screenshots (390×844 logical viewport, full page, 2× DPR) are ATTACHED for ${stepsWithScreenshot.length}/${steps.length} step(s). Use them to verify the visual checks that would otherwise be NOT VERIFIED — typography sizes, color & contrast, hero image quality, mobile layout/spacing, sticky CTAs, banner placement, F/Z-pattern, badges, etc. The image labelled "[Step K — name] mobile screenshot" maps to STEP K below.`,
+      );
+      sections.push(
+        `Steps WITHOUT an attached screenshot (capture failed): ${
+          steps
+            .filter((s) => !s.screenshotMobileUrl)
+            .map((s) => s.index)
+            .join(', ') || 'none'
+        }. For those steps only, keep the original NOT VERIFIED defaults.`,
+      );
+    } else {
+      sections.push(
+        `No screenshots could be captured for this run (Playwright capture failed for every page). Fall back to the text-only NOT VERIFIED defaults defined in the system prompt.`,
+      );
+    }
+  }
+
   sections.push('');
   sections.push('# FUNNEL PAGES (ordered, step 1 = first / step N = last)');
   for (const s of steps) {
     sections.push('');
+    const typeTag = s.pageType ? `[${pageTypeLabel(s.pageType)}]` : '';
     const heading = s.name
-      ? `## STEP ${s.index} — ${s.name}`
-      : `## STEP ${s.index}`;
+      ? `## STEP ${s.index} — ${s.name}${typeTag ? ` ${typeTag}` : ''}`
+      : `## STEP ${s.index}${typeTag ? ` — ${typeTag}` : ''}`;
     sections.push(heading);
     sections.push(`URL: ${s.url}`);
+    if (s.pageType) {
+      // Explicit, machine-readable line so the auditor can adapt the
+      // rubric to the page's role (e.g. don't expect a hero/CTA on a
+      // privacy page; weight headline craft heavily on advertorials).
+      sections.push(
+        `Page type: ${pageTypeLabel(s.pageType)} (${s.pageType})`,
+      );
+    }
+    if (category === 'coherence') {
+      sections.push(
+        s.screenshotMobileUrl
+          ? `Mobile screenshot: ATTACHED (see image labelled "Step ${s.index}").`
+          : `Mobile screenshot: NOT AVAILABLE (capture failed for this step).`,
+      );
+    }
     if (s.fetchError) {
       sections.push(
         `[FETCH-ERROR] Could not load this page: ${s.fetchError}. Treat as MISSING in your audit.`,

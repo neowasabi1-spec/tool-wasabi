@@ -7,6 +7,10 @@
 
 import { supabase } from '@/lib/supabase';
 import { fetchHtmlSmart } from '@/lib/fetch-html-smart';
+import {
+  captureMobileScreenshot,
+  uploadCheckpointScreenshot,
+} from '@/lib/screenshot-capture';
 import type {
   CheckpointFunnel,
   CheckpointFunnelPage,
@@ -24,7 +28,7 @@ const SELECT_FUNNEL_FIELDS =
 const MAX_PAGES_PER_FUNNEL = 100;
 
 /** Normalise + validate a single page entry. */
-function normalisePage(input: { url?: string; name?: string }):
+function normalisePage(input: { url?: string; name?: string; pageType?: string }):
   | { ok: true; page: CheckpointFunnelPage }
   | { ok: false; error: string } {
   const raw = (input.url ?? '').trim();
@@ -43,6 +47,7 @@ function normalisePage(input: { url?: string; name?: string }):
     page: {
       url: parsed.toString(),
       name: input.name?.trim() || undefined,
+      pageType: input.pageType?.trim() || undefined,
     },
   };
 }
@@ -54,11 +59,20 @@ function resolvePagesFromInput(
 ):
   | { ok: true; pages: CheckpointFunnelPage[] }
   | { ok: false; error: string } {
-  const raw: { url?: string; name?: string }[] = [];
+  const raw: { url?: string; name?: string; pageType?: string }[] = [];
+  // Funnel-level fallback type (e.g. "landing" picked once for a
+  // single-page Landing entry). Per-page values still win.
+  const defaultType = input.page_type?.trim() || undefined;
   if (input.pages && Array.isArray(input.pages) && input.pages.length > 0) {
-    for (const p of input.pages) raw.push({ url: p.url, name: p.name });
+    for (const p of input.pages) {
+      raw.push({
+        url: p.url,
+        name: p.name,
+        pageType: p.pageType ?? defaultType,
+      });
+    }
   } else if (input.url) {
-    raw.push({ url: input.url, name: input.name });
+    raw.push({ url: input.url, name: input.name, pageType: defaultType });
   } else {
     return { ok: false, error: 'Nessuna URL fornita.' };
   }
@@ -88,6 +102,10 @@ function rowToFunnel(row: Record<string, unknown>): CheckpointFunnel {
       .map((p) => ({
         url: typeof p?.url === 'string' ? p.url : '',
         name: typeof p?.name === 'string' ? p.name : undefined,
+        pageType:
+          typeof p?.pageType === 'string' && p.pageType.trim()
+            ? p.pageType
+            : undefined,
       }))
       .filter((p) => p.url);
   }
@@ -479,15 +497,48 @@ export interface FunnelPageHtml {
   index: number;
   url: string;
   name?: string;
+  /** Page-type tag carried over from CheckpointFunnelPage so the
+   *  audit prompt can label each step (advertorial / vsl / landing
+   *  / checkout / ...). Undefined when the funnel was created before
+   *  pageType was a thing or when the user didn't pick one. */
+  pageType?: string;
   html: string | null;
   htmlLength: number;
   error: string | null;
+  /** Public URL of the mobile screenshot uploaded to Supabase Storage,
+   *  populated only when fetchFunnelPagesHtml is called with
+   *  `withScreenshots: true` AND the capture succeeded. Used by the
+   *  Visual audit to feed Claude vision via URL image blocks. */
+  screenshotMobileUrl?: string | null;
+  /** Captured-but-not-yet-uploaded byte size, for diagnostics. */
+  screenshotBytes?: number;
+  /** Per-step screenshot error (capture or upload). Null when ok or
+   *  when screenshots weren't requested. */
+  screenshotError?: string | null;
 }
 
 const FETCH_CONCURRENCY = 3;
+/** Cap on parallel screenshot captures. Each Playwright launch costs
+ *  ~5–10s of cold start + 200–500MB peak memory, so we keep this
+ *  smaller than the HTML fetch concurrency. */
+const SCREENSHOT_CONCURRENCY = 2;
+
+export interface FetchFunnelPagesOptions {
+  /** Capture mobile screenshots and upload them to Supabase Storage.
+   *  Required when `runId` is provided. */
+  withScreenshots?: boolean;
+  /** Run id used as the storage path prefix (`{runId}/step-N-mobile.jpg`).
+   *  Required when `withScreenshots` is true. */
+  runId?: string;
+  /** Cap on number of pages we screenshot — extra pages return without
+   *  a screenshot (still get HTML). Defaults to 12 to match the cap on
+   *  images we ship to Claude per request. */
+  maxScreenshots?: number;
+}
 
 export async function fetchFunnelPagesHtml(
   pages: CheckpointFunnelPage[],
+  opts: FetchFunnelPagesOptions = {},
 ): Promise<FunnelPageHtml[]> {
   const out: FunnelPageHtml[] = new Array(pages.length);
   let cursor = 0;
@@ -503,6 +554,7 @@ export async function fetchFunnelPagesHtml(
           index: i,
           url: p.url,
           name: p.name,
+          pageType: p.pageType,
           html,
           htmlLength: html?.length ?? 0,
           error: html ? null : 'fetch returned null',
@@ -512,6 +564,7 @@ export async function fetchFunnelPagesHtml(
           index: i,
           url: p.url,
           name: p.name,
+          pageType: p.pageType,
           html: null,
           htmlLength: 0,
           error: err instanceof Error ? err.message : String(err),
@@ -522,5 +575,93 @@ export async function fetchFunnelPagesHtml(
 
   const workerCount = Math.min(FETCH_CONCURRENCY, pages.length);
   await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+  // Optional second pass: capture mobile screenshots for the (still
+  // reachable) pages and upload them to Supabase Storage. Done AFTER
+  // the HTML fetch so we can skip pages that didn't load at all.
+  if (opts.withScreenshots) {
+    if (!opts.runId) {
+      console.warn(
+        '[checkpoint-store] withScreenshots=true but no runId provided — skipping screenshot capture.',
+      );
+    } else {
+      await captureAndUploadScreenshots(out, {
+        runId: opts.runId,
+        maxScreenshots: opts.maxScreenshots ?? 12,
+      });
+    }
+  }
+
   return out;
+}
+
+/** Capture + upload pipeline. Mutates `pages` in place to attach
+ *  `screenshotMobileUrl` / `screenshotError`. Pages without HTML are
+ *  skipped (no point screenshotting an unreachable URL). Pages past
+ *  the `maxScreenshots` cap are skipped silently. */
+async function captureAndUploadScreenshots(
+  pages: FunnelPageHtml[],
+  opts: { runId: string; maxScreenshots: number },
+): Promise<void> {
+  const eligibleIdx = pages
+    .filter((p) => p.html && p.html.length > 0)
+    .slice(0, opts.maxScreenshots)
+    .map((p) => pages.indexOf(p));
+
+  if (eligibleIdx.length === 0) {
+    console.log('[checkpoint-store] no eligible pages for screenshot capture');
+    return;
+  }
+
+  console.log(
+    `[checkpoint-store] capturing ${eligibleIdx.length}/${pages.length} screenshots (runId=${opts.runId}, concurrency=${SCREENSHOT_CONCURRENCY})`,
+  );
+
+  let cursor = 0;
+  async function worker(): Promise<void> {
+    while (true) {
+      const k = cursor++;
+      if (k >= eligibleIdx.length) return;
+      const i = eligibleIdx[k];
+      const page = pages[i];
+      try {
+        const shot = await captureMobileScreenshot(page.url);
+        if (!shot.ok || !shot.buffer) {
+          page.screenshotMobileUrl = null;
+          page.screenshotError = shot.error ?? 'capture failed';
+          continue;
+        }
+        const upload = await uploadCheckpointScreenshot({
+          runId: opts.runId,
+          stepIndex: page.index + 1,
+          buffer: shot.buffer,
+          viewport: 'mobile',
+        });
+        if (!upload.ok) {
+          page.screenshotMobileUrl = null;
+          page.screenshotBytes = shot.buffer.length;
+          page.screenshotError = upload.error ?? 'upload failed';
+        } else {
+          page.screenshotMobileUrl = upload.publicUrl;
+          page.screenshotBytes = shot.buffer.length;
+          page.screenshotError = null;
+        }
+      } catch (err) {
+        page.screenshotMobileUrl = null;
+        page.screenshotError =
+          err instanceof Error ? err.message : String(err);
+      }
+    }
+  }
+
+  const workerCount = Math.min(SCREENSHOT_CONCURRENCY, eligibleIdx.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+  const ok = pages.filter((p) => p.screenshotMobileUrl).length;
+  const failed = pages.filter(
+    (p) => p.screenshotError && !p.screenshotMobileUrl,
+  ).length;
+  console.log(
+    `[checkpoint-store] screenshot capture done — ok=${ok} failed=${failed}`,
+  );
 }

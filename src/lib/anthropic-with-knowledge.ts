@@ -29,9 +29,27 @@ const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
 const DEFAULT_MODEL = 'claude-sonnet-4-20250514';
 
+/** Optional image attachment for vision-capable models. URL-source
+ *  only — base64 is supported by the Anthropic API but our pipeline
+ *  uploads to Supabase Storage and passes URLs to keep the request
+ *  payload small. The image MUST be served publicly (Anthropic's
+ *  fetcher does not authenticate). */
+export interface ClaudeImageInput {
+  url: string;
+  /** Optional human-readable label rendered next to the image in the
+   *  user message ("Step 1 — landing.html"). Used for clarity, ignored
+   *  by the model's image processing. */
+  label?: string;
+}
+
 export interface ClaudeMessage {
   role: 'user' | 'assistant';
   content: string;
+  /** When provided on a USER message, the wrapper rebuilds `content`
+   *  as a multi-block array (text + image blocks) so vision models
+   *  see both the prose and the screenshots. Ignored on assistant
+   *  messages. Each image is sent as `{type:'image', source:{type:'url'}}`. */
+  images?: ClaudeImageInput[];
 }
 
 export interface CallClaudeOptions {
@@ -150,9 +168,48 @@ function buildMessages(
   const updated: ClaudeMessage = {
     role: 'user',
     content: sections.join('\n\n'),
+    images: last.images,
   };
 
   return [...messages.slice(0, lastIdx), updated];
+}
+
+/** Anthropic content block shapes we emit. Subset of the official
+ *  schema — we only need text + URL-sourced images for now. */
+type AnthropicContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'image'; source: { type: 'url'; url: string } };
+
+interface AnthropicMessage {
+  role: 'user' | 'assistant';
+  content: string | AnthropicContentBlock[];
+}
+
+/** Convert our internal ClaudeMessage[] into the wire-format messages
+ *  array Anthropic expects. Messages without `images` keep their
+ *  string content (cheaper to ship). Messages with `images` get
+ *  expanded into a multi-block array: text first, then one image
+ *  block per attachment. We prefix each image with a tiny label-line
+ *  text block so the model knows which step the screenshot belongs
+ *  to. */
+function serializeMessagesForApi(
+  messages: ClaudeMessage[],
+): AnthropicMessage[] {
+  return messages.map((m) => {
+    if (!m.images || m.images.length === 0) {
+      return { role: m.role, content: m.content };
+    }
+    const blocks: AnthropicContentBlock[] = [
+      { type: 'text', text: m.content },
+    ];
+    for (const img of m.images) {
+      if (img.label) {
+        blocks.push({ type: 'text', text: `\n${img.label}` });
+      }
+      blocks.push({ type: 'image', source: { type: 'url', url: img.url } });
+    }
+    return { role: m.role, content: blocks };
+  });
 }
 
 export async function callClaudeWithKnowledge(
@@ -173,6 +230,7 @@ export async function callClaudeWithKnowledge(
     opts.skipKnowledge ?? false,
   );
   const messages = buildMessages(opts.messages, opts.brief, opts.marketResearch);
+  const wireMessages = serializeMessagesForApi(messages);
 
   // Compose timeout + caller signal so either can abort the request.
   const timeoutMs = opts.timeoutMs ?? 90_000;
@@ -194,7 +252,7 @@ export async function callClaudeWithKnowledge(
         model,
         max_tokens: maxTokens,
         system,
-        messages,
+        messages: wireMessages,
       }),
       signal: composedSignal,
     });

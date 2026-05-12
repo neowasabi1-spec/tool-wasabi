@@ -15,6 +15,7 @@ import {
   buildMultiPageUserMessage,
   htmlToAuditText,
   extractJsonFromReply,
+  pageTypeToTask,
   type MultiPagePromptStep,
 } from '@/lib/checkpoint-prompts';
 import {
@@ -132,7 +133,18 @@ export async function POST(
   // every page fails we close the row as failed; if at least one
   // succeeded we keep going (the AI prompts are designed to surface
   // [FETCH-ERROR] pages as missing).
-  const pagesHtml = await fetchFunnelPagesHtml(funnel.pages);
+  //
+  // When the run includes the `coherence` (Visual) category we also
+  // capture mobile screenshots of every page and upload them to
+  // Supabase Storage so the vision-capable Claude can see actual
+  // rendered pixels (typography / contrast / hero / spacing). Done
+  // here instead of inside runClaudeCategory so the screenshots are
+  // a one-time cost per run regardless of category re-runs.
+  const needsScreenshots = categories.includes('coherence');
+  const pagesHtml = await fetchFunnelPagesHtml(funnel.pages, {
+    withScreenshots: needsScreenshots,
+    runId: checkpointId,
+  });
   const reachable = pagesHtml.filter((p) => p.html && p.html.length > 0);
   if (reachable.length === 0) {
     const msg =
@@ -162,13 +174,16 @@ export async function POST(
 
   // Convert each fetched HTML into the compact audit text once, so
   // every category reuses the same input (saves on htmlToAuditText
-  // cost when categories > 1).
+  // cost when categories > 1). Screenshot URLs travel alongside so
+  // the Visual audit can attach them as image content blocks.
   const auditSteps: MultiPagePromptStep[] = pagesHtml.map((p) => ({
     index: p.index + 1,
     url: p.url,
     name: p.name,
+    pageType: p.pageType,
     pageText: p.html ? htmlToAuditText(p.html) : '',
     fetchError: p.error ?? null,
+    screenshotMobileUrl: p.screenshotMobileUrl ?? null,
   }));
 
   // ── Fork: external (OpenClaw) auditors ───────────────────────────
@@ -433,10 +448,59 @@ async function runClaudeCategory(args: {
   const cfg = CATEGORY_PROMPT_CONFIG[category];
   const userMessage = buildMultiPageUserMessage(args);
 
+  // When every step shares the same page type, override the category's
+  // default `task` (used for the Tier 2 KB injection) with the type-
+  // specific bundle so the Landing single-page flow gets, e.g., the
+  // Advertorial knowledge tier rather than a generic 'vsl' default.
+  // Mixed-type funnels keep the category default — there's no single
+  // "right" bundle for a 3-step advertorial → VSL → checkout sequence.
+  const types = Array.from(
+    new Set(
+      args.steps
+        .map((s) => (s.pageType ?? '').trim().toLowerCase())
+        .filter(Boolean),
+    ),
+  );
+  const dominantTask =
+    types.length === 1 ? pageTypeToTask(types[0]) : null;
+  const taskForKB = dominantTask ?? cfg.task;
+  if (dominantTask && dominantTask !== cfg.task) {
+    console.log(
+      `[checkpoint/run] ${category} pageType=${types[0]} → KB task override "${cfg.task}" → "${dominantTask}"`,
+    );
+  }
+
+  // Visual audit is the only category that benefits from images.
+  // We attach one mobile screenshot per step (when uploaded
+  // successfully) so Claude vision can verify typography / colors /
+  // hero quality / mobile layout — checks the prompt previously had
+  // to mark NOT VERIFIED. Hard cap at 12 images to stay well within
+  // Anthropic's request limits and avoid runaway token cost.
+  const images =
+    category === 'coherence'
+      ? args.steps
+          .filter((s) => !!s.screenshotMobileUrl)
+          .slice(0, 12)
+          .map((s) => ({
+            url: s.screenshotMobileUrl as string,
+            label: `[Step ${s.index}${s.name ? ' — ' + s.name : ''}] mobile screenshot (390×844 viewport)`,
+          }))
+      : undefined;
+
+  if (images && images.length > 0) {
+    console.log(
+      `[checkpoint/run] ${category} attaching ${images.length} mobile screenshot(s) to vision call`,
+    );
+  } else if (category === 'coherence') {
+    console.warn(
+      `[checkpoint/run] ${category} running WITHOUT screenshots (capture failed for all eligible steps) — falling back to text-only audit`,
+    );
+  }
+
   const { reply, usage } = await callClaudeWithKnowledge({
-    task: cfg.task,
+    task: taskForKB,
     instructions: cfg.instructions,
-    messages: [{ role: 'user', content: userMessage }],
+    messages: [{ role: 'user', content: userMessage, images }],
     maxTokens: cfg.maxTokens,
   });
 
