@@ -557,37 +557,34 @@ export default function CheckpointPage() {
               Log
             </button>
 
-            <div className="inline-flex rounded-lg overflow-hidden border border-gray-200 shadow-sm">
-              <button
-                onClick={() => toggleAddMode('landing')}
-                disabled={adding || autoCrawling}
-                className={`inline-flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors disabled:opacity-50 ${
-                  addMode === 'landing'
-                    ? 'bg-emerald-600 text-white hover:bg-emerald-700'
-                    : 'bg-white text-gray-700 hover:bg-emerald-50 hover:text-emerald-700'
-                }`}
-                title="Audit di una singola pagina"
-              >
-                <Globe className="w-4 h-4" />
-                Landing
-              </button>
-              <div className="w-px bg-gray-200" />
-              <button
-                onClick={() => toggleAddMode('funnel-pick')}
-                disabled={adding || autoCrawling}
-                className={`inline-flex items-center gap-2 px-4 py-2 text-sm font-medium transition-colors disabled:opacity-50 ${
-                  addMode === 'funnel-pick' ||
-                  addMode === 'funnel-manual' ||
-                  addMode === 'funnel-auto'
-                    ? 'bg-blue-600 text-white hover:bg-blue-700'
-                    : 'bg-white text-gray-700 hover:bg-blue-50 hover:text-blue-700'
-                }`}
-                title="Audit di un funnel multi-step"
-              >
-                <Layers className="w-4 h-4" />
-                Funnel
-              </button>
-            </div>
+            <button
+              onClick={() => toggleAddMode('landing')}
+              disabled={adding || autoCrawling}
+              className={`inline-flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg shadow-sm transition-colors disabled:opacity-50 ${
+                addMode === 'landing'
+                  ? 'bg-emerald-700 text-white ring-2 ring-emerald-300'
+                  : 'bg-emerald-600 text-white hover:bg-emerald-700'
+              }`}
+              title="Audit di una singola pagina"
+            >
+              <Globe className="w-4 h-4" />
+              Landing
+            </button>
+            <button
+              onClick={() => toggleAddMode('funnel-pick')}
+              disabled={adding || autoCrawling}
+              className={`inline-flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg shadow-sm transition-colors disabled:opacity-50 ${
+                addMode === 'funnel-pick' ||
+                addMode === 'funnel-manual' ||
+                addMode === 'funnel-auto'
+                  ? 'bg-blue-700 text-white ring-2 ring-blue-300'
+                  : 'bg-blue-600 text-white hover:bg-blue-700'
+              }`}
+              title="Audit di un funnel multi-step"
+            >
+              <Layers className="w-4 h-4" />
+              Funnel
+            </button>
           </div>
 
           {/* "Who am I" strip. Will be replaced by auth session lookup
