@@ -64,8 +64,17 @@ Scoring rubric (be honest, not generous):
 
 Rules:
 - Issue ordering: critical first, then warning, then info.
-- Issue count: 0 to 8. Don't pad.
-- Suggestions: maximum 5, only HIGH-IMPACT fixes.
+- Issue count: target 6 to 12 issues. Be exhaustive — a real funnel
+  always has at least 5–6 verifiable findings across the checklist
+  below. If you only emit 1–2 issues you are under-auditing: re-read
+  the input and surface every concrete deviation, plus the
+  "NOT VERIFIED" info issues for checks you genuinely cannot evaluate
+  from the supplied text. Cap at 12 only to stay focused.
+- Each issue MUST have a non-trivial "detail" of 2–4 sentences
+  (problem + WHY it hurts + concrete impact). One-liner details are
+  not acceptable — they read as filler in the UI sheet.
+- Suggestions: 3 to 6 HIGH-IMPACT fixes (no fewer than 3 unless the
+  page is genuinely best-in-class).
 - Stay focused on YOUR category — don't audit unrelated dimensions.
 - All "evidence" snippets MUST appear verbatim in the input HTML/text.
 - "currentText" must appear VERBATIM in the input. If your fix is
@@ -819,6 +828,19 @@ PRIORITY → SEVERITY MAPPING (use this for the "severity" field):
 - 🔴 HIGH (significant drop-off risk: high-friction Q1, no progress bar, no Zeigarnik loops in first 3 screens, info slides reveal mechanism too early/too late, broken Yes Ladder, missing future-pacing question, low color contrast on options) → "critical"
 - 🟡 MEDIUM (optimisation cycle: weak verbatim, no "people like you" personalised social proof, multi-select used where single-select would auto-advance, info slide design indistinct from question screens) → "warning"
 - 🟢 LOW / NOT VERIFIED → "info"
+
+ISSUE DENSITY — MANDATORY:
+- Target 8 to 14 issues per category. Quiz funnels are conversion
+  machines with many failure points: under-delivering (1–3 issues)
+  is treated as a defective audit. Re-read the input and surface
+  every concrete deviation across the checks below, plus
+  NOT VERIFIED info-issues for checks you genuinely cannot evaluate
+  from the supplied snapshot.
+- Each issue MUST have a "detail" of 2–4 sentences (problem +
+  WHY it costs conversions + impact on the quiz funnel funnel
+  flow). Avoid one-liner details — they read as filler in the UI.
+- If the same defect repeats across multiple steps, emit ONE
+  consolidated issue and list every step in the detail.
 `;
 
 export const QUIZ_CATEGORY_PROMPT_OVERRIDES: Partial<Record<

@@ -1495,12 +1495,11 @@ function SheetColumn({
 }
 
 /** Pastello centralizzato per le 5 colonne dello sheet.
- *  - `body` è il fondo morbido dell'intera colonna (≈ tinta 50)
- *  - `header` è una pennellata leggermente più piena (≈ tinta 100)
- *  - `divide` mantiene i separatori orizzontali coerenti col tono
- *  - `rowHover` aggiunge un wash discreto al passaggio del mouse
- *  Tutti scelti dalla scala Tailwind per restare puliti senza
- *  custom CSS. Cambiare qui = cambia ovunque. */
+ *  Saturazione media: i `100` per il body sono pienamente percepibili
+ *  ma non spengono il testo (testo reso a `text-{color}-900`). Gli
+ *  header passano a `200` per gerarchia. Niente opacity modifier sul
+ *  body così il colore arriva pieno anche su sfondi chiari del
+ *  layout. Cambiare qui = cambia ovunque. */
 function accentClasses(accent: SheetAccent): {
   body: string;
   header: string;
@@ -1512,48 +1511,48 @@ function accentClasses(accent: SheetAccent): {
   switch (accent) {
     case 'blue':
       return {
-        body: 'bg-sky-50/60',
-        header: 'bg-sky-100/80',
-        headerText: 'text-sky-800',
-        headerBorder: 'border-sky-200/70',
-        divide: 'divide-sky-100',
-        rowHover: 'hover:bg-sky-100/60',
+        body: 'bg-sky-100',
+        header: 'bg-sky-200',
+        headerText: 'text-sky-900',
+        headerBorder: 'border-sky-300',
+        divide: 'divide-sky-200/70',
+        rowHover: 'hover:bg-sky-200/70',
       };
     case 'emerald':
       return {
-        body: 'bg-emerald-50/60',
-        header: 'bg-emerald-100/80',
-        headerText: 'text-emerald-800',
-        headerBorder: 'border-emerald-200/70',
-        divide: 'divide-emerald-100',
-        rowHover: 'hover:bg-emerald-100/60',
+        body: 'bg-emerald-100',
+        header: 'bg-emerald-200',
+        headerText: 'text-emerald-900',
+        headerBorder: 'border-emerald-300',
+        divide: 'divide-emerald-200/70',
+        rowHover: 'hover:bg-emerald-200/70',
       };
     case 'violet':
       return {
-        body: 'bg-violet-50/60',
-        header: 'bg-violet-100/80',
-        headerText: 'text-violet-800',
-        headerBorder: 'border-violet-200/70',
-        divide: 'divide-violet-100',
-        rowHover: 'hover:bg-violet-100/60',
+        body: 'bg-violet-100',
+        header: 'bg-violet-200',
+        headerText: 'text-violet-900',
+        headerBorder: 'border-violet-300',
+        divide: 'divide-violet-200/70',
+        rowHover: 'hover:bg-violet-200/70',
       };
     case 'amber':
       return {
-        body: 'bg-amber-50/60',
-        header: 'bg-amber-100/80',
-        headerText: 'text-amber-800',
-        headerBorder: 'border-amber-200/70',
-        divide: 'divide-amber-100',
-        rowHover: 'hover:bg-amber-100/60',
+        body: 'bg-amber-100',
+        header: 'bg-amber-200',
+        headerText: 'text-amber-900',
+        headerBorder: 'border-amber-300',
+        divide: 'divide-amber-200/70',
+        rowHover: 'hover:bg-amber-200/70',
       };
     default:
       return {
-        body: 'bg-slate-50/70',
-        header: 'bg-slate-100/80',
-        headerText: 'text-slate-700',
-        headerBorder: 'border-slate-200/70',
-        divide: 'divide-slate-100',
-        rowHover: 'hover:bg-slate-100/60',
+        body: 'bg-slate-100',
+        header: 'bg-slate-200',
+        headerText: 'text-slate-800',
+        headerBorder: 'border-slate-300',
+        divide: 'divide-slate-200/70',
+        rowHover: 'hover:bg-slate-200/70',
       };
   }
 }

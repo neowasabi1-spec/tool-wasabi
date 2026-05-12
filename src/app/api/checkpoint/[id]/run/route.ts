@@ -241,56 +241,94 @@ export async function POST(
   let succeeded = 0;
   const total = categories.length;
 
-  for (let i = 0; i < total; i++) {
-    const cat = categories[i];
-    const tStart = Date.now();
-    console.log(`[checkpoint/run] ▶ ${cat} (${i + 1}/${total})`);
+  // Run the categories in PARALLEL instead of sequentially. Each
+  // Claude call is independent (separate prompt + separate persist
+  // row) and Anthropic's per-key rate limit comfortably handles 4
+  // concurrent Sonnet requests. Sequential execution was hitting
+  // Netlify's 300s function timeout on quiz funnels (4 categories ×
+  // 60-90s each + Playwright screenshot capture). Parallel collapses
+  // the wall-clock to ≈ max(per-category time) + screenshot time.
+  //
+  // We persist EACH category's row as soon as it completes (inside
+  // the per-category async block) so the polling UI keeps showing
+  // partial progress in real time — same observable behaviour as
+  // before, just much faster overall.
+  const parallelStart = Date.now();
+  console.log(
+    `[checkpoint/run] launching ${total} categories in PARALLEL (categories=${categories.join(',')})`,
+  );
 
-    try {
-      // Navigation requires >= 2 reachable pages — record a clean
-      // "skipped" with a clear reason instead of running the prompt
-      // and hoping the model bails out on its own.
-      if (cat === 'navigation' && reachable.length < 2) {
-        results[cat] = {
+  const settled = await Promise.allSettled(
+    categories.map(async (cat) => {
+      const tStart = Date.now();
+      console.log(`[checkpoint/run] ▶ ${cat} (parallel start)`);
+      try {
+        let result: CheckpointCategoryResult;
+        // Navigation requires >= 2 reachable pages — record a clean
+        // "skipped" with a clear reason instead of running the prompt
+        // and hoping the model bails out on its own.
+        if (cat === 'navigation' && reachable.length < 2) {
+          result = {
+            score: null,
+            status: 'skipped',
+            summary:
+              "Il check Navigazione richiede almeno 2 pagine raggiungibili nel funnel.",
+            issues: [],
+            suggestions: [],
+          };
+        } else {
+          result = await runClaudeCategory({
+            category: cat,
+            funnelName: funnel.name,
+            steps: auditSteps,
+            brandProfile,
+          });
+        }
+        results[cat] = result;
+        const elapsed = Date.now() - tStart;
+        console.log(
+          `[checkpoint/run] ◀ ${cat} done in ${elapsed}ms · score=${result.score ?? 'null'} · status=${result.status} · issues=${result.issues?.length ?? 0}`,
+        );
+        // Persist this category's slice as soon as it lands so the
+        // polling UI sees it light up incrementally.
+        await persistCategory(checkpointId, results, cat);
+        return { cat, status: result.status };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[checkpoint/run] ✗ ${cat} crashed:`, msg);
+        const errResult: CheckpointCategoryResult = {
           score: null,
-          status: 'skipped',
-          summary:
-            "Il check Navigazione richiede almeno 2 pagine raggiungibili nel funnel.",
+          status: 'error',
+          summary: `Audit failed: ${msg}`,
           issues: [],
           suggestions: [],
+          error: msg,
         };
-      } else {
-        results[cat] = await runClaudeCategory({
-          category: cat,
-          funnelName: funnel.name,
-          steps: auditSteps,
-          brandProfile,
-        });
+        results[cat] = errResult;
+        // Persist the error result so the UI can render the failure
+        // for that specific column without blocking the others.
+        try {
+          await persistCategory(checkpointId, results, cat);
+        } catch (persistErr) {
+          console.warn(
+            `[checkpoint/run] persistCategory(error) for ${cat} failed:`,
+            persistErr,
+          );
+        }
+        return { cat, status: 'error' as const };
       }
-      const status = results[cat]?.status;
-      if (status === 'error') errored++;
-      else if (status !== 'skipped') succeeded++;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[checkpoint/run] ✗ ${cat} crashed:`, msg);
-      results[cat] = {
-        score: null,
-        status: 'error',
-        summary: `Audit failed: ${msg}`,
-        issues: [],
-        suggestions: [],
-        error: msg,
-      };
-      errored++;
-    }
+    }),
+  );
 
-    const elapsed = Date.now() - tStart;
-    console.log(
-      `[checkpoint/run] ◀ ${cat} done in ${elapsed}ms · score=${results[cat]?.score ?? 'null'} · status=${results[cat]?.status}`,
-    );
-
-    await persistCategory(checkpointId, results, cat);
+  for (const s of settled) {
+    if (s.status !== 'fulfilled') continue;
+    if (s.value.status === 'error') errored++;
+    else if (s.value.status !== 'skipped') succeeded++;
   }
+
+  console.log(
+    `[checkpoint/run] all ${total} categories settled in ${Date.now() - parallelStart}ms · succeeded=${succeeded} · errored=${errored}`,
+  );
 
   const numericScores = Object.values(results)
     .map((r) => r?.score)
