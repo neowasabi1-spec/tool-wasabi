@@ -9,7 +9,7 @@ export const maxDuration = 300;
 
 const SERVER_INFO = {
   name: 'funnel-swiper-mcp',
-  version: '1.1.0',
+  version: '1.2.0',
 };
 
 // MCP Streamable HTTP protocol version (2025-03-26 introduced Streamable HTTP)
@@ -1471,6 +1471,145 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: {}, required: [] },
   },
 
+  // ─── CHECKPOINT (qualitative funnel audit) ───────────────────────────
+  // Surface the Checkpoint feature to external auditors (eg. OpenClaw)
+  // so they can either trigger the built-in Claude pipeline OR fetch
+  // raw page contents and run their own analysis, then write the
+  // result back via checkpoint_save_run so it shows up in the dashboard
+  // exactly like a Claude run.
+  {
+    name: 'checkpoint_list_funnels',
+    description: 'List every funnel registered in the Checkpoint library, newest first. Optionally filter by projectId.',
+    inputSchema: {
+      type: 'object',
+      properties: { projectId: { type: 'string' } },
+      required: [],
+    },
+  },
+  {
+    name: 'checkpoint_get_funnel',
+    description: 'Get a single Checkpoint funnel by id, plus its run history (newest 20).',
+    inputSchema: {
+      type: 'object',
+      properties: { id: { type: 'string' } },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'checkpoint_create_funnel',
+    description: 'Add a new funnel to the Checkpoint library. Pass `pages: [{url, name?}]` for multi-step funnels OR `url` for a single-page audit.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Optional display name. Defaults to the first page hostname.' },
+        url: { type: 'string', description: 'Single-page funnel — first/only URL. Use `pages` for multi-step.' },
+        pages: {
+          type: 'array',
+          description: 'Ordered steps of the funnel. Up to 100 pages.',
+          items: {
+            type: 'object',
+            properties: {
+              url: { type: 'string' },
+              name: { type: 'string' },
+            },
+            required: ['url'],
+          },
+        },
+        notes: { type: 'string' },
+        brand_profile: { type: 'string', description: 'Brand voice profile used by the Tone of Voice category.' },
+        product_type: { type: 'string', enum: ['supplement', 'digital', 'both'] },
+        project_id: { type: 'string' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'checkpoint_delete_funnel',
+    description: 'Delete a Checkpoint funnel and cascade its run history.',
+    inputSchema: {
+      type: 'object',
+      properties: { id: { type: 'string' } },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'checkpoint_run_start',
+    description: 'Trigger the built-in Claude-powered audit on a funnel. BLOCKS until the run completes (can take 1-5 minutes for multi-step funnels). For long funnels prefer checkpoint_fetch_pages + checkpoint_save_run so the auditor (eg. OpenClaw) does the analysis itself.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'Funnel id from checkpoint_list_funnels.' },
+        categories: {
+          type: 'array',
+          description: 'Categories to run. Defaults to ["navigation","coherence","copy"].',
+          items: { type: 'string', enum: ['navigation', 'coherence', 'copy', 'cro', 'tov', 'compliance'] },
+        },
+        brandProfile: { type: 'string' },
+        triggeredByName: { type: 'string', description: 'Name shown in the Log modal — defaults to the API key label.' },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'checkpoint_run_status',
+    description: 'Poll a single run by runId. While the run is in progress the JSONB `results` column streams partial categories (one per ~30s). Auto-marks the run as failed if it has been stuck in `running` for >10 minutes.',
+    inputSchema: {
+      type: 'object',
+      properties: { runId: { type: 'string' } },
+      required: ['runId'],
+    },
+  },
+  {
+    name: 'checkpoint_latest_run',
+    description: 'Get the most recent run for a funnel — useful right after kicking off a run when you only have the funnel id.',
+    inputSchema: {
+      type: 'object',
+      properties: { id: { type: 'string', description: 'Funnel id.' } },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'checkpoint_recent_logs',
+    description: 'Global log: every Checkpoint run executed across all funnels, newest first (default cap 200).',
+    inputSchema: {
+      type: 'object',
+      properties: { limit: { type: 'number' } },
+      required: [],
+    },
+  },
+  {
+    name: 'checkpoint_fetch_pages',
+    description: 'Fetch the LIVE contents of every page in a funnel — HTML and/or audit-friendly text — so an external auditor (OpenClaw, etc.) can do its OWN analysis in-context. Honours SPA rendering via Playwright. Mode: "text" (default, ~30KB/page), "html" (raw, capped), or "both".',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'Funnel id.' },
+        mode: { type: 'string', enum: ['text', 'html', 'both'], description: 'Default: text.' },
+        maxCharsPerPage: { type: 'number', description: 'Per-page cap. Default 30000, max 200000.' },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'checkpoint_save_run',
+    description: 'Save an EXTERNAL audit result back into the funnel_checkpoints table — the run shows up in the dashboard exactly like a built-in Claude run. Use this AFTER checkpoint_fetch_pages once your own analysis is done. The score columns and overall score are recomputed server-side from `results`, so you only ship the per-category payload.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'Funnel id.' },
+        results: {
+          type: 'object',
+          description: 'Per-category audit output: { navigation?: {...}, coherence?: {...}, copy?: {...} }. Each category has shape { score: 0-100|null, status: "pass"|"warn"|"fail"|"error"|"skipped", summary, issues: [...], suggestions: [...] }.',
+        },
+        status: { type: 'string', enum: ['completed', 'partial', 'failed'] },
+        triggeredByName: { type: 'string', description: 'Auditor name shown in the Log modal — eg. "OpenClaw / Neo".' },
+        triggeredByUserId: { type: 'string' },
+        error: { type: 'string', description: 'Surface only when status="failed".' },
+      },
+      required: ['id', 'results'],
+    },
+  },
+
   // ─── GENERIC ESCAPE HATCH ────────────────────────────────────────────
   {
     name: 'invoke_api',
@@ -2455,6 +2594,63 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
       return { table, deleted: count || 0 };
     }
 
+    // ─── CHECKPOINT (qualitative funnel audit) ────────────────────────
+    case 'checkpoint_list_funnels': {
+      const query: Record<string, unknown> = {};
+      if (args.projectId) query.projectId = String(args.projectId);
+      return await proxyApiCall('GET', '/api/checkpoint/funnels', {}, query, 30_000);
+    }
+    case 'checkpoint_get_funnel':
+      return await proxyApiCall('GET', `/api/checkpoint/${String(args.id)}`, {}, {}, 30_000);
+    case 'checkpoint_create_funnel':
+      return await proxyApiCall('POST', '/api/checkpoint/funnels', args, {}, 30_000);
+    case 'checkpoint_delete_funnel':
+      return await proxyApiCall('DELETE', `/api/checkpoint/${String(args.id)}`, {}, {}, 30_000);
+    case 'checkpoint_run_start': {
+      // Built-in Claude pipeline. Caps at 300s — same as the underlying
+      // route's maxDuration. For long funnels prefer the
+      // checkpoint_fetch_pages + checkpoint_save_run combo so the
+      // external auditor (eg. OpenClaw) does the analysis with its
+      // own context window.
+      const { id, ...body } = args as Record<string, unknown>;
+      return await proxyApiCall(
+        'POST',
+        `/api/checkpoint/${String(id)}/run`,
+        body,
+        {},
+        300_000,
+      );
+    }
+    case 'checkpoint_run_status':
+      return await proxyApiCall('GET', `/api/checkpoint/runs/${String(args.runId)}`, {}, {}, 30_000);
+    case 'checkpoint_latest_run':
+      return await proxyApiCall('GET', `/api/checkpoint/${String(args.id)}/latest-run`, {}, {}, 30_000);
+    case 'checkpoint_recent_logs': {
+      const query: Record<string, unknown> = {};
+      if (args.limit !== undefined) query.limit = String(args.limit);
+      return await proxyApiCall('GET', '/api/checkpoint/logs', {}, query, 30_000);
+    }
+    case 'checkpoint_fetch_pages': {
+      const { id, ...body } = args as Record<string, unknown>;
+      return await proxyApiCall(
+        'POST',
+        `/api/checkpoint/${String(id)}/fetch-pages`,
+        body,
+        {},
+        300_000,
+      );
+    }
+    case 'checkpoint_save_run': {
+      const { id, ...body } = args as Record<string, unknown>;
+      return await proxyApiCall(
+        'POST',
+        `/api/checkpoint/${String(id)}/runs`,
+        body,
+        {},
+        60_000,
+      );
+    }
+
     // ─── DISCOVERY ─────────────────────────────────────────────────────
     case 'list_sections':
       return { sections: SECTIONS, count: SECTIONS.length };
@@ -2607,6 +2803,18 @@ const API_ENDPOINTS = [
   { path: '/api/funnel-analyzer/save-vision', methods: ['POST'], description: 'Save vision analysis results' },
   { path: '/api/funnel-analyzer/vision', methods: ['POST'], description: 'Run vision AI on funnel pages' },
   { path: '/api/funnel/analyze', methods: ['POST'], description: 'High-level single-funnel analysis' },
+
+  // Checkpoint (qualitative funnel audit, multi-step)
+  { path: '/api/checkpoint/funnels', methods: ['GET', 'POST'], description: 'List or create Checkpoint funnels' },
+  { path: '/api/checkpoint/funnels/import', methods: ['POST'], description: 'Bulk import funnels (eg. from a project)' },
+  { path: '/api/checkpoint/[id]', methods: ['GET', 'DELETE'], description: 'Get a Checkpoint funnel + recent runs, or delete it' },
+  { path: '/api/checkpoint/[id]/run', methods: ['POST'], description: 'Trigger the built-in Claude audit on a funnel (blocks 1-5min)' },
+  { path: '/api/checkpoint/[id]/runs', methods: ['POST'], description: 'Save an external audit result (used by OpenClaw via MCP)' },
+  { path: '/api/checkpoint/[id]/latest-run', methods: ['GET'], description: 'Most recent run for a funnel (polling-friendly)' },
+  { path: '/api/checkpoint/[id]/fetch-pages', methods: ['POST'], description: 'Fetch live HTML/text of all funnel pages for external audits' },
+  { path: '/api/checkpoint/runs/[runId]', methods: ['GET'], description: 'Single run by id (live partial results during a run)' },
+  { path: '/api/checkpoint/logs', methods: ['GET'], description: 'Global Checkpoint log (newest 200)' },
+  { path: '/api/checkpoint/diagnose-fetch', methods: ['POST'], description: 'Diagnose the SPA fallback chain on a single URL' },
 
   // Reverse funnel
   { path: '/api/reverse-funnel/analyze', methods: ['POST'], description: 'Reverse-engineer a competitor funnel' },
