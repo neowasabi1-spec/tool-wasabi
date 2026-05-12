@@ -956,6 +956,175 @@ async function fillCrawlFormFields(page) {
   });
 }
 
+// Ask the configured LLM (Neo/Trinity locally OR Morfeo/Anthropic) which
+// of the visible clickable elements actually advances the funnel. The
+// model receives a numbered list and answers with a single index — way
+// more accurate than the regex/priority heuristic, especially on quiz
+// funnels with non-standard CTA copy ("Scopri il mio piano", "Voglio
+// la mia analisi gratuita", "Ottieni l'offerta speciale", ...) that the
+// regex misses. Returns:
+//   { done: true }                     → LLM thinks the funnel is over
+//   { done: false, clicked: true }     → element clicked successfully
+//   null                                → no usable answer; caller falls
+//                                         back to the heuristic
+async function llmChooseAdvance(page, attemptNumber) {
+  // 1. Gather the same set of "interactive" elements the heuristic
+  //    would have considered. Index in this array is what we hand to
+  //    the LLM and what we use to re-locate the element for clicking.
+  const SELECTOR =
+    'button, [role="button"], input[type="submit"], a[class*="btn"], a[class*="button"], label[for], input[type="radio"]:not(:checked), [class*="option"]:not([aria-selected="true"]), [class*="answer"], [class*="choice"], [class*="cta"], [class*="next"], a[href]';
+
+  const elements = await page
+    .evaluate((sel) => {
+      const out = [];
+      const all = Array.from(document.querySelectorAll(sel));
+      for (const el of all) {
+        const rect = el.getBoundingClientRect();
+        if (rect.width < 5 || rect.height < 5) continue;
+        const style = window.getComputedStyle(el);
+        if (style.visibility === 'hidden' || style.display === 'none') continue;
+        const text = (el.innerText || '').trim() || el.value || el.placeholder || '';
+        if (!text) continue;
+        if (text.length > 200) continue;
+        out.push({
+          text: text.slice(0, 120),
+          tag: el.tagName.toLowerCase(),
+          type: (el.type || '').toLowerCase(),
+          aria: (el.getAttribute('aria-label') || '').slice(0, 80),
+        });
+        if (out.length >= 35) break;
+      }
+      return out;
+    }, SELECTOR)
+    .catch(() => []);
+
+  if (!elements || elements.length === 0) return null;
+
+  const url = page.url();
+  const title = await page.title().catch(() => '');
+  const visibleText = await page
+    .evaluate(() => (document.body && document.body.innerText ? document.body.innerText : '').slice(0, 1800))
+    .catch(() => '');
+
+  const list = elements
+    .map((e, i) => {
+      const meta = [e.tag + (e.type ? '/' + e.type : ''), e.aria].filter(Boolean).join(' · ');
+      return `[${i}] "${e.text}"  (${meta})`;
+    })
+    .join('\n');
+
+  const systemPrompt = `Sei un agente che naviga un funnel di vendita per scoprire ogni step (landing → quiz → offerta → checkout).
+Ad ogni turno ricevi:
+- l'URL e il titolo della pagina attuale
+- il testo visibile (parziale)
+- una lista numerata di elementi cliccabili visibili a schermo
+
+Devi scegliere l'elemento che porta al passo SUCCESSIVO del funnel: tipicamente un CTA primario tipo "Continua", "Avanti", "Inizia", "Scopri", "Ottieni", una risposta a una domanda di quiz, un radio button con risposta plausibile, o un pulsante di submit.
+NON cliccare: link a privacy/cookie/termini/footer, "indietro", "skip", logo, navigazione di sito.
+Se l'URL o il titolo dicono che siamo al checkout / pagamento / pagina di errore / pagina di conferma → "done".
+Se ti sembra una landing finale senza altro da cliccare → "done".
+
+RISPONDI ESCLUSIVAMENTE con un singolo oggetto JSON, senza testo prima o dopo, senza markdown:
+{"action":"click","index":<intero>,"reasoning":"<frase breve>"}
+oppure
+{"action":"done","reasoning":"<frase breve>"}`;
+
+  const userPrompt = `URL: ${url}
+Titolo: ${title}
+Step #${attemptNumber + 1}
+
+--- Testo visibile ---
+${visibleText}
+
+--- Elementi cliccabili ---
+${list}
+
+Quale index clicco per andare avanti nel funnel?`;
+
+  let reply;
+  try {
+    reply = await callOpenClaw([
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userPrompt },
+    ]);
+  } catch (e) {
+    err(`  · LLM-advance failed: ${e.message} — falling back to heuristic`);
+    return null;
+  }
+
+  const cleaned = String(reply || '')
+    .trim()
+    .replace(/^```(?:json)?\s*\n?/i, '')
+    .replace(/\n?```\s*$/i, '');
+  const a = cleaned.indexOf('{');
+  const b = cleaned.lastIndexOf('}');
+  if (a < 0 || b <= a) {
+    err(`  · LLM-advance: no JSON in reply ("${cleaned.slice(0, 80)}…") — falling back`);
+    return null;
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(cleaned.substring(a, b + 1));
+  } catch {
+    err(`  · LLM-advance: invalid JSON — falling back`);
+    return null;
+  }
+
+  if (parsed.action === 'done') {
+    log(`  · LLM: done (${parsed.reasoning || 'no reasoning'})`);
+    return { done: true };
+  }
+  if (parsed.action !== 'click') return null;
+  const idx = Number(parsed.index);
+  if (!Number.isInteger(idx) || idx < 0 || idx >= elements.length) {
+    err(`  · LLM-advance: out-of-range index ${parsed.index} (have ${elements.length} elements) — falling back`);
+    return null;
+  }
+
+  const target = elements[idx];
+  log(`  · LLM picked [${idx}] "${target.text}" — ${parsed.reasoning || ''}`);
+
+  // Re-locate the same element by replaying the same enumeration order
+  // and clicking the Nth match. Doing it this way (instead of caching
+  // an ElementHandle) avoids stale-handle errors on SPAs that re-render
+  // between the page.evaluate call above and now.
+  const clicked = await page
+    .evaluate(
+      ({ idx, sel }) => {
+        const all = Array.from(document.querySelectorAll(sel));
+        let counter = -1;
+        for (const el of all) {
+          const rect = el.getBoundingClientRect();
+          if (rect.width < 5 || rect.height < 5) continue;
+          const style = window.getComputedStyle(el);
+          if (style.visibility === 'hidden' || style.display === 'none') continue;
+          const text = (el.innerText || '').trim() || el.value || el.placeholder || '';
+          if (!text) continue;
+          if (text.length > 200) continue;
+          counter++;
+          if (counter === idx) {
+            try {
+              el.scrollIntoView({ block: 'center' });
+              el.click();
+              return true;
+            } catch {
+              return false;
+            }
+          }
+        }
+        return false;
+      },
+      { idx, sel: SELECTOR },
+    )
+    .catch(() => false);
+
+  if (!clicked) {
+    err(`  · LLM-advance: click on index ${idx} failed in DOM — falling back`);
+    return null;
+  }
+  return { done: false, clicked: true };
+}
+
 async function clickCrawlAdvance(page, patternSource) {
   return page.evaluate((src) => {
     const pattern = new RegExp(src, 'i');
@@ -1072,11 +1241,32 @@ async function processCrawlJob(row) {
       }
 
       await fillCrawlFormFields(page).catch(() => 0);
-      const clicked = await clickCrawlAdvance(page, QUIZ_NEXT_PATTERN_SOURCE).catch(
-        () => false,
-      );
-      if (!clicked) {
-        log(`  · no clickable advance found, stopping`);
+
+      // Ask Neo / Morfeo (whichever LLM this worker is wired to via
+      // OPENCLAW_BACKEND) which element advances the funnel. Falls
+      // back to the regex/priority heuristic only if the LLM call
+      // fails or returns garbage — so the crawl still works even if
+      // the local model is offline.
+      let advanced = false;
+      let llmDone = false;
+      const llm = await llmChooseAdvance(page, steps.length).catch(() => null);
+      if (llm && llm.done) {
+        llmDone = true;
+      } else if (llm && llm.clicked) {
+        advanced = true;
+      } else {
+        const clicked = await clickCrawlAdvance(page, QUIZ_NEXT_PATTERN_SOURCE).catch(
+          () => false,
+        );
+        if (clicked) advanced = true;
+      }
+
+      if (llmDone) {
+        log(`  · LLM declared funnel complete, stopping`);
+        break;
+      }
+      if (!advanced) {
+        log(`  · no clickable advance found (LLM + heuristic both failed), stopping`);
         break;
       }
 
