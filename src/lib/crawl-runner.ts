@@ -309,7 +309,16 @@ export async function runCrawl(jobId: string, params: CrawlParams): Promise<void
     }
 
     // ---- Standard BFS crawl ----
-    const entryOrigin = new URL(entryUrl).origin;
+    // `effectiveEntryOrigin` is what we treat as "the funnel" for the
+    // same-origin filter. It starts at the URL the user pasted, but if
+    // the first navigation lands on a *different* origin (very common
+    // with ad/tracking links: trk.foo.com → www.foo.com/landing) we
+    // re-anchor it to the landing origin. Without this, every
+    // subsequent page is rejected as off-origin and the crawl ends
+    // with zero steps even though the funnel renders fine in a real
+    // browser.
+    let effectiveEntryOrigin = new URL(entryUrl).origin;
+    let firstNavigation = true;
     while (queue.length > 0 && steps.length < maxSteps) {
       const { url: currentUrl, depth } = queue.shift()!;
       if (visited.has(currentUrl) || depth > maxDepth) continue;
@@ -331,10 +340,29 @@ export async function runCrawl(jobId: string, params: CrawlParams): Promise<void
           continue;
         }
         const finalUrl = page.url();
+
+        // Re-anchor same-origin tracking on the very first hop so a
+        // tracker → landing redirect doesn't make us throw away every
+        // future page.
+        if (firstNavigation) {
+          try {
+            const landed = new URL(finalUrl).origin;
+            if (landed !== effectiveEntryOrigin) {
+              console.log(
+                `[crawl] tracker ${effectiveEntryOrigin} redirected to ${landed}; re-anchoring same-origin filter to landing origin`,
+              );
+              effectiveEntryOrigin = landed;
+            }
+          } catch {
+            /* keep the original origin if the redirect target is unparseable */
+          }
+          firstNavigation = false;
+        }
+
         if (followSameOriginOnly) {
           try {
             const currentOrigin = new URL(finalUrl).origin;
-            if (currentOrigin !== entryOrigin) {
+            if (currentOrigin !== effectiveEntryOrigin) {
               await page.close();
               continue;
             }
@@ -424,7 +452,7 @@ export async function runCrawl(jobId: string, params: CrawlParams): Promise<void
           for (const link of links) {
             try {
               const full = new URL(link.href);
-              if (full.origin === entryOrigin && full.href !== finalUrl && !visited.has(full.href)) {
+              if (full.origin === effectiveEntryOrigin && full.href !== finalUrl && !visited.has(full.href)) {
                 const pathQuery = full.origin + full.pathname + full.search;
                 queue.push({ url: pathQuery, depth: depth + 1 });
               }
