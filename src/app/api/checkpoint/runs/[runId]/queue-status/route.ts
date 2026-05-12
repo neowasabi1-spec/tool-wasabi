@@ -20,8 +20,13 @@ export const runtime = 'nodejs';
  *
  * Returns:
  *   { found: false }
- *   { found: true, status, target_agent, created_at, updated_at,
+ *   { found: true, status, target_agent, created_at, completed_at,
  *     error_message, age_seconds }
+ *
+ * NOTE: openclaw_messages does NOT have an `updated_at` column —
+ * the worker stamps `completed_at` once when the row terminates.
+ * Selecting `updated_at` here used to 500 on every poll (1 req
+ * every ~2s) and flood the browser console with red.
  */
 export async function GET(
   _req: NextRequest,
@@ -40,7 +45,7 @@ export async function GET(
   const { data, error } = await supabase
     .from('openclaw_messages')
     .select(
-      'id, status, target_agent, created_at, updated_at, error_message',
+      'id, status, target_agent, created_at, completed_at, error_message',
     )
     .eq('section', 'checkpoint_audit')
     .ilike('user_message', `%${needle}%`)
@@ -73,7 +78,7 @@ export async function GET(
       | 'error',
     target_agent: data.target_agent,
     created_at: data.created_at,
-    updated_at: data.updated_at,
+    completed_at: data.completed_at,
     error_message: data.error_message,
     age_seconds: ageSeconds,
   });
