@@ -13,6 +13,7 @@
 const { createClient } = require('@supabase/supabase-js');
 const http = require('http');
 const https = require('https');
+const os = require('os');
 const { URL } = require('url');
 
 // ===== CONFIG =====================================================
@@ -26,6 +27,31 @@ const OPENCLAW_PORT = parseInt(process.env.OPENCLAW_PORT || '18789', 10);
 const OPENCLAW_API_KEY = process.env.OPENCLAW_API_KEY
   || 'ba893c2470e9f12b281ab1031746b5f177b14a746143b1ab';
 const OPENCLAW_MODEL = process.env.OPENCLAW_MODEL || 'openclaw/trinity';
+
+// ── Agent identity (for explicit Neo vs Morfeo routing) ─────────
+// Independent of OPENCLAW_MODEL (which labels the LOCAL LLM the worker
+// forwards chat completions to). When this is set, the poll query
+// only claims openclaw_messages rows tagged with the same target_agent
+// (or untagged legacy rows). When it's null we behave like before
+// (first-come-first-served on every pending row).
+//
+// Resolution order (first one that matches wins):
+//   1. OPENCLAW_AGENT env var (explicit override).
+//   2. Auto-detect from the OS username and computer name. This is
+//      the zero-config path: on the PC where the Windows user is
+//      "Neo" we become openclaw:neo, on a PC owned by "Morfeo" /
+//      "Morpheus" we become openclaw:morfeo. Works on Linux too via
+//      `os.userInfo().username`.
+//   3. null  → legacy mode, no routing (acts like before this patch).
+function resolveAgentIdentity() {
+  const explicit = (process.env.OPENCLAW_AGENT || '').trim();
+  if (explicit) return explicit;
+  const name = `${os.userInfo().username || ''} ${os.hostname() || ''}`.toLowerCase();
+  if (/\bneo\b|trinity/.test(name)) return 'openclaw:neo';
+  if (/morfeo|morpheus/.test(name)) return 'openclaw:morfeo';
+  return null;
+}
+const OPENCLAW_AGENT = resolveAgentIdentity();
 
 const TOOL_BASE_URL = process.env.TOOL_BASE_URL
   || 'https://tool-wasabi-neo.netlify.app';
@@ -484,14 +510,23 @@ async function poll() {
     // Filter so that ONLY rows targeted at this worker (or untargeted
     // legacy rows) are claimed. Without this, with two workers running
     // (Neo + Morfeo) the queue is first-come-first-served and the user
-    // can't choose which agent processes a job. The .or() clause keeps
-    // backward compatibility with rows inserted before this column
-    // existed (target_agent IS NULL → anyone can grab them).
-    const { data, error } = await supabase
+    // can't choose which agent processes a job.
+    //
+    // - OPENCLAW_AGENT === null  → legacy mode (no filter, picks any).
+    // - OPENCLAW_AGENT === 'openclaw:neo' → only Neo's targeted jobs
+    //   PLUS any untagged jobs (back-compat for queue consumers that
+    //   still don't set target_agent — keeps chat / rewrite / swipe
+    //   working unchanged).
+    let pollQuery = supabase
       .from('openclaw_messages')
       .select('*')
-      .eq('status', 'pending')
-      .or(`target_agent.is.null,target_agent.eq.${OPENCLAW_MODEL}`)
+      .eq('status', 'pending');
+    if (OPENCLAW_AGENT) {
+      pollQuery = pollQuery.or(
+        `target_agent.is.null,target_agent.eq.${OPENCLAW_AGENT}`,
+      );
+    }
+    const { data, error } = await pollQuery
       .order('created_at', { ascending: true })
       .limit(1);
 
@@ -540,8 +575,16 @@ function printBanner() {
   console.log(`║  Supabase URL:  ${SUPABASE_URL.substring(0, 28).padEnd(28)}║`);
   console.log(`║  OpenClaw:      ${OPENCLAW_HOST}:${OPENCLAW_PORT.toString().padEnd(28 - OPENCLAW_HOST.length - 1)}║`);
   console.log(`║  Model:         ${OPENCLAW_MODEL.padEnd(28)}║`);
+  console.log(
+    `║  Agent:         ${(OPENCLAW_AGENT || '(unset → legacy any-job mode)').padEnd(28).substring(0, 28)}║`,
+  );
   console.log(`║  Poll:          every ${POLL_INTERVAL_MS / 1000}s`.padEnd(45) + '║');
   console.log('╚════════════════════════════════════════════╝');
+  if (OPENCLAW_AGENT) {
+    log(`Routing: this worker only claims jobs targeted at "${OPENCLAW_AGENT}" (or untagged legacy jobs).`);
+  } else {
+    log('Routing: legacy mode — claims ANY pending job (set OPENCLAW_AGENT or rename the OS user to enable explicit routing).');
+  }
   log('Worker started. Waiting for messages...');
 }
 
