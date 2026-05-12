@@ -18,6 +18,10 @@ import {
   StopCircle,
   Stethoscope,
   X,
+  Code2,
+  Megaphone,
+  Eye,
+  ListChecks,
 } from 'lucide-react';
 import {
   type CheckpointCategory,
@@ -30,7 +34,6 @@ import LiveStepDashboard, {
   buildSteps,
   type LiveStep,
 } from '@/components/checkpoint/LiveStepDashboard';
-import FindingsTable from '@/components/checkpoint/FindingsTable';
 
 // v2: the audit pipeline runs three categories. The legacy ones
 // (cro, tov, compliance) are still in the type union for historical
@@ -653,8 +656,44 @@ export default function CheckpointDetailPage({
               startedAt={liveStartedAt}
             />
 
-            {/* Aggregated findings */}
-            <FindingsTable results={dashboardResults} />
+            {/* Categorie audit — 4 colonne. Sostituisce il vecchio
+                "Riepilogo findings". I click sono placeholder
+                (console.log) finché non viene definito cosa devono
+                fare (filtro / drilldown / avvio audit dedicato). */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+              <CategoryCard
+                icon={<Code2 className="w-5 h-5" />}
+                title="Tech/Detail"
+                accent="blue"
+                onClick={() =>
+                  console.log('[checkpoint] category click: tech-detail')
+                }
+              />
+              <CategoryCard
+                icon={<Megaphone className="w-5 h-5" />}
+                title="Marketing"
+                accent="emerald"
+                onClick={() =>
+                  console.log('[checkpoint] category click: marketing')
+                }
+              />
+              <CategoryCard
+                icon={<Eye className="w-5 h-5" />}
+                title="Visual"
+                accent="violet"
+                onClick={() =>
+                  console.log('[checkpoint] category click: visual')
+                }
+              />
+              <CategoryCard
+                icon={<ListChecks className="w-5 h-5" />}
+                title="All Step"
+                accent="gray"
+                onClick={() =>
+                  console.log('[checkpoint] category click: all-step')
+                }
+              />
+            </div>
           </>
         )}
       </div>
@@ -874,4 +913,52 @@ function durationSec(startIso: string, endIso: string): number {
   } catch {
     return 0;
   }
+}
+
+/** Tile di categoria audit usato nella griglia che ha sostituito
+ *  "Riepilogo findings" (Tech/Detail · Marketing · Visual · All Step).
+ *  Stile coerente con le card già presenti nella pagina lista
+ *  (ModeCard): icona + titolo, ring colorato in hover.
+ *  L'accent decide il colore di icona + ring. */
+function CategoryCard({
+  icon,
+  title,
+  onClick,
+  accent = 'gray',
+}: {
+  icon: React.ReactNode;
+  title: string;
+  onClick?: () => void;
+  accent?: 'gray' | 'blue' | 'emerald' | 'violet';
+}) {
+  const accentRing =
+    accent === 'blue'
+      ? 'hover:border-blue-400 hover:ring-blue-100 hover:bg-blue-50/40'
+      : accent === 'emerald'
+        ? 'hover:border-emerald-400 hover:ring-emerald-100 hover:bg-emerald-50/40'
+        : accent === 'violet'
+          ? 'hover:border-violet-400 hover:ring-violet-100 hover:bg-violet-50/40'
+          : 'hover:border-gray-400 hover:ring-gray-100 hover:bg-gray-50';
+  const iconBg =
+    accent === 'blue'
+      ? 'bg-blue-100 text-blue-600'
+      : accent === 'emerald'
+        ? 'bg-emerald-100 text-emerald-600'
+        : accent === 'violet'
+          ? 'bg-violet-100 text-violet-600'
+          : 'bg-gray-100 text-gray-600';
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`text-left p-4 bg-white border border-gray-200 rounded-xl transition-all hover:ring-4 ${accentRing}`}
+    >
+      <div
+        className={`w-10 h-10 rounded-lg flex items-center justify-center mb-3 ${iconBg}`}
+      >
+        {icon}
+      </div>
+      <div className="font-semibold text-gray-900 text-sm">{title}</div>
+    </button>
+  );
 }
