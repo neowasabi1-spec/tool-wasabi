@@ -21,6 +21,7 @@ import {
   Paintbrush,
 } from 'lucide-react';
 import VisualHtmlEditor from '@/components/VisualHtmlEditor';
+import { parseJsonResponse } from '@/lib/safe-fetch';
 
 interface ProductInfo {
   name: string;
@@ -95,23 +96,29 @@ export default function CloneLandingPage() {
         body: JSON.stringify({ url }),
       });
 
-      const data = await response.json();
+      const parsed = await parseJsonResponse<{
+        html?: string;
+        data?: unknown;
+        url?: string;
+        error?: string;
+      }>(response);
 
-      if (!response.ok) {
-        throw new Error(data.error || 'Error during cloning');
+      if (!parsed.ok) {
+        throw new Error(parsed.error || `HTTP ${parsed.status}`);
       }
+      const data = parsed.data!;
 
       if (data.html) {
         setResult({
           html: data.html,
-          url: data.url,
+          url: data.url ?? url,
           isSwipedVersion: false,
         });
         setShowSwipeForm(true);
       } else if (data.data) {
         setResult({
           html: `<pre style="padding: 20px; font-family: monospace;">${JSON.stringify(data.data, null, 2)}</pre>`,
-          url: data.url,
+          url: data.url ?? url,
         });
       } else {
         throw new Error('No content received');
@@ -150,11 +157,24 @@ export default function CloneLandingPage() {
         }),
       });
 
-      const data = await response.json();
+      // Don't call response.json() directly: when Netlify kills the
+      // function (504 Gateway Timeout) the body is an HTML error page
+      // and the parser dies with "Unexpected token '<'". parseJsonResponse
+      // converts that into a human-readable error.
+      const parsed = await parseJsonResponse<{
+        html?: string;
+        error?: string;
+        original_title?: string;
+        new_title?: string;
+        changes_made?: string[];
+        processing_time_seconds?: number;
+      }>(response);
 
-      if (!response.ok) {
-        throw new Error(data.error || 'Error during swipe');
+      if (!parsed.ok) {
+        throw new Error(parsed.error || `HTTP ${parsed.status}`);
       }
+
+      const data = parsed.data!;
 
       if (data.html) {
         setResult({

@@ -26,11 +26,13 @@
 
 # Override timeout solo per la function unica del Next adapter, così le
 # route con maxDuration alto (clone/swipe/checkpoint/diagnose-fetch) hanno
-# spazio per scaricare Chromium + lanciarlo + navigare. Richiede piano
-# Pro+ su Netlify per superare i 26 s. Le altre function restano sul
-# default — non rallentiamo niente, alziamo solo il tetto disponibile.
+# spazio per scaricare Chromium + lanciarlo + navigare. 300s = soffitto
+# Netlify Pro. La route swipe ha `export const maxDuration = 300`, quindi
+# se il tetto qui fosse più basso (es. 120) Netlify ucciderebbe la
+# function a metà generazione e il client riceverebbe HTML 504 (causa
+# del classico "Unexpected token '<'" nel parser JSON del frontend).
 [functions."___netlify-server-handler"]
-  timeout = 120
+  timeout = 300
 
 [[plugins]]
   package = "@netlify/plugin-nextjs"
