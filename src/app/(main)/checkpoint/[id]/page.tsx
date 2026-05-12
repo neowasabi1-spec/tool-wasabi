@@ -202,43 +202,84 @@ export default function CheckpointDetailPage({
    * Polling loop. Reads the in-progress run row every `intervalMs`
    * and translates `results` JSONB into the LiveStep[] dashboard.
    * Stops when the row's status leaves `running` (or after `maxMs`
-   * as a safety net so we never poll forever).
+   * as a safety net so we never poll forever, or when the supplied
+   * `signal` is aborted by the user clicking Stop / leaving the page).
+   *
+   * Implemented as a real async while-loop (NOT setTimeout-callback
+   * chaining): the previous version returned its promise as soon as
+   * the FIRST tick scheduled the next one, so `await pollRun(...)`
+   * resolved in ~1s and the parent finally block setRunning(false)
+   * way too early. On the OpenClaw fast-fork path that meant the UI
+   * marked the run "completata" verde at ~31s while the worker was
+   * still in prep. With the while loop the promise resolves only
+   * when the run actually reaches a terminal status, so the parent
+   * setRunning(false) fires at the right moment.
+   *
+   * `maxMs` defaults to 12 minutes — quiz funnels with 5+ steps and
+   * mobile screenshots can take 4-6 minutes wall-clock on Claude,
+   * and the OpenClaw worker can take longer with Trinity-sized
+   * prompts. We want the UI to wait, not give up at 6 min.
    */
   const pollRun = async (
     runId: string,
-    intervalMs = 1500,
-    maxMs = 6 * 60 * 1000,
+    opts: {
+      intervalMs?: number;
+      maxMs?: number;
+      signal?: AbortSignal;
+    } = {},
   ): Promise<void> => {
+    const intervalMs = opts.intervalMs ?? 1500;
+    const maxMs = opts.maxMs ?? 12 * 60 * 1000;
+    const signal = opts.signal;
     const startedPolling = Date.now();
-    const tick = async (): Promise<void> => {
-      if (Date.now() - startedPolling > maxMs) {
-        console.warn(`[checkpoint poll] giving up on ${runId} after ${maxMs}ms`);
+    let consecutiveFailures = 0;
+
+    while (true) {
+      if (signal?.aborted) {
+        console.log(`[checkpoint poll] aborted by user (runId=${runId})`);
         return;
       }
+      if (Date.now() - startedPolling > maxMs) {
+        console.warn(
+          `[checkpoint poll] giving up on ${runId} after ${maxMs}ms`,
+        );
+        return;
+      }
+      let terminal = false;
       try {
         const res = await fetch(`/api/checkpoint/runs/${runId}`, {
           cache: 'no-store',
+          signal,
         });
-        if (!res.ok) {
-          // Run not found yet (race) → try again.
-          pollTimerRef.current = setTimeout(tick, intervalMs);
-          return;
-        }
-        const { run } = (await res.json()) as { run: CheckpointRun | null };
-        if (!run) {
-          pollTimerRef.current = setTimeout(tick, intervalMs);
-          return;
-        }
-        applyRunSnapshot(run);
-        if (run.status === 'running') {
-          pollTimerRef.current = setTimeout(tick, intervalMs);
+        if (res.ok) {
+          const { run } = (await res.json()) as { run: CheckpointRun | null };
+          if (run) {
+            applyRunSnapshot(run);
+            if (run.status !== 'running') {
+              terminal = true;
+            }
+            consecutiveFailures = 0;
+          }
         }
       } catch (err) {
-        console.warn('[checkpoint poll] tick failed', err);
-        pollTimerRef.current = setTimeout(tick, intervalMs * 2);
+        if ((err as { name?: string })?.name === 'AbortError') return;
+        consecutiveFailures++;
+        console.warn(
+          `[checkpoint poll] tick failed (${consecutiveFailures})`,
+          err,
+        );
       }
-    };
-    return tick();
+      if (terminal) return;
+      await new Promise<void>((resolve) => {
+        const t = setTimeout(resolve, intervalMs);
+        // If we're aborted mid-sleep, resolve immediately so the
+        // next iteration's signal.aborted check exits the loop.
+        signal?.addEventListener('abort', () => {
+          clearTimeout(t);
+          resolve();
+        }, { once: true });
+      });
+    }
   };
 
   /**
@@ -534,11 +575,16 @@ export default function CheckpointDetailPage({
 
   /**
    * Look up the most recent run for this funnel until we find one
-   * created after we clicked "Run". Then switch to per-runId polling.
+   * created after we clicked "Run", then switch to per-runId polling
+   * via `pollRun` (which itself runs until terminal status).
+   *
+   * `giveUpAt` is 60s — generous because the OpenClaw enqueue path
+   * is fast (≈500ms) but Claude's POST can take 5-10s to even
+   * insert the row on cold lambda.
    */
   const startPollingForLatestRun = async (signal: AbortSignal) => {
     const clickedAt = Date.now();
-    const giveUpAt = clickedAt + 30_000;
+    const giveUpAt = clickedAt + 60_000;
     while (!signal.aborted && Date.now() < giveUpAt) {
       try {
         const res = await fetch(
@@ -551,7 +597,12 @@ export default function CheckpointDetailPage({
           // moment we clicked — otherwise we'd attach to an old run.
           if (run && new Date(run.created_at).getTime() >= clickedAt - 2000) {
             applyRunSnapshot(run);
-            await pollRun(run.id);
+            // pollRun is now a real async while-loop that resolves
+            // ONLY when the run reaches a terminal status (or the
+            // signal is aborted, or maxMs elapses). The previous
+            // setTimeout-callback impl resolved after the very first
+            // tick, which broke the OpenClaw fast-fork path.
+            await pollRun(run.id, { signal });
             return;
           }
         }
@@ -875,6 +926,7 @@ export default function CheckpointDetailPage({
               lastChangeAt={lastChangeAt}
               startedAt={liveStartedAt ?? null}
               queueStatus={queueStatus}
+              runStatus={activeRun?.status ?? null}
             />
 
             {/* Live / frozen step dashboard */}
@@ -1183,6 +1235,7 @@ function RunActivityMonitor({
   lastChangeAt,
   startedAt,
   queueStatus,
+  runStatus,
 }: {
   isRunning: boolean;
   auditor: 'claude' | 'openclaw:neo' | 'openclaw:morfeo';
@@ -1190,6 +1243,10 @@ function RunActivityMonitor({
   lastChangeAt: number | null;
   startedAt: number | null;
   queueStatus: { found: boolean; status?: string; target_agent?: string | null } | null;
+  /** True terminal status of the active run (from the DB), used to
+   *  pick the right "completata / fallita / parziale" badge instead
+   *  of always showing "completata" green when isRunning flips false. */
+  runStatus: 'running' | 'completed' | 'partial' | 'failed' | null;
 }) {
   // Tick every second to keep the elapsed clock fresh.
   const [nowTs, setNowTs] = useState(() => Date.now());
@@ -1213,14 +1270,39 @@ function RunActivityMonitor({
   const sinceLastMs = lastChangeAt ? nowTs - lastChangeAt : 0;
   const stalled = isRunning && sinceLastMs > 25_000;
 
-  // Header state badge.
+  // Header state badge. When the run has actually terminated we
+  // pick the badge from the persisted `runStatus` so a partial /
+  // failed run is not falsely shown as "completata" verde just
+  // because the polling loop exited.
   let stateBadge: { label: string; cls: string; icon: React.ReactNode };
   if (!isRunning) {
-    stateBadge = {
-      label: 'completata',
-      cls: 'bg-emerald-100 text-emerald-700 border-emerald-200',
-      icon: <CheckCircle2 className="w-3.5 h-3.5" />,
-    };
+    if (runStatus === 'failed') {
+      stateBadge = {
+        label: 'fallita',
+        cls: 'bg-red-100 text-red-700 border-red-200',
+        icon: <XCircle className="w-3.5 h-3.5" />,
+      };
+    } else if (runStatus === 'partial') {
+      stateBadge = {
+        label: 'parziale',
+        cls: 'bg-amber-100 text-amber-700 border-amber-200',
+        icon: <AlertTriangle className="w-3.5 h-3.5" />,
+      };
+    } else if (runStatus === 'running') {
+      // Polling loop dropped out (timeout / abort / page reload)
+      // but the DB row says we're still going. Tell the user.
+      stateBadge = {
+        label: 'in corso (in background)',
+        cls: 'bg-blue-100 text-blue-700 border-blue-200',
+        icon: <Loader2 className="w-3.5 h-3.5 animate-spin" />,
+      };
+    } else {
+      stateBadge = {
+        label: 'completata',
+        cls: 'bg-emerald-100 text-emerald-700 border-emerald-200',
+        icon: <CheckCircle2 className="w-3.5 h-3.5" />,
+      };
+    }
   } else if (stalled) {
     stateBadge = {
       label: 'nessuna risposta',
