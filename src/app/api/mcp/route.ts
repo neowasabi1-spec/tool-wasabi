@@ -2818,6 +2818,7 @@ const API_ENDPOINTS = [
   { path: '/api/checkpoint/[id]/runs', methods: ['POST'], description: 'Save an external audit result (used by OpenClaw via MCP)' },
   { path: '/api/checkpoint/[id]/latest-run', methods: ['GET'], description: 'Most recent run for a funnel (polling-friendly)' },
   { path: '/api/checkpoint/[id]/fetch-pages', methods: ['POST'], description: 'Fetch live HTML/text of all funnel pages for external audits' },
+  { path: '/api/checkpoint/[id]/openclaw-prep', methods: ['POST'], description: 'OpenClaw worker prep: returns per-category prompts (system+user) ready to send to the local model' },
   { path: '/api/checkpoint/runs/[runId]', methods: ['GET'], description: 'Single run by id (live partial results during a run)' },
   { path: '/api/checkpoint/runs/[runId]/openclaw-category', methods: ['POST'], description: 'OpenClaw worker callback: stream a per-category result into a running audit' },
   { path: '/api/checkpoint/runs/[runId]/openclaw-finalize', methods: ['POST'], description: 'OpenClaw worker callback: close a streaming audit (recomputes overall score server-side)' },

@@ -392,57 +392,106 @@ async function processMessage(msg) {
     } else if (msg.section === 'checkpoint_audit') {
       // ─── CHECKPOINT AUDIT (qualitative funnel audit, multi-step) ───
       // Payload (in user_message, JSON-encoded):
-      //   { runId, funnelId, prompts: [{category, system, user}, ...] }
-      // For each category we ask the local model for a JSON verdict,
-      // post the partial result back to the tool so the live dashboard
-      // can stream it, then finalise the run when all categories are
-      // done. Errors per-category don't abort the whole run — we mark
-      // the offending category as 'error' and keep going (matches the
-      // built-in Claude pipeline).
+      //   v1 payload (legacy):
+      //     { runId, funnelId, prompts: [{category, system, user}, ...] }
+      //   v2 payload (current):
+      //     { runId, funnelId, categories: [...], brandProfile? }
+      //
+      // In v2 the server enqueues fast (no page fetch, no prompt build)
+      // and we ask /api/checkpoint/[funnelId]/openclaw-prep here for
+      // pre-built prompts. This moves the slow Playwright work out of
+      // the user-facing POST so the dashboard never sees a 504.
+      // Per-category errors don't abort the run — we mark the offending
+      // category as 'error' and keep going (matches Claude pipeline).
       let payload;
       try { payload = JSON.parse(msg.user_message); }
       catch { throw new Error('Invalid checkpoint_audit payload (not valid JSON)'); }
 
-      const { runId, prompts } = payload;
+      const { runId, funnelId, categories, brandProfile } = payload;
       if (!runId) throw new Error('checkpoint_audit missing runId');
-      if (!Array.isArray(prompts) || prompts.length === 0) {
-        throw new Error('checkpoint_audit missing prompts[]');
-      }
 
-      const summary = { ok: 0, errored: 0, total: prompts.length };
-      for (const p of prompts) {
-        const cat = p.category;
-        log(`  ▸ checkpoint ${cat}`);
+      let prompts = Array.isArray(payload.prompts) ? payload.prompts : null;
+      if (!prompts) {
+        if (!funnelId) throw new Error('checkpoint_audit missing funnelId (and no prompts inline)');
+        log(`  · prep: fetching pages + building prompts for funnel ${funnelId}`);
+        let prep;
         try {
-          const reply = await callOpenClaw([
-            { role: 'system', content: p.system },
-            { role: 'user', content: p.user },
-          ]);
-          await callToolApi(
-            `/api/checkpoint/runs/${runId}/openclaw-category`,
-            { category: cat, reply, ok: true },
-            120_000,
+          prep = await callToolApi(
+            `/api/checkpoint/${funnelId}/openclaw-prep`,
+            { categories, brandProfile },
+            300_000, // 5 min: SPA fetch can be slow on first visit
           );
-          summary.ok++;
         } catch (e) {
-          err(`  ✗ checkpoint ${cat} failed:`, e.message);
+          err(`  ✗ openclaw-prep failed: ${e.message}`);
+          await callToolApi(
+            `/api/checkpoint/runs/${runId}/openclaw-finalize`,
+            { status: 'failed', error: `Prep step failed: ${e.message}` },
+            60_000,
+          ).catch(() => {});
+          throw e;
+        }
+        prompts = prep.prompts || [];
+        log(`  · prep done: ${prep.reachableCount}/${prep.pageCount} pages reachable, ${prompts.length} prompts ready, ${prep.skipped?.length || 0} skipped`);
+
+        // Persist the "skipped" categories the prep step couldn't run.
+        for (const sk of prep.skipped || []) {
           await callToolApi(
             `/api/checkpoint/runs/${runId}/openclaw-category`,
-            { category: cat, ok: false, error: e.message },
-            60_000,
-          ).catch(() => { /* don't crash on follow-up failure */ });
-          summary.errored++;
+            {
+              category: sk.category,
+              ok: false,
+              error: sk.reason,
+              skipped: true,
+            },
+            30_000,
+          ).catch((e) => err(`  · skip persist failed: ${e.message}`));
         }
       }
 
-      const finalStatus =
-        summary.ok === 0 ? 'failed' : summary.errored === 0 ? 'completed' : 'partial';
-      await callToolApi(
-        `/api/checkpoint/runs/${runId}/openclaw-finalize`,
-        { status: finalStatus },
-        60_000,
-      );
-      responsePayload = JSON.stringify({ runId, ...summary, status: finalStatus });
+      if (prompts.length === 0) {
+        // Nothing to ask the model — finalise as completed (skipped-only).
+        await callToolApi(
+          `/api/checkpoint/runs/${runId}/openclaw-finalize`,
+          { status: 'completed' },
+          60_000,
+        );
+        responsePayload = JSON.stringify({ runId, ok: 0, errored: 0, total: 0, status: 'completed' });
+      } else {
+        const summary = { ok: 0, errored: 0, total: prompts.length };
+        for (const p of prompts) {
+          const cat = p.category;
+          log(`  ▸ checkpoint ${cat}`);
+          try {
+            const reply = await callOpenClaw([
+              { role: 'system', content: p.system },
+              { role: 'user', content: p.user },
+            ]);
+            await callToolApi(
+              `/api/checkpoint/runs/${runId}/openclaw-category`,
+              { category: cat, reply, ok: true },
+              120_000,
+            );
+            summary.ok++;
+          } catch (e) {
+            err(`  ✗ checkpoint ${cat} failed:`, e.message);
+            await callToolApi(
+              `/api/checkpoint/runs/${runId}/openclaw-category`,
+              { category: cat, ok: false, error: e.message },
+              60_000,
+            ).catch(() => { /* don't crash on follow-up failure */ });
+            summary.errored++;
+          }
+        }
+
+        const finalStatus =
+          summary.ok === 0 ? 'failed' : summary.errored === 0 ? 'completed' : 'partial';
+        await callToolApi(
+          `/api/checkpoint/runs/${runId}/openclaw-finalize`,
+          { status: finalStatus },
+          60_000,
+        );
+        responsePayload = JSON.stringify({ runId, ...summary, status: finalStatus });
+      }
     } else if (isRewriteSection(msg.section)) {
       // ─── REWRITE JOB (Trinity quiz-rewrite) ────────────────────────
       // Splittiamo in batch per non far esplodere il context del modello.

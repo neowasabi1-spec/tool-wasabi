@@ -55,6 +55,11 @@ export async function POST(
     ok?: boolean;
     reply?: string;
     error?: string;
+    /** When true, persist the row as `status: 'skipped'` (not 'error')
+     *  with the supplied reason in `summary`. Used by the worker for
+     *  categories the prep step deliberately drops (e.g. navigation
+     *  on a single-page funnel). */
+    skipped?: boolean;
   };
   try {
     body = (await req.json()) as typeof body;
@@ -70,7 +75,15 @@ export async function POST(
   // Build the per-category result. Errors come pre-flagged from the
   // worker; happy-path replies still need JSON parsing + normalisation.
   let result: CheckpointCategoryResult;
-  if (body.ok === false) {
+  if (body.skipped) {
+    result = {
+      score: null,
+      status: 'skipped',
+      summary: body.error ?? 'Skipped by the OpenClaw worker.',
+      issues: [],
+      suggestions: [],
+    };
+  } else if (body.ok === false) {
     result = {
       score: null,
       status: 'error',

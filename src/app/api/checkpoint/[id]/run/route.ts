@@ -131,6 +131,54 @@ export async function POST(
     `[checkpoint/run] start runId=${checkpointId} funnel="${funnel.name}" pages=${funnel.pages.length} categories=${categories.join(',')} auditor=${auditor}`,
   );
 
+  // ── Fast-fork: external (OpenClaw) auditors return IMMEDIATELY ──
+  // We DON'T fetch pages or build prompts here — that work is moved
+  // entirely to the worker via /api/checkpoint/[id]/openclaw-prep.
+  // Reason: the page fetch (Playwright + SPA fallback) easily takes
+  // 20-60s on slow funnels, which would 504 the user-facing POST on
+  // Netlify even though no LLM has been called yet. By enqueuing
+  // just the funnelId here, this endpoint returns in <500ms and the
+  // worker handles all the heavy lifting on the user's PC where
+  // there's no serverless timeout.
+  if (isOpenclawAuditor(auditor)) {
+    const queuePayload = {
+      runId: checkpointId,
+      funnelId: funnel.id,
+      funnelName: funnel.name,
+      categories,
+      brandProfile: brandProfile ?? null,
+    };
+    const { error: enqueueErr } = await supabase
+      .from('openclaw_messages')
+      .insert({
+        section: 'checkpoint_audit',
+        target_agent: auditor,
+        status: 'pending',
+        user_message: JSON.stringify(queuePayload),
+        system_prompt: null,
+      });
+    if (enqueueErr) {
+      const msg = `Failed to enqueue OpenClaw job: ${enqueueErr.message}`;
+      await supabase
+        .from('funnel_checkpoints')
+        .update({
+          status: 'failed' as CheckpointRunStatus,
+          error: msg,
+          completed_at: new Date().toISOString(),
+        })
+        .eq('id', checkpointId);
+      return NextResponse.json({ error: msg }, { status: 500 });
+    }
+    return NextResponse.json({
+      runId: checkpointId,
+      status: 'running' as CheckpointRunStatus,
+      auditor,
+      enqueuedCategories: categories,
+      message: `Job sent to ${auditor}. Poll /api/checkpoint/runs/${checkpointId} for live status.`,
+    });
+  }
+
+  // ── Default: in-process Claude pipeline ─────────────────────────
   // Fetch HTML for ALL pages, in order, AFTER opening the row. If
   // every page fails we close the row as failed; if at least one
   // succeeded we keep going (the AI prompts are designed to surface
@@ -188,119 +236,6 @@ export async function POST(
     screenshotMobileUrl: p.screenshotMobileUrl ?? null,
   }));
 
-  // ── Fork: external (OpenClaw) auditors ───────────────────────────
-  // For openclaw:* we pre-build every category prompt server-side,
-  // ship them as a single openclaw_messages row tagged with the
-  // target_agent, and return the runId immediately. The matching
-  // worker will stream the per-category results back via
-  // /api/checkpoint/runs/[runId]/openclaw-category and close the run
-  // via /openclaw-finalize. This bypasses Claude entirely and offloads
-  // the heavy LLM work to the user's machine, where there's no
-  // serverless timeout.
-  if (isOpenclawAuditor(auditor)) {
-    const prompts = categories
-      .filter((cat) => {
-        if (cat === 'navigation' && reachable.length < 2) {
-          // Persist a "skipped" placeholder server-side so the UI
-          // shows the same explanation Claude would have produced,
-          // and don't ship navigation to OpenClaw.
-          return false;
-        }
-        return true;
-      })
-      .map((cat) => {
-        const cfg = CATEGORY_PROMPT_CONFIG[cat];
-        return {
-          category: cat,
-          system: cfg.instructions,
-          user: buildMultiPageUserMessage({
-            category: cat,
-            funnelName: funnel.name,
-            steps: auditSteps,
-            brandProfile,
-          }),
-        };
-      });
-
-    // Pre-persist any "skipped" categories (navigation only for now).
-    const preSkipped: CheckpointResults = {};
-    for (const cat of categories) {
-      if (cat === 'navigation' && reachable.length < 2) {
-        preSkipped[cat] = {
-          score: null,
-          status: 'skipped',
-          summary:
-            "Il check Navigazione richiede almeno 2 pagine raggiungibili nel funnel.",
-          issues: [],
-          suggestions: [],
-        };
-      }
-    }
-    if (Object.keys(preSkipped).length > 0) {
-      await supabase
-        .from('funnel_checkpoints')
-        .update({ results: preSkipped })
-        .eq('id', checkpointId);
-    }
-
-    if (prompts.length === 0) {
-      // Nothing left to ask the worker → finalise as completed/failed
-      // here without bothering the queue.
-      const completedAt = new Date().toISOString();
-      await supabase
-        .from('funnel_checkpoints')
-        .update({
-          status: 'completed' as CheckpointRunStatus,
-          completed_at: completedAt,
-        })
-        .eq('id', checkpointId);
-      return NextResponse.json({
-        runId: checkpointId,
-        status: 'completed',
-        auditor,
-        message: 'No categories required external audit (all skipped).',
-      });
-    }
-
-    const queuePayload = {
-      runId: checkpointId,
-      funnelId: funnel.id,
-      funnelName: funnel.name,
-      prompts,
-    };
-    const { error: enqueueErr } = await supabase
-      .from('openclaw_messages')
-      .insert({
-        section: 'checkpoint_audit',
-        target_agent: auditor,
-        status: 'pending',
-        user_message: JSON.stringify(queuePayload),
-        system_prompt: null,
-      });
-    if (enqueueErr) {
-      const msg = `Failed to enqueue OpenClaw job: ${enqueueErr.message}`;
-      await supabase
-        .from('funnel_checkpoints')
-        .update({
-          status: 'failed' as CheckpointRunStatus,
-          error: msg,
-          completed_at: new Date().toISOString(),
-        })
-        .eq('id', checkpointId);
-      return NextResponse.json({ error: msg }, { status: 500 });
-    }
-
-    return NextResponse.json({
-      runId: checkpointId,
-      status: 'running' as CheckpointRunStatus,
-      auditor,
-      enqueuedCategories: prompts.map((p) => p.category),
-      message:
-        `Job sent to ${auditor}. Poll /api/checkpoint/runs/${checkpointId} for live status.`,
-    });
-  }
-
-  // ── Default: in-process Claude pipeline ─────────────────────────
   const results: CheckpointResults = {};
   let errored = 0;
   let succeeded = 0;
