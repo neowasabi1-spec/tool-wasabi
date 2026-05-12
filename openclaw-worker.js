@@ -28,6 +28,42 @@ const OPENCLAW_API_KEY = process.env.OPENCLAW_API_KEY
   || 'ba893c2470e9f12b281ab1031746b5f177b14a746143b1ab';
 const OPENCLAW_MODEL = process.env.OPENCLAW_MODEL || 'openclaw/trinity';
 
+// ── LLM backend selector ────────────────────────────────────────
+// Two backends are wired up:
+//
+//   - 'openai-compat' (default): forward chat completions to the
+//     local OpenClaw / Trinity / Ollama / LM Studio server on
+//     OPENCLAW_HOST:OPENCLAW_PORT. This is what Neo uses with
+//     Trinity locally.
+//
+//   - 'anthropic': call the Anthropic Messages API directly at
+//     api.anthropic.com. This is what Morfeo uses on the Mac Mini —
+//     no local LLM needed, just an Anthropic API key. The OpenAI-
+//     style messages are transparently translated to the Messages
+//     API format (system → top-level system, user/assistant in the
+//     conversation array, content blocks decoded back to plain text
+//     so processMessage doesn't need to know which backend ran it).
+//
+// All other behaviour (queue polling, target_agent routing, swipe
+// jobs, rewrite batching, checkpoint_audit pipeline, retries) is
+// backend-agnostic and stays identical — Neo and Morfeo claim
+// distinct rows from the same queue and only differ in WHO actually
+// runs the inference under the hood.
+const OPENCLAW_BACKEND = (process.env.OPENCLAW_BACKEND || 'openai-compat')
+  .toLowerCase();
+const ANTHROPIC_API_KEY =
+  process.env.ANTHROPIC_API_KEY || process.env.OPENCLAW_API_KEY || '';
+const ANTHROPIC_VERSION = process.env.ANTHROPIC_VERSION || '2023-06-01';
+// Max output tokens. Anthropic Sonnet/Opus comfortably handles 8192;
+// local OpenClaw/Trinity historically caps lower, so we keep its
+// default at 4096 for compatibility. Override per-machine via env if
+// you know your model handles more.
+const OPENCLAW_MAX_TOKENS = parseInt(
+  process.env.OPENCLAW_MAX_TOKENS
+    || (OPENCLAW_BACKEND === 'anthropic' ? '8192' : '4096'),
+  10,
+);
+
 // ── Agent identity (for explicit Neo vs Morfeo routing) ─────────
 // Independent of OPENCLAW_MODEL (which labels the LOCAL LLM the worker
 // forwards chat completions to). When this is set, the poll query
@@ -76,14 +112,25 @@ const stamp = () => new Date().toISOString().replace('T', ' ').substring(0, 19);
 const log = (...args) => console.log(`[${stamp()}]`, ...args);
 const err = (...args) => console.error(`[${stamp()}] ERROR`, ...args);
 
-// ===== OPENCLAW CALL ==============================================
+// ===== LLM CALLS ==================================================
+// Dispatcher: route the chat completion to whichever backend the
+// worker was configured for. Both backends accept and return the
+// same shape (OpenAI-style messages in, plain string out), so the
+// rest of the worker doesn't need to know which one ran.
 function callOpenClaw(messages) {
+  if (OPENCLAW_BACKEND === 'anthropic') return callAnthropic(messages);
+  return callOpenClawNative(messages);
+}
+
+// OpenAI-compatible local HTTP call (Trinity / Ollama / LM Studio /
+// vLLM / llama.cpp server). Default for the Neo PC.
+function callOpenClawNative(messages) {
   return new Promise((resolve, reject) => {
     const payload = JSON.stringify({
       model: OPENCLAW_MODEL,
       messages,
       temperature: 0.7,
-      max_tokens: 4096,
+      max_tokens: OPENCLAW_MAX_TOKENS,
     });
 
     const req = http.request({
@@ -120,6 +167,116 @@ function callOpenClaw(messages) {
       reject(new Error(`OpenClaw timeout after ${OPENCLAW_TIMEOUT_MS / 1000}s`));
     });
     req.on('error', (e) => reject(new Error(`OpenClaw network error: ${e.message}`)));
+    req.write(payload);
+    req.end();
+  });
+}
+
+// Anthropic Messages API call. Used by Morfeo on the Mac Mini —
+// no local LLM, just an Anthropic API key. We translate the
+// OpenAI-shaped `messages` array into the Anthropic format:
+//   - the first/concatenated `role: 'system'` entries become the
+//     top-level `system` field
+//   - everything else stays as { role, content } in `messages`
+//   - the response's `content[].text` blocks are joined back into
+//     a single string so the rest of the worker is unchanged.
+function callAnthropic(messages) {
+  return new Promise((resolve, reject) => {
+    if (!ANTHROPIC_API_KEY) {
+      return reject(
+        new Error(
+          'OPENCLAW_BACKEND=anthropic but no ANTHROPIC_API_KEY (or OPENCLAW_API_KEY) is set. Export ANTHROPIC_API_KEY=sk-ant-... and restart the worker.',
+        ),
+      );
+    }
+
+    let systemPrompt = '';
+    const conv = [];
+    for (const m of messages || []) {
+      if (!m || typeof m.content !== 'string') continue;
+      if (m.role === 'system') {
+        systemPrompt = systemPrompt
+          ? `${systemPrompt}\n\n${m.content}`
+          : m.content;
+        continue;
+      }
+      if (m.role === 'user' || m.role === 'assistant') {
+        conv.push({ role: m.role, content: m.content });
+      }
+    }
+    if (conv.length === 0) {
+      return reject(
+        new Error(
+          'callAnthropic: no user/assistant messages to send (translation produced an empty conversation)',
+        ),
+      );
+    }
+
+    const body = {
+      model: OPENCLAW_MODEL,
+      max_tokens: OPENCLAW_MAX_TOKENS,
+      messages: conv,
+    };
+    if (systemPrompt) body.system = systemPrompt;
+    const payload = JSON.stringify(body);
+
+    const req = https.request(
+      {
+        hostname: 'api.anthropic.com',
+        port: 443,
+        path: '/v1/messages',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': ANTHROPIC_API_KEY,
+          'anthropic-version': ANTHROPIC_VERSION,
+          'Content-Length': Buffer.byteLength(payload),
+        },
+        timeout: OPENCLAW_TIMEOUT_MS,
+      },
+      (res) => {
+        let buf = '';
+        res.on('data', (c) => (buf += c));
+        res.on('end', () => {
+          if (res.statusCode === 200) {
+            try {
+              const data = JSON.parse(buf);
+              const text = Array.isArray(data.content)
+                ? data.content
+                    .filter(
+                      (b) => b && b.type === 'text' && typeof b.text === 'string',
+                    )
+                    .map((b) => b.text)
+                    .join('')
+                : '';
+              resolve(text);
+            } catch (e) {
+              reject(
+                new Error(
+                  'Invalid JSON from Anthropic: ' + buf.substring(0, 200),
+                ),
+              );
+            }
+          } else {
+            reject(
+              new Error(
+                `Anthropic HTTP ${res.statusCode}: ${buf.substring(0, 300)}`,
+              ),
+            );
+          }
+        });
+      },
+    );
+
+    req.on('timeout', () => {
+      req.destroy();
+      reject(
+        new Error(`Anthropic timeout after ${OPENCLAW_TIMEOUT_MS / 1000}s`),
+      );
+    });
+    req.on('error', (e) =>
+      reject(new Error(`Anthropic network error: ${e.message}`)),
+    );
     req.write(payload);
     req.end();
   });
@@ -667,13 +824,28 @@ function printBanner() {
   console.log('║           OpenClaw Worker v2               ║');
   console.log('╠════════════════════════════════════════════╣');
   console.log(`║  Supabase URL:  ${SUPABASE_URL.substring(0, 28).padEnd(28)}║`);
-  console.log(`║  OpenClaw:      ${OPENCLAW_HOST}:${OPENCLAW_PORT.toString().padEnd(28 - OPENCLAW_HOST.length - 1)}║`);
-  console.log(`║  Model:         ${OPENCLAW_MODEL.padEnd(28)}║`);
+  console.log(`║  Backend:       ${OPENCLAW_BACKEND.padEnd(28)}║`);
+  if (OPENCLAW_BACKEND === 'anthropic') {
+    const keyHint = ANTHROPIC_API_KEY
+      ? `${ANTHROPIC_API_KEY.slice(0, 8)}…(${ANTHROPIC_API_KEY.length} chars)`
+      : '(MISSING — worker will fail on first job!)';
+    console.log(`║  Endpoint:      api.anthropic.com:443      ║`);
+    console.log(`║  API key:       ${keyHint.padEnd(28).substring(0, 28)}║`);
+  } else {
+    console.log(`║  Endpoint:      ${(OPENCLAW_HOST + ':' + OPENCLAW_PORT).padEnd(28)}║`);
+  }
+  console.log(`║  Model:         ${OPENCLAW_MODEL.padEnd(28).substring(0, 28)}║`);
+  console.log(`║  Max tokens:    ${String(OPENCLAW_MAX_TOKENS).padEnd(28)}║`);
   console.log(
     `║  Agent:         ${(OPENCLAW_AGENT || '(unset → legacy any-job mode)').padEnd(28).substring(0, 28)}║`,
   );
   console.log(`║  Poll:          every ${POLL_INTERVAL_MS / 1000}s`.padEnd(45) + '║');
   console.log('╚════════════════════════════════════════════╝');
+  if (OPENCLAW_BACKEND === 'anthropic' && !ANTHROPIC_API_KEY) {
+    err(
+      'OPENCLAW_BACKEND=anthropic but ANTHROPIC_API_KEY is empty — every checkpoint_audit and chat job will fail until you export ANTHROPIC_API_KEY=sk-ant-... and restart.',
+    );
+  }
   if (OPENCLAW_AGENT) {
     log(`Routing: this worker only claims jobs targeted at "${OPENCLAW_AGENT}" (or untagged legacy jobs).`);
   } else {
