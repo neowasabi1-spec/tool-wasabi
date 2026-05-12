@@ -23,6 +23,7 @@ import {
   Eye,
   ListChecks,
   Crown,
+  Lightbulb,
 } from 'lucide-react';
 import {
   type CheckpointCategory,
@@ -957,6 +958,17 @@ interface SheetRow {
   sourceCategory: CheckpointCategory;
 }
 
+/** "Cose da fare" row: a concrete rewrite proposed by the audit.
+ *  When `currentText` + `targetText` are present we render the
+ *  before/after pair; otherwise we fall back to title + detail. */
+interface SheetActionRow {
+  title: string;
+  detail?: string;
+  currentText?: string;
+  targetText?: string;
+  sourceCategory: CheckpointCategory;
+}
+
 function FindingsSheet({
   results,
   isRunning,
@@ -1022,6 +1034,28 @@ function SheetColumn({
       a.title.localeCompare(b.title),
   );
 
+  // Aggrega le "cose da fare" (suggestions) dalle stesse categorie
+  // sorgenti. Per "All Step" deduplichiamo per title per evitare di
+  // mostrare la stessa azione due volte.
+  const seenAct = new Set<string>();
+  const actions: SheetActionRow[] = [];
+  for (const cat of sourceCats) {
+    const r = results[cat];
+    if (!r || !Array.isArray(r.suggestions)) continue;
+    for (const sug of r.suggestions) {
+      const dedupeKey = sug.title.toLowerCase();
+      if (config.sources === '*' && seenAct.has(dedupeKey)) continue;
+      seenAct.add(dedupeKey);
+      actions.push({
+        title: sug.title,
+        detail: sug.detail,
+        currentText: sug.currentText,
+        targetText: sug.targetText,
+        sourceCategory: cat,
+      });
+    }
+  }
+
   // Stato della colonna per il badge in header.
   // - in corso (almeno una source è running senza risultato ancora)
   // - completata (tutte le source hanno una risposta)
@@ -1064,24 +1098,127 @@ function SheetColumn({
         <SheetStatusBadge status={status} count={rows.length} />
       </div>
 
-      {/* Body: righe stile foglio */}
-      <div className="flex-1 divide-y divide-gray-100 overflow-y-auto max-h-[420px]">
-        {rows.length === 0 ? (
-          <div className="px-3 py-6 text-center text-xs text-gray-400">
-            {status === 'idle' && 'In attesa di analisi…'}
-            {status === 'running' && (
-              <span className="inline-flex items-center gap-1">
-                <Loader2 className="w-3 h-3 animate-spin" />
-                Analisi in corso…
-              </span>
-            )}
-            {status === 'done' && 'Nessuna criticità trovata.'}
+      {/* Body: ANALISI (righe stile foglio con le criticità) */}
+      <div className="border-b border-gray-100">
+        <div className="px-3 py-1.5 bg-gray-50/60 text-[10px] font-semibold uppercase tracking-wide text-gray-500 flex items-center justify-between">
+          <span>Analisi</span>
+          {rows.length > 0 && (
+            <span className="text-gray-400">{rows.length}</span>
+          )}
+        </div>
+        <div className="divide-y divide-gray-100 overflow-y-auto max-h-[260px]">
+          {rows.length === 0 ? (
+            <div className="px-3 py-6 text-center text-xs text-gray-400">
+              {status === 'idle' && 'In attesa di analisi…'}
+              {status === 'running' && (
+                <span className="inline-flex items-center gap-1">
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                  Analisi in corso…
+                </span>
+              )}
+              {status === 'done' && 'Nessuna criticità trovata.'}
+            </div>
+          ) : (
+            rows.map((row, i) => (
+              <SheetRowView key={`${config.id}-${i}`} index={i + 1} row={row} />
+            ))
+          )}
+        </div>
+      </div>
+
+      {/* Body: COSE DA FARE (suggestions con riscritture concrete) */}
+      <div className="flex-1">
+        <div className="px-3 py-1.5 bg-amber-50/60 text-[10px] font-semibold uppercase tracking-wide text-amber-700 flex items-center justify-between">
+          <span>Cose da fare</span>
+          {actions.length > 0 && (
+            <span className="text-amber-600">{actions.length}</span>
+          )}
+        </div>
+        <div className="divide-y divide-gray-100 overflow-y-auto max-h-[320px]">
+          {actions.length === 0 ? (
+            <div className="px-3 py-6 text-center text-xs text-gray-400">
+              {status === 'idle' && '—'}
+              {status === 'running' && (
+                <span className="inline-flex items-center gap-1">
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                  In arrivo…
+                </span>
+              )}
+              {status === 'done' && 'Nessuna azione consigliata.'}
+            </div>
+          ) : (
+            actions.map((act, i) => (
+              <SheetActionView
+                key={`${config.id}-act-${i}`}
+                index={i + 1}
+                row={act}
+              />
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SheetActionView({
+  index,
+  row,
+}: {
+  index: number;
+  row: SheetActionRow;
+}) {
+  const hasRewrite = !!(row.currentText && row.targetText);
+  return (
+    <div className="px-3 py-2 hover:bg-amber-50/30">
+      <div className="flex items-start gap-2">
+        <span className="text-[10px] font-mono text-gray-300 w-5 text-right pt-0.5 select-none shrink-0">
+          {index}
+        </span>
+        <Lightbulb className="w-3.5 h-3.5 mt-0.5 shrink-0 text-amber-500" />
+        <div className="flex-1 min-w-0 space-y-1.5">
+          <div className="text-xs font-medium text-gray-900 leading-snug">
+            {row.title}
           </div>
-        ) : (
-          rows.map((row, i) => (
-            <SheetRowView key={`${config.id}-${i}`} index={i + 1} row={row} />
-          ))
-        )}
+          {row.detail && (
+            <div className="text-[11px] text-gray-500 leading-snug">
+              {row.detail}
+            </div>
+          )}
+          {hasRewrite && (
+            <div className="space-y-1 mt-1">
+              <div className="rounded border border-red-100 bg-red-50/50 px-2 py-1.5">
+                <div className="text-[9px] font-semibold uppercase tracking-wide text-red-600 mb-0.5">
+                  Ora è
+                </div>
+                <div className="text-[11px] italic text-gray-700 leading-snug whitespace-pre-wrap">
+                  &ldquo;{row.currentText}&rdquo;
+                </div>
+              </div>
+              <div className="rounded border border-emerald-100 bg-emerald-50/50 px-2 py-1.5">
+                <div className="text-[9px] font-semibold uppercase tracking-wide text-emerald-700 mb-0.5">
+                  Cambialo in
+                </div>
+                <div className="text-[11px] text-gray-800 leading-snug whitespace-pre-wrap">
+                  {row.targetText}
+                </div>
+              </div>
+            </div>
+          )}
+          {!hasRewrite && row.targetText && (
+            <div className="rounded border border-emerald-100 bg-emerald-50/50 px-2 py-1.5 mt-1">
+              <div className="text-[9px] font-semibold uppercase tracking-wide text-emerald-700 mb-0.5">
+                Da aggiungere
+              </div>
+              <div className="text-[11px] text-gray-800 leading-snug whitespace-pre-wrap">
+                {row.targetText}
+              </div>
+            </div>
+          )}
+          <div className="text-[10px] text-gray-400 uppercase tracking-wide">
+            {row.sourceCategory}
+          </div>
+        </div>
       </div>
     </div>
   );

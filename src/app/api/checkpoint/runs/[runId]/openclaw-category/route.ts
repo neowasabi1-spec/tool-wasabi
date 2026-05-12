@@ -187,6 +187,14 @@ function normaliseCategoryResult(
           title: String(it.title).slice(0, 200),
           detail:
             typeof it.detail === 'string' ? it.detail.slice(0, 1500) : undefined,
+          currentText:
+            typeof it.currentText === 'string' && it.currentText.trim()
+              ? it.currentText.slice(0, 600)
+              : undefined,
+          targetText:
+            typeof it.targetText === 'string' && it.targetText.trim()
+              ? it.targetText.slice(0, 800)
+              : undefined,
         }))
     : [];
 

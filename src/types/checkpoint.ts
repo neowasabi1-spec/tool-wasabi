@@ -97,6 +97,14 @@ export interface CheckpointIssue {
 export interface CheckpointSuggestion {
   title: string;
   detail?: string;
+  /** Verbatim quote of the copy on the page that should change.
+   *  When set together with `targetText`, the UI renders the
+   *  suggestion as a "Now → Change to" pair under the column. */
+  currentText?: string;
+  /** The proposed replacement copy (drop-in). Companion of
+   *  `currentText`. Both are optional: if absent, the UI falls
+   *  back to title + detail rendering. */
+  targetText?: string;
 }
 
 export interface CheckpointCategoryResult {

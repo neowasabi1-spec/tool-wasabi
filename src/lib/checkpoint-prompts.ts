@@ -48,7 +48,9 @@ OUTPUT FORMAT — return ONE valid JSON object, no markdown fence, no prose:
   "suggestions": [
     {
       "title": "<actionable fix headline, max 80 chars>",
-      "detail": "<1-2 sentences with the exact change to make>"
+      "detail": "<1-2 sentences explaining WHY this change matters>",
+      "currentText": "<the EXACT verbatim copy on the page right now (or omit if not applicable, e.g. structural fixes), max 250 chars, must appear word-for-word in the input>",
+      "targetText": "<the EXACT replacement copy you propose (drop-in), max 400 chars, written as if ready to paste into the page>"
     }
   ]
 }
@@ -66,6 +68,14 @@ Rules:
 - Suggestions: maximum 5, only HIGH-IMPACT fixes.
 - Stay focused on YOUR category — don't audit unrelated dimensions.
 - All "evidence" snippets MUST appear verbatim in the input HTML/text.
+- "currentText" must appear VERBATIM in the input. If your fix is
+  structural (e.g. "add a guarantee badge") and there's nothing on
+  the page to quote, OMIT the "currentText" key entirely — do NOT
+  invent a quote and do NOT include "targetText" without the matching
+  "currentText".
+- "targetText" must be production-ready copy in the SAME language as
+  the page. No placeholders like "[insert benefit here]". No
+  meta-commentary ("you should write..."). Just the new sentence(s).
 - If the page is not analyzable for your category (e.g. empty, wrong language), return score=null and put a single warning issue explaining why.
 `;
 
