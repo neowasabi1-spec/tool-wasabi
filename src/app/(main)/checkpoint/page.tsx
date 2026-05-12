@@ -30,12 +30,14 @@ import {
   Wand2,
   MousePointer2,
   RefreshCw,
+  FolderOpen,
 } from 'lucide-react';
 import type {
   CheckpointFunnel,
   CheckpointLogEntry,
 } from '@/types/checkpoint';
 import { getCurrentUserName, setCurrentUserName } from '@/lib/current-user';
+import ImportFromProjectsModal from '@/components/checkpoint/ImportFromProjectsModal';
 
 function ScorePill({ score }: { score: number | null }) {
   if (score === null || score === undefined) {
@@ -207,6 +209,11 @@ export default function CheckpointPage() {
   const [logEntries, setLogEntries] = useState<CheckpointLogEntry[]>([]);
   const [logLoading, setLogLoading] = useState(false);
   const [logError, setLogError] = useState<string | null>(null);
+
+  // "Import from My Projects" modal — picker over Supabase projects
+  // that re-uses /api/checkpoint/funnels/import (same flow as the
+  // Projects page, just kicked off from inside Checkpoint).
+  const [showProjectsImport, setShowProjectsImport] = useState(false);
 
   // "Who am I" — placeholder until auth lands.
   const [userName, setUserName] = useState<string>('Owner');
@@ -555,6 +562,16 @@ export default function CheckpointPage() {
             >
               <History className="w-4 h-4" />
               Log
+            </button>
+
+            <button
+              onClick={() => setShowProjectsImport(true)}
+              disabled={adding || autoCrawling}
+              className="inline-flex items-center gap-2 px-4 py-2 bg-white border border-indigo-300 text-indigo-700 text-sm font-medium rounded-lg hover:bg-indigo-50 transition-colors disabled:opacity-50"
+              title="Importa un funnel o una pagina dai My Projects"
+            >
+              <FolderOpen className="w-4 h-4" />
+              My Projects
             </button>
 
             <button
@@ -1261,6 +1278,13 @@ export default function CheckpointPage() {
           </div>
         </div>
       )}
+
+      {/* Import from My Projects — opens a 2-step picker: project →
+          mode (all pages / single page) → confirm. */}
+      <ImportFromProjectsModal
+        open={showProjectsImport}
+        onClose={() => setShowProjectsImport(false)}
+      />
     </div>
   );
 }
