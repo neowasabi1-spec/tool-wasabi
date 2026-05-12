@@ -555,6 +555,20 @@ export default function CheckpointDetailPage({
               'error',
               `${target} · errore worker: ${data.error_message ?? 'sconosciuto'}`,
             );
+            // The worker died/errored before it could call
+            // /openclaw-finalize → the funnel_checkpoints row would
+            // sit on status='running' forever and the dashboard
+            // would just hang on "in corso (in background)".
+            // Auto-force-fail it so the user gets a real terminal
+            // status (and the column-fill-up logic in finalize
+            // marks the missing categories as 'error' instead of
+            // leaving them spectral). Fire-and-forget; if the
+            // call fails the user can still hit the manual
+            // "Marca come fallita" button in the banner.
+            handleForceFail(
+              runId,
+              `Worker ${target} ha riportato errore: ${data.error_message ?? 'sconosciuto'}`,
+            ).catch(() => {});
           }
           lastQueueStatusRef.current = data.status;
         }
@@ -1415,7 +1429,9 @@ function RunActivityMonitor({
           <div className="flex-1">
             <strong>Nessun aggiornamento da {formatHmsShort(sinceLastMs)}.</strong>{' '}
             {auditor.startsWith('openclaw:')
-              ? `Verifica che il worker ${queueStatus?.target_agent ?? auditor.split(':')[1]} sia avviato (terminale Cursor con "node openclaw-worker.js"). Se è online il job potrebbe richiedere ancora qualche secondo.`
+              ? queueStatus?.status === 'error'
+                ? `Il worker ${queueStatus?.target_agent ?? auditor.split(':')[1]} ha riportato un errore (${queueStatus?.error_message ?? 'sconosciuto'}). Probabile versione del worker non aggiornata: nel terminale Cursor fai "git pull" e riavvia "node openclaw-worker.js", poi rilancia l'audit.`
+                : `Verifica che il worker ${queueStatus?.target_agent ?? auditor.split(':')[1]} sia avviato (terminale Cursor con "node openclaw-worker.js"). Se è online il job potrebbe richiedere ancora qualche secondo.`
               : "L'API Claude potrebbe essere lenta o la function su Netlify è andata in timeout (504). Il run continua in background, riprova fra poco a refreshare la pagina."}
           </div>
           {runId && sinceLastMs > 90_000 && (
