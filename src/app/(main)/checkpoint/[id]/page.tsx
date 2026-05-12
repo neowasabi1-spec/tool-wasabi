@@ -166,11 +166,13 @@ export default function CheckpointDetailPage({
     setLastChangeAt(lastChangeAtRef.current);
   };
 
-  const refetch = async (preserveActive = false) => {
-    setLoading(true);
-    setLoadError(null);
+  const refetch = async (preserveActive = false, silent = false) => {
+    if (!silent) setLoading(true);
+    if (!silent) setLoadError(null);
     try {
-      const res = await fetch(`/api/checkpoint/${funnelId}`);
+      const res = await fetch(`/api/checkpoint/${funnelId}`, {
+        cache: 'no-store',
+      });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body?.error ?? `HTTP ${res.status}`);
@@ -181,9 +183,9 @@ export default function CheckpointDetailPage({
         setActiveRunId(payload.runs[0].id);
       }
     } catch (err) {
-      setLoadError(err instanceof Error ? err.message : String(err));
+      if (!silent) setLoadError(err instanceof Error ? err.message : String(err));
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
@@ -200,6 +202,34 @@ export default function CheckpointDetailPage({
       abortRef.current?.abort();
     };
   }, []);
+
+  // Background sync: while ANY visible run is still in 'running'
+  // state (or the user just clicked Run and we're waiting for the
+  // first row to appear), silently re-fetch the funnel detail
+  // every 2.5s. This is the "user shouldn't have to F5 to see new
+  // results" safety net — it sits on top of the per-run pollRun
+  // loop, so even when that loop has a hiccup (network blip, tab
+  // backgrounded then refocused, deploy mid-session, etc.) the
+  // dashboard still catches up. Only runs while either the local
+  // state says we're running OR the most recent server snapshot
+  // shows a 'running' row, and stops automatically when both are
+  // false. `silent` skips the loading spinner so this never makes
+  // the page flicker. We depend on a derived BOOLEAN (not on
+  // `data.runs` itself) so the interval isn't torn down and
+  // recreated on every refetch — only when the running-vs-done
+  // state actually flips.
+  const hasRunningRowFromData = useMemo(
+    () => !!data?.runs.some((r) => r.status === 'running'),
+    [data?.runs],
+  );
+  useEffect(() => {
+    if (!running && !hasRunningRowFromData) return;
+    const id = setInterval(() => {
+      refetch(true, true).catch(() => {});
+    }, 2500);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [running, hasRunningRowFromData]);
 
   /**
    * Polling loop. Reads the in-progress run row every `intervalMs`
@@ -719,20 +749,42 @@ export default function CheckpointDetailPage({
   }, [data, activeRunId]);
 
   // The dashboard always has SOMETHING to show:
-  //   - if a run is in progress, show the live state
+  //   - if a run is in progress, show the live state — picking
+  //     whichever source is RICHER between liveResults (per-run
+  //     pollRun loop, every 1.5s) and activeRun.results (background
+  //     refetch, every 2.5s). They normally agree, but if pollRun
+  //     hits a hiccup the background sync keeps the columns moving
+  //     so the user never has to F5 to see new findings appear.
   //   - else if a historical run is selected, show its frozen state
   //   - else show 5 pending placeholders
-  const dashboardSteps: LiveStep[] = useMemo(() => {
-    if (running) return liveSteps;
-    if (activeRun) return buildSteps(CATEGORIES, activeRun.results);
-    return buildSteps(CATEGORIES);
-  }, [running, liveSteps, activeRun]);
-
   const dashboardResults: CheckpointResults = useMemo(() => {
-    if (running) return liveResults;
+    if (running) {
+      const activeResults = activeRun?.results ?? {};
+      const liveCount = Object.keys(liveResults).length;
+      const activeCount = Object.keys(activeResults).length;
+      return activeCount > liveCount ? activeResults : liveResults;
+    }
     if (activeRun) return activeRun.results;
     return {};
   }, [running, liveResults, activeRun]);
+
+  const dashboardSteps: LiveStep[] = useMemo(() => {
+    if (running) {
+      // Same "richest source wins" rule as dashboardResults so the
+      // step states (running / done / error indicators) stay in
+      // sync with the column contents.
+      const liveDoneOrErr = liveSteps.filter(
+        (s) => s.state === 'done' || s.state === 'error',
+      ).length;
+      const activeFromBg = buildSteps(CATEGORIES, activeRun?.results ?? {});
+      const bgDoneOrErr = activeFromBg.filter(
+        (s) => s.state === 'done' || s.state === 'error',
+      ).length;
+      return bgDoneOrErr > liveDoneOrErr ? activeFromBg : liveSteps;
+    }
+    if (activeRun) return buildSteps(CATEGORIES, activeRun.results);
+    return buildSteps(CATEGORIES);
+  }, [running, liveSteps, activeRun]);
 
   // Pull the current "[stage] …" hint out of activeRun.error while
   // the run is still running. The server uses error as a sneaky
