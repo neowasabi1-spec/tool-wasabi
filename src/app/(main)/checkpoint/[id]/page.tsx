@@ -671,6 +671,15 @@ export default function CheckpointDetailPage({
               results={dashboardResults}
               isRunning={running}
             />
+
+            {/* "Cose da fare": checklist unica con tutte le riscritture
+                proposte dall'audit (Ora è → Cambialo in). Sta sotto
+                la tabella, raggruppata per colonna/categoria. */}
+            <ActionChecklist
+              results={dashboardResults}
+              isRunning={running}
+              runId={activeRun?.id ?? null}
+            />
           </>
         )}
       </div>
@@ -1034,28 +1043,6 @@ function SheetColumn({
       a.title.localeCompare(b.title),
   );
 
-  // Aggrega le "cose da fare" (suggestions) dalle stesse categorie
-  // sorgenti. Per "All Step" deduplichiamo per title per evitare di
-  // mostrare la stessa azione due volte.
-  const seenAct = new Set<string>();
-  const actions: SheetActionRow[] = [];
-  for (const cat of sourceCats) {
-    const r = results[cat];
-    if (!r || !Array.isArray(r.suggestions)) continue;
-    for (const sug of r.suggestions) {
-      const dedupeKey = sug.title.toLowerCase();
-      if (config.sources === '*' && seenAct.has(dedupeKey)) continue;
-      seenAct.add(dedupeKey);
-      actions.push({
-        title: sug.title,
-        detail: sug.detail,
-        currentText: sug.currentText,
-        targetText: sug.targetText,
-        sourceCategory: cat,
-      });
-    }
-  }
-
   // Stato della colonna per il badge in header.
   // - in corso (almeno una source è running senza risultato ancora)
   // - completata (tutte le source hanno una risposta)
@@ -1086,7 +1073,7 @@ function SheetColumn({
             : 'bg-gray-50 text-gray-700';
 
   return (
-    <div className="flex flex-col min-h-[320px]">
+    <div className="flex flex-col min-h-[260px]">
       {/* Header sticky in cima alla colonna */}
       <div
         className={`px-3 py-2 border-b border-gray-200 flex items-center justify-between gap-2 ${headerBg}`}
@@ -1099,14 +1086,8 @@ function SheetColumn({
       </div>
 
       {/* Body: ANALISI (righe stile foglio con le criticità) */}
-      <div className="border-b border-gray-100">
-        <div className="px-3 py-1.5 bg-gray-50/60 text-[10px] font-semibold uppercase tracking-wide text-gray-500 flex items-center justify-between">
-          <span>Analisi</span>
-          {rows.length > 0 && (
-            <span className="text-gray-400">{rows.length}</span>
-          )}
-        </div>
-        <div className="divide-y divide-gray-100 overflow-y-auto max-h-[260px]">
+      <div className="flex-1">
+        <div className="divide-y divide-gray-100 overflow-y-auto max-h-[320px]">
           {rows.length === 0 ? (
             <div className="px-3 py-6 text-center text-xs text-gray-400">
               {status === 'idle' && 'In attesa di analisi…'}
@@ -1125,103 +1106,318 @@ function SheetColumn({
           )}
         </div>
       </div>
+    </div>
+  );
+}
 
-      {/* Body: COSE DA FARE (suggestions con riscritture concrete) */}
-      <div className="flex-1">
-        <div className="px-3 py-1.5 bg-amber-50/60 text-[10px] font-semibold uppercase tracking-wide text-amber-700 flex items-center justify-between">
-          <span>Cose da fare</span>
-          {actions.length > 0 && (
-            <span className="text-amber-600">{actions.length}</span>
-          )}
+/**
+ * "Cose da fare" — single checklist that lives below the findings
+ * sheet. Aggregates suggestions from ALL categories, groups them by
+ * the column they would have shown up in (Tech/Marketing/Visual/Copy
+ * Chief), and renders each one as a checkable card with the
+ * "Ora è → Cambialo in" rewrite, plus a copy-to-clipboard button on
+ * the target text. Checked state is persisted in localStorage keyed
+ * by runId so toggles survive refreshes for that specific run.
+ */
+function ActionChecklist({
+  results,
+  isRunning,
+  runId,
+}: {
+  results: CheckpointResults;
+  isRunning: boolean;
+  runId: string | null;
+}) {
+  // Build grouped action rows. A category belongs to a column based
+  // on the same SHEET_COLUMNS mapping used above (excluding "all"
+  // which is just a union view).
+  const grouped = useMemo(() => {
+    type Group = {
+      id: string;
+      title: string;
+      icon: React.ReactNode;
+      accent: SheetAccent;
+      actions: SheetActionRow[];
+    };
+    const out: Group[] = [];
+    for (const col of SHEET_COLUMNS) {
+      if (col.id === 'all') continue;
+      const sources = (col.sources === '*' ? [] : col.sources) as CheckpointCategory[];
+      const actions: SheetActionRow[] = [];
+      const seen = new Set<string>();
+      for (const cat of sources) {
+        const r = results[cat];
+        if (!r || !Array.isArray(r.suggestions)) continue;
+        for (const sug of r.suggestions) {
+          const key = (sug.title || '').toLowerCase();
+          if (seen.has(key)) continue;
+          seen.add(key);
+          actions.push({
+            title: sug.title,
+            detail: sug.detail,
+            currentText: sug.currentText,
+            targetText: sug.targetText,
+            sourceCategory: cat,
+          });
+        }
+      }
+      if (actions.length > 0) {
+        out.push({
+          id: col.id,
+          title: col.title,
+          icon: col.icon,
+          accent: col.accent,
+          actions,
+        });
+      }
+    }
+    return out;
+  }, [results]);
+
+  const totalActions = grouped.reduce((acc, g) => acc + g.actions.length, 0);
+
+  // Persist per-run checkbox state in localStorage.
+  const storageKey = runId ? `checkpoint:done:${runId}` : null;
+  const [done, setDone] = useState<Record<string, boolean>>({});
+  useEffect(() => {
+    if (!storageKey || typeof window === 'undefined') {
+      setDone({});
+      return;
+    }
+    try {
+      const raw = window.localStorage.getItem(storageKey);
+      setDone(raw ? (JSON.parse(raw) as Record<string, boolean>) : {});
+    } catch {
+      setDone({});
+    }
+  }, [storageKey]);
+  const toggleDone = (key: string) => {
+    setDone((prev) => {
+      const next = { ...prev, [key]: !prev[key] };
+      if (storageKey && typeof window !== 'undefined') {
+        try {
+          window.localStorage.setItem(storageKey, JSON.stringify(next));
+        } catch {
+          // localStorage full / private mode — silently ignore.
+        }
+      }
+      return next;
+    });
+  };
+
+  const completed = grouped.reduce((acc, g) => {
+    return (
+      acc +
+      g.actions.reduce(
+        (a, act) => (done[`${g.id}::${act.title.toLowerCase()}`] ? a + 1 : a),
+        0,
+      )
+    );
+  }, 0);
+
+  // Empty state — nothing to do yet (still running or no rewrites).
+  if (totalActions === 0) {
+    return (
+      <div className="bg-white rounded-xl border border-gray-200 p-6">
+        <div className="flex items-center gap-2 mb-2">
+          <Lightbulb className="w-5 h-5 text-amber-500" />
+          <h3 className="font-semibold text-gray-900">Cose da fare</h3>
         </div>
-        <div className="divide-y divide-gray-100 overflow-y-auto max-h-[320px]">
-          {actions.length === 0 ? (
-            <div className="px-3 py-6 text-center text-xs text-gray-400">
-              {status === 'idle' && '—'}
-              {status === 'running' && (
-                <span className="inline-flex items-center gap-1">
-                  <Loader2 className="w-3 h-3 animate-spin" />
-                  In arrivo…
-                </span>
-              )}
-              {status === 'done' && 'Nessuna azione consigliata.'}
-            </div>
+        <div className="text-sm text-gray-500">
+          {isRunning ? (
+            <span className="inline-flex items-center gap-2">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              In arrivo… le riscritture concrete compariranno qui mano a mano
+              che le categorie completano l&apos;analisi.
+            </span>
           ) : (
-            actions.map((act, i) => (
-              <SheetActionView
-                key={`${config.id}-act-${i}`}
-                index={i + 1}
-                row={act}
-              />
-            ))
+            "Nessuna azione consigliata per quest'ultima run."
           )}
         </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+      <div className="px-5 py-3 border-b border-gray-200 bg-gradient-to-r from-amber-50 to-white flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex items-center gap-2">
+          <Lightbulb className="w-5 h-5 text-amber-500" />
+          <h3 className="font-semibold text-gray-900">Cose da fare</h3>
+          <span className="text-xs text-gray-500">
+            riscritture pronte da incollare in pagina
+          </span>
+        </div>
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-gray-600">
+            <strong className="text-gray-900">{completed}</strong> /{' '}
+            {totalActions} completate
+          </span>
+          <div className="w-32 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-emerald-500 transition-all"
+              style={{
+                width: `${totalActions === 0 ? 0 : Math.round((completed / totalActions) * 100)}%`,
+              }}
+            />
+          </div>
+        </div>
+      </div>
+
+      <div className="divide-y divide-gray-100">
+        {grouped.map((g) => (
+          <div key={g.id} className="px-4 py-3">
+            <div className="flex items-center gap-2 mb-2">
+              <span
+                className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-semibold ${accentChipClass(g.accent)}`}
+              >
+                {g.icon}
+                {g.title}
+              </span>
+              <span className="text-[11px] text-gray-400">
+                {g.actions.length} {g.actions.length === 1 ? 'azione' : 'azioni'}
+              </span>
+            </div>
+            <ul className="space-y-2">
+              {g.actions.map((act, i) => {
+                const key = `${g.id}::${act.title.toLowerCase()}`;
+                const isDone = !!done[key];
+                return (
+                  <ChecklistItem
+                    key={`${g.id}-${i}`}
+                    row={act}
+                    isDone={isDone}
+                    onToggle={() => toggleDone(key)}
+                  />
+                );
+              })}
+            </ul>
+          </div>
+        ))}
       </div>
     </div>
   );
 }
 
-function SheetActionView({
-  index,
+function ChecklistItem({
   row,
+  isDone,
+  onToggle,
 }: {
-  index: number;
   row: SheetActionRow;
+  isDone: boolean;
+  onToggle: () => void;
 }) {
+  const [copied, setCopied] = useState(false);
   const hasRewrite = !!(row.currentText && row.targetText);
+  const handleCopy = async () => {
+    if (!row.targetText) return;
+    try {
+      await navigator.clipboard.writeText(row.targetText);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1400);
+    } catch {
+      // Browser blocked clipboard — silently no-op.
+    }
+  };
+
   return (
-    <div className="px-3 py-2 hover:bg-amber-50/30">
-      <div className="flex items-start gap-2">
-        <span className="text-[10px] font-mono text-gray-300 w-5 text-right pt-0.5 select-none shrink-0">
-          {index}
-        </span>
-        <Lightbulb className="w-3.5 h-3.5 mt-0.5 shrink-0 text-amber-500" />
-        <div className="flex-1 min-w-0 space-y-1.5">
-          <div className="text-xs font-medium text-gray-900 leading-snug">
+    <li
+      className={`rounded-lg border p-3 transition-colors ${
+        isDone
+          ? 'bg-gray-50 border-gray-200 opacity-60'
+          : 'bg-white border-gray-200 hover:border-amber-300'
+      }`}
+    >
+      <div className="flex items-start gap-3">
+        <button
+          onClick={onToggle}
+          className={`mt-0.5 w-4 h-4 rounded border-2 flex items-center justify-center shrink-0 transition-colors ${
+            isDone
+              ? 'bg-emerald-500 border-emerald-500'
+              : 'bg-white border-gray-300 hover:border-emerald-400'
+          }`}
+          title={isDone ? 'Segna come da fare' : 'Segna come fatta'}
+        >
+          {isDone && <CheckCircle2 className="w-3 h-3 text-white" />}
+        </button>
+        <div className="flex-1 min-w-0 space-y-2">
+          <div
+            className={`text-sm font-medium leading-snug ${
+              isDone ? 'line-through text-gray-500' : 'text-gray-900'
+            }`}
+          >
             {row.title}
           </div>
           {row.detail && (
-            <div className="text-[11px] text-gray-500 leading-snug">
+            <div className="text-xs text-gray-500 leading-snug">
               {row.detail}
             </div>
           )}
           {hasRewrite && (
-            <div className="space-y-1 mt-1">
-              <div className="rounded border border-red-100 bg-red-50/50 px-2 py-1.5">
-                <div className="text-[9px] font-semibold uppercase tracking-wide text-red-600 mb-0.5">
+            <div className="grid sm:grid-cols-2 gap-2 mt-1">
+              <div className="rounded-md border border-red-100 bg-red-50/40 px-3 py-2">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-red-600 mb-1">
                   Ora è
                 </div>
-                <div className="text-[11px] italic text-gray-700 leading-snug whitespace-pre-wrap">
+                <div className="text-xs italic text-gray-700 leading-snug whitespace-pre-wrap">
                   &ldquo;{row.currentText}&rdquo;
                 </div>
               </div>
-              <div className="rounded border border-emerald-100 bg-emerald-50/50 px-2 py-1.5">
-                <div className="text-[9px] font-semibold uppercase tracking-wide text-emerald-700 mb-0.5">
-                  Cambialo in
+              <div className="rounded-md border border-emerald-100 bg-emerald-50/40 px-3 py-2 relative">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-emerald-700 mb-1 flex items-center justify-between">
+                  <span>Cambialo in</span>
+                  <button
+                    onClick={handleCopy}
+                    className="text-[10px] font-semibold uppercase tracking-wide text-emerald-700 hover:text-emerald-900 underline-offset-2 hover:underline"
+                  >
+                    {copied ? 'copiato ✓' : 'copia'}
+                  </button>
                 </div>
-                <div className="text-[11px] text-gray-800 leading-snug whitespace-pre-wrap">
+                <div className="text-xs text-gray-800 leading-snug whitespace-pre-wrap">
                   {row.targetText}
                 </div>
               </div>
             </div>
           )}
           {!hasRewrite && row.targetText && (
-            <div className="rounded border border-emerald-100 bg-emerald-50/50 px-2 py-1.5 mt-1">
-              <div className="text-[9px] font-semibold uppercase tracking-wide text-emerald-700 mb-0.5">
-                Da aggiungere
+            <div className="rounded-md border border-emerald-100 bg-emerald-50/40 px-3 py-2 relative">
+              <div className="text-[10px] font-semibold uppercase tracking-wide text-emerald-700 mb-1 flex items-center justify-between">
+                <span>Da aggiungere</span>
+                <button
+                  onClick={handleCopy}
+                  className="text-[10px] font-semibold uppercase tracking-wide text-emerald-700 hover:text-emerald-900 underline-offset-2 hover:underline"
+                >
+                  {copied ? 'copiato ✓' : 'copia'}
+                </button>
               </div>
-              <div className="text-[11px] text-gray-800 leading-snug whitespace-pre-wrap">
+              <div className="text-xs text-gray-800 leading-snug whitespace-pre-wrap">
                 {row.targetText}
               </div>
             </div>
           )}
           <div className="text-[10px] text-gray-400 uppercase tracking-wide">
-            {row.sourceCategory}
+            fonte: {row.sourceCategory}
           </div>
         </div>
       </div>
-    </div>
+    </li>
   );
+}
+
+function accentChipClass(accent: SheetAccent): string {
+  switch (accent) {
+    case 'blue':
+      return 'bg-blue-50 text-blue-700 border border-blue-200';
+    case 'emerald':
+      return 'bg-emerald-50 text-emerald-700 border border-emerald-200';
+    case 'violet':
+      return 'bg-violet-50 text-violet-700 border border-violet-200';
+    case 'amber':
+      return 'bg-amber-50 text-amber-700 border border-amber-200';
+    default:
+      return 'bg-gray-50 text-gray-700 border border-gray-200';
+  }
 }
 
 function SheetRowView({ index, row }: { index: number; row: SheetRow }) {
