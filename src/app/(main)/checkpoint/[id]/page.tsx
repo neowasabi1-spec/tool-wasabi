@@ -458,10 +458,16 @@ export default function CheckpointDetailPage({
     const ctrl = new AbortController();
     abortRef.current = ctrl;
 
+    // Shared ref the discovery loop reads on every tick: as soon as
+    // the POST returns the runId we set this and the loop pivots
+    // straight to `pollRun(runId)` without depending on the
+    // created_at/clickedAt heuristic (which can fail on clock skew).
+    const knownRunIdRef = { current: null as string | null };
+
     // Start polling in parallel — it'll discover the runId via
     // /latest-run as soon as the server inserts the row, even if the
     // POST response is still pending (or buffered by the platform).
-    const pollerStarted = startPollingForLatestRun(ctrl.signal);
+    const pollerStarted = startPollingForLatestRun(ctrl.signal, knownRunIdRef);
 
     try {
       const res = await fetch(`/api/checkpoint/${funnelId}/run`, {
@@ -490,6 +496,9 @@ export default function CheckpointDetailPage({
       if (final.results) setLiveResults(final.results);
       if (final.runId) {
         setActiveRunId(final.runId);
+        // Hand the runId to the discovery loop so it stops guessing
+        // via /latest-run and polls THIS specific row directly.
+        knownRunIdRef.current = final.runId;
         // For OpenClaw audits the POST returns instantly with the
         // runId and the heavy work happens in the worker — start a
         // dedicated queue poller so we can show "in coda → preso →
@@ -595,11 +604,28 @@ export default function CheckpointDetailPage({
    * `giveUpAt` is 60s — generous because the OpenClaw enqueue path
    * is fast (≈500ms) but Claude's POST can take 5-10s to even
    * insert the row on cold lambda.
+   *
+   * `knownRunIdRef` is a fast-path: as soon as the user-facing POST
+   * comes back with the runId we set this ref so this loop bypasses
+   * the latest-run discovery entirely and pivots straight to
+   * `pollRun(knownRunId)`. Without it, any clock skew between the
+   * browser and the Supabase DB (only a few seconds is enough!)
+   * makes the "created_at >= clickedAt - 2000" guard fail forever
+   * → loop times out at 60s → setRunning(false) fires → UI shows
+   * "polling client si è chiuso" while the run is still going.
    */
-  const startPollingForLatestRun = async (signal: AbortSignal) => {
+  const startPollingForLatestRun = async (
+    signal: AbortSignal,
+    knownRunIdRef?: { current: string | null },
+  ) => {
     const clickedAt = Date.now();
     const giveUpAt = clickedAt + 60_000;
     while (!signal.aborted && Date.now() < giveUpAt) {
+      // Fast path: POST already told us the runId — go directly.
+      if (knownRunIdRef?.current) {
+        await pollRun(knownRunIdRef.current, { signal });
+        return;
+      }
       try {
         const res = await fetch(
           `/api/checkpoint/${funnelId}/latest-run`,
@@ -607,9 +633,17 @@ export default function CheckpointDetailPage({
         );
         if (res.ok) {
           const { run } = (await res.json()) as { run: CheckpointRun | null };
-          // Only accept a run whose created_at is fresher than the
-          // moment we clicked — otherwise we'd attach to an old run.
-          if (run && new Date(run.created_at).getTime() >= clickedAt - 2000) {
+          // Accept a run if it's still in flight (it can only be ours
+          // — UI doesn't allow concurrent audits) OR if its created_at
+          // is reasonably close to our click (30s tolerance to absorb
+          // clock skew between browser and DB; the original 2s window
+          // was way too tight and caused the loop to give up at 60s
+          // even on a healthy run).
+          if (
+            run &&
+            (run.status === 'running' ||
+              new Date(run.created_at).getTime() >= clickedAt - 30_000)
+          ) {
             applyRunSnapshot(run);
             // pollRun is now a real async while-loop that resolves
             // ONLY when the run reaches a terminal status (or the
