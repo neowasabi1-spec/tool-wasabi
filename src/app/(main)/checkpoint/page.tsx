@@ -499,12 +499,17 @@ export default function CheckpointPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           entryUrl: autoEntryUrl.trim(),
-          // Capped at 25 to fit inside the Netlify 300s lambda window
-          // (each Playwright nav can take 30-120s on slow funnels).
-          // Higher values never actually completed — the lambda would
-          // die mid-crawl and the polling client below would always
-          // time out at 3-5 min waiting for a row that no one was
-          // updating any more. Use the manual mode for >25 step funnels.
+          // Agentic / quiz mode: instead of a dumb BFS over <a href>
+          // links (which fails on SPAs, ad trackers, and any modern
+          // funnel where "next" is a JS button), open the page like
+          // a real user, fill any required form fields with sensible
+          // defaults, click the most-likely-CTA button, repeat until
+          // we hit a checkout-like URL or stop seeing new content.
+          // Captures URL + title (no screenshots/network/cookies for
+          // speed — we only need the URL list to seed the checkpoint
+          // funnel pages).
+          quizMode: true,
+          quizMaxSteps: 25,
           maxSteps: 25,
           captureScreenshots: false,
           captureNetwork: false,

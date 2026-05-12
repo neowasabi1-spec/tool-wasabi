@@ -60,6 +60,84 @@ async function getQuizStepLabel(page: Page): Promise<string> {
   });
 }
 
+/** Fill any unfilled visible inputs with sensible placeholder values
+ *  so a "next" button gated by `required` fields can actually be
+ *  clicked. Heuristic-based: the field name / id / placeholder /
+ *  type tells us roughly what kind of value to put in. We never
+ *  overwrite something the user (or a previous step) already typed,
+ *  and we tick the first unchecked checkbox we find — that's almost
+ *  always a "consenso GDPR / accetto i termini" gate. Returns the
+ *  number of fields populated. */
+async function fillQuizFormFields(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    let filled = 0;
+
+    const inputs = Array.from(
+      document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(
+        'input:not([type="radio"]):not([type="checkbox"]):not([type="submit"]):not([type="button"]):not([type="hidden"]):not([type="file"]), textarea, select',
+      ),
+    );
+
+    for (const el of inputs) {
+      if (el.value && el.value.trim().length > 0) continue;
+      const rect = el.getBoundingClientRect();
+      if (rect.width < 5 || rect.height < 5) continue;
+      const style = window.getComputedStyle(el);
+      if (style.visibility === 'hidden' || style.display === 'none') continue;
+
+      const type = (el as HTMLInputElement).type?.toLowerCase() || '';
+      const hint = `${el.name || ''} ${el.id || ''} ${(el as HTMLInputElement).placeholder || ''} ${el.getAttribute('aria-label') || ''}`.toLowerCase();
+
+      let value = '';
+      if (el.tagName === 'SELECT') {
+        const select = el as HTMLSelectElement;
+        const firstReal = Array.from(select.options).find(
+          (o) => o.value && o.value !== '0' && !/seleziona|select|choose|---/i.test(o.text),
+        );
+        if (firstReal) {
+          select.value = firstReal.value;
+          select.dispatchEvent(new Event('change', { bubbles: true }));
+          filled++;
+        }
+        continue;
+      }
+
+      if (type === 'email' || /email|e-mail|mail/.test(hint)) value = 'test@example.com';
+      else if (type === 'tel' || /phone|tel|cell|mobile|telefono/.test(hint)) value = '3331234567';
+      else if (type === 'number' || /age|year|amount|peso|weight|altezza|height|importo/.test(hint)) value = '30';
+      else if (/zip|postal|cap/.test(hint)) value = '00100';
+      else if (/first.*name|nome|prenom|given.*name/.test(hint)) value = 'Mario';
+      else if (/last.*name|surname|cognome|family.*name/.test(hint)) value = 'Rossi';
+      else if (/full.*name|name/.test(hint)) value = 'Mario Rossi';
+      else if (type === 'date') value = '1990-01-01';
+      else if (type === 'url') value = 'https://example.com';
+      else if (type === 'text' || type === 'search' || type === '' || el.tagName === 'TEXTAREA') value = 'Test';
+      else continue;
+
+      (el as HTMLInputElement).value = value;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      filled++;
+    }
+
+    // GDPR / ToS gate: tick the first visible unchecked checkbox.
+    const cb = Array.from(
+      document.querySelectorAll<HTMLInputElement>('input[type="checkbox"]:not(:checked)'),
+    ).find((c) => {
+      const r = c.getBoundingClientRect();
+      const s = window.getComputedStyle(c);
+      return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
+    });
+    if (cb) {
+      cb.checked = true;
+      cb.dispatchEvent(new Event('change', { bubbles: true }));
+      cb.dispatchEvent(new Event('click', { bubbles: true }));
+    }
+
+    return filled;
+  });
+}
+
 async function clickQuizAdvance(page: Page): Promise<boolean> {
   return page.evaluate((nextPattern: string) => {
     const pattern = new RegExp(nextPattern, 'i');
@@ -264,6 +342,12 @@ export async function runCrawl(jobId: string, params: CrawlParams): Promise<void
           await updateJob(jobId, { currentStep: steps.length, totalSteps: maxQuizSteps });
 
           if (isCheckoutLikePage(quizPage.url(), step.title)) break;
+
+          // Fill any required fields (email/name/age/checkbox-ToS)
+          // BEFORE attempting to click "next", otherwise validation
+          // will keep the button disabled and the crawl stalls on
+          // the same fingerprint.
+          await fillQuizFormFields(quizPage).catch(() => 0);
 
           const clicked = await clickQuizAdvance(quizPage);
           if (!clicked) break;
