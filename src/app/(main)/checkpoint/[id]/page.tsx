@@ -656,44 +656,18 @@ export default function CheckpointDetailPage({
               startedAt={liveStartedAt}
             />
 
-            {/* Categorie audit — 4 colonne. Sostituisce il vecchio
-                "Riepilogo findings". I click sono placeholder
-                (console.log) finché non viene definito cosa devono
-                fare (filtro / drilldown / avvio audit dedicato). */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
-              <CategoryCard
-                icon={<Code2 className="w-5 h-5" />}
-                title="Tech/Detail"
-                accent="blue"
-                onClick={() =>
-                  console.log('[checkpoint] category click: tech-detail')
-                }
-              />
-              <CategoryCard
-                icon={<Megaphone className="w-5 h-5" />}
-                title="Marketing"
-                accent="emerald"
-                onClick={() =>
-                  console.log('[checkpoint] category click: marketing')
-                }
-              />
-              <CategoryCard
-                icon={<Eye className="w-5 h-5" />}
-                title="Visual"
-                accent="violet"
-                onClick={() =>
-                  console.log('[checkpoint] category click: visual')
-                }
-              />
-              <CategoryCard
-                icon={<ListChecks className="w-5 h-5" />}
-                title="All Step"
-                accent="gray"
-                onClick={() =>
-                  console.log('[checkpoint] category click: all-step')
-                }
-              />
-            </div>
+            {/* "Foglio" findings: 4 colonne, una per step di analisi.
+                Si popolano in tempo reale durante l'audit con le
+                criticità (issues critical/warning) trovate per ogni
+                categoria. Mapping di partenza:
+                  Tech/Detail → navigation
+                  Marketing   → copy
+                  Visual      → coherence
+                  All Step    → unione di tutte le categorie eseguite */}
+            <FindingsSheet
+              results={dashboardResults}
+              isRunning={running}
+            />
           </>
         )}
       </div>
@@ -915,50 +889,266 @@ function durationSec(startIso: string, endIso: string): number {
   }
 }
 
-/** Tile di categoria audit usato nella griglia che ha sostituito
- *  "Riepilogo findings" (Tech/Detail · Marketing · Visual · All Step).
- *  Stile coerente con le card già presenti nella pagina lista
- *  (ModeCard): icona + titolo, ring colorato in hover.
- *  L'accent decide il colore di icona + ring. */
-function CategoryCard({
-  icon,
-  title,
-  onClick,
-  accent = 'gray',
-}: {
-  icon: React.ReactNode;
+/** "Foglio" findings: 4 colonne (Tech/Detail · Marketing · Visual ·
+ *  All Step) che si popolano in tempo reale durante l'audit con le
+ *  criticità trovate. Ogni colonna è una mini-tabella con header
+ *  sticky + righe numerate. Il mapping categorie → colonne è
+ *  configurato in SHEET_COLUMNS qui sotto.
+ *
+ *  Per popolarsi senza ulteriore polling, usa direttamente
+ *  `results` (CheckpointResults) e `isRunning`, gli stessi dati che
+ *  alimentavano FindingsTable e LiveStepDashboard. */
+type SheetAccent = 'blue' | 'emerald' | 'violet' | 'gray';
+
+interface SheetColumnConfig {
+  id: 'tech' | 'marketing' | 'visual' | 'all';
   title: string;
-  onClick?: () => void;
-  accent?: 'gray' | 'blue' | 'emerald' | 'violet';
+  icon: React.ReactNode;
+  accent: SheetAccent;
+  /** Categorie sorgenti da cui pescare le issues. 'all' include
+   *  qualunque categoria presente in results (deduplicato per titolo). */
+  sources: CheckpointCategory[] | '*';
+}
+
+const SHEET_COLUMNS: SheetColumnConfig[] = [
+  {
+    id: 'tech',
+    title: 'Tech/Detail',
+    icon: <Code2 className="w-4 h-4" />,
+    accent: 'blue',
+    sources: ['navigation'],
+  },
+  {
+    id: 'marketing',
+    title: 'Marketing',
+    icon: <Megaphone className="w-4 h-4" />,
+    accent: 'emerald',
+    sources: ['copy'],
+  },
+  {
+    id: 'visual',
+    title: 'Visual',
+    icon: <Eye className="w-4 h-4" />,
+    accent: 'violet',
+    sources: ['coherence'],
+  },
+  {
+    id: 'all',
+    title: 'All Step',
+    icon: <ListChecks className="w-4 h-4" />,
+    accent: 'gray',
+    sources: '*',
+  },
+];
+
+interface SheetRow {
+  severity: 'critical' | 'warning' | 'info';
+  title: string;
+  detail?: string;
+  sourceCategory: CheckpointCategory;
+}
+
+function FindingsSheet({
+  results,
+  isRunning,
+}: {
+  results: CheckpointResults;
+  isRunning: boolean;
 }) {
-  const accentRing =
-    accent === 'blue'
-      ? 'hover:border-blue-400 hover:ring-blue-100 hover:bg-blue-50/40'
-      : accent === 'emerald'
-        ? 'hover:border-emerald-400 hover:ring-emerald-100 hover:bg-emerald-50/40'
-        : accent === 'violet'
-          ? 'hover:border-violet-400 hover:ring-violet-100 hover:bg-violet-50/40'
-          : 'hover:border-gray-400 hover:ring-gray-100 hover:bg-gray-50';
-  const iconBg =
-    accent === 'blue'
-      ? 'bg-blue-100 text-blue-600'
-      : accent === 'emerald'
-        ? 'bg-emerald-100 text-emerald-600'
-        : accent === 'violet'
-          ? 'bg-violet-100 text-violet-600'
-          : 'bg-gray-100 text-gray-600';
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`text-left p-4 bg-white border border-gray-200 rounded-xl transition-all hover:ring-4 ${accentRing}`}
-    >
-      <div
-        className={`w-10 h-10 rounded-lg flex items-center justify-center mb-3 ${iconBg}`}
-      >
-        {icon}
+    <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 divide-y sm:divide-y-0 sm:divide-x divide-gray-200">
+        {SHEET_COLUMNS.map((col) => (
+          <SheetColumn
+            key={col.id}
+            config={col}
+            results={results}
+            isRunning={isRunning}
+          />
+        ))}
       </div>
-      <div className="font-semibold text-gray-900 text-sm">{title}</div>
-    </button>
+    </div>
   );
+}
+
+function SheetColumn({
+  config,
+  results,
+  isRunning,
+}: {
+  config: SheetColumnConfig;
+  results: CheckpointResults;
+  isRunning: boolean;
+}) {
+  // Categorie effettivamente analizzate per questa colonna.
+  const sourceCats: CheckpointCategory[] =
+    config.sources === '*'
+      ? (Object.keys(results) as CheckpointCategory[])
+      : config.sources;
+
+  // Aggrega tutte le issues critical+warning dalle categorie sorgenti.
+  // Per "All Step" deduplichiamo per titolo per non ripetere lo stesso
+  // problema due volte se più categorie l'hanno sollevato.
+  const seen = new Set<string>();
+  const rows: SheetRow[] = [];
+  for (const cat of sourceCats) {
+    const r = results[cat];
+    if (!r || !Array.isArray(r.issues)) continue;
+    for (const iss of r.issues) {
+      if (iss.severity === 'info') continue;
+      const dedupeKey = `${iss.severity}::${iss.title.toLowerCase()}`;
+      if (config.sources === '*' && seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+      rows.push({
+        severity: iss.severity,
+        title: iss.title,
+        detail: iss.detail,
+        sourceCategory: cat,
+      });
+    }
+  }
+  rows.sort(
+    (a, b) =>
+      severityRank(a.severity) - severityRank(b.severity) ||
+      a.title.localeCompare(b.title),
+  );
+
+  // Stato della colonna per il badge in header.
+  // - in corso (almeno una source è running senza risultato ancora)
+  // - completata (tutte le source hanno una risposta)
+  // - vuota (nessuna source ha risultati)
+  const sourcesWithResult = sourceCats.filter((c) => results[c]);
+  const allDone =
+    sourcesWithResult.length > 0 &&
+    sourcesWithResult.length === sourceCats.length;
+  const status: 'idle' | 'running' | 'done' = isRunning
+    ? sourcesWithResult.length === 0
+      ? 'running'
+      : allDone
+        ? 'done'
+        : 'running'
+    : sourcesWithResult.length > 0
+      ? 'done'
+      : 'idle';
+
+  const headerBg =
+    config.accent === 'blue'
+      ? 'bg-blue-50 text-blue-700'
+      : config.accent === 'emerald'
+        ? 'bg-emerald-50 text-emerald-700'
+        : config.accent === 'violet'
+          ? 'bg-violet-50 text-violet-700'
+          : 'bg-gray-50 text-gray-700';
+
+  return (
+    <div className="flex flex-col min-h-[320px]">
+      {/* Header sticky in cima alla colonna */}
+      <div
+        className={`px-3 py-2 border-b border-gray-200 flex items-center justify-between gap-2 ${headerBg}`}
+      >
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="shrink-0">{config.icon}</span>
+          <span className="font-semibold text-sm truncate">{config.title}</span>
+        </div>
+        <SheetStatusBadge status={status} count={rows.length} />
+      </div>
+
+      {/* Body: righe stile foglio */}
+      <div className="flex-1 divide-y divide-gray-100 overflow-y-auto max-h-[420px]">
+        {rows.length === 0 ? (
+          <div className="px-3 py-6 text-center text-xs text-gray-400">
+            {status === 'idle' && 'In attesa di analisi…'}
+            {status === 'running' && (
+              <span className="inline-flex items-center gap-1">
+                <Loader2 className="w-3 h-3 animate-spin" />
+                Analisi in corso…
+              </span>
+            )}
+            {status === 'done' && 'Nessuna criticità trovata.'}
+          </div>
+        ) : (
+          rows.map((row, i) => (
+            <SheetRowView key={`${config.id}-${i}`} index={i + 1} row={row} />
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SheetRowView({ index, row }: { index: number; row: SheetRow }) {
+  const sevColor =
+    row.severity === 'critical'
+      ? 'text-red-600'
+      : row.severity === 'warning'
+        ? 'text-amber-600'
+        : 'text-blue-600';
+  const SevIcon =
+    row.severity === 'critical'
+      ? AlertCircle
+      : row.severity === 'warning'
+        ? AlertTriangle
+        : CheckCircle2;
+  return (
+    <div className="px-3 py-2 hover:bg-gray-50 flex items-start gap-2">
+      <span className="text-[10px] font-mono text-gray-300 w-5 text-right pt-0.5 select-none shrink-0">
+        {index}
+      </span>
+      <SevIcon className={`w-3.5 h-3.5 mt-0.5 shrink-0 ${sevColor}`} />
+      <div className="flex-1 min-w-0">
+        <div className="text-xs font-medium text-gray-900 leading-snug">
+          {row.title}
+        </div>
+        {row.detail && (
+          <div className="text-[11px] text-gray-500 mt-0.5 line-clamp-2 leading-snug">
+            {row.detail}
+          </div>
+        )}
+        <div className="text-[10px] text-gray-400 uppercase tracking-wide mt-1">
+          {row.sourceCategory}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SheetStatusBadge({
+  status,
+  count,
+}: {
+  status: 'idle' | 'running' | 'done';
+  count: number;
+}) {
+  if (status === 'running') {
+    return (
+      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-white/80 text-gray-700 border border-gray-200">
+        <Loader2 className="w-3 h-3 animate-spin" />
+        live
+      </span>
+    );
+  }
+  if (status === 'done') {
+    const tone =
+      count === 0
+        ? 'bg-emerald-100 text-emerald-700 border-emerald-200'
+        : 'bg-red-100 text-red-700 border-red-200';
+    return (
+      <span
+        className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold border ${tone}`}
+      >
+        {count} criticità
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-white/70 text-gray-400 border border-gray-200">
+      idle
+    </span>
+  );
+}
+
+function severityRank(s: 'critical' | 'warning' | 'info'): number {
+  if (s === 'critical') return 0;
+  if (s === 'warning') return 1;
+  return 2;
 }
