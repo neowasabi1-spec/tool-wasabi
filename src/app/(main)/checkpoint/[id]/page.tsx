@@ -24,6 +24,10 @@ import {
   ListChecks,
   Crown,
   Lightbulb,
+  Activity,
+  Zap,
+  Inbox,
+  Bot,
 } from 'lucide-react';
 import {
   type CheckpointCategory,
@@ -121,6 +125,42 @@ export default function CheckpointDetailPage({
   const abortRef = useRef<AbortController | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Activity feed: every transition we OBSERVE during polling becomes
+  // a line in the monitor below. This is the user's window into "is
+  // the auditor actually working or stuck?".
+  type ActivityLevel = 'info' | 'success' | 'warn' | 'error';
+  interface ActivityEvent {
+    ts: number;
+    level: ActivityLevel;
+    message: string;
+  }
+  const [events, setEvents] = useState<ActivityEvent[]>([]);
+  const [lastChangeAt, setLastChangeAt] = useState<number | null>(null);
+  const prevRunRef = useRef<CheckpointRun | null>(null);
+  const lastChangeAtRef = useRef<number | null>(null);
+
+  // OpenClaw queue status: tells us if the worker has even SEEN the
+  // job yet. Without this the UI looks frozen for the first ~3-15s
+  // while the worker's poll loop discovers the new pending row.
+  interface QueueStatus {
+    found: boolean;
+    status?: 'pending' | 'processing' | 'completed' | 'error';
+    target_agent?: string | null;
+    error_message?: string | null;
+    age_seconds?: number;
+  }
+  const [queueStatus, setQueueStatus] = useState<QueueStatus | null>(null);
+  const queuePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastQueueStatusRef = useRef<string | null>(null);
+
+  const pushEvent = (level: ActivityLevel, message: string) => {
+    setEvents((prev) =>
+      [...prev, { ts: Date.now(), level, message }].slice(-80),
+    );
+    lastChangeAtRef.current = Date.now();
+    setLastChangeAt(lastChangeAtRef.current);
+  };
+
   const refetch = async (preserveActive = false) => {
     setLoading(true);
     setLoadError(null);
@@ -151,6 +191,7 @@ export default function CheckpointDetailPage({
   useEffect(() => {
     return () => {
       if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
+      if (queuePollRef.current) clearInterval(queuePollRef.current);
       abortRef.current?.abort();
     };
   }, []);
@@ -203,11 +244,66 @@ export default function CheckpointDetailPage({
    * Each category in `results` becomes a `done`/`error` step; the
    * first category that hasn't reported yet is treated as the one
    * the bot is currently working on.
+   *
+   * Side effect: diff against the previously-observed snapshot and
+   * emit an activity event for every transition (new category result,
+   * status change, etc.). This is what powers the activity monitor
+   * below the dashboard so the user can SEE work happening.
    */
   const applyRunSnapshot = (run: CheckpointRun) => {
     setActiveRunId(run.id);
     setLiveResults(run.results ?? {});
 
+    // ── Diff against last snapshot to extract events ───────────────
+    const prev = prevRunRef.current;
+    const isNewRun = !prev || prev.id !== run.id;
+    if (isNewRun) {
+      pushEvent(
+        'info',
+        `Run #${run.id.slice(0, 8)} osservata (status: ${run.status})`,
+      );
+    }
+    if (prev && prev.id === run.id) {
+      // Status transitions
+      if (prev.status !== run.status) {
+        if (run.status === 'completed') {
+          pushEvent(
+            'success',
+            `Run completata · score finale ${run.score_overall ?? '–'}/100`,
+          );
+        } else if (run.status === 'failed') {
+          pushEvent(
+            'error',
+            `Run fallita${run.error ? `: ${run.error}` : ''}`,
+          );
+        } else if (run.status === 'partial') {
+          pushEvent(
+            'warn',
+            'Run completata parzialmente — alcune categorie hanno avuto errori',
+          );
+        }
+      }
+    }
+    // New category results that just landed in this poll
+    for (const cat of CATEGORIES) {
+      const before = prev?.results?.[cat];
+      const after = run.results?.[cat];
+      if (!before && after) {
+        if (after.status === 'error') {
+          pushEvent('error', `${cat} · errore: ${after.error ?? 'sconosciuto'}`);
+        } else if (after.status === 'skipped') {
+          pushEvent('warn', `${cat} · skippata (${after.summary || 'non applicabile'})`);
+        } else {
+          pushEvent(
+            'success',
+            `${cat} · completata (${after.score ?? '–'}/100, ${after.issues?.length ?? 0} criticità, ${after.suggestions?.length ?? 0} azioni)`,
+          );
+        }
+      }
+    }
+    prevRunRef.current = run;
+
+    // ── Translate to LiveStep[] for the existing dashboard ─────────
     const stillRunning = run.status === 'running';
     const next: LiveStep[] = CATEGORIES.map((category) => {
       const result = run.results?.[category];
@@ -283,6 +379,15 @@ export default function CheckpointDetailPage({
     setLiveActiveIdx(-1);
     setLiveStartedAt(Date.now());
 
+    // Reset activity feed for this fresh run.
+    setEvents([]);
+    prevRunRef.current = null;
+    lastChangeAtRef.current = Date.now();
+    setLastChangeAt(lastChangeAtRef.current);
+    setQueueStatus(null);
+    lastQueueStatusRef.current = null;
+    pushEvent('info', `Run avviata · auditor: ${auditorLabel(auditor)}`);
+
     const ctrl = new AbortController();
     abortRef.current = ctrl;
 
@@ -316,21 +421,88 @@ export default function CheckpointDetailPage({
         results?: CheckpointResults;
       };
       if (final.results) setLiveResults(final.results);
-      if (final.runId) setActiveRunId(final.runId);
+      if (final.runId) {
+        setActiveRunId(final.runId);
+        // For OpenClaw audits the POST returns instantly with the
+        // runId and the heavy work happens in the worker — start a
+        // dedicated queue poller so we can show "in coda → preso →
+        // processing" before the first category lands.
+        if (auditor.startsWith('openclaw:')) {
+          startQueuePolling(final.runId);
+        }
+      }
     } catch (err) {
       if ((err as Error).name === 'AbortError') {
         setRunError("Run interrotta dall'utente.");
+        pushEvent('warn', "Run interrotta dall'utente");
       } else {
-        setRunError(err instanceof Error ? err.message : String(err));
+        const msg = err instanceof Error ? err.message : String(err);
+        setRunError(msg);
+        pushEvent('error', `POST /run fallita: ${msg}`);
       }
     } finally {
       // Stop polling, allow any in-flight final tick to settle.
       await pollerStarted;
       stopPolling();
+      stopQueuePolling();
       setRunning(false);
       setLiveActiveIdx(-1);
       abortRef.current = null;
       await refetch(true);
+    }
+  };
+
+  /**
+   * For OpenClaw audits the work happens off-platform in a Node worker
+   * polling `openclaw_messages`. The dashboard is otherwise blind to
+   * "has the worker even noticed the new row yet?" — this poller
+   * fills that gap by hitting /queue-status every 1.5s and emitting
+   * an event whenever the message's status changes
+   * (pending → processing → completed/error).
+   */
+  const startQueuePolling = (runId: string) => {
+    stopQueuePolling();
+    const tick = async () => {
+      try {
+        const res = await fetch(
+          `/api/checkpoint/runs/${runId}/queue-status`,
+          { cache: 'no-store' },
+        );
+        if (!res.ok) return;
+        const data = (await res.json()) as QueueStatus;
+        setQueueStatus(data);
+        if (!data.found || !data.status) return;
+        if (lastQueueStatusRef.current !== data.status) {
+          const target = data.target_agent ?? 'worker';
+          if (data.status === 'pending') {
+            pushEvent(
+              'info',
+              `In coda OpenClaw · in attesa che ${target} prenda il job…`,
+            );
+          } else if (data.status === 'processing') {
+            pushEvent('success', `${target} ha preso il job · sta processando`);
+          } else if (data.status === 'completed') {
+            pushEvent('success', `${target} · prep completato lato worker`);
+          } else if (data.status === 'error') {
+            pushEvent(
+              'error',
+              `${target} · errore worker: ${data.error_message ?? 'sconosciuto'}`,
+            );
+          }
+          lastQueueStatusRef.current = data.status;
+        }
+      } catch {
+        // Network blip — silent retry on next interval.
+      }
+    };
+    tick();
+    queuePollRef.current = setInterval(tick, 1500);
+  };
+
+  const stopQueuePolling = () => {
+    if (queuePollRef.current) {
+      clearInterval(queuePollRef.current);
+      queuePollRef.current = null;
     }
   };
 
@@ -650,6 +822,20 @@ export default function CheckpointDetailPage({
               <ScoreBanner run={activeRun} />
             )}
 
+            {/* Live activity monitor — shows the user WHAT is happening
+                second by second (auditor selected, queue pickup, each
+                category landing/erroring, stalled detection). Stays
+                mounted after the run completes so the user can scroll
+                back through what happened. Resets on next Run. */}
+            <RunActivityMonitor
+              isRunning={running}
+              auditor={auditor}
+              events={events}
+              lastChangeAt={lastChangeAt}
+              startedAt={liveStartedAt ?? null}
+              queueStatus={queueStatus}
+            />
+
             {/* Live / frozen step dashboard */}
             <LiveStepDashboard
               steps={dashboardSteps}
@@ -899,6 +1085,205 @@ function durationSec(startIso: string, endIso: string): number {
   } catch {
     return 0;
   }
+}
+
+function auditorLabel(a: 'claude' | 'openclaw:neo' | 'openclaw:morfeo'): string {
+  if (a === 'claude') return 'Claude (built-in)';
+  if (a === 'openclaw:neo') return 'Neo (OpenClaw)';
+  if (a === 'openclaw:morfeo') return 'Morfeo (OpenClaw)';
+  return a;
+}
+
+function formatHms(ms: number): string {
+  if (ms < 0) ms = 0;
+  const totalSec = Math.floor(ms / 1000);
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
+function formatHmsShort(ms: number): string {
+  const sec = Math.floor(ms / 1000);
+  if (sec < 60) return `${sec}s`;
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return s === 0 ? `${m}m` : `${m}m ${s}s`;
+}
+
+function formatTime(ts: number): string {
+  try {
+    const d = new Date(ts);
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * RunActivityMonitor — live "what is the auditor doing right now?"
+ * panel. Sits between the score banner and the LiveStepDashboard.
+ *
+ * Three signals to the user:
+ *   1. Header: which auditor is running, current state badge,
+ *      elapsed time (ticks every 1s), seconds since last activity.
+ *   2. Stalled warning: if `running` and no observed change for >25s,
+ *      a yellow banner suggests checking the worker / Netlify logs.
+ *   3. Console-style event feed: every transition observed by the
+ *      polling loop becomes a colored line with a timestamp.
+ *
+ * Stays mounted after the run completes so the user can scroll the
+ * history of what happened. Resets on the next "Run".
+ */
+function RunActivityMonitor({
+  isRunning,
+  auditor,
+  events,
+  lastChangeAt,
+  startedAt,
+  queueStatus,
+}: {
+  isRunning: boolean;
+  auditor: 'claude' | 'openclaw:neo' | 'openclaw:morfeo';
+  events: Array<{ ts: number; level: 'info' | 'success' | 'warn' | 'error'; message: string }>;
+  lastChangeAt: number | null;
+  startedAt: number | null;
+  queueStatus: { found: boolean; status?: string; target_agent?: string | null } | null;
+}) {
+  // Tick every second to keep the elapsed clock fresh.
+  const [nowTs, setNowTs] = useState(() => Date.now());
+  useEffect(() => {
+    if (!isRunning) return;
+    const id = setInterval(() => setNowTs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [isRunning]);
+
+  // Auto-scroll feed to bottom when new events arrive.
+  const feedRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (feedRef.current) {
+      feedRef.current.scrollTop = feedRef.current.scrollHeight;
+    }
+  }, [events.length]);
+
+  if (!isRunning && events.length === 0) return null;
+
+  const elapsedMs = startedAt ? nowTs - startedAt : 0;
+  const sinceLastMs = lastChangeAt ? nowTs - lastChangeAt : 0;
+  const stalled = isRunning && sinceLastMs > 25_000;
+
+  // Header state badge.
+  let stateBadge: { label: string; cls: string; icon: React.ReactNode };
+  if (!isRunning) {
+    stateBadge = {
+      label: 'completata',
+      cls: 'bg-emerald-100 text-emerald-700 border-emerald-200',
+      icon: <CheckCircle2 className="w-3.5 h-3.5" />,
+    };
+  } else if (stalled) {
+    stateBadge = {
+      label: 'nessuna risposta',
+      cls: 'bg-amber-100 text-amber-700 border-amber-200',
+      icon: <AlertTriangle className="w-3.5 h-3.5" />,
+    };
+  } else if (
+    auditor.startsWith('openclaw:') &&
+    queueStatus?.found &&
+    queueStatus.status === 'pending'
+  ) {
+    stateBadge = {
+      label: `in coda · attesa ${queueStatus.target_agent ?? 'worker'}`,
+      cls: 'bg-blue-100 text-blue-700 border-blue-200',
+      icon: <Inbox className="w-3.5 h-3.5" />,
+    };
+  } else {
+    stateBadge = {
+      label: 'in elaborazione',
+      cls: 'bg-blue-100 text-blue-700 border-blue-200',
+      icon: <Loader2 className="w-3.5 h-3.5 animate-spin" />,
+    };
+  }
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+      <div className="px-4 py-3 border-b border-gray-100 bg-gradient-to-r from-slate-50 to-white flex flex-wrap items-center gap-3">
+        <Activity className="w-4 h-4 text-slate-500 shrink-0" />
+        <h3 className="text-sm font-semibold text-gray-900">Attività audit</h3>
+
+        <span
+          className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-semibold border ${stateBadge.cls}`}
+        >
+          {stateBadge.icon}
+          {stateBadge.label}
+        </span>
+
+        <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-medium bg-slate-100 text-slate-700 border border-slate-200">
+          <Bot className="w-3.5 h-3.5" />
+          {auditorLabel(auditor)}
+        </span>
+
+        {startedAt && (
+          <span
+            className="inline-flex items-center gap-1.5 text-[11px] font-mono text-gray-700"
+            title="Tempo dall'avvio della run"
+          >
+            <Clock className="w-3.5 h-3.5 text-gray-400" />
+            {formatHms(elapsedMs)}
+          </span>
+        )}
+
+        {isRunning && lastChangeAt && (
+          <span
+            className={`inline-flex items-center gap-1.5 text-[11px] ${stalled ? 'text-amber-700 font-semibold' : 'text-gray-500'}`}
+            title="Tempo trascorso dall'ultima attività osservata"
+          >
+            <Zap className="w-3.5 h-3.5" />
+            ultimo aggiornamento {formatHmsShort(sinceLastMs)} fa
+          </span>
+        )}
+      </div>
+
+      {stalled && (
+        <div className="px-4 py-2 border-b border-amber-200 bg-amber-50 text-xs text-amber-800 flex items-start gap-2">
+          <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+          <div>
+            <strong>Nessun aggiornamento da {formatHmsShort(sinceLastMs)}.</strong>{' '}
+            {auditor.startsWith('openclaw:')
+              ? `Verifica che il worker ${queueStatus?.target_agent ?? auditor.split(':')[1]} sia avviato (terminale Cursor con "node openclaw-worker.js"). Se è online il job potrebbe richiedere ancora qualche secondo.`
+              : "L'API Claude potrebbe essere lenta o la function su Netlify è andata in timeout (504). Il run continua in background, riprova fra poco a refreshare la pagina."}
+          </div>
+        </div>
+      )}
+
+      <div
+        ref={feedRef}
+        className="max-h-56 overflow-y-auto bg-slate-950 text-slate-200 font-mono text-[11px] leading-relaxed px-3 py-2"
+      >
+        {events.length === 0 ? (
+          <div className="text-slate-500 italic">In attesa del primo evento…</div>
+        ) : (
+          events.map((ev, i) => (
+            <div key={i} className="flex gap-2 items-start">
+              <span className="text-slate-500 shrink-0">{formatTime(ev.ts)}</span>
+              <span
+                className={`shrink-0 w-3 text-center ${
+                  ev.level === 'success'
+                    ? 'text-emerald-400'
+                    : ev.level === 'error'
+                      ? 'text-red-400'
+                      : ev.level === 'warn'
+                        ? 'text-amber-400'
+                        : 'text-sky-400'
+                }`}
+              >
+                {ev.level === 'success' ? '✓' : ev.level === 'error' ? '✗' : ev.level === 'warn' ? '!' : '·'}
+              </span>
+              <span className="text-slate-200 break-words">{ev.message}</span>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
 }
 
 /** "Foglio" findings: 4 colonne (Tech/Detail · Marketing · Visual ·
