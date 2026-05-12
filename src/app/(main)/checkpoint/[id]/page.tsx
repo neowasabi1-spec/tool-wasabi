@@ -1446,22 +1446,14 @@ function SheetColumn({
       ? 'done'
       : 'idle';
 
-  const headerBg =
-    config.accent === 'blue'
-      ? 'bg-blue-50 text-blue-700'
-      : config.accent === 'emerald'
-        ? 'bg-emerald-50 text-emerald-700'
-        : config.accent === 'violet'
-          ? 'bg-violet-50 text-violet-700'
-          : config.accent === 'amber'
-            ? 'bg-amber-50 text-amber-700'
-            : 'bg-gray-50 text-gray-700';
+  const palette = accentClasses(config.accent);
 
   return (
-    <div className="flex flex-col min-h-[260px]">
-      {/* Header sticky in cima alla colonna */}
+    <div className={`flex flex-col min-h-[260px] ${palette.body}`}>
+      {/* Header sticky in cima alla colonna — pastello "deep" sopra
+          un body pastello "soft" così la colonna intera è colorata. */}
       <div
-        className={`px-3 py-2 border-b border-gray-200 flex items-center justify-between gap-2 ${headerBg}`}
+        className={`px-3 py-2 border-b ${palette.headerBorder} flex items-center justify-between gap-2 ${palette.header} ${palette.headerText}`}
       >
         <div className="flex items-center gap-2 min-w-0">
           <span className="shrink-0">{config.icon}</span>
@@ -1472,9 +1464,11 @@ function SheetColumn({
 
       {/* Body: ANALISI (righe stile foglio con le criticità) */}
       <div className="flex-1">
-        <div className="divide-y divide-gray-100 overflow-y-auto max-h-[320px]">
+        <div
+          className={`divide-y ${palette.divide} overflow-y-auto max-h-[320px]`}
+        >
           {rows.length === 0 ? (
-            <div className="px-3 py-6 text-center text-xs text-gray-400">
+            <div className="px-3 py-6 text-center text-xs text-gray-500/80">
               {status === 'idle' && 'In attesa di analisi…'}
               {status === 'running' && (
                 <span className="inline-flex items-center gap-1">
@@ -1486,13 +1480,82 @@ function SheetColumn({
             </div>
           ) : (
             rows.map((row, i) => (
-              <SheetRowView key={`${config.id}-${i}`} index={i + 1} row={row} />
+              <SheetRowView
+                key={`${config.id}-${i}`}
+                index={i + 1}
+                row={row}
+                hoverBg={palette.rowHover}
+              />
             ))
           )}
         </div>
       </div>
     </div>
   );
+}
+
+/** Pastello centralizzato per le 5 colonne dello sheet.
+ *  - `body` è il fondo morbido dell'intera colonna (≈ tinta 50)
+ *  - `header` è una pennellata leggermente più piena (≈ tinta 100)
+ *  - `divide` mantiene i separatori orizzontali coerenti col tono
+ *  - `rowHover` aggiunge un wash discreto al passaggio del mouse
+ *  Tutti scelti dalla scala Tailwind per restare puliti senza
+ *  custom CSS. Cambiare qui = cambia ovunque. */
+function accentClasses(accent: SheetAccent): {
+  body: string;
+  header: string;
+  headerText: string;
+  headerBorder: string;
+  divide: string;
+  rowHover: string;
+} {
+  switch (accent) {
+    case 'blue':
+      return {
+        body: 'bg-sky-50/60',
+        header: 'bg-sky-100/80',
+        headerText: 'text-sky-800',
+        headerBorder: 'border-sky-200/70',
+        divide: 'divide-sky-100',
+        rowHover: 'hover:bg-sky-100/60',
+      };
+    case 'emerald':
+      return {
+        body: 'bg-emerald-50/60',
+        header: 'bg-emerald-100/80',
+        headerText: 'text-emerald-800',
+        headerBorder: 'border-emerald-200/70',
+        divide: 'divide-emerald-100',
+        rowHover: 'hover:bg-emerald-100/60',
+      };
+    case 'violet':
+      return {
+        body: 'bg-violet-50/60',
+        header: 'bg-violet-100/80',
+        headerText: 'text-violet-800',
+        headerBorder: 'border-violet-200/70',
+        divide: 'divide-violet-100',
+        rowHover: 'hover:bg-violet-100/60',
+      };
+    case 'amber':
+      return {
+        body: 'bg-amber-50/60',
+        header: 'bg-amber-100/80',
+        headerText: 'text-amber-800',
+        headerBorder: 'border-amber-200/70',
+        divide: 'divide-amber-100',
+        rowHover: 'hover:bg-amber-100/60',
+      };
+    default:
+      return {
+        body: 'bg-slate-50/70',
+        header: 'bg-slate-100/80',
+        headerText: 'text-slate-700',
+        headerBorder: 'border-slate-200/70',
+        divide: 'divide-slate-100',
+        rowHover: 'hover:bg-slate-100/60',
+      };
+  }
 }
 
 /**
@@ -1805,7 +1868,17 @@ function accentChipClass(accent: SheetAccent): string {
   }
 }
 
-function SheetRowView({ index, row }: { index: number; row: SheetRow }) {
+function SheetRowView({
+  index,
+  row,
+  hoverBg = 'hover:bg-gray-50',
+}: {
+  index: number;
+  row: SheetRow;
+  /** Tailwind hover class injected by the parent column so the
+   *  per-row hover stays in the same pastel family as the column. */
+  hoverBg?: string;
+}) {
   const sevColor =
     row.severity === 'critical'
       ? 'text-red-600'
@@ -1819,7 +1892,7 @@ function SheetRowView({ index, row }: { index: number; row: SheetRow }) {
         ? AlertTriangle
         : CheckCircle2;
   return (
-    <div className="px-3 py-2 hover:bg-gray-50 flex items-start gap-2">
+    <div className={`px-3 py-2 flex items-start gap-2 transition-colors ${hoverBg}`}>
       <span className="text-[10px] font-mono text-gray-300 w-5 text-right pt-0.5 select-none shrink-0">
         {index}
       </span>
