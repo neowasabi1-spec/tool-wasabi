@@ -183,6 +183,13 @@ export interface CheckpointLogEntry {
 export interface CheckpointFunnelPage {
   url: string;
   name?: string;
+  /** Page-type tag (advertorial / vsl / landing / opt_in / quiz_funnel /
+   *  sales_letter / checkout / upsell / oto / ...). Optional but
+   *  highly recommended: drives the audit prompt's knowledge bundle
+   *  selection (Tier 2 KB injection) so the analysis is tailored to
+   *  the page's role. Stored verbatim in the pages JSONB column —
+   *  values mirror BuiltInPageType from src/types/index.ts. */
+  pageType?: string;
 }
 
 /** A funnel the user added to the Checkpoint library. v2: a funnel
@@ -219,4 +226,8 @@ export interface CreateCheckpointFunnelInput {
   brand_profile?: string;
   product_type?: 'supplement' | 'digital' | 'both';
   project_id?: string;
+  /** Default page type applied when `pages` items don't carry one.
+   *  Useful for the Landing single-page flow where the user picks one
+   *  type for the whole entry (and the entry IS the page). */
+  page_type?: string;
 }

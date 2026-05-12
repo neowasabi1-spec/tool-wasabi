@@ -36,10 +36,33 @@ import type {
   CheckpointFunnel,
   CheckpointLogEntry,
 } from '@/types/checkpoint';
+import {
+  BUILT_IN_PAGE_TYPE_OPTIONS,
+  PAGE_TYPE_CATEGORIES,
+  type PageTypeOption,
+} from '@/types';
 import { getCurrentUserName, setCurrentUserName } from '@/lib/current-user';
 import ImportFromProjectsModal, {
   type PickedProject,
 } from '@/components/checkpoint/ImportFromProjectsModal';
+
+// ─── Page-type heuristic (Landing single-page flow) ────────────────
+// Best-effort guess of the page type from the URL path + step name.
+// Used to pre-select the dropdown when the user picks a URL — they
+// can still override before submitting.
+function guessPageType(args: { url?: string; name?: string }): string {
+  const hay = `${args.url ?? ''} ${args.name ?? ''}`.toLowerCase();
+  if (/checkout|order|purchase/.test(hay)) return 'checkout';
+  if (/upsell|oto|one[- ]?time/.test(hay)) return 'upsell';
+  if (/downsell/.test(hay)) return 'downsell';
+  if (/thank[- ]?you|grazie|confirmation/.test(hay)) return 'thank_you';
+  if (/quiz|survey|assessment/.test(hay)) return 'quiz_funnel';
+  if (/advertorial|listicle|article|presell/.test(hay)) return 'advertorial';
+  if (/vsl|video[- ]?sales|webinar/.test(hay)) return 'vsl';
+  if (/opt[- ]?in|squeeze|lead/.test(hay)) return 'opt_in';
+  if (/sales|offer|product/.test(hay)) return 'sales_letter';
+  return 'landing';
+}
 
 function ScorePill({ score }: { score: number | null }) {
   if (score === null || score === undefined) {
@@ -146,8 +169,11 @@ export default function CheckpointPage() {
   const [addError, setAddError] = useState<string | null>(null);
   const [formName, setFormName] = useState('');
 
-  // Landing mode: single URL.
+  // Landing mode: single URL + page type. The page type drives the
+  // audit's KB injection (advertorial → advertorial bundle, vsl → VSL
+  // bundle, etc.) so the analysis is tailored to the page's role.
   const [landingUrl, setLandingUrl] = useState('');
+  const [landingPageType, setLandingPageType] = useState<string>('landing');
 
   // Funnel manual mode: one URL per row, +/- buttons to manage rows.
   const [manualPages, setManualPages] = useState<string[]>(['', '']);
@@ -169,6 +195,7 @@ export default function CheckpointPage() {
     setAddError(null);
     setFormName('');
     setLandingUrl('');
+    setLandingPageType('landing');
     setManualPages(['', '']);
     setAutoEntryUrl('');
     setAutoJobId(null);
@@ -210,9 +237,13 @@ export default function CheckpointPage() {
 
     if (target === 'landing') {
       if (selectedProject && selectedProject.detectedUrls.length > 0) {
+        const first = selectedProject.detectedUrls[0];
         setProjectLandingIdx(0);
-        setLandingUrl(selectedProject.detectedUrls[0]?.url ?? '');
+        setLandingUrl(first?.url ?? '');
         setFormName(selectedProject.name);
+        setLandingPageType(
+          guessPageType({ url: first?.url, name: first?.name }),
+        );
       }
       setAddMode('landing');
       return;
@@ -250,8 +281,12 @@ export default function CheckpointPage() {
         setFormName(p.name);
         setAddMode(p.detectedUrls.length > 0 ? 'funnel-manual' : 'funnel-pick');
       } else {
-        setLandingUrl(p.detectedUrls[0]?.url ?? '');
+        const first = p.detectedUrls[0];
+        setLandingUrl(first?.url ?? '');
         setFormName(p.name);
+        setLandingPageType(
+          first ? guessPageType({ url: first.url, name: first.name }) : 'landing',
+        );
         setAddMode('landing');
       }
     }
@@ -374,7 +409,10 @@ export default function CheckpointPage() {
    *  handling and reload-on-success live in one place. When a project
    *  is selected, its id is forwarded so the new funnel is linked to
    *  the project for back-references. */
-  const submitFunnel = async (urls: string[]) => {
+  const submitFunnel = async (
+    urls: string[],
+    opts: { pageType?: string } = {},
+  ) => {
     const cleaned = urls.map((u) => u.trim()).filter(Boolean);
     if (cleaned.length === 0) {
       throw new Error('Inserisci almeno una URL.');
@@ -387,6 +425,7 @@ export default function CheckpointPage() {
         pages,
         name: formName.trim() || undefined,
         project_id: selectedProject?.id,
+        page_type: opts.pageType,
       }),
     });
     const body = await res.json();
@@ -398,7 +437,7 @@ export default function CheckpointPage() {
     setAdding(true);
     setAddError(null);
     try {
-      await submitFunnel([landingUrl]);
+      await submitFunnel([landingUrl], { pageType: landingPageType });
       closeAddPanel();
       reload();
     } catch (err) {
@@ -867,6 +906,9 @@ export default function CheckpointPage() {
                                   onChange={() => {
                                     setProjectLandingIdx(i);
                                     setLandingUrl(u.url);
+                                    setLandingPageType(
+                                      guessPageType({ url: u.url, name: u.name }),
+                                    );
                                   }}
                                   className="mt-1 accent-indigo-600"
                                 />
@@ -885,6 +927,11 @@ export default function CheckpointPage() {
                       </ul>
                     </div>
                   )}
+
+                <PageTypeSelect
+                  value={landingPageType}
+                  onChange={setLandingPageType}
+                />
 
                 <div className="flex flex-wrap items-end gap-3">
                   <div className="flex-1 min-w-[260px]">
@@ -1586,6 +1633,55 @@ function ModeCard({
         {description}
       </div>
     </button>
+  );
+}
+
+/** Page-type dropdown grouped by category. The selected value drives
+ *  the audit's KB injection on the server (advertorial → advertorial
+ *  bundle, vsl → VSL bundle, etc.) so the analysis quotes the right
+ *  frameworks for that page's role. */
+function PageTypeSelect({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  // Group built-in options by their category so the dropdown is
+  // navigable; categories without a current option (e.g. 'custom')
+  // are filtered out.
+  const groups = PAGE_TYPE_CATEGORIES.map((cat) => ({
+    label: cat.label,
+    options: BUILT_IN_PAGE_TYPE_OPTIONS.filter(
+      (o: PageTypeOption) => o.category === cat.value,
+    ),
+  })).filter((g) => g.options.length > 0);
+
+  return (
+    <div>
+      <label className="block text-xs font-medium text-gray-700 mb-1">
+        Tipo di pagina <span className="text-red-500">*</span>{' '}
+        <span className="text-gray-400 font-normal">
+          — seleziona il ruolo della pagina nel funnel così l&apos;audit
+          usa il knowledge bundle giusto
+        </span>
+      </label>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+      >
+        {groups.map((g) => (
+          <optgroup key={g.label} label={g.label}>
+            {g.options.map((opt) => (
+              <option key={opt.value as string} value={opt.value as string}>
+                {opt.label}
+              </option>
+            ))}
+          </optgroup>
+        ))}
+      </select>
+    </div>
   );
 }
 
