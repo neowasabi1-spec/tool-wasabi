@@ -448,11 +448,19 @@ async function processMessage(msg) {
         }
       }
 
+      // The list of categories we EXPECTED to deliver — sent to the
+      // finaliser so the server can fill any "lost" category as
+      // `error` if our POST to /openclaw-category never landed (eg
+      // network blip). Without this, a silently-dropped category
+      // would leave the dashboard column stuck on "In attesa di
+      // analisi…" even on a "completed" run.
+      const expectedCategories = prompts.map((p) => p.category);
+
       if (prompts.length === 0) {
         // Nothing to ask the model — finalise as completed (skipped-only).
         await callToolApi(
           `/api/checkpoint/runs/${runId}/openclaw-finalize`,
-          { status: 'completed' },
+          { status: 'completed', expectedCategories },
           60_000,
         );
         responsePayload = JSON.stringify({ runId, ok: 0, errored: 0, total: 0, status: 'completed' });
@@ -487,7 +495,7 @@ async function processMessage(msg) {
           summary.ok === 0 ? 'failed' : summary.errored === 0 ? 'completed' : 'partial';
         await callToolApi(
           `/api/checkpoint/runs/${runId}/openclaw-finalize`,
-          { status: finalStatus },
+          { status: finalStatus, expectedCategories },
           60_000,
         );
         responsePayload = JSON.stringify({ runId, ...summary, status: finalStatus });

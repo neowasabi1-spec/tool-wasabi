@@ -5,8 +5,10 @@ import {
 } from '@/lib/checkpoint-store';
 import {
   CATEGORY_PROMPT_CONFIG,
+  QUIZ_CATEGORY_PROMPT_OVERRIDES,
   buildMultiPageUserMessage,
   htmlToAuditText,
+  isAllQuizSteps,
   type MultiPagePromptStep,
 } from '@/lib/checkpoint-prompts';
 import {
@@ -99,7 +101,16 @@ export async function POST(
     name: p.name,
     pageText: p.html ? htmlToAuditText(p.html) : '',
     fetchError: p.error ?? null,
+    pageType: p.pageType,
   }));
+
+  // Match the Claude pipeline: when EVERY step is a quiz/survey/
+  // assessment page we swap the standard prompts for the dedicated
+  // QUIZ funnel rubric. Without this swap the OpenClaw worker was
+  // running the generic copy/coherence/cro prompts on a quiz funnel,
+  // which is why the columns were coming back thin or empty when
+  // the user picked "Neo (OpenClaw)" on a quiz Landing.
+  const quizMode = isAllQuizSteps(auditSteps);
 
   const prompts: { category: CheckpointCategory; system: string; user: string }[] = [];
   const skipped: { category: CheckpointCategory; reason: string }[] = [];
@@ -112,7 +123,9 @@ export async function POST(
       });
       continue;
     }
-    const cfg = CATEGORY_PROMPT_CONFIG[cat];
+    const cfg =
+      (quizMode ? QUIZ_CATEGORY_PROMPT_OVERRIDES[cat] : undefined) ??
+      CATEGORY_PROMPT_CONFIG[cat];
     prompts.push({
       category: cat,
       system: cfg.instructions,

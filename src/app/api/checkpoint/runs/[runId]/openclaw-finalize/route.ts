@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
 import { syncLastRunSnapshot } from '@/lib/checkpoint-store';
 import type {
+  CheckpointCategory,
+  CheckpointCategoryResult,
   CheckpointResults,
   CheckpointRunStatus,
 } from '@/types/checkpoint';
@@ -45,7 +47,17 @@ export async function POST(
     return NextResponse.json({ error: 'Missing runId' }, { status: 400 });
   }
 
-  let body: { status?: string; error?: string };
+  let body: {
+    status?: string;
+    error?: string;
+    /** Categories the worker actually attempted (i.e. were returned
+     *  by /openclaw-prep as runnable). The finaliser uses this list
+     *  to detect "lost" categories — ones the worker never reported
+     *  back via /openclaw-category — and persist them as `error` so
+     *  the dashboard never shows "In attesa di analisi" on a run
+     *  that's been marked completed. */
+    expectedCategories?: string[];
+  };
   try {
     body = (await req.json()) as typeof body;
   } catch {
@@ -65,6 +77,37 @@ export async function POST(
   }
 
   const results: CheckpointResults = (row.results as CheckpointResults) ?? {};
+
+  // Fill any expected category that NEVER reported back from the
+  // worker. The dashboard polls `results.<category>` to decide
+  // whether a column is "in attesa" / "completata" / "errore"; if
+  // the worker dies mid-loop or one of its POSTs to
+  // /openclaw-category times out silently, the column is stuck on
+  // "In attesa di analisi…" forever — even on a run flagged as
+  // completed. Materialising those gaps as explicit `error` rows
+  // restores observable feedback.
+  const expectedCategories = Array.isArray(body.expectedCategories)
+    ? (body.expectedCategories.filter(
+        (c): c is CheckpointCategory => typeof c === 'string',
+      ) as CheckpointCategory[])
+    : [];
+  let lost = 0;
+  for (const cat of expectedCategories) {
+    if (results[cat]) continue;
+    const lostResult: CheckpointCategoryResult = {
+      score: null,
+      status: 'error',
+      summary:
+        "Il worker OpenClaw non ha riportato il risultato per questa categoria (timeout o crash mid-loop). Riprova la run.",
+      issues: [],
+      suggestions: [],
+      error:
+        'Worker did not POST /openclaw-category for this category before finalising.',
+    };
+    results[cat] = lostResult;
+    lost++;
+  }
+
   const numericScores = Object.values(results)
     .map((r) => r?.score)
     .filter((s): s is number => typeof s === 'number');
@@ -77,10 +120,24 @@ export async function POST(
 
   const reportedStatus = body.status as CheckpointRunStatus | undefined;
   const everSaved = Object.keys(results).length;
+  // Recompute the run status from observable per-category state,
+  // not from whatever the worker self-reported. This way
+  // "completed" can never coexist with categories silently missing.
+  const categoryStatuses = Object.values(results).map((r) => r?.status);
+  const okCount = categoryStatuses.filter(
+    (s) => s === 'pass' || s === 'warn' || s === 'fail',
+  ).length;
+  const errorCount = categoryStatuses.filter((s) => s === 'error').length;
   let finalStatus: CheckpointRunStatus;
   if (everSaved === 0) {
     finalStatus = 'failed';
+  } else if (okCount === 0) {
+    finalStatus = 'failed';
+  } else if (errorCount > 0) {
+    finalStatus = 'partial';
   } else if (reportedStatus && ALLOWED_STATUSES.includes(reportedStatus)) {
+    // No errors observed — trust the worker's self-report (it might
+    // legitimately downgrade to 'partial' for skipped categories).
     finalStatus = reportedStatus;
   } else {
     finalStatus = 'completed';
@@ -91,6 +148,9 @@ export async function POST(
     status: finalStatus,
     score_overall: overall,
     completed_at: completedAt,
+    // Persist the patched results so any "lost" categories filled
+    // above survive the row update.
+    results,
   };
   if (finalStatus === 'failed') {
     update.error =
@@ -98,6 +158,10 @@ export async function POST(
       (everSaved === 0
         ? 'OpenClaw worker finalised the run with zero category results.'
         : 'OpenClaw worker reported failure.');
+  } else if (lost > 0) {
+    // Soft signal in the run-level error column so the dashboard's
+    // run header can warn the user about the partial outcome.
+    update.error = `${lost} categoria/e non riportata/e dal worker (timeout o crash). Risultati parziali.`;
   }
 
   const { error: updErr } = await supabase
@@ -123,6 +187,7 @@ export async function POST(
     ok: true,
     runId,
     status: finalStatus,
+    lostCategories: lost,
     score_overall: overall,
     categoryCount: everSaved,
   });

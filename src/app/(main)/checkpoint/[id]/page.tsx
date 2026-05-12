@@ -28,6 +28,8 @@ import {
   Zap,
   Inbox,
   Bot,
+  SkipForward,
+  Ban,
 } from 'lucide-react';
 import {
   type CheckpointCategory,
@@ -1429,22 +1431,55 @@ function SheetColumn({
   );
 
   // Stato della colonna per il badge in header.
-  // - in corso (almeno una source è running senza risultato ancora)
-  // - completata (tutte le source hanno una risposta)
-  // - vuota (nessuna source ha risultati)
+  //
+  // Per le colonne "single-source" (Tech/Detail, Marketing, Visual,
+  // Copy Chief) leggiamo lo status REALE della categoria sorgente, in
+  // modo da distinguere:
+  //   - 'skipped' (es. navigation richiede ≥2 pagine, qui il funnel
+  //     ne ha 1) → mostriamo il summary invece del bugiardo "Nessuna
+  //     criticità trovata"
+  //   - 'error'  (audit fallito sul worker / parsing JSON fallito /
+  //     timeout Claude) → mostriamo il messaggio di errore
+  //   - 'running' (la run è ancora in corso e questa categoria non
+  //     ha ancora consegnato il proprio risultato)
+  //   - 'done'   (risultato presente, 0 issues critical/warning)
+  //   - 'idle'   (la run non è in corso e questa categoria non ha
+  //     mai prodotto un risultato — accade nelle run vecchie pre-
+  //     v2 o quando il worker non ha reportato la categoria affatto)
+  //
+  // Per "All Step" (sources='*') manteniamo la logica semplice di
+  // prima: aggrega tutto, niente skip/error a livello di colonna.
+  const isAggregate = config.sources === '*';
   const sourcesWithResult = sourceCats.filter((c) => results[c]);
-  const allDone =
-    sourcesWithResult.length > 0 &&
-    sourcesWithResult.length === sourceCats.length;
-  const status: 'idle' | 'running' | 'done' = isRunning
-    ? sourcesWithResult.length === 0
-      ? 'running'
-      : allDone
+  const firstSourceResult = !isAggregate
+    ? results[sourceCats[0]]
+    : undefined;
+
+  let status: 'idle' | 'running' | 'done' | 'skipped' | 'error';
+  let stateMessage: string | undefined;
+  if (!isAggregate && firstSourceResult?.status === 'skipped') {
+    status = 'skipped';
+    stateMessage = firstSourceResult.summary;
+  } else if (!isAggregate && firstSourceResult?.status === 'error') {
+    status = 'error';
+    stateMessage =
+      firstSourceResult.error ||
+      firstSourceResult.summary ||
+      'Audit fallito su questa categoria.';
+  } else {
+    const allDone =
+      sourcesWithResult.length > 0 &&
+      sourcesWithResult.length === sourceCats.length;
+    status = isRunning
+      ? sourcesWithResult.length === 0
+        ? 'running'
+        : allDone
+          ? 'done'
+          : 'running'
+      : sourcesWithResult.length > 0
         ? 'done'
-        : 'running'
-    : sourcesWithResult.length > 0
-      ? 'done'
-      : 'idle';
+        : 'idle';
+  }
 
   const palette = accentClasses(config.accent);
 
@@ -1468,15 +1503,43 @@ function SheetColumn({
           className={`divide-y ${palette.divide} overflow-y-auto max-h-[320px]`}
         >
           {rows.length === 0 ? (
-            <div className="px-3 py-6 text-center text-xs text-gray-500/80">
-              {status === 'idle' && 'In attesa di analisi…'}
+            <div className="px-3 py-6 text-center text-xs">
+              {status === 'idle' && (
+                <span className="text-gray-500/80">In attesa di analisi…</span>
+              )}
               {status === 'running' && (
-                <span className="inline-flex items-center gap-1">
+                <span className="inline-flex items-center gap-1 text-gray-500/80">
                   <Loader2 className="w-3 h-3 animate-spin" />
                   Analisi in corso…
                 </span>
               )}
-              {status === 'done' && 'Nessuna criticità trovata.'}
+              {status === 'done' && (
+                <span className="text-gray-500/80">
+                  Nessuna criticità trovata.
+                </span>
+              )}
+              {status === 'skipped' && (
+                <div className="flex flex-col items-center gap-2 px-2 text-gray-700">
+                  <SkipForward className="w-4 h-4 text-gray-500" />
+                  <div className="font-medium">Categoria non eseguita</div>
+                  {stateMessage && (
+                    <div className="text-[11px] leading-snug text-gray-600">
+                      {stateMessage}
+                    </div>
+                  )}
+                </div>
+              )}
+              {status === 'error' && (
+                <div className="flex flex-col items-center gap-2 px-2 text-red-700">
+                  <Ban className="w-4 h-4" />
+                  <div className="font-medium">Audit fallito</div>
+                  {stateMessage && (
+                    <div className="text-[11px] leading-snug text-red-700/80 break-words">
+                      {stateMessage}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           ) : (
             rows.map((row, i) => (
@@ -1917,7 +1980,7 @@ function SheetStatusBadge({
   status,
   count,
 }: {
-  status: 'idle' | 'running' | 'done';
+  status: 'idle' | 'running' | 'done' | 'skipped' | 'error';
   count: number;
 }) {
   if (status === 'running') {
@@ -1925,6 +1988,20 @@ function SheetStatusBadge({
       <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-white/80 text-gray-700 border border-gray-200">
         <Loader2 className="w-3 h-3 animate-spin" />
         live
+      </span>
+    );
+  }
+  if (status === 'skipped') {
+    return (
+      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-white/80 text-gray-600 border border-gray-300">
+        skipped
+      </span>
+    );
+  }
+  if (status === 'error') {
+    return (
+      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-red-100 text-red-700 border border-red-300">
+        errore
       </span>
     );
   }
