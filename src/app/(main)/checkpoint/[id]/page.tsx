@@ -276,7 +276,7 @@ export default function CheckpointDetailPage({
         } else if (run.status === 'failed') {
           pushEvent(
             'error',
-            `Run fallita${run.error ? `: ${run.error}` : ''}`,
+            `Run fallita${run.error && !run.error.startsWith('[stage]') ? `: ${run.error}` : ''}`,
           );
         } else if (run.status === 'partial') {
           pushEvent(
@@ -285,6 +285,30 @@ export default function CheckpointDetailPage({
           );
         }
       }
+      // Stage hints: while status='running' the server (ab)uses
+      // `error` to broadcast prep-pipeline progress with a literal
+      // "[stage] " prefix. Surface every transition as an info-line
+      // in the activity feed so the user sees the page-fetch /
+      // screenshot pipeline ticking instead of staring at "0/3 step
+      // completati" for a minute.
+      const prevStage =
+        prev.status === 'running' && prev.error?.startsWith('[stage] ')
+          ? prev.error.slice('[stage] '.length)
+          : null;
+      const currStage =
+        run.status === 'running' && run.error?.startsWith('[stage] ')
+          ? run.error.slice('[stage] '.length)
+          : null;
+      if (currStage && currStage !== prevStage) {
+        pushEvent('info', `Prep · ${currStage}`);
+      }
+    } else if (
+      run.status === 'running' &&
+      run.error?.startsWith('[stage] ')
+    ) {
+      // First snapshot already inside prep — emit the current stage
+      // line so the user sees it without waiting for the next tick.
+      pushEvent('info', `Prep · ${run.error.slice('[stage] '.length)}`);
     }
     // New category results that just landed in this poll
     for (const cat of CATEGORIES) {
@@ -573,6 +597,21 @@ export default function CheckpointDetailPage({
     return {};
   }, [running, liveResults, activeRun]);
 
+  // Pull the current "[stage] …" hint out of activeRun.error while
+  // the run is still running. The server uses error as a sneaky
+  // progress channel during the prep phase (page fetch + screenshot
+  // capture); we strip the prefix and feed the rest to the
+  // dashboard so the user sees what's happening instead of a
+  // static "0/N step completati".
+  const prepStage: string | null = useMemo(() => {
+    if (!running || !activeRun) return null;
+    const err = activeRun.error;
+    if (typeof err === 'string' && err.startsWith('[stage] ')) {
+      return err.slice('[stage] '.length);
+    }
+    return null;
+  }, [running, activeRun]);
+
   if (loading && !data) {
     return (
       <div className="min-h-screen bg-gray-50">
@@ -844,6 +883,7 @@ export default function CheckpointDetailPage({
               isRunning={running}
               activeIndex={liveActiveIdx}
               startedAt={liveStartedAt}
+              prepStage={prepStage}
             />
 
             {/* "Foglio" findings: 5 colonne, una per step di analisi.

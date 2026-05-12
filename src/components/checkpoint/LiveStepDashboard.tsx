@@ -43,6 +43,14 @@ interface Props {
   activeIndex: number;
   /** Optional ETA hint shown above the bar. */
   startedAt?: number;
+  /** Free-form "what the prep pipeline is doing right now" string
+   *  derived from the [stage] hint the server writes into
+   *  funnel_checkpoints.error during the 30–90s page-fetch +
+   *  screenshot-capture phase before any LLM call lands. When
+   *  present (and the run is still in pre-LLM territory), shows up
+   *  in place of the bland "0/N step completati" footer so the user
+   *  knows we're not stuck. */
+  prepStage?: string | null;
 }
 
 export default function LiveStepDashboard({
@@ -50,6 +58,7 @@ export default function LiveStepDashboard({
   isRunning,
   activeIndex,
   startedAt,
+  prepStage,
 }: Props) {
   const total = steps.length;
   const doneCount = steps.filter(
@@ -141,7 +150,18 @@ export default function LiveStepDashboard({
 
         <div className="mt-2 flex items-center justify-between text-xs">
           <span className="text-gray-500">
-            {isRunning && activeIndex >= 0 && steps[activeIndex] ? (
+            {isRunning && doneCount === 0 && prepStage ? (
+              // Preparation phase: dominate the footer with the
+              // current stage so the user sees activity immediately
+              // (instead of a deceptively static "0/N step completati"
+              // for ~30-90s while we fetch pages + screenshot them).
+              <span className="inline-flex items-center gap-1.5 text-blue-700">
+                <Loader2 className="w-3 h-3 animate-spin" />
+                <span>
+                  Preparazione · <strong>{prepStage}</strong>
+                </span>
+              </span>
+            ) : isRunning && activeIndex >= 0 && steps[activeIndex] ? (
               <span className="inline-flex items-center gap-1.5">
                 <Loader2 className="w-3 h-3 animate-spin text-blue-600" />
                 <span>
@@ -150,6 +170,15 @@ export default function LiveStepDashboard({
                     {CHECKPOINT_CATEGORY_LABELS[steps[activeIndex].category]}
                   </strong>{' '}
                   in analisi
+                </span>
+              </span>
+            ) : isRunning && doneCount === 0 ? (
+              // No prep hint yet but we're in the pre-LLM window —
+              // soft fallback so the footer isn't blank.
+              <span className="inline-flex items-center gap-1.5 text-blue-700">
+                <Loader2 className="w-3 h-3 animate-spin" />
+                <span>
+                  Preparazione audit (download pagine + screenshot mobili)…
                 </span>
               </span>
             ) : doneCount === total && total > 0 ? (

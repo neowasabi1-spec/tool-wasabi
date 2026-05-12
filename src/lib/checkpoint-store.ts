@@ -534,14 +534,36 @@ export interface FetchFunnelPagesOptions {
    *  a screenshot (still get HTML). Defaults to 12 to match the cap on
    *  images we ship to Claude per request. */
   maxScreenshots?: number;
+  /** Optional progress callback invoked at each macro stage of the
+   *  prep pipeline (HTML fetch start/finish, screenshot start/finish).
+   *  The /run route uses this to write a "stage hint" into
+   *  funnel_checkpoints.error so the polling client can show the user
+   *  WHAT we're doing during the ~30-90s before any category lands.
+   *  Errors thrown by the callback are swallowed — progress reporting
+   *  must never break the audit. */
+  onStage?: (stage: string) => Promise<void> | void;
 }
 
 export async function fetchFunnelPagesHtml(
   pages: CheckpointFunnelPage[],
   opts: FetchFunnelPagesOptions = {},
 ): Promise<FunnelPageHtml[]> {
+  const safeStage = async (msg: string) => {
+    if (!opts.onStage) return;
+    try {
+      await opts.onStage(msg);
+    } catch (err) {
+      console.warn('[checkpoint-store] onStage callback threw:', err);
+    }
+  };
+
   const out: FunnelPageHtml[] = new Array(pages.length);
   let cursor = 0;
+  let fetched = 0;
+
+  await safeStage(
+    `Scarico ${pages.length} ${pages.length === 1 ? 'pagina' : 'pagine'} del funnel…`,
+  );
 
   async function worker(): Promise<void> {
     while (true) {
@@ -570,6 +592,10 @@ export async function fetchFunnelPagesHtml(
           error: err instanceof Error ? err.message : String(err),
         };
       }
+      fetched++;
+      // Report progress every page to keep the user's "is it stuck?"
+      // anxiety in check.
+      await safeStage(`Pagine scaricate ${fetched}/${pages.length}`);
     }
   }
 
@@ -588,6 +614,7 @@ export async function fetchFunnelPagesHtml(
       await captureAndUploadScreenshots(out, {
         runId: opts.runId,
         maxScreenshots: opts.maxScreenshots ?? 12,
+        onStage: opts.onStage,
       });
     }
   }
@@ -601,8 +628,21 @@ export async function fetchFunnelPagesHtml(
  *  the `maxScreenshots` cap are skipped silently. */
 async function captureAndUploadScreenshots(
   pages: FunnelPageHtml[],
-  opts: { runId: string; maxScreenshots: number },
+  opts: {
+    runId: string;
+    maxScreenshots: number;
+    onStage?: (stage: string) => Promise<void> | void;
+  },
 ): Promise<void> {
+  const safeStage = async (msg: string) => {
+    if (!opts.onStage) return;
+    try {
+      await opts.onStage(msg);
+    } catch (err) {
+      console.warn('[checkpoint-store] onStage(screenshot) threw:', err);
+    }
+  };
+
   const eligibleIdx = pages
     .filter((p) => p.html && p.html.length > 0)
     .slice(0, opts.maxScreenshots)
@@ -616,8 +656,12 @@ async function captureAndUploadScreenshots(
   console.log(
     `[checkpoint-store] capturing ${eligibleIdx.length}/${pages.length} screenshots (runId=${opts.runId}, concurrency=${SCREENSHOT_CONCURRENCY})`,
   );
+  await safeStage(
+    `Cattura screenshot mobili (0/${eligibleIdx.length})…`,
+  );
 
   let cursor = 0;
+  let captured = 0;
   async function worker(): Promise<void> {
     while (true) {
       const k = cursor++;
@@ -651,6 +695,10 @@ async function captureAndUploadScreenshots(
         page.screenshotError =
           err instanceof Error ? err.message : String(err);
       }
+      captured++;
+      await safeStage(
+        `Cattura screenshot mobili (${captured}/${eligibleIdx.length})…`,
+      );
     }
   }
 

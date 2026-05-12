@@ -190,10 +190,29 @@ export async function POST(
   // rendered pixels (typography / contrast / hero / spacing). Done
   // here instead of inside runClaudeCategory so the screenshots are
   // a one-time cost per run regardless of category re-runs.
+  // "Stage hint" channel: we (ab)use the funnel_checkpoints.error
+  // column to broadcast WHAT the prep pipeline is doing to the
+  // polling client. The convention is: while status='running' any
+  // error string starting with the literal "[stage] " is read as a
+  // user-facing progress message (NOT as a real failure). Cleared
+  // before the categories launch so a real error mid-audit is never
+  // confused with a stale stage hint.
+  const writeStageHint = async (msg: string) => {
+    try {
+      await supabase
+        .from('funnel_checkpoints')
+        .update({ error: `[stage] ${msg}` })
+        .eq('id', checkpointId);
+    } catch (e) {
+      console.warn('[checkpoint/run] writeStageHint failed:', e);
+    }
+  };
+
   const needsScreenshots = categories.includes('coherence');
   const pagesHtml = await fetchFunnelPagesHtml(funnel.pages, {
     withScreenshots: needsScreenshots,
     runId: checkpointId,
+    onStage: writeStageHint,
   });
   const reachable = pagesHtml.filter((p) => p.html && p.html.length > 0);
   if (reachable.length === 0) {
@@ -253,6 +272,12 @@ export async function POST(
   // the per-category async block) so the polling UI keeps showing
   // partial progress in real time — same observable behaviour as
   // before, just much faster overall.
+  // Clear the stage hint so the polling client doesn't keep
+  // displaying the last screenshot-progress line while the LLM is
+  // crunching. From here on, observable progress is the per-category
+  // results landing in the JSONB column.
+  await writeStageHint(`Avvio analisi parallela: ${categories.join(', ')}`);
+
   const parallelStart = Date.now();
   console.log(
     `[checkpoint/run] launching ${total} categories in PARALLEL (categories=${categories.join(',')})`,
@@ -339,12 +364,17 @@ export async function POST(
     succeeded === 0 ? 'failed' : errored === 0 ? 'completed' : 'partial';
   const completedAt = new Date().toISOString();
 
+  // Clear any leftover [stage] hint from the prep phase before
+  // stamping the terminal status: real failures populate `error`
+  // separately and we must never leave a stale "Avvio analisi…"
+  // string visible on a completed run.
   const { error: updErr } = await supabase
     .from('funnel_checkpoints')
     .update({
       score_overall: overall,
       status: finalStatus,
       completed_at: completedAt,
+      error: null,
     })
     .eq('id', checkpointId);
   if (updErr) {

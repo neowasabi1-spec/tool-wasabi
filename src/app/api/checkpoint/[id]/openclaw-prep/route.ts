@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { supabase } from '@/lib/supabase';
 import {
   getFunnel,
   fetchFunnelPagesHtml,
@@ -69,15 +70,46 @@ export async function POST(
     );
   }
 
-  let body: { categories?: CheckpointCategory[]; brandProfile?: string } = {};
+  let body: {
+    categories?: CheckpointCategory[];
+    brandProfile?: string;
+    /** Optional run id. When provided, this prep step writes "stage
+     *  hints" into funnel_checkpoints.error (with the literal "[stage] "
+     *  prefix) so the dashboard's polling client can show the user
+     *  WHAT we're doing during the 30–90s prep window. Backwards
+     *  compatible: older workers omit this field and the prep simply
+     *  runs silently as before. */
+    runId?: string;
+  } = {};
   try { body = await req.json(); } catch { body = {}; }
   const categories: CheckpointCategory[] =
     body.categories && body.categories.length > 0
       ? body.categories
       : [...CHECKPOINT_RUN_CATEGORIES];
   const brandProfile = body.brandProfile ?? funnel.brand_profile ?? undefined;
+  const runId = typeof body.runId === 'string' && body.runId ? body.runId : null;
 
-  const pagesHtml = await fetchFunnelPagesHtml(funnel.pages);
+  const writeStageHint = runId
+    ? async (msg: string) => {
+        try {
+          await supabase
+            .from('funnel_checkpoints')
+            .update({ error: `[stage] ${msg}` })
+            .eq('id', runId);
+        } catch (e) {
+          console.warn('[openclaw-prep] writeStageHint failed:', e);
+        }
+      }
+    : undefined;
+
+  // OpenClaw / Trinity is text-only — capturing mobile screenshots
+  // here would just burn 30-60s with no benefit (the local LLM can't
+  // see images). The Claude pipeline path captures them inside its
+  // own /run route. Here we only forward stage hints so the dashboard
+  // can show prep progress.
+  const pagesHtml = await fetchFunnelPagesHtml(funnel.pages, {
+    onStage: writeStageHint,
+  });
   const reachable = pagesHtml.filter((p) => p.html && p.html.length > 0);
   if (reachable.length === 0) {
     return NextResponse.json(

@@ -418,7 +418,13 @@ async function processMessage(msg) {
         try {
           prep = await callToolApi(
             `/api/checkpoint/${funnelId}/openclaw-prep`,
-            { categories, brandProfile },
+            // Forward runId so the prep step can write [stage] hints
+            // into funnel_checkpoints.error during the 30-90s page-
+            // fetch / SPA-render window. The dashboard polling client
+            // reads those and shows them in the live activity log so
+            // the user sees what's happening instead of staring at
+            // "0/3 step completati" for a minute.
+            { categories, brandProfile, runId },
             300_000, // 5 min: SPA fetch can be slow on first visit
           );
         } catch (e) {
