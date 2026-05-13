@@ -193,6 +193,33 @@ export default function CheckpointPage() {
   const [autoSteps, setAutoSteps] = useState<
     { url: string; title: string; screenshotUrl?: string | null }[] | null
   >(null);
+  // Diagnostic surfaced by the worker when the crawl stops BEFORE
+  // hitting the configured max — explains "perché si è fermato a 6
+  // step invece di 25" in the UI. null when the crawl ran clean.
+  interface CrawlStopDiag {
+    reason:
+      | 'no_advance_button'
+      | 'stuck_fingerprint'
+      | 'checkout_like_page'
+      | 'reached_max_steps';
+    atStep: number;
+    maxSteps: number;
+    url?: string;
+    title?: string;
+    label?: string;
+    consecutiveSame?: number;
+    inventory?: Array<{
+      tag: string;
+      cls: string;
+      w: number;
+      h: number;
+      text: string;
+      disabled: boolean;
+      href?: string | null;
+    }>;
+    hint?: string;
+  }
+  const [autoStopDiag, setAutoStopDiag] = useState<CrawlStopDiag | null>(null);
   const [autoSelected, setAutoSelected] = useState<Set<number>>(new Set());
 
   const resetAddState = () => {
@@ -510,6 +537,7 @@ export default function CheckpointPage() {
     setAutoSteps(null);
     setAutoSelected(new Set());
     setAutoProgress(null);
+    setAutoStopDiag(null);
     setAutoCrawling(true);
     try {
       const startRes = await fetch('/api/funnel-analyzer/crawl/start', {
@@ -607,6 +635,13 @@ export default function CheckpointPage() {
           }));
           setAutoSteps(cleaned);
           setAutoSelected(new Set(cleaned.map((_, i) => i)));
+          // Worker tells us WHY it stopped (or whether it actually
+          // reached the configured max). Surfaced in the UI so the
+          // user doesn't think "8 step out of 25" is a silent bug.
+          const diag = (statusBody.result?.stopDiagnostic ?? null) as
+            | CrawlStopDiag
+            | null;
+          setAutoStopDiag(diag);
           return;
         }
         if (statusBody.status === 'failed') {
@@ -1268,6 +1303,14 @@ export default function CheckpointPage() {
 
                 {autoSteps && (
                   <form onSubmit={handleAddAuto} className="space-y-4">
+                    {/* Stop diagnostic — explains "perché 6 di 25" so
+                        the user doesn't think the crawler silently ate
+                        their funnel. Only shown for early stops; when
+                        the worker reached maxSteps cleanly we hide. */}
+                    {autoStopDiag &&
+                      autoStopDiag.reason !== 'reached_max_steps' && (
+                        <CrawlStopDiagPanel diag={autoStopDiag} />
+                      )}
                     <div className="flex items-center justify-between">
                       <div className="text-sm">
                         <strong className="text-gray-900">
@@ -1285,6 +1328,7 @@ export default function CheckpointPage() {
                           setAutoSteps(null);
                           setAutoSelected(new Set());
                           setAutoProgress(null);
+                          setAutoStopDiag(null);
                           setAddError(null);
                         }}
                         className="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700"
@@ -1839,6 +1883,148 @@ function ErrorBanner({ message }: { message: string }) {
   return (
     <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-md px-3 py-2">
       {message}
+    </div>
+  );
+}
+
+/** Yellow "why did the crawl stop early?" panel rendered above the
+ *  step list when the worker bailed out before reaching the configured
+ *  maxSteps. Shows the human-readable reason, the page where it gave
+ *  up, and (when available) the DOM inventory the worker captured —
+ *  so the user can either:
+ *    a) realise the crawl is correct and the funnel really has N steps,
+ *    b) spot which button text needs to be added to the regex,
+ *    c) decide to continue manually by typing the missing URLs.
+ */
+function CrawlStopDiagPanel({
+  diag,
+}: {
+  diag: {
+    reason:
+      | 'no_advance_button'
+      | 'stuck_fingerprint'
+      | 'checkout_like_page'
+      | 'reached_max_steps';
+    atStep: number;
+    maxSteps: number;
+    url?: string;
+    title?: string;
+    label?: string;
+    consecutiveSame?: number;
+    inventory?: Array<{
+      tag: string;
+      cls: string;
+      w: number;
+      h: number;
+      text: string;
+      disabled: boolean;
+      href?: string | null;
+    }>;
+    hint?: string;
+  };
+}) {
+  const reasonLabel: Record<typeof diag.reason, string> = {
+    no_advance_button:
+      'Il crawler non ha trovato nessun bottone "next/continue/avanti" cliccabile.',
+    stuck_fingerprint:
+      'Il bottone è stato cliccato ma la pagina non è cambiata (stesso testo per 3 tentativi).',
+    checkout_like_page:
+      "Il crawler ha riconosciuto questa pagina come checkout/landing finale e si è fermato qui (comportamento voluto).",
+    reached_max_steps:
+      'Il crawler ha raggiunto il limite di step impostato.',
+  };
+
+  const isCheckout = diag.reason === 'checkout_like_page';
+  const tone = isCheckout
+    ? {
+        wrap: 'bg-blue-50 border-blue-200',
+        title: 'text-blue-900',
+        body: 'text-blue-800',
+      }
+    : {
+        wrap: 'bg-amber-50 border-amber-200',
+        title: 'text-amber-900',
+        body: 'text-amber-800',
+      };
+
+  return (
+    <div className={`rounded-lg border px-3 py-3 ${tone.wrap}`}>
+      <div className={`text-sm font-semibold mb-1 ${tone.title}`}>
+        Crawl fermato a step {diag.atStep}/{diag.maxSteps}
+      </div>
+      <div className={`text-xs ${tone.body}`}>{reasonLabel[diag.reason]}</div>
+      {diag.label && (
+        <div className="text-xs text-gray-700 mt-2">
+          <span className="text-gray-500">Pagina:</span>{' '}
+          <strong>{diag.label}</strong>
+        </div>
+      )}
+      {diag.url && (
+        <div className="text-[11px] text-gray-500 font-mono break-all mt-0.5">
+          {diag.url}
+        </div>
+      )}
+      {!isCheckout && (
+        <details className="mt-2">
+          <summary className="text-xs text-amber-900 hover:underline cursor-pointer">
+            Cosa fare adesso?
+          </summary>
+          <div className="text-xs text-amber-800 mt-1 leading-relaxed space-y-1">
+            <div>
+              1. Verifica con i tuoi occhi: apri l&apos;URL qui sopra e vedi se
+              c&apos;è davvero un bottone &quot;next&quot; visibile a quello step.
+            </div>
+            <div>
+              2. Se il bottone esiste ma ha un testo non standard
+              (es. &quot;I&apos;m ready&quot;, &quot;Tell me more&quot;), copialo e
+              dimmi il testo: lo aggiungo al matcher.
+            </div>
+            <div>
+              3. Se il funnel ha davvero N step (e non 25), seleziona quelli
+              utili qui sotto e procedi.
+            </div>
+            <div>
+              4. Se vuoi forzare il proseguimento manuale, prendi gli step
+              trovati ora, premi &quot;Riprova&quot; o passa a modalità
+              &quot;Multi-step manuale&quot; per inserire gli URL mancanti.
+            </div>
+          </div>
+        </details>
+      )}
+      {diag.inventory && diag.inventory.length > 0 && (
+        <details className="mt-2">
+          <summary className="text-xs text-amber-900 hover:underline cursor-pointer">
+            Bottoni visti dal crawler ({diag.inventory.length})
+          </summary>
+          <div className="mt-1 max-h-48 overflow-y-auto bg-white/70 rounded border border-amber-200 px-2 py-1 font-mono text-[10px] text-gray-700 leading-relaxed">
+            {diag.inventory.slice(0, 30).map((it, i) => (
+              <div key={i} className="truncate">
+                <span className="text-gray-400">[{it.tag}]</span>{' '}
+                <span
+                  className={
+                    it.disabled
+                      ? 'text-gray-400 line-through'
+                      : 'text-gray-900'
+                  }
+                >
+                  &quot;{it.text}&quot;
+                </span>{' '}
+                <span className="text-gray-400">
+                  · {it.w}×{it.h}
+                </span>
+                {it.disabled && (
+                  <span className="text-red-500"> (disabled)</span>
+                )}
+              </div>
+            ))}
+            {diag.inventory.length > 30 && (
+              <div className="text-gray-400 italic">
+                +{diag.inventory.length - 30} altri non mostrati
+              </div>
+            )}
+          </div>
+        </details>
+      )}
     </div>
   );
 }

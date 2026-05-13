@@ -1688,6 +1688,43 @@ async function processCrawlJob(row) {
     await page.waitForLoadState('load', { timeout: 4000 }).catch(() => {});
 
     let consecutiveSame = 0;
+    // Populated whenever the loop breaks BEFORE reaching maxSteps.
+    // Persisted into `result.stopDiagnostic` at the end so the user
+    // (and we) can post-mortem the crawl without needing access to
+    // the worker's stdout — answers "why did it stop at step N?"
+    let stopDiagnostic = null;
+    const captureDomInventory = (page) =>
+      page
+        .evaluate(() => {
+          const out = [];
+          const sel =
+            'button, [role="button"], input[type="submit"], input[type="button"], a, [class*="btn"], [class*="cta"], [class*="answer"], [class*="option"], [class*="choice"], [onclick]';
+          document.querySelectorAll(sel).forEach((el) => {
+            if (out.length >= 40) return;
+            const r = el.getBoundingClientRect();
+            const s = window.getComputedStyle(el);
+            const visible =
+              r.width >= 5 &&
+              r.height >= 5 &&
+              s.visibility !== 'hidden' &&
+              s.display !== 'none' &&
+              s.opacity !== '0';
+            if (!visible) return;
+            const text = ((el.innerText || el.value || el.getAttribute('aria-label') || '') + '').trim().slice(0, 80);
+            if (!text && el.tagName !== 'BUTTON') return;
+            out.push({
+              tag: el.tagName.toLowerCase(),
+              cls: (el.className || '').toString().slice(0, 80),
+              w: Math.round(r.width),
+              h: Math.round(r.height),
+              text: text || '(empty)',
+              disabled: !!el.disabled || el.getAttribute('aria-disabled') === 'true',
+              href: el.getAttribute('href') || null,
+            });
+          });
+          return out;
+        })
+        .catch(() => []);
 
     while (steps.length < maxSteps) {
       const fp = await getQuizFingerprint(page).catch(() => '');
@@ -1728,6 +1765,14 @@ async function processCrawlJob(row) {
 
       if (isCheckoutLikePage(url, title)) {
         log(`  · checkout-like page detected, stopping`);
+        stopDiagnostic = {
+          reason: 'checkout_like_page',
+          atStep: steps.length,
+          url,
+          title,
+          label,
+          maxSteps,
+        };
         break;
       }
 
@@ -1784,36 +1829,7 @@ async function processCrawlJob(row) {
         // gave up — text + selector of every visible button-like
         // element. Logged once per crawl, only on stop, so it doesn't
         // bloat the worker log on happy paths.
-        const inventory = await page
-          .evaluate(() => {
-            const out = [];
-            const sel =
-              'button, [role="button"], input[type="submit"], input[type="button"], a, [class*="btn"], [class*="cta"], [class*="answer"], [class*="option"], [class*="choice"], [onclick]';
-            document.querySelectorAll(sel).forEach((el) => {
-              const r = el.getBoundingClientRect();
-              const s = window.getComputedStyle(el);
-              const visible =
-                r.width >= 5 &&
-                r.height >= 5 &&
-                s.visibility !== 'hidden' &&
-                s.display !== 'none' &&
-                s.opacity !== '0';
-              if (!visible) return;
-              const text = ((el.innerText || el.value || el.getAttribute('aria-label') || '') + '').trim().slice(0, 60);
-              if (!text && el.tagName !== 'BUTTON') return;
-              out.push({
-                tag: el.tagName.toLowerCase(),
-                cls: (el.className || '').toString().slice(0, 60),
-                w: Math.round(r.width),
-                h: Math.round(r.height),
-                text: text || '(empty)',
-                disabled: !!el.disabled || el.getAttribute('aria-disabled') === 'true',
-              });
-              if (out.length >= 30) return;
-            });
-            return out;
-          })
-          .catch(() => []);
+        const inventory = await captureDomInventory(page);
         log(`  · no clickable advance found, stopping. DOM inventory at this step:`);
         for (const it of inventory.slice(0, 20)) {
           log(`      [${it.tag}] "${it.text}" — ${it.w}x${it.h} ${it.disabled ? '(disabled)' : ''} class="${it.cls}"`);
@@ -1821,6 +1837,17 @@ async function processCrawlJob(row) {
         if (inventory.length > 20) {
           log(`      ... +${inventory.length - 20} more elements not shown`);
         }
+        stopDiagnostic = {
+          reason: 'no_advance_button',
+          atStep: steps.length,
+          url,
+          title,
+          label,
+          maxSteps,
+          inventory,
+          hint:
+            "The clicker's regex (QUIZ_NEXT_PATTERN_SOURCE) didn't match any visible CTA. Look at `inventory` for the button text on this page and add a matching alternative to the regex (or fix the page's button labels).",
+        };
         break;
       }
 
@@ -1846,11 +1873,36 @@ async function processCrawlJob(row) {
         consecutiveSame++;
         if (consecutiveSame >= CRAWL_SAME_FINGERPRINT_MAX) {
           log(`  · stuck on same fingerprint ${consecutiveSame}× — stopping`);
+          stopDiagnostic = {
+            reason: 'stuck_fingerprint',
+            atStep: steps.length,
+            url,
+            title,
+            label,
+            maxSteps,
+            consecutiveSame,
+            inventory: await captureDomInventory(page),
+            hint:
+              "We DID click an advance button, but the page's text fingerprint never changed. Either the click didn't actually trigger a transition (wrong button), or the next slide is a duplicate that the dedupe heuristic interpreted as 'no progress'.",
+          };
           break;
         }
       } else {
         consecutiveSame = 0;
       }
+    }
+    // If the loop exited because we hit maxSteps cleanly (no early
+    // break), record that too so the dashboard can distinguish "user
+    // capped at 25 and we DELIVERED 25" from "we genuinely walked
+    // the whole funnel, here are all 8 pages it has".
+    if (!stopDiagnostic && steps.length >= maxSteps) {
+      stopDiagnostic = {
+        reason: 'reached_max_steps',
+        atStep: steps.length,
+        maxSteps,
+        hint:
+          "Crawl hit the configured maxSteps limit. The funnel might continue further — bump quizMaxSteps to discover more.",
+      };
     }
 
     await page.close().catch(() => {});
@@ -1863,6 +1915,7 @@ async function processCrawlJob(row) {
       durationMs: Date.now() - startedAt,
       visitedUrls: steps.map((s) => s.url),
       isQuizFunnel: true,
+      stopDiagnostic,
     };
     await updateCrawlJob(jobId, {
       status: 'completed',
