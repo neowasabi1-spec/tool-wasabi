@@ -47,6 +47,20 @@ const defaultProduct: ProductInfo = {
   social_proof: '',
 };
 
+type Auditor = 'claude' | 'neo' | 'morfeo';
+
+const AUDITOR_LABEL: Record<Auditor, string> = {
+  claude: 'Claude (server)',
+  neo: 'Neo (OpenClaw locale)',
+  morfeo: 'Morfeo (OpenClaw locale)',
+};
+
+const AUDITOR_TARGET_AGENT: Record<Auditor, string | null> = {
+  claude: null,
+  neo: 'openclaw:neo',
+  morfeo: 'openclaw:morfeo',
+};
+
 export default function CloneLandingPage() {
   const [url, setUrl] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -71,6 +85,91 @@ export default function CloneLandingPage() {
   const [language, setLanguage] = useState<'it' | 'en'>('it');
   const [showEditor, setShowEditor] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  // Auditor selection (Claude server-side vs Neo/Morfeo via OpenClaw queue).
+  // Claude path = current synchronous behaviour (single POST, await response).
+  // Neo/Morfeo path = enqueue swipe_job in openclaw_messages with a target_agent
+  // and poll until status='completed'. The worker fetches the page locally with
+  // Playwright (no Netlify timeout, no edge 504) and posts back the cleaned HTML.
+  const [auditor, setAuditor] = useState<Auditor>('claude');
+  // Live activity log shown while a Neo/Morfeo job is running, so the user
+  // sees what's happening instead of staring at a generic spinner for ~30s.
+  const [progress, setProgress] = useState<string[]>([]);
+
+  const pushProgress = (msg: string) => {
+    const t = new Date().toLocaleTimeString();
+    setProgress((p) => [...p, `${t}  ${msg}`]);
+  };
+
+  /**
+   * Clone via OpenClaw worker (Neo or Morfeo). The worker fetches the
+   * page locally with Playwright — no Netlify timeout — and posts the
+   * cleaned HTML back. We just enqueue + poll openclaw_messages until
+   * the row's status flips to completed.
+   */
+  const handleCloneViaOpenclaw = async (chosen: Auditor) => {
+    const targetAgent = AUDITOR_TARGET_AGENT[chosen];
+    pushProgress(`Coda OpenClaw → ${AUDITOR_LABEL[chosen]}`);
+
+    const enqueueRes = await fetch('/api/openclaw/queue', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        section: 'swipe_job',
+        message: JSON.stringify({
+          action: 'clone_landing_local',
+          url,
+          removeScripts: true,
+        }),
+        targetAgent,
+      }),
+    });
+    const enqueued = (await enqueueRes.json()) as { id?: string; error?: string };
+    if (!enqueueRes.ok || !enqueued.id) {
+      throw new Error(`Enqueue fallito: ${enqueued.error || `HTTP ${enqueueRes.status}`}`);
+    }
+    pushProgress(`Job #${enqueued.id.slice(0, 8)} in coda · in attesa che il worker lo prenda`);
+
+    // Poll for completion. The worker's own fetchCheckpointPageHtml has a
+    // 20s plain-fetch + 30s Playwright budget per page, so we give it
+    // plenty of headroom — but cap at 5min so a dead worker doesn't
+    // block the UI forever (matches the server-side stale-run watchdog).
+    const t0 = Date.now();
+    const POLL_TIMEOUT_MS = 5 * 60 * 1000;
+    const POLL_INTERVAL_MS = 2000;
+    let lastStatus: string | null = null;
+    while (true) {
+      if (Date.now() - t0 > POLL_TIMEOUT_MS) {
+        throw new Error(`Timeout: il worker non ha completato il job in ${POLL_TIMEOUT_MS / 1000}s.`);
+      }
+      await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+      const pollRes = await fetch(`/api/openclaw/queue?id=${encodeURIComponent(enqueued.id)}`);
+      const polled = (await pollRes.json()) as {
+        status?: string;
+        content?: string;
+        error?: string;
+      };
+      if (polled.status && polled.status !== lastStatus) {
+        lastStatus = polled.status;
+        if (polled.status === 'processing') pushProgress(`Worker ha preso il job · sta scaricando la pagina in locale…`);
+      }
+      if (polled.status === 'completed' && polled.content) {
+        pushProgress(`Job completato`);
+        let parsed: { success?: boolean; html?: string; url?: string; method_used?: string; error?: string } = {};
+        try {
+          parsed = JSON.parse(polled.content);
+        } catch {
+          throw new Error('Risposta del worker non è JSON valido');
+        }
+        if (parsed.success === false || !parsed.html) {
+          throw new Error(parsed.error || 'Worker ha completato senza HTML');
+        }
+        return { html: parsed.html, url: parsed.url ?? url, methodUsed: parsed.method_used };
+      }
+      if (polled.status === 'error' || polled.status === 'failed') {
+        throw new Error(polled.error || 'Worker ha fallito il job');
+      }
+    }
+  };
 
   const handleClone = async () => {
     if (!url.trim()) {
@@ -88,8 +187,22 @@ export default function CloneLandingPage() {
     setIsLoading(true);
     setError(null);
     setResult(null);
+    setProgress([]);
 
     try {
+      // ── OpenClaw path (Neo / Morfeo) ───────────────────────────
+      if (auditor !== 'claude') {
+        const cloned = await handleCloneViaOpenclaw(auditor);
+        setResult({
+          html: cloned.html,
+          url: cloned.url,
+          isSwipedVersion: false,
+        });
+        setShowSwipeForm(true);
+        return;
+      }
+
+      // ── Claude path (server-side, current behaviour) ───────────
       const response = await fetch('/api/landing/clone', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -277,6 +390,44 @@ export default function CloneLandingPage() {
             </button>
           </div>
 
+          {/* Auditor selector — Claude server-side vs Neo/Morfeo via OpenClaw */}
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <span className="text-sm font-medium text-gray-700">Esegui con:</span>
+            {(['claude', 'neo', 'morfeo'] as const).map((opt) => {
+              const active = auditor === opt;
+              const baseClasses =
+                'text-sm px-3 py-1.5 rounded-lg border transition-colors disabled:opacity-50';
+              const colourClasses = active
+                ? opt === 'claude'
+                  ? 'bg-purple-600 text-white border-purple-600'
+                  : opt === 'neo'
+                    ? 'bg-emerald-600 text-white border-emerald-600'
+                    : 'bg-blue-600 text-white border-blue-600'
+                : 'bg-white text-gray-700 border-gray-300 hover:border-gray-400';
+              return (
+                <button
+                  key={opt}
+                  type="button"
+                  disabled={isLoading || isSwiping}
+                  onClick={() => setAuditor(opt)}
+                  className={`${baseClasses} ${colourClasses}`}
+                  title={
+                    opt === 'claude'
+                      ? 'Server-side via Anthropic + Playwright Netlify (può fallire su SPA grossi)'
+                      : `Job in coda OpenClaw → worker ${opt} fa il fetch in locale (no 504)`
+                  }
+                >
+                  {AUDITOR_LABEL[opt]}
+                </button>
+              );
+            })}
+            {auditor !== 'claude' && (
+              <span className="text-xs text-gray-500 ml-1">
+                fetch della pagina sul PC del worker (no Netlify timeout)
+              </span>
+            )}
+          </div>
+
           {/* Quick Examples */}
           <div className="mt-3 flex flex-wrap gap-2">
             <span className="text-sm text-gray-500">Examples:</span>
@@ -305,14 +456,44 @@ export default function CloneLandingPage() {
 
         {/* Loading State */}
         {(isLoading || isSwiping) && (
-          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-12 text-center mb-6">
-            <Loader2 className="w-12 h-12 text-purple-600 animate-spin mx-auto mb-4" />
-            <h3 className="text-lg font-semibold text-gray-900">
-              {isSwiping ? 'Swipe in progress...' : 'Cloning in progress...'}
-            </h3>
-            <p className="text-gray-500 mt-2">
-              {isSwiping ? 'Adapting the landing to your product' : 'Downloading and processing the page'}
-            </p>
+          <div className={`bg-white rounded-xl shadow-sm border border-gray-200 p-8 mb-6 ${isFullscreen ? 'mx-4' : ''}`}>
+            <div className="text-center">
+              <Loader2 className={`w-10 h-10 animate-spin mx-auto mb-3 ${
+                auditor === 'claude'
+                  ? 'text-purple-600'
+                  : auditor === 'neo'
+                    ? 'text-emerald-600'
+                    : 'text-blue-600'
+              }`} />
+              <h3 className="text-lg font-semibold text-gray-900">
+                {isSwiping
+                  ? 'Swipe in corso…'
+                  : auditor === 'claude'
+                    ? 'Cloning in corso…'
+                    : `Cloning via ${AUDITOR_LABEL[auditor]}…`}
+              </h3>
+              <p className="text-gray-500 mt-1 text-sm">
+                {isSwiping
+                  ? 'Adatto la landing al tuo prodotto'
+                  : auditor === 'claude'
+                    ? 'Scarico e processo la pagina sul server Netlify'
+                    : 'Il worker scarica la pagina con Playwright in locale (no 504)'}
+              </p>
+            </div>
+
+            {/* Live activity log — only meaningful when going via OpenClaw */}
+            {!isSwiping && auditor !== 'claude' && progress.length > 0 && (
+              <div className="mt-4 bg-gray-50 border border-gray-200 rounded-lg p-3 max-h-56 overflow-y-auto">
+                {progress.map((line, i) => (
+                  <div
+                    key={i}
+                    className="text-xs font-mono text-gray-700 whitespace-pre-wrap"
+                  >
+                    {line}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 

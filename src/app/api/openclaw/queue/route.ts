@@ -2,18 +2,31 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
 
 export async function POST(req: NextRequest) {
-  const { message, systemPrompt, section, chatHistory } = await req.json();
+  const { message, systemPrompt, section, chatHistory, targetAgent } =
+    await req.json();
   if (!message) return NextResponse.json({ error: 'Missing message' }, { status: 400 });
+
+  // `targetAgent` (e.g. "openclaw:neo", "openclaw:morfeo") routes the
+  // job to a specific worker. Without it, ANY worker can claim the
+  // row (legacy first-come-first-served behaviour). Used by the
+  // clone-landing / agentic-swipe / checkpoint UIs to honor an
+  // explicit auditor selection without changing the worker poll
+  // logic — workers already filter by `target_agent.is.null OR
+  // target_agent.eq.<their-agent>`.
+  const insert: Record<string, unknown> = {
+    user_message: message,
+    system_prompt: systemPrompt || null,
+    section: section || 'Dashboard',
+    chat_history: chatHistory ? JSON.stringify(chatHistory) : null,
+    status: 'pending',
+  };
+  if (typeof targetAgent === 'string' && targetAgent.trim()) {
+    insert.target_agent = targetAgent.trim();
+  }
 
   const { data, error } = await supabase
     .from('openclaw_messages')
-    .insert({
-      user_message: message,
-      system_prompt: systemPrompt || null,
-      section: section || 'Dashboard',
-      chat_history: chatHistory ? JSON.stringify(chatHistory) : null,
-      status: 'pending',
-    })
+    .insert(insert)
     .select('id')
     .single();
 

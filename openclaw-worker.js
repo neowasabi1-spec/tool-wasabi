@@ -673,6 +673,48 @@ async function processMessage(msg) {
           responsePayload = JSON.stringify(result);
           break;
         }
+        case 'clone_landing_local': {
+          // ── Worker-driven clone-landing ─────────────────────────────
+          // Mirrors the new checkpoint pattern: heavy page fetch happens
+          // HERE on the user's PC (no Netlify timeout, no edge 504),
+          // then a single ~1-2s POST to /openclaw-finalize for the
+          // CPU-only post-processing (asset rewrite + asset inlining).
+          //
+          // Job payload:
+          //   { action: 'clone_landing_local', url, removeScripts? }
+          // Response (JSON-encoded into openclaw_messages.response):
+          //   The same shape /api/landing/clone returns on success, so
+          //   the existing UI can consume either path interchangeably.
+          if (!job.url) throw new Error('clone_landing_local missing url');
+          log(`  · clone_landing_local: fetching ${job.url} locally`);
+          const fetched = await fetchCheckpointPageHtml(job.url);
+          if (!fetched.ok || !fetched.html) {
+            throw new Error(
+              `Local fetch failed: ${fetched.error || 'no HTML returned'}`,
+            );
+          }
+          log(`    ✓ fetched ${fetched.html.length} chars via ${fetched.source} in ${(fetched.durationMs / 1000).toFixed(1)}s — finalising server-side`);
+          const finalised = await callToolApi(
+            '/api/landing/clone/openclaw-finalize',
+            {
+              url: job.url,
+              html: fetched.html,
+              removeScripts: job.removeScripts,
+              methodUsed: fetched.source ? `openclaw-local-${fetched.source}` : 'openclaw-local',
+              wasSpa:
+                fetched.source === 'playwright-spa' ||
+                fetched.source === 'playwright-only',
+              attempts: fetched.source ? [fetched.source] : [],
+              fetchDurationMs: fetched.durationMs,
+            },
+            120_000,
+          );
+          if (finalised && finalised.success === false) {
+            throw new Error(finalised.error || 'openclaw-finalize returned failure');
+          }
+          responsePayload = JSON.stringify(finalised);
+          break;
+        }
         default:
           throw new Error(`Unknown swipe_job action: ${job.action}`);
       }
