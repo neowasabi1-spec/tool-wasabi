@@ -27,6 +27,7 @@ import {
   Brain,
   FolderOpen,
   ClipboardCheck,
+  DollarSign,
 } from 'lucide-react';
 
 const menuItems = [
@@ -76,6 +77,11 @@ const menuItems = [
     name: 'API Keys',
     href: '/api-keys',
     icon: KeyRound,
+  },
+  {
+    name: 'Spesa API',
+    href: '/api-usage',
+    icon: DollarSign,
   },
 ];
 

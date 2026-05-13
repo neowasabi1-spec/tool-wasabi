@@ -186,6 +186,62 @@ function callOpenClawNative(messages) {
   });
 }
 
+// ── Pricing & usage logging ─────────────────────────────────────
+// USD per 1M tokens. Keep this in sync with Anthropic's pricing page;
+// numbers below are public list prices as of mid-2025. Used by the
+// /api-usage dashboard to compute "spesa di oggi" without re-fetching
+// invoices. If a model is missing here we fall back to Sonnet pricing
+// and tag `metadata.pricing_fallback = true` so the dashboard can show
+// it as an estimate.
+const ANTHROPIC_PRICING = {
+  'claude-sonnet-4-20250514':       { input: 3.00,  output: 15.00 },
+  'claude-3-5-sonnet-20241022':     { input: 3.00,  output: 15.00 },
+  'claude-3-5-sonnet-20240620':     { input: 3.00,  output: 15.00 },
+  'claude-3-5-haiku-20241022':      { input: 0.80,  output: 4.00  },
+  'claude-3-opus-20240229':         { input: 15.00, output: 75.00 },
+  'claude-opus-4-20250514':         { input: 15.00, output: 75.00 },
+  'claude-haiku-4-20250514':        { input: 0.80,  output: 4.00  },
+};
+
+function pricingFor(provider, model) {
+  if (provider === 'anthropic') {
+    return ANTHROPIC_PRICING[model] || { input: 3.00, output: 15.00, fallback: true };
+  }
+  return null;
+}
+
+function computeCostUsd(provider, model, inputTokens, outputTokens) {
+  const p = pricingFor(provider, model);
+  if (!p) return 0;
+  const inCost = (inputTokens / 1_000_000) * p.input;
+  const outCost = (outputTokens / 1_000_000) * p.output;
+  return Number((inCost + outCost).toFixed(6));
+}
+
+// Fire-and-forget Supabase insert — never throws, never blocks the
+// caller. If the table doesn't exist yet (migration not applied) we
+// silently swallow; the worker keeps running and the user just sees
+// $0 in the dashboard until they apply supabase-migration-api-usage-log.sql.
+async function logApiUsage({ provider, model, inputTokens, outputTokens, source, durationMs, metadata }) {
+  try {
+    const cost = computeCostUsd(provider, model, inputTokens, outputTokens);
+    await supabase.from('api_usage_log').insert({
+      provider,
+      model,
+      input_tokens: inputTokens || 0,
+      output_tokens: outputTokens || 0,
+      cost_usd: cost,
+      source: source || null,
+      agent: OPENCLAW_AGENT || null,
+      duration_ms: durationMs ?? null,
+      metadata: metadata || null,
+    });
+  } catch (e) {
+    // Non-fatal — usage logging must never break the actual job.
+    err(`logApiUsage failed: ${e.message}`);
+  }
+}
+
 // Anthropic Messages API call. Used by Morfeo on the Mac Mini —
 // no local LLM, just an Anthropic API key. We translate the
 // OpenAI-shaped `messages` array into the Anthropic format:
@@ -194,7 +250,23 @@ function callOpenClawNative(messages) {
 //   - everything else stays as { role, content } in `messages`
 //   - the response's `content[].text` blocks are joined back into
 //     a single string so the rest of the worker is unchanged.
+// Optional context attached to the next callAnthropic invocation so
+// logApiUsage can record WHICH job/section this call belonged to.
+// Set with `withCallContext({ source, metadata }, fn)` for clarity.
+let _callContext = null;
+function withCallContext(ctx, fn) {
+  const prev = _callContext;
+  _callContext = ctx || null;
+  try {
+    return fn();
+  } finally {
+    _callContext = prev;
+  }
+}
+
 function callAnthropic(messages) {
+  const callStartedAt = Date.now();
+  const callCtx = _callContext;
   return new Promise((resolve, reject) => {
     if (!ANTHROPIC_API_KEY) {
       return reject(
@@ -263,6 +335,20 @@ function callAnthropic(messages) {
                     .map((b) => b.text)
                     .join('')
                 : '';
+              // Log spend (fire-and-forget — never blocks resolve).
+              const usage = data.usage || {};
+              logApiUsage({
+                provider: 'anthropic',
+                model: data.model || OPENCLAW_MODEL,
+                inputTokens:
+                  (usage.input_tokens || 0) +
+                  (usage.cache_creation_input_tokens || 0) +
+                  (usage.cache_read_input_tokens || 0),
+                outputTokens: usage.output_tokens || 0,
+                source: (callCtx && callCtx.source) || 'worker',
+                durationMs: Date.now() - callStartedAt,
+                metadata: callCtx && callCtx.metadata,
+              }).catch(() => {});
               resolve(text);
             } catch (e) {
               reject(
@@ -678,10 +764,15 @@ async function processMessage(msg) {
           const cat = p.category;
           log(`  ▸ checkpoint ${cat}`);
           try {
+            _callContext = {
+              source: 'checkpoint_audit',
+              metadata: { runId, funnelId, category: cat },
+            };
             const reply = await callOpenClaw([
               { role: 'system', content: p.system },
               { role: 'user', content: p.user },
             ]);
+            _callContext = null;
             await callToolApi(
               `/api/checkpoint/runs/${runId}/openclaw-category`,
               { category: cat, reply, ok: true },
@@ -1077,6 +1168,10 @@ Quale index clicco per andare avanti nel funnel?`;
 
   let reply;
   try {
+    _callContext = {
+      source: 'funnel_crawl_navigation',
+      metadata: { step: attemptNumber + 1 },
+    };
     reply = await callOpenClaw([
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userPrompt },
@@ -1084,6 +1179,8 @@ Quale index clicco per andare avanti nel funnel?`;
   } catch (e) {
     err(`  · LLM-advance failed: ${e.message} — falling back to heuristic`);
     return null;
+  } finally {
+    _callContext = null;
   }
 
   const cleaned = String(reply || '')

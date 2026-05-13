@@ -67,6 +67,10 @@ service-account*.json
 # Runtime job state (per-process, regenerated on each request)
 jobs.json
 
+# Local worker logs (regenerated on each run)
+openclaw-worker.log
+openclaw-worker.err.log
+
 # Supabase CLI local cache
 supabase/.temp/
 
