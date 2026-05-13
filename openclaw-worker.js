@@ -868,6 +868,40 @@ async function updateCrawlJob(jobId, patch) {
   }
 }
 
+// Returns a short human-readable label for the current step. We try to
+// pull the most prominent heading/question text on the page so the
+// modal can show "Step 3: Quanti anni hai?" instead of 11 identical
+// rows for an SPA quiz where the URL never changes.
+async function getStepLabel(page) {
+  return page
+    .evaluate(() => {
+      const candidates = [
+        'h1',
+        '.quiz-question',
+        '[class*="question"]',
+        '[data-question]',
+        '[class*="step-title"]',
+        '[class*="step-heading"]',
+        'h2',
+        '[class*="title"]',
+      ];
+      for (const sel of candidates) {
+        const el = document.querySelector(sel);
+        if (!el) continue;
+        const txt = (el.innerText || '').trim();
+        if (!txt) continue;
+        if (txt.length < 3) continue;
+        return txt.replace(/\s+/g, ' ').slice(0, 140);
+      }
+      const main =
+        document.querySelector('main, [role="main"], .quiz-container, #quiz') ||
+        document.body;
+      const fallback = (main.innerText || '').trim().split('\n').find((l) => l.trim().length > 4);
+      return fallback ? fallback.replace(/\s+/g, ' ').slice(0, 140) : '';
+    })
+    .catch(() => '');
+}
+
 async function getQuizFingerprint(page) {
   return page.evaluate(() => {
     const main =
@@ -1221,15 +1255,24 @@ async function processCrawlJob(row) {
       const fp = await getQuizFingerprint(page).catch(() => '');
       const title = await page.title().catch(() => '');
       const url = page.url();
+      const label = await getStepLabel(page);
 
       steps.push({
         stepIndex: steps.length + 1,
         url,
         title,
+        // `quizStepLabel` is what the checkpoint modal renders as the
+        // row title — for SPA funnels (URL never changes) it's the only
+        // way for the user to tell steps apart. Falls back to title +
+        // index so the row is never blank.
+        quizStepLabel: label || title || `Step ${steps.length + 1}`,
         timestamp: new Date().toISOString(),
         isQuizStep: true,
       });
-      log(`  · step ${steps.length}/${maxSteps}: ${url}`);
+      log(
+        `  · step ${steps.length}/${maxSteps}: ${url}` +
+          (label ? `  ⟶ ${label.slice(0, 80)}` : ''),
+      );
       await updateCrawlJob(jobId, {
         currentStep: steps.length,
         totalSteps: maxSteps,

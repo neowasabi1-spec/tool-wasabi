@@ -562,32 +562,24 @@ export default function CheckpointPage() {
           const steps = (statusBody.result?.steps ?? []) as {
             url: string;
             title?: string;
+            quizStepLabel?: string;
           }[];
           if (steps.length === 0) {
             throw new Error(
               "Il crawler non ha trovato pagine. Prova in modalità manuale.",
             );
           }
-          // Dedupe by canonical URL (origin + pathname, ignore query
-          // string + hash). SPA quiz funnels keep the same URL across
-          // many "steps" because they only swap the rendered content,
-          // so without deduping the modal would show e.g. 11 identical
-          // rows. Keep the first occurrence's title (usually the
-          // landing title) which is the most descriptive.
-          const seen = new Map<string, { url: string; title: string }>();
-          for (const s of steps) {
-            let key: string;
-            try {
-              const u = new URL(s.url);
-              key = u.origin + u.pathname;
-            } catch {
-              key = s.url;
-            }
-            if (!seen.has(key)) {
-              seen.set(key, { url: s.url, title: s.title || s.url });
-            }
-          }
-          const cleaned = Array.from(seen.values());
+          // Show every step the agent traversed, even when the URL is
+          // identical across them (typical of SPA quiz funnels). The
+          // `quizStepLabel` (H1 / question text captured per step) is
+          // what makes them distinguishable in the list.
+          const cleaned = steps.map((s, i) => ({
+            url: s.url,
+            title:
+              s.quizStepLabel ||
+              s.title ||
+              `Step ${i + 1}`,
+          }));
           setAutoSteps(cleaned);
           setAutoSelected(new Set(cleaned.map((_, i) => i)));
           return;
