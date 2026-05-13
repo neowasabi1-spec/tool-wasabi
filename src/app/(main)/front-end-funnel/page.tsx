@@ -2819,10 +2819,15 @@ export default function FrontEndFunnel() {
       } else if (mode === 'rewrite') {
         // All rewrites go through /api/quiz-rewrite (Anthropic Claude)
         let htmlToRewrite = currentPage?.clonedData?.html || currentPage?.swipedData?.html || '';
+        const chosenAuditorEarly = auditorRef.current;
 
         // No size threshold — if there's no cached HTML at all we clone first;
         // anything else (even small SPA shells) is forwarded to Claude.
-        if (!htmlToRewrite) {
+        // Skip the Netlify clone-funnel pre-step when auditor != claude:
+        // the worker's swipe_landing_local already does the fetch locally
+        // via Playwright (no Netlify limits), so making Netlify do it
+        // first just buys us "Internal Error. ID: ..." on big SPAs.
+        if (!htmlToRewrite && chosenAuditorEarly === 'claude') {
           console.log('[rewrite] No HTML cached — cloning page first...');
           setCloneProgress({
             phase: 'extract',
@@ -2896,19 +2901,26 @@ export default function FrontEndFunnel() {
             marketing_brief: (cloneConfig.brief || cloneConfig.customPrompt || '').trim() || undefined,
             market_research: (cloneConfig.marketResearch || '').trim() || undefined,
           };
+          // Spedisci `html` SOLO se l'abbiamo gia' in cache (evita di
+          // mandare megabyte attraverso Netlify per niente — il worker
+          // sa fetchare la pagina lui in locale via Playwright). Se
+          // sourceUrl e' presente ma html no, swipe_landing_local fa
+          // il fetch dal worker. Se entrambi presenti, usa l'html.
+          const swipePayload: Record<string, unknown> = {
+            action: 'swipe_landing_local',
+            sourceUrl: url,
+            product: productPayloadForRow,
+            tone: 'professional',
+            language: cloneConfig.language || 'it',
+          };
+          if (htmlToRewrite) swipePayload.html = htmlToRewrite;
+
           const enqueueRes = await fetch('/api/openclaw/queue', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               section: 'swipe_job',
-              message: JSON.stringify({
-                action: 'swipe_landing_local',
-                html: htmlToRewrite,
-                sourceUrl: url,
-                product: productPayloadForRow,
-                tone: 'professional',
-                language: cloneConfig.language || 'it',
-              }),
+              message: JSON.stringify(swipePayload),
               targetAgent: targetAgentForRewrite,
             }),
           });
