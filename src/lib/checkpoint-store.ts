@@ -337,6 +337,67 @@ export async function syncLastRunSnapshot(args: {
  *  gave up". */
 const RUN_STALE_AFTER_MS = 10 * 60 * 1000; // 10 minutes
 
+/** Diagnose WHY a stale run is stale by peeking at the OpenClaw queue
+ *  row tied to it. The dashboard used to surface a single, misleading
+ *  "timeout della funzione" message for every reaped run — which was
+ *  fine for Claude (synchronous, can genuinely hit the lambda budget)
+ *  but actively wrong for OpenClaw runs whose only failure mode here
+ *  is "no worker for the targeted agent ever picked up the job".
+ *
+ *  Returns the agent that was targeted (if any) and what the queue
+ *  row's last observed status was, so the caller can craft a precise
+ *  message. Soft-fails: if the queue lookup errors out we just say
+ *  we don't know and keep the legacy text.
+ *
+ *  Mirror of /api/checkpoint/runs/[runId]/queue-status — kept inline
+ *  rather than importing because checkpoint-store is the lower layer.
+ */
+async function diagnoseStaleRun(runId: string): Promise<{
+  source: 'openclaw' | 'unknown';
+  targetAgent: string | null;
+  queueStatus: 'pending' | 'processing' | 'completed' | 'error' | null;
+  queueError: string | null;
+}> {
+  const fallback = {
+    source: 'unknown' as const,
+    targetAgent: null,
+    queueStatus: null,
+    queueError: null,
+  };
+  try {
+    const needle = `"runId":"${runId.replace(/[%_]/g, '')}"`;
+    const { data, error } = await supabase
+      .from('openclaw_messages')
+      .select('status, target_agent, error_message')
+      .eq('section', 'checkpoint_audit')
+      .ilike('user_message', `%${needle}%`)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error || !data) return fallback;
+    return {
+      source: 'openclaw',
+      targetAgent: (data.target_agent as string | null) ?? null,
+      queueStatus: (data.status as
+        | 'pending'
+        | 'processing'
+        | 'completed'
+        | 'error'
+        | null) ?? null,
+      queueError: (data.error_message as string | null) ?? null,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+/** Pretty-print "openclaw:morfeo" → "Morfeo" for user-facing copy. */
+function prettyAgent(agent: string | null): string {
+  if (!agent) return 'sconosciuto';
+  const tail = agent.includes(':') ? agent.split(':').slice(-1)[0] : agent;
+  return tail.charAt(0).toUpperCase() + tail.slice(1);
+}
+
 /** If `row` is a `running` checkpoint older than the stale threshold,
  *  flip it to `failed` in-place (both in the DB and on the returned
  *  object). This prevents the live dashboard from spinning forever
@@ -351,9 +412,36 @@ async function reapStaleRun(
   if (!Number.isFinite(startedAt)) return row;
   if (Date.now() - startedAt < RUN_STALE_AFTER_MS) return row;
 
+  // Try to figure out WHY the run is stale instead of always blaming
+  // the lambda. For OpenClaw-targeted runs the most common cause is
+  // simply "no worker of that agent is connected" — the previous
+  // generic "timeout della funzione" copy was actively misleading
+  // for those.
+  const diag = await diagnoseStaleRun(row.id);
+  let errorMsg: string;
+  if (diag.source === 'openclaw' && diag.queueStatus === 'pending') {
+    const agent = prettyAgent(diag.targetAgent);
+    errorMsg =
+      `Nessun worker ${agent} ha preso il job nei 10 minuti dalla creazione. ` +
+      `Verifica che il worker ${diag.targetAgent ?? agent} sia avviato sul ` +
+      `PC giusto e collegato a Supabase, oppure rilancia la run con un altro auditor.`;
+  } else if (diag.source === 'openclaw' && diag.queueStatus === 'processing') {
+    const agent = prettyAgent(diag.targetAgent);
+    errorMsg =
+      `Il worker ${agent} ha preso il job ma non l'ha completato in 10 minuti. ` +
+      `Probabile crash o blocco del worker — controlla il terminale del worker ` +
+      `(scroll-up sull'ultimo "▸ checkpoint <categoria>" per vedere dove si è fermato).`;
+  } else if (diag.source === 'openclaw' && diag.queueStatus === 'error') {
+    const agent = prettyAgent(diag.targetAgent);
+    errorMsg =
+      `Il worker ${agent} ha terminato con errore (${diag.queueError ?? 'motivo non riportato'}) ` +
+      `ma la run non è stata finalizzata. Verifica i log del worker e riprova.`;
+  } else {
+    // Legacy / Claude path: keep the original copy.
+    errorMsg =
+      'Run interrotta dal server (timeout della funzione). Riprova: il fetch delle pagine ora gira in parallelo, ma una run molto lunga può ancora superare il limite della piattaforma.';
+  }
   const completedAt = new Date().toISOString();
-  const errorMsg =
-    'Run interrotta dal server (timeout della funzione). Riprova: il fetch delle pagine ora gira in parallelo, ma una run molto lunga può ancora superare il limite della piattaforma.';
   const { error } = await supabase
     .from('funnel_checkpoints')
     .update({
