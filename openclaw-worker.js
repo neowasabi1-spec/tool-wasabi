@@ -1683,18 +1683,96 @@ async function processCrawlJob(row) {
         break;
       }
 
+      // Wait for the page to actually have a visible interactive
+      // element before we try to click. React quiz funnels often
+      // animate-in their CTA / answer cards 200-1000ms after the
+      // previous transition completes, so calling clickAdvance too
+      // early sees an empty DOM.
+      await page
+        .waitForFunction(
+          () => {
+            const els = document.querySelectorAll(
+              'button, [role="button"], input[type="submit"], a[class*="btn"], [class*="cta"], [class*="answer"], [class*="option"]',
+            );
+            for (const el of els) {
+              const rect = el.getBoundingClientRect();
+              if (rect.width >= 40 && rect.height >= 24) {
+                const s = window.getComputedStyle(el);
+                if (s.visibility !== 'hidden' && s.display !== 'none' && s.opacity !== '0') {
+                  return true;
+                }
+              }
+            }
+            return false;
+          },
+          { timeout: 3500 },
+        )
+        .catch(() => {
+          /* timeout — the page genuinely has no buttons; clickAdvance
+             will return false and the loop will break with the right
+             diagnostic. */
+        });
+
       await fillCrawlFormFields(page).catch(() => 0);
 
       // Pure Playwright + heuristic. Previous version asked the LLM
       // per click, but that was both very slow (Trinity ~30-60s per
       // decision) and unnecessary — the regex priority queue already
-      // handles ~95% of quiz funnels (radio selection done above by
-      // fillCrawlFormFields, then "next/continua/avanti" click here).
-      const advanced = await clickCrawlAdvance(page, QUIZ_NEXT_PATTERN_SOURCE).catch(
+      // handles ~95% of quiz funnels.
+      let advanced = await clickCrawlAdvance(page, QUIZ_NEXT_PATTERN_SOURCE).catch(
         () => false,
       );
+      // Retry once after a short wait. On animated SPA quizzes the CTA
+      // sometimes appears 500-1500ms after the previous transition; a
+      // single retry catches those without making the happy path slow.
       if (!advanced) {
-        log(`  · no clickable advance found, stopping`);
+        await new Promise((r) => setTimeout(r, 1200));
+        advanced = await clickCrawlAdvance(page, QUIZ_NEXT_PATTERN_SOURCE).catch(
+          () => false,
+        );
+      }
+      if (!advanced) {
+        // Verbose dump so we can see WHAT was on the page when we
+        // gave up — text + selector of every visible button-like
+        // element. Logged once per crawl, only on stop, so it doesn't
+        // bloat the worker log on happy paths.
+        const inventory = await page
+          .evaluate(() => {
+            const out = [];
+            const sel =
+              'button, [role="button"], input[type="submit"], input[type="button"], a, [class*="btn"], [class*="cta"], [class*="answer"], [class*="option"], [class*="choice"], [onclick]';
+            document.querySelectorAll(sel).forEach((el) => {
+              const r = el.getBoundingClientRect();
+              const s = window.getComputedStyle(el);
+              const visible =
+                r.width >= 5 &&
+                r.height >= 5 &&
+                s.visibility !== 'hidden' &&
+                s.display !== 'none' &&
+                s.opacity !== '0';
+              if (!visible) return;
+              const text = ((el.innerText || el.value || el.getAttribute('aria-label') || '') + '').trim().slice(0, 60);
+              if (!text && el.tagName !== 'BUTTON') return;
+              out.push({
+                tag: el.tagName.toLowerCase(),
+                cls: (el.className || '').toString().slice(0, 60),
+                w: Math.round(r.width),
+                h: Math.round(r.height),
+                text: text || '(empty)',
+                disabled: !!el.disabled || el.getAttribute('aria-disabled') === 'true',
+              });
+              if (out.length >= 30) return;
+            });
+            return out;
+          })
+          .catch(() => []);
+        log(`  · no clickable advance found, stopping. DOM inventory at this step:`);
+        for (const it of inventory.slice(0, 20)) {
+          log(`      [${it.tag}] "${it.text}" — ${it.w}x${it.h} ${it.disabled ? '(disabled)' : ''} class="${it.cls}"`);
+        }
+        if (inventory.length > 20) {
+          log(`      ... +${inventory.length - 20} more elements not shown`);
+        }
         break;
       }
 
