@@ -529,7 +529,17 @@ export interface FunnelPageHtml {
   screenshotError?: string | null;
 }
 
-const FETCH_CONCURRENCY = 3;
+// Concurrency cap for parallel page fetches inside fetchFunnelPagesHtml.
+// 3 was a safe starting point but made 25-step funnels go ~4 minutes
+// (right at Netlify's maxDuration ceiling). Bumped to 6 because:
+//   - Playwright is the dominant cost, and a single Lambda has 1 vCPU
+//     anyway, so we're CPU-bound past ~4-5 simultaneous browsers.
+//   - At 6 simultaneous SPA renders we peak around ~600-800MB which
+//     fits comfortably in the 1024MB Netlify default memory.
+//   - 25 pages / 6 = ~4 batches × ~25s each ≈ 100s wall clock,
+//     well inside the 300s budget AND under the (now-streamed) edge
+//     inactivity window.
+const FETCH_CONCURRENCY = 6;
 /** Cap on parallel screenshot captures. Each Playwright launch costs
  *  ~5–10s of cold start + 200–500MB peak memory, so we keep this
  *  smaller than the HTML fetch concurrency. */

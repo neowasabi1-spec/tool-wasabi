@@ -711,6 +711,16 @@ async function processMessage(msg) {
             { categories, brandProfile, runId },
             300_000, // 5 min: SPA fetch can be slow on first visit
           );
+          // The endpoint now streams a heartbeat to defeat the CDN's
+          // 30s inactivity timeout and returns errors as
+          // { error } with HTTP 200 (we can't change the status
+          // code mid-stream). Surface them as thrown so the catch
+          // below marks the run failed and the dashboard activity
+          // log shows the real reason instead of "Worker did not
+          // POST /openclaw-category…" generic noise.
+          if (prep && typeof prep === 'object' && prep.error) {
+            throw new Error(String(prep.error));
+          }
         } catch (e) {
           err(`  ✗ openclaw-prep failed: ${e.message}`);
           await callToolApi(
