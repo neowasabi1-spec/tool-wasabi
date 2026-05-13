@@ -383,22 +383,29 @@ function callAnthropic(messages) {
 }
 
 // ===== TOOL API CALL (for swipe jobs) =============================
-function callToolApi(path, body, timeoutMs) {
+function callToolApi(path, body, timeoutMs, method = 'POST') {
   return new Promise((resolve, reject) => {
     const u = new URL(path, TOOL_BASE_URL);
     const isHttps = u.protocol === 'https:';
     const lib = isHttps ? https : http;
-    const payload = JSON.stringify(body);
+    // GET requests have no body; passing one to lib.request would
+    // confuse the server, so we omit Content-Length / write.
+    const isGet = method.toUpperCase() === 'GET';
+    const payload = isGet ? '' : JSON.stringify(body ?? {});
+
+    const headers = isGet
+      ? { 'Accept': 'application/json' }
+      : {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(payload),
+        };
 
     const req = lib.request({
       hostname: u.hostname,
       port: u.port || (isHttps ? 443 : 80),
       path: u.pathname + u.search,
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(payload),
-      },
+      method: method.toUpperCase(),
+      headers,
       timeout: timeoutMs,
     }, (res) => {
       let buf = '';
@@ -418,9 +425,32 @@ function callToolApi(path, body, timeoutMs) {
       reject(new Error(`Tool API timeout after ${(timeoutMs / 1000).toFixed(0)}s`));
     });
     req.on('error', (e) => reject(new Error(`Tool API network error: ${e.message}`)));
-    req.write(payload);
+    if (!isGet) req.write(payload);
     req.end();
   });
+}
+
+/**
+ * Write a "[stage] <msg>" hint to funnel_checkpoints.error so the
+ * dashboard's polling client can surface "what is the worker doing
+ * RIGHT NOW" in the activity monitor while the local page-fetch is
+ * in progress. Replaces the old server-side writeStageHint that ran
+ * inside openclaw-prep — now that prep is local, we have to write
+ * the hint ourselves directly via Supabase.
+ *
+ * Non-fatal: a Supabase blip during a fetch must NEVER fail the run.
+ */
+async function writeCheckpointStageHint(runId, msg) {
+  if (!runId || !msg) return;
+  try {
+    await supabase
+      .from('funnel_checkpoints')
+      .update({ error: `[stage] ${msg}` })
+      .eq('id', runId);
+  } catch (e) {
+    // Soft-fail by design — the whole monitor is a "nice to have".
+    err(`writeCheckpointStageHint failed: ${e && e.message ? e.message : String(e)}`);
+  }
 }
 
 // ===== REWRITE BATCHING ==========================================
@@ -697,32 +727,71 @@ async function processMessage(msg) {
           ).catch(() => {});
           throw new Error('checkpoint_audit missing funnelId (and no prompts inline)');
         }
-        log(`  · prep: fetching pages + building prompts for funnel ${funnelId}`);
+        log(`  · prep: fetching funnel info from server (light read)`);
+        // ── New flow ────────────────────────────────────────────────
+        // The slow Playwright/SPA fetch is now done LOCALLY here.
+        // Only two server calls remain in this hot path and both are
+        // guaranteed sub-second:
+        //   1) GET /api/checkpoint/[id]   → funnel + pages metadata
+        //   2) POST /openclaw-build-prompts → text → prompts
+        // Anything that used to fail with a Netlify 504 ("Inactivity
+        // Timeout" after ~28s during page fetch) now lives on the
+        // user's PC where there is no inactivity timeout at all.
         let prep;
         try {
-          prep = await callToolApi(
-            `/api/checkpoint/${funnelId}/openclaw-prep`,
-            // Forward runId so the prep step can write [stage] hints
-            // into funnel_checkpoints.error during the 30-90s page-
-            // fetch / SPA-render window. The dashboard polling client
-            // reads those and shows them in the live activity log so
-            // the user sees what's happening instead of staring at
-            // "0/3 step completati" for a minute.
-            { categories, brandProfile, runId },
-            300_000, // 5 min: SPA fetch can be slow on first visit
+          // 1. Funnel metadata (pages array, brand profile, name).
+          const funnelInfo = await callToolApi(
+            `/api/checkpoint/${funnelId}`,
+            null,
+            30_000,
+            'GET',
           );
-          // The endpoint now streams a heartbeat to defeat the CDN's
-          // 30s inactivity timeout and returns errors as
-          // { error } with HTTP 200 (we can't change the status
-          // code mid-stream). Surface them as thrown so the catch
-          // below marks the run failed and the dashboard activity
-          // log shows the real reason instead of "Worker did not
-          // POST /openclaw-category…" generic noise.
+          if (!funnelInfo || !funnelInfo.funnel) {
+            throw new Error('Funnel not found on server');
+          }
+          const funnelPages = Array.isArray(funnelInfo.funnel.pages)
+            ? funnelInfo.funnel.pages
+            : [];
+          if (funnelPages.length === 0) {
+            throw new Error('Funnel has no pages configured');
+          }
+
+          // 2. Local fetch of every page (Playwright on this PC) + a
+          //    progress hint into funnel_checkpoints.error so the
+          //    dashboard's live monitor shows "Pagine scaricate X/N".
+          log(`  · fetching ${funnelPages.length} pages locally (Playwright)…`);
+          await writeCheckpointStageHint(runId, `Scarico ${funnelPages.length} pagine in locale…`);
+          const auditSteps = await fetchCheckpointFunnelLocally(funnelPages, {
+            onProgress: async (done, total) => {
+              await writeCheckpointStageHint(
+                runId,
+                `Pagine scaricate ${done}/${total} (worker locale)`,
+              );
+            },
+          });
+          const reachableNow = auditSteps.filter(
+            (s) => s.pageText && s.pageText.length > 0,
+          ).length;
+          log(`  · local fetch done: ${reachableNow}/${auditSteps.length} pages reachable`);
+          await writeCheckpointStageHint(
+            runId,
+            `Costruzione prompt (${reachableNow}/${auditSteps.length} pagine pronte)…`,
+          );
+
+          // 3. Build prompts on the server. Tiny payload by checkpoint
+          //    standards: ~25KB per page after htmlToAuditText, well
+          //    inside Netlify's 6MB POST limit even on funnels with
+          //    25 steps.
+          prep = await callToolApi(
+            `/api/checkpoint/${funnelId}/openclaw-build-prompts`,
+            { categories, brandProfile, auditSteps },
+            60_000,
+          );
           if (prep && typeof prep === 'object' && prep.error) {
             throw new Error(String(prep.error));
           }
         } catch (e) {
-          err(`  ✗ openclaw-prep failed: ${e.message}`);
+          err(`  ✗ openclaw prep (local) failed: ${e.message}`);
           await callToolApi(
             `/api/checkpoint/runs/${runId}/openclaw-finalize`,
             {
@@ -982,6 +1051,219 @@ const CRAWL_SAME_FINGERPRINT_MAX = 3;
 // down (`Math.min(..., 60)`) prevents runaway loops.
 const CRAWL_DEFAULT_MAX_STEPS = 40;
 const CRAWL_POLL_INTERVAL_MS = 4000;
+
+// ── checkpoint_audit: local page fetch helpers ────────────────────
+// Tunables for the LOCAL page-fetch path used by the new checkpoint
+// flow. We do all the heavy lifting in the worker (Playwright on the
+// user's PC) so Netlify functions never need to fetch HTML and the
+// edge CDN's 30s inactivity timeout becomes irrelevant.
+const CHECKPOINT_FETCH_CONCURRENCY = 6;
+const CHECKPOINT_FETCH_TIMEOUT_MS = 20_000; // plain fetch
+const CHECKPOINT_PLAYWRIGHT_TIMEOUT_MS = 30_000; // Playwright nav
+// Heuristic: if the plain-fetched HTML body has fewer than this many
+// chars after stripping tags, treat it as a "shell SPA" and fall
+// back to Playwright. Real content pages routinely clear this bar.
+const CHECKPOINT_SPA_SHELL_TEXT_THRESHOLD = 500;
+
+/**
+ * Strip an HTML payload down to compact, audit-ready text. Mirrors
+ * `htmlToAuditText` in src/lib/checkpoint-prompts.ts — kept in sync
+ * by hand because porting the whole prompts module here would balloon
+ * the worker.
+ */
+function checkpointHtmlToAuditText(html, maxChars = 30000) {
+  if (typeof html !== 'string' || html.length === 0) return '';
+  let out = html
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, '')
+    .replace(/<svg[\s\S]*?<\/svg>/gi, '')
+    .replace(/<!--[\s\S]*?-->/g, '');
+  out = out.replace(
+    /<a\b[^>]*?href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi,
+    (_m, href, inner) => {
+      const txt = inner.replace(/<[^>]+>/g, '').trim();
+      return txt ? `[CTA-LINK href="${href.slice(0, 200)}"]${txt}[/CTA]` : '';
+    },
+  );
+  out = out.replace(
+    /<button\b[^>]*>([\s\S]*?)<\/button>/gi,
+    (_m, inner) => {
+      const txt = inner.replace(/<[^>]+>/g, '').trim();
+      return txt ? `[CTA-BTN]${txt}[/CTA]` : '';
+    },
+  );
+  out = out
+    .replace(/<h([1-6])\b[^>]*>([\s\S]*?)<\/h\1>/gi, '\n\n# $2\n')
+    .replace(/<\/?(p|li|tr|td|th|div|section|article|header|footer)\b[^>]*>/gi, '\n')
+    .replace(/<br\s*\/?>/gi, '\n');
+  out = out
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;|&#160;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
+  if (out.length > maxChars) {
+    out = out.slice(0, maxChars) + `\n\n[... truncated, original ${out.length} chars]`;
+  }
+  return out;
+}
+
+/**
+ * Fetch a single page's HTML for the checkpoint audit. Two-tier
+ * strategy:
+ *   1) plain `fetch()` with a 20s budget — fast for SSR/SSG pages.
+ *   2) if the returned HTML strips down to < SPA_SHELL_TEXT_THRESHOLD
+ *      chars (typical React shell with empty <div id="root">), fire
+ *      Playwright to get the post-render DOM.
+ *
+ * Returns `{ ok, html, error, source, durationMs }`. We never throw —
+ * the caller drives a per-step error column instead.
+ */
+async function fetchCheckpointPageHtml(url) {
+  const t0 = Date.now();
+  if (!url || !/^https?:\/\//i.test(url)) {
+    return { ok: false, html: null, error: 'invalid url', source: null, durationMs: 0 };
+  }
+  // ── 1. Plain fetch ───────────────────────────────────────────────
+  let plainHtml = null;
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), CHECKPOINT_FETCH_TIMEOUT_MS);
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Wasabi Checkpoint Bot — local worker) AppleWebKit/537.36',
+        'Accept': 'text/html,application/xhtml+xml',
+      },
+      redirect: 'follow',
+      signal: ctrl.signal,
+    });
+    clearTimeout(timer);
+    if (res.ok) {
+      const ct = res.headers.get('content-type') || '';
+      if (ct.includes('html') || ct === '') {
+        plainHtml = await res.text();
+      }
+    }
+  } catch {
+    // Plain fetch failed — fall through to Playwright.
+  }
+  if (plainHtml && plainHtml.length > 0) {
+    const stripped = checkpointHtmlToAuditText(plainHtml, 100000);
+    if (stripped.length >= CHECKPOINT_SPA_SHELL_TEXT_THRESHOLD) {
+      return { ok: true, html: plainHtml, error: null, source: 'fetch', durationMs: Date.now() - t0 };
+    }
+  }
+  // ── 2. Playwright fallback ───────────────────────────────────────
+  if (!playwrightChromium) {
+    return {
+      ok: !!plainHtml,
+      html: plainHtml,
+      error: plainHtml
+        ? null
+        : 'plain fetch failed and Playwright is not available in this worker',
+      source: plainHtml ? 'fetch-thin' : null,
+      durationMs: Date.now() - t0,
+    };
+  }
+  let browser = null;
+  try {
+    browser = await playwrightChromium.launch({
+      headless: true,
+      args: ['--disable-dev-shm-usage', '--disable-gpu'],
+    });
+    const ctx = await browser.newContext({
+      userAgent:
+        'Mozilla/5.0 (Wasabi Checkpoint Bot — local worker) AppleWebKit/537.36',
+      viewport: { width: 1280, height: 1800 },
+    });
+    // Block trackers (same list as the crawl path) so navigation
+    // doesn't sit on networkidle waiting for analytics beacons.
+    await ctx.route('**/*', (route) => {
+      const u = route.request().url();
+      if (CRAWL_BLOCKED_HOSTS.some((h) => u.includes(h))) return route.abort();
+      return route.continue();
+    });
+    const page = await ctx.newPage();
+    await page.goto(url, {
+      waitUntil: 'domcontentloaded',
+      timeout: CHECKPOINT_PLAYWRIGHT_TIMEOUT_MS,
+    });
+    // Give SPAs a beat to populate the DOM after DOMContentLoaded.
+    await page.waitForLoadState('networkidle', { timeout: 5_000 }).catch(() => {});
+    const renderedHtml = await page.content();
+    await page.close().catch(() => {});
+    await ctx.close().catch(() => {});
+    return {
+      ok: true,
+      html: renderedHtml,
+      error: null,
+      source: plainHtml ? 'playwright-spa' : 'playwright-only',
+      durationMs: Date.now() - t0,
+    };
+  } catch (e) {
+    return {
+      ok: !!plainHtml,
+      html: plainHtml,
+      error: plainHtml
+        ? null
+        : `playwright failed: ${e && e.message ? e.message : String(e)}`,
+      source: plainHtml ? 'fetch-thin' : null,
+      durationMs: Date.now() - t0,
+    };
+  } finally {
+    if (browser) await browser.close().catch(() => {});
+  }
+}
+
+/**
+ * Fetch every page of a funnel in parallel (bounded concurrency) and
+ * normalise into the `auditSteps` shape the openclaw-build-prompts
+ * endpoint expects. Designed to replace the slow, Netlify-side
+ * fetchFunnelPagesHtml + htmlToAuditText pipeline that kept tripping
+ * the edge inactivity 504.
+ */
+async function fetchCheckpointFunnelLocally(pages, opts = {}) {
+  const onProgress = typeof opts.onProgress === 'function' ? opts.onProgress : null;
+  const out = new Array(pages.length);
+  let cursor = 0;
+  let done = 0;
+  async function worker() {
+    while (true) {
+      const i = cursor++;
+      if (i >= pages.length) return;
+      const p = pages[i];
+      const res = await fetchCheckpointPageHtml(p.url);
+      const text = res.ok && res.html ? checkpointHtmlToAuditText(res.html) : '';
+      out[i] = {
+        index: i + 1,
+        url: p.url,
+        name: p.name,
+        pageType: p.pageType,
+        pageText: text,
+        fetchError: res.ok && text.length > 0 ? null : res.error || 'empty page',
+        source: res.source || null,
+        durationMs: res.durationMs,
+      };
+      done++;
+      if (onProgress) {
+        try {
+          await onProgress(done, pages.length);
+        } catch { /* progress callback errors are non-fatal */ }
+      }
+    }
+  }
+  const workerCount = Math.min(CHECKPOINT_FETCH_CONCURRENCY, pages.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  return out;
+}
 
 // Hosts whose requests we abort to keep navigation fast. These are
 // pure analytics/marketing trackers — blocking them never breaks the
