@@ -9,7 +9,18 @@ function getClient(): SupabaseClient {
   if (!supabaseUrl || !supabaseAnonKey) {
     throw new Error('Missing Supabase environment variables');
   }
-  _client = createClient(supabaseUrl, supabaseAnonKey);
+  // Force every Supabase HTTP call to bypass Next 14's data cache.
+  // The default `fetch` in Next 14 Route Handlers caches GET responses
+  // unless you explicitly opt out, which means the polling endpoint
+  // for funnel-crawl status was happily returning a "still running"
+  // snapshot for minutes after the worker had written `completed` to
+  // Supabase. Wrapping fetch with `cache: 'no-store'` makes the entire
+  // codebase immune to this class of bug.
+  const noStoreFetch: typeof fetch = (input, init) =>
+    fetch(input, { ...init, cache: 'no-store' });
+  _client = createClient(supabaseUrl, supabaseAnonKey, {
+    global: { fetch: noStoreFetch },
+  });
   return _client;
 }
 
