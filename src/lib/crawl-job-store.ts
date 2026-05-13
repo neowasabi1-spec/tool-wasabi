@@ -69,19 +69,53 @@ function rowToJob(row: CrawlJobRow): CrawlJob {
 export async function createJob(
   entryUrl: string,
   params: Record<string, unknown>,
+  targetAgent?: string | null,
 ): Promise<string> {
+  const insertRow: Record<string, unknown> = {
+    status: 'pending',
+    entry_url: entryUrl,
+    params,
+    current_step: 0,
+    total_steps: 0,
+  };
+  // Only set the column if the caller cares; if the migration
+  // (supabase-migration-funnel-crawl-jobs-target-agent.sql) hasn't
+  // been applied yet PostgREST will reject the insert with
+  // "Could not find the 'target_agent' column", so we leave it out
+  // entirely when the caller doesn't pass anything.
+  if (targetAgent) {
+    insertRow.target_agent = targetAgent;
+  }
+
   const { data, error } = await supabase
     .from('funnel_crawl_jobs')
-    .insert({
-      status: 'pending',
-      entry_url: entryUrl,
-      params,
-      current_step: 0,
-      total_steps: 0,
-    })
+    .insert(insertRow)
     .select('id')
     .single();
   if (error) {
+    // Self-healing: if the column is missing, retry without it so the
+    // crawl still works (it just becomes first-come-first-served).
+    if (
+      targetAgent &&
+      /target_agent/i.test(error.message)
+    ) {
+      console.warn(
+        `[crawl-job-store] target_agent column missing — retrying without it. ` +
+          `Apply supabase-migration-funnel-crawl-jobs-target-agent.sql to enable agent routing.`,
+      );
+      delete insertRow.target_agent;
+      const retry = await supabase
+        .from('funnel_crawl_jobs')
+        .insert(insertRow)
+        .select('id')
+        .single();
+      if (retry.error) {
+        throw new Error(
+          `createJob failed: ${retry.error.message}. Did you apply supabase-migration-funnel-crawl-jobs.sql?`,
+        );
+      }
+      return retry.data.id as string;
+    }
     throw new Error(
       `createJob failed: ${error.message}. Did you apply supabase-migration-funnel-crawl-jobs.sql?`,
     );

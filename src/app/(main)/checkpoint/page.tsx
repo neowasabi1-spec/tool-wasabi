@@ -180,6 +180,10 @@ export default function CheckpointPage() {
 
   // Funnel auto mode: enter one URL → crawl → choose which steps to keep.
   const [autoEntryUrl, setAutoEntryUrl] = useState('');
+  // Which agent's worker should pick up the crawl job. 'neo' = Windows
+  // PC worker, 'morfeo' = Mac Mini worker (Anthropic). 'any' (default)
+  // means whichever worker polls first wins.
+  const [autoAgent, setAutoAgent] = useState<'any' | 'neo' | 'morfeo'>('any');
   const [autoCrawling, setAutoCrawling] = useState(false);
   const [autoJobId, setAutoJobId] = useState<string | null>(null);
   const [autoProgress, setAutoProgress] = useState<{
@@ -514,6 +518,10 @@ export default function CheckpointPage() {
           captureScreenshots: false,
           captureNetwork: false,
           captureCookies: false,
+          // 'any' → don't tag the row, let either worker grab it.
+          // 'neo' / 'morfeo' → only that agent's worker can claim it
+          // (matches OPENCLAW_AGENT in openclaw-worker.js).
+          targetAgent: autoAgent === 'any' ? null : autoAgent,
         }),
       });
       const startBody = await startRes.json();
@@ -1158,6 +1166,37 @@ export default function CheckpointPage() {
                           className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-violet-500 disabled:bg-gray-50"
                           autoFocus
                         />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-gray-700 mb-1">
+                          Naviga con
+                        </label>
+                        <div className="inline-flex rounded-lg border border-gray-300 bg-white p-0.5">
+                          {(['any', 'neo', 'morfeo'] as const).map((opt) => {
+                            const active = autoAgent === opt;
+                            const label =
+                              opt === 'any'
+                                ? 'Auto'
+                                : opt === 'neo'
+                                ? 'Neo (PC)'
+                                : 'Morfeo (Mac)';
+                            return (
+                              <button
+                                key={opt}
+                                type="button"
+                                disabled={autoCrawling}
+                                onClick={() => setAutoAgent(opt)}
+                                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                                  active
+                                    ? 'bg-violet-600 text-white'
+                                    : 'text-gray-600 hover:bg-gray-100'
+                                } disabled:opacity-50`}
+                              >
+                                {label}
+                              </button>
+                            );
+                          })}
+                        </div>
                       </div>
                       <button
                         type="submit"

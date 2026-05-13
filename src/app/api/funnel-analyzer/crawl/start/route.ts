@@ -36,6 +36,7 @@ export async function POST(request: NextRequest) {
       viewportHeight = 720,
       quizMode = false,
       quizMaxSteps = 20,
+      targetAgent = null,
     } = body;
 
     if (!entryUrl || typeof entryUrl !== 'string') {
@@ -87,9 +88,22 @@ export async function POST(request: NextRequest) {
       quizMaxSteps,
     };
 
-    const jobId = await createJob(params.entryUrl, params);
+    // Normalise target_agent: accept "neo" / "morfeo" shorthand and
+    // expand to the canonical "openclaw:neo" / "openclaw:morfeo" the
+    // worker matches on. NULL means first-come-first-served.
+    let resolvedTargetAgent: string | null = null;
+    if (typeof targetAgent === 'string' && targetAgent.trim()) {
+      const t = targetAgent.trim().toLowerCase();
+      if (t === 'neo' || t === 'morfeo') {
+        resolvedTargetAgent = `openclaw:${t}`;
+      } else if (t.startsWith('openclaw:')) {
+        resolvedTargetAgent = t;
+      }
+    }
+
+    const jobId = await createJob(params.entryUrl, params, resolvedTargetAgent);
     console.log(
-      `[crawl/start] queued job ${jobId} for ${params.entryUrl} (maxSteps=${params.maxSteps}, quizMode=${params.quizMode})`,
+      `[crawl/start] queued job ${jobId} for ${params.entryUrl} (maxSteps=${params.maxSteps}, quizMode=${params.quizMode}, target=${resolvedTargetAgent || 'any'})`,
     );
 
     return NextResponse.json({

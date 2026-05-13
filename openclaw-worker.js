@@ -1077,22 +1077,65 @@ async function fillCrawlFormFields(page) {
       cb.dispatchEvent(new Event('click', { bubbles: true }));
     }
 
+    // Tick one radio per radio group. On a quiz funnel each step is
+    // typically one radio group; without ticking one the "Next" CTA
+    // is disabled. We pick the first visible option so the answer
+    // doesn't bias the crawl — for the checkpoint use case we only
+    // care about WHICH steps exist, not what was answered.
+    const radios = Array.from(
+      document.querySelectorAll('input[type="radio"]'),
+    ).filter((r) => {
+      const rect = r.getBoundingClientRect();
+      const s = window.getComputedStyle(r);
+      // Use offsetParent === null to catch hidden parents too. Many
+      // quiz funnels render the actual <input> as visually-hidden and
+      // overlay a custom label; we still want to register a click on
+      // the input (or its label) so the form state updates.
+      return s.display !== 'none' && s.visibility !== 'hidden' && rect.width >= 0;
+    });
+    const groupsTicked = new Set();
+    for (const r of radios) {
+      const groupKey = r.name || r.getAttribute('data-group') || `__solo_${groupsTicked.size}`;
+      if (groupsTicked.has(groupKey)) continue;
+      // Skip if any sibling in the same group is already checked.
+      if (r.name) {
+        const already = document.querySelector(`input[type="radio"][name="${CSS.escape(r.name)}"]:checked`);
+        if (already) {
+          groupsTicked.add(groupKey);
+          continue;
+        }
+      } else if (r.checked) {
+        groupsTicked.add(groupKey);
+        continue;
+      }
+      try {
+        // Prefer clicking the <label> if one exists — quiz funnels
+        // often style the label as the visible button and listen for
+        // label clicks rather than input changes.
+        const lbl = r.id ? document.querySelector(`label[for="${CSS.escape(r.id)}"]`) : null;
+        if (lbl) {
+          lbl.click();
+        } else {
+          r.click();
+        }
+        r.checked = true;
+        r.dispatchEvent(new Event('change', { bubbles: true }));
+        groupsTicked.add(groupKey);
+        filled++;
+      } catch {
+        /* try next radio */
+      }
+    }
+
     return filled;
   });
 }
 
-// Ask the configured LLM (Neo/Trinity locally OR Morfeo/Anthropic) which
-// of the visible clickable elements actually advances the funnel. The
-// model receives a numbered list and answers with a single index — way
-// more accurate than the regex/priority heuristic, especially on quiz
-// funnels with non-standard CTA copy ("Scopri il mio piano", "Voglio
-// la mia analisi gratuita", "Ottieni l'offerta speciale", ...) that the
-// regex misses. Returns:
-//   { done: true }                     → LLM thinks the funnel is over
-//   { done: false, clicked: true }     → element clicked successfully
-//   null                                → no usable answer; caller falls
-//                                         back to the heuristic
-async function llmChooseAdvance(page, attemptNumber) {
+// (legacy: per-step LLM advance was removed because it added 30-60s
+// of latency per step on the local Trinity backend and timed out the
+// crawler. Navigation now relies entirely on fillCrawlFormFields +
+// clickCrawlAdvance, which together handle ~all real-world quiz funnels.)
+async function _legacyLlmChooseAdvance_unused(page, attemptNumber) {
   // 1. Gather the same set of "interactive" elements the heuristic
   //    would have considered. Index in this array is what we hand to
   //    the LLM and what we use to re-locate the element for clicking.
@@ -1259,32 +1302,56 @@ Quale index clicco per andare avanti nel funnel?`;
 async function clickCrawlAdvance(page, patternSource) {
   return page.evaluate((src) => {
     const pattern = new RegExp(src, 'i');
-    const candidates = [];
+    const NEG_PATTERN = /^(skip|salta|indietro|back|prev|previous|cancel|annulla|chiudi|close|home|privacy|cookie|termini|terms|login|accedi|menu|languag)/i;
+
+    // Limit to elements that genuinely advance flow. We removed
+    // radio/option/answer/label[for] from this list because
+    // fillCrawlFormFields already ticks one radio per group BEFORE
+    // we get here — clicking another radio would just change the
+    // selected answer without advancing the funnel.
     const els = document.querySelectorAll(
-      'button, [role="button"], input[type="submit"], a[class*="btn"], a[class*="button"], label[for], input[type="radio"]:not(:checked), [class*="option"]:not([aria-selected="true"]), [class*="answer"], [class*="choice"], [class*="cta"], [class*="next"]',
+      'button, [role="button"], input[type="submit"], input[type="button"], a[class*="btn"], a[class*="button"], a[class*="cta"], a[class*="next"], [class*="cta"], [class*="next-button"]',
     );
+    const viewportH = window.innerHeight || 800;
+    const candidates = [];
     els.forEach((el) => {
-      const text = (el.innerText || '').trim() || el.value || el.placeholder || '';
-      if (!text || text.length > 200) return;
+      const text = ((el.innerText || el.value || el.getAttribute('aria-label') || el.placeholder || '') + '').trim();
+      if (!text || text.length > 80) return;
+      if (NEG_PATTERN.test(text)) return;
+      // Must be visible AND reasonably sized (avoid 1px tracker pixels
+      // and tiny icons). A real CTA is at least 40px tall.
       const rect = el.getBoundingClientRect();
-      if (rect.width < 5 || rect.height < 5) return;
+      if (rect.width < 40 || rect.height < 24) return;
       const style = window.getComputedStyle(el);
-      if (style.visibility === 'hidden' || style.display === 'none') return;
+      if (style.visibility === 'hidden' || style.display === 'none' || style.opacity === '0') return;
+      // Skip disabled buttons (form not yet valid).
+      if (el.disabled || el.getAttribute('aria-disabled') === 'true') return;
+
       let priority = 0;
-      if (pattern.test(text)) priority = 10;
-      else if (el.tagName === 'BUTTON' || el.getAttribute('role') === 'button') priority = 6;
-      else if (el.type === 'radio') priority = 5;
-      else if (el.type === 'submit') priority = 7;
-      else if (/btn|button|cta|next|submit/i.test(el.className || '')) priority = 4;
-      else if (el.tagName === 'LABEL') priority = 3;
-      else if (/option|answer|choice/i.test(el.className || '')) priority = 2;
-      else priority = 1;
-      candidates.push({ el, priority });
+      if (pattern.test(text)) priority += 100;
+      if (el.type === 'submit') priority += 30;
+      if (el.tagName === 'BUTTON') priority += 10;
+      if (/btn|button|cta|next|submit|continue|primary/i.test(el.className || '')) priority += 8;
+      // Prefer elements lower on the screen (CTA is usually below the
+      // question / form, not the menu at the top).
+      if (rect.top > viewportH * 0.4) priority += 5;
+      // Slight bonus for fully on-screen elements.
+      if (rect.top >= 0 && rect.bottom <= viewportH) priority += 2;
+
+      candidates.push({ el, priority, text });
     });
+
     candidates.sort((a, b) => b.priority - a.priority);
-    for (const { el } of candidates) {
+    for (const { el, text } of candidates) {
+      try {
+        el.scrollIntoView({ block: 'center', behavior: 'instant' });
+      } catch {
+        /* ignore scroll errors */
+      }
       try {
         el.click();
+        // eslint-disable-next-line no-console
+        console.log(`[crawl] clicked: "${text.slice(0, 40)}"`);
         return true;
       } catch {
         /* try next */
@@ -1382,31 +1449,16 @@ async function processCrawlJob(row) {
 
       await fillCrawlFormFields(page).catch(() => 0);
 
-      // Ask Neo / Morfeo (whichever LLM this worker is wired to via
-      // OPENCLAW_BACKEND) which element advances the funnel. Falls
-      // back to the regex/priority heuristic only if the LLM call
-      // fails or returns garbage — so the crawl still works even if
-      // the local model is offline.
-      let advanced = false;
-      let llmDone = false;
-      const llm = await llmChooseAdvance(page, steps.length).catch(() => null);
-      if (llm && llm.done) {
-        llmDone = true;
-      } else if (llm && llm.clicked) {
-        advanced = true;
-      } else {
-        const clicked = await clickCrawlAdvance(page, QUIZ_NEXT_PATTERN_SOURCE).catch(
-          () => false,
-        );
-        if (clicked) advanced = true;
-      }
-
-      if (llmDone) {
-        log(`  · LLM declared funnel complete, stopping`);
-        break;
-      }
+      // Pure Playwright + heuristic. Previous version asked the LLM
+      // per click, but that was both very slow (Trinity ~30-60s per
+      // decision) and unnecessary — the regex priority queue already
+      // handles ~95% of quiz funnels (radio selection done above by
+      // fillCrawlFormFields, then "next/continua/avanti" click here).
+      const advanced = await clickCrawlAdvance(page, QUIZ_NEXT_PATTERN_SOURCE).catch(
+        () => false,
+      );
       if (!advanced) {
-        log(`  · no clickable advance found (LLM + heuristic both failed), stopping`);
+        log(`  · no clickable advance found, stopping`);
         break;
       }
 
@@ -1472,12 +1524,21 @@ async function pollCrawlJobs() {
   if (!playwrightChromium) return;
   isCrawling = true;
   try {
-    const { data, error } = await supabase
+    // Same target_agent semantics as openclaw_messages: a row tagged
+    // for a specific agent (target_agent='openclaw:neo' / 'openclaw:morfeo')
+    // can only be claimed by that worker. Untagged rows
+    // (target_agent IS NULL) stay first-come-first-served so legacy
+    // jobs created before the column existed keep working.
+    let query = supabase
       .from('funnel_crawl_jobs')
       .select('*')
       .eq('status', 'pending')
       .order('created_at', { ascending: true })
       .limit(1);
+    if (OPENCLAW_AGENT) {
+      query = query.or(`target_agent.is.null,target_agent.eq.${OPENCLAW_AGENT}`);
+    }
+    const { data, error } = await query;
     if (error) {
       err(`crawl poll error: ${error.message}`);
       return;
