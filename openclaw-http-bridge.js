@@ -14,9 +14,14 @@ function callOpenClaw(userMessage) {
 
     var safeMsg = userMessage.length > 6000 ? userMessage.substring(0, 6000) + '...' : userMessage;
 
-    const proc = spawn('cmd', ['/c', 'openclaw', 'agent', '--agent', 'main', '--message', safeMsg, '--json'], {
+    const isWindows = process.platform === 'win32';
+    const cmd = isWindows ? 'cmd' : 'openclaw';
+    const args = isWindows
+      ? ['/c', 'openclaw', 'agent', '--agent', 'main', '--message', safeMsg, '--json']
+      : ['agent', '--agent', 'main', '--message', safeMsg, '--json'];
+    const proc = spawn(cmd, args, {
       timeout: 600000,
-      windowsHide: true,
+      windowsHide: isWindows,
     });
 
     let stdout = '';
