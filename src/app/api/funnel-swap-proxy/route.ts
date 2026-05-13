@@ -78,6 +78,31 @@ function asFiles(val: unknown): SectionFile[] {
  *   - market_research     : string  — legacy fallback (no routing)
  */
 export async function POST(request: NextRequest) {
+  // Outer try/catch: any uncaught throw inside this handler used to bubble
+  // up to Netlify, which then returned its opaque generic error page
+  // ("Internal Error. ID: 01KR..."). The browser-side caller in
+  // front-end-funnel/page.tsx then crashed with "Extract returned non-JSON
+  // (500): Internal Error. ID: ..." — useless for debugging because the
+  // real cause never made it to the client. This wrapper guarantees we
+  // always reply with structured JSON so the UI / Network tab show
+  // something actionable.
+  try {
+    return await handlePost(request);
+  } catch (unhandled) {
+    const msg = unhandled instanceof Error ? unhandled.message : String(unhandled);
+    const stack = unhandled instanceof Error ? unhandled.stack : undefined;
+    console.error('[funnel-swap-proxy] UNHANDLED:', msg, stack);
+    return NextResponse.json(
+      {
+        error: `funnel-swap-proxy crashed: ${msg}`,
+        stack: stack?.split('\n').slice(0, 8).join('\n'),
+      },
+      { status: 500 },
+    );
+  }
+}
+
+async function handlePost(request: NextRequest) {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
     return NextResponse.json(
       { error: 'Supabase non configurato. Imposta NEXT_PUBLIC_SUPABASE_URL e NEXT_PUBLIC_SUPABASE_ANON_KEY in .env.local' },

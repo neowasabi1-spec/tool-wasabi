@@ -303,9 +303,50 @@ export function sanitizePageTypeForDb(value: PageType | undefined | null): PageT
   return mapped ?? 'altro';
 }
 
+// Postgres `statement_timeout` for the Supabase `anon` role is 3s by default.
+// `cloned_data` / `swiped_data` / `extracted_data` are JSONB and the app
+// historically dropped the entire rendered HTML inside them. On a heavy
+// landing (Funnelish/ClickFunnels SPA snapshots → 1-5 MB) the UPDATE on the
+// TOAST chain blows past 3s and Postgres kills it with `57014 statement
+// timeout`. The user sees "Error updating funnel page" + the downstream
+// /api/funnel-swap-proxy returns a generic 500.
+//
+// Fix: never persist the raw `html` blob in those JSONB columns. We keep
+// metadata (size, length, source url, timestamps, title, method) so the UI
+// can show "previously cloned" state, but the actual HTML stays in
+// in-memory Zustand state only. If the user reloads, the next
+// clone/extract will repopulate it on demand.
+const HTML_PERSIST_THRESHOLD = 50_000; // 50 KB — small enough to never trip the timeout
+
+function stripHtmlFromJsonb(jsonb: unknown): unknown {
+  if (!jsonb || typeof jsonb !== 'object' || Array.isArray(jsonb)) return jsonb;
+  const obj = jsonb as Record<string, unknown>;
+  let out: Record<string, unknown> | null = null;
+  for (const key of ['html', 'mobileHtml', 'htmlMobile', 'rawHtml', 'renderedHtml', 'content']) {
+    const val = obj[key];
+    if (typeof val === 'string' && val.length > HTML_PERSIST_THRESHOLD) {
+      if (!out) out = { ...obj };
+      delete out[key];
+      out[`${key}Length`] = val.length;
+      out[`${key}Skipped`] = true;
+    }
+  }
+  return out ?? jsonb;
+}
+
+function sanitizeFunnelPagePayload<T extends Partial<FunnelPageInsert | FunnelPageUpdate>>(
+  payload: T,
+): T {
+  const out = { ...payload } as Record<string, unknown>;
+  if (out.cloned_data !== undefined) out.cloned_data = stripHtmlFromJsonb(out.cloned_data);
+  if (out.swiped_data !== undefined) out.swiped_data = stripHtmlFromJsonb(out.swiped_data);
+  if (out.extracted_data !== undefined) out.extracted_data = stripHtmlFromJsonb(out.extracted_data);
+  return out as T;
+}
+
 export async function createFunnelPage(page: FunnelPageInsert): Promise<FunnelPage> {
   const safePage: FunnelPageInsert = {
-    ...page,
+    ...sanitizeFunnelPagePayload(page),
     page_type: sanitizePageTypeForDb(page.page_type),
   };
 
@@ -324,7 +365,7 @@ export async function createFunnelPage(page: FunnelPageInsert): Promise<FunnelPa
 
 export async function updateFunnelPage(id: string, updates: FunnelPageUpdate): Promise<FunnelPage> {
   const safeUpdates: FunnelPageUpdate = {
-    ...updates,
+    ...sanitizeFunnelPagePayload(updates),
     ...(updates.page_type !== undefined
       ? { page_type: sanitizePageTypeForDb(updates.page_type) }
       : {}),

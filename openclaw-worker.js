@@ -932,8 +932,30 @@ async function cleanup() {
 // no screenshots, no network capture — the checkpoint flow only
 // needs the list of URLs to seed funnel_pages.
 
+// Patterns that mark a "primary action" element. We use this on three
+// kinds of pages:
+//   - quiz step  → Next/Continue/Avanti
+//   - landing    → Get Instant Access / Unleash / Start Your Journey
+//   - checkout   → Buy Now / Add to Cart / Complete Order / Pay Now
+// Keeping all of them in one regex lets the same heuristic carry the
+// crawler from quiz step #1 all the way to the order summary without
+// branching by page type.
 const QUIZ_NEXT_PATTERN_SOURCE =
-  'next|continue|avanti|continua|→|submit|get\\s*(my|your)?\\s*result|see\\s*result|claim|claim\\s*discount|start|inizia|scopri|prossimo|vai\\s*avanti|ottieni|scopri\\s*(la\\s*)?(tua\\s*)?(offerta|risultato)|next\\s*step|go|vai|proceed|siguiente|siguir|weiter|suivant|continuer|próximo|continuar';
+  'next|continue|avanti|continua|→|submit|' +
+  // generic results / claim
+  'get\\s*(my|your)?\\s*result|see\\s*result|claim(\\s*(my|your))?\\s*(spot|access|discount|offer|reward)?|' +
+  // start / proceed / skip-forward verbs
+  'start(\\s*(now|here|your\\s*journey))?|begin|inizia|scopri|prossimo|vai\\s*avanti|ottieni|next\\s*step|go|vai|proceed|' +
+  // landing-page CTAs
+  'instant\\s*access|your\\s*journey|get\\s*(everything|instant|now|started|access|it\\s*now)|' +
+  'unleash|unlock(\\s*(my|your))?\\s*(access|offer|spot)?|reveal\\s*(my|your)?\\s*(result|plan)?|' +
+  // commerce CTAs
+  'buy(\\s*(it\\s*)?now)?|add\\s*to\\s*(cart|bag)|order\\s*now|complete(\\s*(my|your))?\\s*order|' +
+  'checkout|check\\s*out|purchase|pay(\\s*now)?|place\\s*order|' +
+  // "Yes, I want / Claim mine / Join now"
+  'yes.{0,18}(want|claim|get|please|need|i\\s*do)|join(\\s*now)?|sign\\s*me\\s*up|' +
+  // i18n
+  'siguiente|seguir|weiter|suivant|continuer|próximo|continuar|comprar|comprare|acquista|paga\\s*ora';
 
 // Speed-tuned for quiz funnels. We used to wait 120s for nav and 2.5s
 // after each click — total overhead ~5-30s per step on tracker-heavy
@@ -945,7 +967,10 @@ const CRAWL_NAV_TIMEOUT_MS = 25_000;
 const CRAWL_STEP_WAIT_MS = 800;
 const CRAWL_TRANSITION_MS = 600;
 const CRAWL_SAME_FINGERPRINT_MAX = 3;
-const CRAWL_DEFAULT_MAX_STEPS = 25;
+// 40 covers a typical quiz funnel (10–20 questions) + loading screens
+// + landing page + checkout + thank-you, with margin. Hard cap further
+// down (`Math.min(..., 60)`) prevents runaway loops.
+const CRAWL_DEFAULT_MAX_STEPS = 40;
 const CRAWL_POLL_INTERVAL_MS = 4000;
 
 // Hosts whose requests we abort to keep navigation fast. These are
@@ -1405,8 +1430,14 @@ async function clickCrawlAdvance(page, patternSource) {
     //
     // We do (1) first; if it returns 0 candidates, fall back to (2).
 
+    // Includes plain `a[href]` so we can catch landing/checkout CTAs
+    // styled with utility classes (Tailwind `rounded-full px-10 py-4`
+    // etc.) that don't have any of the historical btn/cta/button class
+    // tokens. The priority scoring below filters out nav links — only
+    // anchors whose text matches the CTA pattern can win pass 1.
     const PRIMARY_SEL =
-      'button, [role="button"], input[type="submit"], input[type="button"], a[class*="btn"], a[class*="button"], a[class*="cta"], a[class*="next"], [class*="cta"], [class*="next-button"]';
+      'button, [role="button"], input[type="submit"], input[type="button"], ' +
+      'a[href], [class*="cta"], [class*="next-button"]';
     // Broader: anything that looks tappable. React quiz funnels often
     // render answer cards as <div onClick> with no semantic role, so we
     // also pick up <div>/<li>/<label> with role="button" or known answer
@@ -1441,13 +1472,30 @@ async function clickCrawlAdvance(page, patternSource) {
       if (!isVisible(el)) return;
 
       const rect = el.getBoundingClientRect();
+      const cls = el.className || '';
       let priority = 0;
       if (pattern.test(text)) priority += 100;
       if (el.type === 'submit') priority += 30;
       if (el.tagName === 'BUTTON') priority += 10;
-      if (/btn|button|cta|next|submit|continue|primary/i.test(el.className || '')) priority += 8;
+      if (/btn|button|cta|next|submit|continue|primary/i.test(cls)) priority += 8;
+      // Tailwind/utility "shaped like a button": rounded + px-/py- padding
+      // is a strong tell of a CTA on landing pages where authors don't
+      // use semantic class names. Boost so styled <a> CTAs beat
+      // `<button class="hamburger">` or footer links.
+      if (typeof cls === 'string' && /\brounded(-full|-lg|-xl|-2xl)?\b/.test(cls) &&
+          /(\bpx-\d|\bpy-\d|\bp-\d)/.test(cls)) {
+        priority += 12;
+      }
+      // Generic "$NN" / "$NN.NN" / "€NN" in button text → it's almost
+      // certainly a price/buy CTA, give it a strong nudge.
+      if (/[$€£]\s?\d/.test(text)) priority += 10;
       if (rect.top > viewportH * 0.4) priority += 5;
       if (rect.top >= 0 && rect.bottom <= viewportH) priority += 2;
+      // Penalise pure anchor links that are clearly nav/footer (text
+      // matches NEG_PATTERN was already filtered, but bare anchors
+      // without any styling and with very short text — "Home", "FAQ" —
+      // shouldn't beat real CTAs).
+      if (el.tagName === 'A' && text.length < 5 && !/[$€£]/.test(text)) priority -= 5;
       primaryCandidates.push({ el, priority, text });
     });
 
@@ -1573,7 +1621,7 @@ async function processCrawlJob(row) {
   const entryUrl = params.entryUrl || row.entry_url;
   const maxSteps = Math.min(
     Math.max(1, Number(params.quizMaxSteps || params.maxSteps || CRAWL_DEFAULT_MAX_STEPS)),
-    50,
+    60,
   );
 
   log(`crawl #${jobId}: starting (entry=${entryUrl}, maxSteps=${maxSteps})`);

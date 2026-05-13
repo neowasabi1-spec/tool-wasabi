@@ -229,6 +229,29 @@ function dbTemplateToApp(t: SwipeTemplate): AppSwipeTemplate {
   };
 }
 
+// Re-attaches the in-memory `html` (and friends) that `supabaseOps` strips
+// before sending the JSONB to Supabase. Used when an UPDATE/INSERT comes
+// back: the DB-backed object will be missing those fields, but the local
+// optimistic state still holds them and downstream rewrite logic depends
+// on `clonedData.html` / `swipedData.html` being present in-memory.
+function mergeJsonbWithLocalHtml<T extends Record<string, unknown> | null | undefined>(
+  fromDb: T,
+  fromLocal: T,
+): T {
+  if (!fromDb && !fromLocal) return fromDb;
+  if (!fromDb) return fromLocal;
+  if (!fromLocal) return fromDb;
+  const out: Record<string, unknown> = { ...fromDb };
+  for (const key of ['html', 'mobileHtml', 'htmlMobile', 'rawHtml', 'renderedHtml', 'content']) {
+    const dbVal = (fromDb as Record<string, unknown>)[key];
+    const localVal = (fromLocal as Record<string, unknown>)[key];
+    if (typeof localVal === 'string' && localVal && typeof dbVal !== 'string') {
+      out[key] = localVal;
+    }
+  }
+  return out as T;
+}
+
 function dbFunnelPageToApp(p: FunnelPage): AppFunnelPage {
   return {
     id: p.id,
@@ -666,10 +689,24 @@ export const useStore = create<Store>()((set, get) => ({
         extracted_data: page.extractedData as unknown as Record<string, unknown>,
       } as Parameters<typeof supabaseOps.updateFunnelPage>[1]);
       
+      // Merge DB result with the optimistic state instead of replacing it.
+      // `supabaseOps.updateFunnelPage` strips the raw `html` blob from
+      // cloned_data/swiped_data/extracted_data before persisting (it would
+      // blow past Supabase's 3s anon `statement_timeout` and crash with
+      // 57014). We must therefore re-attach the in-memory html that the
+      // optimistic update wrote a few lines above, otherwise downstream
+      // rewrite/extract calls would lose access to the cloned page.
       set((state) => ({
-        funnelPages: state.funnelPages.map((p) =>
-          p.id === id ? dbFunnelPageToApp(updated) : p
-        ),
+        funnelPages: state.funnelPages.map((p) => {
+          if (p.id !== id) return p;
+          const fromDb = dbFunnelPageToApp(updated);
+          return {
+            ...fromDb,
+            clonedData: mergeJsonbWithLocalHtml(fromDb.clonedData, p.clonedData),
+            swipedData: mergeJsonbWithLocalHtml(fromDb.swipedData, p.swipedData),
+            extractedData: mergeJsonbWithLocalHtml(fromDb.extractedData, p.extractedData),
+          };
+        }),
       }));
     } catch (error) {
       // Revert on failure
