@@ -176,17 +176,45 @@ function autoSaveSections(html: string, sourceUrl: string, pageName: string) {
 }
 
 /**
+ * Auditor selection — same shape used by /clone-landing and /checkpoint.
+ *   • 'claude'  → existing server-side path (Anthropic via Edge Functions /
+ *                 funnel-swap-proxy / Fly.dev pipeline)
+ *   • 'neo'     → enqueue with target_agent='openclaw:neo'   (worker su PC Neo)
+ *   • 'morfeo'  → enqueue with target_agent='openclaw:morfeo' (worker su Mac Morfeo)
+ *
+ * The constants are duplicated (not imported) to keep this page hermetic and
+ * avoid pulling in the whole clone-landing module just for 3 strings.
+ */
+type Auditor = 'claude' | 'neo' | 'morfeo';
+const AUDITOR_LABEL: Record<Auditor, string> = {
+  claude: 'Claude (server)',
+  neo: 'Neo (OpenClaw locale)',
+  morfeo: 'Morfeo (OpenClaw locale)',
+};
+const AUDITOR_TARGET_AGENT: Record<Auditor, string | null> = {
+  claude: null,
+  neo: 'openclaw:neo',
+  morfeo: 'openclaw:morfeo',
+};
+
+/**
  * Client-side rewrite via OpenClaw using direct Supabase queue polling.
  * Bypasses Vercel's 60s serverless timeout by polling from the browser.
+ *
+ * `targetAgent` (optional) routes the job to a specific worker
+ * (e.g. 'openclaw:morfeo') so the user-selected auditor at the top of
+ * the page is honoured here too. When omitted, ANY worker can pick the
+ * job (legacy behaviour kept for backward compat).
  */
 async function rewriteWithOpenClawFromBrowser(args: {
   html: string;
   productName: string;
   productDescription: string;
   customPrompt?: string;
+  targetAgent?: string | null;
   onProgress?: (batchesDone: number, batchesTotal: number) => void;
 }): Promise<{ html: string; replacements: number; totalTexts: number; originalLength: number; newLength: number; provider: string }> {
-  const { html, productName, productDescription, customPrompt, onProgress } = args;
+  const { html, productName, productDescription, customPrompt, targetAgent, onProgress } = args;
   const { supabase } = await import('@/lib/supabase');
 
   // 1. Extract texts server-side via the existing route (fast: <5s)
@@ -219,14 +247,16 @@ async function rewriteWithOpenClawFromBrowser(args: {
   const messageIds: string[] = [];
   for (const batch of batches) {
     const batchPrompt = `Rewrite these ${batch.length} texts for the product "${productName}":\n\n${JSON.stringify(batch, null, 2)}`;
+    const insertRow: Record<string, unknown> = {
+      user_message: batchPrompt,
+      system_prompt: effectiveSystem,
+      section: 'Quiz Rewrite',
+      status: 'pending',
+    };
+    if (targetAgent) insertRow.target_agent = targetAgent;
     const { data, error } = await supabase
       .from('openclaw_messages')
-      .insert({
-        user_message: batchPrompt,
-        system_prompt: effectiveSystem,
-        section: 'Quiz Rewrite',
-        status: 'pending',
-      })
+      .insert(insertRow)
       .select('id')
       .single();
     if (error || !data) throw new Error(`Enqueue failed: ${error?.message || 'no data'}`);
@@ -874,6 +904,29 @@ export default function FrontEndFunnel() {
   // API Mode
   const [apiMode, setApiMode] = useState<ApiMode>('localDev');
   const api = API_ENDPOINTS[apiMode];
+
+  // ── Global auditor selector ───────────────────────────────────────
+  // Drives where ALL clone/swipe/rewrite/checkpoint actions go:
+  //   • 'claude' → existing server-side path (Anthropic / Edge Function /
+  //                Fly.dev pipeline) — unchanged
+  //   • 'neo' / 'morfeo' → enqueue jobs in openclaw_messages with the
+  //                matching target_agent so ONLY that worker picks them
+  // Sticky in localStorage so the user doesn't have to reselect every
+  // page reload.
+  const [auditor, setAuditorState] = useState<Auditor>('claude');
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const v = window.localStorage.getItem('frontend_funnel_auditor');
+    if (v === 'claude' || v === 'neo' || v === 'morfeo') setAuditorState(v);
+  }, []);
+  const setAuditor = useCallback((next: Auditor) => {
+    setAuditorState(next);
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem('frontend_funnel_auditor', next);
+    }
+  }, []);
+  const auditorRef = useRef<Auditor>('claude');
+  useEffect(() => { auditorRef.current = auditor; }, [auditor]);
 
   // Jobs Monitor Panel
   const [showJobsPanel, setShowJobsPanel] = useState(false);
@@ -2106,6 +2159,192 @@ export default function FrontEndFunnel() {
     });
   };
 
+  /* ───────────── Swipe All — OpenClaw worker path ─────────────
+   * Quando l'utente sceglie Neo / Morfeo nel selettore globale,
+   * salta l'orchestratore Edge Function (Anthropic) e per ogni pagina
+   * eligibile enqueue un job `swipe_landing_local` sul worker scelto.
+   *
+   * Vantaggi:
+   *   • niente Netlify timeout (il worker fa fetch + LLM in locale)
+   *   • niente quota Anthropic
+   *   • aggiorna gli stessi swipeAllJob/swipeLog/funnelPage state della
+   *     versione Claude, quindi il pannello attivita` esistente funziona
+   *     uguale.
+   *
+   * Nota: la "narrative coherence" tra pagine (passare il summary delle
+   * gia` scritte alle successive) NON e` portata su questo path — il
+   * worker rewrite ogni pagina in isolamento. Le scritture Anthropic con
+   * narrative restano disponibili scegliendo "Claude". */
+  const runSwipeAllViaOpenclaw = useCallback(async (chosen: Auditor) => {
+    const targetAgent = AUDITOR_TARGET_AGENT[chosen];
+    if (!targetAgent) return;
+    const allPages = funnelPages || [];
+    const eligible = allPages.filter((p) => p.urlToSwipe && p.productId);
+    if (!eligible.length) {
+      alert('Nessuna pagina eligibile (servono URL competitor + Project su ogni riga).');
+      return;
+    }
+    const ok = window.confirm(
+      `Avvio Swipe All via ${AUDITOR_LABEL[chosen]} su ${eligible.length} pagine.\n\n` +
+        'Il worker locale fara fetch + rewrite per ogni pagina (no Netlify ' +
+        'timeout, no quota Anthropic). La coerenza narrativa tra pagine ' +
+        'NON e mantenuta su questo path (per quella, usa Claude).\n\nProcedere?'
+    );
+    if (!ok) return;
+
+    swipeAllCancelRef.current = false;
+    resetSwipeLog();
+    setSwipeAllJob({
+      isRunning: true,
+      cancelRequested: false,
+      currentIndex: 0,
+      totalCount: eligible.length,
+      currentStep: 'idle',
+      currentPageName: '',
+      batchInfo: '',
+      completed: 0,
+      errors: [],
+      startedAt: Date.now(),
+    });
+    pushSwipeLog('info', `Swipe All start \u2014 ${eligible.length} pages via ${AUDITOR_LABEL[chosen]}`);
+
+    // Cap per pagina: 10min (worker LLM rewrite + 2 pass gap-fill su
+    // funnel grossi puo` richiedere ~5min, +headroom).
+    const PAGE_TIMEOUT_MS = 10 * 60 * 1000;
+    const POLL_INTERVAL_MS = 2500;
+
+    for (let i = 0; i < eligible.length; i++) {
+      if (swipeAllCancelRef.current) break;
+      const page = eligible[i];
+      const project = (projects || []).find((p) => p.id === page.productId);
+      const url = page.urlToSwipe || '';
+      const pageName = page.name || `Step ${i + 1}`;
+
+      setSwipeAllJob((s) =>
+        s ? { ...s, currentIndex: i + 1, currentPageName: pageName, currentStep: 'cloning', batchInfo: `coda ${AUDITOR_LABEL[chosen]}…` } : s
+      );
+      pushSwipeLog('info', `\u25b6 Page ${i + 1}/${eligible.length} \u2014 enqueue worker job`, pageName);
+      updateFunnelPage(page.id, {
+        swipeStatus: 'in_progress',
+        swipeResult: `Swipe All ${i + 1}/${eligible.length} — Coda OpenClaw…`,
+      });
+
+      if (!project) {
+        const msg = `Project non trovato per la pagina (productId=${page.productId})`;
+        updateFunnelPage(page.id, { swipeStatus: 'failed', swipeResult: msg });
+        setSwipeAllJob((s) =>
+          s ? { ...s, errors: [...s.errors, { pageId: page.id, pageName, message: msg }] } : s
+        );
+        pushSwipeLog('error', `\u2717 ${msg}`, pageName);
+        continue;
+      }
+
+      try {
+        // Build a product info shape that matches what
+        // /api/landing/swipe/openclaw-build-prompts expects (only
+        // `name` is required; everything else is best-effort context).
+        const productPayload = {
+          name: project.name,
+          description: project.description || '',
+          brand_name: undefined,
+          target_audience: undefined,
+          marketing_brief: (project.brief || '').trim() || undefined,
+          market_research: extractSectionContent(project.marketResearch) || undefined,
+          project_brief: (project.brief || '').trim() || undefined,
+        };
+
+        const enqueueRes = await fetch('/api/openclaw/queue', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            section: 'swipe_job',
+            message: JSON.stringify({
+              action: 'swipe_landing_local',
+              sourceUrl: url,
+              product: productPayload,
+              tone: 'professional',
+              language: 'it',
+            }),
+            targetAgent,
+          }),
+        });
+        const enqueued = (await enqueueRes.json()) as { id?: string; error?: string };
+        if (!enqueueRes.ok || !enqueued.id) {
+          throw new Error(enqueued.error || `Enqueue HTTP ${enqueueRes.status}`);
+        }
+        pushSwipeLog('success', `\u2713 Job #${enqueued.id.slice(0, 8)} enqueued`, pageName);
+
+        const t0 = Date.now();
+        let lastStatus: string | null = null;
+        let final: { html?: string; replacements?: number; totalTexts?: number; new_title?: string; success?: boolean; error?: string } | null = null;
+        while (true) {
+          if (swipeAllCancelRef.current) break;
+          if (Date.now() - t0 > PAGE_TIMEOUT_MS) {
+            throw new Error(`Timeout: il worker non ha completato in ${PAGE_TIMEOUT_MS / 1000}s`);
+          }
+          await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+          const pollRes = await fetch(`/api/openclaw/queue?id=${encodeURIComponent(enqueued.id)}`);
+          const polled = (await pollRes.json()) as { status?: string; content?: string; error?: string };
+          if (polled.status && polled.status !== lastStatus) {
+            lastStatus = polled.status;
+            if (polled.status === 'processing') {
+              setSwipeAllJob((s) => (s ? { ...s, currentStep: 'rewriting', batchInfo: 'fetch + rewrite locale…' } : s));
+              pushSwipeLog('info', `\u2192 Worker ha preso il job (fetch + LLM in locale)`, pageName);
+              updateFunnelPage(page.id, {
+                swipeStatus: 'in_progress',
+                swipeResult: `Swipe All ${i + 1}/${eligible.length} — worker locale…`,
+              });
+            }
+          }
+          if (polled.status === 'completed' && polled.content) {
+            try {
+              final = JSON.parse(polled.content);
+            } catch {
+              throw new Error('Worker response non e JSON valido');
+            }
+            break;
+          }
+          if (polled.status === 'error' || polled.status === 'failed') {
+            throw new Error(polled.error || 'Worker ha fallito');
+          }
+        }
+
+        if (swipeAllCancelRef.current) break;
+        if (!final || final.success === false || !final.html) {
+          throw new Error(final?.error || 'Worker ha completato senza HTML');
+        }
+
+        const replacements = final.replacements ?? 0;
+        const totalTexts = final.totalTexts ?? 0;
+        updateFunnelPage(page.id, {
+          swipeStatus: 'completed',
+          swipeResult: `Rewrite OK (${replacements}/${totalTexts} sostituzioni via ${AUDITOR_LABEL[chosen]})`,
+          clonedData: {
+            html: final.html,
+            mobileHtml: page.clonedData?.mobileHtml,
+            title: final.new_title || page.clonedData?.title || pageName,
+            method_used: `openclaw-${chosen}`,
+            content_length: final.html.length,
+            duration_seconds: Math.round((Date.now() - t0) / 1000),
+            cloned_at: new Date(),
+          },
+        });
+        setSwipeAllJob((s) => (s ? { ...s, completed: s.completed + 1 } : s));
+        pushSwipeLog('success', `\u2713\u2713 Done: ${replacements}/${totalTexts} sostituzioni`, pageName);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Errore sconosciuto';
+        updateFunnelPage(page.id, { swipeStatus: 'failed', swipeResult: `Swipe All (${chosen}): ${msg}` });
+        setSwipeAllJob((s) =>
+          s ? { ...s, errors: [...s.errors, { pageId: page.id, pageName, message: msg }] } : s
+        );
+        pushSwipeLog('error', `\u2717 ${msg}`, pageName);
+      }
+    }
+
+    setSwipeAllJob((s) => (s ? { ...s, isRunning: false, currentStep: 'idle', batchInfo: '' } : s));
+    pushSwipeLog('info', `\u25fc Swipe All finished (${AUDITOR_LABEL[chosen]})`);
+  }, [funnelPages, projects, updateFunnelPage, pushSwipeLog, resetSwipeLog]);
+
   /* ───────────── Swipe All orchestrator ─────────────
    * Per ogni pagina eligibile del funnel:
    *   1. clona identical (se non già clonata)
@@ -2115,6 +2354,13 @@ export default function FrontEndFunnel() {
    *
    * Pagine eligibili = hanno urlToSwipe + productId valido. */
   const runSwipeAll = useCallback(async () => {
+    // Branch globale: se l'utente ha scelto Neo/Morfeo, delega
+    // all'orchestratore worker-driven (no Netlify timeout, no quota
+    // Anthropic). Altrimenti procede con la versione Claude esistente.
+    if (auditorRef.current !== 'claude') {
+      await runSwipeAllViaOpenclaw(auditorRef.current);
+      return;
+    }
     const allPages = funnelPages || [];
     const eligible = allPages.filter(
       (p) => p.urlToSwipe && p.productId
@@ -2413,7 +2659,7 @@ export default function FrontEndFunnel() {
       s ? { ...s, isRunning: false, currentStep: 'idle', batchInfo: '' } : s
     );
     pushSwipeLog('info', '\u25fc Swipe All finished');
-  }, [funnelPages, projects, updateFunnelPage, pushSwipeLog, pushRewrites, resetSwipeLog]);
+  }, [funnelPages, projects, updateFunnelPage, pushSwipeLog, pushRewrites, resetSwipeLog, runSwipeAllViaOpenclaw]);
 
   const cancelSwipeAll = useCallback(() => {
     swipeAllCancelRef.current = true;
@@ -2540,13 +2786,23 @@ export default function FrontEndFunnel() {
 
         let rewriteData: { html: string; replacements: number; totalTexts: number; originalLength?: number; newLength?: number; provider?: string; error?: string };
 
-        if (cloneConfig.useOpenClaw) {
+        // Global auditor selector wins: if the user picked Neo/Morfeo
+        // at the top, force the OpenClaw path (and pin the worker via
+        // target_agent). The legacy `cloneConfig.useOpenClaw` checkbox
+        // remains valid for the "Claude" auditor flow as before.
+        const useOpenClawForRewrite =
+          cloneConfig.useOpenClaw || auditorRef.current !== 'claude';
+        const targetAgentForRewrite =
+          AUDITOR_TARGET_AGENT[auditorRef.current] || undefined;
+
+        if (useOpenClawForRewrite) {
           rewriteData = await rewriteWithOpenClawFromBrowser({
             html: htmlToRewrite,
             productName: cloneConfig.productName,
             productDescription: cloneConfig.productDescription,
             customPrompt: cloneConfig.customPrompt || undefined,
-            onProgress: (done, total) => setCloneProgress({ phase: 'processing', totalTexts: total, processedTexts: done, message: `Rewriting via OpenClaw (${done}/${total} batches)...` }),
+            targetAgent: targetAgentForRewrite,
+            onProgress: (done, total) => setCloneProgress({ phase: 'processing', totalTexts: total, processedTexts: done, message: `Rewriting via OpenClaw${targetAgentForRewrite ? ` (${AUDITOR_LABEL[auditorRef.current]})` : ''} (${done}/${total} batches)...` }),
           });
         } else {
           // Browser-orchestrated chunked rewrite via Anthropic.
@@ -3410,6 +3666,40 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                     {API_ENDPOINTS[mode].icon} {API_ENDPOINTS[mode].name}
                   </button>
                 ))}
+              </div>
+
+              {/* Global Auditor selector — vale per Swipe All, Clone &
+                 Rewrite per riga, e gli enqueue OpenClaw da questo page.
+                 La voce attiva e` sticky in localStorage. */}
+              <div
+                className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-gray-50 border border-gray-200"
+                title="Sceglie chi esegue clone + swipe + rewrite. Claude = Netlify (Anthropic). Neo / Morfeo = job in coda OpenClaw, worker locale fa fetch + LLM in locale."
+              >
+                <span className="text-xs font-medium text-gray-600 pr-1">Auditor:</span>
+                {(['claude', 'neo', 'morfeo'] as const).map((opt) => {
+                  const active = auditor === opt;
+                  const colour = opt === 'claude'
+                    ? (active ? 'bg-purple-600 text-white border-purple-600' : 'bg-white text-purple-700 border-gray-300 hover:border-purple-400')
+                    : opt === 'neo'
+                      ? (active ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-emerald-700 border-gray-300 hover:border-emerald-400')
+                      : (active ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-blue-700 border-gray-300 hover:border-blue-400');
+                  return (
+                    <button
+                      key={opt}
+                      type="button"
+                      disabled={swipeAllJob?.isRunning}
+                      onClick={() => setAuditor(opt)}
+                      className={`text-xs px-2 py-1 rounded border transition-colors disabled:opacity-50 ${colour}`}
+                      title={
+                        opt === 'claude'
+                          ? 'Server-side via Anthropic + Edge Function (puo fallire su funnel grossi / quota Anthropic finita)'
+                          : `Job in coda OpenClaw, worker ${opt} fa fetch + rewrite LLM in locale (no 504, no quota Anthropic)`
+                      }
+                    >
+                      {opt === 'claude' ? 'Claude' : opt === 'neo' ? 'Neo' : 'Morfeo'}
+                    </button>
+                  );
+                })}
               </div>
 
               {/* Swipe All — riscrive in sequenza tutte le pagine eligibili
