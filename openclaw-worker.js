@@ -935,12 +935,50 @@ async function cleanup() {
 const QUIZ_NEXT_PATTERN_SOURCE =
   'next|continue|avanti|continua|→|submit|get\\s*(my|your)?\\s*result|see\\s*result|claim|claim\\s*discount|start|inizia|scopri|prossimo|vai\\s*avanti|ottieni|scopri\\s*(la\\s*)?(tua\\s*)?(offerta|risultato)|next\\s*step|go|vai|proceed|siguiente|siguir|weiter|suivant|continuer|próximo|continuar';
 
-const CRAWL_NAV_TIMEOUT_MS = 120_000;
-const CRAWL_STEP_WAIT_MS = 2500;
-const CRAWL_TRANSITION_MS = 1500;
+// Speed-tuned for quiz funnels. We used to wait 120s for nav and 2.5s
+// after each click — total overhead ~5-30s per step on tracker-heavy
+// pages (networkidle never settles when GA/FB Pixel/Hotjar are present).
+// Now: 25s nav cap, 800ms post-click wait, and we BLOCK trackers up
+// front (see `route` handler in processCrawlJob) so DOM is ready in
+// ~1-2s on most funnels.
+const CRAWL_NAV_TIMEOUT_MS = 25_000;
+const CRAWL_STEP_WAIT_MS = 800;
+const CRAWL_TRANSITION_MS = 600;
 const CRAWL_SAME_FINGERPRINT_MAX = 3;
 const CRAWL_DEFAULT_MAX_STEPS = 25;
 const CRAWL_POLL_INTERVAL_MS = 4000;
+
+// Hosts whose requests we abort to keep navigation fast. These are
+// pure analytics/marketing trackers — blocking them never breaks the
+// funnel itself (the funnel page renders fine without them) but cuts
+// 5-20s of "networkidle never settles" wait per step. Pattern is
+// matched against the request URL with .includes().
+const CRAWL_BLOCKED_HOSTS = [
+  'google-analytics.com',
+  'googletagmanager.com',
+  'doubleclick.net',
+  'facebook.com/tr',
+  'connect.facebook.net',
+  'analytics.tiktok.com',
+  'hotjar.com',
+  'static.hotjar.com',
+  'clarity.ms',
+  'segment.io',
+  'segment.com/v1',
+  'fullstory.com',
+  'mouseflow.com',
+  'optimizely.com',
+  'mixpanel.com',
+  'amplitude.com',
+  'snap.licdn.com',
+  'px.ads.linkedin.com',
+  'pinimg.com',
+  'twitter.com/i/adsct',
+  'ads.twitter.com',
+  'criteo.net',
+  'rlcdn.com',
+];
+
 let isCrawling = false;
 
 async function updateCrawlJob(jobId, patch) {
@@ -971,11 +1009,15 @@ async function captureCrawlScreenshot(page, jobId, stepIndex) {
   try {
     buf = await page.screenshot({
       type: 'jpeg',
-      quality: 65,
+      quality: 60,
       // Viewport only — full-page on a 100k-pixel-tall quiz funnel
       // would blow past the 5MB bucket limit and add seconds per step.
       fullPage: false,
-      timeout: 8000,
+      // Tight cap: a screenshot that takes >3s usually means the page
+      // is doing layout shifts, not that we'll get a better image by
+      // waiting more. Better to drop the thumbnail than to slow the
+      // whole crawl by 5-10s/step.
+      timeout: 3000,
     });
   } catch (e) {
     err(`  · screenshot capture failed at step ${stepIndex}: ${e.message}`);
@@ -1446,6 +1488,28 @@ async function processCrawlJob(row) {
     const page = await context.newPage();
     page.setDefaultTimeout(CRAWL_NAV_TIMEOUT_MS);
 
+    // Block trackers so the page reaches an interactive state in 1-2s
+    // instead of waiting 10-30s for GA/FB Pixel/Hotjar requests that
+    // never settle. Quiz funnels never need these to function.
+    await page.route('**/*', (route) => {
+      try {
+        const reqUrl = route.request().url();
+        const rtype = route.request().resourceType();
+        // Drop heavy media we don't need — saves bandwidth + render
+        // time. We still allow stylesheet + font so the screenshot
+        // looks right.
+        if (rtype === 'media' || rtype === 'websocket') {
+          return route.abort();
+        }
+        for (const host of CRAWL_BLOCKED_HOSTS) {
+          if (reqUrl.includes(host)) return route.abort();
+        }
+        return route.continue();
+      } catch {
+        return route.continue();
+      }
+    });
+
     let normalizedEntry = entryUrl;
     try {
       const u = new URL(entryUrl);
@@ -1459,7 +1523,11 @@ async function processCrawlJob(row) {
       timeout: CRAWL_NAV_TIMEOUT_MS,
     });
     if (!goResp) throw new Error('Initial navigation returned no response');
-    await page.waitForLoadState('networkidle').catch(() => {});
+    // Wait for "load" (cheaper than networkidle) with a short cap. We
+    // don't NEED the page to be quiet — we need it to be interactive,
+    // and 'load' covers that on 99% of funnels. Cap at 4s so a slow
+    // tracker that we forgot to block doesn't blow the budget.
+    await page.waitForLoadState('load', { timeout: 4000 }).catch(() => {});
 
     let consecutiveSame = 0;
 
@@ -1520,19 +1588,29 @@ async function processCrawlJob(row) {
         break;
       }
 
-      await new Promise((r) => setTimeout(r, CRAWL_STEP_WAIT_MS));
-      const newFp = await getQuizFingerprint(page).catch(() => '');
+      // Active wait: poll the fingerprint at 100ms intervals and break
+      // as soon as it changes. Caps at CRAWL_STEP_WAIT_MS so a stuck
+      // page doesn't block the loop forever. On fast SPAs this returns
+      // in ~200-400ms instead of always sleeping 800ms.
+      const transitionDeadline = Date.now() + CRAWL_STEP_WAIT_MS;
+      let newFp = fp;
+      while (Date.now() < transitionDeadline) {
+        await new Promise((r) => setTimeout(r, 100));
+        newFp = await getQuizFingerprint(page).catch(() => fp);
+        if (newFp !== fp) break;
+      }
       if (newFp === fp) {
+        // Sometimes the click triggers a slow transition (lazy-loaded
+        // next slide). Give it one extra grace period before counting
+        // it as a stuck page.
         await new Promise((r) => setTimeout(r, CRAWL_TRANSITION_MS));
-        const retry = await getQuizFingerprint(page).catch(() => '');
-        if (retry === fp) {
-          consecutiveSame++;
-          if (consecutiveSame >= CRAWL_SAME_FINGERPRINT_MAX) {
-            log(`  · stuck on same fingerprint ${consecutiveSame}× — stopping`);
-            break;
-          }
-        } else {
-          consecutiveSame = 0;
+        newFp = await getQuizFingerprint(page).catch(() => fp);
+      }
+      if (newFp === fp) {
+        consecutiveSame++;
+        if (consecutiveSame >= CRAWL_SAME_FINGERPRINT_MAX) {
+          log(`  · stuck on same fingerprint ${consecutiveSame}× — stopping`);
+          break;
         }
       } else {
         consecutiveSame = 0;
