@@ -715,6 +715,108 @@ async function processMessage(msg) {
           responsePayload = JSON.stringify(finalised);
           break;
         }
+        case 'swipe_landing_local': {
+          // ── Worker-driven landing swipe ─────────────────────────────
+          // Three Netlify round-trips, each guaranteed sub-2s. The slow
+          // bits live HERE on the user's PC:
+          //   • optional Playwright fetch of the source page
+          //   • LLM rewrite loop (batched + gap-fill) via local
+          //     OpenClaw / Trinity / whatever the worker is wired to
+          //
+          // Job payload:
+          //   { action: 'swipe_landing_local',
+          //     html?, sourceUrl?, product, tone?, language? }
+          // Either html OR sourceUrl is required. The UI normally
+          // ships `html` because it has the clone result already; MCP
+          // / curl callers can pass sourceUrl to fetch fresh.
+          //
+          // Response (JSON-encoded into openclaw_messages.response):
+          //   Same shape /api/landing/swipe returns on success — the
+          //   existing handleSwipe in clone-landing/page.tsx eats it
+          //   without modifications.
+          if (!job.product || !job.product.name) {
+            throw new Error('swipe_landing_local missing product.name');
+          }
+          let originalHtml = typeof job.html === 'string' ? job.html : '';
+          if (!originalHtml) {
+            if (!job.sourceUrl) {
+              throw new Error('swipe_landing_local: provide either html or sourceUrl');
+            }
+            log(`  · swipe_landing_local: fetching ${job.sourceUrl} locally`);
+            const fetched = await fetchCheckpointPageHtml(job.sourceUrl);
+            if (!fetched.ok || !fetched.html) {
+              throw new Error(
+                `Local fetch failed: ${fetched.error || 'no HTML returned'}`,
+              );
+            }
+            originalHtml = fetched.html;
+            log(`    ✓ fetched ${originalHtml.length} chars via ${fetched.source} in ${(fetched.durationMs / 1000).toFixed(1)}s`);
+          }
+
+          // 1. Build prompts (extract texts + system prompt + user message
+          //    pre-formatted with the markers runRewriteInBatches expects).
+          log(`  · swipe_landing_local: building prompts server-side (light)`);
+          const prep = await callToolApi(
+            '/api/landing/swipe/openclaw-build-prompts',
+            {
+              html: originalHtml,
+              sourceUrl: job.sourceUrl,
+              product: job.product,
+              tone: job.tone,
+              language: job.language,
+            },
+            60_000,
+          );
+          if (!prep || prep.success === false) {
+            throw new Error(prep && prep.error ? prep.error : 'openclaw-build-prompts failed');
+          }
+          const promptTexts = Array.isArray(prep.texts) ? prep.texts : [];
+          if (promptTexts.length === 0) {
+            throw new Error('No texts to rewrite (page had no extractable copy)');
+          }
+          log(`  · swipe_landing_local: rewriting ${promptTexts.length} texts via local LLM (batched)`);
+
+          // 2. Run the batched rewrite against the local LLM.
+          //    runRewriteInBatches auto-detects the markers we used in
+          //    the user_message and does batching + gap-fill internally.
+          const rewriteRaw = await runRewriteInBatches(prep.systemPrompt, prep.userMessage);
+          let rewrites = [];
+          try {
+            const cleaned = String(rewriteRaw).trim()
+              .replace(/^```(?:json)?\s*\n?/i, '')
+              .replace(/\n?```\s*$/i, '');
+            const a = cleaned.indexOf('[');
+            const b = cleaned.lastIndexOf(']');
+            if (a >= 0 && b > a) {
+              rewrites = JSON.parse(cleaned.substring(a, b + 1));
+            }
+          } catch (e) {
+            err(`  ✗ Failed to parse local LLM rewrite response: ${e.message}`);
+          }
+          if (!Array.isArray(rewrites) || rewrites.length === 0) {
+            throw new Error('Local LLM did not return any usable rewrites');
+          }
+          log(`    ✓ got ${rewrites.length}/${promptTexts.length} rewrites from local LLM`);
+
+          // 3. Finalise: server merges mappings + injects swipeScript.
+          log(`  · swipe_landing_local: finalising server-side (apply mappings + inject script)`);
+          const finalised = await callToolApi(
+            '/api/landing/swipe/openclaw-finalize',
+            {
+              html: originalHtml,
+              sourceUrl: job.sourceUrl,
+              texts: promptTexts,
+              rewrites,
+            },
+            60_000,
+          );
+          if (!finalised || finalised.success === false) {
+            throw new Error(finalised && finalised.error ? finalised.error : 'openclaw-finalize (swipe) failed');
+          }
+          log(`    ✓ swipe done: ${finalised.replacements}/${finalised.totalTexts} replacements, ${finalised.unresolved_text_ids?.length || 0} unresolved`);
+          responsePayload = JSON.stringify(finalised);
+          break;
+        }
         default:
           throw new Error(`Unknown swipe_job action: ${job.action}`);
       }

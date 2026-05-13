@@ -243,6 +243,121 @@ export default function CloneLandingPage() {
     }
   };
 
+  /**
+   * Swipe via OpenClaw worker (Neo or Morfeo). The worker reuses the
+   * already-cloned HTML we have in `result.html` (no second fetch),
+   * runs the LLM rewrite loop against the local OpenClaw model, and
+   * comes back with the same shape /api/landing/swipe returns.
+   */
+  const handleSwipeViaOpenclaw = async (chosen: Auditor) => {
+    if (!result?.html) throw new Error('No cloned HTML to swipe — clone first');
+    const targetAgent = AUDITOR_TARGET_AGENT[chosen];
+    pushProgress(`Coda OpenClaw → ${AUDITOR_LABEL[chosen]} (swipe)`);
+
+    const payload = {
+      action: 'swipe_landing_local',
+      // Always ship the clone result so the worker doesn't re-fetch.
+      html: result.html,
+      sourceUrl: result.url,
+      product: {
+        ...product,
+        benefits: product.benefits.filter((b) => b.trim()),
+      },
+      tone,
+      language,
+    };
+
+    const enqueueRes = await fetch('/api/openclaw/queue', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        section: 'swipe_job',
+        message: JSON.stringify(payload),
+        targetAgent,
+      }),
+    });
+    const enqueued = (await enqueueRes.json()) as { id?: string; error?: string };
+    if (!enqueueRes.ok || !enqueued.id) {
+      throw new Error(`Enqueue fallito: ${enqueued.error || `HTTP ${enqueueRes.status}`}`);
+    }
+    pushProgress(`Job #${enqueued.id.slice(0, 8)} in coda · in attesa che il worker lo prenda`);
+
+    // Swipe takes longer than clone (LLM rewrite loop). 10min cap.
+    const t0 = Date.now();
+    const POLL_TIMEOUT_MS = 10 * 60 * 1000;
+    const POLL_INTERVAL_MS = 2500;
+    let lastStatus: string | null = null;
+    while (true) {
+      if (Date.now() - t0 > POLL_TIMEOUT_MS) {
+        throw new Error(`Timeout: il worker non ha completato lo swipe in ${POLL_TIMEOUT_MS / 1000}s.`);
+      }
+      await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+      const pollRes = await fetch(`/api/openclaw/queue?id=${encodeURIComponent(enqueued.id)}`);
+      const polled = (await pollRes.json()) as {
+        status?: string;
+        content?: string;
+        error?: string;
+      };
+      if (polled.status && polled.status !== lastStatus) {
+        lastStatus = polled.status;
+        if (polled.status === 'processing') {
+          pushProgress(`Worker ha preso il job · estrazione testi → rewrite locale → finalize`);
+        }
+      }
+      if (polled.status === 'completed' && polled.content) {
+        pushProgress(`Job completato`);
+        let parsed: {
+          success?: boolean;
+          html?: string;
+          original_title?: string;
+          new_title?: string;
+          changes_made?: Array<string | { from: string; to: string }>;
+          replacements?: number;
+          totalTexts?: number;
+          unresolved_text_ids?: number[];
+          finalize_duration_ms?: number;
+          error?: string;
+        } = {};
+        try {
+          parsed = JSON.parse(polled.content);
+        } catch {
+          throw new Error('Risposta del worker non è JSON valido');
+        }
+        if (parsed.success === false || !parsed.html) {
+          throw new Error(parsed.error || 'Worker ha completato senza HTML swipato');
+        }
+        // changes_made shape differs slightly: server returns
+        // [{from,to}], UI expects string[]. Normalise.
+        const changesArr = Array.isArray(parsed.changes_made)
+          ? parsed.changes_made.map((c) =>
+              typeof c === 'string' ? c : `${c.from} → ${c.to}`,
+            )
+          : undefined;
+        if (parsed.replacements !== undefined && parsed.totalTexts !== undefined) {
+          pushProgress(
+            `${parsed.replacements}/${parsed.totalTexts} testi sostituiti${
+              parsed.unresolved_text_ids?.length
+                ? ` · ${parsed.unresolved_text_ids.length} non risolti`
+                : ''
+            }`,
+          );
+        }
+        return {
+          html: parsed.html,
+          original_title: parsed.original_title,
+          new_title: parsed.new_title,
+          changes_made: changesArr,
+          processing_time_seconds: parsed.finalize_duration_ms
+            ? parsed.finalize_duration_ms / 1000
+            : undefined,
+        };
+      }
+      if (polled.status === 'error' || polled.status === 'failed') {
+        throw new Error(polled.error || 'Worker ha fallito lo swipe');
+      }
+    }
+  };
+
   const handleSwipe = async () => {
     if (!result?.url) return;
     
@@ -254,8 +369,32 @@ export default function CloneLandingPage() {
 
     setIsSwiping(true);
     setError(null);
+    setProgress([]);
 
     try {
+      // ── OpenClaw path (Neo / Morfeo) ─────────────────────────────
+      // Reuses `result.html` so the worker doesn't re-fetch the page.
+      // The actual rewrite happens against the local LLM via
+      // runRewriteInBatches in openclaw-worker.js.
+      if (auditor !== 'claude') {
+        const data = await handleSwipeViaOpenclaw(auditor);
+        if (!data.html) throw new Error('No HTML received from worker');
+        setResult({
+          html: data.html,
+          url: result.url,
+          isSwipedVersion: true,
+          swipeInfo: {
+            originalTitle: data.original_title,
+            newTitle: data.new_title,
+            changesMade: data.changes_made,
+            processingTime: data.processing_time_seconds,
+          },
+        });
+        setShowSwipeForm(false);
+        return;
+      }
+
+      // ── Claude path (server-side, current behaviour) ─────────────
       const response = await fetch('/api/landing/swipe', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -413,8 +552,8 @@ export default function CloneLandingPage() {
                   className={`${baseClasses} ${colourClasses}`}
                   title={
                     opt === 'claude'
-                      ? 'Server-side via Anthropic + Playwright Netlify (può fallire su SPA grossi)'
-                      : `Job in coda OpenClaw → worker ${opt} fa il fetch in locale (no 504)`
+                      ? 'Clone + swipe server-side via Anthropic + Playwright Netlify (può fallire su SPA grossi o swipe lunghi)'
+                      : `Clone + swipe in coda OpenClaw → worker ${opt} fa fetch + rewrite LLM in locale (no 504)`
                   }
                 >
                   {AUDITOR_LABEL[opt]}
@@ -423,7 +562,7 @@ export default function CloneLandingPage() {
             })}
             {auditor !== 'claude' && (
               <span className="text-xs text-gray-500 ml-1">
-                fetch della pagina sul PC del worker (no Netlify timeout)
+                clone + swipe sul PC del worker (no Netlify timeout, LLM locale)
               </span>
             )}
           </div>
@@ -467,22 +606,28 @@ export default function CloneLandingPage() {
               }`} />
               <h3 className="text-lg font-semibold text-gray-900">
                 {isSwiping
-                  ? 'Swipe in corso…'
+                  ? auditor === 'claude'
+                    ? 'Swipe in corso…'
+                    : `Swipe via ${AUDITOR_LABEL[auditor]}…`
                   : auditor === 'claude'
                     ? 'Cloning in corso…'
                     : `Cloning via ${AUDITOR_LABEL[auditor]}…`}
               </h3>
               <p className="text-gray-500 mt-1 text-sm">
                 {isSwiping
-                  ? 'Adatto la landing al tuo prodotto'
+                  ? auditor === 'claude'
+                    ? 'Adatto la landing al tuo prodotto (server-side)'
+                    : 'Il worker rewrite ogni testo con il modello locale (no 504, no quota Anthropic)'
                   : auditor === 'claude'
                     ? 'Scarico e processo la pagina sul server Netlify'
                     : 'Il worker scarica la pagina con Playwright in locale (no 504)'}
               </p>
             </div>
 
-            {/* Live activity log — only meaningful when going via OpenClaw */}
-            {!isSwiping && auditor !== 'claude' && progress.length > 0 && (
+            {/* Live activity log — only meaningful when going via OpenClaw.
+                Same panel for clone AND swipe, since both share the same
+                progress[] state and only one of the two runs at a time. */}
+            {auditor !== 'claude' && progress.length > 0 && (
               <div className="mt-4 bg-gray-50 border border-gray-200 rounded-lg p-3 max-h-56 overflow-y-auto">
                 {progress.map((line, i) => (
                   <div
