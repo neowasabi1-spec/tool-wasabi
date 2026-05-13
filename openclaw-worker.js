@@ -1394,54 +1394,164 @@ async function clickCrawlAdvance(page, patternSource) {
     const pattern = new RegExp(src, 'i');
     const NEG_PATTERN = /^(skip|salta|indietro|back|prev|previous|cancel|annulla|chiudi|close|home|privacy|cookie|termini|terms|login|accedi|menu|languag)/i;
 
-    // Limit to elements that genuinely advance flow. We removed
-    // radio/option/answer/label[for] from this list because
-    // fillCrawlFormFields already ticks one radio per group BEFORE
-    // we get here — clicking another radio would just change the
-    // selected answer without advancing the funnel.
-    const els = document.querySelectorAll(
-      'button, [role="button"], input[type="submit"], input[type="button"], a[class*="btn"], a[class*="button"], a[class*="cta"], a[class*="next"], [class*="cta"], [class*="next-button"]',
-    );
+    // Two passes:
+    //   1. Standard CTA (button/anchor with btn/cta classes etc.) —
+    //      handles "Continue / Avanti / Submit" pages.
+    //   2. Quiz answer fallback (any clickable element with substantial
+    //      text content) — handles SPA quizzes where the answer ITSELF
+    //      is the advance trigger and there's no explicit Next button.
+    //      Without this fallback the crawler stops at the first answer
+    //      page (e.g. "Which season of life are you in right now?").
+    //
+    // We do (1) first; if it returns 0 candidates, fall back to (2).
+
+    const PRIMARY_SEL =
+      'button, [role="button"], input[type="submit"], input[type="button"], a[class*="btn"], a[class*="button"], a[class*="cta"], a[class*="next"], [class*="cta"], [class*="next-button"]';
+    // Broader: anything that looks tappable. React quiz funnels often
+    // render answer cards as <div onClick> with no semantic role, so we
+    // also pick up <div>/<li>/<label> with role="button" or known answer
+    // class names.
+    const ANSWER_SEL =
+      'button, [role="button"], [role="option"], [class*="option"], [class*="answer"], [class*="choice"], [class*="card"][onclick], li[onclick], div[onclick], label[for]';
+
     const viewportH = window.innerHeight || 800;
-    const candidates = [];
-    els.forEach((el) => {
-      const text = ((el.innerText || el.value || el.getAttribute('aria-label') || el.placeholder || '') + '').trim();
+    const viewportW = window.innerWidth || 1280;
+
+    function isVisible(el) {
+      const rect = el.getBoundingClientRect();
+      if (rect.width < 40 || rect.height < 24) return false;
+      const style = window.getComputedStyle(el);
+      if (style.visibility === 'hidden' || style.display === 'none' || style.opacity === '0') return false;
+      if (el.disabled || el.getAttribute('aria-disabled') === 'true') return false;
+      // Cull elements that are far off-screen (tab content not in view).
+      if (rect.bottom < 0 || rect.top > viewportH * 3) return false;
+      if (rect.right < 0 || rect.left > viewportW) return false;
+      return true;
+    }
+    function getText(el) {
+      return ((el.innerText || el.value || el.getAttribute('aria-label') || el.placeholder || '') + '').trim();
+    }
+
+    // ─── PASS 1: explicit CTA buttons ────────────────────────────
+    const primaryCandidates = [];
+    document.querySelectorAll(PRIMARY_SEL).forEach((el) => {
+      const text = getText(el);
       if (!text || text.length > 80) return;
       if (NEG_PATTERN.test(text)) return;
-      // Must be visible AND reasonably sized (avoid 1px tracker pixels
-      // and tiny icons). A real CTA is at least 40px tall.
-      const rect = el.getBoundingClientRect();
-      if (rect.width < 40 || rect.height < 24) return;
-      const style = window.getComputedStyle(el);
-      if (style.visibility === 'hidden' || style.display === 'none' || style.opacity === '0') return;
-      // Skip disabled buttons (form not yet valid).
-      if (el.disabled || el.getAttribute('aria-disabled') === 'true') return;
+      if (!isVisible(el)) return;
 
+      const rect = el.getBoundingClientRect();
       let priority = 0;
       if (pattern.test(text)) priority += 100;
       if (el.type === 'submit') priority += 30;
       if (el.tagName === 'BUTTON') priority += 10;
       if (/btn|button|cta|next|submit|continue|primary/i.test(el.className || '')) priority += 8;
-      // Prefer elements lower on the screen (CTA is usually below the
-      // question / form, not the menu at the top).
       if (rect.top > viewportH * 0.4) priority += 5;
-      // Slight bonus for fully on-screen elements.
       if (rect.top >= 0 && rect.bottom <= viewportH) priority += 2;
-
-      candidates.push({ el, priority, text });
+      primaryCandidates.push({ el, priority, text });
     });
 
-    candidates.sort((a, b) => b.priority - a.priority);
-    for (const { el, text } of candidates) {
+    primaryCandidates.sort((a, b) => b.priority - a.priority);
+    // Only accept the primary winner if it actually matches the CTA
+    // pattern — a generic <button> with random text isn't a CTA, it
+    // might be a hamburger/menu icon. If pattern doesn't match, fall
+    // through to the answer-card pass.
+    if (
+      primaryCandidates.length > 0 &&
+      (pattern.test(primaryCandidates[0].text) ||
+        primaryCandidates[0].el.type === 'submit')
+    ) {
+      const winner = primaryCandidates[0];
+      try {
+        winner.el.scrollIntoView({ block: 'center', behavior: 'instant' });
+      } catch {
+        /* ignore */
+      }
+      try {
+        winner.el.click();
+        // eslint-disable-next-line no-console
+        console.log(`[crawl] CTA clicked: "${winner.text.slice(0, 60)}"`);
+        return true;
+      } catch {
+        /* fall through */
+      }
+    }
+
+    // ─── PASS 2: quiz answer cards ───────────────────────────────
+    // No CTA matched. Look for groups of clickable elements that look
+    // like answer choices (multiple visible items, similar size, none
+    // is a Next button). Click the FIRST one — the actual answer
+    // choice doesn't matter for crawling, we just need to advance.
+    const answerCandidates = [];
+    const seen = new Set();
+    document.querySelectorAll(ANSWER_SEL).forEach((el) => {
+      // Dedup nested matches (a <button> inside a [role=button] container).
+      // We use the element with the smallest descendant count that still
+      // contains the text — basically: prefer leaves.
+      if (seen.has(el)) return;
+      const text = getText(el);
+      if (!text || text.length < 2 || text.length > 160) return;
+      if (NEG_PATTERN.test(text)) return;
+      if (pattern.test(text)) return; // those went through pass 1
+      if (!isVisible(el)) return;
+
+      // Skip elements that fully contain another candidate (we'd
+      // double-click). Mark all descendants as seen.
+      el.querySelectorAll(ANSWER_SEL).forEach((d) => seen.add(d));
+
+      const rect = el.getBoundingClientRect();
+      let priority = 0;
+      // Prefer answer-class elements (these are explicitly quiz answers).
+      if (/answer|choice|option|quiz/i.test(el.className || '')) priority += 8;
+      if (el.tagName === 'BUTTON') priority += 4;
+      // Prefer elements that look like distinct cards (full-width-ish).
+      if (rect.width > viewportW * 0.4) priority += 3;
+      // Prefer earlier in document order so we click the first answer
+      // (typical UX expectation: top-to-bottom reading order).
+      // We bake this into the order naturally because we push in order.
+      answerCandidates.push({ el, priority, text, top: rect.top });
+    });
+
+    if (answerCandidates.length >= 2) {
+      // Sort: highest priority first, then top-to-bottom.
+      answerCandidates.sort((a, b) => b.priority - a.priority || a.top - b.top);
+      const winner = answerCandidates[0];
+      try {
+        winner.el.scrollIntoView({ block: 'center', behavior: 'instant' });
+      } catch {
+        /* ignore */
+      }
+      try {
+        winner.el.click();
+        // eslint-disable-next-line no-console
+        console.log(`[crawl] answer clicked: "${winner.text.slice(0, 60)}"`);
+        return true;
+      } catch {
+        /* try second-best */
+        if (answerCandidates[1]) {
+          try {
+            answerCandidates[1].el.click();
+            return true;
+          } catch {
+            /* give up */
+          }
+        }
+      }
+    }
+
+    // ─── PASS 3: last resort, any remaining primary candidate ────
+    // If pass 1 had a non-pattern winner (e.g. a generic <button>),
+    // click it now as a final attempt to advance.
+    for (const { el, text } of primaryCandidates) {
       try {
         el.scrollIntoView({ block: 'center', behavior: 'instant' });
       } catch {
-        /* ignore scroll errors */
+        /* ignore */
       }
       try {
         el.click();
         // eslint-disable-next-line no-console
-        console.log(`[crawl] clicked: "${text.slice(0, 40)}"`);
+        console.log(`[crawl] generic clicked: "${text.slice(0, 60)}"`);
         return true;
       } catch {
         /* try next */
