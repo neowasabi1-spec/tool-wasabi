@@ -28,7 +28,12 @@ const SELECT_FUNNEL_FIELDS =
 const MAX_PAGES_PER_FUNNEL = 100;
 
 /** Normalise + validate a single page entry. */
-function normalisePage(input: { url?: string; name?: string; pageType?: string }):
+function normalisePage(input: {
+  url?: string;
+  name?: string;
+  pageType?: string;
+  screenshotUrl?: string | null;
+}):
   | { ok: true; page: CheckpointFunnelPage }
   | { ok: false; error: string } {
   const raw = (input.url ?? '').trim();
@@ -48,6 +53,7 @@ function normalisePage(input: { url?: string; name?: string; pageType?: string }
       url: parsed.toString(),
       name: input.name?.trim() || undefined,
       pageType: input.pageType?.trim() || undefined,
+      screenshotUrl: input.screenshotUrl?.trim() || undefined,
     },
   };
 }
@@ -59,7 +65,12 @@ function resolvePagesFromInput(
 ):
   | { ok: true; pages: CheckpointFunnelPage[] }
   | { ok: false; error: string } {
-  const raw: { url?: string; name?: string; pageType?: string }[] = [];
+  const raw: {
+    url?: string;
+    name?: string;
+    pageType?: string;
+    screenshotUrl?: string | null;
+  }[] = [];
   // Funnel-level fallback type (e.g. "landing" picked once for a
   // single-page Landing entry). Per-page values still win.
   const defaultType = input.page_type?.trim() || undefined;
@@ -69,6 +80,7 @@ function resolvePagesFromInput(
         url: p.url,
         name: p.name,
         pageType: p.pageType ?? defaultType,
+        screenshotUrl: p.screenshotUrl,
       });
     }
   } else if (input.url) {

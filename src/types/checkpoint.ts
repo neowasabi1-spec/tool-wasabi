@@ -198,6 +198,12 @@ export interface CheckpointFunnelPage {
    *  the page's role. Stored verbatim in the pages JSONB column —
    *  values mirror BuiltInPageType from src/types/index.ts. */
   pageType?: string;
+  /** Optional: thumbnail captured at the time this step was discovered
+   *  by the auto-crawler. For SPA quiz funnels (where every step shares
+   *  the same URL) this is what visually distinguishes one row from the
+   *  next in the Sequenza UI — without it the list looks like 10
+   *  identical lines. Public Supabase Storage URL. */
+  screenshotUrl?: string;
 }
 
 /** A funnel the user added to the Checkpoint library. v2: a funnel

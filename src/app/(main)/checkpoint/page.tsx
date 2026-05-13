@@ -191,7 +191,7 @@ export default function CheckpointPage() {
     total: number;
   } | null>(null);
   const [autoSteps, setAutoSteps] = useState<
-    { url: string; title: string }[] | null
+    { url: string; title: string; screenshotUrl?: string | null }[] | null
   >(null);
   const [autoSelected, setAutoSelected] = useState<Set<number>>(new Set());
 
@@ -414,14 +414,24 @@ export default function CheckpointPage() {
    *  is selected, its id is forwarded so the new funnel is linked to
    *  the project for back-references. */
   const submitFunnel = async (
-    urls: string[],
+    urlsOrPages: string[] | { url: string; screenshotUrl?: string | null }[],
     opts: { pageType?: string } = {},
   ) => {
-    const cleaned = urls.map((u) => u.trim()).filter(Boolean);
-    if (cleaned.length === 0) {
+    // Accept either a plain string[] (from the manual / landing flows)
+    // or a richer array with per-page metadata (from the auto-discover
+    // flow, which carries the screenshot captured by the worker).
+    const pages = (urlsOrPages as Array<string | { url: string; screenshotUrl?: string | null }>)
+      .map((entry) => {
+        if (typeof entry === 'string') return { url: entry.trim() };
+        return {
+          url: (entry.url || '').trim(),
+          screenshotUrl: entry.screenshotUrl ?? undefined,
+        };
+      })
+      .filter((p) => !!p.url);
+    if (pages.length === 0) {
       throw new Error('Inserisci almeno una URL.');
     }
-    const pages = cleaned.map((url) => ({ url }));
     const res = await fetch('/api/checkpoint/funnels', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -472,11 +482,15 @@ export default function CheckpointPage() {
     setAdding(true);
     setAddError(null);
     try {
-      const urls = Array.from(autoSelected)
+      const pages = Array.from(autoSelected)
         .sort((a, b) => a - b)
-        .map((i) => autoSteps[i]?.url)
-        .filter((u): u is string => !!u);
-      await submitFunnel(urls);
+        .map((i) => {
+          const s = autoSteps[i];
+          if (!s) return null;
+          return { url: s.url, screenshotUrl: s.screenshotUrl ?? undefined };
+        })
+        .filter((p): p is { url: string; screenshotUrl?: string } => !!p && !!p.url);
+      await submitFunnel(pages);
       closeAddPanel();
       reload();
     } catch (err) {
@@ -571,6 +585,7 @@ export default function CheckpointPage() {
             url: string;
             title?: string;
             quizStepLabel?: string;
+            screenshotUrl?: string | null;
           }[];
           if (steps.length === 0) {
             throw new Error(
@@ -580,13 +595,15 @@ export default function CheckpointPage() {
           // Show every step the agent traversed, even when the URL is
           // identical across them (typical of SPA quiz funnels). The
           // `quizStepLabel` (H1 / question text captured per step) is
-          // what makes them distinguishable in the list.
+          // what makes them distinguishable in the list, and
+          // `screenshotUrl` is the thumbnail uploaded by the worker.
           const cleaned = steps.map((s, i) => ({
             url: s.url,
             title:
               s.quizStepLabel ||
               s.title ||
               `Step ${i + 1}`,
+            screenshotUrl: s.screenshotUrl ?? null,
           }));
           setAutoSteps(cleaned);
           setAutoSelected(new Set(cleaned.map((_, i) => i)));
@@ -1277,7 +1294,7 @@ export default function CheckpointPage() {
                       </button>
                     </div>
 
-                    <div className="border border-gray-200 rounded-lg divide-y divide-gray-100 max-h-72 overflow-y-auto">
+                    <div className="border border-gray-200 rounded-lg divide-y divide-gray-100 max-h-96 overflow-y-auto">
                       {autoSteps.map((s, i) => {
                         const checked = autoSelected.has(i);
                         return (
@@ -1293,6 +1310,33 @@ export default function CheckpointPage() {
                               onChange={() => toggleAutoStep(i)}
                               className="mt-1 accent-violet-600"
                             />
+                            {s.screenshotUrl ? (
+                              // The whole point of the screenshot is so the
+                              // user can DISTINGUISH SPA quiz steps that all
+                              // share the same URL — so we render an actual
+                              // visible thumbnail (96px wide) here, not a tiny
+                              // 24px favicon. Click opens full-size.
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <a
+                                href={s.screenshotUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                onClick={(e) => e.stopPropagation()}
+                                className="flex-shrink-0"
+                                title="Apri screenshot full size"
+                              >
+                                <img
+                                  src={s.screenshotUrl}
+                                  alt={`Step ${i + 1}`}
+                                  className="w-24 h-16 object-cover object-top rounded border border-gray-200 bg-gray-50"
+                                  loading="lazy"
+                                />
+                              </a>
+                            ) : (
+                              <div className="w-24 h-16 rounded border border-dashed border-gray-200 bg-gray-50 flex items-center justify-center text-[10px] text-gray-400 flex-shrink-0">
+                                no img
+                              </div>
+                            )}
                             <div className="flex-1 min-w-0">
                               <div className="flex items-center gap-2">
                                 <span className="text-xs font-mono text-gray-400">

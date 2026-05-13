@@ -863,15 +863,35 @@ export default function CheckpointDetailPage({
                 Il check &quot;Navigazione&quot; verifica le transizioni 1→{pageCount}.
               </span>
             </div>
-            <ol className="space-y-1.5">
+            <ol className="space-y-2">
               {funnel.pages.map((p, i) => (
                 <li
-                  key={`${i}-${p.url}`}
+                  key={`${i}-${p.url}-${i}`}
                   className="flex items-start gap-3 text-sm"
                 >
-                  <span className="flex-shrink-0 w-6 h-6 rounded-full bg-indigo-100 text-indigo-700 text-xs font-bold flex items-center justify-center mt-0.5">
+                  <span className="flex-shrink-0 w-6 h-6 rounded-full bg-indigo-100 text-indigo-700 text-xs font-bold flex items-center justify-center mt-1">
                     {i + 1}
                   </span>
+                  {p.screenshotUrl ? (
+                    // For SPA quiz funnels every step shares one URL, so the
+                    // thumbnail is the only visual cue distinguishing rows.
+                    // Click opens full-res in a new tab.
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <a
+                      href={p.screenshotUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex-shrink-0"
+                      title="Apri screenshot full size"
+                    >
+                      <img
+                        src={p.screenshotUrl}
+                        alt={`Step ${i + 1}`}
+                        className="w-28 h-20 object-cover object-top rounded border border-gray-200 bg-gray-50"
+                        loading="lazy"
+                      />
+                    </a>
+                  ) : null}
                   <div className="min-w-0 flex-1">
                     {p.name && (
                       <div className="font-medium text-gray-800 truncate">

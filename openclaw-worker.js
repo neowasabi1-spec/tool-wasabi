@@ -959,6 +959,54 @@ async function updateCrawlJob(jobId, patch) {
   }
 }
 
+// Capture a viewport-only JPEG of the current page and upload it to
+// the public `checkpoint-screenshots` Supabase bucket under
+// `crawl/<jobId>/step-<n>.jpg`. Returns the public URL on success or
+// null on any failure (we never want a screenshot upload error to
+// abort the crawl — losing a thumbnail is acceptable, losing 10 step
+// URLs because of one slow upload isn't).
+const CRAWL_SCREENSHOT_BUCKET = 'checkpoint-screenshots';
+async function captureCrawlScreenshot(page, jobId, stepIndex) {
+  let buf;
+  try {
+    buf = await page.screenshot({
+      type: 'jpeg',
+      quality: 65,
+      // Viewport only — full-page on a 100k-pixel-tall quiz funnel
+      // would blow past the 5MB bucket limit and add seconds per step.
+      fullPage: false,
+      timeout: 8000,
+    });
+  } catch (e) {
+    err(`  · screenshot capture failed at step ${stepIndex}: ${e.message}`);
+    return null;
+  }
+  if (!buf || buf.length === 0) return null;
+
+  const path = `crawl/${jobId}/step-${String(stepIndex).padStart(3, '0')}.jpg`;
+  try {
+    const { error } = await supabase.storage
+      .from(CRAWL_SCREENSHOT_BUCKET)
+      .upload(path, buf, {
+        contentType: 'image/jpeg',
+        cacheControl: '3600',
+        upsert: true,
+      });
+    if (error) {
+      err(`  · screenshot upload failed at step ${stepIndex}: ${error.message}`);
+      return null;
+    }
+  } catch (e) {
+    err(`  · screenshot upload threw at step ${stepIndex}: ${e.message}`);
+    return null;
+  }
+
+  const { data: pub } = supabase.storage
+    .from(CRAWL_SCREENSHOT_BUCKET)
+    .getPublicUrl(path);
+  return pub?.publicUrl || null;
+}
+
 // Returns a short human-readable label for the current step. We try to
 // pull the most prominent heading/question text on the page so the
 // modal can show "Step 3: Quanti anni hai?" instead of 11 identical
@@ -1421,21 +1469,31 @@ async function processCrawlJob(row) {
       const url = page.url();
       const label = await getStepLabel(page);
 
+      const nextIndex = steps.length + 1;
+      // Capture the screenshot BEFORE pushing the step so we can attach
+      // the URL inline. We do it before the click that advances the
+      // funnel, so the thumbnail shows what the user saw at that step.
+      const screenshotUrl = await captureCrawlScreenshot(page, jobId, nextIndex);
+
       steps.push({
-        stepIndex: steps.length + 1,
+        stepIndex: nextIndex,
         url,
         title,
         // `quizStepLabel` is what the checkpoint modal renders as the
         // row title — for SPA funnels (URL never changes) it's the only
         // way for the user to tell steps apart. Falls back to title +
         // index so the row is never blank.
-        quizStepLabel: label || title || `Step ${steps.length + 1}`,
+        quizStepLabel: label || title || `Step ${nextIndex}`,
+        // Public Supabase Storage URL. Null if upload failed; the UI
+        // gracefully falls back to URL-only when missing.
+        screenshotUrl,
         timestamp: new Date().toISOString(),
         isQuizStep: true,
       });
       log(
         `  · step ${steps.length}/${maxSteps}: ${url}` +
-          (label ? `  ⟶ ${label.slice(0, 80)}` : ''),
+          (label ? `  ⟶ ${label.slice(0, 80)}` : '') +
+          (screenshotUrl ? '  📸' : ''),
       );
       await updateCrawlJob(jobId, {
         currentStep: steps.length,
