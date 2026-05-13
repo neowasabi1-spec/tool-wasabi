@@ -2851,27 +2851,134 @@ export default function FrontEndFunnel() {
           });
         }
 
-        setCloneProgress({ phase: 'processing', totalTexts: 0, processedTexts: 0, message: cloneConfig.useOpenClaw ? 'Rewriting texts with OpenClaw (local)...' : 'Trinity sta riscrivendo...' });
+        const chosenAuditor = auditorRef.current;
+        const targetAgentForRewrite = AUDITOR_TARGET_AGENT[chosenAuditor] || undefined;
+
+        setCloneProgress({
+          phase: 'processing',
+          totalTexts: 0,
+          processedTexts: 0,
+          message:
+            chosenAuditor !== 'claude'
+              ? `Rewriting via ${AUDITOR_LABEL[chosenAuditor]} (worker locale)...`
+              : cloneConfig.useOpenClaw
+                ? 'Rewriting texts with OpenClaw (local)...'
+                : 'Trinity sta riscrivendo...',
+        });
 
         let rewriteData: { html: string; replacements: number; totalTexts: number; originalLength?: number; newLength?: number; provider?: string; error?: string };
 
-        // Global auditor selector wins: if the user picked Neo/Morfeo
-        // at the top, force the OpenClaw path (and pin the worker via
-        // target_agent). The legacy `cloneConfig.useOpenClaw` checkbox
-        // remains valid for the "Claude" auditor flow as before.
-        const useOpenClawForRewrite =
-          cloneConfig.useOpenClaw || auditorRef.current !== 'claude';
-        const targetAgentForRewrite =
-          AUDITOR_TARGET_AGENT[auditorRef.current] || undefined;
+        // Global auditor selector wins.
+        //
+        // PATH A — Neo / Morfeo (selettore globale != claude):
+        //   Andiamo via swipe_landing_local sul worker scelto: stesso
+        //   path dello "Swipe All", quindi STESSO universal-text
+        //   extractor (extractAllTextsUniversal in
+        //   /api/landing/swipe/openclaw-build-prompts) che pesca anche
+        //   testi annidati / mixed-content / attributes che invece
+        //   `extractTextsForRewriteClient` (regex piatto) si perdeva.
+        //   E` la causa principale del "non swipa tutti i testi".
+        //
+        // PATH B — `cloneConfig.useOpenClaw` con auditor=claude:
+        //   Path legacy via `rewriteWithOpenClawFromBrowser` (qualsiasi
+        //   worker prende il job, no target). Tenuto per backward compat.
+        //
+        // PATH C — Claude vero e proprio:
+        //   Edge Function Anthropic invariata.
+        if (chosenAuditor !== 'claude') {
+          if (!targetAgentForRewrite) throw new Error('Internal: missing target_agent for non-claude auditor');
+          // Build product context shape expected by /openclaw-build-prompts.
+          // marketingResearch / brief sono passati come marketing_brief
+          // così finiscono nel system prompt del rewrite.
+          const productPayloadForRow = {
+            name: cloneConfig.productName,
+            description: cloneConfig.productDescription || '',
+            marketing_brief: (cloneConfig.brief || cloneConfig.customPrompt || '').trim() || undefined,
+            market_research: (cloneConfig.marketResearch || '').trim() || undefined,
+          };
+          const enqueueRes = await fetch('/api/openclaw/queue', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              section: 'swipe_job',
+              message: JSON.stringify({
+                action: 'swipe_landing_local',
+                html: htmlToRewrite,
+                sourceUrl: url,
+                product: productPayloadForRow,
+                tone: 'professional',
+                language: cloneConfig.language || 'it',
+              }),
+              targetAgent: targetAgentForRewrite,
+            }),
+          });
+          const enqueued = (await enqueueRes.json()) as { id?: string; error?: string };
+          if (!enqueueRes.ok || !enqueued.id) {
+            throw new Error(enqueued.error || `Enqueue HTTP ${enqueueRes.status}`);
+          }
+          setCloneProgress({
+            phase: 'processing',
+            totalTexts: 0,
+            processedTexts: 0,
+            message: `In coda → ${AUDITOR_LABEL[chosenAuditor]} (job ${enqueued.id.slice(0, 8)})…`,
+          });
 
-        if (useOpenClawForRewrite) {
+          const PAGE_TIMEOUT_MS = 10 * 60 * 1000;
+          const POLL_INTERVAL_MS = 2500;
+          const t0 = Date.now();
+          let lastStatus: string | null = null;
+          let final: {
+            success?: boolean;
+            html?: string;
+            replacements?: number;
+            totalTexts?: number;
+            new_title?: string;
+            error?: string;
+          } | null = null;
+          while (true) {
+            if (Date.now() - t0 > PAGE_TIMEOUT_MS) {
+              throw new Error(`Timeout: il worker non ha completato in ${PAGE_TIMEOUT_MS / 1000}s`);
+            }
+            await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+            const pollRes = await fetch(`/api/openclaw/queue?id=${encodeURIComponent(enqueued.id)}`);
+            const polled = (await pollRes.json()) as { status?: string; content?: string; error?: string };
+            if (polled.status && polled.status !== lastStatus) {
+              lastStatus = polled.status;
+              if (polled.status === 'processing') {
+                setCloneProgress({
+                  phase: 'processing',
+                  totalTexts: 0,
+                  processedTexts: 0,
+                  message: `${AUDITOR_LABEL[chosenAuditor]} sta lavorando: estrazione + rewrite locale → finalize…`,
+                });
+              }
+            }
+            if (polled.status === 'completed' && polled.content) {
+              try { final = JSON.parse(polled.content); }
+              catch { throw new Error('Worker response non e JSON valido'); }
+              break;
+            }
+            if (polled.status === 'error' || polled.status === 'failed') {
+              throw new Error(polled.error || 'Worker ha fallito');
+            }
+          }
+          if (!final || final.success === false || !final.html) {
+            throw new Error(final?.error || 'Worker ha completato senza HTML');
+          }
+          rewriteData = {
+            html: final.html,
+            replacements: final.replacements ?? 0,
+            totalTexts: final.totalTexts ?? 0,
+            provider: `openclaw-${chosenAuditor}`,
+          };
+        } else if (cloneConfig.useOpenClaw) {
           rewriteData = await rewriteWithOpenClawFromBrowser({
             html: htmlToRewrite,
             productName: cloneConfig.productName,
             productDescription: cloneConfig.productDescription,
             customPrompt: cloneConfig.customPrompt || undefined,
             targetAgent: targetAgentForRewrite,
-            onProgress: (done, total) => setCloneProgress({ phase: 'processing', totalTexts: total, processedTexts: done, message: `Rewriting via OpenClaw${targetAgentForRewrite ? ` (${AUDITOR_LABEL[auditorRef.current]})` : ''} (${done}/${total} batches)...` }),
+            onProgress: (done, total) => setCloneProgress({ phase: 'processing', totalTexts: total, processedTexts: done, message: `Rewriting via OpenClaw (${done}/${total} batches)...` }),
           });
         } else {
           // Browser-orchestrated chunked rewrite via Anthropic.
@@ -3739,9 +3846,17 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
 
               {/* Global Auditor selector — vale per Swipe All, Clone &
                  Rewrite per riga, e gli enqueue OpenClaw da questo page.
-                 La voce attiva e` sticky in localStorage. */}
+                 La voce attiva e` sticky in localStorage.
+                 Highlight prominente quando NON e` Claude, cosi` l'utente
+                 vede immediatamente chi sta lavorando. */}
               <div
-                className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-gray-50 border border-gray-200"
+                className={`flex items-center gap-1.5 px-2 py-1 rounded-lg border transition-colors ${
+                  auditor === 'claude'
+                    ? 'bg-gray-50 border-gray-200'
+                    : auditor === 'neo'
+                      ? 'bg-emerald-50 border-emerald-300 ring-2 ring-emerald-100'
+                      : 'bg-blue-50 border-blue-300 ring-2 ring-blue-100'
+                }`}
                 title="Sceglie chi esegue clone + swipe + rewrite. Claude = Netlify (Anthropic). Neo / Morfeo = job in coda OpenClaw, worker locale fa fetch + LLM in locale."
               >
                 <span className="text-xs font-medium text-gray-600 pr-1">Auditor:</span>
