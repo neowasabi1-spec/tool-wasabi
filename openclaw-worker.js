@@ -839,9 +839,22 @@ async function processMessage(msg) {
         responsePayload = JSON.stringify({ runId, ok: 0, errored: 0, total: 0, status: 'completed' });
       } else {
         const summary = { ok: 0, errored: 0, total: prompts.length };
-        for (const p of prompts) {
+        for (let i = 0; i < prompts.length; i++) {
+          const p = prompts[i];
           const cat = p.category;
-          log(`  ▸ checkpoint ${cat}`);
+          const catStarted = Date.now();
+          log(`  ▸ checkpoint ${cat} (${i + 1}/${prompts.length})`);
+          // Surface "we're working on category X" to the dashboard's
+          // live monitor. Without this hint, when a category crashed
+          // AND the follow-up POST below also failed, the user saw
+          // nothing between the previous category's success event and
+          // the run-level "completata parzialmente" badge — total
+          // black hole. The hint guarantees AT LEAST one event per
+          // category attempt, regardless of POST outcome.
+          await writeCheckpointStageHint(
+            runId,
+            `Categoria ${cat} (${i + 1}/${prompts.length}) · analisi in corso…`,
+          );
           try {
             _callContext = {
               source: 'checkpoint_audit',
@@ -858,13 +871,35 @@ async function processMessage(msg) {
               120_000,
             );
             summary.ok++;
+            log(`    ✓ ${cat} ok in ${((Date.now() - catStarted) / 1000).toFixed(1)}s`);
           } catch (e) {
-            err(`  ✗ checkpoint ${cat} failed:`, e.message);
-            await callToolApi(
-              `/api/checkpoint/runs/${runId}/openclaw-category`,
-              { category: cat, ok: false, error: e.message },
-              60_000,
-            ).catch(() => { /* don't crash on follow-up failure */ });
+            err(`  ✗ checkpoint ${cat} failed in ${((Date.now() - catStarted) / 1000).toFixed(1)}s:`, e.message);
+            // Try to surface the error to the dashboard. If THIS POST
+            // also fails (it's the same Netlify endpoint that may be
+            // down), don't crash the whole loop — but DO log the
+            // secondary failure loud and clear in the worker
+            // terminal. Previously this was a silent .catch(noop)
+            // and the user had no way to tell whether the worker
+            // skipped the category or just couldn't tell the server
+            // about it.
+            try {
+              await callToolApi(
+                `/api/checkpoint/runs/${runId}/openclaw-category`,
+                { category: cat, ok: false, error: e.message },
+                60_000,
+              );
+            } catch (postErr) {
+              err(
+                `  ⚠ ALSO failed to report ${cat} failure to server:`,
+                postErr && postErr.message ? postErr.message : String(postErr),
+              );
+              // Best-effort stage hint so the dashboard at least
+              // shows an event marker tied to this category.
+              await writeCheckpointStageHint(
+                runId,
+                `Categoria ${cat} · errore non riportato al server (${e.message?.slice(0, 80) || 'ignoto'})`,
+              );
+            }
             summary.errored++;
           }
         }
