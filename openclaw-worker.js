@@ -558,16 +558,15 @@ async function writeCheckpointStageHint(runId, msg) {
 //                         a prescindere dalla mode scelta.
 const REWRITE_QUALITY_MODE = (process.env.REWRITE_QUALITY_MODE || 'oneshot').toLowerCase();
 const QUALITY_DEFAULTS = {
-  // 'oneshot' (NUOVO DEFAULT) — UNA call con TUTTI i testi insieme,
-  // esattamente come quando l'utente chatta in Telegram con Neo dicendo
-  // "ehi riscrivimi questa landing intera". Neo riceve la visione
-  // d'insieme, applica tecniche coerenti, restituisce tutto in 1 round.
-  // Usa batchSize molto grande (default 200) cosi' una landing media
-  // (50-150 testi) entra interamente in una sola call. Se la landing e'
-  // mostruosa (>200 testi) si fanno comunque pochi batch grandi.
-  // Nettamente piu' veloce (1-3 min vs 20 min) e qualita' migliore
-  // perche' il modello vede la landing intera invece di pezzettini.
-  oneshot: { batchSize: 200 },
+  // 'oneshot' (NUOVO DEFAULT) — POCHE call grandi invece di tante piccole.
+  // batchSize 30 e' il sweet spot empirico per OpenClaw / Trinity locale:
+  //   - oltre 50 testi/batch il server locale chiude la connessione con
+  //     ECONNABORTED (body POST troppo grande per /v1/chat/completions)
+  //   - 30 testi/batch + system prompt da ~12K char = body ~18K = OK
+  //   - una landing da 100 testi → ~3-4 batch, in parallelo (3 in flight)
+  //     = 1-2 round = 2-4 min totali
+  // Override via REWRITE_BATCH_SIZE se il setup locale regge di piu'.
+  oneshot: { batchSize: 30 },
   // 5 e' il sweet spot empirico per Trinity locale (vecchio default
   // 'fast'): abbastanza piccolo da non far omettere id al modello,
   // abbastanza grande da non moltiplicare le call. Mantenuto per
@@ -1300,7 +1299,16 @@ async function processMessage(msg) {
           //     Costo: 1 chiamata in piu' per swipe (non per batch).
           //     Il risultato viene appeso al system prompt e arriva a
           //     OGNI batch successivo gratis.
-          try {
+          //
+          //     SKIP in oneshot mode: oneshot fa gia' 1-3 batch grossi
+          //     ciascuno con tutto il system prompt. Aggiungere altri
+          //     6-8K char di primer al system prompt fa esplodere il
+          //     payload e OpenClaw locale rigetta con ECONNABORTED.
+          //     In oneshot l'agente ha gia' tutta la KB built-in +
+          //     tecniche utente nel system prompt — il primer e' overhead.
+          if (REWRITE_QUALITY_MODE === 'oneshot') {
+            log('  · swipe_landing_local: agent primer skipped (oneshot mode — primer non necessario, system prompt gia\' completo)');
+          } else try {
             const productCtx = [
               `PRODOTTO: ${job.product?.name || '(sconosciuto)'}`,
               job.product?.description ? `DESCRIZIONE: ${job.product.description}` : '',
