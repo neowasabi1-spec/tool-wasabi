@@ -493,7 +493,28 @@ async function writeCheckpointStageHint(runId, msg) {
 // essere troppo grande per la context window del modello locale. Lo splittiamo
 // in chunk e aggreghiamo i risultati.
 
-const REWRITE_BATCH_SIZE = parseInt(process.env.REWRITE_BATCH_SIZE || '15', 10);
+// REWRITE_QUALITY_MODE controls quality vs speed:
+//   'fast' (default)  → batch 8, prompt standard. Quick funnel rewrites.
+//   'high'            → batch 3, prompt asks the model to draft 2-3
+//                       candidate rewrites mentally and pick the best.
+//                       3-5x slower but the model uses much more of its
+//                       internal skills/archives per text. Use when the
+//                       output of 'fast' looks generic / superficial.
+//   'ultra'           → batch 1 (one text per call), prompt fully
+//                       per-text with role/position context. ~10x slower
+//                       but max possible quality. Reserve for hero
+//                       sections / highly important pages.
+const REWRITE_QUALITY_MODE = (process.env.REWRITE_QUALITY_MODE || 'fast').toLowerCase();
+const QUALITY_DEFAULTS = {
+  fast: { batchSize: 8 },
+  high: { batchSize: 3 },
+  ultra: { batchSize: 1 },
+};
+const QUALITY_BATCH_DEFAULT = (QUALITY_DEFAULTS[REWRITE_QUALITY_MODE] || QUALITY_DEFAULTS.fast).batchSize;
+const REWRITE_BATCH_SIZE = parseInt(
+  process.env.REWRITE_BATCH_SIZE || String(QUALITY_BATCH_DEFAULT),
+  10,
+);
 
 function isRewriteSection(section) {
   return section === 'Rewrite' || section === 'Quiz Rewrite';
@@ -562,10 +583,58 @@ async function runRewriteInBatches(systemPrompt, userMessage) {
     }
   }
 
+  // ─── Quality booster ─────────────────────────────────────────────
+  // Iniettato nel user message di OGNI batch del rewrite: dice
+  // esplicitamente al modello di pensare per ogni testo, di usare
+  // archivi/skill/tecniche, e di NON dare una rewrite generica al
+  // primo tentativo. Risolve il problema "in chat sono molto meglio":
+  // li forziamo a entrare in "thinking mode" anche dentro al pipeline.
+  // Il booster e' progressivo:
+  //   fast  → reminder breve (no overhead percepibile)
+  //   high  → richiesta esplicita di 2-3 candidate + pick best mentale
+  //   ultra → workflow per-testo dettagliato + anti-eco aggressivo
+  function buildQualityBooster() {
+    if (REWRITE_QUALITY_MODE === 'ultra') {
+      return [
+        '',
+        '====================================================================',
+        'ISTRUZIONI DI QUALITA` (mode=ultra):',
+        'Per OGNI testo qui sotto, prima di rispondere fai mentalmente:',
+        '  1. CONTESTO  → in che tag appare (h1/p/button/li/...)? quale ruolo persuasivo?',
+        '                 (hook, proof, scarcity, CTA, objection-handling, social-proof, FAQ, footer...)',
+        '  2. TECNICA   → quale framework di copywriting (PAS / AIDA / Big Idea / Story Brand /',
+        '                 Schwartz awareness levels) e quale leva (scarcity / authority /',
+        '                 social-proof / loss-aversion) e\' piu\' adatta a QUESTO testo?',
+        '  3. ARCHIVIO  → cerca nei tuoi archivi prodotti / KB / past work hook o claim simili',
+        '                 che hanno convertito. Riusali se calzano.',
+        '  4. CANDIDATI → genera 3 rewrite differenti (angle differenti).',
+        '  5. PICK BEST → scegli quella che converte di piu\' per QUESTO target,',
+        '                 NON quella che suona meglio in astratto.',
+        '  6. ANTI-ECO  → rileggi: se la finale parafrasa l\'originale, scartala e usa la #2.',
+        'POI ritorna SOLO il JSON con il risultato finale (no preamboli, no ragionamento).',
+        '====================================================================',
+        '',
+      ].join('\n');
+    }
+    if (REWRITE_QUALITY_MODE === 'high') {
+      return [
+        '',
+        '*** QUALITY MODE = HIGH ***',
+        'Per OGNI testo: PRIMA di rispondere, mentalmente genera 2-3 candidate rewrites usando',
+        'angle/leve/framework diversi dai tuoi archivi e skill, poi pick la migliore per il',
+        'target. NON dare la prima rewrite che ti viene in mente. NON parafrasare l\'originale.',
+        'Ritorna SOLO il JSON finale (no ragionamento).',
+        '',
+      ].join('\n');
+    }
+    return '\nRicorda: USA i tuoi archivi prodotti, le tue skill di copywriting e le tue tecniche di persuasione. NON parafrasare l\'originale.\n';
+  }
+  const qualityBooster = buildQualityBooster();
+
   async function runBatch(batch, label, extraSystemHint) {
     batchCount++;
-    const batchUserMessage = `${beforeJson}\n${JSON.stringify(batch, null, 2)}\n${afterJson}`;
-    log(`  ▸ Rewrite ${label} (${batch.length} testi)`);
+    const batchUserMessage = `${beforeJson}\n${JSON.stringify(batch, null, 2)}\n${afterJson}${qualityBooster}`;
+    log(`  ▸ Rewrite ${label} (${batch.length} testi, mode=${REWRITE_QUALITY_MODE})`);
     let raw = '';
     try {
       const sys = extraSystemHint
@@ -2599,6 +2668,7 @@ function printBanner() {
   } else {
     log('No static extra context — set OPENCLAW_EXTRA_CONTEXT_FILE=/path/to/notes.md or drop "openclaw-extra-context.md" accanto al worker per dargli knowledge personale (brand book, claims approvati, ecc.).');
   }
+  log(`Rewrite quality mode: ${REWRITE_QUALITY_MODE} (batch size ${REWRITE_BATCH_SIZE}). Set REWRITE_QUALITY_MODE=high|ultra per piu' qualita' (e piu' tempo).`);
   if (!playwrightChromium) {
     log(
       'Funnel crawl poller DISABLED: playwright-core not found. Run `npm install` then `npx playwright install chromium` if you want this worker to also process auto-discover funnel jobs.',
