@@ -210,14 +210,21 @@ function truncate(s: string, max: number): string {
 }
 
 // Cap per la copywriting KB built-in (src/knowledge/copywriting/) quando
-// la spediamo a un LLM locale (Trinity / Ollama / equivalenti). Claude
-// regge ~28K token Tier 1 + 35K Tier 2 grazie al prompt caching, ma un
-// modello 32K-context locale verrebbe saturato. 22K char ≈ 5.5K token e'
-// abbastanza per dare le tecniche essenziali senza far esplodere il prompt.
-// Configurabile da env per workstation con context window grosso (Trinity-XL ecc).
+// la spediamo a un agente locale (Neo / Morfeo via OpenClaw, o Trinity /
+// Ollama). Claude regge 28K + 35K token grazie al prompt caching, qui no.
+//
+// 12K char ≈ 3K token e' il sweet spot empirico:
+//   - abbastanza per dare le tecniche-chiave (estratti COS Engine, Evaldo,
+//     Anghelache, headline recipes, framework PAS/AIDA)
+//   - LATENCY: ogni call processa SOLO 3K token in piu', quindi su un
+//     LLM locale che fa 30s/batch a 6K token ne fa ~20s a 3K token
+//   - su una landing con 100 testi (20 batch) salviamo ~3-4 min totali
+//
+// Aumentabile via env per LLM con context window grosso (32K+) e velocita'
+// alta (es. workstation con GPU dedicata + Trinity-XL).
 const MAX_BUILTIN_KB_CHARS = Math.max(
   4000,
-  Math.min(80_000, Number.parseInt(process.env.OPENCLAW_KB_MAX_CHARS || '22000', 10) || 22000),
+  Math.min(80_000, Number.parseInt(process.env.OPENCLAW_KB_MAX_CHARS || '12000', 10) || 12000),
 );
 
 // Distilla la KB built-in (cos-engine, evaldo, anghelache, ...) in una

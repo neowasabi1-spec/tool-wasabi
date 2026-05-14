@@ -306,14 +306,26 @@ export default function CloneLandingPage() {
     }
     pushProgress(`Job #${enqueued.id.slice(0, 8)} in coda · in attesa che il worker lo prenda`);
 
-    // Swipe takes longer than clone (LLM rewrite loop). 10min cap.
+    // Swipe takes a LONG time on local agents: per ogni testo il modello
+    // locale (Trinity / equiv) processa ~25K char di system prompt (KB
+    // built-in + knowledge tool) e genera la rewrite. ~40s per batch di 5,
+    // moltiplicato per ~30 batch su una landing media = 20 min.
+    // Tetto a 30 min per non far scadere il polling prima che il worker
+    // finisca davvero. La task gira COMUNQUE in background — meglio
+    // mostrare "in corso" per 30 min che dare timeout finto a 10 min e
+    // perdere il risultato che e' gia' in Supabase.
     const t0 = Date.now();
-    const POLL_TIMEOUT_MS = 10 * 60 * 1000;
+    const POLL_TIMEOUT_MS = 30 * 60 * 1000;
     const POLL_INTERVAL_MS = 2500;
     let lastStatus: string | null = null;
     while (true) {
       if (Date.now() - t0 > POLL_TIMEOUT_MS) {
-        throw new Error(`Timeout: il worker non ha completato lo swipe in ${POLL_TIMEOUT_MS / 1000}s.`);
+        throw new Error(
+          `Timeout: il worker non ha completato lo swipe in ${POLL_TIMEOUT_MS / 1000}s. `
+          + 'Controlla openclaw-worker.log: se il worker era ancora in elaborazione, il risultato e\' '
+          + 'salvato in Supabase ma la UI non puo\' piu\' recuperarlo. Riduci la dimensione della landing '
+          + 'o usa un LLM piu\' veloce.',
+        );
       }
       await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
       const pollRes = await fetch(`/api/openclaw/queue?id=${encodeURIComponent(enqueued.id)}`);

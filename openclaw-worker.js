@@ -102,13 +102,16 @@ const OPENCLAW_BACKEND = (process.env.OPENCLAW_BACKEND || 'openai-compat')
 const ANTHROPIC_API_KEY =
   process.env.ANTHROPIC_API_KEY || process.env.OPENCLAW_API_KEY || '';
 const ANTHROPIC_VERSION = process.env.ANTHROPIC_VERSION || '2023-06-01';
-// Max output tokens. Anthropic Sonnet/Opus comfortably handles 8192;
-// local OpenClaw/Trinity historically caps lower, so we keep its
-// default at 4096 for compatibility. Override per-machine via env if
-// you know your model handles more.
+// Max output tokens. Anthropic Sonnet/Opus regge 8192; OpenClaw/Trinity
+// regge tipicamente fino a 16K (Trinity ha context window 32K, output
+// fino a 16K). Default alzato a 16K per i locali: cosi' un'unica call
+// "oneshot" puo' restituire 100+ rewrites in un solo round (come fa
+// Telegram quando l'utente chatta direttamente con Neo: 1 messaggio,
+// 1 risposta lunga). Override via env se il modello locale ha un cap
+// piu' basso.
 const OPENCLAW_MAX_TOKENS = parseInt(
   process.env.OPENCLAW_MAX_TOKENS
-    || (OPENCLAW_BACKEND === 'anthropic' ? '8192' : '4096'),
+    || (OPENCLAW_BACKEND === 'anthropic' ? '8192' : '16384'),
   10,
 );
 
@@ -535,34 +538,41 @@ async function writeCheckpointStageHint(runId, msg) {
 // essere troppo grande per la context window del modello locale. Lo splittiamo
 // in chunk e aggreghiamo i risultati.
 
-// REWRITE_QUALITY_MODE controls quality vs speed:
-//   'chat' (default)  → conversazionale 1-a-1 (un testo per call con
-//                       prompt naturale, risposta libera). E' la stessa
-//                       modalita' che usa la chat del tool quando
-//                       Neo/Morfeo "pescano dai loro archivi e
-//                       triggerano RAG/tool" — confermato dall'utente.
-//                       L'agente vede una richiesta vera e attiva il
-//                       loop tool-use, non il "form-filler mode".
-//                       ~5-10x piu' lento di 'fast' ma la qualita' e'
-//                       quella della chat.
-//   'fast'            → batch JSON da 5. Modalita' veloce per funnel
-//                       grossi quando vuoi spingere e accetti rewrite
-//                       piu' "form-filler". L'ultimo gap-fill pass usa
-//                       comunque chat-style per recuperare i mancanti.
-//   'high'            → batch JSON da 3, hint extra "pensa 2-3 candidati".
-//   'ultra'           → batch JSON da 1 (un testo per call ma sempre
-//                       formato JSON). Tipicamente CHAT e' meglio.
-// Default 'fast' (batch JSON da 5). Chat-style 1-a-1 e' opt-in via env
-// var perche' su funnel medio-grandi (50+ testi) e' molto lento e su
-// alcuni modelli locali tende a far rispondere l'agente con preamboli
-// / domande di chiarimento invece del solo testo riscritto.
-// L'ULTIMO gap-fill pass usa COMUNQUE chat-style per i testi che il
-// batch JSON ha sbagliato, cosi' i due mondi si compensano.
-const REWRITE_QUALITY_MODE = (process.env.REWRITE_QUALITY_MODE || 'fast').toLowerCase();
+// REWRITE_QUALITY_MODE controlla la strategia di rewrite:
+//   'oneshot' (DEFAULT) → 1 call con TUTTI i testi insieme, come fa
+//                         Telegram. Neo vede la landing intera, applica
+//                         tecniche coerenti, restituisce tutto in 1
+//                         risposta lunga. 1-3 min totali, qualita' max.
+//                         Limite: il modello locale deve reggere
+//                         (context >= 16K + max_tokens output >= 8K).
+//                         Se la landing e' enorme (>200 testi) si fanno
+//                         comunque batch grossi (200/round).
+//   'fast'              → batch JSON da 5 sequenziale. Vecchio default,
+//                         compatibile con modelli locali stretti (8K).
+//                         ~20 min su una landing da 100 testi.
+//   'high'              → batch JSON da 3, hint "pensa 2-3 candidati".
+//   'ultra'             → batch JSON da 1.
+//   'chat'              → 1 call conversazionale per OGNI testo. Lento
+//                         ma triggera RAG nativo. Usato anche come
+//                         fallback automatico nell'ULTIMO gap-fill pass
+//                         a prescindere dalla mode scelta.
+const REWRITE_QUALITY_MODE = (process.env.REWRITE_QUALITY_MODE || 'oneshot').toLowerCase();
 const QUALITY_DEFAULTS = {
-  // 5 e' il sweet spot empirico per Trinity locale: abbastanza piccolo
-  // da non far omettere id al modello, abbastanza grande da non
-  // moltiplicare le call. Sopra 6-7 il modello inizia a "saltare" testi.
+  // 'oneshot' (NUOVO DEFAULT) — UNA call con TUTTI i testi insieme,
+  // esattamente come quando l'utente chatta in Telegram con Neo dicendo
+  // "ehi riscrivimi questa landing intera". Neo riceve la visione
+  // d'insieme, applica tecniche coerenti, restituisce tutto in 1 round.
+  // Usa batchSize molto grande (default 200) cosi' una landing media
+  // (50-150 testi) entra interamente in una sola call. Se la landing e'
+  // mostruosa (>200 testi) si fanno comunque pochi batch grandi.
+  // Nettamente piu' veloce (1-3 min vs 20 min) e qualita' migliore
+  // perche' il modello vede la landing intera invece di pezzettini.
+  oneshot: { batchSize: 200 },
+  // 5 e' il sweet spot empirico per Trinity locale (vecchio default
+  // 'fast'): abbastanza piccolo da non far omettere id al modello,
+  // abbastanza grande da non moltiplicare le call. Mantenuto per
+  // compatibilita' con setup vecchi e per modelli locali con
+  // context window stretto (8K) che non reggono il oneshot.
   fast: { batchSize: 5 },
   high: { batchSize: 3 },
   ultra: { batchSize: 1 },
@@ -952,13 +962,42 @@ async function runRewriteInBatches(systemPrompt, userMessage) {
     await runBatchOnce(half2, `${label}/split-B`, extraSystemHint);
   }
 
-  // Pass principale.
+  // Pass principale CONCORRENTE.
+  // Trinity locale impiega ~30-40s per batch da 5 testi. Su una landing
+  // da 100+ testi diventa ~20 min sequenziali. La maggior parte degli
+  // LLM gateway locali (OpenClaw, Ollama, vLLM, llama.cpp server) gestisce
+  // bene 2-4 richieste in parallelo, quindi fare 3 batch in flight cuts
+  // 60-66% del wall-time senza appesantire il modello (e' lo stesso load
+  // totale, solo distribuito su time line piu' corta). Configurabile via
+  // env per disattivare il parallelismo se il setup locale non lo regge.
+  const REWRITE_PARALLELISM = Math.max(
+    1,
+    Math.min(8, Number.parseInt(process.env.REWRITE_PARALLELISM || '3', 10) || 3),
+  );
+  const allBatches = [];
   for (let i = 0; i < total; i += REWRITE_BATCH_SIZE) {
     const batch = texts.slice(i, i + REWRITE_BATCH_SIZE);
     const idxFrom = i + 1;
     const idxTo = Math.min(i + REWRITE_BATCH_SIZE, total);
-    await runBatch(batch, `batch ${batchCount + 1} (${idxFrom}-${idxTo}/${total})`);
+    allBatches.push({ batch, label: `batch ${allBatches.length + 1}/${Math.ceil(total / REWRITE_BATCH_SIZE)} (${idxFrom}-${idxTo}/${total})` });
   }
+  log(
+    `  ▸ Pass principale: ${allBatches.length} batch totali, ${REWRITE_PARALLELISM} in parallelo`
+    + ` (REWRITE_PARALLELISM=${REWRITE_PARALLELISM})`,
+  );
+  // Worker pool semplice: prendi N batch dalla coda finche' non e' vuota.
+  let nextIdx = 0;
+  async function consumer() {
+    while (nextIdx < allBatches.length) {
+      const myIdx = nextIdx++;
+      const item = allBatches[myIdx];
+      if (!item) break;
+      await runBatch(item.batch, item.label);
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(REWRITE_PARALLELISM, allBatches.length) }, () => consumer()),
+  );
 
   // Gap-fill: il modello locale a volte salta degli id O risponde con echo
   // (= testo originale identico). In entrambi i casi ritentiamo solo i mancanti
@@ -3018,11 +3057,12 @@ function printBanner() {
     log('No static extra context — set OPENCLAW_EXTRA_CONTEXT_FILE=/path/to/notes.md or drop "openclaw-extra-context.md" accanto al worker per dargli knowledge personale (brand book, claims approvati, ecc.).');
   }
   log(
-    `Rewrite quality mode: ${REWRITE_QUALITY_MODE} (batch size ${REWRITE_BATCH_SIZE}).`
-    + (REWRITE_QUALITY_MODE === 'chat'
-      ? ' Modalita\' agent-loop nativa (Neo/Morfeo riceve richieste conversazionali, triggera RAG/archivi/tool come in chat). Lento ma alta qualita\'.'
-      : ' Modalita\' batch JSON. L\'ultimo gap-fill pass usa comunque CHAT-STYLE per recuperare i mancanti.'
-        + ' Per qualita\' max: REWRITE_QUALITY_MODE=chat'),
+    `Rewrite quality mode: ${REWRITE_QUALITY_MODE} (batch size ${REWRITE_BATCH_SIZE}, max_tokens ${OPENCLAW_MAX_TOKENS}).`
+    + (REWRITE_QUALITY_MODE === 'oneshot'
+      ? ' Modalita\' ONESHOT: 1 call con tutti i testi insieme (come Telegram). Veloce + qualita\' max. Se il tuo modello locale ha context stretto: REWRITE_QUALITY_MODE=fast'
+      : REWRITE_QUALITY_MODE === 'chat'
+        ? ' Modalita\' agent-loop nativa (call conversazionale per ogni testo). Lento.'
+        : ` Modalita' batch JSON. L'ultimo gap-fill pass usa comunque CHAT-STYLE per recuperare i mancanti. Per max velocita': REWRITE_QUALITY_MODE=oneshot`),
   );
   if (!playwrightChromium) {
     log(

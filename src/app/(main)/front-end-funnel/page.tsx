@@ -2282,7 +2282,11 @@ export default function FrontEndFunnel() {
     // No-pickup watchdog: se entro 30s nessun worker prende la PRIMA
     // pagina, fallisci tutto subito invece di aspettare 10min × N
     // pagine per niente.
-    const PAGE_TIMEOUT_MS = 10 * 60 * 1000;
+    // 30 min per pagina: Trinity locale processa ~25K char di system prompt
+    // (KB built-in + knowledge tool) per ogni batch — su landing grosse
+    // (100+ testi) puo' richiedere 15-25 min. Meglio aspettare che dare
+    // timeout finto e perdere il risultato che e' gia' in Supabase.
+    const PAGE_TIMEOUT_MS = 30 * 60 * 1000;
     const NO_PICKUP_TIMEOUT_MS = 30 * 1000;
     const POLL_INTERVAL_MS = 2500;
 
@@ -3012,7 +3016,7 @@ export default function FrontEndFunnel() {
             message: `In coda → ${AUDITOR_LABEL[chosenAuditor]} (job ${enqueued.id.slice(0, 8)})…`,
           });
 
-          const PAGE_TIMEOUT_MS = 10 * 60 * 1000;
+          const PAGE_TIMEOUT_MS = 30 * 60 * 1000;
           const POLL_INTERVAL_MS = 2500;
           // No-pickup watchdog: se entro 30s nessun worker ha
           // marcato il job come 'processing', il problema NON e'
