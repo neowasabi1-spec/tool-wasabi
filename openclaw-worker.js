@@ -1242,7 +1242,18 @@ async function processMessage(msg) {
           if (job.knowledge && (job.knowledge.prompts?.length || job.knowledge.project)) {
             const pCount = job.knowledge.prompts?.length || 0;
             const hasBrief = !!(job.knowledge.project?.brief);
-            log(`  · swipe_landing_local: knowledge dal tool — ${pCount} tecniche libreria${hasBrief ? ' + brief progetto' : ''}`);
+            const hasMR = !!(job.knowledge.project?.market_research);
+            const projName = job.knowledge.project?.name || '(senza nome)';
+            const briefLen = (job.knowledge.project?.brief || '').toString().length;
+            const mrLen = (() => {
+              const mr = job.knowledge.project?.market_research;
+              if (!mr) return 0;
+              if (typeof mr === 'string') return mr.length;
+              try { return JSON.stringify(mr).length; } catch { return 0; }
+            })();
+            log(`  · swipe_landing_local: knowledge dal tool — ${pCount} tecniche libreria${hasBrief ? ` + brief progetto "${projName}" (${briefLen} char)` : ''}${hasMR ? ` + market research (${mrLen} char)` : ''}`);
+          } else {
+            log(`  · swipe_landing_local: ⚠ NESSUNA knowledge dal tool (no saved_prompts, no progetto). Il rewrite usera' solo la KB built-in + le info inserite manualmente nel form.`);
           }
           log(`  · swipe_landing_local: building prompts server-side (light)`);
           const prep = await callToolApi(

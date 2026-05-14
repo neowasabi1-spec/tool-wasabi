@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import Header from '@/components/Header';
 import {
   Copy,
@@ -94,6 +94,56 @@ export default function CloneLandingPage() {
   // Live activity log shown while a Neo/Morfeo job is running, so the user
   // sees what's happening instead of staring at a generic spinner for ~30s.
   const [progress, setProgress] = useState<string[]>([]);
+
+  // ── Project picker ─────────────────────────────────────────────────
+  // Permette all'utente di legare lo swipe a un progetto esistente
+  // (con brief + market research). Quando viene selezionato, passiamo
+  // il projectId a /api/swipe/load-knowledge cosi' Neo/Morfeo ricevono
+  // anche il brief del progetto e non solo la libreria saved_prompts.
+  type ProjectPick = {
+    id: string;
+    name: string;
+    description?: string | null;
+    brief?: string | null;
+  };
+  const [availableProjects, setAvailableProjects] = useState<ProjectPick[]>([]);
+  const [selectedProjectId, setSelectedProjectId] = useState<string>('');
+  const [knowledgeBadge, setKnowledgeBadge] = useState<{
+    techniques: number;
+    hasBrief: boolean;
+    hasMarketResearch: boolean;
+    projectName?: string;
+  } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch('/api/projects/list');
+        if (!r.ok) return;
+        const j = (await r.json()) as { projects?: ProjectPick[] };
+        if (!cancelled && Array.isArray(j.projects)) {
+          setAvailableProjects(j.projects);
+        }
+      } catch {/* ignore */}
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const handleSelectProject = (id: string) => {
+    setSelectedProjectId(id);
+    if (!id) return;
+    const proj = availableProjects.find((p) => p.id === id);
+    if (!proj) return;
+    setProduct((curr) => ({
+      ...curr,
+      name: curr.name?.trim() ? curr.name : proj.name,
+      description:
+        curr.description?.trim()
+          ? curr.description
+          : (proj.description || proj.brief || '').slice(0, 1500),
+    }));
+  };
 
   const pushProgress = (msg: string) => {
     const t = new Date().toLocaleTimeString();
@@ -261,16 +311,35 @@ export default function CloneLandingPage() {
     pushProgress('Carico libreria tecniche / knowledge dal tool…');
     let knowledge: { prompts: unknown[]; project: unknown } = { prompts: [], project: null };
     try {
-      const kRes = await fetch('/api/swipe/load-knowledge');
+      const qs = selectedProjectId
+        ? `?projectId=${encodeURIComponent(selectedProjectId)}`
+        : '';
+      const kRes = await fetch(`/api/swipe/load-knowledge${qs}`);
       if (kRes.ok) {
         const kj = await kRes.json();
         knowledge = {
           prompts: Array.isArray(kj.prompts) ? kj.prompts : [],
           project: kj.project ?? null,
         };
+        const proj = (kj.project || null) as { name?: string; brief?: string | null; market_research?: unknown } | null;
+        setKnowledgeBadge({
+          techniques: Array.isArray(kj.prompts) ? kj.prompts.length : 0,
+          hasBrief: !!(proj?.brief && String(proj.brief).trim()),
+          hasMarketResearch: !!proj?.market_research,
+          projectName: proj?.name,
+        });
+        const briefBits: string[] = [];
+        if (proj?.name) briefBits.push(`progetto "${proj.name}"`);
+        if (proj?.brief && String(proj.brief).trim()) briefBits.push('brief');
+        if (proj?.market_research) briefBits.push('market research');
         pushProgress(
-          `Knowledge: ${knowledge.prompts.length} tecniche libreria${knowledge.project ? ' + brief progetto' : ''}`,
+          `Knowledge: ${knowledge.prompts.length} tecniche${briefBits.length ? ` + ${briefBits.join(' + ')}` : ''}`,
         );
+        if (!selectedProjectId) {
+          pushProgress(
+            '⚠ Nessun progetto selezionato — Neo/Morfeo NON riceveranno brief/market research. Selezionane uno nel form swipe per attivarli.',
+          );
+        }
       }
     } catch {
       // non fatale: lo swipe parte comunque, solo senza la knowledge extra
@@ -709,6 +778,63 @@ export default function CloneLandingPage() {
 
             {showSwipeForm && (
               <div className="px-6 pb-6 border-t border-orange-200">
+                {/* Project picker — opzionale, ma fondamentale se vuoi che
+                    Neo/Morfeo usino il brief + market research del progetto.
+                    Senza selezione qui, lo swipe parte solo con la libreria
+                    saved_prompts (tecniche generiche, niente contesto prodotto). */}
+                <div className="mt-4 bg-white border border-orange-200 rounded-lg p-4">
+                  <div className="flex items-start gap-3">
+                    <div className="bg-orange-100 p-2 rounded-md mt-0.5">
+                      <Sparkles className="w-4 h-4 text-orange-600" />
+                    </div>
+                    <div className="flex-1">
+                      <label className="block text-sm font-semibold text-gray-800 mb-1">
+                        Progetto attivo (per brief + market research)
+                      </label>
+                      <p className="text-xs text-gray-500 mb-2">
+                        Lega lo swipe a un progetto del tool: Neo/Morfeo riceveranno il <b>brief</b>, la <b>market research</b> e useranno la tua libreria <b>saved_prompts</b> per riscrivere come ti aspetti dal tool.
+                      </p>
+                      <select
+                        value={selectedProjectId}
+                        onChange={(e) => handleSelectProject(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-orange-500 text-sm"
+                      >
+                        <option value="">— Nessun progetto (solo libreria tecniche) —</option>
+                        {availableProjects.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name}
+                          </option>
+                        ))}
+                      </select>
+                      {knowledgeBadge && (
+                        <div className="mt-2 flex flex-wrap gap-2 text-xs">
+                          <span className="inline-flex items-center gap-1 px-2 py-1 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-full">
+                            ✓ {knowledgeBadge.techniques} tecniche libreria
+                          </span>
+                          {knowledgeBadge.hasBrief ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-1 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-full">
+                              ✓ Brief progetto{knowledgeBadge.projectName ? ` "${knowledgeBadge.projectName}"` : ''}
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 px-2 py-1 bg-amber-50 text-amber-700 border border-amber-200 rounded-full">
+                              ⚠ Nessun brief — seleziona un progetto
+                            </span>
+                          )}
+                          {knowledgeBadge.hasMarketResearch ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-1 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-full">
+                              ✓ Market research
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 px-2 py-1 bg-amber-50 text-amber-700 border border-amber-200 rounded-full">
+                              ⚠ Nessuna market research
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
                   {/* Left Column */}
                   <div className="space-y-4">
