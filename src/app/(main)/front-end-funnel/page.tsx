@@ -2279,7 +2279,11 @@ export default function FrontEndFunnel() {
 
     // Cap per pagina: 10min (worker LLM rewrite + 2 pass gap-fill su
     // funnel grossi puo` richiedere ~5min, +headroom).
+    // No-pickup watchdog: se entro 30s nessun worker prende la PRIMA
+    // pagina, fallisci tutto subito invece di aspettare 10min × N
+    // pagine per niente.
     const PAGE_TIMEOUT_MS = 10 * 60 * 1000;
+    const NO_PICKUP_TIMEOUT_MS = 30 * 1000;
     const POLL_INTERVAL_MS = 2500;
 
     for (let i = 0; i < eligible.length; i++) {
@@ -2349,7 +2353,18 @@ export default function FrontEndFunnel() {
         while (true) {
           if (swipeAllCancelRef.current) break;
           if (Date.now() - t0 > PAGE_TIMEOUT_MS) {
-            throw new Error(`Timeout: il worker non ha completato in ${PAGE_TIMEOUT_MS / 1000}s`);
+            throw new Error(`Timeout: il worker ${AUDITOR_LABEL[chosen]} non ha completato in ${PAGE_TIMEOUT_MS / 1000}s`);
+          }
+          // No-pickup early bail-out (vedi commento su NO_PICKUP_TIMEOUT_MS).
+          if (
+            Date.now() - t0 > NO_PICKUP_TIMEOUT_MS &&
+            (lastStatus === 'pending' || lastStatus === null)
+          ) {
+            throw new Error(
+              `${AUDITOR_LABEL[chosen]} non ha preso il job in ${NO_PICKUP_TIMEOUT_MS / 1000}s. ` +
+                `Controlla che il worker giri sul PC di ${chosen === 'neo' ? 'Neo' : 'Morfeo'} (\`node openclaw-worker.js\`) e ` +
+                `che sia aggiornato all'ultimo commit. Workaround: cambia auditor.`,
+            );
           }
           await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
           const pollRes = await fetch(`/api/openclaw/queue?id=${encodeURIComponent(enqueued.id)}`);
@@ -2374,7 +2389,16 @@ export default function FrontEndFunnel() {
             break;
           }
           if (polled.status === 'error' || polled.status === 'failed') {
-            throw new Error(polled.error || 'Worker ha fallito');
+            const raw = polled.error || 'Worker ha fallito';
+            let hint = '';
+            if (/Unknown swipe_job action.*swipe_landing_local/i.test(raw)) {
+              hint = ` — Worker ${AUDITOR_LABEL[chosen]} su commit vecchio: \`git pull\` + restart su quel PC.`;
+            } else if (/(ECONNREFUSED|HTTP 404|fetch failed).*(18789|chat\/completions)/i.test(raw)) {
+              hint = ` — OpenClaw locale di ${AUDITOR_LABEL[chosen]} non risponde su 127.0.0.1:18789.`;
+            } else if (/Local fetch failed|Playwright|net::ERR/i.test(raw)) {
+              hint = ` — Playwright sul PC di ${AUDITOR_LABEL[chosen]} non scarica la pagina (\`npx playwright install chromium\`).`;
+            }
+            throw new Error(`${raw}${hint}`);
           }
         }
 
@@ -2937,6 +2961,12 @@ export default function FrontEndFunnel() {
 
           const PAGE_TIMEOUT_MS = 10 * 60 * 1000;
           const POLL_INTERVAL_MS = 2500;
+          // No-pickup watchdog: se entro 30s nessun worker ha
+          // marcato il job come 'processing', il problema NON e'
+          // tempo di rewrite — il worker scelto non sta girando o
+          // non vede questa coda. Fallisci subito con messaggio
+          // azionabile invece di aspettare 10 minuti per niente.
+          const NO_PICKUP_TIMEOUT_MS = 30 * 1000;
           const t0 = Date.now();
           let lastStatus: string | null = null;
           let final: {
@@ -2949,7 +2979,20 @@ export default function FrontEndFunnel() {
           } | null = null;
           while (true) {
             if (Date.now() - t0 > PAGE_TIMEOUT_MS) {
-              throw new Error(`Timeout: il worker non ha completato in ${PAGE_TIMEOUT_MS / 1000}s`);
+              throw new Error(`Timeout: il worker ${AUDITOR_LABEL[chosenAuditor]} non ha completato in ${PAGE_TIMEOUT_MS / 1000}s`);
+            }
+            // No-pickup early bail-out.
+            if (
+              Date.now() - t0 > NO_PICKUP_TIMEOUT_MS &&
+              (lastStatus === 'pending' || lastStatus === null)
+            ) {
+              throw new Error(
+                `${AUDITOR_LABEL[chosenAuditor]} non ha preso il job in ${NO_PICKUP_TIMEOUT_MS / 1000}s. ` +
+                  `Verifica che il worker sia avviato sul PC di ${chosenAuditor === 'neo' ? 'Neo' : 'Morfeo'} ` +
+                  `(node openclaw-worker.js), che il repo sia aggiornato all'ultimo commit ` +
+                  `(\`git pull\` poi riavvio worker), e che il suo OpenClaw locale risponda su 127.0.0.1:18789. ` +
+                  `Workaround: riprova selezionando un altro auditor.`,
+              );
             }
             await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
             const pollRes = await fetch(`/api/openclaw/queue?id=${encodeURIComponent(enqueued.id)}`);
@@ -2971,7 +3014,19 @@ export default function FrontEndFunnel() {
               break;
             }
             if (polled.status === 'error' || polled.status === 'failed') {
-              throw new Error(polled.error || 'Worker ha fallito');
+              const raw = polled.error || 'Worker ha fallito';
+              // Heuristics su errori comuni del worker per dare
+              // un'azione concreta all'utente invece del solo testo
+              // grezzo dal worker.
+              let hint = '';
+              if (/Unknown swipe_job action.*swipe_landing_local/i.test(raw)) {
+                hint = ` — Il worker ${AUDITOR_LABEL[chosenAuditor]} non conosce 'swipe_landing_local' = sta girando su un commit vecchio. Su quel PC: \`git pull\` + riavvio worker.`;
+              } else if (/(ECONNREFUSED|HTTP 404|fetch failed).*(18789|chat\/completions)/i.test(raw)) {
+                hint = ` — Il worker risponde ma il suo OpenClaw locale non risponde su 127.0.0.1:18789. Verifica \`openclaw gateway status\` su quel PC.`;
+              } else if (/Local fetch failed|Playwright|net::ERR/i.test(raw)) {
+                hint = ` — Il worker non riesce a scaricare la pagina. Probabilmente Playwright non e' installato (\`npx playwright install chromium\`) o il sito blocca l'IP del worker.`;
+              }
+              throw new Error(`${raw}${hint}`);
             }
           }
           if (!final || final.success === false || !final.html) {
