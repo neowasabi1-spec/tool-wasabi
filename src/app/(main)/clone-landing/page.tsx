@@ -302,6 +302,22 @@ export default function CloneLandingPage() {
   const handleSwipeViaOpenclaw = async (chosen: Auditor) => {
     if (!result?.html) throw new Error('No cloned HTML to swipe — clone first');
     const targetAgent = AUDITOR_TARGET_AGENT[chosen];
+
+    // ── HARD-GATE: brief + market research OBBLIGATORI per Neo/Morfeo
+    // Senza un progetto selezionato (con brief + market research) gli
+    // agenti locali producono copy generico. Il worker rifiutera' lo
+    // stesso il job, ma blocchiamo qui per dare un errore chiaro PRIMA
+    // di mettere in coda + aspettare il pickup.
+    if (!selectedProjectId) {
+      throw new Error(
+        'Devi selezionare un progetto nella sezione "Progetto attivo" del form Swipe. ' +
+        `Neo/Morfeo richiedono OBBLIGATORIAMENTE brief + market research del progetto ` +
+        `per riscrivere con qualita' (usano le tecniche di Stefan Georgi, Sultanic, ` +
+        `Schwartz, Halbert, Caples, Bencivenga, Ogilvy, Carlton, ecc. dai loro archivi ` +
+        `interni — ma serve il brief per orientarli).`
+      );
+    }
+
     pushProgress(`Coda OpenClaw → ${AUDITOR_LABEL[chosen]} (swipe)`);
 
     // Carica la knowledge (libreria saved_prompts + brief progetto attivo)
@@ -311,9 +327,7 @@ export default function CloneLandingPage() {
     pushProgress('Carico libreria tecniche / knowledge dal tool…');
     let knowledge: { prompts: unknown[]; project: unknown } = { prompts: [], project: null };
     try {
-      const qs = selectedProjectId
-        ? `?projectId=${encodeURIComponent(selectedProjectId)}`
-        : '';
+      const qs = `?projectId=${encodeURIComponent(selectedProjectId)}`;
       const kRes = await fetch(`/api/swipe/load-knowledge${qs}`);
       if (kRes.ok) {
         const kj = await kRes.json();
@@ -335,15 +349,35 @@ export default function CloneLandingPage() {
         pushProgress(
           `Knowledge: ${knowledge.prompts.length} tecniche${briefBits.length ? ` + ${briefBits.join(' + ')}` : ''}`,
         );
-        if (!selectedProjectId) {
-          pushProgress(
-            '⚠ Nessun progetto selezionato — Neo/Morfeo NON riceveranno brief/market research. Selezionane uno nel form swipe per attivarli.',
+
+        // ── HARD-GATE 2: brief E market research devono essere
+        // entrambi presenti, altrimenti blocchiamo PRIMA di far
+        // partire il worker (che li rifiuterebbe comunque).
+        const briefOk = !!(proj?.brief && String(proj.brief).trim().length > 30);
+        const mrOk = !!proj?.market_research && (() => {
+          const mr = proj.market_research;
+          if (typeof mr === 'string') return mr.trim().length > 30;
+          if (typeof mr === 'object' && mr) return Object.keys(mr).length > 0;
+          return false;
+        })();
+        if (!briefOk || !mrOk) {
+          const missing: string[] = [];
+          if (!briefOk) missing.push('BRIEF');
+          if (!mrOk) missing.push('MARKET RESEARCH');
+          throw new Error(
+            `Il progetto "${proj?.name || selectedProjectId}" non ha ${missing.join(' + ')} compilati. ` +
+            `Vai su Projects → apri questo progetto → compila ${missing.join(' e ')} ` +
+            `e ritorna qui. Senza questi due input Neo/Morfeo non riescono a usare le ` +
+            `tecniche dei master copywriter (Stefan Georgi, Sultanic, Schwartz, Halbert, ` +
+            `Caples, Bencivenga, Ogilvy, Carlton, ecc.) in modo mirato sul TUO prodotto.`
           );
         }
+      } else {
+        throw new Error(`Knowledge load HTTP ${kRes.status}`);
       }
-    } catch {
-      // non fatale: lo swipe parte comunque, solo senza la knowledge extra
-      pushProgress('Knowledge non caricabile (vado avanti senza)');
+    } catch (e) {
+      // FATALE: senza knowledge non procediamo (l'utente l'ha richiesto).
+      throw e instanceof Error ? e : new Error(String(e));
     }
 
     const payload = {
@@ -778,28 +812,48 @@ export default function CloneLandingPage() {
 
             {showSwipeForm && (
               <div className="px-6 pb-6 border-t border-orange-200">
-                {/* Project picker — opzionale, ma fondamentale se vuoi che
-                    Neo/Morfeo usino il brief + market research del progetto.
-                    Senza selezione qui, lo swipe parte solo con la libreria
-                    saved_prompts (tecniche generiche, niente contesto prodotto). */}
-                <div className="mt-4 bg-white border border-orange-200 rounded-lg p-4">
+                {/* Project picker — OBBLIGATORIO per Neo/Morfeo.
+                    Brief + market research sono fondamentali: senza,
+                    gli agenti locali producono copy generico (la libreria
+                    saved_prompts da sola non basta). */}
+                <div className={`mt-4 border-2 rounded-lg p-4 ${
+                  auditor !== 'claude' && !selectedProjectId
+                    ? 'bg-red-50 border-red-300'
+                    : 'bg-white border-orange-200'
+                }`}>
                   <div className="flex items-start gap-3">
-                    <div className="bg-orange-100 p-2 rounded-md mt-0.5">
-                      <Sparkles className="w-4 h-4 text-orange-600" />
+                    <div className={`p-2 rounded-md mt-0.5 ${
+                      auditor !== 'claude' && !selectedProjectId
+                        ? 'bg-red-100'
+                        : 'bg-orange-100'
+                    }`}>
+                      <Sparkles className={`w-4 h-4 ${
+                        auditor !== 'claude' && !selectedProjectId
+                          ? 'text-red-600'
+                          : 'text-orange-600'
+                      }`} />
                     </div>
                     <div className="flex-1">
                       <label className="block text-sm font-semibold text-gray-800 mb-1">
-                        Progetto attivo (per brief + market research)
+                        Progetto attivo
+                        {auditor !== 'claude' && (
+                          <span className="ml-1 text-red-600 font-bold">* OBBLIGATORIO per Neo/Morfeo</span>
+                        )}
                       </label>
-                      <p className="text-xs text-gray-500 mb-2">
-                        Lega lo swipe a un progetto del tool: Neo/Morfeo riceveranno il <b>brief</b>, la <b>market research</b> e useranno la tua libreria <b>saved_prompts</b> per riscrivere come ti aspetti dal tool.
+                      <p className="text-xs text-gray-600 mb-2">
+                        Neo e Morfeo usano <b>brief + market research</b> del progetto per scegliere big idea + leve, e applicano le tecniche di <b>Stefan Georgi, Sultanic, Eugene Schwartz, Gary Halbert, John Caples, Gary Bencivenga, David Ogilvy, John Carlton, Dan Kennedy, Sugarman, Hopkins</b> dai loro archivi interni.
+                        {' '}<b className="text-gray-800">Senza brief + market research lo swipe non parte.</b>
                       </p>
                       <select
                         value={selectedProjectId}
                         onChange={(e) => handleSelectProject(e.target.value)}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-orange-500 text-sm"
+                        className={`w-full px-3 py-2 border rounded-lg focus:ring-2 text-sm ${
+                          auditor !== 'claude' && !selectedProjectId
+                            ? 'border-red-400 focus:ring-red-500 focus:border-red-500'
+                            : 'border-gray-300 focus:ring-orange-500 focus:border-orange-500'
+                        }`}
                       >
-                        <option value="">— Nessun progetto (solo libreria tecniche) —</option>
+                        <option value="">— Seleziona un progetto —</option>
                         {availableProjects.map((p) => (
                           <option key={p.id} value={p.id}>
                             {p.name}

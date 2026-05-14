@@ -2331,6 +2331,28 @@ export default function FrontEndFunnel() {
       }
 
       try {
+        // ── HARD-GATE: brief + market research OBBLIGATORI per OpenClaw
+        // (Neo/Morfeo). Senza, l'agente locale produce copy generico e
+        // il worker rifiuta comunque il job. Falliamo subito con errore
+        // chiaro qui, prima di mettere in coda.
+        const briefStr = (project.brief || '').trim();
+        const mrStr = extractSectionContent(project.marketResearch);
+        const briefOk = briefStr.length > 30;
+        const mrOk = !!mrStr && String(mrStr).trim().length > 30;
+        if (chosen !== 'claude' && (!briefOk || !mrOk)) {
+          const missing: string[] = [];
+          if (!briefOk) missing.push('BRIEF');
+          if (!mrOk) missing.push('MARKET RESEARCH');
+          throw new Error(
+            `Project "${project.name}" non ha ${missing.join(' + ')} compilati. ` +
+            `Vai su Projects → apri il progetto → compila ${missing.join(' e ')} ` +
+            `prima di lanciare swipe via Neo/Morfeo. Senza, gli agenti locali ` +
+            `non riescono ad applicare le tecniche dei master copywriter ` +
+            `(Stefan Georgi, Sultanic, Schwartz, Halbert, Caples, Bencivenga, ` +
+            `Ogilvy, Carlton, ecc.) in modo mirato sul TUO prodotto.`
+          );
+        }
+
         // Build a product info shape that matches what
         // /api/landing/swipe/openclaw-build-prompts expects (only
         // `name` is required; everything else is best-effort context).
@@ -2339,9 +2361,9 @@ export default function FrontEndFunnel() {
           description: project.description || '',
           brand_name: undefined,
           target_audience: undefined,
-          marketing_brief: (project.brief || '').trim() || undefined,
-          market_research: extractSectionContent(project.marketResearch) || undefined,
-          project_brief: (project.brief || '').trim() || undefined,
+          marketing_brief: briefStr || undefined,
+          market_research: mrStr || undefined,
+          project_brief: briefStr || undefined,
         };
 
         // Knowledge per QUESTA pagina: libreria globale + brief del
@@ -2351,8 +2373,8 @@ export default function FrontEndFunnel() {
           prompts: globalPrompts,
           project: {
             name: project.name,
-            brief: (project.brief || '').trim() || null,
-            market_research: extractSectionContent(project.marketResearch) || null,
+            brief: briefStr || null,
+            market_research: mrStr || null,
             notes: null,
           },
         };

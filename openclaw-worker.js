@@ -1239,22 +1239,38 @@ async function processMessage(msg) {
           // Forwarda anche `knowledge` (libreria saved_prompts dell'utente
           // + brief progetto): server-side la embed nel system prompt cosi'
           // Neo/Morfeo ricevono tecniche+brief insieme al testo.
-          if (job.knowledge && (job.knowledge.prompts?.length || job.knowledge.project)) {
-            const pCount = job.knowledge.prompts?.length || 0;
-            const hasBrief = !!(job.knowledge.project?.brief);
-            const hasMR = !!(job.knowledge.project?.market_research);
-            const projName = job.knowledge.project?.name || '(senza nome)';
-            const briefLen = (job.knowledge.project?.brief || '').toString().length;
-            const mrLen = (() => {
-              const mr = job.knowledge.project?.market_research;
-              if (!mr) return 0;
-              if (typeof mr === 'string') return mr.length;
-              try { return JSON.stringify(mr).length; } catch { return 0; }
-            })();
-            log(`  · swipe_landing_local: knowledge dal tool — ${pCount} tecniche libreria${hasBrief ? ` + brief progetto "${projName}" (${briefLen} char)` : ''}${hasMR ? ` + market research (${mrLen} char)` : ''}`);
-          } else {
-            log(`  · swipe_landing_local: ⚠ NESSUNA knowledge dal tool (no saved_prompts, no progetto). Il rewrite usera' solo la KB built-in + le info inserite manualmente nel form.`);
+          // ── VALIDAZIONE: brief e market research OBBLIGATORI ─────
+          // L'utente ha chiesto esplicitamente che senza brief + market
+          // research lo swipe NON parta — perche' la qualita' del rewrite
+          // dipende criticamente da questi due input. Senza, l'agente
+          // produce copy generico che "sembra l'originale".
+          const projForCheck = job.knowledge?.project || null;
+          const hasBriefForCheck = !!(projForCheck?.brief && String(projForCheck.brief).trim().length > 30);
+          const mrForCheck = projForCheck?.market_research;
+          const hasMRForCheck =
+            !!mrForCheck &&
+            ((typeof mrForCheck === 'string' && mrForCheck.trim().length > 30) ||
+              (typeof mrForCheck === 'object' && Object.keys(mrForCheck || {}).length > 0));
+          if (!hasBriefForCheck || !hasMRForCheck) {
+            const missing = [];
+            if (!hasBriefForCheck) missing.push('brief progetto');
+            if (!hasMRForCheck) missing.push('market research');
+            throw new Error(
+              `KNOWLEDGE OBBLIGATORIA MANCANTE: ${missing.join(' + ')}. ` +
+              `Vai su /clone-landing → form Swipe → seleziona un progetto che abbia ` +
+              `BRIEF e MARKET RESEARCH compilati nella sezione Projects del tool. ` +
+              `Senza questi due input lo swipe non puo' produrre un rewrite di qualita'.`
+            );
           }
+
+          const pCount = job.knowledge?.prompts?.length || 0;
+          const projName = projForCheck.name || '(senza nome)';
+          const briefLen = String(projForCheck.brief || '').length;
+          const mrLen = (() => {
+            if (typeof mrForCheck === 'string') return mrForCheck.length;
+            try { return JSON.stringify(mrForCheck).length; } catch { return 0; }
+          })();
+          log(`  · swipe_landing_local: knowledge OK — ${pCount} tecniche libreria + brief progetto "${projName}" (${briefLen} char) + market research (${mrLen} char)`);
           log(`  · swipe_landing_local: building prompts server-side (light)`);
           const prep = await callToolApi(
             '/api/landing/swipe/openclaw-build-prompts',
@@ -1317,34 +1333,72 @@ async function processMessage(msg) {
           //     payload e OpenClaw locale rigetta con ECONNABORTED.
           //     In oneshot l'agente ha gia' tutta la KB built-in +
           //     tecniche utente nel system prompt — il primer e' overhead.
-          if (REWRITE_QUALITY_MODE === 'oneshot') {
-            log('  · swipe_landing_local: agent primer skipped (oneshot mode — primer non necessario, system prompt gia\' completo)');
-          } else try {
+          //     IL PRIMER GIRA SEMPRE — anche in oneshot — perche' e' il
+          //     modo con cui chiediamo a Neo/Morfeo di USARE attivamente
+          //     i loro archivi interni (Stefan Georgi, Sultanic Frameworks,
+          //     Eugene Schwartz, Halbert, Caples, Bencivenga, Ogilvy, Carlton,
+          //     Jay Abraham, Dan Kennedy, ecc.) e di internalizzare il
+          //     brief + market research del progetto prima di toccare il
+          //     copy. Senza questo step l'agente "fa il riassunto" del
+          //     testo originale e produce copy generico.
+          try {
+            // Compatta brief e MR perche' il primer non deve esplodere il
+            // payload (limite OpenClaw locale ~80K char per request).
+            const briefStr = String(projForCheck.brief || '').trim();
+            const mrStr = (() => {
+              if (typeof mrForCheck === 'string') return mrForCheck.trim();
+              try { return JSON.stringify(mrForCheck, null, 2); } catch { return ''; }
+            })();
+            const briefShort = briefStr.length > 4000 ? briefStr.slice(0, 4000) + '\n[...troncato per limite payload primer...]' : briefStr;
+            const mrShort = mrStr.length > 4000 ? mrStr.slice(0, 4000) + '\n[...troncato per limite payload primer...]' : mrStr;
+
             const productCtx = [
-              `PRODOTTO: ${job.product?.name || '(sconosciuto)'}`,
-              job.product?.description ? `DESCRIZIONE: ${job.product.description}` : '',
-              job.product?.marketing_brief ? `BRIEF:\n${job.product.marketing_brief}` : '',
-              job.product?.market_research ? `MARKET RESEARCH:\n${job.product.market_research}` : '',
-              job.sourceUrl ? `URL COMPETITOR DA CUI RIPRENDIAMO LA STRUTTURA: ${job.sourceUrl}` : '',
+              `PRODOTTO: ${job.product?.name || projForCheck.name || '(sconosciuto)'}`,
+              job.product?.description ? `DESCRIZIONE PRODOTTO:\n${job.product.description}` : '',
+              briefShort ? `BRIEF DEL PROGETTO (dal tool, OBBLIGATORIO):\n${briefShort}` : '',
+              mrShort ? `MARKET RESEARCH (dal tool, OBBLIGATORIA):\n${mrShort}` : '',
+              job.sourceUrl ? `URL COMPETITOR DA CUI PRENDIAMO LA STRUTTURA HTML: ${job.sourceUrl}` : '',
             ].filter(Boolean).join('\n\n');
 
-            const primerSystem = 'Sei un AGENTE specializzato (non un LLM puro): hai accesso a archivi prodotti interni, knowledge base proprietaria, RAG locale, skill di copywriting / direct response / persuasione, tecniche e framework che hai accumulato nel tempo. Quando ti viene chiesto di prepararti per un task, USI ATTIVAMENTE tutte queste risorse e rispondi conciso, azionabile, in italiano, senza preamboli.';
-            const primerUser = `Sto per riscrivere il copy di una landing page per QUESTO prodotto:\n\n${productCtx}\n\nUSA TUTTE LE TUE RISORSE INTERNE — archivi prodotti, knowledge base, RAG locale, conversazioni passate, esperienze pregresse, skill di copywriting, tecniche di persuasione, framework che conosci — e ritorna UN SOLO blocco di testo (no markdown, no JSON, no liste numerate) con tutto cio' che hai trovato e che useresti come riferimento per scrivere copy che converte.\n\nIn particolare:\n1. ARCHIVI PRODOTTI: cerca nei tuoi archivi questo prodotto o prodotti simili (stesso settore / posizionamento / target). Tira fuori dati reali: ingredienti, claims approvati, prezzi tipici, USP, oggetti d'esperimento split-test che hai visto funzionare.\n2. KNOWLEDGE BASE / TECNICHE: quali framework di copywriting (PAS, AIDA, big idea, story brand, Schwartz awareness levels, etc.) e quali tecniche persuasive (riprova sociale, scarcity, autorita', loss aversion, etc.) sono PIU' adatte per QUESTO prodotto e QUESTO target.\n3. PATTERN DI COPY: hook, headline, lead magnet, struttura della VSL, oggetti email — qualunque pattern che hai visto convertire bene su prodotti simili.\n4. VINCOLI: claims vietati per legge nel mercato target (FDA / DSGV / claims medici), positioning da evitare, brand competitor da non nominare.\n5. VOICE / TONE: come parla normalmente questa audience (formalita', metafore tipiche, gergo settoriale, livello di consapevolezza del problema/soluzione).\n\nMax 2000 parole. Se davvero non hai nulla nei tuoi archivi su questo prodotto/settore/audience, rispondi esattamente: "Nessun contesto aggiuntivo".`;
+            const primerSystem = `Sei un AGENTE direct-response (NON un LLM generico). Hai accesso a:
+- Archivi prodotti reali (ingredienti, claim approvati, prezzi, USP, split-test)
+- Knowledge base copywriting interna con le tecniche dei MAESTRI: Stefan Georgi (RMBC method, lead types, story-bridge), Eugene Schwartz (5 awareness levels, market sophistication, Breakthrough Advertising), Gary Halbert (Halbert headlines, Boron Letters, AIDA aggressivo), John Caples (Tested Advertising, headlines testati), Gary Bencivenga (Bencivenga Bullets, hidden persuaders), David Ogilvy (Ogilvy on Advertising, headlines fattuali), John Carlton (One-Legged Golfer, killer headlines), Dan Kennedy (Magnetic Marketing, NO-BS), Jay Abraham (preeminence, USP), Frank Kern, Russell Brunson, Joe Sugarman (psychological triggers, Adweek Copywriting Handbook), Claude Hopkins (Scientific Advertising), Robert Collier (Letter Book), Joe Karbo, Ben Settle, Andre Chaperon, Brian Kurtz
+- Framework: PAS, AIDA, AIDCA, FAB, BAB, QUEST, HSO (Hook-Story-Offer), 4 P, Big Idea (Schwartz), Story Brand (Miller), RMBC (Georgi), Pico hook, Sultanic Framework / archetipi narrativi
+- RAG locale, conversazioni passate, esperienze pregresse su prodotti simili
+USA QUESTE RISORSE ATTIVAMENTE quando ti chiedono di prepararti. Rispondi conciso, in italiano, senza preamboli.`;
 
-            log('  · swipe_landing_local: priming agent (archivi + skill + tecniche)…');
+            const primerUser = `Tra poco ti passero' i testi della landing competitor da riscrivere per IL NOSTRO prodotto. Prima di iniziare voglio che TU prepari il terreno usando le TUE risorse interne.
+
+${productCtx}
+
+ISTRUZIONI:
+1. CONSULTA I TUOI ARCHIVI PRODOTTI: cerca questo specifico prodotto o prodotti analoghi nella tua memoria. Tirami fuori: angle che hanno funzionato, claims sicuri, prezzi tipici, USP rilevanti. NON inventare dati medici/legali.
+2. CONSULTA LA TUA KB COPYWRITING: pesca le tecniche dei MAESTRI (Stefan Georgi, Sultanic, Eugene Schwartz, Halbert, Caples, Bencivenga, Ogilvy, Carlton, Kennedy, Sugarman, Hopkins, ecc.) che applicheresti a QUESTO target / awareness level / sophistication. Cita esplicitamente "uso il metodo X di Y per il headline" / "applico il framework Z per la sezione benefits" cosi' io capisco che stai usando le tue risorse e non inventando.
+3. INTERNALIZZA IL BRIEF E LA MARKET RESEARCH qui sopra: estrai positioning, target avatar, obiezioni note, claim approvati, voice/tone, vincoli regolatori, USP unici.
+4. SCEGLI LA "BIG IDEA" CENTRALE che useremo per riscrivere TUTTI i testi della pagina, in modo coerente. UNA sola big idea, declinata in headline, body, CTA.
+5. SCEGLI 2-3 LEVE PRINCIPALI (es. fear-of-loss + social-proof + autorita' scientifica) coerenti con awareness level + market sophistication del nostro target.
+
+Restituisci UN SOLO blocco di testo (no markdown enorme, no JSON, no liste numerate gigantesche). Massimo 1200 parole. Vai DIRETTO al sodo: archivi → tecniche citate per nome → big idea → leve.
+
+Se nei tuoi archivi NON trovi nulla su questo specifico prodotto, dillo chiaro e basati comunque sul brief + market research per scegliere big idea e leve dei maestri.`;
+
+            log('  · swipe_landing_local: priming agent (chiedo Stefan Georgi / Sultanic / Schwartz / Halbert / etc + brief + MR)…');
             const memoryDump = await callOpenClaw([
               { role: 'system', content: primerSystem },
               { role: 'user', content: primerUser },
             ]);
             const trimmed = (memoryDump || '').trim();
             if (trimmed.length > 80 && !/^nessun contesto aggiuntivo\.?$/i.test(trimmed)) {
-              enrichedSystemPrompt = `${enrichedSystemPrompt}\n\n=== RISORSE INTERNE DELL'AGENTE (archivi prodotti, KB, skill, tecniche) ===\n${trimmed}\n=== FINE RISORSE INTERNE ===\n\nNON sei un LLM puro: sei un AGENTE con accesso a queste risorse + altre. Quando riscrivi ogni testo, applica ATTIVAMENTE: framework di copywriting, tecniche di persuasione, dati reali dai tuoi archivi prodotti, voice/tone dell'audience target, vincoli legali. Se hai trovato pattern che convertono per prodotti simili, USALI.`;
-              log(`    ✓ agent primer: ${trimmed.length} chars di risorse interne iniettate nel system prompt`);
+              // Cap difensivo: non vogliamo che il primer faccia esplodere
+              // il payload di OGNI batch successivo (ECONNABORTED).
+              const primerCapped = trimmed.length > 8000 ? trimmed.slice(0, 8000) + '\n[...primer troncato per limite payload...]' : trimmed;
+              enrichedSystemPrompt = `${enrichedSystemPrompt}\n\n=== ANALISI PREP DELL'AGENTE (archivi + tecniche maestri citate + big idea + leve, dal primer su questo prodotto) ===\n${primerCapped}\n=== FINE ANALISI PREP ===\n\nIMPORTANTE: nei rewrite che seguono, APPLICA la big idea + le leve scelte qui sopra, e USA le tecniche dei maestri che hai citato. Niente parafrasi del competitor — ogni testo deve riflettere LA NOSTRA big idea coerente.`;
+              log(`    ✓ agent primer: ${primerCapped.length} chars di analisi (Stefan Georgi/Sultanic/etc + brief/MR internalizzati) iniettati nel system prompt`);
             } else {
-              log('    · agent primer: l\'agente non ha trovato contesto rilevante nei suoi archivi');
+              log('    ⚠ agent primer: risposta troppo corta o vuota — il system prompt usera\' solo brief/MR senza analisi prep');
             }
           } catch (e) {
-            log(`    · agent primer skipped (${e.message})`);
+            log(`    ⚠ agent primer FALLITO (${e.message}) — vado avanti col system prompt base, ma la qualita' sara\' inferiore`);
           }
 
           // 2. Run the batched rewrite against the local LLM.
