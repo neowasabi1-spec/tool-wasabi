@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { extractAllTextsUniversal } from '@/lib/universal-text-extractor';
+import { getCoreKnowledge, getKnowledgeForTask } from '@/knowledge/copywriting';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -208,6 +209,48 @@ function truncate(s: string, max: number): string {
   return s.substring(0, max - 80) + '\n[...troncato per limite di lunghezza...]';
 }
 
+// Cap per la copywriting KB built-in (src/knowledge/copywriting/) quando
+// la spediamo a un LLM locale (Trinity / Ollama / equivalenti). Claude
+// regge ~28K token Tier 1 + 35K Tier 2 grazie al prompt caching, ma un
+// modello 32K-context locale verrebbe saturato. 22K char ≈ 5.5K token e'
+// abbastanza per dare le tecniche essenziali senza far esplodere il prompt.
+// Configurabile da env per workstation con context window grosso (Trinity-XL ecc).
+const MAX_BUILTIN_KB_CHARS = Math.max(
+  4000,
+  Math.min(80_000, Number.parseInt(process.env.OPENCLAW_KB_MAX_CHARS || '22000', 10) || 22000),
+);
+
+// Distilla la KB built-in (cos-engine, evaldo, anghelache, ...) in una
+// versione COMPATTA per l'LLM locale: Tier 1 sempre + Tier 2 'pdp' se
+// avanza budget. Trunca al limite e marca chiaramente.
+function buildBuiltinKnowledge(): string {
+  if (MAX_BUILTIN_KB_CHARS <= 0) return '';
+  let core = '';
+  try {
+    core = getCoreKnowledge() || '';
+  } catch (e) {
+    console.warn('[swipe/openclaw-build-prompts] getCoreKnowledge failed:', e);
+    return '';
+  }
+  if (!core.trim()) return '';
+
+  let bundle = core;
+  // Se avanza budget significativo, aggiungi Tier 2 per landing-page.
+  if (core.length < MAX_BUILTIN_KB_CHARS * 0.6) {
+    try {
+      const t2 = getKnowledgeForTask('pdp') || '';
+      if (t2.trim()) bundle = `${core}\n\n${t2}`;
+    } catch {/* ignore */}
+  }
+
+  if (bundle.length > MAX_BUILTIN_KB_CHARS) {
+    bundle = bundle.substring(0, MAX_BUILTIN_KB_CHARS - 200)
+      + '\n\n[KB troncata per limite di context: '
+      + `${MAX_BUILTIN_KB_CHARS} char. Aumenta OPENCLAW_KB_MAX_CHARS se il tuo LLM locale ha context piu' grande.]`;
+  }
+  return bundle;
+}
+
 function buildKnowledgeMarkdown(knowledge: KnowledgePayload | undefined): string {
   if (!knowledge) return '';
   const parts: string[] = [];
@@ -339,11 +382,16 @@ export async function POST(req: NextRequest) {
   const product = body.product;
   const productCtx = buildProductContextMarkdown(product);
   const knowledgeMd = buildKnowledgeMarkdown(body.knowledge);
+  const builtinKb = buildBuiltinKnowledge();
   const lang = body.language || 'it';
   const toneStr = body.tone || 'professional';
 
   const knowledgeSection = knowledgeMd
     ? `\n=== KNOWLEDGE & TECNICHE DAL TOOL DELL'UTENTE (libreria personale + brief progetto). USALE ATTIVAMENTE come faresti se l'utente te le avesse appena scritte in chat. ===\n${knowledgeMd}\n=== FINE KNOWLEDGE TOOL ===\n`
+    : '';
+
+  const builtinKbSection = builtinKb
+    ? `\n=== COPYWRITING FRAMEWORK BUILT-IN (distillati: COS Engine, Tony Flores Mechanisms, Evaldo 16-Word, Anghelache, Savage System, 108 Split Tests + Landing Page Recipes). Sono i framework professionali su cui questo tool e' costruito — applicali silenziosamente in OGNI rewrite (non citarli per nome se non utile all'utente). ===\n${builtinKb}\n=== FINE COPYWRITING FRAMEWORK ===\n`
     : '';
 
   const systemPrompt = `Sei un AGENTE specializzato in direct-response copywriting (NON un LLM puro: hai accesso ad archivi prodotti, knowledge base, RAG locale, skill di copywriting / persuasione / framework che hai accumulato nel tempo). Stai riscrivendo un competitor / template per venderlo come segue.
@@ -352,7 +400,7 @@ PRODOTTO: ${product.name}
 
 CONTESTO PRODOTTO COMPLETO (USA tutto: fatti, angle, benefit, proof, obiezioni, naming. Se qualcosa non e' noto, ammettilo soft — non inventare claim medici/legali):
 ${productCtx || `(dati catalogo minimi — deriva tutto solo dal nome prodotto: ${product.name})`}
-${knowledgeSection}
+${builtinKbSection}${knowledgeSection}
 TONO: ${toneStr}
 LINGUA OUTPUT: ${lang === 'it' ? 'Italiano' : lang === 'en' ? 'English' : lang}
 
@@ -400,6 +448,7 @@ REGOLE OBBLIGATORIE:
       promptCount: body.knowledge?.prompts?.length || 0,
       hasProjectBrief: !!(body.knowledge?.project?.brief),
       hasMarketResearch: !!(body.knowledge?.project?.market_research),
+      builtinKbChars: builtinKb.length,
     },
     durationMs: Date.now() - t0,
   });
