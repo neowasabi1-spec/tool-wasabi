@@ -14,7 +14,41 @@ const { createClient } = require('@supabase/supabase-js');
 const http = require('http');
 const https = require('https');
 const os = require('os');
+const fs = require('fs');
+const path = require('path');
 const { URL } = require('url');
+
+// ===== STATIC EXTRA CONTEXT (per-worker) ============================
+// L'utente puo' mettere su questo PC un file di "knowledge personale"
+// che il worker iniettera' in OGNI rewrite. Pensato per cose che il
+// modello locale non sa di sapere — es. brand book, tone-of-voice
+// customer-specific, prodotti del catalogo, claims approvati legalmente.
+//
+//   1. ENV var OPENCLAW_EXTRA_CONTEXT_FILE=/path/to/notes.md (priorita')
+//   2. file `openclaw-extra-context.md` accanto al worker (zero-config)
+//
+// Se nessuno dei due esiste, niente contesto extra statico (usiamo
+// solo il primer + il system prompt del server). Massimo 50_000 chars
+// per non saturare la context window.
+function loadStaticExtraContext() {
+  const envPath = (process.env.OPENCLAW_EXTRA_CONTEXT_FILE || '').trim();
+  const candidates = [];
+  if (envPath) candidates.push(envPath);
+  candidates.push(path.join(__dirname, 'openclaw-extra-context.md'));
+  for (const p of candidates) {
+    try {
+      if (p && fs.existsSync(p)) {
+        const raw = fs.readFileSync(p, 'utf8').trim();
+        if (raw.length > 20) {
+          const truncated = raw.length > 50_000 ? raw.substring(0, 50_000) + '\n[…truncated]' : raw;
+          return { path: p, content: truncated };
+        }
+      }
+    } catch (_e) { /* keep trying next candidate */ }
+  }
+  return null;
+}
+const STATIC_EXTRA_CONTEXT = loadStaticExtraContext();
 
 // Playwright is optional — only needed when this worker also processes
 // funnel_crawl_jobs rows (agentic auto-discover for the checkpoint UI).
@@ -776,10 +810,65 @@ async function processMessage(msg) {
           }
           log(`  · swipe_landing_local: rewriting ${promptTexts.length} texts via local LLM (batched)`);
 
+          // 1.5 — LOCAL MEMORY PRIMER ─────────────────────────────────
+          // Prima del rewrite chiediamo all'LLM locale di consultare la
+          // SUA memoria (conversazioni passate, knowledge base, file di
+          // progetto, esperienze pregresse) e tirare fuori tutto quello
+          // che ricorda e che possa migliorare il copy. Il risultato lo
+          // appendiamo al systemPrompt che gira a runRewriteInBatches,
+          // cosi' il contesto extra arriva a OGNI batch a costo di una
+          // sola chiamata LLM (non per batch).
+          //
+          // Se l'LLM non ha memoria utile o la chiamata fallisce,
+          // procediamo comunque col system prompt originale — tutto
+          // best-effort. NON facciamo fallire il job per questo.
+          let enrichedSystemPrompt = prep.systemPrompt;
+
+          // (a) Static extra context — knowledge personale messa
+          //     dall'utente sul filesystem del worker. Iniettata sempre,
+          //     a prescindere dal primer LLM.
+          if (STATIC_EXTRA_CONTEXT) {
+            enrichedSystemPrompt = `${enrichedSystemPrompt}\n\n=== KNOWLEDGE STATICA (${path.basename(STATIC_EXTRA_CONTEXT.path)}, USALA ATTIVAMENTE) ===\n${STATIC_EXTRA_CONTEXT.content}\n=== FINE KNOWLEDGE STATICA ===`;
+            log(`  · swipe_landing_local: static knowledge iniettata (${STATIC_EXTRA_CONTEXT.content.length} chars)`);
+          }
+
+          // (b) Live memory primer — chiediamo all'LLM locale di
+          //     consultare la sua memoria di lungo termine
+          //     (conversazioni passate, RAG locale, esperienze) e
+          //     tirare fuori roba utile per QUESTO specifico prodotto.
+          //     Costo: 1 chiamata LLM in piu' per swipe (non per batch).
+          try {
+            const productCtx = [
+              `PRODOTTO: ${job.product?.name || '(sconosciuto)'}`,
+              job.product?.description ? `DESCRIZIONE: ${job.product.description}` : '',
+              job.product?.marketing_brief ? `BRIEF:\n${job.product.marketing_brief}` : '',
+              job.product?.market_research ? `MARKET RESEARCH:\n${job.product.market_research}` : '',
+              job.sourceUrl ? `URL COMPETITOR DA CUI RIPRENDIAMO LA STRUTTURA: ${job.sourceUrl}` : '',
+            ].filter(Boolean).join('\n\n');
+
+            const primerSystem = 'Sei un copywriter professionista con memoria di lungo termine. Quando ti viene chiesto di consultare la tua memoria, rispondi conciso, azionabile, in italiano. Niente preamboli.';
+            const primerUser = `Sto per riscrivere il copy di una landing page per QUESTO prodotto:\n\n${productCtx}\n\nHai memoria locale, conversazioni passate, knowledge base personale, file di progetto, esperienze pregresse.\n\nCONSULTA tutto cio' che hai e ritorna SOLO un blocco di testo (no markdown, no liste numerate JSON) con tutto quello che ricordi e che sia utile a scrivere copy migliore per questo prodotto:\n- conoscenze sul prodotto, brand, mercato, target\n- copy che hai gia' scritto / letto / analizzato per prodotti simili\n- pattern persuasivi, hook, framework che hai visto funzionare per questo tipo di prodotto/audience\n- studi, statistiche, claims che hai memorizzato e che potrebbero essere usati\n- vincoli legali / claims vietati / positioning da evitare\n\nMax 1500 parole. Se non ricordi nulla di rilevante, rispondi esattamente: "Nessun contesto aggiuntivo".`;
+
+            log('  · swipe_landing_local: priming local memory…');
+            const memoryDump = await callOpenClaw([
+              { role: 'system', content: primerSystem },
+              { role: 'user', content: primerUser },
+            ]);
+            const trimmed = (memoryDump || '').trim();
+            if (trimmed.length > 80 && !/^nessun contesto aggiuntivo\.?$/i.test(trimmed)) {
+              enrichedSystemPrompt = `${enrichedSystemPrompt}\n\n=== CONTESTO DALLA TUA MEMORIA LOCALE (USALO ATTIVAMENTE NELLE RISCRITTURE) ===\n${trimmed}\n=== FINE CONTESTO ===`;
+              log(`    ✓ memory primer: ${trimmed.length} chars di contesto extra iniettati nel system prompt`);
+            } else {
+              log('    · memory primer: nessun contesto rilevante');
+            }
+          } catch (e) {
+            log(`    · memory primer skipped (${e.message})`);
+          }
+
           // 2. Run the batched rewrite against the local LLM.
           //    runRewriteInBatches auto-detects the markers we used in
           //    the user_message and does batching + gap-fill internally.
-          const rewriteRaw = await runRewriteInBatches(prep.systemPrompt, prep.userMessage);
+          const rewriteRaw = await runRewriteInBatches(enrichedSystemPrompt, prep.userMessage);
           let rewrites = [];
           try {
             const cleaned = String(rewriteRaw).trim()
@@ -2498,6 +2587,11 @@ function printBanner() {
     log(`Routing: this worker only claims jobs targeted at "${OPENCLAW_AGENT}" (or untagged legacy jobs).`);
   } else {
     log('Routing: legacy mode — claims ANY pending job (set OPENCLAW_AGENT or rename the OS user to enable explicit routing).');
+  }
+  if (STATIC_EXTRA_CONTEXT) {
+    log(`Static extra context loaded from ${STATIC_EXTRA_CONTEXT.path} (${STATIC_EXTRA_CONTEXT.content.length} chars) — sara' iniettato in OGNI swipe rewrite.`);
+  } else {
+    log('No static extra context — set OPENCLAW_EXTRA_CONTEXT_FILE=/path/to/notes.md or drop "openclaw-extra-context.md" accanto al worker per dargli knowledge personale (brand book, claims approvati, ecc.).');
   }
   if (!playwrightChromium) {
     log(
