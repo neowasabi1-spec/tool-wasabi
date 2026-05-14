@@ -69,6 +69,26 @@ interface ProductInfo {
   market_research?: string;
 }
 
+interface KnowledgePrompt {
+  title: string;
+  content: string;
+  category?: string;
+  tags?: string[];
+  is_favorite?: boolean;
+}
+
+interface KnowledgeProject {
+  name?: string;
+  brief?: string | null;
+  market_research?: unknown;
+  notes?: string | null;
+}
+
+interface KnowledgePayload {
+  prompts?: KnowledgePrompt[];
+  project?: KnowledgeProject | null;
+}
+
 interface ExtractedText {
   original: string;
   tag: string;
@@ -170,6 +190,86 @@ function prependDocumentTitle(texts: ExtractedText[], html: string): ExtractedTe
   return [{ original: raw, tag: 'title', position: minPos - 1 }, ...texts];
 }
 
+// Cap individuale per ogni prompt salvato in libreria, cosi' un singolo
+// prompt mostre non puo' farci esplodere il context window del modello
+// locale. 2.5k char ciascuno e' largo, ma e' un cap di sicurezza.
+const MAX_CHARS_PER_PROMPT = 2500;
+// Numero max di prompt totale embeddati. Anche se l'utente ne ha 50
+// salvati, 12 e' gia' un budget di context generoso e teniamo i piu'
+// rilevanti (favorites + categorie esatte).
+const MAX_PROMPTS_TO_EMBED = 12;
+// Cap totale dei caratteri di tutta la knowledge sezione, per evitare
+// che il system prompt diventi enorme se l'utente ha brief lunghi.
+const MAX_KNOWLEDGE_CHARS = 18_000;
+
+function truncate(s: string, max: number): string {
+  if (typeof s !== 'string') return '';
+  if (s.length <= max) return s;
+  return s.substring(0, max - 80) + '\n[...troncato per limite di lunghezza...]';
+}
+
+function buildKnowledgeMarkdown(knowledge: KnowledgePayload | undefined): string {
+  if (!knowledge) return '';
+  const parts: string[] = [];
+
+  // ── Project brief / market research ────────────────────────────
+  const proj = knowledge.project;
+  if (proj) {
+    const projParts: string[] = [];
+    if (proj.name) projParts.push(`PROGETTO: ${proj.name}`);
+    if (typeof proj.brief === 'string' && proj.brief.trim()) {
+      projParts.push(`BRIEF DEL PROGETTO:\n${proj.brief.trim()}`);
+    }
+    if (proj.market_research) {
+      let mr = '';
+      if (typeof proj.market_research === 'string') mr = proj.market_research;
+      else {
+        try { mr = JSON.stringify(proj.market_research, null, 2); } catch { mr = ''; }
+      }
+      if (mr.trim()) projParts.push(`MARKET RESEARCH (dal progetto):\n${truncate(mr.trim(), 6000)}`);
+    }
+    if (typeof proj.notes === 'string' && proj.notes.trim()) {
+      projParts.push(`NOTE / OSSERVAZIONI:\n${proj.notes.trim()}`);
+    }
+    if (projParts.length) parts.push(projParts.join('\n\n'));
+  }
+
+  // ── Saved prompts (libreria personale dell'utente) ─────────────
+  const allPrompts = (knowledge.prompts || []).filter(
+    (p) => p && typeof p.content === 'string' && p.content.trim().length > 0,
+  );
+  if (allPrompts.length) {
+    // Ordina: favorites prima, poi per categoria swipe > copy > clone > landing > general
+    const CAT_ORDER: Record<string, number> = {
+      swipe: 0, copy: 1, clone: 2, landing: 3, general: 4,
+    };
+    const sorted = allPrompts.slice().sort((a, b) => {
+      const fav = (b.is_favorite ? 1 : 0) - (a.is_favorite ? 1 : 0);
+      if (fav !== 0) return fav;
+      const ca = CAT_ORDER[String(a.category || '').toLowerCase()] ?? 99;
+      const cb = CAT_ORDER[String(b.category || '').toLowerCase()] ?? 99;
+      return ca - cb;
+    });
+    const top = sorted.slice(0, MAX_PROMPTS_TO_EMBED);
+    const promptBlocks = top.map((p, i) => {
+      const head = `### TECNICA #${i + 1} — ${p.title}${p.category ? ` [${p.category}]` : ''}${p.is_favorite ? ' ★' : ''}`;
+      const body = truncate(p.content.trim(), MAX_CHARS_PER_PROMPT);
+      return `${head}\n${body}`;
+    });
+    parts.push(
+      `LIBRERIA TECNICHE / KNOWLEDGE / SWIPE-FRAMEWORKS dell'utente (USALE ATTIVAMENTE — non sono suggerimenti, sono il modo in cui l'utente VUOLE che si scriva):\n\n${promptBlocks.join('\n\n---\n\n')}`,
+    );
+    if (sorted.length > MAX_PROMPTS_TO_EMBED) {
+      parts.push(
+        `(${sorted.length - MAX_PROMPTS_TO_EMBED} altre tecniche disponibili in libreria — non incluse per limite di context)`,
+      );
+    }
+  }
+
+  if (parts.length === 0) return '';
+  return truncate(parts.join('\n\n=====\n\n'), MAX_KNOWLEDGE_CHARS);
+}
+
 function buildProductContextMarkdown(product: ProductInfo): string {
   const lines: string[] = [];
   if (product.description) lines.push(`Description:\n${product.description}`);
@@ -212,6 +312,7 @@ export async function POST(req: NextRequest) {
     product?: ProductInfo;
     tone?: string;
     language?: string;
+    knowledge?: KnowledgePayload;
   } = {};
   try {
     body = (await req.json()) as typeof body;
@@ -237,8 +338,13 @@ export async function POST(req: NextRequest) {
 
   const product = body.product;
   const productCtx = buildProductContextMarkdown(product);
+  const knowledgeMd = buildKnowledgeMarkdown(body.knowledge);
   const lang = body.language || 'it';
   const toneStr = body.tone || 'professional';
+
+  const knowledgeSection = knowledgeMd
+    ? `\n=== KNOWLEDGE & TECNICHE DAL TOOL DELL'UTENTE (libreria personale + brief progetto). USALE ATTIVAMENTE come faresti se l'utente te le avesse appena scritte in chat. ===\n${knowledgeMd}\n=== FINE KNOWLEDGE TOOL ===\n`
+    : '';
 
   const systemPrompt = `Sei un AGENTE specializzato in direct-response copywriting (NON un LLM puro: hai accesso ad archivi prodotti, knowledge base, RAG locale, skill di copywriting / persuasione / framework che hai accumulato nel tempo). Stai riscrivendo un competitor / template per venderlo come segue.
 
@@ -246,17 +352,19 @@ PRODOTTO: ${product.name}
 
 CONTESTO PRODOTTO COMPLETO (USA tutto: fatti, angle, benefit, proof, obiezioni, naming. Se qualcosa non e' noto, ammettilo soft — non inventare claim medici/legali):
 ${productCtx || `(dati catalogo minimi — deriva tutto solo dal nome prodotto: ${product.name})`}
-
+${knowledgeSection}
 TONO: ${toneStr}
 LINGUA OUTPUT: ${lang === 'it' ? 'Italiano' : lang === 'en' ? 'English' : lang}
 
 REGOLE OBBLIGATORIE:
 1. Per ogni testo: NON parafrasare. Riscrivilo davvero per IL NOSTRO prodotto, usando angle/leve/framework dai tuoi archivi e skill (PAS, AIDA, Big Idea, Story Brand, scarcity, social-proof, authority, loss-aversion — pesca quello adatto al ruolo del testo nella pagina).
-2. Mantieni il TIPO di copy: headline = punchy; body paragraph = esplicativo; CTA = imperativo breve; bullet = scannerizzabile. La lunghezza puo' variare liberamente — NON serve restare vicino all'originale, serve restare adatto al ruolo.
-3. SOLO testo piano nei "rewritten" — niente HTML, niente markdown, niente escape JSON oltre quelli standard.
-4. Testi legali / disclaimer / compliance: riscrivili solo dove e' sicuro, altrimenti migliora solo la chiarezza preservando le disclosure obbligatorie.
-5. Ogni risposta DEVE contenere UN oggetto {"id","rewritten"} per OGNI id ricevuto. NON omettere id. Se davvero un id e' irrescrivibile, rispondi comunque con un rewritten leggermente migliorato in chiarezza ma diverso dall'originale.
-6. Anti-eco: e' VIETATO restituire un "rewritten" identico all'"text". Se ti viene da farlo, fermati e rifai con un angle diverso.
+2. SE sopra trovi una "LIBRERIA TECNICHE / KNOWLEDGE": e' la libreria personale dell'utente — USALA con priorita' rispetto alle tecniche generiche. Quei prompt sono il modo in cui l'utente VUOLE scrivere.
+3. SE sopra trovi un "BRIEF DEL PROGETTO" o "MARKET RESEARCH": tirane fuori positioning, target, claim approvati, voice/tone, vincoli, e applicali in OGNI rewrite.
+4. Mantieni il TIPO di copy: headline = punchy; body paragraph = esplicativo; CTA = imperativo breve; bullet = scannerizzabile. La lunghezza puo' variare liberamente — NON serve restare vicino all'originale, serve restare adatto al ruolo.
+5. SOLO testo piano nei "rewritten" — niente HTML, niente markdown, niente escape JSON oltre quelli standard.
+6. Testi legali / disclaimer / compliance: riscrivili solo dove e' sicuro, altrimenti migliora solo la chiarezza preservando le disclosure obbligatorie.
+7. Ogni risposta DEVE contenere UN oggetto {"id","rewritten"} per OGNI id ricevuto. NON omettere id. Se davvero un id e' irrescrivibile, rispondi comunque con un rewritten leggermente migliorato in chiarezza ma diverso dall'originale.
+8. Anti-eco: e' VIETATO restituire un "rewritten" identico all'"text". Se ti viene da farlo, fermati e rifai con un angle diverso.
 `;
 
   // The worker's runRewriteInBatches helper auto-detects this format
@@ -288,6 +396,11 @@ REGOLE OBBLIGATORIE:
     originalTitle:
       body.html.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || '',
     sourceUrl: body.sourceUrl ?? null,
+    knowledgeIncluded: {
+      promptCount: body.knowledge?.prompts?.length || 0,
+      hasProjectBrief: !!(body.knowledge?.project?.brief),
+      hasMarketResearch: !!(body.knowledge?.project?.market_research),
+    },
     durationMs: Date.now() - t0,
   });
 }

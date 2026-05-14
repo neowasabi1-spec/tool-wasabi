@@ -2286,6 +2286,20 @@ export default function FrontEndFunnel() {
     const NO_PICKUP_TIMEOUT_MS = 30 * 1000;
     const POLL_INTERVAL_MS = 2500;
 
+    // ── Carica una sola volta la knowledge globale (libreria saved_prompts).
+    // Per ogni pagina invece carichiamo il brief specifico del progetto.
+    let globalPrompts: unknown[] = [];
+    try {
+      const kRes = await fetch('/api/swipe/load-knowledge');
+      if (kRes.ok) {
+        const kj = await kRes.json();
+        if (Array.isArray(kj.prompts)) globalPrompts = kj.prompts;
+      }
+      pushSwipeLog('info', `Knowledge: ${globalPrompts.length} tecniche caricate dalla libreria`);
+    } catch {
+      pushSwipeLog('info', 'Knowledge libreria non disponibile, vado avanti');
+    }
+
     for (let i = 0; i < eligible.length; i++) {
       if (swipeAllCancelRef.current) break;
       const page = eligible[i];
@@ -2326,6 +2340,19 @@ export default function FrontEndFunnel() {
           project_brief: (project.brief || '').trim() || undefined,
         };
 
+        // Knowledge per QUESTA pagina: libreria globale + brief del
+        // project specifico. Cosi' Neo/Morfeo ricevono sia le tecniche
+        // dell'utente sia il context-specific del prodotto.
+        const pageKnowledge = {
+          prompts: globalPrompts,
+          project: {
+            name: project.name,
+            brief: (project.brief || '').trim() || null,
+            market_research: extractSectionContent(project.marketResearch) || null,
+            notes: null,
+          },
+        };
+
         const enqueueRes = await fetch('/api/openclaw/queue', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -2337,6 +2364,7 @@ export default function FrontEndFunnel() {
               product: productPayload,
               tone: 'professional',
               language: 'it',
+              knowledge: pageKnowledge,
             }),
             targetAgent,
           }),
@@ -2930,12 +2958,37 @@ export default function FrontEndFunnel() {
           // sa fetchare la pagina lui in locale via Playwright). Se
           // sourceUrl e' presente ma html no, swipe_landing_local fa
           // il fetch dal worker. Se entrambi presenti, usa l'html.
+          //
+          // Knowledge: carico libreria saved_prompts (tecniche utente)
+          // + brief specifico di questo project. Cosi' Neo/Morfeo
+          // ricevono contestualmente sia le tecniche personali sia il
+          // contesto del prodotto.
+          let rowKnowledge: { prompts: unknown[]; project: unknown } = { prompts: [], project: null };
+          try {
+            const kRes = await fetch('/api/swipe/load-knowledge');
+            if (kRes.ok) {
+              const kj = await kRes.json();
+              rowKnowledge = {
+                prompts: Array.isArray(kj.prompts) ? kj.prompts : [],
+                project: {
+                  name: cloneConfig.productName,
+                  brief: (cloneConfig.brief || cloneConfig.customPrompt || '').trim() || null,
+                  market_research: (cloneConfig.marketResearch || '').trim() || null,
+                  notes: null,
+                },
+              };
+            }
+          } catch {
+            // non fatale
+          }
+
           const swipePayload: Record<string, unknown> = {
             action: 'swipe_landing_local',
             sourceUrl: url,
             product: productPayloadForRow,
             tone: 'professional',
             language: cloneConfig.language || 'it',
+            knowledge: rowKnowledge,
           };
           if (htmlToRewrite) swipePayload.html = htmlToRewrite;
 

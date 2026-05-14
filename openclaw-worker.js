@@ -512,6 +512,13 @@ const QUALITY_DEFAULTS = {
   fast: { batchSize: 5 },
   high: { batchSize: 3 },
   ultra: { batchSize: 1 },
+  // 'chat' mode: NESSUN batch JSON. Per ogni testo facciamo una call
+  // conversazionale come se l'utente avesse scritto in chat al modello
+  // (system minimale, prompt naturale, risposta libera). Bypassa
+  // completamente la pressione "form filler" che fa scrivere male il
+  // modello locale. Lento (~1 call per testo) ma e' la qualita' che
+  // si vede quando si chatta direttamente con Neo / Morfeo nel tool.
+  chat: { batchSize: 1 },
 };
 const QUALITY_BATCH_DEFAULT = (QUALITY_DEFAULTS[REWRITE_QUALITY_MODE] || QUALITY_DEFAULTS.fast).batchSize;
 const REWRITE_BATCH_SIZE = parseInt(
@@ -591,6 +598,82 @@ function extractRewritesFromAiResponse(text) {
 // call) per garantire la massima copertura.
 const REWRITE_GAP_FILL_PASSES = parseInt(process.env.REWRITE_GAP_FILL_PASSES || '4', 10);
 
+// ─── CONVERSATIONAL REWRITE (chat-style) ──────────────────────────
+// Estrae il "product context" + tono dal system prompt server-side.
+// Server-side il prompt e' in italiano e ha una sezione delimitata
+// "CONTESTO PRODOTTO COMPLETO (...): ${productCtx}"; preferiamo
+// estrarre solo quella sezione + nome prodotto, cosi' la chat vede
+// solo cio' che le serve davvero.
+function extractProductContextFromSystemPrompt(systemPrompt) {
+  if (typeof systemPrompt !== 'string') return { productName: '', context: '' };
+  let productName = '';
+  const nameMatch = systemPrompt.match(/PRODOTTO:\s*(.+)/i)
+    || systemPrompt.match(/PRODUCT NAME:\s*(.+)/i);
+  if (nameMatch) productName = nameMatch[1].trim();
+  // Tutto cio' che sta tra "CONTESTO PRODOTTO COMPLETO" e la sezione
+  // successiva (TONO / TONE) e' il contesto utile.
+  let context = '';
+  const ctxStart = systemPrompt.search(/CONTESTO PRODOTTO COMPLETO|FULL PRODUCT CONTEXT/i);
+  if (ctxStart >= 0) {
+    const after = systemPrompt.substring(ctxStart);
+    const afterColon = after.indexOf(':');
+    if (afterColon >= 0) {
+      const block = after.substring(afterColon + 1);
+      const stop = block.search(/\n\s*(TONO|TONE|LINGUA|OUTPUT LANGUAGE|REGOLE|CRITICAL RULES)/i);
+      context = (stop >= 0 ? block.substring(0, stop) : block).trim();
+    }
+  }
+  return { productName, context };
+}
+
+// Mimicra ESATTAMENTE come la UI del tool chatta con Neo/Morfeo:
+// system minimale, user message in linguaggio naturale, risposta libera.
+// Differenza fondamentale vs runBatch: niente JSON, niente batch, niente
+// regole su lunghezza/format, il modello scrive come scriverebbe in chat.
+async function rewriteOneTextChatStyle({ id, originalText, tag, productName, productContext, lang }) {
+  const langLabel = lang === 'en' ? 'English' : (lang === 'it' || !lang ? 'italiano' : lang);
+  const tagHint = tag ? ` (appare come <${tag.replace(/^(tag|mixed|attr):/, '')}> nella pagina)` : '';
+  const sys = `Sei un AGENTE specializzato in direct-response copywriting. NON sei un LLM puro: hai accesso ad archivi prodotti, knowledge base, RAG locale, skill di copywriting (PAS, AIDA, Big Idea, Story Brand, Schwartz awareness levels), tecniche di persuasione (scarcity, social-proof, authority, loss-aversion). Quando ti viene chiesto di riscrivere un testo, USA ATTIVAMENTE tutte queste risorse — esattamente come fai quando l'utente ti scrive in chat normale.`;
+  const userMsg = [
+    `Riscrivi questo testo per la landing del prodotto "${productName || 'target'}".`,
+    productContext ? `\nContesto prodotto:\n${productContext}\n` : '',
+    `\nTesto originale${tagHint}:`,
+    `"""${originalText}"""`,
+    '',
+    `Scrivi la versione riscritta in ${langLabel}, usando le tue skill, archivi e tecniche.`,
+    'NON parafrasare l\'originale. NON aggiungere preamboli ("Ecco la riscrittura:", ecc). NON usare markdown. NON mettere virgolette attorno alla risposta.',
+    'Rispondi SOLO con il testo riscritto, niente altro.',
+  ].filter(Boolean).join('\n');
+  let raw;
+  try {
+    raw = await callOpenClaw([
+      { role: 'system', content: sys },
+      { role: 'user', content: userMsg },
+    ]);
+  } catch (e) {
+    return null;
+  }
+  if (typeof raw !== 'string') return null;
+  let cleaned = raw.trim();
+  // Rimuovi preamboli comuni se il modello li ha aggiunti.
+  cleaned = cleaned
+    .replace(/^(?:ecco(?:\s+la|\s+il)?\s+(?:rewrite|riscrittura|versione|testo riscritto)[\s:.\-]*)/i, '')
+    .replace(/^(?:rewritten|riscritto|version|versione)[\s:.\-]*/i, '')
+    .trim();
+  // Rimuovi fence markdown.
+  cleaned = cleaned.replace(/^```[a-z]*\s*/i, '').replace(/```\s*$/, '').trim();
+  // Rimuovi virgolette wrap se l'intera risposta e' tra " " o « » o "..."
+  if ((cleaned.startsWith('"') && cleaned.endsWith('"'))
+      || (cleaned.startsWith('«') && cleaned.endsWith('»'))
+      || (cleaned.startsWith('"') && cleaned.endsWith('"'))) {
+    cleaned = cleaned.slice(1, -1).trim();
+  }
+  // Rifiuto echi.
+  if (cleaned === originalText.trim() && originalText.length > 20) return null;
+  if (!cleaned) return null;
+  return cleaned;
+}
+
 async function runRewriteInBatches(systemPrompt, userMessage) {
   const parsed = parseTextsFromRewritePrompt(userMessage);
   if (!parsed) {
@@ -603,6 +686,45 @@ async function runRewriteInBatches(systemPrompt, userMessage) {
   const { texts, beforeJson, afterJson } = parsed;
   const total = texts.length;
   if (total === 0) return JSON.stringify([]);
+
+  // ─── Modalita' CHAT: bypass totale del JSON ────────────────────────
+  // Se l'utente ha settato REWRITE_QUALITY_MODE=chat, non facciamo
+  // batch JSON. Ogni testo viene chiesto al modello in linguaggio
+  // naturale (come l'utente fa quando chatta direttamente con
+  // Neo/Morfeo nel tool, dove il risultato e' molto migliore).
+  // Lento (1 call per testo) ma garantisce la stessa qualita' della chat.
+  if (REWRITE_QUALITY_MODE === 'chat') {
+    log(`  ▸ Rewrite chat-mode: ${total} testi, 1 chiamata conversazionale ciascuno`);
+    const { productName, context: productContext } = extractProductContextFromSystemPrompt(systemPrompt);
+    // Detect lingua dal system prompt server-side
+    const langMatch = systemPrompt.match(/(?:LINGUA|OUTPUT LANGUAGE).*?:\s*([a-zA-Z]+)/i);
+    const lang = langMatch ? langMatch[1].toLowerCase().slice(0, 2) : 'it';
+    const allRewrites = [];
+    let trueRewrites = 0;
+    for (let i = 0; i < texts.length; i++) {
+      const t = texts[i];
+      if (!t || typeof t.id !== 'number') continue;
+      if ((i + 1) % 10 === 0 || i === 0) log(`  ▸ chat-mode ${i + 1}/${total}`);
+      const rewritten = await rewriteOneTextChatStyle({
+        id: t.id,
+        originalText: t.text,
+        tag: t.tag,
+        productName,
+        productContext,
+        lang,
+      });
+      if (rewritten) {
+        allRewrites.push({ id: t.id, rewritten });
+        trueRewrites++;
+      } else {
+        // Echo o fail: fallback all'originale per non lasciare l'id missing.
+        allRewrites.push({ id: t.id, rewritten: t.text });
+      }
+    }
+    const skipped = total - trueRewrites;
+    log(`  ▸ Rewrite done (chat-mode): ${trueRewrites}/${total} VERAMENTE riscritti, ${skipped} restano = originale`);
+    return JSON.stringify(allRewrites);
+  }
 
   // Map id -> rewritten string. Usiamo una Map così l'ultima riscrittura buona
   // sovrascrive eventuali risposte precedenti per lo stesso id (gap-fill).
@@ -743,33 +865,50 @@ async function runRewriteInBatches(systemPrompt, userMessage) {
   // Gap-fill: il modello locale a volte salta degli id O risponde con echo
   // (= testo originale identico). In entrambi i casi ritentiamo solo i mancanti
   // con un hint di sistema piu' aggressivo e batch sempre piu' piccoli.
-  // L'ULTIMO pass usa SEMPRE batch=1 (un testo per call) — e' lento ma
-  // garantisce che ogni id riceva almeno un tentativo "dedicato".
+  // L'ULTIMO pass usa CHAT-STYLE (call conversazionale 1-a-1, no JSON) —
+  // questo bypassa totalmente la pressione "form filler" del JSON e da'
+  // la stessa qualita' di quando l'utente chatta direttamente con
+  // Neo/Morfeo nel tool. E' la stessa tecnica usata per
+  // REWRITE_QUALITY_MODE=chat, ma applicata SOLO ai testi che il
+  // modello ha sbagliato/saltato nei pass JSON precedenti.
+  const { productName: pName, context: pContext } = extractProductContextFromSystemPrompt(systemPrompt);
+  const langMatch = systemPrompt.match(/(?:LINGUA|OUTPUT LANGUAGE).*?:\s*([a-zA-Z]+)/i);
+  const detectedLang = langMatch ? langMatch[1].toLowerCase().slice(0, 2) : 'it';
+
   for (let pass = 1; pass <= REWRITE_GAP_FILL_PASSES; pass++) {
     const missing = texts.filter((t) => !idToRewrite.has(t.id));
     if (missing.length === 0) break;
     const isLastPass = pass === REWRITE_GAP_FILL_PASSES;
-    let echoHint;
+
+    // ULTIMO pass = chat-style 1-a-1 (no JSON pressure)
     if (isLastPass) {
-      echoHint = 'ULTIMO TENTATIVO. Sei un AGENTE specializzato (Neo / Morfeo) con accesso ad archivi prodotti, KB, RAG, skill di copywriting. Per QUESTO singolo testo: USA le tue risorse e produci un "rewritten" semanticamente diverso dall\'originale, calzato sul prodotto target. NON ti e\' permesso parafrasare. Se davvero il testo e\' un disclaimer legale o ultra-strutturale e non puoi riscriverlo, ritorna un rewritten leggermente migliorato in chiarezza ma diverso dall\'originale.';
-    } else if (pass === 1) {
+      log(
+        `  ▸ Gap-fill pass ${pass}/${REWRITE_GAP_FILL_PASSES}: ${missing.length} testi mancanti — uso CHAT-STYLE (conversazionale, no JSON, come la chat del tool)`,
+      );
+      for (const t of missing) {
+        const rewritten = await rewriteOneTextChatStyle({
+          id: t.id,
+          originalText: t.text,
+          tag: t.tag,
+          productName: pName,
+          productContext: pContext,
+          lang: detectedLang,
+        });
+        if (rewritten) idToRewrite.set(t.id, rewritten);
+      }
+      continue;
+    }
+
+    // Pass intermedi = JSON con batch decrescente + hint progressivo
+    let echoHint;
+    if (pass === 1) {
       echoHint = 'Hai appena restituito il testo originale identico per QUESTI id (oppure non li hai inclusi nel JSON). È vietato. Riscrivili davvero per il prodotto target, usando archivi/skill/tecniche.';
     } else {
       echoHint = `Pass ${pass}: gli id qui sotto NON sono ancora stati riscritti. Per OGNI id produci un "rewritten" diverso dall'"text", piu' specifico per il prodotto target. Includi TUTTI gli id nella risposta.`;
     }
-    // Batch size decrescente:
-    //   pass 1 → REWRITE_BATCH_SIZE / 2
-    //   pass 2 → REWRITE_BATCH_SIZE / 3
-    //   pass 3 → 2
-    //   ultimo → 1 (un testo per call, max attenzione)
-    let fillBatchSize;
-    if (isLastPass) {
-      fillBatchSize = 1;
-    } else {
-      fillBatchSize = Math.max(2, Math.floor(REWRITE_BATCH_SIZE / (pass + 1)));
-    }
+    const fillBatchSize = Math.max(2, Math.floor(REWRITE_BATCH_SIZE / (pass + 1)));
     log(
-      `  ▸ Gap-fill pass ${pass}/${REWRITE_GAP_FILL_PASSES}: ${missing.length} testi ancora mancanti (echo o skipped) — batch=${fillBatchSize}${isLastPass ? ' [LAST PASS, one-by-one]' : ''}`,
+      `  ▸ Gap-fill pass ${pass}/${REWRITE_GAP_FILL_PASSES}: ${missing.length} testi ancora mancanti — batch=${fillBatchSize}`,
     );
     for (let i = 0; i < missing.length; i += fillBatchSize) {
       const slice = missing.slice(i, i + fillBatchSize);
@@ -961,6 +1100,14 @@ async function processMessage(msg) {
 
           // 1. Build prompts (extract texts + system prompt + user message
           //    pre-formatted with the markers runRewriteInBatches expects).
+          // Forwarda anche `knowledge` (libreria saved_prompts dell'utente
+          // + brief progetto): server-side la embed nel system prompt cosi'
+          // Neo/Morfeo ricevono tecniche+brief insieme al testo.
+          if (job.knowledge && (job.knowledge.prompts?.length || job.knowledge.project)) {
+            const pCount = job.knowledge.prompts?.length || 0;
+            const hasBrief = !!(job.knowledge.project?.brief);
+            log(`  · swipe_landing_local: knowledge dal tool — ${pCount} tecniche libreria${hasBrief ? ' + brief progetto' : ''}`);
+          }
           log(`  · swipe_landing_local: building prompts server-side (light)`);
           const prep = await callToolApi(
             '/api/landing/swipe/openclaw-build-prompts',
@@ -970,6 +1117,7 @@ async function processMessage(msg) {
               product: job.product,
               tone: job.tone,
               language: job.language,
+              knowledge: job.knowledge || undefined,
             },
             60_000,
           );
@@ -2771,7 +2919,11 @@ function printBanner() {
   } else {
     log('No static extra context — set OPENCLAW_EXTRA_CONTEXT_FILE=/path/to/notes.md or drop "openclaw-extra-context.md" accanto al worker per dargli knowledge personale (brand book, claims approvati, ecc.).');
   }
-  log(`Rewrite quality mode: ${REWRITE_QUALITY_MODE} (batch size ${REWRITE_BATCH_SIZE}). Set REWRITE_QUALITY_MODE=high|ultra per piu' qualita' (e piu' tempo).`);
+  log(
+    `Rewrite quality mode: ${REWRITE_QUALITY_MODE} (batch size ${REWRITE_BATCH_SIZE}).`
+    + ` L'ultimo gap-fill pass usa CHAT-STYLE 1-a-1 (come la chat del tool).`
+    + ` REWRITE_QUALITY_MODE=chat per usare chat-style su TUTTI i testi (max qualita', ~5x piu' lento).`,
+  );
   if (!playwrightChromium) {
     log(
       'Funnel crawl poller DISABLED: playwright-core not found. Run `npm install` then `npx playwright install chromium` if you want this worker to also process auto-discover funnel jobs.',

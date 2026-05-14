@@ -254,6 +254,29 @@ export default function CloneLandingPage() {
     const targetAgent = AUDITOR_TARGET_AGENT[chosen];
     pushProgress(`Coda OpenClaw → ${AUDITOR_LABEL[chosen]} (swipe)`);
 
+    // Carica la knowledge (libreria saved_prompts + brief progetto attivo)
+    // PRIMA di mandare il job al worker: cosi' Neo/Morfeo ricevono
+    // immediatamente tutto il contesto che l'utente ha costruito nel tool,
+    // senza dover fare round-trip aggiuntivi.
+    pushProgress('Carico libreria tecniche / knowledge dal tool…');
+    let knowledge: { prompts: unknown[]; project: unknown } = { prompts: [], project: null };
+    try {
+      const kRes = await fetch('/api/swipe/load-knowledge');
+      if (kRes.ok) {
+        const kj = await kRes.json();
+        knowledge = {
+          prompts: Array.isArray(kj.prompts) ? kj.prompts : [],
+          project: kj.project ?? null,
+        };
+        pushProgress(
+          `Knowledge: ${knowledge.prompts.length} tecniche libreria${knowledge.project ? ' + brief progetto' : ''}`,
+        );
+      }
+    } catch {
+      // non fatale: lo swipe parte comunque, solo senza la knowledge extra
+      pushProgress('Knowledge non caricabile (vado avanti senza)');
+    }
+
     const payload = {
       action: 'swipe_landing_local',
       // Always ship the clone result so the worker doesn't re-fetch.
@@ -265,6 +288,7 @@ export default function CloneLandingPage() {
       },
       tone,
       language,
+      knowledge,
     };
 
     const enqueueRes = await fetch('/api/openclaw/queue', {
