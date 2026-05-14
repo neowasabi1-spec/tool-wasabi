@@ -510,7 +510,13 @@ async function writeCheckpointStageHint(runId, msg) {
 //   'high'            → batch JSON da 3, hint extra "pensa 2-3 candidati".
 //   'ultra'           → batch JSON da 1 (un testo per call ma sempre
 //                       formato JSON). Tipicamente CHAT e' meglio.
-const REWRITE_QUALITY_MODE = (process.env.REWRITE_QUALITY_MODE || 'chat').toLowerCase();
+// Default 'fast' (batch JSON da 5). Chat-style 1-a-1 e' opt-in via env
+// var perche' su funnel medio-grandi (50+ testi) e' molto lento e su
+// alcuni modelli locali tende a far rispondere l'agente con preamboli
+// / domande di chiarimento invece del solo testo riscritto.
+// L'ULTIMO gap-fill pass usa COMUNQUE chat-style per i testi che il
+// batch JSON ha sbagliato, cosi' i due mondi si compensano.
+const REWRITE_QUALITY_MODE = (process.env.REWRITE_QUALITY_MODE || 'fast').toLowerCase();
 const QUALITY_DEFAULTS = {
   // 5 e' il sweet spot empirico per Trinity locale: abbastanza piccolo
   // da non far omettere id al modello, abbastanza grande da non
@@ -616,8 +622,11 @@ function extractProductContextFromSystemPrompt(systemPrompt) {
   const nameMatch = systemPrompt.match(/PRODOTTO:\s*(.+)/i)
     || systemPrompt.match(/PRODUCT NAME:\s*(.+)/i);
   if (nameMatch) productName = nameMatch[1].trim();
-  // Tutto cio' che sta tra "CONTESTO PRODOTTO COMPLETO" e la sezione
-  // successiva (TONO / TONE) e' il contesto utile.
+  // Tutto cio' che sta tra "CONTESTO PRODOTTO COMPLETO" e la PRIMA
+  // sezione successiva (KB built-in / KNOWLEDGE TOOL / TONO). Cosi'
+  // chat-style NON spedisce 22K char di KB built-in in OGNI call:
+  // il system prompt globale del rewrite la include gia' al primo
+  // round, qui ci serve solo il contesto-prodotto stretto.
   let context = '';
   const ctxStart = systemPrompt.search(/CONTESTO PRODOTTO COMPLETO|FULL PRODUCT CONTEXT/i);
   if (ctxStart >= 0) {
@@ -625,8 +634,14 @@ function extractProductContextFromSystemPrompt(systemPrompt) {
     const afterColon = after.indexOf(':');
     if (afterColon >= 0) {
       const block = after.substring(afterColon + 1);
-      const stop = block.search(/\n\s*(TONO|TONE|LINGUA|OUTPUT LANGUAGE|REGOLE|CRITICAL RULES)/i);
+      // Stop alla PRIMA fra: KB built-in, knowledge tool, tono, lingua, regole.
+      const stop = block.search(/\n\s*(?:===\s*COPYWRITING FRAMEWORK|===\s*KNOWLEDGE|TONO|TONE|LINGUA|OUTPUT LANGUAGE|REGOLE|CRITICAL RULES)/i);
       context = (stop >= 0 ? block.substring(0, stop) : block).trim();
+      // Cap supplementare a 4000 char per sicurezza: chat-style fa una
+      // call per testo, non vogliamo blastare prompt giganti × N testi.
+      if (context.length > 4000) {
+        context = context.substring(0, 3900) + '\n[...troncato per chat-mode...]';
+      }
     }
   }
   return { productName, context };
@@ -661,26 +676,57 @@ async function rewriteOneTextChatStyle({ id, originalText, tag, productName, pro
       { role: 'user', content: userMsg },
     ]);
   } catch (e) {
+    log(`    ✗ chat-style id=${id}: agente ha errato (${e.message})`);
     return null;
   }
-  if (typeof raw !== 'string') return null;
+  if (typeof raw !== 'string' || !raw.trim()) {
+    log(`    ✗ chat-style id=${id}: agente ha risposto VUOTO`);
+    return null;
+  }
+  const rawLen = raw.length;
   let cleaned = raw.trim();
   // Rimuovi preamboli comuni se il modello li ha aggiunti.
   cleaned = cleaned
     .replace(/^(?:ecco(?:\s+la|\s+il)?\s+(?:rewrite|riscrittura|versione|testo riscritto)[\s:.\-]*)/i, '')
     .replace(/^(?:rewritten|riscritto|version|versione)[\s:.\-]*/i, '')
     .trim();
-  // Rimuovi fence markdown.
-  cleaned = cleaned.replace(/^```[a-z]*\s*/i, '').replace(/```\s*$/, '').trim();
+  // Rimuovi fence markdown ovunque siano.
+  cleaned = cleaned.replace(/```(?:[a-z]+)?\s*/gi, '').replace(/```/g, '').trim();
   // Rimuovi virgolette wrap se l'intera risposta e' tra " " o « » o "..."
-  if ((cleaned.startsWith('"') && cleaned.endsWith('"'))
-      || (cleaned.startsWith('«') && cleaned.endsWith('»'))
-      || (cleaned.startsWith('"') && cleaned.endsWith('"'))) {
+  while (
+    (cleaned.startsWith('"') && cleaned.endsWith('"'))
+    || (cleaned.startsWith('«') && cleaned.endsWith('»'))
+    || (cleaned.startsWith('"') && cleaned.endsWith('"'))
+    || (cleaned.startsWith('“') && cleaned.endsWith('”'))
+  ) {
     cleaned = cleaned.slice(1, -1).trim();
   }
+  // Se la risposta e' MOLTO piu' lunga dell'originale (3x), probabilmente
+  // l'agente ha aggiunto spiegazioni / opzioni. Tagliamo alle prime 1-2
+  // righe sostanziali, oppure scartiamo se sembra una conversazione vera.
+  if (cleaned.length > Math.max(originalText.length * 3, 400)) {
+    // Se contiene markers tipici di explanation, rifiutiamo cosi' va in fallback.
+    if (/^(opzione|option|versione|alternative|alternativa|vers\.|v[12345]|1\.|2\.|3\.)/im.test(cleaned)
+        || /\?$/m.test(cleaned.split('\n')[0] || '')) {
+      log(`    ⚠ chat-style id=${id}: agente ha risposto con opzioni/spiegazione (${rawLen} char), scarto`);
+      return null;
+    }
+    // Altrimenti tieni solo la prima riga sostanziosa.
+    const firstLine = cleaned.split(/\n+/).map((l) => l.trim()).find((l) => l.length > 10);
+    if (firstLine) {
+      log(`    ⚠ chat-style id=${id}: risposta lunga ${rawLen} char, prendo solo prima riga (${firstLine.length} char)`);
+      cleaned = firstLine;
+    }
+  }
   // Rifiuto echi.
-  if (cleaned === originalText.trim() && originalText.length > 20) return null;
-  if (!cleaned) return null;
+  if (cleaned === originalText.trim() && originalText.length > 20) {
+    log(`    ✗ chat-style id=${id}: agente ha rispedito l'originale (echo)`);
+    return null;
+  }
+  if (!cleaned) {
+    log(`    ✗ chat-style id=${id}: dopo cleanup la risposta e' vuota`);
+    return null;
+  }
   return cleaned;
 }
 
