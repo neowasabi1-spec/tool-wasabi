@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { fetchSavedPrompts } from '@/lib/supabase-operations';
-import { supabase } from '@/lib/supabaseClient';
+import { supabase } from '@/lib/supabase';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
