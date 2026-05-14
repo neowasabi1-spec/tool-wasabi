@@ -222,6 +222,49 @@ export async function deleteFunnel(
 }
 
 /**
+ * Bulk-set the `pageType` on every step of an existing funnel. Used by
+ * the "Tipo funnel" inline editor on the detail page so the user can
+ * retag a funnel that was created without a type (typical for the
+ * auto-discover flow, which historically didn't ask for one) — once
+ * all steps share the new type, `isAllQuizSteps()` (and the rest of
+ * the prompt-routing logic in `checkpoint-prompts.ts`) picks the
+ * right rubric on the next checkpoint run, no schema migration
+ * required.
+ *
+ * Pass `pageType: null` to CLEAR the type from every page (back to
+ * "no type set" — falls through to the default audit rubric).
+ */
+export async function updateFunnelPagesType(
+  id: string,
+  pageType: string | null,
+): Promise<{ ok: true; funnel: CheckpointFunnel } | { error: string }> {
+  const funnel = await getFunnel(id);
+  if (!funnel) return { error: 'Funnel non trovato.' };
+
+  const cleaned = (pageType ?? '').trim();
+  const newPageType = cleaned ? cleaned : undefined;
+
+  const newPages: CheckpointFunnelPage[] = funnel.pages.map((p) => ({
+    url: p.url,
+    name: p.name,
+    pageType: newPageType,
+    screenshotUrl: p.screenshotUrl,
+  }));
+
+  const { data, error } = await supabase
+    .from('checkpoint_funnels')
+    .update({
+      pages: newPages,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', id)
+    .select('*')
+    .single();
+  if (error) return { error: error.message };
+  return { ok: true, funnel: rowToFunnel(data as Record<string, unknown>) };
+}
+
+/**
  * Batch import multiple funnels (typically from a project's funnel
  * steps). Each item is validated like `createFunnel`. Items that are
  * either invalid or already present (same URL within the same project)

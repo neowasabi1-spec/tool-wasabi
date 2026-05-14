@@ -40,6 +40,11 @@ import {
   type CheckpointRun,
   type CheckpointFunnel,
 } from '@/types/checkpoint';
+import {
+  BUILT_IN_PAGE_TYPE_OPTIONS,
+  PAGE_TYPE_CATEGORIES,
+  type PageTypeOption,
+} from '@/types';
 import { getCurrentUserName } from '@/lib/current-user';
 import LiveStepDashboard, {
   buildSteps,
@@ -157,6 +162,41 @@ export default function CheckpointDetailPage({
   const [queueStatus, setQueueStatus] = useState<QueueStatus | null>(null);
   const queuePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastQueueStatusRef = useRef<string | null>(null);
+
+  // Inline funnel-type editor state. Not persisted — always reset from
+  // the loaded funnel on refetch. We track "saving" + "error" so the
+  // dropdown can disable itself + show a small message inline.
+  const [funnelTypeSaving, setFunnelTypeSaving] = useState(false);
+  const [funnelTypeError, setFunnelTypeError] = useState<string | null>(null);
+
+  /**
+   * Bulk-update the page-type of every step of this funnel and refetch
+   * so the rest of the UI (and the next checkpoint run) sees the new
+   * value. The PATCH endpoint validates / persists; we just optimistic-
+   * disable the dropdown for the round trip.
+   */
+  const handleFunnelTypeChange = async (newType: string) => {
+    setFunnelTypeError(null);
+    setFunnelTypeSaving(true);
+    try {
+      const res = await fetch(`/api/checkpoint/${funnelId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pageType: newType || null }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body?.error ?? `HTTP ${res.status}`);
+      }
+      // Refetch silently so the funnel.pages[].pageType reflects the
+      // new value without flashing the loading spinner.
+      await refetch(true, true);
+    } catch (e) {
+      setFunnelTypeError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setFunnelTypeSaving(false);
+    }
+  };
 
   const pushEvent = (level: ActivityLevel, message: string) => {
     setEvents((prev) =>
@@ -850,6 +890,26 @@ export default function CheckpointDetailPage({
       />
 
       <div className="px-6 py-6 space-y-6">
+        {/* Funnel-type inline editor — drives which prompt rubric the
+            next audit run will use (Quiz Funnel switches all four
+            columns to the quiz-specific overrides in
+            checkpoint-prompts.ts, so URLs identici tra step non
+            vengono piu' segnalati come "broken funnel"). */}
+        <FunnelTypeBar
+          currentType={funnel.pages?.[0]?.pageType ?? ''}
+          totalPages={pageCount}
+          allSameType={
+            funnel.pages.length > 0 &&
+            funnel.pages.every(
+              (p) => (p.pageType ?? '') === (funnel.pages[0].pageType ?? ''),
+            )
+          }
+          saving={funnelTypeSaving}
+          error={funnelTypeError}
+          disabled={running}
+          onChange={handleFunnelTypeChange}
+        />
+
         {/* Funnel steps overview — visible whenever the funnel has
             more than one page so the user can see the full sequence
             the audit will walk through. */}
@@ -1252,6 +1312,107 @@ export default function CheckpointDetailPage({
             </div>
           </div>
         </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Inline editor for the funnel-level page-type. Renders a compact
+ * dropdown that bulk-applies the picked type to every step of the
+ * funnel via `PATCH /api/checkpoint/[id]`. Critical UX for SPA quiz
+ * funnels: once the user picks "Quiz Funnel" the next checkpoint run
+ * routes through the quiz-specific prompt overrides
+ * (`isAllQuizSteps()` in checkpoint-prompts.ts) and stops complaining
+ * that "all 25 URLs are identical".
+ *
+ * `allSameType` warns the user when the funnel currently has mixed
+ * page types per step — the dropdown still works (it overrides all),
+ * but the badge says "misto" so they know they're flattening.
+ */
+function FunnelTypeBar({
+  currentType,
+  totalPages,
+  allSameType,
+  saving,
+  error,
+  disabled,
+  onChange,
+}: {
+  currentType: string;
+  totalPages: number;
+  allSameType: boolean;
+  saving: boolean;
+  error: string | null;
+  disabled: boolean;
+  onChange: (newType: string) => void;
+}) {
+  const isQuiz =
+    allSameType &&
+    (currentType === 'quiz_funnel' ||
+      currentType === 'survey' ||
+      currentType === 'assessment');
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 px-4 py-3 flex flex-wrap items-center gap-3">
+      <div className="flex items-center gap-2">
+        <span className="text-xs uppercase tracking-wide text-gray-500 font-semibold">
+          Tipo funnel
+        </span>
+        {isQuiz && (
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-violet-100 text-violet-700 border border-violet-200">
+            QUIZ MODE ATTIVA
+          </span>
+        )}
+        {!allSameType && (
+          <span
+            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-50 text-amber-700 border border-amber-200"
+            title="Gli step hanno tipi misti — cambiando il valore qui sotto verranno tutti uniformati"
+          >
+            misto
+          </span>
+        )}
+      </div>
+      <select
+        value={currentType}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled || saving}
+        title="Applica il tipo a TUTTI gli step del funnel. Quiz Funnel attiva il rubric quiz (judge-by-content invece di judge-by-URL)."
+        className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-violet-500 disabled:bg-gray-50 disabled:opacity-60"
+      >
+        <option value="">Auto / Standard (rubric default)</option>
+        {PAGE_TYPE_CATEGORIES.map((cat) => {
+          const opts = BUILT_IN_PAGE_TYPE_OPTIONS.filter(
+            (o: PageTypeOption) => o.category === cat.value,
+          );
+          if (opts.length === 0) return null;
+          return (
+            <optgroup key={cat.value} label={cat.label}>
+              {opts.map((opt) => (
+                <option key={opt.value as string} value={opt.value as string}>
+                  {opt.label}
+                </option>
+              ))}
+            </optgroup>
+          );
+        })}
+      </select>
+      <span className="text-xs text-gray-400">
+        applicato a {totalPages} {totalPages === 1 ? 'pagina' : 'pagine'}
+      </span>
+      {saving && (
+        <span className="inline-flex items-center gap-1 text-xs text-violet-600">
+          <Loader2 className="w-3 h-3 animate-spin" />
+          salvo…
+        </span>
+      )}
+      {!saving && error && (
+        <span className="text-xs text-red-600">{error}</span>
+      )}
+      {!saving && !error && isQuiz && (
+        <span className="text-xs text-violet-700">
+          ✓ Il prossimo run userà i prompt quiz (no più "URL identici =
+          funnel rotto").
+        </span>
       )}
     </div>
   );

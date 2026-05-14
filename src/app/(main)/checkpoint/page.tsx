@@ -184,6 +184,13 @@ export default function CheckpointPage() {
   // PC worker, 'morfeo' = Mac Mini worker (Anthropic). 'any' (default)
   // means whichever worker polls first wins.
   const [autoAgent, setAutoAgent] = useState<'any' | 'neo' | 'morfeo'>('any');
+  // Funnel-level page type the user assigns to ALL auto-discovered
+  // steps when they "Aggiungi pagine selezionate". Default is empty
+  // (no type set → default audit rubric). Picking 'quiz_funnel' is
+  // what tells the audit pipeline "URLs identici tra step sono
+  // normali, giudica dai contenuti e dagli screenshot" via
+  // `isAllQuizSteps()` in checkpoint-prompts.ts.
+  const [autoFunnelType, setAutoFunnelType] = useState<string>('');
   const [autoCrawling, setAutoCrawling] = useState(false);
   const [autoJobId, setAutoJobId] = useState<string | null>(null);
   const [autoProgress, setAutoProgress] = useState<{
@@ -229,6 +236,7 @@ export default function CheckpointPage() {
     setLandingPageType('landing');
     setManualPages(['', '']);
     setAutoEntryUrl('');
+    setAutoFunnelType('');
     setAutoJobId(null);
     setAutoProgress(null);
     setAutoSteps(null);
@@ -517,7 +525,12 @@ export default function CheckpointPage() {
           return { url: s.url, screenshotUrl: s.screenshotUrl ?? undefined };
         })
         .filter((p): p is { url: string; screenshotUrl?: string } => !!p && !!p.url);
-      await submitFunnel(pages);
+      // Pass the user-picked funnel type so it's stamped on every auto
+      // step (resolvePagesFromInput uses page_type as the per-page
+      // fallback). Empty = "no type" → default audit rubric.
+      await submitFunnel(pages, {
+        pageType: autoFunnelType || undefined,
+      });
       closeAddPanel();
       reload();
     } catch (err) {
@@ -1221,6 +1234,38 @@ export default function CheckpointPage() {
                       </div>
                       <div>
                         <label className="block text-xs font-medium text-gray-700 mb-1">
+                          Tipo funnel
+                        </label>
+                        <select
+                          value={autoFunnelType}
+                          onChange={(e) => setAutoFunnelType(e.target.value)}
+                          disabled={autoCrawling}
+                          title="Pick 'Quiz Funnel' per funnel SPA dove ogni step ha lo stesso URL — l'audit userà il rubric quiz e giudicherà dai contenuti / screenshot, non dagli URL."
+                          className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-violet-500 disabled:bg-gray-50"
+                        >
+                          <option value="">Auto / Standard</option>
+                          {PAGE_TYPE_CATEGORIES.map((cat) => {
+                            const opts = BUILT_IN_PAGE_TYPE_OPTIONS.filter(
+                              (o: PageTypeOption) => o.category === cat.value,
+                            );
+                            if (opts.length === 0) return null;
+                            return (
+                              <optgroup key={cat.value} label={cat.label}>
+                                {opts.map((opt) => (
+                                  <option
+                                    key={opt.value as string}
+                                    value={opt.value as string}
+                                  >
+                                    {opt.label}
+                                  </option>
+                                ))}
+                              </optgroup>
+                            );
+                          })}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-gray-700 mb-1">
                           Naviga con
                         </label>
                         <div className="inline-flex rounded-lg border border-gray-300 bg-white p-0.5">
@@ -1406,6 +1451,54 @@ export default function CheckpointPage() {
                       })}
                     </div>
 
+                    {/* Tipo funnel — applied to ALL selected steps so
+                        the next checkpoint run picks the right rubric.
+                        Critical for SPA quizzes (URLs identici tra step)
+                        where without 'quiz_funnel' l'audit conclude
+                        "broken funnel — 25 identical URLs". */}
+                    <div>
+                      <label className="block text-xs font-medium text-gray-700 mb-1">
+                        Tipo funnel{' '}
+                        <span className="text-gray-400 font-normal">
+                          — applicato a tutti gli step selezionati
+                        </span>
+                      </label>
+                      <select
+                        value={autoFunnelType}
+                        onChange={(e) => setAutoFunnelType(e.target.value)}
+                        disabled={adding}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-violet-500 disabled:bg-gray-50"
+                      >
+                        <option value="">
+                          Auto / Standard (rubric default)
+                        </option>
+                        {PAGE_TYPE_CATEGORIES.map((cat) => {
+                          const opts = BUILT_IN_PAGE_TYPE_OPTIONS.filter(
+                            (o: PageTypeOption) => o.category === cat.value,
+                          );
+                          if (opts.length === 0) return null;
+                          return (
+                            <optgroup key={cat.value} label={cat.label}>
+                              {opts.map((opt) => (
+                                <option
+                                  key={opt.value as string}
+                                  value={opt.value as string}
+                                >
+                                  {opt.label}
+                                </option>
+                              ))}
+                            </optgroup>
+                          );
+                        })}
+                      </select>
+                      {autoFunnelType === 'quiz_funnel' && (
+                        <p className="text-[11px] text-violet-700 mt-1">
+                          ✓ Modalità Quiz attiva — l&apos;audit saprà che
+                          gli step di un quiz SPA condividono URL e
+                          giudicherà dai contenuti / screenshot.
+                        </p>
+                      )}
+                    </div>
                     <NameField value={formName} onChange={setFormName} />
                     {addError && <ErrorBanner message={addError} />}
                     <SubmitBar
