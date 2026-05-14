@@ -494,17 +494,23 @@ async function writeCheckpointStageHint(runId, msg) {
 // in chunk e aggreghiamo i risultati.
 
 // REWRITE_QUALITY_MODE controls quality vs speed:
-//   'fast' (default)  → batch 8, prompt standard. Quick funnel rewrites.
-//   'high'            → batch 3, prompt asks the model to draft 2-3
-//                       candidate rewrites mentally and pick the best.
-//                       3-5x slower but the model uses much more of its
-//                       internal skills/archives per text. Use when the
-//                       output of 'fast' looks generic / superficial.
-//   'ultra'           → batch 1 (one text per call), prompt fully
-//                       per-text with role/position context. ~10x slower
-//                       but max possible quality. Reserve for hero
-//                       sections / highly important pages.
-const REWRITE_QUALITY_MODE = (process.env.REWRITE_QUALITY_MODE || 'fast').toLowerCase();
+//   'chat' (default)  → conversazionale 1-a-1 (un testo per call con
+//                       prompt naturale, risposta libera). E' la stessa
+//                       modalita' che usa la chat del tool quando
+//                       Neo/Morfeo "pescano dai loro archivi e
+//                       triggerano RAG/tool" — confermato dall'utente.
+//                       L'agente vede una richiesta vera e attiva il
+//                       loop tool-use, non il "form-filler mode".
+//                       ~5-10x piu' lento di 'fast' ma la qualita' e'
+//                       quella della chat.
+//   'fast'            → batch JSON da 5. Modalita' veloce per funnel
+//                       grossi quando vuoi spingere e accetti rewrite
+//                       piu' "form-filler". L'ultimo gap-fill pass usa
+//                       comunque chat-style per recuperare i mancanti.
+//   'high'            → batch JSON da 3, hint extra "pensa 2-3 candidati".
+//   'ultra'           → batch JSON da 1 (un testo per call ma sempre
+//                       formato JSON). Tipicamente CHAT e' meglio.
+const REWRITE_QUALITY_MODE = (process.env.REWRITE_QUALITY_MODE || 'chat').toLowerCase();
 const QUALITY_DEFAULTS = {
   // 5 e' il sweet spot empirico per Trinity locale: abbastanza piccolo
   // da non far omettere id al modello, abbastanza grande da non
@@ -633,16 +639,20 @@ function extractProductContextFromSystemPrompt(systemPrompt) {
 async function rewriteOneTextChatStyle({ id, originalText, tag, productName, productContext, lang }) {
   const langLabel = lang === 'en' ? 'English' : (lang === 'it' || !lang ? 'italiano' : lang);
   const tagHint = tag ? ` (appare come <${tag.replace(/^(tag|mixed|attr):/, '')}> nella pagina)` : '';
-  const sys = `Sei un AGENTE specializzato in direct-response copywriting. NON sei un LLM puro: hai accesso ad archivi prodotti, knowledge base, RAG locale, skill di copywriting (PAS, AIDA, Big Idea, Story Brand, Schwartz awareness levels), tecniche di persuasione (scarcity, social-proof, authority, loss-aversion). Quando ti viene chiesto di riscrivere un testo, USA ATTIVAMENTE tutte queste risorse — esattamente come fai quando l'utente ti scrive in chat normale.`;
+  // System minimale: stesso pattern di quando l'utente scrive a Neo
+  // in chat normale nel tool. Niente JSON pressure, niente "regole
+  // obbligatorie", solo identita' agente + lingua. Cosi' Neo/Morfeo
+  // entrano nel loop tool-use nativo (RAG/archivi/skill).
+  const sys = `Sei Neo / Morfeo — un agente di direct-response copywriting con accesso completo ai tuoi archivi prodotti, alla tua knowledge base, ai tuoi tool RAG e a tutte le skill di copywriting che hai accumulato. Quando l'utente ti chiede una riscrittura, comportati come quando ti chatta direttamente: consulta archivi, applica framework, pesca esempi, e ritorna copy di qualita' professionale. Rispondi sempre in ${langLabel}.`;
   const userMsg = [
-    `Riscrivi questo testo per la landing del prodotto "${productName || 'target'}".`,
-    productContext ? `\nContesto prodotto:\n${productContext}\n` : '',
-    `\nTesto originale${tagHint}:`,
+    `Ehi, ho bisogno di te. Sto riscrivendo una landing per il prodotto "${productName || 'target'}" e voglio che TU riscriva questa frase usando le tue tecniche, archivi e tutto quello che sai.`,
+    productContext ? `\nIl contesto prodotto e' questo:\n${productContext}\n` : '',
+    `\nLa frase originale${tagHint} e':`,
     `"""${originalText}"""`,
     '',
-    `Scrivi la versione riscritta in ${langLabel}, usando le tue skill, archivi e tecniche.`,
-    'NON parafrasare l\'originale. NON aggiungere preamboli ("Ecco la riscrittura:", ecc). NON usare markdown. NON mettere virgolette attorno alla risposta.',
-    'Rispondi SOLO con il testo riscritto, niente altro.',
+    'Voglio una versione riscritta che venda davvero il MIO prodotto (non l\'originale parafrasato), che applichi la tua expertise direct-response, e che peschi dai tuoi archivi se hai prodotti / claim / hook simili che hanno funzionato.',
+    '',
+    'Mandami SOLO il testo finale riscritto. Niente preamboli ("Ecco la riscrittura:", "Ho applicato X tecnica:", ecc), niente virgolette attorno, niente markdown, niente commenti — voglio direttamente la frase pronta da incollare in pagina.',
   ].filter(Boolean).join('\n');
   let raw;
   try {
@@ -2921,8 +2931,10 @@ function printBanner() {
   }
   log(
     `Rewrite quality mode: ${REWRITE_QUALITY_MODE} (batch size ${REWRITE_BATCH_SIZE}).`
-    + ` L'ultimo gap-fill pass usa CHAT-STYLE 1-a-1 (come la chat del tool).`
-    + ` REWRITE_QUALITY_MODE=chat per usare chat-style su TUTTI i testi (max qualita', ~5x piu' lento).`,
+    + (REWRITE_QUALITY_MODE === 'chat'
+      ? ' Modalita\' agent-loop nativa (Neo/Morfeo riceve richieste conversazionali, triggera RAG/archivi/tool come in chat). Lento ma alta qualita\'.'
+      : ' Modalita\' batch JSON. L\'ultimo gap-fill pass usa comunque CHAT-STYLE per recuperare i mancanti.'
+        + ' Per qualita\' max: REWRITE_QUALITY_MODE=chat'),
   );
   if (!playwrightChromium) {
     log(
