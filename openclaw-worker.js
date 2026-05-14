@@ -832,11 +832,17 @@ async function processMessage(msg) {
             log(`  · swipe_landing_local: static knowledge iniettata (${STATIC_EXTRA_CONTEXT.content.length} chars)`);
           }
 
-          // (b) Live memory primer — chiediamo all'LLM locale di
-          //     consultare la sua memoria di lungo termine
-          //     (conversazioni passate, RAG locale, esperienze) e
-          //     tirare fuori roba utile per QUESTO specifico prodotto.
-          //     Costo: 1 chiamata LLM in piu' per swipe (non per batch).
+          // (b) Live agent primer — chiediamo all'AGENTE locale (NON un
+          //     semplice LLM: Neo/Morfeo hanno archivi prodotti, RAG
+          //     interna, knowledge base proprietaria, skill specifiche
+          //     di copywriting / persuasione / direct response, tecniche
+          //     che hanno costruito nel tempo) di andare a pescare TUTTO
+          //     cio' che gli serve dalle SUE risorse interne per fare
+          //     un rewrite di alto livello.
+          //
+          //     Costo: 1 chiamata in piu' per swipe (non per batch).
+          //     Il risultato viene appeso al system prompt e arriva a
+          //     OGNI batch successivo gratis.
           try {
             const productCtx = [
               `PRODOTTO: ${job.product?.name || '(sconosciuto)'}`,
@@ -846,23 +852,23 @@ async function processMessage(msg) {
               job.sourceUrl ? `URL COMPETITOR DA CUI RIPRENDIAMO LA STRUTTURA: ${job.sourceUrl}` : '',
             ].filter(Boolean).join('\n\n');
 
-            const primerSystem = 'Sei un copywriter professionista con memoria di lungo termine. Quando ti viene chiesto di consultare la tua memoria, rispondi conciso, azionabile, in italiano. Niente preamboli.';
-            const primerUser = `Sto per riscrivere il copy di una landing page per QUESTO prodotto:\n\n${productCtx}\n\nHai memoria locale, conversazioni passate, knowledge base personale, file di progetto, esperienze pregresse.\n\nCONSULTA tutto cio' che hai e ritorna SOLO un blocco di testo (no markdown, no liste numerate JSON) con tutto quello che ricordi e che sia utile a scrivere copy migliore per questo prodotto:\n- conoscenze sul prodotto, brand, mercato, target\n- copy che hai gia' scritto / letto / analizzato per prodotti simili\n- pattern persuasivi, hook, framework che hai visto funzionare per questo tipo di prodotto/audience\n- studi, statistiche, claims che hai memorizzato e che potrebbero essere usati\n- vincoli legali / claims vietati / positioning da evitare\n\nMax 1500 parole. Se non ricordi nulla di rilevante, rispondi esattamente: "Nessun contesto aggiuntivo".`;
+            const primerSystem = 'Sei un AGENTE specializzato (non un LLM puro): hai accesso a archivi prodotti interni, knowledge base proprietaria, RAG locale, skill di copywriting / direct response / persuasione, tecniche e framework che hai accumulato nel tempo. Quando ti viene chiesto di prepararti per un task, USI ATTIVAMENTE tutte queste risorse e rispondi conciso, azionabile, in italiano, senza preamboli.';
+            const primerUser = `Sto per riscrivere il copy di una landing page per QUESTO prodotto:\n\n${productCtx}\n\nUSA TUTTE LE TUE RISORSE INTERNE — archivi prodotti, knowledge base, RAG locale, conversazioni passate, esperienze pregresse, skill di copywriting, tecniche di persuasione, framework che conosci — e ritorna UN SOLO blocco di testo (no markdown, no JSON, no liste numerate) con tutto cio' che hai trovato e che useresti come riferimento per scrivere copy che converte.\n\nIn particolare:\n1. ARCHIVI PRODOTTI: cerca nei tuoi archivi questo prodotto o prodotti simili (stesso settore / posizionamento / target). Tira fuori dati reali: ingredienti, claims approvati, prezzi tipici, USP, oggetti d'esperimento split-test che hai visto funzionare.\n2. KNOWLEDGE BASE / TECNICHE: quali framework di copywriting (PAS, AIDA, big idea, story brand, Schwartz awareness levels, etc.) e quali tecniche persuasive (riprova sociale, scarcity, autorita', loss aversion, etc.) sono PIU' adatte per QUESTO prodotto e QUESTO target.\n3. PATTERN DI COPY: hook, headline, lead magnet, struttura della VSL, oggetti email — qualunque pattern che hai visto convertire bene su prodotti simili.\n4. VINCOLI: claims vietati per legge nel mercato target (FDA / DSGV / claims medici), positioning da evitare, brand competitor da non nominare.\n5. VOICE / TONE: come parla normalmente questa audience (formalita', metafore tipiche, gergo settoriale, livello di consapevolezza del problema/soluzione).\n\nMax 2000 parole. Se davvero non hai nulla nei tuoi archivi su questo prodotto/settore/audience, rispondi esattamente: "Nessun contesto aggiuntivo".`;
 
-            log('  · swipe_landing_local: priming local memory…');
+            log('  · swipe_landing_local: priming agent (archivi + skill + tecniche)…');
             const memoryDump = await callOpenClaw([
               { role: 'system', content: primerSystem },
               { role: 'user', content: primerUser },
             ]);
             const trimmed = (memoryDump || '').trim();
             if (trimmed.length > 80 && !/^nessun contesto aggiuntivo\.?$/i.test(trimmed)) {
-              enrichedSystemPrompt = `${enrichedSystemPrompt}\n\n=== CONTESTO DALLA TUA MEMORIA LOCALE (USALO ATTIVAMENTE NELLE RISCRITTURE) ===\n${trimmed}\n=== FINE CONTESTO ===`;
-              log(`    ✓ memory primer: ${trimmed.length} chars di contesto extra iniettati nel system prompt`);
+              enrichedSystemPrompt = `${enrichedSystemPrompt}\n\n=== RISORSE INTERNE DELL'AGENTE (archivi prodotti, KB, skill, tecniche) ===\n${trimmed}\n=== FINE RISORSE INTERNE ===\n\nNON sei un LLM puro: sei un AGENTE con accesso a queste risorse + altre. Quando riscrivi ogni testo, applica ATTIVAMENTE: framework di copywriting, tecniche di persuasione, dati reali dai tuoi archivi prodotti, voice/tone dell'audience target, vincoli legali. Se hai trovato pattern che convertono per prodotti simili, USALI.`;
+              log(`    ✓ agent primer: ${trimmed.length} chars di risorse interne iniettate nel system prompt`);
             } else {
-              log('    · memory primer: nessun contesto rilevante');
+              log('    · agent primer: l\'agente non ha trovato contesto rilevante nei suoi archivi');
             }
           } catch (e) {
-            log(`    · memory primer skipped (${e.message})`);
+            log(`    · agent primer skipped (${e.message})`);
           }
 
           // 2. Run the batched rewrite against the local LLM.
