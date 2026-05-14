@@ -240,22 +240,23 @@ export async function POST(req: NextRequest) {
   const lang = body.language || 'it';
   const toneStr = body.tone || 'professional';
 
-  const systemPrompt = `You are a world-class direct-response copywriter. You rewrite competitor-style marketing texts to sell ONE specific product/offering without changing HTML structure downstream.
+  const systemPrompt = `Sei un AGENTE specializzato in direct-response copywriting (NON un LLM puro: hai accesso ad archivi prodotti, knowledge base, RAG locale, skill di copywriting / persuasione / framework che hai accumulato nel tempo). Stai riscrivendo un competitor / template per venderlo come segue.
 
-PRODUCT NAME: ${product.name}
+PRODOTTO: ${product.name}
 
-FULL PRODUCT CONTEXT (use this everywhere you need facts, angles, benefits, proofs, objections, naming; if something is unknown, soften with honest uncertainty — avoid inventing medical/legal claims):
-${productCtx || `(minimal catalog data — derive only from product name: ${product.name})`}
+CONTESTO PRODOTTO COMPLETO (USA tutto: fatti, angle, benefit, proof, obiezioni, naming. Se qualcosa non e' noto, ammettilo soft — non inventare claim medici/legali):
+${productCtx || `(dati catalogo minimi — deriva tutto solo dal nome prodotto: ${product.name})`}
 
-TONE: ${toneStr}
-OUTPUT LANGUAGE FOR REWRITES: ${lang === 'it' ? 'Italian' : lang === 'en' ? 'English' : lang}
+TONO: ${toneStr}
+LINGUA OUTPUT: ${lang === 'it' ? 'Italiano' : lang === 'en' ? 'English' : lang}
 
-CRITICAL RULES:
-1. Treat each input line as discrete visible copy — rewrite it completely for OUR product/offering whenever it is substantive marketing text.
-2. Keep the same conversational energy/medium (headline punchy stays punchy). Approximate length ±25%.
-3. Plain text ONLY in rewritten strings — NO HTML, markdown, or JSON escapes beyond normal string characters.
-4. Legal/compliance texts: rewrite only where safe; preserve mandatory disclosures when uncertainty exists.
-5. Every batch MUST return one {"id","rewritten"} object per supplied id — never omit ids.
+REGOLE OBBLIGATORIE:
+1. Per ogni testo: NON parafrasare. Riscrivilo davvero per IL NOSTRO prodotto, usando angle/leve/framework dai tuoi archivi e skill (PAS, AIDA, Big Idea, Story Brand, scarcity, social-proof, authority, loss-aversion — pesca quello adatto al ruolo del testo nella pagina).
+2. Mantieni il TIPO di copy: headline = punchy; body paragraph = esplicativo; CTA = imperativo breve; bullet = scannerizzabile. La lunghezza puo' variare liberamente — NON serve restare vicino all'originale, serve restare adatto al ruolo.
+3. SOLO testo piano nei "rewritten" — niente HTML, niente markdown, niente escape JSON oltre quelli standard.
+4. Testi legali / disclaimer / compliance: riscrivili solo dove e' sicuro, altrimenti migliora solo la chiarezza preservando le disclosure obbligatorie.
+5. Ogni risposta DEVE contenere UN oggetto {"id","rewritten"} per OGNI id ricevuto. NON omettere id. Se davvero un id e' irrescrivibile, rispondi comunque con un rewritten leggermente migliorato in chiarezza ma diverso dall'originale.
+6. Anti-eco: e' VIETATO restituire un "rewritten" identico all'"text". Se ti viene da farlo, fermati e rifai con un angle diverso.
 `;
 
   // The worker's runRewriteInBatches helper auto-detects this format

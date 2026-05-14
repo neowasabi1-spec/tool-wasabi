@@ -506,7 +506,10 @@ async function writeCheckpointStageHint(runId, msg) {
 //                       sections / highly important pages.
 const REWRITE_QUALITY_MODE = (process.env.REWRITE_QUALITY_MODE || 'fast').toLowerCase();
 const QUALITY_DEFAULTS = {
-  fast: { batchSize: 8 },
+  // 5 e' il sweet spot empirico per Trinity locale: abbastanza piccolo
+  // da non far omettere id al modello, abbastanza grande da non
+  // moltiplicare le call. Sopra 6-7 il modello inizia a "saltare" testi.
+  fast: { batchSize: 5 },
   high: { batchSize: 3 },
   ultra: { batchSize: 1 },
 };
@@ -543,19 +546,50 @@ function parseTextsFromRewritePrompt(userMessage) {
 
 function extractRewritesFromAiResponse(text) {
   if (typeof text !== 'string' || !text.trim()) return [];
-  let cleaned = text.trim().replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/i, '');
+  let cleaned = text.trim();
+  // Rimuovi tutti i fence code in qualunque punto (a volte il modello mette
+  // ```json ... ``` a meta' della risposta, non solo all'inizio).
+  cleaned = cleaned.replace(/```(?:json|JSON)?\s*/g, '').replace(/```/g, '');
   const a = cleaned.indexOf('[');
   const b = cleaned.lastIndexOf(']');
-  if (a < 0 || b <= a) return [];
-  try {
-    const parsed = JSON.parse(cleaned.substring(a, b + 1));
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
+  if (a >= 0 && b > a) {
+    const slice = cleaned.substring(a, b + 1);
+    try {
+      const parsed = JSON.parse(slice);
+      if (Array.isArray(parsed)) return parsed;
+    } catch {
+      // continua sotto: fallback parser
+    }
   }
+  // Fallback: il modello ha rotto il JSON (es. virgola finale, escape mancante,
+  // newline dentro una stringa). Estraiamo manualmente tutti gli oggetti
+  // {"id": N, "rewritten": "..."} con regex tollerante. Non perfetto ma
+  // recupera la maggior parte degli id buoni.
+  const recovered = [];
+  const pattern = /\{\s*"id"\s*:\s*(\d+)\s*,\s*"rewritten"\s*:\s*"((?:[^"\\]|\\.)*)"\s*\}/g;
+  let m;
+  while ((m = pattern.exec(cleaned)) !== null) {
+    const id = parseInt(m[1], 10);
+    if (Number.isNaN(id)) continue;
+    let rewritten;
+    try {
+      rewritten = JSON.parse(`"${m[2]}"`);
+    } catch {
+      rewritten = m[2];
+    }
+    recovered.push({ id, rewritten });
+  }
+  return recovered;
 }
 
-const REWRITE_GAP_FILL_PASSES = parseInt(process.env.REWRITE_GAP_FILL_PASSES || '2', 10);
+// Numero di pass di "gap-fill" per recuperare id saltati o echi.
+// Ogni pass usa un batch sempre piu' piccolo. Default alzato a 4: il
+// modello locale (Trinity / equivalenti) salta facilmente id se i
+// batch sono grandi, e l'unico modo per recuperarli affidabilmente
+// e' iterare con prompt sempre piu' aggressivi e batch sempre piu'
+// piccoli. L'ULTIMO pass viene sempre fatto a batch=1 (un testo per
+// call) per garantire la massima copertura.
+const REWRITE_GAP_FILL_PASSES = parseInt(process.env.REWRITE_GAP_FILL_PASSES || '4', 10);
 
 async function runRewriteInBatches(systemPrompt, userMessage) {
   const parsed = parseTextsFromRewritePrompt(userMessage);
@@ -631,7 +665,7 @@ async function runRewriteInBatches(systemPrompt, userMessage) {
   }
   const qualityBooster = buildQualityBooster();
 
-  async function runBatch(batch, label, extraSystemHint) {
+  async function runBatchOnce(batch, label, extraSystemHint) {
     batchCount++;
     const batchUserMessage = `${beforeJson}\n${JSON.stringify(batch, null, 2)}\n${afterJson}${qualityBooster}`;
     log(`  ▸ Rewrite ${label} (${batch.length} testi, mode=${REWRITE_QUALITY_MODE})`);
@@ -646,29 +680,56 @@ async function runRewriteInBatches(systemPrompt, userMessage) {
       ]);
     } catch (e) {
       err(`  ✗ ${label} failed:`, e.message);
-      return;
+      return { added: 0, parsed: 0 };
     }
     const rewrites = extractRewritesFromAiResponse(raw);
+    let added = 0;
     for (const rw of rewrites) {
       if (!rw || typeof rw.id !== 'number') continue;
       if (typeof rw.rewritten !== 'string') continue;
       const trimmed = rw.rewritten.trim();
       if (!trimmed) continue;
       // Reject "echo": se il modello restituisce identico all'originale e il
-      // testo non è breve/strutturale, non lo registriamo così verrà ritentato
+      // testo non e' breve/strutturale, non lo registriamo cosi' verra' ritentato
       // nel pass di echo-fill.
       const original = idToOriginal.get(rw.id);
       if (original && trimmed === original && original.length > 20) {
-        // tieni solo se non avevamo già una rewrite per quell'id (così non
-        // peggioriamo una rewrite buona di un pass precedente)
-        if (!idToRewrite.has(rw.id)) {
-          // marker speciale: stringa vuota = "vista ma echo, da ritentare"
-          // NB: usiamo un Map separato per i pending, per non confondere con missing.
-        }
         continue;
       }
-      idToRewrite.set(rw.id, trimmed);
+      // Solo se non avevamo gia' una rewrite buona per questo id, oppure se
+      // la nuova e' chiaramente migliore (== piu' diversa dall'originale).
+      const prev = idToRewrite.get(rw.id);
+      if (!prev || prev === original) {
+        idToRewrite.set(rw.id, trimmed);
+        added++;
+      }
     }
+    return { added, parsed: rewrites.length };
+  }
+
+  // runBatch con auto-split: se il batch ritorna < 70% dei testi attesi
+  // (o il JSON e' rotto), spezza in due meta' e riprova ogni meta'
+  // separatamente. Cosi' non perdiamo MAI un intero batch per un singolo
+  // id rotto / un newline messo male nel JSON dal modello.
+  async function runBatch(batch, label, extraSystemHint) {
+    if (batch.length === 0) return;
+    const expected = batch.filter((t) => t && typeof t.id === 'number').length;
+    const beforeSize = idToRewrite.size;
+    const result = await runBatchOnce(batch, label, extraSystemHint);
+    const newlyCovered = idToRewrite.size - beforeSize;
+    // Se ne abbiamo coperti almeno il 70%, OK.
+    if (expected === 0 || newlyCovered >= Math.ceil(expected * 0.7)) return;
+    // Altrimenti split-and-retry. Solo se batch > 1: con 1 testo non c'e'
+    // niente da splittare, ci pensera' il prossimo pass di gap-fill.
+    if (batch.length <= 1) return;
+    log(
+      `  ! ${label}: solo ${newlyCovered}/${expected} coperti (parsed=${result.parsed}). Auto-split in 2 meta'.`,
+    );
+    const mid = Math.floor(batch.length / 2);
+    const half1 = batch.slice(0, mid);
+    const half2 = batch.slice(mid);
+    await runBatchOnce(half1, `${label}/split-A`, extraSystemHint);
+    await runBatchOnce(half2, `${label}/split-B`, extraSystemHint);
   }
 
   // Pass principale.
@@ -681,28 +742,62 @@ async function runRewriteInBatches(systemPrompt, userMessage) {
 
   // Gap-fill: il modello locale a volte salta degli id O risponde con echo
   // (= testo originale identico). In entrambi i casi ritentiamo solo i mancanti
-  // con un hint di sistema più aggressivo e batch più piccoli.
+  // con un hint di sistema piu' aggressivo e batch sempre piu' piccoli.
+  // L'ULTIMO pass usa SEMPRE batch=1 (un testo per call) — e' lento ma
+  // garantisce che ogni id riceva almeno un tentativo "dedicato".
   for (let pass = 1; pass <= REWRITE_GAP_FILL_PASSES; pass++) {
     const missing = texts.filter((t) => !idToRewrite.has(t.id));
     if (missing.length === 0) break;
-    const echoHint = pass === 1
-      ? 'Hai appena restituito il testo originale identico per QUESTI id. È vietato. Riscrivili davvero per il prodotto target.'
-      : 'ULTIMO TENTATIVO: per OGNI id qui sotto produci un "rewritten" semanticamente diverso dall\'"text". Se il testo è generico, riformulalo dal punto di vista del prodotto target con parole sue.';
-    log(`  ▸ Gap-fill pass ${pass}: ${missing.length} testi ancora mancanti (echo o skipped)`);
-    const fillBatchSize = Math.max(5, Math.floor(REWRITE_BATCH_SIZE / 2));
+    const isLastPass = pass === REWRITE_GAP_FILL_PASSES;
+    let echoHint;
+    if (isLastPass) {
+      echoHint = 'ULTIMO TENTATIVO. Sei un AGENTE specializzato (Neo / Morfeo) con accesso ad archivi prodotti, KB, RAG, skill di copywriting. Per QUESTO singolo testo: USA le tue risorse e produci un "rewritten" semanticamente diverso dall\'originale, calzato sul prodotto target. NON ti e\' permesso parafrasare. Se davvero il testo e\' un disclaimer legale o ultra-strutturale e non puoi riscriverlo, ritorna un rewritten leggermente migliorato in chiarezza ma diverso dall\'originale.';
+    } else if (pass === 1) {
+      echoHint = 'Hai appena restituito il testo originale identico per QUESTI id (oppure non li hai inclusi nel JSON). È vietato. Riscrivili davvero per il prodotto target, usando archivi/skill/tecniche.';
+    } else {
+      echoHint = `Pass ${pass}: gli id qui sotto NON sono ancora stati riscritti. Per OGNI id produci un "rewritten" diverso dall'"text", piu' specifico per il prodotto target. Includi TUTTI gli id nella risposta.`;
+    }
+    // Batch size decrescente:
+    //   pass 1 → REWRITE_BATCH_SIZE / 2
+    //   pass 2 → REWRITE_BATCH_SIZE / 3
+    //   pass 3 → 2
+    //   ultimo → 1 (un testo per call, max attenzione)
+    let fillBatchSize;
+    if (isLastPass) {
+      fillBatchSize = 1;
+    } else {
+      fillBatchSize = Math.max(2, Math.floor(REWRITE_BATCH_SIZE / (pass + 1)));
+    }
+    log(
+      `  ▸ Gap-fill pass ${pass}/${REWRITE_GAP_FILL_PASSES}: ${missing.length} testi ancora mancanti (echo o skipped) — batch=${fillBatchSize}${isLastPass ? ' [LAST PASS, one-by-one]' : ''}`,
+    );
     for (let i = 0; i < missing.length; i += fillBatchSize) {
       const slice = missing.slice(i, i + fillBatchSize);
       await runBatch(slice, `gap-fill p${pass} (${slice.length} testi)`, echoHint);
     }
   }
 
+  // Diagnostica pre-fallback: quanti id sono "veri" rewrite vs quanti restano
+  // identici all'originale (= il modello ha rifiutato di riscriverli anche
+  // dopo tutti i pass). Cosi' nei log si vede chiaramente "X testi non
+  // riscritti", che e' il sintomo che vede l'utente nella UI ("saltano testi").
+  let trueRewrites = 0;
+  let echoFromRetry = 0;
+  for (const [id, rewritten] of idToRewrite) {
+    const original = idToOriginal.get(id);
+    if (original && rewritten.trim() === original) echoFromRetry++;
+    else trueRewrites++;
+  }
+
   // Final fallback: per i testi che dopo tutti i pass restano senza rewrite,
   // li includiamo comunque nel response con `rewritten = original` così almeno
   // applyRewrites server-side ha una entry per ogni id (e lo status route può
   // contarli). Senza questo, alcuni testi resterebbero `missing` per sempre.
+  let neverTouched = 0;
   for (const t of texts) {
     if (!idToRewrite.has(t.id) && idToOriginal.has(t.id)) {
       idToRewrite.set(t.id, idToOriginal.get(t.id));
+      neverTouched++;
     }
   }
 
@@ -710,11 +805,19 @@ async function runRewriteInBatches(systemPrompt, userMessage) {
   for (const [id, rewritten] of idToRewrite) {
     allRewrites.push({ id, rewritten });
   }
-  const stillMissing = texts.length - idToRewrite.size;
+  const skippedTotal = neverTouched + echoFromRetry;
   log(
-    `  ▸ Rewrite done: ${idToRewrite.size}/${total} testi riscritti in ${batchCount} batch`
-    + (stillMissing > 0 ? ` (${stillMissing} ancora mancanti dopo gap-fill)` : ''),
+    `  ▸ Rewrite done: ${trueRewrites}/${total} testi VERAMENTE riscritti, ${skippedTotal}/${total} restano = originale`
+    + ` (${neverTouched} mai toccati, ${echoFromRetry} echi non risolti) — ${batchCount} batch totali`,
   );
+  if (skippedTotal > 0 && skippedTotal / total > 0.15) {
+    log(
+      `  ! Attenzione: ${Math.round((skippedTotal / total) * 100)}% dei testi NON e' stato riscritto. Se il numero e' alto:`
+      + '\n     - prova REWRITE_QUALITY_MODE=high (batch piu\' piccoli)'
+      + '\n     - o REWRITE_QUALITY_MODE=ultra (1 testo alla volta, max copertura)'
+      + '\n     - o aumenta REWRITE_GAP_FILL_PASSES (default 4)',
+    );
+  }
   return JSON.stringify(allRewrites);
 }
 
