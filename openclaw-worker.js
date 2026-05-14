@@ -157,8 +157,50 @@ let totalErrors = 0;
 let isProcessing = false;
 
 const stamp = () => new Date().toISOString().replace('T', ' ').substring(0, 19);
-const log = (...args) => console.log(`[${stamp()}]`, ...args);
-const err = (...args) => console.error(`[${stamp()}] ERROR`, ...args);
+
+// ── File-based logging ───────────────────────────────────────────
+// A prescindere da come il worker viene avviato (node openclaw-worker.js
+// in PowerShell, tramite .bat, via NSSM, launchd, ecc), scriviamo SEMPRE
+// ogni riga di log anche su file `openclaw-worker.log` accanto al worker.
+// Cosi' l'utente puo' sempre fare Get-Content / tail per debug, senza
+// dover stare a copiare dalla finestra PowerShell.
+//
+// Comportamento:
+//   - Append (no overwrite): la prima riga ad ogni avvio e' un separator
+//     "======== WORKER STARTED <ts> PID=<n> ========"
+//   - Cap di rotazione semplice: se il file > 20MB, lo trunchiamo a 5MB
+//     (taglio dall'inizio) cosi' non cresce all'infinito.
+const LOG_FILE = path.join(__dirname, 'openclaw-worker.log');
+const MAX_LOG_SIZE = 20 * 1024 * 1024;     // 20 MB
+const LOG_TRUNCATE_TO = 5 * 1024 * 1024;   // dopo rotazione, tieni gli ultimi 5MB
+function rotateLogIfNeeded() {
+  try {
+    const st = fs.statSync(LOG_FILE);
+    if (st.size > MAX_LOG_SIZE) {
+      const fd = fs.openSync(LOG_FILE, 'r');
+      const buf = Buffer.alloc(LOG_TRUNCATE_TO);
+      fs.readSync(fd, buf, 0, LOG_TRUNCATE_TO, st.size - LOG_TRUNCATE_TO);
+      fs.closeSync(fd);
+      fs.writeFileSync(LOG_FILE, '== [log truncated for size] ==\n' + buf.toString('utf8'));
+    }
+  } catch { /* file probabilmente non esiste ancora, OK */ }
+}
+function writeLogFile(line) {
+  try { fs.appendFileSync(LOG_FILE, line + '\n'); } catch { /* swallow */ }
+}
+rotateLogIfNeeded();
+writeLogFile(`\n======== WORKER STARTED ${new Date().toISOString()} PID=${process.pid} ========`);
+
+const log = (...args) => {
+  const line = `[${stamp()}] ${args.map((a) => typeof a === 'string' ? a : JSON.stringify(a)).join(' ')}`;
+  console.log(line);
+  writeLogFile(line);
+};
+const err = (...args) => {
+  const line = `[${stamp()}] ERROR ${args.map((a) => typeof a === 'string' ? a : JSON.stringify(a)).join(' ')}`;
+  console.error(line);
+  writeLogFile(line);
+};
 
 // ===== LLM CALLS ==================================================
 // Dispatcher: route the chat completion to whichever backend the
