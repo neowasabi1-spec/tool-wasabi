@@ -1239,11 +1239,10 @@ async function processMessage(msg) {
           // Forwarda anche `knowledge` (libreria saved_prompts dell'utente
           // + brief progetto): server-side la embed nel system prompt cosi'
           // Neo/Morfeo ricevono tecniche+brief insieme al testo.
-          // ── VALIDAZIONE: brief e market research OBBLIGATORI ─────
-          // L'utente ha chiesto esplicitamente che senza brief + market
-          // research lo swipe NON parta — perche' la qualita' del rewrite
-          // dipende criticamente da questi due input. Senza, l'agente
-          // produce copy generico che "sembra l'originale".
+          // ── KNOWLEDGE: usata se passata, altrimenti l'agente la
+          // tirera' fuori da SOLO dai suoi archivi nel primer step.
+          // Nessun blocco qui: e' compito del primer chiedere a Neo/
+          // Morfeo di consultare i loro archivi per brief + MR + tecniche.
           const projForCheck = job.knowledge?.project || null;
           const hasBriefForCheck = !!(projForCheck?.brief && String(projForCheck.brief).trim().length > 30);
           const mrForCheck = projForCheck?.market_research;
@@ -1251,26 +1250,24 @@ async function processMessage(msg) {
             !!mrForCheck &&
             ((typeof mrForCheck === 'string' && mrForCheck.trim().length > 30) ||
               (typeof mrForCheck === 'object' && Object.keys(mrForCheck || {}).length > 0));
-          if (!hasBriefForCheck || !hasMRForCheck) {
-            const missing = [];
-            if (!hasBriefForCheck) missing.push('brief progetto');
-            if (!hasMRForCheck) missing.push('market research');
-            throw new Error(
-              `KNOWLEDGE OBBLIGATORIA MANCANTE: ${missing.join(' + ')}. ` +
-              `Vai su /clone-landing → form Swipe → seleziona un progetto che abbia ` +
-              `BRIEF e MARKET RESEARCH compilati nella sezione Projects del tool. ` +
-              `Senza questi due input lo swipe non puo' produrre un rewrite di qualita'.`
-            );
-          }
-
           const pCount = job.knowledge?.prompts?.length || 0;
-          const projName = projForCheck.name || '(senza nome)';
-          const briefLen = String(projForCheck.brief || '').length;
+          const projName = projForCheck?.name || '(non specificato)';
+          const briefLen = projForCheck?.brief ? String(projForCheck.brief).length : 0;
           const mrLen = (() => {
             if (typeof mrForCheck === 'string') return mrForCheck.length;
-            try { return JSON.stringify(mrForCheck).length; } catch { return 0; }
+            if (mrForCheck) {
+              try { return JSON.stringify(mrForCheck).length; } catch { return 0; }
+            }
+            return 0;
           })();
-          log(`  · swipe_landing_local: knowledge OK — ${pCount} tecniche libreria + brief progetto "${projName}" (${briefLen} char) + market research (${mrLen} char)`);
+          if (hasBriefForCheck && hasMRForCheck) {
+            log(`  · swipe_landing_local: knowledge dal tool OK — ${pCount} tecniche + brief "${projName}" (${briefLen} char) + MR (${mrLen} char)`);
+          } else {
+            const missing = [];
+            if (!hasBriefForCheck) missing.push('brief');
+            if (!hasMRForCheck) missing.push('market research');
+            log(`  · swipe_landing_local: knowledge dal tool parziale — ${pCount} tecniche libreria, manca ${missing.join('+')}. Chiedero' all'agente di tirarli fuori dai SUOI archivi nel primer.`);
+          }
           log(`  · swipe_landing_local: building prompts server-side (light)`);
           const prep = await callToolApi(
             '/api/landing/swipe/openclaw-build-prompts',
@@ -1342,47 +1339,59 @@ async function processMessage(msg) {
           //     copy. Senza questo step l'agente "fa il riassunto" del
           //     testo originale e produce copy generico.
           try {
-            // Compatta brief e MR perche' il primer non deve esplodere il
-            // payload (limite OpenClaw locale ~80K char per request).
-            const briefStr = String(projForCheck.brief || '').trim();
+            // Compatta brief e MR per non esplodere il payload del primer
+            // (limite OpenClaw locale ~80K char per request).
+            const briefStr = projForCheck?.brief ? String(projForCheck.brief).trim() : '';
             const mrStr = (() => {
+              if (!mrForCheck) return '';
               if (typeof mrForCheck === 'string') return mrForCheck.trim();
               try { return JSON.stringify(mrForCheck, null, 2); } catch { return ''; }
             })();
             const briefShort = briefStr.length > 4000 ? briefStr.slice(0, 4000) + '\n[...troncato per limite payload primer...]' : briefStr;
             const mrShort = mrStr.length > 4000 ? mrStr.slice(0, 4000) + '\n[...troncato per limite payload primer...]' : mrStr;
 
-            const productCtx = [
-              `PRODOTTO: ${job.product?.name || projForCheck.name || '(sconosciuto)'}`,
-              job.product?.description ? `DESCRIZIONE PRODOTTO:\n${job.product.description}` : '',
-              briefShort ? `BRIEF DEL PROGETTO (dal tool, OBBLIGATORIO):\n${briefShort}` : '',
-              mrShort ? `MARKET RESEARCH (dal tool, OBBLIGATORIA):\n${mrShort}` : '',
-              job.sourceUrl ? `URL COMPETITOR DA CUI PRENDIAMO LA STRUTTURA HTML: ${job.sourceUrl}` : '',
-            ].filter(Boolean).join('\n\n');
+            const productLines = [];
+            productLines.push(`PRODOTTO DA PROMUOVERE: ${job.product?.name || projForCheck?.name || '(non fornito — usa il sourceUrl per dedurlo)'}`);
+            if (job.product?.description) productLines.push(`DESCRIZIONE FORNITA DAL TOOL:\n${job.product.description}`);
+            if (job.sourceUrl) productLines.push(`URL COMPETITOR DA CUI PRENDIAMO STRUTTURA HTML: ${job.sourceUrl}`);
+            if (briefShort) productLines.push(`BRIEF FORNITO DAL TOOL (parziale — usa anche il TUO archivio per arricchirlo):\n${briefShort}`);
+            else productLines.push('BRIEF FORNITO DAL TOOL: ⚠ NESSUNO. DEVI costruirtelo TU consultando i TUOI archivi prodotti per questo specifico prodotto / settore.');
+            if (mrShort) productLines.push(`MARKET RESEARCH FORNITA DAL TOOL (parziale — usa anche il TUO archivio per arricchirla):\n${mrShort}`);
+            else productLines.push('MARKET RESEARCH FORNITA DAL TOOL: ⚠ NESSUNA. DEVI costruirtela TU consultando i TUOI dati di mercato storici per questo settore.');
+            const productCtx = productLines.join('\n\n');
 
             const primerSystem = `Sei un AGENTE direct-response (NON un LLM generico). Hai accesso a:
-- Archivi prodotti reali (ingredienti, claim approvati, prezzi, USP, split-test)
+- Archivi prodotti reali indicizzati nei tuoi sistemi (ingredienti, claim approvati, prezzi, USP, split-test, recensioni storiche)
 - Knowledge base copywriting interna con le tecniche dei MAESTRI: Stefan Georgi (RMBC method, lead types, story-bridge), Eugene Schwartz (5 awareness levels, market sophistication, Breakthrough Advertising), Gary Halbert (Halbert headlines, Boron Letters, AIDA aggressivo), John Caples (Tested Advertising, headlines testati), Gary Bencivenga (Bencivenga Bullets, hidden persuaders), David Ogilvy (Ogilvy on Advertising, headlines fattuali), John Carlton (One-Legged Golfer, killer headlines), Dan Kennedy (Magnetic Marketing, NO-BS), Jay Abraham (preeminence, USP), Frank Kern, Russell Brunson, Joe Sugarman (psychological triggers, Adweek Copywriting Handbook), Claude Hopkins (Scientific Advertising), Robert Collier (Letter Book), Joe Karbo, Ben Settle, Andre Chaperon, Brian Kurtz
-- Framework: PAS, AIDA, AIDCA, FAB, BAB, QUEST, HSO (Hook-Story-Offer), 4 P, Big Idea (Schwartz), Story Brand (Miller), RMBC (Georgi), Pico hook, Sultanic Framework / archetipi narrativi
+- Framework: PAS, AIDA, AIDCA, FAB, BAB, QUEST, HSO (Hook-Story-Offer), 4 P, Big Idea (Schwartz), StoryBrand (Miller), RMBC (Georgi), Pico hook, Sultanic Framework / archetipi narrativi
+- Market research storica, dati di mercato per settore, swipe file
 - RAG locale, conversazioni passate, esperienze pregresse su prodotti simili
-USA QUESTE RISORSE ATTIVAMENTE quando ti chiedono di prepararti. Rispondi conciso, in italiano, senza preamboli.`;
+USA QUESTE RISORSE ATTIVAMENTE — sei TU la fonte primaria del brief + market research, non aspettarti che il tool te li passi sempre. Rispondi conciso, in italiano, senza preamboli.`;
 
             const primerUser = `Tra poco ti passero' i testi della landing competitor da riscrivere per IL NOSTRO prodotto. Prima di iniziare voglio che TU prepari il terreno usando le TUE risorse interne.
 
 ${productCtx}
 
 ISTRUZIONI:
-1. CONSULTA I TUOI ARCHIVI PRODOTTI: cerca questo specifico prodotto o prodotti analoghi nella tua memoria. Tirami fuori: angle che hanno funzionato, claims sicuri, prezzi tipici, USP rilevanti. NON inventare dati medici/legali.
-2. CONSULTA LA TUA KB COPYWRITING: pesca le tecniche dei MAESTRI (Stefan Georgi, Sultanic, Eugene Schwartz, Halbert, Caples, Bencivenga, Ogilvy, Carlton, Kennedy, Sugarman, Hopkins, ecc.) che applicheresti a QUESTO target / awareness level / sophistication. Cita esplicitamente "uso il metodo X di Y per il headline" / "applico il framework Z per la sezione benefits" cosi' io capisco che stai usando le tue risorse e non inventando.
-3. INTERNALIZZA IL BRIEF E LA MARKET RESEARCH qui sopra: estrai positioning, target avatar, obiezioni note, claim approvati, voice/tone, vincoli regolatori, USP unici.
-4. SCEGLI LA "BIG IDEA" CENTRALE che useremo per riscrivere TUTTI i testi della pagina, in modo coerente. UNA sola big idea, declinata in headline, body, CTA.
-5. SCEGLI 2-3 LEVE PRINCIPALI (es. fear-of-loss + social-proof + autorita' scientifica) coerenti con awareness level + market sophistication del nostro target.
 
-Restituisci UN SOLO blocco di testo (no markdown enorme, no JSON, no liste numerate gigantesche). Massimo 1200 parole. Vai DIRETTO al sodo: archivi → tecniche citate per nome → big idea → leve.
+1. CONSULTA I TUOI ARCHIVI PRODOTTI: cerca questo specifico prodotto o prodotti analoghi (stesso settore / posizionamento / target / range prezzo) nella TUA memoria. Tirami fuori cose CONCRETE: angle che hanno funzionato in passato per prodotti simili, claim sicuri / claim vietati nel settore, prezzi tipici di mercato, USP rilevanti, recensioni-tipo del target. NON inventare dati medici/legali. Se nei tuoi archivi NON trovi nulla, dillo CHIARO.
 
-Se nei tuoi archivi NON trovi nulla su questo specifico prodotto, dillo chiaro e basati comunque sul brief + market research per scegliere big idea e leve dei maestri.`;
+2. SE IL TOOL NON TI HA FORNITO BRIEF / MARKET RESEARCH (vedi sopra), RICOSTRUISCITELI TU consultando i TUOI archivi:
+   - BRIEF: chi vende cosa, a chi, con che positioning, quali claim approvati, quale voice/tone, quali vincoli regolatori (es. FDA, FTC, GDPR), quali USP unici. Anche solo per inferenza dal nome prodotto + URL competitor + tuoi dati storici di mercato.
+   - MARKET RESEARCH: awareness level del target (Schwartz: unaware, problem aware, solution aware, product aware, most aware), market sophistication (Schwartz 1-5), big competitor del settore, angle che convertono storicamente in QUEL settore, language pattern del target, pain points + desideri primari/secondari.
+   Annunciali entrambi in modo strutturato cosi': "BRIEF (ricostruito): ..." e "MARKET RESEARCH (ricostruita): ...".
 
-            log('  · swipe_landing_local: priming agent (chiedo Stefan Georgi / Sultanic / Schwartz / Halbert / etc + brief + MR)…');
+3. CONSULTA LA TUA KB COPYWRITING: pesca le tecniche dei MAESTRI (Stefan Georgi, Sultanic, Eugene Schwartz, Halbert, Caples, Bencivenga, Ogilvy, Carlton, Kennedy, Sugarman, Hopkins, Collier, ecc.) che applicheresti a QUESTO target / awareness level / sophistication. Cita esplicitamente "uso il metodo X di Y per il headline" / "applico il framework Z per la sezione benefits" cosi' capisco che stai usando le tue risorse e non inventando.
+
+4. SCEGLI LA "BIG IDEA" CENTRALE che useremo per riscrivere TUTTI i testi della pagina, in modo coerente. UNA sola big idea, declinata in headline, body, CTA. Annunciala con "BIG IDEA: ...".
+
+5. SCEGLI 2-3 LEVE PRINCIPALI (es. fear-of-loss + social-proof + autorita' scientifica) coerenti con awareness level + market sophistication del nostro target. Annunciale con "LEVE: ...".
+
+Restituisci UN SOLO blocco di testo (no markdown enorme, no JSON, no liste numerate gigantesche). Massimo 1500 parole. Vai DIRETTO al sodo: archivi → brief ricostruito → market research ricostruita → tecniche citate per nome → big idea → leve.
+
+ONESTA': se nei TUOI archivi non hai dati su questo prodotto/settore e non puoi costruire brief/MR seri, DILLO CHIARO scrivendo all'inizio "ARCHIVI INSUFFICIENTI: lavorero' solo con tecniche generiche dei maestri + struttura del competitor". Cosi' so cosa aspettarmi.`;
+
+            log(`  · swipe_landing_local: priming agent (${hasBriefForCheck && hasMRForCheck ? 'arricchimento' : 'ricostruzione brief+MR dai SUOI archivi'} + tecniche maestri)…`);
             const memoryDump = await callOpenClaw([
               { role: 'system', content: primerSystem },
               { role: 'user', content: primerUser },

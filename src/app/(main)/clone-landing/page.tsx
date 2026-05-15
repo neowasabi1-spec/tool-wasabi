@@ -329,27 +329,21 @@ export default function CloneLandingPage() {
     if (!result?.html) throw new Error('No cloned HTML to swipe — clone first');
     const targetAgent = AUDITOR_TARGET_AGENT[chosen];
 
-    // ── HARD-GATE: brief + market research OBBLIGATORI per Neo/Morfeo
-    // Possono venire o dal progetto selezionato o dalle textarea che
-    // l'utente puo' compilare a mano nel form Swipe. Quello che conta
-    // e' che SIANO presenti, non da dove arrivano.
+    // Brief / MR sono OPZIONALI lato UI: se l'utente li passa li
+    // mandiamo, altrimenti l'agente (Neo/Morfeo) li ricostruira' dai
+    // SUOI archivi nel primer step. Niente blocco qui.
     const briefForJob = (briefText || '').trim();
     const mrForJob = (marketResearchText || '').trim();
-    if (briefForJob.length < 30 || mrForJob.length < 30) {
-      const missing: string[] = [];
-      if (briefForJob.length < 30) missing.push('BRIEF');
-      if (mrForJob.length < 30) missing.push('MARKET RESEARCH');
-      throw new Error(
-        `Manca ${missing.join(' + ')} (min 30 char). ` +
-        `Apri il form Swipe → seziona "Brief & Market Research" → ` +
-        `o seleziona un progetto compilato, o incolla i testi a mano nelle textarea. ` +
-        `Senza questi due input Neo/Morfeo non riescono ad applicare le tecniche dei ` +
-        `master copywriter (Stefan Georgi, Sultanic, Schwartz, Halbert, Caples, ` +
-        `Bencivenga, Ogilvy, Carlton, ecc.) in modo mirato sul tuo prodotto.`
-      );
-    }
 
     pushProgress(`Coda OpenClaw → ${AUDITOR_LABEL[chosen]} (swipe)`);
+    if (!briefForJob || !mrForJob) {
+      const missing: string[] = [];
+      if (!briefForJob) missing.push('brief');
+      if (!mrForJob) missing.push('market research');
+      pushProgress(
+        `Nessun ${missing.join(' + ')} fornito dal tool — Neo/Morfeo li ricostruira' dai LORO archivi nel primer step.`,
+      );
+    }
 
     // Carica la libreria saved_prompts (e il progetto se selezionato,
     // per logging). Brief/MR del payload arrivano dalle textarea sopra,
