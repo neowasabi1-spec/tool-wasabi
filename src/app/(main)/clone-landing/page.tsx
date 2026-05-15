@@ -114,6 +114,12 @@ export default function CloneLandingPage() {
     hasMarketResearch: boolean;
     projectName?: string;
   } | null>(null);
+  // Brief + market research editabili nel form Swipe.
+  // Pre-popolati dal progetto se selezionato. Modificabili a mano.
+  // Quello che parte al worker e' SEMPRE questo valore (non quello del DB),
+  // cosi' l'utente puo' aggiustare al volo senza andare in Projects.
+  const [briefText, setBriefText] = useState<string>('');
+  const [marketResearchText, setMarketResearchText] = useState<string>('');
 
   useEffect(() => {
     let cancelled = false;
@@ -130,19 +136,39 @@ export default function CloneLandingPage() {
     return () => { cancelled = true; };
   }, []);
 
-  const handleSelectProject = (id: string) => {
+  const handleSelectProject = async (id: string) => {
     setSelectedProjectId(id);
     if (!id) return;
     const proj = availableProjects.find((p) => p.id === id);
-    if (!proj) return;
-    setProduct((curr) => ({
-      ...curr,
-      name: curr.name?.trim() ? curr.name : proj.name,
-      description:
-        curr.description?.trim()
-          ? curr.description
-          : (proj.description || proj.brief || '').slice(0, 1500),
-    }));
+    if (proj) {
+      setProduct((curr) => ({
+        ...curr,
+        name: curr.name?.trim() ? curr.name : proj.name,
+        description:
+          curr.description?.trim()
+            ? curr.description
+            : (proj.description || proj.brief || '').slice(0, 1500),
+      }));
+    }
+    // Tira giu' brief + market research del progetto selezionato e
+    // pre-popola le textarea, ma solo se sono attualmente vuote
+    // (cosi' non sovrascriviamo eventuali modifiche dell'utente).
+    try {
+      const r = await fetch(`/api/swipe/load-knowledge?projectId=${encodeURIComponent(id)}`);
+      if (!r.ok) return;
+      const j = await r.json();
+      const p = (j?.project || null) as { brief?: string | null; market_research?: unknown } | null;
+      if (p) {
+        const projBrief = (p.brief || '').toString().trim();
+        const projMR = (() => {
+          if (!p.market_research) return '';
+          if (typeof p.market_research === 'string') return p.market_research.trim();
+          try { return JSON.stringify(p.market_research, null, 2); } catch { return ''; }
+        })();
+        setBriefText((curr) => curr.trim() ? curr : projBrief);
+        setMarketResearchText((curr) => curr.trim() ? curr : projMR);
+      }
+    } catch {/* ignore */}
   };
 
   const pushProgress = (msg: string) => {
@@ -304,81 +330,64 @@ export default function CloneLandingPage() {
     const targetAgent = AUDITOR_TARGET_AGENT[chosen];
 
     // ── HARD-GATE: brief + market research OBBLIGATORI per Neo/Morfeo
-    // Senza un progetto selezionato (con brief + market research) gli
-    // agenti locali producono copy generico. Il worker rifiutera' lo
-    // stesso il job, ma blocchiamo qui per dare un errore chiaro PRIMA
-    // di mettere in coda + aspettare il pickup.
-    if (!selectedProjectId) {
+    // Possono venire o dal progetto selezionato o dalle textarea che
+    // l'utente puo' compilare a mano nel form Swipe. Quello che conta
+    // e' che SIANO presenti, non da dove arrivano.
+    const briefForJob = (briefText || '').trim();
+    const mrForJob = (marketResearchText || '').trim();
+    if (briefForJob.length < 30 || mrForJob.length < 30) {
+      const missing: string[] = [];
+      if (briefForJob.length < 30) missing.push('BRIEF');
+      if (mrForJob.length < 30) missing.push('MARKET RESEARCH');
       throw new Error(
-        'Devi selezionare un progetto nella sezione "Progetto attivo" del form Swipe. ' +
-        `Neo/Morfeo richiedono OBBLIGATORIAMENTE brief + market research del progetto ` +
-        `per riscrivere con qualita' (usano le tecniche di Stefan Georgi, Sultanic, ` +
-        `Schwartz, Halbert, Caples, Bencivenga, Ogilvy, Carlton, ecc. dai loro archivi ` +
-        `interni — ma serve il brief per orientarli).`
+        `Manca ${missing.join(' + ')} (min 30 char). ` +
+        `Apri il form Swipe → seziona "Brief & Market Research" → ` +
+        `o seleziona un progetto compilato, o incolla i testi a mano nelle textarea. ` +
+        `Senza questi due input Neo/Morfeo non riescono ad applicare le tecniche dei ` +
+        `master copywriter (Stefan Georgi, Sultanic, Schwartz, Halbert, Caples, ` +
+        `Bencivenga, Ogilvy, Carlton, ecc.) in modo mirato sul tuo prodotto.`
       );
     }
 
     pushProgress(`Coda OpenClaw → ${AUDITOR_LABEL[chosen]} (swipe)`);
 
-    // Carica la knowledge (libreria saved_prompts + brief progetto attivo)
-    // PRIMA di mandare il job al worker: cosi' Neo/Morfeo ricevono
-    // immediatamente tutto il contesto che l'utente ha costruito nel tool,
-    // senza dover fare round-trip aggiuntivi.
-    pushProgress('Carico libreria tecniche / knowledge dal tool…');
-    let knowledge: { prompts: unknown[]; project: unknown } = { prompts: [], project: null };
+    // Carica la libreria saved_prompts (e il progetto se selezionato,
+    // per logging). Brief/MR del payload arrivano dalle textarea sopra,
+    // NON da quelle del progetto: cosi' l'utente puo' overrideare a mano.
+    pushProgress('Carico libreria tecniche dal tool…');
+    let prompts: unknown[] = [];
+    let projName: string | undefined;
     try {
-      const qs = `?projectId=${encodeURIComponent(selectedProjectId)}`;
+      const qs = selectedProjectId
+        ? `?projectId=${encodeURIComponent(selectedProjectId)}`
+        : '';
       const kRes = await fetch(`/api/swipe/load-knowledge${qs}`);
       if (kRes.ok) {
         const kj = await kRes.json();
-        knowledge = {
-          prompts: Array.isArray(kj.prompts) ? kj.prompts : [],
-          project: kj.project ?? null,
-        };
-        const proj = (kj.project || null) as { name?: string; brief?: string | null; market_research?: unknown } | null;
-        setKnowledgeBadge({
-          techniques: Array.isArray(kj.prompts) ? kj.prompts.length : 0,
-          hasBrief: !!(proj?.brief && String(proj.brief).trim()),
-          hasMarketResearch: !!proj?.market_research,
-          projectName: proj?.name,
-        });
-        const briefBits: string[] = [];
-        if (proj?.name) briefBits.push(`progetto "${proj.name}"`);
-        if (proj?.brief && String(proj.brief).trim()) briefBits.push('brief');
-        if (proj?.market_research) briefBits.push('market research');
-        pushProgress(
-          `Knowledge: ${knowledge.prompts.length} tecniche${briefBits.length ? ` + ${briefBits.join(' + ')}` : ''}`,
-        );
-
-        // ── HARD-GATE 2: brief E market research devono essere
-        // entrambi presenti, altrimenti blocchiamo PRIMA di far
-        // partire il worker (che li rifiuterebbe comunque).
-        const briefOk = !!(proj?.brief && String(proj.brief).trim().length > 30);
-        const mrOk = !!proj?.market_research && (() => {
-          const mr = proj.market_research;
-          if (typeof mr === 'string') return mr.trim().length > 30;
-          if (typeof mr === 'object' && mr) return Object.keys(mr).length > 0;
-          return false;
-        })();
-        if (!briefOk || !mrOk) {
-          const missing: string[] = [];
-          if (!briefOk) missing.push('BRIEF');
-          if (!mrOk) missing.push('MARKET RESEARCH');
-          throw new Error(
-            `Il progetto "${proj?.name || selectedProjectId}" non ha ${missing.join(' + ')} compilati. ` +
-            `Vai su Projects → apri questo progetto → compila ${missing.join(' e ')} ` +
-            `e ritorna qui. Senza questi due input Neo/Morfeo non riescono a usare le ` +
-            `tecniche dei master copywriter (Stefan Georgi, Sultanic, Schwartz, Halbert, ` +
-            `Caples, Bencivenga, Ogilvy, Carlton, ecc.) in modo mirato sul TUO prodotto.`
-          );
-        }
-      } else {
-        throw new Error(`Knowledge load HTTP ${kRes.status}`);
+        prompts = Array.isArray(kj.prompts) ? kj.prompts : [];
+        projName = (kj?.project?.name as string | undefined) || availableProjects.find((p) => p.id === selectedProjectId)?.name;
       }
-    } catch (e) {
-      // FATALE: senza knowledge non procediamo (l'utente l'ha richiesto).
-      throw e instanceof Error ? e : new Error(String(e));
-    }
+    } catch {/* non fatale */}
+
+    setKnowledgeBadge({
+      techniques: prompts.length,
+      hasBrief: true,
+      hasMarketResearch: true,
+      projectName: projName,
+    });
+    pushProgress(
+      `Knowledge: ${prompts.length} tecniche libreria + brief (${briefForJob.length} char) + MR (${mrForJob.length} char)${projName ? ` · progetto "${projName}"` : ' · brief/MR a mano'}`,
+    );
+
+    const knowledge = {
+      prompts,
+      project: {
+        name: projName || product.name?.trim() || 'Custom',
+        brief: briefForJob,
+        market_research: mrForJob,
+        notes: null,
+      },
+    };
 
     const payload = {
       action: 'swipe_landing_local',
@@ -812,82 +821,115 @@ export default function CloneLandingPage() {
 
             {showSwipeForm && (
               <div className="px-6 pb-6 border-t border-orange-200">
-                {/* Project picker — OBBLIGATORIO per Neo/Morfeo.
-                    Brief + market research sono fondamentali: senza,
-                    gli agenti locali producono copy generico (la libreria
-                    saved_prompts da sola non basta). */}
-                <div className={`mt-4 border-2 rounded-lg p-4 ${
-                  auditor !== 'claude' && !selectedProjectId
-                    ? 'bg-red-50 border-red-300'
-                    : 'bg-white border-orange-200'
-                }`}>
-                  <div className="flex items-start gap-3">
-                    <div className={`p-2 rounded-md mt-0.5 ${
-                      auditor !== 'claude' && !selectedProjectId
-                        ? 'bg-red-100'
-                        : 'bg-orange-100'
+                {/* Brief + Market Research — OBBLIGATORI per Neo/Morfeo.
+                    Possono venire o dal progetto (selettore) o dalle
+                    textarea direttamente. Quello che parte al worker
+                    e' SEMPRE il valore delle textarea. */}
+                {(() => {
+                  const briefOk = briefText.trim().length >= 30;
+                  const mrOk = marketResearchText.trim().length >= 30;
+                  const blocked = auditor !== 'claude' && (!briefOk || !mrOk);
+                  return (
+                    <div className={`mt-4 border-2 rounded-lg p-4 ${
+                      blocked ? 'bg-red-50 border-red-300' : 'bg-white border-orange-200'
                     }`}>
-                      <Sparkles className={`w-4 h-4 ${
-                        auditor !== 'claude' && !selectedProjectId
-                          ? 'text-red-600'
-                          : 'text-orange-600'
-                      }`} />
-                    </div>
-                    <div className="flex-1">
-                      <label className="block text-sm font-semibold text-gray-800 mb-1">
-                        Progetto attivo
-                        {auditor !== 'claude' && (
-                          <span className="ml-1 text-red-600 font-bold">* OBBLIGATORIO per Neo/Morfeo</span>
-                        )}
-                      </label>
-                      <p className="text-xs text-gray-600 mb-2">
-                        Neo e Morfeo usano <b>brief + market research</b> del progetto per scegliere big idea + leve, e applicano le tecniche di <b>Stefan Georgi, Sultanic, Eugene Schwartz, Gary Halbert, John Caples, Gary Bencivenga, David Ogilvy, John Carlton, Dan Kennedy, Sugarman, Hopkins</b> dai loro archivi interni.
-                        {' '}<b className="text-gray-800">Senza brief + market research lo swipe non parte.</b>
-                      </p>
-                      <select
-                        value={selectedProjectId}
-                        onChange={(e) => handleSelectProject(e.target.value)}
-                        className={`w-full px-3 py-2 border rounded-lg focus:ring-2 text-sm ${
-                          auditor !== 'claude' && !selectedProjectId
-                            ? 'border-red-400 focus:ring-red-500 focus:border-red-500'
-                            : 'border-gray-300 focus:ring-orange-500 focus:border-orange-500'
-                        }`}
-                      >
-                        <option value="">— Seleziona un progetto —</option>
-                        {availableProjects.map((p) => (
-                          <option key={p.id} value={p.id}>
-                            {p.name}
-                          </option>
-                        ))}
-                      </select>
-                      {knowledgeBadge && (
-                        <div className="mt-2 flex flex-wrap gap-2 text-xs">
-                          <span className="inline-flex items-center gap-1 px-2 py-1 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-full">
-                            ✓ {knowledgeBadge.techniques} tecniche libreria
-                          </span>
-                          {knowledgeBadge.hasBrief ? (
-                            <span className="inline-flex items-center gap-1 px-2 py-1 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-full">
-                              ✓ Brief progetto{knowledgeBadge.projectName ? ` "${knowledgeBadge.projectName}"` : ''}
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center gap-1 px-2 py-1 bg-amber-50 text-amber-700 border border-amber-200 rounded-full">
-                              ⚠ Nessun brief — seleziona un progetto
-                            </span>
+                      <div className="flex items-start gap-3">
+                        <div className={`p-2 rounded-md mt-0.5 ${
+                          blocked ? 'bg-red-100' : 'bg-orange-100'
+                        }`}>
+                          <Sparkles className={`w-4 h-4 ${
+                            blocked ? 'text-red-600' : 'text-orange-600'
+                          }`} />
+                        </div>
+                        <div className="flex-1">
+                          <label className="block text-sm font-semibold text-gray-800 mb-1">
+                            Brief & Market Research
+                            {auditor !== 'claude' && (
+                              <span className="ml-1 text-red-600 font-bold">* OBBLIGATORI per Neo/Morfeo</span>
+                            )}
+                          </label>
+                          <p className="text-xs text-gray-600 mb-3">
+                            Neo e Morfeo usano questi due testi per scegliere big idea + leve, e applicano le tecniche di <b>Stefan Georgi, Sultanic, Eugene Schwartz, Gary Halbert, John Caples, Gary Bencivenga, David Ogilvy, John Carlton, Dan Kennedy, Sugarman, Hopkins, Collier</b> dai loro archivi interni.
+                          </p>
+
+                          {availableProjects.length > 0 && (
+                            <div className="mb-3">
+                              <label className="block text-xs font-medium text-gray-600 mb-1">
+                                Pre-popola da un progetto esistente (opzionale)
+                              </label>
+                              <select
+                                value={selectedProjectId}
+                                onChange={(e) => handleSelectProject(e.target.value)}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-orange-500 text-sm"
+                              >
+                                <option value="">— Nessuno (compila a mano sotto) —</option>
+                                {availableProjects.map((p) => (
+                                  <option key={p.id} value={p.id}>
+                                    {p.name}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
                           )}
-                          {knowledgeBadge.hasMarketResearch ? (
-                            <span className="inline-flex items-center gap-1 px-2 py-1 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-full">
-                              ✓ Market research
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center gap-1 px-2 py-1 bg-amber-50 text-amber-700 border border-amber-200 rounded-full">
-                              ⚠ Nessuna market research
-                            </span>
+
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div>
+                              <label className="block text-xs font-medium text-gray-700 mb-1">
+                                Brief del progetto {auditor !== 'claude' && <span className="text-red-600">*</span>}
+                                <span className={`ml-2 ${briefOk ? 'text-emerald-600' : 'text-red-600'}`}>
+                                  {briefText.trim().length} char {briefOk ? '✓' : '(min 30)'}
+                                </span>
+                              </label>
+                              <textarea
+                                value={briefText}
+                                onChange={(e) => setBriefText(e.target.value)}
+                                placeholder="Cosa stiamo vendendo, a chi, con che positioning, USP, claim approvati, voice/tone, vincoli legali. Anche poche righe ma concrete (es: target avatar, 3 obiezioni principali, 2 USP unici, prezzo, social proof disponibili)."
+                                rows={6}
+                                className={`w-full px-3 py-2 border rounded-lg focus:ring-2 text-sm font-mono ${
+                                  auditor !== 'claude' && !briefOk
+                                    ? 'border-red-400 focus:ring-red-500 focus:border-red-500'
+                                    : 'border-gray-300 focus:ring-orange-500 focus:border-orange-500'
+                                }`}
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-xs font-medium text-gray-700 mb-1">
+                                Market research {auditor !== 'claude' && <span className="text-red-600">*</span>}
+                                <span className={`ml-2 ${mrOk ? 'text-emerald-600' : 'text-red-600'}`}>
+                                  {marketResearchText.trim().length} char {mrOk ? '✓' : '(min 30)'}
+                                </span>
+                              </label>
+                              <textarea
+                                value={marketResearchText}
+                                onChange={(e) => setMarketResearchText(e.target.value)}
+                                placeholder="Awareness level (Schwartz), market sophistication, big competitor, angle che funzionano nel settore, language pattern del target, pain points, desideri primari/secondari, formati creativi vincenti, recensioni dei concorrenti."
+                                rows={6}
+                                className={`w-full px-3 py-2 border rounded-lg focus:ring-2 text-sm font-mono ${
+                                  auditor !== 'claude' && !mrOk
+                                    ? 'border-red-400 focus:ring-red-500 focus:border-red-500'
+                                    : 'border-gray-300 focus:ring-orange-500 focus:border-orange-500'
+                                }`}
+                              />
+                            </div>
+                          </div>
+
+                          {knowledgeBadge && (
+                            <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                              <span className="inline-flex items-center gap-1 px-2 py-1 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-full">
+                                ✓ {knowledgeBadge.techniques} tecniche libreria
+                              </span>
+                              {knowledgeBadge.projectName && (
+                                <span className="inline-flex items-center gap-1 px-2 py-1 bg-blue-50 text-blue-700 border border-blue-200 rounded-full">
+                                  Progetto "{knowledgeBadge.projectName}"
+                                </span>
+                              )}
+                            </div>
                           )}
                         </div>
-                      )}
+                      </div>
                     </div>
-                  </div>
-                </div>
+                  );
+                })()}
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
                   {/* Left Column */}
