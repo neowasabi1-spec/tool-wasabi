@@ -2387,25 +2387,46 @@ export default function FrontEndFunnel() {
         const t0 = Date.now();
         let lastStatus: string | null = null;
         let final: { html?: string; replacements?: number; totalTexts?: number; new_title?: string; success?: boolean; error?: string } | null = null;
+        let busyAnnounced = false;
         while (true) {
           if (swipeAllCancelRef.current) break;
           if (Date.now() - t0 > PAGE_TIMEOUT_MS) {
             throw new Error(`Timeout: il worker ${AUDITOR_LABEL[chosen]} non ha completato in ${PAGE_TIMEOUT_MS / 1000}s`);
           }
-          // No-pickup early bail-out (vedi commento su NO_PICKUP_TIMEOUT_MS).
+          await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+          const pollRes = await fetch(`/api/openclaw/queue?id=${encodeURIComponent(enqueued.id)}`);
+          const polled = (await pollRes.json()) as {
+            status?: string;
+            content?: string;
+            error?: string;
+            worker_busy_with?: { id: string; section: string | null; started_at: string | null } | null;
+          };
+          // No-pickup early bail-out: SOLO se davvero nessun worker e' in
+          // esecuzione (worker_busy_with === null). Se il worker e' occupato
+          // con un altro job lungo, NON gridiamo "worker offline" — diamo
+          // info utile e aspettiamo che si liberi.
           if (
             Date.now() - t0 > NO_PICKUP_TIMEOUT_MS &&
             (lastStatus === 'pending' || lastStatus === null)
           ) {
-            throw new Error(
-              `${AUDITOR_LABEL[chosen]} non ha preso il job in ${NO_PICKUP_TIMEOUT_MS / 1000}s. ` +
+            if (!polled.worker_busy_with) {
+              throw new Error(
+                `${AUDITOR_LABEL[chosen]} non ha preso il job in ${NO_PICKUP_TIMEOUT_MS / 1000}s e nessun altro job e' in elaborazione. ` +
                 `Controlla che il worker giri sul PC di ${chosen === 'neo' ? 'Neo' : 'Morfeo'} (\`node openclaw-worker.js\`) e ` +
                 `che sia aggiornato all'ultimo commit. Workaround: cambia auditor.`,
-            );
+              );
+            } else if (!busyAnnounced) {
+              busyAnnounced = true;
+              const startedAgo = polled.worker_busy_with.started_at
+                ? Math.round((Date.now() - new Date(polled.worker_busy_with.started_at).getTime()) / 1000)
+                : null;
+              pushSwipeLog(
+                'info',
+                `\u2026 worker occupato con job #${polled.worker_busy_with.id.slice(0, 8)} (${polled.worker_busy_with.section || '?'})${startedAgo ? `, in corso da ${startedAgo}s` : ''} \u2014 attendo che si liberi`,
+                pageName,
+              );
+            }
           }
-          await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-          const pollRes = await fetch(`/api/openclaw/queue?id=${encodeURIComponent(enqueued.id)}`);
-          const polled = (await pollRes.json()) as { status?: string; content?: string; error?: string };
           if (polled.status && polled.status !== lastStatus) {
             lastStatus = polled.status;
             if (polled.status === 'processing') {
@@ -3024,13 +3045,14 @@ export default function FrontEndFunnel() {
           const PAGE_TIMEOUT_MS = 30 * 60 * 1000;
           const POLL_INTERVAL_MS = 2500;
           // No-pickup watchdog: se entro 30s nessun worker ha
-          // marcato il job come 'processing', il problema NON e'
-          // tempo di rewrite — il worker scelto non sta girando o
-          // non vede questa coda. Fallisci subito con messaggio
-          // azionabile invece di aspettare 10 minuti per niente.
+          // marcato il job come 'processing' E nessun altro job e'
+          // in elaborazione per quel target, il worker e' davvero
+          // offline → fallisci. Se invece il worker e' occupato con
+          // un altro job lungo, NON fallire — aspetta che si liberi.
           const NO_PICKUP_TIMEOUT_MS = 30 * 1000;
           const t0 = Date.now();
           let lastStatus: string | null = null;
+          let busyAnnounced = false;
           let final: {
             success?: boolean;
             html?: string;
@@ -3043,22 +3065,40 @@ export default function FrontEndFunnel() {
             if (Date.now() - t0 > PAGE_TIMEOUT_MS) {
               throw new Error(`Timeout: il worker ${AUDITOR_LABEL[chosenAuditor]} non ha completato in ${PAGE_TIMEOUT_MS / 1000}s`);
             }
-            // No-pickup early bail-out.
+            await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+            const pollRes = await fetch(`/api/openclaw/queue?id=${encodeURIComponent(enqueued.id)}`);
+            const polled = (await pollRes.json()) as {
+              status?: string;
+              content?: string;
+              error?: string;
+              worker_busy_with?: { id: string; section: string | null; started_at: string | null } | null;
+            };
+            // No-pickup early bail-out: SOLO se worker davvero offline.
             if (
               Date.now() - t0 > NO_PICKUP_TIMEOUT_MS &&
               (lastStatus === 'pending' || lastStatus === null)
             ) {
-              throw new Error(
-                `${AUDITOR_LABEL[chosenAuditor]} non ha preso il job in ${NO_PICKUP_TIMEOUT_MS / 1000}s. ` +
-                  `Verifica che il worker sia avviato sul PC di ${chosenAuditor === 'neo' ? 'Neo' : 'Morfeo'} ` +
-                  `(node openclaw-worker.js), che il repo sia aggiornato all'ultimo commit ` +
-                  `(\`git pull\` poi riavvio worker), e che il suo OpenClaw locale risponda su 127.0.0.1:18789. ` +
-                  `Workaround: riprova selezionando un altro auditor.`,
-              );
+              if (!polled.worker_busy_with) {
+                throw new Error(
+                  `${AUDITOR_LABEL[chosenAuditor]} non ha preso il job in ${NO_PICKUP_TIMEOUT_MS / 1000}s e nessun altro job e' in elaborazione. ` +
+                    `Verifica che il worker sia avviato sul PC di ${chosenAuditor === 'neo' ? 'Neo' : 'Morfeo'} ` +
+                    `(node openclaw-worker.js), che il repo sia aggiornato all'ultimo commit ` +
+                    `(\`git pull\` poi riavvio worker), e che il suo OpenClaw locale risponda su 127.0.0.1:18789. ` +
+                    `Workaround: riprova selezionando un altro auditor.`,
+                );
+              } else if (!busyAnnounced) {
+                busyAnnounced = true;
+                const startedAgo = polled.worker_busy_with.started_at
+                  ? Math.round((Date.now() - new Date(polled.worker_busy_with.started_at).getTime()) / 1000)
+                  : null;
+                setCloneProgress({
+                  phase: 'processing',
+                  totalTexts: 0,
+                  processedTexts: 0,
+                  message: `Worker occupato con job #${polled.worker_busy_with.id.slice(0, 8)} (${polled.worker_busy_with.section || '?'})${startedAgo ? `, in corso da ${startedAgo}s` : ''} — attendo che si liberi…`,
+                });
+              }
             }
-            await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-            const pollRes = await fetch(`/api/openclaw/queue?id=${encodeURIComponent(enqueued.id)}`);
-            const polled = (await pollRes.json()) as { status?: string; content?: string; error?: string };
             if (polled.status && polled.status !== lastStatus) {
               lastStatus = polled.status;
               if (polled.status === 'processing') {

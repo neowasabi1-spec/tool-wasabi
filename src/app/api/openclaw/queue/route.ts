@@ -55,7 +55,7 @@ export async function GET(req: NextRequest) {
 
   const { data, error } = await supabase
     .from('openclaw_messages')
-    .select('status, response, error_message')
+    .select('status, response, error_message, target_agent, created_at')
     .eq('id', id)
     .single();
 
@@ -63,9 +63,37 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
+  // Watchdog helper: when a job stays 'pending' troppo a lungo,
+  // il client UI non sa se "il worker e' down" o "il worker e' occupato
+  // con un altro job lungo (5-20 min) e non puo' fare claim". Restituiamo
+  // info su altri job in 'processing' per lo stesso target_agent: cosi' la
+  // UI puo' distinguere "worker offline" da "worker busy" e dare messaggi
+  // azionabili invece di "verifica che il worker giri" ingiustamente.
+  let workerBusyWith: { id: string; section: string | null; started_at: string | null } | null = null;
+  if (data.status === 'pending') {
+    let q = supabase
+      .from('openclaw_messages')
+      .select('id, section, created_at')
+      .eq('status', 'processing')
+      .neq('id', id)
+      .order('created_at', { ascending: true })
+      .limit(1);
+    if (data.target_agent) q = q.eq('target_agent', data.target_agent);
+    const { data: busy } = await q;
+    if (busy && busy.length > 0) {
+      workerBusyWith = {
+        id: busy[0].id,
+        section: busy[0].section,
+        started_at: busy[0].created_at,
+      };
+    }
+  }
+
   return NextResponse.json({
     status: data.status,
     content: data.response,
     error: data.error_message,
+    target_agent: data.target_agent || null,
+    worker_busy_with: workerBusyWith,
   });
 }
