@@ -462,13 +462,16 @@ function callAnthropic(messages) {
 }
 
 // ===== TOOL API CALL (for swipe jobs) =============================
-function callToolApi(path, body, timeoutMs, method = 'POST') {
+// Internal one-shot; do not call directly outside this file — use
+// callToolApi (the retry wrapper below) for everything that goes
+// through the Netlify edge / OpenResty proxy, perche' transient 502/
+// 503/504/ECONNRESET sono normali su Netlify quando la funzione e' a
+// cold-start o ha appena finito un'altra invocazione lunga.
+function callToolApiOnce(path, body, timeoutMs, method = 'POST') {
   return new Promise((resolve, reject) => {
     const u = new URL(path, TOOL_BASE_URL);
     const isHttps = u.protocol === 'https:';
     const lib = isHttps ? https : http;
-    // GET requests have no body; passing one to lib.request would
-    // confuse the server, so we omit Content-Length / write.
     const isGet = method.toUpperCase() === 'GET';
     const payload = isGet ? '' : JSON.stringify(body ?? {});
 
@@ -494,19 +497,73 @@ function callToolApi(path, body, timeoutMs, method = 'POST') {
           try { resolve(JSON.parse(buf)); }
           catch { resolve({ raw: buf }); }
         } else {
-          reject(new Error(`Tool API HTTP ${res.statusCode}: ${buf.substring(0, 300)}`));
+          const e = new Error(`Tool API HTTP ${res.statusCode}: ${buf.substring(0, 300)}`);
+          e.statusCode = res.statusCode;
+          reject(e);
         }
       });
     });
 
     req.on('timeout', () => {
       req.destroy();
-      reject(new Error(`Tool API timeout after ${(timeoutMs / 1000).toFixed(0)}s`));
+      const e = new Error(`Tool API timeout after ${(timeoutMs / 1000).toFixed(0)}s`);
+      e.code = 'ETIMEDOUT';
+      reject(e);
     });
-    req.on('error', (e) => reject(new Error(`Tool API network error: ${e.message}`)));
+    req.on('error', (e) => {
+      const wrap = new Error(`Tool API network error: ${e.message}`);
+      wrap.code = e.code;
+      reject(wrap);
+    });
     if (!isGet) req.write(payload);
     req.end();
   });
+}
+
+// Retry wrapper. Su 502/503/504 (OpenResty / Netlify cold-start /
+// upstream timeout) e su ECONNRESET / ETIMEDOUT / ECONNREFUSED /
+// ECONNABORTED / EAI_AGAIN, riproviamo fino a 3 volte con backoff
+// esponenziale (1s, 3s, 7s). Altri errori (400/422/...) NON sono
+// transient e ritornano subito al chiamante.
+//
+// I 502 sono frequenti quando Netlify spegne una function instance
+// dopo idle e la prossima chiamata trova il pod ancora warm-up: il
+// proxy OpenResty davanti restituisce 502 mentre l'istanza non e'
+// pronta. Un secondo tentativo dopo 1s tipicamente la trova viva.
+const TRANSIENT_STATUS = new Set([502, 503, 504]);
+const TRANSIENT_CODES = new Set([
+  'ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED', 'ECONNABORTED',
+  'EAI_AGAIN', 'EPIPE', 'EHOSTUNREACH', 'ENETUNREACH',
+]);
+function isTransientError(err) {
+  if (err && typeof err.statusCode === 'number' && TRANSIENT_STATUS.has(err.statusCode)) return true;
+  if (err && err.code && TRANSIENT_CODES.has(err.code)) return true;
+  if (err && err.message) {
+    const m = err.message;
+    if (/HTTP (502|503|504)\b/.test(m)) return true;
+    if (/network error|timeout after|socket hang up|EAI_AGAIN|ECONNRESET|ETIMEDOUT|ECONNABORTED|ECONNREFUSED/i.test(m)) return true;
+  }
+  return false;
+}
+async function callToolApi(path, body, timeoutMs, method = 'POST') {
+  const MAX_ATTEMPTS = 3;
+  const BACKOFF_MS = [1000, 3000, 7000];
+  let lastErr;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      return await callToolApiOnce(path, body, timeoutMs, method);
+    } catch (e) {
+      lastErr = e;
+      if (attempt < MAX_ATTEMPTS && isTransientError(e)) {
+        const wait = BACKOFF_MS[attempt - 1];
+        log(`  · Tool API ${method} ${path} fallita (tentativo ${attempt}/${MAX_ATTEMPTS}): ${e.message.substring(0, 160)} — riprovo tra ${wait / 1000}s`);
+        await new Promise((r) => setTimeout(r, wait));
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw lastErr;
 }
 
 /**
