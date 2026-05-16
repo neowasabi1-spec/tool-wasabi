@@ -3074,11 +3074,46 @@ export async function POST(req: NextRequest) {
 // Clients that require a stream can still POST normally.
 export async function GET(req: NextRequest) {
   const accept = req.headers.get('accept') || '';
-  // If a client explicitly requests the stream, reply 405 per spec (we don't support server-initiated streams).
+  // Streamable HTTP: il client puo' fare un GET opzionale per aprire un
+  // canale SSE per server-initiated notifications. Lo spec MCP dice che
+  // questo path e' OPZIONALE e che il server puo' rispondere 405; ma in
+  // pratica alcuni client (OpenClaw bundle-mcp issue #72757, e altri SDK
+  // che usano StreamableHTTPClientTransport prima della v1.x) trattano
+  // il 405 come errore fatale e NON proseguono col POST initialize.
+  //
+  // Per maximum compat restituiamo un mini-stream SSE 200 vuoto: nessun
+  // evento server-initiated (non ne abbiamo bisogno, lo stato vive nel
+  // POST), keep-alive comment ogni 15s per evitare proxy timeout, e
+  // auto-close a 25s per stare sotto al limite Netlify (26s).
   if (accept.includes('text/event-stream')) {
-    return new NextResponse('Server-initiated streams are not supported. POST to this endpoint instead.', {
-      status: 405,
-      headers: baseHeaders({ 'Content-Type': 'text/plain', 'Allow': 'POST, OPTIONS, DELETE' }),
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        // Comment iniziale "kick" + commento descrittivo (le righe che iniziano
+        // con ':' sono SSE comments — vengono ignorate dai parser ma forzano
+        // i proxy a flushare i header subito).
+        controller.enqueue(encoder.encode(`: mcp-streamable-http server-initiated channel\n: protocol ${MCP_PROTOCOL_VERSION}\n\n`));
+        const ping = setInterval(() => {
+          try { controller.enqueue(encoder.encode(`: ping ${Date.now()}\n\n`)); }
+          catch { clearInterval(ping); }
+        }, 15000);
+        setTimeout(() => {
+          clearInterval(ping);
+          try { controller.close(); } catch { /* already closed */ }
+        }, 25000);
+      },
+    });
+    return new NextResponse(stream, {
+      status: 200,
+      headers: baseHeaders({
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache, no-transform',
+        'Connection': 'keep-alive',
+        // Disabilita il buffering Nginx (proxy Netlify) cosi' lo stream
+        // arriva al client subito e non blocca finche' non si riempie un
+        // buffer interno.
+        'X-Accel-Buffering': 'no',
+      }),
     });
   }
 
