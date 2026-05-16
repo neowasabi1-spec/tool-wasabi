@@ -26,6 +26,8 @@ const { URL } = require('url');
 // risultato finale su Supabase. ZERO 502 da OpenResty / Netlify
 // cold-start in mezzo.
 const { buildPrompts: buildSwipePrompts } = require('./worker-lib/build-prompts');
+const { extractBundleTexts } = require('./worker-lib/bundle-extractor');
+const { inlineBundleRewrites } = require('./worker-lib/bundle-inliner');
 const { finalizeSwipe: finalizeSwipeLocal } = require('./worker-lib/finalize');
 
 // ===== STATIC EXTRA CONTEXT (per-worker) ============================
@@ -1335,6 +1337,26 @@ async function processMessage(msg) {
             if (!hasMRForCheck) missing.push('market research');
             log(`  · swipe_landing_local: knowledge dal tool parziale — ${pCount} tecniche libreria, manca ${missing.join('+')}. Chiedero' all'agente di tirarli fuori dai SUOI archivi nel primer.`);
           }
+          // 0.5 — BUNDLE JS EXTRACTION (Next.js CSR-only quiz/funnel).
+          // Per pagine come Bioma Health i veri testi (domande quiz, opzioni,
+          // CTA, headline) sono hardcoded dentro /_next/static/chunks/pages/*.js
+          // e NON sono ne' nell'HTML SSR ne' in __NEXT_DATA__. Li scarichiamo
+          // qui in parallelo cosi' poi finiscono nel batch di rewrite insieme
+          // agli altri testi. Best-effort: errori non bloccano lo swipe.
+          let extraTexts = [];
+          try {
+            extraTexts = await extractBundleTexts(originalHtml, job.sourceUrl, {
+              log: (m) => log(m),
+              warn: (m) => err(m),
+            });
+            if (extraTexts.length > 0) {
+              log(`  · swipe_landing_local: +${extraTexts.length} testi dai bundle JS Next.js`);
+            }
+          } catch (e) {
+            err(`  · bundle-extractor: skipped per errore non fatale: ${e.message}`);
+            extraTexts = [];
+          }
+
           log(`  · swipe_landing_local: building prompts IN-PROCESS (no Netlify)`);
           let prep;
           try {
@@ -1345,6 +1367,7 @@ async function processMessage(msg) {
               tone: job.tone,
               language: job.language,
               knowledge: job.knowledge || undefined,
+              extraTexts: extraTexts.length > 0 ? extraTexts : undefined,
             });
           } catch (e) {
             throw new Error(`build-prompts (in-process) fallito: ${e.message}`);
@@ -1517,11 +1540,40 @@ ONESTA': se nei TUOI archivi non hai dati su questo prodotto/settore e non puoi 
               // ("Reset Patch Reset Patch" → "Reset Patch"). Si veda
               // worker-lib/finalize.js #replaceBrandInHtml.
               productName: job.product?.name || '',
+              // Auto-on per pagine SPA: strippa <script>/<noscript>/on*
+              // originali e inietta nav-fix Next.js + FAQ CSS hard-override
+              // + fallback init (jQuery/Swiper da CDN, FAQ accordion delegato,
+              // thumb→main image). Cosi' il preview e' interattivo anche
+              // quando il bundle originale fallisce a montare. Opt-out
+              // possibile passando false esplicitamente.
+              applySpaPreviewMode: job.applySpaPreviewMode,
             });
           } catch (e) {
             throw new Error(`finalize (in-process) fallito: ${e.message}`);
           }
-          log(`    ✓ swipe done: ${finalised.replacements}/${finalised.totalTexts} replacements, ${finalised.unresolved_text_ids?.length || 0} unresolved`);
+          // BUNDLE INLINING: per ogni testo js-bundle riscritto, rifa la
+          // fetch del bundle, sostituisce le stringhe, e inline-a il bundle
+          // modificato al posto del <script src> originale. Cosi' i quiz
+          // CSR-only mostrano i testi riscritti. Best-effort: errori non
+          // bloccano la response.
+          const hasBundleTexts = promptTexts.some((t) => t.tag === 'js-bundle');
+          if (hasBundleTexts) {
+            try {
+              const inlined = await inlineBundleRewrites(
+                { html: finalised.html, texts: promptTexts, rewrites },
+                { log: (m) => log(m), warn: (m) => err(m) },
+              );
+              finalised.html = inlined.html;
+              finalised.new_length = inlined.html.length;
+              finalised.bundle_inline_stats = inlined.stats;
+              log(`    ✓ bundle inlining: ${inlined.stats.bundlesInlined}/${inlined.stats.bundlesAttempted} bundle, ${inlined.stats.totalReplacements} stringhe`);
+            } catch (e) {
+              err(`  · bundle-inliner: skipped per errore non fatale: ${e.message}`);
+              finalised.bundle_inline_stats = { error: e.message };
+            }
+          }
+          log(`    ✓ swipe done: ${finalised.replacements}/${finalised.totalTexts} replacements, ${finalised.unresolved_text_ids?.length || 0} unresolved` +
+            (finalised.is_spa_page ? ` (SPA: ${finalised.spa_safety_strips} strips, preview-mode=${finalised.spa_preview_mode_applied})` : ''));
           responsePayload = JSON.stringify(finalised);
           break;
         }

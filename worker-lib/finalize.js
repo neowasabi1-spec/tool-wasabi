@@ -208,6 +208,67 @@ function replaceBrandInHtml(html, sourceUrl, originalHtml, productName) {
   return working;
 }
 
+// Detect SPA: pagine costruite con Vue (data-v-*), React (data-reactroot,
+// __NEXT_DATA__), Svelte (svelte-*), Nuxt (__NUXT__), o page builders che
+// compilano a un componente (Funnelytics, ClickFunnels 2.0, Convertri,
+// Shogun, Replo) si idratano dopo il render. Se il rewrite introduce nuovi
+// tag (<p>, <strong>, <br>) che non c'erano nell'originale, il mismatch
+// di hydration fa bail al framework e DISABILITA tutti gli event handler:
+// accordion FAQ, slider, gallery, modali smettono di rispondere ai click
+// pur continuando a renderizzare. Detection cheap su un sample 50KB.
+function detectSpa(originalHtml) {
+  if (!originalHtml || typeof originalHtml !== 'string') return false;
+  const sample = originalHtml.substring(0, 50000);
+  return (
+    /\bdata-v-[a-f0-9]{6,}/.test(sample) ||
+    /\bdata-reactroot\b/.test(sample) ||
+    /__NEXT_DATA__/.test(sample) ||
+    /__NUXT__/.test(sample) ||
+    /__sveltekit_data/.test(sample) ||
+    /\bsvelte-[a-z0-9]{6,}/.test(sample) ||
+    /<div[^>]+id=["']root["'][^>]*>\s*<\/div>/.test(sample) ||
+    /<div[^>]+id=["']__next["'][^>]*>/.test(sample) ||
+    /\bv-cloak\b/.test(sample) ||
+    /\bng-(?:app|controller|view)\b/.test(sample)
+  );
+}
+
+// Rimuove tutti i tag HTML da un rewrite mantenendo solo il testo.
+// Usato quando l'originale era plain text ma il LLM ha aggiunto markup
+// (problema tipico su SPA: rompe l'hydration).
+function stripAllHtmlTags(s) {
+  if (!s || typeof s !== 'string') return s;
+  return s
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+// SPA safety: garantisce che il rewrite NON cambi la struttura dei tag
+// rispetto all'originale.
+//   - originale plain + rewrite con tag → strip tag dal rewrite
+//   - originale con tag + rewrite con tag → fallback a plain (non riusciamo
+//     a riallineare i tag, meglio perdere formattazione che rompere hydration)
+//   - originale con tag + rewrite plain → ok, distributeTextProportionally
+//     ridistribuira' il testo sui segmenti preservando i tag originali
+function enforceSpaSafety(originalText, rewrittenText) {
+  const originalHasTags = /<[a-zA-Z\/]/.test(originalText || '');
+  const rewrittenHasTags = /<[a-zA-Z\/]/.test(rewrittenText || '');
+  if (!rewrittenHasTags) return rewrittenText;
+  // rewritten ha tag → strip in entrambi i casi (sia se originalHasTags
+  // sia se non li aveva; nel primo caso preserveremo i tag originali via
+  // distributeTextProportionally durante il fuzzy replace).
+  return stripAllHtmlTags(rewrittenText);
+}
+
 // Collassa run consecutive del product name ("Reset Patch Reset Patch" →
 // "Reset Patch") dentro lo stesso text-node. Mai cross-tag (rompe handler).
 function collapseConsecutiveBrandRuns(html, productName) {
@@ -236,7 +297,74 @@ function collapseConsecutiveBrandRuns(html, productName) {
   return working;
 }
 
-function finalizeSwipe({ html, sourceUrl, texts, rewrites, productName }) {
+// Strip <script>, <noscript> e attributi inline on* dall'HTML. Mantiene
+// gli script che hanno l'attributo data-fallback (i nostri injection).
+// Usato in spa-preview-mode per evitare che il bundle Vue/Funnelish/
+// CheckoutChamp originale tenti di montare contro un dominio che non e'
+// il suo (manca sessione, API, ecc.) lasciando i bottoni inerti.
+function stripOriginalScripts(html) {
+  let out = html;
+  const before = (out.match(/<script\b/gi) || []).length;
+  out = out.replace(/<script\b(?![^>]*data-fallback=)(?![^>]*data-inlined-bundle=)[^>]*>[\s\S]*?<\/script>/gi, '');
+  out = out.replace(/<script\b(?![^>]*data-fallback=)(?![^>]*data-inlined-bundle=)[^>]*\/>/gi, '');
+  out = out.replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, '');
+  out = out.replace(/\s+on[a-z]+="[^"]*"/gi, '');
+  out = out.replace(/\s+on[a-z]+='[^']*'/gi, '');
+  const after = (out.match(/<script\b/gi) || []).length;
+  return { html: out, scriptsBefore: before, scriptsAfter: after };
+}
+
+// Fix navigation Next.js: i quiz Next.js fanno fetch a
+// /_next/data/<buildId>/<page>.json per props della pagina successiva.
+// Su un dominio clonato questi danno 404 → quiz si blocca al primo click.
+// Monkey-patch del fetch per ritornare pageProps:{} (lo state del
+// componente quiz mantiene comunque la domanda corrente).
+const NEXTJS_NAVIGATION_FIX = `<script data-fallback="navigation-fix">(function(){
+  if (typeof window === 'undefined') return;
+  var origFetch = window.fetch ? window.fetch.bind(window) : null;
+  if (!origFetch) return;
+  window.fetch = function(input, init){
+    try {
+      var url = typeof input === 'string' ? input : (input && input.url) || '';
+      if (/\\/_next\\/data\\//.test(url)) {
+        return Promise.resolve(new Response(JSON.stringify({pageProps:{},__N_SSP:true}),{status:200,headers:{'Content-Type':'application/json'}}));
+      }
+    } catch(e){}
+    return origFetch(input, init);
+  };
+})();</script>`;
+
+// CSS hard-override per FAQ/accordion. Strategia pragmatica: tutte le FAQ
+// visibili DI DEFAULT (no JS necessario per leggerle). Il toggle JS
+// nostro aggiunge/rimuove .fb-collapsed per richiuderle. Specificity alta
+// per battere Vue scoped CSS [data-v-*].
+const FAQ_CSS_OVERRIDE = `<style data-fallback="faq-css">
+html body .faq .faq-content-wrapper,html body .faq .faq-content,html body .faq-wrapper .faq-content-wrapper,html body .faq-wrapper .faq-content,html body .faq-item .faq-body,html body .faq-item .faq-answer,html body .accordion-item .accordion-content,html body .accordion-item .accordion-body,html body .accordion-item .accordion-collapse,html body details > *:not(summary){display:block !important;max-height:none !important;height:auto !important;min-height:0 !important;overflow:visible !important;visibility:visible !important;opacity:1 !important;transform:none !important;pointer-events:auto !important;}
+html body .faq.fb-collapsed .faq-content-wrapper,html body .faq.fb-collapsed .faq-content,html body .faq-wrapper.fb-collapsed .faq-content-wrapper,html body .faq-wrapper.fb-collapsed .faq-content,html body .faq-item.fb-collapsed .faq-body,html body .faq-item.fb-collapsed .faq-answer,html body .accordion-item.fb-collapsed .accordion-content,html body .accordion-item.fb-collapsed .accordion-body{display:none !important;}
+.faq-header,.faq-question,.faq-title,.accordion-header,.accordion-button,.accordion-question,.accordion-toggle,summary{cursor:pointer !important;}
+.fb-icon-rotated{transform:rotate(180deg) !important;transition:transform .2s !important;}
+html body .stickSection{display:block !important;visibility:visible !important;opacity:1 !important;}
+</style>`;
+
+// Fallback init server-side: jQuery + Swiper da CDN se mancano, FAQ
+// accordion delegato, thumb→main image binding, sticky CTA visibili.
+// Idempotente: window.__FB_FALLBACK_INSTALLED segna l'installazione.
+const FALLBACK_INIT_SCRIPT = `<script data-fallback="init">(function(){
+  var FB_VERSION='worker-finalize-v1';
+  if(window.__FB_FALLBACK_INSTALLED){return;} window.__FB_FALLBACK_INSTALLED=FB_VERSION;
+  function loadCss(href){if(document.querySelector('link[data-fb-css="'+href+'"]'))return;var l=document.createElement('link');l.rel='stylesheet';l.href=href;l.dataset.fbCss=href;document.head.appendChild(l);}
+  function loadScript(src,cb){var existing=document.querySelector('script[data-fb-src="'+src+'"]');if(existing){if(existing.__loaded){cb();}else{existing.addEventListener('load',cb);existing.addEventListener('error',cb);}return;}var s=document.createElement('script');s.src=src;s.async=false;s.dataset.fbSrc=src;s.addEventListener('load',function(){s.__loaded=true;cb();});s.addEventListener('error',function(){cb();});(document.head||document.documentElement).appendChild(s);}
+  function findContents(header){var p=header.closest('.faq,.faq-wrapper,.faq-item,.accordion-item,details')||header.parentElement;return p;}
+  function toggleFaq(header){var p=findContents(header);if(!p)return;var willCollapse=!p.classList.contains('fb-collapsed');if(willCollapse){p.classList.add('fb-collapsed');p.classList.remove('active','open','expanded','is-open','show');if(p.tagName==='DETAILS')p.removeAttribute('open');}else{p.classList.remove('fb-collapsed');p.classList.add('active','open','expanded','is-open','show');if(p.tagName==='DETAILS')p.setAttribute('open','');}header.setAttribute('aria-expanded',willCollapse?'false':'true');var icon=header.querySelector('.faq-icon,.accordion-icon,svg');if(icon){if(willCollapse)icon.classList.remove('fb-icon-rotated');else icon.classList.add('fb-icon-rotated');}}
+  function bindFaq(){if(document.body.__faqDelegateBound)return;document.body.__faqDelegateBound=true;document.body.addEventListener('click',function(ev){var t=ev.target;if(!t||!t.closest)return;var actionable=t.closest('a,button,input,select,textarea,label,[role="button"],[onclick]');var header=t.closest('.faq-header,.faq-question,.faq-title,.accordion-header,.accordion-question,.accordion-toggle,.accordion-button,[data-faq-toggle],[data-toggle="collapse"],summary');if(!header)return;if(actionable&&header.contains(actionable)&&actionable!==header)return;ev.preventDefault();ev.stopPropagation();try{toggleFaq(header);}catch(e){}},true);document.querySelectorAll('.faq-header,.faq-question,.faq-title,.accordion-header,.accordion-button,summary').forEach(function(h){h.style.cursor='pointer';});}
+  function bindThumbs(){if(document.body.__thumbDelegateBound)return;document.body.__thumbDelegateBound=true;document.body.addEventListener('click',function(ev){var t=ev.target;if(!t||!t.closest)return;var tc=t.closest('.thumbImage,.swiper-thumbs,[data-thumb-container]');if(!tc)return;var ti=t.closest('.swiper-slide,[data-thumb],img');if(!ti)return;var sib=Array.prototype.slice.call(tc.querySelectorAll('.swiper-slide,[data-thumb]'));if(!sib.length)sib=Array.prototype.slice.call(tc.querySelectorAll('img'));var idx=sib.indexOf(ti);if(idx<0){var p=ti;while(p&&idx<0){idx=sib.indexOf(p);p=p.parentElement;}}var mainEl=document.querySelector('.swiper.mainImage');if(mainEl&&mainEl.swiper&&idx>=0){try{mainEl.swiper.slideTo(idx);}catch(_){}}var img=ti.tagName==='IMG'?ti:ti.querySelector('img');if(img){var src=img.currentSrc||img.src||img.getAttribute('data-src');if(src){var m=document.querySelector('.swiper.mainImage .swiper-slide-active img,.swiper.mainImage .swiper-slide img,.mainImage img:not(.thumb),.product-image img');if(m){m.src=src;m.removeAttribute('srcset');}}}},true);}
+  function initSwipers(){if(typeof window.Swiper!=='function')return false;var thumbs=[];document.querySelectorAll('.swiper.thumbImage,.swiper.swiper-thumbs').forEach(function(el){if(el.swiper||el.__swBound)return;el.__swBound=true;try{thumbs.push(new window.Swiper(el,{slidesPerView:'auto',spaceBetween:10,watchSlidesProgress:true,freeMode:true,slideToClickedSlide:true}));}catch(_){}});document.querySelectorAll('.swiper.mainImage').forEach(function(el){if(el.swiper||el.__swBound)return;el.__swBound=true;var opts={slidesPerView:1,spaceBetween:10,navigation:{nextEl:el.querySelector('.swiper-button-next'),prevEl:el.querySelector('.swiper-button-prev')},pagination:{el:el.querySelector('.swiper-pagination'),clickable:true}};if(thumbs[0])opts.thumbs={swiper:thumbs[0]};try{new window.Swiper(el,opts);}catch(_){}});document.querySelectorAll('.swiper').forEach(function(el){if(el.swiper||el.__swBound)return;el.__swBound=true;var ann=el.classList.contains('announcement_bar');try{new window.Swiper(el,{slidesPerView:1,spaceBetween:10,loop:ann,autoplay:ann?{delay:3500}:false,navigation:{nextEl:el.querySelector('.swiper-button-next'),prevEl:el.querySelector('.swiper-button-prev')},pagination:{el:el.querySelector('.swiper-pagination'),clickable:true}});}catch(_){}});document.querySelectorAll('.stickSection').forEach(function(s){s.style.display='';});return true;}
+  function bootstrap(){bindFaq();bindThumbs();var hasJq=typeof window.jQuery!=='undefined';var hasSw=typeof window.Swiper==='function';loadCss('https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.css');var pending=0;function done(){if(--pending<=0)finalize();}if(!hasJq){pending++;loadScript('https://code.jquery.com/jquery-3.5.1.min.js',done);}if(!hasSw){pending++;loadScript('https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.js',done);}if(pending===0)finalize();}
+  function finalize(){initSwipers();bindFaq();bindThumbs();setTimeout(function(){initSwipers();},1500);}
+  if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',bootstrap);}else{setTimeout(bootstrap,50);}
+})();</script>`;
+
+function finalizeSwipe({ html, sourceUrl, texts, rewrites, productName, applySpaPreviewMode }) {
   const t0 = Date.now();
   if (!html || typeof html !== 'string' || html.length < 50) {
     throw new Error('html is required');
@@ -245,18 +373,31 @@ function finalizeSwipe({ html, sourceUrl, texts, rewrites, productName }) {
   if (!Array.isArray(rewrites)) throw new Error('rewrites[] is required');
 
   const originalHtml = html;
+  const isSpa = detectSpa(originalHtml);
 
-  // id → rewritten map
+  // id → rewritten map. Quando la pagina e' SPA applichiamo SPA-safety:
+  // ogni rewrite che ha aggiunto tag non presenti nell'originale viene
+  // strippato a plain text, altrimenti l'hydration di Vue/React/Svelte
+  // fa bail e disabilita tutti i click handler (accordion, slider, ecc.).
   const idToRewrite = new Map();
   const textById = new Map();
+  let spaSafetyStrips = 0;
   for (const t of texts) textById.set(t.id, t);
   for (const rw of rewrites) {
     if (typeof rw.id !== 'number' || typeof rw.rewritten !== 'string') continue;
     const trimmed = rw.rewritten.trim();
     if (!trimmed) continue;
-    const original = textById.get(rw.id)?.original;
-    if (original && trimmed === original) continue;
-    idToRewrite.set(rw.id, trimmed);
+    const original = textById.get(rw.id);
+    const originalText = original?.original;
+    if (originalText && trimmed === originalText) continue;
+    let safeText = trimmed;
+    if (isSpa) {
+      const before = safeText;
+      safeText = enforceSpaSafety(originalText || '', safeText);
+      if (safeText !== before) spaSafetyStrips++;
+      if (!safeText) continue;
+    }
+    idToRewrite.set(rw.id, safeText);
   }
   const unresolvedIds = texts.filter((t) => !idToRewrite.has(t.id)).map((t) => t.id);
 
@@ -473,6 +614,36 @@ function finalizeSwipe({ html, sourceUrl, texts, rewrites, productName }) {
     preparedHtml = collapseConsecutiveBrandRuns(preparedHtml, productName.trim());
   }
 
+  // SPA preview mode (opt-in, default = auto-on per pagine SPA).
+  // Strippa <script>, <noscript>, on* handlers originali e inietta:
+  //   - fix navigation Next.js (/_next/data/* → 200 vuoto)
+  //   - CSS hard-override FAQ/accordion (sempre visibili)
+  //   - fallback init (FAQ delegate, thumb→main image, Swiper da CDN)
+  // Cosi' il preview e' interattivo anche quando il bundle originale
+  // tenta di montare su un dominio che non e' il suo e fallisce.
+  const previewModeRequested =
+    applySpaPreviewMode === true || (applySpaPreviewMode !== false && isSpa);
+  let scriptStripStats = null;
+  if (previewModeRequested) {
+    const strip = stripOriginalScripts(preparedHtml);
+    scriptStripStats = { before: strip.scriptsBefore, after: strip.scriptsAfter };
+    preparedHtml = strip.html;
+    // FAQ CSS + navigation fix nel <head>; fallback init prima di </body>.
+    const headInjection = FAQ_CSS_OVERRIDE + NEXTJS_NAVIGATION_FIX;
+    if (preparedHtml.includes('</head>')) {
+      preparedHtml = preparedHtml.replace('</head>', headInjection + '</head>');
+    } else if (preparedHtml.includes('<body')) {
+      preparedHtml = preparedHtml.replace(/(<body[^>]*>)/, headInjection + '$1');
+    } else {
+      preparedHtml = headInjection + preparedHtml;
+    }
+    if (preparedHtml.includes('</body>')) {
+      preparedHtml = preparedHtml.replace('</body>', FALLBACK_INIT_SCRIPT + '</body>');
+    } else {
+      preparedHtml += FALLBACK_INIT_SCRIPT;
+    }
+  }
+
   let resultHtml = preparedHtml;
   if (resultHtml.includes('</body>')) {
     resultHtml = resultHtml.replace('</body>', swipeScript + '</body>');
@@ -498,6 +669,10 @@ function finalizeSwipe({ html, sourceUrl, texts, rewrites, productName }) {
     replacements_meta: serverSideMetaPairs.length,
     replacements_server_side_html: serverReplacementsCount,
     replacements_server_side_fuzzy: fuzzyReplacementsCount,
+    is_spa_page: isSpa,
+    spa_safety_strips: spaSafetyStrips,
+    spa_preview_mode_applied: previewModeRequested,
+    spa_preview_script_strip: scriptStripStats,
     unresolved_text_ids: unresolvedIds,
     coverage_ratio: texts.length ? totalReplacements / texts.length : 0,
     provider: 'openclaw-local-inproc',

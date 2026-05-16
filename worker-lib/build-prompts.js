@@ -11,7 +11,7 @@
 const { extractAllTextsUniversal } = require('./text-extractor');
 const { getCoreKnowledge, getKnowledgeForTask } = require('./knowledge-kb');
 
-const SAFE_TAG_CONTEXT = new Set(['title', 'meta:content', 'noscript']);
+const SAFE_TAG_CONTEXT = new Set(['title', 'meta:content', 'noscript', 'js-bundle']);
 const SAFE_TAG_PREFIXES = [
   'tag:h1','tag:h2','tag:h3','tag:h4','tag:h5','tag:h6',
   'tag:p','tag:li','tag:td','tag:th','tag:dt','tag:dd',
@@ -54,6 +54,10 @@ const TAG_PRIORITY = {
   // su molte SPA sono il copy principale (hero, headline, CTA).
   'spa-json': 2,
   'json-ld': 4,
+  // Bundle JS Next.js: priorita' medio-bassa (i testi reali della pagina
+  // sono spesso in __NEXT_DATA__ o nei tag visibili che hanno gia' priorita'
+  // alta; i js-bundle catturano quiz options, headline CSR-only, ecc.).
+  'js-bundle': 5,
 };
 function priorityOf(tag) {
   if (TAG_PRIORITY[tag] !== undefined) return TAG_PRIORITY[tag];
@@ -61,11 +65,16 @@ function priorityOf(tag) {
   return 8;
 }
 
-function extractTextsFromHtml(html) {
+function extractTextsFromHtml(html, extraTexts) {
   const universal = extractAllTextsUniversal(html);
+  // Merge: extraTexts viene PRIMA cosi' i suoi position vengono onorati
+  // dal dedupe successivo (la mappa `seen` tiene il primo entry visto).
+  const combined = Array.isArray(extraTexts) && extraTexts.length > 0
+    ? [...extraTexts, ...universal]
+    : universal;
   const collected = [];
   const seen = new Map();
-  for (const u of universal) {
+  for (const u of combined) {
     if (!isSafeContext(u.context)) continue;
     if (u.text.length < 2 || u.text.length > 800) continue;
     if (!/[a-zA-Z]/.test(u.text)) continue;
@@ -81,16 +90,20 @@ function extractTextsFromHtml(html) {
     else if (u.context === 'noscript') mappedTag = 'p';
     else if (u.context.startsWith('spa-json:')) mappedTag = 'spa-json'; // tag virtuale, gestito da finalize
     else if (u.context.startsWith('json-ld:')) mappedTag = 'json-ld';
+    else if (u.context === 'js-bundle') mappedTag = 'js-bundle';
     const existing = seen.get(u.text);
     const newPrio = priorityOf(mappedTag);
     if (existing) {
       if (newPrio < priorityOf(existing.tag)) {
         existing.tag = mappedTag;
         existing.position = u.position;
+        // Conserva _bundleUrl quando promuovi/sovrascrivi su js-bundle
+        if (u._bundleUrl) existing._bundleUrl = u._bundleUrl;
       }
       continue;
     }
     const entry = { original: u.text, tag: mappedTag, position: u.position };
+    if (u._bundleUrl) entry._bundleUrl = u._bundleUrl;
     seen.set(u.text, entry);
     collected.push(entry);
   }
@@ -238,14 +251,14 @@ function buildProductContextMarkdown(product) {
  * Build everything the worker needs to send to the local LLM.
  * Sincrono e in-process: ZERO chiamate HTTP a Netlify.
  */
-function buildPrompts({ html, sourceUrl, product, tone, language, knowledge }) {
+function buildPrompts({ html, sourceUrl, product, tone, language, knowledge, extraTexts }) {
   if (!html || typeof html !== 'string' || html.length < 50) {
     throw new Error('html is required (min 50 chars)');
   }
   if (!product || !product.name || !String(product.name).trim()) {
     throw new Error('product.name is required');
   }
-  let texts = extractTextsFromHtml(html);
+  let texts = extractTextsFromHtml(html, extraTexts);
   texts = prependDocumentTitle(texts, html);
   if (texts.length === 0) throw new Error('No text found in page');
 
@@ -302,7 +315,11 @@ REGOLE OBBLIGATORIE:
     success: true,
     systemPrompt,
     userMessage,
-    texts: texts.map((t, i) => ({ id: i, original: t.original, tag: t.tag, position: t.position })),
+    texts: texts.map((t, i) => {
+      const e = { id: i, original: t.original, tag: t.tag, position: t.position };
+      if (t._bundleUrl) e._bundleUrl = t._bundleUrl;
+      return e;
+    }),
     totalTexts: texts.length,
     productName: product.name,
     originalTitle: html.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || '',
