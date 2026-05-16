@@ -329,28 +329,18 @@ export default function CloneLandingPage() {
     if (!result?.html) throw new Error('No cloned HTML to swipe — clone first');
     const targetAgent = AUDITOR_TARGET_AGENT[chosen];
 
-    // Brief / MR sono OPZIONALI lato UI: se l'utente li passa li
-    // mandiamo, altrimenti l'agente (Neo/Morfeo) li ricostruira' dai
-    // SUOI archivi nel primer step. Niente blocco qui.
-    const briefForJob = (briefText || '').trim();
-    const mrForJob = (marketResearchText || '').trim();
-
     pushProgress(`Coda OpenClaw → ${AUDITOR_LABEL[chosen]} (swipe)`);
-    if (!briefForJob || !mrForJob) {
-      const missing: string[] = [];
-      if (!briefForJob) missing.push('brief');
-      if (!mrForJob) missing.push('market research');
-      pushProgress(
-        `Nessun ${missing.join(' + ')} fornito dal tool — Neo/Morfeo li ricostruira' dai LORO archivi nel primer step.`,
-      );
-    }
 
-    // Carica la libreria saved_prompts (e il progetto se selezionato,
-    // per logging). Brief/MR del payload arrivano dalle textarea sopra,
-    // NON da quelle del progetto: cosi' l'utente puo' overrideare a mano.
+    // Carica la libreria saved_prompts E il progetto (se selezionato).
+    // PRECEDENZA brief/MR: textarea manuali > brief/MR del progetto. Cosi'
+    // l'utente puo' overrideare a mano, ma se le textarea sono vuote NON
+    // perdiamo il brief del progetto (era il bug: Neo/Morfeo non sostituivano
+    // nome dottore / durata audio / prezzi perche' il brief non arrivava).
     pushProgress('Carico libreria tecniche dal tool…');
     let prompts: unknown[] = [];
     let projName: string | undefined;
+    let projBriefFromDb = '';
+    let projMrFromDb: unknown = null;
     try {
       const qs = selectedProjectId
         ? `?projectId=${encodeURIComponent(selectedProjectId)}`
@@ -359,18 +349,42 @@ export default function CloneLandingPage() {
       if (kRes.ok) {
         const kj = await kRes.json();
         prompts = Array.isArray(kj.prompts) ? kj.prompts : [];
-        projName = (kj?.project?.name as string | undefined) || availableProjects.find((p) => p.id === selectedProjectId)?.name;
+        const kproj = kj?.project as { name?: string; brief?: string | null; market_research?: unknown } | null;
+        projName = (kproj?.name as string | undefined) || availableProjects.find((p) => p.id === selectedProjectId)?.name;
+        projBriefFromDb = (kproj?.brief && String(kproj.brief).trim()) || '';
+        projMrFromDb = kproj?.market_research ?? null;
       }
     } catch {/* non fatale */}
 
+    const briefManual = (briefText || '').trim();
+    const mrManual = (marketResearchText || '').trim();
+    const briefForJob = briefManual || projBriefFromDb;
+    const mrForJob = (() => {
+      if (mrManual) return mrManual;
+      if (!projMrFromDb) return '';
+      if (typeof projMrFromDb === 'string') return projMrFromDb;
+      try { return JSON.stringify(projMrFromDb); } catch { return ''; }
+    })();
+    const briefSource = briefManual ? 'manuale' : (projBriefFromDb ? 'progetto' : 'mancante');
+    const mrSource = mrManual ? 'manuale' : (projMrFromDb ? 'progetto' : 'mancante');
+
+    if (!briefForJob || !mrForJob) {
+      const missing: string[] = [];
+      if (!briefForJob) missing.push('brief');
+      if (!mrForJob) missing.push('market research');
+      pushProgress(
+        `Nessun ${missing.join(' + ')} fornito (ne' a mano ne' dal progetto) — Neo/Morfeo li ricostruira' dai LORO archivi nel primer step.`,
+      );
+    }
+
     setKnowledgeBadge({
       techniques: prompts.length,
-      hasBrief: true,
-      hasMarketResearch: true,
+      hasBrief: !!briefForJob,
+      hasMarketResearch: !!mrForJob,
       projectName: projName,
     });
     pushProgress(
-      `Knowledge: ${prompts.length} tecniche libreria + brief (${briefForJob.length} char) + MR (${mrForJob.length} char)${projName ? ` · progetto "${projName}"` : ' · brief/MR a mano'}`,
+      `Knowledge: ${prompts.length} tecniche + brief ${briefForJob.length} char (${briefSource}) + MR ${mrForJob.length} char (${mrSource})${projName ? ` · progetto "${projName}"` : ''}`,
     );
 
     const knowledge = {

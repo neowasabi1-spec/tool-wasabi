@@ -130,7 +130,17 @@ function prependDocumentTitle(texts, html) {
 
 const MAX_CHARS_PER_PROMPT = 2500;
 const MAX_PROMPTS_TO_EMBED = 12;
-const MAX_KNOWLEDGE_CHARS = 18000;
+// Cap globale della knowledge section (brief progetto + MR + libreria tecniche).
+// Alzato da 18k a 35k: a 18k il brief lungo + MR + 12 prompt venivano troncati
+// a meta', con la conseguenza che facts specifici (nome dottore, durata audio,
+// prezzi, garanzia) descritti in fondo al brief NON arrivavano al LLM e i
+// rewrite mantenevano i facts del competitor. 35k e' ancora sicuro per LLM
+// locali con context >= 16k token (il system prompt totale resta < 60k char).
+const MAX_KNOWLEDGE_CHARS = 35000;
+// Cap per la MR (porzione dentro la knowledge section). Alzato da 6k a 12k:
+// stessa logica del cap globale, i facts della MR (audience age/income,
+// pain-point esatti, claim approvati) sono spesso oltre i primi 6k char.
+const MAX_MR_CHARS = 12000;
 
 function truncate(s, max) {
   if (typeof s !== 'string') return '';
@@ -177,7 +187,7 @@ function buildKnowledgeMarkdown(knowledge) {
       let mr = '';
       if (typeof proj.market_research === 'string') mr = proj.market_research;
       else { try { mr = JSON.stringify(proj.market_research, null, 2); } catch { mr = ''; } }
-      if (mr.trim()) projParts.push(`MARKET RESEARCH (dal progetto):\n${truncate(mr.trim(), 6000)}`);
+      if (mr.trim()) projParts.push(`MARKET RESEARCH (dal progetto):\n${truncate(mr.trim(), MAX_MR_CHARS)}`);
     }
     if (typeof proj.notes === 'string' && proj.notes.trim()) {
       projParts.push(`NOTE / OSSERVAZIONI:\n${proj.notes.trim()}`);
@@ -211,6 +221,118 @@ function buildKnowledgeMarkdown(knowledge) {
   }
   if (parts.length === 0) return '';
   return truncate(parts.join('\n\n=====\n\n'), MAX_KNOWLEDGE_CHARS);
+}
+
+// Estrae facts CONCRETI dal product + (best-effort) dal brief/MR per
+// costruire una cheat-sheet che il LLM puo' usare per FACT-SUBSTITUTION
+// quando incontra fatti del competitor nei testi originali.
+//
+// Conservative-by-default: meglio una cheat-sheet piu' corta ma giusta
+// che una lunga ma con falsi positivi (il LLM userebbe i falsi positivi).
+//
+// Categorie di facts:
+//   - nome prodotto + brand
+//   - prezzo (full + scontato se presenti nel brief)
+//   - dottori / esperti / autorita' (regex su brief: "Dr.", "Dott.", "Prof.")
+//   - durate (regex: "X min[uti|utes|']", "X giorni|days|day")
+//   - garanzie (regex: "X-day money back|guarantee|garanzia")
+//   - ingredienti chiave (da product.characteristics se lista)
+function extractProductFacts(product, knowledge) {
+  const facts = {
+    name: '',
+    brand: '',
+    price: '',
+    doctors: [],
+    durations: [],
+    guarantees: [],
+    percentages: [],
+    ingredients: [],
+    targetAge: '',
+  };
+  if (product) {
+    if (product.name) facts.name = String(product.name).trim();
+    if (product.brand_name) facts.brand = String(product.brand_name).trim();
+    if (product.price != null && String(product.price).trim()) facts.price = String(product.price).trim();
+    if (Array.isArray(product.characteristics)) {
+      // characteristics sono spesso ingredienti / specs (es. "200mg Magnesium",
+      // "9-minute audio session"). Le mettiamo come "ingredienti" lato facts.
+      facts.ingredients = product.characteristics
+        .map((c) => String(c || '').trim())
+        .filter((c) => c.length > 0 && c.length < 120);
+    }
+  }
+  // Pesca dal brief e da MR — sempre meglio di niente. Conservative regex.
+  const sources = [];
+  if (knowledge?.project?.brief && typeof knowledge.project.brief === 'string') {
+    sources.push(knowledge.project.brief);
+  }
+  if (knowledge?.project?.market_research) {
+    const mr = knowledge.project.market_research;
+    if (typeof mr === 'string') sources.push(mr);
+    else { try { sources.push(JSON.stringify(mr)); } catch {/* skip */} }
+  }
+  if (product?.description) sources.push(String(product.description));
+  if (product?.marketing_brief) sources.push(String(product.marketing_brief));
+  if (product?.project_brief) sources.push(String(product.project_brief));
+  if (product?.market_research) sources.push(String(product.market_research));
+  const corpus = sources.join('\n\n');
+  if (corpus) {
+    // Dottori / esperti — match conservativo: titolo + 1-3 token capitalizzati
+    const docRe = /\b(?:Dr|Dott|Dr\.ssa|Dott\.ssa|Prof|Professor|Doctor|Doctora)\.?\s+([A-Z][a-zA-Zàèéìòù'-]+(?:\s+[A-Z][a-zA-Zàèéìòù'-]+){0,2})/g;
+    const docSeen = new Set();
+    let dm;
+    while ((dm = docRe.exec(corpus)) !== null) {
+      const name = `${dm[0]}`.replace(/\s+/g, ' ').trim();
+      if (!docSeen.has(name) && docSeen.size < 5) { docSeen.add(name); facts.doctors.push(name); }
+    }
+    // Durate audio/sessione/protocollo (minuti, secondi, ore)
+    const durRe = /\b(\d{1,4})\s*[-\s]?\s*(min(?:uti|utes|ute|s|s\.)?|sec(?:ondi|onds|ond|s)?|h(?:ours|our|rs|r)?|ore|hour)\b/gi;
+    const durSeen = new Set();
+    let durm;
+    while ((durm = durRe.exec(corpus)) !== null) {
+      const val = `${durm[1]} ${durm[2].toLowerCase()}`.trim();
+      if (!durSeen.has(val) && durSeen.size < 8) { durSeen.add(val); facts.durations.push(val); }
+    }
+    // Garanzie "X-day money back" / "garanzia X giorni"
+    const guarRe = /\b(\d{1,3})[-\s]?(day|days|giorni|giorno)\s+(money[-\s]?back|garanzia|guarantee|refund|rimborso)\b/gi;
+    const guarSeen = new Set();
+    let gm;
+    while ((gm = guarRe.exec(corpus)) !== null) {
+      const val = gm[0].replace(/\s+/g, ' ').trim();
+      if (!guarSeen.has(val) && guarSeen.size < 3) { guarSeen.add(val); facts.guarantees.push(val); }
+    }
+    // Percentuali "X%" (no \b dopo % perche' % non e' word-char,
+    // \b fallirebbe sul confine non-word/non-word).
+    const pctRe = /\b(\d{1,3}(?:[.,]\d+)?)\s*%/g;
+    const pctSeen = new Set();
+    let pm;
+    while ((pm = pctRe.exec(corpus)) !== null) {
+      if (!pctSeen.has(pm[1]) && pctSeen.size < 6) { pctSeen.add(pm[1]); facts.percentages.push(`${pm[1]}%`); }
+    }
+    // Target age "X-Y year" / "X to Y year" / "tra X e Y anni" / "X-Y anni"
+    const ageRe = /\b(\d{2,3})\s*(?:[-–]|to|a)\s*(\d{2,3})\s*(years?|year[-\s]?old|anni|year)\b/i;
+    const am = corpus.match(ageRe);
+    if (am) facts.targetAge = am[0].trim();
+  }
+  return facts;
+}
+
+function buildProductFactsBlock(facts) {
+  const lines = [];
+  if (facts.name) lines.push(`• Nome prodotto: ${facts.name}`);
+  if (facts.brand) lines.push(`• Brand: ${facts.brand}`);
+  if (facts.price) lines.push(`• Prezzo: ${facts.price}`);
+  if (facts.doctors.length) lines.push(`• Dottori / esperti / autorita': ${facts.doctors.join(' · ')}`);
+  if (facts.durations.length) lines.push(`• Durate ricorrenti (es. audio, sessioni, protocollo): ${facts.durations.join(' · ')}`);
+  if (facts.guarantees.length) lines.push(`• Garanzia: ${facts.guarantees.join(' · ')}`);
+  if (facts.percentages.length) lines.push(`• Percentuali chiave: ${facts.percentages.join(' · ')}`);
+  if (facts.targetAge) lines.push(`• Eta' target: ${facts.targetAge}`);
+  if (facts.ingredients.length) {
+    const ing = facts.ingredients.slice(0, 12);
+    lines.push(`• Ingredienti / specs (top ${ing.length}): ${ing.join(' · ')}`);
+  }
+  if (!lines.length) return '';
+  return lines.join('\n');
 }
 
 function buildProductContextMarkdown(product) {
@@ -265,8 +387,17 @@ function buildPrompts({ html, sourceUrl, product, tone, language, knowledge, ext
   const productCtx = buildProductContextMarkdown(product);
   const knowledgeMd = buildKnowledgeMarkdown(knowledge);
   const builtinKb = buildBuiltinKnowledge();
+  const productFacts = extractProductFacts(product, knowledge);
+  const productFactsBlock = buildProductFactsBlock(productFacts);
   const lang = language || 'it';
   const toneStr = tone || 'professional';
+
+  // PRODUCT FACTS sheet: dati concreti (nome, prezzo, dottori, durate,
+  // garanzia, ingredienti) estratti dal product + brief + MR. Va in cima
+  // al prompt cosi' il LLM li ha sempre presenti per fact-substitution.
+  const productFactsSection = productFactsBlock
+    ? `\n=== PRODUCT FACTS — FATTI CONCRETI DEL NOSTRO PRODOTTO (cheat sheet auto-estratta). Quando un testo del competitor menziona un fatto equivalente, SOSTITUISCILO con il fatto qui sotto. ===\n${productFactsBlock}\n=== FINE PRODUCT FACTS ===\n`
+    : '';
 
   const knowledgeSection = knowledgeMd
     ? `\n=== KNOWLEDGE & TECNICHE DAL TOOL DELL'UTENTE (libreria personale + brief progetto). USALE ATTIVAMENTE come faresti se l'utente te le avesse appena scritte in chat. ===\n${knowledgeMd}\n=== FINE KNOWLEDGE TOOL ===\n`
@@ -283,7 +414,7 @@ Framework: PAS, AIDA, AIDCA, FAB, BAB, QUEST, HSO (Hook-Story-Offer), 4P, Big Id
 Quando applichi una tecnica, riconoscila a te stesso (es: "qui applico una Halbert headline"); poi scrivi il copy senza citare il framework all'utente.
 
 PRODOTTO: ${product.name}
-
+${productFactsSection}
 CONTESTO PRODOTTO COMPLETO (USA tutto: fatti, angle, benefit, proof, obiezioni, naming. Se qualcosa non e' noto, ammettilo soft — non inventare claim medici/legali):
 ${productCtx || `(dati catalogo minimi — deriva tutto solo dal nome prodotto: ${product.name})`}
 ${builtinKbSection}${knowledgeSection}
@@ -294,11 +425,22 @@ REGOLE OBBLIGATORIE:
 1. Per ogni testo: NON parafrasare. Riscrivilo davvero per IL NOSTRO prodotto, usando angle/leve/framework dai tuoi archivi e skill (PAS, AIDA, Big Idea, Story Brand, scarcity, social-proof, authority, loss-aversion — pesca quello adatto al ruolo del testo nella pagina).
 2. SE sopra trovi una "LIBRERIA TECNICHE / KNOWLEDGE": e' la libreria personale dell'utente — USALA con priorita' rispetto alle tecniche generiche.
 3. SE sopra trovi un "BRIEF DEL PROGETTO" o "MARKET RESEARCH": tirane fuori positioning, target, claim approvati, voice/tone, vincoli, e applicali in OGNI rewrite.
-4. Mantieni il TIPO di copy: headline = punchy; body = esplicativo; CTA = imperativo breve; bullet = scannerizzabile. La lunghezza puo' variare liberamente.
-5. SOLO testo piano nei "rewritten" — niente HTML, niente markdown, niente escape JSON oltre quelli standard.
-6. Testi legali / disclaimer / compliance: riscrivili solo dove e' sicuro, altrimenti migliora solo la chiarezza preservando le disclosure obbligatorie.
-7. Ogni risposta DEVE contenere UN oggetto {"id","rewritten"} per OGNI id ricevuto. NON omettere id.
-8. Anti-eco: VIETATO restituire un "rewritten" identico al "text". Se ti viene da farlo, fermati e rifai con un angle diverso.
+4. ⚠️ FACT SUBSTITUTION OBBLIGATORIA (la piu' importante — non saltarla mai):
+   Se il testo originale contiene un FATTO SPECIFICO (nome di una persona, numero, durata, prezzo, ingrediente, percentuale, anno, garanzia, eta', citta'), controlla la sezione "PRODUCT FACTS" e il BRIEF del progetto qui sopra:
+   - se trovi il fatto EQUIVALENTE del nostro prodotto → SOSTITUISCI quello del competitor con il nostro (es. "Dr. Sarah Johnson" del competitor → "Dr. Marco Rossi" del nostro brief; "15 minutes" del competitor → "9 minutes" del nostro brief; "$97" → "$67")
+   - se NON hai l'equivalente → usa un termine neutro generico (es. "il nostro esperto" / "the formula" / "la sessione" / "la garanzia"), MAI lasciare il fatto del competitor
+   - VIETATO inventare numeri, dosaggi, claim medici o nomi propri che non sono nel brief / product facts
+   Esempi di violazioni che mi devo vietare:
+     ✗ originale "Dr. Sarah Johnson said" → rewrite "Dr. Sarah Johnson said" (lasciato il competitor)
+     ✗ originale "15-minute audio" → rewrite "15-minute audio" (lasciata la durata del competitor)
+     ✓ originale "Dr. Sarah Johnson said" + brief con "Dr. Marco Rossi" → rewrite "Dr. Marco Rossi dice"
+     ✓ originale "15-minute audio" + brief con "9 minuti" → rewrite "9-minute audio"
+     ✓ originale "Dr. Sarah Johnson" + NESSUN dottore nel brief → rewrite "il nostro esperto"
+5. Mantieni il TIPO di copy: headline = punchy; body = esplicativo; CTA = imperativo breve; bullet = scannerizzabile. La lunghezza puo' variare liberamente.
+6. SOLO testo piano nei "rewritten" — niente HTML, niente markdown, niente escape JSON oltre quelli standard.
+7. Testi legali / disclaimer / compliance: riscrivili solo dove e' sicuro, altrimenti migliora solo la chiarezza preservando le disclosure obbligatorie.
+8. Ogni risposta DEVE contenere UN oggetto {"id","rewritten"} per OGNI id ricevuto. NON omettere id.
+9. Anti-eco: VIETATO restituire un "rewritten" identico al "text". Se ti viene da farlo, fermati e rifai con un angle diverso.
 `;
 
   const textsForAi = texts.map((t, i) => ({ id: i, text: t.original, tag: t.tag }));
@@ -329,6 +471,23 @@ REGOLE OBBLIGATORIE:
       hasProjectBrief: !!(knowledge?.project?.brief),
       hasMarketResearch: !!(knowledge?.project?.market_research),
       builtinKbChars: builtinKb.length,
+      projectBriefChars: knowledge?.project?.brief ? String(knowledge.project.brief).length : 0,
+      marketResearchChars: (() => {
+        const mr = knowledge?.project?.market_research;
+        if (!mr) return 0;
+        if (typeof mr === 'string') return mr.length;
+        try { return JSON.stringify(mr).length; } catch { return 0; }
+      })(),
+    },
+    productFacts: {
+      doctors: productFacts.doctors,
+      durations: productFacts.durations,
+      guarantees: productFacts.guarantees,
+      percentages: productFacts.percentages,
+      ingredientsCount: productFacts.ingredients.length,
+      hasName: !!productFacts.name,
+      hasPrice: !!productFacts.price,
+      sheetChars: productFactsBlock.length,
     },
   };
 }

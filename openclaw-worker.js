@@ -1378,7 +1378,20 @@ async function processMessage(msg) {
           }
           if (prep.knowledgeIncluded) {
             const k = prep.knowledgeIncluded;
-            log(`    · prompts pronti: ${promptTexts.length} testi, KB built-in ${k.builtinKbChars} char, ${k.promptCount} tecniche libreria, brief=${k.hasProjectBrief}, MR=${k.hasMarketResearch}`);
+            log(`    · prompts pronti: ${promptTexts.length} testi, KB built-in ${k.builtinKbChars} char, ${k.promptCount} tecniche libreria, brief=${k.projectBriefChars} char, MR=${k.marketResearchChars} char`);
+          }
+          if (prep.productFacts && prep.productFacts.sheetChars > 0) {
+            const f = prep.productFacts;
+            const summary = [];
+            if (f.doctors.length) summary.push(`dottori=[${f.doctors.join(', ')}]`);
+            if (f.durations.length) summary.push(`durate=[${f.durations.join(', ')}]`);
+            if (f.guarantees.length) summary.push(`garanzie=[${f.guarantees.join(', ')}]`);
+            if (f.percentages.length) summary.push(`%=[${f.percentages.join(', ')}]`);
+            if (f.ingredientsCount) summary.push(`ingredienti=${f.ingredientsCount}`);
+            if (f.hasPrice) summary.push('prezzo=ok');
+            log(`    · 🎯 PRODUCT FACTS cheat-sheet (${f.sheetChars} char): ${summary.length ? summary.join(' · ') : '(solo nome prodotto)'}`);
+          } else {
+            log(`    · ⚠️  PRODUCT FACTS cheat-sheet vuota: il LLM non potra' fare fact-substitution automatica. Verifica che il brief contenga dottori/durate/prezzi/garanzie.`);
           }
           log(`  · swipe_landing_local: rewriting ${promptTexts.length} texts via local LLM (batched)`);
 
