@@ -1380,6 +1380,11 @@ async function processMessage(msg) {
             const k = prep.knowledgeIncluded;
             log(`    · prompts pronti: ${promptTexts.length} testi, KB built-in ${k.builtinKbChars} char, ${k.promptCount} tecniche libreria, brief=${k.projectBriefChars} char, MR=${k.marketResearchChars} char`);
           }
+          if (prep.languageInfo) {
+            const li = prep.languageInfo;
+            const source = li.requested ? 'UI' : (li.detected ? 'auto-detect' : 'default');
+            log(`    · 🌍 LINGUA output: ${li.label} (${li.effective}) [source=${source}, detected=${li.detected || 'n/a'}], prompt scritto in ${li.promptLanguage}`);
+          }
           if (prep.productFacts && prep.productFacts.sheetChars > 0) {
             const f = prep.productFacts;
             const summary = [];
