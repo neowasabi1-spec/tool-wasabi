@@ -1512,6 +1512,11 @@ ONESTA': se nei TUOI archivi non hai dati su questo prodotto/settore e non puoi 
               sourceUrl: job.sourceUrl,
               texts: promptTexts,
               rewrites,
+              // Necessario per: (a) brand replace dal dominio del competitor
+              // (es. "nooro" → productName), (b) collapse anti-stuffing
+              // ("Reset Patch Reset Patch" → "Reset Patch"). Si veda
+              // worker-lib/finalize.js #replaceBrandInHtml.
+              productName: job.product?.name || '',
             });
           } catch (e) {
             throw new Error(`finalize (in-process) fallito: ${e.message}`);

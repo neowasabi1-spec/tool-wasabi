@@ -11,7 +11,7 @@
 const { extractAllTextsUniversal } = require('./text-extractor');
 const { getCoreKnowledge, getKnowledgeForTask } = require('./knowledge-kb');
 
-const SAFE_TAG_CONTEXT = new Set(['title', 'meta:content']);
+const SAFE_TAG_CONTEXT = new Set(['title', 'meta:content', 'noscript']);
 const SAFE_TAG_PREFIXES = [
   'tag:h1','tag:h2','tag:h3','tag:h4','tag:h5','tag:h6',
   'tag:p','tag:li','tag:td','tag:th','tag:dt','tag:dd',
@@ -23,10 +23,16 @@ const SAFE_TAG_PREFIXES = [
   'mixed:h1','mixed:h2','mixed:h3','mixed:h4','mixed:h5','mixed:h6',
   'mixed:span','mixed:strong','mixed:em','mixed:a','mixed:b','mixed:i',
   'attr:alt','attr:title','attr:placeholder','attr:aria-label','attr:value',
+  // SPA JSON / JSON-LD: testi nascosti dentro <script type="application/json">
+  // o dentro __NEXT_DATA__ / __NUXT__ / __sveltekit_data che sono i veri
+  // contenitori del copy su SPA come Nooro, Bioma, Typeform-like, ecc.
+  'spa-json:',
+  'json-ld:',
+  'meta:',
 ];
 function isSafeContext(ctx) {
   if (SAFE_TAG_CONTEXT.has(ctx)) return true;
-  return SAFE_TAG_PREFIXES.some((p) => ctx === p || ctx.startsWith(p + ':'));
+  return SAFE_TAG_PREFIXES.some((p) => ctx === p || ctx.startsWith(p + ':') || (p.endsWith(':') && ctx.startsWith(p)));
 }
 
 const MAX_TEXTS_FOR_AI = Math.max(
@@ -44,6 +50,10 @@ const TAG_PRIORITY = {
   div: 7,
   'attr:alt': 5, 'attr:title': 5, 'attr:placeholder': 5,
   'attr:aria-label': 5, 'attr:value': 5, 'attr:meta-content': 5,
+  // Testi nascosti in SPA JSON / JSON-LD: priorita' medio-alta perche'
+  // su molte SPA sono il copy principale (hero, headline, CTA).
+  'spa-json': 2,
+  'json-ld': 4,
 };
 function priorityOf(tag) {
   if (TAG_PRIORITY[tag] !== undefined) return TAG_PRIORITY[tag];
@@ -67,6 +77,10 @@ function extractTextsFromHtml(html) {
     else if (u.context.startsWith('mixed:')) mappedTag = u.context.slice(6);
     else if (u.context === 'title') mappedTag = 'title';
     else if (u.context === 'meta:content') mappedTag = 'attr:meta-content';
+    else if (u.context.startsWith('meta:')) mappedTag = 'attr:meta-content';
+    else if (u.context === 'noscript') mappedTag = 'p';
+    else if (u.context.startsWith('spa-json:')) mappedTag = 'spa-json'; // tag virtuale, gestito da finalize
+    else if (u.context.startsWith('json-ld:')) mappedTag = 'json-ld';
     const existing = seen.get(u.text);
     const newPrio = priorityOf(mappedTag);
     if (existing) {
