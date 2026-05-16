@@ -18,6 +18,16 @@ const fs = require('fs');
 const path = require('path');
 const { URL } = require('url');
 
+// ===== IN-PROCESS WORKER MODULES ===================================
+// Portati dentro al worker da src/app/api/landing/swipe/* per
+// eliminare le chiamate HTTP al tool Netlify durante lo swipe.
+// L'agente fa tutto in locale: estrazione testi, prompt building,
+// rewrite via local LLM, applicazione modifiche all'HTML, scrittura
+// risultato finale su Supabase. ZERO 502 da OpenResty / Netlify
+// cold-start in mezzo.
+const { buildPrompts: buildSwipePrompts } = require('./worker-lib/build-prompts');
+const { finalizeSwipe: finalizeSwipeLocal } = require('./worker-lib/finalize');
+
 // ===== STATIC EXTRA CONTEXT (per-worker) ============================
 // L'utente puo' mettere su questo PC un file di "knowledge personale"
 // che il worker iniettera' in OGNI rewrite. Pensato per cose che il
@@ -1325,25 +1335,27 @@ async function processMessage(msg) {
             if (!hasMRForCheck) missing.push('market research');
             log(`  · swipe_landing_local: knowledge dal tool parziale — ${pCount} tecniche libreria, manca ${missing.join('+')}. Chiedero' all'agente di tirarli fuori dai SUOI archivi nel primer.`);
           }
-          log(`  · swipe_landing_local: building prompts server-side (light)`);
-          const prep = await callToolApi(
-            '/api/landing/swipe/openclaw-build-prompts',
-            {
+          log(`  · swipe_landing_local: building prompts IN-PROCESS (no Netlify)`);
+          let prep;
+          try {
+            prep = buildSwipePrompts({
               html: originalHtml,
               sourceUrl: job.sourceUrl,
               product: job.product,
               tone: job.tone,
               language: job.language,
               knowledge: job.knowledge || undefined,
-            },
-            60_000,
-          );
-          if (!prep || prep.success === false) {
-            throw new Error(prep && prep.error ? prep.error : 'openclaw-build-prompts failed');
+            });
+          } catch (e) {
+            throw new Error(`build-prompts (in-process) fallito: ${e.message}`);
           }
           const promptTexts = Array.isArray(prep.texts) ? prep.texts : [];
           if (promptTexts.length === 0) {
             throw new Error('No texts to rewrite (page had no extractable copy)');
+          }
+          if (prep.knowledgeIncluded) {
+            const k = prep.knowledgeIncluded;
+            log(`    · prompts pronti: ${promptTexts.length} testi, KB built-in ${k.builtinKbChars} char, ${k.promptCount} tecniche libreria, brief=${k.hasProjectBrief}, MR=${k.hasMarketResearch}`);
           }
           log(`  · swipe_landing_local: rewriting ${promptTexts.length} texts via local LLM (batched)`);
 
@@ -1489,20 +1501,20 @@ ONESTA': se nei TUOI archivi non hai dati su questo prodotto/settore e non puoi 
           }
           log(`    ✓ got ${rewrites.length}/${promptTexts.length} rewrites from local LLM`);
 
-          // 3. Finalise: server merges mappings + injects swipeScript.
-          log(`  · swipe_landing_local: finalising server-side (apply mappings + inject script)`);
-          const finalised = await callToolApi(
-            '/api/landing/swipe/openclaw-finalize',
-            {
+          // 3. Finalise IN-PROCESS: applichiamo i rewrite all'HTML
+          //    qui dentro al worker, ZERO chiamate HTTP. Il risultato
+          //    finale viene scritto su Supabase via responsePayload.
+          log(`  · swipe_landing_local: finalising IN-PROCESS (apply mappings + inject script)`);
+          let finalised;
+          try {
+            finalised = finalizeSwipeLocal({
               html: originalHtml,
               sourceUrl: job.sourceUrl,
               texts: promptTexts,
               rewrites,
-            },
-            60_000,
-          );
-          if (!finalised || finalised.success === false) {
-            throw new Error(finalised && finalised.error ? finalised.error : 'openclaw-finalize (swipe) failed');
+            });
+          } catch (e) {
+            throw new Error(`finalize (in-process) fallito: ${e.message}`);
           }
           log(`    ✓ swipe done: ${finalised.replacements}/${finalised.totalTexts} replacements, ${finalised.unresolved_text_ids?.length || 0} unresolved`);
           responsePayload = JSON.stringify(finalised);
