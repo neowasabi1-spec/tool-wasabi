@@ -373,66 +373,6 @@ function buildProductContextMarkdown(product) {
  * Build everything the worker needs to send to the local LLM.
  * Sincrono e in-process: ZERO chiamate HTTP a Netlify.
  */
-// Rileva la lingua dominante della pagina contando occorrenze di parole
-// funzionali italiane vs inglesi vs spagnole vs francesi vs tedesche su
-// un sample dell'HTML (titolo, h1-h3, p, li). Non e' un detector
-// linguistico professionale ma per "IT vs EN vs poco altro" e' >95%
-// accurato. Usato come fallback quando l'utente non specifica language.
-function detectPageLanguage(html) {
-  if (!html || typeof html !== 'string') return null;
-  // Estrai sample testuale dai tag piu' "umani" (max 20k char)
-  const matches = [];
-  const tagRe = /<(?:title|h1|h2|h3|p|li|button|a|span|td)[^>]*>([\s\S]{0,600}?)<\/(?:title|h1|h2|h3|p|li|button|a|span|td)>/gi;
-  let m;
-  while ((m = tagRe.exec(html)) !== null) {
-    const stripped = m[1].replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
-    if (stripped.length >= 3) matches.push(stripped);
-    if (matches.length > 200) break;
-  }
-  const sample = matches.join(' ').toLowerCase();
-  if (sample.length < 100) return null;
-  // Bag-of-stopwords. Le parole sono distinte (la maggior parte) tra le 5
-  // lingue, quindi conteggio diretto = lingua dominante.
-  const buckets = {
-    en: ['the','and','of','to','in','for','that','with','your','you','our','this','is','are','was','were','will','have','has','can','should','what','when','where','how','why','from','as','at','by','it','an','if','or','but'],
-    it: ['il','la','i','le','che','e','di','un','una','per','con','del','della','dei','delle','sono','sei','è','non','più','come','quando','dove','perché','dal','dalla','dai','dalle','nel','nella','tuo','tua','vostro','vostra','noi','voi','loro'],
-    es: ['el','la','los','las','que','y','de','un','una','para','con','del','los','las','son','es','no','más','como','cuando','donde','por','su','tu','nosotros','vosotros'],
-    fr: ['le','la','les','un','une','de','et','que','pour','avec','est','sont','dans','votre','notre','vous','nous','plus','comme','quand','où','pourquoi'],
-    de: ['der','die','das','und','von','zu','mit','ein','eine','ist','sind','nicht','mehr','wie','wann','wo','warum','für','auf','aus','bei'],
-  };
-  const wordRe = /\b[\w']+\b/g;
-  const words = sample.match(wordRe) || [];
-  if (words.length < 30) return null;
-  const counts = { en: 0, it: 0, es: 0, fr: 0, de: 0 };
-  const sets = Object.fromEntries(Object.entries(buckets).map(([k, v]) => [k, new Set(v)]));
-  for (const w of words) {
-    for (const lang of Object.keys(counts)) {
-      if (sets[lang].has(w)) { counts[lang]++; break; }
-    }
-  }
-  const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
-  const [topLang, topCount] = sorted[0];
-  const [, secondCount] = sorted[1] || ['', 0];
-  // Margine minimo: la prima deve avere almeno 8 occorrenze e battere la
-  // seconda di almeno il 30% (altrimenti pagina ambigua, ritorna null).
-  if (topCount < 8) return null;
-  if (secondCount > 0 && topCount < secondCount * 1.3) return null;
-  return topLang;
-}
-
-// Etichetta lingua leggibile per il system prompt (sia in inglese che in
-// italiano cosi' il LLM non si confonde sul nome della lingua target).
-function languageLabel(lang) {
-  switch (lang) {
-    case 'en': return 'English';
-    case 'it': return 'Italian (italiano)';
-    case 'es': return 'Spanish (español)';
-    case 'fr': return 'French (français)';
-    case 'de': return 'German (Deutsch)';
-    default: return String(lang);
-  }
-}
-
 function buildPrompts({ html, sourceUrl, product, tone, language, knowledge, extraTexts }) {
   if (!html || typeof html !== 'string' || html.length < 50) {
     throw new Error('html is required (min 50 chars)');
@@ -449,39 +389,24 @@ function buildPrompts({ html, sourceUrl, product, tone, language, knowledge, ext
   const builtinKb = buildBuiltinKnowledge();
   const productFacts = extractProductFacts(product, knowledge);
   const productFactsBlock = buildProductFactsBlock(productFacts);
-  // Lingua finale: 1) UI esplicita, 2) auto-detect dalla pagina, 3) default 'en'.
-  // Default 'en' (non 'it') perche' il 90% delle landing che cloniamo sono
-  // pagine US/UK; chi vuole IT lo seleziona in UI o ha pagina IT detectabile.
-  const detectedLang = detectPageLanguage(html);
-  const lang = (language && String(language).trim()) || detectedLang || 'en';
-  const langLabel = languageLabel(lang);
+  const lang = language || 'it';
   const toneStr = tone || 'professional';
-  // Tutto il system prompt viene scritto NELLA STESSA lingua dell'output.
-  // Se le istruzioni sono in italiano ma chiediamo output in inglese, il
-  // LLM contamina (bug riportato: "sta mischiando con un po' di italiano").
-  const PROMPT_IN_ITALIAN = lang === 'it';
 
-  // Le sezioni section-header sono brevi e neutre — fanno solo da "etichetta
-  // di apertura/chiusura" per il LLM. I CONTENUTI dentro (brief, MR, prompts,
-  // KB) restano nella lingua originale dell'utente: sono dati, non istruzioni.
+  // PRODUCT FACTS sheet: dati concreti (nome, prezzo, dottori, durate,
+  // garanzia, ingredienti) estratti dal product + brief + MR. Va in cima
+  // al prompt cosi' il LLM li ha sempre presenti per fact-substitution.
   const productFactsSection = productFactsBlock
-    ? (PROMPT_IN_ITALIAN
-      ? `\n=== PRODUCT FACTS — FATTI CONCRETI DEL NOSTRO PRODOTTO (cheat sheet auto-estratta). Quando un testo del competitor menziona un fatto equivalente, SOSTITUISCILO con il fatto qui sotto. ===\n${productFactsBlock}\n=== END PRODUCT FACTS ===\n`
-      : `\n=== PRODUCT FACTS — CONCRETE FACTS ABOUT OUR PRODUCT (auto-extracted cheat sheet). When the competitor copy mentions an equivalent fact, REPLACE it with the fact below. ===\n${productFactsBlock}\n=== END PRODUCT FACTS ===\n`)
+    ? `\n=== PRODUCT FACTS — FATTI CONCRETI DEL NOSTRO PRODOTTO (cheat sheet auto-estratta). Quando un testo del competitor menziona un fatto equivalente, SOSTITUISCILO con il fatto qui sotto. ===\n${productFactsBlock}\n=== FINE PRODUCT FACTS ===\n`
     : '';
+
   const knowledgeSection = knowledgeMd
-    ? (PROMPT_IN_ITALIAN
-      ? `\n=== KNOWLEDGE & TECNICHE DAL TOOL DELL'UTENTE (libreria personale + brief progetto). USALE ATTIVAMENTE come faresti se l'utente te le avesse appena scritte in chat. ===\n${knowledgeMd}\n=== END USER KNOWLEDGE ===\n`
-      : `\n=== KNOWLEDGE & TECHNIQUES FROM THE USER'S TOOL (personal library + project brief). USE THEM ACTIVELY as if the user had just written them to you in chat. ===\n${knowledgeMd}\n=== END USER KNOWLEDGE ===\n`)
+    ? `\n=== KNOWLEDGE & TECNICHE DAL TOOL DELL'UTENTE (libreria personale + brief progetto). USALE ATTIVAMENTE come faresti se l'utente te le avesse appena scritte in chat. ===\n${knowledgeMd}\n=== FINE KNOWLEDGE TOOL ===\n`
     : '';
   const builtinKbSection = builtinKb
-    ? (PROMPT_IN_ITALIAN
-      ? `\n=== COPYWRITING FRAMEWORK BUILT-IN (distillati: COS Engine, Tony Flores Mechanisms, Evaldo 16-Word, Anghelache, Savage System, 108 Split Tests + Landing Page Recipes). Sono i framework professionali su cui questo tool e' costruito — applicali silenziosamente in OGNI rewrite (non citarli per nome se non utile all'utente). ===\n${builtinKb}\n=== END BUILT-IN FRAMEWORK ===\n`
-      : `\n=== BUILT-IN COPYWRITING FRAMEWORKS (distilled: COS Engine, Tony Flores Mechanisms, Evaldo 16-Word, Anghelache, Savage System, 108 Split Tests + Landing Page Recipes). These are the professional frameworks this tool is built on — apply them silently in EVERY rewrite (don't name them in the output unless useful to the user). ===\n${builtinKb}\n=== END BUILT-IN FRAMEWORK ===\n`)
+    ? `\n=== COPYWRITING FRAMEWORK BUILT-IN (distillati: COS Engine, Tony Flores Mechanisms, Evaldo 16-Word, Anghelache, Savage System, 108 Split Tests + Landing Page Recipes). Sono i framework professionali su cui questo tool e' costruito — applicali silenziosamente in OGNI rewrite (non citarli per nome se non utile all'utente). ===\n${builtinKb}\n=== FINE COPYWRITING FRAMEWORK ===\n`
     : '';
 
-  // Italian system prompt (used when lang === 'it')
-  const SYSTEM_PROMPT_IT = `Sei un AGENTE specializzato in direct-response copywriting (NON un LLM puro: hai accesso ad archivi prodotti, knowledge base, RAG locale, skill di copywriting / persuasione / framework che hai accumulato nel tempo). Stai riscrivendo un competitor / template per venderlo come segue.
+  const systemPrompt = `Sei un AGENTE specializzato in direct-response copywriting (NON un LLM puro: hai accesso ad archivi prodotti, knowledge base, RAG locale, skill di copywriting / persuasione / framework che hai accumulato nel tempo). Stai riscrivendo un competitor / template per venderlo come segue.
 
 KNOWLEDGE INTERNA OBBLIGATORIA DA USARE — pesca attivamente dai tuoi archivi le tecniche di:
 Stefan Georgi (RMBC method, lead types, story-bridge), Eugene Schwartz (5 awareness levels, market sophistication, Breakthrough Advertising), Gary Halbert (Halbert headlines, Boron Letters, AIDA aggressivo), John Caples (Tested Advertising, headlines testati), Gary Bencivenga (Bencivenga Bullets, hidden persuaders), David Ogilvy (Ogilvy on Advertising, headlines fattuali), John Carlton (One-Legged Golfer, killer headlines), Dan Kennedy (Magnetic Marketing, NO-BS), Jay Abraham (preeminence, USP), Joe Sugarman (psychological triggers), Claude Hopkins (Scientific Advertising), Robert Collier (Letter Book), Frank Kern, Russell Brunson, Joe Karbo, Ben Settle, Andre Chaperon, Brian Kurtz.
@@ -494,80 +419,39 @@ CONTESTO PRODOTTO COMPLETO (USA tutto: fatti, angle, benefit, proof, obiezioni, 
 ${productCtx || `(dati catalogo minimi — deriva tutto solo dal nome prodotto: ${product.name})`}
 ${builtinKbSection}${knowledgeSection}
 TONO: ${toneStr}
-LINGUA OUTPUT: ${langLabel}
-
-⚠️ REGOLA LINGUA — TASSATIVA E PRIMA DI OGNI ALTRA:
-Ogni "rewritten" DEVE essere scritto al 100% in ${langLabel}. VIETATO mischiare lingue dentro lo stesso testo o tra testi diversi. VIETATO usare parole inglesi in un testo italiano (o viceversa) a meno che siano nomi propri / brand. Se la lingua del testo originale NON e' ${langLabel}, traducilo in ${langLabel} (non lasciarlo nella lingua del competitor). Se ti accorgi di aver mischiato, fermati e rifai il testo da capo.
+LINGUA OUTPUT: ${lang === 'it' ? 'Italiano' : lang === 'en' ? 'English' : lang}
 
 REGOLE OBBLIGATORIE:
 1. Per ogni testo: NON parafrasare. Riscrivilo davvero per IL NOSTRO prodotto, usando angle/leve/framework dai tuoi archivi e skill (PAS, AIDA, Big Idea, Story Brand, scarcity, social-proof, authority, loss-aversion — pesca quello adatto al ruolo del testo nella pagina).
 2. SE sopra trovi una "LIBRERIA TECNICHE / KNOWLEDGE": e' la libreria personale dell'utente — USALA con priorita' rispetto alle tecniche generiche.
 3. SE sopra trovi un "BRIEF DEL PROGETTO" o "MARKET RESEARCH": tirane fuori positioning, target, claim approvati, voice/tone, vincoli, e applicali in OGNI rewrite.
-4. ⚠️ FACT SUBSTITUTION OBBLIGATORIA: se il testo originale contiene un FATTO SPECIFICO (nome di persona, numero, durata, prezzo, ingrediente, %, anno, garanzia, eta', citta'), controlla "PRODUCT FACTS" e il BRIEF qui sopra:
-   - se trovi il fatto equivalente del nostro prodotto → SOSTITUISCI (es. "Dr. Sarah Johnson" → "Dr. Marco Rossi"; "15 minutes" → "9 minuti"; "$97" → "$67")
-   - se NON hai l'equivalente → usa un termine neutro generico (es. "il nostro esperto" / "la formula" / "la sessione" / "la garanzia"), MAI lasciare il fatto del competitor
-   - VIETATO inventare numeri, dosaggi, claim medici o nomi propri che non sono nel brief / product facts.
-5. Mantieni il TIPO di copy: headline = punchy; body = esplicativo; CTA = imperativo breve; bullet = scannerizzabile.
+4. ⚠️ FACT SUBSTITUTION OBBLIGATORIA (la piu' importante — non saltarla mai):
+   Se il testo originale contiene un FATTO SPECIFICO (nome di una persona, numero, durata, prezzo, ingrediente, percentuale, anno, garanzia, eta', citta'), controlla la sezione "PRODUCT FACTS" e il BRIEF del progetto qui sopra:
+   - se trovi il fatto EQUIVALENTE del nostro prodotto → SOSTITUISCI quello del competitor con il nostro (es. "Dr. Sarah Johnson" del competitor → "Dr. Marco Rossi" del nostro brief; "15 minutes" del competitor → "9 minutes" del nostro brief; "$97" → "$67")
+   - se NON hai l'equivalente → usa un termine neutro generico (es. "il nostro esperto" / "the formula" / "la sessione" / "la garanzia"), MAI lasciare il fatto del competitor
+   - VIETATO inventare numeri, dosaggi, claim medici o nomi propri che non sono nel brief / product facts
+   Esempi di violazioni che mi devo vietare:
+     ✗ originale "Dr. Sarah Johnson said" → rewrite "Dr. Sarah Johnson said" (lasciato il competitor)
+     ✗ originale "15-minute audio" → rewrite "15-minute audio" (lasciata la durata del competitor)
+     ✓ originale "Dr. Sarah Johnson said" + brief con "Dr. Marco Rossi" → rewrite "Dr. Marco Rossi dice"
+     ✓ originale "15-minute audio" + brief con "9 minuti" → rewrite "9-minute audio"
+     ✓ originale "Dr. Sarah Johnson" + NESSUN dottore nel brief → rewrite "il nostro esperto"
+5. Mantieni il TIPO di copy: headline = punchy; body = esplicativo; CTA = imperativo breve; bullet = scannerizzabile. La lunghezza puo' variare liberamente.
 6. SOLO testo piano nei "rewritten" — niente HTML, niente markdown, niente escape JSON oltre quelli standard.
 7. Testi legali / disclaimer / compliance: riscrivili solo dove e' sicuro, altrimenti migliora solo la chiarezza preservando le disclosure obbligatorie.
 8. Ogni risposta DEVE contenere UN oggetto {"id","rewritten"} per OGNI id ricevuto. NON omettere id.
 9. Anti-eco: VIETATO restituire un "rewritten" identico al "text". Se ti viene da farlo, fermati e rifai con un angle diverso.
 `;
 
-  // English system prompt (used for lang === 'en' and any other non-IT lang)
-  const SYSTEM_PROMPT_EN = `You are an AGENT specialized in direct-response copywriting (NOT a generic LLM: you have access to product archives, knowledge bases, local RAG, copywriting / persuasion / framework skills you've built up over time). You are rewriting a competitor / template to sell the product described below.
-
-MANDATORY INTERNAL KNOWLEDGE TO USE — actively pull from your archives the techniques of:
-Stefan Georgi (RMBC method, lead types, story-bridge), Eugene Schwartz (5 awareness levels, market sophistication, Breakthrough Advertising), Gary Halbert (Halbert headlines, Boron Letters, aggressive AIDA), John Caples (Tested Advertising, tested headlines), Gary Bencivenga (Bencivenga Bullets, hidden persuaders), David Ogilvy (Ogilvy on Advertising, factual headlines), John Carlton (One-Legged Golfer, killer headlines), Dan Kennedy (Magnetic Marketing, NO-BS), Jay Abraham (preeminence, USP), Joe Sugarman (psychological triggers), Claude Hopkins (Scientific Advertising), Robert Collier (Letter Book), Frank Kern, Russell Brunson, Joe Karbo, Ben Settle, Andre Chaperon, Brian Kurtz.
-Frameworks: PAS, AIDA, AIDCA, FAB, BAB, QUEST, HSO (Hook-Story-Offer), 4P, Big Idea (Schwartz), StoryBrand (Miller), RMBC (Georgi), Pico hook, Sultanic Framework / narrative archetypes.
-When you apply a technique, name it to yourself (e.g. "applying a Halbert headline here") then write the copy without naming the framework to the user.
-
-PRODUCT: ${product.name}
-${productFactsSection}
-FULL PRODUCT CONTEXT (USE all of it: facts, angle, benefits, proof, objections, naming. If something isn't known, hedge softly — never invent medical/legal claims):
-${productCtx || `(minimal catalog data — derive everything from the product name only: ${product.name})`}
-${builtinKbSection}${knowledgeSection}
-TONE: ${toneStr}
-OUTPUT LANGUAGE: ${langLabel}
-
-⚠️ LANGUAGE RULE — STRICT AND FIRST PRIORITY:
-Every "rewritten" string MUST be 100% in ${langLabel}. NEVER mix languages within a single text or across texts. NEVER use words from another language inside a ${langLabel} text unless they are proper nouns / brand names. If the original text is NOT in ${langLabel}, translate it into ${langLabel} (do not leave it in the competitor's language). If you catch yourself mixing, stop and rewrite from scratch.
-
-MANDATORY RULES:
-1. For each text: DON'T paraphrase. Truly rewrite it for OUR product using angles / hooks / frameworks from your archives and skills (PAS, AIDA, Big Idea, StoryBrand, scarcity, social proof, authority, loss aversion — pick what fits the text's role on the page).
-2. IF you see a "USER KNOWLEDGE / TECHNIQUES LIBRARY" above: it's the user's personal library — USE IT with priority over generic techniques.
-3. IF you see a "PROJECT BRIEF" or "MARKET RESEARCH" above: extract positioning, target, approved claims, voice/tone, constraints, and apply them in EVERY rewrite.
-4. ⚠️ MANDATORY FACT SUBSTITUTION: if the original text contains a SPECIFIC FACT (name of a person, number, duration, price, ingredient, %, year, guarantee, age, city), check the "PRODUCT FACTS" section and the BRIEF above:
-   - if you find the equivalent fact for our product → REPLACE (e.g. "Dr. Sarah Johnson" → "Dr. Marco Rossi"; "15 minutes" → "9 minutes"; "$97" → "$67")
-   - if you DON'T have the equivalent → use a neutral generic term (e.g. "our expert" / "the formula" / "the session" / "the guarantee"), NEVER leave the competitor's fact in place
-   - FORBIDDEN to invent numbers, dosages, medical claims, or proper names not present in the brief / product facts.
-5. Keep the copy TYPE: headline = punchy; body = explanatory; CTA = short imperative; bullet = scannable.
-6. ONLY plain text in the "rewritten" field — no HTML, no markdown, no JSON escape beyond standard ones.
-7. Legal / disclaimer / compliance text: rewrite only where safe, otherwise improve clarity while preserving mandatory disclosures.
-8. Every response MUST contain ONE {"id","rewritten"} object for EVERY id received. DO NOT omit ids.
-9. Anti-echo: FORBIDDEN to return a "rewritten" identical to the "text". If you're tempted, stop and redo with a different angle.
-`;
-
-  const systemPrompt = PROMPT_IN_ITALIAN ? SYSTEM_PROMPT_IT : SYSTEM_PROMPT_EN;
-
   const textsForAi = texts.map((t, i) => ({ id: i, text: t.original, tag: t.tag }));
-  const userMessage = PROMPT_IN_ITALIAN
-    ? [
-        `Riscrivi questi testi per il prodotto "${product.name}". Rispondi SEMPRE con un JSON array di oggetti {"id": <numero>, "rewritten": "..."}. Ogni "rewritten" deve essere al 100% in ${langLabel} — non mischiare lingue.`,
-        '',
-        'Testi da riscrivere (JSON):',
-        JSON.stringify(textsForAi, null, 2),
-        '',
-        'Riscrivi UNO PER UNO ogni id qui sopra. Output: array JSON, niente markdown, niente prosa fuori dal JSON.',
-      ].join('\n')
-    : [
-        `Rewrite these texts for the product "${product.name}". ALWAYS respond with a JSON array of {"id": <number>, "rewritten": "..."} objects. Every "rewritten" string must be 100% in ${langLabel} — do not mix languages.`,
-        '',
-        'Texts to rewrite (JSON):',
-        JSON.stringify(textsForAi, null, 2),
-        '',
-        'Rewrite EACH id above one by one. Output: a JSON array, no markdown, no prose outside the JSON.',
-      ].join('\n');
+  const userMessage = [
+    `Riscrivi questi testi per il prodotto "${product.name}". Rispondi SEMPRE con un JSON array di oggetti {"id": <numero>, "rewritten": "..."}.`,
+    '',
+    'Testi da riscrivere (JSON):',
+    JSON.stringify(textsForAi, null, 2),
+    '',
+    'Riscrivi UNO PER UNO ogni id qui sopra. Output: array JSON, niente markdown, niente prosa fuori dal JSON.',
+  ].join('\n');
 
   return {
     success: true,
@@ -604,13 +488,6 @@ MANDATORY RULES:
       hasName: !!productFacts.name,
       hasPrice: !!productFacts.price,
       sheetChars: productFactsBlock.length,
-    },
-    languageInfo: {
-      requested: language || null,
-      detected: detectedLang,
-      effective: lang,
-      label: langLabel,
-      promptLanguage: PROMPT_IN_ITALIAN ? 'it' : 'en',
     },
   };
 }

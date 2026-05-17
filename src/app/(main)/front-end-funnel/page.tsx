@@ -6,9 +6,6 @@ import Header from '@/components/Header';
 import { useStore } from '@/store/useStore';
 import { fetchAffiliateSavedFunnels } from '@/lib/supabase-operations';
 import { extractSectionContent } from '@/lib/project-sections';
-import SwipeCinemaOverlay, {
-  type SwipePageInfo, type SwipeLogEntry as OverlayLogEntry,
-} from '@/components/SwipeCinemaOverlay';
 import type { AffiliateSavedFunnel, SavedPrompt } from '@/types/database';
 import {
   BUILT_IN_PAGE_TYPE_OPTIONS,
@@ -6435,34 +6432,6 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
           </div>
         </div>
       )}
-
-      {/* Cinematic full-screen overlay during Swipe All / single rewrite.
-          Replaces the old tiny "Rewriting texts..." toast in the bottom-right
-          corner with a real live view: page list with status, iframe preview
-          of the page being rewritten, scrolling activity log, ETA + cancel. */}
-      <SwipeCinemaOverlay
-        swipeAll={swipeAllJob}
-        cloneProgress={cloneProgress}
-        cloneTargetPageName={cloneModal.pageName || cloneModal.url || ''}
-        pages={(funnelPages || []).map<SwipePageInfo>((p) => ({
-          id: p.id,
-          name: p.name,
-          pageType: p.pageType,
-          url: p.urlToSwipe,
-          swipeStatus: p.swipeStatus as SwipePageInfo['swipeStatus'],
-          clonedHtml: p.clonedData?.html || p.swipedData?.html,
-        }))}
-        log={swipeLog as OverlayLogEntry[]}
-        rewrites={rewriteStream}
-        onCancel={() => {
-          if (swipeAllJob?.isRunning) cancelSwipeAll();
-        }}
-        onClose={() => {
-          if (!swipeAllJob?.isRunning && !cloneProgress) {
-            setSwipeAllJob(null);
-          }
-        }}
-      />
 
       {/* Clone Configuration Modal */}
       {cloneModal.isOpen && (

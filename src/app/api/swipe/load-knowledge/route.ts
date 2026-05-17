@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { fetchSavedPrompts } from '@/lib/supabase-operations';
 import { supabase } from '@/lib/supabase';
+import { extractSectionContent } from '@/lib/project-sections';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -43,16 +44,45 @@ export async function GET(request: Request) {
   );
 
   // ── Project knowledge ────────────────────────────────────────────
+  // BUG STORICO: il brief vive in due colonne per backward compat:
+  //   - projects.brief         (TEXT, legacy)
+  //   - projects.brief_files   (JSONB { files, notes, content }, moderno)
+  // L'UI moderna scrive solo in `brief_files`. Selezionando solo `brief`
+  // ottenevamo NULL anche quando il brief era pieno → il worker logga
+  // `brief=false` e Neo/Morfeo non vedono il brief vero.
+  // Fix: leggi entrambi, prefer brief_files.content, fallback brief.
+  // Idem per market_research: leggiamo anche il content estratto da
+  // SectionData se la colonna market_research e' JSONB.
   let project: { id: string; name: string; brief: string | null; market_research: unknown; notes: string | null } | null = null;
   if (projectId) {
     try {
       const { data, error } = await supabase
         .from('projects')
-        .select('id, name, brief, market_research, notes')
+        .select('id, name, brief, brief_files, market_research, notes')
         .eq('id', projectId)
         .maybeSingle();
       if (error) throw error;
-      if (data) project = data as typeof project;
+      if (data) {
+        const row = data as {
+          id: string; name: string;
+          brief: string | null;
+          brief_files?: unknown;
+          market_research: unknown;
+          notes: string | null;
+        };
+        const briefFromFiles = extractSectionContent(row.brief_files).trim();
+        const briefFromText = (row.brief || '').trim();
+        const briefFinal = briefFromFiles || briefFromText || null;
+        const mrFromContent = extractSectionContent(row.market_research).trim();
+        const mrFinal: unknown = mrFromContent ? mrFromContent : row.market_research;
+        project = {
+          id: row.id,
+          name: row.name,
+          brief: briefFinal,
+          market_research: mrFinal,
+          notes: row.notes,
+        };
+      }
     } catch (e) {
       console.warn('[swipe/load-knowledge] fetch project failed:', e);
     }

@@ -82,11 +82,7 @@ export default function CloneLandingPage() {
   const [showSwipeForm, setShowSwipeForm] = useState(false);
   const [product, setProduct] = useState<ProductInfo>(defaultProduct);
   const [tone, setTone] = useState<'professional' | 'friendly' | 'urgent' | 'luxury'>('professional');
-  // Default 'en': il 90% delle landing che si clonano sono pagine US/UK.
-  // Quando la pagina viene clonata facciamo anche un auto-detect rapido
-  // (vedi useEffect su result.html) per impostare la lingua corretta
-  // prima dello swipe. L'utente puo' comunque overrideare manualmente.
-  const [language, setLanguage] = useState<'it' | 'en'>('en');
+  const [language, setLanguage] = useState<'it' | 'en'>('it');
   const [showEditor, setShowEditor] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   // Auditor selection (Claude server-side vs Neo/Morfeo via OpenClaw queue).
@@ -139,35 +135,6 @@ export default function CloneLandingPage() {
     })();
     return () => { cancelled = true; };
   }, []);
-
-  // Auto-detect della lingua della pagina clonata. Stesso algoritmo
-  // bag-of-stopwords del server (worker-lib/build-prompts.js #detectPageLanguage)
-  // ma semplificato a IT vs EN visto che la UI espone solo queste due.
-  // L'utente puo' sempre overrideare via il select.
-  useEffect(() => {
-    if (!result?.html) return;
-    const sample = result.html
-      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/&nbsp;/g, ' ')
-      .replace(/\s+/g, ' ')
-      .substring(0, 20000)
-      .toLowerCase();
-    if (sample.length < 200) return;
-    const enStop = new Set(['the','and','of','to','in','for','that','with','your','you','our','this','is','are','was','will','have','has','can','what','when','from','at','by','it','an','or','but']);
-    const itStop = new Set(['il','la','i','le','che','di','un','una','per','con','del','della','dei','delle','sono','è','non','più','come','quando','dove','perché','nel','nella','tuo','tua','vostro','vostra']);
-    const words = sample.match(/\b[\w']+\b/g) || [];
-    if (words.length < 50) return;
-    let en = 0; let it = 0;
-    for (const w of words) { if (enStop.has(w)) en++; else if (itStop.has(w)) it++; }
-    if (en < 8 && it < 8) return; // ambiguo, lascia stare
-    const detected: 'it' | 'en' = en > it * 1.3 ? 'en' : (it > en * 1.3 ? 'it' : language);
-    if (detected !== language) {
-      setLanguage(detected);
-      pushProgress(`Lingua pagina rilevata: ${detected === 'en' ? 'English' : 'Italian'} (${en} EN / ${it} IT stopwords) — il select e' stato aggiornato. Puoi cambiarla a mano se serve.`);
-    }
-  }, [result?.html]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSelectProject = async (id: string) => {
     setSelectedProjectId(id);
