@@ -6,6 +6,10 @@ import Header from '@/components/Header';
 import { useStore } from '@/store/useStore';
 import { fetchAffiliateSavedFunnels } from '@/lib/supabase-operations';
 import { extractSectionContent } from '@/lib/project-sections';
+import SwipeDebugModal, {
+  buildSwipeDebugInfo,
+  type SwipeDebugInfo,
+} from '@/components/SwipeDebugModal';
 import type { AffiliateSavedFunnel, SavedPrompt } from '@/types/database';
 import {
   BUILT_IN_PAGE_TYPE_OPTIONS,
@@ -966,6 +970,26 @@ export default function FrontEndFunnel() {
     startedAt: number;
   } | null>(null);
   const swipeAllCancelRef = useRef(false);
+
+  // ── Swipe Debug Modal ───────────────────────────────────────────
+  // Prima di enqueueare un job swipe_landing_local a Neo / Morfeo
+  // apriamo un popup bloccante che mostra ESATTAMENTE cosa sta per
+  // essere passato all'agente (brief, market research, product, regole
+  // anti-paraphrase iniettate, agente scelto, workspace). L'utente
+  // clicca Procedi/Annulla. Vedi src/components/SwipeDebugModal.tsx.
+  const [swipeDebugInfo, setSwipeDebugInfo] = useState<SwipeDebugInfo | null>(null);
+  const swipeDebugResolveRef = useRef<((proceed: boolean) => void) | null>(null);
+  const confirmSwipeDebug = (info: SwipeDebugInfo) =>
+    new Promise<boolean>((resolve) => {
+      swipeDebugResolveRef.current = resolve;
+      setSwipeDebugInfo(info);
+    });
+  const closeSwipeDebug = (proceed: boolean) => {
+    const r = swipeDebugResolveRef.current;
+    setSwipeDebugInfo(null);
+    swipeDebugResolveRef.current = null;
+    r?.(proceed);
+  };
 
   // API Mode
   const [apiMode, setApiMode] = useState<ApiMode>('localDev');
@@ -2250,11 +2274,62 @@ export default function FrontEndFunnel() {
       alert('Nessuna pagina eligibile (servono URL competitor + Project su ogni riga).');
       return;
     }
-    const ok = window.confirm(
-      `Avvio Swipe All via ${AUDITOR_LABEL[chosen]} su ${eligible.length} pagine.\n\n` +
-        'Il worker locale fara fetch + rewrite per ogni pagina (no Netlify ' +
-        'timeout, no quota Anthropic). La coerenza narrativa tra pagine ' +
-        'NON e mantenuta su questo path (per quella, usa Claude).\n\nProcedere?'
+
+    // ── SWIPE DEBUG MODAL (batch) ──────────────────────────────
+    // Mostra il payload di esempio della 1a pagina + nota "N job
+    // verranno mandati con brief/product della rispettiva pagina".
+    // Lo carichiamo carico al volo: brief + MR + libreria prompts.
+    const firstPage = eligible[0];
+    const firstProject = (projects || []).find((p) => p.id === firstPage.productId);
+    let previewPrompts: unknown[] = [];
+    try {
+      const kRes = await fetch('/api/swipe/load-knowledge');
+      if (kRes.ok) {
+        const kj = await kRes.json();
+        if (Array.isArray(kj.prompts)) previewPrompts = kj.prompts;
+      }
+    } catch {
+      // non fatale
+    }
+    const previewBrief = (firstProject?.brief || '').trim();
+    const previewMr = extractSectionContent(firstProject?.marketResearch);
+    const previewProduct = firstProject
+      ? {
+          name: firstProject.name,
+          description: firstProject.description || '',
+          marketing_brief: previewBrief || undefined,
+          market_research: previewMr || undefined,
+        }
+      : { name: '(no project)' };
+    const ok = await confirmSwipeDebug(
+      buildSwipeDebugInfo({
+        agent: chosen as 'neo' | 'morfeo',
+        agentLabel: AUDITOR_LABEL[chosen],
+        targetAgent,
+        payload: {
+          action: 'swipe_landing_local',
+          sourceUrl: firstPage.urlToSwipe || null,
+          product: previewProduct as unknown as Record<string, unknown>,
+          tone: 'professional',
+          language: 'it',
+          knowledge: {
+            prompts: previewPrompts,
+            project: {
+              name: firstProject?.name || '(no project)',
+              brief: previewBrief || null,
+              market_research: previewMr || null,
+              notes: null,
+            },
+          },
+          htmlLength: 0,
+        },
+        briefSource: previewBrief ? 'progetto' : 'mancante',
+        mrSource: previewMr ? 'progetto' : 'mancante',
+        batchInfo: {
+          totalPages: eligible.length,
+          firstPageName: firstPage.name || 'Step 1',
+        },
+      }),
     );
     if (!ok) return;
 
@@ -3018,6 +3093,44 @@ export default function FrontEndFunnel() {
             knowledge: rowKnowledge,
           };
           if (htmlToRewrite) swipePayload.html = htmlToRewrite;
+
+          // ── SWIPE DEBUG MODAL ─────────────────────────────────
+          // Mostra all'utente cosa sta per essere mandato a Neo/Morfeo
+          // prima di enqueueare. Bloccante: se annulla, abortiamo.
+          const briefStrForDebug = (
+            (rowKnowledge.project as { brief?: string | null } | null)?.brief || ''
+          );
+          const mrForDebug = (rowKnowledge.project as { market_research?: unknown } | null)
+            ?.market_research;
+          const debugProceed = await confirmSwipeDebug(
+            buildSwipeDebugInfo({
+              agent: chosenAuditor as 'neo' | 'morfeo',
+              agentLabel: AUDITOR_LABEL[chosenAuditor],
+              targetAgent: targetAgentForRewrite,
+              payload: {
+                action: 'swipe_landing_local',
+                sourceUrl: url,
+                product: productPayloadForRow as unknown as Record<string, unknown>,
+                tone: 'professional',
+                language: cloneConfig.language || 'it',
+                knowledge: {
+                  prompts: rowKnowledge.prompts,
+                  project: {
+                    name: cloneConfig.productName,
+                    brief: briefStrForDebug || null,
+                    market_research: mrForDebug ?? null,
+                    notes: null,
+                  },
+                },
+                htmlLength: (htmlToRewrite || '').length,
+              },
+              briefSource: briefStrForDebug ? 'manuale' : 'mancante',
+              mrSource: mrForDebug ? 'manuale' : 'mancante',
+            }),
+          );
+          if (!debugProceed) {
+            throw new Error("Annullato dall'utente nel preview debug.");
+          }
 
           const enqueueRes = await fetch('/api/openclaw/queue', {
             method: 'POST',
@@ -6980,6 +7093,11 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
           </div>
         </div>
       )}
+
+      {/* Swipe Debug Modal — bloccante prima di enqueueare un job
+          swipe_landing_local a Neo / Morfeo. Mostra payload, brief,
+          MR, regole anti-paraphrase iniettate, agente, workspace. */}
+      <SwipeDebugModal info={swipeDebugInfo} onResolve={closeSwipeDebug} />
     </div>
   );
 }
