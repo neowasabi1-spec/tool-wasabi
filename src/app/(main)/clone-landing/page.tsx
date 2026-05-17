@@ -460,9 +460,11 @@ export default function CloneLandingPage() {
       agentName: AUDITOR_LABEL[chosen],
       targetAgent,
       workspaceDir: chosen === 'neo'
-        ? 'C:\\Users\\Neo\\.openclaw\\workspace (agent main / Neo)'
-        : 'C:\\Users\\Neo\\.openclaw\\workspace-morpheus (agent morpheus / Morfeo)',
-      sharedKnowledgeDoc: 'C:\\Users\\Neo\\.openclaw\\workspace\\agents\\SHARED-KNOWLEDGE\\processes\\swipe-html-process.md\n(regola fondamentale: NON adattare il competitor, RISCRIVERE dal brief)',
+        ? 'PC Windows (Neo) — C:\\Users\\Neo\\.openclaw\\workspace (agent main)'
+        : 'Mac (Morfeo) — ~/.openclaw/workspace-morpheus (agent morpheus). Il job viene messo in coda su Supabase e raccolto dal worker sul Mac.',
+      sharedKnowledgeDoc: chosen === 'neo'
+        ? 'C:\\Users\\Neo\\.openclaw\\workspace\\agents\\SHARED-KNOWLEDGE\\processes\\swipe-html-process.md\n(regola fondamentale: NON adattare il competitor, RISCRIVERE dal brief)'
+        : 'Morfeo gira sul Mac, ha il suo workspace separato. Le regole anti-paraphrase arrivano comunque via openclaw-extra-context.md committato nel repo: appena il Mac fa `git pull` e riavvia il worker, anche Morfeo le carica.',
       payload: {
         action: payload.action,
         sourceUrl: payload.sourceUrl,
