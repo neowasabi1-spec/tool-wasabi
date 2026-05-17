@@ -80,6 +80,41 @@ export default function CloneLandingPage() {
   const [viewMode, setViewMode] = useState<'preview' | 'code'>('preview');
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showSwipeForm, setShowSwipeForm] = useState(false);
+  // Debug modal: prima di enqueueare un job openclaw, apriamo un popup
+  // che mostra ESATTAMENTE cosa verra' passato a Neo/Morfeo (knowledge,
+  // brief, MR, product facts, regole iniettate, agente scelto). L'utente
+  // clicca "Procedi" o "Annulla". Idea: rende visibile che cosa il
+  // worker passa al modello, cosi' si capisce se il problema e' nel
+  // prompt (mancano dati) o nel modello (li riceve ma ignora).
+  type SwipeDebugInfo = {
+    agent: Auditor;
+    agentName: string;
+    targetAgent: string | null;
+    workspaceDir: string;
+    sharedKnowledgeDoc: string;
+    payload: {
+      action: string;
+      sourceUrl: string | null;
+      product: ProductInfo;
+      tone: string;
+      language: string;
+      knowledge: {
+        prompts: unknown[];
+        project: {
+          name: string;
+          brief: string | null;
+          market_research: unknown;
+          notes: string | null;
+        };
+      };
+      htmlLength: number;
+    };
+    briefSource: 'manuale' | 'progetto' | 'mancante';
+    mrSource: 'manuale' | 'progetto' | 'mancante';
+    rulesInjected: string;
+  };
+  const [swipeDebugInfo, setSwipeDebugInfo] = useState<SwipeDebugInfo | null>(null);
+  const swipeDebugResolveRef = useRef<((proceed: boolean) => void) | null>(null);
   const [product, setProduct] = useState<ProductInfo>(defaultProduct);
   const [tone, setTone] = useState<'professional' | 'friendly' | 'urgent' | 'luxury'>('professional');
   const [language, setLanguage] = useState<'it' | 'en'>('it');
@@ -410,6 +445,47 @@ export default function CloneLandingPage() {
       language,
       knowledge,
     };
+
+    // ── DEBUG MODAL ────────────────────────────────────────────────
+    // Prima di enqueueare apriamo un popup con tutto quello che sta
+    // per essere passato all'agente. Cosi' l'utente vede a colpo
+    // d'occhio se brief/MR/product facts arrivano davvero, quale
+    // agente sceglie, quale workspace ha (Neo=workspace, Trinity=
+    // workspace-trinity, Morpheus=workspace-morpheus), quale
+    // documento SHARED-KNOWLEDGE viene applicato per lo swipe, e
+    // quali regole anti-paraphrase il worker inietta dal file
+    // openclaw-extra-context.md.
+    const debugInfo: SwipeDebugInfo = {
+      agent: chosen,
+      agentName: AUDITOR_LABEL[chosen],
+      targetAgent,
+      workspaceDir: chosen === 'neo'
+        ? 'C:\\Users\\Neo\\.openclaw\\workspace (agent main / Neo)'
+        : 'C:\\Users\\Neo\\.openclaw\\workspace-morpheus (agent morpheus / Morfeo)',
+      sharedKnowledgeDoc: 'C:\\Users\\Neo\\.openclaw\\workspace\\agents\\SHARED-KNOWLEDGE\\processes\\swipe-html-process.md\n(regola fondamentale: NON adattare il competitor, RISCRIVERE dal brief)',
+      payload: {
+        action: payload.action,
+        sourceUrl: payload.sourceUrl,
+        product: payload.product as ProductInfo,
+        tone: payload.tone as string,
+        language: payload.language as string,
+        knowledge: payload.knowledge,
+        htmlLength: result.html?.length || 0,
+      },
+      briefSource: briefSource as 'manuale' | 'progetto' | 'mancante',
+      mrSource: mrSource as 'manuale' | 'progetto' | 'mancante',
+      rulesInjected: 'openclaw-extra-context.md (drop accanto al worker): 5 regole obbligatorie tra cui "NON adattare = SBAGLIATO, RISCRIVERE dal brief = GIUSTO", lunghezza blocco, fact substitution, brief come fonte di verita\', auto-check pre-risposta.',
+    };
+
+    const proceed = await new Promise<boolean>((resolve) => {
+      swipeDebugResolveRef.current = resolve;
+      setSwipeDebugInfo(debugInfo);
+    });
+    setSwipeDebugInfo(null);
+    swipeDebugResolveRef.current = null;
+    if (!proceed) {
+      throw new Error('Annullato dall\'utente nel preview debug.');
+    }
 
     const enqueueRes = await fetch('/api/openclaw/queue', {
       method: 'POST',
@@ -1315,6 +1391,129 @@ export default function CloneLandingPage() {
           }}
           onClose={() => setShowEditor(false)}
         />
+      )}
+
+      {/* Swipe Debug Modal — mostra ESATTAMENTE cosa viene passato a
+          Neo/Morfeo prima di enqueueare il job. Bloccante: l'utente
+          deve cliccare "Procedi" per andare avanti, "Annulla" per
+          abortire. */}
+      {swipeDebugInfo && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[100] p-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-5xl w-full max-h-[90vh] overflow-hidden flex flex-col">
+            <div className="px-6 py-4 border-b border-gray-200 bg-gradient-to-r from-purple-600 to-indigo-600 flex items-center justify-between">
+              <div>
+                <h2 className="text-xl font-bold text-white">Swipe Debug — cosa verra' passato a {swipeDebugInfo.agentName}</h2>
+                <p className="text-white/80 text-sm">Verifica prima di lanciare: brief, market research, product facts, regole iniettate.</p>
+              </div>
+              <button
+                onClick={() => swipeDebugResolveRef.current?.(false)}
+                className="text-white/80 hover:text-white text-2xl leading-none"
+                title="Annulla"
+              >×</button>
+            </div>
+
+            <div className="overflow-y-auto p-6 space-y-5 text-sm">
+              {/* AGENTE */}
+              <section>
+                <h3 className="font-semibold text-gray-900 mb-2">🤖 Agente scelto</h3>
+                <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 space-y-1">
+                  <div><span className="text-gray-500">Nome:</span> <strong>{swipeDebugInfo.agentName}</strong></div>
+                  <div><span className="text-gray-500">target_agent (routing Supabase):</span> <code className="text-purple-700">{swipeDebugInfo.targetAgent || '(null = qualunque worker)'}</code></div>
+                  <div><span className="text-gray-500">Workspace OpenClaw:</span> <code className="text-xs text-gray-700 break-all">{swipeDebugInfo.workspaceDir}</code></div>
+                </div>
+              </section>
+
+              {/* DOCUMENTO INTERNO */}
+              <section>
+                <h3 className="font-semibold text-gray-900 mb-2">📄 Documento SHARED-KNOWLEDGE usato per gli swipe</h3>
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 whitespace-pre-line text-gray-700">{swipeDebugInfo.sharedKnowledgeDoc}</div>
+                <p className="text-xs text-gray-500 mt-1">Questo documento sta nel workspace di Neo (main). Trinity/Morpheus non lo vedono nel loro bootstrap-context, ma le sue regole arrivano comunque via <code>openclaw-extra-context.md</code> (vedi sotto).</p>
+              </section>
+
+              {/* REGOLE OBBLIGATORIE INIETTATE */}
+              <section>
+                <h3 className="font-semibold text-gray-900 mb-2">⚠️ Regole obbligatorie iniettate in ogni call (openclaw-extra-context.md)</h3>
+                <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-gray-800">{swipeDebugInfo.rulesInjected}</div>
+              </section>
+
+              {/* PRODOTTO */}
+              <section>
+                <h3 className="font-semibold text-gray-900 mb-2">🛍️ Prodotto target</h3>
+                <pre className="bg-gray-50 border border-gray-200 rounded-lg p-3 overflow-x-auto text-xs whitespace-pre-wrap">{JSON.stringify(swipeDebugInfo.payload.product, null, 2)}</pre>
+              </section>
+
+              {/* BRIEF */}
+              <section>
+                <h3 className="font-semibold text-gray-900 mb-2">
+                  📝 Brief (source: <span className={swipeDebugInfo.briefSource === 'mancante' ? 'text-red-600' : 'text-green-700'}>{swipeDebugInfo.briefSource}</span>, {(swipeDebugInfo.payload.knowledge.project.brief || '').length} char)
+                </h3>
+                {swipeDebugInfo.payload.knowledge.project.brief ? (
+                  <pre className="bg-gray-50 border border-gray-200 rounded-lg p-3 overflow-x-auto text-xs whitespace-pre-wrap max-h-60">{swipeDebugInfo.payload.knowledge.project.brief}</pre>
+                ) : (
+                  <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-red-700">⚠ Nessun brief: l'agente dovra' ricostruirlo dai suoi archivi nel primer step (qualita' inferiore).</div>
+                )}
+              </section>
+
+              {/* MARKET RESEARCH */}
+              <section>
+                <h3 className="font-semibold text-gray-900 mb-2">
+                  🔍 Market Research (source: <span className={swipeDebugInfo.mrSource === 'mancante' ? 'text-red-600' : 'text-green-700'}>{swipeDebugInfo.mrSource}</span>, {(() => {
+                    const mr = swipeDebugInfo.payload.knowledge.project.market_research;
+                    if (typeof mr === 'string') return mr.length;
+                    try { return JSON.stringify(mr).length; } catch { return 0; }
+                  })()} char)
+                </h3>
+                {swipeDebugInfo.payload.knowledge.project.market_research ? (
+                  <pre className="bg-gray-50 border border-gray-200 rounded-lg p-3 overflow-x-auto text-xs whitespace-pre-wrap max-h-60">{typeof swipeDebugInfo.payload.knowledge.project.market_research === 'string' ? swipeDebugInfo.payload.knowledge.project.market_research : JSON.stringify(swipeDebugInfo.payload.knowledge.project.market_research, null, 2)}</pre>
+                ) : (
+                  <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-red-700">⚠ Nessuna market research.</div>
+                )}
+              </section>
+
+              {/* KNOWLEDGE PROMPTS */}
+              <section>
+                <h3 className="font-semibold text-gray-900 mb-2">📚 Tecniche libreria saved_prompts ({swipeDebugInfo.payload.knowledge.prompts.length})</h3>
+                {swipeDebugInfo.payload.knowledge.prompts.length === 0 ? (
+                  <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 text-yellow-800">Nessuna tecnica caricata dalla libreria. L'agente usera' solo le sue tecniche interne (Schwartz/Sultanic/Georgi/Halbert/ecc).</div>
+                ) : (
+                  <ul className="bg-gray-50 border border-gray-200 rounded-lg p-3 space-y-1 max-h-40 overflow-y-auto">
+                    {swipeDebugInfo.payload.knowledge.prompts.map((p, idx) => {
+                      const pp = p as { title?: string; category?: string; tags?: string[] };
+                      return (
+                        <li key={idx} className="text-xs">
+                          <strong>{pp.title || '(no title)'}</strong> — <span className="text-gray-500">{pp.category || '?'}</span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </section>
+
+              {/* PAYLOAD META */}
+              <section>
+                <h3 className="font-semibold text-gray-900 mb-2">⚙️ Payload tecnico</h3>
+                <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 text-xs space-y-1">
+                  <div><span className="text-gray-500">Action:</span> <code>{swipeDebugInfo.payload.action}</code></div>
+                  <div><span className="text-gray-500">Source URL:</span> <code className="break-all">{swipeDebugInfo.payload.sourceUrl || '(nessuna, viene usato html clonato)'}</code></div>
+                  <div><span className="text-gray-500">Tono:</span> <code>{swipeDebugInfo.payload.tone}</code></div>
+                  <div><span className="text-gray-500">Lingua output:</span> <code>{swipeDebugInfo.payload.language}</code></div>
+                  <div><span className="text-gray-500">HTML originale:</span> <code>{swipeDebugInfo.payload.htmlLength} char</code></div>
+                </div>
+              </section>
+            </div>
+
+            <div className="px-6 py-4 border-t border-gray-200 bg-gray-50 flex items-center justify-end gap-3">
+              <button
+                onClick={() => swipeDebugResolveRef.current?.(false)}
+                className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors"
+              >Annulla</button>
+              <button
+                onClick={() => swipeDebugResolveRef.current?.(true)}
+                className="px-6 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors font-semibold"
+              >Procedi col swipe →</button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
