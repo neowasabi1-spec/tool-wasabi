@@ -742,60 +742,27 @@ function extractProductContextFromSystemPrompt(systemPrompt) {
   const nameMatch = systemPrompt.match(/PRODOTTO:\s*(.+)/i)
     || systemPrompt.match(/PRODUCT NAME:\s*(.+)/i);
   if (nameMatch) productName = nameMatch[1].trim();
-
-  // Estraiamo TRE blocchi dal system prompt, in ordine di priorità per il
-  // chat-style. Senza questi blocchi Neo/Morfeo riceve solo {id,text,tag} +
-  // nome prodotto e produce copy generico (bug confermato leggendo le
-  // sessioni in .openclaw/agents/trinity/sessions/*.jsonl del 16/05):
-  //   A. PRODUCT FACTS    → cheat-sheet di fatti concreti (dottori, durate,
-  //                          prezzi, garanzie). SENZA QUESTA, il chat-style
-  //                          non può fare fact-substitution e lascia
-  //                          "Dr. Sarah Johnson" / "15 minutes" / "$97"
-  //                          dell'originale.
-  //   B. ANALISI PREP     → big idea + leve + tecniche maestri citate dal
-  //                          primer iniziale. SENZA QUESTA, ogni gap-fill
-  //                          va in direzione diversa rompendo la coerenza
-  //                          narrativa del batch principale.
-  //   C. CONTESTO PRODOTTO→ brief + market research + benefits del prodotto.
-  function extractBlock(start, stopRegex) {
-    const idx = systemPrompt.search(start);
-    if (idx < 0) return '';
-    const after = systemPrompt.substring(idx);
-    const sepIdx = after.search(/[:\n]/);
-    if (sepIdx < 0) return '';
-    const body = after.substring(sepIdx + 1);
-    const stopIdx = body.search(stopRegex);
-    return (stopIdx >= 0 ? body.substring(0, stopIdx) : body).trim();
-  }
-
-  const productFacts = extractBlock(
-    /===\s*PRODUCT FACTS/i,
-    /\n===\s*FINE PRODUCT FACTS|\n===\s*KNOWLEDGE|\n===\s*COPYWRITING|\nCONTESTO PRODOTTO|\nFULL PRODUCT CONTEXT|\nTONO|\nTONE|\nLINGUA|\nOUTPUT LANGUAGE|\nREGOLE|\nCRITICAL RULES/i,
-  );
-
-  const agentPrep = extractBlock(
-    /===\s*ANALISI PREP DELL'AGENTE/i,
-    /\n===\s*FINE ANALISI PREP|\n===\s*KNOWLEDGE STATICA|\n===\s*FINE KNOWLEDGE/i,
-  );
-
-  const productCtx = extractBlock(
-    /CONTESTO PRODOTTO COMPLETO|FULL PRODUCT CONTEXT/i,
-    /\n\s*===\s*COPYWRITING FRAMEWORK|\n\s*===\s*KNOWLEDGE|\n\s*TONO|\n\s*TONE|\n\s*LINGUA|\n\s*OUTPUT LANGUAGE|\n\s*REGOLE|\n\s*CRITICAL RULES/i,
-  );
-
-  const parts = [];
-  if (productFacts) parts.push(`=== PRODUCT FACTS (sostituisci ogni fatto equivalente del competitor con QUESTI) ===\n${productFacts}`);
-  if (agentPrep) parts.push(`=== BIG IDEA + LEVE + TECNICHE GIA' SCELTE PER QUESTA LANDING (rispettale, NON cambiare direzione) ===\n${agentPrep}`);
-  if (productCtx) parts.push(`=== CONTESTO PRODOTTO (brief + market research) ===\n${productCtx}`);
-
-  let context = parts.join('\n\n');
-  // Cap globale: chat-style fa 1 call per testo, non vogliamo prompt
-  // giganti × N testi. PRODUCT FACTS è il pezzo più importante quindi
-  // viene per primo e sopravvive al taglio anche se gli altri due
-  // vengono troncati.
-  const CAP = 8000;
-  if (context.length > CAP) {
-    context = context.substring(0, CAP - 80) + '\n[...troncato per chat-mode: il system prompt globale del batch principale ha già visto tutto.]';
+  // Tutto cio' che sta tra "CONTESTO PRODOTTO COMPLETO" e la PRIMA
+  // sezione successiva (KB built-in / KNOWLEDGE TOOL / TONO). Cosi'
+  // chat-style NON spedisce 22K char di KB built-in in OGNI call:
+  // il system prompt globale del rewrite la include gia' al primo
+  // round, qui ci serve solo il contesto-prodotto stretto.
+  let context = '';
+  const ctxStart = systemPrompt.search(/CONTESTO PRODOTTO COMPLETO|FULL PRODUCT CONTEXT/i);
+  if (ctxStart >= 0) {
+    const after = systemPrompt.substring(ctxStart);
+    const afterColon = after.indexOf(':');
+    if (afterColon >= 0) {
+      const block = after.substring(afterColon + 1);
+      // Stop alla PRIMA fra: KB built-in, knowledge tool, tono, lingua, regole.
+      const stop = block.search(/\n\s*(?:===\s*COPYWRITING FRAMEWORK|===\s*KNOWLEDGE|TONO|TONE|LINGUA|OUTPUT LANGUAGE|REGOLE|CRITICAL RULES)/i);
+      context = (stop >= 0 ? block.substring(0, stop) : block).trim();
+      // Cap supplementare a 4000 char per sicurezza: chat-style fa una
+      // call per testo, non vogliamo blastare prompt giganti × N testi.
+      if (context.length > 4000) {
+        context = context.substring(0, 3900) + '\n[...troncato per chat-mode...]';
+      }
+    }
   }
   return { productName, context };
 }
@@ -804,65 +771,7 @@ function extractProductContextFromSystemPrompt(systemPrompt) {
 // system minimale, user message in linguaggio naturale, risposta libera.
 // Differenza fondamentale vs runBatch: niente JSON, niente batch, niente
 // regole su lunghezza/format, il modello scrive come scriverebbe in chat.
-// Fast-path: alcuni "testi" estratti dalla pagina sono in realtà valori
-// tecnici (viewport, charset, dimensioni, color hex, percentuali, ID
-// numerici, CSS shorthand). Su questi il modello giustamente rifiuta di
-// fare copywriting e ritorna l'originale identico, ma ogni call paga
-// ~$1.20 di cacheWrite. Li riconosciamo e li short-circuitiamo PRIMA
-// della call (verificato leggendo agents/trinity/sessions/*.jsonl: il
-// modello sta sprecando soldi su "width=device-width, initial-scale=1.0").
-function isNonCopyTechnicalValue(text, tag) {
-  if (typeof text !== 'string') return true;
-  const t = text.trim();
-  if (!t) return true;
-  // Troppo corto per essere copy
-  if (t.length < 4) return true;
-  if (!/[a-zA-Z]/.test(t)) return true;
-  // Solo numeri / unità / percentuali / valute / dimensioni
-  if (/^[\d\s.,:%$€£¥+\-/x×]+$/.test(t)) return true;
-  // Color hex / rgb / hsl
-  if (/^#?[0-9a-f]{3,8}$/i.test(t)) return true;
-  if (/^(?:rgb|rgba|hsl|hsla|var|calc|url)\s*\(/i.test(t)) return true;
-  // Viewport / charset / meta http-equiv typical values
-  if (/^\s*(?:width|height|initial-scale|maximum-scale|minimum-scale|user-scalable|viewport-fit)\s*=/i.test(t)) return true;
-  if (/^(?:utf-8|utf-16|iso-8859-\d+|windows-12\d{2})$/i.test(t)) return true;
-  if (/^(?:no-cache|no-store|public|private|max-age|noindex|nofollow|index|follow|noimageindex|noarchive|notranslate|origin|same-origin|cross-origin|anonymous|use-credentials)/i.test(t)) return true;
-  // CSS class / id-like (no spaces, kebab/snake/camel only, no real words)
-  if (/^[a-zA-Z][\w-]{0,40}$/.test(t) && !/\s/.test(t) && t.length < 25) {
-    // Permetti se sembra una parola reale (ha vocali in posizione "naturale")
-    const vowelRatio = (t.match(/[aeiouAEIOU]/g) || []).length / t.length;
-    if (vowelRatio < 0.2) return true;
-  }
-  // URL / path / email / coordinate
-  if (/^https?:\/\//i.test(t)) return true;
-  if (/^\/[\w\-./]+$/.test(t)) return true;
-  if (/^[\w.+-]+@[\w.-]+\.[a-z]{2,}$/i.test(t)) return true;
-  // Date / time iso-like
-  if (/^\d{4}-\d{2}-\d{2}/.test(t)) return true;
-  // Hint dal tag estrattore: sono tecnici quasi sempre
-  if (tag) {
-    const lower = String(tag).toLowerCase();
-    if (/^attr:meta-content$/.test(lower)) {
-      // i meta tag content sono quasi sempre tecnici (viewport, charset,
-      // robots), TRANNE description / og:description / twitter:description
-      // — quelli portano copy. Senza il nome dell'attributo "name" qui non
-      // possiamo distinguere, ma il batch principale li avrà gestiti coi
-      // markers giusti. Nel gap-fill chat-style li skippiamo.
-      return true;
-    }
-    if (/^attr:(?:href|src|action|formaction|cite|data|srcset|sizes|integrity|crossorigin|rel|media|target|type|class|id|name|for|role|tabindex|aria-(?!label|labelledby|describedby)|data-(?!.*text|.*title|.*description|.*heading|.*subtitle|.*caption|.*label))/i.test(lower)) {
-      return true;
-    }
-  }
-  return false;
-}
-
 async function rewriteOneTextChatStyle({ id, originalText, tag, productName, productContext, lang }) {
-  // Skip valori tecnici prima della call (vedi isNonCopyTechnicalValue)
-  if (isNonCopyTechnicalValue(originalText, tag)) {
-    log(`    ↩ chat-style id=${id}: valore tecnico/non-copy (${(tag || 'no-tag')}), skip call e ritorno originale`);
-    return null;
-  }
   const langLabel = lang === 'en' ? 'English' : (lang === 'it' || !lang ? 'italiano' : lang);
   const tagHint = tag ? ` (appare come <${tag.replace(/^(tag|mixed|attr):/, '')}> nella pagina)` : '';
   // System minimale: stesso pattern di quando l'utente scrive a Neo
@@ -1471,6 +1380,11 @@ async function processMessage(msg) {
             const k = prep.knowledgeIncluded;
             log(`    · prompts pronti: ${promptTexts.length} testi, KB built-in ${k.builtinKbChars} char, ${k.promptCount} tecniche libreria, brief=${k.projectBriefChars} char, MR=${k.marketResearchChars} char`);
           }
+          if (prep.languageInfo) {
+            const li = prep.languageInfo;
+            const source = li.requested ? 'UI' : (li.detected ? 'auto-detect' : 'default');
+            log(`    · 🌍 LINGUA output: ${li.label} (${li.effective}) [source=${source}, detected=${li.detected || 'n/a'}], prompt scritto in ${li.promptLanguage}`);
+          }
           if (prep.productFacts && prep.productFacts.sheetChars > 0) {
             const f = prep.productFacts;
             const summary = [];
@@ -1546,33 +1460,6 @@ async function processMessage(msg) {
             const briefShort = briefStr.length > 4000 ? briefStr.slice(0, 4000) + '\n[...troncato per limite payload primer...]' : briefStr;
             const mrShort = mrStr.length > 4000 ? mrStr.slice(0, 4000) + '\n[...troncato per limite payload primer...]' : mrStr;
 
-            // Estrai il TESTO PLAIN della landing originale dal HTML. Senza
-            // questo, il primer sceglie "big idea" e "leve" al buio (vede solo
-            // URL + brief, NON il copy del competitor). Cap a 6K char: oltre
-            // esplode il payload del primer (limite OpenClaw ~80K).
-            const pagePreview = (() => {
-              if (!originalHtml || typeof originalHtml !== 'string') return '';
-              const plain = originalHtml
-                .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-                .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-                .replace(/<noscript[\s\S]*?<\/noscript>/gi, ' ')
-                .replace(/<!--[\s\S]*?-->/g, ' ')
-                .replace(/<[^>]+>/g, ' ')
-                .replace(/&nbsp;/g, ' ')
-                .replace(/&amp;/g, '&')
-                .replace(/&lt;/g, '<')
-                .replace(/&gt;/g, '>')
-                .replace(/&quot;/g, '"')
-                .replace(/&#39;/g, "'")
-                .replace(/\s+/g, ' ')
-                .trim();
-              if (plain.length <= 6000) return plain;
-              // Prendi inizio (hook/headline) + finale (offer/cta) — è dove
-              // sta la roba persuasiva. Saltiamo il middle (testimonial+modulo
-              // lista che spesso è ripetitivo).
-              return `${plain.slice(0, 4500)}\n\n[...porzione centrale omessa per limite payload primer...]\n\n${plain.slice(-1500)}`;
-            })();
-
             const productLines = [];
             productLines.push(`PRODOTTO DA PROMUOVERE: ${job.product?.name || projForCheck?.name || '(non fornito — usa il sourceUrl per dedurlo)'}`);
             if (job.product?.description) productLines.push(`DESCRIZIONE FORNITA DAL TOOL:\n${job.product.description}`);
@@ -1581,7 +1468,6 @@ async function processMessage(msg) {
             else productLines.push('BRIEF FORNITO DAL TOOL: ⚠ NESSUNO. DEVI costruirtelo TU consultando i TUOI archivi prodotti per questo specifico prodotto / settore.');
             if (mrShort) productLines.push(`MARKET RESEARCH FORNITA DAL TOOL (parziale — usa anche il TUO archivio per arricchirla):\n${mrShort}`);
             else productLines.push('MARKET RESEARCH FORNITA DAL TOOL: ⚠ NESSUNA. DEVI costruirtela TU consultando i TUOI dati di mercato storici per questo settore.');
-            if (pagePreview) productLines.push(`COPY ORIGINALE DEL COMPETITOR (testo plain estratto, ${pagePreview.length} char — LEGGILO ATTENTAMENTE prima di scegliere big idea/leve: questo e' il flusso narrativo che andrai a sovrascrivere):\n${pagePreview}`);
             const productCtx = productLines.join('\n\n');
 
             const primerSystem = `Sei un AGENTE direct-response (NON un LLM generico). Hai accesso a:
@@ -1627,7 +1513,6 @@ ONESTA': se nei TUOI archivi non hai dati su questo prodotto/settore e non puoi 
               const primerCapped = trimmed.length > 8000 ? trimmed.slice(0, 8000) + '\n[...primer troncato per limite payload...]' : trimmed;
               enrichedSystemPrompt = `${enrichedSystemPrompt}\n\n=== ANALISI PREP DELL'AGENTE (archivi + tecniche maestri citate + big idea + leve, dal primer su questo prodotto) ===\n${primerCapped}\n=== FINE ANALISI PREP ===\n\nIMPORTANTE: nei rewrite che seguono, APPLICA la big idea + le leve scelte qui sopra, e USA le tecniche dei maestri che hai citato. Niente parafrasi del competitor — ogni testo deve riflettere LA NOSTRA big idea coerente.`;
               log(`    ✓ agent primer: ${primerCapped.length} chars di analisi (Stefan Georgi/Sultanic/etc + brief/MR internalizzati) iniettati nel system prompt`);
-              log(`    ► primer preview (primi 800 char): ${primerCapped.slice(0, 800).replace(/\n/g, ' | ')}${primerCapped.length > 800 ? '...' : ''}`);
             } else {
               log('    ⚠ agent primer: risposta troppo corta o vuota — il system prompt usera\' solo brief/MR senza analisi prep');
             }
