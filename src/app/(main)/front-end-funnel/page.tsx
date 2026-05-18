@@ -337,7 +337,7 @@ async function rewriteWithOpenClawFromBrowser(args: {
 
   // 3. Poll Supabase directly from browser until all batches complete or timeout
   const POLL_INTERVAL = 3000;
-  const MAX_WAIT_MS = 30 * 60 * 1000; // 30 minutes
+  const MAX_WAIT_MS = 60 * 60 * 1000; // 60 minutes (job lunghi con 280+ testi possono richiedere 35-50 min)
   const startTime = Date.now();
   const rewrites: Array<{ id: number; rewritten: string }> = [];
   const completedIds = new Set<string>();
@@ -2373,11 +2373,12 @@ export default function FrontEndFunnel() {
     // No-pickup watchdog: se entro 30s nessun worker prende la PRIMA
     // pagina, fallisci tutto subito invece di aspettare 10min × N
     // pagine per niente.
-    // 30 min per pagina: Trinity locale processa ~25K char di system prompt
-    // (KB built-in + knowledge tool) per ogni batch — su landing grosse
-    // (100+ testi) puo' richiedere 15-25 min. Meglio aspettare che dare
-    // timeout finto e perdere il risultato che e' gia' in Supabase.
-    const PAGE_TIMEOUT_MS = 30 * 60 * 1000;
+    // 60 min per pagina: Neo/Morfeo locali processano ~25K char di system
+    // prompt (KB built-in + knowledge tool) per ogni batch — su landing
+    // grosse (250+ testi estratti) puo' richiedere 35-50 min. Meglio
+    // aspettare che dare timeout finto e perdere il risultato che e' gia'
+    // in Supabase (controllabile dalla History).
+    const PAGE_TIMEOUT_MS = 60 * 60 * 1000;
     const NO_PICKUP_TIMEOUT_MS = 30 * 1000;
     const POLL_INTERVAL_MS = 2500;
 
@@ -2499,7 +2500,7 @@ export default function FrontEndFunnel() {
         while (true) {
           if (swipeAllCancelRef.current) break;
           if (Date.now() - t0 > PAGE_TIMEOUT_MS) {
-            throw new Error(`Timeout: il worker ${AUDITOR_LABEL[chosen]} non ha completato in ${PAGE_TIMEOUT_MS / 1000}s`);
+            throw new Error(`Timeout UI: ${AUDITOR_LABEL[chosen]} non ha completato in ${Math.round(PAGE_TIMEOUT_MS / 60000)} min. ATTENZIONE: il worker potrebbe ancora finire — controlla la Swipe History tra 5-10 min o openclaw-worker.log. Per landing grosse usa REWRITE_QUALITY_MODE=oneshot sul worker (~5x piu' veloce).`);
           }
           await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
           const pollRes = await fetch(`/api/openclaw/queue?id=${encodeURIComponent(enqueued.id)}`);
@@ -3209,7 +3210,7 @@ export default function FrontEndFunnel() {
             message: `In coda → ${AUDITOR_LABEL[chosenAuditor]} (job ${enqueued.id.slice(0, 8)})…`,
           });
 
-          const PAGE_TIMEOUT_MS = 30 * 60 * 1000;
+          const PAGE_TIMEOUT_MS = 60 * 60 * 1000; // 60 min: landing grosse (250+ testi) richiedono 35-50 min
           const POLL_INTERVAL_MS = 2500;
           // No-pickup watchdog: se entro 30s nessun worker ha
           // marcato il job come 'processing' E nessun altro job e'
@@ -3230,7 +3231,7 @@ export default function FrontEndFunnel() {
           } | null = null;
           while (true) {
             if (Date.now() - t0 > PAGE_TIMEOUT_MS) {
-              throw new Error(`Timeout: il worker ${AUDITOR_LABEL[chosenAuditor]} non ha completato in ${PAGE_TIMEOUT_MS / 1000}s`);
+              throw new Error(`Timeout UI: ${AUDITOR_LABEL[chosenAuditor]} non ha completato in ${Math.round(PAGE_TIMEOUT_MS / 60000)} min. ATTENZIONE: il worker potrebbe ancora finire — controlla la Swipe History tra 5-10 min o openclaw-worker.log. Per landing grosse usa REWRITE_QUALITY_MODE=oneshot sul worker (~5x piu' veloce).`);
             }
             await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
             const pollRes = await fetch(`/api/openclaw/queue?id=${encodeURIComponent(enqueued.id)}`);

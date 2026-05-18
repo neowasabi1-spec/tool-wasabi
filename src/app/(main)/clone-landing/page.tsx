@@ -435,7 +435,7 @@ export default function CloneLandingPage() {
     // mostrare "in corso" per 30 min che dare timeout finto a 10 min e
     // perdere il risultato che e' gia' in Supabase.
     const t0 = Date.now();
-    const POLL_TIMEOUT_MS = 30 * 60 * 1000;
+    const POLL_TIMEOUT_MS = 60 * 60 * 1000; // 60 min: landing grosse possono richiedere 35-50 min
     const POLL_INTERVAL_MS = 2500;
     let lastStatus: string | null = null;
     while (true) {
