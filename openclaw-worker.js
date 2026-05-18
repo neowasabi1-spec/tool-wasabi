@@ -86,7 +86,19 @@ const OPENCLAW_HOST = process.env.OPENCLAW_HOST || '127.0.0.1';
 const OPENCLAW_PORT = parseInt(process.env.OPENCLAW_PORT || '18789', 10);
 const OPENCLAW_API_KEY = process.env.OPENCLAW_API_KEY
   || 'ba893c2470e9f12b281ab1031746b5f177b14a746143b1ab';
-const OPENCLAW_MODEL = process.env.OPENCLAW_MODEL || 'openclaw/trinity';
+// OPENCLAW_MODEL: nome dell'agente OpenClaw da invocare via
+// /v1/chat/completions. Risolto DOPO OPENCLAW_AGENT (sotto), perche'
+// il default sensato dipende da chi e' il worker:
+//   - worker Neo (PC Windows) → openclaw/main (l'agente "Neo" che ha
+//     accesso a SHARED-KNOWLEDGE: swipe-html-process.md, swipe-method-
+//     summary.md, ecc — i documenti di processo per gli swipe)
+//   - worker Morfeo (Mac) → openclaw/morpheus (l'agente "Morfeo" col
+//     suo workspace)
+// Storico (rotto): default era 'openclaw/trinity'. Trinity ha workspace
+// separato che NON include SHARED-KNOWLEDGE, quindi gli swipe partivano
+// senza le regole interne anti-paraphrase → testi generici.
+// Si puo' sempre forzare via env var OPENCLAW_MODEL=openclaw/xxx.
+let OPENCLAW_MODEL = (process.env.OPENCLAW_MODEL || '').trim();
 
 // ── LLM backend selector ────────────────────────────────────────
 // Two backends are wired up:
@@ -151,6 +163,25 @@ function resolveAgentIdentity() {
   return null;
 }
 const OPENCLAW_AGENT = resolveAgentIdentity();
+
+// ── Agent → OpenClaw model mapping ──────────────────────────────
+// L'utente sceglie nella UI "Neo" o "Morfeo". Il frontend mette il
+// job in coda con target_agent='openclaw:neo' o 'openclaw:morfeo'.
+// Il worker corrispondente fa pickup. MA il worker deve poi invocare
+// il MODELLO giusto via OpenClaw HTTP gateway, NON 'openclaw/trinity'
+// hardcoded. Mappa:
+//   openclaw:neo    → openclaw/main      (l'agente "Neo" in openclaw.json,
+//                                          workspace con SHARED-KNOWLEDGE)
+//   openclaw:morfeo → openclaw/morpheus  (l'agente "Morfeo"/Morpheus)
+// Se OPENCLAW_MODEL e' stato gia' settato esplicitamente via env, lo
+// rispettiamo. Altrimenti deriviamo dall'OPENCLAW_AGENT del worker.
+const AGENT_TO_MODEL = {
+  'openclaw:neo': 'openclaw/main',
+  'openclaw:morfeo': 'openclaw/morpheus',
+};
+if (!OPENCLAW_MODEL) {
+  OPENCLAW_MODEL = AGENT_TO_MODEL[OPENCLAW_AGENT] || 'openclaw/main';
+}
 
 const TOOL_BASE_URL = process.env.TOOL_BASE_URL
   || 'https://tool-wasabi-neo.netlify.app';
@@ -3276,6 +3307,16 @@ function printBanner() {
     log(`Routing: this worker only claims jobs targeted at "${OPENCLAW_AGENT}" (or untagged legacy jobs).`);
   } else {
     log('Routing: legacy mode — claims ANY pending job (set OPENCLAW_AGENT or rename the OS user to enable explicit routing).');
+  }
+  // Log esplicito su QUALE agente OpenClaw invoca il worker — cosi' si
+  // capisce a colpo d'occhio se la UI dice "Neo" ma poi il worker chiama
+  // Trinity o un altro modello (storicamente: bug).
+  if (process.env.OPENCLAW_MODEL) {
+    log(`Model: ${OPENCLAW_MODEL} (forced via env OPENCLAW_MODEL — set even on UI selection of Neo/Morfeo).`);
+  } else if (AGENT_TO_MODEL[OPENCLAW_AGENT]) {
+    log(`Model: ${OPENCLAW_MODEL} (auto-derived from agent ${OPENCLAW_AGENT}). Override via OPENCLAW_MODEL=openclaw/xxx.`);
+  } else {
+    log(`Model: ${OPENCLAW_MODEL} (fallback default — no OPENCLAW_AGENT in AGENT_TO_MODEL map).`);
   }
   if (STATIC_EXTRA_CONTEXT) {
     log(`Static extra context loaded from ${STATIC_EXTRA_CONTEXT.path} (${STATIC_EXTRA_CONTEXT.content.length} chars) — sara' iniettato in OGNI swipe rewrite.`);
