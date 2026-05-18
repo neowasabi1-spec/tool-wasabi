@@ -309,11 +309,11 @@ export function buildSwipeDebugInfo(args: {
     agentName: args.agentLabel,
     targetAgent: args.targetAgent,
     workspaceDir: isNeo
-      ? 'PC Windows (Neo) — C:\\Users\\Neo\\.openclaw\\workspace (agent main)'
-      : 'Mac (Morfeo) — ~/.openclaw/workspace-morpheus (agent morpheus). Il job viene messo in coda su Supabase e raccolto dal worker sul Mac.',
+      ? 'PC Windows (Neo) — C:\\Users\\Neo\\.openclaw\\workspace (agent main = Neo)'
+      : 'Mac (Morfeo) — workspace di Morfeo sul Mac (agent main = Morfeo, NON c\'entra con `workspace-morpheus` che e\' un sub-agent di Neo sul PC). Il job viene messo in coda su Supabase e raccolto dal worker sul Mac.',
     sharedKnowledgeDoc: isNeo
       ? 'C:\\Users\\Neo\\.openclaw\\workspace\\agents\\SHARED-KNOWLEDGE\\processes\\swipe-html-process.md\n(regola fondamentale: NON adattare il competitor, RISCRIVERE dal brief)'
-      : 'Morfeo gira sul Mac, ha il suo workspace separato. Le regole anti-paraphrase arrivano comunque via openclaw-extra-context.md committato nel repo: appena il Mac fa `git pull` e riavvia il worker, anche Morfeo le carica.',
+      : 'Morfeo gira sul Mac, ha il suo workspace separato (sul Mac lui e\' main). Le regole anti-paraphrase arrivano comunque via openclaw-extra-context.md committato nel repo: appena il Mac fa `git pull` e riavvia il worker, anche Morfeo le carica.',
     rulesInjected:
       'openclaw-extra-context.md (drop accanto al worker): 5 regole obbligatorie tra cui "NON adattare = SBAGLIATO, RISCRIVERE dal brief = GIUSTO", lunghezza blocco, fact substitution, brief come fonte di verita\', auto-check pre-risposta.',
     payload: args.payload,

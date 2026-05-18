@@ -164,23 +164,23 @@ function resolveAgentIdentity() {
 }
 const OPENCLAW_AGENT = resolveAgentIdentity();
 
-// ── Agent → OpenClaw model mapping ──────────────────────────────
-// L'utente sceglie nella UI "Neo" o "Morfeo". Il frontend mette il
-// job in coda con target_agent='openclaw:neo' o 'openclaw:morfeo'.
-// Il worker corrispondente fa pickup. MA il worker deve poi invocare
-// il MODELLO giusto via OpenClaw HTTP gateway, NON 'openclaw/trinity'
-// hardcoded. Mappa:
-//   openclaw:neo    → openclaw/main      (l'agente "Neo" in openclaw.json,
-//                                          workspace con SHARED-KNOWLEDGE)
-//   openclaw:morfeo → openclaw/morpheus  (l'agente "Morfeo"/Morpheus)
-// Se OPENCLAW_MODEL e' stato gia' settato esplicitamente via env, lo
-// rispettiamo. Altrimenti deriviamo dall'OPENCLAW_AGENT del worker.
-const AGENT_TO_MODEL = {
-  'openclaw:neo': 'openclaw/main',
-  'openclaw:morfeo': 'openclaw/morpheus',
-};
+// ── OpenClaw model default ──────────────────────────────────────
+// Ogni worker invoca SEMPRE il suo agente principale, "openclaw/main".
+// Su ogni macchina l'agente "main" e' la persona che possiede quella
+// macchina:
+//   - PC Windows di Neo → openclaw/main = Neo
+//   - Mac di Morfeo     → openclaw/main = Morfeo (sul SUO openclaw.json
+//                          Morfeo e' "main", anche se in tool-wasabi
+//                          ha target_agent='openclaw:morfeo' per il
+//                          routing della coda Supabase)
+// NON usare 'openclaw/trinity' / 'openclaw/morpheus' / 'openclaw/smith':
+// quelli sono i SUB-AGENT di Neo nel suo workspace PC (workspace-trinity,
+// workspace-morpheus, ecc) — non c'entrano nulla con Morfeo del Mac e
+// non hanno accesso a SHARED-KNOWLEDGE.
+// L'override resta possibile via env OPENCLAW_MODEL=openclaw/xxx per
+// chi vuole forzare uno specifico sub-agent.
 if (!OPENCLAW_MODEL) {
-  OPENCLAW_MODEL = AGENT_TO_MODEL[OPENCLAW_AGENT] || 'openclaw/main';
+  OPENCLAW_MODEL = 'openclaw/main';
 }
 
 const TOOL_BASE_URL = process.env.TOOL_BASE_URL
@@ -3310,13 +3310,11 @@ function printBanner() {
   }
   // Log esplicito su QUALE agente OpenClaw invoca il worker — cosi' si
   // capisce a colpo d'occhio se la UI dice "Neo" ma poi il worker chiama
-  // Trinity o un altro modello (storicamente: bug).
+  // un sub-agent sbagliato (storicamente: bug, default era trinity).
   if (process.env.OPENCLAW_MODEL) {
-    log(`Model: ${OPENCLAW_MODEL} (forced via env OPENCLAW_MODEL — set even on UI selection of Neo/Morfeo).`);
-  } else if (AGENT_TO_MODEL[OPENCLAW_AGENT]) {
-    log(`Model: ${OPENCLAW_MODEL} (auto-derived from agent ${OPENCLAW_AGENT}). Override via OPENCLAW_MODEL=openclaw/xxx.`);
+    log(`Model: ${OPENCLAW_MODEL} (forzato via env OPENCLAW_MODEL).`);
   } else {
-    log(`Model: ${OPENCLAW_MODEL} (fallback default — no OPENCLAW_AGENT in AGENT_TO_MODEL map).`);
+    log(`Model: ${OPENCLAW_MODEL} (default = main agent della macchina: Neo sul PC, Morfeo sul Mac). Override via OPENCLAW_MODEL=openclaw/xxx.`);
   }
   if (STATIC_EXTRA_CONTEXT) {
     log(`Static extra context loaded from ${STATIC_EXTRA_CONTEXT.path} (${STATIC_EXTRA_CONTEXT.content.length} chars) — sara' iniettato in OGNI swipe rewrite.`);
