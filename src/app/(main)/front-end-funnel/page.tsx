@@ -273,6 +273,45 @@ function extractTextsForRewriteClient(html: string): Array<{ original: string; t
   }
   return texts;
 }
+
+// Rileva la LINGUA della pagina sorgente. Priorita':
+//   1. attributo <html lang="xx"> nell'HTML (se passato)
+//   2. TLD / path nell'URL (.it/.es/.fr/.de o /it/, /es/ etc)
+//   3. Euristica content: conteggio stopword italiane vs inglesi nelle prime 4K
+//      char di testo visibile (fallback finale)
+// Ritorna 'it' | 'en' | 'es' | 'fr' | 'de' | 'pt' (default 'en' se incerto:
+// la maggior parte delle landing scrappate sono in inglese, e l'utente vuole
+// esplicitamente niente italiano "di default").
+function detectPageLanguage(sourceUrl?: string | null, html?: string | null): string {
+  if (html && typeof html === 'string') {
+    const m = html.match(/<html[^>]*\blang\s*=\s*["']([a-zA-Z]{2})/i);
+    if (m && m[1]) return m[1].toLowerCase();
+  }
+  if (sourceUrl && typeof sourceUrl === 'string') {
+    try {
+      const u = new URL(sourceUrl);
+      const host = u.hostname.toLowerCase();
+      const path = u.pathname.toLowerCase();
+      if (/\.it(\b|$)/.test(host) || /\/it[/-]/.test(path)) return 'it';
+      if (/\.es(\b|$)/.test(host) || /\/es[/-]/.test(path)) return 'es';
+      if (/\.fr(\b|$)/.test(host) || /\/fr[/-]/.test(path)) return 'fr';
+      if (/\.de(\b|$)/.test(host) || /\/de[/-]/.test(path)) return 'de';
+      if (/\.(pt|br)(\b|$)/.test(host) || /\/(pt|br)[/-]/.test(path)) return 'pt';
+      if (/\.(com|us|uk|au|ca|net|org|io|co)(\b|$)/.test(host) || /\/(en|us|uk)[/-]/.test(path)) return 'en';
+    } catch { /* URL invalido */ }
+  }
+  if (html && typeof html === 'string') {
+    const sample = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 4000).toLowerCase();
+    const itHits = (sample.match(/\b(il|la|le|gli|che|con|per|del|della|dei|delle|sono|questo|questa|come|piu|gia|hanno)\b/g) || []).length;
+    const enHits = (sample.match(/\b(the|and|of|is|for|with|that|this|are|have|from|your|you|our|will|can|been)\b/g) || []).length;
+    const esHits = (sample.match(/\b(que|los|las|del|para|con|por|este|esta|como|mas|son|esta|han|estan)\b/g) || []).length;
+    if (esHits > enHits && esHits > itHits) return 'es';
+    if (itHits > enHits && itHits >= 3) return 'it';
+    return 'en';
+  }
+  return 'en';
+}
+
 const REWRITE_SYSTEM_PROMPT = `You are a direct-response copywriter. You rewrite marketing texts for a specific product while keeping the same tone, persuasion structure, and emotional angle.
 
 RULES:
@@ -2320,6 +2359,7 @@ export default function FrontEndFunnel() {
           market_research: previewMr || undefined,
         }
       : { name: '(no project)' };
+    const detectedLangPreview = detectPageLanguage(firstPage.urlToSwipe || null, null);
     const ok = await confirmSwipeDebug(
       buildSwipeDebugInfo({
         agent: chosen as 'neo' | 'morfeo',
@@ -2330,7 +2370,7 @@ export default function FrontEndFunnel() {
           sourceUrl: firstPage.urlToSwipe || null,
           product: previewProduct as unknown as Record<string, unknown>,
           tone: 'professional',
-          language: 'it',
+          language: detectedLangPreview,
           knowledge: {
             prompts: previewPrompts,
             project: {
@@ -2471,6 +2511,7 @@ export default function FrontEndFunnel() {
           );
         }
 
+        const detectedLangForRow = detectPageLanguage(url, null);
         const enqueueRes = await fetch('/api/openclaw/queue', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -2481,7 +2522,7 @@ export default function FrontEndFunnel() {
               sourceUrl: url,
               product: productPayload,
               tone: 'professional',
-              language: 'it',
+              language: detectedLangForRow,
               knowledge: pageKnowledge,
             }),
             targetAgent,
@@ -3121,12 +3162,13 @@ export default function FrontEndFunnel() {
             // non fatale
           }
 
+          const detectedLangSingle = detectPageLanguage(url, htmlToRewrite || null);
           const swipePayload: Record<string, unknown> = {
             action: 'swipe_landing_local',
             sourceUrl: url,
             product: productPayloadForRow,
             tone: 'professional',
-            language: cloneConfig.language || 'it',
+            language: cloneConfig.language || detectedLangSingle,
             knowledge: rowKnowledge,
           };
           if (htmlToRewrite) swipePayload.html = htmlToRewrite;
@@ -3149,7 +3191,7 @@ export default function FrontEndFunnel() {
                 sourceUrl: url,
                 product: productPayloadForRow as unknown as Record<string, unknown>,
                 tone: 'professional',
-                language: cloneConfig.language || 'it',
+                language: cloneConfig.language || detectedLangSingle,
                 knowledge: {
                   prompts: rowKnowledge.prompts,
                   project: {

@@ -3,6 +3,21 @@
 > Questo documento viene iniettato AUTOMATICAMENTE in ogni system prompt
 > di riscrittura. Le regole qui hanno PRECEDENZA su qualsiasi altra
 > istruzione "creativa" e devono essere seguite alla lettera.
+
+## ⚠️ REGOLA LINGUA #0 — ZERO MIX LINGUISTICO
+
+Guarda la "LINGUA OUTPUT" nel system prompt e SCRIVI ESCLUSIVAMENTE in quella lingua.
+
+- Se LINGUA OUTPUT = English → output 100% inglese. Tutti i fact tradotti
+  (es. "9 minuti" → "9 minutes", "8 ore" → "8 hours", "90 giorni" → "90 days").
+- Se LINGUA OUTPUT = Italiano → output 100% italiano.
+- Nomi propri (Dr. Alan Reed, Metabolic Wave, brand) restano identici.
+- VIETATO lasciare parole italiane in un rewrite inglese (e viceversa).
+  Tipico errore da NON fare: "Get Instant Relief with our 9 minuti audio session"
+  → CORRETTO: "Get Instant Relief with our 9-minute audio session".
+
+Prima di emettere il JSON finale, rileggi mentalmente ogni "rewritten":
+se contiene anche UNA parola della lingua sbagliata, riscrivila.
 >
 > Documenti di riferimento (consultabili sul filesystem):
 >  - `C:\Users\Neo\.openclaw\workspace\agents\SHARED-KNOWLEDGE\processes\swipe-html-process.md`

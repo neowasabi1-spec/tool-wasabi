@@ -417,7 +417,7 @@ function buildPrompts({ html, sourceUrl, product, tone, language, knowledge, ext
   const builtinKb = buildBuiltinKnowledge();
   const productFacts = extractProductFacts(product, knowledge);
   const productFactsBlock = buildProductFactsBlock(productFacts);
-  const lang = language || 'it';
+  const lang = language || 'en';
   const toneStr = tone || 'professional';
 
   // PRODUCT FACTS sheet: dati concreti (nome, prezzo, dottori, durate,
@@ -448,6 +448,16 @@ ${productCtx || `(dati catalogo minimi — deriva tutto solo dal nome prodotto: 
 ${builtinKbSection}${knowledgeSection}
 TONO: ${toneStr}
 LINGUA OUTPUT: ${lang === 'it' ? 'Italiano' : lang === 'en' ? 'English' : lang}
+
+⚠️ REGOLA LINGUA (NON NEGOZIABILE):
+- TUTTO il testo che produci in "rewritten" DEVE essere in ${lang === 'it' ? 'ITALIANO PURO' : lang === 'en' ? 'PURE ENGLISH' : lang.toUpperCase()}.
+- Il BRIEF / MARKET RESEARCH / PRODUCT FACTS qui sopra POTREBBERO essere scritti in italiano (es. "9 minuti", "8 ore", "garanzia 90 giorni", "Dr. Alan Reed"): se la LINGUA OUTPUT e' diversa dall'italiano, TRADUCI ogni fact prima di inserirlo nel rewrite.
+  - "9 minuti" → ${lang === 'en' ? '"9 minutes"' : lang === 'es' ? '"9 minutos"' : lang === 'fr' ? '"9 minutes"' : '"9 minuti"'}
+  - "8 ore" → ${lang === 'en' ? '"8 hours"' : lang === 'es' ? '"8 horas"' : lang === 'fr' ? '"8 heures"' : '"8 ore"'}
+  - "90 giorni" → ${lang === 'en' ? '"90 days"' : lang === 'es' ? '"90 dias"' : lang === 'fr' ? '"90 jours"' : '"90 giorni"'}
+  - "il nostro esperto" → ${lang === 'en' ? '"our expert"' : lang === 'es' ? '"nuestro experto"' : lang === 'fr' ? '"notre expert"' : '"il nostro esperto"'}
+  - Nomi propri (es. "Dr. Alan Reed", "Metabolic Wave") restano IDENTICI in qualsiasi lingua.
+- VIETATO mescolare lingue ("9 minuti audio" in un rewrite inglese = ERRORE). Re-leggi mentalmente ogni rewrite: se vedi una parola italiana in un output inglese, riscrivi quella parola.
 
 REGOLE OBBLIGATORIE:
 1. Per ogni testo: NON parafrasare. Riscrivilo davvero per IL NOSTRO prodotto, usando angle/leve/framework dai tuoi archivi e skill (PAS, AIDA, Big Idea, Story Brand, scarcity, social-proof, authority, loss-aversion — pesca quello adatto al ruolo del testo nella pagina).

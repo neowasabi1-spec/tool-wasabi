@@ -908,7 +908,7 @@ async function runRewriteInBatches(systemPrompt, userMessage) {
     const { productName, context: productContext } = extractProductContextFromSystemPrompt(systemPrompt);
     // Detect lingua dal system prompt server-side
     const langMatch = systemPrompt.match(/(?:LINGUA|OUTPUT LANGUAGE).*?:\s*([a-zA-Z]+)/i);
-    const lang = langMatch ? langMatch[1].toLowerCase().slice(0, 2) : 'it';
+    const lang = langMatch ? langMatch[1].toLowerCase().slice(0, 2) : 'en';
     const allRewrites = [];
     let trueRewrites = 0;
     for (let i = 0; i < texts.length; i++) {
@@ -1230,7 +1230,7 @@ async function processMessage(msg) {
             source_url: job.source_url,
             product: job.product,
             tone: job.tone || 'professional',
-            language: job.language || 'it',
+            language: job.language || 'en',
           }, SWIPE_JOB_TIMEOUT_MS);
           responsePayload = JSON.stringify(result);
           break;
