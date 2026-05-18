@@ -1111,8 +1111,8 @@ export default function FrontEndFunnel() {
     framework: '',
     target: '',
     customPrompt: '',
-    language: 'it',
-    targetLanguage: 'Italiano',
+    language: '',
+    targetLanguage: 'Auto (rileva dalla pagina)',
     useOpenClaw: false,
     // Optional: pulled from the linked Project (My Projects → Brief tab and
     // Market Research tab). Sent to the rewrite proxy so Claude can use the
@@ -2291,8 +2291,8 @@ export default function FrontEndFunnel() {
       framework: '',
       target: '',
       customPrompt: page.prompt || '',
-      language: 'it',
-      targetLanguage: 'Italiano',
+      language: '',
+      targetLanguage: 'Auto (rileva dalla pagina)',
       useOpenClaw: false,
       brief: getProjectBriefText(project),
       marketResearch: researchText.trim(),
@@ -2803,7 +2803,7 @@ export default function FrontEndFunnel() {
             framework: '',
             target: '',
             customPrompt: '',
-            targetLanguage: 'it',
+            targetLanguage: detectPageLanguage(url, html),
             userId: DEFAULT_USER_ID,
             renderedHtml: html,
             brief: briefStr || undefined,
@@ -3417,7 +3417,7 @@ export default function FrontEndFunnel() {
               framework: cloneConfig.framework || '',
               target: cloneConfig.target || '',
               customPrompt: cloneConfig.customPrompt || '',
-              targetLanguage: cloneConfig.language || 'it',
+              targetLanguage: cloneConfig.language || detectPageLanguage(sourceUrlForSwap, htmlToRewrite),
               userId: DEFAULT_USER_ID,
               renderedHtml: htmlToRewrite,
               brief: cloneConfig.brief || undefined,
@@ -3553,7 +3553,7 @@ export default function FrontEndFunnel() {
               productName: cloneConfig.productName,
               productDescription: cloneConfig.productDescription,
               customPrompt: cloneConfig.customPrompt || undefined,
-              targetLanguage: cloneConfig.language || 'it',
+              targetLanguage: cloneConfig.language || 'en',
             }),
           });
           let initData: {
