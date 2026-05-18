@@ -87,17 +87,20 @@ const OPENCLAW_PORT = parseInt(process.env.OPENCLAW_PORT || '18789', 10);
 const OPENCLAW_API_KEY = process.env.OPENCLAW_API_KEY
   || 'ba893c2470e9f12b281ab1031746b5f177b14a746143b1ab';
 // OPENCLAW_MODEL: nome dell'agente OpenClaw da invocare via
-// /v1/chat/completions. Risolto DOPO OPENCLAW_AGENT (sotto), perche'
-// il default sensato dipende da chi e' il worker:
-//   - worker Neo (PC Windows) → openclaw/main (l'agente "Neo" che ha
-//     accesso a SHARED-KNOWLEDGE: swipe-html-process.md, swipe-method-
-//     summary.md, ecc — i documenti di processo per gli swipe)
-//   - worker Morfeo (Mac) → openclaw/morpheus (l'agente "Morfeo" col
-//     suo workspace)
-// Storico (rotto): default era 'openclaw/trinity'. Trinity ha workspace
-// separato che NON include SHARED-KNOWLEDGE, quindi gli swipe partivano
-// senza le regole interne anti-paraphrase → testi generici.
-// Si puo' sempre forzare via env var OPENCLAW_MODEL=openclaw/xxx.
+// /v1/chat/completions. Risolto DOPO OPENCLAW_AGENT (sotto): se non
+// viene forzato via env, ogni worker chiama 'openclaw/main' (= l'agente
+// principale della propria macchina):
+//   - worker su PC Windows  → openclaw/main = Neo
+//   - worker sul Mac        → openclaw/main = Morfeo
+// Neo (main del PC) ha accesso a SHARED-KNOWLEDGE (swipe-html-process.md,
+// swipe-method-summary.md, ecc). Morfeo (main del Mac) ha il proprio
+// workspace separato sul Mac.
+// Storico (rotto): default era 'openclaw/trinity'. Trinity e' un
+// sub-agent di Neo sul PC (workspace-trinity), NON include
+// SHARED-KNOWLEDGE → swipe scadenti.
+// Si puo' sempre forzare via env OPENCLAW_MODEL=openclaw/xxx (es.
+// openclaw/trinity, openclaw/morpheus = altro sub-agent di Neo,
+// openclaw/smith, ecc).
 let OPENCLAW_MODEL = (process.env.OPENCLAW_MODEL || '').trim();
 
 // ── LLM backend selector ────────────────────────────────────────
