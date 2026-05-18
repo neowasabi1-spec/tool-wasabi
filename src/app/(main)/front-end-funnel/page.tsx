@@ -1755,7 +1755,7 @@ export default function FrontEndFunnel() {
         ? `${funnelName} - Step ${step.step_index}: ${step.title}`.slice(0, 80)
         : `${funnelName} - Step ${step.step_index}`,
       pageType,
-      productId: projects[0]?.id || '',
+      productId: '',
       urlToSwipe: step.url || '',
       prompt: step.description || '',
       swipeStatus: 'pending',
@@ -1938,7 +1938,7 @@ export default function FrontEndFunnel() {
     addFunnelPage({
       name: `Step ${stepNum}`,
       pageType: 'landing',
-      productId: projects[0]?.id || '',
+      productId: '',
       urlToSwipe: '',
       prompt: '',
       swipeStatus: 'pending',
@@ -5055,12 +5055,15 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                       {/* Project */}
                       <td>
                         <select
-                          value={page.productId}
-                          onChange={(e) =>
-                            updateFunnelPage(page.id, {
-                              productId: e.target.value,
-                            })
-                          }
+                          value={(projects || []).some((pr) => pr.id === page.productId) ? page.productId : ''}
+                          onChange={(e) => {
+                            const newProjectId = e.target.value;
+                            updateFunnelPage(page.id, { productId: newProjectId }).catch((err) => {
+                              console.error('[project-select] Supabase update failed for page', page.id, '→ project', newProjectId, err);
+                              const detail = err instanceof Error ? err.message : String(err);
+                              window.alert(`Errore salvataggio progetto: ${detail}\n\nIl valore tornera' a quello precedente. Controlla la console per dettagli.`);
+                            });
+                          }}
                           className="truncate"
                         >
                           <option value="">Project...</option>
@@ -5806,6 +5809,80 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                               safeHtml = safeHtml.includes('<head>') ? safeHtml.replace('<head>', '<head>' + refTag) : refTag + safeHtml;
                             }
                             safeHtml = safeHtml.replace(/loading=["']lazy["']/gi, 'loading="eager"');
+                            // ── BLOCCA 404 LOOP DA assets.checkoutchamp.com ──────────────
+                            // Le rewrite del competitor a volte puntano immagini al
+                            // CDN CheckoutChamp del nostro prodotto, dove gli asset
+                            // non sono ancora stati caricati (404). Script Taboola/CKC
+                            // nell'HTML originale fanno poi polling continuo. Per
+                            // silenziare il loop:
+                            //   1. sostituisci src/href/srcset checkoutchamp → data:GIF 1x1 trasparente
+                            //   2. sostituisci background-image:url(checkoutchamp) → data:GIF
+                            //   3. inietta uno script che attacca onerror globale alle <img>
+                            //      cosi' qualsiasi altra 404 imprevista non fa retry/log
+                            const TRANSPARENT_GIF = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+                            const CKC_HOST_RX = /(?:assets|cdn|images?)\.checkoutchamp\.com/i;
+                            safeHtml = safeHtml.replace(
+                              /(src|href|data-src|data-original|poster)\s*=\s*(["'])https?:\/\/[^"']*?(?:assets|cdn|images?)\.checkoutchamp\.com[^"']*\2/gi,
+                              (_m, attr, q) => `${attr}=${q}${TRANSPARENT_GIF}${q}`
+                            );
+                            safeHtml = safeHtml.replace(
+                              /srcset\s*=\s*(["'])[^"']*?(?:assets|cdn|images?)\.checkoutchamp\.com[^"']*\1/gi,
+                              'srcset=""'
+                            );
+                            safeHtml = safeHtml.replace(
+                              /url\((['"]?)https?:\/\/[^)'"]*?(?:assets|cdn|images?)\.checkoutchamp\.com[^)'"]*\1\)/gi,
+                              `url('${TRANSPARENT_GIF}')`
+                            );
+                            if (CKC_HOST_RX.test(htmlToShow)) {
+                              const noRetryGuard = `<script data-fallback="ckc-noretry">(function(){
+                                try{
+                                  // Onerror globale: nasconde l'immagine broken invece di
+                                  // lasciar fare retry alle librerie di lazy-load.
+                                  document.addEventListener('error', function(ev){
+                                    var t = ev.target;
+                                    if(!t) return;
+                                    if(t.tagName === 'IMG' || t.tagName === 'SOURCE' || t.tagName === 'VIDEO'){
+                                      t.onerror = null;
+                                      t.style.visibility = 'hidden';
+                                    }
+                                  }, true);
+                                  // Patcha fetch/XHR per intercettare richieste a CheckoutChamp
+                                  // e restituire 204 No Content, fermando i poll di Taboola CKC.
+                                  var BLOCK_RX = /(?:assets|cdn|images?|api)\\.checkoutchamp\\.com/i;
+                                  var origFetch = window.fetch;
+                                  if(typeof origFetch === 'function'){
+                                    window.fetch = function(u, opts){
+                                      var url = (typeof u === 'string') ? u : (u && u.url) || '';
+                                      if(BLOCK_RX.test(url)){
+                                        return Promise.resolve(new Response('', { status: 204 }));
+                                      }
+                                      return origFetch.apply(this, arguments);
+                                    };
+                                  }
+                                  var OrigXHR = window.XMLHttpRequest;
+                                  if(OrigXHR && OrigXHR.prototype && OrigXHR.prototype.open){
+                                    var origOpen = OrigXHR.prototype.open;
+                                    OrigXHR.prototype.open = function(method, url){
+                                      this.__ckcBlocked = (typeof url === 'string' && BLOCK_RX.test(url));
+                                      return origOpen.apply(this, arguments);
+                                    };
+                                    var origSend = OrigXHR.prototype.send;
+                                    OrigXHR.prototype.send = function(){
+                                      if(this.__ckcBlocked){
+                                        try{ this.abort(); }catch(_){}
+                                        return;
+                                      }
+                                      return origSend.apply(this, arguments);
+                                    };
+                                  }
+                                }catch(_){}
+                              })();</` + `script>`;
+                              if (safeHtml.includes('<head>')) {
+                                safeHtml = safeHtml.replace('<head>', '<head>' + noRetryGuard);
+                              } else {
+                                safeHtml = noRetryGuard + safeHtml;
+                              }
+                            }
                             // Strip vecchi fallback bake-ati nell'HTML (server-v1 aveva
                             // un click-delegate FAQ troppo aggressivo che killava le CTA).
                             // Riapplichiamo SEMPRE il fallback client v5+ qui sotto.
