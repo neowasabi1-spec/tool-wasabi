@@ -89,9 +89,14 @@ function replaceLiquidPlaceholders(html) {
 // stata sostituita.
 function fuzzyReplaceWithTagPreservation(html, originalText, newText) {
   if (!originalText || !newText || originalText === newText) return { html, replaced: false };
-  if (originalText.length < 5 || originalText.length > 600) return { html, replaced: false };
+  // Cap length 1500 (era 600): coerente con il nuovo cap dei testi a 4000.
+  // A 600 i testi medio-lunghi (es. paragrafo con 1 frase di brand + 1
+  // frase di feature + 1 frase di benefit) che hanno tag inline annidati
+  // non venivano MAI fuzzy-matchati e restavano con i pezzi originali.
+  if (originalText.length < 5 || originalText.length > 1500) return { html, replaced: false };
   const words = originalText.split(/\s+/).filter((w) => w.length > 0);
-  if (words.length < 2 || words.length > 40) return { html, replaced: false };
+  // Cap word 60 (era 40): vedi sopra.
+  if (words.length < 2 || words.length > 60) return { html, replaced: false };
   let result = html;
   let replaced = false;
   try {
@@ -551,6 +556,22 @@ function finalizeSwipe({ html, sourceUrl, texts, rewrites, productName, applySpa
   let serverReplacementsCount = 0;
   let fuzzyReplacementsCount = 0;
   const unmatchedAfterServer = [];
+  // BUG FIX (review-95 Nooro): l'ordine length-desc del sort sopra e' giusto
+  // ma il flow originale faceva PRIMA TUTTI i literal split di TUTTI i pair,
+  // POI tutti i fuzzy. Effetto disastroso: un pair lungo "Nooro NMES Foot
+  // Massager uses the power of NeuroMuscular Electrical..." con tag annidati
+  // (a<a>...</a></b> uses the power of <b>...</b>) falliva il literal
+  // (plain-text non matcha HTML con tag inline) e finiva in
+  // unmatchedAfterServer. INTANTO i pair corti "Nooro NMES Foot Massager",
+  // "NeuroMuscular Electrical..." venivano applicati come literal SUCCESSO,
+  // distruggendo le keyword del pair lungo. Quando poi il fuzzy del pair
+  // lungo girava, le sue parole-chiave non erano piu' nell'HTML → fallimento.
+  // Risultato: porzioni di copy fra i pezzi corti restavano in lingua
+  // originale (es. "to correct overpronation and relieve associated pain").
+  // FIX: per ogni pair, prova LITERAL → se fallisce, prova FUZZY SUBITO,
+  // PRIMA di passare al pair successivo. Cosi' il pair lungo (che viene
+  // prima per il sort length-desc) ha la chance di matchare via fuzzy
+  // mentre l'HTML contiene ancora le sue keyword originali.
   for (const pair of dedupedDomPairs) {
     if (pair.from.length < 3) continue;
     const fromEsc = escHtml(pair.from);
@@ -573,22 +594,26 @@ function finalizeSwipe({ html, sourceUrl, texts, rewrites, productName, applySpa
       preparedHtml = preparedHtml.split(fromJson).join(toJson);
       if (preparedHtml !== beforeJson) { serverReplacementsCount++; appliedThisPair = true; }
     }
-    if (!appliedThisPair) unmatchedAfterServer.push(pair);
-  }
-
-  // 4° tentativo: fuzzy tag-tolerant per i pair non ancora applicati. Questa
-  // pass cattura "Old <strong>head</strong>line" che il literal split sopra
-  // non vedrebbe mai. Distribuisce il nuovo testo proporzionalmente sui
-  // segmenti preservando ESATTAMENTE tutti i tag inline (cruciale su Vue/
-  // React per non rompere l'hydration).
-  for (const pair of unmatchedAfterServer) {
-    const res1 = fuzzyReplaceWithTagPreservation(preparedHtml, pair.from, pair.to);
-    if (res1.replaced) { preparedHtml = res1.html; fuzzyReplacementsCount++; continue; }
-    const fromEsc = escHtml(pair.from);
-    if (fromEsc !== pair.from) {
-      const res2 = fuzzyReplaceWithTagPreservation(preparedHtml, fromEsc, escHtml(pair.to));
-      if (res2.replaced) { preparedHtml = res2.html; fuzzyReplacementsCount++; }
+    // ── FUZZY IMMEDIATO se literal non ha matchato ────────────────────
+    // Tentativo tag-tolerant con il from raw e con la versione escHtml.
+    // Se fuzzy matcha, l'HTML del pair lungo viene sostituito PRIMA che
+    // un pair corto successivo possa distruggere il suo originale.
+    if (!appliedThisPair) {
+      const fuz1 = fuzzyReplaceWithTagPreservation(preparedHtml, pair.from, pair.to);
+      if (fuz1.replaced) {
+        preparedHtml = fuz1.html;
+        fuzzyReplacementsCount++;
+        appliedThisPair = true;
+      } else if (fromEsc !== pair.from) {
+        const fuz2 = fuzzyReplaceWithTagPreservation(preparedHtml, fromEsc, escHtml(pair.to));
+        if (fuz2.replaced) {
+          preparedHtml = fuz2.html;
+          fuzzyReplacementsCount++;
+          appliedThisPair = true;
+        }
+      }
     }
+    if (!appliedThisPair) unmatchedAfterServer.push(pair);
   }
 
   // Attributi

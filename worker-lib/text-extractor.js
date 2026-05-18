@@ -65,11 +65,49 @@ function extractAllTextsUniversal(html) {
   // <figcaption>...</figcaption>). Prima questi venivano persi.
   const blockRegex = /<(p|div|li|td|th|h[1-6]|span|b|strong|em|i|a|button|header|footer|section|article|nav|aside|main|figcaption|caption|summary|label|blockquote|dt|dd)([^>]*)>([\s\S]*?)<\/\1>/gi;
   let blockMatch;
+  // BUG FIX (review-95 Nooro): l'HTML wrappava 6 bullet point dentro un
+  // UNICO <i> esterno (4098 char totali). Il regex globale (lastIndex
+  // avanzante) matchava il <i> esterno PER PRIMO e poi skippava tutti
+  // i <span>/<b> interni → bullet "Achilles Tendinitis: Overpronation
+  // can cause..." mai estratti → mai riscritti → "overpronation" restava
+  // nei sub-bullet anche se il pair lungo del <i> esterno veniva droppato
+  // dal cap length > 4000.
+  // Soluzione: per ogni blocco LUNGO (>800 char), ricorri sull'innerHtml
+  // con un secondo pass del blockRegex (depth=1) per catturare i
+  // sub-elementi che il pass principale ha skippato. Limite di depth
+  // a 2 per evitare infinite recursion in caso di HTML malformato.
+  // IMPORTANTE: ogni chiamata ricorsiva istanzia una NUOVA RegExp.
+  // Condividere la stessa RegExp tra chiamate ricorsive causerebbe
+  // infinite loop perche' lastIndex viene resettato dalla ricorsione
+  // e il while esterno ripartirebbe dall'inizio dell'inner.
+  function harvestInnerBlocks(inner, baseIndex, depthLeft) {
+    if (depthLeft <= 0) return;
+    const localRegex = /<(p|div|li|td|th|h[1-6]|span|b|strong|em|i|a|button|header|footer|section|article|nav|aside|main|figcaption|caption|summary|label|blockquote|dt|dd)([^>]*)>([\s\S]*?)<\/\1>/gi;
+    let innerMatch;
+    while ((innerMatch = localRegex.exec(inner)) !== null) {
+      const innerTag = innerMatch[1];
+      const innerInner = innerMatch[3];
+      const innerPlain = innerInner.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+      if (innerPlain.length > 2) {
+        addText(innerPlain, `mixed:${innerTag}`, baseIndex + innerMatch.index);
+      }
+      // Ricorri sui blocchi ancora piu' lunghi (es. testimonial dentro
+      // section dentro article).
+      if (innerInner.length > 800 && /<[a-z]/i.test(innerInner)) {
+        harvestInnerBlocks(innerInner, baseIndex + innerMatch.index, depthLeft - 1);
+      }
+    }
+  }
   while ((blockMatch = blockRegex.exec(html)) !== null) {
     const tag = blockMatch[1];
     const innerHtml = blockMatch[3];
     const plainText = innerHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
     if (plainText.length > 2) addText(plainText, `mixed:${tag}`, blockMatch.index);
+    // Se il blocco e' lungo e contiene altri tag → ricorri per catturare
+    // i sub-blocchi che il pass principale (lastIndex globale) skipperebbe.
+    if (innerHtml.length > 800 && /<[a-z]/i.test(innerHtml)) {
+      harvestInnerBlocks(innerHtml, blockMatch.index, 2);
+    }
   }
 
   // 5. attributi
