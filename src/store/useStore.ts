@@ -105,6 +105,16 @@ interface AppFunnelPage {
     content_length: number;
     duration_seconds: number;
     cloned_at: Date;
+    // ID del job openclaw_messages che ha prodotto questo HTML. Usato dal
+    // boot dello store per reidratare l'HTML dalla `response` del job
+    // quando supabase ha stripped via il blob > 50KB.
+    jobId?: string;
+    // Flag/metadata che supabase-operations.ts inietta quando l'HTML e'
+    // stato strippato prima del save (sopra HTML_PERSIST_THRESHOLD).
+    htmlLength?: number;
+    htmlSkipped?: boolean;
+    mobileHtmlLength?: number;
+    mobileHtmlSkipped?: boolean;
   };
   swipedData?: {
     html: string;
@@ -116,6 +126,11 @@ interface AppFunnelPage {
     methodUsed: string;
     changesMade: string[];
     swipedAt: Date;
+    jobId?: string;
+    htmlLength?: number;
+    htmlSkipped?: boolean;
+    mobileHtmlLength?: number;
+    mobileHtmlSkipped?: boolean;
   };
   analysisStatus?: SwipeStatus;
   analysisResult?: string;
@@ -381,15 +396,76 @@ export const useStore = create<Store>()((set, get) => ({
         ])
       );
 
+      const appFunnelPages = funnelPages.map(dbFunnelPageToApp);
       set({
         products: products.map(dbProductToApp),
         projects: projects.map(dbProjectToApp),
         templates: templates.map(dbTemplateToApp),
-        funnelPages: funnelPages.map(dbFunnelPageToApp),
+        funnelPages: appFunnelPages,
         postPurchasePages: postPurchasePages.map(dbPostPurchaseToApp),
         isLoading: false,
         isInitialized: true,
       });
+
+      // ── HTML REHYDRATE ────────────────────────────────────────────────
+      // `stripHtmlFromJsonb` rimuove l'HTML > 50KB da swiped_data /
+      // cloned_data prima del save Supabase per evitare statement_timeout
+      // 57014 sull'anon role. Senza reidratazione l'utente vede la riga
+      // "Completed / Rewrite OK" ma il preview HTML e' sparito al reload.
+      // Recuperiamo l'HTML originale dalla `response` di openclaw_messages
+      // (dove il worker lo ha gia' salvato in fase di completamento) usando
+      // il `jobId` che noi salviamo nello swipedData/clonedData al success.
+      // Async non-blocking: la UI si vede subito senza HTML, poi quando
+      // arrivano le `response` la set aggiorna gli swipedData/clonedData
+      // e React rerenderizza con l'HTML completo.
+      void (async () => {
+        const toRehydrate: Array<{ pageId: string; jobId: string; target: 'swipedData' | 'clonedData' }> = [];
+        for (const p of appFunnelPages) {
+          if (p.swipedData?.jobId && (p.swipedData.htmlSkipped || !p.swipedData.html)) {
+            toRehydrate.push({ pageId: p.id, jobId: p.swipedData.jobId, target: 'swipedData' });
+          } else if (p.clonedData?.jobId && (p.clonedData.htmlSkipped || !p.clonedData.html)) {
+            toRehydrate.push({ pageId: p.id, jobId: p.clonedData.jobId, target: 'clonedData' });
+          }
+        }
+        if (toRehydrate.length === 0) return;
+        // eslint-disable-next-line no-console
+        console.log(`[store] reidrato HTML per ${toRehydrate.length} pagine da openclaw_messages…`);
+        // Limita 4 in parallelo per non saturare l'API route Next.js
+        const PARALLEL = 4;
+        for (let i = 0; i < toRehydrate.length; i += PARALLEL) {
+          const slice = toRehydrate.slice(i, i + PARALLEL);
+          await Promise.all(
+            slice.map(async ({ pageId, jobId, target }) => {
+              try {
+                const r = await fetch(`/api/openclaw/queue?id=${encodeURIComponent(jobId)}`);
+                if (!r.ok) return;
+                const data = (await r.json()) as { status?: string; response?: string | null };
+                if (!data.response) return;
+                let parsed: { html?: string; mobileHtml?: string; new_title?: string } | null = null;
+                try { parsed = JSON.parse(data.response); } catch { return; }
+                if (!parsed?.html) return;
+                set((state) => ({
+                  funnelPages: state.funnelPages.map((p) => {
+                    if (p.id !== pageId) return p;
+                    const blob = p[target] as Record<string, unknown> | undefined;
+                    if (!blob) return p;
+                    const merged = {
+                      ...blob,
+                      html: parsed!.html as string,
+                      ...(parsed!.mobileHtml ? { mobileHtml: parsed!.mobileHtml } : {}),
+                      htmlSkipped: false,
+                    };
+                    return { ...p, [target]: merged } as typeof p;
+                  }),
+                }));
+              } catch (err) {
+                // eslint-disable-next-line no-console
+                console.warn(`[store] reidratazione HTML fallita per page ${pageId} (job ${jobId.slice(0, 8)}):`, err);
+              }
+            })
+          );
+        }
+      })();
     } catch (error) {
       console.error('Error initializing data from Supabase:', error);
       set({

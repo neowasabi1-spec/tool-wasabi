@@ -2628,6 +2628,7 @@ export default function FrontEndFunnel() {
             content_length: final.html.length,
             duration_seconds: Math.round((Date.now() - t0) / 1000),
             cloned_at: new Date(),
+            jobId: enqueued.id,
           },
         });
         setSwipeAllJob((s) => (s ? { ...s, completed: s.completed + 1 } : s));
@@ -3103,7 +3104,7 @@ export default function FrontEndFunnel() {
                 : 'Trinity sta riscrivendo...',
         });
 
-        let rewriteData: { html: string; replacements: number; totalTexts: number; originalLength?: number; newLength?: number; provider?: string; error?: string };
+        let rewriteData: { html: string; replacements: number; totalTexts: number; originalLength?: number; newLength?: number; provider?: string; error?: string; jobId?: string };
 
         // Global auditor selector wins.
         //
@@ -3349,6 +3350,7 @@ export default function FrontEndFunnel() {
             replacements: final.replacements ?? 0,
             totalTexts: final.totalTexts ?? 0,
             provider: `openclaw-${chosenAuditor}`,
+            jobId: enqueued.id,
           };
         } else if (cloneConfig.useOpenClaw) {
           rewriteData = await rewriteWithOpenClawFromBrowser({
@@ -3797,9 +3799,10 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
             originalLength: rewriteData.originalLength || htmlToRewrite.length,
             newLength: rewriteData.newLength || rewrittenHtml.length,
             processingTime: 0,
-            methodUsed: 'claude-rewrite',
+            methodUsed: rewriteData.provider || 'claude-rewrite',
             changesMade: [`${rewriteData.replacements} texts rewritten out of ${rewriteData.totalTexts}`],
             swipedAt: new Date(),
+            ...(rewriteData.jobId ? { jobId: rewriteData.jobId } : {}),
           },
         });
 
