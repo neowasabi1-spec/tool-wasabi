@@ -2453,6 +2453,23 @@ export default function FrontEndFunnel() {
           },
         };
 
+        // Log visibile: dimensione brief mandato e a chi va. Cosi'
+        // l'utente vede subito se il job parte con brief vuoto (=
+        // rewrite generico, no dottore/durate giusti) o pieno.
+        if (briefStr.length === 0) {
+          pushSwipeLog(
+            'error',
+            `⚠ BRIEF VUOTO mandato a ${AUDITOR_LABEL[chosen]} → l'agente ricostruira' dai SUOI archivi → testi GENERICI (no dottore, no durate del nostro prodotto). Carica il brief in "${project.name}" prima di riscrivere.`,
+            pageName,
+          );
+        } else {
+          pushSwipeLog(
+            'info',
+            `→ ${AUDITOR_LABEL[chosen]}: brief ${briefStr.length.toLocaleString()} char, MR ${mrStr.length.toLocaleString()} char`,
+            pageName,
+          );
+        }
+
         const enqueueRes = await fetch('/api/openclaw/queue', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -3149,6 +3166,27 @@ export default function FrontEndFunnel() {
           );
           if (!debugProceed) {
             throw new Error("Annullato dall'utente nel preview debug.");
+          }
+
+          // Log visibile: chi sta riscrivendo e con quanto brief.
+          // Se brief=0 l'agente partira' senza fonte di verita' →
+          // sicuramente fara' testi generici (no dottore giusto, no
+          // durate giuste). Vogliamo che l'utente lo veda subito.
+          const briefLen = briefStrForDebug.length;
+          const mrLen = typeof mrForDebug === 'string' ? mrForDebug.length
+            : mrForDebug ? JSON.stringify(mrForDebug).length : 0;
+          if (briefLen === 0) {
+            pushSwipeLog(
+              'error',
+              `⚠ BRIEF VUOTO mandato a ${AUDITOR_LABEL[chosenAuditor]} → l'agente ricostruira' dai SUOI archivi → testi GENERICI (no dottore, no durate del nostro prodotto). Carica il brief nel project prima di riscrivere.`,
+              pageName,
+            );
+          } else {
+            pushSwipeLog(
+              'success',
+              `→ Mandato a ${AUDITOR_LABEL[chosenAuditor]} (NON Claude): brief ${briefLen.toLocaleString()} char, MR ${mrLen.toLocaleString()} char`,
+              pageName,
+            );
           }
 
           const enqueueRes = await fetch('/api/openclaw/queue', {
