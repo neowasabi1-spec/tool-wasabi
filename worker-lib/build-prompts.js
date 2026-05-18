@@ -19,9 +19,23 @@ const SAFE_TAG_PREFIXES = [
   'tag:blockquote','tag:summary','tag:legend','tag:option',
   'tag:span','tag:strong','tag:em','tag:b','tag:i','tag:u',
   'tag:small','tag:mark','tag:cite','tag:q','tag:abbr',
+  // tag:div incluso perche' i lander SPA tipo Nooro mettono TUTTO il
+  // copy (anche dottori, intro, H2 visivi) dentro <div data-text="text">
+  // — senza questo, ~50% del copy vero veniva droppato silenziosamente
+  // PRIMA del rewrite. Priorita' bassa (7) → se si supera
+  // MAX_TEXTS_FOR_AI vengono comunque scartati prima dei tag semantici.
+  'tag:div',
   'mixed:p','mixed:div','mixed:li','mixed:td','mixed:th',
   'mixed:h1','mixed:h2','mixed:h3','mixed:h4','mixed:h5','mixed:h6',
   'mixed:span','mixed:strong','mixed:em','mixed:a','mixed:b','mixed:i',
+  // Tag contenitori che spesso wrappano copy con HTML annidato e prima
+  // venivano persi dall'extractor (ora gestiti dal blockRegex esteso):
+  // <button><span>BUY</span></button>, <header><h1>X</h1></header>,
+  // <section>copy</section>, <blockquote>testimonial</blockquote>,
+  // <label>form copy</label>, <figcaption>caption</figcaption>.
+  'mixed:button','mixed:header','mixed:footer','mixed:section','mixed:article',
+  'mixed:nav','mixed:aside','mixed:main','mixed:figcaption','mixed:caption',
+  'mixed:summary','mixed:label','mixed:blockquote','mixed:dt','mixed:dd',
   'attr:alt','attr:title','attr:placeholder','attr:aria-label','attr:value',
   // SPA JSON / JSON-LD: testi nascosti dentro <script type="application/json">
   // o dentro __NEXT_DATA__ / __NUXT__ / __sveltekit_data che sono i veri
@@ -45,6 +59,10 @@ const TAG_PRIORITY = {
   h1: 1, h2: 1, h3: 2, h4: 3, h5: 4, h6: 4,
   p: 2, li: 2, button: 1, a: 3, label: 3,
   td: 4, th: 4, dt: 4, dd: 4, blockquote: 4, summary: 4, legend: 4, figcaption: 4,
+  // Contenitori semantici: priorita' medio-alta perche' nei lander SPA
+  // sono spesso il vero contenitore del copy principale (hero, CTA).
+  header: 2, footer: 6, section: 3, article: 3, nav: 5, aside: 6, main: 3,
+  caption: 4,
   option: 5, span: 6, strong: 6, em: 6, b: 6, i: 6, u: 6,
   small: 6, mark: 6, cite: 6, q: 6, abbr: 6,
   div: 7,

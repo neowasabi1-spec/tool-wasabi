@@ -57,7 +57,13 @@ function extractAllTextsUniversal(html) {
   }
 
   // 4. testi misti (tag spezzati)
-  const blockRegex = /<(p|div|li|td|th|h[1-6]|span|b|strong|em|i|a)([^>]*)>([\s\S]*?)<\/\1>/gi;
+  // Esteso da `p|div|li|td|th|h[1-6]|span|b|strong|em|i|a` per coprire i
+  // tag che Nooro e altri lander SPA usano come contenitori di copy
+  // con HTML annidato (es. <button><span>BUY</span></button>,
+  // <header><h1>X</h1></header>, <section><div data-text>Y</div></section>,
+  // <blockquote><p>testimonial</p></blockquote>, <label><span>Email</span></label>,
+  // <figcaption>...</figcaption>). Prima questi venivano persi.
+  const blockRegex = /<(p|div|li|td|th|h[1-6]|span|b|strong|em|i|a|button|header|footer|section|article|nav|aside|main|figcaption|caption|summary|label|blockquote|dt|dd)([^>]*)>([\s\S]*?)<\/\1>/gi;
   let blockMatch;
   while ((blockMatch = blockRegex.exec(html)) !== null) {
     const tag = blockMatch[1];

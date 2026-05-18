@@ -76,7 +76,11 @@ export function extractAllTextsUniversal(html: string): ExtractedText[] {
 
   // 4. TESTI MISTI (il caso difficile: testo spezzato tra tag)
   // Strategia: rimuovi tutti i tag inline e prendi il testo risultante
-  const blockRegex = /<(p|div|li|td|th|h[1-6]|span|b|strong|em|i|a)([^>]*)>([\s\S]*?)<\/\1>/gi;
+  // Tag estesi (allineato con worker-lib/text-extractor.js): aggiunti
+  // button, header, footer, section, article, nav, aside, main,
+  // figcaption, caption, summary, label, blockquote, dt, dd — questi
+  // contenitori spesso wrappano copy che prima veniva perso.
+  const blockRegex = /<(p|div|li|td|th|h[1-6]|span|b|strong|em|i|a|button|header|footer|section|article|nav|aside|main|figcaption|caption|summary|label|blockquote|dt|dd)([^>]*)>([\s\S]*?)<\/\1>/gi;
   let blockMatch;
   while ((blockMatch = blockRegex.exec(html)) !== null) {
     const tag = blockMatch[1];
