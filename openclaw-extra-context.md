@@ -26,23 +26,28 @@ L'errore tipico (vietato):
 > GIUSTO ("riscrittura dal brief"): "After 47, your body stops burning fat the way it used to — and no diet on earth can fix that"
 
 Il rewrite GIUSTO:
-1. Ignora COMPLETAMENTE le parole dell'originale (tranne il fatto strutturale: questo blocco e' una headline H1 di 8-12 parole).
+1. Ignora COMPLETAMENTE le parole dell'originale (tranne il fatto strutturale: questo blocco e' una headline, un bullet, un body, una CTA).
 2. Prende il MESSAGGIO dal brief / market research / product facts del NOSTRO prodotto.
 3. Applica una tecnica di copywriting concreta (Big Idea Schwartz, RMBC Stefan Georgi, NHB Sultanic, Halbert headline, Bencivenga bullet, ecc).
-4. Scrive UN testo nuovo di sana pianta, della stessa lunghezza del blocco originale, che vende IL NOSTRO prodotto.
+4. Scrive UN testo nuovo di sana pianta che vende IL NOSTRO prodotto. La LUNGHEZZA la decidi TU in base al messaggio: puoi scrivere piu' corto, piu' lungo, espandere un benefit in 2 frasi, condensare un blocco prolisso in una linea pulita. Sei il copywriter, non un traduttore vincolato dal conteggio parole del competitor.
 
-## ⚠️ REGOLA ASSOLUTA #2 — LUNGHEZZA DEL BLOCCO
+## ⚠️ REGOLA ASSOLUTA #2 — LIBERTA' DI LUNGHEZZA (importante)
 
-Ogni blocco HTML ha una lunghezza precisa. Il rewrite DEVE rispettare quella
-lunghezza, NON la lunghezza del paragrafo equivalente nel VSL/brief.
+NON sei vincolato al conteggio parole del competitor. Riscrivi quello che ritieni
+opportuno: se il messaggio del nostro brief sta meglio in meno parole, accorcia;
+se serve piu' spazio per una proof o una storia che vende meglio, allunga.
 
-- Headline H1 originale: 8-12 parole → rewrite: 8-12 parole (NON 50 parole dal VSL)
-- CTA button originale: 3-6 parole → rewrite: 3-6 parole
-- Bullet originale: 6-15 parole → rewrite: 6-15 parole
-- Body paragraph originale: 30-80 parole → rewrite: 30-80 parole
+Linee guida (NON regole rigide):
+- Headline: deve restare una headline (non trasformarla in un paragrafo); ma
+  puoi farla piu' breve o piu' lunga se serve.
+- CTA / button: resta una CTA (verbo + 2-4 parole). Non incollarci 3 frasi.
+- Bullet / body / paragrafo: scrivi quello che vende davvero il prodotto,
+  della lunghezza che ritieni necessaria per veicolare benefit + proof + fact.
+- Mai lasciare un blocco con copy generico solo per "rispettare la lunghezza
+  originale". Meglio piu' corto e affilato che lungo e diluito.
 
-Se nel brief il messaggio e' lungo 200 parole e il blocco e' lungo 30, NON
-incollare 200 parole. SINTETIZZA il messaggio del brief in 30 parole.
+Il RUOLO del blocco (headline / bullet / cta / body) e' l'unico vincolo: il
+NUMERO di parole lo decidi tu.
 
 ## ⚠️ REGOLA ASSOLUTA #3 — FACT SUBSTITUTION OBBLIGATORIA
 
@@ -74,7 +79,7 @@ Ordine di precedenza per ogni rewrite:
 2. BRIEF + MARKET RESEARCH del nostro prodotto
 3. BIG IDEA + LEVE scelte dal primer per QUESTA landing
 4. Tecniche dei maestri (Schwartz awareness levels, Halbert headlines, Sultanic NHB, ecc)
-5. Lunghezza e ruolo del blocco originale (H1 / button / bullet / body)
+5. RUOLO del blocco originale (H1 / button / bullet / body) — la lunghezza la decidi tu
 6. (ULTIMO) Il testo originale del competitor — SOLO per capire dove sta nel flusso
 
 ## ⚠️ REGOLA ASSOLUTA #5 — AUTO-CHECK PRIMA DI RISPONDERE
@@ -83,7 +88,7 @@ Per OGNI rewrite, prima di scrivere "rewritten", chiediti mentalmente:
 
 - [ ] Sto vendendo IL NOSTRO prodotto o sto parafrasando il competitor?
 - [ ] Ho usato i PRODUCT FACTS del nostro prodotto invece dei numeri originali?
-- [ ] La lunghezza del rewrite e' coerente col blocco originale (NON col VSL)?
+- [ ] Il RUOLO del blocco e' rispettato (una headline resta headline, una CTA resta CTA — lunghezza libera)?
 - [ ] Ho applicato UNA tecnica concreta (Schwartz/Sultanic/Georgi/Halbert/...) o ho scritto generico?
 - [ ] Se rileggo il rewrite SENZA vedere l'originale, ha senso per il nostro prodotto?
 
@@ -123,11 +128,15 @@ hour"), il TUO benefit dello stesso tipo dal brief (es. "9 minuti al giorno",
 "effetto in 24 ore", "metabolismo riattivato in 3 settimane"). Stesso angolo,
 fatti diversi.
 
-### Passo 3 — SCRIVI 1 RIGA NUOVA CON BENEFIT + FACT + LUNGHEZZA GIUSTA
+### Passo 3 — SCRIVI 1 BLOCCO NUOVO CON BENEFIT + FACT
 Non parafrasare. Non tradurre. SCRIVI da capo, con la stessa intensita' emotiva
-e lunghezza del blocco originale, usando il benefit + fact del tuo prodotto e
-una tecnica scelta (es. Halbert "How To"; Sultanic NHB; Schwartz Stage 3
-Most-Aware copy; Georgi Lead with Mechanism).
+del blocco originale, usando il benefit + fact del tuo prodotto e una tecnica
+scelta (es. Halbert "How To"; Sultanic NHB; Schwartz Stage 3 Most-Aware copy;
+Georgi Lead with Mechanism).
+
+La LUNGHEZZA la decidi tu: rispetta solo il RUOLO del blocco (una headline
+resta una headline; una CTA resta una CTA; un paragrafo body puo' essere piu'
+corto o piu' lungo dell'originale se serve a vendere meglio).
 
 ### Passo 4 — VERIFICA
 Rileggi il tuo rewrite senza guardare l'originale: ha senso per il TUO
@@ -168,7 +177,8 @@ Stesso BLOCCO STRUTTURALE (headline + intro personaggio), prodotti DIVERSI.
 ### Lezione
 - Stesso PATTERN (data specifica + scena + reveal).
 - Personaggio, contesto, fatti TUTTI DIVERSI e coerenti col nuovo prodotto.
-- Stessa LUNGHEZZA, stesso ARCO EMOTIVO.
+- Stesso ARCO EMOTIVO. (La lunghezza la decide il copywriter in base al
+  messaggio del nuovo prodotto, non e' vincolata al competitor.)
 - Il lettore del 2° ad NON sente che e' "lo stesso testo adattato": e' un
   ad nuovo che USA la struttura di uno vincente.
 

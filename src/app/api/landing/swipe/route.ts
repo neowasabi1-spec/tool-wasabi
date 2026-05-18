@@ -339,7 +339,7 @@ async function anthropicRewriteBatch(
   if (batch.length === 0) return [];
   const userPrompt = `${passLabel}: You MUST return exactly one JSON object per input id (${batch.length} items). Never skip an id.
 
-Rewrite these texts so they sell ONLY the described product while keeping approximate length (±25%) and the same conversational energy. Plain text only in "rewritten" — no HTML or markdown.
+Rewrite these texts so they sell ONLY the described product. LENGTH IS FREE — rewrite at whatever length serves the message best (don't pad, don't truncate to match the original word count). Keep the same conversational energy (headlines stay headlines, CTAs stay CTAs). Plain text only in "rewritten" — no HTML or markdown.
 
 Input:
 ${JSON.stringify(batch, null, 2)}
@@ -540,7 +540,7 @@ OUTPUT LANGUAGE FOR REWRITES: ${lang === 'it' ? 'Italian' : lang === 'en' ? 'Eng
 
 CRITICAL RULES:
 1. Treat each input line as discrete visible copy — rewrite it completely for OUR product/offering whenever it is substantive marketing text.
-2. Keep the same conversational energy/medium (headline punchy stays punchy). Approximate length ±25%.
+2. Keep the same conversational energy/medium (a headline stays a headline, a CTA stays a CTA, body copy stays body copy). LENGTH IS FREE: rewrite at whatever length actually sells the message — don't pad or truncate to match the original word count.
 3. Plain text ONLY in rewritten strings — NO HTML, markdown, or JSON escapes beyond normal string characters.
 4. Legal/compliance texts: rewrite only where safe; preserve mandatory disclosures when uncertainty exists.
 5. Every batch MUST return one {"id","rewritten"} object per supplied id — never omit ids.

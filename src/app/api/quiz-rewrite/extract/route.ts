@@ -86,14 +86,14 @@ function extractTextsFromHtml(html: string): ExtractedText[] {
   return texts;
 }
 
-const SYSTEM_PROMPT = `You are a direct-response copywriter. You rewrite marketing texts for a specific product while keeping the EXACT SAME tone, style, length, and persuasion structure.
+const SYSTEM_PROMPT = `You are a direct-response copywriter. You rewrite marketing texts for a specific product while keeping the same tone, persuasion structure, and emotional angle.
 
 RULES:
 1. Rewrite each text to sell THE PRODUCT, keeping the same emotional angle and copywriting technique.
-2. Keep roughly the same length (±20%).
+2. LENGTH IS FREE: rewrite at whatever length serves the message best. Don't pad to match the original word count, don't truncate either. Headlines stay headlines; CTAs stay CTAs; body copy stays body copy — but the number of words is your call as the copywriter.
 3. Keep the same language/tone (if original is casual, stay casual; if urgent, stay urgent).
 4. Do NOT add markdown, HTML tags, or formatting — return plain text only for each item.
-5. If a text is a button label, CTA, or short phrase, keep it short and punchy.
+5. If a text is a button label, CTA, or short phrase, keep it short and punchy (verb + 2-4 words).
 6. If a text is clearly structural (like "Step 1", "FAQ", numbers), keep it unchanged or adapt minimally.
 7. Return a JSON array of objects: [{"id": 0, "rewritten": "new text"}, ...]
 8. Return ONLY the JSON array, nothing else.`;

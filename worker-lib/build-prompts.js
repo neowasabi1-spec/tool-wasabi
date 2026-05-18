@@ -464,7 +464,7 @@ REGOLE OBBLIGATORIE:
      ✓ originale "Dr. Sarah Johnson said" + brief con "Dr. Marco Rossi" → rewrite "Dr. Marco Rossi dice"
      ✓ originale "15-minute audio" + brief con "9 minuti" → rewrite "9-minute audio"
      ✓ originale "Dr. Sarah Johnson" + NESSUN dottore nel brief → rewrite "il nostro esperto"
-5. Mantieni il TIPO di copy: headline = punchy; body = esplicativo; CTA = imperativo breve; bullet = scannerizzabile. La lunghezza puo' variare liberamente.
+5. Mantieni il RUOLO del blocco: headline = punchy; body = esplicativo; CTA = imperativo breve (verbo + 2-4 parole); bullet = scannerizzabile. La LUNGHEZZA la decidi TU come copywriter: non sei vincolato al conteggio parole dell'originale. Riscrivi quello che ritieni opportuno per vendere — accorcia se l'originale e' diluito, allunga se serve piu' spazio per benefit/proof/fact. NESSUN limite "stessa lunghezza ±X%".
 6. SOLO testo piano nei "rewritten" — niente HTML, niente markdown, niente escape JSON oltre quelli standard.
 7. Testi legali / disclaimer / compliance: riscrivili solo dove e' sicuro, altrimenti migliora solo la chiarezza preservando le disclosure obbligatorie.
 8. Ogni risposta DEVE contenere UN oggetto {"id","rewritten"} per OGNI id ricevuto. NON omettere id.
