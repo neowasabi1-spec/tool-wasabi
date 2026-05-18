@@ -5,7 +5,7 @@ import { useSearchParams, useRouter } from 'next/navigation';
 import Header from '@/components/Header';
 import { useStore } from '@/store/useStore';
 import { fetchAffiliateSavedFunnels } from '@/lib/supabase-operations';
-import { extractSectionContent } from '@/lib/project-sections';
+import { extractSectionContent, type SectionData } from '@/lib/project-sections';
 import SwipeDebugModal, {
   buildSwipeDebugInfo,
   type SwipeDebugInfo,
@@ -971,6 +971,24 @@ export default function FrontEndFunnel() {
   } | null>(null);
   const swipeAllCancelRef = useRef(false);
 
+  // ── Brief helper ────────────────────────────────────────────────
+  // Il brief di un progetto puo' stare in DUE posti diversi:
+  //  - project.brief        → campo TEXT legacy (puo' essere vuoto se
+  //                            l'utente ha caricato il nuovo blob)
+  //  - project.briefData    → nuovo blob multi-file JSONB (Brief tab:
+  //                            "Drop files / click to upload"); contiene
+  //                            { files: [...], notes, content }
+  // Prima leggevamo solo il TEXT legacy → su progetti con i brief in
+  // file (es. Metabolic Wave: 4 file da 112K char totali) vedevamo
+  // "Brief mancante" anche se i file erano caricati. Questo helper
+  // legge sempre il vero contenuto, indipendentemente da dove sta.
+  const getProjectBriefText = (p: { brief?: string | null; briefData?: SectionData } | null | undefined): string => {
+    if (!p) return '';
+    const fromFiles = extractSectionContent(p.briefData).trim();
+    if (fromFiles) return fromFiles;
+    return (p.brief || '').trim();
+  };
+
   // ── Swipe Debug Modal ───────────────────────────────────────────
   // Prima di enqueueare un job swipe_landing_local a Neo / Morfeo
   // apriamo un popup bloccante che mostra ESATTAMENTE cosa sta per
@@ -1682,8 +1700,9 @@ export default function FrontEndFunnel() {
     if (project.description?.trim()) {
       parts.push(`DESCRIPTION:\n${project.description.trim()}`);
     }
-    if (project.brief?.trim()) {
-      parts.push(`BRIEF (use this as the primary source of truth for tone, positioning and value props):\n${project.brief.trim()}`);
+    const briefText = getProjectBriefText(project as Parameters<typeof getProjectBriefText>[0]);
+    if (briefText) {
+      parts.push(`BRIEF (use this as the primary source of truth for tone, positioning and value props):\n${briefText}`);
     }
     return parts.join('\n\n');
   };
@@ -2236,7 +2255,7 @@ export default function FrontEndFunnel() {
       language: 'it',
       targetLanguage: 'Italiano',
       useOpenClaw: false,
-      brief: project?.brief?.trim() || '',
+      brief: getProjectBriefText(project),
       marketResearch: researchText.trim(),
     });
     setCloneMode('identical');
@@ -2291,7 +2310,7 @@ export default function FrontEndFunnel() {
     } catch {
       // non fatale
     }
-    const previewBrief = (firstProject?.brief || '').trim();
+    const previewBrief = getProjectBriefText(firstProject);
     const previewMr = extractSectionContent(firstProject?.marketResearch);
     const previewProduct = firstProject
       ? {
@@ -2405,7 +2424,7 @@ export default function FrontEndFunnel() {
       try {
         // Brief / MR opzionali: se mancano l'agente li ricostruisce
         // dai SUOI archivi nel primer step (no piu' hard-gate).
-        const briefStr = (project.brief || '').trim();
+        const briefStr = getProjectBriefText(project);
         const mrStr = extractSectionContent(project.marketResearch);
 
         // Build a product info shape that matches what
@@ -2691,7 +2710,7 @@ export default function FrontEndFunnel() {
             ].join('\n')
           : '';
 
-        const briefStr = (project.brief || '').trim();
+        const briefStr = getProjectBriefText(project);
         // marketResearch is now a multi-file blob: { files, notes, content }.
         // We feed Claude the pre-built `content` (concatenated file text +
         // notes) so the prompt stays human-readable and we don't ship raw
