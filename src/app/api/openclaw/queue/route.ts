@@ -92,6 +92,11 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     status: data.status,
     content: data.response,
+    // `response` e' un alias di `content` usato dalla reidratazione HTML
+    // (useStore.loadAllData / Eye-button fetch on-demand). Mantengo
+    // entrambi per non rompere altri client (clone-landing, strategist,
+    // front-end-funnel poll) che leggono `content`.
+    response: data.response,
     error: data.error_message,
     target_agent: data.target_agent || null,
     worker_busy_with: workerBusyWith,

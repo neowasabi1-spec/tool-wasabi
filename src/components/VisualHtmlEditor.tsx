@@ -609,6 +609,46 @@ function prepareEditorHtml(html: string): string {
   let clean = html;
   clean = clean.replace(/<meta[^>]*content-security-policy[^>]*>/gi, '');
   clean = clean.replace(/loading=["']lazy["']/gi, 'loading="eager"');
+  // ── BLOCCA LOOP 404 CHECKOUTCHAMP NELL'EDITOR ──────────────────────
+  // Stesso problema del preview iframe del front-end-funnel: l'HTML
+  // ha src che puntano a assets.checkoutchamp.com (asset Metabolic Wave
+  // non ancora caricati lì → 404 ripetuti per script Taboola CKC poll).
+  // Sostituisci URL → data:GIF trasparente + intercetta fetch/XHR.
+  {
+    const TRANSPARENT_GIF = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+    const CKC_RX = /(?:assets|cdn|images?)\.checkoutchamp\.com/i;
+    if (CKC_RX.test(clean)) {
+      clean = clean.replace(
+        /(src|href|data-src|data-original|poster)\s*=\s*(["'])https?:\/\/[^"']*?(?:assets|cdn|images?)\.checkoutchamp\.com[^"']*\2/gi,
+        (_m, attr, q) => `${attr}=${q}${TRANSPARENT_GIF}${q}`
+      );
+      clean = clean.replace(
+        /srcset\s*=\s*(["'])[^"']*?(?:assets|cdn|images?)\.checkoutchamp\.com[^"']*\1/gi,
+        'srcset=""'
+      );
+      clean = clean.replace(
+        /url\((['"]?)https?:\/\/[^)'"]*?(?:assets|cdn|images?)\.checkoutchamp\.com[^)'"]*\1\)/gi,
+        `url('${TRANSPARENT_GIF}')`
+      );
+      const noRetryGuard = `<script data-editor-ckc-noretry>(function(){try{
+        document.addEventListener('error', function(ev){var t=ev.target; if(!t)return;
+          if(t.tagName==='IMG'||t.tagName==='SOURCE'||t.tagName==='VIDEO'){t.onerror=null; t.style.visibility='hidden';}
+        }, true);
+        var BLOCK_RX=/(?:assets|cdn|images?|api)\\.checkoutchamp\\.com/i;
+        var origFetch=window.fetch;
+        if(typeof origFetch==='function'){window.fetch=function(u){var url=(typeof u==='string')?u:(u&&u.url)||'';
+          if(BLOCK_RX.test(url))return Promise.resolve(new Response('',{status:204}));
+          return origFetch.apply(this,arguments);};}
+        var OrigXHR=window.XMLHttpRequest;
+        if(OrigXHR&&OrigXHR.prototype&&OrigXHR.prototype.open){var origOpen=OrigXHR.prototype.open;
+          OrigXHR.prototype.open=function(method,url){this.__ckcBlocked=(typeof url==='string'&&BLOCK_RX.test(url));return origOpen.apply(this,arguments);};
+          var origSend=OrigXHR.prototype.send;
+          OrigXHR.prototype.send=function(){if(this.__ckcBlocked){try{this.abort();}catch(_){}return;}return origSend.apply(this,arguments);};}
+      }catch(_){}})();</` + `script>`;
+      if (clean.includes('<head>')) clean = clean.replace('<head>', '<head>' + noRetryGuard);
+      else clean = noRetryGuard + clean;
+    }
+  }
   // Strip server/client fallback init che installano click-delegate FAQ/Swiper
   // e un HUD: dentro l'editor visuale rubano i click di selezione.
   clean = clean.replace(/<script\b[^>]*data-fallback=[^>]*>[\s\S]*?<\/script>/gi, '');

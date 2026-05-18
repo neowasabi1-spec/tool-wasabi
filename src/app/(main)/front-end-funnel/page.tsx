@@ -5097,35 +5097,78 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                           </span>
                           {(page.swipedData || page.clonedData) && (
                             <button
-                              onClick={() => {
+                              onClick={async () => {
+                                // Helper: se l'HTML e' stato strippato (Supabase >50KB)
+                                // ma abbiamo un jobId, lo recuperiamo on-demand da
+                                // openclaw_messages.response. Senza jobId (righe
+                                // vecchie pre-fix adc7299) avvisiamo l'utente.
+                                const fetchHtmlIfNeeded = async (
+                                  blob: { html?: string; mobileHtml?: string; jobId?: string; htmlSkipped?: boolean } | undefined,
+                                ): Promise<{ html: string; mobileHtml?: string } | null> => {
+                                  if (!blob) return null;
+                                  if (blob.html && blob.html.length > 0) {
+                                    return { html: blob.html, mobileHtml: blob.mobileHtml };
+                                  }
+                                  if (!blob.jobId) {
+                                    alert(
+                                      'HTML non disponibile per questa pagina.\n\n' +
+                                      'Questa riga e\' stata generata PRIMA del fix di persistenza ' +
+                                      '(commit adc7299): l\'HTML > 50KB e\' stato strippato da Supabase per ' +
+                                      'evitare timeout. Non c\'e\' modo di recuperarlo.\n\n' +
+                                      'Riesegui il Rewrite (bottone "Riscrivi") per rigenerarlo: la nuova ' +
+                                      'esecuzione salvera\' il jobId e l\'HTML rimarra\' disponibile.'
+                                    );
+                                    return null;
+                                  }
+                                  try {
+                                    const r = await fetch(`/api/openclaw/queue?id=${encodeURIComponent(blob.jobId)}`);
+                                    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                                    const data = (await r.json()) as { response?: string | null };
+                                    if (!data.response) throw new Error('response vuota');
+                                    const parsed = JSON.parse(data.response) as { html?: string; mobileHtml?: string };
+                                    if (!parsed.html) throw new Error('html mancante nella response');
+                                    return { html: parsed.html, mobileHtml: parsed.mobileHtml };
+                                  } catch (err) {
+                                    alert(
+                                      `Impossibile recuperare l'HTML dal job ${blob.jobId?.slice(0, 8)}...:\n${err instanceof Error ? err.message : String(err)}\n\n` +
+                                      'Il job potrebbe essere stato eliminato o la response e\' scaduta. Riesegui il Rewrite.'
+                                    );
+                                    return null;
+                                  }
+                                };
+
                                 if (page.swipedData) {
+                                  const got = await fetchHtmlIfNeeded(page.swipedData);
+                                  if (!got) return;
                                   setPreviewTab('preview');
                                   setHtmlPreviewModal({
                                     isOpen: true,
                                     title: page.swipedData.newTitle || page.name,
-                                    html: page.swipedData.html,
+                                    html: got.html,
                                     mobileHtml: '',
                                     iframeSrc: '',
                                     metadata: {
                                       method: page.swipedData.methodUsed || 'unknown',
-                                      length: page.swipedData.newLength || page.swipedData.html?.length || 0,
+                                      length: page.swipedData.newLength || got.html.length || 0,
                                       duration: page.swipedData.processingTime || 0,
                                     },
                                     pageId: page.id,
                                     sourceType: 'swiped',
                                   });
                                 } else if (page.clonedData) {
+                                  const got = await fetchHtmlIfNeeded(page.clonedData);
+                                  if (!got) return;
                                   setPreviewViewport('desktop');
                                   setPreviewTab('preview');
                                   setHtmlPreviewModal({
                                     isOpen: true,
                                     title: page.clonedData!.title || page.name,
-                                    html: page.clonedData!.html,
-                                    mobileHtml: page.clonedData!.mobileHtml || '',
+                                    html: got.html,
+                                    mobileHtml: got.mobileHtml || page.clonedData!.mobileHtml || '',
                                     iframeSrc: '',
                                     metadata: {
                                       method: page.clonedData!.method_used || 'clone',
-                                      length: page.clonedData!.content_length || page.clonedData!.html?.length || 0,
+                                      length: page.clonedData!.content_length || got.html.length || 0,
                                       duration: page.clonedData!.duration_seconds || 0,
                                     },
                                     pageId: page.id,
