@@ -79,7 +79,8 @@ export function filterAndCap(
 
   for (const u of universal) {
     if (!isSafeContext(u.context)) continue;
-    if (u.text.length < 2 || u.text.length > 800) continue;
+    // Cap 4000 (era 800): allineato a worker-lib/build-prompts.js.
+    if (u.text.length < 2 || u.text.length > 4000) continue;
     if (!/[a-zA-Z]/.test(u.text)) continue;
     if (u.text.startsWith('http://') || u.text.startsWith('https://')) continue;
     // Code embed accidentale

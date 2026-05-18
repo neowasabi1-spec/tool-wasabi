@@ -159,7 +159,10 @@ function extractTextsFromHtml(html: string): ExtractedText[] {
   const seen = new Map<string, ExtractedText>();
   for (const u of universal) {
     if (!isSafeContext(u.context)) continue;
-    if (u.text.length < 2 || u.text.length > 800) continue;
+    // Cap 4000 (era 800): allineato a worker-lib/build-prompts.js.
+    // 4000 e' soglia anti-JSON-dump (pageData embedded = 20k+ char),
+    // non filtro qualitativo. Tutto il copy reale ci sta sotto.
+    if (u.text.length < 2 || u.text.length > 4000) continue;
     if (!/[a-zA-Z]/.test(u.text)) continue;
     if (u.text.startsWith('http://') || u.text.startsWith('https://')) continue;
     if (u.text.includes('{') && u.text.includes('}') && /[=:]\s*function|=>/.test(u.text)) continue;

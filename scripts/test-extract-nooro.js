@@ -29,7 +29,7 @@ function isSafe(ctx, list) {
 
 function passFilters(t, list) {
   if (!isSafe(t.context, list)) return false;
-  if (t.text.length < 2 || t.text.length > 800) return false;
+  if (t.text.length < 2 || t.text.length > 4000) return false;
   if (!/[a-zA-Z]/.test(t.text)) return false;
   if (t.text.startsWith('http://') || t.text.startsWith('https://')) return false;
   if (t.text.includes('{') && t.text.includes('}') && /[=:]\s*function|=>/.test(t.text)) return false;

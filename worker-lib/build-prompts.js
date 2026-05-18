@@ -94,7 +94,17 @@ function extractTextsFromHtml(html, extraTexts) {
   const seen = new Map();
   for (const u of combined) {
     if (!isSafeContext(u.context)) continue;
-    if (u.text.length < 2 || u.text.length > 800) continue;
+    // Cap superiore: 4000 char. NON arbitrario:
+    //   - Frasi/CTA/headline = 20-150 char
+    //   - Testimonial media = 800-1500
+    //   - Testimonial estesa = 1500-2500
+    //   - Paragrafi descrizione / FAQ lunghi = fino a 3000
+    //   - Dump JSON pageData "rubati" da <script> = 20k-50k char
+    // 4000 copre TUTTO il copy reale ma taglia ancora i dump JSON
+    // accidentali (rete di sicurezza, non filtro qualitativo).
+    // Storico (rotto): era 800 → tagliava via testimonial vere come
+    // Charlotte Hudson e William Boxall sulla pagina Nooro review-95.
+    if (u.text.length < 2 || u.text.length > 4000) continue;
     if (!/[a-zA-Z]/.test(u.text)) continue;
     if (u.text.startsWith('http://') || u.text.startsWith('https://')) continue;
     if (u.text.includes('{') && u.text.includes('}') && /[=:]\s*function|=>/.test(u.text)) continue;

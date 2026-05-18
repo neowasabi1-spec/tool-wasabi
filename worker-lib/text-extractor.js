@@ -173,7 +173,11 @@ function extractAllTextsUniversal(html) {
     return false;
   }
   function isHumanText(s) {
-    if (s.length < 3 || s.length > 800) return false;
+    // Cap 4000 (era 800): allineato a build-prompts.js. 4000 e' soglia
+    // anti-JSON-dump (i pageData embedded sono 20k+), non filtro
+    // qualitativo. Tutto il copy reale (anche testimonial estese)
+    // sta sotto 4000.
+    if (s.length < 3 || s.length > 4000) return false;
     const letters = s.match(/[a-zA-ZàèéìòùÀÈÉÌÒÙáéíóúÁÉÍÓÚñÑ]/g)?.length || 0;
     if (letters < 3) return false;
     if (letters / s.length < 0.4) return false;
