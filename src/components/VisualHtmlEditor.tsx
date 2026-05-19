@@ -653,6 +653,31 @@ function prepareEditorHtml(html: string): string {
   // e un HUD: dentro l'editor visuale rubano i click di selezione.
   clean = clean.replace(/<script\b[^>]*data-fallback=[^>]*>[\s\S]*?<\/script>/gi, '');
   clean = clean.replace(/<style\b[^>]*data-fallback=[^>]*>[\s\S]*?<\/style>/gi, '');
+  // ── STRIP AGGRESSIVO TUTTI GLI SCRIPT DELLA PAGINA ───────────────
+  // In modalita' EDITOR l'utente sta modificando copy/stili. Gli script
+  // della pagina originale (analytics, popup di exit-intent, sticky bar
+  // JS-driven, geolocation tracker, A/B testing, Funnelish runtime,
+  // tracking pixel, retargeting...) non servono a nulla per editare e
+  // anzi:
+  //   - intercettano i click con stopPropagation/preventDefault e
+  //     impediscono al nostro click-delegate selectEl() di vedere il
+  //     target -> "clicco e non si seleziona niente"
+  //   - aprono popup/modal che coprono la pagina
+  //   - rilanciano fetch a CDN morti -> errori in console che fanno
+  //     panicare l'utente
+  //   - in alcuni casi sostituiscono il body via JS riscrivendo la
+  //     pagina e cancellando il nostro EDITOR_SCRIPT al volo
+  //
+  // Quindi: tolti TUTTI i <script> della pagina. Riniettiamo SOLO il
+  // nostro EDITOR_SCRIPT (sotto) + il noRetryGuard CKC (sopra).
+  // Lo strip avviene DOPO il noRetryGuard CKC injection cosi' quello
+  // viene rimosso anche lui, ma per l'editor non serve (gli script
+  // CKC veri sono comunque andati via in questo replace).
+  clean = clean.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
+  clean = clean.replace(/<script\b[^>]*\/>/gi, '');
+  // Toglie anche noscript: contengono spesso pixel di tracking che
+  // diventano visibili se i loro <script> wrapper sono spariti.
+  clean = clean.replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, '');
   // Strip <li> vuoti orfani (punti senza testo). Loop finche stabile per
   // gestire bullet annidate e <li> che diventano vuoti dopo aver tolto altri.
   {

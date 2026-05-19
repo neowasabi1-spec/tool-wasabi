@@ -412,55 +412,96 @@ export const useStore = create<Store>()((set, get) => ({
       // cloned_data prima del save Supabase per evitare statement_timeout
       // 57014 sull'anon role. Senza reidratazione l'utente vede la riga
       // "Completed / Rewrite OK" ma il preview HTML e' sparito al reload.
-      // Recuperiamo l'HTML originale dalla `response` di openclaw_messages
-      // (dove il worker lo ha gia' salvato in fase di completamento) usando
-      // il `jobId` che noi salviamo nello swipedData/clonedData al success.
+      //
+      // Strategia in due livelli:
+      //   1) openclaw_messages.response (via jobId) — funziona per i flussi
+      //      rewrite/extract che producono HTML lato worker.
+      //   2) IndexedDB locale (html-blob-store) — funziona per il clone
+      //      Identical sincrono via /api/clone-funnel, e copre anche i
+      //      casi in cui openclaw_messages non e' raggiungibile o la
+      //      `response` e' stata pulita.
+      //
       // Async non-blocking: la UI si vede subito senza HTML, poi quando
       // arrivano le `response` la set aggiorna gli swipedData/clonedData
       // e React rerenderizza con l'HTML completo.
       void (async () => {
-        const toRehydrate: Array<{ pageId: string; jobId: string; target: 'swipedData' | 'clonedData' }> = [];
+        const { loadHtmlBlob } = await import('@/lib/html-blob-store');
+
+        // Tutte le pagine con HTML mancante in clonedData o swipedData,
+        // indipendentemente dalla presenza di jobId. Per ognuna proviamo
+        // prima openclaw (se ha jobId) poi IndexedDB.
+        const targets: Array<{ pageId: string; target: 'swipedData' | 'clonedData'; jobId?: string }> = [];
         for (const p of appFunnelPages) {
-          if (p.swipedData?.jobId && (p.swipedData.htmlSkipped || !p.swipedData.html)) {
-            toRehydrate.push({ pageId: p.id, jobId: p.swipedData.jobId, target: 'swipedData' });
-          } else if (p.clonedData?.jobId && (p.clonedData.htmlSkipped || !p.clonedData.html)) {
-            toRehydrate.push({ pageId: p.id, jobId: p.clonedData.jobId, target: 'clonedData' });
+          if (p.swipedData && (p.swipedData.htmlSkipped || !p.swipedData.html)) {
+            targets.push({ pageId: p.id, target: 'swipedData', jobId: p.swipedData.jobId });
+          }
+          if (p.clonedData && (p.clonedData.htmlSkipped || !p.clonedData.html)) {
+            targets.push({ pageId: p.id, target: 'clonedData', jobId: p.clonedData.jobId });
           }
         }
-        if (toRehydrate.length === 0) return;
+        if (targets.length === 0) return;
         // eslint-disable-next-line no-console
-        console.log(`[store] reidrato HTML per ${toRehydrate.length} pagine da openclaw_messages…`);
+        console.log(`[store] tentativo reidratazione HTML per ${targets.length} target (openclaw_messages → IndexedDB fallback)…`);
+
+        const applyHydratedHtml = (
+          pageId: string,
+          target: 'swipedData' | 'clonedData',
+          html: string,
+          mobileHtml?: string,
+        ) => {
+          set((state) => ({
+            funnelPages: state.funnelPages.map((p) => {
+              if (p.id !== pageId) return p;
+              const blob = p[target] as Record<string, unknown> | undefined;
+              if (!blob) return p;
+              const merged = {
+                ...blob,
+                html,
+                ...(mobileHtml ? { mobileHtml } : {}),
+                htmlSkipped: false,
+              };
+              return { ...p, [target]: merged } as typeof p;
+            }),
+          }));
+        };
+
         // Limita 4 in parallelo per non saturare l'API route Next.js
         const PARALLEL = 4;
-        for (let i = 0; i < toRehydrate.length; i += PARALLEL) {
-          const slice = toRehydrate.slice(i, i + PARALLEL);
+        for (let i = 0; i < targets.length; i += PARALLEL) {
+          const slice = targets.slice(i, i + PARALLEL);
           await Promise.all(
-            slice.map(async ({ pageId, jobId, target }) => {
+            slice.map(async ({ pageId, target, jobId }) => {
+              // 1) openclaw_messages (solo se jobId)
+              if (jobId) {
+                try {
+                  const r = await fetch(`/api/openclaw/queue?id=${encodeURIComponent(jobId)}`);
+                  if (r.ok) {
+                    const data = (await r.json()) as { status?: string; response?: string | null };
+                    if (data.response) {
+                      let parsed: { html?: string; mobileHtml?: string; new_title?: string } | null = null;
+                      try { parsed = JSON.parse(data.response); } catch { /* fall through to IDB */ }
+                      if (parsed?.html) {
+                        applyHydratedHtml(pageId, target, parsed.html, parsed.mobileHtml);
+                        return;
+                      }
+                    }
+                  }
+                } catch (err) {
+                  // eslint-disable-next-line no-console
+                  console.warn(`[store] openclaw rehydrate fallito per page ${pageId} (job ${jobId.slice(0, 8)}), provo IndexedDB:`, err);
+                }
+              }
+
+              // 2) IndexedDB locale — copre il clone Identical (no jobId)
+              //    e i casi in cui openclaw non ha la response.
               try {
-                const r = await fetch(`/api/openclaw/queue?id=${encodeURIComponent(jobId)}`);
-                if (!r.ok) return;
-                const data = (await r.json()) as { status?: string; response?: string | null };
-                if (!data.response) return;
-                let parsed: { html?: string; mobileHtml?: string; new_title?: string } | null = null;
-                try { parsed = JSON.parse(data.response); } catch { return; }
-                if (!parsed?.html) return;
-                set((state) => ({
-                  funnelPages: state.funnelPages.map((p) => {
-                    if (p.id !== pageId) return p;
-                    const blob = p[target] as Record<string, unknown> | undefined;
-                    if (!blob) return p;
-                    const merged = {
-                      ...blob,
-                      html: parsed!.html as string,
-                      ...(parsed!.mobileHtml ? { mobileHtml: parsed!.mobileHtml } : {}),
-                      htmlSkipped: false,
-                    };
-                    return { ...p, [target]: merged } as typeof p;
-                  }),
-                }));
+                const blob = await loadHtmlBlob(pageId, target);
+                if (blob?.html) {
+                  applyHydratedHtml(pageId, target, blob.html, blob.mobileHtml);
+                }
               } catch (err) {
                 // eslint-disable-next-line no-console
-                console.warn(`[store] reidratazione HTML fallita per page ${pageId} (job ${jobId.slice(0, 8)}):`, err);
+                console.warn(`[store] IndexedDB rehydrate fallita per page ${pageId}/${target}:`, err);
               }
             })
           );
