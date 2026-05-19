@@ -62,6 +62,7 @@ import {
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import VisualHtmlEditor from '@/components/VisualHtmlEditor';
+import { saveHtmlBlob } from '@/lib/html-blob-store';
 
 // Helper: sanitize cloned HTML and rewrite ALL relative URLs to absolute using the original domain
 // Strips scripts (unless keepScripts=true for quiz pages), rewrites src/href/url() so CSS, images, fonts load correctly in preview
@@ -1130,6 +1131,12 @@ export default function FrontEndFunnel() {
     pageName: string;
     url: string;
   }>({ isOpen: false, pageId: '', pageName: '', url: '' });
+  // Tracks whether the Translate tab can find HTML in IndexedDB when memory
+  // is empty. 'memory' = found in Zustand state, 'indexeddb' = found locally
+  // after F5, 'checking' = async check in flight, 'none' = nothing yet, user
+  // must clone first.
+  const [translateHtmlSource, setTranslateHtmlSource] = useState<'memory' | 'indexeddb' | 'checking' | 'none'>('none');
+  const [translateHtmlSize, setTranslateHtmlSize] = useState<number>(0);
   const [cloneMode, setCloneMode] = useState<'identical' | 'rewrite' | 'translate'>('identical');
   const [cloneMobile, setCloneMobile] = useState(true);
   const [previewViewport, setPreviewViewport] = useState<'desktop' | 'mobile'>('desktop');
@@ -1139,6 +1146,18 @@ export default function FrontEndFunnel() {
   // anteprima…" mentre la doc.write avviene in setTimeout(0) cosi' il
   // browser puo' almeno disegnare lo spinner prima del freeze.
   const [previewLoading, setPreviewLoading] = useState(false);
+  // Defensive: se per qualunque motivo setPreviewLoading(false) non viene
+  // chiamato (ref callback non re-eseguita, errore prima del cleanup,
+  // HTML enorme che blocca il main thread...) lo spinner resta a vita.
+  // Hard timeout 15s -> sblocca sempre.
+  useEffect(() => {
+    if (!previewLoading) return;
+    const t = setTimeout(() => {
+      console.warn('[front-end-funnel] previewLoading timeout (15s) — forcing off');
+      setPreviewLoading(false);
+    }, 15000);
+    return () => clearTimeout(t);
+  }, [previewLoading]);
   const [editableHtml, setEditableHtml] = useState('');
   const [cloneConfig, setCloneConfig] = useState({
     productName: '',
@@ -1250,6 +1269,48 @@ export default function FrontEndFunnel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   void overlayClock; void isAnyRewriteActive; // silence unused warnings; consumed by overlay render
+
+  // Translate tab: detect availability of HTML in memory + IndexedDB.
+  // The Zustand state may not yet have the cloned/swiped HTML right after
+  // F5 (Supabase strips blobs > 50KB and the boot rehydrate is async).
+  // Without this effect, the user opens the Translate tab, sees the red
+  // "No HTML available" banner, and concludes Translate is broken — even
+  // though IndexedDB has a perfectly good copy from the previous clone.
+  useEffect(() => {
+    if (!cloneModal.isOpen || cloneMode !== 'translate') return;
+    const page = (funnelPages || []).find((p) => p.id === cloneModal.pageId);
+    const memHtml = page?.swipedData?.html || page?.clonedData?.html;
+    if (memHtml && memHtml.length > 0) {
+      setTranslateHtmlSource('memory');
+      setTranslateHtmlSize(memHtml.length);
+      return;
+    }
+    setTranslateHtmlSource('checking');
+    setTranslateHtmlSize(0);
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { loadHtmlBlob } = await import('@/lib/html-blob-store');
+        const swiped = await loadHtmlBlob(cloneModal.pageId, 'swipedData');
+        const cloned = swiped?.html ? null : await loadHtmlBlob(cloneModal.pageId, 'clonedData');
+        if (cancelled) return;
+        const blobHtml = swiped?.html || cloned?.html;
+        if (blobHtml && blobHtml.length > 0) {
+          setTranslateHtmlSource('indexeddb');
+          setTranslateHtmlSize(blobHtml.length);
+        } else {
+          setTranslateHtmlSource('none');
+          setTranslateHtmlSize(0);
+        }
+      } catch {
+        if (!cancelled) {
+          setTranslateHtmlSource('none');
+          setTranslateHtmlSize(0);
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [cloneModal.isOpen, cloneModal.pageId, cloneMode, funnelPages]);
 
   // Vision Analysis Modal
   const [visionModal, setVisionModal] = useState<{
@@ -3084,6 +3145,12 @@ export default function FrontEndFunnel() {
           },
         });
 
+        // Persist the HTML blob in IndexedDB so it survives a page reload.
+        // Supabase JSONB strips this blob > 50KB to dodge the anon
+        // `statement_timeout 57014`, and the openclaw_messages-based
+        // rehydrate at boot doesn't apply here (sync clone, no jobId).
+        void saveHtmlBlob(pageId, 'clonedData', clonedHtml, clonedMobileHtml || undefined);
+
         try { autoSaveSections(clonedHtml, url, pageName); } catch {}
 
         setPreviewViewport('desktop');
@@ -3139,6 +3206,7 @@ export default function FrontEndFunnel() {
               method: 'identical',
             },
           });
+          void saveHtmlBlob(pageId, 'clonedData', htmlToRewrite);
         }
 
         const chosenAuditor = auditorRef.current;
@@ -3873,7 +3941,22 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
       } else if (mode === 'translate') {
         // Translate mode: need clonedData HTML first
         const page = (funnelPages || []).find(p => p.id === pageId);
-        const htmlToTranslate = page?.clonedData?.html || page?.swipedData?.html;
+        let htmlToTranslate = page?.clonedData?.html || page?.swipedData?.html;
+
+        // Fallback IndexedDB: il rehydrate al boot e' async, e per HTML > 50KB
+        // Supabase strippa il blob. Se la memoria non ha l'HTML ma lo abbiamo
+        // salvato in IndexedDB al clone, lo recuperiamo qui prima di
+        // throw-are. Cosi' Translate funziona anche subito dopo F5.
+        if (!htmlToTranslate) {
+          try {
+            const { loadHtmlBlob } = await import('@/lib/html-blob-store');
+            const cloned = await loadHtmlBlob(pageId, 'clonedData');
+            const swiped = await loadHtmlBlob(pageId, 'swipedData');
+            htmlToTranslate = cloned?.html || swiped?.html;
+          } catch (err) {
+            console.warn('[translate] IndexedDB fallback failed:', err);
+          }
+        }
 
         if (!htmlToTranslate) {
           throw new Error('Clone the page before translating it (cloned or rewritten HTML is required)');
@@ -3919,6 +4002,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
             swipedAt: new Date(),
           },
         });
+        void saveHtmlBlob(pageId, 'swipedData', translatedHtml);
 
         setHtmlPreviewModal({
           isOpen: true,
@@ -5157,47 +5241,69 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                           {(page.swipedData || page.clonedData) && (
                             <button
                               onClick={async () => {
-                                // Helper: se l'HTML e' stato strippato (Supabase >50KB)
-                                // ma abbiamo un jobId, lo recuperiamo on-demand da
-                                // openclaw_messages.response. Senza jobId (righe
-                                // vecchie pre-fix adc7299) avvisiamo l'utente.
+                                // Helper: cerca l'HTML in tre posti, in ordine:
+                                //   1) blob in memoria (Zustand)
+                                //   2) IndexedDB locale (html-blob-store) — copre il caso
+                                //      "F5 dopo clone Identical": Supabase strippa l'HTML
+                                //      >50KB, e per il clone sincrono non c'e' jobId.
+                                //   3) openclaw_messages.response via jobId — funziona
+                                //      per i flussi rewrite/extract dove il worker ha
+                                //      salvato l'HTML completo nella response.
+                                // Se nessuno dei tre ha l'HTML, mostra un messaggio
+                                // chiaro che dipende dallo stato (no-clone vs strippato).
                                 const fetchHtmlIfNeeded = async (
                                   blob: { html?: string; mobileHtml?: string; jobId?: string; htmlSkipped?: boolean } | undefined,
+                                  target: 'clonedData' | 'swipedData',
                                 ): Promise<{ html: string; mobileHtml?: string } | null> => {
                                   if (!blob) return null;
                                   if (blob.html && blob.html.length > 0) {
                                     return { html: blob.html, mobileHtml: blob.mobileHtml };
                                   }
-                                  if (!blob.jobId) {
-                                    alert(
-                                      'HTML non disponibile per questa pagina.\n\n' +
-                                      'Questa riga e\' stata generata PRIMA del fix di persistenza ' +
-                                      '(commit adc7299): l\'HTML > 50KB e\' stato strippato da Supabase per ' +
-                                      'evitare timeout. Non c\'e\' modo di recuperarlo.\n\n' +
-                                      'Riesegui il Rewrite (bottone "Riscrivi") per rigenerarlo: la nuova ' +
-                                      'esecuzione salvera\' il jobId e l\'HTML rimarra\' disponibile.'
-                                    );
-                                    return null;
-                                  }
+                                  // 2) IndexedDB
                                   try {
-                                    const r = await fetch(`/api/openclaw/queue?id=${encodeURIComponent(blob.jobId)}`);
-                                    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-                                    const data = (await r.json()) as { response?: string | null };
-                                    if (!data.response) throw new Error('response vuota');
-                                    const parsed = JSON.parse(data.response) as { html?: string; mobileHtml?: string };
-                                    if (!parsed.html) throw new Error('html mancante nella response');
-                                    return { html: parsed.html, mobileHtml: parsed.mobileHtml };
-                                  } catch (err) {
-                                    alert(
-                                      `Impossibile recuperare l'HTML dal job ${blob.jobId?.slice(0, 8)}...:\n${err instanceof Error ? err.message : String(err)}\n\n` +
-                                      'Il job potrebbe essere stato eliminato o la response e\' scaduta. Riesegui il Rewrite.'
-                                    );
-                                    return null;
+                                    const { loadHtmlBlob } = await import('@/lib/html-blob-store');
+                                    const idb = await loadHtmlBlob(page.id, target);
+                                    if (idb?.html) {
+                                      return { html: idb.html, mobileHtml: idb.mobileHtml };
+                                    }
+                                  } catch { /* fall through */ }
+                                  // 3) openclaw_messages.response (richiede jobId)
+                                  if (blob.jobId) {
+                                    try {
+                                      const r = await fetch(`/api/openclaw/queue?id=${encodeURIComponent(blob.jobId)}`);
+                                      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                                      const data = (await r.json()) as { response?: string | null };
+                                      if (!data.response) throw new Error('response vuota');
+                                      const parsed = JSON.parse(data.response) as { html?: string; mobileHtml?: string };
+                                      if (!parsed.html) throw new Error('html mancante nella response');
+                                      return { html: parsed.html, mobileHtml: parsed.mobileHtml };
+                                    } catch (err) {
+                                      alert(
+                                        `Impossibile recuperare l'HTML dal job ${blob.jobId.slice(0, 8)}...:\n${err instanceof Error ? err.message : String(err)}\n\n` +
+                                        'Il job potrebbe essere stato eliminato o la response e\' scaduta. Riesegui il Rewrite.'
+                                      );
+                                      return null;
+                                    }
                                   }
+                                  // Nessuna fonte ha l'HTML.
+                                  const wasSkipped = !!blob.htmlSkipped;
+                                  alert(
+                                    wasSkipped
+                                      ? 'HTML non disponibile per questa pagina.\n\n' +
+                                        'L\'HTML era > 50KB e Supabase l\'ha strippato per evitare timeout. ' +
+                                        'Il browser non ha una copia in IndexedDB (probabilmente un altro device, ' +
+                                        'sessione anonima, o cache pulita).\n\n' +
+                                        'Riesegui Clone o Rewrite per rigenerarlo.'
+                                      : 'HTML non disponibile per questa pagina.\n\n' +
+                                        'Questa riga non ha ancora un HTML clonato/riscritto, ' +
+                                        'oppure e\' stata generata su un\'altra macchina.\n\n' +
+                                        'Esegui Clone (Identical / Rewrite) per generare l\'HTML.'
+                                  );
+                                  return null;
                                 };
 
                                 if (page.swipedData) {
-                                  const got = await fetchHtmlIfNeeded(page.swipedData);
+                                  const got = await fetchHtmlIfNeeded(page.swipedData, 'swipedData');
                                   if (!got) return;
                                   setPreviewTab('preview');
                                   setHtmlPreviewModal({
@@ -5215,7 +5321,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                     sourceType: 'swiped',
                                   });
                                 } else if (page.clonedData) {
-                                  const got = await fetchHtmlIfNeeded(page.clonedData);
+                                  const got = await fetchHtmlIfNeeded(page.clonedData, 'clonedData');
                                   if (!got) return;
                                   setPreviewViewport('desktop');
                                   setPreviewTab('preview');
@@ -6332,10 +6438,19 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                               }
                             }
                             } // end: if (!isClonedPreview) — copia-incolla puro per cloned
-                            doc.write(safeHtml);
-                            doc.close();
+                            try {
+                              doc.write(safeHtml);
+                              doc.close();
+                            } catch (writeErr) {
+                              console.error('[front-end-funnel] preview doc.write failed:', writeErr);
+                            }
                           }
                         }
+                        // Sempre: nasconde lo spinner anche se doc.write
+                        // ha rumoreggiato o l'HTML era vuoto. Senza questo
+                        // gli utenti vedevano "Caricamento anteprima…" per
+                        // sempre quando l'HTML clonato non aveva contenuto
+                        // o conteneva script che bloccavano il parser.
                         setPreviewLoading(false);
                         }, 0);
                       }
@@ -7127,21 +7242,23 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                     You need to clone the page first (Identical Clone or Rewrite).
                   </div>
 
-                  {(() => {
-                    const page = (funnelPages || []).find(p => p.id === cloneModal.pageId);
-                    const hasHtml = page?.clonedData?.html || page?.swipedData?.html;
-                    return hasHtml ? (
-                      <div className="bg-green-50 border border-green-200 rounded-lg p-3 text-sm text-green-800 flex items-center gap-2">
-                        <CheckCircle className="w-4 h-4" />
-                        HTML available ({((page?.swipedData?.html || page?.clonedData?.html)?.length || 0).toLocaleString()} chars)
-                      </div>
-                    ) : (
-                      <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-800 flex items-center gap-2">
-                        <XCircle className="w-4 h-4" />
-                        No HTML available. Clone the page first.
-                      </div>
-                    );
-                  })()}
+                  {translateHtmlSource === 'checking' ? (
+                    <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800 flex items-center gap-2">
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Checking for cached HTML…
+                    </div>
+                  ) : translateHtmlSource === 'memory' || translateHtmlSource === 'indexeddb' ? (
+                    <div className="bg-green-50 border border-green-200 rounded-lg p-3 text-sm text-green-800 flex items-center gap-2">
+                      <CheckCircle className="w-4 h-4" />
+                      HTML available ({translateHtmlSize.toLocaleString()} chars
+                      {translateHtmlSource === 'indexeddb' ? ', from IndexedDB' : ''})
+                    </div>
+                  ) : (
+                    <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-800 flex items-center gap-2">
+                      <XCircle className="w-4 h-4" />
+                      No HTML available. Clone the page first.
+                    </div>
+                  )}
 
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Target Language</label>
@@ -7177,10 +7294,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                 onClick={handleClone}
                 disabled={
                   (cloneMode === 'rewrite' && (!cloneConfig.productName || !cloneConfig.productDescription)) ||
-                  (cloneMode === 'translate' && !(() => {
-                    const page = (funnelPages || []).find(p => p.id === cloneModal.pageId);
-                    return page?.clonedData?.html || page?.swipedData?.html;
-                  })())
+                  (cloneMode === 'translate' && translateHtmlSource !== 'memory' && translateHtmlSource !== 'indexeddb')
                 }
                 className="flex items-center gap-2 px-6 py-2 bg-amber-500 text-white rounded-lg hover:bg-amber-600 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
               >
