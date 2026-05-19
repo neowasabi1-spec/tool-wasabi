@@ -711,6 +711,54 @@ function prepareEditorHtml(html: string): string {
       pointer-events: none !important; 
       user-select: none !important;
     }
+
+    /* ── FORZA APERTE TUTTE LE FAQ/ACCORDION IN EDITOR ────────────
+     * In editor abbiamo strippato tutti gli <script> della pagina
+     * (per non rubare i click di selezione). Conseguenza: la JS
+     * dell'accordion FAQ non parte e i pannelli restano chiusi
+     * via CSS (display:none, max-height:0, ecc). L'utente non puo'
+     * vedere/editare il contenuto delle FAQ.
+     * Fix: override CSS che riapre tutto. Copre i pattern piu'
+     * comuni — Funnelish (.faq-content-wrapper / .faq-content),
+     * Bootstrap (.collapse, .accordion-collapse), generici
+     * (.accordion-content / .accordion-body), e <details>.
+     * Solo display/visibility/opacity/max-height/height —
+     * non tocchiamo niente che possa rompere il layout.
+     */
+    .faq .faq-content-wrapper,
+    .faq .faq-content,
+    .faq-wrapper .faq-content-wrapper,
+    .faq-wrapper .faq-content,
+    .faq-item .faq-body,
+    .faq-item .faq-answer,
+    .faq-answer,
+    .faq-body,
+    .accordion-item .accordion-content,
+    .accordion-item .accordion-body,
+    .accordion-item .accordion-collapse,
+    .accordion-content,
+    .accordion-body,
+    .accordion-collapse,
+    .collapse,
+    .toggle-content,
+    .collapse-content,
+    [data-faq-body],
+    details > *:not(summary) {
+      display: block !important;
+      max-height: none !important;
+      height: auto !important;
+      min-height: 0 !important;
+      overflow: visible !important;
+      visibility: visible !important;
+      opacity: 1 !important;
+      transform: none !important;
+      pointer-events: auto !important;
+    }
+    details[open], details:not([open]) { /* nop, just specificity */ }
+    /* Bootstrap collapse + show — basta forzare display:block (gia' sopra) */
+    /* Icona rotazione "+/-" → ferma allo stato chiuso visivamente, non
+       importa perche' l'utente non clicca per chiudere, gli serve solo
+       vedere/editare il contenuto. */
   </style>`;
   const script = `<script>${EDITOR_SCRIPT}<\/script>`;
   const inject = editorCss + script;
