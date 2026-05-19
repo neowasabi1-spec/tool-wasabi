@@ -5065,6 +5065,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                   <th className="min-w-[100px]">Type</th>
                   <th className="min-w-[120px]">Template</th>
                   <th className="min-w-[180px]">URL</th>
+                  <th className="min-w-[140px]" title="Marketing angle for this step (e.g. fear-of-loss, social proof, before/after)">Angle</th>
                   <th className="min-w-[140px]">Prompt</th>
                   <th className="min-w-[100px]">Project</th>
                   <th className="w-20">Status</th>
@@ -5078,7 +5079,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
               <tbody>
                 {(funnelPages || []).length === 0 ? (
                   <tr>
-                    <td colSpan={12} className="text-center py-8 text-gray-500">
+                    <td colSpan={13} className="text-center py-8 text-gray-500">
                       No steps. Click &quot;Add Step&quot; to start from Step 1.
                     </td>
                   </tr>
@@ -5241,6 +5242,19 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                             </a>
                           )}
                         </div>
+                      </td>
+
+                      {/* Angle */}
+                      <td>
+                        <DebouncedInput
+                          type="text"
+                          value={page.angle || ''}
+                          onChange={(v) =>
+                            updateFunnelPage(page.id, { angle: v })
+                          }
+                          placeholder="Angle..."
+                          className="truncate w-full"
+                        />
                       </td>
 
                       {/* Prompt */}

@@ -344,23 +344,54 @@ function sanitizeFunnelPagePayload<T extends Partial<FunnelPageInsert | FunnelPa
   return out as T;
 }
 
+// True when the supabase error is a "column does not exist" failure for the
+// given column name. Used to retry without optional new columns whose
+// migration may not have been applied yet (e.g. `angle`).
+function isMissingColumnError(err: unknown, column: string): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const msg = String((err as { message?: unknown }).message || '').toLowerCase();
+  // PostgREST surfaces the underlying Postgres "column ... does not exist"
+  // text. Match both the Postgres wording and the field name appearing in
+  // a "could not find the X column" PostgREST message.
+  return (
+    (msg.includes('column') && msg.includes(column.toLowerCase()) && msg.includes('does not exist')) ||
+    (msg.includes(`'${column.toLowerCase()}'`) && msg.includes('column'))
+  );
+}
+
 export async function createFunnelPage(page: FunnelPageInsert): Promise<FunnelPage> {
   const safePage: FunnelPageInsert = {
     ...sanitizeFunnelPagePayload(page),
     page_type: sanitizePageTypeForDb(page.page_type),
   };
 
-  const { data, error } = await supabase
+  let { data, error } = await supabase
     .from('funnel_pages')
     .insert(safePage)
     .select()
     .single();
 
+  // Retry without `angle` if the column hasn't been migrated yet
+  // (supabase-migration-funnel-pages-angle.sql). The rest of the row
+  // still gets created so the user isn't blocked.
+  if (error && isMissingColumnError(error, 'angle') && 'angle' in safePage) {
+    console.warn('[funnel_pages] `angle` column missing — run supabase-migration-funnel-pages-angle.sql to enable persistence');
+    const { angle: _omit, ...rest } = safePage as FunnelPageInsert & { angle?: unknown };
+    void _omit;
+    const retry = await supabase
+      .from('funnel_pages')
+      .insert(rest)
+      .select()
+      .single();
+    data = retry.data;
+    error = retry.error;
+  }
+
   if (error) {
     console.error('Error creating funnel page:', error, '\nOriginal page_type:', page.page_type, '→ sanitized:', safePage.page_type);
     throw error;
   }
-  return data;
+  return data!;
 }
 
 export async function updateFunnelPage(id: string, updates: FunnelPageUpdate): Promise<FunnelPage> {
@@ -371,18 +402,32 @@ export async function updateFunnelPage(id: string, updates: FunnelPageUpdate): P
       : {}),
   };
 
-  const { data, error } = await supabase
+  let { data, error } = await supabase
     .from('funnel_pages')
     .update(safeUpdates)
     .eq('id', id)
     .select()
     .single();
 
+  if (error && isMissingColumnError(error, 'angle') && 'angle' in safeUpdates) {
+    console.warn('[funnel_pages] `angle` column missing — run supabase-migration-funnel-pages-angle.sql to enable persistence');
+    const { angle: _omit, ...rest } = safeUpdates as FunnelPageUpdate & { angle?: unknown };
+    void _omit;
+    const retry = await supabase
+      .from('funnel_pages')
+      .update(rest)
+      .eq('id', id)
+      .select()
+      .single();
+    data = retry.data;
+    error = retry.error;
+  }
+
   if (error) {
     console.error('Error updating funnel page:', error);
     throw error;
   }
-  return data;
+  return data!;
 }
 
 export async function deleteFunnelPage(id: string): Promise<void> {

@@ -130,6 +130,7 @@ export interface Database {
           product_id: string;
           project_id: string | null;
           url_to_swipe: string;
+          angle: string | null;
           prompt: string | null;
           swipe_status: SwipeStatus;
           swipe_result: string | null;
@@ -150,6 +151,7 @@ export interface Database {
           product_id: string;
           project_id?: string | null;
           url_to_swipe: string;
+          angle?: string | null;
           prompt?: string | null;
           swipe_status?: SwipeStatus;
           swipe_result?: string | null;
@@ -170,6 +172,7 @@ export interface Database {
           product_id?: string;
           project_id?: string | null;
           url_to_swipe?: string;
+          angle?: string | null;
           prompt?: string | null;
           swipe_status?: SwipeStatus;
           swipe_result?: string | null;

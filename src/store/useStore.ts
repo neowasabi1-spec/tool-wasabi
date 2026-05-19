@@ -93,6 +93,7 @@ interface AppFunnelPage {
   templateId?: string;
   productId: string;
   urlToSwipe: string;
+  angle?: string;
   prompt?: string;
   swipeStatus: SwipeStatus;
   swipeResult?: string;
@@ -278,6 +279,10 @@ function dbFunnelPageToApp(p: FunnelPage): AppFunnelPage {
     // disappear from the UI; the user just needs to re-pick the project.
     productId: p.project_id || p.product_id || '',
     urlToSwipe: p.url_to_swipe,
+    // `angle` is read defensively because the column was added in a later
+    // migration (supabase-migration-funnel-pages-angle.sql) and may be
+    // missing on rows from older deploys.
+    angle: (p as Record<string, unknown>).angle as string | undefined,
     prompt: (p as Record<string, unknown>).prompt as string | undefined,
     swipeStatus: p.swipe_status,
     swipeResult: p.swipe_result || undefined,
@@ -755,6 +760,7 @@ export const useStore = create<Store>()((set, get) => ({
         project_id: page.productId || null,
         product_id: null,
         url_to_swipe: page.urlToSwipe,
+        angle: page.angle,
         prompt: page.prompt,
         swipe_status: page.swipeStatus,
         swipe_result: page.swipeResult,
@@ -795,6 +801,7 @@ export const useStore = create<Store>()((set, get) => ({
           ? { project_id: page.productId || null }
           : {}),
         url_to_swipe: page.urlToSwipe,
+        angle: page.angle,
         prompt: page.prompt,
         swipe_status: page.swipeStatus,
         swipe_result: page.swipeResult,

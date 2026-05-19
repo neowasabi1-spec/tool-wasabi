@@ -196,6 +196,7 @@ export interface FunnelPage {
   templateId?: string; // Reference to SwipeTemplate
   productId: string;
   urlToSwipe: string;
+  angle?: string; // Marketing angle for this step (e.g. "fear-of-loss", "social proof")
   prompt?: string; // Custom prompt for AI analysis
   swipeStatus: SwipeStatus;
   swipeResult?: string;
