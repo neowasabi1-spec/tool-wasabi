@@ -786,12 +786,20 @@ export async function POST(request: NextRequest) {
         );
       }
 
+      // Budget temporali studiati per stare dentro il limite Netlify
+      // Pro (26s di Lambda). Mai un timeout assoluto piu' lungo della
+      // somma: 8s fetch + 16s Jina = 24s totali nel caso peggiore.
+      const FETCH_BUDGET_MS = 8000;
+      const JINA_BUDGET_MS = 16000;
+
       const t0 = Date.now();
-      console.log(`[clone-funnel] identical: fetch ${cleanUrl}`);
+      console.log(`[clone-funnel] identical: start ${cleanUrl} (fetch_budget=${FETCH_BUDGET_MS}, jina_budget=${JINA_BUDGET_MS})`);
 
       let rawHtml = '';
       let fetchOk = false;
+      let fetchMs = 0;
       try {
+        const fetchT0 = Date.now();
         const res = await fetch(cleanUrl, {
           headers: {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
@@ -800,7 +808,7 @@ export async function POST(request: NextRequest) {
             'Upgrade-Insecure-Requests': '1',
           },
           redirect: 'follow',
-          signal: AbortSignal.timeout(15000),
+          signal: AbortSignal.timeout(FETCH_BUDGET_MS),
         });
         if (res.ok) {
           rawHtml = await res.text();
@@ -808,53 +816,96 @@ export async function POST(request: NextRequest) {
         } else {
           console.warn(`[clone-funnel] identical: direct fetch HTTP ${res.status} for ${cleanUrl}`);
         }
+        fetchMs = Date.now() - fetchT0;
+        console.log(`[clone-funnel] identical: direct fetch ${fetchOk ? 'OK' : 'KO'} ${rawHtml.length} chars in ${fetchMs}ms`);
       } catch (fetchErr) {
-        console.warn(`[clone-funnel] identical: direct fetch threw for ${cleanUrl}:`, fetchErr instanceof Error ? fetchErr.message : fetchErr);
+        fetchMs = Date.now() - t0;
+        console.warn(`[clone-funnel] identical: direct fetch threw in ${fetchMs}ms for ${cleanUrl}:`, fetchErr instanceof Error ? fetchErr.message : fetchErr);
       }
 
       // Decidi se serve il fallback Jina:
       //   - fetch fallito del tutto, oppure
       //   - HTML scaricato ma e' un SPA shell (poco testo dentro <body>)
-      const needsJina = !fetchOk || isSpaShell(rawHtml);
+      const spaShellDetected = fetchOk && isSpaShell(rawHtml);
+      const needsJina = !fetchOk || spaShellDetected;
 
       if (needsJina) {
-        console.log(`[clone-funnel] identical: fallback Jina (${fetchOk ? 'SPA shell detected' : 'direct fetch failed'}) for ${cleanUrl}`);
+        const reason = fetchOk ? 'SPA shell detected' : 'direct fetch failed';
+        console.log(`[clone-funnel] identical: trying Jina (${reason}) for ${cleanUrl}`);
+
+        // HARD TIMEOUT: rescueViaJina puo' impiegare fino a 60s. Su
+        // Netlify Lambda quello fa morire la richiesta lasciando l'UI
+        // in loading infinito. Race contro un timeout esplicito: se
+        // Jina non rispetta il budget, andiamo avanti con quello che
+        // abbiamo (rawHtml shell oppure errore secco).
+        let jinaHtml: string | null = null;
+        const jinaT0 = Date.now();
         try {
-          const jinaHtml = await rescueViaJina(cleanUrl);
-          if (jinaHtml && jinaHtml.length > 200) {
-            // rescueViaJina chiama gia' stabilizeClonedHtml internamente.
-            const dt = Date.now() - t0;
-            console.log(`[clone-funnel] identical: Jina OK ${jinaHtml.length} chars in ${dt}ms for ${cleanUrl}`);
-            return NextResponse.json({
-              success: true,
-              content: jinaHtml,
-              mobileContent: null,
-              format: 'html',
-              mode: 'identical',
-              originalSize: rawHtml.length || jinaHtml.length,
-              finalSize: jinaHtml.length,
-              cssInlined: false,
-              jsRendered: true,
-              method: 'jina',
-              title: jinaHtml.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || '',
-            });
-          }
-          console.warn(`[clone-funnel] identical: Jina returned ${jinaHtml?.length ?? 0} chars (insufficient) for ${cleanUrl}`);
+          jinaHtml = await Promise.race<string | null>([
+            rescueViaJina(cleanUrl),
+            new Promise<null>((resolve) => setTimeout(() => resolve(null), JINA_BUDGET_MS)),
+          ]);
         } catch (jinaErr) {
           console.error(`[clone-funnel] identical: Jina threw for ${cleanUrl}:`, jinaErr instanceof Error ? jinaErr.message : jinaErr);
         }
+        const jinaMs = Date.now() - jinaT0;
 
-        // Jina ha fallito. Se almeno il fetch diretto era passato,
-        // restituiamo quel guscio cosi' l'utente vede SOMETHING invece
-        // di un errore secco.
+        if (jinaHtml && jinaHtml.length > 200) {
+          const dt = Date.now() - t0;
+          console.log(`[clone-funnel] identical: Jina OK ${jinaHtml.length} chars in ${jinaMs}ms (total ${dt}ms) for ${cleanUrl}`);
+          return NextResponse.json({
+            success: true,
+            content: jinaHtml,
+            mobileContent: null,
+            format: 'html',
+            mode: 'identical',
+            originalSize: rawHtml.length || jinaHtml.length,
+            finalSize: jinaHtml.length,
+            cssInlined: false,
+            jsRendered: true,
+            method: 'jina',
+            timing: { fetchMs, jinaMs, totalMs: dt },
+            title: jinaHtml.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || '',
+          });
+        }
+
+        console.warn(`[clone-funnel] identical: Jina timeout/empty in ${jinaMs}ms for ${cleanUrl} (returned ${jinaHtml?.length ?? 0} chars)`);
+
+        // Jina KO. Se non avevamo neanche il fetch, errore secco.
         if (!fetchOk) {
+          const dt = Date.now() - t0;
           return NextResponse.json(
-            { error: `Unable to clone the page: direct fetch and Jina both failed for ${cleanUrl}` },
+            {
+              error: `Unable to clone the page: direct fetch failed AND Jina timed out (${jinaMs}ms) for ${cleanUrl}`,
+              timing: { fetchMs, jinaMs, totalMs: dt },
+            },
             { status: 502 }
           );
         }
+
+        // Abbiamo il guscio SPA: meglio del nulla. L'utente vedra' la
+        // pagina non montata, ma il front-end mostra il warning.
+        console.log(`[clone-funnel] identical: returning SPA shell (Jina KO) for ${cleanUrl}`);
+        const shellStabilized = stabilizeClonedHtml(rawHtml, cleanUrl);
+        const dt = Date.now() - t0;
+        return NextResponse.json({
+          success: true,
+          content: shellStabilized,
+          mobileContent: null,
+          format: 'html',
+          mode: 'identical',
+          originalSize: rawHtml.length,
+          finalSize: shellStabilized.length,
+          cssInlined: false,
+          jsRendered: false,
+          method: 'fetch-shell',
+          timing: { fetchMs, jinaMs, totalMs: dt },
+          warning: 'Page looks like an SPA shell — JS content not rendered. Jina fallback timed out.',
+          title: shellStabilized.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || '',
+        });
       }
 
+      // Caso felice: fetch diretto OK e contenuto reale presente.
       const stabilizedHtml = stabilizeClonedHtml(rawHtml, cleanUrl);
       const dt = Date.now() - t0;
       console.log(`[clone-funnel] identical: direct OK ${stabilizedHtml.length} chars in ${dt}ms for ${cleanUrl}`);
@@ -870,6 +921,7 @@ export async function POST(request: NextRequest) {
         cssInlined: false,
         jsRendered: false,
         method: 'fetch',
+        timing: { fetchMs, totalMs: dt },
         title: stabilizedHtml.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || '',
       });
     }
