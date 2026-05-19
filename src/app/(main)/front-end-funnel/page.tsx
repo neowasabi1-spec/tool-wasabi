@@ -64,9 +64,7 @@ import * as XLSX from 'xlsx';
 import VisualHtmlEditor from '@/components/VisualHtmlEditor';
 import { saveHtmlBlob } from '@/lib/html-blob-store';
 import {
-  extractTextsForTranslate,
-  applyTranslationsToHtml,
-  setHtmlLangAttr,
+  buildTranslateContext,
   type ExtractedText,
 } from '@/lib/translate-html-client';
 
@@ -3992,7 +3990,11 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
           message: `Extracting translatable texts...`,
         });
 
-        const extracted: ExtractedText[] = extractTextsForTranslate(htmlToTranslate);
+        // Costruiamo un context DOM-based: parsea l'HTML una sola volta,
+        // dedup-ica i testi e tiene riferimento ai text node originali per
+        // poter scrivere le traduzioni in-place senza match su stringa.
+        const ctx = buildTranslateContext(htmlToTranslate);
+        const extracted: ExtractedText[] = ctx.texts;
         if (extracted.length === 0) {
           throw new Error('No translatable texts found in HTML');
         }
@@ -4000,11 +4002,6 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
         const TRANSLATE_CHUNK = 12;
         const totalBatches = Math.ceil(extracted.length / TRANSLATE_CHUNK);
         const DEFAULT_USER_ID = '00000000-0000-0000-0000-000000000001';
-        // Mappe per id -> testo. `clean` e' il testo che e' andato a Claude,
-        // `raw` e' il testo originale del text node (con whitespace) e ci
-        // serve per il replace whitespace-tolerant.
-        const idToClean = new Map<number, string>(extracted.map((e) => [e.id, e.text]));
-        const idToRaw = new Map<number, string>(extracted.map((e) => [e.id, e.raw]));
         const idToTranslated = new Map<number, string>();
 
         setCloneProgress({
@@ -4015,11 +4012,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
         });
 
         for (let bi = 0; bi < totalBatches; bi++) {
-          // Non mandiamo `raw` a Claude (e' rumore di whitespace). Inviamo
-          // solo id/text/tag, e teniamo `raw` lato client per il replace.
-          const slice = extracted
-            .slice(bi * TRANSLATE_CHUNK, (bi + 1) * TRANSLATE_CHUNK)
-            .map((e) => ({ id: e.id, text: e.text, tag: e.tag }));
+          const slice = extracted.slice(bi * TRANSLATE_CHUNK, (bi + 1) * TRANSLATE_CHUNK);
           let attempt = 0;
           let lastErr: string | null = null;
           while (attempt < 2) {
@@ -4080,20 +4073,13 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
           message: 'Applying translations to HTML...',
         });
 
-        const pairs: Array<{ raw: string; clean: string; translated: string }> = [];
-        for (const [id, translated] of idToTranslated) {
-          const clean = idToClean.get(id) || '';
-          const raw = idToRaw.get(id) || clean;
-          if (clean && translated && clean !== translated) {
-            pairs.push({ raw, clean, translated });
-          }
-        }
-        const { html: translatedRaw, replacements, missed } = applyTranslationsToHtml(htmlToTranslate, pairs);
+        const { html: translatedRaw, replacements, missed } = ctx.apply(idToTranslated, targetLang);
+        const totalRefs = replacements + missed;
         if (missed > 0) {
-          console.warn(`[translate] ${missed}/${pairs.length} testi tradotti ma non sostituiti nell'HTML (whitespace/encoding mismatch)`);
+          console.warn(`[translate] ${missed}/${totalRefs} text node senza traduzione (batch falliti o testi non tradotti da Claude)`);
         }
-        const translatedWithLang = setHtmlLangAttr(translatedRaw, targetLang);
-        const translatedHtml = sanitizeClonedHtml(translatedWithLang, url, { keepScripts: preserveScripts });
+        console.log(`[translate] ${replacements} text node aggiornati lato DOM, ${idToTranslated.size}/${extracted.length} testi unici tradotti`);
+        const translatedHtml = sanitizeClonedHtml(translatedRaw, url, { keepScripts: preserveScripts });
 
         const durationMs = Math.round(performance.now() - t0);
         const newTitle = `${targetLang}: ${pageName}`;
@@ -4111,8 +4097,8 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
             processingTime: durationMs,
             methodUsed: 'funnel-translate-v1-batch',
             changesMade: [
-              `${idToTranslated.size}/${extracted.length} texts translated to ${targetLang}`,
-              `${replacements} replacements applied${missed ? ` (${missed} missed)` : ''}`,
+              `${idToTranslated.size}/${extracted.length} unique texts translated to ${targetLang}`,
+              `${replacements} text node aggiornati nel DOM${missed ? ` (${missed} non tradotti)` : ''}`,
               `${totalBatches} batch chiamati lato client`,
             ],
             swipedAt: new Date(),
