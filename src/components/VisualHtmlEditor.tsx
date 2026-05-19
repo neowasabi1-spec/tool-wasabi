@@ -681,20 +681,44 @@ function prepareEditorHtml(html: string): string {
 
   // ── PROMOZIONE STATICA LAZY-LOAD ────────────────────────────────────
   // Avendo strippato tutti gli script, le librerie lazy-load (LazyLoad.js,
-  // lozad, vanilla-lazyload, WP "a3 Lazy Load", Funnelish lazy, ecc.)
-  // non girano piu' e img/video/iframe con `data-src=...` (o varianti)
-  // restano vuoti => l'editor mostra spazi grigi al posto di immagini e
+  // lozad, vanilla-lazyload, WP "a3 Lazy Load", Funnelish lazy,
+  // Cloudflare Rocket Loader, echo.js, ecc.) non girano piu' e
+  // img/video/iframe con `data-src=...` (o varianti) restano vuoti =>
+  // l'editor mostra spazi grigi/placeholder SVG al posto di immagini e
   // video. Promuoviamo staticamente i piu' comuni attributi data-* nei
   // loro veri `src`/`srcset`/`poster` cosi' il browser li carica subito,
   // senza bisogno di JS.
   //
   // Coperti: img, source, iframe, video, audio.
-  // Attributi: data-src, data-original, data-lazy-src, data-lazy,
-  //   data-srcset, data-lazy-srcset, data-poster.
-  // Nota: non tocchiamo gli <a href> (l'editor non naviga), e non
-  // tocchiamo data-* su tag non-media.
+  // Pattern lazy-loader supportati: LazyLoad.js, lozad, jQuery.lazy,
+  // unveil.js, echo.js, vanilla-lazyload, WP a3-Lazy-Load, Cloudflare
+  // Rocket Loader (data-cfsrc), Complianz (data-cmplz-src),
+  // Webflow (data-wf-src), Shopify lazysizes (data-orig-src),
+  // ed un buon numero di builder custom (data-image-src, data-thumb...).
   {
     const MEDIA_TAG_RE = /<(img|source|iframe|video|audio)\b([^>]*)>/gi;
+    const LAZY_SRC_ATTRS = [
+      'data-src', 'data-original', 'data-original-src', 'data-orig-src',
+      'data-lazy-src', 'data-lazy', 'data-lazyload', 'data-lazy-load',
+      'data-url', 'data-image-src', 'data-image', 'data-thumb',
+      'data-cfsrc', 'data-cmplz-src', 'data-wf-src', 'data-echo',
+      'data-defer-src', 'data-hi-res-src', 'data-actual', 'data-srcfallback',
+    ];
+    const LAZY_SRCSET_ATTRS = [
+      'data-srcset', 'data-lazy-srcset', 'data-cfsrcset',
+      'data-cmplz-srcset', 'data-wf-srcset',
+    ];
+    const LAZY_POSTER_ATTRS = ['data-poster', 'data-lazy-poster', 'data-cfsrc-poster'];
+    // src "placeholder" che andrebbero sempre rimpiazzati anche se non
+    // c'e' un data-src — sono blur/svg/spacer tipici dei lazy-loader.
+    const isPlaceholderSrc = (s: string): boolean => {
+      if (!s) return true;
+      const v = s.trim().toLowerCase();
+      if (v.startsWith('data:image/svg')) return true;
+      if (v.startsWith('data:image/gif;base64,r0lgodlh')) return true; // 1x1 transparent gif
+      if (/\/(?:placeholder|spacer|blank|pixel|loader|lazyload|lqip)\.(?:gif|png|jpe?g|svg|webp)/i.test(v)) return true;
+      return false;
+    };
     const pickAttr = (attrs: string, names: string[]): string | null => {
       for (const n of names) {
         // Allow any of: data-src="x" | data-src='x' | data-src=x (no quotes for legacy)
@@ -710,32 +734,59 @@ function prepareEditorHtml(html: string): string {
       if (re.test(attrs)) return attrs.replace(re, ` ${name}="${safe}"`);
       return attrs + ` ${name}="${safe}"`;
     };
+    const getAttr = (attrs: string, name: string): string | null => {
+      const re = new RegExp(`\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i');
+      const m = attrs.match(re);
+      if (!m) return null;
+      return m[1] || m[2] || m[3] || '';
+    };
     clean = clean.replace(MEDIA_TAG_RE, (_full, tag, attrs: string) => {
       let a = attrs;
-      const lazySrc = pickAttr(a, ['data-src', 'data-original', 'data-lazy-src', 'data-lazy', 'data-url']);
+      const lazySrc = pickAttr(a, LAZY_SRC_ATTRS);
       if (lazySrc) a = setAttr(a, 'src', lazySrc);
-      const lazySrcset = pickAttr(a, ['data-srcset', 'data-lazy-srcset']);
+      const lazySrcset = pickAttr(a, LAZY_SRCSET_ATTRS);
       if (lazySrcset) a = setAttr(a, 'srcset', lazySrcset);
       if (tag.toLowerCase() === 'video') {
-        const lazyPoster = pickAttr(a, ['data-poster', 'data-lazy-poster']);
+        const lazyPoster = pickAttr(a, LAZY_POSTER_ATTRS);
         if (lazyPoster) a = setAttr(a, 'poster', lazyPoster);
+      }
+      // Se NON abbiamo trovato un data-src ma il src corrente e' un
+      // placeholder e c'e' un srcset/data-srcset valido, prova a
+      // estrarne la prima URL e usala come src.
+      const currentSrc = getAttr(a, 'src');
+      if (currentSrc !== null && isPlaceholderSrc(currentSrc)) {
+        const srcset = getAttr(a, 'srcset') || pickAttr(a, LAZY_SRCSET_ATTRS);
+        if (srcset) {
+          const firstUrl = srcset.trim().split(',')[0]?.trim().split(/\s+/)[0];
+          if (firstUrl && !isPlaceholderSrc(firstUrl)) {
+            a = setAttr(a, 'src', firstUrl);
+          }
+        }
       }
       return `<${tag}${a}>`;
     });
 
-    // Background images con data-bg / data-background: promuovi a inline
-    // style background-image (solo se l'elemento non ha gia' un bg-image).
+    // Background images con data-bg / data-background / data-bgset:
+    // promuovi a inline style background-image. Se l'elemento ha gia'
+    // un background-image inline ma e' un placeholder data: URI o un
+    // file palesemente placeholder, sovrascrivi.
     clean = clean.replace(
-      /<([a-zA-Z][a-zA-Z0-9-]*)\b([^>]*\sdata-(?:bg|background|background-image)\s*=\s*(?:"([^"]+)"|'([^']+)')[^>]*)>/g,
+      /<([a-zA-Z][a-zA-Z0-9-]*)\b([^>]*\sdata-(?:bg|bgset|background|background-image|bg-src|lazy-bg)\s*=\s*(?:"([^"]+)"|'([^']+)')[^>]*)>/g,
       (full, tag, attrs: string, dq, sq) => {
-        const url = (dq || sq || '').trim();
-        if (!url) return full;
-        // se ha gia' un background-image inline non sovrascrivere
-        if (/style\s*=\s*(["'])[^"']*background-image\s*:/i.test(attrs)) return full;
+        const rawUrl = (dq || sq || '').trim();
+        if (!rawUrl) return full;
+        // data-bgset puo' avere piu' URL: prendi la prima.
+        const url = rawUrl.split(',')[0]?.trim().split(/\s+/)[0] || rawUrl;
+        if (!url || isPlaceholderSrc(url)) return full;
+        const styleMatch = attrs.match(/\sstyle\s*=\s*(["'])([^"']*)\1/i);
+        const existingBg = styleMatch ? (styleMatch[2].match(/background-image\s*:\s*url\(([^)]+)\)/i)?.[1] || '').replace(/^["']|["']$/g, '') : '';
+        if (existingBg && !isPlaceholderSrc(existingBg)) return full;
         const inject = `background-image:url('${url.replace(/'/g, "\\'")}');background-size:cover;background-position:center;`;
         let newAttrs;
-        if (/\sstyle\s*=\s*(["'])/i.test(attrs)) {
-          newAttrs = attrs.replace(/\sstyle\s*=\s*(["'])([^"']*)\1/i, (_m, q, val) => ` style=${q}${inject}${val}${q}`);
+        if (styleMatch) {
+          // se c'era un background-image placeholder, rimuovilo prima di iniettare quello nuovo
+          const cleanedStyle = styleMatch[2].replace(/background-image\s*:[^;]+;?/gi, '');
+          newAttrs = attrs.replace(/\sstyle\s*=\s*(["'])([^"']*)\1/i, ` style="${inject}${cleanedStyle}"`);
         } else {
           newAttrs = attrs + ` style="${inject}"`;
         }
