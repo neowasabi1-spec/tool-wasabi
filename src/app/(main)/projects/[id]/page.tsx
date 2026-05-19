@@ -78,18 +78,18 @@ interface TabContent {
   images?: ImageFile[];
 }
 
-// ─── Tab color presets ───────────────────────────────────────────────────────
+// ─── Tab color presets (dark-mode friendly) ──────────────────────────────────
 // Map a tab "color" key to Tailwind classes for the badge (small numbered
 // circle to the left of the tab name) and for the big pill that appears
 // above the cards in the active tab.
 
 const TAB_COLOR: Record<Tab['color'], { badge: string; pill: string; underline: string }> = {
-  green:  { badge: 'bg-emerald-100 text-emerald-700', pill: 'bg-emerald-500',  underline: 'border-emerald-500' },
-  blue:   { badge: 'bg-blue-100 text-blue-700',       pill: 'bg-blue-500',     underline: 'border-blue-500' },
-  purple: { badge: 'bg-purple-100 text-purple-700',   pill: 'bg-purple-500',   underline: 'border-purple-500' },
-  pink:   { badge: 'bg-pink-100 text-pink-700',       pill: 'bg-pink-500',     underline: 'border-pink-500' },
-  orange: { badge: 'bg-orange-100 text-orange-700',   pill: 'bg-orange-500',   underline: 'border-orange-500' },
-  slate:  { badge: 'bg-slate-100 text-slate-700',     pill: 'bg-slate-500',    underline: 'border-slate-500' },
+  green:  { badge: 'bg-emerald-900/50 text-emerald-300', pill: 'bg-emerald-600',  underline: 'border-emerald-500' },
+  blue:   { badge: 'bg-blue-900/50 text-blue-300',       pill: 'bg-blue-600',     underline: 'border-blue-500' },
+  purple: { badge: 'bg-purple-900/50 text-purple-300',   pill: 'bg-purple-600',   underline: 'border-purple-500' },
+  pink:   { badge: 'bg-pink-900/50 text-pink-300',       pill: 'bg-pink-600',     underline: 'border-pink-500' },
+  orange: { badge: 'bg-orange-900/50 text-orange-300',   pill: 'bg-orange-600',   underline: 'border-orange-500' },
+  slate:  { badge: 'bg-slate-700/60 text-slate-200',     pill: 'bg-slate-600',    underline: 'border-slate-400' },
 };
 
 // Heuristic: pick a sensible default color based on tab name.
@@ -235,36 +235,36 @@ export default function ProjectDetailPage({
   const sectionLabel = SECTIONS.find((s) => s.key === section)?.label || 'General Brief';
 
   return (
-    <div className="min-h-screen bg-[#F5F7FA]">
+    <div className="min-h-screen bg-[#0F1117]">
       {/* Top breadcrumb bar */}
-      <div className="bg-white border-b border-gray-200 px-6 py-3">
+      <div className="bg-[#1A1D27] border-b border-[#2A2D3A] px-6 py-3">
         <div className="flex items-center gap-2 text-sm">
           <Link
             href="/projects"
-            className="text-gray-500 hover:text-gray-700 flex items-center gap-1 transition-colors"
+            className="text-gray-400 hover:text-white flex items-center gap-1 transition-colors"
           >
             <ChevronLeft className="w-4 h-4" />
             Progetti
           </Link>
-          <span className="text-gray-400">/</span>
-          <span className="text-gray-700 font-medium">
+          <span className="text-gray-600">/</span>
+          <span className="text-gray-300 font-medium">
             {loading ? '...' : project?.name || 'Untitled'}
           </span>
-          <span className="text-gray-400">/</span>
-          <span className="text-gray-900 font-semibold">{sectionLabel}</span>
+          <span className="text-gray-600">/</span>
+          <span className="text-white font-semibold">{sectionLabel}</span>
         </div>
       </div>
 
       <div className="flex">
         {/* In-page sidebar */}
-        <aside className="w-60 bg-white border-r border-gray-200 min-h-[calc(100vh-49px)] py-4 sticky top-0">
+        <aside className="w-60 bg-[#1A1D27] border-r border-[#2A2D3A] min-h-[calc(100vh-49px)] py-4 sticky top-0">
           {/* Project header in sidebar */}
-          <div className="px-4 pb-4 mb-2 border-b border-gray-100 flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-gray-100 flex items-center justify-center text-sm font-bold text-gray-700 uppercase flex-shrink-0">
+          <div className="px-4 pb-4 mb-2 border-b border-[#2A2D3A] flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-[#2A2D3A] flex items-center justify-center text-sm font-bold text-gray-300 uppercase flex-shrink-0">
               {(project?.name || 'U').charAt(0)}
             </div>
             <div className="min-w-0 flex-1">
-              <div className="text-sm font-semibold text-gray-900 truncate">
+              <div className="text-sm font-semibold text-white truncate">
                 {loading ? 'Loading...' : project?.name || 'Untitled'}
               </div>
               {project?.domain && (
@@ -285,8 +285,8 @@ export default function ProjectDetailPage({
                       onClick={() => pickSection(s.key)}
                       className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors ${
                         active
-                          ? 'bg-emerald-50 text-emerald-700 font-medium'
-                          : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+                          ? 'bg-emerald-900/30 text-emerald-300 font-medium'
+                          : 'text-gray-400 hover:bg-[#0F1117] hover:text-white'
                       }`}
                     >
                       <Icon className="w-4 h-4 flex-shrink-0" />
@@ -371,7 +371,7 @@ function GeneralBriefSection({ projectId }: { projectId: string }) {
   return (
     <div className="space-y-4">
       {/* Tabs row */}
-      <div className="bg-white rounded-xl border border-gray-200 px-2 py-1 flex items-center gap-1 overflow-x-auto">
+      <div className="bg-[#1A1D27] rounded-xl border border-[#2A2D3A] px-2 py-1 flex items-center gap-1 overflow-x-auto">
         {/* Static "General Brief" tab */}
         <TabButton
           active={isGeneralActive}
@@ -398,7 +398,7 @@ function GeneralBriefSection({ projectId }: { projectId: string }) {
         <button
           type="button"
           onClick={addTab}
-          className="flex items-center gap-1.5 px-3 py-2 text-sm text-emerald-700 hover:bg-emerald-50 rounded-md transition-colors flex-shrink-0"
+          className="flex items-center gap-1.5 px-3 py-2 text-sm text-emerald-400 hover:text-emerald-300 hover:bg-emerald-900/20 rounded-md transition-colors flex-shrink-0"
         >
           <Plus className="w-4 h-4" />
           Aggiungi
@@ -414,8 +414,8 @@ function GeneralBriefSection({ projectId }: { projectId: string }) {
           tab={activeTab}
         />
       ) : (
-        <div className="text-center text-gray-500 py-20 bg-white rounded-xl border border-gray-200">
-          Nessuna scheda selezionata. Premi <strong>+ Aggiungi</strong> per crearne una.
+        <div className="text-center text-gray-400 py-20 bg-[#1A1D27] rounded-xl border border-[#2A2D3A]">
+          Nessuna scheda selezionata. Premi <strong className="text-white">+ Aggiungi</strong> per crearne una.
         </div>
       )}
     </div>
@@ -457,8 +457,8 @@ function TabButton({
     <div
       className={`flex items-center gap-2 px-3 py-2 text-sm rounded-md cursor-pointer transition-colors flex-shrink-0 border-b-2 ${
         active
-          ? `${cls.underline} text-gray-900 font-semibold`
-          : 'border-transparent text-gray-600 hover:bg-gray-50'
+          ? `${cls.underline} text-white font-semibold`
+          : 'border-transparent text-gray-400 hover:bg-[#0F1117] hover:text-gray-200'
       }`}
       onClick={() => !isEditing && onClick()}
     >
@@ -478,7 +478,7 @@ function TabButton({
             if (e.key === 'Enter') onCommitEdit?.(draft.trim() || label);
             if (e.key === 'Escape') onCommitEdit?.(label);
           }}
-          className="bg-transparent border-b border-gray-300 outline-none px-1 text-sm min-w-0 max-w-[200px]"
+          className="bg-[#0F1117] border border-[#2A2D3A] outline-none px-1.5 py-0.5 rounded text-sm text-white min-w-0 max-w-[200px] focus:border-blue-500"
         />
       ) : (
         <span className="whitespace-nowrap">{label}</span>
@@ -488,7 +488,7 @@ function TabButton({
           <button
             type="button"
             onClick={(e) => { e.stopPropagation(); onStartEdit?.(); }}
-            className="p-0.5 text-gray-400 hover:text-gray-700 transition-colors"
+            className="p-0.5 text-gray-500 hover:text-white transition-colors"
             title="Rinomina"
           >
             <Pencil className="w-3.5 h-3.5" />
@@ -496,7 +496,7 @@ function TabButton({
           <button
             type="button"
             onClick={(e) => { e.stopPropagation(); onRemove?.(); }}
-            className="p-0.5 text-gray-400 hover:text-red-600 transition-colors"
+            className="p-0.5 text-gray-500 hover:text-red-400 transition-colors"
             title="Elimina scheda"
           >
             <X className="w-3.5 h-3.5" />
@@ -511,9 +511,9 @@ function TabButton({
 
 function GeneralBriefContent() {
   return (
-    <div className="bg-white rounded-xl border border-gray-200 p-10 text-center text-gray-500">
+    <div className="bg-[#1A1D27] rounded-xl border border-[#2A2D3A] p-10 text-center text-gray-400">
       <FileText className="w-10 h-10 mx-auto mb-3 opacity-40" />
-      <h3 className="text-base font-semibold text-gray-700">General Brief</h3>
+      <h3 className="text-base font-semibold text-gray-200">General Brief</h3>
       <p className="text-sm mt-1">
         Brief generale del progetto. Per i brief specifici di ogni step funnel,
         usa le schede a destra (Product Brief — Frontend, OTO1, OTO2, …).
@@ -537,7 +537,7 @@ function ProductBriefTab({ projectId, tab }: { projectId: string; tab: Tab }) {
 
   return (
     <div className="space-y-4">
-      {/* Color pill above the cards (the red "Prodotto 2 — OTO2" thing) */}
+      {/* Color pill above the cards */}
       <div>
         <span
           className={`inline-block px-3 py-1.5 rounded-full text-xs font-semibold text-white ${
@@ -604,12 +604,12 @@ function DocumentCard({
   }
 
   return (
-    <Card title={title} icon={<FileText className="w-4 h-4 text-gray-700" />} action={
+    <Card title={title} icon={<FileText className="w-4 h-4 text-gray-300" />} action={
       <button
         type="button"
         onClick={() => inputRef.current?.click()}
         disabled={busy}
-        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors disabled:opacity-50"
+        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-200 bg-[#0F1117] border border-[#2A2D3A] rounded-md hover:bg-[#222530] hover:border-[#3A3D4A] transition-colors disabled:opacity-50"
       >
         <Upload className="w-3.5 h-3.5" />
         {busy ? 'Carico...' : 'Aggiungi documento'}
@@ -623,16 +623,16 @@ function DocumentCard({
         className="hidden"
       />
       {doc ? (
-        <div className="flex items-center justify-between gap-3 px-4 py-3 border border-gray-200 rounded-lg">
+        <div className="flex items-center justify-between gap-3 px-4 py-3 border border-[#2A2D3A] rounded-lg bg-[#0F1117]">
           <div className="flex items-center gap-3 min-w-0 flex-1">
-            <div className="w-10 h-10 rounded-lg bg-blue-50 flex items-center justify-center flex-shrink-0">
-              <FileText className="w-5 h-5 text-blue-600" />
+            <div className="w-10 h-10 rounded-lg bg-blue-900/30 flex items-center justify-center flex-shrink-0">
+              <FileText className="w-5 h-5 text-blue-400" />
             </div>
             <div className="min-w-0">
               <a
                 href={doc.dataUrl}
                 download={doc.name}
-                className="block text-sm font-medium text-gray-900 truncate hover:text-blue-700"
+                className="block text-sm font-medium text-white truncate hover:text-blue-400"
               >
                 {doc.name}
               </a>
@@ -644,7 +644,7 @@ function DocumentCard({
           <button
             type="button"
             onClick={() => onChange(undefined)}
-            className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors flex-shrink-0"
+            className="p-1.5 text-gray-500 hover:text-red-400 hover:bg-red-900/20 rounded transition-colors flex-shrink-0"
             title="Rimuovi"
           >
             <Trash2 className="w-4 h-4" />
@@ -701,12 +701,12 @@ function ImagesCard({
   }
 
   return (
-    <Card title={title} icon={<ImageIcon className="w-4 h-4 text-gray-700" />} action={
+    <Card title={title} icon={<ImageIcon className="w-4 h-4 text-gray-300" />} action={
       <button
         type="button"
         onClick={() => inputRef.current?.click()}
         disabled={busy}
-        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors disabled:opacity-50"
+        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-200 bg-[#0F1117] border border-[#2A2D3A] rounded-md hover:bg-[#222530] hover:border-[#3A3D4A] transition-colors disabled:opacity-50"
       >
         <Upload className="w-3.5 h-3.5" />
         {busy ? 'Carico...' : 'Aggiungi immagini'}
@@ -725,7 +725,7 @@ function ImagesCard({
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
           {images.map((img, idx) => (
-            <div key={idx} className="group relative border border-gray-200 rounded-lg overflow-hidden bg-gray-50">
+            <div key={idx} className="group relative border border-[#2A2D3A] rounded-lg overflow-hidden bg-[#0F1117]">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 src={img.dataUrl}
@@ -735,12 +735,12 @@ function ImagesCard({
               <button
                 type="button"
                 onClick={() => removeAt(idx)}
-                className="absolute top-1.5 right-1.5 p-1 bg-white/95 text-gray-600 hover:text-red-600 rounded-md shadow-sm opacity-0 group-hover:opacity-100 transition-opacity"
+                className="absolute top-1.5 right-1.5 p-1 bg-[#1A1D27]/95 text-gray-300 hover:text-red-400 rounded-md shadow-sm opacity-0 group-hover:opacity-100 transition-opacity border border-[#2A2D3A]"
                 title="Rimuovi"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
-              <div className="px-2 py-1.5 text-[11px] text-gray-600 truncate" title={img.name}>
+              <div className="px-2 py-1.5 text-[11px] text-gray-400 truncate" title={img.name}>
                 {img.name}
               </div>
             </div>
@@ -765,9 +765,9 @@ function Card({
   children: React.ReactNode;
 }) {
   return (
-    <section className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-      <header className="flex items-center justify-between gap-3 px-5 py-3.5 border-b border-gray-100">
-        <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900">
+    <section className="bg-[#1A1D27] rounded-xl border border-[#2A2D3A] overflow-hidden">
+      <header className="flex items-center justify-between gap-3 px-5 py-3.5 border-b border-[#2A2D3A]">
+        <h3 className="flex items-center gap-2 text-sm font-semibold text-white">
           {icon}
           {title}
         </h3>
@@ -788,12 +788,12 @@ function EmptyState({
   subtitle: string;
 }) {
   return (
-    <div className="border-2 border-dashed border-gray-200 rounded-lg py-12 px-4 text-center text-gray-500">
-      <div className="w-12 h-12 mx-auto mb-3 bg-gray-100 rounded-lg flex items-center justify-center text-gray-400">
+    <div className="border-2 border-dashed border-[#2A2D3A] rounded-lg py-12 px-4 text-center text-gray-500">
+      <div className="w-12 h-12 mx-auto mb-3 bg-[#0F1117] rounded-lg flex items-center justify-center text-gray-500">
         {icon}
       </div>
-      <p className="text-sm italic font-medium text-gray-600">{title}</p>
-      <p className="text-xs mt-1">{subtitle}</p>
+      <p className="text-sm italic font-medium text-gray-300">{title}</p>
+      <p className="text-xs mt-1 text-gray-500">{subtitle}</p>
     </div>
   );
 }
@@ -865,7 +865,7 @@ function FunnelSection({ projectId }: { projectId: string }) {
   return (
     <Card
       title={`Flows (${flows.length})`}
-      icon={<Layers className="w-4 h-4 text-gray-700" />}
+      icon={<Layers className="w-4 h-4 text-gray-300" />}
       action={
         <button
           type="button"
@@ -885,7 +885,7 @@ function FunnelSection({ projectId }: { projectId: string }) {
             onChange={(e) => setNewName(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && addFlow()}
             placeholder="Flow name (es. Flow A — Nooro Swipe)"
-            className="flex-1 bg-white border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
+            className="flex-1 bg-[#0F1117] border border-[#2A2D3A] rounded-md px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
             autoFocus
           />
           <button
@@ -899,7 +899,7 @@ function FunnelSection({ projectId }: { projectId: string }) {
       )}
 
       {loading ? (
-        <div className="text-center text-gray-500 py-8 animate-pulse text-sm">Carico flows...</div>
+        <div className="text-center text-gray-400 py-8 animate-pulse text-sm">Carico flows...</div>
       ) : flows.length === 0 ? (
         <EmptyState
           icon={<Layers className="w-8 h-8" />}
@@ -907,7 +907,7 @@ function FunnelSection({ projectId }: { projectId: string }) {
           subtitle="Aggiungi il primo flow per iniziare"
         />
       ) : (
-        <ul className="divide-y divide-gray-100">
+        <ul className="divide-y divide-[#2A2D3A]">
           {flows.map((flow) => (
             <li key={flow.id} className="flex items-center justify-between gap-3 py-3">
               <button
@@ -915,29 +915,29 @@ function FunnelSection({ projectId }: { projectId: string }) {
                 onClick={() => router.push(`/projects/${projectId}/flow/${flow.id}`)}
                 className="flex items-center gap-3 min-w-0 flex-1 text-left group"
               >
-                <div className="w-9 h-9 rounded-lg bg-indigo-50 flex items-center justify-center flex-shrink-0">
-                  <Layers className="w-4 h-4 text-indigo-600" />
+                <div className="w-9 h-9 rounded-lg bg-indigo-900/30 flex items-center justify-center flex-shrink-0">
+                  <Layers className="w-4 h-4 text-indigo-400" />
                 </div>
                 <div className="min-w-0">
-                  <div className="text-sm font-medium text-gray-900 truncate group-hover:text-blue-700">{flow.name}</div>
+                  <div className="text-sm font-medium text-white truncate group-hover:text-blue-400">{flow.name}</div>
                   <div className="text-xs text-gray-500">
                     {flow.created_at ? new Date(flow.created_at).toLocaleDateString('it-IT') : ''}
-                    {flow.is_active && <span className="ml-2 text-emerald-600">· active</span>}
+                    {flow.is_active && <span className="ml-2 text-emerald-400">· active</span>}
                   </div>
                 </div>
               </button>
-              <span className="px-2.5 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-700">
+              <span className="px-2.5 py-1 rounded-full text-xs font-medium bg-gray-700 text-gray-300">
                 {flow.status}
               </span>
               <Link
                 href={`/projects/${projectId}/flow/${flow.id}`}
-                className="text-xs font-medium text-indigo-600 hover:text-indigo-700 inline-flex items-center gap-1"
+                className="text-xs font-medium text-indigo-400 hover:text-indigo-300 inline-flex items-center gap-1"
               >
                 Apri <ChevronRight className="w-3.5 h-3.5" />
               </Link>
               <button
                 onClick={() => deleteFlow(flow.id)}
-                className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
+                className="p-1.5 text-gray-500 hover:text-red-400 hover:bg-red-900/20 rounded transition-colors"
                 title="Elimina"
               >
                 <Trash2 className="w-4 h-4" />
@@ -954,7 +954,7 @@ function FunnelSection({ projectId }: { projectId: string }) {
 
 function ComingSoonSection({ label, icon: Icon }: { label: string; icon: LucideIcon }) {
   return (
-    <Card title={label} icon={<Icon className="w-4 h-4 text-gray-700" />}>
+    <Card title={label} icon={<Icon className="w-4 h-4 text-gray-300" />}>
       <EmptyState
         icon={<Icon className="w-8 h-8" />}
         title={`${label} — in arrivo`}
