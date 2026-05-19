@@ -5756,6 +5756,29 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                     Open in new tab
                   </a>
                 )}
+                {htmlPreviewModal.html && !htmlPreviewModal.iframeSrc && (
+                  <button
+                    onClick={() => {
+                      // Apre l'HTML clonato in una vera tab del browser via blob URL.
+                      // L'iframe ha permessi limitati (about:blank origin) e quindi
+                      // CSS esterno e fetch cross-origin spesso non funzionano,
+                      // facendo apparire la pagina nuda o in loop. Una tab vera
+                      // invece esegue il JS con permessi normali e il rendering
+                      // e' quello reale che vedrebbe l'utente finale.
+                      const htmlToOpen = previewViewport === 'mobile' && htmlPreviewModal.mobileHtml
+                        ? htmlPreviewModal.mobileHtml : htmlPreviewModal.html;
+                      const blob = new Blob([htmlToOpen], { type: 'text/html;charset=utf-8' });
+                      const url = URL.createObjectURL(blob);
+                      window.open(url, '_blank', 'noopener,noreferrer');
+                      setTimeout(() => URL.revokeObjectURL(url), 60000);
+                    }}
+                    className="px-4 py-2 text-sm font-medium text-blue-600 hover:text-blue-700 flex items-center gap-1"
+                    title="Open the cloned HTML in a real browser tab — works around iframe restrictions"
+                  >
+                    <ExternalLink className="w-3 h-3" />
+                    Open in new tab
+                  </button>
+                )}
 
                 {/* Debug controls (Re-run fallback button + live diag pill)
                     removed — facevano solo casino in UI per l'utente. Lo state
@@ -5972,24 +5995,21 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                             // tocca reinizializzare jQuery/Swiper/FAQ a runtime.
                             const isClonedPreview = htmlPreviewModal.sourceType === 'cloned';
                             if (isClonedPreview) {
-                              // Per le anteprime CLONATE strippiamo SOLO gli script
-                              // originali della pagina (e i noscript / inline event
-                              // handlers). Niente fallbackInit, niente fbStyleClient,
-                              // niente HUD. Motivo: i quiz Funnelish/Vue e tante SPA
-                              // fanno fetch dati cross-origin che falliscono dentro
-                              // l'iframe → entrano in retry loop e l'anteprima
-                              // sfarfalla tra splash di caricamento e contenuto
-                              // statico. La pagina cosi' viene mostrata come uno
-                              // snapshot DOM rendered dal Playwright lato server +
-                              // CSS inline, senza nessuna interattivita' lato client.
+                              // Anteprime CLONATE: ZERO modifiche all'HTML.
+                              // L'utente clicca "Clone" perche' vuole vedere la pagina
+                              // identica all'originale. Ogni nostra "smart fix"
+                              // (strip script, inject CSS, blocca CKC) finisce per
+                              // rompere qualche caso d'uso:
+                              //   - strip script -> Vue/Funnelish/React non montano,
+                              //                     vedi guscio nudo non-stilato
+                              //   - keep script  -> SPA che fanno fetch cross-origin
+                              //                     vanno in retry loop infinito
+                              // Non c'e' via di mezzo dentro un iframe. Per il caso
+                              // "loop" l'utente puo' usare "Apri in nuova tab" sotto,
+                              // che apre l'HTML in una vera tab del browser (blob URL)
+                              // dove i permessi sono normali e tutto funziona.
                               //
-                              // L'HTML originale (con gli script) resta nello state
-                              // htmlPreviewModal.html / clonedData.html per quando
-                              // l'utente clicca Edit HTML, Copy HTML, o ripubblica.
-                              safeHtml = safeHtml.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
-                              safeHtml = safeHtml.replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, '');
-                              safeHtml = safeHtml.replace(/\s+on[a-z]+="[^"]*"/gi, '');
-                              safeHtml = safeHtml.replace(/\s+on[a-z]+='[^']*'/gi, '');
+                              // Quindi qui: doc.write(html) e basta.
                             } else {
                             // Strip vecchi fallback bake-ati nell'HTML (server-v1 aveva
                             // un click-delegate FAQ troppo aggressivo che killava le CTA).
