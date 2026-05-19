@@ -63,6 +63,12 @@ import {
 import * as XLSX from 'xlsx';
 import VisualHtmlEditor from '@/components/VisualHtmlEditor';
 import { saveHtmlBlob } from '@/lib/html-blob-store';
+import {
+  extractTextsForTranslate,
+  applyTranslationsToHtml,
+  setHtmlLangAttr,
+  type ExtractedText,
+} from '@/lib/translate-html-client';
 
 // Helper: sanitize cloned HTML and rewrite ALL relative URLs to absolute using the original domain
 // Strips scripts (unless keepScripts=true for quiz pages), rewrites src/href/url() so CSS, images, fonts load correctly in preview
@@ -3969,43 +3975,134 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
           throw new Error('Clone the page before translating it (cloned or rewritten HTML is required)');
         }
 
-        setCloneProgress({ phase: 'translating', totalTexts: 0, processedTexts: 0, message: `Translating to ${cloneConfig.targetLanguage}...` });
-        const DEFAULT_USER_ID = '00000000-0000-0000-0000-000000000001';
+        // === Translate via client-side batching ===
+        // Tutto il loop di chiamate Claude e' guidato dal browser: estraiamo
+        // i testi qui, li mandiamo all'Edge Function in chunk piccoli, e
+        // applichiamo le traduzioni sull'HTML in memoria. Ogni call dura
+        // 10-30s, quindi nessun proxy intermedio (Netlify/Cloudflare/Supabase)
+        // chiude per Inactivity Timeout 504 come succedeva con la modalita'
+        // "full HTML" sul server.
+        const targetLang = cloneConfig.targetLanguage;
+        const t0 = performance.now();
 
-        const response = await fetch('/api/clone-funnel', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            cloneMode: 'translate',
-            htmlContent: htmlToTranslate,
-            targetLanguage: cloneConfig.targetLanguage,
-            userId: DEFAULT_USER_ID,
-          }),
+        setCloneProgress({
+          phase: 'translating',
+          totalTexts: 0,
+          processedTexts: 0,
+          message: `Extracting translatable texts...`,
         });
-        const data = await parseJsonResponseOrThrow<{
-          content?: string;
-          textsTranslated?: number;
-          targetLanguage?: string;
-          originalHtmlSize?: number;
-          finalHtmlSize?: number;
-          error?: string;
-        }>(response, '[clone translate]');
-        if (!response.ok || data.error) throw new Error(data.error || 'Translate failed');
+
+        const extracted: ExtractedText[] = extractTextsForTranslate(htmlToTranslate);
+        if (extracted.length === 0) {
+          throw new Error('No translatable texts found in HTML');
+        }
+
+        const TRANSLATE_CHUNK = 12;
+        const totalBatches = Math.ceil(extracted.length / TRANSLATE_CHUNK);
+        const DEFAULT_USER_ID = '00000000-0000-0000-0000-000000000001';
+        const idToOriginal = new Map<number, string>(extracted.map((e) => [e.id, e.text]));
+        const idToTranslated = new Map<number, string>();
+
+        setCloneProgress({
+          phase: 'translating',
+          totalTexts: extracted.length,
+          processedTexts: 0,
+          message: `Translating to ${targetLang} — 0/${totalBatches} batch...`,
+        });
+
+        for (let bi = 0; bi < totalBatches; bi++) {
+          const slice = extracted.slice(bi * TRANSLATE_CHUNK, (bi + 1) * TRANSLATE_CHUNK);
+          let attempt = 0;
+          let lastErr: string | null = null;
+          while (attempt < 2) {
+            attempt += 1;
+            try {
+              const res = await fetch('/api/clone-funnel', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  cloneMode: 'translate',
+                  mode: 'batch',
+                  texts: slice,
+                  targetLanguage: targetLang,
+                  userId: DEFAULT_USER_ID,
+                }),
+              });
+              const data = await parseJsonResponseOrThrow<{
+                translations?: Array<{ id: number; translated: string }>;
+                error?: string;
+              }>(res, `[translate batch ${bi + 1}]`);
+              if (!res.ok || data.error) throw new Error(data.error || `Batch ${bi + 1} failed`);
+              for (const row of data.translations || []) {
+                if (typeof row?.id === 'number' && typeof row?.translated === 'string') {
+                  const trimmed = row.translated.trim();
+                  if (trimmed) idToTranslated.set(row.id, trimmed);
+                }
+              }
+              lastErr = null;
+              break;
+            } catch (err) {
+              lastErr = err instanceof Error ? err.message : String(err);
+              console.warn(`[translate] batch ${bi + 1}/${totalBatches} attempt ${attempt} failed:`, lastErr);
+              if (attempt < 2) await new Promise((r) => setTimeout(r, 1500));
+            }
+          }
+          if (lastErr) {
+            // Non interrompiamo l'intero job: i testi non tradotti restano
+            // come originali. Cosi' una pagina di 500 testi non muore per
+            // un singolo batch andato storto.
+            console.error(`[translate] batch ${bi + 1}/${totalBatches} skipped after retry: ${lastErr}`);
+          }
+          setCloneProgress({
+            phase: 'translating',
+            totalTexts: extracted.length,
+            processedTexts: idToTranslated.size,
+            message: `Translating to ${targetLang} — ${bi + 1}/${totalBatches} batch (${idToTranslated.size}/${extracted.length} testi)...`,
+          });
+        }
+
+        if (idToTranslated.size === 0) {
+          throw new Error('Translation failed for all batches. Check the Edge Function logs.');
+        }
+
+        setCloneProgress({
+          phase: 'translating',
+          totalTexts: extracted.length,
+          processedTexts: idToTranslated.size,
+          message: 'Applying translations to HTML...',
+        });
+
+        const pairs: Array<{ original: string; translated: string }> = [];
+        for (const [id, translated] of idToTranslated) {
+          const original = idToOriginal.get(id);
+          if (original && translated && original !== translated) {
+            pairs.push({ original, translated });
+          }
+        }
+        const { html: translatedRaw, replacements } = applyTranslationsToHtml(htmlToTranslate, pairs);
+        const translatedWithLang = setHtmlLangAttr(translatedRaw, targetLang);
+        const translatedHtml = sanitizeClonedHtml(translatedWithLang, url, { keepScripts: preserveScripts });
+
+        const durationMs = Math.round(performance.now() - t0);
+        const newTitle = `${targetLang}: ${pageName}`;
 
         setCloneProgress(null);
-        const translatedHtml = sanitizeClonedHtml(data.content || '', url, { keepScripts: preserveScripts });
         updateFunnelPage(pageId, {
           swipeStatus: 'completed',
-          swipeResult: `Translated (${data.textsTranslated || 0} texts → ${data.targetLanguage})`,
+          swipeResult: `Translated (${idToTranslated.size}/${extracted.length} texts → ${targetLang})`,
           swipedData: {
             html: translatedHtml,
             originalTitle: pageName,
-            newTitle: `${data.targetLanguage}: ${pageName}`,
-            originalLength: data.originalHtmlSize || 0,
-            newLength: data.finalHtmlSize || 0,
-            processingTime: 0,
-            methodUsed: 'smooth-responder-translate',
-            changesMade: [`${data.textsTranslated} texts translated to ${data.targetLanguage}`],
+            newTitle,
+            originalLength: htmlToTranslate.length,
+            newLength: translatedHtml.length,
+            processingTime: durationMs,
+            methodUsed: 'funnel-translate-v1-batch',
+            changesMade: [
+              `${idToTranslated.size}/${extracted.length} texts translated to ${targetLang}`,
+              `${replacements} replacements applied`,
+              `${totalBatches} batch chiamati lato client`,
+            ],
             swipedAt: new Date(),
           },
         });
@@ -4013,11 +4110,11 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
 
         setHtmlPreviewModal({
           isOpen: true,
-          title: `${data.targetLanguage}: ${pageName}`,
+          title: newTitle,
           html: translatedHtml,
           mobileHtml: '',
           iframeSrc: '',
-          metadata: { method: 'translate', length: data.finalHtmlSize || 0, duration: 0 },
+          metadata: { method: 'translate-batch', length: translatedHtml.length, duration: durationMs },
           pageId,
           sourceType: 'swiped',
         });
