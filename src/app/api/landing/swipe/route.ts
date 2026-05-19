@@ -616,9 +616,19 @@ CRITICAL RULES:
 
     const usedProvider = 'anthropic';
 
+    // JSON-in-<script> safe encode: vedi worker-lib/finalize.js per il
+    // razionale completo. Se uno dei valori in `replacementPairs` contiene
+    // "</script>", "<!--" o U+2028/U+2029, il tag <script> viene chiuso a
+    // meta' del JS dal parser HTML e il resto del codice diventa testo
+    // visibile nel <body>.
+    const pairsJson = JSON.stringify(replacementPairs)
+      .replace(/<\/(script|style)/gi, '<\\/$1')
+      .replace(/<!--/g, '<\\!--')
+      .replace(/\u2028/g, '\\u2028')
+      .replace(/\u2029/g, '\\u2029');
     const swipeScript = `<script data-swipe-replacer>
 (function(){
-  var pairs = ${JSON.stringify(replacementPairs)};
+  var pairs = ${pairsJson};
   function escRx(s){return s.replace(/[.*+?^\${}()|[\\]\\\\]/g,'\\\\$&');}
   function normWS(s){return (s||'').replace(/\\s+/g,' ').trim();}
   // Pre-compute a normalized form + tolerant regex for every pair so we can

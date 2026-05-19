@@ -141,9 +141,19 @@ export async function POST(req: NextRequest) {
   // Il replace server-side sopra dovrebbe gia' aver risolto la maggior
   // parte dei testi nel sorgente HTML; qui pesco quelli generati a
   // runtime dall'SPA dopo idratazione.
+  // JSON-in-<script> safe encode: vedi worker-lib/finalize.js per il
+  // razionale completo. Sintesi: se un valore in `replacementPairs`
+  // contiene "</script>", "<!--" o gli unicode line-separators, il
+  // tag <script> viene chiuso a meta' del JS dal parser HTML e il
+  // resto dello script appare come testo visibile nel <body>.
+  const pairsJson = JSON.stringify(replacementPairs)
+    .replace(/<\/(script|style)/gi, '<\\/$1')
+    .replace(/<!--/g, '<\\!--')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
   const swipeScript = `<script data-swipe-replacer>
 (function(){
-  var pairs = ${JSON.stringify(replacementPairs)};
+  var pairs = ${pairsJson};
   function escRx(s){return s.replace(/[.*+?^\${}()|[\\]\\\\]/g,'\\\\$&');}
   function normWS(s){return (s||'').replace(/\\s+/g,' ').trim();}
   var prepared = pairs.map(function(p){

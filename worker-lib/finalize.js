@@ -428,10 +428,32 @@ function finalizeSwipe({ html, sourceUrl, texts, rewrites, productName, applySpa
     }
   }
 
-  // swipeScript (SPA-aware con MutationObserver + polling)
+  // swipeScript (SPA-aware con MutationObserver + polling).
+  //
+  // ⚠️ JSON-in-<script> escaping: `replacementPairs` puo' contenere
+  // qualsiasi stringa estratta dalla pagina del competitor o emessa dal
+  // LLM. Se uno dei valori contiene la sottostringa "</script>" (es.
+  // un advertorial che cita codice, un FAQ "come modifico lo script
+  // della checkout", o anche solo il pattern dentro un commento HTML),
+  // `JSON.stringify` la emette letterale: il parser HTML vede
+  // </script> e CHIUDE il tag in mezzo al codice JS. Risultato visibile
+  // nel browser: tutta la coda dello script (function normWS, pairs,
+  // clearInterval, ecc.) appare come TESTO nel <body>, e i swipe
+  // replacement runtime non partono mai. Fix standard: escapare le
+  // sequenze che possono uscire dal contesto <script>:
+  //   • </script  →  <\/script    (script-tag breakout)
+  //   • </style   →  <\/style     (se mai usato dentro <style>)
+  //   • <!--      →  <\!--        (HTML comment dentro script)
+  //   • U+2028 / U+2029           (line separators: validi in JSON ma
+  //                                NON in JS literal → SyntaxError)
+  const pairsJson = JSON.stringify(replacementPairs)
+    .replace(/<\/(script|style)/gi, '<\\/$1')
+    .replace(/<!--/g, '<\\!--')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
   const swipeScript = `<script data-swipe-replacer>
 (function(){
-  var pairs = ${JSON.stringify(replacementPairs)};
+  var pairs = ${pairsJson};
   function escRx(s){return s.replace(/[.*+?^\${}()|[\\]\\\\]/g,'\\\\$&');}
   function normWS(s){return (s||'').replace(/\\s+/g,' ').trim();}
   var prepared = pairs.map(function(p){
