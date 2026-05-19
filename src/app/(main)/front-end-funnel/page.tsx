@@ -4000,7 +4000,11 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
         const TRANSLATE_CHUNK = 12;
         const totalBatches = Math.ceil(extracted.length / TRANSLATE_CHUNK);
         const DEFAULT_USER_ID = '00000000-0000-0000-0000-000000000001';
-        const idToOriginal = new Map<number, string>(extracted.map((e) => [e.id, e.text]));
+        // Mappe per id -> testo. `clean` e' il testo che e' andato a Claude,
+        // `raw` e' il testo originale del text node (con whitespace) e ci
+        // serve per il replace whitespace-tolerant.
+        const idToClean = new Map<number, string>(extracted.map((e) => [e.id, e.text]));
+        const idToRaw = new Map<number, string>(extracted.map((e) => [e.id, e.raw]));
         const idToTranslated = new Map<number, string>();
 
         setCloneProgress({
@@ -4011,7 +4015,11 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
         });
 
         for (let bi = 0; bi < totalBatches; bi++) {
-          const slice = extracted.slice(bi * TRANSLATE_CHUNK, (bi + 1) * TRANSLATE_CHUNK);
+          // Non mandiamo `raw` a Claude (e' rumore di whitespace). Inviamo
+          // solo id/text/tag, e teniamo `raw` lato client per il replace.
+          const slice = extracted
+            .slice(bi * TRANSLATE_CHUNK, (bi + 1) * TRANSLATE_CHUNK)
+            .map((e) => ({ id: e.id, text: e.text, tag: e.tag }));
           let attempt = 0;
           let lastErr: string | null = null;
           while (attempt < 2) {
@@ -4072,14 +4080,18 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
           message: 'Applying translations to HTML...',
         });
 
-        const pairs: Array<{ original: string; translated: string }> = [];
+        const pairs: Array<{ raw: string; clean: string; translated: string }> = [];
         for (const [id, translated] of idToTranslated) {
-          const original = idToOriginal.get(id);
-          if (original && translated && original !== translated) {
-            pairs.push({ original, translated });
+          const clean = idToClean.get(id) || '';
+          const raw = idToRaw.get(id) || clean;
+          if (clean && translated && clean !== translated) {
+            pairs.push({ raw, clean, translated });
           }
         }
-        const { html: translatedRaw, replacements } = applyTranslationsToHtml(htmlToTranslate, pairs);
+        const { html: translatedRaw, replacements, missed } = applyTranslationsToHtml(htmlToTranslate, pairs);
+        if (missed > 0) {
+          console.warn(`[translate] ${missed}/${pairs.length} testi tradotti ma non sostituiti nell'HTML (whitespace/encoding mismatch)`);
+        }
         const translatedWithLang = setHtmlLangAttr(translatedRaw, targetLang);
         const translatedHtml = sanitizeClonedHtml(translatedWithLang, url, { keepScripts: preserveScripts });
 
@@ -4100,7 +4112,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
             methodUsed: 'funnel-translate-v1-batch',
             changesMade: [
               `${idToTranslated.size}/${extracted.length} texts translated to ${targetLang}`,
-              `${replacements} replacements applied`,
+              `${replacements} replacements applied${missed ? ` (${missed} missed)` : ''}`,
               `${totalBatches} batch chiamati lato client`,
             ],
             swipedAt: new Date(),
