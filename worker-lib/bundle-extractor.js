@@ -89,6 +89,17 @@ function isHumanLikeJsString(s) {
   return true;
 }
 
+// Stesso filtro del text-extractor: stringhe del picker shipping country/
+// currency Shopify/WooCommerce/Funnelish — zero valore di copy, costo
+// token alto. Cfr. worker-lib/text-extractor.js per i dettagli.
+const BUNDLE_COUNTRY_CURRENCY_RE = /^[A-ZÀÈÉÌÒÙÁÉÍÓÚÑ][A-Za-zÀ-ÿ\s&',()/.-]{3,55}\s[A-Z]{3,4}\s(?:[^\sa-zA-Z\d.!?:;]{1,6}|[A-Z]{2,5})$/;
+function isCountryCurrencyPickerString(s) {
+  if (s.length < 8 || s.length > 70) return false;
+  if (/[.!?:;]/.test(s)) return false;
+  if (/\d/.test(s)) return false;
+  return BUNDLE_COUNTRY_CURRENCY_RE.test(s);
+}
+
 function extractStringsFromBundleSource(js) {
   if (!js || typeof js !== 'string') return [];
   const out = [];
@@ -98,6 +109,7 @@ function extractStringsFromBundleSource(js) {
   while ((m = re.exec(js)) !== null) {
     const s = m[2];
     if (!isHumanLikeJsString(s)) continue;
+    if (isCountryCurrencyPickerString(s)) continue;
     if (seen.has(s)) continue;
     seen.add(s);
     out.push(s);

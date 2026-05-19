@@ -7,6 +7,43 @@
 // Mantenere allineato a src/lib/universal-text-extractor.ts: se cambia
 // laggiu' (per la UI), rispecchia qui.
 
+// ── JUNK FILTER: shipping country + currency selector items ─────
+// Pattern emesso dai picker di shipping di Shopify/WooCommerce/Funnelish
+// in footer:
+//   "Bosnia & Herzegovina BAM KM"
+//   "British Indian Ocean Territory USD $"
+//   "Caribbean Netherlands USD $"
+//   "Central African Republic XAF CFA"
+//   "United States USD $"
+// Sono ~250 stringhe auto-generate dalla piattaforma, ZERO valore di copy.
+// Mandarli al LLM costa tempo e token. Filtrarli qui blocca tutto a monte.
+//
+// Heuristica conservativa:
+//   - Comincia con MAIUSCOLA
+//   - Non contiene punteggiatura di frase (. ! ? : ;)
+//   - Non contiene cifre (cosi' "Get X — Just $39" passa)
+//   - Lunghezza totale 6-70 char
+//   - Finisce con: SPAZIO + 3-4 lettere maiuscole (codice valuta ISO 4217)
+//     + SPAZIO + 1-6 caratteri non-spazio non-cifra (simbolo: $ € £ ¥, o
+//     suffisso valuta: KM, kr, zł, CFA, FCFA, ecc.)
+//
+// Falsi positivi possibili teoricamente ma trascurabili: copy che finisce
+// per ".. USD $" senza un punto prima ("Order processing in USD $")
+// e' molto raro nelle landing.
+// Trailing token: SIMBOLO valuta non-lettera ($ € £ ¥ ...) oppure
+// 2-5 lettere MAIUSCOLE (KM, CFA, FCFA). Cosi' "Pricing in USD only"
+// non viene erroneamente filtrato (trailing "only" e' lowercase).
+// Trade-off: perdiamo i suffissi lowercase ("kr", "zł") ma sono rari
+// nelle picker english-default e meno costosi di un falso positivo.
+const COUNTRY_CURRENCY_RE = /^[A-ZÀÈÉÌÒÙÁÉÍÓÚÑ][A-Za-zÀ-ÿ\s&',()/.-]{3,55}\s[A-Z]{3,4}\s(?:[^\sa-zA-Z\d.!?:;]{1,6}|[A-Z]{2,5})$/;
+
+function looksLikeCountryCurrencyPicker(s) {
+  if (s.length < 8 || s.length > 70) return false;
+  if (/[.!?:;]/.test(s)) return false;
+  if (/\d/.test(s)) return false;
+  return COUNTRY_CURRENCY_RE.test(s);
+}
+
 function extractAllTextsUniversal(html) {
   const texts = [];
   const seen = new Set();
@@ -21,6 +58,7 @@ function extractAllTextsUniversal(html) {
       .replace(/\s+/g, ' ')
       .trim();
     if (cleaned.length < 2) return;
+    if (looksLikeCountryCurrencyPicker(cleaned)) return;
     const key = `${cleaned}::${context}`;
     if (seen.has(key)) return;
     seen.add(key);

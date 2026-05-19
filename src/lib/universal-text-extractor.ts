@@ -8,6 +8,17 @@ export interface ExtractedText {
   position: number;
 }
 
+// JUNK FILTER: stringhe del picker shipping country/currency
+// (Shopify/WooCommerce/Funnelish footer). Vedi worker-lib/text-extractor.js
+// per la spiegazione dettagliata. Tenuto allineato fra UI e worker.
+const COUNTRY_CURRENCY_RE = /^[A-ZÀÈÉÌÒÙÁÉÍÓÚÑ][A-Za-zÀ-ÿ\s&',()/.-]{3,55}\s[A-Z]{3,4}\s(?:[^\sa-zA-Z\d.!?:;]{1,6}|[A-Z]{2,5})$/;
+function looksLikeCountryCurrencyPicker(s: string): boolean {
+  if (s.length < 8 || s.length > 70) return false;
+  if (/[.!?:;]/.test(s)) return false;
+  if (/\d/.test(s)) return false;
+  return COUNTRY_CURRENCY_RE.test(s);
+}
+
 export function extractAllTextsUniversal(html: string): ExtractedText[] {
   const texts: ExtractedText[] = [];
   const seen = new Set<string>();
@@ -25,7 +36,9 @@ export function extractAllTextsUniversal(html: string): ExtractedText[] {
 
     // Validazione minima - solo lunghezza
     if (cleaned.length < 2) return;
-    
+    // Skip stringhe del country/currency picker (footer Shopify-like).
+    if (looksLikeCountryCurrencyPicker(cleaned)) return;
+
     // Evita duplicati esatti
     const key = `${cleaned}::${context}`;
     if (seen.has(key)) return;
