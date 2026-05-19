@@ -90,13 +90,31 @@ async function fetchPageWithFallbacks(url: string): Promise<
       if (res.ok) {
         const html = await res.text();
         if (html && html.length > 50) {
-          // Use the new SPA detector — it logs `[SPA-CHECK]` and matches
-          // open `<div id="root">`, Vite `/assets/index-`, and the rest
-          // of the modern marker set. Old `isSpaShell` missed these.
-          if (looksLikeSpaShell(html)) {
-            details.push(`${attempt.name}: SPA shell detected (${html.length} chars) — falling through to fetchHtmlSmart (Playwright → Jina)`);
+          // The `looksLikeSpaShell` detector from fetch-html-smart is
+          // aggressive on purpose for the AUDIT flow — any `<div id="root">`
+          // marker triggers Playwright "just in case". For the CLONE flow
+          // that's a regression: an SSR'd Next/Vite/CRA page with the
+          // root div + 300KB of real content gets misclassified and we
+          // throw away a perfectly good HTML, then time out in Playwright,
+          // and Netlify returns a 504 HTML page → "<HTML> <HE..." JSON
+          // parse error on the client.
+          //
+          // Fix: trust the marker ONLY when the body is actually empty.
+          // If we already have substantive content tags (h1/p/article/
+          // section/main) AND a non-trivial payload (>= 15KB), the page
+          // is hydrated SSR — use it as-is. This restores the 2-second
+          // fast path that worked before ef75e58.
+          const hasRealContent =
+            html.length >= 15000 &&
+            /<(h[1-6]|p|article|section|main)[\s>]/i.test(html);
+
+          if (looksLikeSpaShell(html) && !hasRealContent) {
+            details.push(`${attempt.name}: SPA shell detected (${html.length} chars, no real content) — falling through to fetchHtmlSmart (Playwright → Jina)`);
             console.warn(`[clone-funnel] ${attempt.name} returned SPA shell for ${url} — trying next attempt`);
           } else {
+            if (looksLikeSpaShell(html)) {
+              console.log(`[clone-funnel] ${attempt.name}: SPA marker present but ${html.length} chars + content tags found — treating as SSR, using as-is`);
+            }
             const stabilized = stabilizeClonedHtml(html, url);
             const inlined = await inlineExternalAssets(stabilized, url);
             return { ok: true, html: inlined, method: attempt.name };

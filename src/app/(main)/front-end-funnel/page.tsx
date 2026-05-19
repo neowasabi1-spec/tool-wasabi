@@ -68,6 +68,41 @@ import VisualHtmlEditor from '@/components/VisualHtmlEditor';
 const SAVED_SECTIONS_KEY = 'funnel-swiper-saved-sections';
 const CLONED_URLS_KEY = 'funnel-swiper-cloned-urls';
 
+// Robust JSON response parser. When an Edge/CDN/serverless gateway returns
+// an HTML error page (502, 504, 413, plain "Internal Server Error" pages,
+// Netlify "<HTML> <HEAD>..." gateway errors, etc.) the front-end used to
+// blow up with "Unexpected token '<', "<HTML> <HE"... is not valid JSON",
+// hiding the actual status. This helper surfaces status + body snippet so
+// the real error reaches the UI/console.
+async function parseJsonResponseOrThrow<T = unknown>(
+  res: Response,
+  label: string
+): Promise<T> {
+  const raw = await res.text();
+  const ct = res.headers.get('content-type') || '';
+  const trimmed = raw.trim();
+  const looksHtml =
+    ct.includes('text/html') ||
+    trimmed.startsWith('<') ||
+    /^<!doctype\s+html/i.test(trimmed);
+
+  if (looksHtml || !trimmed) {
+    const snippet = trimmed.replace(/\s+/g, ' ').slice(0, 220);
+    const reason = !trimmed
+      ? 'empty response body'
+      : `gateway returned HTML instead of JSON: "${snippet}…"`;
+    throw new Error(`${label} HTTP ${res.status} ${res.statusText} — ${reason}`);
+  }
+
+  try {
+    return JSON.parse(raw) as T;
+  } catch (parseErr) {
+    const snippet = raw.replace(/\s+/g, ' ').slice(0, 220);
+    const msg = parseErr instanceof Error ? parseErr.message : 'parse error';
+    throw new Error(`${label} HTTP ${res.status} — invalid JSON (${msg}): "${snippet}…"`);
+  }
+}
+
 interface SavedSectionEntry {
   id: string;
   name: string;
@@ -2741,11 +2776,14 @@ export default function FrontEndFunnel() {
               keepScripts: true,
             }),
           });
-          const cloneData = await cloneRes.json();
+          const cloneData = await parseJsonResponseOrThrow<{ content?: string; error?: string }>(
+            cloneRes,
+            '[swipe-all clone]'
+          );
           if (!cloneRes.ok || cloneData.error) {
             throw new Error(cloneData.error || 'Clone fallito');
           }
-          html = sanitizeClonedHtml(cloneData.content, url, { keepScripts: true });
+          html = sanitizeClonedHtml(cloneData.content || '', url, { keepScripts: true });
         }
         if (swipeAllCancelRef.current) break;
         pushSwipeLog('success', `\u2713 Cloned: ${(html.length / 1024).toFixed(1)} KB of HTML`, pageName);
@@ -3007,14 +3045,25 @@ export default function FrontEndFunnel() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ url, cloneMode: 'identical', viewport: cloneMobile ? 'both' : 'desktop', keepScripts: preserveScripts }),
         });
-        const data = await response.json();
+        const data = await parseJsonResponseOrThrow<{
+          content?: string;
+          mobileContent?: string | null;
+          mobileFinalSize?: number;
+          finalSize?: number;
+          cssInlined?: boolean;
+          cssCount?: number;
+          imgCount?: number;
+          jsRendered?: boolean;
+          warning?: string;
+          error?: string;
+        }>(response, '[clone identical]');
         if (!response.ok || data.error) throw new Error(data.error || 'Clone failed');
 
         if (data.warning) {
           console.warn('⚠️ Clone warning:', data.warning);
         }
 
-        const clonedHtml = sanitizeClonedHtml(data.content, url, { keepScripts: preserveScripts });
+        const clonedHtml = sanitizeClonedHtml(data.content || '', url, { keepScripts: preserveScripts });
         const clonedMobileHtml = data.mobileContent ? sanitizeClonedHtml(data.mobileContent, url, { keepScripts: preserveScripts }) : '';
         const mobileInfo = clonedMobileHtml ? ` + mobile ${(data.mobileFinalSize || 0).toLocaleString()}` : '';
         const statusMsg = data.jsRendered
@@ -3073,11 +3122,14 @@ export default function FrontEndFunnel() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ url, cloneMode: 'identical', viewport: 'desktop', keepScripts: preserveScripts }),
           });
-          const cloneData = await cloneRes.json();
+          const cloneData = await parseJsonResponseOrThrow<{ content?: string; title?: string; error?: string }>(
+            cloneRes,
+            '[rewrite pre-clone]'
+          );
           if (!cloneRes.ok || cloneData.error) {
             throw new Error(cloneData.error || 'Clone failed — cannot rewrite without HTML');
           }
-          htmlToRewrite = sanitizeClonedHtml(cloneData.content, url, { keepScripts: preserveScripts });
+          htmlToRewrite = sanitizeClonedHtml(cloneData.content || '', url, { keepScripts: preserveScripts });
 
           updateFunnelPage(pageId, {
             clonedData: {
@@ -3840,11 +3892,18 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
             userId: DEFAULT_USER_ID,
           }),
         });
-        const data = await response.json();
+        const data = await parseJsonResponseOrThrow<{
+          content?: string;
+          textsTranslated?: number;
+          targetLanguage?: string;
+          originalHtmlSize?: number;
+          finalHtmlSize?: number;
+          error?: string;
+        }>(response, '[clone translate]');
         if (!response.ok || data.error) throw new Error(data.error || 'Translate failed');
 
         setCloneProgress(null);
-        const translatedHtml = sanitizeClonedHtml(data.content, url, { keepScripts: preserveScripts });
+        const translatedHtml = sanitizeClonedHtml(data.content || '', url, { keepScripts: preserveScripts });
         updateFunnelPage(pageId, {
           swipeStatus: 'completed',
           swipeResult: `Translated (${data.textsTranslated || 0} texts → ${data.targetLanguage})`,
@@ -5698,37 +5757,10 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                   </a>
                 )}
 
-                {htmlPreviewModal.html && previewTab === 'preview' && (
-                  <button
-                    onClick={() => {
-                      try {
-                        previewIframeRef.current?.contentWindow?.postMessage(
-                          { __funnelPreviewCmd: 'rerun' },
-                          '*'
-                        );
-                      } catch {}
-                    }}
-                    className="px-3 py-1.5 ml-2 text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white rounded"
-                    title="Re-run init scripts (jQuery/Swiper/FAQ)"
-                  >
-                    Re-run fallback
-                  </button>
-                )}
-
-                {previewDiag && previewTab === 'preview' && (
-                  <div
-                    className={`ml-2 px-2 py-1 rounded text-[11px] font-mono ${
-                      previewDiag.swipers === 0 && previewDiag.faqHeaders === 0
-                        ? 'bg-red-100 text-red-800'
-                        : previewDiag.label === 'after-fallback' || previewDiag.label === 'retry' || previewDiag.label === 'FORCED-OPEN'
-                          ? 'bg-green-100 text-green-800'
-                          : 'bg-amber-100 text-amber-800'
-                    }`}
-                    title={`Live diag from preview iframe — fb ${previewDiag.version}`}
-                  >
-                    {previewDiag.label} · scr={previewDiag.scripts} · faq={previewDiag.faqHeaders} · sw={previewDiag.swipers}/{previewDiag.slides} · th={previewDiag.thumbs} · {previewDiag.version}
-                  </div>
-                )}
+                {/* Debug controls (Re-run fallback button + live diag pill)
+                    removed — facevano solo casino in UI per l'utente. Lo state
+                    previewDiag e il postMessage 'rerun' restano funzionanti
+                    lato iframe, semplicemente non sono più esposti qui. */}
 
                 {/* Desktop/Mobile viewport switcher */}
                 {htmlPreviewModal.mobileHtml && (
@@ -5929,6 +5961,17 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                 safeHtml = noRetryGuard + safeHtml;
                               }
                             }
+                            // Per le pagine CLONATE (sourceType='cloned') mostriamo
+                            // l'HTML così com'è uscito da /api/clone-funnel: niente
+                            // strip script, niente fallback, niente FAQ-override.
+                            // La pagina deve apparire IDENTICA all'originale. Tutta
+                            // la machinery sotto (Swiper init, FAQ open-by-default,
+                            // HUD "FB ready", strip script Vue/Funnelish) serve SOLO
+                            // alle pagine RISCRITTE (sourceType='swiped'), dove il
+                            // worker ha già strippato gli script originali e ci
+                            // tocca reinizializzare jQuery/Swiper/FAQ a runtime.
+                            const isClonedPreview = htmlPreviewModal.sourceType === 'cloned';
+                            if (!isClonedPreview) {
                             // Strip vecchi fallback bake-ati nell'HTML (server-v1 aveva
                             // un click-delegate FAQ troppo aggressivo che killava le CTA).
                             // Riapplichiamo SEMPRE il fallback client v5+ qui sotto.
@@ -6264,6 +6307,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                 safeHtml = safeHtml + fallbackInit;
                               }
                             }
+                            } // end: if (!isClonedPreview) — skip fallback machinery for cloned pages
                             doc.write(safeHtml);
                             doc.close();
                           }
