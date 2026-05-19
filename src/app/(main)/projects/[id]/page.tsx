@@ -1,11 +1,16 @@
 'use client';
 
-import { useState, useEffect, use } from 'react';
-import { useRouter } from 'next/navigation';
+import { useState, useEffect, use, useRef } from 'react';
 import Link from 'next/link';
-import Header from '@/components/Header';
+import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
-import { ArrowLeft, Plus, Layers, ChevronRight, Trash2, X, Clock, CheckCircle, Pause, Archive } from 'lucide-react';
+import {
+  ChevronLeft, ChevronRight, FileText, Layers, Library, Palette,
+  ShieldCheck, BarChart3, Plus, X, Pencil, Image as ImageIcon,
+  Upload, Trash2, type LucideIcon,
+} from 'lucide-react';
+
+// ─── Types ───────────────────────────────────────────────────────────────────
 
 interface Project {
   id: string;
@@ -23,44 +28,797 @@ interface Flow {
   created_at: string;
 }
 
-const STATUS_COLOR: Record<string, string> = {
-  draft: 'bg-gray-700 text-gray-300',
-  live: 'bg-green-900 text-green-300',
-  paused: 'bg-yellow-900 text-yellow-300',
-  archived: 'bg-gray-800 text-gray-500',
+type SectionKey =
+  | 'general_brief'
+  | 'funnel'
+  | 'competitor_library'
+  | 'creative'
+  | 'chief'
+  | 'analytics';
+
+interface SectionDef {
+  key: SectionKey;
+  label: string;
+  icon: LucideIcon;
+}
+
+const SECTIONS: SectionDef[] = [
+  { key: 'general_brief', label: 'General Brief', icon: FileText },
+  { key: 'funnel', label: 'Funnel', icon: Layers },
+  { key: 'competitor_library', label: 'Competitor Library', icon: Library },
+  { key: 'creative', label: 'Creative', icon: Palette },
+  { key: 'chief', label: 'Chief', icon: ShieldCheck },
+  { key: 'analytics', label: 'Analytics', icon: BarChart3 },
+];
+
+interface Tab {
+  id: string;
+  name: string;
+  /** Color theme for the badge / pill. */
+  color: 'green' | 'blue' | 'purple' | 'pink' | 'orange' | 'slate';
+}
+
+interface DocumentFile {
+  name: string;
+  size: number;
+  type: string;
+  dataUrl: string;
+  uploadedAt: string;
+}
+
+interface ImageFile {
+  name: string;
+  size: number;
+  dataUrl: string;
+  uploadedAt: string;
+}
+
+interface TabContent {
+  document?: DocumentFile;
+  images?: ImageFile[];
+}
+
+// ─── Tab color presets ───────────────────────────────────────────────────────
+// Map a tab "color" key to Tailwind classes for the badge (small numbered
+// circle to the left of the tab name) and for the big pill that appears
+// above the cards in the active tab.
+
+const TAB_COLOR: Record<Tab['color'], { badge: string; pill: string; underline: string }> = {
+  green:  { badge: 'bg-emerald-100 text-emerald-700', pill: 'bg-emerald-500',  underline: 'border-emerald-500' },
+  blue:   { badge: 'bg-blue-100 text-blue-700',       pill: 'bg-blue-500',     underline: 'border-blue-500' },
+  purple: { badge: 'bg-purple-100 text-purple-700',   pill: 'bg-purple-500',   underline: 'border-purple-500' },
+  pink:   { badge: 'bg-pink-100 text-pink-700',       pill: 'bg-pink-500',     underline: 'border-pink-500' },
+  orange: { badge: 'bg-orange-100 text-orange-700',   pill: 'bg-orange-500',   underline: 'border-orange-500' },
+  slate:  { badge: 'bg-slate-100 text-slate-700',     pill: 'bg-slate-500',    underline: 'border-slate-500' },
 };
 
-export default function ProjectDetailPage({ params }: { params: { id: string } | Promise<{ id: string }> }) {
+// Heuristic: pick a sensible default color based on tab name.
+function suggestColor(name: string): Tab['color'] {
+  const n = name.toLowerCase();
+  if (/oto\s*1|otto?1/.test(n)) return 'orange';
+  if (/oto\s*2|otto?2/.test(n)) return 'pink';
+  if (/oto\s*3|otto?3/.test(n)) return 'purple';
+  if (/front|fe\b|landing/.test(n)) return 'blue';
+  if (/back|be\b|upsell/.test(n)) return 'purple';
+  if (/checkout|order/.test(n)) return 'green';
+  return 'slate';
+}
+
+// ─── localStorage helpers (per project) ──────────────────────────────────────
+
+function tabsKey(projectId: string): string {
+  return `project:${projectId}:tabs`;
+}
+function tabContentKey(projectId: string, tabId: string): string {
+  return `project:${projectId}:tab:${tabId}:content`;
+}
+function sectionKey(projectId: string): string {
+  return `project:${projectId}:section`;
+}
+
+function loadTabs(projectId: string): Tab[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(tabsKey(projectId));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((t): t is Tab =>
+      typeof t === 'object' && t && typeof t.id === 'string' && typeof t.name === 'string',
+    );
+  } catch {
+    return [];
+  }
+}
+
+function saveTabs(projectId: string, tabs: Tab[]): void {
+  if (typeof window === 'undefined') return;
+  try { window.localStorage.setItem(tabsKey(projectId), JSON.stringify(tabs)); } catch {}
+}
+
+function loadTabContent(projectId: string, tabId: string): TabContent {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = window.localStorage.getItem(tabContentKey(projectId, tabId));
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed as TabContent : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveTabContent(projectId: string, tabId: string, content: TabContent): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(tabContentKey(projectId, tabId), JSON.stringify(content));
+  } catch (err) {
+    // Most likely QuotaExceededError — files too big for localStorage.
+    alert(
+      'Spazio locale esaurito (limite ~5 MB del browser).\n\n' +
+      'Per ora togli qualche file: il salvataggio su Supabase Storage arriva nel prossimo step.',
+    );
+    throw err;
+  }
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function uid(): string {
+  return Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+}
+
+function readFileAsDataURL(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// ─── Page ────────────────────────────────────────────────────────────────────
+
+export default function ProjectDetailPage({
+  params,
+}: {
+  params: { id: string } | Promise<{ id: string }>;
+}) {
   const resolvedParams = params instanceof Promise ? use(params) : params;
   const id = resolvedParams.id;
-  const router = useRouter();
+
   const [project, setProject] = useState<Project | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [section, setSection] = useState<SectionKey>('general_brief');
+
+  useEffect(() => { loadProject(); }, [id]);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const stored = window.localStorage.getItem(sectionKey(id));
+    if (stored && SECTIONS.some((s) => s.key === stored)) {
+      setSection(stored as SectionKey);
+    }
+  }, [id]);
+
+  async function loadProject() {
+    setLoading(true);
+    const { data } = await supabase
+      .from('projects')
+      .select('id, name, status, description, domain')
+      .eq('id', id)
+      .single();
+    if (data) {
+      setProject({
+        id: String(data.id || ''),
+        name: typeof data.name === 'string' ? data.name : 'Untitled',
+        status: typeof data.status === 'string' ? data.status : 'active',
+        description: typeof data.description === 'string' ? data.description : '',
+        domain: typeof data.domain === 'string' ? data.domain : '',
+      });
+    }
+    setLoading(false);
+  }
+
+  function pickSection(next: SectionKey) {
+    setSection(next);
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(sectionKey(id), next);
+    }
+  }
+
+  const sectionLabel = SECTIONS.find((s) => s.key === section)?.label || 'General Brief';
+
+  return (
+    <div className="min-h-screen bg-[#F5F7FA]">
+      {/* Top breadcrumb bar */}
+      <div className="bg-white border-b border-gray-200 px-6 py-3">
+        <div className="flex items-center gap-2 text-sm">
+          <Link
+            href="/projects"
+            className="text-gray-500 hover:text-gray-700 flex items-center gap-1 transition-colors"
+          >
+            <ChevronLeft className="w-4 h-4" />
+            Progetti
+          </Link>
+          <span className="text-gray-400">/</span>
+          <span className="text-gray-700 font-medium">
+            {loading ? '...' : project?.name || 'Untitled'}
+          </span>
+          <span className="text-gray-400">/</span>
+          <span className="text-gray-900 font-semibold">{sectionLabel}</span>
+        </div>
+      </div>
+
+      <div className="flex">
+        {/* In-page sidebar */}
+        <aside className="w-60 bg-white border-r border-gray-200 min-h-[calc(100vh-49px)] py-4 sticky top-0">
+          {/* Project header in sidebar */}
+          <div className="px-4 pb-4 mb-2 border-b border-gray-100 flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-gray-100 flex items-center justify-center text-sm font-bold text-gray-700 uppercase flex-shrink-0">
+              {(project?.name || 'U').charAt(0)}
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-semibold text-gray-900 truncate">
+                {loading ? 'Loading...' : project?.name || 'Untitled'}
+              </div>
+              {project?.domain && (
+                <div className="text-[11px] text-gray-500 truncate">{project.domain}</div>
+              )}
+            </div>
+          </div>
+
+          <nav className="px-2">
+            <ul className="space-y-0.5">
+              {SECTIONS.map((s) => {
+                const Icon = s.icon;
+                const active = section === s.key;
+                return (
+                  <li key={s.key}>
+                    <button
+                      type="button"
+                      onClick={() => pickSection(s.key)}
+                      className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors ${
+                        active
+                          ? 'bg-emerald-50 text-emerald-700 font-medium'
+                          : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+                      }`}
+                    >
+                      <Icon className="w-4 h-4 flex-shrink-0" />
+                      <span className="flex-1 text-left truncate">{s.label}</span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </nav>
+        </aside>
+
+        {/* Main content */}
+        <main className="flex-1 p-6 max-w-[1100px]">
+          {section === 'general_brief' && (
+            <GeneralBriefSection projectId={id} />
+          )}
+          {section === 'funnel' && (
+            <FunnelSection projectId={id} />
+          )}
+          {section !== 'general_brief' && section !== 'funnel' && (
+            <ComingSoonSection
+              label={sectionLabel}
+              icon={SECTIONS.find((s) => s.key === section)?.icon || FileText}
+            />
+          )}
+        </main>
+      </div>
+    </div>
+  );
+}
+
+// ─── General Brief section ───────────────────────────────────────────────────
+
+function GeneralBriefSection({ projectId }: { projectId: string }) {
+  const [tabs, setTabs] = useState<Tab[]>([]);
+  const [activeId, setActiveId] = useState<string>('general'); // 'general' = the static "General Brief" tab
+  const [editingId, setEditingId] = useState<string | null>(null);
+
+  // Hydrate tabs from localStorage on mount.
+  useEffect(() => {
+    const loaded = loadTabs(projectId);
+    setTabs(loaded);
+    if (loaded.length > 0) setActiveId(loaded[0].id);
+  }, [projectId]);
+
+  function persist(next: Tab[]) {
+    setTabs(next);
+    saveTabs(projectId, next);
+  }
+
+  function addTab() {
+    const name = prompt('Nome della nuova scheda (es. "Product Brief — OTO1")')?.trim();
+    if (!name) return;
+    const t: Tab = { id: uid(), name, color: suggestColor(name) };
+    const next = [...tabs, t];
+    persist(next);
+    setActiveId(t.id);
+  }
+
+  function renameTab(tabId: string, name: string) {
+    const next = tabs.map((t) => (t.id === tabId ? { ...t, name, color: suggestColor(name) } : t));
+    persist(next);
+    setEditingId(null);
+  }
+
+  function removeTab(tabId: string) {
+    if (!confirm('Eliminare questa scheda? Documenti e immagini caricati andranno persi.')) return;
+    const next = tabs.filter((t) => t.id !== tabId);
+    persist(next);
+    if (typeof window !== 'undefined') {
+      window.localStorage.removeItem(tabContentKey(projectId, tabId));
+    }
+    if (activeId === tabId) {
+      setActiveId(next[0]?.id || 'general');
+    }
+  }
+
+  const isGeneralActive = activeId === 'general';
+  const activeTab = tabs.find((t) => t.id === activeId);
+
+  return (
+    <div className="space-y-4">
+      {/* Tabs row */}
+      <div className="bg-white rounded-xl border border-gray-200 px-2 py-1 flex items-center gap-1 overflow-x-auto">
+        {/* Static "General Brief" tab */}
+        <TabButton
+          active={isGeneralActive}
+          onClick={() => setActiveId('general')}
+          color="slate"
+          icon={<FileText className="w-4 h-4" />}
+          label="General Brief"
+        />
+        {tabs.map((t, i) => (
+          <TabButton
+            key={t.id}
+            active={activeId === t.id}
+            onClick={() => setActiveId(t.id)}
+            color={t.color}
+            badge={String(i + 1)}
+            label={t.name}
+            editable
+            isEditing={editingId === t.id}
+            onStartEdit={() => setEditingId(t.id)}
+            onCommitEdit={(value) => renameTab(t.id, value)}
+            onRemove={() => removeTab(t.id)}
+          />
+        ))}
+        <button
+          type="button"
+          onClick={addTab}
+          className="flex items-center gap-1.5 px-3 py-2 text-sm text-emerald-700 hover:bg-emerald-50 rounded-md transition-colors flex-shrink-0"
+        >
+          <Plus className="w-4 h-4" />
+          Aggiungi
+        </button>
+      </div>
+
+      {/* Active tab content */}
+      {isGeneralActive ? (
+        <GeneralBriefContent />
+      ) : activeTab ? (
+        <ProductBriefTab
+          projectId={projectId}
+          tab={activeTab}
+        />
+      ) : (
+        <div className="text-center text-gray-500 py-20 bg-white rounded-xl border border-gray-200">
+          Nessuna scheda selezionata. Premi <strong>+ Aggiungi</strong> per crearne una.
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Tab button ──────────────────────────────────────────────────────────────
+
+function TabButton({
+  active,
+  onClick,
+  color,
+  badge,
+  icon,
+  label,
+  editable = false,
+  isEditing = false,
+  onStartEdit,
+  onCommitEdit,
+  onRemove,
+}: {
+  active: boolean;
+  onClick: () => void;
+  color: Tab['color'];
+  badge?: string;
+  icon?: React.ReactNode;
+  label: string;
+  editable?: boolean;
+  isEditing?: boolean;
+  onStartEdit?: () => void;
+  onCommitEdit?: (value: string) => void;
+  onRemove?: () => void;
+}) {
+  const [draft, setDraft] = useState(label);
+  useEffect(() => { setDraft(label); }, [label, isEditing]);
+  const cls = TAB_COLOR[color];
+
+  return (
+    <div
+      className={`flex items-center gap-2 px-3 py-2 text-sm rounded-md cursor-pointer transition-colors flex-shrink-0 border-b-2 ${
+        active
+          ? `${cls.underline} text-gray-900 font-semibold`
+          : 'border-transparent text-gray-600 hover:bg-gray-50'
+      }`}
+      onClick={() => !isEditing && onClick()}
+    >
+      {badge && (
+        <span className={`w-5 h-5 rounded-full text-[11px] font-bold flex items-center justify-center ${cls.badge}`}>
+          {badge}
+        </span>
+      )}
+      {icon}
+      {isEditing ? (
+        <input
+          autoFocus
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={() => onCommitEdit?.(draft.trim() || label)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') onCommitEdit?.(draft.trim() || label);
+            if (e.key === 'Escape') onCommitEdit?.(label);
+          }}
+          className="bg-transparent border-b border-gray-300 outline-none px-1 text-sm min-w-0 max-w-[200px]"
+        />
+      ) : (
+        <span className="whitespace-nowrap">{label}</span>
+      )}
+      {editable && active && !isEditing && (
+        <>
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onStartEdit?.(); }}
+            className="p-0.5 text-gray-400 hover:text-gray-700 transition-colors"
+            title="Rinomina"
+          >
+            <Pencil className="w-3.5 h-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onRemove?.(); }}
+            className="p-0.5 text-gray-400 hover:text-red-600 transition-colors"
+            title="Elimina scheda"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─── Static "General Brief" placeholder content ──────────────────────────────
+
+function GeneralBriefContent() {
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 p-10 text-center text-gray-500">
+      <FileText className="w-10 h-10 mx-auto mb-3 opacity-40" />
+      <h3 className="text-base font-semibold text-gray-700">General Brief</h3>
+      <p className="text-sm mt-1">
+        Brief generale del progetto. Per i brief specifici di ogni step funnel,
+        usa le schede a destra (Product Brief — Frontend, OTO1, OTO2, …).
+      </p>
+    </div>
+  );
+}
+
+// ─── Product Brief tab content ───────────────────────────────────────────────
+
+function ProductBriefTab({ projectId, tab }: { projectId: string; tab: Tab }) {
+  const [content, setContent] = useState<TabContent>({});
+  useEffect(() => {
+    setContent(loadTabContent(projectId, tab.id));
+  }, [projectId, tab.id]);
+
+  function persist(next: TabContent) {
+    setContent(next);
+    saveTabContent(projectId, tab.id, next);
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Color pill above the cards (the red "Prodotto 2 — OTO2" thing) */}
+      <div>
+        <span
+          className={`inline-block px-3 py-1.5 rounded-full text-xs font-semibold text-white ${
+            TAB_COLOR[tab.color].pill
+          }`}
+        >
+          {tab.name}
+        </span>
+      </div>
+
+      {/* Mockup Immagini Prodotto — placed ABOVE per user's request
+          ("sopra il + aggiungi le foto") */}
+      <ImagesCard
+        title="Mockup Immagini Prodotto"
+        subtitle="Carica le foto del prodotto per questo step del funnel"
+        images={content.images || []}
+        onChange={(images) => persist({ ...content, images })}
+      />
+
+      {/* Product Brief document upload */}
+      <DocumentCard
+        title="Product Brief"
+        subtitle="Carica il product brief per questo step del funnel"
+        document={content.document}
+        onChange={(document) => persist({ ...content, document })}
+      />
+    </div>
+  );
+}
+
+// ─── Document upload card ────────────────────────────────────────────────────
+
+function DocumentCard({
+  title,
+  subtitle,
+  document: doc,
+  onChange,
+}: {
+  title: string;
+  subtitle: string;
+  document?: DocumentFile;
+  onChange: (next: DocumentFile | undefined) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setBusy(true);
+    try {
+      const dataUrl = await readFileAsDataURL(file);
+      onChange({
+        name: file.name,
+        size: file.size,
+        type: file.type || 'application/octet-stream',
+        dataUrl,
+        uploadedAt: new Date().toISOString(),
+      });
+    } finally {
+      setBusy(false);
+      if (inputRef.current) inputRef.current.value = '';
+    }
+  }
+
+  return (
+    <Card title={title} icon={<FileText className="w-4 h-4 text-gray-700" />} action={
+      <button
+        type="button"
+        onClick={() => inputRef.current?.click()}
+        disabled={busy}
+        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors disabled:opacity-50"
+      >
+        <Upload className="w-3.5 h-3.5" />
+        {busy ? 'Carico...' : 'Aggiungi documento'}
+      </button>
+    }>
+      <input
+        ref={inputRef}
+        type="file"
+        accept=".pdf,.doc,.docx,.txt,.md,.rtf,.odt"
+        onChange={handleFile}
+        className="hidden"
+      />
+      {doc ? (
+        <div className="flex items-center justify-between gap-3 px-4 py-3 border border-gray-200 rounded-lg">
+          <div className="flex items-center gap-3 min-w-0 flex-1">
+            <div className="w-10 h-10 rounded-lg bg-blue-50 flex items-center justify-center flex-shrink-0">
+              <FileText className="w-5 h-5 text-blue-600" />
+            </div>
+            <div className="min-w-0">
+              <a
+                href={doc.dataUrl}
+                download={doc.name}
+                className="block text-sm font-medium text-gray-900 truncate hover:text-blue-700"
+              >
+                {doc.name}
+              </a>
+              <div className="text-xs text-gray-500 mt-0.5">
+                {formatBytes(doc.size)} · caricato {new Date(doc.uploadedAt).toLocaleString('it-IT')}
+              </div>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => onChange(undefined)}
+            className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors flex-shrink-0"
+            title="Rimuovi"
+          >
+            <Trash2 className="w-4 h-4" />
+          </button>
+        </div>
+      ) : (
+        <EmptyState icon={<FileText className="w-8 h-8" />} title="Nessun documento caricato" subtitle={subtitle} />
+      )}
+    </Card>
+  );
+}
+
+// ─── Images upload card ──────────────────────────────────────────────────────
+
+function ImagesCard({
+  title,
+  subtitle,
+  images,
+  onChange,
+}: {
+  title: string;
+  subtitle: string;
+  images: ImageFile[];
+  onChange: (next: ImageFile[]) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function handleFiles(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+    setBusy(true);
+    try {
+      const next: ImageFile[] = [...images];
+      for (const file of files) {
+        if (!file.type.startsWith('image/')) continue;
+        const dataUrl = await readFileAsDataURL(file);
+        next.push({
+          name: file.name,
+          size: file.size,
+          dataUrl,
+          uploadedAt: new Date().toISOString(),
+        });
+      }
+      onChange(next);
+    } finally {
+      setBusy(false);
+      if (inputRef.current) inputRef.current.value = '';
+    }
+  }
+
+  function removeAt(idx: number) {
+    onChange(images.filter((_, i) => i !== idx));
+  }
+
+  return (
+    <Card title={title} icon={<ImageIcon className="w-4 h-4 text-gray-700" />} action={
+      <button
+        type="button"
+        onClick={() => inputRef.current?.click()}
+        disabled={busy}
+        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors disabled:opacity-50"
+      >
+        <Upload className="w-3.5 h-3.5" />
+        {busy ? 'Carico...' : 'Aggiungi immagini'}
+      </button>
+    }>
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/*"
+        multiple
+        onChange={handleFiles}
+        className="hidden"
+      />
+      {images.length === 0 ? (
+        <EmptyState icon={<ImageIcon className="w-8 h-8" />} title="Nessuna immagine caricata" subtitle={subtitle} />
+      ) : (
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+          {images.map((img, idx) => (
+            <div key={idx} className="group relative border border-gray-200 rounded-lg overflow-hidden bg-gray-50">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={img.dataUrl}
+                alt={img.name}
+                className="w-full aspect-square object-cover"
+              />
+              <button
+                type="button"
+                onClick={() => removeAt(idx)}
+                className="absolute top-1.5 right-1.5 p-1 bg-white/95 text-gray-600 hover:text-red-600 rounded-md shadow-sm opacity-0 group-hover:opacity-100 transition-opacity"
+                title="Rimuovi"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+              <div className="px-2 py-1.5 text-[11px] text-gray-600 truncate" title={img.name}>
+                {img.name}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+// ─── Generic Card / EmptyState ───────────────────────────────────────────────
+
+function Card({
+  title,
+  icon,
+  action,
+  children,
+}: {
+  title: string;
+  icon?: React.ReactNode;
+  action?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+      <header className="flex items-center justify-between gap-3 px-5 py-3.5 border-b border-gray-100">
+        <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900">
+          {icon}
+          {title}
+        </h3>
+        {action}
+      </header>
+      <div className="p-5">{children}</div>
+    </section>
+  );
+}
+
+function EmptyState({
+  icon,
+  title,
+  subtitle,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  subtitle: string;
+}) {
+  return (
+    <div className="border-2 border-dashed border-gray-200 rounded-lg py-12 px-4 text-center text-gray-500">
+      <div className="w-12 h-12 mx-auto mb-3 bg-gray-100 rounded-lg flex items-center justify-center text-gray-400">
+        {icon}
+      </div>
+      <p className="text-sm italic font-medium text-gray-600">{title}</p>
+      <p className="text-xs mt-1">{subtitle}</p>
+    </div>
+  );
+}
+
+// ─── Funnel section: reuse existing flows list ───────────────────────────────
+
+function FunnelSection({ projectId }: { projectId: string }) {
+  const router = useRouter();
   const [flows, setFlows] = useState<Flow[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
   const [newName, setNewName] = useState('');
   const [adding, setAdding] = useState(false);
 
-  useEffect(() => { loadData(); }, [id]);
+  useEffect(() => { loadFlows(); }, [projectId]);
 
-  async function loadData() {
+  async function loadFlows() {
     setLoading(true);
-    const [pRes, fRes] = await Promise.all([
-      supabase.from('projects').select('id, name, status, description, domain').eq('id', id).single(),
-      supabase.from('funnel_flows').select('id, name, status, is_active, created_at').eq('project_id', id).order('created_at', { ascending: false }),
-    ]);
-    if (pRes.data) {
-      const p = pRes.data;
-      setProject({
-        id: String(p.id || ''),
-        name: typeof p.name === 'string' ? p.name : 'Untitled',
-        status: typeof p.status === 'string' ? p.status : 'active',
-        description: typeof p.description === 'string' ? p.description : '',
-        domain: typeof p.domain === 'string' ? p.domain : '',
-      });
-    }
-    if (fRes.data) {
-      setFlows(fRes.data.map((f: any) => ({
+    const { data } = await supabase
+      .from('funnel_flows')
+      .select('id, name, status, is_active, created_at')
+      .eq('project_id', projectId)
+      .order('created_at', { ascending: false });
+    if (data) {
+      setFlows(data.map((f: any) => ({
         id: String(f.id || ''),
         name: typeof f.name === 'string' ? f.name : 'Flow',
         status: typeof f.status === 'string' ? f.status : 'draft',
@@ -76,11 +834,16 @@ export default function ProjectDetailPage({ params }: { params: { id: string } |
     setAdding(true);
     const { data, error } = await supabase
       .from('funnel_flows')
-      .insert({ project_id: id, name: newName.trim(), status: 'draft', is_active: false })
+      .insert({ project_id: projectId, name: newName.trim(), status: 'draft', is_active: false })
       .select('id, name, status, is_active, created_at')
       .single();
-    if (!error && data) {
-      setFlows(prev => [{
+    if (error) {
+      alert(`Create failed: ${error.message}`);
+      setAdding(false);
+      return;
+    }
+    if (data) {
+      setFlows((prev) => [{
         id: String(data.id),
         name: String(data.name || ''),
         status: String(data.status || 'draft'),
@@ -96,109 +859,107 @@ export default function ProjectDetailPage({ params }: { params: { id: string } |
   async function deleteFlow(flowId: string) {
     if (!confirm('Delete this flow and all its steps?')) return;
     await supabase.from('funnel_flows').delete().eq('id', flowId);
-    setFlows(prev => prev.filter(f => f.id !== flowId));
+    setFlows((prev) => prev.filter((f) => f.id !== flowId));
   }
 
-  if (loading) return (
-    <div className="min-h-screen bg-[#0F1117] flex items-center justify-center">
-      <div className="text-gray-400 animate-pulse">Loading...</div>
-    </div>
-  );
-
   return (
-    <div className="min-h-screen bg-[#0F1117]">
-      <Header title={project?.name || 'Project'} subtitle="Funnel Flows" />
-      <div className="p-6 max-w-4xl mx-auto">
-
-        <button onClick={() => router.push('/projects')} className="flex items-center gap-2 text-gray-400 hover:text-white mb-6 text-sm transition-colors">
-          <ArrowLeft className="w-4 h-4" /> Back to Projects
+    <Card
+      title={`Flows (${flows.length})`}
+      icon={<Layers className="w-4 h-4 text-gray-700" />}
+      action={
+        <button
+          type="button"
+          onClick={() => setShowAdd((v) => !v)}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-md transition-colors"
+        >
+          {showAdd ? <X className="w-3.5 h-3.5" /> : <Plus className="w-3.5 h-3.5" />}
+          {showAdd ? 'Annulla' : 'Aggiungi flow'}
         </button>
-
-        {project && (
-          <div className="bg-[#1A1D27] border border-[#2A2D3A] rounded-xl p-5 mb-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <h2 className="text-xl font-bold text-white">{project.name}</h2>
-                {project.description ? <p className="text-gray-400 text-sm mt-1 whitespace-pre-line" style={{ whiteSpace: 'pre-line' }}>{project.description}</p> : null}
-                {project.domain ? <p className="text-blue-400 text-xs mt-1">{project.domain}</p> : null}
-              </div>
-              <span className="px-3 py-1 rounded-full text-xs font-medium bg-blue-900 text-blue-300">{project.status}</span>
-            </div>
-          </div>
-        )}
-
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-2 text-gray-400">
-            <Layers className="w-5 h-5" />
-            <span className="text-sm font-medium text-white">Flows ({flows.length})</span>
-          </div>
+      }
+    >
+      {showAdd && (
+        <div className="flex gap-2 mb-4">
+          <input
+            type="text"
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && addFlow()}
+            placeholder="Flow name (es. Flow A — Nooro Swipe)"
+            className="flex-1 bg-white border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
+            autoFocus
+          />
           <button
-            onClick={() => setShowAdd(!showAdd)}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
+            onClick={addFlow}
+            disabled={adding || !newName.trim()}
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm rounded-md transition-colors"
           >
-            {showAdd ? <X className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
-            {showAdd ? 'Cancel' : 'Add Flow'}
+            {adding ? 'Creo...' : 'Crea'}
           </button>
         </div>
+      )}
 
-        {showAdd && (
-          <div className="bg-[#1A1D27] border border-[#2A2D3A] rounded-xl p-4 mb-4">
-            <div className="flex gap-3">
-              <input
-                type="text"
-                value={newName}
-                onChange={e => setNewName(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && addFlow()}
-                placeholder="Flow name (e.g. Flow A — Nooro Swipe)"
-                className="flex-1 bg-[#0F1117] border border-[#2A2D3A] rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500"
-                autoFocus
-              />
-              <button onClick={addFlow} disabled={adding || !newName.trim()} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm rounded-lg transition-colors">
-                {adding ? 'Creating...' : 'Create'}
-              </button>
-            </div>
-          </div>
-        )}
-
-        {flows.length === 0 ? (
-          <div className="text-center text-gray-500 py-20">
-            <Layers className="w-12 h-12 mx-auto mb-3 opacity-30" />
-            <p>No flows yet. Add your first flow.</p>
-          </div>
-        ) : (
-          <div className="space-y-3">
-            {flows.map(flow => (
-              <div key={flow.id} className="bg-[#1A1D27] border border-[#2A2D3A] hover:border-[#3A3D4A] rounded-xl p-4 transition-colors">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <div className="w-9 h-9 rounded-lg bg-indigo-600/20 flex items-center justify-center flex-shrink-0">
-                      <Layers className="w-4 h-4 text-indigo-400" />
-                    </div>
-                    <div>
-                      <h4 className="text-white font-medium">{flow.name}</h4>
-                      <p className="text-gray-500 text-xs mt-0.5">{flow.created_at ? new Date(flow.created_at).toLocaleDateString('it-IT') : ''}</p>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${STATUS_COLOR[flow.status] || 'bg-gray-700 text-gray-300'}`}>
-                      {flow.status}
-                    </span>
-                    <Link
-                      href={`/projects/${id}/flow/${flow.id}`}
-                      className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-medium rounded-lg transition-colors"
-                    >
-                      Open <ChevronRight className="w-3.5 h-3.5" />
-                    </Link>
-                    <button onClick={() => deleteFlow(flow.id)} className="p-1.5 text-gray-600 hover:text-red-400 transition-colors rounded">
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+      {loading ? (
+        <div className="text-center text-gray-500 py-8 animate-pulse text-sm">Carico flows...</div>
+      ) : flows.length === 0 ? (
+        <EmptyState
+          icon={<Layers className="w-8 h-8" />}
+          title="Nessun flow ancora creato"
+          subtitle="Aggiungi il primo flow per iniziare"
+        />
+      ) : (
+        <ul className="divide-y divide-gray-100">
+          {flows.map((flow) => (
+            <li key={flow.id} className="flex items-center justify-between gap-3 py-3">
+              <button
+                type="button"
+                onClick={() => router.push(`/projects/${projectId}/flow/${flow.id}`)}
+                className="flex items-center gap-3 min-w-0 flex-1 text-left group"
+              >
+                <div className="w-9 h-9 rounded-lg bg-indigo-50 flex items-center justify-center flex-shrink-0">
+                  <Layers className="w-4 h-4 text-indigo-600" />
+                </div>
+                <div className="min-w-0">
+                  <div className="text-sm font-medium text-gray-900 truncate group-hover:text-blue-700">{flow.name}</div>
+                  <div className="text-xs text-gray-500">
+                    {flow.created_at ? new Date(flow.created_at).toLocaleDateString('it-IT') : ''}
+                    {flow.is_active && <span className="ml-2 text-emerald-600">· active</span>}
                   </div>
                 </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
+              </button>
+              <span className="px-2.5 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-700">
+                {flow.status}
+              </span>
+              <Link
+                href={`/projects/${projectId}/flow/${flow.id}`}
+                className="text-xs font-medium text-indigo-600 hover:text-indigo-700 inline-flex items-center gap-1"
+              >
+                Apri <ChevronRight className="w-3.5 h-3.5" />
+              </Link>
+              <button
+                onClick={() => deleteFlow(flow.id)}
+                className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
+                title="Elimina"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Card>
+  );
+}
+
+// ─── Coming soon placeholder ─────────────────────────────────────────────────
+
+function ComingSoonSection({ label, icon: Icon }: { label: string; icon: LucideIcon }) {
+  return (
+    <Card title={label} icon={<Icon className="w-4 h-4 text-gray-700" />}>
+      <EmptyState
+        icon={<Icon className="w-8 h-8" />}
+        title={`${label} — in arrivo`}
+        subtitle="Questa sezione sarà disponibile a breve."
+      />
+    </Card>
   );
 }
