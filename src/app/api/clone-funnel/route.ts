@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCoreKnowledge } from '@/knowledge/copywriting';
-import { rescueViaJina, stabilizeClonedHtml } from '@/lib/spa-rescue';
+import { rescueViaJina, stabilizeClonedHtml, isSpaShell } from '@/lib/spa-rescue';
 import { inlineExternalAssets } from '@/lib/inline-assets';
 import { fetchHtmlSmart, looksLikeSpaShell } from '@/lib/fetch-html-smart';
 
@@ -758,23 +758,25 @@ export async function POST(request: NextRequest) {
     const keepScriptsFlag: boolean = !!body.keepScripts;
     console.log(`[clone-funnel] request: mode=${cloneMode}, url=${url}, viewport=${viewport}, serverless=${IS_SERVERLESS}`);
 
-    // IDENTICAL MODE: SIMPLEST POSSIBLE PATH.
-    // L'utente vuole "copia e incolla del codice", esattamente come quando
-    // fa view-source nel browser e salva la pagina. Nessuna SPA detection,
-    // nessun Playwright, nessun Jina, nessun fallback cascade. Solo:
+    // IDENTICAL MODE: due step molto semplici.
     //
-    //   1. fetch(url) con User-Agent Chrome
-    //   2. stabilizeClonedHtml -> assolutizza URL relativi (immagini, CSS,
-    //      link) cosi' che quando l'HTML viene mostrato in iframe da un
-    //      altro dominio (Netlify) le risorse continuano a caricare dal
-    //      dominio originale. Stesso comportamento di "Salva pagina con
-    //      nome" di Chrome che riscrive i path.
-    //   3. ritorna l'HTML.
+    //   1. fetch(url) con User-Agent Chrome (veloce, 1-2s).
+    //      -> Per il 90% delle landing (SSR, Funnelish baked, WordPress,
+    //         pagine statiche) l'HTML che torna e' gia' completo di
+    //         contenuto. stabilizeClonedHtml assolutizza i path
+    //         relativi cosi' immagini/CSS caricano dal dominio
+    //         originale anche dentro un iframe di un altro origin.
     //
-    // Per pagine SPA (Vue/React/Funnelish) l'HTML risultante e' un guscio
-    // perche' senza un vero browser nessuno puo' eseguire il JS che monta
-    // i componenti. Per quel caso d'uso esiste Riscrivi (passa via worker
-    // locale con Playwright vero).
+    //   2. Se il body e' un guscio SPA vuoto (Vue/React/Funnelish con
+    //      mount client-side), fallback automatico a r.jina.ai che
+    //      monta un Chromium server-side e ritorna l'HTML post-render
+    //      con immagini, CSS, struttura. Aggiunge 5-15s ma e' l'unico
+    //      modo di ottenere il contenuto vero. Era cosi' anche prima
+    //      della mia "semplificazione" rotta.
+    //
+    // Niente Playwright locale (Lambda non lo regge), niente cascade
+    // di User-Agent diversi, niente worker locale. Tutto in una sola
+    // route Netlify-friendly.
     if (cloneMode === 'identical' && url) {
       const cleanUrl = String(url).trim();
       if (!/^https?:\/\//i.test(cleanUrl)) {
@@ -784,7 +786,11 @@ export async function POST(request: NextRequest) {
         );
       }
 
+      const t0 = Date.now();
       console.log(`[clone-funnel] identical: fetch ${cleanUrl}`);
+
+      let rawHtml = '';
+      let fetchOk = false;
       try {
         const res = await fetch(cleanUrl, {
           headers: {
@@ -794,49 +800,78 @@ export async function POST(request: NextRequest) {
             'Upgrade-Insecure-Requests': '1',
           },
           redirect: 'follow',
-          signal: AbortSignal.timeout(20000),
+          signal: AbortSignal.timeout(15000),
         });
-
-        if (!res.ok) {
-          return NextResponse.json(
-            { error: `Fetch failed: HTTP ${res.status} ${res.statusText}` },
-            { status: 502 }
-          );
+        if (res.ok) {
+          rawHtml = await res.text();
+          fetchOk = !!rawHtml && rawHtml.length >= 50;
+        } else {
+          console.warn(`[clone-funnel] identical: direct fetch HTTP ${res.status} for ${cleanUrl}`);
         }
-
-        const rawHtml = await res.text();
-        if (!rawHtml || rawHtml.length < 50) {
-          return NextResponse.json(
-            { error: `Fetch returned empty/tiny body (${rawHtml.length} chars)` },
-            { status: 502 }
-          );
-        }
-
-        const stabilizedHtml = stabilizeClonedHtml(rawHtml, cleanUrl);
-
-        console.log(`[clone-funnel] identical: OK ${stabilizedHtml.length} chars from ${cleanUrl}`);
-
-        return NextResponse.json({
-          success: true,
-          content: stabilizedHtml,
-          mobileContent: null,
-          format: 'html',
-          mode: 'identical',
-          originalSize: rawHtml.length,
-          finalSize: stabilizedHtml.length,
-          cssInlined: false,
-          jsRendered: false,
-          method: 'fetch',
-          title: stabilizedHtml.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || '',
-        });
       } catch (fetchErr) {
-        const msg = fetchErr instanceof Error ? fetchErr.message : 'unknown error';
-        console.error(`[clone-funnel] identical fetch failed for ${cleanUrl}:`, msg);
-        return NextResponse.json(
-          { error: `Unable to clone the page: ${msg}` },
-          { status: 502 }
-        );
+        console.warn(`[clone-funnel] identical: direct fetch threw for ${cleanUrl}:`, fetchErr instanceof Error ? fetchErr.message : fetchErr);
       }
+
+      // Decidi se serve il fallback Jina:
+      //   - fetch fallito del tutto, oppure
+      //   - HTML scaricato ma e' un SPA shell (poco testo dentro <body>)
+      const needsJina = !fetchOk || isSpaShell(rawHtml);
+
+      if (needsJina) {
+        console.log(`[clone-funnel] identical: fallback Jina (${fetchOk ? 'SPA shell detected' : 'direct fetch failed'}) for ${cleanUrl}`);
+        try {
+          const jinaHtml = await rescueViaJina(cleanUrl);
+          if (jinaHtml && jinaHtml.length > 200) {
+            // rescueViaJina chiama gia' stabilizeClonedHtml internamente.
+            const dt = Date.now() - t0;
+            console.log(`[clone-funnel] identical: Jina OK ${jinaHtml.length} chars in ${dt}ms for ${cleanUrl}`);
+            return NextResponse.json({
+              success: true,
+              content: jinaHtml,
+              mobileContent: null,
+              format: 'html',
+              mode: 'identical',
+              originalSize: rawHtml.length || jinaHtml.length,
+              finalSize: jinaHtml.length,
+              cssInlined: false,
+              jsRendered: true,
+              method: 'jina',
+              title: jinaHtml.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || '',
+            });
+          }
+          console.warn(`[clone-funnel] identical: Jina returned ${jinaHtml?.length ?? 0} chars (insufficient) for ${cleanUrl}`);
+        } catch (jinaErr) {
+          console.error(`[clone-funnel] identical: Jina threw for ${cleanUrl}:`, jinaErr instanceof Error ? jinaErr.message : jinaErr);
+        }
+
+        // Jina ha fallito. Se almeno il fetch diretto era passato,
+        // restituiamo quel guscio cosi' l'utente vede SOMETHING invece
+        // di un errore secco.
+        if (!fetchOk) {
+          return NextResponse.json(
+            { error: `Unable to clone the page: direct fetch and Jina both failed for ${cleanUrl}` },
+            { status: 502 }
+          );
+        }
+      }
+
+      const stabilizedHtml = stabilizeClonedHtml(rawHtml, cleanUrl);
+      const dt = Date.now() - t0;
+      console.log(`[clone-funnel] identical: direct OK ${stabilizedHtml.length} chars in ${dt}ms for ${cleanUrl}`);
+
+      return NextResponse.json({
+        success: true,
+        content: stabilizedHtml,
+        mobileContent: null,
+        format: 'html',
+        mode: 'identical',
+        originalSize: rawHtml.length,
+        finalSize: stabilizedHtml.length,
+        cssInlined: false,
+        jsRendered: false,
+        method: 'fetch',
+        title: stabilizedHtml.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || '',
+      });
     }
 
     // REWRITE EXTRACT PHASE: render with Playwright, extract texts locally, save to Supabase DB
