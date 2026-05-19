@@ -758,112 +758,84 @@ export async function POST(request: NextRequest) {
     const keepScriptsFlag: boolean = !!body.keepScripts;
     console.log(`[clone-funnel] request: mode=${cloneMode}, url=${url}, viewport=${viewport}, serverless=${IS_SERVERLESS}`);
 
-    // IDENTICAL MODE: use Playwright headless browser for full page rendering
+    // IDENTICAL MODE: SIMPLEST POSSIBLE PATH.
+    // L'utente vuole "copia e incolla del codice", esattamente come quando
+    // fa view-source nel browser e salva la pagina. Nessuna SPA detection,
+    // nessun Playwright, nessun Jina, nessun fallback cascade. Solo:
+    //
+    //   1. fetch(url) con User-Agent Chrome
+    //   2. stabilizeClonedHtml -> assolutizza URL relativi (immagini, CSS,
+    //      link) cosi' che quando l'HTML viene mostrato in iframe da un
+    //      altro dominio (Netlify) le risorse continuano a caricare dal
+    //      dominio originale. Stesso comportamento di "Salva pagina con
+    //      nome" di Chrome che riscrive i path.
+    //   3. ritorna l'HTML.
+    //
+    // Per pagine SPA (Vue/React/Funnelish) l'HTML risultante e' un guscio
+    // perche' senza un vero browser nessuno puo' eseguire il JS che monta
+    // i componenti. Per quel caso d'uso esiste Riscrivi (passa via worker
+    // locale con Playwright vero).
     if (cloneMode === 'identical' && url) {
-      if (IS_SERVERLESS) {
-        console.log(`⚠️ Serverless detected, using direct fetch for clone: ${url}`);
-        const cleanUrl = String(url).trim();
-        if (!/^https?:\/\//i.test(cleanUrl)) {
-          return NextResponse.json({ error: `Invalid URL (must start with http:// or https://): ${cleanUrl}` }, { status: 400 });
-        }
+      const cleanUrl = String(url).trim();
+      if (!/^https?:\/\//i.test(cleanUrl)) {
+        return NextResponse.json(
+          { error: `Invalid URL (must start with http:// or https://): ${cleanUrl}` },
+          { status: 400 }
+        );
+      }
 
-        const result = await fetchPageWithFallbacks(cleanUrl);
-        if (!result.ok) {
+      console.log(`[clone-funnel] identical: fetch ${cleanUrl}`);
+      try {
+        const res = await fetch(cleanUrl, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9,it;q=0.8',
+            'Upgrade-Insecure-Requests': '1',
+          },
+          redirect: 'follow',
+          signal: AbortSignal.timeout(20000),
+        });
+
+        if (!res.ok) {
           return NextResponse.json(
-            { error: `Unable to clone the page: ${result.error}`, details: result.details },
+            { error: `Fetch failed: HTTP ${res.status} ${res.statusText}` },
             { status: 502 }
           );
         }
 
+        const rawHtml = await res.text();
+        if (!rawHtml || rawHtml.length < 50) {
+          return NextResponse.json(
+            { error: `Fetch returned empty/tiny body (${rawHtml.length} chars)` },
+            { status: 502 }
+          );
+        }
+
+        const stabilizedHtml = stabilizeClonedHtml(rawHtml, cleanUrl);
+
+        console.log(`[clone-funnel] identical: OK ${stabilizedHtml.length} chars from ${cleanUrl}`);
+
         return NextResponse.json({
           success: true,
-          content: result.html,
+          content: stabilizedHtml,
           mobileContent: null,
           format: 'html',
           mode: 'identical',
-          originalSize: result.html.length,
-          finalSize: result.html.length,
+          originalSize: rawHtml.length,
+          finalSize: stabilizedHtml.length,
           cssInlined: false,
           jsRendered: false,
-          method: result.method,
-          title: result.html.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1] || '',
+          method: 'fetch',
+          title: stabilizedHtml.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || '',
         });
-      }
-
-      console.log(`🔄 Clone IDENTICAL with Playwright (${viewport}${keepScriptsFlag ? ', keepScripts' : ''}): ${url}`);
-
-      try {
-        const result = await cloneWithBrowser(url, 'desktop', keepScriptsFlag);
-        
-        console.log(`✅ Desktop clone completed: ${result.renderedSize.toLocaleString()} chars, ${result.cssCount} CSS, ${result.imgCount} images`);
-
-        let mobileResult = null;
-        if (viewport === 'mobile' || viewport === 'both') {
-          try {
-            console.log(`📱 Clone MOBILE with Playwright: ${url}`);
-            mobileResult = await cloneWithBrowser(url, 'mobile', keepScriptsFlag);
-            console.log(`✅ Mobile clone completed: ${mobileResult.renderedSize.toLocaleString()} chars`);
-          } catch (mobileErr) {
-            console.error('⚠️ Mobile clone failed, desktop only:', mobileErr);
-          }
-        }
-
-        return NextResponse.json({
-          success: true,
-          content: viewport === 'mobile' && mobileResult ? mobileResult.html : result.html,
-          mobileContent: mobileResult?.html || null,
-          format: 'html',
-          mode: 'identical',
-          originalSize: result.renderedSize,
-          finalSize: result.html.length,
-          mobileFinalSize: mobileResult?.html.length || null,
-          cssInlined: true,
-          cssCount: result.cssCount,
-          imgCount: result.imgCount,
-          jsRendered: false,
-          title: result.title,
-        });
-      } catch (playwrightErr) {
-        console.error('❌ Playwright error:', playwrightErr);
-
-        // Fallback: SPA-aware smart fetch instead of plain fetch — so
-        // even when our local Playwright path dies the smart fetcher
-        // can still try its own Playwright (different code path) or
-        // the Jina renderer for SPA shells.
-        console.log('⚠️ Fallback to fetchHtmlSmart...');
-        try {
-          const smart = await fetchHtmlSmart(url, {
-            mode: 'full',
-            fetchTimeoutMs: 15000,
-            playwrightTimeoutMs: 30000,
-          });
-
-          if (!smart.ok || !smart.html) {
-            return NextResponse.json(
-              { error: `Download error: ${smart.error ?? 'all fetch strategies failed'}` },
-              { status: 502 }
-            );
-          }
-
-          const fallbackHTML = smart.html;
-          return NextResponse.json({
-            success: true,
-            content: fallbackHTML,
-            mobileContent: null,
-            format: 'html',
-            mode: 'identical',
-            originalSize: fallbackHTML.length,
-            finalSize: fallbackHTML.length,
-            cssInlined: false,
-            jsRendered: true,
-            warning: 'Browser rendering not available. HTML downloaded without JS rendering - may be incomplete.',
-          });
-        } catch (fetchErr) {
-          return NextResponse.json(
-            { error: `Unable to clone the page: ${fetchErr instanceof Error ? fetchErr.message : 'unknown error'}` },
-            { status: 502 }
-          );
-        }
+      } catch (fetchErr) {
+        const msg = fetchErr instanceof Error ? fetchErr.message : 'unknown error';
+        console.error(`[clone-funnel] identical fetch failed for ${cleanUrl}:`, msg);
+        return NextResponse.json(
+          { error: `Unable to clone the page: ${msg}` },
+          { status: 502 }
+        );
       }
     }
 

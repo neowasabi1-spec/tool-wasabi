@@ -5984,33 +5984,18 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                 safeHtml = noRetryGuard + safeHtml;
                               }
                             }
-                            // Per le pagine CLONATE (sourceType='cloned') mostriamo
-                            // l'HTML così com'è uscito da /api/clone-funnel: niente
-                            // strip script, niente fallback, niente FAQ-override.
-                            // La pagina deve apparire IDENTICA all'originale. Tutta
-                            // la machinery sotto (Swiper init, FAQ open-by-default,
-                            // HUD "FB ready", strip script Vue/Funnelish) serve SOLO
-                            // alle pagine RISCRITTE (sourceType='swiped'), dove il
-                            // worker ha già strippato gli script originali e ci
-                            // tocca reinizializzare jQuery/Swiper/FAQ a runtime.
+                            // Per le anteprime CLONATE (sourceType='cloned') l'utente
+                            // vuole "copia e incolla del codice": NESSUNA nostra
+                            // manipolazione. doc.write(html) puro e basta. Il
+                            // backend ha gia' fatto fetch + stabilizeClonedHtml
+                            // (assolutizza URL relativi cosi' immagini/CSS caricano
+                            // dal dominio originale). Per le anteprime RISCRITTE
+                            // (sourceType='swiped') continuiamo ad applicare strip
+                            // script + inject fallbackInit (jQuery/Swiper/FAQ),
+                            // perche' il worker ha gia' strippato gli script
+                            // originali e dobbiamo reinizializzare la UI a runtime.
                             const isClonedPreview = htmlPreviewModal.sourceType === 'cloned';
-                            if (isClonedPreview) {
-                              // Anteprime CLONATE: ZERO modifiche all'HTML.
-                              // L'utente clicca "Clone" perche' vuole vedere la pagina
-                              // identica all'originale. Ogni nostra "smart fix"
-                              // (strip script, inject CSS, blocca CKC) finisce per
-                              // rompere qualche caso d'uso:
-                              //   - strip script -> Vue/Funnelish/React non montano,
-                              //                     vedi guscio nudo non-stilato
-                              //   - keep script  -> SPA che fanno fetch cross-origin
-                              //                     vanno in retry loop infinito
-                              // Non c'e' via di mezzo dentro un iframe. Per il caso
-                              // "loop" l'utente puo' usare "Apri in nuova tab" sotto,
-                              // che apre l'HTML in una vera tab del browser (blob URL)
-                              // dove i permessi sono normali e tutto funziona.
-                              //
-                              // Quindi qui: doc.write(html) e basta.
-                            } else {
+                            if (!isClonedPreview) {
                             // Strip vecchi fallback bake-ati nell'HTML (server-v1 aveva
                             // un click-delegate FAQ troppo aggressivo che killava le CTA).
                             // Riapplichiamo SEMPRE il fallback client v5+ qui sotto.
@@ -6346,7 +6331,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                 safeHtml = safeHtml + fallbackInit;
                               }
                             }
-                            } // end: if (!isClonedPreview) — skip fallback machinery for cloned pages
+                            } // end: if (!isClonedPreview) — copia-incolla puro per cloned
                             doc.write(safeHtml);
                             doc.close();
                           }
