@@ -1075,35 +1075,58 @@ export default function ProjectsPage() {
   async function addProject() {
     if (!newName.trim()) return;
     setAdding(true);
-    const COLS = 'id, name, status, description, domain, notes, created_at, updated_at, market_research, brief, brief_files, front_end, back_end, compliance_funnel, funnel';
-    const { data, error } = await supabase
+    const COLS_FULL = 'id, name, status, description, domain, notes, created_at, updated_at, market_research, brief, brief_files, front_end, back_end, compliance_funnel, funnel';
+    const COLS_LEGACY = 'id, name, status, description, domain, notes, created_at, updated_at, market_research, brief, front_end, back_end, compliance_funnel, funnel';
+
+    let { data, error } = await supabase
       .from('projects')
       .insert({ name: newName.trim(), status: 'active', description: '' })
-      .select(COLS)
+      .select(COLS_FULL)
       .single();
-    if (!error && data) {
-      const newProject: Project = {
-        id: String(data.id),
-        name: String(data.name || ''),
-        status: String(data.status || 'active'),
-        description: '',
-        domain: '',
-        notes: '',
-        created_at: String(data.created_at || ''),
-        updated_at: String(data.updated_at || ''),
-        brief: '',
-        brief_files: null,
-        market_research: null,
-        front_end: null,
-        back_end: null,
-        compliance_funnel: null,
-        funnel: null,
-      };
-      setProjects(prev => [newProject, ...prev]);
-      setExpandedId(newProject.id);
-      setNewName('');
-      setShowAdd(false);
+
+    // brief_files column may be missing if the section-files migration
+    // hasn't been applied yet — retry without it (same pattern as
+    // loadProjects / updateProject).
+    if (error && /brief_files/i.test(String(error.message || ''))) {
+      const retry = await supabase
+        .from('projects')
+        .insert({ name: newName.trim(), status: 'active', description: '' })
+        .select(COLS_LEGACY)
+        .single();
+      data = retry.data;
+      error = retry.error;
+      if (!error) {
+        console.warn('[projects] brief_files column missing — run supabase-migration-projects-section-files.sql');
+      }
     }
+
+    if (error || !data) {
+      setAdding(false);
+      alert(`Create failed: ${error?.message || 'unknown error'}`);
+      return;
+    }
+
+    const newProject: Project = {
+      id: String(data.id),
+      name: String(data.name || ''),
+      status: String(data.status || 'active'),
+      description: '',
+      domain: '',
+      notes: '',
+      created_at: String(data.created_at || ''),
+      updated_at: String(data.updated_at || ''),
+      brief: '',
+      brief_files: null,
+      market_research: null,
+      front_end: null,
+      back_end: null,
+      compliance_funnel: null,
+      funnel: null,
+    };
+    setProjects(prev => [newProject, ...prev]);
+    setExpandedId(newProject.id);
+    setNewName('');
+    setShowAdd(false);
     setAdding(false);
   }
 
