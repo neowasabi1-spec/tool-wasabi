@@ -7,7 +7,7 @@ import { supabase } from '@/lib/supabase';
 import {
   Plus, FolderOpen, ChevronRight, ChevronDown, Layers,
   Trash2, Search, Save, X, Upload, Loader2, FileText, Eye,
-  ShieldCheck, LayoutGrid, Rows3,
+  ShieldCheck, LayoutGrid, LayoutList,
 } from 'lucide-react';
 import {
   parseSectionData, buildSectionBlob, formatFileSize,
@@ -1255,7 +1255,7 @@ export default function ProjectsPage() {
                     : 'text-gray-400 hover:text-white'
                 }`}
               >
-                <Rows3 className="w-3.5 h-3.5" />
+                <LayoutList className="w-3.5 h-3.5" />
                 <span className="hidden sm:inline">Schede</span>
               </button>
               <button
