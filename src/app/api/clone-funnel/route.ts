@@ -1372,7 +1372,26 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const edgeFunctionUrl = `${SUPABASE_URL}/functions/v1/smooth-responder`;
+    // Routing per modalita' verso le Edge Function Supabase.
+    //
+    // STORIA: questa route puntava a `smooth-responder`, una function
+    // mai presente nel repo e quindi non deployata dal CI. Risultato:
+    // ogni chiamata Translate prendeva 404 dalla Edge Function, e la
+    // route Next.js inoltrava lo stesso status — il client vedeva
+    // `POST /api/clone-funnel 404`.
+    //
+    // FIX: per `cloneMode === 'translate'` puntiamo alla nuova
+    // `funnel-translate-v1` (vedi `supabase/functions/funnel-translate-v1`),
+    // funzione dedicata e completa. Per tutto il resto teniamo
+    // `funnel-swap-v1-functions`, che e' il monolite multi-modalita'
+    // gia' deployato (chiamato anche da `funnel-swap-proxy/route.ts`).
+    //
+    // Override possibile via `SUPABASE_EDGE_FN_NAME` (default modes)
+    // o `SUPABASE_EDGE_FN_TRANSLATE` (translate) per future migrazioni.
+    const defaultFnName = process.env.SUPABASE_EDGE_FN_NAME || 'funnel-swap-v1-functions';
+    const translateFnName = process.env.SUPABASE_EDGE_FN_TRANSLATE || 'funnel-translate-v1';
+    const edgeFnName = body.cloneMode === 'translate' ? translateFnName : defaultFnName;
+    const edgeFunctionUrl = `${SUPABASE_URL}/functions/v1/${edgeFnName}`;
 
     // Inject the copywriting knowledge base into the request body so the Edge
     // Function can pass it to Claude as a cached system block (cache_control:
