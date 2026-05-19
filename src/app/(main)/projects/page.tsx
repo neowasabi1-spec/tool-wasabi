@@ -7,7 +7,7 @@ import { supabase } from '@/lib/supabase';
 import {
   Plus, FolderOpen, ChevronRight, ChevronDown, Layers,
   Trash2, Search, Save, X, Upload, Loader2, FileText, Eye,
-  ShieldCheck,
+  ShieldCheck, LayoutGrid, Rows3,
 } from 'lucide-react';
 import {
   parseSectionData, buildSectionBlob, formatFileSize,
@@ -51,6 +51,9 @@ interface Project {
 
 const TABS = ['Overview', 'Market Research', 'Brief', 'Front End', 'Back End', 'Compliance', 'Funnel'] as const;
 type Tab = (typeof TABS)[number];
+
+type ViewMode = 'cards' | 'grid';
+const VIEW_STORAGE_KEY = 'projects:viewMode';
 
 const STATUS_OPTIONS = ['active', 'in_progress', 'paused', 'completed', 'archived'];
 
@@ -1026,10 +1029,29 @@ export default function ProjectsPage() {
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
   const [checkpointTarget, setCheckpointTarget] = useState<Project | null>(null);
+  // View toggle: 'cards' = current expandable list (default), 'grid' = compact tiles.
+  // The choice is persisted in localStorage so it sticks across sessions.
+  const [view, setView] = useState<ViewMode>('cards');
 
   useEffect(() => {
     loadProjects();
   }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const stored = window.localStorage.getItem(VIEW_STORAGE_KEY);
+    if (stored === 'cards' || stored === 'grid') setView(stored);
+  }, []);
+
+  function setViewMode(next: ViewMode) {
+    setView(next);
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(VIEW_STORAGE_KEY, next);
+    }
+    // Collapse any open project when switching to grid — the grid layout
+    // does not have an inline expand panel.
+    if (next === 'grid') setExpandedId(null);
+  }
 
   async function loadProjects() {
     setLoading(true);
@@ -1214,13 +1236,53 @@ export default function ProjectsPage() {
             </div>
           </div>
 
-          <button
-            onClick={() => setShowAdd(!showAdd)}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors flex-shrink-0"
-          >
-            <Plus className="w-4 h-4" />
-            New Project
-          </button>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            {/* View toggle: grid (compact tiles) vs cards (expandable list) */}
+            <div
+              role="tablist"
+              aria-label="View mode"
+              className="inline-flex items-center gap-1 bg-[#1A1D27] border border-[#2A2D3A] rounded-lg p-1"
+            >
+              <button
+                type="button"
+                role="tab"
+                aria-selected={view === 'cards'}
+                onClick={() => setViewMode('cards')}
+                title="Schede"
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                  view === 'cards'
+                    ? 'bg-blue-600 text-white'
+                    : 'text-gray-400 hover:text-white'
+                }`}
+              >
+                <Rows3 className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Schede</span>
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={view === 'grid'}
+                onClick={() => setViewMode('grid')}
+                title="Griglia"
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                  view === 'grid'
+                    ? 'bg-blue-600 text-white'
+                    : 'text-gray-400 hover:text-white'
+                }`}
+              >
+                <LayoutGrid className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Griglia</span>
+              </button>
+            </div>
+
+            <button
+              onClick={() => setShowAdd(!showAdd)}
+              className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
+            >
+              <Plus className="w-4 h-4" />
+              New Project
+            </button>
+          </div>
         </div>
 
         {/* Add form */}
@@ -1260,6 +1322,65 @@ export default function ProjectsPage() {
           <div className="text-center text-gray-500 py-20">
             <FolderOpen className="w-12 h-12 mx-auto mb-3 opacity-30" />
             <p>{projects.length === 0 ? 'No projects yet. Create your first one.' : 'No projects match your search.'}</p>
+          </div>
+        ) : view === 'grid' ? (
+          /* Grid view — compact tiles, click to navigate to /projects/[id]/flow */
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+            {filtered.map(project => (
+              <Link
+                key={project.id}
+                href={'/projects/' + project.id}
+                className="group bg-[#1A1D27] border border-[#2A2D3A] hover:border-blue-600/50 rounded-xl p-4 transition-colors flex flex-col"
+              >
+                <div className="flex items-start justify-between gap-2 mb-3">
+                  <div className="w-10 h-10 rounded-lg bg-blue-600/20 flex items-center justify-center flex-shrink-0">
+                    <FolderOpen className="w-5 h-5 text-blue-400" />
+                  </div>
+                  <span
+                    className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${
+                      STATUS_COLOR[project.status] || 'bg-gray-700 text-gray-300'
+                    }`}
+                  >
+                    {project.status}
+                  </span>
+                </div>
+                <h3 className="text-white font-semibold text-sm truncate">
+                  {project.name}
+                </h3>
+                {project.domain ? (
+                  <p className="text-blue-400 text-xs mt-0.5 truncate">{project.domain}</p>
+                ) : (
+                  <p className="text-gray-600 text-xs mt-0.5 italic">no domain</p>
+                )}
+                {project.description ? (
+                  <p
+                    className="text-gray-400 text-xs mt-1.5 line-clamp-2"
+                    title={project.description}
+                  >
+                    {project.description.replace(/\s+/g, ' ').trim()}
+                  </p>
+                ) : null}
+                <div className="mt-auto pt-3 flex items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    onClick={e => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setCheckpointTarget(project);
+                    }}
+                    className="flex items-center gap-1 px-2 py-1 bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-medium rounded transition-colors"
+                    title="Importa nel Checkpoint"
+                  >
+                    <ShieldCheck className="w-3 h-3" />
+                    Checkpoint
+                  </button>
+                  <span className="flex items-center gap-1 text-indigo-400 text-[10px] font-medium group-hover:text-indigo-300">
+                    Flows
+                    <ChevronRight className="w-3 h-3" />
+                  </span>
+                </div>
+              </Link>
+            ))}
           </div>
         ) : (
           <div className="space-y-3">
