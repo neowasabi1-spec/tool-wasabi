@@ -678,6 +678,71 @@ function prepareEditorHtml(html: string): string {
   // Toglie anche noscript: contengono spesso pixel di tracking che
   // diventano visibili se i loro <script> wrapper sono spariti.
   clean = clean.replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, '');
+
+  // ── PROMOZIONE STATICA LAZY-LOAD ────────────────────────────────────
+  // Avendo strippato tutti gli script, le librerie lazy-load (LazyLoad.js,
+  // lozad, vanilla-lazyload, WP "a3 Lazy Load", Funnelish lazy, ecc.)
+  // non girano piu' e img/video/iframe con `data-src=...` (o varianti)
+  // restano vuoti => l'editor mostra spazi grigi al posto di immagini e
+  // video. Promuoviamo staticamente i piu' comuni attributi data-* nei
+  // loro veri `src`/`srcset`/`poster` cosi' il browser li carica subito,
+  // senza bisogno di JS.
+  //
+  // Coperti: img, source, iframe, video, audio.
+  // Attributi: data-src, data-original, data-lazy-src, data-lazy,
+  //   data-srcset, data-lazy-srcset, data-poster.
+  // Nota: non tocchiamo gli <a href> (l'editor non naviga), e non
+  // tocchiamo data-* su tag non-media.
+  {
+    const MEDIA_TAG_RE = /<(img|source|iframe|video|audio)\b([^>]*)>/gi;
+    const pickAttr = (attrs: string, names: string[]): string | null => {
+      for (const n of names) {
+        // Allow any of: data-src="x" | data-src='x' | data-src=x (no quotes for legacy)
+        const re = new RegExp(`\\s${n}\\s*=\\s*(?:"([^"]+)"|'([^']+)'|([^\\s>]+))`, 'i');
+        const m = attrs.match(re);
+        if (m) return m[1] || m[2] || m[3] || null;
+      }
+      return null;
+    };
+    const setAttr = (attrs: string, name: string, value: string): string => {
+      const safe = value.replace(/"/g, '&quot;');
+      const re = new RegExp(`\\s${name}\\s*=\\s*(?:"[^"]*"|'[^']*'|[^\\s>]+)`, 'i');
+      if (re.test(attrs)) return attrs.replace(re, ` ${name}="${safe}"`);
+      return attrs + ` ${name}="${safe}"`;
+    };
+    clean = clean.replace(MEDIA_TAG_RE, (_full, tag, attrs: string) => {
+      let a = attrs;
+      const lazySrc = pickAttr(a, ['data-src', 'data-original', 'data-lazy-src', 'data-lazy', 'data-url']);
+      if (lazySrc) a = setAttr(a, 'src', lazySrc);
+      const lazySrcset = pickAttr(a, ['data-srcset', 'data-lazy-srcset']);
+      if (lazySrcset) a = setAttr(a, 'srcset', lazySrcset);
+      if (tag.toLowerCase() === 'video') {
+        const lazyPoster = pickAttr(a, ['data-poster', 'data-lazy-poster']);
+        if (lazyPoster) a = setAttr(a, 'poster', lazyPoster);
+      }
+      return `<${tag}${a}>`;
+    });
+
+    // Background images con data-bg / data-background: promuovi a inline
+    // style background-image (solo se l'elemento non ha gia' un bg-image).
+    clean = clean.replace(
+      /<([a-zA-Z][a-zA-Z0-9-]*)\b([^>]*\sdata-(?:bg|background|background-image)\s*=\s*(?:"([^"]+)"|'([^']+)')[^>]*)>/g,
+      (full, tag, attrs: string, dq, sq) => {
+        const url = (dq || sq || '').trim();
+        if (!url) return full;
+        // se ha gia' un background-image inline non sovrascrivere
+        if (/style\s*=\s*(["'])[^"']*background-image\s*:/i.test(attrs)) return full;
+        const inject = `background-image:url('${url.replace(/'/g, "\\'")}');background-size:cover;background-position:center;`;
+        let newAttrs;
+        if (/\sstyle\s*=\s*(["'])/i.test(attrs)) {
+          newAttrs = attrs.replace(/\sstyle\s*=\s*(["'])([^"']*)\1/i, (_m, q, val) => ` style=${q}${inject}${val}${q}`);
+        } else {
+          newAttrs = attrs + ` style="${inject}"`;
+        }
+        return `<${tag}${newAttrs}>`;
+      }
+    );
+  }
   // Strip <li> vuoti orfani (punti senza testo). Loop finche stabile per
   // gestire bullet annidate e <li> che diventano vuoti dopo aver tolto altri.
   {
