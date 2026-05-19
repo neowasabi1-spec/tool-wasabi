@@ -2515,7 +2515,13 @@ export default function FrontEndFunnel() {
     // aspettare che dare timeout finto e perdere il risultato che e' gia'
     // in Supabase (controllabile dalla History).
     const PAGE_TIMEOUT_MS = 60 * 60 * 1000;
-    const NO_PICKUP_TIMEOUT_MS = 30 * 1000;
+    // Era 30s ma Morfeo (Claude Sonnet via Anthropic) ha latenze poll
+    // 2-10s e in piu' puo' essere occupato con una Riscrivi precedente
+    // (5-15 min). 30s era troppo aggressivo e gridava "worker offline"
+    // anche quando Morfeo stava banalmente finendo il job di prima.
+    // Alziamo a 90s: se in 90s nessun worker ha marcato 'processing' E
+    // nessun altro job e' in 'processing', il worker e' davvero giu'.
+    const NO_PICKUP_TIMEOUT_MS = 90 * 1000;
     const POLL_INTERVAL_MS = 2500;
 
     // ── Carica una sola volta la knowledge globale (libreria saved_prompts).
@@ -2657,9 +2663,9 @@ export default function FrontEndFunnel() {
           ) {
             if (!polled.worker_busy_with) {
               throw new Error(
-                `${AUDITOR_LABEL[chosen]} non ha preso il job in ${NO_PICKUP_TIMEOUT_MS / 1000}s e nessun altro job e' in elaborazione. ` +
-                `Controlla che il worker giri sul PC di ${chosen === 'neo' ? 'Neo' : 'Morfeo'} (\`node openclaw-worker.js\`) e ` +
-                `che sia aggiornato all'ultimo commit. Workaround: cambia auditor.`,
+                `${AUDITOR_LABEL[chosen]} non ha preso il job in ${NO_PICKUP_TIMEOUT_MS / 1000}s e nessun altro job risulta in elaborazione per quel worker. ` +
+                `Cause probabili: worker offline / OpenClaw locale (127.0.0.1:18789) non risponde / repo non aggiornato. ` +
+                `Workaround immediato: riprova selezionando ${chosen === 'neo' ? '"Morfeo"' : '"Neo"'} come auditor.`,
               );
             } else if (!busyAnnounced) {
               busyAnnounced = true;
@@ -3375,12 +3381,15 @@ export default function FrontEndFunnel() {
 
           const PAGE_TIMEOUT_MS = 60 * 60 * 1000; // 60 min: landing grosse (250+ testi) richiedono 35-50 min
           const POLL_INTERVAL_MS = 2500;
-          // No-pickup watchdog: se entro 30s nessun worker ha
+          // No-pickup watchdog: se entro 90s nessun worker ha
           // marcato il job come 'processing' E nessun altro job e'
           // in elaborazione per quel target, il worker e' davvero
           // offline → fallisci. Se invece il worker e' occupato con
           // un altro job lungo, NON fallire — aspetta che si liberi.
-          const NO_PICKUP_TIMEOUT_MS = 30 * 1000;
+          // Bumped da 30s a 90s: Morfeo poll ogni 2-10s + spesso e'
+          // occupato con la Riscrivi precedente. 30s era troppo
+          // stretto e gridava "worker offline" anche con worker vivo.
+          const NO_PICKUP_TIMEOUT_MS = 90 * 1000;
           const t0 = Date.now();
           let lastStatus: string | null = null;
           let busyAnnounced = false;
@@ -3411,11 +3420,9 @@ export default function FrontEndFunnel() {
             ) {
               if (!polled.worker_busy_with) {
                 throw new Error(
-                  `${AUDITOR_LABEL[chosenAuditor]} non ha preso il job in ${NO_PICKUP_TIMEOUT_MS / 1000}s e nessun altro job e' in elaborazione. ` +
-                    `Verifica che il worker sia avviato sul PC di ${chosenAuditor === 'neo' ? 'Neo' : 'Morfeo'} ` +
-                    `(node openclaw-worker.js), che il repo sia aggiornato all'ultimo commit ` +
-                    `(\`git pull\` poi riavvio worker), e che il suo OpenClaw locale risponda su 127.0.0.1:18789. ` +
-                    `Workaround: riprova selezionando un altro auditor.`,
+                  `${AUDITOR_LABEL[chosenAuditor]} non ha preso il job in ${NO_PICKUP_TIMEOUT_MS / 1000}s e nessun altro job risulta in elaborazione per quel worker. ` +
+                    `Cause probabili: worker spento / OpenClaw locale (127.0.0.1:18789) non risponde / repo non aggiornato. ` +
+                    `Workaround immediato: riprova selezionando ${chosenAuditor === 'neo' ? '"Morfeo"' : '"Neo"'} come auditor.`,
                 );
               } else if (!busyAnnounced) {
                 busyAnnounced = true;

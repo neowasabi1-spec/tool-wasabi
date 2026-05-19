@@ -1308,24 +1308,6 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     iframeRef.current?.contentWindow?.postMessage(msg, '*');
   }, []);
 
-  // Defensive fallback: se l'iframe non risponde con 'editor-ready' entro
-  // un budget ragionevole, sblocchiamo comunque l'overlay. Succede quando
-  // l'HTML clonato contiene <script src="..."> parser-blocking che non
-  // finiscono in tempo (CDN lento, broken script) o uno script della
-  // pagina originale che fa document.write/redirect distruttivo. Senza
-  // questo timeout l'utente vede "Loading editor..." in eterno.
-  useEffect(() => {
-    if (editorReady || switchingViewport || restoringHistory) return;
-    const t = setTimeout(() => {
-      console.warn('[VisualHtmlEditor] editor-ready timeout (8s) — forcing ready');
-      setEditorReady(true);
-      setSwitchingViewport(false);
-      setSwitchingMode(false);
-      setRestoringHistory(false);
-    }, 8000);
-    return () => clearTimeout(t);
-  }, [editorReady, switchingViewport, restoringHistory, iframeVersion]);
-
   useEffect(() => {
     const handler = (e: MessageEvent) => {
       if (!e.data?.type) return;
@@ -2634,6 +2616,28 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
       }, 0);
     });
   }, [mode, switchingMode, switchMode]);
+
+  // Defensive fallback: se l'iframe non risponde con 'editor-ready' entro
+  // un budget ragionevole, sblocchiamo comunque l'overlay. Succede quando
+  // l'HTML clonato contiene <script src="..."> parser-blocking che non
+  // finiscono in tempo (CDN lento, broken script) o uno script della
+  // pagina originale che fa document.write/redirect distruttivo. Senza
+  // questo timeout l'utente vede "Loading editor..." in eterno.
+  //
+  // Deve stare DOPO le dichiarazioni di switchingViewport, switchingMode
+  // e setSwitchingMode (riga ~2580+), altrimenti TDZ -> "Cannot access
+  // 'lc' before initialization" in produzione (Next.js minified bundle).
+  useEffect(() => {
+    if (editorReady || switchingViewport || restoringHistory) return;
+    const t = setTimeout(() => {
+      console.warn('[VisualHtmlEditor] editor-ready timeout (8s) — forcing ready');
+      setEditorReady(true);
+      setSwitchingViewport(false);
+      setSwitchingMode(false);
+      setRestoringHistory(false);
+    }, 8000);
+    return () => clearTimeout(t);
+  }, [editorReady, switchingViewport, restoringHistory, iframeVersion]);
 
   return (
     <div className="fixed inset-0 z-[60] flex flex-col bg-white">
