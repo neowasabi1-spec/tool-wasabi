@@ -5971,7 +5971,26 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                             // worker ha già strippato gli script originali e ci
                             // tocca reinizializzare jQuery/Swiper/FAQ a runtime.
                             const isClonedPreview = htmlPreviewModal.sourceType === 'cloned';
-                            if (!isClonedPreview) {
+                            if (isClonedPreview) {
+                              // Per le anteprime CLONATE strippiamo SOLO gli script
+                              // originali della pagina (e i noscript / inline event
+                              // handlers). Niente fallbackInit, niente fbStyleClient,
+                              // niente HUD. Motivo: i quiz Funnelish/Vue e tante SPA
+                              // fanno fetch dati cross-origin che falliscono dentro
+                              // l'iframe → entrano in retry loop e l'anteprima
+                              // sfarfalla tra splash di caricamento e contenuto
+                              // statico. La pagina cosi' viene mostrata come uno
+                              // snapshot DOM rendered dal Playwright lato server +
+                              // CSS inline, senza nessuna interattivita' lato client.
+                              //
+                              // L'HTML originale (con gli script) resta nello state
+                              // htmlPreviewModal.html / clonedData.html per quando
+                              // l'utente clicca Edit HTML, Copy HTML, o ripubblica.
+                              safeHtml = safeHtml.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
+                              safeHtml = safeHtml.replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, '');
+                              safeHtml = safeHtml.replace(/\s+on[a-z]+="[^"]*"/gi, '');
+                              safeHtml = safeHtml.replace(/\s+on[a-z]+='[^']*'/gi, '');
+                            } else {
                             // Strip vecchi fallback bake-ati nell'HTML (server-v1 aveva
                             // un click-delegate FAQ troppo aggressivo che killava le CTA).
                             // Riapplichiamo SEMPRE il fallback client v5+ qui sotto.
