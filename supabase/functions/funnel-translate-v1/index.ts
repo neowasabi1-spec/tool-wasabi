@@ -429,30 +429,49 @@ serve(async (req) => {
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       )
     }
-    if (!userId || typeof userId !== 'string') {
-      return new Response(
-        JSON.stringify({ error: 'Missing or invalid userId' }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+
+    // Lookup Anthropic API key. Strategia in due livelli:
+    //
+    //   1) Edge Function secret `ANTHROPIC_API_KEY` (recommended in
+    //      single-user setup, una chiave per tutta la function).
+    //      Configurazione:
+    //        supabase secrets set ANTHROPIC_API_KEY=sk-ant-...
+    //          --project-ref <YOUR_PROJECT_REF>
+    //      oppure dashboard:
+    //        Project → Edge Functions → Manage secrets
+    //
+    //   2) `user_profiles.anthropic_api_key` per l'`userId` ricevuto.
+    //      Modalita' multi-tenant legacy. Funziona solo se il client
+    //      manda un `userId` reale che esiste nella tabella; il
+    //      front-end attuale manda l'UUID fittizio
+    //      00000000-0000-0000-0000-000000000001 che non esiste,
+    //      quindi questo path fallisce silenziosamente — usato solo
+    //      come fallback se il secret non e' settato.
+    let apiKey: string | undefined = Deno.env.get('ANTHROPIC_API_KEY')?.trim() || undefined
+
+    if (!apiKey && userId && typeof userId === 'string') {
+      const supabase = createClient(
+        Deno.env.get('SUPABASE_URL') ?? '',
+        Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? Deno.env.get('SUPABASE_ANON_KEY') ?? '',
       )
+      const { data: userProfile } = await supabase
+        .from('user_profiles')
+        .select('anthropic_api_key')
+        .eq('id', userId)
+        .single()
+      if (userProfile?.anthropic_api_key) {
+        apiKey = userProfile.anthropic_api_key
+      }
     }
 
-    // Lookup Anthropic API key dell'utente
-    const supabase = createClient(
-      Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? Deno.env.get('SUPABASE_ANON_KEY') ?? '',
-    )
-
-    const { data: userProfile, error: profileError } = await supabase
-      .from('user_profiles')
-      .select('anthropic_api_key')
-      .eq('id', userId)
-      .single()
-
-    if (profileError || !userProfile?.anthropic_api_key) {
+    if (!apiKey) {
       return new Response(
         JSON.stringify({
-          error: `API Key Anthropic non configurata per l'utente ${userId}. ` +
-                 `Vai su Settings → My Account → Anthropic API Key per aggiungerla.`,
+          error:
+            'Anthropic API key non disponibile. ' +
+            'Imposta il secret `ANTHROPIC_API_KEY` sulla Edge Function:\n' +
+            '  supabase secrets set ANTHROPIC_API_KEY=sk-ant-... --project-ref <YOUR_PROJECT_REF>\n' +
+            'oppure dal dashboard: Project → Edge Functions → Manage secrets.',
         }),
         { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       )
@@ -497,7 +516,7 @@ serve(async (req) => {
       const batch = batches[i]
       try {
         const translated = await translateBatchWithClaude({
-          apiKey: userProfile.anthropic_api_key,
+          apiKey,
           systemKb,
           targetLanguage,
           batch,
