@@ -786,107 +786,161 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      // Budget temporali studiati per stare dentro il limite Netlify
-      // Pro (26s di Lambda). Mai un timeout assoluto piu' lungo della
-      // somma: 8s fetch + 16s Jina = 24s totali nel caso peggiore.
-      const FETCH_BUDGET_MS = 8000;
-      const JINA_BUDGET_MS = 16000;
+      // Budget temporali. Tetto totale Netlify Pro per la function
+      // `___netlify-server-handler`: 300s (vedi netlify.toml). Quindi
+      // siamo larghi. Strategia:
+      //   - 2 tentativi diretti (Chrome + Googlebot) da 5s ciascuno
+      //   - Jina con budget 30s come ultima spiaggia
+      //   - Worst case sequenziale: 5 + 5 + 30 = 40s totali
+      //
+      // Il secondo tentativo Googlebot bypassa il 90% dei filtri
+      // Cloudflare/Shopify bot-detection che 403-ano il chrome UA su
+      // siti tipo shop.try-spartan.com.
+      const FETCH_BUDGET_MS = 5000;
+      const JINA_BUDGET_MS = 30000;
+
+      type DirectAttempt = { ok: boolean; html: string; status: number; ms: number; name: string; error?: string };
+
+      async function fetchDirect(name: string, ua: string, extra: Record<string, string> = {}): Promise<DirectAttempt> {
+        const t = Date.now();
+        try {
+          const res = await fetch(cleanUrl, {
+            headers: {
+              'User-Agent': ua,
+              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+              'Accept-Language': 'en-US,en;q=0.9,it;q=0.8',
+              'Upgrade-Insecure-Requests': '1',
+              ...extra,
+            },
+            redirect: 'follow',
+            signal: AbortSignal.timeout(FETCH_BUDGET_MS),
+          });
+          const ms = Date.now() - t;
+          if (!res.ok) {
+            return { ok: false, html: '', status: res.status, ms, name, error: `HTTP ${res.status}` };
+          }
+          const html = await res.text();
+          const ok = !!html && html.length >= 50;
+          return { ok, html, status: res.status, ms, name };
+        } catch (e) {
+          const ms = Date.now() - t;
+          const msg = e instanceof Error ? e.message : String(e);
+          return { ok: false, html: '', status: 0, ms, name, error: msg };
+        }
+      }
 
       const t0 = Date.now();
       console.log(`[clone-funnel] identical: start ${cleanUrl} (fetch_budget=${FETCH_BUDGET_MS}, jina_budget=${JINA_BUDGET_MS})`);
 
-      let rawHtml = '';
-      let fetchOk = false;
-      let fetchMs = 0;
-      try {
-        const fetchT0 = Date.now();
-        const res = await fetch(cleanUrl, {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9,it;q=0.8',
-            'Upgrade-Insecure-Requests': '1',
-          },
-          redirect: 'follow',
-          signal: AbortSignal.timeout(FETCH_BUDGET_MS),
-        });
-        if (res.ok) {
-          rawHtml = await res.text();
-          fetchOk = !!rawHtml && rawHtml.length >= 50;
-        } else {
-          console.warn(`[clone-funnel] identical: direct fetch HTTP ${res.status} for ${cleanUrl}`);
+      // ── Step 1: Chrome desktop UA ────────────────────────────────
+      const chromeAttempt = await fetchDirect(
+        'chrome-desktop',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        {
+          'Sec-Fetch-Dest': 'document',
+          'Sec-Fetch-Mode': 'navigate',
+          'Sec-Fetch-Site': 'none',
+          'Sec-Fetch-User': '?1',
         }
-        fetchMs = Date.now() - fetchT0;
-        console.log(`[clone-funnel] identical: direct fetch ${fetchOk ? 'OK' : 'KO'} ${rawHtml.length} chars in ${fetchMs}ms`);
-      } catch (fetchErr) {
-        fetchMs = Date.now() - t0;
-        console.warn(`[clone-funnel] identical: direct fetch threw in ${fetchMs}ms for ${cleanUrl}:`, fetchErr instanceof Error ? fetchErr.message : fetchErr);
+      );
+      console.log(`[clone-funnel] identical: chrome ${chromeAttempt.ok ? 'OK' : 'KO'} status=${chromeAttempt.status} ${chromeAttempt.html.length}ch in ${chromeAttempt.ms}ms${chromeAttempt.error ? ` err=${chromeAttempt.error}` : ''}`);
+
+      // Se chrome ha funzionato E non e' un guscio SPA, usalo subito.
+      if (chromeAttempt.ok && !isSpaShell(chromeAttempt.html)) {
+        const stabilizedHtml = stabilizeClonedHtml(chromeAttempt.html, cleanUrl);
+        const dt = Date.now() - t0;
+        console.log(`[clone-funnel] identical: direct OK via chrome ${stabilizedHtml.length}ch in ${dt}ms`);
+        return NextResponse.json({
+          success: true,
+          content: stabilizedHtml,
+          mobileContent: null,
+          format: 'html',
+          mode: 'identical',
+          originalSize: chromeAttempt.html.length,
+          finalSize: stabilizedHtml.length,
+          cssInlined: false,
+          jsRendered: false,
+          method: 'fetch-chrome',
+          timing: { chromeMs: chromeAttempt.ms, totalMs: dt },
+          title: stabilizedHtml.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || '',
+        });
       }
 
-      // Decidi se serve il fallback Jina:
-      //   - fetch fallito del tutto, oppure
-      //   - HTML scaricato ma e' un SPA shell (poco testo dentro <body>)
-      const spaShellDetected = fetchOk && isSpaShell(rawHtml);
-      const needsJina = !fetchOk || spaShellDetected;
+      // ── Step 2: Googlebot UA (bypassa filtri Cloudflare/Shopify) ─
+      const botAttempt = await fetchDirect(
+        'googlebot',
+        'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)'
+      );
+      console.log(`[clone-funnel] identical: googlebot ${botAttempt.ok ? 'OK' : 'KO'} status=${botAttempt.status} ${botAttempt.html.length}ch in ${botAttempt.ms}ms${botAttempt.error ? ` err=${botAttempt.error}` : ''}`);
 
-      if (needsJina) {
-        const reason = fetchOk ? 'SPA shell detected' : 'direct fetch failed';
-        console.log(`[clone-funnel] identical: trying Jina (${reason}) for ${cleanUrl}`);
+      if (botAttempt.ok && !isSpaShell(botAttempt.html)) {
+        const stabilizedHtml = stabilizeClonedHtml(botAttempt.html, cleanUrl);
+        const dt = Date.now() - t0;
+        console.log(`[clone-funnel] identical: direct OK via googlebot ${stabilizedHtml.length}ch in ${dt}ms`);
+        return NextResponse.json({
+          success: true,
+          content: stabilizedHtml,
+          mobileContent: null,
+          format: 'html',
+          mode: 'identical',
+          originalSize: botAttempt.html.length,
+          finalSize: stabilizedHtml.length,
+          cssInlined: false,
+          jsRendered: false,
+          method: 'fetch-googlebot',
+          timing: { chromeMs: chromeAttempt.ms, botMs: botAttempt.ms, totalMs: dt },
+          title: stabilizedHtml.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || '',
+        });
+      }
 
-        // HARD TIMEOUT: rescueViaJina puo' impiegare fino a 60s. Su
-        // Netlify Lambda quello fa morire la richiesta lasciando l'UI
-        // in loading infinito. Race contro un timeout esplicito: se
-        // Jina non rispetta il budget, andiamo avanti con quello che
-        // abbiamo (rawHtml shell oppure errore secco).
-        let jinaHtml: string | null = null;
-        const jinaT0 = Date.now();
-        try {
-          jinaHtml = await Promise.race<string | null>([
-            rescueViaJina(cleanUrl),
-            new Promise<null>((resolve) => setTimeout(() => resolve(null), JINA_BUDGET_MS)),
-          ]);
-        } catch (jinaErr) {
-          console.error(`[clone-funnel] identical: Jina threw for ${cleanUrl}:`, jinaErr instanceof Error ? jinaErr.message : jinaErr);
-        }
-        const jinaMs = Date.now() - jinaT0;
+      // Best raw HTML disponibile (per shell fallback in fondo)
+      const bestRaw = chromeAttempt.html.length >= botAttempt.html.length ? chromeAttempt : botAttempt;
+      const anyFetchOk = chromeAttempt.ok || botAttempt.ok;
+      const totalFetchMs = chromeAttempt.ms + botAttempt.ms;
 
-        if (jinaHtml && jinaHtml.length > 200) {
-          const dt = Date.now() - t0;
-          console.log(`[clone-funnel] identical: Jina OK ${jinaHtml.length} chars in ${jinaMs}ms (total ${dt}ms) for ${cleanUrl}`);
-          return NextResponse.json({
-            success: true,
-            content: jinaHtml,
-            mobileContent: null,
-            format: 'html',
-            mode: 'identical',
-            originalSize: rawHtml.length || jinaHtml.length,
-            finalSize: jinaHtml.length,
-            cssInlined: false,
-            jsRendered: true,
-            method: 'jina',
-            timing: { fetchMs, jinaMs, totalMs: dt },
-            title: jinaHtml.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || '',
-          });
-        }
+      // ── Step 3: Jina (render SPA / sblocca pagine bot-protected) ─
+      const jinaReason = !anyFetchOk
+        ? 'both direct fetches failed'
+        : 'SPA shell detected';
+      console.log(`[clone-funnel] identical: trying Jina (${jinaReason}) for ${cleanUrl}`);
 
-        console.warn(`[clone-funnel] identical: Jina timeout/empty in ${jinaMs}ms for ${cleanUrl} (returned ${jinaHtml?.length ?? 0} chars)`);
+      let jinaHtml: string | null = null;
+      const jinaT0 = Date.now();
+      try {
+        jinaHtml = await Promise.race<string | null>([
+          rescueViaJina(cleanUrl),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), JINA_BUDGET_MS)),
+        ]);
+      } catch (jinaErr) {
+        console.error(`[clone-funnel] identical: Jina threw for ${cleanUrl}:`, jinaErr instanceof Error ? jinaErr.message : jinaErr);
+      }
+      const jinaMs = Date.now() - jinaT0;
 
-        // Jina KO. Se non avevamo neanche il fetch, errore secco.
-        if (!fetchOk) {
-          const dt = Date.now() - t0;
-          return NextResponse.json(
-            {
-              error: `Unable to clone the page: direct fetch failed AND Jina timed out (${jinaMs}ms) for ${cleanUrl}`,
-              timing: { fetchMs, jinaMs, totalMs: dt },
-            },
-            { status: 502 }
-          );
-        }
+      if (jinaHtml && jinaHtml.length > 200) {
+        const dt = Date.now() - t0;
+        console.log(`[clone-funnel] identical: Jina OK ${jinaHtml.length}ch in ${jinaMs}ms (total ${dt}ms) for ${cleanUrl}`);
+        return NextResponse.json({
+          success: true,
+          content: jinaHtml,
+          mobileContent: null,
+          format: 'html',
+          mode: 'identical',
+          originalSize: bestRaw.html.length || jinaHtml.length,
+          finalSize: jinaHtml.length,
+          cssInlined: false,
+          jsRendered: true,
+          method: 'jina',
+          timing: { chromeMs: chromeAttempt.ms, botMs: botAttempt.ms, jinaMs, totalMs: dt },
+          title: jinaHtml.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || '',
+        });
+      }
 
-        // Abbiamo il guscio SPA: meglio del nulla. L'utente vedra' la
-        // pagina non montata, ma il front-end mostra il warning.
-        console.log(`[clone-funnel] identical: returning SPA shell (Jina KO) for ${cleanUrl}`);
-        const shellStabilized = stabilizeClonedHtml(rawHtml, cleanUrl);
+      console.warn(`[clone-funnel] identical: Jina timeout/empty in ${jinaMs}ms for ${cleanUrl} (returned ${jinaHtml?.length ?? 0} chars)`);
+
+      // ── Step 4: Shell fallback se almeno un fetch ha dato qualcosa
+      if (anyFetchOk && bestRaw.html.length > 200) {
+        console.log(`[clone-funnel] identical: returning best fetch shell (${bestRaw.name}, ${bestRaw.html.length}ch) for ${cleanUrl}`);
+        const shellStabilized = stabilizeClonedHtml(bestRaw.html, cleanUrl);
         const dt = Date.now() - t0;
         return NextResponse.json({
           success: true,
@@ -894,36 +948,31 @@ export async function POST(request: NextRequest) {
           mobileContent: null,
           format: 'html',
           mode: 'identical',
-          originalSize: rawHtml.length,
+          originalSize: bestRaw.html.length,
           finalSize: shellStabilized.length,
           cssInlined: false,
           jsRendered: false,
-          method: 'fetch-shell',
-          timing: { fetchMs, jinaMs, totalMs: dt },
+          method: `fetch-shell-${bestRaw.name}`,
+          timing: { chromeMs: chromeAttempt.ms, botMs: botAttempt.ms, jinaMs, totalMs: dt },
           warning: 'Page looks like an SPA shell — JS content not rendered. Jina fallback timed out.',
           title: shellStabilized.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || '',
         });
       }
 
-      // Caso felice: fetch diretto OK e contenuto reale presente.
-      const stabilizedHtml = stabilizeClonedHtml(rawHtml, cleanUrl);
+      // Tutto KO.
       const dt = Date.now() - t0;
-      console.log(`[clone-funnel] identical: direct OK ${stabilizedHtml.length} chars in ${dt}ms for ${cleanUrl}`);
-
-      return NextResponse.json({
-        success: true,
-        content: stabilizedHtml,
-        mobileContent: null,
-        format: 'html',
-        mode: 'identical',
-        originalSize: rawHtml.length,
-        finalSize: stabilizedHtml.length,
-        cssInlined: false,
-        jsRendered: false,
-        method: 'fetch',
-        timing: { fetchMs, totalMs: dt },
-        title: stabilizedHtml.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || '',
-      });
+      const causes = [
+        `chrome=${chromeAttempt.error || `HTTP ${chromeAttempt.status}`}`,
+        `googlebot=${botAttempt.error || `HTTP ${botAttempt.status}`}`,
+        `jina=timeout/empty ${jinaMs}ms`,
+      ];
+      return NextResponse.json(
+        {
+          error: `Unable to clone ${cleanUrl}: ${causes.join(' | ')}`,
+          timing: { chromeMs: chromeAttempt.ms, botMs: botAttempt.ms, jinaMs, totalFetchMs, totalMs: dt },
+        },
+        { status: 502 }
+      );
     }
 
     // REWRITE EXTRACT PHASE: render with Playwright, extract texts locally, save to Supabase DB
