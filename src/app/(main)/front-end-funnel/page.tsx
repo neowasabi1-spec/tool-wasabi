@@ -6217,6 +6217,51 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                             // perche' il worker ha gia' strippato gli script
                             // originali e dobbiamo reinizializzare la UI a runtime.
                             const isClonedPreview = htmlPreviewModal.sourceType === 'cloned';
+                            if (isClonedPreview) {
+                              // ── ANTI-FRAME-BUSTER + STRIP META REFRESH ──────────
+                              // Le pagine clonate (funnel, quiz, opt-in) spesso
+                              // contengono codice "frame-buster" tipo
+                              //   if (top !== self) top.location.href = self.location.href
+                              // che, dentro la preview iframe, navigherebbe l'iframe
+                              // alla URL del funnel originale — e siccome quella URL
+                              // tipicamente reindirizza a Google reCAPTCHA / Google
+                              // OAuth / Google Forms, l'iframe finisce su
+                              // www.google.com che blocca il framing → l'utente vede
+                              // "Connessione negata da www.google.com" al posto della
+                              // pagina clonata. Stesso problema con
+                              // <meta http-equiv="refresh" content="0;url=...">
+                              // se l'url e' assoluta verso un altro dominio.
+                              //
+                              // Strippiamo i meta refresh con URL esterna e iniettiamo
+                              // un piccolo guard che fa diventare top/parent === self,
+                              // cosi' i frame-buster vedono di essere top-level e non
+                              // fanno nulla. Nessuna manipolazione del DOM visibile.
+                              safeHtml = safeHtml.replace(
+                                /<meta\b[^>]*http-equiv\s*=\s*["']?refresh["']?[^>]*>/gi,
+                                ''
+                              );
+                              const frameBusterGuard = `<script data-preview-fbk>(function(){try{
+                                Object.defineProperty(window,'top',{get:function(){return window;},configurable:true});
+                              }catch(_){} try{
+                                Object.defineProperty(window,'parent',{get:function(){return window;},configurable:true});
+                              }catch(_){} try{
+                                Object.defineProperty(window,'frameElement',{get:function(){return null;},configurable:true});
+                              }catch(_){} try{
+                                var origAssign=window.location.assign && window.location.assign.bind(window.location);
+                                var origReplace=window.location.replace && window.location.replace.bind(window.location);
+                                var hostHere=window.location.host;
+                                function sameHost(u){try{var x=new URL(u,window.location.href);return x.host===hostHere||!x.host;}catch(_){return true;}}
+                                if(origAssign){window.location.assign=function(u){if(sameHost(u))return origAssign(u);console.warn('[preview] blocked top-nav to',u);};}
+                                if(origReplace){window.location.replace=function(u){if(sameHost(u))return origReplace(u);console.warn('[preview] blocked top-nav to',u);};}
+                              }catch(_){}})();</` + `script>`;
+                              if (safeHtml.includes('<head>')) {
+                                safeHtml = safeHtml.replace('<head>', '<head>' + frameBusterGuard);
+                              } else if (/<head\s/i.test(safeHtml)) {
+                                safeHtml = safeHtml.replace(/<head([^>]*)>/i, '<head$1>' + frameBusterGuard);
+                              } else {
+                                safeHtml = frameBusterGuard + safeHtml;
+                              }
+                            }
                             if (!isClonedPreview) {
                             // Strip vecchi fallback bake-ati nell'HTML (server-v1 aveva
                             // un click-delegate FAQ troppo aggressivo che killava le CTA).
