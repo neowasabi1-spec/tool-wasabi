@@ -1044,7 +1044,20 @@ export default function FrontEndFunnel() {
     metadata: { method: string; length: number; duration: number } | null;
     pageId?: string;
     sourceType?: 'cloned' | 'swiped';
+    // URL originale del clone — usata per la preview live (iframe src diretto
+    // verso il dominio sorgente). Cosi' il bundle React/Vue gira nel suo
+    // origin nativo (niente CORS, niente check anti-clone) e vediamo la
+    // pagina esattamente come la vedrebbe un visitatore. L'HTML clonato
+    // resta usato per Edit Visually / Copy / Download / Open in new tab.
+    sourceUrl?: string;
   }>({ isOpen: false, title: '', html: '', mobileHtml: '', iframeSrc: '', metadata: null });
+
+  // Modalita' rendering della preview clonata:
+  //   'live'     = <iframe src=URL_originale> → layout perfetto ma richiede
+  //                che il sito non blocchi il framing (X-Frame-Options).
+  //   'snapshot' = doc.write dell'HTML salvato (statico, niente script).
+  //                Fallback per siti che bloccano l'embedding.
+  const [clonedPreviewMode, setClonedPreviewMode] = useState<'live' | 'snapshot'>('live');
 
   const [showVisualEditor, setShowVisualEditor] = useState(false);
 
@@ -3243,6 +3256,7 @@ export default function FrontEndFunnel() {
         try { autoSaveSections(clonedHtml, url, pageName); } catch {}
 
         setPreviewViewport('desktop');
+        setClonedPreviewMode('live');
         setHtmlPreviewModal({
           isOpen: true,
           title: data.jsRendered ? `⚠️ Clone (JS-rendered): ${pageName}` : `Clone: ${pageName}`,
@@ -3252,6 +3266,7 @@ export default function FrontEndFunnel() {
           metadata: { method: 'identical', length: data.finalSize || data.content?.length || 0, duration: 0 },
           pageId,
           sourceType: 'cloned',
+          sourceUrl: url,
         });
 
       } else if (mode === 'rewrite') {
@@ -5520,6 +5535,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                   if (!got) return;
                                   setPreviewViewport('desktop');
                                   setPreviewTab('preview');
+                                  setClonedPreviewMode('live');
                                   setHtmlPreviewModal({
                                     isOpen: true,
                                     title: page.clonedData!.title || page.name,
@@ -5533,6 +5549,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                     },
                                     pageId: page.id,
                                     sourceType: 'cloned',
+                                    sourceUrl: page.urlToSwipe || undefined,
                                   });
                                 }
                               }}
@@ -5992,12 +6009,49 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                   )}
                 </div>
               </div>
-              <button
-                onClick={() => { setPreviewTab('preview'); setHtmlPreviewModal({ isOpen: false, title: '', html: '', mobileHtml: '', iframeSrc: '', metadata: null }); }}
-                className="text-white/80 hover:text-white text-2xl font-bold"
-              >
-                ×
-              </button>
+              <div className="flex items-center gap-3">
+                {/* Toggle Live ↔ Snapshot per le preview clonate */}
+                {htmlPreviewModal.sourceType === 'cloned' && htmlPreviewModal.sourceUrl && previewTab === 'preview' && (
+                  <div className="flex items-center gap-1 bg-white/10 rounded-lg p-1 border border-white/20">
+                    <button
+                      onClick={() => {
+                        if (clonedPreviewMode === 'live') return;
+                        setPreviewLoading(true);
+                        setClonedPreviewMode('live');
+                      }}
+                      className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
+                        clonedPreviewMode === 'live'
+                          ? 'bg-white text-blue-700'
+                          : 'text-white/80 hover:text-white'
+                      }`}
+                      title="Carica direttamente la URL originale (layout 1:1, richiede che il sito non blocchi iframe)"
+                    >
+                      Live
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (clonedPreviewMode === 'snapshot') return;
+                        setPreviewLoading(true);
+                        setClonedPreviewMode('snapshot');
+                      }}
+                      className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
+                        clonedPreviewMode === 'snapshot'
+                          ? 'bg-white text-blue-700'
+                          : 'text-white/80 hover:text-white'
+                      }`}
+                      title="Renderizza l'HTML clonato salvato (statico, senza script)"
+                    >
+                      Snapshot HTML
+                    </button>
+                  </div>
+                )}
+                <button
+                  onClick={() => { setPreviewTab('preview'); setHtmlPreviewModal({ isOpen: false, title: '', html: '', mobileHtml: '', iframeSrc: '', metadata: null }); }}
+                  className="text-white/80 hover:text-white text-2xl font-bold"
+                >
+                  ×
+                </button>
+              </div>
             </div>
 
             {/* Modal Body - Tabs */}
@@ -6198,7 +6252,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                     </div>
                   )}
                   <iframe
-                    key={`${previewViewport}-${htmlPreviewModal.html?.length || ''}-${htmlPreviewModal.iframeSrc || 'empty'}`}
+                    key={`${previewViewport}-${htmlPreviewModal.html?.length || ''}-${htmlPreviewModal.iframeSrc || 'empty'}-${clonedPreviewMode}`}
                     ref={(iframe) => {
                       previewIframeRef.current = iframe;
                       if (!iframe) { previewInitedRef.current = null; return; }
@@ -6208,6 +6262,34 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                       // ogni setState del parent rieseguiva doc.write → loop.
                       if (previewInitedRef.current === iframe) return;
                       previewInitedRef.current = iframe;
+                      // ── LIVE PREVIEW PER PAGINE CLONATE ─────────────────
+                      // Se la pagina e' un clone (sourceType='cloned') e abbiamo
+                      // la URL originale, di default puntiamo l'iframe DIRETTO
+                      // a quella URL. La pagina si carica dal suo origin nativo,
+                      // quindi tutti gli script (React/Vue bundles, CSS-in-JS,
+                      // anti-clone checks) funzionano esattamente come per un
+                      // visitatore: niente CORS errors, niente bouncer verso
+                      // Google, layout pixel-perfect. L'HTML clonato resta
+                      // disponibile per Edit Visually / Copy / Download.
+                      // L'utente puo' switchare a "Snapshot HTML" dal toggle
+                      // in header se vuole vedere il codice salvato renderizzato.
+                      const liveCloneSrc =
+                        htmlPreviewModal.sourceType === 'cloned' &&
+                        clonedPreviewMode === 'live' &&
+                        htmlPreviewModal.sourceUrl
+                          ? htmlPreviewModal.sourceUrl
+                          : null;
+                      if (liveCloneSrc) {
+                        iframe.src = liveCloneSrc;
+                        iframe.addEventListener('load', () => setPreviewLoading(false), { once: true });
+                        // Fallback: se il sito blocca il framing (X-Frame-Options
+                        // / CSP frame-ancestors), `load` non scatta e lo spinner
+                        // resta. Dopo 6s nascondiamo lo spinner comunque e
+                        // l'utente vede il messaggio del browser ("Refused to
+                        // connect"); puo' allora switchare a Snapshot HTML.
+                        setTimeout(() => setPreviewLoading(false), 6000);
+                        return;
+                      }
                       if (htmlPreviewModal.iframeSrc) {
                         iframe.src = htmlPreviewModal.iframeSrc;
                         setPreviewLoading(false);
@@ -6874,14 +6956,12 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                     }`}
                     title="HTML Preview"
                     allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
-                    {...(htmlPreviewModal.sourceType === 'cloned'
+                    {...(htmlPreviewModal.sourceType === 'cloned' &&
+                    clonedPreviewMode === 'snapshot'
                       ? {
-                          // Cloned preview = snapshot statico. prepareClonedHtml
-                          // ForPreview ha gia' rimosso TUTTI gli <script>, quindi
-                          // allow-scripts non serve. Lo lasciamo via per evitare
-                          // che un eventuale script sopravvissuto (es. injection
-                          // nei data-attribute) possa girare. DOM + CSS sono
-                          // sufficienti a mostrare la pagina come appare.
+                          // Snapshot mode = doc.write dell'HTML clonato senza
+                          // script. prepareClonedHtmlForPreview ha gia' rimosso
+                          // tutti gli <script>, quindi allow-scripts non serve.
                           sandbox: 'allow-same-origin allow-forms allow-popups allow-modals',
                         }
                       : {})}
