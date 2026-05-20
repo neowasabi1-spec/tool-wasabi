@@ -1634,7 +1634,22 @@ const TOOLS = [
 ];
 
 async function validateMcpAuth(req: NextRequest): Promise<{ valid: boolean; error?: string }> {
-  const apiKey = req.headers.get('x-api-key') || req.headers.get('authorization')?.replace('Bearer ', '');
+  // Header-based key (preferito).
+  let apiKey = req.headers.get('x-api-key') || req.headers.get('authorization')?.replace('Bearer ', '');
+
+  // Fallback server-side: se la richiesta non porta header (e' il caso di
+  // bundle-mcp di OpenClaw che non sa come iniettare X-API-Key), accetta
+  // una key di default impostata via env var. Da settare su Netlify come
+  // MCP_DEFAULT_API_KEY=fsk_xxx in modo che il client non debba conoscerla.
+  // Se MCP_DEFAULT_API_KEY non e' settata, il comportamento resta come
+  // prima (auth obbligatoria via header).
+  if (!apiKey || !apiKey.startsWith('fsk_')) {
+    const envKey = process.env.MCP_DEFAULT_API_KEY;
+    if (envKey && envKey.startsWith('fsk_')) {
+      apiKey = envKey;
+    }
+  }
+
   if (!apiKey || !apiKey.startsWith('fsk_')) {
     return { valid: false, error: 'Missing or invalid API key. Use X-API-Key header with an fsk_ key.' };
   }
@@ -3090,8 +3105,23 @@ export async function GET(req: NextRequest) {
     // Compute origin from incoming request so the `endpoint` event resolves
     // to the SAME host the client is talking to (custom domain vs.
     // *.netlify.app branch, preview deploys, ecc.).
+    //
+    // IMPORTANT: req.url su Netlify viene normalizzato al canonical host
+    // (tool-wasabi-neo.netlify.app) anche quando il client si connette a
+    // un preview URL (<hash>--tool-wasabi-neo.netlify.app). Questo causa
+    // bundle-mcp a buttare l'errore "Endpoint origin does not match
+    // connection origin" perche' fa una security check tra l'host SSE e
+    // l'host nell'event endpoint.
+    //
+    // Soluzione: preferire x-forwarded-host / x-forwarded-proto che Netlify
+    // popola con l'host originale richiesto dal client. Fallback su req.url
+    // per dev locale dove gli header proxy non sono presenti.
     const reqUrl = new URL(req.url);
-    const origin = `${reqUrl.protocol}//${reqUrl.host}`;
+    const fwdHost = req.headers.get('x-forwarded-host')?.split(',')[0].trim();
+    const fwdProto = req.headers.get('x-forwarded-proto')?.split(',')[0].trim();
+    const host = fwdHost || reqUrl.host;
+    const proto = fwdProto || reqUrl.protocol.replace(':', '');
+    const origin = `${proto}://${host}`;
     const messagesEndpoint = `${origin}/api/mcp`;
     const stream = new ReadableStream({
       start(controller) {
