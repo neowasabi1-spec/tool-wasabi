@@ -1722,6 +1722,13 @@ export default function FrontEndFunnel() {
     ts: number;
   } | null>(null);
 
+  // Navigazioni bloccate dal preview-guard (frame-buster killer per cloned).
+  // Tenute in stato cosi' le mostriamo nell'header del modal: l'utente
+  // capisce subito *perche'* la preview non sta navigando (es. "blocked
+  // location.href -> https://accounts.google.com/oauth/...") senza dover
+  // aprire DevTools dentro l'iframe.
+  const [previewBlocked, setPreviewBlocked] = useState<Array<{ kind: string; target: string; ts: number }>>([]);
+
   useEffect(() => {
     const onMsg = (ev: MessageEvent) => {
       const d = ev.data;
@@ -1747,6 +1754,14 @@ export default function FrontEndFunnel() {
           `[funnel-preview-click] ${d.target}: ${d.target === 'faq' ? `"${d.headerText}" contents=${d.contents} open=${d.newOpen}` : `idx=${d.idx}/${d.siblings}`}`
         );
       }
+      if (d && typeof d === 'object' && d.__funnelPreviewBlocked) {
+        // eslint-disable-next-line no-console
+        console.warn(`[funnel-preview-guard] blocked ${d.kind} -> ${d.target}`);
+        setPreviewBlocked(prev => {
+          const next = [...prev, { kind: String(d.kind || ''), target: String(d.target || ''), ts: Date.now() }];
+          return next.slice(-5);
+        });
+      }
     };
     window.addEventListener('message', onMsg);
     return () => window.removeEventListener('message', onMsg);
@@ -1754,7 +1769,7 @@ export default function FrontEndFunnel() {
 
   // Reset diag quando il modal si chiude
   useEffect(() => {
-    if (!htmlPreviewModal.isOpen) setPreviewDiag(null);
+    if (!htmlPreviewModal.isOpen) { setPreviewDiag(null); setPreviewBlocked([]); }
   }, [htmlPreviewModal.isOpen]);
 
   const handleSelectSavedPrompt = useCallback((prompt: SavedPrompt, target: 'swipe' | 'clone') => {
@@ -5897,6 +5912,18 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                   {htmlPreviewModal.iframeSrc && (
                     <p className="text-white/80 text-sm">
                       Result from pipeline job
+                    </p>
+                  )}
+                  {previewBlocked.length > 0 && (
+                    <p className="text-yellow-100 text-xs mt-1 bg-yellow-900/40 px-2 py-1 rounded border border-yellow-300/40">
+                      Blocked {previewBlocked.length} navigation{previewBlocked.length === 1 ? '' : 's'}:&nbsp;
+                      {previewBlocked.slice(-2).map((b, i) => (
+                        <span key={i} className="inline-block mr-2">
+                          <span className="font-mono opacity-75">{b.kind}</span>
+                          &nbsp;→&nbsp;
+                          <span className="font-mono">{b.target.slice(0, 60)}{b.target.length > 60 ? '…' : ''}</span>
+                        </span>
+                      ))}
                     </p>
                   )}
                 </div>
