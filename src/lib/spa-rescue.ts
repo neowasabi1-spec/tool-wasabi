@@ -557,11 +557,31 @@ export function absolutizeUrlsInHtml(html: string, originUrl: string): string {
       /(\bstyle\s*=\s*)(["'])([^"']*)\2/gi,
       (_m, prefix: string, q: string, val: string) => `${prefix}${q}${rewriteCssUrls(val, base)}${q}`,
     )
-    // Lazy-load attributes: data-src, data-bg, data-image, data-original,
-    // data-lazy-src — covers the most common JS lazy-loaders.
+    // Lazy-load attributes (single URL): allineato 1:1 alla lista che
+    // VisualHtmlEditor.prepareEditorHtml promuove a src/srcset/poster.
+    // Senza assolutizzarli QUI, lazy-loader Shopify/Flickity/lozad/
+    // PhotoSwipe/Webflow/Cloudflare/Complianz/Funnelish lasciano src
+    // relativi (es. /cdn/shop/files/foo.jpg) e l'editor srcdoc, che
+    // ha origin null, non riesce a risolverli => immagini bianche.
     .replace(
-      /(\bdata-(?:src|bg|image|original|lazy-src)\s*=\s*)(["'])([^"']+)\2/gi,
+      /(\bdata-(?:src|bg|background|background-image|bg-src|lazy-bg|bgset|image|image-src|thumb|original|original-src|orig-src|lazy|lazy-src|lazyload|lazy-load|url|cfsrc|cmplz-src|wf-src|echo|defer-src|hi-res-src|actual|srcfallback|poster|lazy-poster|cfsrc-poster|video-src|poster-src|flickity-lazyload|flickity-lazyload-src|photoswipe-src)\s*=\s*)(["'])([^"']+)\2/gi,
       (_m, prefix: string, q: string, val: string) => `${prefix}${q}${absolutize(val, base)}${q}`,
+    )
+    // Lazy-load attributes (srcset format: "url1 1x, url2 2x"): assolutizza
+    // ogni URL nella lista, preservando i descriptor.
+    .replace(
+      /(\bdata-(?:srcset|lazy-srcset|cfsrcset|cmplz-srcset|wf-srcset|flickity-lazyload-srcset)\s*=\s*)(["'])([^"']+)\2/gi,
+      (_m, prefix: string, q: string, val: string) => {
+        const fixed = val.split(',').map((part) => {
+          const trimmed = part.trim();
+          if (!trimmed) return part;
+          const segments = trimmed.split(/\s+/);
+          const u = segments[0];
+          const rest = segments.slice(1);
+          return [absolutize(u, base), ...rest].join(' ');
+        }).join(', ');
+        return `${prefix}${q}${fixed}${q}`;
+      },
     );
 
   return out;

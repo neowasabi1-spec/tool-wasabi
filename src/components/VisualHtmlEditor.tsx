@@ -750,11 +750,13 @@ function prepareEditorHtml(html: string): string {
         const lazyPoster = pickAttr(a, LAZY_POSTER_ATTRS);
         if (lazyPoster) a = setAttr(a, 'poster', lazyPoster);
       }
-      // Se NON abbiamo trovato un data-src ma il src corrente e' un
-      // placeholder e c'e' un srcset/data-srcset valido, prova a
-      // estrarne la prima URL e usala come src.
+      // Se il src corrente e' mancante / vuoto / placeholder e c'e' un
+      // srcset (o data-srcset) valido, prova a estrarne la prima URL e
+      // usala come src. Copre: <img srcset="x.jpg 1x"> senza src, <source
+      // data-srcset="..."> dentro <picture>, e img il cui src e' uno
+      // spacer/lqip ma srcset ha l'immagine vera.
       const currentSrc = getAttr(a, 'src');
-      if (currentSrc !== null && isPlaceholderSrc(currentSrc)) {
+      if (!currentSrc || isPlaceholderSrc(currentSrc)) {
         const srcset = getAttr(a, 'srcset') || pickAttr(a, LAZY_SRCSET_ATTRS);
         if (srcset) {
           const firstUrl = srcset.trim().split(',')[0]?.trim().split(/\s+/)[0];
