@@ -48,6 +48,11 @@ const menuItems = [
     icon: Copy,
   },
   {
+    name: 'Clone / Swipe Quiz',
+    href: '/quiz-swipe',
+    icon: HelpCircle,
+  },
+  {
     name: 'My Archive',
     href: '/templates',
     icon: FileCode,
