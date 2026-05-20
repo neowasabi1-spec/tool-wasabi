@@ -102,6 +102,13 @@ export function getPublicUrlForFile(filePath: string): string | null {
 export function getUploadUrl(filePath?: string | null): string {
   if (!filePath) return '';
   if (/^https?:\/\//i.test(filePath)) return filePath;
+  // Legacy synthetic paths produced by `legacyFilesForProject` resolve to a
+  // server route that streams the inlined text content as a download
+  // (legacy section files used to live as text inside JSONB columns, not in
+  // Supabase Storage).
+  if (filePath.startsWith('legacy/')) {
+    return `/api/projecthub/legacy-files/${filePath.slice('legacy/'.length)}`;
+  }
   return getPublicUrlForFile(filePath) || '';
 }
 

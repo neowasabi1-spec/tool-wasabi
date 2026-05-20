@@ -1,11 +1,26 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
+import {
+  derivedProductBriefSections,
+  legacyFilesForProject,
+} from '@/lib/projecthub-legacy';
 
 export const dynamic = 'force-dynamic';
 
-const PROJECT_COLS =
-  'id, name, status, description, domain, notes, created_at, updated_at, thumbnail_path, product_brief_sections';
-const PROJECT_COLS_LEGACY =
+const PROJECT_COLS_FULL = `
+  id, name, status, description, domain, notes, created_at, updated_at,
+  thumbnail_path, product_brief_sections,
+  market_research, brief, brief_files, front_end, back_end,
+  compliance_funnel, funnel
+`.replace(/\s+/g, ' ').trim();
+
+const PROJECT_COLS_LEGACY = `
+  id, name, status, description, domain, notes, created_at, updated_at,
+  market_research, brief, brief_files, front_end, back_end,
+  compliance_funnel, funnel
+`.replace(/\s+/g, ' ').trim();
+
+const PROJECT_COLS_MINIMAL =
   'id, name, status, description, domain, notes, created_at, updated_at';
 
 export async function GET(
@@ -14,20 +29,19 @@ export async function GET(
 ) {
   const { id } = params;
 
-  let { data: project, error } = await supabase
-    .from('projects')
-    .select(PROJECT_COLS)
-    .eq('id', id)
-    .single();
+  const tryWith = async (cols: string) =>
+    supabase.from('projects').select(cols).eq('id', id).single();
 
-  if (error && /thumbnail_path|product_brief_sections/i.test(error.message || '')) {
-    const retry = await supabase
-      .from('projects')
-      .select(PROJECT_COLS_LEGACY)
-      .eq('id', id)
-      .single();
-    project = retry.data;
-    error = retry.error;
+  let { data: project, error } = await tryWith(PROJECT_COLS_FULL);
+  if (error) {
+    if (/thumbnail_path|product_brief_sections/i.test(error.message || '')) {
+      ({ data: project, error } = await tryWith(PROJECT_COLS_LEGACY));
+    }
+  }
+  if (error) {
+    if (/market_research|brief_files|front_end|back_end|compliance_funnel|funnel/i.test(error.message || '')) {
+      ({ data: project, error } = await tryWith(PROJECT_COLS_MINIMAL));
+    }
   }
   if (error || !project) {
     return NextResponse.json(
@@ -36,13 +50,25 @@ export async function GET(
     );
   }
 
-  const { data: files } = await supabase
+  const projectRow = project as unknown as Record<string, unknown>;
+
+  const { data: realFiles } = await supabase
     .from('project_files')
     .select('*')
     .eq('project_id', id)
     .order('created_at', { ascending: false });
 
-  return NextResponse.json({ ...project, files: files || [] });
+  const virtualFiles = legacyFilesForProject(projectRow);
+  const allFiles = [...(realFiles || []), ...virtualFiles];
+
+  const sections = derivedProductBriefSections(projectRow);
+  const productBriefSectionsString = JSON.stringify(sections);
+
+  return NextResponse.json({
+    ...project,
+    files: allFiles,
+    product_brief_sections: productBriefSectionsString,
+  });
 }
 
 export async function PATCH(
