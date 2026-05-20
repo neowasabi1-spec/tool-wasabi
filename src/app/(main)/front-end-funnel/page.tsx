@@ -6240,20 +6240,77 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                 /<meta\b[^>]*http-equiv\s*=\s*["']?refresh["']?[^>]*>/gi,
                                 ''
                               );
-                              const frameBusterGuard = `<script data-preview-fbk>(function(){try{
-                                Object.defineProperty(window,'top',{get:function(){return window;},configurable:true});
-                              }catch(_){} try{
-                                Object.defineProperty(window,'parent',{get:function(){return window;},configurable:true});
-                              }catch(_){} try{
-                                Object.defineProperty(window,'frameElement',{get:function(){return null;},configurable:true});
-                              }catch(_){} try{
-                                var origAssign=window.location.assign && window.location.assign.bind(window.location);
-                                var origReplace=window.location.replace && window.location.replace.bind(window.location);
-                                var hostHere=window.location.host;
-                                function sameHost(u){try{var x=new URL(u,window.location.href);return x.host===hostHere||!x.host;}catch(_){return true;}}
-                                if(origAssign){window.location.assign=function(u){if(sameHost(u))return origAssign(u);console.warn('[preview] blocked top-nav to',u);};}
-                                if(origReplace){window.location.replace=function(u){if(sameHost(u))return origReplace(u);console.warn('[preview] blocked top-nav to',u);};}
-                              }catch(_){}})();</` + `script>`;
+                              const frameBusterGuard = `<script data-preview-fbk>(function(){
+                                var hostHere = window.location.host;
+                                function sameHost(u){
+                                  try{
+                                    var x = new URL(String(u||''), window.location.href);
+                                    return !x.host || x.host === hostHere;
+                                  }catch(_){return true;}
+                                }
+                                function block(label, target){
+                                  try{
+                                    console.warn('[preview-guard] blocked', label, '->', target);
+                                    try{ window.parent.postMessage({__funnelPreviewBlocked:true,kind:label,target:String(target)},'*'); }catch(_){}
+                                  }catch(_){}
+                                }
+                                // 1) Fai diventare top/parent === self cosi' i frame-buster
+                                //    (if(top!==self)top.location=...) vedono di essere top-level e skippano.
+                                try{ Object.defineProperty(window,'top',{get:function(){return window;},configurable:true}); }catch(_){}
+                                try{ Object.defineProperty(window,'parent',{get:function(){return window;},configurable:true}); }catch(_){}
+                                try{ Object.defineProperty(window,'frameElement',{get:function(){return null;},configurable:true}); }catch(_){}
+                                // 2) Intercetta location.assign() e location.replace() verso altri host.
+                                try{
+                                  var origAssign = window.location.assign && window.location.assign.bind(window.location);
+                                  var origReplace = window.location.replace && window.location.replace.bind(window.location);
+                                  if(origAssign){ window.location.assign = function(u){ if(sameHost(u)) return origAssign(u); block('location.assign', u); }; }
+                                  if(origReplace){ window.location.replace = function(u){ if(sameHost(u)) return origReplace(u); block('location.replace', u); }; }
+                                }catch(_){}
+                                // 3) Intercetta il SETTER di location.href cosi' anche
+                                //    window.location.href = '...' e window.location = '...'
+                                //    (entrambi passano dal setter href) vengono filtrati.
+                                //    Questo blocca i redirect tipo OAuth/Google del quiz
+                                //    funnel che altrimenti porterebbero l'iframe su
+                                //    www.google.com -> "Connessione negata".
+                                try{
+                                  var proto = window.Location && window.Location.prototype;
+                                  var desc = (proto && Object.getOwnPropertyDescriptor(proto,'href')) ||
+                                             Object.getOwnPropertyDescriptor(window.location,'href');
+                                  if(desc && typeof desc.set === 'function'){
+                                    var origHrefSet = desc.set;
+                                    Object.defineProperty(window.location,'href',{
+                                      get: desc.get,
+                                      set: function(v){
+                                        if(sameHost(v)) return origHrefSet.call(window.location, v);
+                                        block('location.href', v);
+                                      },
+                                      configurable: true
+                                    });
+                                  }
+                                }catch(_){}
+                                // 4) Blocca submit di <form> con action verso altri host.
+                                try{
+                                  document.addEventListener('submit', function(ev){
+                                    var f = ev.target;
+                                    if(!f || f.tagName !== 'FORM') return;
+                                    var act = f.getAttribute('action') || '';
+                                    if(act && !sameHost(act)){ ev.preventDefault(); ev.stopPropagation(); block('form.submit', act); }
+                                  }, true);
+                                }catch(_){}
+                                // 5) Cancella <a target="_top"> click che porterebbero out.
+                                try{
+                                  document.addEventListener('click', function(ev){
+                                    var a = ev.target && ev.target.closest && ev.target.closest('a[href]');
+                                    if(!a) return;
+                                    var t = a.getAttribute('target') || '';
+                                    var href = a.getAttribute('href') || '';
+                                    if((t === '_top' || t === '_parent') && !sameHost(href)){
+                                      ev.preventDefault(); ev.stopPropagation();
+                                      block('anchor.click', href);
+                                    }
+                                  }, true);
+                                }catch(_){}
+                              })();</` + `script>`;
                               if (safeHtml.includes('<head>')) {
                                 safeHtml = safeHtml.replace('<head>', '<head>' + frameBusterGuard);
                               } else if (/<head\s/i.test(safeHtml)) {
@@ -6623,6 +6680,16 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                     }`}
                     title="HTML Preview"
                     allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
+                    {...(htmlPreviewModal.sourceType === 'cloned'
+                      ? {
+                          // Solo per le anteprime CLONATE: niente allow-top-navigation
+                          // cosi' anche se un frame-buster bypassa il guard JS, il
+                          // browser stesso rifiuta di navigare top a un altro dominio
+                          // (es. google.com OAuth/reCAPTCHA). I rewrite/swipe non hanno
+                          // sandbox perche' il loro fallbackInit assume DOM full-access.
+                          sandbox: 'allow-scripts allow-same-origin allow-forms allow-popups allow-modals',
+                        }
+                      : {})}
                   />
                 </div>
               )}
