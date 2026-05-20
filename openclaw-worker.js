@@ -187,7 +187,7 @@ if (!OPENCLAW_MODEL) {
 }
 
 const TOOL_BASE_URL = process.env.TOOL_BASE_URL
-  || 'https://tool-wasabi-neo.netlify.app';
+  || 'https://cute-cupcake-74bad8.netlify.app';
 
 const POLL_INTERVAL_MS = 3000;
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000;

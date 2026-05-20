@@ -54,7 +54,7 @@ async function testAPI() {
   // Test 3: Production API
   console.log('\n3. Testing production API:');
   try {
-    const response = await fetch('https://tool-wasabi-neo.netlify.app/api/quiz-archive');
+    const response = await fetch('https://cute-cupcake-74bad8.netlify.app/api/quiz-archive');
     const text = await response.text();
     console.log('Response status:', response.status);
     console.log('Response headers:', Object.fromEntries(response.headers.entries()));

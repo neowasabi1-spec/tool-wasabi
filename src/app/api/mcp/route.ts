@@ -3107,8 +3107,8 @@ export async function GET(req: NextRequest) {
     // *.netlify.app branch, preview deploys, ecc.).
     //
     // IMPORTANT: req.url su Netlify viene normalizzato al canonical host
-    // (tool-wasabi-neo.netlify.app) anche quando il client si connette a
-    // un preview URL (<hash>--tool-wasabi-neo.netlify.app). Questo causa
+    // (cute-cupcake-74bad8.netlify.app) anche quando il client si connette
+    // a un preview URL (<hash>--cute-cupcake-74bad8.netlify.app). Questo causa
     // bundle-mcp a buttare l'errore "Endpoint origin does not match
     // connection origin" perche' fa una security check tra l'host SSE e
     // l'host nell'event endpoint.
