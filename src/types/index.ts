@@ -449,6 +449,23 @@ export interface FunnelCrawlStep {
   quizStepLabel?: string;
   /** Main text content (e.g. when single-page crawl for landing analyzer) */
   contentText?: string;
+  /**
+   * Public Supabase Storage URL of the per-step screenshot. Distinct from
+   * screenshotBase64 which is inline base64. The worker uploads to
+   * storage and writes the URL here; the UI prefers this over the base64
+   * because it keeps the JSONB result row small.
+   */
+  screenshotUrl?: string | null;
+  /**
+   * Full post-render DOM HTML at this step. Populated only when the job
+   * was enqueued with `params.captureHtml=true` (e.g. by the Clone/Swipe
+   * Quiz section). Null/undefined for regular Funnel Analyzer crawls so
+   * we don't bloat the result row with megabytes of HTML the UI never
+   * needs.
+   */
+  html?: string | null;
+  /** Length of `html` in chars — populated even if `html` is null. */
+  htmlLength?: number;
 }
 
 export interface FunnelCrawlOptions {
@@ -476,6 +493,32 @@ export interface FunnelCrawlResult {
   visitedUrls: string[];
   /** True when crawl was run in quiz mode (multi-step same-URL) */
   isQuizFunnel?: boolean;
+  /**
+   * Why the walker stopped before reaching maxSteps (or null if it
+   * walked the whole funnel cleanly). Populated by the worker so the
+   * UI can show "stuck on same fingerprint", "no advance button found",
+   * "checkout-like page detected", etc., without forcing the user to
+   * read the worker stdout.
+   */
+  stopDiagnostic?: {
+    reason?: string;
+    atStep?: number;
+    url?: string;
+    title?: string;
+    label?: string;
+    maxSteps?: number;
+    consecutiveSame?: number;
+    inventory?: Array<{
+      tag: string;
+      cls: string;
+      w: number;
+      h: number;
+      text: string;
+      disabled: boolean;
+      href: string | null;
+    }>;
+    hint?: string;
+  } | null;
 }
 
 // =====================================================

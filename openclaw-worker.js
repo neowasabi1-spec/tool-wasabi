@@ -3021,6 +3021,17 @@ async function processCrawlJob(row) {
       // funnel, so the thumbnail shows what the user saw at that step.
       const screenshotUrl = await captureCrawlScreenshot(page, jobId, nextIndex);
 
+      // OPT-IN: cattura anche l'HTML renderizzato per step. Usato dalla
+      // sezione Clone/Swipe Quiz, dove serve l'HTML di OGNI domanda per
+      // poterla swipare singolarmente. Default OFF per non gonfiare i
+      // crawl del Funnel Analyzer / Checkpoint che vivono di solo
+      // screenshot + URL. page.content() include il DOM post-React quindi
+      // copre i quiz SPA dove il fetch raw e' un guscio vuoto.
+      let stepHtml = null;
+      if (params.captureHtml) {
+        stepHtml = await page.content().catch(() => null);
+      }
+
       steps.push({
         stepIndex: nextIndex,
         url,
@@ -3033,6 +3044,10 @@ async function processCrawlJob(row) {
         // Public Supabase Storage URL. Null if upload failed; the UI
         // gracefully falls back to URL-only when missing.
         screenshotUrl,
+        // Full post-render HTML del DOM, solo se params.captureHtml=true.
+        // null altrimenti (non popolato sui crawl Funnel Analyzer).
+        html: stepHtml,
+        htmlLength: stepHtml ? stepHtml.length : 0,
         timestamp: new Date().toISOString(),
         isQuizStep: true,
       });

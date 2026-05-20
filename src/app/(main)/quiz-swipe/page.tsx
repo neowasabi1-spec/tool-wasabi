@@ -10,44 +10,128 @@
  * Il clone tradizionale (sezione "Clone / Swipe") cattura solo lo step 1
  * perche' il restante DOM viene generato a runtime dal bundle, spesso
  * dietro fetch /api/. Per clonare l'intero quiz servono:
- *   1. un walker Playwright (worker locale, job_type='walk_quiz')
- *      che apre la URL, clicca Next, cattura HTML+screenshot ad ogni step;
- *   2. una tabella `quiz_walks` che salva l'array di step;
- *   3. una UI (questa pagina) che mostra ogni step come riga indipendente
- *      e permette di swipare ciascuno separatamente.
- *
- * Questa pagina e' lo scaffolding: form di input + chiamata a un endpoint
- * che ancora non esiste. Il backend (job nel worker, route API, tabella DB)
- * verra' aggiunto nei prossimi commit, in modo incrementale, senza toccare
- * la sezione "Clone / Swipe" classica che funziona per le pagine normali.
+ *   1. un walker Playwright (worker locale) che apre la URL, clicca Next,
+ *      cattura HTML+screenshot ad ogni step;
+ *   2. il job viene enqueato in `funnel_crawl_jobs` con flag
+ *      `captureHtml=true` (il worker quel flag lo legge e fa page.content()
+ *      a ogni step in piu' rispetto al solo screenshot);
+ *   3. questa pagina mostra lo stato del walk in tempo reale + l'array
+ *      degli step catturati, ciascuno con anteprima e bottoni per
+ *      preview / swipe (lo swipe per-step e' lo step successivo).
  */
 
-import { useState } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import Header from '@/components/Header';
-import { HelpCircle, Play, AlertCircle, Sparkles, Loader2 } from 'lucide-react';
+import {
+  HelpCircle,
+  Play,
+  AlertCircle,
+  Sparkles,
+  Loader2,
+  Image as ImageIcon,
+  Code,
+  XCircle,
+  CheckCircle,
+} from 'lucide-react';
 
 interface QuizWalkStep {
-  index: number;
-  html: string;
-  screenshot_url?: string;
-  detected_question?: string;
-  detected_options?: string[];
+  stepIndex: number;
+  url: string;
+  title?: string;
+  quizStepLabel?: string;
+  screenshotUrl?: string | null;
+  html?: string | null;
+  htmlLength?: number;
+  timestamp?: string;
 }
 
 interface QuizWalkResult {
-  url: string;
-  steps: QuizWalkStep[];
-  final_step: number;
-  duration_seconds: number;
-  notes?: string;
+  success?: boolean;
+  entryUrl?: string;
+  steps?: QuizWalkStep[];
+  totalSteps?: number;
+  durationMs?: number;
+  visitedUrls?: string[];
+  isQuizFunnel?: boolean;
+  stopDiagnostic?: {
+    reason?: string;
+    atStep?: number;
+    hint?: string;
+  } | null;
 }
+
+type JobStatus = 'pending' | 'running' | 'completed' | 'failed' | 'not_found';
+
+interface JobSnapshot {
+  ok: boolean;
+  jobId: string;
+  status: JobStatus;
+  entryUrl: string;
+  currentStep: number;
+  totalSteps: number;
+  result: QuizWalkResult | null;
+  error: string | null;
+}
+
+const POLL_INTERVAL_MS = 1500;
+const POLL_TIMEOUT_MS = 5 * 60 * 1000;
 
 export default function QuizSwipePage() {
   const [url, setUrl] = useState('');
   const [maxSteps, setMaxSteps] = useState(15);
-  const [isWalking, setIsWalking] = useState(false);
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [snapshot, setSnapshot] = useState<JobSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<QuizWalkResult | null>(null);
+  const [isStarting, setIsStarting] = useState(false);
+  const [previewStep, setPreviewStep] = useState<QuizWalkStep | null>(null);
+
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pollDeadlineRef = useRef<number>(0);
+
+  const stopPolling = useCallback(() => {
+    if (pollTimerRef.current) {
+      clearTimeout(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => () => stopPolling(), [stopPolling]);
+
+  const pollOnce = useCallback(async (id: string) => {
+    try {
+      const res = await fetch(`/api/walk-quiz/status/${id}`, { cache: 'no-store' });
+      const ct = res.headers.get('content-type') || '';
+      if (!res.ok) {
+        if (res.status === 404) {
+          setError('Job non trovato sul backend. Forse e\' stato cancellato.');
+          stopPolling();
+          return;
+        }
+        const body = ct.includes('application/json') ? JSON.stringify(await res.json()) : await res.text();
+        setError(`Errore ${res.status}: ${body.slice(0, 300)}`);
+        stopPolling();
+        return;
+      }
+      const data = (await res.json()) as JobSnapshot;
+      setSnapshot(data);
+
+      if (data.status === 'completed' || data.status === 'failed') {
+        stopPolling();
+        return;
+      }
+
+      if (Date.now() > pollDeadlineRef.current) {
+        setError(`Timeout: il walk non si e' completato entro ${Math.round(POLL_TIMEOUT_MS / 60000)} minuti. Il worker e\' acceso? (node openclaw-worker.js).`);
+        stopPolling();
+        return;
+      }
+
+      pollTimerRef.current = setTimeout(() => void pollOnce(id), POLL_INTERVAL_MS);
+    } catch (e) {
+      setError(`Polling fallito: ${e instanceof Error ? e.message : String(e)}`);
+      stopPolling();
+    }
+  }, [stopPolling]);
 
   async function startWalk() {
     if (!url.trim()) {
@@ -61,8 +145,9 @@ export default function QuizSwipePage() {
       return;
     }
     setError(null);
-    setResult(null);
-    setIsWalking(true);
+    setSnapshot(null);
+    setJobId(null);
+    setIsStarting(true);
     try {
       const res = await fetch('/api/walk-quiz', {
         method: 'POST',
@@ -71,12 +156,6 @@ export default function QuizSwipePage() {
       });
       const ct = res.headers.get('content-type') || '';
       if (!res.ok) {
-        if (res.status === 501) {
-          setError(
-            "Backend ancora non costruito. Questa sezione e' lo scaffolding UI; il job 'walk_quiz' nel worker, la route /api/walk-quiz e la tabella quiz_walks verranno aggiunti nei prossimi commit."
-          );
-          return;
-        }
         const body = ct.includes('application/json') ? JSON.stringify(await res.json()) : await res.text();
         setError(`Errore ${res.status}: ${body.slice(0, 300)}`);
         return;
@@ -85,18 +164,26 @@ export default function QuizSwipePage() {
         setError('Risposta non JSON dal server.');
         return;
       }
-      const data = (await res.json()) as { ok?: boolean; result?: QuizWalkResult; error?: string };
-      if (!data.ok || !data.result) {
+      const data = (await res.json()) as { ok?: boolean; jobId?: string; error?: string };
+      if (!data.ok || !data.jobId) {
         setError(data.error || 'Risposta inattesa dal server.');
         return;
       }
-      setResult(data.result);
+      setJobId(data.jobId);
+      pollDeadlineRef.current = Date.now() + POLL_TIMEOUT_MS;
+      void pollOnce(data.jobId);
     } catch (e) {
       setError(`Errore di rete: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
-      setIsWalking(false);
+      setIsStarting(false);
     }
   }
+
+  const steps = snapshot?.result?.steps ?? [];
+  const isRunning = snapshot?.status === 'running' || snapshot?.status === 'pending';
+  const isDone = snapshot?.status === 'completed';
+  const isFailed = snapshot?.status === 'failed';
+  const stopDiag = snapshot?.result?.stopDiagnostic;
 
   return (
     <div className="flex-1 flex flex-col bg-gray-50">
@@ -115,9 +202,8 @@ export default function QuizSwipePage() {
                 <p className="text-white/85 text-sm mt-1 max-w-2xl">
                   Per quiz e funnel single-URL multi-step (React/Vue SPA dove tutte le
                   domande vivono sullo stesso link e cambiano via JS). Il walker apre la
-                  pagina con Playwright, clicca Next ad ogni step, cattura HTML +
-                  screenshot di ogni schermata e li salva come righe separate, swipabili
-                  una alla volta.
+                  pagina con Playwright sul worker locale, clicca Next ad ogni step,
+                  cattura HTML + screenshot di ogni schermata.
                 </p>
               </div>
             </div>
@@ -132,7 +218,7 @@ export default function QuizSwipePage() {
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
                 placeholder="https://esempio.com/quiz/?affiliate=0"
-                disabled={isWalking}
+                disabled={isStarting || isRunning}
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent disabled:opacity-60"
               />
               <p className="text-xs text-gray-500 mt-1">
@@ -147,28 +233,28 @@ export default function QuizSwipePage() {
               <input
                 type="number"
                 min={1}
-                max={50}
+                max={30}
                 value={maxSteps}
-                onChange={(e) => setMaxSteps(Math.max(1, Math.min(50, Number(e.target.value) || 1)))}
-                disabled={isWalking}
+                onChange={(e) => setMaxSteps(Math.max(1, Math.min(30, Number(e.target.value) || 1)))}
+                disabled={isStarting || isRunning}
                 className="w-32 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent disabled:opacity-60"
               />
               <p className="text-xs text-gray-500 mt-1">
-                Il walker si ferma in anticipo se non trova piu' un bottone Next o se vede una
-                schermata di checkout/grazie.
+                Hard cap a 30 (Lambda budget). Il walker si ferma prima se non trova piu&apos;
+                un Next o se vede una schermata di checkout.
               </p>
             </div>
 
             <div className="flex items-center gap-3 pt-2">
               <button
                 onClick={startWalk}
-                disabled={isWalking || !url.trim()}
+                disabled={isStarting || isRunning || !url.trim()}
                 className="px-5 py-2.5 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed font-medium"
               >
-                {isWalking ? (
+                {isStarting || isRunning ? (
                   <>
                     <Loader2 className="w-4 h-4 animate-spin" />
-                    Walking quiz...
+                    {isStarting ? 'Avvio job...' : `Walking step ${snapshot?.currentStep ?? 0}/${snapshot?.totalSteps ?? maxSteps}...`}
                   </>
                 ) : (
                   <>
@@ -178,9 +264,9 @@ export default function QuizSwipePage() {
                 )}
               </button>
 
-              <span className="text-xs text-gray-500">
-                Il job gira sul worker locale (Playwright), non sulla Lambda.
-              </span>
+              {jobId && (
+                <span className="text-xs text-gray-500 font-mono">job {jobId.slice(0, 8)}…</span>
+              )}
             </div>
           </div>
 
@@ -192,60 +278,134 @@ export default function QuizSwipePage() {
             </div>
           )}
 
-          {/* Result list */}
-          {result && (
+          {/* Failed banner */}
+          {isFailed && snapshot?.error && (
+            <div className="bg-red-50 border border-red-200 rounded-xl p-4 flex items-start gap-3">
+              <XCircle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
+              <div className="text-sm text-red-900">
+                <div className="font-semibold">Walk fallito</div>
+                <div className="mt-1 break-words">{snapshot.error}</div>
+              </div>
+            </div>
+          )}
+
+          {/* Done banner */}
+          {isDone && (
+            <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4 flex items-start gap-3">
+              <CheckCircle className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
+              <div className="text-sm text-emerald-900">
+                <div className="font-semibold">
+                  Walk completato — {steps.length} step catturati
+                </div>
+                {stopDiag?.reason && (
+                  <div className="mt-1 text-emerald-800/90">
+                    Motivo stop: <code className="bg-emerald-100 px-1 rounded">{stopDiag.reason}</code>
+                    {stopDiag.hint && <span className="block mt-1 italic text-xs">{stopDiag.hint}</span>}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Steps list */}
+          {steps.length > 0 && (
             <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-lg font-bold text-gray-900 flex items-center gap-2">
                   <Sparkles className="w-5 h-5 text-purple-600" />
-                  {result.steps.length} step catturati
+                  {steps.length} step
                 </h2>
-                <span className="text-xs text-gray-500">
-                  {result.duration_seconds.toFixed(1)}s • final_step={result.final_step}
-                </span>
+                {snapshot?.result?.durationMs && (
+                  <span className="text-xs text-gray-500">
+                    {(snapshot.result.durationMs / 1000).toFixed(1)}s
+                  </span>
+                )}
               </div>
               <ul className="divide-y divide-gray-100">
-                {result.steps.map((s) => (
-                  <li key={s.index} className="py-3 flex items-start gap-4">
+                {steps.map((s) => (
+                  <li key={s.stepIndex} className="py-4 flex items-start gap-4">
                     <div className="w-10 h-10 rounded-lg bg-purple-100 text-purple-700 font-bold flex items-center justify-center shrink-0">
-                      {s.index + 1}
+                      {s.stepIndex}
                     </div>
+                    {s.screenshotUrl ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={s.screenshotUrl}
+                        alt={`Step ${s.stepIndex} screenshot`}
+                        className="w-32 h-20 object-cover rounded border border-gray-200 shrink-0 bg-gray-50"
+                        loading="lazy"
+                      />
+                    ) : (
+                      <div className="w-32 h-20 rounded border border-dashed border-gray-300 flex items-center justify-center text-gray-400 shrink-0">
+                        <ImageIcon className="w-5 h-5" />
+                      </div>
+                    )}
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium text-gray-900 truncate">
-                        {s.detected_question || 'Domanda non rilevata'}
+                        {s.quizStepLabel || s.title || `Step ${s.stepIndex}`}
                       </p>
-                      {s.detected_options && s.detected_options.length > 0 && (
-                        <p className="text-xs text-gray-500 mt-0.5 truncate">
-                          {s.detected_options.join(' • ')}
-                        </p>
-                      )}
+                      <p className="text-xs text-gray-500 mt-0.5 truncate">{s.url}</p>
                       <p className="text-xs text-gray-400 mt-1">
-                        HTML: {s.html.length.toLocaleString()} chars
-                        {s.screenshot_url ? ' • screenshot salvato' : ''}
+                        HTML: {(s.htmlLength || s.html?.length || 0).toLocaleString()} chars
+                        {s.html ? '' : ' (HTML non disponibile — vecchia capture senza captureHtml)'}
                       </p>
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      {s.html && (
+                        <button
+                          onClick={() => setPreviewStep(s)}
+                          className="px-3 py-1.5 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 flex items-center gap-1.5"
+                        >
+                          <Code className="w-3 h-3" /> Preview
+                        </button>
+                      )}
+                      <button
+                        disabled
+                        title="Swipe per step — prossimo commit"
+                        className="px-3 py-1.5 text-xs bg-purple-100 text-purple-400 rounded cursor-not-allowed flex items-center gap-1.5"
+                      >
+                        <Sparkles className="w-3 h-3" /> Swipe (soon)
+                      </button>
                     </div>
                   </li>
                 ))}
               </ul>
-              {result.notes && (
-                <p className="text-xs text-gray-500 mt-4 italic">{result.notes}</p>
-              )}
             </div>
           )}
-
-          {/* Roadmap nota */}
-          <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 text-sm text-blue-900">
-            <p className="font-semibold mb-1">Stato</p>
-            <p className="text-blue-800">
-              UI scaffolding pronta. Mancano: route <code className="bg-blue-100 px-1 rounded">/api/walk-quiz</code>,
-              job <code className="bg-blue-100 px-1 rounded">walk_quiz</code> nel worker
-              (<code className="bg-blue-100 px-1 rounded">worker-lib/walk-quiz.js</code>) e tabella{' '}
-              <code className="bg-blue-100 px-1 rounded">quiz_walks</code> in Supabase. Nessuna delle pipeline
-              esistenti viene toccata.
-            </p>
-          </div>
         </div>
       </main>
+
+      {/* Preview modal */}
+      {previewStep && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={() => setPreviewStep(null)}>
+          <div className="bg-white rounded-xl shadow-2xl w-[95vw] h-[90vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="px-5 py-3 border-b border-gray-200 flex items-center justify-between bg-gradient-to-r from-purple-600 to-indigo-600">
+              <div className="flex items-center gap-3 min-w-0">
+                <Code className="w-5 h-5 text-white" />
+                <div className="min-w-0">
+                  <div className="text-white font-semibold truncate">
+                    Step {previewStep.stepIndex} — {previewStep.quizStepLabel || previewStep.title}
+                  </div>
+                  <div className="text-white/80 text-xs truncate">{previewStep.url}</div>
+                </div>
+              </div>
+              <button
+                onClick={() => setPreviewStep(null)}
+                className="text-white/80 hover:text-white text-2xl font-bold"
+              >
+                ×
+              </button>
+            </div>
+            <iframe
+              key={previewStep.stepIndex}
+              srcDoc={previewStep.html || '<html><body>HTML non disponibile</body></html>'}
+              sandbox="allow-same-origin"
+              className="flex-1 w-full bg-white"
+              title={`Step ${previewStep.stepIndex}`}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
