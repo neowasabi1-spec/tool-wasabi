@@ -93,6 +93,18 @@ export function getPublicUrlForFile(filePath: string): string | null {
   return data?.publicUrl || null;
 }
 
+/**
+ * Convenience wrapper used by projecthub components in place of the original
+ * `/uploads/${file_path}` express static-file URL. Returns an empty string
+ * when Supabase isn't configured so `<img src="">` simply shows a broken
+ * image instead of crashing the render.
+ */
+export function getUploadUrl(filePath?: string | null): string {
+  if (!filePath) return '';
+  if (/^https?:\/\//i.test(filePath)) return filePath;
+  return getPublicUrlForFile(filePath) || '';
+}
+
 export async function deleteProjectFile(filePath: string): Promise<void> {
   const supabase = getSupabaseBrowser();
   if (!supabase) return;

@@ -11,8 +11,9 @@ export default function ConditionalLayout({
 }) {
   const pathname = usePathname();
   const isMobileOnlyPage = pathname === '/m';
+  const isProjectDetail = /^\/projects\/[^/]+(\/|$)/.test(pathname || '');
 
-  if (isMobileOnlyPage) {
+  if (isMobileOnlyPage || isProjectDetail) {
     return <>{children}</>;
   }
 
