@@ -59,6 +59,7 @@ import {
   Link2,
   Send,
   ShieldCheck,
+  Octagon,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import VisualHtmlEditor from '@/components/VisualHtmlEditor';
@@ -4660,6 +4661,62 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
               >
                 <Download className="w-4 h-4" />
                 Save
+              </button>
+
+              {/* Emergency Stop — kills all queued/running swipe + crawl jobs
+                 in Supabase and resets in-progress pages to idle. Use when
+                 the worker is thrasshing (MCP backend down, retry storm,
+                 etc.) and you want to reclaim the UI without waiting. */}
+              <button
+                onClick={async () => {
+                  if (
+                    !confirm(
+                      'Fermare TUTTI gli swipe in corso?\n\n' +
+                        '• Marca come error tutti i job pending/processing in coda Supabase\n' +
+                        '• Resetta a idle le pagine in stato in_progress\n' +
+                        '• Aborta il Swipe All locale se in corso\n\n' +
+                        'NON killa i processi Node sul tuo PC — quelli si fermano da soli quando vedono lo stato error.\n\n' +
+                        'Procedere?',
+                    )
+                  ) {
+                    return;
+                  }
+                  // Abort local Swipe All state immediately so the UI overlay closes.
+                  setSwipeAllJob((s) =>
+                    s ? { ...s, isRunning: false, currentStep: 'idle', batchInfo: '' } : s,
+                  );
+                  try {
+                    const res = await fetch('/api/swipe/emergency-stop', {
+                      method: 'POST',
+                    });
+                    const data = await res.json();
+                    if (!res.ok || !data.ok) {
+                      const errs = (data.errors || []).join('\n') || 'Unknown error';
+                      alert(`Stop parziale.\n\n${errs}`);
+                      return;
+                    }
+                    alert(
+                      `Stop completato (${data.durationMs}ms)\n\n` +
+                        `Job killati: ${data.totalKilled}\n` +
+                        `  • openclaw_messages: ${data.openclawMessagesKilled}\n` +
+                        `  • funnel_crawl_jobs: ${data.funnelCrawlJobsKilled}\n` +
+                        `  • funnel_pages reset: ${data.funnelPagesReset}\n\n` +
+                        'I worker locali smetteranno di thrasshare appena vedono lo stato error.\n' +
+                        'Se invece vuoi anche killare i processi Node, fallo da PowerShell.',
+                    );
+                  } catch (err) {
+                    alert(
+                      `Errore nella richiesta: ${
+                        err instanceof Error ? err.message : 'unknown'
+                      }`,
+                    );
+                  }
+                }}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-bold bg-red-600 text-white hover:bg-red-700 transition-colors"
+                title="STOP — Marca come error tutti i job swipe pending/processing in coda Supabase. Da usare quando il worker sta thrasshing (es. MCP 503)."
+              >
+                <Octagon className="w-4 h-4" />
+                Stop
               </button>
 
               {/* Clean All Steps */}
