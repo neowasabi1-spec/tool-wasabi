@@ -79,6 +79,188 @@ const CLONED_URLS_KEY = 'funnel-swiper-cloned-urls';
 // blow up with "Unexpected token '<', "<HTML> <HE"... is not valid JSON",
 // hiding the actual status. This helper surfaces status + body snippet so
 // the real error reaches the UI/console.
+/**
+ * Prepara un HTML clonato per essere visualizzato in un contesto "preview"
+ * (iframe della modal OR blob URL della "Open in new tab"). Il risultato e'
+ * sicuro da mostrare: niente redirect a google, niente embed cross-origin
+ * che bloccano framing, niente meta refresh. L'HTML salvato/scaricato dalla
+ * funzione "Download HTML" passa SOLO per la sanitizzazione minima (vedi
+ * sanitizeClonedHtml), questo helper e' SOLO per la visualizzazione.
+ *
+ * Step:
+ *   1. Strip <meta http-equiv="refresh"> con URL esterna.
+ *   2. Strip <script src="..."> verso host di tracking/bouncer noti
+ *      (7clickt, GTM, GA, Pixel, ecc.) — quelli sono i piu' frequenti
+ *      colpevoli del redirect "affiliate=0 -> google".
+ *   3. Strip <script> inline che contengono assegnazioni di
+ *      (window|top|parent|document|self).location(.href)? a URL https://
+ *      assolute — frame-buster espliciti.
+ *   4. Sostituisce <iframe src="google|fb|ig|twitter..."> con placeholder
+ *      visibile (quei servizi bloccano framing dal nostro origine).
+ *   5. Inietta come PRIMO script in <head> un guard che:
+ *      - finge che window.top, window.parent, window.frameElement siano
+ *        self (frame-buster classico if(top!==self) skippa);
+ *      - finge che window.location.search abbia un affiliate "valido"
+ *        (?affiliate=999999&aff_id=999999&aff=999999) — molti bundle
+ *        React/Vue di landing affiliate fanno window.location=google se
+ *        il param manca / e' 0. Override SOLO della .search getter, il
+ *        resto di location resta intatto;
+ *      - sovrascrive URLSearchParams.get('affiliate'|'aff'|'aff_id') per
+ *        ritornare '999999' se assente;
+ *      - intercetta location.assign / location.replace verso altri host;
+ *      - intercetta submit di <form action="https://other-host">;
+ *      - intercetta click su <a target="_top|_parent"> verso altri host.
+ */
+function prepareClonedHtmlForPreview(rawHtml: string): string {
+  let html = rawHtml;
+
+  // 1. strip <meta refresh>
+  html = html.replace(/<meta\b[^>]*http-equiv\s*=\s*["']?refresh["']?[^>]*>/gi, '');
+
+  // 2-3. strip bouncer scripts
+  const BOUNCER_HOSTS_RX = /(?:^|\/\/)(?:www\.)?(?:7clickt\.com|googletagmanager\.com|google-analytics\.com|googleadservices\.com|googlesyndication\.com|doubleclick\.net|facebook\.net|connect\.facebook\.net|fbq?\.com|hotjar\.com|fullstory\.com|segment\.(?:com|io)|mixpanel\.com|amplitude\.com|matomo\.cloud|clarity\.ms|pixel\.[\w.-]+|track\.[\w.-]+|tracking\.[\w.-]+|tagmanager\.[\w.-]+|click(?:funnels|magick|click)\.com\/(?:track|t))/i;
+  html = html.replace(
+    /<script\b([^>]*\bsrc\s*=\s*(["'])([^"']+)\2[^>]*)(?:>\s*<\/script>|\/?>)/gi,
+    (full, _attrs, _q, src: string) => {
+      if (BOUNCER_HOSTS_RX.test(src)) {
+        return `<!-- preview-stripped bouncer: ${src.slice(0, 100).replace(/--/g, '- -')} -->`;
+      }
+      return full;
+    }
+  );
+  html = html.replace(
+    /<script\b(?![^>]*\bsrc\s*=)[^>]*>([\s\S]*?)<\/script>/gi,
+    (full, body: string) => {
+      if (!/\b(?:window\.|top\.|parent\.|document\.|self\.|globalThis\.)?location(?:\.href)?\s*=\s*(["'])https?:\/\//.test(body)) return full;
+      return `<!-- preview-stripped inline-redirect script -->`;
+    }
+  );
+
+  // 4. sostituisce iframe cross-origin che bloccano framing
+  const FRAME_BLOCKED_HOSTS_RX = /(?:^|\/\/)(?:www\.google\.com\/(?:recaptcha|maps|forms)|docs\.google\.com\/forms|www\.gstatic\.com\/recaptcha|platform\.twitter\.com|www\.instagram\.com\/embed|www\.facebook\.com\/(?:plugins|tr)|www\.googletagmanager\.com\/ns)/i;
+  html = html.replace(
+    /<iframe\b([^>]*)>([\s\S]*?)<\/iframe>/gi,
+    (full, attrs: string) => {
+      const srcMatch = attrs.match(/\bsrc\s*=\s*(["'])([^"']+)\1/i);
+      const src = srcMatch ? srcMatch[2] : '';
+      if (!src || !FRAME_BLOCKED_HOSTS_RX.test(src)) return full;
+      let label = 'Embed';
+      try {
+        const u = new URL(src);
+        label = u.host.replace(/^www\./, '') + (u.pathname.includes('recaptcha') ? ' (reCAPTCHA)' : u.pathname.includes('forms') ? ' (Form)' : u.pathname.includes('maps') ? ' (Map)' : u.pathname.includes('plugins') ? ' (Plugin)' : '');
+      } catch { /* keep default */ }
+      const styleMatch = attrs.match(/\bstyle\s*=\s*(["'])([^"']*)\1/i);
+      const widthMatch = attrs.match(/\bwidth\s*=\s*(["']?)(\d+%?)\1/i);
+      const heightMatch = attrs.match(/\bheight\s*=\s*(["']?)(\d+%?)\1/i);
+      const inlineStyle = (styleMatch ? styleMatch[2] + ';' : '') +
+        (widthMatch ? `width:${widthMatch[2]}${/[%]$/.test(widthMatch[2]) ? '' : 'px'};` : 'width:100%;') +
+        (heightMatch ? `height:${heightMatch[2]}${/[%]$/.test(heightMatch[2]) ? '' : 'px'};` : 'min-height:200px;');
+      const safeSrc = src.replace(/"/g, '&quot;');
+      return `<div data-preview-embed-placeholder="${label.replace(/"/g, '&quot;')}" style="${inlineStyle.replace(/"/g, '&quot;')}box-sizing:border-box;display:flex;align-items:center;justify-content:center;background:#f3f4f6;border:1px dashed #cbd5e1;border-radius:6px;color:#475569;font:500 12px/1.4 system-ui,sans-serif;padding:12px;text-align:center;"><span>📎 Embed bloccato in preview<br><strong>${label}</strong><br><span style="opacity:.6;font-size:11px;word-break:break-all">${safeSrc.slice(0, 80)}${safeSrc.length > 80 ? '…' : ''}</span></span></div>`;
+    }
+  );
+
+  // 5. inietta guard
+  const guard = `<script data-preview-fbk>(function(){
+    var hostHere = window.location.host;
+    function sameHost(u){ try{ var x = new URL(String(u||''), window.location.href); return !x.host || x.host === hostHere; }catch(_){return true;} }
+    function block(label, target){ try{
+      console.warn('[preview-guard] blocked', label, '->', target);
+      try{ window.parent.postMessage({__funnelPreviewBlocked:true,kind:label,target:String(target)},'*'); }catch(_){}
+    }catch(_){} }
+    try{ Object.defineProperty(window,'top',{get:function(){return window;},configurable:true}); }catch(_){}
+    try{ Object.defineProperty(window,'parent',{get:function(){return window;},configurable:true}); }catch(_){}
+    try{ Object.defineProperty(window,'frameElement',{get:function(){return null;},configurable:true}); }catch(_){}
+    // Fake URLSearchParams.get('affiliate'|...) cosi' il bundle che cerca
+    // affiliate=X non trova 0/null e non fa bounce a google.
+    try{
+      var FAKE_KEYS = {affiliate:1, affiliateid:1, aff_id:1, aff:1, a_aid:1, refid:1, ref:1, cid:1, partner:1};
+      var FAKE_VAL = '999999';
+      var OrigUSP = window.URLSearchParams;
+      if(OrigUSP){
+        var origGet = OrigUSP.prototype.get;
+        OrigUSP.prototype.get = function(key){
+          var v = origGet.call(this, key);
+          if((!v || v==='0') && key && FAKE_KEYS[String(key).toLowerCase()]) return FAKE_VAL;
+          return v;
+        };
+        var origHas = OrigUSP.prototype.has;
+        OrigUSP.prototype.has = function(key){
+          if(key && FAKE_KEYS[String(key).toLowerCase()]) return true;
+          return origHas.call(this, key);
+        };
+      }
+    }catch(_){}
+    // Fake location.search per chi parsea con regex / .split('=')
+    try{
+      var locProto = window.Location && window.Location.prototype;
+      var searchDesc = (locProto && Object.getOwnPropertyDescriptor(locProto,'search')) ||
+                       Object.getOwnPropertyDescriptor(window.location,'search');
+      if(searchDesc && typeof searchDesc.get === 'function'){
+        Object.defineProperty(window.location,'search',{
+          get: function(){
+            var real = searchDesc.get.call(window.location) || '';
+            if(/[?&](?:affiliate|aff_id|aff|a_aid|refid|ref|cid|partner)=/i.test(real)) return real;
+            var sep = real ? '&' : '?';
+            return real + sep + 'affiliate=999999&aff=999999&aff_id=999999';
+          },
+          set: searchDesc.set,
+          configurable: true
+        });
+      }
+    }catch(_){}
+    // Intercetta location.assign / replace verso altri host
+    try{
+      var origAssign = window.location.assign && window.location.assign.bind(window.location);
+      var origReplace = window.location.replace && window.location.replace.bind(window.location);
+      if(origAssign){ window.location.assign = function(u){ if(sameHost(u)) return origAssign(u); block('location.assign', u); }; }
+      if(origReplace){ window.location.replace = function(u){ if(sameHost(u)) return origReplace(u); block('location.replace', u); }; }
+    }catch(_){}
+    // Intercetta Location.prototype.href setter
+    try{
+      var lproto = window.Location && window.Location.prototype;
+      var hrefDesc = (lproto && Object.getOwnPropertyDescriptor(lproto,'href')) ||
+                     Object.getOwnPropertyDescriptor(window.location,'href');
+      if(hrefDesc && typeof hrefDesc.set === 'function'){
+        var origHrefSet = hrefDesc.set;
+        Object.defineProperty(window.location,'href',{
+          get: hrefDesc.get,
+          set: function(v){ if(sameHost(v)) return origHrefSet.call(window.location, v); block('location.href', v); },
+          configurable: true
+        });
+      }
+    }catch(_){}
+    // Form submit cross-host
+    try{
+      document.addEventListener('submit', function(ev){
+        var f = ev.target; if(!f || f.tagName !== 'FORM') return;
+        var act = f.getAttribute('action') || '';
+        if(act && !sameHost(act)){ ev.preventDefault(); ev.stopPropagation(); block('form.submit', act); }
+      }, true);
+    }catch(_){}
+    // <a target="_top|_parent"> click cross-host
+    try{
+      document.addEventListener('click', function(ev){
+        var a = ev.target && ev.target.closest && ev.target.closest('a[href]');
+        if(!a) return;
+        var t = a.getAttribute('target') || '';
+        var href = a.getAttribute('href') || '';
+        if((t === '_top' || t === '_parent') && !sameHost(href)){
+          ev.preventDefault(); ev.stopPropagation(); block('anchor.click', href);
+        }
+      }, true);
+    }catch(_){}
+  })();</` + `script>`;
+  if (html.includes('<head>')) {
+    html = html.replace('<head>', '<head>' + guard);
+  } else if (/<head\s/i.test(html)) {
+    html = html.replace(/<head([^>]*)>/i, '<head$1>' + guard);
+  } else {
+    html = guard + html;
+  }
+  return html;
+}
+
 async function parseJsonResponseOrThrow<T = unknown>(
   res: Response,
   label: string
@@ -6014,8 +6196,17 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                       // facendo apparire la pagina nuda o in loop. Una tab vera
                       // invece esegue il JS con permessi normali e il rendering
                       // e' quello reale che vedrebbe l'utente finale.
-                      const htmlToOpen = previewViewport === 'mobile' && htmlPreviewModal.mobileHtml
+                      //
+                      // CRITICAL: applichiamo lo stesso prepareClonedHtmlForPreview
+                      // della preview iframe. Altrimenti i bouncer
+                      // (window.location=google quando affiliate=0) si triggerano
+                      // anche nella tab nuova perche' il blob URL non ha query
+                      // param e il bundle vede affiliate=null -> redirect.
+                      const rawHtml = previewViewport === 'mobile' && htmlPreviewModal.mobileHtml
                         ? htmlPreviewModal.mobileHtml : htmlPreviewModal.html;
+                      const htmlToOpen = htmlPreviewModal.sourceType === 'cloned'
+                        ? prepareClonedHtmlForPreview(rawHtml)
+                        : rawHtml;
                       const blob = new Blob([htmlToOpen], { type: 'text/html;charset=utf-8' });
                       const url = URL.createObjectURL(blob);
                       window.open(url, '_blank', 'noopener,noreferrer');
@@ -6245,6 +6436,9 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                             // originali e dobbiamo reinizializzare la UI a runtime.
                             const isClonedPreview = htmlPreviewModal.sourceType === 'cloned';
                             if (isClonedPreview) {
+                              safeHtml = prepareClonedHtmlForPreview(safeHtml);
+                            }
+                            if (false /* legacy inline block disabled — see prepareClonedHtmlForPreview */ ) {
                               // ── ANTI-FRAME-BUSTER + STRIP META REFRESH ──────────
                               // Le pagine clonate (funnel, quiz, opt-in) spesso
                               // contengono codice "frame-buster" tipo
