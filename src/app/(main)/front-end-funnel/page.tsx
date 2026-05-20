@@ -6956,6 +6956,11 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                     }`}
                     title="HTML Preview"
                     allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
+                    referrerPolicy={
+                      htmlPreviewModal.sourceType === 'cloned' && clonedPreviewMode === 'live'
+                        ? 'no-referrer'
+                        : undefined
+                    }
                     {...(htmlPreviewModal.sourceType === 'cloned'
                       ? clonedPreviewMode === 'snapshot'
                         ? {
@@ -6987,7 +6992,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
             </div>
 
             {/* Modal Footer */}
-            <div className="px-6 py-4 border-t border-gray-200 bg-gray-50 flex justify-end gap-2">
+            <div className="px-6 py-4 border-t border-gray-200 bg-gray-50 flex justify-end gap-2 flex-wrap">
               {htmlPreviewModal.html && (
                 <button
                   onClick={() => setShowVisualEditor(true)}
@@ -6995,6 +7000,22 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                 >
                   <Paintbrush className="w-4 h-4" />
                   Edit Visually
+                </button>
+              )}
+              {/* Apre la URL originale in una vera finestra del browser:
+                  li' top === self, niente check anti-frame, la navigazione
+                  step→step del funnel funziona normalmente (mentre dentro
+                  l'iframe alcuni bundle resettano al primo step). */}
+              {htmlPreviewModal.sourceType === 'cloned' && htmlPreviewModal.sourceUrl && (
+                <button
+                  onClick={() => {
+                    window.open(htmlPreviewModal.sourceUrl, '_blank', 'noopener,noreferrer');
+                  }}
+                  className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors flex items-center gap-2"
+                  title="Apre la pagina live in una nuova finestra del browser (navigabile, niente iframe)"
+                >
+                  <ExternalLink className="w-4 h-4" />
+                  Apri live navigabile
                 </button>
               )}
               {htmlPreviewModal.html && (
@@ -7008,9 +7029,10 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                     }
                   }}
                   className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors flex items-center gap-2"
+                  title="Apre l'HTML clonato salvato in una nuova finestra"
                 >
                   <ExternalLink className="w-4 h-4" />
-                  Open in New Window
+                  Open HTML clonato
                 </button>
               )}
               {htmlPreviewModal.html && (
