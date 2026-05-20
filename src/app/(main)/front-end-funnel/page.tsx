@@ -6267,6 +6267,50 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                 /<meta\b[^>]*http-equiv\s*=\s*["']?refresh["']?[^>]*>/gi,
                                 ''
                               );
+                              // ── SOSTITUISCI IFRAME VERSO HOST CHE BLOCCANO FRAMING ──
+                              // Quiz funnel / opt-in usano spesso embed di:
+                              //   - Google reCAPTCHA  (www.google.com/recaptcha/...)
+                              //   - Google Forms      (docs.google.com/forms/...)
+                              //   - Google Maps       (www.google.com/maps/embed/...)
+                              //   - YouTube no-cookie a volte
+                              //   - X/Twitter widgets (platform.twitter.com)
+                              //   - Instagram embeds  (www.instagram.com/embed/...)
+                              //   - Facebook pixels   (www.facebook.com/plugins/...)
+                              //
+                              // Questi rispondono X-Frame-Options/CSP frame-ancestors
+                              // restrittive che IL NOSTRO origine Netlify NON e'
+                              // autorizzato a frammare -> il browser ci mostra
+                              // "Connessione negata da www.google.com". E se l'iframe
+                              // e' a tutto schermo (caso quiz Step-1), copre tutta
+                              // la pagina clonata e l'utente vede SOLO l'errore.
+                              //
+                              // Rimpiazziamo con un placeholder div che mantiene
+                              // ingombro/colore cosi' il layout della pagina non
+                              // collassa e l'utente vede che li' c'era un embed.
+                              const FRAME_BLOCKED_HOSTS_RX = /(?:^|\/\/)(?:www\.google\.com\/(?:recaptcha|maps|forms)|docs\.google\.com\/forms|www\.gstatic\.com\/recaptcha|platform\.twitter\.com|www\.instagram\.com\/embed|www\.facebook\.com\/(?:plugins|tr)|www\.googletagmanager\.com\/ns)/i;
+                              safeHtml = safeHtml.replace(
+                                /<iframe\b([^>]*)>([\s\S]*?)<\/iframe>/gi,
+                                (full, attrs: string) => {
+                                  const srcMatch = attrs.match(/\bsrc\s*=\s*(["'])([^"']+)\1/i);
+                                  const src = srcMatch ? srcMatch[2] : '';
+                                  if (!src || !FRAME_BLOCKED_HOSTS_RX.test(src)) return full;
+                                  let label = 'Embed';
+                                  try {
+                                    const u = new URL(src);
+                                    label = u.host.replace(/^www\./, '') + (u.pathname.includes('recaptcha') ? ' (reCAPTCHA)' : u.pathname.includes('forms') ? ' (Form)' : u.pathname.includes('maps') ? ' (Map)' : u.pathname.includes('plugins') ? ' (Plugin)' : '');
+                                  } catch { /* keep default */ }
+                                  // Preserva eventuali width/height/style inline cosi'
+                                  // il placeholder occupa lo stesso spazio dell'iframe.
+                                  const styleMatch = attrs.match(/\bstyle\s*=\s*(["'])([^"']*)\1/i);
+                                  const widthMatch = attrs.match(/\bwidth\s*=\s*(["']?)(\d+%?)\1/i);
+                                  const heightMatch = attrs.match(/\bheight\s*=\s*(["']?)(\d+%?)\1/i);
+                                  const inlineStyle = (styleMatch ? styleMatch[2] + ';' : '') +
+                                    (widthMatch ? `width:${widthMatch[2]}${/[%]$/.test(widthMatch[2]) ? '' : 'px'};` : 'width:100%;') +
+                                    (heightMatch ? `height:${heightMatch[2]}${/[%]$/.test(heightMatch[2]) ? '' : 'px'};` : 'min-height:200px;');
+                                  const safeSrc = src.replace(/"/g, '&quot;');
+                                  return `<div data-preview-embed-placeholder="${label.replace(/"/g, '&quot;')}" style="${inlineStyle.replace(/"/g, '&quot;')}box-sizing:border-box;display:flex;align-items:center;justify-content:center;background:#f3f4f6;border:1px dashed #cbd5e1;border-radius:6px;color:#475569;font:500 12px/1.4 system-ui,sans-serif;padding:12px;text-align:center;"><span>📎 Embed bloccato in preview<br><strong>${label}</strong><br><span style="opacity:.6;font-size:11px;word-break:break-all">${safeSrc.slice(0, 80)}${safeSrc.length > 80 ? '…' : ''}</span></span></div>`;
+                                }
+                              );
                               const frameBusterGuard = `<script data-preview-fbk>(function(){
                                 var hostHere = window.location.host;
                                 function sameHost(u){
