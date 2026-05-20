@@ -6956,14 +6956,30 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                     }`}
                     title="HTML Preview"
                     allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
-                    {...(htmlPreviewModal.sourceType === 'cloned' &&
-                    clonedPreviewMode === 'snapshot'
-                      ? {
-                          // Snapshot mode = doc.write dell'HTML clonato senza
-                          // script. prepareClonedHtmlForPreview ha gia' rimosso
-                          // tutti gli <script>, quindi allow-scripts non serve.
-                          sandbox: 'allow-same-origin allow-forms allow-popups allow-modals',
-                        }
+                    {...(htmlPreviewModal.sourceType === 'cloned'
+                      ? clonedPreviewMode === 'snapshot'
+                        ? {
+                            // Snapshot mode = doc.write dell'HTML clonato senza
+                            // script. prepareClonedHtmlForPreview ha gia'
+                            // rimosso tutti gli <script>, quindi allow-scripts
+                            // non serve.
+                            sandbox: 'allow-same-origin allow-forms allow-popups allow-modals',
+                          }
+                        : {
+                            // Live mode = iframe.src diretto alla URL originale.
+                            // Permettiamo TUTTO il necessario per far funzionare
+                            // la pagina come un visitatore reale, MA blocchiamo
+                            // la top-navigation: cosi' un click su "Next"/CTA
+                            // naviga DENTRO l'iframe (l'utente vede lo step
+                            // successivo del funnel) invece di portarci via dalla
+                            // nostra app. allow-same-origin tiene la pagina sul
+                            // suo dominio nativo (cookie/localStorage/fetch
+                            // funzionano normalmente, niente CORS), che e' il
+                            // motivo per cui in live mode la pagina NON triggera
+                            // il bouncer anti-clone.
+                            sandbox:
+                              'allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals',
+                          }
                       : {})}
                   />
                 </div>
