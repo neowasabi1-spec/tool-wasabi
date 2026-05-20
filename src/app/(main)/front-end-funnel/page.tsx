@@ -6753,12 +6753,30 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                     allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
                     {...(htmlPreviewModal.sourceType === 'cloned'
                       ? {
-                          // Solo per le anteprime CLONATE: niente allow-top-navigation
-                          // cosi' anche se un frame-buster bypassa il guard JS, il
-                          // browser stesso rifiuta di navigare top a un altro dominio
-                          // (es. google.com OAuth/reCAPTCHA). I rewrite/swipe non hanno
-                          // sandbox perche' il loro fallbackInit assume DOM full-access.
-                          sandbox: 'allow-scripts allow-same-origin allow-forms allow-popups allow-modals',
+                          // Per le anteprime CLONATE: sandbox SENZA allow-scripts.
+                          //
+                          // L'HTML clonato e' uno snapshot post-render (Jina ha gia'
+                          // eseguito React/Vue/bundle e ha catturato il DOM finale).
+                          // I <script> originali sono ANCORA nell'HTML pero', e se
+                          // rieseguono nell'iframe della preview causano:
+                          //   - redirect tipo "affiliate=0 → google.com" (lpservhub,
+                          //     SPA con tracker che vede iframe e bounces)
+                          //   - fetch a CDN/API morti -> 404 spam
+                          //   - frame-buster che cercano di navigare top fuori
+                          //   - re-mount di React/Vue che blanka il body durante hydration
+                          //
+                          // Senza allow-scripts: immagini, CSS, layout, video, font
+                          // funzionano tutti — il bundle JS NON gira. Il risultato e'
+                          // ESATTAMENTE l'aspetto finale della pagina, statico.
+                          //
+                          // allow-same-origin permette al doc.write di funzionare con
+                          // l'origine del parent (necessario per srcdoc / doc.write).
+                          // allow-forms/popups/modals: niente di pericoloso per la
+                          // preview, ma non rotti se servono per CSS-only widget.
+                          //
+                          // L'HTML salvato/scaricato resta intatto: questo sandbox e'
+                          // SOLO sul rendering della preview iframe.
+                          sandbox: 'allow-same-origin allow-forms allow-popups allow-modals',
                         }
                       : {})}
                   />
