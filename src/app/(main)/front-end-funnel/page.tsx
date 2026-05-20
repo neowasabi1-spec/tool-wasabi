@@ -6267,6 +6267,53 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                 /<meta\b[^>]*http-equiv\s*=\s*["']?refresh["']?[^>]*>/gi,
                                 ''
                               );
+                              // ── STRIP SCRIPT BOUNCER / TRACKING ──────────────────────
+                              // Su molte landing affiliate (lpservhub, clickfunnels,
+                              // funnelish, ecc.) il bundle React renderizza la pagina
+                              // ma uno SCRIPT ESTERNO di tracking (7clickt.com,
+                              // googletagmanager, analytics, pixel) controlla i query
+                              // param (es. ?affiliate=0) e se invalidi fa
+                              // `window.location = "https://www.google.com/..."` come
+                              // bounce. Dentro la preview iframe questo redirect porta
+                              // tutta l'iframe su google.com -> "Connessione negata".
+                              //
+                              // Il guard JS qui sotto NON riesce a intercettare
+                              // window.location = X (Chrome blocca defineProperty su
+                              // Window.location). L'unico fix robusto: rimuovere
+                              // QUEL tipo di script prima che doc.write li esegua.
+                              //
+                              // Strippo SOLO script esterni a host noti come "tracker /
+                              // bouncer". Il bundle della pagina (main.*.js, app.js
+                              // dal proprio CDN, vendors.*.js) resta intatto: serve a
+                              // disegnare il layout React/Vue/Funnelish, e non fa
+                              // redirect.
+                              const BOUNCER_HOSTS_RX = /(?:^|\/\/)(?:www\.)?(?:7clickt\.com|googletagmanager\.com|google-analytics\.com|googleadservices\.com|googlesyndication\.com|doubleclick\.net|facebook\.net|connect\.facebook\.net|fbq?\.com|hotjar\.com|fullstory\.com|segment\.(?:com|io)|mixpanel\.com|amplitude\.com|matomo\.cloud|clarity\.ms|pixel\.[\w.-]+|track\.[\w.-]+|tracking\.[\w.-]+|tagmanager\.[\w.-]+|click(?:funnels|magick|click)\.com\/(?:track|t))/i;
+                              safeHtml = safeHtml.replace(
+                                /<script\b([^>]*\bsrc\s*=\s*(["'])([^"']+)\2[^>]*)(?:>\s*<\/script>|\/?>)/gi,
+                                (full, _attrs, _q, src: string) => {
+                                  if (BOUNCER_HOSTS_RX.test(src)) {
+                                    return `<!-- preview-stripped bouncer: ${src.slice(0, 100).replace(/--/g, '- -')} -->`;
+                                  }
+                                  return full;
+                                }
+                              );
+                              // Strip INLINE script con redirect verso google/altri host:
+                              // pattern "window.location = 'https://...other-host/...'"
+                              // (cattura anche document.location, top.location, parent.location).
+                              safeHtml = safeHtml.replace(
+                                /<script\b(?![^>]*\bsrc\s*=)[^>]*>([\s\S]*?)<\/script>/gi,
+                                (full, body: string) => {
+                                  // Heuristica: lo script ha "(location|top|parent|document).?location"
+                                  // ASSEGNATO a una URL assoluta a un host che NON e' lo stesso
+                                  // della pagina clonata? Allora lo strippiamo.
+                                  if (!/\b(?:window\.|top\.|parent\.|document\.|self\.|globalThis\.)?location(?:\.href)?\s*=\s*(["'])https?:\/\//.test(body)) return full;
+                                  // E' un'assegnazione di location.href a una URL assoluta:
+                                  // strippa tutto lo script. Non rischiamo di rimuovere
+                                  // script di routing della pagina che usano location SET
+                                  // a path relativi, perche' filtriamo solo le URL https://.
+                                  return `<!-- preview-stripped inline-redirect script -->`;
+                                }
+                              );
                               // ── SOSTITUISCI IFRAME VERSO HOST CHE BLOCCANO FRAMING ──
                               // Quiz funnel / opt-in usano spesso embed di:
                               //   - Google reCAPTCHA  (www.google.com/recaptcha/...)
@@ -6753,30 +6800,15 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                     allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
                     {...(htmlPreviewModal.sourceType === 'cloned'
                       ? {
-                          // Per le anteprime CLONATE: sandbox SENZA allow-scripts.
-                          //
-                          // L'HTML clonato e' uno snapshot post-render (Jina ha gia'
-                          // eseguito React/Vue/bundle e ha catturato il DOM finale).
-                          // I <script> originali sono ANCORA nell'HTML pero', e se
-                          // rieseguono nell'iframe della preview causano:
-                          //   - redirect tipo "affiliate=0 → google.com" (lpservhub,
-                          //     SPA con tracker che vede iframe e bounces)
-                          //   - fetch a CDN/API morti -> 404 spam
-                          //   - frame-buster che cercano di navigare top fuori
-                          //   - re-mount di React/Vue che blanka il body durante hydration
-                          //
-                          // Senza allow-scripts: immagini, CSS, layout, video, font
-                          // funzionano tutti — il bundle JS NON gira. Il risultato e'
-                          // ESATTAMENTE l'aspetto finale della pagina, statico.
-                          //
-                          // allow-same-origin permette al doc.write di funzionare con
-                          // l'origine del parent (necessario per srcdoc / doc.write).
-                          // allow-forms/popups/modals: niente di pericoloso per la
-                          // preview, ma non rotti se servono per CSS-only widget.
-                          //
-                          // L'HTML salvato/scaricato resta intatto: questo sandbox e'
-                          // SOLO sul rendering della preview iframe.
-                          sandbox: 'allow-same-origin allow-forms allow-popups allow-modals',
+                          // Per le anteprime CLONATE: scripts SI, niente
+                          // allow-top-navigation. I bouncer/tracker/analytics
+                          // che fanno redirect (es. affiliate=0 -> google) sono
+                          // gia' strippati a monte nell'HTML stesso (vedi blocco
+                          // BLOCK_BOUNCER_SCRIPTS); cosi' il bundle React/Vue
+                          // resta attivo e disegna il layout corretto, ma i
+                          // tracking script che cambiano window.location non
+                          // ci sono piu'.
+                          sandbox: 'allow-scripts allow-same-origin allow-forms allow-popups allow-modals',
                         }
                       : {})}
                   />
