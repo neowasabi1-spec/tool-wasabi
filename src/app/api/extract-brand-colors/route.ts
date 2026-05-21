@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import Anthropic from '@anthropic-ai/sdk';
 
 export const maxDuration = 60;
 export const dynamic = 'force-dynamic';
@@ -8,19 +9,27 @@ export const dynamic = 'force-dynamic';
  *
  * Estrae una brand palette (primary / secondary / accent / background / text)
  * partendo, in ordine di preferenza:
- *   1. dal testo del brief / market research del Project
+ *   1. dal testo del brief / market research del Project (regex hex)
  *   2. da una foto del prodotto (imageUrl pubblico OPPURE imageDataUrl base64)
+ *      → vision LLM
+ *   3. solo dal testo → text LLM
  *
- * Logica:
- * - Se nel testo trovo abbastanza hex colors (≥ 2) li uso così come sono.
- * - Altrimenti, se ho un'immagine, chiamo Gemini Vision per estrarre la palette.
- * - Altrimenti, se ho solo testo, chiedo a Gemini di "tradurre" in palette le
- *   parole-chiave di brand/mood/emozioni presenti nel brief.
+ * Doppio provider con failover automatico:
+ *   - prima tenta Gemini (gemini-2.5-flash, gratis e veloce)
+ *   - se Gemini fallisce (chiave invalida, quota, 5xx, network, ecc.) ripiega
+ *     SUBITO su Claude (Anthropic Sonnet) usando ANTHROPIC_API_KEY
+ *   - se entrambi falliscono restituisce 500
+ *
+ * Questo serve perché in produzione la chiave Gemini può scadere / essere
+ * revocata / esaurire quota e l'utente vede il bottone "Brand Colors"
+ * spaccarsi. Con il failover automatico, finché Claude funziona la feature
+ * resta operativa.
  *
  * Response shape:
  * {
  *   ok: true,
  *   palette: { primary, secondary, accent, background, text, mood, source },
+ *   provider: 'gemini' | 'claude'
  * }
  */
 
@@ -51,7 +60,6 @@ function normaliseHex(h: string): string {
   let v = h.trim();
   if (!v.startsWith('#')) v = '#' + v;
   if (v.length === 4) {
-    // #abc -> #aabbcc
     v = '#' + v[1] + v[1] + v[2] + v[2] + v[3] + v[3];
   }
   return v.toLowerCase();
@@ -78,21 +86,51 @@ function paletteFromHexList(hexes: string[]): Palette | null {
   };
 }
 
-async function geminiJson(
-  systemInstruction: string,
-  userParts: Array<{ text: string } | { inline_data: { mime_type: string; data: string } }>
-): Promise<Record<string, unknown>> {
-  // Accetta entrambi i nomi (il resto della codebase fa lo stesso): GEMINI_API_KEY
-  // è il nome ufficiale di Google AI Studio, GOOGLE_GEMINI_API_KEY è il nome
-  // usato storicamente in questo repo.
-  const apiKey = (
+const PALETTE_SCHEMA_HINT = `Return STRICT JSON with this exact shape:
+{
+  "primary":    "#RRGGBB",
+  "secondary":  "#RRGGBB",
+  "accent":     "#RRGGBB",
+  "background": "#RRGGBB",
+  "text":       "#RRGGBB",
+  "mood":       "1-3 words describing the brand vibe (e.g. 'medical clinical', 'luxury wellness', 'high-energy conspiracy')"
+}
+No prose, no markdown, no code fences. Every color MUST be a valid 6-digit hex.`;
+
+function parseJsonLoose(txt: string): Record<string, unknown> {
+  try {
+    return JSON.parse(txt);
+  } catch {
+    const cleaned = txt
+      .replace(/^```json?\s*/i, '')
+      .replace(/```\s*$/i, '')
+      .trim();
+    // ultimo tentativo: trova la prima { e l'ultima } e parsa solo quello
+    const start = cleaned.indexOf('{');
+    const end = cleaned.lastIndexOf('}');
+    if (start >= 0 && end > start) {
+      return JSON.parse(cleaned.slice(start, end + 1));
+    }
+    throw new Error('LLM did not return valid JSON');
+  }
+}
+
+/* ───────────────────────── Provider: Gemini ───────────────────────── */
+
+function geminiKey(): string {
+  return (
     process.env.GOOGLE_GEMINI_API_KEY ??
     process.env.GEMINI_API_KEY ??
     ''
   ).trim();
-  if (!apiKey) {
-    throw new Error('GOOGLE_GEMINI_API_KEY (or GEMINI_API_KEY) not configured');
-  }
+}
+
+async function geminiJson(
+  systemInstruction: string,
+  userParts: Array<{ text: string } | { inline_data: { mime_type: string; data: string } }>,
+): Promise<Record<string, unknown>> {
+  const apiKey = geminiKey();
+  if (!apiKey) throw new Error('Gemini key not configured');
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
   const res = await fetch(url, {
@@ -116,31 +154,117 @@ async function geminiJson(
 
   const data = await res.json();
   const txt: string = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
-  try {
-    return JSON.parse(txt);
-  } catch {
-    // a volte Gemini avvolge in ```json … ```
-    const cleaned = txt.replace(/^```json?\s*/i, '').replace(/```\s*$/i, '').trim();
-    return JSON.parse(cleaned);
-  }
+  return parseJsonLoose(txt);
 }
 
-const PALETTE_SCHEMA_HINT = `Return STRICT JSON with this exact shape:
-{
-  "primary":    "#RRGGBB",
-  "secondary":  "#RRGGBB",
-  "accent":     "#RRGGBB",
-  "background": "#RRGGBB",
-  "text":       "#RRGGBB",
-  "mood":       "1-3 words describing the brand vibe (e.g. 'medical clinical', 'luxury wellness', 'high-energy conspiracy')"
+/* ───────────────────────── Provider: Claude ───────────────────────── */
+
+function claudeKey(): string {
+  return (process.env.ANTHROPIC_API_KEY ?? '').trim();
 }
-No prose, no markdown, no code fences. Every color MUST be a valid 6-digit hex.`;
+
+type ClaudeContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'image'; source: { type: 'base64'; media_type: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp'; data: string } };
+
+async function claudeJson(
+  systemInstruction: string,
+  contentBlocks: ClaudeContentBlock[],
+): Promise<Record<string, unknown>> {
+  const apiKey = claudeKey();
+  if (!apiKey) throw new Error('ANTHROPIC_API_KEY not configured');
+
+  const anthropic = new Anthropic({ apiKey });
+  const response = await anthropic.messages.create({
+    model: 'claude-sonnet-4-20250514',
+    max_tokens: 1024,
+    system:
+      systemInstruction +
+      '\n\nIMPORTANT: respond with ONLY the raw JSON object. No prose, no markdown, no code fences.',
+    messages: [
+      {
+        role: 'user',
+        content: contentBlocks,
+      },
+    ],
+  });
+
+  const txt =
+    response.content[0] && response.content[0].type === 'text'
+      ? response.content[0].text
+      : '';
+  return parseJsonLoose(txt);
+}
+
+/* ───────────────────────── Smart routing ───────────────────────── */
+
+type ProviderUsed = 'gemini' | 'claude';
+
+interface ProviderResult {
+  json: Record<string, unknown>;
+  provider: ProviderUsed;
+}
+
+interface ProviderInputs {
+  systemInstruction: string;
+  textOnly: string;
+  image?: { mimeType: string; base64: string };
+}
+
+/** Esegue la richiesta su Gemini, e se fallisce per QUALSIASI motivo
+ *  (chiave invalida, quota, 5xx, parse error, ecc.) ripiega su Claude. */
+async function callLLMWithFailover(inp: ProviderInputs): Promise<ProviderResult> {
+  // ── 1. Gemini ──
+  if (geminiKey()) {
+    try {
+      const parts: Array<{ text: string } | { inline_data: { mime_type: string; data: string } }> = [
+        { text: inp.textOnly },
+      ];
+      if (inp.image) {
+        parts.push({
+          inline_data: { mime_type: inp.image.mimeType, data: inp.image.base64 },
+        });
+      }
+      const json = await geminiJson(inp.systemInstruction, parts);
+      return { json, provider: 'gemini' };
+    } catch (err) {
+      console.warn(
+        '[extract-brand-colors] Gemini failed, falling back to Claude:',
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  // ── 2. Claude (fallback) ──
+  if (!claudeKey()) {
+    throw new Error(
+      'Both providers unavailable: Gemini failed/missing and ANTHROPIC_API_KEY not configured',
+    );
+  }
+
+  const blocks: ClaudeContentBlock[] = [{ type: 'text', text: inp.textOnly }];
+  if (inp.image) {
+    const mt = inp.image.mimeType;
+    const supportedMime =
+      mt === 'image/jpeg' || mt === 'image/png' || mt === 'image/gif' || mt === 'image/webp'
+        ? mt
+        : 'image/jpeg';
+    blocks.push({
+      type: 'image',
+      source: { type: 'base64', media_type: supportedMime, data: inp.image.base64 },
+    });
+  }
+  const json = await claudeJson(inp.systemInstruction, blocks);
+  return { json, provider: 'claude' };
+}
+
+/* ───────────────────────── Palette extraction ───────────────────────── */
 
 async function paletteFromImage(
   imageUrl: string | undefined,
   imageDataUrl: string | undefined,
-  productName: string
-): Promise<Palette> {
+  productName: string,
+): Promise<{ palette: Palette; provider: ProviderUsed }> {
   let mimeType = 'image/jpeg';
   let base64 = '';
 
@@ -172,19 +296,24 @@ ${PALETTE_SCHEMA_HINT}`;
     ? `Product name (for context only, do NOT let it override what you SEE): ${productName}`
     : 'No product name provided.';
 
-  const json = (await geminiJson(sys, [
-    { text: productHint },
-    { inline_data: { mime_type: mimeType, data: base64 } },
-  ])) as Partial<Palette>;
+  const { json, provider } = await callLLMWithFailover({
+    systemInstruction: sys,
+    textOnly: productHint,
+    image: { mimeType, base64 },
+  });
 
+  const j = json as Partial<Palette>;
   return {
-    primary: json.primary || '#3b82f6',
-    secondary: json.secondary || '#1e40af',
-    accent: json.accent || '#f59e0b',
-    background: json.background || '#0b0f1a',
-    text: json.text || '#ffffff',
-    mood: json.mood,
-    source: 'image-llm',
+    palette: {
+      primary: j.primary || '#3b82f6',
+      secondary: j.secondary || '#1e40af',
+      accent: j.accent || '#f59e0b',
+      background: j.background || '#0b0f1a',
+      text: j.text || '#ffffff',
+      mood: j.mood,
+      source: 'image-llm',
+    },
+    provider,
   };
 }
 
@@ -192,8 +321,8 @@ async function paletteFromTextLLM(
   brief: string,
   marketResearch: string,
   productName: string,
-  productDescription: string
-): Promise<Palette> {
+  productDescription: string,
+): Promise<{ palette: Palette; provider: ProviderUsed }> {
   const sys = `You are a senior brand designer. Read the product brief + market research and pick a
 conversion-ready brand color palette for the landing page. Prefer colors that match the niche
 conventions (e.g. red/gold for urgency-conspiracy, teal/white for medical, green/cream for natural,
@@ -210,18 +339,27 @@ ${PALETTE_SCHEMA_HINT}`;
     .filter(Boolean)
     .join('\n\n');
 
-  const json = (await geminiJson(sys, [{ text: userText || 'No data provided' }])) as Partial<Palette>;
+  const { json, provider } = await callLLMWithFailover({
+    systemInstruction: sys,
+    textOnly: userText || 'No data provided',
+  });
 
+  const j = json as Partial<Palette>;
   return {
-    primary: json.primary || '#3b82f6',
-    secondary: json.secondary || '#1e40af',
-    accent: json.accent || '#f59e0b',
-    background: json.background || '#0b0f1a',
-    text: json.text || '#ffffff',
-    mood: json.mood,
-    source: 'text-llm',
+    palette: {
+      primary: j.primary || '#3b82f6',
+      secondary: j.secondary || '#1e40af',
+      accent: j.accent || '#f59e0b',
+      background: j.background || '#0b0f1a',
+      text: j.text || '#ffffff',
+      mood: j.mood,
+      source: 'text-llm',
+    },
+    provider,
   };
 }
+
+/* ───────────────────────── Handler ───────────────────────── */
 
 export async function POST(request: NextRequest) {
   try {
@@ -238,27 +376,27 @@ export async function POST(request: NextRequest) {
 
     const fullText = `${brief}\n\n${marketResearch}`.trim();
 
-    // 1. Try fast hex extraction from the brief
+    // 1. Hex regex shortcut (zero API calls)
     if (!forceImage) {
       const hexes = extractHexFromText(fullText);
       const fromHex = paletteFromHexList(hexes);
       if (fromHex) {
-        return NextResponse.json({ ok: true, palette: fromHex });
+        return NextResponse.json({ ok: true, palette: fromHex, provider: 'hex' });
       }
     }
 
-    // 2. Image-based extraction (preferred when available)
+    // 2. Image-based (preferred when available) — con failover Gemini → Claude
     if (imageUrl || imageDataUrl) {
       try {
-        const palette = await paletteFromImage(imageUrl, imageDataUrl, productName);
-        return NextResponse.json({ ok: true, palette });
+        const { palette, provider } = await paletteFromImage(imageUrl, imageDataUrl, productName);
+        return NextResponse.json({ ok: true, palette, provider });
       } catch (imgErr) {
-        // se fallisce e abbiamo testo, fallback al testo
         if (fullText) {
-          const palette = await paletteFromTextLLM(brief, marketResearch, productName, productDescription);
+          const { palette, provider } = await paletteFromTextLLM(brief, marketResearch, productName, productDescription);
           return NextResponse.json({
             ok: true,
             palette,
+            provider,
             warning: `Image analysis failed (${imgErr instanceof Error ? imgErr.message : 'unknown'}), used text fallback.`,
           });
         }
@@ -266,13 +404,13 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // 3. Text-only LLM extraction
+    // 3. Text-only — con failover Gemini → Claude
     if (fullText || productName || productDescription) {
-      const palette = await paletteFromTextLLM(brief, marketResearch, productName, productDescription);
-      return NextResponse.json({ ok: true, palette });
+      const { palette, provider } = await paletteFromTextLLM(brief, marketResearch, productName, productDescription);
+      return NextResponse.json({ ok: true, palette, provider });
     }
 
-    // 4. Nothing usable → ask the client to provide a photo
+    // 4. Niente di usabile → chiede al client la foto prodotto
     return NextResponse.json(
       {
         ok: false,
@@ -280,7 +418,7 @@ export async function POST(request: NextRequest) {
         error:
           'No brief, market research, product name or image available. Please upload a product photo to extract a brand palette.',
       },
-      { status: 422 }
+      { status: 422 },
     );
   } catch (error) {
     console.error('[api/extract-brand-colors] Error:', error);
@@ -289,7 +427,7 @@ export async function POST(request: NextRequest) {
         ok: false,
         error: error instanceof Error ? error.message : 'Unknown error extracting brand colors',
       },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }
