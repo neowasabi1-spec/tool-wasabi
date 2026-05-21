@@ -2675,97 +2675,65 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     }
   }, [runBrandExtract]);
 
-  /* ── Brand Colors: applica la palette riusando /api/ai-edit-html ──
-   * Costruiamo un prompt MOLTO esplicito che chiede di ricolorare TUTTA la
-   * pagina mantenendo gerarchia/contrasti — gli stessi vincoli che già usa
-   * il pipeline AI Edit, solo focalizzato sui colori. */
+  /* ── Brand Colors: applica la palette via swap deterministico server-side ──
+   *
+   * Prima usavamo /api/ai-edit-html (Claude chunked) ma su landing > 80 KB
+   * il numero di chunk × tempo per chunk superava il timeout Netlify (300s)
+   * e il browser mostrava un generico "network error".
+   *
+   * Adesso il ricolore è fatto da /api/recolor-page: estrae tutti i token
+   * colore dell'HTML (hex / rgb / named), per ognuno sceglie il role della
+   * palette più vicino in spazio HSL, e fa lo swap. Risultato deterministico,
+   * istantaneo (<1s anche su pagine da 1 MB), nessuna dipendenza da LLM
+   * keys/quota/timeout. */
   const handleApplyBrandColors = useCallback(async () => {
     if (!brandPalette || brandApplying) return;
     setBrandApplying(true);
     setBrandExtractError('');
     try {
-      const p = brandPalette;
-      const prompt = [
-        `Recolor the ENTIRE landing page using ONLY this brand palette (do NOT introduce other hues):`,
-        `- primary:    ${p.primary}   (main CTA buttons, key highlights, primary links)`,
-        `- secondary:  ${p.secondary} (secondary buttons, supporting accents, hover states)`,
-        `- accent:     ${p.accent}    (badges, urgency markers, small decorative elements, icons)`,
-        `- background: ${p.background} (page background, hero/section backgrounds — use tasteful tints/shades for cards & alternating sections)`,
-        `- text:       ${p.text}      (body copy, headings — derive a slightly muted version for secondary text and a contrasted version for captions; ensure WCAG AA contrast on the background)`,
-        p.mood ? `Overall mood / vibe to evoke: ${p.mood}.` : '',
-        '',
-        'CONCRETE RULES:',
-        '1. Replace EVERY existing color (inline styles, <style> blocks, gradients, shadows, border colors, svg fills/strokes, background-image gradients) with the palette above or with mathematically-derived tints/shades of those colors (lighter/darker variants ok, NEW hues NOT ok).',
-        '2. Rebuild gradients using primary→secondary or primary→accent. Never keep the old gradient stops.',
-        '3. Update box-shadows/glows to use rgba() of primary or accent (not the old color).',
-        '4. Keep ALL text content, structure, layout, fonts, images, videos, links, forms and scripts EXACTLY as-is — colors only.',
-        '5. Make sure CTAs (primary buttons) really pop on the new background. If contrast is poor, swap button text color to whichever of #ffffff / #000000 reads best on primary.',
-        '6. Be CONSISTENT: a section that was "dark with light text" should stay dark (using `background`) with light text (`text`); a section that was "light card on dark" should stay that pattern with the new colors.',
-      ].filter(Boolean).join('\n');
-
       const targetHtml = editorViewport === 'mobile' && mobileHtml ? mobileHtml : currentHtml;
 
-      // Usiamo Claude (non Gemini) perché:
-      // - /api/ai-edit-html non ha il failover automatico Gemini→Claude che
-      //   abbiamo aggiunto a /api/extract-brand-colors → se la chiave Gemini
-      //   è invalida/quota-out, l'apply esplode con "GOOGLE_GEMINI_API_KEY
-      //   not configured" e l'utente vede l'errore sotto la palette anche
-      //   se l'estrazione era andata bene via Claude.
-      // - Per un task di "ricolora questo HTML" Claude Sonnet 4 è molto più
-      //   preciso di Gemini Flash e tiene meglio la struttura.
-      const res = await fetch('/api/ai-edit-html', {
+      const res = await fetch('/api/recolor-page', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ html: targetHtml, prompt, model: 'claude' }),
+        body: JSON.stringify({
+          html: targetHtml,
+          palette: {
+            primary: brandPalette.primary,
+            secondary: brandPalette.secondary,
+            accent: brandPalette.accent,
+            background: brandPalette.background,
+            text: brandPalette.text,
+          },
+        }),
       });
 
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({ error: 'Network error' }));
-        throw new Error(errData.error || `HTTP ${res.status}`);
+      const ctype = (res.headers.get('content-type') || '').toLowerCase();
+      const rawText = await res.text();
+      let data: { ok?: boolean; html?: string; error?: string; replacements?: number } | null = null;
+      if (ctype.includes('application/json')) {
+        try { data = JSON.parse(rawText); } catch { data = null; }
+      } else {
+        try { data = JSON.parse(rawText); } catch { data = null; }
       }
 
-      const reader = res.body?.getReader();
-      if (!reader) throw new Error('Stream not available');
+      if (!data) {
+        throw new Error(`Server returned non-JSON (HTTP ${res.status}). Try again.`);
+      }
+      if (!res.ok || !data.ok || !data.html) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
 
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue;
-          try {
-            const data = JSON.parse(line.slice(6));
-            if (data.type === 'chunk-start') {
-              setAiEditProgress({
-                chunkIndex: data.chunkIndex,
-                totalChunks: data.totalChunks,
-                label: data.label || `Chunk ${data.chunkIndex + 1}`,
-              });
-            } else if (data.type === 'result' && data.html) {
-              setIframeVersion(v => v + 1);
-              if (editorViewport === 'mobile' && mobileHtml) {
-                setAiEditHistory(prev => [...prev, mobileHtml]);
-                setMobileHtml(data.html);
-                setMobileCodeHtml(data.html);
-              } else {
-                setAiEditHistory(prev => [...prev, currentHtml]);
-                setCurrentHtml(data.html);
-                setCodeHtml(data.html);
-                pushUndo(data.html);
-              }
-            } else if (data.type === 'error') {
-              throw new Error(data.error);
-            }
-          } catch (parseErr) {
-            if (parseErr instanceof Error && !parseErr.message.includes('Unexpected')) throw parseErr;
-          }
-        }
+      setIframeVersion(v => v + 1);
+      if (editorViewport === 'mobile' && mobileHtml) {
+        setAiEditHistory(prev => [...prev, mobileHtml]);
+        setMobileHtml(data.html);
+        setMobileCodeHtml(data.html);
+      } else {
+        setAiEditHistory(prev => [...prev, currentHtml]);
+        setCurrentHtml(data.html);
+        setCodeHtml(data.html);
+        pushUndo(data.html);
       }
 
       setShowBrandColorsPanel(false);
