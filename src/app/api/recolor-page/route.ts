@@ -528,11 +528,19 @@ function recolor(html: string, paletteColors: RoleColor[]): {
     return `${prefix}${rgbToHex({ r: role.r, g: role.g, b: role.b })}${suffix}`;
   });
 
-  // 3) Sostituzione attributi HTML deprecati (bgcolor, color="#fff" su <font>)
-  //    Sono colori da rimappare al pari del CSS.
-  const ATTR_COLOR_RE = /\b(bgcolor|color)\s*=\s*(["'])([^"']+)\2/gi;
-  out = out.replace(ATTR_COLOR_RE, (m, attr, quote, value) => {
-    const parsed = parseColor(value);
+  // 3) Sostituzione NAMED colors dentro attributi HTML deprecati (es.
+  //    `<body bgcolor="black">`, `<font color="white">`). Solo named perché
+  //    hex / rgb / hsl in questi attributi sono già stati gestiti dal pass 1.
+  //    Senza questo filtro, processare DI NUOVO l'attributo dopo che è già
+  //    stato rimappato inverte il mapping (un dark mappato a light verrebbe
+  //    poi rimappato a text scuro).
+  const ATTR_NAMED_RE = new RegExp(
+    `\\b(bgcolor|color)\\s*=\\s*(["'])(${Object.keys(NAMED_COLORS).join('|')})\\2`,
+    'gi',
+  );
+  out = out.replace(ATTR_NAMED_RE, (m, attr, quote, value) => {
+    const hex = NAMED_COLORS[value.toLowerCase()];
+    const parsed = hex ? parseColor(hex) : null;
     if (!parsed) return m;
     const role = mapColor(parsed);
     replacements++;
