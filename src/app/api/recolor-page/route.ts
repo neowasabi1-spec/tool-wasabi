@@ -222,25 +222,66 @@ function buildPaletteColors(palette: Palette): RoleColor[] {
   return out;
 }
 
-/** Sceglie il role della palette più vicino a (h,s,l) usando regole
- *  morbide: prima discrimina luminanza (background = chiaro o scuro;
- *  text = molto chiaro o molto scuro opposto al background), poi tra i
- *  3 colorati (primary/secondary/accent) sceglie quello a saturazione e
- *  hue più vicini. */
-function pickRole(c: { h: number; s: number; l: number }, palette: RoleColor[]): RoleColor {
+/** Rileva il tema della pagina originale guardando i colori non-saturati
+ *  più frequenti. Se la luminanza media pesata è < 0.5 la pagina è dark
+ *  themed (background scuro, testo chiaro); altrimenti light themed. */
+function detectOriginalTheme(allColors: ColorOccurrence[]): 'dark' | 'light' {
+  let totalWeight = 0;
+  let weightedL = 0;
+  for (const c of allColors) {
+    // Pesa più i colori non-saturati (sono quelli di bg/testo, non gli accenti)
+    const w = c.count * (1 - c.s * 0.7);
+    weightedL += c.l * w;
+    totalWeight += w;
+  }
+  if (totalWeight === 0) return 'dark';
+  const avgL = weightedL / totalWeight;
+  return avgL < 0.5 ? 'dark' : 'light';
+}
+
+/** Sceglie il role della palette per un colore osservato.
+ *
+ *  Regole:
+ *  - Colori non-saturati (s < 0.2): mappati a bg o text in base al tema.
+ *    Se il tema originale e nuovo COINCIDONO → mantieni la posizione
+ *    luminanza (dark→dark, light→light). Se sono OPPOSTI → swap, cioè
+ *    il colore "background" originale (dark in pagina dark) prende il
+ *    nuovo background (anche se light) e viceversa per il testo.
+ *  - Colori saturati: scegli tra primary/secondary/accent per distanza
+ *    pesata in HSL (hue conta di più, poi sat, poi luminanza). */
+function pickRole(
+  c: { h: number; s: number; l: number },
+  palette: RoleColor[],
+  originalTheme: 'dark' | 'light',
+  newTheme: 'dark' | 'light',
+): RoleColor {
   const pBg = palette.find(p => p.role === 'background');
   const pTxt = palette.find(p => p.role === 'text');
 
-  // Casi estremi: quasi-nero o quasi-bianco → background o text in base
-  // a quale dei due è più vicino in luminanza.
-  if (c.s < 0.15 || c.l < 0.08 || c.l > 0.92) {
+  // Soglia un po' più permissiva (0.2) per intercettare anche i grigi
+  // medi che le landing usano come bg di sezione.
+  if (c.s < 0.22 || c.l < 0.08 || c.l > 0.92) {
     if (pBg && pTxt) {
-      return Math.abs(c.l - pBg.l) <= Math.abs(c.l - pTxt.l) ? pBg : pTxt;
+      // RELATIVE luminance check: il colore è "scuro" o "chiaro" RISPETTO
+      // al tema originale?
+      // - tema originale dark: i colori scuri sono background, i chiari sono testo
+      // - tema originale light: i colori chiari sono background, i scuri sono testo
+      const isOriginallyBackground =
+        originalTheme === 'dark' ? c.l < 0.5 : c.l > 0.5;
+
+      if (originalTheme === newTheme) {
+        // Stesso tema: il bg originale prende il nuovo bg (assomigliano in L)
+        return isOriginallyBackground ? pBg : pTxt;
+      }
+      // SWAP TEMA: il bg originale prende comunque il nuovo bg (anche se
+      // L opposta). È esattamente questo che fa cambiare visivamente la
+      // pagina quando l'utente applica una palette di tema opposto.
+      return isOriginallyBackground ? pBg : pTxt;
     }
     return pBg || pTxt || palette[0];
   }
 
-  // Tra i 3 colorati: distanza pesata in HSL (l'hue conta di più).
+  // Tra i 3 colorati: distanza pesata in HSL (hue domina).
   const colored = palette.filter(p => p.role !== 'background' && p.role !== 'text');
   if (colored.length === 0) return palette[0];
 
@@ -259,43 +300,121 @@ function pickRole(c: { h: number; s: number; l: number }, palette: RoleColor[]):
 
 /* ──────────────────────── replacement ──────────────────────── */
 
-/** Trova tutti i token colore nell'HTML (hex, rgb/rgba, named) sia inline
- *  che dentro <style>, e li sostituisce con il role palette più vicino.
- *  Ritorna nuovo HTML + count delle sostituzioni. */
-function recolor(html: string, paletteColors: RoleColor[]): { html: string; replacements: number } {
-  // Regex per i token colore. Order matters: hex prima perché contiene #
-  // che potrebbe altrimenti far overlap con altri pattern.
-  const COLOR_TOKEN_RE = /(#(?:[0-9A-Fa-f]{8}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{4}|[0-9A-Fa-f]{3})\b|rgba?\([^)]+\))/g;
+interface ColorOccurrence {
+  token: string;
+  r: number;
+  g: number;
+  b: number;
+  a: number;
+  h: number;
+  s: number;
+  l: number;
+  count: number;
+}
 
-  let replacements = 0;
-  let out = html.replace(COLOR_TOKEN_RE, (token) => {
+const COLOR_TOKEN_RE = /(#(?:[0-9A-Fa-f]{8}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{4}|[0-9A-Fa-f]{3})\b|rgba?\([^)]+\))/g;
+
+function collectAllColors(html: string): { occurrences: ColorOccurrence[]; namedMatches: number } {
+  const map = new Map<string, ColorOccurrence>();
+  let m: RegExpExecArray | null;
+  COLOR_TOKEN_RE.lastIndex = 0;
+  while ((m = COLOR_TOKEN_RE.exec(html)) !== null) {
+    const token = m[1];
     const parsed = parseColor(token);
-    if (!parsed) return token;
+    if (!parsed) continue;
     const hsl = rgbToHsl(parsed.r, parsed.g, parsed.b);
-    const role = pickRole(hsl, paletteColors);
-    replacements++;
-    return formatRgba(role.r, role.g, role.b, parsed.a);
-  });
-
-  // Named colors solo dentro `style="..."` o dentro <style>...</style>,
-  // per non rovinare contenuti testuali tipo "white smile" o nomi prodotto.
-  // Approccio: cerco named colors come VALORE di una proprietà CSS.
+    const key = `${parsed.r}-${parsed.g}-${parsed.b}-${parsed.a}`;
+    const prev = map.get(key);
+    if (prev) {
+      prev.count++;
+    } else {
+      map.set(key, {
+        token,
+        r: parsed.r, g: parsed.g, b: parsed.b, a: parsed.a,
+        h: hsl.h, s: hsl.s, l: hsl.l,
+        count: 1,
+      });
+    }
+  }
+  // Named colors (solo come valore di proprietà CSS)
+  let namedMatches = 0;
   const NAMED_RE = new RegExp(
     `(:\\s*)(${Object.keys(NAMED_COLORS).join('|')})(\\s*[;}!"' )])`,
     'gi',
   );
+  let nm: RegExpExecArray | null;
+  while ((nm = NAMED_RE.exec(html)) !== null) {
+    const name = nm[2].toLowerCase();
+    const hex = NAMED_COLORS[name];
+    const parsed = hex ? parseColor(hex) : null;
+    if (!parsed) continue;
+    namedMatches++;
+    const hsl = rgbToHsl(parsed.r, parsed.g, parsed.b);
+    const key = `${parsed.r}-${parsed.g}-${parsed.b}-${parsed.a}`;
+    const prev = map.get(key);
+    if (prev) {
+      prev.count++;
+    } else {
+      map.set(key, {
+        token: name,
+        r: parsed.r, g: parsed.g, b: parsed.b, a: parsed.a,
+        h: hsl.h, s: hsl.s, l: hsl.l,
+        count: 1,
+      });
+    }
+  }
+  return { occurrences: [...map.values()], namedMatches };
+}
 
+/** Trova tutti i token colore nell'HTML, fa un first-pass per rilevare il
+ *  tema dominante della pagina, poi sostituisce ogni token con il role
+ *  palette più appropriato (vedi pickRole). */
+function recolor(html: string, paletteColors: RoleColor[]): {
+  html: string;
+  replacements: number;
+  originalTheme: 'dark' | 'light';
+  newTheme: 'dark' | 'light';
+} {
+  // Tema della nuova palette: confronta L di background e text
+  const pBg = paletteColors.find(p => p.role === 'background');
+  const pTxt = paletteColors.find(p => p.role === 'text');
+  const newTheme: 'dark' | 'light' =
+    pBg && pTxt ? (pBg.l > pTxt.l ? 'light' : 'dark')
+    : pBg ? (pBg.l > 0.5 ? 'light' : 'dark')
+    : 'dark';
+
+  // First pass: scan colori + tema originale
+  const { occurrences } = collectAllColors(html);
+  const originalTheme = detectOriginalTheme(occurrences);
+
+  let replacements = 0;
+
+  // Sostituzione hex / rgb / rgba
+  let out = html.replace(COLOR_TOKEN_RE, (token) => {
+    const parsed = parseColor(token);
+    if (!parsed) return token;
+    const hsl = rgbToHsl(parsed.r, parsed.g, parsed.b);
+    const role = pickRole(hsl, paletteColors, originalTheme, newTheme);
+    replacements++;
+    return formatRgba(role.r, role.g, role.b, parsed.a);
+  });
+
+  // Sostituzione named colors (solo come valore CSS)
+  const NAMED_RE = new RegExp(
+    `(:\\s*)(${Object.keys(NAMED_COLORS).join('|')})(\\s*[;}!"' )])`,
+    'gi',
+  );
   out = out.replace(NAMED_RE, (m, prefix, name, suffix) => {
     const hex = NAMED_COLORS[name.toLowerCase()];
     const parsed = hex ? parseColor(hex) : null;
     if (!parsed) return m;
     const hsl = rgbToHsl(parsed.r, parsed.g, parsed.b);
-    const role = pickRole(hsl, paletteColors);
+    const role = pickRole(hsl, paletteColors, originalTheme, newTheme);
     replacements++;
     return `${prefix}${rgbToHex({ r: role.r, g: role.g, b: role.b })}${suffix}`;
   });
 
-  return { html: out, replacements };
+  return { html: out, replacements, originalTheme, newTheme };
 }
 
 /* ──────────────────────── handler ──────────────────────── */
@@ -320,7 +439,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const { html: out, replacements } = recolor(html, paletteColors);
+    const { html: out, replacements, originalTheme, newTheme } = recolor(html, paletteColors);
 
     return NextResponse.json({
       ok: true,
@@ -328,6 +447,9 @@ export async function POST(request: NextRequest) {
       replacements,
       originalLength: html.length,
       newLength: out.length,
+      originalTheme,
+      newTheme,
+      themeSwapped: originalTheme !== newTheme,
     });
   } catch (error) {
     console.error('[api/recolor-page] Error:', error);
