@@ -2603,7 +2603,37 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
           imageUrl: overrideImageUrl || brandUploadedImageUrl || productContext?.imageUrl || '',
         }),
       });
-      const data = await res.json();
+
+      // Gestione difensiva: se la function timeoutta o crasha, Netlify
+      // restituisce una pagina HTML d'errore (5xx con content-type text/html)
+      // e res.json() exploderebbe con "Unexpected token '<'…".
+      // Leggiamo prima come testo e proviamo a parsarlo come JSON.
+      const ctype = (res.headers.get('content-type') || '').toLowerCase();
+      const rawText = await res.text();
+      let data: { ok?: boolean; palette?: BrandPalette; error?: string; needsImage?: boolean } | null = null;
+
+      if (ctype.includes('application/json')) {
+        try {
+          data = JSON.parse(rawText);
+        } catch {
+          // body è HTML pure se Content-Type dice JSON (raro, capita con proxy malformati)
+          data = null;
+        }
+      } else {
+        try { data = JSON.parse(rawText); } catch { /* lascia null */ }
+      }
+
+      if (!data) {
+        // Body non-JSON (HTML d'errore di Netlify, gateway timeout, ecc.)
+        const isTimeout = res.status === 504 || res.status === 408 || /timeout/i.test(rawText);
+        setBrandExtractError(
+          isTimeout
+            ? `Server timed out (${res.status}). The product image may be too slow to fetch or analyze. Try again or upload a smaller photo.`
+            : `Server returned an unexpected response (HTTP ${res.status}). Try again or hard-refresh the page (Ctrl+Shift+R).`,
+        );
+        return;
+      }
+
       if (!res.ok || !data.ok) {
         if (data?.needsImage) {
           setBrandNeedsImage(true);
@@ -2613,6 +2643,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
         }
         return;
       }
+
       setBrandPalette(data.palette as BrandPalette);
     } catch (err) {
       setBrandExtractError(err instanceof Error ? err.message : 'Unknown error');
