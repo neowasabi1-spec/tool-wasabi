@@ -1,0 +1,63 @@
+name: MCP keep-warm
+
+# Pings the MCP endpoint every 4 minutes so the Netlify Function stays
+# warm. Cold starts on this route can take 15-30s and the OpenClaw
+# bundle-mcp client times out at 30s, which causes a thrasshing loop
+# (rewrite -> save fails -> retry -> rewrite again, burning tokens).
+#
+# Keeping the function warm makes the save complete in <500ms.
+#
+# Costs: 1 ping = ~3s of GitHub Actions runtime. ~15/hour * 24h = ~18min/day.
+# Trivially within the 2000 free minutes/month for public repos.
+#
+# To stop the keep-warm temporarily (e.g. while debugging or to avoid
+# Netlify invocations during a usage_exceeded event), disable this
+# workflow from the Actions tab. Cancellation is instant.
+
+on:
+  schedule:
+    # Every 4 minutes. GitHub may delay cron by a few minutes on free
+    # tier under load, so 4min is more reliable than 5min for the
+    # Netlify Function 5min idle timeout.
+    - cron: '*/4 * * * *'
+  workflow_dispatch:  # also allow manual trigger from the UI
+
+# Avoid stacking multiple in-flight pings if a previous run is slow.
+concurrency:
+  group: mcp-keepwarm
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Ping MCP endpoint
+        env:
+          MCP_URL: ${{ vars.MCP_URL || 'https://cute-cupcake-74bad8.netlify.app/api/mcp' }}
+          MCP_API_KEY: ${{ secrets.MCP_API_KEY }}
+        run: |
+          set -euo pipefail
+          echo "Pinging $MCP_URL ..."
+          # Plain GET returns the JSON capability descriptor — light path,
+          # no DB hits beyond auth (which is anyway cached after first call).
+          # If MCP_API_KEY secret is set, send it; otherwise rely on
+          # MCP_DEFAULT_API_KEY env var on Netlify.
+          AUTH_HEADER=()
+          if [ -n "${MCP_API_KEY:-}" ]; then
+            AUTH_HEADER=(-H "X-API-Key: ${MCP_API_KEY}")
+          fi
+          # Capture status code separately from body so we can fail fast.
+          HTTP_CODE=$(curl -sS -o /tmp/mcp-body.txt -w "%{http_code}" \
+            --max-time 60 \
+            "${AUTH_HEADER[@]}" \
+            "$MCP_URL")
+          echo "HTTP status: $HTTP_CODE"
+          echo "Body (first 200 chars):"
+          head -c 200 /tmp/mcp-body.txt || true
+          echo ""
+          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 500 ]; then
+            echo "::error::MCP keep-warm failed with HTTP $HTTP_CODE"
+            exit 1
+          fi
+          echo "OK"
