@@ -3106,22 +3106,14 @@ export async function GET(req: NextRequest) {
     // to the SAME host the client is talking to (custom domain vs.
     // *.netlify.app branch, preview deploys, ecc.).
     //
-    // IMPORTANT: req.url su Netlify viene normalizzato al canonical host
-    // (cute-cupcake-74bad8.netlify.app) anche quando il client si connette
-    // a un preview URL (<hash>--cute-cupcake-74bad8.netlify.app). Questo causa
-    // bundle-mcp a buttare l'errore "Endpoint origin does not match
-    // connection origin" perche' fa una security check tra l'host SSE e
-    // l'host nell'event endpoint.
-    //
-    // Soluzione: preferire x-forwarded-host / x-forwarded-proto che Netlify
-    // popola con l'host originale richiesto dal client. Fallback su req.url
-    // per dev locale dove gli header proxy non sono presenti.
+    // NOTA: avevo provato a preferire x-forwarded-host (commit ae43d47) per
+    // gestire i preview deploys, ma quel cambio sembra essere correlato al
+    // timeout del bundle-mcp di OpenClaw a partire dal 21/5. Ripristinato
+    // il behavior originale (req.url.host) — se il bug "Endpoint origin
+    // does not match connection origin" ritorna sui preview, lo affronto
+    // diversamente.
     const reqUrl = new URL(req.url);
-    const fwdHost = req.headers.get('x-forwarded-host')?.split(',')[0].trim();
-    const fwdProto = req.headers.get('x-forwarded-proto')?.split(',')[0].trim();
-    const host = fwdHost || reqUrl.host;
-    const proto = fwdProto || reqUrl.protocol.replace(':', '');
-    const origin = `${proto}://${host}`;
+    const origin = `${reqUrl.protocol}//${reqUrl.host}`;
     const messagesEndpoint = `${origin}/api/mcp`;
     const stream = new ReadableStream({
       start(controller) {
