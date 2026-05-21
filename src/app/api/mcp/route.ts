@@ -3103,17 +3103,34 @@ export async function GET(req: NextRequest) {
   if (accept.includes('text/event-stream')) {
     const encoder = new TextEncoder();
     // Compute origin from incoming request so the `endpoint` event resolves
-    // to the SAME host the client is talking to (custom domain vs.
-    // *.netlify.app branch, preview deploys, ecc.).
+    // to the SAME host the client is talking to.
     //
-    // NOTA: avevo provato a preferire x-forwarded-host (commit ae43d47) per
-    // gestire i preview deploys, ma quel cambio sembra essere correlato al
-    // timeout del bundle-mcp di OpenClaw a partire dal 21/5. Ripristinato
-    // il behavior originale (req.url.host) — se il bug "Endpoint origin
-    // does not match connection origin" ritorna sui preview, lo affronto
-    // diversamente.
+    // BUG FIXATO (verificato dal log bundle-mcp):
+    //   Endpoint origin does not match connection origin:
+    //   https://6a0ec7e989a94d000871b03d--cute-cupcake-74bad8.netlify.app
+    //
+    // Su Netlify, `req.url.host` dentro la function torna l'host del
+    // DEPLOY SPECIFICO (es. <hash>--<sitename>.netlify.app), NON il
+    // canonical (<sitename>.netlify.app). Bundle-mcp si connette al
+    // canonical, e quando vede l'endpoint event con un host diverso
+    // butta "origin does not match" e abortisce.
+    //
+    // Soluzione: preferire x-forwarded-host / x-forwarded-proto, che
+    // Netlify popola con l'host originale richiesto dal client.
+    // Fallback su req.url solo per dev locale (no header proxy).
     const reqUrl = new URL(req.url);
-    const origin = `${reqUrl.protocol}//${reqUrl.host}`;
+    const fwdHost = req.headers.get('x-forwarded-host')?.split(',')[0].trim();
+    const fwdProto = req.headers.get('x-forwarded-proto')?.split(',')[0].trim();
+    // Extra safety: se l'host attuale ha la forma <hash>--<site> tipica
+    // di un Netlify preview deploy, ed esiste un x-forwarded-host, usa
+    // sempre quello. Se non esiste forwarded e siamo su preview, prova
+    // a strippare il prefisso `<hash>--` per atterrare sul canonical.
+    let host = fwdHost || reqUrl.host;
+    if (!fwdHost && /^[a-f0-9]+--/i.test(reqUrl.host)) {
+      host = reqUrl.host.replace(/^[a-f0-9]+--/i, '');
+    }
+    const proto = fwdProto || reqUrl.protocol.replace(':', '');
+    const origin = `${proto}://${host}`;
     const messagesEndpoint = `${origin}/api/mcp`;
     const stream = new ReadableStream({
       start(controller) {
