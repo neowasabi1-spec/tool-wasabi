@@ -297,6 +297,24 @@ const AUDITOR_LABEL: Record<Auditor, string> = {
   neo: 'Neo (OpenClaw locale)',
   morfeo: 'Morfeo (OpenClaw locale)',
 };
+
+// Best-effort cancel of an in-flight openclaw_messages row when the UI
+// gives up on it (no-pickup 90s, page-timeout 60min, manual Swipe All
+// cancel). Without this, the row stays `pending`, the worker eventually
+// claims it and burns LLM tokens producing a result the UI already
+// abandoned. Pairs with the cooperative-abort poller in the worker:
+// rows already 'processing' get aborted within ~5s of the flip.
+async function cancelWorkerJob(jobId: string, reason: string): Promise<void> {
+  if (!jobId) return;
+  try {
+    await fetch(
+      `/api/openclaw/queue?id=${encodeURIComponent(jobId)}&reason=${encodeURIComponent(reason)}`,
+      { method: 'DELETE' },
+    );
+  } catch {
+    /* best-effort: if the cancel call fails the row stays pending; not worth blocking the UI */
+  }
+}
 const AUDITOR_TARGET_AGENT: Record<Auditor, string | null> = {
   claude: null,
   neo: 'openclaw:neo',
@@ -2738,9 +2756,13 @@ export default function FrontEndFunnel() {
         let final: { html?: string; replacements?: number; totalTexts?: number; new_title?: string; success?: boolean; error?: string } | null = null;
         let busyAnnounced = false;
         while (true) {
-          if (swipeAllCancelRef.current) break;
+          if (swipeAllCancelRef.current) {
+            await cancelWorkerJob(enqueued.id, 'Swipe All cancelled by user');
+            break;
+          }
           if (Date.now() - t0 > PAGE_TIMEOUT_MS) {
-            throw new Error(`Timeout UI: ${AUDITOR_LABEL[chosen]} non ha completato in ${Math.round(PAGE_TIMEOUT_MS / 60000)} min. ATTENZIONE: il worker potrebbe ancora finire — controlla la Swipe History tra 5-10 min o openclaw-worker.log. Per landing grosse usa REWRITE_QUALITY_MODE=oneshot sul worker (~5x piu' veloce).`);
+            await cancelWorkerJob(enqueued.id, `UI timeout after ${Math.round(PAGE_TIMEOUT_MS / 60000)}min`);
+            throw new Error(`Timeout UI: ${AUDITOR_LABEL[chosen]} non ha completato in ${Math.round(PAGE_TIMEOUT_MS / 60000)} min. Job cancellato in coda Supabase per non sprecare token. Per landing grosse usa REWRITE_QUALITY_MODE=oneshot sul worker (~5x piu' veloce).`);
           }
           await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
           const pollRes = await fetch(`/api/openclaw/queue?id=${encodeURIComponent(enqueued.id)}`);
@@ -2759,9 +2781,11 @@ export default function FrontEndFunnel() {
             (lastStatus === 'pending' || lastStatus === null)
           ) {
             if (!polled.worker_busy_with) {
+              await cancelWorkerJob(enqueued.id, `No-pickup after ${NO_PICKUP_TIMEOUT_MS / 1000}s (worker offline?)`);
               throw new Error(
                 `${AUDITOR_LABEL[chosen]} non ha preso il job in ${NO_PICKUP_TIMEOUT_MS / 1000}s e nessun altro job risulta in elaborazione per quel worker. ` +
                 `Cause probabili: worker offline / OpenClaw locale (127.0.0.1:18789) non risponde / repo non aggiornato. ` +
+                `Job rimosso dalla coda Supabase (status=error) cosi' non verra' processato in seguito. ` +
                 `Workaround immediato: riprova selezionando ${chosen === 'neo' ? '"Morfeo"' : '"Neo"'} come auditor.`,
               );
             } else if (!busyAnnounced) {
@@ -3502,7 +3526,8 @@ export default function FrontEndFunnel() {
           } | null = null;
           while (true) {
             if (Date.now() - t0 > PAGE_TIMEOUT_MS) {
-              throw new Error(`Timeout UI: ${AUDITOR_LABEL[chosenAuditor]} non ha completato in ${Math.round(PAGE_TIMEOUT_MS / 60000)} min. ATTENZIONE: il worker potrebbe ancora finire — controlla la Swipe History tra 5-10 min o openclaw-worker.log. Per landing grosse usa REWRITE_QUALITY_MODE=oneshot sul worker (~5x piu' veloce).`);
+              await cancelWorkerJob(enqueued.id, `UI timeout after ${Math.round(PAGE_TIMEOUT_MS / 60000)}min`);
+              throw new Error(`Timeout UI: ${AUDITOR_LABEL[chosenAuditor]} non ha completato in ${Math.round(PAGE_TIMEOUT_MS / 60000)} min. Job cancellato in coda Supabase per non sprecare token. Per landing grosse usa REWRITE_QUALITY_MODE=oneshot sul worker (~5x piu' veloce).`);
             }
             await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
             const pollRes = await fetch(`/api/openclaw/queue?id=${encodeURIComponent(enqueued.id)}`);
@@ -3518,9 +3543,11 @@ export default function FrontEndFunnel() {
               (lastStatus === 'pending' || lastStatus === null)
             ) {
               if (!polled.worker_busy_with) {
+                await cancelWorkerJob(enqueued.id, `No-pickup after ${NO_PICKUP_TIMEOUT_MS / 1000}s (worker offline?)`);
                 throw new Error(
                   `${AUDITOR_LABEL[chosenAuditor]} non ha preso il job in ${NO_PICKUP_TIMEOUT_MS / 1000}s e nessun altro job risulta in elaborazione per quel worker. ` +
                     `Cause probabili: worker spento / OpenClaw locale (127.0.0.1:18789) non risponde / repo non aggiornato. ` +
+                    `Job rimosso dalla coda Supabase (status=error) cosi' non verra' processato in seguito. ` +
                     `Workaround immediato: riprova selezionando ${chosenAuditor === 'neo' ? '"Morfeo"' : '"Neo"'} come auditor.`,
                 );
               } else if (!busyAnnounced) {
