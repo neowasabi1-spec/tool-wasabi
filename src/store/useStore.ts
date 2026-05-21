@@ -116,9 +116,17 @@ interface AppFunnelPage {
     htmlSkipped?: boolean;
     mobileHtmlLength?: number;
     mobileHtmlSkipped?: boolean;
+    // URL pubblico Supabase Storage da cui recuperare l'HTML al boot.
+    // Settato dalla pipeline `persistHtmlBlobs` quando l'html supera
+    // HTML_STORAGE_THRESHOLD (50 KB). Persiste cross-browser/device —
+    // l'IndexedDB resta solo come backup locale. Vedi rehydrate logic
+    // in `initializeData` (Step 0).
+    htmlUrl?: string;
+    mobileHtmlUrl?: string;
   };
   swipedData?: {
     html: string;
+    mobileHtml?: string;
     originalTitle: string;
     newTitle: string;
     originalLength: number;
@@ -132,6 +140,8 @@ interface AppFunnelPage {
     htmlSkipped?: boolean;
     mobileHtmlLength?: number;
     mobileHtmlSkipped?: boolean;
+    htmlUrl?: string;
+    mobileHtmlUrl?: string;
   };
   analysisStatus?: SwipeStatus;
   analysisResult?: string;
@@ -242,6 +252,126 @@ function dbTemplateToApp(t: SwipeTemplate): AppSwipeTemplate {
     previewImage: t.preview_image || undefined,
     category: row.category || 'standard',
     createdAt: new Date(t.created_at),
+  };
+}
+
+// ── Persistenza HTML su Supabase Storage ────────────────────────────
+// Per ognuno dei blob JSONB (cloned/swiped/extracted): se contiene un html
+// > 50 KB, lo carica su Storage (path: funnel-html/{pageId}/{kind}.html)
+// e ritorna:
+//   - `forDb.<kind>` : blob da scrivere su DB con html/mobileHtml RIMOSSI
+//     (sostituiti da htmlUrl/mobileHtmlUrl + htmlLength + htmlSkipped=true)
+//   - `urlsByKind.<kind>` : { htmlUrl, mobileHtmlUrl } da MERGEARE nello
+//     state locale senza toccare l'html in-memory
+// Best-effort: se Storage fallisce, restituiamo il blob originale e
+// lasciamo che `supabase-operations.stripHtmlFromJsonb` faccia il suo
+// strip senza salvataggio (l'HTML resterà solo in memoria e in IDB).
+const STORAGE_HTML_FIELDS: Array<['html' | 'mobileHtml', 'htmlUrl' | 'mobileHtmlUrl']> = [
+  ['html', 'htmlUrl'],
+  ['mobileHtml', 'mobileHtmlUrl'],
+];
+
+async function persistHtmlBlobs(
+  pageId: string,
+  blobs: {
+    clonedData?: Record<string, unknown>;
+    swipedData?: Record<string, unknown>;
+    extractedData?: Record<string, unknown>;
+  },
+): Promise<{
+  forDb: {
+    clonedData: Record<string, unknown> | undefined;
+    swipedData: Record<string, unknown> | undefined;
+    extractedData: Record<string, unknown> | undefined;
+  };
+  urlsByKind: {
+    cloned: Record<string, string> | null;
+    swiped: Record<string, string> | null;
+    extracted: Record<string, string> | null;
+  };
+}> {
+  const { persistHtmlToStorage, HTML_STORAGE_THRESHOLD } = await import('@/lib/funnel-html-storage');
+  const { saveHtmlBlob } = await import('@/lib/html-blob-store');
+
+  type Kind = 'cloned' | 'swiped' | 'extracted';
+  const work: Array<{ kind: Kind; idbTarget: 'clonedData' | 'swipedData' | 'extractedData'; blob: Record<string, unknown> | undefined }> = [
+    { kind: 'cloned', idbTarget: 'clonedData', blob: blobs.clonedData },
+    { kind: 'swiped', idbTarget: 'swipedData', blob: blobs.swipedData },
+    { kind: 'extracted', idbTarget: 'extractedData', blob: blobs.extractedData },
+  ];
+
+  const forDb: Record<string, Record<string, unknown> | undefined> = {};
+  const urlsByKind: Record<string, Record<string, string> | null> = { cloned: null, swiped: null, extracted: null };
+
+  for (const { kind, idbTarget, blob } of work) {
+    if (!blob) { forDb[kind] = undefined; continue; }
+    const out: Record<string, unknown> = { ...blob };
+
+    const htmlVal = typeof blob.html === 'string' ? (blob.html as string) : '';
+    const mobileVal = typeof blob.mobileHtml === 'string' ? (blob.mobileHtml as string) : '';
+    const needsHtmlUpload = htmlVal.length > HTML_STORAGE_THRESHOLD;
+    const needsMobileUpload = mobileVal.length > HTML_STORAGE_THRESHOLD;
+
+    if (needsHtmlUpload || needsMobileUpload) {
+      try {
+        const urls = await persistHtmlToStorage(
+          pageId,
+          kind,
+          needsHtmlUpload ? htmlVal : undefined,
+          needsMobileUpload ? mobileVal : undefined,
+        );
+        const collected: Record<string, string> = {};
+        for (const [htmlKey, urlKey] of STORAGE_HTML_FIELDS) {
+          const v = htmlKey === 'html' ? htmlVal : mobileVal;
+          const url = htmlKey === 'html' ? urls.htmlUrl : urls.mobileHtmlUrl;
+          if (v.length > HTML_STORAGE_THRESHOLD && url) {
+            out[urlKey] = url;
+            out[`${htmlKey}Length`] = v.length;
+            out[`${htmlKey}Skipped`] = true;
+            delete out[htmlKey];
+            collected[urlKey] = url;
+          }
+        }
+        urlsByKind[kind] = collected;
+
+        // Backup IDB (best-effort): se Storage in futuro non risponde,
+        // l'utente trova comunque la sua edit su questa macchina.
+        try {
+          await saveHtmlBlob(
+            pageId,
+            idbTarget,
+            htmlVal || '',
+            mobileVal || undefined,
+          );
+        } catch {
+          // silenziosa: IDB è solo backup
+        }
+      } catch (err) {
+        // Storage upload failed — lasciamo il blob originale e
+        // `stripHtmlFromJsonb` farà il vecchio strip. Almeno IDB salva.
+        console.warn(`[useStore.persistHtmlBlobs] Storage upload failed for ${kind} of page ${pageId}, falling back to strip:`, err);
+        try {
+          await saveHtmlBlob(pageId, idbTarget, htmlVal || '', mobileVal || undefined);
+        } catch {
+          // niente
+        }
+      }
+    }
+
+    forDb[kind] = out;
+  }
+
+  return {
+    forDb: {
+      clonedData: forDb.cloned,
+      swipedData: forDb.swiped,
+      extractedData: forDb.extracted,
+    },
+    urlsByKind: {
+      cloned: urlsByKind.cloned,
+      swiped: urlsByKind.swiped,
+      extracted: urlsByKind.extracted,
+    },
   };
 }
 
@@ -431,22 +561,41 @@ export const useStore = create<Store>()((set, get) => ({
       // e React rerenderizza con l'HTML completo.
       void (async () => {
         const { loadHtmlBlob } = await import('@/lib/html-blob-store');
+        const { fetchHtmlFromStorage } = await import('@/lib/funnel-html-storage');
 
         // Tutte le pagine con HTML mancante in clonedData o swipedData,
         // indipendentemente dalla presenza di jobId. Per ognuna proviamo
-        // prima openclaw (se ha jobId) poi IndexedDB.
-        const targets: Array<{ pageId: string; target: 'swipedData' | 'clonedData'; jobId?: string }> = [];
+        // nell'ordine: Storage URL → openclaw → IndexedDB.
+        const targets: Array<{
+          pageId: string;
+          target: 'swipedData' | 'clonedData';
+          jobId?: string;
+          htmlUrl?: string;
+          mobileHtmlUrl?: string;
+        }> = [];
         for (const p of appFunnelPages) {
           if (p.swipedData && (p.swipedData.htmlSkipped || !p.swipedData.html)) {
-            targets.push({ pageId: p.id, target: 'swipedData', jobId: p.swipedData.jobId });
+            targets.push({
+              pageId: p.id,
+              target: 'swipedData',
+              jobId: p.swipedData.jobId,
+              htmlUrl: p.swipedData.htmlUrl,
+              mobileHtmlUrl: p.swipedData.mobileHtmlUrl,
+            });
           }
           if (p.clonedData && (p.clonedData.htmlSkipped || !p.clonedData.html)) {
-            targets.push({ pageId: p.id, target: 'clonedData', jobId: p.clonedData.jobId });
+            targets.push({
+              pageId: p.id,
+              target: 'clonedData',
+              jobId: p.clonedData.jobId,
+              htmlUrl: p.clonedData.htmlUrl,
+              mobileHtmlUrl: p.clonedData.mobileHtmlUrl,
+            });
           }
         }
         if (targets.length === 0) return;
         // eslint-disable-next-line no-console
-        console.log(`[store] tentativo reidratazione HTML per ${targets.length} target (openclaw_messages → IndexedDB fallback)…`);
+        console.log(`[store] tentativo reidratazione HTML per ${targets.length} target (Storage URL → openclaw_messages → IndexedDB)…`);
 
         const applyHydratedHtml = (
           pageId: string,
@@ -475,7 +624,25 @@ export const useStore = create<Store>()((set, get) => ({
         for (let i = 0; i < targets.length; i += PARALLEL) {
           const slice = targets.slice(i, i + PARALLEL);
           await Promise.all(
-            slice.map(async ({ pageId, target, jobId }) => {
+            slice.map(async ({ pageId, target, jobId, htmlUrl, mobileHtmlUrl }) => {
+              // 0) Supabase Storage URL — fonte primaria per le edit del
+              //    VisualHtmlEditor. Cross-browser, cross-device. Se il
+              //    JSONB ha htmlUrl significa che il save ha fatto upload
+              //    su Storage, quindi la versione lì è la più aggiornata.
+              if (htmlUrl) {
+                try {
+                  const html = await fetchHtmlFromStorage(htmlUrl);
+                  const mobileHtml = mobileHtmlUrl ? await fetchHtmlFromStorage(mobileHtmlUrl) : undefined;
+                  if (html) {
+                    applyHydratedHtml(pageId, target, html, mobileHtml || undefined);
+                    return;
+                  }
+                } catch (err) {
+                  // eslint-disable-next-line no-console
+                  console.warn(`[store] Storage rehydrate fallito per page ${pageId}/${target}, provo openclaw/IDB:`, err);
+                }
+              }
+
               // 1) openclaw_messages (solo se jobId)
               if (jobId) {
                 try {
@@ -498,7 +665,7 @@ export const useStore = create<Store>()((set, get) => ({
               }
 
               // 2) IndexedDB locale — copre il clone Identical (no jobId)
-              //    e i casi in cui openclaw non ha la response.
+              //    e i casi in cui openclaw / Storage non hanno la response.
               try {
                 const blob = await loadHtmlBlob(pageId, target);
                 if (blob?.html) {
@@ -790,6 +957,24 @@ export const useStore = create<Store>()((set, get) => ({
       ),
     }));
     try {
+      // ── HTML PERSISTENCE (cross-session, cross-device) ──────────────
+      // Prima del save Supabase: se i blob cloned/swiped/extracted hanno
+      // html grossi (l'edit dell'editor produce facilmente 100-500 KB)
+      // li carichiamo su Supabase Storage e nel JSONB mettiamo solo
+      // `htmlUrl` (~200 byte). Altrimenti `stripHtmlFromJsonb` li
+      // butterebbe via PER SEMPRE per non triggerare 57014, e al refresh
+      // dell'app le edit dell'utente sparirebbero.
+      //
+      // `payload` = quello che va su DB (HTML strippato, solo URL).
+      // Lo state in memoria continua a tenere l'html completo PIÙ gli
+      // htmlUrl appena ottenuti (così la UI renderizza subito e al next
+      // save abbiamo già l'URL).
+      const persisted = await persistHtmlBlobs(id, {
+        clonedData: page.clonedData,
+        swipedData: page.swipedData,
+        extractedData: page.extractedData as Record<string, unknown> | undefined,
+      });
+
       // See `addFunnelPage`: write the selected Project id on `project_id`.
       // We only touch `product_id` if the caller explicitly cleared it
       // (page.productId === '') — otherwise the legacy value is preserved.
@@ -806,12 +991,28 @@ export const useStore = create<Store>()((set, get) => ({
         swipe_status: page.swipeStatus,
         swipe_result: page.swipeResult,
         feedback: page.feedback,
-        cloned_data: page.clonedData as unknown as Record<string, unknown>,
-        swiped_data: page.swipedData as unknown as Record<string, unknown>,
+        cloned_data: persisted.forDb.clonedData as unknown as Record<string, unknown>,
+        swiped_data: persisted.forDb.swipedData as unknown as Record<string, unknown>,
         analysis_status: page.analysisStatus,
         analysis_result: page.analysisResult,
-        extracted_data: page.extractedData as unknown as Record<string, unknown>,
+        extracted_data: persisted.forDb.extractedData as unknown as Record<string, unknown>,
       } as Parameters<typeof supabaseOps.updateFunnelPage>[1]);
+
+      // Riallinea lo state in memoria con gli url Storage appena scritti
+      // (mantenendo l'html originale per il render istantaneo).
+      if (persisted.urlsByKind.cloned || persisted.urlsByKind.swiped || persisted.urlsByKind.extracted) {
+        set((state) => ({
+          funnelPages: state.funnelPages.map((p) => {
+            if (p.id !== id) return p;
+            return {
+              ...p,
+              clonedData: p.clonedData ? { ...p.clonedData, ...persisted.urlsByKind.cloned } as typeof p.clonedData : p.clonedData,
+              swipedData: p.swipedData ? { ...p.swipedData, ...persisted.urlsByKind.swiped } as typeof p.swipedData : p.swipedData,
+              extractedData: p.extractedData ? { ...p.extractedData, ...persisted.urlsByKind.extracted } as typeof p.extractedData : p.extractedData,
+            };
+          }),
+        }));
+      }
       
       // Merge DB result with the optimistic state instead of replacing it.
       // `supabaseOps.updateFunnelPage` strips the raw `html` blob from

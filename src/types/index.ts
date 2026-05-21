@@ -94,6 +94,7 @@ export interface SwipeApiResponse {
 
 export interface SwipedPageData {
   html: string;
+  mobileHtml?: string;
   originalTitle: string;
   newTitle: string;
   originalLength: number;
@@ -102,6 +103,14 @@ export interface SwipedPageData {
   methodUsed: string;
   changesMade: string[];
   swipedAt: Date;
+  /** Vedi ClonedPageData per la semantica di questi campi. */
+  jobId?: string;
+  htmlSkipped?: boolean;
+  htmlLength?: number;
+  mobileHtmlSkipped?: boolean;
+  mobileHtmlLength?: number;
+  htmlUrl?: string;
+  mobileHtmlUrl?: string;
 }
 
 export interface FunnelAnalysis {
@@ -187,6 +196,22 @@ export interface ClonedPageData {
   content_length: number;
   duration_seconds: number;
   cloned_at: Date;
+  /** Job id quando l'HTML arriva da un worker (rewrite / extract). */
+  jobId?: string;
+  /** Set dallo strip server-side: il blob HTML è stato tolto dal JSONB
+   *  per non triggerare Postgres 57014 (statement_timeout 3s).
+   *  L'HTML è recuperabile via htmlUrl (Supabase Storage), openclaw_messages
+   *  (se jobId presente) o IndexedDB locale. Vedi useStore rehydrate logic. */
+  htmlSkipped?: boolean;
+  htmlLength?: number;
+  mobileHtmlSkipped?: boolean;
+  mobileHtmlLength?: number;
+  /** URL pubblico Supabase Storage da cui recuperare l'HTML al boot.
+   *  Scritto da supabaseOps.updateFunnelPage quando l'html supera la
+   *  soglia di persistenza JSONB (50 KB). Persiste cross-browser e
+   *  cross-device — IndexedDB resta solo come backup locale. */
+  htmlUrl?: string;
+  mobileHtmlUrl?: string;
 }
 
 export interface FunnelPage {
