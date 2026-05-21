@@ -94,6 +94,14 @@ interface VisualHtmlEditorProps {
   onSave: (html: string, mobileHtml?: string) => void;
   onClose: () => void;
   pageTitle?: string;
+  /** URL originale da cui è stata clonata/swipata la pagina. Usato per:
+   *  1) Iniettare `<base href>` dentro l'iframe srcdoc così le URL
+   *     relative dell'HTML (es. `/brain_waves.png`) si risolvono contro
+   *     l'origin sorgente invece che contro `about:srcdoc` (broken) o
+   *     contro il dominio della nostra Netlify (404).
+   *  2) Riscrivere a runtime qualunque src/href che sia accidentalmente
+   *     finito puntato al nostro dominio editor invece che al sorgente. */
+  sourceUrl?: string;
   /** Project context: passato dal parent (front-end-funnel) e usato per
    *  pre-compilare il prompt quando l'utente clicca "Swipe for Product"
    *  su un video. Senza questo, il bottone esiste comunque e usa solo
@@ -623,10 +631,55 @@ const EDITOR_SCRIPT = `
 
 /* ─────────── Helpers ─────────── */
 
-function prepareEditorHtml(html: string): string {
+function prepareEditorHtml(html: string, sourceUrl?: string): string {
   let clean = html;
   clean = clean.replace(/<meta[^>]*content-security-policy[^>]*>/gi, '');
   clean = clean.replace(/loading=["']lazy["']/gi, 'loading="eager"');
+
+  // ── BASE HREF: garantisce che le URL RELATIVE nell'HTML clonato
+  // si risolvano contro l'origin del sito sorgente, non contro
+  // about:srcdoc (= broken) o contro il dominio del nostro editor
+  // (= 404 perché le immagini non esistono lì).
+  //
+  // Senza questa fix: `<img src="/brain_waves.png">` nell'HTML clonato
+  // → iframe srcdoc cerca about:srcdoc/brain_waves.png oppure
+  // cute-cupcake-74bad8.netlify.app/brain_waves.png → 404 → broken icon.
+  //
+  // Lo applichiamo SOLO se `<base href>` non c'è gia' (stabilizeClonedHtml
+  // lo inietta di solito ma cloni vecchi o swipe-generated potrebbero
+  // non averlo).
+  if (sourceUrl) {
+    try {
+      const sourceOrigin = new URL(sourceUrl).origin;
+      const baseHrefVal = sourceOrigin + '/';
+      const hasBase = /<base\b[^>]*\bhref\s*=/i.test(clean);
+      if (!hasBase) {
+        const baseTag = `<base href="${baseHrefVal}">`;
+        if (/<head\b[^>]*>/i.test(clean)) {
+          clean = clean.replace(/<head\b([^>]*)>/i, `<head$1>${baseTag}`);
+        } else if (/<html\b[^>]*>/i.test(clean)) {
+          clean = clean.replace(/<html\b([^>]*)>/i, `<html$1><head>${baseTag}</head>`);
+        } else {
+          clean = `<head>${baseTag}</head>${clean}`;
+        }
+      }
+
+      // RIPARA URL ASSOLUTE puntate per errore al dominio del nostro editor
+      // (es. https://cute-cupcake-74bad8.netlify.app/brain_waves.png) →
+      // rewrite all'origin sorgente. Capita quando la pipeline di clone
+      // più vecchia non assolutizzava le URL relative e il save successivo
+      // ha "congelato" la risoluzione contro window.location.origin.
+      if (typeof window !== 'undefined') {
+        const editorOrigin = window.location.origin;
+        if (editorOrigin && editorOrigin !== sourceOrigin) {
+          const escaped = editorOrigin.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          // (src|href|content|action|poster|srcset)="<editorOrigin>..."  → "<sourceOrigin>..."
+          const reAttr = new RegExp(`(["'(])${escaped}(?=\\/|["'\\s)])`, 'gi');
+          clean = clean.replace(reAttr, `$1${sourceOrigin}`);
+        }
+      }
+    } catch { /* sourceUrl invalido — skip */ }
+  }
   // ── BLOCCA SOLO I 404-RETRY-LOOP CHECKOUTCHAMP, NON LE IMMAGINI ────
   // Il problema originale era: alcuni script Taboola/CKC polling fanno
   // fetch/XHR a checkoutchamp.com in loop infinito se rispondono 404 →
@@ -1360,7 +1413,7 @@ const TEXT_EDITABLE_TAGS = new Set([
 
 /* ─────────── Component ─────────── */
 
-export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSave, onClose, pageTitle, productContext }: VisualHtmlEditorProps) {
+export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSave, onClose, pageTitle, productContext, sourceUrl }: VisualHtmlEditorProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [mode, setMode] = useState<EditorMode>('visual');
   const [selectedElement, setSelectedElement] = useState<ElementInfo | null>(null);
@@ -3034,7 +3087,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
 
   // Only recompute srcDoc when we explicitly need to reload the iframe (undo/redo/AI edit/viewport switch)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const stableSrcDoc = useMemo(() => prepareEditorHtml(activeHtml), [iframeVersion, editorViewport]);
+  const stableSrcDoc = useMemo(() => prepareEditorHtml(activeHtml, sourceUrl), [iframeVersion, editorViewport, sourceUrl]);
   const el = selectedElement;
 
   // Preview mode: il <iframe srcDoc={activeHtml}> esegue TUTTI gli script

@@ -4069,6 +4069,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
           metadata: { method: 'claude-rewrite', length: rewrittenHtml.length, duration: 0 },
           pageId,
           sourceType: 'swiped',
+          sourceUrl: url,
         });
 
       } else if (mode === 'translate') {
@@ -4237,6 +4238,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
           metadata: { method: 'translate-batch', length: translatedHtml.length, duration: durationMs },
           pageId,
           sourceType: 'swiped',
+          sourceUrl: url,
         });
       }
     } catch (error) {
@@ -5613,6 +5615,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                     },
                                     pageId: page.id,
                                     sourceType: 'swiped',
+                                    sourceUrl: page.urlToSwipe || page.url || '',
                                   });
                                 } else if (page.clonedData) {
                                   const got = await fetchHtmlIfNeeded(page.clonedData, 'clonedData');
@@ -8026,6 +8029,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
           initialHtml={htmlPreviewModal.html}
           initialMobileHtml={htmlPreviewModal.mobileHtml || undefined}
           pageTitle={htmlPreviewModal.title || 'Edit Landing'}
+          sourceUrl={htmlPreviewModal.sourceUrl}
           productContext={editorProject ? {
             name: editorProject.name,
             description: editorProject.description || '',
