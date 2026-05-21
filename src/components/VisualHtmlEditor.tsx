@@ -627,32 +627,31 @@ function prepareEditorHtml(html: string): string {
   let clean = html;
   clean = clean.replace(/<meta[^>]*content-security-policy[^>]*>/gi, '');
   clean = clean.replace(/loading=["']lazy["']/gi, 'loading="eager"');
-  // ── BLOCCA LOOP 404 CHECKOUTCHAMP NELL'EDITOR ──────────────────────
-  // Stesso problema del preview iframe del front-end-funnel: l'HTML
-  // ha src che puntano a assets.checkoutchamp.com (asset Metabolic Wave
-  // non ancora caricati lì → 404 ripetuti per script Taboola CKC poll).
-  // Sostituisci URL → data:GIF trasparente + intercetta fetch/XHR.
+  // ── BLOCCA SOLO I 404-RETRY-LOOP CHECKOUTCHAMP, NON LE IMMAGINI ────
+  // Il problema originale era: alcuni script Taboola/CKC polling fanno
+  // fetch/XHR a checkoutchamp.com in loop infinito se rispondono 404 →
+  // console flood + memory leak.
+  //
+  // ⚠️ FIX storico SBAGLIATO: sostituiva TUTTE le src= di img/video con
+  //    una GIF trasparente, "rompendo" tutte le foto prodotto, stelline
+  //    recensioni, badge garanzia, tick verdi ecc. che vengono caricate
+  //    legittimamente dal CDN CKC (es. Nooro Metabolic Wave usa
+  //    assets.checkoutchamp.com/.../stars.png, greentick.png, prodotto
+  //    1.webp). Risultato: editor mostrava una landing "vuota".
+  //
+  // Ora interveniamo SOLO a livello di fetch/XHR (i veri responsabili
+  // dei loop) e installiamo un onerror listener che nasconde
+  // silenziosamente eventuali immagini che davvero falliscono.
+  // Le src/href/srcset/url() restano intatte → tutte le immagini
+  // del CDN che funzionano vengono mostrate normalmente.
   {
-    const TRANSPARENT_GIF = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
-    const CKC_RX = /(?:assets|cdn|images?)\.checkoutchamp\.com/i;
+    const CKC_RX = /(?:assets|cdn|images?|api)\.checkoutchamp\.com/i;
     if (CKC_RX.test(clean)) {
-      clean = clean.replace(
-        /(src|href|data-src|data-original|poster)\s*=\s*(["'])https?:\/\/[^"']*?(?:assets|cdn|images?)\.checkoutchamp\.com[^"']*\2/gi,
-        (_m, attr, q) => `${attr}=${q}${TRANSPARENT_GIF}${q}`
-      );
-      clean = clean.replace(
-        /srcset\s*=\s*(["'])[^"']*?(?:assets|cdn|images?)\.checkoutchamp\.com[^"']*\1/gi,
-        'srcset=""'
-      );
-      clean = clean.replace(
-        /url\((['"]?)https?:\/\/[^)'"]*?(?:assets|cdn|images?)\.checkoutchamp\.com[^)'"]*\1\)/gi,
-        `url('${TRANSPARENT_GIF}')`
-      );
       const noRetryGuard = `<script data-editor-ckc-noretry>(function(){try{
         document.addEventListener('error', function(ev){var t=ev.target; if(!t)return;
           if(t.tagName==='IMG'||t.tagName==='SOURCE'||t.tagName==='VIDEO'){t.onerror=null; t.style.visibility='hidden';}
         }, true);
-        var BLOCK_RX=/(?:assets|cdn|images?|api)\\.checkoutchamp\\.com/i;
+        var BLOCK_RX=/(?:api)\\.checkoutchamp\\.com/i; // SOLO api.*, non assets/cdn/images
         var origFetch=window.fetch;
         if(typeof origFetch==='function'){window.fetch=function(u){var url=(typeof u==='string')?u:(u&&u.url)||'';
           if(BLOCK_RX.test(url))return Promise.resolve(new Response('',{status:204}));

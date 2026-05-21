@@ -6398,30 +6398,19 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                               safeHtml = safeHtml.includes('<head>') ? safeHtml.replace('<head>', '<head>' + refTag) : refTag + safeHtml;
                             }
                             safeHtml = safeHtml.replace(/loading=["']lazy["']/gi, 'loading="eager"');
-                            // ── BLOCCA 404 LOOP DA assets.checkoutchamp.com ──────────────
-                            // Le rewrite del competitor a volte puntano immagini al
-                            // CDN CheckoutChamp del nostro prodotto, dove gli asset
-                            // non sono ancora stati caricati (404). Script Taboola/CKC
-                            // nell'HTML originale fanno poi polling continuo. Per
-                            // silenziare il loop:
-                            //   1. sostituisci src/href/srcset checkoutchamp → data:GIF 1x1 trasparente
-                            //   2. sostituisci background-image:url(checkoutchamp) → data:GIF
-                            //   3. inietta uno script che attacca onerror globale alle <img>
-                            //      cosi' qualsiasi altra 404 imprevista non fa retry/log
-                            const TRANSPARENT_GIF = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
-                            const CKC_HOST_RX = /(?:assets|cdn|images?)\.checkoutchamp\.com/i;
-                            safeHtml = safeHtml.replace(
-                              /(src|href|data-src|data-original|poster)\s*=\s*(["'])https?:\/\/[^"']*?(?:assets|cdn|images?)\.checkoutchamp\.com[^"']*\2/gi,
-                              (_m, attr, q) => `${attr}=${q}${TRANSPARENT_GIF}${q}`
-                            );
-                            safeHtml = safeHtml.replace(
-                              /srcset\s*=\s*(["'])[^"']*?(?:assets|cdn|images?)\.checkoutchamp\.com[^"']*\1/gi,
-                              'srcset=""'
-                            );
-                            safeHtml = safeHtml.replace(
-                              /url\((['"]?)https?:\/\/[^)'"]*?(?:assets|cdn|images?)\.checkoutchamp\.com[^)'"]*\1\)/gi,
-                              `url('${TRANSPARENT_GIF}')`
-                            );
+                            // ── BLOCCA SOLO I 404-LOOP CKC, NON LE IMMAGINI ──────────────
+                            // ⚠️ FIX storico SBAGLIATO: sostituiva TUTTE le src= di
+                            //    img/video puntate ad assets.checkoutchamp.com con una
+                            //    GIF trasparente, "rompendo" stelline recensioni, foto
+                            //    prodotto, badge garanzia e tick verdi che vengono
+                            //    serviti legittimamente dal CDN CKC. Nooro Metabolic
+                            //    Wave per es. usa stars.png, greentick.png, 1.webp.
+                            //
+                            //  Ora interveniamo SOLO sulle XHR/fetch verso `api.*` e
+                            //  installiamo un onerror listener che nasconde
+                            //  silenziosamente eventuali immagini realmente broken.
+                            //  src/href/srcset/url() restano intatti.
+                            const CKC_HOST_RX = /(?:assets|cdn|images?|api)\.checkoutchamp\.com/i;
                             if (CKC_HOST_RX.test(htmlToShow)) {
                               const noRetryGuard = `<script data-fallback="ckc-noretry">(function(){
                                 try{
@@ -6435,9 +6424,10 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                       t.style.visibility = 'hidden';
                                     }
                                   }, true);
-                                  // Patcha fetch/XHR per intercettare richieste a CheckoutChamp
-                                  // e restituire 204 No Content, fermando i poll di Taboola CKC.
-                                  var BLOCK_RX = /(?:assets|cdn|images?|api)\\.checkoutchamp\\.com/i;
+                                  // Patcha fetch/XHR per intercettare richieste a CheckoutChamp api.*
+                                  // (NON assets/cdn/images: quelli devono caricare).
+                                  // 204 No Content ferma i poll di Taboola CKC.
+                                  var BLOCK_RX = /(?:api)\\.checkoutchamp\\.com/i;
                                   var origFetch = window.fetch;
                                   if(typeof origFetch === 'function'){
                                     window.fetch = function(u, opts){
