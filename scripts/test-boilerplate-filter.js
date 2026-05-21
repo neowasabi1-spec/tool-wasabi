@@ -10,6 +10,8 @@ const URL_PATH_RE = /^\/[A-Za-z0-9_\-/.~%]+$/;
 const HASH_RE = /^[A-Za-z0-9_\-]{24,}$/;
 const CSS_TOKEN_RE = /^[a-zA-Z][a-zA-Z0-9]*(?:[-_]+[a-zA-Z0-9]+){1,8}$/;
 const CSV_TECHNICAL_TOKENS_RE = /^[a-z][a-z0-9\-]{1,30}(?:\s*[,;]\s*[a-z][a-z0-9\-]{1,30}){1,8}$/;
+const CSS_RULE_RE = /\{[^{}]*:[^{}]*\}/;
+const CSS_INDICATOR_RE = /\b(?:padding-(?:top|bottom|left|right)|margin-(?:top|bottom|left|right)|color-scheme|--color-[a-z\-]+|--gradient-[a-z\-]+|font-(?:size|family|weight|style)|line-height|background(?:-color|-image)?|display\s*:|width\s*:|height\s*:|@media\s+(?:screen|all|print)|nth-child|grid-template|flex-direction|column-gap|row-gap|var\s*\(\s*--)/;
 
 function looksLikeTechnicalBoilerplate(s) {
   if (!s) return false;
@@ -19,6 +21,7 @@ function looksLikeTechnicalBoilerplate(s) {
   if (HASH_RE.test(s) && /\d/.test(s) && /[a-zA-Z]/.test(s)) return true;
   if (META_TECHNICAL_RE.test(s) && /[a-zA-Z][a-zA-Z\-]*=/.test(s)) return true;
   if (CSV_TECHNICAL_TOKENS_RE.test(s)) return true;
+  if (len >= 30 && CSS_RULE_RE.test(s) && CSS_INDICATOR_RE.test(s)) return true;
   if (
     len >= 4 && len <= 50 &&
     !/\s/.test(s) &&
@@ -41,6 +44,13 @@ const SHOULD_FILTER = [
   'btn-primary--large',
   'no-cache,no-store',
   'shop_pay_session_abc123def456ghi789',
+  // Da log calminity (Shopify section CSS)
+  '.icon-hamburger { display: flex !important; align-items: flex-start; flex-direction: column; gap: calc(8px - var(--icons-thickness)); }',
+  '.section-template--29442616754517__custom_columns_KDUTnD-padding { padding-top: 12px; padding-bottom: 12px; }',
+  '.color-scheme-template--29442616754517__rich_text_ajjPdP.color-custom { --color-background: 255, 255, 255; --gradient-background: #ffffff; --color-foreground: 46, 42, 57; }',
+  '.drawer { visibility: hidden; } .cart-drawer .drawer__footer { background: #f3f3f3; }',
+  '.cart-drawer .cart-item--product-shipping-insurance { display: none; }',
+  '@media screen and (min-width: 750px) { .header { padding-top: 16px; padding-bottom: 20px; } }',
 ];
 
 const SHOULD_PASS = [
@@ -70,6 +80,12 @@ const SHOULD_PASS = [
   '$39',
   '€1.200',
   '20 lbs',
+  // Copy con braces / colon che NON è CSS (regressione check)
+  'Email: support@brand.com — risposta entro 24h',
+  'Bonus: free shipping on orders over $50',
+  'Step 1: choose your plan. Step 2: complete checkout.',
+  'Use code {SAVE20} at checkout for 20% off your order',
+  'Limited time: 50% off our best-selling formula',
 ];
 
 let failed = 0;

@@ -85,6 +85,22 @@ const CSS_TOKEN_RE = /^[a-zA-Z][a-zA-Z0-9]*(?:[-_]+[a-zA-Z0-9]+){1,8}$/;
 // sono sempre lowercase + trattino, mai punteggiatura di frase.
 const CSV_TECHNICAL_TOKENS_RE = /^[a-z][a-z0-9\-]{1,30}(?:\s*[,;]\s*[a-z][a-z0-9\-]{1,30}){1,8}$/;
 
+// CSS inline / <style> content estratto come "testo". Su Shopify (e
+// piattaforme che usano section CSS scoped per template) i template
+// section-id-driven generano blob enormi tipo:
+//   ".section-template--29442616754517__custom_columns_KDUTnD-padding
+//    { padding-top: 12px; padding-bottom: 12px; } @media screen ..."
+// che l'extractor cattura come "tag:div" o "spa-json". Il modello li
+// echa giustamente (non sono copy) ma costano un sacco di token e
+// fanno girare il gap-fill in loop. Heuristica:
+//   - Almeno una regola CSS (`{ key: value }`) → CSS_RULE_RE
+//   - PIÙ almeno un indicatore certo (padding-, color-scheme, --color-,
+//     @media, font-size, ecc) → CSS_INDICATOR_RE
+// La doppia condizione evita falsi positivi su copy tipo
+// "Email: name@domain.com" (un `:` ma niente `{}` né indicatori CSS).
+const CSS_RULE_RE = /\{[^{}]*:[^{}]*\}/;
+const CSS_INDICATOR_RE = /\b(?:padding-(?:top|bottom|left|right)|margin-(?:top|bottom|left|right)|color-scheme|--color-[a-z\-]+|--gradient-[a-z\-]+|font-(?:size|family|weight|style)|line-height|background(?:-color|-image)?|display\s*:|width\s*:|height\s*:|@media\s+(?:screen|all|print)|nth-child|grid-template|flex-direction|column-gap|row-gap|var\s*\(\s*--)/;
+
 function looksLikeTechnicalBoilerplate(s) {
   if (!s) return false;
   const len = s.length;
@@ -97,6 +113,10 @@ function looksLikeTechnicalBoilerplate(s) {
   if (META_TECHNICAL_RE.test(s) && /[a-zA-Z][a-zA-Z\-]*=/.test(s)) return true;
   // CSV di token tecnici (Cache-Control / robots / CSP-like).
   if (CSV_TECHNICAL_TOKENS_RE.test(s)) return true;
+  // Inline CSS / <style> blocks: deve avere ALMENO una regola `{ k: v }`
+  // E almeno un indicatore CSS riconoscibile. Soglia 30 char per evitare
+  // falsi positivi su markup tipo "{key}" usati in copy templated.
+  if (len >= 30 && CSS_RULE_RE.test(s) && CSS_INDICATOR_RE.test(s)) return true;
   if (
     len >= 4 && len <= 50 &&
     !/\s/.test(s) &&
