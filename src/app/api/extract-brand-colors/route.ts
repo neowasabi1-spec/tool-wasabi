@@ -82,8 +82,17 @@ async function geminiJson(
   systemInstruction: string,
   userParts: Array<{ text: string } | { inline_data: { mime_type: string; data: string } }>
 ): Promise<Record<string, unknown>> {
-  const apiKey = (process.env.GOOGLE_GEMINI_API_KEY ?? '').trim();
-  if (!apiKey) throw new Error('GOOGLE_GEMINI_API_KEY not configured');
+  // Accetta entrambi i nomi (il resto della codebase fa lo stesso): GEMINI_API_KEY
+  // è il nome ufficiale di Google AI Studio, GOOGLE_GEMINI_API_KEY è il nome
+  // usato storicamente in questo repo.
+  const apiKey = (
+    process.env.GOOGLE_GEMINI_API_KEY ??
+    process.env.GEMINI_API_KEY ??
+    ''
+  ).trim();
+  if (!apiKey) {
+    throw new Error('GOOGLE_GEMINI_API_KEY (or GEMINI_API_KEY) not configured');
+  }
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
   const res = await fetch(url, {
