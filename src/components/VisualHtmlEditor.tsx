@@ -895,6 +895,162 @@ function prepareEditorHtml(html: string): string {
     /* Icona rotazione "+/-" → ferma allo stato chiuso visivamente, non
        importa perche' l'utente non clicca per chiudere, gli serve solo
        vedere/editare il contenuto. */
+
+    /* ── CAROUSEL/SLIDER: FORZA TUTTI GLI SLIDE VISIBILI ──────────
+     * In editor abbiamo strippato gli <script>. Conseguenza: Swiper /
+     * Slick / Owl / Glide non partono. Risultato: solo il primo slide
+     * e' visibile, gli altri sono nascosti con display:none o
+     * transform:translateX(-9999px) sul wrapper. L'utente vede solo
+     * una testimonianza/recensione/feature invece di tutte → si
+     * lamenta che "mancano immagini e stelline".
+     *
+     * Fix: forziamo TUTTI gli slide visibili (uno sotto l'altro,
+     * scroll-snap-style), neutralizziamo i transform sul wrapper,
+     * e mostriamo le freccette/dots come riferimento di stile (ma
+     * disabilitate). Tutti i pattern comuni coperti. */
+    .swiper-wrapper,
+    .swiper-container,
+    .swiper,
+    .slick-track,
+    .slick-list,
+    .owl-stage,
+    .owl-stage-outer,
+    .owl-carousel,
+    .glide__track,
+    .glide__slides,
+    .glide,
+    .flickity-slider,
+    .flickity-viewport,
+    .splide__track,
+    .splide__list,
+    .carousel-inner,
+    .carousel-items,
+    [class*="carousel"][class*="wrapper"],
+    [class*="slider"][class*="wrapper"],
+    [class*="slider"][class*="track"] {
+      transform: none !important;
+      -webkit-transform: none !important;
+      transition: none !important;
+      width: auto !important;
+      height: auto !important;
+      max-width: 100% !important;
+      display: flex !important;
+      flex-wrap: wrap !important;
+      gap: 16px !important;
+      overflow: visible !important;
+      position: relative !important;
+      left: auto !important;
+      top: auto !important;
+    }
+    .swiper-slide,
+    .slick-slide,
+    .owl-item,
+    .glide__slide,
+    .splide__slide,
+    .carousel-item,
+    .carousel-cell,
+    .flickity-cell,
+    .testimonial-slide,
+    .review-slide,
+    .slider-item,
+    [class*="carousel"][class*="item"],
+    [class*="slider"][class*="item"] {
+      display: block !important;
+      visibility: visible !important;
+      opacity: 1 !important;
+      transform: none !important;
+      -webkit-transform: none !important;
+      position: relative !important;
+      left: auto !important;
+      top: auto !important;
+      width: auto !important;
+      min-width: 280px !important;
+      max-width: 100% !important;
+      flex: 0 1 calc(33.333% - 16px) !important;
+      height: auto !important;
+      pointer-events: auto !important;
+    }
+    /* Slick/Swiper a volte usano aria-hidden + tabindex per nascondere */
+    .slick-slide[aria-hidden="true"],
+    .swiper-slide[aria-hidden="true"],
+    [aria-hidden="true"][class*="slide"] {
+      display: block !important;
+      visibility: visible !important;
+      opacity: 1 !important;
+    }
+    /* Mobile: 1 colonna invece di 3 */
+    @media (max-width: 768px) {
+      .swiper-slide, .slick-slide, .owl-item, .glide__slide,
+      .splide__slide, .carousel-item, .carousel-cell, .flickity-cell,
+      .testimonial-slide, .review-slide, .slider-item,
+      [class*="carousel"][class*="item"], [class*="slider"][class*="item"] {
+        flex: 0 1 100% !important;
+      }
+    }
+
+    /* ── FALLBACK PER ICON-FONT MANCANTI (FontAwesome SVG-with-JS) ─
+     * Pattern <i class="fas fa-star"></i> renderizzato dal JS di FA.
+     * Abbiamo strippato gli script → i container <i> restano vuoti
+     * e non si vedono. Inietto pseudo-content con char unicode per
+     * le icone piu' usate nelle landing (stelle, check, frecce). Se
+     * il font FA e' invece caricato via CSS link tag, l'unicode FA
+     * Pro/Free vince comunque, quindi non rompiamo niente. */
+    i.fa-star::before, i.fas.fa-star::before, i.far.fa-star::before,
+    i.fa.fa-star::before, .fa-solid.fa-star::before, .fa-regular.fa-star::before,
+    svg.fa-star, .icon-star::before, [class*="star-icon"]::before {
+      content: "★";
+      font-family: "FontAwesome", "Font Awesome 6 Free", "Font Awesome 5 Free", Arial, sans-serif;
+      font-style: normal;
+      color: inherit;
+      display: inline-block;
+    }
+    i.fa-star-half::before, i.fa-star-half-alt::before, i.fa-star-half-stroke::before {
+      content: "⯨";
+      font-family: "FontAwesome", "Font Awesome 6 Free", Arial, sans-serif;
+      font-style: normal;
+      display: inline-block;
+    }
+    i.fa-check::before, i.fas.fa-check::before, .fa-solid.fa-check::before,
+    .icon-check::before, [class*="check-icon"]::before {
+      content: "✓";
+      font-family: "FontAwesome", "Font Awesome 6 Free", Arial, sans-serif;
+      font-style: normal;
+      display: inline-block;
+    }
+    i.fa-circle-check::before, i.fa-check-circle::before {
+      content: "✔";
+      font-family: "FontAwesome", "Font Awesome 6 Free", Arial, sans-serif;
+      font-style: normal;
+      display: inline-block;
+    }
+    i.fa-times::before, i.fa-xmark::before, i.fa-close::before {
+      content: "✕";
+      font-family: "FontAwesome", "Font Awesome 6 Free", Arial, sans-serif;
+      font-style: normal;
+      display: inline-block;
+    }
+    i.fa-arrow-right::before, i.fa-chevron-right::before, i.fa-angle-right::before {
+      content: "›";
+      font-family: "FontAwesome", "Font Awesome 6 Free", Arial, sans-serif;
+      font-style: normal;
+      display: inline-block;
+    }
+    i.fa-arrow-left::before, i.fa-chevron-left::before, i.fa-angle-left::before {
+      content: "‹";
+      font-family: "FontAwesome", "Font Awesome 6 Free", Arial, sans-serif;
+      font-style: normal;
+      display: inline-block;
+    }
+    /* Empty <i> containers (FA SVG-with-JS rimuove il content e mette
+     * un <svg> al posto del <i> via JS). Se il <i> e' completamente
+     * vuoto, gli diamo una dimensione minima e un placeholder square
+     * cosi' l'utente vede DOVE sta l'icona e puo' editarla. */
+    i.fa:empty, i.fas:empty, i.far:empty, i.fab:empty, i.fal:empty,
+    i[class*="fa-"]:empty {
+      display: inline-block;
+      min-width: 1em;
+      min-height: 1em;
+    }
   </style>`;
   const script = `<script>${EDITOR_SCRIPT}<\/script>`;
   const inject = editorCss + script;
