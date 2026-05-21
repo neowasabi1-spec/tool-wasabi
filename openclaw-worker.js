@@ -943,6 +943,26 @@ async function runRewriteInBatches(systemPrompt, userMessage) {
 
   // Per il check "echo" ci serve l'originale di ogni id.
   const idToOriginal = new Map();
+  // Contatore di echi consecutivi per id: se il modello continua a
+  // rispedire identico l'originale per lo stesso id, dopo
+  // MAX_ECHOES_BEFORE_GIVEUP tentativi smettiamo di ritentarlo nei
+  // gap-fill pass. Senza questo, il loop split-A/split-B insiste
+  // all'infinito sugli stessi 30 id che il modello rifiuta di
+  // riscrivere (vedi log salvinilabs/adv9 18/05: 18 min persi su
+  // questo prima di arrivare a "neverTouched"). Trade-off: gli id
+  // con MAX_ECHOES restano = originale, ma è esattamente il fallback
+  // finale che faremmo comunque dopo i 4 pass — solo molto più veloce.
+  const idEchoCount = new Map();
+  const MAX_ECHOES_BEFORE_GIVEUP = 2;
+  // Quante volte il modello ha rispedito identico l'originale per
+  // questo id (= "echo"). Usato dal gap-fill per skippare gli id che
+  // il modello rifiuta sistematicamente di riscrivere (es. testi che
+  // gli sembrano gia' "abbastanza buoni") dopo MAX_ECHOES_PER_ID
+  // tentativi. Senza questo cap, il gap-fill perde 15-20 min su pagine
+  // medie facendo split-A/split-B all'infinito sui soliti 20-30 id
+  // (vedi log salvinilabs/adv9 18/05: 18 min in p1, 0/2 coperti
+  // ripetuto 6 volte di seguito).
+  const idEchoCount = new Map();
   for (const t of texts) {
     if (t && typeof t.id === 'number' && typeof t.text === 'string') {
       idToOriginal.set(t.id, t.text.trim());
@@ -1023,9 +1043,12 @@ async function runRewriteInBatches(systemPrompt, userMessage) {
       if (!trimmed) continue;
       // Reject "echo": se il modello restituisce identico all'originale e il
       // testo non e' breve/strutturale, non lo registriamo cosi' verra' ritentato
-      // nel pass di echo-fill.
+      // nel pass di echo-fill. Incrementiamo il counter cosi' il gap-fill
+      // pia' avanti puo' decidere di mollare gli id "irriducibili" invece di
+      // ritentarli all'infinito.
       const original = idToOriginal.get(rw.id);
       if (original && trimmed === original && original.length > 20) {
+        idEchoCount.set(rw.id, (idEchoCount.get(rw.id) || 0) + 1);
         continue;
       }
       // Solo se non avevamo gia' una rewrite buona per questo id, oppure se
@@ -1114,8 +1137,30 @@ async function runRewriteInBatches(systemPrompt, userMessage) {
   const langMatch = systemPrompt.match(/(?:LINGUA|OUTPUT LANGUAGE).*?:\s*([a-zA-Z]+)/i);
   const detectedLang = langMatch ? langMatch[1].toLowerCase().slice(0, 2) : 'it';
 
+  // Soglia oltre la quale consideriamo un id "irriducibile" e
+  // smettiamo di ritentarlo nei gap-fill. 2 = il modello ha gia'
+  // rispedito 2 volte l'originale identico, e' molto improbabile che
+  // al terzo cambi idea. Configurabile via env per chi vuole il
+  // vecchio comportamento "ritenta sempre".
+  const MAX_ECHOES_PER_ID = Math.max(
+    1,
+    Number.parseInt(process.env.REWRITE_MAX_ECHOES_PER_ID || '2', 10) || 2,
+  );
+
   for (let pass = 1; pass <= REWRITE_GAP_FILL_PASSES; pass++) {
-    const missing = texts.filter((t) => !idToRewrite.has(t.id));
+    const missing = texts.filter((t) => {
+      if (idToRewrite.has(t.id)) return false;
+      const echoes = idEchoCount.get(t.id) || 0;
+      return echoes < MAX_ECHOES_PER_ID;
+    });
+    const givenUp = texts.filter((t) =>
+      !idToRewrite.has(t.id) && (idEchoCount.get(t.id) || 0) >= MAX_ECHOES_PER_ID
+    ).length;
+    if (givenUp > 0) {
+      log(
+        `  · gap-fill pass ${pass}: ${givenUp} id saltati (echo-ati ${MAX_ECHOES_PER_ID}+ volte → resteranno = originale)`,
+      );
+    }
     if (missing.length === 0) break;
     const isLastPass = pass === REWRITE_GAP_FILL_PASSES;
 

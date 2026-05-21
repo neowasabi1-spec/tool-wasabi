@@ -44,6 +44,89 @@ function looksLikeCountryCurrencyPicker(s) {
   return COUNTRY_CURRENCY_RE.test(s);
 }
 
+// ── BOILERPLATE TECNICO: filtri pre-LLM ─────────────────────────
+// Pattern HTML/Shopify/Next.js che NON sono copy ma finiscono nei
+// prompt e fanno "echare" il modello (= rispedisce identico
+// l'originale). Senza questo filtro, il gap-fill perde 15-20 min su
+// pagine medie ritentando questi id all'infinito (vedi log
+// salvinilabs/adv9 18/05). Sono tutti "ZERO valore di copy", come
+// i country-currency picker sopra.
+//
+// Pattern catturati:
+//
+//  1) META content tecnici:
+//     "width=device-width,initial-scale=1" (viewport)
+//     "IE=edge" (X-UA-Compatible)
+//     "no-cache, no-store" (Cache-Control)
+//     "text/html; charset=utf-8" (Content-Type)
+//
+//  2) URL path interi: "/96283164998/digital_wallets/dialog"
+//     Tipico di Shopify Pay / Apple Pay / route SPA. L'extractor li
+//     cattura quando finiscono in un attribute o in spa-json.
+//
+//  3) Hash hex / alfanumerici lunghi >= 24 char senza spazi:
+//     "4e5323e83f88dbf4747a395309921945" (cart token)
+//     "shop_pay_session_abc123..." (Shopify session)
+//     UUID, build IDs Next.js, asset hashes.
+//
+//  4) Class/ID CSS DOM: token snake_case / kebab-case / camelCase
+//     SENZA spazi e SENZA punteggiatura, lunghezza 4-40.
+//     Esempi: "shopify-section-header", "cart_drawer_open",
+//             "btn-primary--large".
+//
+// Heuristica conservativa: in dubbio, NON filtriamo (preferiamo che
+// il LLM li veda piuttosto che droppare un copy reale per errore).
+const META_TECHNICAL_RE = /^[a-zA-Z\-]+\s*=\s*[^,\s]+(?:\s*,\s*[a-zA-Z\-]+\s*=\s*[^,\s]+){0,4}$/;
+const URL_PATH_RE = /^\/[A-Za-z0-9_\-/.~%]+$/;
+const HASH_RE = /^[A-Za-z0-9_\-]{24,}$/;
+const CSS_TOKEN_RE = /^[a-zA-Z][a-zA-Z0-9]*(?:[-_]+[a-zA-Z0-9]+){1,8}$/;
+// Lista CSV di token tecnici tipo Cache-Control / Content-Security-Policy:
+// "no-cache,no-store", "default-src 'self'; script-src ...". I valori
+// sono sempre lowercase + trattino, mai punteggiatura di frase.
+const CSV_TECHNICAL_TOKENS_RE = /^[a-z][a-z0-9\-]{1,30}(?:\s*[,;]\s*[a-z][a-z0-9\-]{1,30}){1,8}$/;
+
+function looksLikeTechnicalBoilerplate(s) {
+  if (!s) return false;
+  const len = s.length;
+  if (len < 3) return false;
+  if (URL_PATH_RE.test(s)) return true;
+  if (HASH_RE.test(s) && /\d/.test(s) && /[a-zA-Z]/.test(s)) return true;
+  // Pattern key=value: ammettiamo iniziali UPPERCASE (es. "IE=edge",
+  // "X-UA-Compatible=IE=edge"), purche' contenga almeno un "=" preceduto
+  // da una lettera (non confondibile con copy tipo "WAS $79" che non ha =).
+  if (META_TECHNICAL_RE.test(s) && /[a-zA-Z][a-zA-Z\-]*=/.test(s)) return true;
+  // CSV di token tecnici (Cache-Control / robots / CSP-like).
+  if (CSV_TECHNICAL_TOKENS_RE.test(s)) return true;
+  if (
+    len >= 4 && len <= 50 &&
+    !/\s/.test(s) &&
+    !/[.!?:;,'"()[\]{}—–]/.test(s) &&
+    CSS_TOKEN_RE.test(s)
+  ) return true;
+  return false;
+}
+
+// Context "meta:viewport" / "meta:charset" / "meta:robots" /
+// "meta:generator" / "meta:theme-color" sono SEMPRE tecnici per
+// definizione. Filtriamo a monte senza guardare il valore.
+const META_TECHNICAL_KEYS = new Set([
+  'meta:viewport',
+  'meta:charset',
+  'meta:robots',
+  'meta:generator',
+  'meta:theme-color',
+  'meta:msapplication-tilecolor',
+  'meta:msapplication-config',
+  'meta:format-detection',
+  'meta:apple-mobile-web-app-capable',
+  'meta:apple-mobile-web-app-status-bar-style',
+  'meta:referrer',
+  'meta:google-site-verification',
+  'meta:facebook-domain-verification',
+  'meta:fb:app_id',
+  'meta:fb:pages',
+]);
+
 function extractAllTextsUniversal(html) {
   const texts = [];
   const seen = new Set();
@@ -59,6 +142,8 @@ function extractAllTextsUniversal(html) {
       .trim();
     if (cleaned.length < 2) return;
     if (looksLikeCountryCurrencyPicker(cleaned)) return;
+    if (META_TECHNICAL_KEYS.has(context)) return;
+    if (looksLikeTechnicalBoilerplate(cleaned)) return;
     const key = `${cleaned}::${context}`;
     if (seen.has(key)) return;
     seen.add(key);
