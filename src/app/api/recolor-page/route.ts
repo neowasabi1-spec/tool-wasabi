@@ -222,21 +222,73 @@ function buildPaletteColors(palette: Palette): RoleColor[] {
   return out;
 }
 
-/** Rileva il tema della pagina originale guardando i colori non-saturati
- *  più frequenti. Se la luminanza media pesata è < 0.5 la pagina è dark
- *  themed (background scuro, testo chiaro); altrimenti light themed. */
-function detectOriginalTheme(allColors: ColorOccurrence[]): 'dark' | 'light' {
-  let totalWeight = 0;
-  let weightedL = 0;
-  for (const c of allColors) {
-    // Pesa più i colori non-saturati (sono quelli di bg/testo, non gli accenti)
-    const w = c.count * (1 - c.s * 0.7);
-    weightedL += c.l * w;
-    totalWeight += w;
-  }
-  if (totalWeight === 0) return 'dark';
-  const avgL = weightedL / totalWeight;
-  return avgL < 0.5 ? 'dark' : 'light';
+/** Rileva il tema della pagina originale in modo CONTEXT-AWARE: distingue
+ *  i colori usati come `background:` da quelli usati come `color:` (testo).
+ *  È molto più affidabile di una media luminanza globale, perché in una
+ *  landing dark-themed i grigi chiari del testo (#ccc, #ddd, #fff) appaiono
+ *  più volte dei pochi bg neri e sviano una media non-pesata.
+ *
+ *  Logica:
+ *  1) Conta quante volte appare un colore SCURO non-saturato come background
+ *     vs un colore CHIARO. Più background scuri → tema dark.
+ *  2) Se i background sono empty/ambigui → guarda i text colors: più testo
+ *     chiaro = tema dark (perché il testo chiaro presuppone bg scuro). */
+function detectOriginalTheme(html: string): 'dark' | 'light' {
+  const COLOR_VALUE_RE = /(#(?:[0-9A-Fa-f]{8}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{4}|[0-9A-Fa-f]{3})\b|rgba?\([^)]+\))/;
+  const NAMED_OR_COLOR = `(?:${COLOR_VALUE_RE.source}|${Object.keys(NAMED_COLORS).join('|')})`;
+
+  // background: <color>  oppure  background-color: <color>
+  // oppure: background: ... linear-gradient(..., <color>, <color>) — beccato
+  // dal parser di token sotto in pratica.
+  const bgRe = new RegExp(
+    `background(?:-color)?\\s*:\\s*([^;"'}]+)`,
+    'gi',
+  );
+  // color: <color>   (ma NON background-color)
+  const textRe = new RegExp(
+    `(?:^|[^-])\\bcolor\\s*:\\s*([^;"'}]+)`,
+    'gi',
+  );
+
+  const score = { darkBg: 0, lightBg: 0, darkText: 0, lightText: 0 };
+
+  const scoreColorValue = (raw: string, bucket: 'bg' | 'text') => {
+    // Possono esserci più token colore in un singolo value (es. gradient)
+    const tokenRe = new RegExp(NAMED_OR_COLOR, 'gi');
+    let m: RegExpExecArray | null;
+    while ((m = tokenRe.exec(raw)) !== null) {
+      const tok = m[0];
+      const parsed = parseColor(tok);
+      if (!parsed) continue;
+      const hsl = rgbToHsl(parsed.r, parsed.g, parsed.b);
+      // skip saturati (CTA / accenti) — non aiutano a definire il tema
+      if (hsl.s > 0.35) continue;
+      if (bucket === 'bg') {
+        if (hsl.l < 0.5) score.darkBg++;
+        else score.lightBg++;
+      } else {
+        if (hsl.l < 0.5) score.darkText++;
+        else score.lightText++;
+      }
+    }
+  };
+
+  let m: RegExpExecArray | null;
+  bgRe.lastIndex = 0;
+  while ((m = bgRe.exec(html)) !== null) scoreColorValue(m[1], 'bg');
+  textRe.lastIndex = 0;
+  while ((m = textRe.exec(html)) !== null) scoreColorValue(m[1], 'text');
+
+  // Decision tree
+  if (score.darkBg > score.lightBg && score.darkBg >= 2) return 'dark';
+  if (score.lightBg > score.darkBg && score.lightBg >= 2) return 'light';
+
+  // Fallback al testo: tanto testo chiaro = tema dark (presuppone bg dark)
+  if (score.lightText > score.darkText * 1.5) return 'dark';
+  if (score.darkText > score.lightText * 1.5) return 'light';
+
+  // Default conservativo: dark (più comune nelle landing converting)
+  return 'dark';
 }
 
 /** Sceglie il role della palette per un colore osservato.
@@ -300,71 +352,7 @@ function pickRole(
 
 /* ──────────────────────── replacement ──────────────────────── */
 
-interface ColorOccurrence {
-  token: string;
-  r: number;
-  g: number;
-  b: number;
-  a: number;
-  h: number;
-  s: number;
-  l: number;
-  count: number;
-}
-
 const COLOR_TOKEN_RE = /(#(?:[0-9A-Fa-f]{8}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{4}|[0-9A-Fa-f]{3})\b|rgba?\([^)]+\))/g;
-
-function collectAllColors(html: string): { occurrences: ColorOccurrence[]; namedMatches: number } {
-  const map = new Map<string, ColorOccurrence>();
-  let m: RegExpExecArray | null;
-  COLOR_TOKEN_RE.lastIndex = 0;
-  while ((m = COLOR_TOKEN_RE.exec(html)) !== null) {
-    const token = m[1];
-    const parsed = parseColor(token);
-    if (!parsed) continue;
-    const hsl = rgbToHsl(parsed.r, parsed.g, parsed.b);
-    const key = `${parsed.r}-${parsed.g}-${parsed.b}-${parsed.a}`;
-    const prev = map.get(key);
-    if (prev) {
-      prev.count++;
-    } else {
-      map.set(key, {
-        token,
-        r: parsed.r, g: parsed.g, b: parsed.b, a: parsed.a,
-        h: hsl.h, s: hsl.s, l: hsl.l,
-        count: 1,
-      });
-    }
-  }
-  // Named colors (solo come valore di proprietà CSS)
-  let namedMatches = 0;
-  const NAMED_RE = new RegExp(
-    `(:\\s*)(${Object.keys(NAMED_COLORS).join('|')})(\\s*[;}!"' )])`,
-    'gi',
-  );
-  let nm: RegExpExecArray | null;
-  while ((nm = NAMED_RE.exec(html)) !== null) {
-    const name = nm[2].toLowerCase();
-    const hex = NAMED_COLORS[name];
-    const parsed = hex ? parseColor(hex) : null;
-    if (!parsed) continue;
-    namedMatches++;
-    const hsl = rgbToHsl(parsed.r, parsed.g, parsed.b);
-    const key = `${parsed.r}-${parsed.g}-${parsed.b}-${parsed.a}`;
-    const prev = map.get(key);
-    if (prev) {
-      prev.count++;
-    } else {
-      map.set(key, {
-        token: name,
-        r: parsed.r, g: parsed.g, b: parsed.b, a: parsed.a,
-        h: hsl.h, s: hsl.s, l: hsl.l,
-        count: 1,
-      });
-    }
-  }
-  return { occurrences: [...map.values()], namedMatches };
-}
 
 /** Trova tutti i token colore nell'HTML, fa un first-pass per rilevare il
  *  tema dominante della pagina, poi sostituisce ogni token con il role
@@ -383,9 +371,7 @@ function recolor(html: string, paletteColors: RoleColor[]): {
     : pBg ? (pBg.l > 0.5 ? 'light' : 'dark')
     : 'dark';
 
-  // First pass: scan colori + tema originale
-  const { occurrences } = collectAllColors(html);
-  const originalTheme = detectOriginalTheme(occurrences);
+  const originalTheme = detectOriginalTheme(html);
 
   let replacements = 0;
 
