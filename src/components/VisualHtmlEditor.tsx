@@ -2705,10 +2705,18 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
 
       const targetHtml = editorViewport === 'mobile' && mobileHtml ? mobileHtml : currentHtml;
 
+      // Usiamo Claude (non Gemini) perché:
+      // - /api/ai-edit-html non ha il failover automatico Gemini→Claude che
+      //   abbiamo aggiunto a /api/extract-brand-colors → se la chiave Gemini
+      //   è invalida/quota-out, l'apply esplode con "GOOGLE_GEMINI_API_KEY
+      //   not configured" e l'utente vede l'errore sotto la palette anche
+      //   se l'estrazione era andata bene via Claude.
+      // - Per un task di "ricolora questo HTML" Claude Sonnet 4 è molto più
+      //   preciso di Gemini Flash e tiene meglio la struttura.
       const res = await fetch('/api/ai-edit-html', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ html: targetHtml, prompt, model: 'gemini' }),
+        body: JSON.stringify({ html: targetHtml, prompt, model: 'claude' }),
       });
 
       if (!res.ok) {
