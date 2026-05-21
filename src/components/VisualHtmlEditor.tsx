@@ -673,11 +673,61 @@ function prepareEditorHtml(html: string, sourceUrl?: string): string {
         const editorOrigin = window.location.origin;
         if (editorOrigin && editorOrigin !== sourceOrigin) {
           const escaped = editorOrigin.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-          // (src|href|content|action|poster|srcset)="<editorOrigin>..."  → "<sourceOrigin>..."
           const reAttr = new RegExp(`(["'(])${escaped}(?=\\/|["'\\s)])`, 'gi');
           clean = clean.replace(reAttr, `$1${sourceOrigin}`);
         }
       }
+
+      // ASSOLUTIZZA URL ROOT-RELATIVE (es. src="/brain_waves.png",
+      // src="/brain_activation.mp4", url(/img/foo.png)). Iframe srcdoc
+      // ha origin null e anche con <base href> certi browser hanno
+      // comportamenti inconsistenti — assolutizzare nell'HTML stesso è
+      // l'unico modo deterministico per fare sempre risolvere queste
+      // URL contro l'origin sorgente.
+      //
+      // Coperto: src= / href= / poster= / action= / data-src / data-poster /
+      // data-original / data-bg* / data-image* / srcset / data-srcset /
+      // url(...) dentro <style> e inline style.
+      const SINGLE_URL_ATTRS =
+        '(?:src|href|poster|action|formaction|data-src|data-poster|data-original|data-original-src|data-orig-src|data-image|data-image-src|data-thumb|data-bg|data-background|data-background-image|data-bg-src|data-lazy-bg|data-cfsrc|data-cmplz-src|data-wf-src|data-echo|data-defer-src|data-hi-res-src|data-actual|data-lazy|data-lazy-src|data-lazyload|data-lazy-load|data-url)';
+      const SRCSET_ATTRS =
+        '(?:srcset|data-srcset|data-lazy-srcset|data-cfsrcset|data-cmplz-srcset|data-wf-srcset|data-bgset)';
+
+      // 1) Single-URL attributes
+      const singleRe = new RegExp(
+        `\\s(${SINGLE_URL_ATTRS})\\s*=\\s*(["'])(\\/[^"'/][^"']*)\\2`,
+        'gi',
+      );
+      clean = clean.replace(singleRe, (_full, attr, q, val) => {
+        return ` ${attr}=${q}${sourceOrigin}${val}${q}`;
+      });
+
+      // 2) srcset: ogni token può iniziare con /
+      const srcsetRe = new RegExp(
+        `\\s(${SRCSET_ATTRS})\\s*=\\s*(["'])([^"']+)\\2`,
+        'gi',
+      );
+      clean = clean.replace(srcsetRe, (_full, attr, q, val) => {
+        const fixed = val.split(',').map((part: string) => {
+          const trimmed = part.trim();
+          if (!trimmed) return part;
+          const parts = trimmed.split(/\s+/);
+          const url = parts[0];
+          const rest = parts.slice(1);
+          if (url.startsWith('/') && !url.startsWith('//')) {
+            return [sourceOrigin + url, ...rest].join(' ');
+          }
+          return part;
+        }).join(', ');
+        return ` ${attr}=${q}${fixed}${q}`;
+      });
+
+      // 3) url(...) dentro <style> blocks e inline style=""
+      // Catch url(/foo.png), url('/foo.png'), url("/foo.png")
+      const urlInStyleRe = /url\(\s*(['"]?)(\/[^)'"\s][^)'"]*)\1\s*\)/g;
+      clean = clean.replace(urlInStyleRe, (_full, q, val) => {
+        return `url(${q}${sourceOrigin}${val}${q})`;
+      });
     } catch { /* sourceUrl invalido — skip */ }
   }
   // ── BLOCCA SOLO I 404-RETRY-LOOP CHECKOUTCHAMP, NON LE IMMAGINI ────
