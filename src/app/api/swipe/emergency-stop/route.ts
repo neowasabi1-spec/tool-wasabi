@@ -45,12 +45,14 @@ export async function POST() {
     );
   }
 
-  // 2) funnel_crawl_jobs: pending|running -> error
+  // 2) funnel_crawl_jobs: pending|running -> failed
+  // NB: this table has a CHECK constraint on status; it accepts 'failed'
+  // (not 'error' like openclaw_messages does). Discovered the hard way.
   try {
     const { data, error } = await supabase
       .from('funnel_crawl_jobs')
       .update({
-        status: 'error',
+        status: 'failed',
         error: 'Stopped via emergency-stop button',
         updated_at: new Date().toISOString(),
       })
