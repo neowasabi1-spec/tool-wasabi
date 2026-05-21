@@ -86,11 +86,10 @@ const NAMED_COLORS: Record<string, string> = {
 
 /** Parsa qualunque colore CSS in [r, g, b] 0-255 + alpha 0-1.
  *  Ritorna null se non riconosciuto. Supporta hex (#fff, #ffffff, #ffffffff),
- *  rgb()/rgba(), e named colors. NON supporta hsl()/hsla() o color() perché
- *  raramente compaiono in landing pages — eventualmente da estendere. */
+ *  rgb()/rgba(), hsl()/hsla(), e named colors. */
 function parseColor(raw: string): { r: number; g: number; b: number; a: number } | null {
   const s = raw.trim().toLowerCase();
-  if (!s || s === 'transparent' || s === 'inherit' || s === 'currentcolor' || s === 'initial' || s === 'unset') {
+  if (!s || s === 'transparent' || s === 'inherit' || s === 'currentcolor' || s === 'initial' || s === 'unset' || s === 'none') {
     return null;
   }
 
@@ -142,7 +141,63 @@ function parseColor(raw: string): { r: number; g: number; b: number; a: number }
     }
   }
 
+  // hsl / hsla
+  const hslMatch = s.match(/^hsla?\(\s*([^)]+)\)$/);
+  if (hslMatch) {
+    const parts = hslMatch[1].split(/[,\s/]+/).filter(Boolean);
+    if (parts.length >= 3) {
+      const h = parseHueDeg(parts[0]);
+      const sat = parsePercent01(parts[1]);
+      const lig = parsePercent01(parts[2]);
+      const a = parts[3] !== undefined ? parseAlpha(parts[3]) : 1;
+      if (h !== null && sat !== null && lig !== null) {
+        const { r, g, b } = hslToRgb(h, sat, lig);
+        return { r, g, b, a };
+      }
+    }
+  }
+
   return null;
+}
+
+function parseHueDeg(s: string): number | null {
+  const t = s.trim().replace(/deg$/i, '').replace(/turn$/i, '');
+  // Possibili unità: deg (default), rad, grad, turn
+  if (s.trim().endsWith('rad')) {
+    const v = parseFloat(s.trim().replace(/rad$/i, ''));
+    return Number.isFinite(v) ? (v * 180) / Math.PI : null;
+  }
+  if (s.trim().endsWith('grad')) {
+    const v = parseFloat(s.trim().replace(/grad$/i, ''));
+    return Number.isFinite(v) ? (v * 360) / 400 : null;
+  }
+  if (s.trim().endsWith('turn')) {
+    const v = parseFloat(s.trim().replace(/turn$/i, ''));
+    return Number.isFinite(v) ? v * 360 : null;
+  }
+  const v = parseFloat(t);
+  return Number.isFinite(v) ? v : null;
+}
+
+function parsePercent01(s: string): number | null {
+  const t = s.trim();
+  if (t.endsWith('%')) {
+    const v = parseFloat(t.slice(0, -1));
+    return Number.isFinite(v) ? Math.max(0, Math.min(1, v / 100)) : null;
+  }
+  const v = parseFloat(t);
+  return Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : null;
+}
+
+function hslToRgb(h: number, s: number, l: number): { r: number; g: number; b: number } {
+  const hh = ((h % 360) + 360) % 360 / 360;
+  const f = (n: number, k = (n + hh * 12) % 12) =>
+    l - s * Math.min(l, 1 - l) * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+  return {
+    r: Math.round(f(0) * 255),
+    g: Math.round(f(8) * 255),
+    b: Math.round(f(4) * 255),
+  };
 }
 
 function parsePercentOrInt(s: string): number | null {
@@ -291,49 +346,109 @@ function detectOriginalTheme(html: string): 'dark' | 'light' {
   return 'dark';
 }
 
+/** Trova il colore dominante usato come PAGE BACKGROUND (su <html>, <body>
+ *  o sui selettori `html {}` / `body {}` dentro <style>). Usato per
+ *  force-mappare quel colore (e tutti i suoi "vicini") al nuovo background,
+ *  garantendo che il bg della pagina cambi sempre. */
+function detectPageBackground(html: string): { r: number; g: number; b: number } | null {
+  const candidates: string[] = [];
+
+  // 1) <body style="... background: X ...">
+  const bodyStyleMatch = html.match(/<body[^>]*\sstyle\s*=\s*["']([^"']+)["']/i);
+  if (bodyStyleMatch) {
+    const m = bodyStyleMatch[1].match(/background(?:-color)?\s*:\s*([^;]+)/i);
+    if (m) candidates.push(m[1]);
+  }
+  // 2) <html style="... background: X ...">
+  const htmlStyleMatch = html.match(/<html[^>]*\sstyle\s*=\s*["']([^"']+)["']/i);
+  if (htmlStyleMatch) {
+    const m = htmlStyleMatch[1].match(/background(?:-color)?\s*:\s*([^;]+)/i);
+    if (m) candidates.push(m[1]);
+  }
+  // 3) <body bgcolor="X">
+  const bgAttr = html.match(/<body[^>]*\sbgcolor\s*=\s*["']?([^"'>\s]+)/i);
+  if (bgAttr) candidates.push(bgAttr[1]);
+  // 4) `body { background: X }` dentro <style>
+  const bodySelectorMatch = html.match(/(?:^|[\s,}])body\s*\{[^}]*background(?:-color)?\s*:\s*([^;}]+)/i);
+  if (bodySelectorMatch) candidates.push(bodySelectorMatch[1]);
+  // 5) `html { background: X }`
+  const htmlSelectorMatch = html.match(/(?:^|[\s,}])html\s*\{[^}]*background(?:-color)?\s*:\s*([^;}]+)/i);
+  if (htmlSelectorMatch) candidates.push(htmlSelectorMatch[1]);
+  // 6) `:root { background: X }`
+  const rootSelectorMatch = html.match(/:root\s*\{[^}]*background(?:-color)?\s*:\s*([^;}]+)/i);
+  if (rootSelectorMatch) candidates.push(rootSelectorMatch[1]);
+
+  // Estrai il PRIMO token colore valido da ciascun candidato (gradient,
+  // valore semplice, ecc.) e ritorna il primo che si parsa correttamente.
+  for (const cand of candidates) {
+    const tokenRe = /(#(?:[0-9A-Fa-f]{8}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{4}|[0-9A-Fa-f]{3})\b|rgba?\([^)]+\)|hsla?\([^)]+\)|[a-z]+)/gi;
+    let m: RegExpExecArray | null;
+    while ((m = tokenRe.exec(cand)) !== null) {
+      const tok = m[0];
+      const parsed = parseColor(tok);
+      if (parsed) return { r: parsed.r, g: parsed.g, b: parsed.b };
+    }
+  }
+  return null;
+}
+
+function rgbDistance(
+  a: { r: number; g: number; b: number },
+  b: { r: number; g: number; b: number },
+): number {
+  return Math.sqrt(
+    Math.pow(a.r - b.r, 2) + Math.pow(a.g - b.g, 2) + Math.pow(a.b - b.b, 2),
+  );
+}
+
 /** Sceglie il role della palette per un colore osservato.
  *
- *  Regole:
- *  - Colori non-saturati (s < 0.2): mappati a bg o text in base al tema.
- *    Se il tema originale e nuovo COINCIDONO → mantieni la posizione
- *    luminanza (dark→dark, light→light). Se sono OPPOSTI → swap, cioè
- *    il colore "background" originale (dark in pagina dark) prende il
- *    nuovo background (anche se light) e viceversa per il testo.
- *  - Colori saturati: scegli tra primary/secondary/accent per distanza
- *    pesata in HSL (hue conta di più, poi sat, poi luminanza). */
+ *  Regole (in ordine di priorità):
+ *  1) Se il colore è MOLTO vicino al page background rilevato → force map a
+ *     new bg (anche se ha un po' di saturazione, tipo dark blue tinted).
+ *  2) Estremi di luminanza (l < 0.18 o l > 0.88): sempre bg/text (anche
+ *     se saturati — un #0a1428 navy quasi-nero è chiaramente un bg, non
+ *     un primary).
+ *  3) Bassa saturazione (s < 0.22): bg/text in base al tema originale.
+ *  4) Saturazione media-alta: pick tra primary/secondary/accent per
+ *     distanza HSL pesata. */
 function pickRole(
-  c: { h: number; s: number; l: number },
+  c: { h: number; s: number; l: number; r: number; g: number; b: number },
   palette: RoleColor[],
   originalTheme: 'dark' | 'light',
   newTheme: 'dark' | 'light',
+  pageBg: { r: number; g: number; b: number } | null,
 ): RoleColor {
   const pBg = palette.find(p => p.role === 'background');
   const pTxt = palette.find(p => p.role === 'text');
 
-  // Soglia un po' più permissiva (0.2) per intercettare anche i grigi
-  // medi che le landing usano come bg di sezione.
-  if (c.s < 0.22 || c.l < 0.08 || c.l > 0.92) {
+  // 1) Force-map del page background
+  if (pageBg && pBg) {
+    const dist = rgbDistance(c, pageBg);
+    if (dist < 30) {
+      return pBg;
+    }
+  }
+
+  // 2) Luminanza estrema → sempre bg/text (anche con qualche saturazione,
+  //    cattura i dark blue tinted backgrounds tipo #0a1428).
+  // 3) Bassa saturazione → bg/text
+  const isBgTextCandidate =
+    c.s < 0.22 ||
+    c.l < 0.18 ||
+    c.l > 0.88 ||
+    (c.s < 0.45 && (c.l < 0.22 || c.l > 0.82));
+
+  if (isBgTextCandidate) {
     if (pBg && pTxt) {
-      // RELATIVE luminance check: il colore è "scuro" o "chiaro" RISPETTO
-      // al tema originale?
-      // - tema originale dark: i colori scuri sono background, i chiari sono testo
-      // - tema originale light: i colori chiari sono background, i scuri sono testo
       const isOriginallyBackground =
         originalTheme === 'dark' ? c.l < 0.5 : c.l > 0.5;
-
-      if (originalTheme === newTheme) {
-        // Stesso tema: il bg originale prende il nuovo bg (assomigliano in L)
-        return isOriginallyBackground ? pBg : pTxt;
-      }
-      // SWAP TEMA: il bg originale prende comunque il nuovo bg (anche se
-      // L opposta). È esattamente questo che fa cambiare visivamente la
-      // pagina quando l'utente applica una palette di tema opposto.
       return isOriginallyBackground ? pBg : pTxt;
     }
     return pBg || pTxt || palette[0];
   }
 
-  // Tra i 3 colorati: distanza pesata in HSL (hue domina).
+  // 4) Tra i 3 colorati: distanza pesata in HSL (hue domina).
   const colored = palette.filter(p => p.role !== 'background' && p.role !== 'text');
   if (colored.length === 0) return palette[0];
 
@@ -352,16 +467,18 @@ function pickRole(
 
 /* ──────────────────────── replacement ──────────────────────── */
 
-const COLOR_TOKEN_RE = /(#(?:[0-9A-Fa-f]{8}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{4}|[0-9A-Fa-f]{3})\b|rgba?\([^)]+\))/g;
+// hex (#rgb, #rrggbb, #rgba, #rrggbbaa) + rgb/rgba + hsl/hsla
+const COLOR_TOKEN_RE = /(#(?:[0-9A-Fa-f]{8}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{4}|[0-9A-Fa-f]{3})\b|rgba?\([^)]+\)|hsla?\([^)]+\))/g;
 
 /** Trova tutti i token colore nell'HTML, fa un first-pass per rilevare il
- *  tema dominante della pagina, poi sostituisce ogni token con il role
- *  palette più appropriato (vedi pickRole). */
+ *  tema dominante della pagina e il page background, poi sostituisce ogni
+ *  token con il role palette più appropriato (vedi pickRole). */
 function recolor(html: string, paletteColors: RoleColor[]): {
   html: string;
   replacements: number;
   originalTheme: 'dark' | 'light';
   newTheme: 'dark' | 'light';
+  pageBgDetected: string | null;
 } {
   // Tema della nuova palette: confronta L di background e text
   const pBg = paletteColors.find(p => p.role === 'background');
@@ -372,20 +489,32 @@ function recolor(html: string, paletteColors: RoleColor[]): {
     : 'dark';
 
   const originalTheme = detectOriginalTheme(html);
+  const pageBg = detectPageBackground(html);
 
   let replacements = 0;
 
-  // Sostituzione hex / rgb / rgba
+  const mapColor = (parsed: { r: number; g: number; b: number; a: number }) => {
+    const hsl = rgbToHsl(parsed.r, parsed.g, parsed.b);
+    return pickRole(
+      { ...hsl, r: parsed.r, g: parsed.g, b: parsed.b },
+      paletteColors,
+      originalTheme,
+      newTheme,
+      pageBg,
+    );
+  };
+
+  // 1) Sostituzione hex / rgb / rgba / hsl / hsla
   let out = html.replace(COLOR_TOKEN_RE, (token) => {
     const parsed = parseColor(token);
     if (!parsed) return token;
-    const hsl = rgbToHsl(parsed.r, parsed.g, parsed.b);
-    const role = pickRole(hsl, paletteColors, originalTheme, newTheme);
+    const role = mapColor(parsed);
     replacements++;
     return formatRgba(role.r, role.g, role.b, parsed.a);
   });
 
-  // Sostituzione named colors (solo come valore CSS)
+  // 2) Sostituzione named colors (solo come VALORE di proprietà CSS, non
+  //    come testo libero — sennò ti cambia "white smile" nel testo).
   const NAMED_RE = new RegExp(
     `(:\\s*)(${Object.keys(NAMED_COLORS).join('|')})(\\s*[;}!"' )])`,
     'gi',
@@ -394,13 +523,29 @@ function recolor(html: string, paletteColors: RoleColor[]): {
     const hex = NAMED_COLORS[name.toLowerCase()];
     const parsed = hex ? parseColor(hex) : null;
     if (!parsed) return m;
-    const hsl = rgbToHsl(parsed.r, parsed.g, parsed.b);
-    const role = pickRole(hsl, paletteColors, originalTheme, newTheme);
+    const role = mapColor(parsed);
     replacements++;
     return `${prefix}${rgbToHex({ r: role.r, g: role.g, b: role.b })}${suffix}`;
   });
 
-  return { html: out, replacements, originalTheme, newTheme };
+  // 3) Sostituzione attributi HTML deprecati (bgcolor, color="#fff" su <font>)
+  //    Sono colori da rimappare al pari del CSS.
+  const ATTR_COLOR_RE = /\b(bgcolor|color)\s*=\s*(["'])([^"']+)\2/gi;
+  out = out.replace(ATTR_COLOR_RE, (m, attr, quote, value) => {
+    const parsed = parseColor(value);
+    if (!parsed) return m;
+    const role = mapColor(parsed);
+    replacements++;
+    return `${attr}=${quote}${rgbToHex({ r: role.r, g: role.g, b: role.b })}${quote}`;
+  });
+
+  return {
+    html: out,
+    replacements,
+    originalTheme,
+    newTheme,
+    pageBgDetected: pageBg ? rgbToHex(pageBg) : null,
+  };
 }
 
 /* ──────────────────────── handler ──────────────────────── */
@@ -425,7 +570,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const { html: out, replacements, originalTheme, newTheme } = recolor(html, paletteColors);
+    const { html: out, replacements, originalTheme, newTheme, pageBgDetected } = recolor(html, paletteColors);
 
     return NextResponse.json({
       ok: true,
@@ -436,6 +581,7 @@ export async function POST(request: NextRequest) {
       originalTheme,
       newTheme,
       themeSwapped: originalTheme !== newTheme,
+      pageBgDetected,
     });
   } catch (error) {
     console.error('[api/recolor-page] Error:', error);
