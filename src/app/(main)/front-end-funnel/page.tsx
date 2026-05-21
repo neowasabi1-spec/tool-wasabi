@@ -4713,7 +4713,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                   }
                 }}
                 className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-bold bg-red-600 text-white hover:bg-red-700 transition-colors"
-                title="STOP — Marca come error tutti i job swipe pending/processing in coda Supabase. Da usare quando il worker sta thrasshing (es. MCP 503)."
+                title="STOP — Marca come error tutti i job swipe pending/processing in coda Supabase. Il worker locale rileva lo status flippato entro 5s e abortisce il job in corso senza altre call al modello (no token sprecati). Da usare quando un rewrite e' partito male o sta thrasshing."
               >
                 <Octagon className="w-4 h-4" />
                 Stop

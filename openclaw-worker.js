@@ -205,6 +205,40 @@ let totalProcessed = 0;
 let totalErrors = 0;
 let isProcessing = false;
 
+// ── Cooperative abort for the in-flight job ─────────────────────
+// The "Stop swipe" button on the UI marks the row as 'failed' / 'error'
+// in `openclaw_messages` via /api/swipe/emergency-stop. WITHOUT this
+// abort hook, the worker keeps churning batches, gap-fill passes and
+// chat-style retries until the natural end of the pipeline — burning
+// LLM tokens for hours on a job the user already cancelled.
+//
+// activeJobId is the row id currently being processed (null between
+// jobs); a 5s poller in processMessage checks the row status and, if
+// it's no longer 'processing', sets jobAbortRequested = true. Hot-path
+// functions (runBatchOnce, gap-fill loops, chat-style 1-by-1) call
+// throwIfAborted() at strategic checkpoints so the next LLM call
+// short-circuits and the pipeline unwinds cleanly via the catch in
+// processMessage. We deliberately NOT abort an in-flight HTTP request:
+// killing the socket mid-stream can hang the local LLM server. We just
+// wait for the current call to finish (worst case ~60s) then bail.
+let activeJobId = null;
+let jobAbortRequested = false;
+let jobAbortReason = '';
+
+function requestJobAbort(reason) {
+  if (jobAbortRequested) return;
+  jobAbortRequested = true;
+  jobAbortReason = reason || 'aborted';
+}
+
+function throwIfAborted() {
+  if (jobAbortRequested) {
+    const e = new Error(`JOB_ABORTED: ${jobAbortReason}`);
+    e.code = 'JOB_ABORTED';
+    throw e;
+  }
+}
+
 const stamp = () => new Date().toISOString().replace('T', ' ').substring(0, 19);
 
 // ── File-based logging ───────────────────────────────────────────
@@ -943,17 +977,6 @@ async function runRewriteInBatches(systemPrompt, userMessage) {
 
   // Per il check "echo" ci serve l'originale di ogni id.
   const idToOriginal = new Map();
-  // Contatore di echi consecutivi per id: se il modello continua a
-  // rispedire identico l'originale per lo stesso id, dopo
-  // MAX_ECHOES_BEFORE_GIVEUP tentativi smettiamo di ritentarlo nei
-  // gap-fill pass. Senza questo, il loop split-A/split-B insiste
-  // all'infinito sugli stessi 30 id che il modello rifiuta di
-  // riscrivere (vedi log salvinilabs/adv9 18/05: 18 min persi su
-  // questo prima di arrivare a "neverTouched"). Trade-off: gli id
-  // con MAX_ECHOES restano = originale, ma è esattamente il fallback
-  // finale che faremmo comunque dopo i 4 pass — solo molto più veloce.
-  const idEchoCount = new Map();
-  const MAX_ECHOES_BEFORE_GIVEUP = 2;
   // Quante volte il modello ha rispedito identico l'originale per
   // questo id (= "echo"). Usato dal gap-fill per skippare gli id che
   // il modello rifiuta sistematicamente di riscrivere (es. testi che
@@ -961,7 +984,8 @@ async function runRewriteInBatches(systemPrompt, userMessage) {
   // tentativi. Senza questo cap, il gap-fill perde 15-20 min su pagine
   // medie facendo split-A/split-B all'infinito sui soliti 20-30 id
   // (vedi log salvinilabs/adv9 18/05: 18 min in p1, 0/2 coperti
-  // ripetuto 6 volte di seguito).
+  // ripetuto 6 volte di seguito). Soglia configurabile via
+  // REWRITE_MAX_ECHOES_PER_ID (default 2 — vedi sotto).
   const idEchoCount = new Map();
   for (const t of texts) {
     if (t && typeof t.id === 'number' && typeof t.text === 'string') {
@@ -1018,6 +1042,7 @@ async function runRewriteInBatches(systemPrompt, userMessage) {
   const qualityBooster = buildQualityBooster();
 
   async function runBatchOnce(batch, label, extraSystemHint) {
+    throwIfAborted();
     batchCount++;
     const batchUserMessage = `${beforeJson}\n${JSON.stringify(batch, null, 2)}\n${afterJson}${qualityBooster}`;
     log(`  ▸ Rewrite ${label} (${batch.length} testi, mode=${REWRITE_QUALITY_MODE})`);
@@ -1114,6 +1139,7 @@ async function runRewriteInBatches(systemPrompt, userMessage) {
   let nextIdx = 0;
   async function consumer() {
     while (nextIdx < allBatches.length) {
+      if (jobAbortRequested) return;
       const myIdx = nextIdx++;
       const item = allBatches[myIdx];
       if (!item) break;
@@ -1148,6 +1174,7 @@ async function runRewriteInBatches(systemPrompt, userMessage) {
   );
 
   for (let pass = 1; pass <= REWRITE_GAP_FILL_PASSES; pass++) {
+    throwIfAborted();
     const missing = texts.filter((t) => {
       if (idToRewrite.has(t.id)) return false;
       const echoes = idEchoCount.get(t.id) || 0;
@@ -1170,6 +1197,7 @@ async function runRewriteInBatches(systemPrompt, userMessage) {
         `  ▸ Gap-fill pass ${pass}/${REWRITE_GAP_FILL_PASSES}: ${missing.length} testi mancanti — uso CHAT-STYLE (conversazionale, no JSON, come la chat del tool)`,
       );
       for (const t of missing) {
+        throwIfAborted();
         const rewritten = await rewriteOneTextChatStyle({
           id: t.id,
           originalText: t.text,
@@ -1250,11 +1278,39 @@ async function processMessage(msg) {
   const preview = String(msg.user_message || '').substring(0, 60).replace(/\n/g, ' ');
   log(`Processing #${msg.id} [${msg.section || 'chat'}]: "${preview}..."`);
 
+  // Mark this job as the in-flight one and reset abort state. The
+  // 5s poller below will flip jobAbortRequested if the row status
+  // changes from 'processing' to anything else (e.g. 'error' /
+  // 'failed' set by the Stop button).
+  activeJobId = msg.id;
+  jobAbortRequested = false;
+  jobAbortReason = '';
+  let abortPoll = null;
+
   try {
     await supabase
       .from('openclaw_messages')
       .update({ status: 'processing' })
       .eq('id', msg.id);
+
+    abortPoll = setInterval(async () => {
+      if (jobAbortRequested) return;
+      try {
+        const { data: row, error: e } = await supabase
+          .from('openclaw_messages')
+          .select('status')
+          .eq('id', msg.id)
+          .maybeSingle();
+        if (e || !row) return;
+        if (row.status !== 'processing') {
+          log(
+            `  ! #${msg.id}: row status flipped to '${row.status}' externally `
+            + '(es. Stop button) — abortando il job per non sprecare token',
+          );
+          requestJobAbort(`status_changed_to_${row.status}`);
+        }
+      } catch (_e) { /* ignore transient supabase errors */ }
+    }, 5000);
 
     const started = Date.now();
     let responsePayload;
@@ -1957,18 +2013,42 @@ ONESTA': se nei TUOI archivi non hai dati su questo prodotto/settore e non puoi 
   } catch (e) {
     totalErrors++;
     err(`#${msg.id}:`, e.message);
-    try {
-      await supabase
-        .from('openclaw_messages')
-        .update({
-          status: 'error',
-          error_message: e.message.substring(0, 500),
-          completed_at: new Date().toISOString(),
-        })
-        .eq('id', msg.id);
-    } catch (updateErr) {
-      err(`Failed to mark #${msg.id} as error:`, updateErr.message);
+    if (e && e.code === 'JOB_ABORTED') {
+      // The row was already flipped to 'error' / 'failed' by whoever
+      // triggered the abort (typically the Stop button via
+      // /api/swipe/emergency-stop). Don't overwrite their status, just
+      // append a note to error_message so they know the worker
+      // actually noticed and stopped — instead of mysteriously running
+      // "in background" while burning tokens.
+      try {
+        await supabase
+          .from('openclaw_messages')
+          .update({
+            error_message: `Worker aborted: ${jobAbortReason}`.substring(0, 500),
+            completed_at: new Date().toISOString(),
+          })
+          .eq('id', msg.id);
+      } catch (_e) { /* best-effort */ }
+      log(`⏹  Aborted #${msg.id} (${jobAbortReason}) — no further LLM calls for this job`);
+    } else {
+      try {
+        await supabase
+          .from('openclaw_messages')
+          .update({
+            status: 'error',
+            error_message: e.message.substring(0, 500),
+            completed_at: new Date().toISOString(),
+          })
+          .eq('id', msg.id);
+      } catch (updateErr) {
+        err(`Failed to mark #${msg.id} as error:`, updateErr.message);
+      }
     }
+  } finally {
+    if (abortPoll) clearInterval(abortPoll);
+    activeJobId = null;
+    jobAbortRequested = false;
+    jobAbortReason = '';
   }
 }
 
