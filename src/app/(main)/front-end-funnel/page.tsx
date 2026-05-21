@@ -8039,7 +8039,10 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
           productContext={editorProject ? {
             name: editorProject.name,
             description: editorProject.description || '',
-            brief: editorProject.brief || '',
+            // brief è il vero testo del brief (file caricati ha priorità sul campo legacy)
+            brief: getProjectBriefText(editorProject) || editorProject.brief || '',
+            // marketResearch è un blob multi-file: lo estraiamo a testo
+            marketResearch: extractSectionContent(editorProject.marketResearch),
             imageUrl:
               (Array.isArray(editorProject.logo) && editorProject.logo[0]?.url) ||
               '',

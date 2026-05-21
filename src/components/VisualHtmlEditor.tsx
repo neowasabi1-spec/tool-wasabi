@@ -102,13 +102,31 @@ interface VisualHtmlEditorProps {
     name?: string;
     description?: string;
     brief?: string;
+    /** Testo estratto dal blocco "Market Research" del Project (multi-file blob).
+     *  Usato dal bottone "Brand Colors" per inferire la palette dal positioning
+     *  emotivo/strategico del prodotto quando il brief non contiene hex code. */
+    marketResearch?: string;
     /** URL di una foto del prodotto (es. logo[0].url del Project).
      *  Quando presente, "Swipe for Product" parte in modalità FULLY AUTO:
      *  l'AI usa direttamente questa immagine come prima frame, scrive il
      *  prompt da sola, lancia Seedance 2.0 e sostituisce il <video>
-     *  senza nessun altro click dell'utente. */
+     *  senza nessun altro click dell'utente.
+     *  È anche la prima fonte usata da "Brand Colors" per estrarre la palette
+     *  via vision quando il brief/research non contengono colori espliciti. */
     imageUrl?: string;
   };
+}
+
+/* ─────────── Brand Colors ─────────── */
+
+interface BrandPalette {
+  primary: string;
+  secondary: string;
+  accent: string;
+  background: string;
+  text: string;
+  mood?: string;
+  source: 'text-hex' | 'text-llm' | 'image-llm';
 }
 
 type EditorMode = 'visual' | 'code' | 'preview';
@@ -1393,6 +1411,27 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   const [aiEditProgress, setAiEditProgress] = useState<{ chunkIndex: number; totalChunks: number; label: string } | null>(null);
   const [showAiEditPanel, setShowAiEditPanel] = useState(false);
   const [aiEditHistory, setAiEditHistory] = useState<string[]>([]);
+
+  /* ── Brand Colors ──
+   * Flusso: l'utente clicca "Brand Colors" in alto → si apre il panel.
+   * Step 1: proviamo a estrarre una palette dal brief/market research (hex
+   *         espliciti o, in mancanza, Gemini interpreta le keyword di brand).
+   * Step 2: se non c'è abbastanza testo ma abbiamo productContext.imageUrl
+   *         (la foto del prodotto), Gemini Vision la guarda e propone una
+   *         palette coerente con il packaging/categoria.
+   * Step 3: se non c'è né testo né imageUrl, chiediamo all'utente di caricare
+   *         una foto prodotto e poi ripartiamo da Step 2.
+   * Step 4: l'utente conferma la palette → la inoltriamo a /api/ai-edit-html
+   *         con un prompt strutturato che ricolora TUTTA la pagina in modo
+   *         consistente (background, testi, bottoni, gradient, ombre…). */
+  const [showBrandColorsPanel, setShowBrandColorsPanel] = useState(false);
+  const [brandPalette, setBrandPalette] = useState<BrandPalette | null>(null);
+  const [brandExtractRunning, setBrandExtractRunning] = useState(false);
+  const [brandExtractError, setBrandExtractError] = useState('');
+  const [brandNeedsImage, setBrandNeedsImage] = useState(false);
+  const [brandUploadedImageUrl, setBrandUploadedImageUrl] = useState('');
+  const [brandApplying, setBrandApplying] = useState(false);
+  const brandFileInputRef = useRef<HTMLInputElement>(null);
   const [aiPresetPrompts] = useState([
     { label: 'Conspiracy / Dark Brand', prompt: 'Completely transform the brand to conspiracy/secret style: use dark colors (black, dark red, gold), impactful fonts, add mysterious visual elements, make the tone more urgent and secretive, modify all text to have a conspiracy angle with "they don\'t want you to know" language, add symbols like eyes, triangles, locks where appropriate in text.' },
     { label: 'Luxury / Premium', prompt: 'Transform the brand to luxury premium style: use elegant colors (black, gold, white), elegant serif fonts, wide spacing, add subtle shadows, make the design minimalist and sophisticated, modify text with exclusive and premium tone.' },
@@ -2544,6 +2583,161 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     }
   }, [aiEditHistory, editorViewport, mobileHtml, pushUndo]);
 
+  /* ── Brand Colors: estrazione palette ──
+   * Chiamata SUBITO all'apertura del panel. Prima prova hex nel brief, poi
+   * fallback su Gemini (text o vision). Se non c'è materiale, alza il flag
+   * brandNeedsImage e lascia all'utente l'upload manuale. */
+  const runBrandExtract = useCallback(async (overrideImageUrl?: string) => {
+    setBrandExtractRunning(true);
+    setBrandExtractError('');
+    setBrandNeedsImage(false);
+    try {
+      const res = await fetch('/api/extract-brand-colors', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          brief: productContext?.brief || '',
+          marketResearch: productContext?.marketResearch || '',
+          productName: productContext?.name || '',
+          productDescription: productContext?.description || '',
+          imageUrl: overrideImageUrl || brandUploadedImageUrl || productContext?.imageUrl || '',
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        if (data?.needsImage) {
+          setBrandNeedsImage(true);
+          setBrandExtractError(data.error || 'No brief/research available. Upload a product photo.');
+        } else {
+          setBrandExtractError(data?.error || `HTTP ${res.status}`);
+        }
+        return;
+      }
+      setBrandPalette(data.palette as BrandPalette);
+    } catch (err) {
+      setBrandExtractError(err instanceof Error ? err.message : 'Unknown error');
+    } finally {
+      setBrandExtractRunning(false);
+    }
+  }, [productContext, brandUploadedImageUrl]);
+
+  // Auto-run quando l'utente apre il panel la prima volta (e non c'è già una palette).
+  useEffect(() => {
+    if (showBrandColorsPanel && !brandPalette && !brandExtractRunning && !brandExtractError && !brandNeedsImage) {
+      void runBrandExtract();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showBrandColorsPanel]);
+
+  /* ── Brand Colors: upload foto prodotto (quando manca brief+imageUrl) ── */
+  const handleBrandImageUpload = useCallback(async (file: File) => {
+    setBrandExtractError('');
+    setBrandExtractRunning(true);
+    try {
+      const url = await directSupabaseUpload(file);
+      setBrandUploadedImageUrl(url);
+      setBrandNeedsImage(false);
+      await runBrandExtract(url);
+    } catch (err) {
+      setBrandExtractError(err instanceof Error ? err.message : 'Upload failed');
+      setBrandExtractRunning(false);
+    }
+  }, [runBrandExtract]);
+
+  /* ── Brand Colors: applica la palette riusando /api/ai-edit-html ──
+   * Costruiamo un prompt MOLTO esplicito che chiede di ricolorare TUTTA la
+   * pagina mantenendo gerarchia/contrasti — gli stessi vincoli che già usa
+   * il pipeline AI Edit, solo focalizzato sui colori. */
+  const handleApplyBrandColors = useCallback(async () => {
+    if (!brandPalette || brandApplying) return;
+    setBrandApplying(true);
+    setBrandExtractError('');
+    try {
+      const p = brandPalette;
+      const prompt = [
+        `Recolor the ENTIRE landing page using ONLY this brand palette (do NOT introduce other hues):`,
+        `- primary:    ${p.primary}   (main CTA buttons, key highlights, primary links)`,
+        `- secondary:  ${p.secondary} (secondary buttons, supporting accents, hover states)`,
+        `- accent:     ${p.accent}    (badges, urgency markers, small decorative elements, icons)`,
+        `- background: ${p.background} (page background, hero/section backgrounds — use tasteful tints/shades for cards & alternating sections)`,
+        `- text:       ${p.text}      (body copy, headings — derive a slightly muted version for secondary text and a contrasted version for captions; ensure WCAG AA contrast on the background)`,
+        p.mood ? `Overall mood / vibe to evoke: ${p.mood}.` : '',
+        '',
+        'CONCRETE RULES:',
+        '1. Replace EVERY existing color (inline styles, <style> blocks, gradients, shadows, border colors, svg fills/strokes, background-image gradients) with the palette above or with mathematically-derived tints/shades of those colors (lighter/darker variants ok, NEW hues NOT ok).',
+        '2. Rebuild gradients using primary→secondary or primary→accent. Never keep the old gradient stops.',
+        '3. Update box-shadows/glows to use rgba() of primary or accent (not the old color).',
+        '4. Keep ALL text content, structure, layout, fonts, images, videos, links, forms and scripts EXACTLY as-is — colors only.',
+        '5. Make sure CTAs (primary buttons) really pop on the new background. If contrast is poor, swap button text color to whichever of #ffffff / #000000 reads best on primary.',
+        '6. Be CONSISTENT: a section that was "dark with light text" should stay dark (using `background`) with light text (`text`); a section that was "light card on dark" should stay that pattern with the new colors.',
+      ].filter(Boolean).join('\n');
+
+      const targetHtml = editorViewport === 'mobile' && mobileHtml ? mobileHtml : currentHtml;
+
+      const res = await fetch('/api/ai-edit-html', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ html: targetHtml, prompt, model: 'gemini' }),
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({ error: 'Network error' }));
+        throw new Error(errData.error || `HTTP ${res.status}`);
+      }
+
+      const reader = res.body?.getReader();
+      if (!reader) throw new Error('Stream not available');
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          try {
+            const data = JSON.parse(line.slice(6));
+            if (data.type === 'chunk-start') {
+              setAiEditProgress({
+                chunkIndex: data.chunkIndex,
+                totalChunks: data.totalChunks,
+                label: data.label || `Chunk ${data.chunkIndex + 1}`,
+              });
+            } else if (data.type === 'result' && data.html) {
+              setIframeVersion(v => v + 1);
+              if (editorViewport === 'mobile' && mobileHtml) {
+                setAiEditHistory(prev => [...prev, mobileHtml]);
+                setMobileHtml(data.html);
+                setMobileCodeHtml(data.html);
+              } else {
+                setAiEditHistory(prev => [...prev, currentHtml]);
+                setCurrentHtml(data.html);
+                setCodeHtml(data.html);
+                pushUndo(data.html);
+              }
+            } else if (data.type === 'error') {
+              throw new Error(data.error);
+            }
+          } catch (parseErr) {
+            if (parseErr instanceof Error && !parseErr.message.includes('Unexpected')) throw parseErr;
+          }
+        }
+      }
+
+      setShowBrandColorsPanel(false);
+    } catch (err) {
+      setBrandExtractError(err instanceof Error ? err.message : 'Unknown error applying palette');
+    } finally {
+      setBrandApplying(false);
+      setAiEditProgress(null);
+    }
+  }, [brandPalette, brandApplying, editorViewport, mobileHtml, currentHtml, pushUndo]);
+
   /* ── Element AI Chat — image upload/paste ── */
   const elAiFileRef = useRef<HTMLInputElement>(null);
   const [elAiUploading, setElAiUploading] = useState(false);
@@ -2927,6 +3121,27 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
             <Bot className="h-4 w-4" />
             <span className="hidden sm:inline">AI Editor</span>
             {aiEditRunning && <Loader2 className="h-3 w-3 animate-spin" />}
+          </button>
+
+          {/* Brand Colors Toggle ──
+              Estrae automaticamente una palette dal brief / market research del
+              Project; se non bastano, usa la foto prodotto (logo[0].url); se
+              manca anche quella, chiede all'utente di caricarne una.  Poi
+              ricolora TUTTA la pagina via /api/ai-edit-html. */}
+          <button
+            onClick={() => setShowBrandColorsPanel(!showBrandColorsPanel)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${
+              showBrandColorsPanel
+                ? 'bg-gradient-to-r from-pink-500 via-fuchsia-500 to-orange-400 text-white shadow-lg shadow-fuchsia-500/30'
+                : brandApplying || brandExtractRunning
+                  ? 'bg-fuchsia-500/20 text-fuchsia-200 animate-pulse'
+                  : 'bg-slate-800 text-fuchsia-300 hover:bg-fuchsia-600/30 hover:text-fuchsia-200'
+            }`}
+            title="Brand Colors — recolor the whole page using the brief / market research / product photo"
+          >
+            <Palette className="h-4 w-4" />
+            <span className="hidden sm:inline">Brand Colors</span>
+            {(brandApplying || brandExtractRunning) && <Loader2 className="h-3 w-3 animate-spin" />}
           </button>
 
           <div className="w-px h-6 bg-slate-700 mx-1" />
@@ -5077,6 +5292,183 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                   {currentHtml.length.toLocaleString()} chars · Ctrl+Enter to send
                 </span>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ═══ Brand Colors Panel (Floating) ═══ */}
+      {showBrandColorsPanel && (
+        <div className="absolute bottom-14 left-1/2 -translate-x-1/2 z-[70] w-[640px] max-w-[95vw]">
+          <div className="bg-slate-900/98 backdrop-blur-xl rounded-2xl border border-fuchsia-500/30 shadow-2xl shadow-fuchsia-500/10 overflow-hidden">
+            {/* Header */}
+            <div className="flex items-center justify-between px-4 py-2.5 border-b border-slate-700/50">
+              <div className="flex items-center gap-2.5">
+                <div className="flex items-center justify-center w-7 h-7 rounded-lg bg-gradient-to-br from-pink-500 via-fuchsia-500 to-orange-400 shadow-lg shadow-fuchsia-500/30">
+                  <Palette className="h-4 w-4 text-white" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white">Brand Colors</h3>
+                  <p className="text-[10px] text-slate-400">
+                    Auto-extract a palette from the brief, market research or product photo,
+                    then recolor the entire page.
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowBrandColorsPanel(false)}
+                className="p-1 rounded-lg text-slate-500 hover:text-white hover:bg-slate-700 transition-colors"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="p-4 space-y-3">
+              {/* Hidden file input shared by all upload triggers in the panel */}
+              <input
+                ref={brandFileInputRef}
+                type="file"
+                accept="image/png,image/jpeg,image/webp,image/avif"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) void handleBrandImageUpload(f);
+                  e.target.value = '';
+                }}
+              />
+
+              {/* Loading initial extract */}
+              {brandExtractRunning && !brandPalette && (
+                <div className="flex items-center gap-2 text-[12px] text-fuchsia-300">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <span>Analyzing brief, market research and product photo…</span>
+                </div>
+              )}
+
+              {/* Needs image upload */}
+              {brandNeedsImage && !brandExtractRunning && (
+                <div className="space-y-2">
+                  <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/30">
+                    <p className="text-[12px] text-amber-200">
+                      No brief, market research or product photo is available for this project.
+                      Upload a product photo and I&apos;ll pick the palette from it.
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => brandFileInputRef.current?.click()}
+                    className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-gradient-to-r from-pink-500 via-fuchsia-500 to-orange-400 text-white text-sm font-semibold hover:opacity-95 transition-all shadow-lg shadow-fuchsia-500/20"
+                  >
+                    <ImagePlus className="h-4 w-4" />
+                    Upload product photo
+                  </button>
+                </div>
+              )}
+
+              {/* Palette shown */}
+              {brandPalette && !brandExtractRunning && (
+                <div className="space-y-3">
+                  {brandPalette.mood && (
+                    <div className="text-[11px] text-slate-400">
+                      Detected vibe:{' '}
+                      <span className="text-fuchsia-300 font-medium">{brandPalette.mood}</span>
+                      <span className="ml-2 text-slate-600">
+                        ·{' '}
+                        {brandPalette.source === 'image-llm' ? 'from product photo'
+                          : brandPalette.source === 'text-hex' ? 'hex colors found in brief'
+                          : 'inferred from brief / research'}
+                      </span>
+                    </div>
+                  )}
+                  <div className="grid grid-cols-5 gap-2">
+                    {([
+                      ['primary',    brandPalette.primary],
+                      ['secondary',  brandPalette.secondary],
+                      ['accent',     brandPalette.accent],
+                      ['background', brandPalette.background],
+                      ['text',       brandPalette.text],
+                    ] as const).map(([role, hex]) => (
+                      <label key={role} className="flex flex-col items-stretch gap-1 cursor-pointer group">
+                        <div
+                          className="h-14 rounded-lg border border-slate-700 shadow-inner relative overflow-hidden group-hover:ring-2 group-hover:ring-fuchsia-400/50 transition-all"
+                          style={{ background: hex }}
+                        >
+                          <input
+                            type="color"
+                            value={hex}
+                            onChange={(e) => {
+                              const v = e.target.value.toLowerCase();
+                              setBrandPalette(p => p ? { ...p, [role]: v } as BrandPalette : p);
+                            }}
+                            className="absolute inset-0 opacity-0 cursor-pointer"
+                            disabled={brandApplying}
+                          />
+                        </div>
+                        <div className="text-[10px] text-slate-400 text-center capitalize">{role}</div>
+                        <div className="text-[10px] text-slate-500 text-center font-mono">{hex}</div>
+                      </label>
+                    ))}
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => runBrandExtract()}
+                      disabled={brandExtractRunning || brandApplying}
+                      className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white border border-slate-700 transition-colors disabled:opacity-40"
+                      title="Re-run extraction"
+                    >
+                      <RotateCcw className="h-3.5 w-3.5" />
+                      Regenerate
+                    </button>
+                    <button
+                      onClick={() => brandFileInputRef.current?.click()}
+                      disabled={brandApplying}
+                      className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white border border-slate-700 transition-colors disabled:opacity-40"
+                      title="Use a different product photo"
+                    >
+                      <Upload className="h-3.5 w-3.5" />
+                      Use other photo
+                    </button>
+                    <div className="flex-1" />
+                    <button
+                      onClick={handleApplyBrandColors}
+                      disabled={brandApplying}
+                      className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-semibold bg-gradient-to-r from-pink-500 via-fuchsia-500 to-orange-400 text-white hover:opacity-95 shadow-lg shadow-fuchsia-500/20 transition-all disabled:opacity-50 disabled:cursor-wait"
+                    >
+                      {brandApplying ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wand2 className="h-4 w-4" />}
+                      {brandApplying ? 'Recoloring…' : 'Apply to page'}
+                    </button>
+                  </div>
+
+                  {/* progress shared con AI Edit (riusiamo aiEditProgress) */}
+                  {brandApplying && aiEditProgress && (
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between text-[11px]">
+                        <span className="text-fuchsia-300 font-medium flex items-center gap-1.5">
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                          {aiEditProgress.label}
+                        </span>
+                        <span className="text-slate-500">
+                          {aiEditProgress.chunkIndex + 1} / {aiEditProgress.totalChunks}
+                        </span>
+                      </div>
+                      <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-gradient-to-r from-pink-500 via-fuchsia-500 to-orange-400 rounded-full transition-all duration-500 ease-out"
+                          style={{ width: `${((aiEditProgress.chunkIndex + 1) / aiEditProgress.totalChunks) * 100}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Error */}
+              {brandExtractError && !brandNeedsImage && (
+                <div className="p-2.5 rounded-lg bg-red-500/10 border border-red-500/30">
+                  <p className="text-[11px] text-red-400 font-medium">{brandExtractError}</p>
+                </div>
+              )}
             </div>
           </div>
         </div>
