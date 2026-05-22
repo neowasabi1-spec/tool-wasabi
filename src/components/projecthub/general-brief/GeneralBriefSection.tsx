@@ -372,6 +372,36 @@ export function GeneralBriefSection({ projectId, files, projectName }: {
       .finally(() => setPbLoaded(true));
   }, [projectId]);
 
+  // One-shot backfill: re-extract text from every file in `project_files`
+  // (Supabase Storage) into the legacy JSONB columns the rewrite pipeline
+  // reads. Idempotent server-side — only writes when there's something new
+  // to mirror — so the cost is one cheap SELECT after the initial migration
+  // pass. This unsticks projects whose files were uploaded BEFORE the POST
+  // route gained text-extraction, where the rewrite reported "Brief mancante"
+  // even though the user could see the file in the UI.
+  const backfillRanRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (backfillRanRef.current === projectId) return;
+    backfillRanRef.current = projectId;
+    fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/files/backfill`, {
+      method: "POST",
+    })
+      .then(r => r.ok ? r.json() : null)
+      .then((res: { backfilled?: Record<string, number> } | null) => {
+        const total = res?.backfilled
+          ? Object.values(res.backfilled).reduce((a, b) => a + b, 0)
+          : 0;
+        if (total > 0) {
+          // Refresh the project so the brief picks up the newly-mirrored
+          // content immediately (rewrite reads it from the project, not
+          // from project_files).
+          queryClient.invalidateQueries({ queryKey: getGetProjectQueryKey(projectId) });
+          queryClient.invalidateQueries({ queryKey: getListProjectsQueryKey() });
+        }
+      })
+      .catch(() => { /* best-effort */ });
+  }, [projectId, queryClient]);
+
   const saveSections = useCallback(async (sections: ProductBriefSection[]) => {
     await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/product-brief-sections`, {
       method: "PATCH",

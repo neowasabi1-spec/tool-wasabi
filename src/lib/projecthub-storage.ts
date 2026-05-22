@@ -98,6 +98,15 @@ export function getPublicUrlForFile(filePath: string): string | null {
  * `/uploads/${file_path}` express static-file URL. Returns an empty string
  * when Supabase isn't configured so `<img src="">` simply shows a broken
  * image instead of crashing the render.
+ *
+ * We deliberately go through `/api/projecthub/file-proxy?path=<key>` instead
+ * of the direct Supabase `getPublicUrl()` URL. The public-URL approach only
+ * works when the `project-files` bucket has been manually set to PUBLIC in
+ * the Supabase Console — a step that's easy to miss (the migration mentions
+ * it as a comment, not as runnable SQL). When the bucket is private, every
+ * single download/preview returns 404 with "documento non presente". The
+ * server-side proxy works regardless of bucket visibility because it
+ * downloads via the SDK and streams the bytes back.
  */
 export function getUploadUrl(filePath?: string | null): string {
   if (!filePath) return '';
@@ -109,7 +118,7 @@ export function getUploadUrl(filePath?: string | null): string {
   if (filePath.startsWith('legacy/')) {
     return `/api/projecthub/legacy-files/${filePath.slice('legacy/'.length)}`;
   }
-  return getPublicUrlForFile(filePath) || '';
+  return `/api/projecthub/file-proxy?path=${encodeURIComponent(filePath)}`;
 }
 
 export async function deleteProjectFile(filePath: string): Promise<void> {

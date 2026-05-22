@@ -4,11 +4,69 @@ import {
   decodeLegacyFileId,
   removeFileFromLegacySection,
 } from '@/lib/projecthub-legacy';
+import {
+  parseSectionData,
+  buildSectionContent,
+} from '@/lib/project-sections';
 
 export const dynamic = 'force-dynamic';
 
 const LEGACY_COLS =
   'id, market_research, brief_files, front_end, back_end, compliance_funnel, funnel';
+
+// Same mapping as the POST route — keep them in sync. We need this here so
+// that deleting a file from `project_files` also pulls the mirrored entry
+// out of the legacy JSONB column (otherwise the rewrite pipeline keeps
+// seeing stale content from a file the user thought was gone).
+const FILE_TYPE_TO_LEGACY_COLUMN: Record<string, string> = {
+  market_research: 'market_research',
+  pb_frontend: 'brief_files',
+  pb_backend: 'back_end',
+  pb_compliance: 'compliance_funnel',
+  pb_funnel: 'funnel',
+};
+
+async function unmirrorFromLegacyColumn(
+  projectId: string,
+  fileType: string,
+  originalName: string,
+): Promise<void> {
+  const column = FILE_TYPE_TO_LEGACY_COLUMN[fileType];
+  if (!column) return;
+
+  const { data: row, error: readErr } = await supabase
+    .from('projects')
+    .select(`id, ${column}${column === 'brief_files' ? ', brief' : ''}`)
+    .eq('id', projectId)
+    .single();
+  if (readErr || !row) return;
+
+  const existing = parseSectionData((row as unknown as Record<string, unknown>)[column]);
+  const newFiles = existing.files.filter((f) => f.name !== originalName);
+  if (newFiles.length === existing.files.length) return; // nothing to remove
+
+  const content = buildSectionContent(newFiles, existing.notes || '');
+  const update: Record<string, unknown> = {
+    [column]: {
+      files: newFiles,
+      notes: existing.notes || '',
+      content,
+    },
+  };
+  if (column === 'brief_files') update.brief = content;
+
+  const { error: updErr } = await supabase
+    .from('projects')
+    .update(update)
+    .eq('id', projectId);
+  if (updErr) {
+    if (/brief_files/i.test(updErr.message) && column === 'brief_files') {
+      await supabase.from('projects').update({ brief: content }).eq('id', projectId);
+      return;
+    }
+    console.warn(`[projecthub] unmirror from ${column} failed:`, updErr.message);
+  }
+}
 
 export async function DELETE(
   _req: NextRequest,
@@ -54,7 +112,7 @@ export async function DELETE(
 
   const { data: row, error: fetchErr } = await supabase
     .from('project_files')
-    .select('file_path')
+    .select('file_path, file_type, original_name, project_id')
     .eq('id', fileId)
     .single();
 
@@ -74,5 +132,17 @@ export async function DELETE(
   if (delErr) {
     return NextResponse.json({ error: delErr.message }, { status: 500 });
   }
+
+  // Keep the legacy JSONB mirror in sync — drop the entry matching
+  // `original_name` from the column matching `file_type`. Failures here are
+  // logged but not surfaced; the file row + storage object are already gone.
+  if (row.file_type && row.original_name) {
+    await unmirrorFromLegacyColumn(
+      String(row.project_id ?? params.id),
+      String(row.file_type),
+      String(row.original_name),
+    );
+  }
+
   return NextResponse.json({ success: true });
 }
