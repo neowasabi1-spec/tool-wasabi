@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { supabaseAdmin } from '@/lib/supabase-admin';
 import {
   decodeLegacyFileId,
   removeFileFromLegacySection,
@@ -34,7 +34,7 @@ async function unmirrorFromLegacyColumn(
   const column = FILE_TYPE_TO_LEGACY_COLUMN[fileType];
   if (!column) return;
 
-  const { data: row, error: readErr } = await supabase
+  const { data: row, error: readErr } = await supabaseAdmin
     .from('projects')
     .select(`id, ${column}${column === 'brief_files' ? ', brief' : ''}`)
     .eq('id', projectId)
@@ -55,13 +55,13 @@ async function unmirrorFromLegacyColumn(
   };
   if (column === 'brief_files') update.brief = content;
 
-  const { error: updErr } = await supabase
+  const { error: updErr } = await supabaseAdmin
     .from('projects')
     .update(update)
     .eq('id', projectId);
   if (updErr) {
     if (/brief_files/i.test(updErr.message) && column === 'brief_files') {
-      await supabase.from('projects').update({ brief: content }).eq('id', projectId);
+      await supabaseAdmin.from('projects').update({ brief: content }).eq('id', projectId);
       return;
     }
     console.warn(`[projecthub] unmirror from ${column} failed:`, updErr.message);
@@ -82,7 +82,7 @@ export async function DELETE(
     if (!decoded) {
       return NextResponse.json({ error: 'Invalid legacy id' }, { status: 400 });
     }
-    const { data: project, error: fetchErr } = await supabase
+    const { data: project, error: fetchErr } = await supabaseAdmin
       .from('projects')
       .select(LEGACY_COLS)
       .eq('id', params.id)
@@ -100,7 +100,7 @@ export async function DELETE(
       decoded.idx,
     );
     const update: Record<string, unknown> = { [decoded.section]: newValue };
-    const { error: updErr } = await supabase
+    const { error: updErr } = await supabaseAdmin
       .from('projects')
       .update(update)
       .eq('id', params.id);
@@ -110,7 +110,7 @@ export async function DELETE(
     return NextResponse.json({ success: true, legacy: true });
   }
 
-  const { data: row, error: fetchErr } = await supabase
+  const { data: row, error: fetchErr } = await supabaseAdmin
     .from('project_files')
     .select('file_path, file_type, original_name, project_id')
     .eq('id', fileId)
@@ -121,10 +121,10 @@ export async function DELETE(
   }
 
   if (row.file_path) {
-    await supabase.storage.from('project-files').remove([row.file_path]);
+    await supabaseAdmin.storage.from('project-files').remove([row.file_path]);
   }
 
-  const { error: delErr } = await supabase
+  const { error: delErr } = await supabaseAdmin
     .from('project_files')
     .delete()
     .eq('id', fileId);

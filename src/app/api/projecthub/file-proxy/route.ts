@@ -28,7 +28,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { supabaseAdmin } from '@/lib/supabase-admin';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -85,7 +85,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid path' }, { status: 400 });
   }
 
-  const { data, error } = await supabase.storage.from(BUCKET).download(path);
+  const { data, error } = await supabaseAdmin.storage.from(BUCKET).download(path);
   if (error || !data) {
     return NextResponse.json(
       { error: error?.message || 'File not found' },

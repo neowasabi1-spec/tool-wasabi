@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { supabaseAdmin, hasServiceRoleKey } from '@/lib/supabase-admin';
 import { extractTextFromUpload } from '@/lib/server-text-extract';
 import {
   parseSectionData,
@@ -9,18 +9,47 @@ import {
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
+// Uploads may include large PDFs that need server-side parsing — give the
+// route enough headroom that we don't get truncated by the default 10s limit.
+export const maxDuration = 300;
+
+const BUCKET = 'project-files';
 
 export async function GET(
   _req: NextRequest,
   { params }: { params: { id: string } },
 ) {
-  const { data, error } = await supabase
+  const { data, error } = await supabaseAdmin
     .from('project_files')
     .select('*')
     .eq('project_id', params.id)
     .order('created_at', { ascending: false });
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json(data || []);
+}
+
+/** Make sure the `project-files` bucket exists and is public. We try to
+ *  create it on first upload — idempotent: "already exists" is a no-op.
+ *  Failures are non-fatal here because the upload itself will then return a
+ *  proper error to the client (and we log everything). */
+let _bucketEnsured = false;
+async function ensureBucket(): Promise<void> {
+  if (_bucketEnsured) return;
+  try {
+    const { error } = await supabaseAdmin.storage.createBucket(BUCKET, {
+      public: true,
+      fileSizeLimit: 52428800, // 50 MB per file
+    });
+    if (error && !/already exists|duplicate/i.test(error.message)) {
+      console.warn('[projecthub] ensureBucket failed:', error.message);
+    }
+  } catch (err) {
+    console.warn(
+      '[projecthub] ensureBucket threw:',
+      err instanceof Error ? err.message : err,
+    );
+  }
+  _bucketEnsured = true;
 }
 
 // file_type (from GeneralBriefSection / projecthub-legacy) → legacy column name.
@@ -56,7 +85,7 @@ async function mirrorToLegacyColumn(
   // Read the current value so we APPEND instead of overwriting (the user may
   // have legacy files already in there, or may upload several files across
   // multiple requests).
-  const { data: row, error: readErr } = await supabase
+  const { data: row, error: readErr } = await supabaseAdmin
     .from('projects')
     .select(`id, ${column}${column === 'brief_files' ? ', brief' : ''}`)
     .eq('id', projectId)
@@ -95,7 +124,7 @@ async function mirrorToLegacyColumn(
   // rewrite pipeline (getProjectBriefText → fallback path) keeps working.
   if (column === 'brief_files') update.brief = content;
 
-  const { error: updErr } = await supabase
+  const { error: updErr } = await supabaseAdmin
     .from('projects')
     .update(update)
     .eq('id', projectId);
@@ -106,7 +135,7 @@ async function mirrorToLegacyColumn(
     // is gated behind a separate run). Retry with just the `brief` TEXT column
     // so we still get rewrite content available.
     if (/brief_files/i.test(updErr.message) && column === 'brief_files') {
-      const { error: brErr } = await supabase
+      const { error: brErr } = await supabaseAdmin
         .from('projects')
         .update({ brief: content })
         .eq('id', projectId);
@@ -138,8 +167,11 @@ export async function POST(
     return NextResponse.json({ error: 'No files provided' }, { status: 400 });
   }
 
+  await ensureBucket();
+
   const inserted: unknown[] = [];
   const extracted: UploadedRecord[] = [];
+  const failures: { name: string; reason: string }[] = [];
 
   for (const file of files) {
     const safe = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
@@ -148,14 +180,19 @@ export async function POST(
     const buf = Buffer.from(ab);
     const contentType = file.type || 'application/octet-stream';
 
-    const { error: upErr } = await supabase.storage
-      .from('project-files')
+    const { error: upErr } = await supabaseAdmin.storage
+      .from(BUCKET)
       .upload(objectKey, buf, { contentType, upsert: false });
     if (upErr) {
-      console.warn('[projecthub] upload failed:', upErr.message);
+      // Surface the REAL reason — the previous code silently swallowed
+      // storage failures and the UI was showing "File caricato!" even
+      // when the bucket was missing or RLS denied the write.
+      const reason = upErr.message || 'storage upload failed';
+      console.warn(`[projecthub] storage upload failed for ${file.name}:`, reason);
+      failures.push({ name: file.name, reason });
       continue;
     }
-    const { data, error } = await supabase
+    const { data, error } = await supabaseAdmin
       .from('project_files')
       .insert({
         project_id: projectId,
@@ -166,7 +203,10 @@ export async function POST(
       .select()
       .single();
     if (error) {
-      console.warn('[projecthub] DB insert failed:', error.message);
+      console.warn(`[projecthub] DB insert failed for ${file.name}:`, error.message);
+      // Roll back the storage object so we don't leak orphans.
+      await supabaseAdmin.storage.from(BUCKET).remove([objectKey]).catch(() => {});
+      failures.push({ name: file.name, reason: error.message });
       continue;
     }
     inserted.push(data);
@@ -187,5 +227,21 @@ export async function POST(
   // POST resolves, and we want getProjectBriefText to see the new content).
   await mirrorToLegacyColumn(projectId, fileType, extracted);
 
-  return NextResponse.json(inserted);
+  // If EVERY file failed return 500 with details so the UI can show a real
+  // error instead of a misleading "File caricato!" toast. Partial successes
+  // still return 200 with `failures` populated.
+  if (inserted.length === 0 && failures.length > 0) {
+    return NextResponse.json(
+      {
+        error: failures[0].reason,
+        failures,
+        hint: hasServiceRoleKey()
+          ? 'Check the `project-files` bucket on Supabase — service role can write but the upload still failed.'
+          : 'SUPABASE_SERVICE_ROLE_KEY is missing in the environment. Without it the server falls back to the anon key, which is normally blocked by RLS / bucket policies. Add the service-role key to .env.local (and to the Netlify env vars) and redeploy.',
+      },
+      { status: 500 },
+    );
+  }
+
+  return NextResponse.json({ inserted, failures });
 }

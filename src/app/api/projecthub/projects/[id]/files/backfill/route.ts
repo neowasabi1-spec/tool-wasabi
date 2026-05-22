@@ -21,7 +21,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { supabaseAdmin } from '@/lib/supabase-admin';
 import { extractTextFromUpload } from '@/lib/server-text-extract';
 import {
   parseSectionData,
@@ -56,7 +56,7 @@ export async function POST(
 ) {
   const projectId = params.id;
 
-  const { data: rows, error: listErr } = await supabase
+  const { data: rows, error: listErr } = await supabaseAdmin
     .from('project_files')
     .select('id, file_path, file_type, original_name, created_at')
     .eq('project_id', projectId);
@@ -83,7 +83,7 @@ export async function POST(
     // SectionFilesEditor) aren't wiped out. Storage-backed files added below
     // are appended only if `name` doesn't already exist.
     const colsToRead = `id, ${column}${column === 'brief_files' ? ', brief' : ''}`;
-    const { data: row, error: readErr } = await supabase
+    const { data: row, error: readErr } = await supabaseAdmin
       .from('projects')
       .select(colsToRead)
       .eq('id', projectId)
@@ -103,7 +103,7 @@ export async function POST(
     for (const f of files) {
       if (existingNames.has(f.original_name)) continue;
 
-      const { data: blob, error: dlErr } = await supabase.storage
+      const { data: blob, error: dlErr } = await supabaseAdmin.storage
         .from('project-files')
         .download(f.file_path);
       if (dlErr || !blob) {
@@ -144,13 +144,13 @@ export async function POST(
     };
     if (column === 'brief_files') update.brief = content;
 
-    const { error: updErr } = await supabase
+    const { error: updErr } = await supabaseAdmin
       .from('projects')
       .update(update)
       .eq('id', projectId);
     if (updErr) {
       if (/brief_files/i.test(updErr.message) && column === 'brief_files') {
-        await supabase.from('projects').update({ brief: content }).eq('id', projectId);
+        await supabaseAdmin.from('projects').update({ brief: content }).eq('id', projectId);
         backfilled[column] = added;
         continue;
       }

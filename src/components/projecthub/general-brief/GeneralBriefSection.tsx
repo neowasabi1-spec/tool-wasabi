@@ -63,15 +63,41 @@ function UploadBtn({ projectId, fileType, label, accept, multiple }: {
       formData.append("file_type", fileType);
       files.forEach((f) => formData.append("files", f));
       const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/files`, { method: "POST", body: formData });
+      // The route returns either `{ inserted, failures }` (≥1 successful
+      // upload) or `{ error, failures, hint }` (everything failed). The old
+      // shape (a raw array) is also handled for backward compat with any
+      // in-flight clients still talking to the previous deploy.
+      let body: { inserted?: unknown[]; failures?: { name: string; reason: string }[]; error?: string; hint?: string } | unknown[] | null = null;
+      try { body = await r.json(); } catch { /* non-JSON response */ }
+
       if (r.ok) {
         queryClient.invalidateQueries({ queryKey: getGetProjectQueryKey(projectId) });
         queryClient.invalidateQueries({ queryKey: getGetProjectStatsQueryKey(projectId) });
-        toast({ title: "File caricato!" });
+        const failures = !Array.isArray(body) ? body?.failures || [] : [];
+        if (failures.length > 0) {
+          toast({
+            title: "Alcuni file non sono stati caricati",
+            description: failures.map(f => `${f.name}: ${f.reason}`).join("\n"),
+            variant: "destructive",
+          });
+        } else {
+          toast({ title: "File caricato!" });
+        }
       } else {
-        toast({ title: "Errore upload", variant: "destructive" });
+        const reason = !Array.isArray(body) ? body?.error : null;
+        const hint = !Array.isArray(body) ? body?.hint : null;
+        toast({
+          title: "Errore upload",
+          description: [reason, hint].filter(Boolean).join("\n") || `HTTP ${r.status}`,
+          variant: "destructive",
+        });
       }
-    } catch {
-      toast({ title: "Errore di rete", variant: "destructive" });
+    } catch (err) {
+      toast({
+        title: "Errore di rete",
+        description: err instanceof Error ? err.message : String(err),
+        variant: "destructive",
+      });
     } finally {
       setUploading(false);
       if (inputRef.current) inputRef.current.value = "";
