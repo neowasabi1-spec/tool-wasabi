@@ -43,42 +43,38 @@ function readStoredSession(): StoredSession | null {
   }
 }
 
-/** Direct REST call to Supabase — bypasses the JS SDK entirely (which
- *  has been hanging on session locks / setSession verification) so we
- *  ALWAYS finish in a bounded time. Returns the parsed app_user_permissions
- *  row or null on miss / error. The caller falls back to a synthetic
- *  zero-permission row in that case. */
-async function fetchPermissionsViaRest(
-  userId: string,
+/** Server-side "who am I" call. Goes through our own /api/auth/whoami
+ *  endpoint which uses the service-role admin client under the hood,
+ *  so any RLS misconfiguration on app_user_permissions can NOT silently
+ *  demote the user to role='user'/sections=[]. Returns the true row, or
+ *  null if the call fails / times out. */
+async function fetchWhoamiViaServer(
   accessToken: string,
   timeoutMs: number,
-): Promise<AppUserPermissions | null> {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
-  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim();
-  if (!url || !anonKey) return null;
-  const endpoint = `${url.replace(/\/$/, '')}/rest/v1/app_user_permissions?user_id=eq.${encodeURIComponent(userId)}&select=*`;
+): Promise<{ user: { id: string; email: string | null }; permissions: AppUserPermissions } | null> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(endpoint, {
+    const res = await fetch('/api/auth/whoami', {
       headers: {
-        apikey: anonKey,
         Authorization: `Bearer ${accessToken}`,
         Accept: 'application/json',
       },
       signal: controller.signal,
     });
     if (!res.ok) {
-      console.warn(`[useCurrentUser] permissions REST ${res.status}`);
+      console.warn(`[useCurrentUser] whoami HTTP ${res.status}`);
       return null;
     }
-    const rows = (await res.json()) as AppUserPermissions[];
-    return rows?.[0] ?? null;
+    return (await res.json()) as {
+      user: { id: string; email: string | null };
+      permissions: AppUserPermissions;
+    };
   } catch (err) {
     if ((err as { name?: string })?.name === 'AbortError') {
-      console.warn('[useCurrentUser] permissions REST aborted (timeout)');
+      console.warn('[useCurrentUser] whoami aborted (timeout)');
     } else {
-      console.warn('[useCurrentUser] permissions REST threw:', err);
+      console.warn('[useCurrentUser] whoami threw:', err);
     }
     return null;
   } finally {
@@ -98,8 +94,8 @@ export function useCurrentUser() {
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
-    const row = await fetchPermissionsViaRest(user.id, accessToken, 2500);
-    return row ?? fallback;
+    const result = await fetchWhoamiViaServer(accessToken, 4000);
+    return result?.permissions ?? fallback;
   }, []);
 
   useEffect(() => {
