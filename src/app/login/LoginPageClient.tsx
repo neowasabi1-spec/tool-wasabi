@@ -32,8 +32,22 @@ export default function LoginPageClient() {
         if (error) throw error;
         setMagicLinkSent(true);
       } else {
-        const { error } = await supabase.auth.signInWithPassword({ email, password });
+        const { data, error } = await supabase.auth.signInWithPassword({ email, password });
         if (error) throw error;
+        if (!data?.session?.access_token) {
+          throw new Error(
+            'Login riuscito ma la sessione non è stata creata. Controlla che il browser permetta localStorage/cookies per questo dominio (Chrome: lucchetto in alto → Cookies → Allow).',
+          );
+        }
+        // Re-read the session from storage to verify the SDK actually
+        // persisted it. If it didn't (localStorage blocked, private mode
+        // restrictions, etc.) the next page would just bounce back here.
+        const { data: verify } = await supabase.auth.getSession();
+        if (!verify.session) {
+          throw new Error(
+            'La sessione non è stata salvata in localStorage. Esci dalla modalità in incognito o abilita lo storage per questo dominio, poi riprova.',
+          );
+        }
         const redirect = new URLSearchParams(window.location.search).get('redirect') || '/';
         window.location.href = redirect;
       }
