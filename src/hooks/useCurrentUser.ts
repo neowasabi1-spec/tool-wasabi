@@ -15,7 +15,6 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import type { User } from '@supabase/supabase-js';
-import { getSupabaseBrowser } from '@/lib/supabase-browser';
 import type { AppUserPermissions, AppRole } from '@/lib/auth/sections';
 
 export interface CurrentUser {
@@ -23,11 +22,75 @@ export interface CurrentUser {
   permissions: AppUserPermissions;
 }
 
+interface StoredSession {
+  access_token: string;
+  refresh_token: string;
+  user_id: string;
+  email?: string;
+  expires_at?: number;
+}
+
+function readStoredSession(): StoredSession | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem('wasabi_session');
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as StoredSession;
+    if (!parsed?.access_token || !parsed?.user_id) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+/** Direct REST call to Supabase — bypasses the JS SDK entirely (which
+ *  has been hanging on session locks / setSession verification) so we
+ *  ALWAYS finish in a bounded time. Returns the parsed app_user_permissions
+ *  row or null on miss / error. The caller falls back to a synthetic
+ *  zero-permission row in that case. */
+async function fetchPermissionsViaRest(
+  userId: string,
+  accessToken: string,
+  timeoutMs: number,
+): Promise<AppUserPermissions | null> {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
+  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim();
+  if (!url || !anonKey) return null;
+  const endpoint = `${url.replace(/\/$/, '')}/rest/v1/app_user_permissions?user_id=eq.${encodeURIComponent(userId)}&select=*`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(endpoint, {
+      headers: {
+        apikey: anonKey,
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/json',
+      },
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      console.warn(`[useCurrentUser] permissions REST ${res.status}`);
+      return null;
+    }
+    const rows = (await res.json()) as AppUserPermissions[];
+    return rows?.[0] ?? null;
+  } catch (err) {
+    if ((err as { name?: string })?.name === 'AbortError') {
+      console.warn('[useCurrentUser] permissions REST aborted (timeout)');
+    } else {
+      console.warn('[useCurrentUser] permissions REST threw:', err);
+    }
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export function useCurrentUser() {
   const [data, setData] = useState<CurrentUser | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const fetchPermissions = useCallback(async (user: User): Promise<AppUserPermissions> => {
+  const fetchPermissions = useCallback(async (user: User, accessToken: string): Promise<AppUserPermissions> => {
     const fallback: AppUserPermissions = {
       user_id: user.id,
       role: 'user' as AppRole,
@@ -35,39 +98,18 @@ export function useCurrentUser() {
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
-    const supabase = getSupabaseBrowser();
-    if (!supabase) return fallback;
-    try {
-      const { data: row, error } = await supabase
-        .from('app_user_permissions')
-        .select('*')
-        .eq('user_id', user.id)
-        .maybeSingle();
-      if (error) {
-        console.warn('[useCurrentUser] permissions query error:', error.message);
-        return fallback;
-      }
-      return (row as AppUserPermissions | null) ?? fallback;
-    } catch (err) {
-      console.warn('[useCurrentUser] permissions fetch threw:', err);
-      return fallback;
-    }
+    const row = await fetchPermissionsViaRest(user.id, accessToken, 2500);
+    return row ?? fallback;
   }, []);
 
   useEffect(() => {
-    const supabase = getSupabaseBrowser();
-    if (!supabase) {
-      console.warn('[useCurrentUser] Supabase not configured — auth disabled');
-      setLoading(false);
-      return;
-    }
     let cancelled = false;
 
-    // Hard timeout: if for any reason the session/permissions calls hang
-    // (flaky network, missing migration, etc.) we still flip loading=false
-    // after 4s so the user sees either the page or the redirect to /login
-    // instead of an eternal spinner. Better to fail open than to brick
-    // the UI.
+    // Hard timeout: if for any reason the permissions REST call hangs
+    // we still flip loading=false after 4s so the AuthGate can decide
+    // whether to render the page or redirect to /login. Failing open
+    // (= treating timeouts as "no session") sends the user back to
+    // login, which is the safest option.
     const timeout = setTimeout(() => {
       if (cancelled) return;
       console.warn('[useCurrentUser] auth check timed out after 4s — releasing spinner');
@@ -76,58 +118,33 @@ export function useCurrentUser() {
 
     (async () => {
       try {
-        // Read OUR own session blob (saved by LoginPageClient on login).
-        // We don't trust the SDK's internal storage because it's been
-        // flaky across navigations + lock contention.
-        let stored: { access_token: string; refresh_token: string } | null = null;
-        try {
-          const raw = localStorage.getItem('wasabi_session');
-          if (raw) stored = JSON.parse(raw);
-        } catch { /* corrupt blob, treat as logged out */ }
-
-        if (!stored?.access_token || !stored?.refresh_token) {
-          console.info('[useCurrentUser] no wasabi_session in localStorage → unauthenticated');
+        const stored = readStoredSession();
+        if (!stored) {
+          console.info('[useCurrentUser] no wasabi_session → unauthenticated');
           if (!cancelled) setData(null);
           return;
         }
 
-        // Hydrate the SDK with our session so subsequent supabase calls
-        // (e.g. supabase.from('app_user_permissions')...) include the
-        // Authorization header.
-        console.info('[useCurrentUser] step 1: setSession from stored blob…');
-        const { data: setData_, error: setErr } = await supabase.auth.setSession({
-          access_token: stored.access_token,
-          refresh_token: stored.refresh_token,
-        });
-        if (setErr || !setData_.session) {
-          console.warn('[useCurrentUser] setSession rejected:', setErr?.message || 'no session returned');
-          // Stale / revoked session — purge and treat as logged out.
-          try { localStorage.removeItem('wasabi_session'); } catch { /* ignore */ }
-          if (!cancelled) setData(null);
-          return;
-        }
-        console.info('[useCurrentUser] step 1 done, user=', setData_.session.user.id);
+        // Build a minimal synthetic `User` so the rest of the app keeps
+        // working without touching the SDK. We avoid `supabase.auth.setSession`
+        // entirely because it does a /user verification network call that
+        // has been hanging on stale lock contention.
+        const user = {
+          id: stored.user_id,
+          email: stored.email,
+          aud: 'authenticated',
+          app_metadata: {},
+          user_metadata: {},
+          created_at: '',
+        } as unknown as User;
 
-        // Refresh wasabi_session with the (possibly refreshed) tokens
-        // returned by setSession so we don't get logged out next time
-        // the access_token expires.
-        try {
-          localStorage.setItem('wasabi_session', JSON.stringify({
-            access_token: setData_.session.access_token,
-            refresh_token: setData_.session.refresh_token,
-            user_id: setData_.session.user.id,
-            email: setData_.session.user.email,
-            expires_at: setData_.session.expires_at,
-          }));
-        } catch { /* ignore */ }
-
-        console.info('[useCurrentUser] step 2: fetchPermissions');
-        const permissions = await fetchPermissions(setData_.session.user);
+        console.info('[useCurrentUser] step 1: fetchPermissions via REST');
+        const permissions = await fetchPermissions(user, stored.access_token);
         console.info(
-          '[useCurrentUser] step 2 done',
+          '[useCurrentUser] step 1 done',
           `role=${permissions.role} sections=${permissions.sections.length}`,
         );
-        if (!cancelled) setData({ user: setData_.session.user, permissions });
+        if (!cancelled) setData({ user, permissions });
       } catch (err) {
         console.warn('[useCurrentUser] initial auth check threw:', err);
         if (!cancelled) setData(null);
@@ -139,39 +156,20 @@ export function useCurrentUser() {
       }
     })();
 
-    // Keep listening for tab-wide auth changes (logout from another tab,
-    // token refresh, etc.) and mirror them into our wasabi_session blob.
-    const { data: sub } = supabase.auth.onAuthStateChange(async (event, session) => {
-      if (cancelled) return;
-      const user = session?.user ?? null;
-      if (event === 'SIGNED_OUT' || !user) {
-        try { localStorage.removeItem('wasabi_session'); } catch { /* ignore */ }
+    // Cross-tab sync: react to localStorage changes (sign-out in another
+    // tab clears `wasabi_session`).
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== 'wasabi_session') return;
+      if (!e.newValue) {
         setData(null);
-        return;
       }
-      if (session?.access_token && session?.refresh_token) {
-        try {
-          localStorage.setItem('wasabi_session', JSON.stringify({
-            access_token: session.access_token,
-            refresh_token: session.refresh_token,
-            user_id: user.id,
-            email: user.email,
-            expires_at: session.expires_at,
-          }));
-        } catch { /* ignore */ }
-      }
-      try {
-        const permissions = await fetchPermissions(user);
-        if (!cancelled) setData({ user, permissions });
-      } catch (err) {
-        console.warn('[useCurrentUser] auth-change permissions refresh threw:', err);
-      }
-    });
+    };
+    window.addEventListener('storage', onStorage);
 
     return () => {
       cancelled = true;
       clearTimeout(timeout);
-      sub.subscription.unsubscribe();
+      window.removeEventListener('storage', onStorage);
     };
   }, [fetchPermissions]);
 
