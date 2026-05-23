@@ -77,14 +77,27 @@ export function useCurrentUser() {
     }, 4000);
 
     (async () => {
+      const t0 = performance.now();
       try {
-        const { data: session } = await supabase.auth.getSession();
+        console.info('[useCurrentUser] step 1: getSession()…');
+        const { data: session, error: sessErr } = await supabase.auth.getSession();
+        const t1 = performance.now();
+        console.info(
+          `[useCurrentUser] step 1 done in ${(t1 - t0).toFixed(0)}ms`,
+          sessErr ? `error=${sessErr.message}` : `session=${session.session ? 'present' : 'null'}`,
+        );
         const user = session.session?.user ?? null;
         if (!user) {
           if (!cancelled) setData(null);
           return;
         }
+        console.info('[useCurrentUser] step 2: fetchPermissions for', user.id);
         const permissions = await fetchPermissions(user);
+        const t2 = performance.now();
+        console.info(
+          `[useCurrentUser] step 2 done in ${(t2 - t1).toFixed(0)}ms`,
+          `role=${permissions.role} sections=${permissions.sections.length}`,
+        );
         if (!cancelled) setData({ user, permissions });
       } catch (err) {
         console.warn('[useCurrentUser] initial auth check threw:', err);
