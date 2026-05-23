@@ -34,18 +34,27 @@ export default function LoginPageClient() {
       } else {
         const { data, error } = await supabase.auth.signInWithPassword({ email, password });
         if (error) throw error;
-        if (!data?.session?.access_token) {
+        if (!data?.session?.access_token || !data?.session?.refresh_token) {
           throw new Error(
-            'Login riuscito ma la sessione non è stata creata. Controlla che il browser permetta localStorage/cookies per questo dominio (Chrome: lucchetto in alto → Cookies → Allow).',
+            'Login riuscito ma la sessione non è stata creata. Controlla che il browser permetta localStorage per questo dominio.',
           );
         }
-        // Re-read the session from storage to verify the SDK actually
-        // persisted it. If it didn't (localStorage blocked, private mode
-        // restrictions, etc.) the next page would just bounce back here.
-        const { data: verify } = await supabase.auth.getSession();
-        if (!verify.session) {
+        // Save the session under OUR OWN key so we don't depend on the
+        // SDK's internal storage logic (which has been flaky across
+        // Next.js soft navigations / multiple tabs / locked refreshes).
+        // useCurrentUser reads this same key on mount and rehydrates
+        // the SDK via `supabase.auth.setSession()`.
+        try {
+          localStorage.setItem('wasabi_session', JSON.stringify({
+            access_token: data.session.access_token,
+            refresh_token: data.session.refresh_token,
+            user_id: data.session.user.id,
+            email: data.session.user.email,
+            expires_at: data.session.expires_at,
+          }));
+        } catch {
           throw new Error(
-            'La sessione non è stata salvata in localStorage. Esci dalla modalità in incognito o abilita lo storage per questo dominio, poi riprova.',
+            'Impossibile salvare la sessione in localStorage. Esci dalla modalità in incognito o abilita lo storage per questo dominio.',
           );
         }
         const redirect = new URLSearchParams(window.location.search).get('redirect') || '/';

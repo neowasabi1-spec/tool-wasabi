@@ -10,19 +10,30 @@
 
 'use client';
 
-import { getSupabaseBrowser } from '@/lib/supabase-browser';
+/**
+ * Read the access_token directly from our own `wasabi_session` blob in
+ * localStorage. We intentionally do NOT call `supabase.auth.getSession()`
+ * here — that has been observed to hang under lock contention and we
+ * already have the token cached. The session is kept in sync by
+ * useCurrentUser on auth state changes.
+ */
+function getAccessToken(): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem('wasabi_session');
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { access_token?: string };
+    return parsed.access_token || null;
+  } catch {
+    return null;
+  }
+}
 
 export async function authFetch(
   input: RequestInfo | URL,
   init: RequestInit = {},
 ): Promise<Response> {
-  const supabase = getSupabaseBrowser();
-  let token: string | null = null;
-  if (supabase) {
-    const { data } = await supabase.auth.getSession();
-    token = data.session?.access_token ?? null;
-  }
-
+  const token = getAccessToken();
   const headers = new Headers(init.headers || {});
   if (token && !headers.has('Authorization')) {
     headers.set('Authorization', `Bearer ${token}`);

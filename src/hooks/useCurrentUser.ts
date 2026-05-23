@@ -57,8 +57,6 @@ export function useCurrentUser() {
   useEffect(() => {
     const supabase = getSupabaseBrowser();
     if (!supabase) {
-      // Env vars missing → nothing to gate, render as anon (the login
-      // page would also fail, but at least the spinner doesn't hang).
       console.warn('[useCurrentUser] Supabase not configured — auth disabled');
       setLoading(false);
       return;
@@ -77,28 +75,59 @@ export function useCurrentUser() {
     }, 4000);
 
     (async () => {
-      const t0 = performance.now();
       try {
-        console.info('[useCurrentUser] step 1: getSession()…');
-        const { data: session, error: sessErr } = await supabase.auth.getSession();
-        const t1 = performance.now();
-        console.info(
-          `[useCurrentUser] step 1 done in ${(t1 - t0).toFixed(0)}ms`,
-          sessErr ? `error=${sessErr.message}` : `session=${session.session ? 'present' : 'null'}`,
-        );
-        const user = session.session?.user ?? null;
-        if (!user) {
+        // Read OUR own session blob (saved by LoginPageClient on login).
+        // We don't trust the SDK's internal storage because it's been
+        // flaky across navigations + lock contention.
+        let stored: { access_token: string; refresh_token: string } | null = null;
+        try {
+          const raw = localStorage.getItem('wasabi_session');
+          if (raw) stored = JSON.parse(raw);
+        } catch { /* corrupt blob, treat as logged out */ }
+
+        if (!stored?.access_token || !stored?.refresh_token) {
+          console.info('[useCurrentUser] no wasabi_session in localStorage → unauthenticated');
           if (!cancelled) setData(null);
           return;
         }
-        console.info('[useCurrentUser] step 2: fetchPermissions for', user.id);
-        const permissions = await fetchPermissions(user);
-        const t2 = performance.now();
+
+        // Hydrate the SDK with our session so subsequent supabase calls
+        // (e.g. supabase.from('app_user_permissions')...) include the
+        // Authorization header.
+        console.info('[useCurrentUser] step 1: setSession from stored blob…');
+        const { data: setData_, error: setErr } = await supabase.auth.setSession({
+          access_token: stored.access_token,
+          refresh_token: stored.refresh_token,
+        });
+        if (setErr || !setData_.session) {
+          console.warn('[useCurrentUser] setSession rejected:', setErr?.message || 'no session returned');
+          // Stale / revoked session — purge and treat as logged out.
+          try { localStorage.removeItem('wasabi_session'); } catch { /* ignore */ }
+          if (!cancelled) setData(null);
+          return;
+        }
+        console.info('[useCurrentUser] step 1 done, user=', setData_.session.user.id);
+
+        // Refresh wasabi_session with the (possibly refreshed) tokens
+        // returned by setSession so we don't get logged out next time
+        // the access_token expires.
+        try {
+          localStorage.setItem('wasabi_session', JSON.stringify({
+            access_token: setData_.session.access_token,
+            refresh_token: setData_.session.refresh_token,
+            user_id: setData_.session.user.id,
+            email: setData_.session.user.email,
+            expires_at: setData_.session.expires_at,
+          }));
+        } catch { /* ignore */ }
+
+        console.info('[useCurrentUser] step 2: fetchPermissions');
+        const permissions = await fetchPermissions(setData_.session.user);
         console.info(
-          `[useCurrentUser] step 2 done in ${(t2 - t1).toFixed(0)}ms`,
+          '[useCurrentUser] step 2 done',
           `role=${permissions.role} sections=${permissions.sections.length}`,
         );
-        if (!cancelled) setData({ user, permissions });
+        if (!cancelled) setData({ user: setData_.session.user, permissions });
       } catch (err) {
         console.warn('[useCurrentUser] initial auth check threw:', err);
         if (!cancelled) setData(null);
@@ -110,12 +139,26 @@ export function useCurrentUser() {
       }
     })();
 
-    const { data: sub } = supabase.auth.onAuthStateChange(async (_event, session) => {
+    // Keep listening for tab-wide auth changes (logout from another tab,
+    // token refresh, etc.) and mirror them into our wasabi_session blob.
+    const { data: sub } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (cancelled) return;
       const user = session?.user ?? null;
-      if (!user) {
+      if (event === 'SIGNED_OUT' || !user) {
+        try { localStorage.removeItem('wasabi_session'); } catch { /* ignore */ }
         setData(null);
         return;
+      }
+      if (session?.access_token && session?.refresh_token) {
+        try {
+          localStorage.setItem('wasabi_session', JSON.stringify({
+            access_token: session.access_token,
+            refresh_token: session.refresh_token,
+            user_id: user.id,
+            email: user.email,
+            expires_at: session.expires_at,
+          }));
+        } catch { /* ignore */ }
       }
       try {
         const permissions = await fetchPermissions(user);

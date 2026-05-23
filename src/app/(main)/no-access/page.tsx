@@ -28,7 +28,8 @@ export default function NoAccessPage() {
 
   async function handleSignOut() {
     const supabase = getSupabaseBrowser();
-    if (supabase) await supabase.auth.signOut();
+    try { localStorage.removeItem('wasabi_session'); } catch { /* ignore */ }
+    if (supabase) await supabase.auth.signOut().catch(() => {});
     router.replace('/login');
   }
 
