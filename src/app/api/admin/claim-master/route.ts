@@ -1,29 +1,23 @@
 /**
- * One-shot bootstrap endpoint: lets the FIRST authenticated user claim
- * the master role.
+ * Bootstrap endpoint that grants the master role.
  *
  *   POST /api/admin/claim-master
  *     → 200 { promoted: true, role: 'master', sections: [...all] }
- *         when no master exists in `app_user_permissions` yet
+ *         when the caller is allowed to become master
  *     → 200 { promoted: false, reason: 'master_already_exists' }
- *         when at least one master is already set up
- *     → 401 when the caller isn't authenticated
+ *         when there's already a master AND the caller isn't an OWNER
+ *     → 401 when not authenticated
  *
- * Rationale: after the first login on a fresh install, the database has
- * an `auth.users` row but no `app_user_permissions` row (or one with
- * role='user'). Without a master nobody can promote anyone via the admin
- * UI, so we bake in a self-bootstrap path that ONLY works while the
- * master slot is empty. Once any master exists this endpoint becomes a
- * no-op — subsequent users have to be invited by a master via
- * /admin/users.
+ * Promotion rules (in order, first match wins):
+ *   1. The caller's email is listed in OWNER_EMAILS env var (comma-
+ *      separated). This always wins, even if other masters already
+ *      exist — useful when you've lost master access and need to
+ *      reclaim it without poking the database directly.
+ *   2. No master exists in `app_user_permissions` yet (fresh install).
+ *   3. Otherwise refuse.
  *
- * Security:
- *   - Requires a valid bearer token (so a random visitor can't claim
- *     master without first logging in via the regular Supabase Auth
- *     flow).
- *   - The "no master exists" check uses the service-role client so it
- *     bypasses RLS and gives a truthful count even when the caller
- *     can't read the table directly.
+ * All DB calls use the service-role client so RLS can't lock us out
+ * of the recovery path.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -34,11 +28,21 @@ import { ALL_SECTION_IDS } from '@/lib/auth/sections';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
+function parseOwnerEmails(): Set<string> {
+  const raw = process.env.OWNER_EMAILS || process.env.OWNER_EMAIL || '';
+  return new Set(
+    raw
+      .split(',')
+      .map(s => s.trim().toLowerCase())
+      .filter(Boolean),
+  );
+}
+
 export async function POST(req: NextRequest) {
   const auth = await requireAuth(req);
   if (!auth.ok) return auth.response;
 
-  // Caller is already a master → nothing to do.
+  // Already a master → nothing to do, just echo back current perms.
   if (auth.permissions.role === 'master') {
     return NextResponse.json({
       promoted: false,
@@ -48,26 +52,34 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  // Does ANY master exist anywhere in the system?
-  const { count, error: countErr } = await supabaseAdmin
-    .from('app_user_permissions')
-    .select('user_id', { count: 'exact', head: true })
-    .eq('role', 'master');
-  if (countErr) {
-    return NextResponse.json(
-      { error: 'count_failed', message: countErr.message },
-      { status: 500 },
-    );
+  const owners = parseOwnerEmails();
+  const callerEmail = (auth.user.email || '').toLowerCase();
+  const isOwner = !!callerEmail && owners.has(callerEmail);
+
+  // Count current masters (using service role → bypasses RLS).
+  let masterExists = false;
+  if (!isOwner) {
+    const { count, error: countErr } = await supabaseAdmin
+      .from('app_user_permissions')
+      .select('user_id', { count: 'exact', head: true })
+      .eq('role', 'master');
+    if (countErr) {
+      return NextResponse.json(
+        { error: 'count_failed', message: countErr.message },
+        { status: 500 },
+      );
+    }
+    masterExists = (count ?? 0) > 0;
   }
 
-  if ((count ?? 0) > 0) {
+  if (masterExists) {
     return NextResponse.json({
       promoted: false,
       reason: 'master_already_exists',
     });
   }
 
-  // No master yet → promote the caller with full section access.
+  // Promote the caller.
   const { error: upsertErr } = await supabaseAdmin
     .from('app_user_permissions')
     .upsert(
@@ -89,5 +101,6 @@ export async function POST(req: NextRequest) {
     promoted: true,
     role: 'master',
     sections: ALL_SECTION_IDS,
+    via: isOwner ? 'owner_override' : 'no_existing_master',
   });
 }
