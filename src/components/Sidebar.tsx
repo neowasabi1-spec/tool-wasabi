@@ -1,97 +1,72 @@
 'use client';
 
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
-import { 
-  LayoutDashboard, 
-  ShoppingBag, 
-  Layers, 
-  CreditCard,
+import { usePathname, useRouter } from 'next/navigation';
+import {
+  LayoutDashboard,
+  ShoppingBag,
+  Layers,
   ChevronRight,
-  Sparkles,
   FileCode,
-  Zap,
-  ScanSearch,
-  GitBranch,
-  MessageSquare,
   HelpCircle,
-  Wand2,
-  FlipVertical,
   Copy,
-  Rocket,
-  BookOpen,
-  ShieldCheck,
-  Wand,
   KeyRound,
   Swords,
   Brain,
   FolderOpen,
   ClipboardCheck,
   DollarSign,
+  Users,
+  LogOut,
+  Shield,
 } from 'lucide-react';
+import { useCurrentUser } from '@/hooks/useCurrentUser';
+import { canAccessSection } from '@/lib/auth/sections';
+import { getSupabaseBrowser } from '@/lib/supabase-browser';
 
-const menuItems = [
-  {
-    name: 'Dashboard',
-    href: '/',
-    icon: LayoutDashboard,
-  },
-  {
-    name: 'Strategist',
-    href: '/strategist',
-    icon: Brain,
-  },
+interface MenuItem {
+  name: string;
+  href: string;
+  icon: typeof LayoutDashboard;
+  /** Section id from `app_user_permissions.sections`. `null` means the
+   *  item is visible to any logged-in user (e.g. the landing dashboard). */
+  sectionId: string | null;
+  /** Only show to masters even if the section id is also granted to
+   *  regular users. Currently only used for the Users admin panel. */
+  masterOnly?: boolean;
+}
 
-  {
-    name: 'Clone / Swipe',
-    href: '/front-end-funnel',
-    icon: Copy,
-  },
-  {
-    name: 'Clone / Swipe Quiz',
-    href: '/quiz-swipe',
-    icon: HelpCircle,
-  },
-  {
-    name: 'My Archive',
-    href: '/templates',
-    icon: FileCode,
-  },
-  {
-    name: 'Catalogue',
-    href: '/products',
-    icon: ShoppingBag,
-  },
-  {
-    name: 'My Projects',
-    href: '/projects',
-    icon: FolderOpen,
-  },
-  {
-    name: 'Checkpoint',
-    href: '/checkpoint',
-    icon: ClipboardCheck,
-  },
-
-  {
-    name: 'Protocollo Valchiria',
-    href: '/protocollo-valchiria',
-    icon: Swords,
-  },
-  {
-    name: 'API Keys',
-    href: '/api-keys',
-    icon: KeyRound,
-  },
-  {
-    name: 'Spesa API',
-    href: '/api-usage',
-    icon: DollarSign,
-  },
+const menuItems: MenuItem[] = [
+  { name: 'Dashboard', href: '/', icon: LayoutDashboard, sectionId: null },
+  { name: 'Strategist', href: '/strategist', icon: Brain, sectionId: null },
+  { name: 'Clone / Swipe', href: '/front-end-funnel', icon: Copy, sectionId: 'front-end-funnel' },
+  { name: 'Clone / Swipe Quiz', href: '/quiz-swipe', icon: HelpCircle, sectionId: 'quiz-swipe' },
+  { name: 'My Archive', href: '/templates', icon: FileCode, sectionId: 'templates' },
+  { name: 'Catalogue', href: '/products', icon: ShoppingBag, sectionId: 'products' },
+  { name: 'My Projects', href: '/projects', icon: FolderOpen, sectionId: 'projects' },
+  { name: 'Checkpoint', href: '/checkpoint', icon: ClipboardCheck, sectionId: 'checkpoint' },
+  { name: 'Protocollo Valchiria', href: '/protocollo-valchiria', icon: Swords, sectionId: 'protocollo-valchiria' },
+  { name: 'API Keys', href: '/api-keys', icon: KeyRound, sectionId: 'api-keys' },
+  { name: 'Spesa API', href: '/api-usage', icon: DollarSign, sectionId: 'api-usage' },
+  { name: 'Users', href: '/admin/users', icon: Users, sectionId: 'admin-users', masterOnly: true },
 ];
 
 export default function Sidebar() {
   const pathname = usePathname();
+  const router = useRouter();
+  const { user, permissions, loading } = useCurrentUser();
+
+  const visibleItems = menuItems.filter(item => {
+    if (item.sectionId === null) return true; // dashboard etc. — always visible
+    if (item.masterOnly && permissions?.role !== 'master') return false;
+    return canAccessSection(permissions, item.sectionId);
+  });
+
+  async function handleSignOut() {
+    const supabase = getSupabaseBrowser();
+    if (supabase) await supabase.auth.signOut();
+    router.replace('/login');
+  }
 
   return (
     <aside className="w-56 bg-gray-900 text-white min-h-screen flex flex-col">
@@ -107,10 +82,10 @@ export default function Sidebar() {
       {/* Navigation */}
       <nav className="flex-1 p-3">
         <ul className="space-y-1">
-          {menuItems.map((item) => {
+          {visibleItems.map((item) => {
             const isActive = pathname === item.href;
             const Icon = item.icon;
-            
+
             return (
               <li key={item.href}>
                 <Link
@@ -133,6 +108,28 @@ export default function Sidebar() {
 
       {/* Footer */}
       <div className="p-3 border-t border-gray-800 space-y-2">
+        {!loading && user && (
+          <div className="bg-gray-800 rounded-lg p-3 space-y-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <Shield className={`w-3.5 h-3.5 shrink-0 ${permissions?.role === 'master' ? 'text-amber-400' : 'text-gray-400'}`} />
+              <div className="min-w-0 flex-1">
+                <p className="text-xs text-white truncate" title={user.email || ''}>
+                  {user.email}
+                </p>
+                <p className="text-[10px] text-gray-400 uppercase tracking-wider">
+                  {permissions?.role || 'user'}
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={handleSignOut}
+              className="w-full flex items-center justify-center gap-1.5 text-[11px] text-gray-300 hover:text-white bg-gray-900 hover:bg-gray-700 rounded-md py-1.5 transition-colors"
+            >
+              <LogOut className="w-3 h-3" />
+              Sign out
+            </button>
+          </div>
+        )}
         <a
           href="/api/health"
           target="_blank"
@@ -141,13 +138,6 @@ export default function Sidebar() {
         >
           API Diagnostics
         </a>
-        <div className="bg-gray-800 rounded-lg p-3">
-          <p className="text-xs text-gray-400">Swipe Status</p>
-          <div className="flex items-center gap-1.5 mt-1.5">
-            <div className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></div>
-            <span className="text-xs">System Active</span>
-          </div>
-        </div>
       </div>
     </aside>
   );
