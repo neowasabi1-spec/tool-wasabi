@@ -27,49 +27,74 @@ export function useCurrentUser() {
   const [data, setData] = useState<CurrentUser | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const fetchPermissions = useCallback(async (user: User) => {
-    const supabase = getSupabaseBrowser();
-    if (!supabase) return null;
-    const { data: row } = await supabase
-      .from('app_user_permissions')
-      .select('*')
-      .eq('user_id', user.id)
-      .maybeSingle();
-    if (row) return row as AppUserPermissions;
-    // No row yet — synthesize a non-master with zero sections so the
-    // AuthGate routes them to /no-access instead of crashing.
-    return {
+  const fetchPermissions = useCallback(async (user: User): Promise<AppUserPermissions> => {
+    const fallback: AppUserPermissions = {
       user_id: user.id,
       role: 'user' as AppRole,
       sections: [] as string[],
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
-    } satisfies AppUserPermissions;
+    };
+    const supabase = getSupabaseBrowser();
+    if (!supabase) return fallback;
+    try {
+      const { data: row, error } = await supabase
+        .from('app_user_permissions')
+        .select('*')
+        .eq('user_id', user.id)
+        .maybeSingle();
+      if (error) {
+        console.warn('[useCurrentUser] permissions query error:', error.message);
+        return fallback;
+      }
+      return (row as AppUserPermissions | null) ?? fallback;
+    } catch (err) {
+      console.warn('[useCurrentUser] permissions fetch threw:', err);
+      return fallback;
+    }
   }, []);
 
   useEffect(() => {
     const supabase = getSupabaseBrowser();
     if (!supabase) {
+      // Env vars missing → nothing to gate, render as anon (the login
+      // page would also fail, but at least the spinner doesn't hang).
+      console.warn('[useCurrentUser] Supabase not configured — auth disabled');
       setLoading(false);
       return;
     }
     let cancelled = false;
 
+    // Hard timeout: if for any reason the session/permissions calls hang
+    // (flaky network, missing migration, etc.) we still flip loading=false
+    // after 4s so the user sees either the page or the redirect to /login
+    // instead of an eternal spinner. Better to fail open than to brick
+    // the UI.
+    const timeout = setTimeout(() => {
+      if (cancelled) return;
+      console.warn('[useCurrentUser] auth check timed out after 4s — releasing spinner');
+      setLoading(false);
+    }, 4000);
+
     (async () => {
-      const { data: session } = await supabase.auth.getSession();
-      const user = session.session?.user ?? null;
-      if (!user) {
+      try {
+        const { data: session } = await supabase.auth.getSession();
+        const user = session.session?.user ?? null;
+        if (!user) {
+          if (!cancelled) setData(null);
+          return;
+        }
+        const permissions = await fetchPermissions(user);
+        if (!cancelled) setData({ user, permissions });
+      } catch (err) {
+        console.warn('[useCurrentUser] initial auth check threw:', err);
+        if (!cancelled) setData(null);
+      } finally {
         if (!cancelled) {
-          setData(null);
+          clearTimeout(timeout);
           setLoading(false);
         }
-        return;
       }
-      const permissions = await fetchPermissions(user);
-      if (!cancelled && permissions) {
-        setData({ user, permissions });
-      }
-      if (!cancelled) setLoading(false);
     })();
 
     const { data: sub } = supabase.auth.onAuthStateChange(async (_event, session) => {
@@ -79,12 +104,17 @@ export function useCurrentUser() {
         setData(null);
         return;
       }
-      const permissions = await fetchPermissions(user);
-      if (permissions) setData({ user, permissions });
+      try {
+        const permissions = await fetchPermissions(user);
+        if (!cancelled) setData({ user, permissions });
+      } catch (err) {
+        console.warn('[useCurrentUser] auth-change permissions refresh threw:', err);
+      }
     });
 
     return () => {
       cancelled = true;
+      clearTimeout(timeout);
       sub.subscription.unsubscribe();
     };
   }, [fetchPermissions]);
