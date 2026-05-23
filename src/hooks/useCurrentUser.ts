@@ -139,11 +139,57 @@ export function useCurrentUser() {
         } as unknown as User;
 
         console.info('[useCurrentUser] step 1: fetchPermissions via REST');
-        const permissions = await fetchPermissions(user, stored.access_token);
+        let permissions = await fetchPermissions(user, stored.access_token);
         console.info(
           '[useCurrentUser] step 1 done',
           `role=${permissions.role} sections=${permissions.sections.length}`,
         );
+
+        // Bootstrap: if this user has no permissions yet (fresh install,
+        // missing trigger, etc.) try to claim the master role. The server
+        // endpoint only honors the claim when no master exists anywhere,
+        // so this is a no-op on any system that already has one. We
+        // intentionally avoid blocking the UI on this — if it fails the
+        // user just lands without permissions and the AuthGate handles
+        // it normally.
+        if (permissions.role === 'user' && permissions.sections.length === 0) {
+          try {
+            console.info('[useCurrentUser] no perms → trying claim-master');
+            const controller = new AbortController();
+            const t = setTimeout(() => controller.abort(), 3000);
+            const res = await fetch('/api/admin/claim-master', {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${stored.access_token}`,
+                Accept: 'application/json',
+              },
+              signal: controller.signal,
+            }).finally(() => clearTimeout(t));
+            if (res.ok) {
+              const payload = (await res.json()) as {
+                promoted?: boolean;
+                role?: string;
+                sections?: string[];
+              };
+              if (payload.promoted && payload.role === 'master') {
+                console.info('[useCurrentUser] claimed master ✓');
+                permissions = {
+                  ...permissions,
+                  role: 'master',
+                  sections: payload.sections || [],
+                  updated_at: new Date().toISOString(),
+                };
+              } else {
+                console.info('[useCurrentUser] claim-master refused (master already exists)');
+              }
+            } else {
+              console.warn(`[useCurrentUser] claim-master HTTP ${res.status}`);
+            }
+          } catch (err) {
+            console.warn('[useCurrentUser] claim-master threw:', err);
+          }
+        }
+
         if (!cancelled) setData({ user, permissions });
       } catch (err) {
         console.warn('[useCurrentUser] initial auth check threw:', err);
