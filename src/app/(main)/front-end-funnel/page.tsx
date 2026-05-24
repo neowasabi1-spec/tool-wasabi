@@ -2722,8 +2722,22 @@ export default function FrontEndFunnel() {
         // if the Angle column is filled for this step, prepend a
         // directive block to the brief in memory. The project's brief
         // in DB is NEVER modified — each row gets its own augmented copy.
+        //
+        // Defensive: wrapped in try/catch so a buggy augmenter can NEVER
+        // break the swipe pipeline — worst case we fall back to the raw
+        // brief and log a warning. Treats the angle feature as additive.
         const angleStr = (page.angle || '').trim();
-        const briefForLlm = augmentBriefWithAngle(briefStr, angleStr);
+        let briefForLlm = briefStr;
+        try {
+          briefForLlm = augmentBriefWithAngle(briefStr, angleStr);
+        } catch (e) {
+          pushSwipeLog(
+            'error',
+            `⚠ Angle injection failed (${e instanceof Error ? e.message : 'unknown'}) → uso il brief originale senza angolo`,
+            pageName,
+          );
+          briefForLlm = briefStr;
+        }
 
         // Build a product info shape that matches what
         // /api/landing/swipe/openclaw-build-prompts expects (only
@@ -3058,8 +3072,22 @@ export default function FrontEndFunnel() {
         // on the project is NOT modified — each row builds its own
         // augmented copy. Pages with empty angle behave exactly as
         // before (briefStr passes through unchanged).
+        //
+        // Defensive: wrapped in try/catch so a buggy augmenter can NEVER
+        // break the swipe pipeline — worst case we fall back to the raw
+        // brief and log a warning. Treats the angle feature as additive.
         const angleStr = (page.angle || '').trim();
-        const briefForLlm = augmentBriefWithAngle(briefStr, angleStr);
+        let briefForLlm = briefStr;
+        try {
+          briefForLlm = augmentBriefWithAngle(briefStr, angleStr);
+        } catch (e) {
+          pushSwipeLog(
+            'error',
+            `⚠ Angle injection failed (${e instanceof Error ? e.message : 'unknown'}) → uso il brief originale senza angolo`,
+            pageName,
+          );
+          briefForLlm = briefStr;
+        }
         if (angleStr) {
           pushSwipeLog(
             'info',
@@ -3104,7 +3132,16 @@ export default function FrontEndFunnel() {
             ...routingPayload,
           }),
         });
-        const extractData = await extractRes.json();
+        // parseJsonResponseOrThrow turns Netlify "Internal Error / 502
+        // <html>…</html>" gateway responses into an actionable error
+        // ("…funnel-swap-proxy HTTP 502 — gateway returned HTML…")
+        // instead of the cryptic "Unexpected token 'I', 'Internal E'…".
+        const extractData = await parseJsonResponseOrThrow<{
+          jobId?: string;
+          totalTexts?: number;
+          error?: string;
+          details?: string;
+        }>(extractRes, '[swipe-all extract /api/funnel-swap-proxy]');
         if (!extractRes.ok || extractData.error) {
           throw new Error(extractData.error || extractData.details || 'Extract fallito');
         }
