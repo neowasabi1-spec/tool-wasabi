@@ -2730,33 +2730,37 @@ export default function FrontEndFunnel() {
 
         const detectedLangForRow = detectPageLanguage(url, null);
         // Per-row marketing angle (from the Angle column on this funnel
-        // step). Sent as a separate field so it does NOT inflate the
-        // existing brief / market_research blobs — adds at most ~200
-        // chars to the message JSON when present, zero overhead when
-        // empty. The worker reads `payload.angle` and forwards it to
-        // buildSwipePrompts, which injects a dominant directive block
-        // at the top of the systemPrompt.
+        // step). Sent as an HTTP HEADER, NOT in the JSON body, so it
+        // adds ZERO bytes to the body payload — critical because the
+        // brief is already duplicated 3x in the payload and big projects
+        // (PDFs >1MB) get close to Netlify's 6MB function body limit.
         //
-        // The brief / market_research / pageKnowledge structure is
-        // BYTE-IDENTICAL to the legacy version — only an optional
-        // extra top-level field is added. Workers on old code (before
-        // angle support) simply ignore the field. No regression risk.
+        // The /api/openclaw/queue route reads `X-Wasabi-Angle`, decodes
+        // it, and injects it into the stored user_message JSON (which
+        // has no DB-side size limit). The worker then reads `angle`
+        // from the parsed user_message exactly as if it had been in the
+        // body all along — backward compatible with old workers that
+        // simply ignore the field.
         const angleForRow = (page.angle || '').trim();
-        const swipeMessage: Record<string, unknown> = {
-          action: 'swipe_landing_local',
-          sourceUrl: url,
-          product: productPayload,
-          tone: 'professional',
-          language: detectedLangForRow,
-          knowledge: pageKnowledge,
-        };
-        if (angleForRow) swipeMessage.angle = angleForRow;
+        const enqueueHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (angleForRow) {
+          // encodeURIComponent so non-ASCII chars (à, è, '"' etc.) pass
+          // through HTTP header validation. Header must be ASCII-safe.
+          enqueueHeaders['X-Wasabi-Angle'] = encodeURIComponent(angleForRow);
+        }
         const enqueueRes = await fetch('/api/openclaw/queue', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: enqueueHeaders,
           body: JSON.stringify({
             section: 'swipe_job',
-            message: JSON.stringify(swipeMessage),
+            message: JSON.stringify({
+              action: 'swipe_landing_local',
+              sourceUrl: url,
+              product: productPayload,
+              tone: 'professional',
+              language: detectedLangForRow,
+              knowledge: pageKnowledge,
+            }),
             targetAgent,
           }),
         });

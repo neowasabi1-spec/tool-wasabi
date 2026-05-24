@@ -6,6 +6,33 @@ export async function POST(req: NextRequest) {
     await req.json();
   if (!message) return NextResponse.json({ error: 'Missing message' }, { status: 400 });
 
+  // `X-Wasabi-Angle` (optional, URL-encoded): per-row marketing angle
+  // for swipe jobs. Sent as an HTTP HEADER (not body) so it does not
+  // count against Netlify Functions' 6MB body limit — the brief is
+  // already duplicated 3x in the swipe payload and big projects get
+  // close to the cap, so any extra body byte triggered 500 Internal
+  // Error. We decode and inject it into the stored user_message JSON
+  // here, where there is no size limit. Workers read `payload.angle`
+  // exactly as if it had been in the body.
+  let messageToStore: unknown = message;
+  const angleHeader = req.headers.get('x-wasabi-angle');
+  if (angleHeader && typeof message === 'string') {
+    try {
+      const decoded = decodeURIComponent(angleHeader).slice(0, 2000);
+      if (decoded.trim()) {
+        const parsed = JSON.parse(message);
+        if (parsed && typeof parsed === 'object') {
+          parsed.angle = decoded.trim();
+          messageToStore = JSON.stringify(parsed);
+        }
+      }
+    } catch {
+      // Header decode or JSON parse failed — fall back to original
+      // message untouched so the job still enqueues. The worker will
+      // simply not see an angle directive (graceful degradation).
+    }
+  }
+
   // `targetAgent` (e.g. "openclaw:neo", "openclaw:morfeo") routes the
   // job to a specific worker. Without it, ANY worker can claim the
   // row (legacy first-come-first-served behaviour). Used by the
@@ -14,7 +41,7 @@ export async function POST(req: NextRequest) {
   // logic — workers already filter by `target_agent.is.null OR
   // target_agent.eq.<their-agent>`.
   const insert: Record<string, unknown> = {
-    user_message: message,
+    user_message: messageToStore,
     system_prompt: systemPrompt || null,
     section: section || 'Dashboard',
     chat_history: chatHistory ? JSON.stringify(chatHistory) : null,
