@@ -435,49 +435,6 @@ function detectPageLanguage(sourceUrl?: string | null, html?: string | null): st
   return 'en';
 }
 
-/**
- * In-memory augmentation: if the user wrote a marketing ANGLE for this
- * specific funnel step (Angle column), prepend a strong directive block
- * to the brief that tells the LLM to tilt every rewrite on that page
- * toward that angle. The brief stored in the project is NEVER mutated —
- * each step gets its own augmented copy that lives only for the duration
- * of the rewrite call. This is what allows the user to rewrite the same
- * source page N times with N different angles.
- *
- * If angle is empty / null / whitespace, returns the brief untouched
- * (so the existing pipeline keeps working exactly as before).
- *
- * Format choice: a single deterministic header at the top of the brief.
- * No extra LLM round-trip ($0 added cost, 0ms added latency). Hard facts
- * (doctors, prices, durations, guarantees, ingredients) are explicitly
- * carved out so the angle can only steer tone/promise, not hallucinate
- * different numbers or names.
- */
-/** Build marker — bump on every commit that touches this file so you can
- *  tell from the browser console whether you're on the deploy you just
- *  pushed or still on the cached old bundle. Search for "FE-FUNNEL build"
- *  in DevTools Console. */
-const FE_FUNNEL_BUILD = 'angle-rollback + error-surfacing 2026-05-24';
-if (typeof window !== 'undefined') {
-  // eslint-disable-next-line no-console
-  console.info(`[FE-FUNNEL build] ${FE_FUNNEL_BUILD}`);
-}
-
-function augmentBriefWithAngle(brief: string, angle: string | undefined | null): string {
-  const a = (angle || '').trim();
-  if (!a) return brief || '';
-  const header = [
-    '### ANGOLO MARKETING DA APPLICARE OBBLIGATORIAMENTE A QUESTA RISCRITTURA',
-    a,
-    '',
-    'Quando riscrivi i testi della pagina, OGNI headline, sottotitolo, body copy, CTA, bullet e social proof deve essere coerente con questo angolo (non con un angolo generico estratto dal brief). Se il brief qui sotto suggerisce un TONO o una PROMESSA diversa, prevale questo angolo per la voce/positioning. Restano invece INVARIATI i fatti hard del brief: nomi propri, dottori, prezzi, garanzie, durate, ingredienti, percentuali, claim medici/legali — non vanno inventati né alterati per piegarli all\'angolo.',
-    '### FINE ANGOLO MARKETING',
-    '',
-    '',
-  ].join('\n');
-  return header + (brief || '');
-}
-
 const REWRITE_SYSTEM_PROMPT = `You are a direct-response copywriter. You rewrite marketing texts for a specific product while keeping the same tone, persuasion structure, and emotional angle.
 
 RULES:
@@ -2728,11 +2685,6 @@ export default function FrontEndFunnel() {
         const briefStr = getProjectBriefText(project);
         const mrStr = extractSectionContent(project.marketResearch);
 
-        // NOTE: angle injection ROLLED BACK (2026-05-24) — see comment
-        // in runSwipeAll (Claude path) above. We send the raw briefStr
-        // to keep the pipeline behaving exactly as before. `page.angle`
-        // is still stored on the row but is NOT sent to the LLM yet.
-
         // Build a product info shape that matches what
         // /api/landing/swipe/openclaw-build-prompts expects (only
         // `name` is required; everything else is best-effort context).
@@ -2775,6 +2727,7 @@ export default function FrontEndFunnel() {
             pageName,
           );
         }
+
         const detectedLangForRow = detectPageLanguage(url, null);
         const enqueueRes = await fetch('/api/openclaw/queue', {
           method: 'POST',
@@ -2792,12 +2745,7 @@ export default function FrontEndFunnel() {
             targetAgent,
           }),
         });
-        // parseJsonResponseOrThrow turns "Internal Error" gateway HTML
-        // into an actionable error instead of "Unexpected token 'I'…".
-        const enqueued = await parseJsonResponseOrThrow<{ id?: string; error?: string }>(
-          enqueueRes,
-          '[swipe-openclaw enqueue /api/openclaw/queue]',
-        );
+        const enqueued = (await enqueueRes.json()) as { id?: string; error?: string };
         if (!enqueueRes.ok || !enqueued.id) {
           throw new Error(enqueued.error || `Enqueue HTTP ${enqueueRes.status}`);
         }
@@ -2818,12 +2766,12 @@ export default function FrontEndFunnel() {
           }
           await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
           const pollRes = await fetch(`/api/openclaw/queue?id=${encodeURIComponent(enqueued.id)}`);
-          const polled = await parseJsonResponseOrThrow<{
+          const polled = (await pollRes.json()) as {
             status?: string;
             content?: string;
             error?: string;
             worker_busy_with?: { id: string; section: string | null; started_at: string | null } | null;
-          }>(pollRes, '[swipe-openclaw poll /api/openclaw/queue]');
+          };
           // No-pickup early bail-out: SOLO se davvero nessun worker e' in
           // esecuzione (worker_busy_with === null). Se il worker e' occupato
           // con un altro job lungo, NON gridiamo "worker offline" — diamo
@@ -3055,15 +3003,6 @@ export default function FrontEndFunnel() {
         // JSON/files metadata into the LLM context.
         const researchStr = extractSectionContent(project.marketResearch);
 
-        // NOTE: angle injection ROLLED BACK (2026-05-24) — augmenting
-        // the brief with the angle was correlated with HTTP 500 from
-        // /api/openclaw/queue and /api/funnel-swap-proxy on some
-        // projects (likely brief already near a payload-size limit;
-        // +600 chars tipping over). Until we re-implement angle as a
-        // separate field, we keep the original briefStr path so the
-        // pipeline behaves exactly as before. `page.angle` is still
-        // stored on the row but is NOT sent to the LLM yet.
-
         // Smart routing payload. The proxy uses these (when present) to:
         //   1. Pick the right copywriting KB Tier 2 for this pageType
         //   2. Select only the brief/research files that match this pageType
@@ -3100,16 +3039,7 @@ export default function FrontEndFunnel() {
             ...routingPayload,
           }),
         });
-        // parseJsonResponseOrThrow turns Netlify "Internal Error / 502
-        // <html>…</html>" gateway responses into an actionable error
-        // ("…funnel-swap-proxy HTTP 502 — gateway returned HTML…")
-        // instead of the cryptic "Unexpected token 'I', 'Internal E'…".
-        const extractData = await parseJsonResponseOrThrow<{
-          jobId?: string;
-          totalTexts?: number;
-          error?: string;
-          details?: string;
-        }>(extractRes, '[swipe-all extract /api/funnel-swap-proxy]');
+        const extractData = await extractRes.json();
         if (!extractRes.ok || extractData.error) {
           throw new Error(extractData.error || extractData.details || 'Extract fallito');
         }
@@ -3561,10 +3491,7 @@ export default function FrontEndFunnel() {
               targetAgent: targetAgentForRewrite,
             }),
           });
-          const enqueued = await parseJsonResponseOrThrow<{ id?: string; error?: string }>(
-            enqueueRes,
-            '[single-row-swipe enqueue /api/openclaw/queue]',
-          );
+          const enqueued = (await enqueueRes.json()) as { id?: string; error?: string };
           if (!enqueueRes.ok || !enqueued.id) {
             throw new Error(enqueued.error || `Enqueue HTTP ${enqueueRes.status}`);
           }
@@ -3604,12 +3531,12 @@ export default function FrontEndFunnel() {
             }
             await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
             const pollRes = await fetch(`/api/openclaw/queue?id=${encodeURIComponent(enqueued.id)}`);
-            const polled = await parseJsonResponseOrThrow<{
+            const polled = (await pollRes.json()) as {
               status?: string;
               content?: string;
               error?: string;
               worker_busy_with?: { id: string; section: string | null; started_at: string | null } | null;
-            }>(pollRes, '[single-row-swipe poll /api/openclaw/queue]');
+            };
             // No-pickup early bail-out: SOLO se worker davvero offline.
             if (
               Date.now() - t0 > NO_PICKUP_TIMEOUT_MS &&
