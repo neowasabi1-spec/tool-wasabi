@@ -2729,19 +2729,34 @@ export default function FrontEndFunnel() {
         }
 
         const detectedLangForRow = detectPageLanguage(url, null);
+        // Per-row marketing angle (from the Angle column on this funnel
+        // step). Sent as a separate field so it does NOT inflate the
+        // existing brief / market_research blobs — adds at most ~200
+        // chars to the message JSON when present, zero overhead when
+        // empty. The worker reads `payload.angle` and forwards it to
+        // buildSwipePrompts, which injects a dominant directive block
+        // at the top of the systemPrompt.
+        //
+        // The brief / market_research / pageKnowledge structure is
+        // BYTE-IDENTICAL to the legacy version — only an optional
+        // extra top-level field is added. Workers on old code (before
+        // angle support) simply ignore the field. No regression risk.
+        const angleForRow = (page.angle || '').trim();
+        const swipeMessage: Record<string, unknown> = {
+          action: 'swipe_landing_local',
+          sourceUrl: url,
+          product: productPayload,
+          tone: 'professional',
+          language: detectedLangForRow,
+          knowledge: pageKnowledge,
+        };
+        if (angleForRow) swipeMessage.angle = angleForRow;
         const enqueueRes = await fetch('/api/openclaw/queue', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             section: 'swipe_job',
-            message: JSON.stringify({
-              action: 'swipe_landing_local',
-              sourceUrl: url,
-              product: productPayload,
-              tone: 'professional',
-              language: detectedLangForRow,
-              knowledge: pageKnowledge,
-            }),
+            message: JSON.stringify(swipeMessage),
             targetAgent,
           }),
         });
@@ -2749,7 +2764,7 @@ export default function FrontEndFunnel() {
         if (!enqueueRes.ok || !enqueued.id) {
           throw new Error(enqueued.error || `Enqueue HTTP ${enqueueRes.status}`);
         }
-        pushSwipeLog('success', `\u2713 Job #${enqueued.id.slice(0, 8)} enqueued`, pageName);
+        pushSwipeLog('success', `\u2713 Job #${enqueued.id.slice(0, 8)} enqueued${angleForRow ? ` · 🎯 angle="${angleForRow.slice(0, 40)}${angleForRow.length > 40 ? '…' : ''}"` : ''}`, pageName);
 
         const t0 = Date.now();
         let lastStatus: string | null = null;
