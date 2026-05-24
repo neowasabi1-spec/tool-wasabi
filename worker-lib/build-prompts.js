@@ -398,45 +398,10 @@ function buildProductContextMarkdown(product) {
 }
 
 /**
- * Build a deterministic systemPrompt fragment that tells the LLM to tilt
- * every rewrite toward a specific MARKETING ANGLE (e.g. "fear of loss",
- * "authority + clinical proof", "before/after transformation").
- *
- * Called only when `angle` is a non-empty trimmed string. Returns the
- * fragment wrapped in === ANGLE === markers so the LLM can clearly see
- * where the directive starts and ends. Hard facts (names, prices,
- * durations, guarantees, ingredients, medical claims) are explicitly
- * carved out so the angle steers tone/positioning only — it can NOT
- * cause the LLM to invent different numbers or names.
- *
- * Kept short on purpose (~400 chars when angle is a typical phrase) so
- * it never bloats the payload going into the local LLM context.
- */
-function buildAngleBlock(angle) {
-  const a = String(angle || '').trim();
-  if (!a) return '';
-  return [
-    '',
-    '=== ANGOLO MARKETING DA APPLICARE OBBLIGATORIAMENTE A QUESTA RISCRITTURA ===',
-    a,
-    '',
-    'Quando riscrivi i testi della pagina, OGNI headline, sottotitolo, body copy, CTA, bullet e social proof deve essere coerente con questo angolo. Se il brief sotto suggerisce un tono o una promessa diversa, prevale questo angolo per la voce/positioning. Restano invece INVARIATI i fatti hard del brief (nomi, dottori, prezzi, garanzie, durate, ingredienti, percentuali, claim medici/legali) — non vanno inventati ne\' alterati per piegarli all\'angolo.',
-    '=== FINE ANGOLO MARKETING ===',
-    '',
-  ].join('\n');
-}
-
-/**
  * Build everything the worker needs to send to the local LLM.
  * Sincrono e in-process: ZERO chiamate HTTP a Netlify.
- *
- * `angle` (optional): free-text marketing angle for this specific page.
- * When non-empty, it is injected as a dominant directive block at the
- * top of the systemPrompt so the LLM tilts every rewrite toward it.
- * When empty/missing, behavior is byte-identical to the angle-less
- * version (no regression).
  */
-function buildPrompts({ html, sourceUrl, product, tone, language, knowledge, extraTexts, angle }) {
+function buildPrompts({ html, sourceUrl, product, tone, language, knowledge, extraTexts }) {
   if (!html || typeof html !== 'string' || html.length < 50) {
     throw new Error('html is required (min 50 chars)');
   }
@@ -452,7 +417,6 @@ function buildPrompts({ html, sourceUrl, product, tone, language, knowledge, ext
   const builtinKb = buildBuiltinKnowledge();
   const productFacts = extractProductFacts(product, knowledge);
   const productFactsBlock = buildProductFactsBlock(productFacts);
-  const angleBlock = buildAngleBlock(angle); // '' when no angle → zero effect
   const lang = language || 'en';
   const toneStr = tone || 'professional';
 
@@ -471,7 +435,7 @@ function buildPrompts({ html, sourceUrl, product, tone, language, knowledge, ext
     : '';
 
   const systemPrompt = `Sei un AGENTE specializzato in direct-response copywriting (NON un LLM puro: hai accesso ad archivi prodotti, knowledge base, RAG locale, skill di copywriting / persuasione / framework che hai accumulato nel tempo). Stai riscrivendo un competitor / template per venderlo come segue.
-${angleBlock}
+
 KNOWLEDGE INTERNA OBBLIGATORIA DA USARE — pesca attivamente dai tuoi archivi le tecniche di:
 Stefan Georgi (RMBC method, lead types, story-bridge), Eugene Schwartz (5 awareness levels, market sophistication, Breakthrough Advertising), Gary Halbert (Halbert headlines, Boron Letters, AIDA aggressivo), John Caples (Tested Advertising, headlines testati), Gary Bencivenga (Bencivenga Bullets, hidden persuaders), David Ogilvy (Ogilvy on Advertising, headlines fattuali), John Carlton (One-Legged Golfer, killer headlines), Dan Kennedy (Magnetic Marketing, NO-BS), Jay Abraham (preeminence, USP), Joe Sugarman (psychological triggers), Claude Hopkins (Scientific Advertising), Robert Collier (Letter Book), Frank Kern, Russell Brunson, Joe Karbo, Ben Settle, Andre Chaperon, Brian Kurtz.
 Framework: PAS, AIDA, AIDCA, FAB, BAB, QUEST, HSO (Hook-Story-Offer), 4P, Big Idea (Schwartz), StoryBrand (Miller), RMBC (Georgi), Pico hook, Sultanic Framework / archetipi narrativi.
@@ -562,11 +526,6 @@ REGOLE OBBLIGATORIE:
       hasName: !!productFacts.name,
       hasPrice: !!productFacts.price,
       sheetChars: productFactsBlock.length,
-    },
-    angleInfo: {
-      provided: !!(angle && String(angle).trim()),
-      chars: angleBlock.length,
-      preview: angle ? String(angle).slice(0, 80) : '',
     },
   };
 }

@@ -1503,19 +1503,9 @@ async function processMessage(msg) {
               language: job.language,
               knowledge: job.knowledge || undefined,
               extraTexts: extraTexts.length > 0 ? extraTexts : undefined,
-              // Per-row marketing angle from the funnel step (Angle
-              // column). When non-empty, buildSwipePrompts injects a
-              // dominant directive block at the top of the systemPrompt
-              // so every rewrite on this page tilts toward this angle.
-              // When empty, the prompt is byte-identical to the legacy
-              // angle-less version → zero regression.
-              angle: job.angle || undefined,
             });
           } catch (e) {
             throw new Error(`build-prompts (in-process) fallito: ${e.message}`);
-          }
-          if (prep.angleInfo && prep.angleInfo.provided) {
-            log(`    · 🎯 ANGOLO applicato: "${prep.angleInfo.preview}${String(job.angle || '').length > 80 ? '…' : ''}" (+${prep.angleInfo.chars} char nel systemPrompt)`);
           }
           const promptTexts = Array.isArray(prep.texts) ? prep.texts : [];
           if (promptTexts.length === 0) {
