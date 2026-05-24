@@ -453,6 +453,16 @@ function detectPageLanguage(sourceUrl?: string | null, html?: string | null): st
  * carved out so the angle can only steer tone/promise, not hallucinate
  * different numbers or names.
  */
+/** Build marker — bump on every commit that touches this file so you can
+ *  tell from the browser console whether you're on the deploy you just
+ *  pushed or still on the cached old bundle. Search for "FE-FUNNEL build"
+ *  in DevTools Console. */
+const FE_FUNNEL_BUILD = 'angle-v3-error-surfacing 2026-05-24';
+if (typeof window !== 'undefined') {
+  // eslint-disable-next-line no-console
+  console.info(`[FE-FUNNEL build] ${FE_FUNNEL_BUILD}`);
+}
+
 function augmentBriefWithAngle(brief: string, angle: string | undefined | null): string {
   const a = (angle || '').trim();
   if (!a) return brief || '';
@@ -2808,7 +2818,12 @@ export default function FrontEndFunnel() {
             targetAgent,
           }),
         });
-        const enqueued = (await enqueueRes.json()) as { id?: string; error?: string };
+        // parseJsonResponseOrThrow turns "Internal Error" gateway HTML
+        // into an actionable error instead of "Unexpected token 'I'…".
+        const enqueued = await parseJsonResponseOrThrow<{ id?: string; error?: string }>(
+          enqueueRes,
+          '[swipe-openclaw enqueue /api/openclaw/queue]',
+        );
         if (!enqueueRes.ok || !enqueued.id) {
           throw new Error(enqueued.error || `Enqueue HTTP ${enqueueRes.status}`);
         }
@@ -2829,12 +2844,12 @@ export default function FrontEndFunnel() {
           }
           await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
           const pollRes = await fetch(`/api/openclaw/queue?id=${encodeURIComponent(enqueued.id)}`);
-          const polled = (await pollRes.json()) as {
+          const polled = await parseJsonResponseOrThrow<{
             status?: string;
             content?: string;
             error?: string;
             worker_busy_with?: { id: string; section: string | null; started_at: string | null } | null;
-          };
+          }>(pollRes, '[swipe-openclaw poll /api/openclaw/queue]');
           // No-pickup early bail-out: SOLO se davvero nessun worker e' in
           // esecuzione (worker_busy_with === null). Se il worker e' occupato
           // con un altro job lungo, NON gridiamo "worker offline" — diamo
@@ -3593,7 +3608,10 @@ export default function FrontEndFunnel() {
               targetAgent: targetAgentForRewrite,
             }),
           });
-          const enqueued = (await enqueueRes.json()) as { id?: string; error?: string };
+          const enqueued = await parseJsonResponseOrThrow<{ id?: string; error?: string }>(
+            enqueueRes,
+            '[single-row-swipe enqueue /api/openclaw/queue]',
+          );
           if (!enqueueRes.ok || !enqueued.id) {
             throw new Error(enqueued.error || `Enqueue HTTP ${enqueueRes.status}`);
           }
@@ -3633,12 +3651,12 @@ export default function FrontEndFunnel() {
             }
             await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
             const pollRes = await fetch(`/api/openclaw/queue?id=${encodeURIComponent(enqueued.id)}`);
-            const polled = (await pollRes.json()) as {
+            const polled = await parseJsonResponseOrThrow<{
               status?: string;
               content?: string;
               error?: string;
               worker_busy_with?: { id: string; section: string | null; started_at: string | null } | null;
-            };
+            }>(pollRes, '[single-row-swipe poll /api/openclaw/queue]');
             // No-pickup early bail-out: SOLO se worker davvero offline.
             if (
               Date.now() - t0 > NO_PICKUP_TIMEOUT_MS &&
