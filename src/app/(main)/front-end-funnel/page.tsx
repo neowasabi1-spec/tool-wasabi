@@ -457,7 +457,7 @@ function detectPageLanguage(sourceUrl?: string | null, html?: string | null): st
  *  tell from the browser console whether you're on the deploy you just
  *  pushed or still on the cached old bundle. Search for "FE-FUNNEL build"
  *  in DevTools Console. */
-const FE_FUNNEL_BUILD = 'angle-v3-error-surfacing 2026-05-24';
+const FE_FUNNEL_BUILD = 'angle-rollback + error-surfacing 2026-05-24';
 if (typeof window !== 'undefined') {
   // eslint-disable-next-line no-console
   console.info(`[FE-FUNNEL build] ${FE_FUNNEL_BUILD}`);
@@ -2728,40 +2728,22 @@ export default function FrontEndFunnel() {
         const briefStr = getProjectBriefText(project);
         const mrStr = extractSectionContent(project.marketResearch);
 
-        // Per-row angle injection (same logic as the Claude path above):
-        // if the Angle column is filled for this step, prepend a
-        // directive block to the brief in memory. The project's brief
-        // in DB is NEVER modified — each row gets its own augmented copy.
-        //
-        // Defensive: wrapped in try/catch so a buggy augmenter can NEVER
-        // break the swipe pipeline — worst case we fall back to the raw
-        // brief and log a warning. Treats the angle feature as additive.
-        const angleStr = (page.angle || '').trim();
-        let briefForLlm = briefStr;
-        try {
-          briefForLlm = augmentBriefWithAngle(briefStr, angleStr);
-        } catch (e) {
-          pushSwipeLog(
-            'error',
-            `⚠ Angle injection failed (${e instanceof Error ? e.message : 'unknown'}) → uso il brief originale senza angolo`,
-            pageName,
-          );
-          briefForLlm = briefStr;
-        }
+        // NOTE: angle injection ROLLED BACK (2026-05-24) — see comment
+        // in runSwipeAll (Claude path) above. We send the raw briefStr
+        // to keep the pipeline behaving exactly as before. `page.angle`
+        // is still stored on the row but is NOT sent to the LLM yet.
 
         // Build a product info shape that matches what
         // /api/landing/swipe/openclaw-build-prompts expects (only
         // `name` is required; everything else is best-effort context).
-        // We pass `briefForLlm` everywhere the brief is sent so the
-        // angle propagates through every channel the worker reads.
         const productPayload = {
           name: project.name,
           description: project.description || '',
           brand_name: undefined,
           target_audience: undefined,
-          marketing_brief: briefForLlm || undefined,
+          marketing_brief: briefStr || undefined,
           market_research: mrStr || undefined,
-          project_brief: briefForLlm || undefined,
+          project_brief: briefStr || undefined,
         };
 
         // Knowledge per QUESTA pagina: libreria globale + brief del
@@ -2771,7 +2753,7 @@ export default function FrontEndFunnel() {
           prompts: globalPrompts,
           project: {
             name: project.name,
-            brief: briefForLlm || null,
+            brief: briefStr || null,
             market_research: mrStr || null,
             notes: null,
           },
@@ -2793,14 +2775,6 @@ export default function FrontEndFunnel() {
             pageName,
           );
         }
-        if (angleStr) {
-          pushSwipeLog(
-            'info',
-            `🎯 Angolo applicato: "${angleStr.slice(0, 80)}${angleStr.length > 80 ? '…' : ''}" (brief augmentato: ${briefStr.length} → ${briefForLlm.length} char)`,
-            pageName,
-          );
-        }
-
         const detectedLangForRow = detectPageLanguage(url, null);
         const enqueueRes = await fetch('/api/openclaw/queue', {
           method: 'POST',
@@ -3081,35 +3055,14 @@ export default function FrontEndFunnel() {
         // JSON/files metadata into the LLM context.
         const researchStr = extractSectionContent(project.marketResearch);
 
-        // Per-row angle injection: if the user filled the Angle column
-        // for this step, prepend a directive block to the brief in
-        // memory so this rewrite tilts on that angle. The brief stored
-        // on the project is NOT modified — each row builds its own
-        // augmented copy. Pages with empty angle behave exactly as
-        // before (briefStr passes through unchanged).
-        //
-        // Defensive: wrapped in try/catch so a buggy augmenter can NEVER
-        // break the swipe pipeline — worst case we fall back to the raw
-        // brief and log a warning. Treats the angle feature as additive.
-        const angleStr = (page.angle || '').trim();
-        let briefForLlm = briefStr;
-        try {
-          briefForLlm = augmentBriefWithAngle(briefStr, angleStr);
-        } catch (e) {
-          pushSwipeLog(
-            'error',
-            `⚠ Angle injection failed (${e instanceof Error ? e.message : 'unknown'}) → uso il brief originale senza angolo`,
-            pageName,
-          );
-          briefForLlm = briefStr;
-        }
-        if (angleStr) {
-          pushSwipeLog(
-            'info',
-            `🎯 Angolo applicato: "${angleStr.slice(0, 80)}${angleStr.length > 80 ? '…' : ''}" (brief augmentato: ${briefStr.length} → ${briefForLlm.length} char)`,
-            pageName,
-          );
-        }
+        // NOTE: angle injection ROLLED BACK (2026-05-24) — augmenting
+        // the brief with the angle was correlated with HTTP 500 from
+        // /api/openclaw/queue and /api/funnel-swap-proxy on some
+        // projects (likely brief already near a payload-size limit;
+        // +600 chars tipping over). Until we re-implement angle as a
+        // separate field, we keep the original briefStr path so the
+        // pipeline behaves exactly as before. `page.angle` is still
+        // stored on the row but is NOT sent to the LLM yet.
 
         // Smart routing payload. The proxy uses these (when present) to:
         //   1. Pick the right copywriting KB Tier 2 for this pageType
@@ -3141,7 +3094,7 @@ export default function FrontEndFunnel() {
             targetLanguage: detectPageLanguage(url, html),
             userId: DEFAULT_USER_ID,
             renderedHtml: html,
-            brief: briefForLlm || undefined,
+            brief: briefStr || undefined,
             market_research: researchStr || undefined,
             funnel_context: funnelContextStr || undefined,
             ...routingPayload,
@@ -3183,7 +3136,7 @@ export default function FrontEndFunnel() {
                 cloneMode: 'rewrite',
                 batchNumber: sbBatch,
                 userId: DEFAULT_USER_ID,
-                brief: briefForLlm || undefined,
+                brief: briefStr || undefined,
                 market_research: researchStr || undefined,
                 funnel_context: funnelContextStr || undefined,
                 ...routingPayload,
