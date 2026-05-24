@@ -435,6 +435,39 @@ function detectPageLanguage(sourceUrl?: string | null, html?: string | null): st
   return 'en';
 }
 
+/**
+ * In-memory augmentation: if the user wrote a marketing ANGLE for this
+ * specific funnel step (Angle column), prepend a strong directive block
+ * to the brief that tells the LLM to tilt every rewrite on that page
+ * toward that angle. The brief stored in the project is NEVER mutated —
+ * each step gets its own augmented copy that lives only for the duration
+ * of the rewrite call. This is what allows the user to rewrite the same
+ * source page N times with N different angles.
+ *
+ * If angle is empty / null / whitespace, returns the brief untouched
+ * (so the existing pipeline keeps working exactly as before).
+ *
+ * Format choice: a single deterministic header at the top of the brief.
+ * No extra LLM round-trip ($0 added cost, 0ms added latency). Hard facts
+ * (doctors, prices, durations, guarantees, ingredients) are explicitly
+ * carved out so the angle can only steer tone/promise, not hallucinate
+ * different numbers or names.
+ */
+function augmentBriefWithAngle(brief: string, angle: string | undefined | null): string {
+  const a = (angle || '').trim();
+  if (!a) return brief || '';
+  const header = [
+    '### ANGOLO MARKETING DA APPLICARE OBBLIGATORIAMENTE A QUESTA RISCRITTURA',
+    a,
+    '',
+    'Quando riscrivi i testi della pagina, OGNI headline, sottotitolo, body copy, CTA, bullet e social proof deve essere coerente con questo angolo (non con un angolo generico estratto dal brief). Se il brief qui sotto suggerisce un TONO o una PROMESSA diversa, prevale questo angolo per la voce/positioning. Restano invece INVARIATI i fatti hard del brief: nomi propri, dottori, prezzi, garanzie, durate, ingredienti, percentuali, claim medici/legali — non vanno inventati né alterati per piegarli all\'angolo.',
+    '### FINE ANGOLO MARKETING',
+    '',
+    '',
+  ].join('\n');
+  return header + (brief || '');
+}
+
 const REWRITE_SYSTEM_PROMPT = `You are a direct-response copywriter. You rewrite marketing texts for a specific product while keeping the same tone, persuasion structure, and emotional angle.
 
 RULES:
@@ -2685,17 +2718,26 @@ export default function FrontEndFunnel() {
         const briefStr = getProjectBriefText(project);
         const mrStr = extractSectionContent(project.marketResearch);
 
+        // Per-row angle injection (same logic as the Claude path above):
+        // if the Angle column is filled for this step, prepend a
+        // directive block to the brief in memory. The project's brief
+        // in DB is NEVER modified — each row gets its own augmented copy.
+        const angleStr = (page.angle || '').trim();
+        const briefForLlm = augmentBriefWithAngle(briefStr, angleStr);
+
         // Build a product info shape that matches what
         // /api/landing/swipe/openclaw-build-prompts expects (only
         // `name` is required; everything else is best-effort context).
+        // We pass `briefForLlm` everywhere the brief is sent so the
+        // angle propagates through every channel the worker reads.
         const productPayload = {
           name: project.name,
           description: project.description || '',
           brand_name: undefined,
           target_audience: undefined,
-          marketing_brief: briefStr || undefined,
+          marketing_brief: briefForLlm || undefined,
           market_research: mrStr || undefined,
-          project_brief: briefStr || undefined,
+          project_brief: briefForLlm || undefined,
         };
 
         // Knowledge per QUESTA pagina: libreria globale + brief del
@@ -2705,7 +2747,7 @@ export default function FrontEndFunnel() {
           prompts: globalPrompts,
           project: {
             name: project.name,
-            brief: briefStr || null,
+            brief: briefForLlm || null,
             market_research: mrStr || null,
             notes: null,
           },
@@ -2724,6 +2766,13 @@ export default function FrontEndFunnel() {
           pushSwipeLog(
             'info',
             `→ ${AUDITOR_LABEL[chosen]}: brief ${briefStr.length.toLocaleString()} char, MR ${mrStr.length.toLocaleString()} char`,
+            pageName,
+          );
+        }
+        if (angleStr) {
+          pushSwipeLog(
+            'info',
+            `🎯 Angolo applicato: "${angleStr.slice(0, 80)}${angleStr.length > 80 ? '…' : ''}" (brief augmentato: ${briefStr.length} → ${briefForLlm.length} char)`,
             pageName,
           );
         }
@@ -3003,6 +3052,22 @@ export default function FrontEndFunnel() {
         // JSON/files metadata into the LLM context.
         const researchStr = extractSectionContent(project.marketResearch);
 
+        // Per-row angle injection: if the user filled the Angle column
+        // for this step, prepend a directive block to the brief in
+        // memory so this rewrite tilts on that angle. The brief stored
+        // on the project is NOT modified — each row builds its own
+        // augmented copy. Pages with empty angle behave exactly as
+        // before (briefStr passes through unchanged).
+        const angleStr = (page.angle || '').trim();
+        const briefForLlm = augmentBriefWithAngle(briefStr, angleStr);
+        if (angleStr) {
+          pushSwipeLog(
+            'info',
+            `🎯 Angolo applicato: "${angleStr.slice(0, 80)}${angleStr.length > 80 ? '…' : ''}" (brief augmentato: ${briefStr.length} → ${briefForLlm.length} char)`,
+            pageName,
+          );
+        }
+
         // Smart routing payload. The proxy uses these (when present) to:
         //   1. Pick the right copywriting KB Tier 2 for this pageType
         //   2. Select only the brief/research files that match this pageType
@@ -3033,7 +3098,7 @@ export default function FrontEndFunnel() {
             targetLanguage: detectPageLanguage(url, html),
             userId: DEFAULT_USER_ID,
             renderedHtml: html,
-            brief: briefStr || undefined,
+            brief: briefForLlm || undefined,
             market_research: researchStr || undefined,
             funnel_context: funnelContextStr || undefined,
             ...routingPayload,
@@ -3066,7 +3131,7 @@ export default function FrontEndFunnel() {
                 cloneMode: 'rewrite',
                 batchNumber: sbBatch,
                 userId: DEFAULT_USER_ID,
-                brief: briefStr || undefined,
+                brief: briefForLlm || undefined,
                 market_research: researchStr || undefined,
                 funnel_context: funnelContextStr || undefined,
                 ...routingPayload,
