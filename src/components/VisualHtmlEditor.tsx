@@ -2269,10 +2269,12 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   }, [sendToIframe]);
 
   /* runSwipeAnalysis — chiama l'analyzer Claude e, se va a buon fine,
-   * popola aiPrompt / aiContextText / intent / duration. È usata sia in
-   * apertura iniziale (autoFire=true → l'utente clicca solo "Swipe" e
-   * il video parte da solo) sia dal bottone "Rigenera prompt" del banner
-   * (autoFire=false, l'utente legge prima e poi conferma con Genera).
+   * popola aiPrompt / aiContextText / intent / duration. Sia in
+   * apertura iniziale che dal bottone "Rigenera prompt", la generazione
+   * NON parte mai automatica: l'utente prima legge l'analisi e il
+   * prompt suggerito, eventualmente lo modifica nel textarea, e POI
+   * clicca il pulsante "Genera". Il parametro autoFire è mantenuto per
+   * retrocompatibilità ma di fatto non viene più usato per autostart.
    * Legge il contesto da swipeAnalysisCtxRef così non dipende da
    * selectedElement (che potrebbe essere cambiato). */
   const runSwipeAnalysis = useCallback(
@@ -2548,7 +2550,13 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
       fallbackPrompt,
     };
 
-    await runSwipeAnalysis({ extraGuidance: '', autoFire: true });
+    /* autoFire: false → dopo l'analisi NON parte la generazione automatica.
+       L'utente legge il prompt suggerito da Claude, eventualmente lo
+       modifica nel textarea o usa i preset "Più drammatico / Più scientifico /
+       …" e poi clicca manualmente "Genera Video (Swipe)". Questo evita
+       di consumare crediti Seedance su un prompt che l'utente non ha mai
+       visto. */
+    await runSwipeAnalysis({ extraGuidance: '', autoFire: false });
   }, [
     selectedElement,
     productContext,
@@ -2661,7 +2669,11 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
       fallbackPrompt,
     };
 
-    await runSwipeAnalysis({ extraGuidance: '', autoFire: true });
+    /* autoFire: false → dopo l'analisi NON parte la generazione automatica.
+       Stessa logica dello Swipe Video: l'utente vede il prompt T2I che
+       Claude ha generato, può modificarlo o rifinire con guidance, e POI
+       clicca "Genera Immagine". */
+    await runSwipeAnalysis({ extraGuidance: '', autoFire: false });
   }, [
     selectedElement,
     productContext,
