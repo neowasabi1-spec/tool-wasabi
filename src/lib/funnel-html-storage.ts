@@ -25,6 +25,7 @@
  */
 
 import { getSupabaseBrowser } from './supabase-browser';
+import { injectWasabiTracker, type TrackerStepType } from './wasabi-tracker-inject';
 
 const BUCKET = 'media';
 
@@ -70,20 +71,68 @@ export interface PersistedHtmlUrls {
   mobileHtmlUrl?: string;
 }
 
+/** Opzioni per `persistHtmlToStorage`. Tutto opzionale per compatibilita'
+ *  retro: chiamare senza opts continua a funzionare (skip tracker inject). */
+export interface PersistHtmlOptions {
+  /** project_id del funnel cui questa pagina appartiene. Necessario per
+   *  iniettare il tag tracker — se manca, l'HTML viene salvato senza
+   *  tracking (fail-safe). */
+  funnelId?: string | null;
+  /** Tipo di step (PageType / PageType.toString()) per popolare `data-step`
+   *  nel tag. Se non passato, l'helper fa auto-detect dall'HTML. */
+  stepType?: TrackerStepType | string | null;
+  /** Forza skip dell'injection (es. per kind='extracted' o test). Default
+   *  false. Quando true l'HTML viene caricato senza tag tracker. */
+  skipTrackerInject?: boolean;
+}
+
 /** Carica html (e mobileHtml se presente) su Storage. Ritorna gli URL
- *  pubblici da scrivere nel JSONB al posto dei blob. */
+ *  pubblici da scrivere nel JSONB al posto dei blob.
+ *
+ *  Side effect intenzionale: se `opts.funnelId` e' passato e l'HTML
+ *  non e' "extracted" (raw competitor scrape), inietta automaticamente
+ *  il tag `<script>` del Wasabi tracker prima dell'upload. L'inject e'
+ *  idempotente (vedi src/lib/wasabi-tracker-inject.ts), quindi save
+ *  ripetuti / re-edit dell'AI non duplicano il tag. */
 export async function persistHtmlToStorage(
   pageId: string,
   kind: HtmlKind,
   html?: string,
   mobileHtml?: string,
+  opts?: PersistHtmlOptions,
 ): Promise<PersistedHtmlUrls> {
+  // Il kind 'extracted' contiene HTML RAW del competitor scrappato — NON
+  // dobbiamo iniettare il nostro tracker li' dentro, perche' quell'HTML
+  // serve come riferimento di analisi e potrebbe finire mostrato in UI
+  // come "originale". Solo cloned/swiped (HTML "nostri") vengono tracciati.
+  const shouldInject =
+    !opts?.skipTrackerInject &&
+    kind !== 'extracted' &&
+    Boolean(opts?.funnelId);
+
+  const processedHtml =
+    shouldInject && html
+      ? injectWasabiTracker(html, {
+          funnelId: opts!.funnelId!,
+          pageId,
+          stepType: opts?.stepType,
+        })
+      : html;
+  const processedMobile =
+    shouldInject && mobileHtml
+      ? injectWasabiTracker(mobileHtml, {
+          funnelId: opts!.funnelId!,
+          pageId,
+          stepType: opts?.stepType,
+        })
+      : mobileHtml;
+
   const out: PersistedHtmlUrls = {};
-  if (html && html.length > 0) {
-    out.htmlUrl = await uploadOne(pageId, kind, 'desktop', html);
+  if (processedHtml && processedHtml.length > 0) {
+    out.htmlUrl = await uploadOne(pageId, kind, 'desktop', processedHtml);
   }
-  if (mobileHtml && mobileHtml.length > 0) {
-    out.mobileHtmlUrl = await uploadOne(pageId, kind, 'mobile', mobileHtml);
+  if (processedMobile && processedMobile.length > 0) {
+    out.mobileHtmlUrl = await uploadOne(pageId, kind, 'mobile', processedMobile);
   }
   return out;
 }

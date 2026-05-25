@@ -278,6 +278,15 @@ async function persistHtmlBlobs(
     swipedData?: Record<string, unknown>;
     extractedData?: Record<string, unknown>;
   },
+  // Contesto del progetto/funnel: serve a persistHtmlToStorage per
+  // iniettare il tag tracker `<script src=".../t.js">` nell'HTML salvato.
+  // Se funnelId e' undefined, l'inject viene saltato (fail-safe). Non
+  // blocca mai il save: il tracking e' un'aggiunta, non e' essenziale
+  // per il funzionamento dell'editor.
+  trackingCtx?: {
+    funnelId?: string | null;
+    stepType?: string | null;
+  },
 ): Promise<{
   forDb: {
     clonedData: Record<string, unknown> | undefined;
@@ -319,6 +328,14 @@ async function persistHtmlBlobs(
           kind,
           needsHtmlUpload ? htmlVal : undefined,
           needsMobileUpload ? mobileVal : undefined,
+          // Solo per kind cloned/swiped (HTML "nostro"). 'extracted' resta
+          // raw — persistHtmlToStorage stesso fa lo skip se kind ===
+          // 'extracted', ma passiamo comunque il context per non
+          // dipendere dall'implementation detail.
+          {
+            funnelId: trackingCtx?.funnelId,
+            stepType: trackingCtx?.stepType,
+          },
         );
         const collected: Record<string, string> = {};
         for (const [htmlKey, urlKey] of STORAGE_HTML_FIELDS) {
@@ -969,11 +986,31 @@ export const useStore = create<Store>()((set, get) => ({
       // Lo state in memoria continua a tenere l'html completo PIÙ gli
       // htmlUrl appena ottenuti (così la UI renderizza subito e al next
       // save abbiamo già l'URL).
-      const persisted = await persistHtmlBlobs(id, {
-        clonedData: page.clonedData,
-        swipedData: page.swipedData,
-        extractedData: page.extractedData as Record<string, unknown> | undefined,
-      });
+      // Context per l'auto-inject del Wasabi tracker: il `funnelId` esposto
+      // come `data-funnel` nel <script> iniettato e' il project_id del
+      // funnel (vedi commento sopra: `project_id` sul DB coincide col
+      // concetto "funnel" lato analytics). Lo step type e' il pageType
+      // della pagina. Entrambi possono venire dalla patch in arrivo o
+      // dallo state precedente — facciamo merge nel modo Zustand-style.
+      // Se entrambi sono mancanti l'inject viene saltato (fail-safe in
+      // persistHtmlToStorage).
+      const trackingFunnelId =
+        (page.productId ?? prev?.productId) || null;
+      const trackingStepType =
+        (page.pageType ?? prev?.pageType) || null;
+
+      const persisted = await persistHtmlBlobs(
+        id,
+        {
+          clonedData: page.clonedData,
+          swipedData: page.swipedData,
+          extractedData: page.extractedData as Record<string, unknown> | undefined,
+        },
+        {
+          funnelId: trackingFunnelId,
+          stepType: trackingStepType,
+        },
+      );
 
       // See `addFunnelPage`: write the selected Project id on `project_id`.
       // We only touch `product_id` if the caller explicitly cleared it
