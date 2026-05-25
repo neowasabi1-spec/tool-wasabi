@@ -1726,7 +1726,10 @@ ONESTA': se nei TUOI archivi non hai dati su questo prodotto/settore e non puoi 
             }
           }
           log(`    ✓ swipe done: ${finalised.replacements}/${finalised.totalTexts} replacements, ${finalised.unresolved_text_ids?.length || 0} unresolved` +
-            (finalised.is_spa_page ? ` (SPA: ${finalised.spa_safety_strips} strips, preview-mode=${finalised.spa_preview_mode_applied})` : ''));
+            (finalised.is_spa_page ? ` (SPA: ${finalised.spa_safety_strips} strips, preview-mode=${finalised.spa_preview_mode_applied})` : '') +
+            (finalised.modern_spa_detected
+              ? ` [MODERN-SPA preserved bundle: ${finalised.modern_spa_reason}]`
+              : ''));
           responsePayload = JSON.stringify(finalised);
           break;
         }

@@ -238,6 +238,89 @@ function detectSpa(originalHtml) {
   );
 }
 
+// Detect "modern SPA" = Vite/CRA/Lovable-style page dove TUTTO il rendering
+// e l'interattivita' (state, routing, eventi) sono guidati da un bundle JS
+// `<script type="module" src="/assets/index-*.js">`. Per queste pagine,
+// l'applySpaPreviewMode standard (= stripOriginalScripts + inietta jQuery/
+// Swiper fallback) e' CATASTROFICO: senza il bundle, React/Vue non
+// montano mai, e i fallback jQuery/Swiper non c'entrano niente con il
+// loro state-management. La pagina renderizza solo il DOM "fotografato"
+// da Playwright al momento del clone, ma e' completamente inerte.
+//
+// Tipiche pagine che matchano:
+//   - Replit React/Vite apps (es. fiber-muse-product-page.replit.app)
+//   - Lovable apps (.lovable.app, .lovable.dev)
+//   - StackBlitz / CodeSandbox preview
+//   - Vercel/Netlify preview di Vite/CRA app (signature positiva)
+//   - Qualsiasi build prod Vite con asset hash standard
+//
+// NON matchano (= mantengono il comportamento di strip esistente):
+//   - Next.js SSR/ISR (script Next sono `/_next/static/chunks/...` NON
+//     `type="module"`; il default Next non usa native ESM nel browser)
+//   - Funnelish/ClickFunnels classic (jQuery + bundle non-module)
+//   - Shopify Liquid SSR
+//   - Vue/Funnelytics page builders compilati (data-v-* ma niente Vite signature)
+//
+// Detection a 4 livelli (qualunque dei 4 basta):
+//   1. Vite production bundle signature: <script type="module" src="/assets/index-HASH.js">
+//   2. Vite dev mode signature: <script type="module" src="/src/main.tsx|main.jsx|main.ts|main.js">
+//   3. Hostname allowlist: *.replit.app/dev, *.lovable.app/dev, *.stackblitz.io, *.csb.app
+//   4. "All scripts are modules" check: ogni <script src> ha type="module"
+//      (e c'e' almeno 1 script) → e' un'app ES modules pure → moderna
+function detectModernSpa(originalHtml, sourceUrl) {
+  if (!originalHtml || typeof originalHtml !== 'string') {
+    return { isModern: false, reason: 'no-html' };
+  }
+  const sample = originalHtml.substring(0, 100000);
+
+  // 1. Vite production bundle: il path /assets/index-*.js con hash e'
+  //    l'output Vite di default (vite build → dist/assets/index-[hash].js).
+  //    Pattern molto specifico, falsi positivi quasi nulli.
+  if (/<script\s+[^>]*type=["']module["'][^>]*src=["'][^"']*\/assets\/index-[a-zA-Z0-9_-]+\.js["']/i.test(sample)) {
+    return { isModern: true, reason: 'vite-production-bundle' };
+  }
+
+  // 2. Vite dev mode: src=/src/main.* o /src/index.* (entry tipico).
+  if (/<script\s+[^>]*type=["']module["'][^>]*src=["'][^"']*\/src\/(?:main|index)\.(?:tsx?|jsx?|mjs)["']/i.test(sample)) {
+    return { isModern: true, reason: 'vite-dev-mode' };
+  }
+
+  // 3. Hostname allowlist: piattaforme che servono SOLO modern SPA stacks.
+  //    Replit/Lovable sono target espliciti dell'utente; gli altri sono
+  //    safety net per preview/staging deployment.
+  if (sourceUrl && typeof sourceUrl === 'string') {
+    try {
+      const host = new URL(sourceUrl).hostname.toLowerCase();
+      const modernHosts = [
+        '.replit.app', '.replit.dev', '.repl.co',
+        '.lovable.app', '.lovable.dev',
+        '.stackblitz.io', '.stackblitz.com', '.webcontainer.io',
+        '.csb.app', '.codesandbox.io',
+      ];
+      for (const suffix of modernHosts) {
+        if (host.endsWith(suffix)) {
+          return { isModern: true, reason: `hostname:${suffix}` };
+        }
+      }
+    } catch { /* invalid URL, fall through */ }
+  }
+
+  // 4. "Tutti gli script con src sono type=module": ES modules pure app.
+  //    Conta gli <script src=...> totali vs quelli type="module". Se >=1
+  //    script e tutti sono module → moderna. Sicuro: classic jQuery /
+  //    Funnelish / CheckoutChamp hanno SEMPRE almeno uno script non-module
+  //    (jQuery CDN, swiper.min.js, custom inline, ecc.).
+  const scriptsWithSrc = sample.match(/<script\b[^>]*\ssrc=["'][^"']+["'][^>]*>/gi) || [];
+  if (scriptsWithSrc.length > 0) {
+    const allModule = scriptsWithSrc.every((s) => /\stype=["']module["']/i.test(s));
+    if (allModule) {
+      return { isModern: true, reason: 'all-scripts-are-modules' };
+    }
+  }
+
+  return { isModern: false, reason: 'no-modern-signature' };
+}
+
 // Rimuove tutti i tag HTML da un rewrite mantenendo solo il testo.
 // Usato quando l'originale era plain text ma il LLM ha aggiunto markup
 // (problema tipico su SPA: rompe l'hydration).
@@ -668,8 +751,30 @@ function finalizeSwipe({ html, sourceUrl, texts, rewrites, productName, applySpa
   //   - fallback init (FAQ delegate, thumb→main image, Swiper da CDN)
   // Cosi' il preview e' interattivo anche quando il bundle originale
   // tenta di montare su un dominio che non e' il suo e fallisce.
+  //
+  // ECCEZIONE — Modern SPA (Vite/CRA/Lovable/Replit):
+  // Per le pagine "modern SPA" (vedi detectModernSpa) lo strip e' RIBALTATO.
+  // Quelle pagine sono _completamente_ client-rendered: senza il bundle
+  // `<script type="module" src="/assets/index-*.js">` React/Vue non monta
+  // mai, e i fallback jQuery+Swiper non sostituiscono niente perche' non
+  // c'e' nessuna struttura jQuery-classic da rianimare. Il risultato e'
+  // una pagina-fotografia del clone Playwright completamente inerte
+  // (bottoni morti, routing morto, ogni interazione morta). Per queste:
+  //   1. SALTIAMO lo strip → bundle Vite preservato → React/Vue monta
+  //      normalmente sul dominio finale (Storage / preview / deploy)
+  //   2. SALTIAMO la FAQ_CSS_OVERRIDE + NEXTJS_NAVIGATION_FIX (non
+  //      servono e potrebbero conflittare con i propri CSS Tailwind /
+  //      router client-side)
+  //   3. SALTIAMO il FALLBACK_INIT_SCRIPT (jQuery/Swiper irrilevanti)
+  //   4. Il swipeScript continua ad essere iniettato sotto: il suo
+  //      MutationObserver intercetta i re-render di React e ri-applica i
+  //      replacement, quindi i testi riscritti si vedono comunque.
+  // Detection POSITIVA (signature Vite + hostname allowlist + all-modules
+  // check) → zero rischio di regressione per pagine legacy gia' funzionanti.
+  const modernSpaCheck = detectModernSpa(originalHtml, sourceUrl);
+  const isModernSpa = modernSpaCheck.isModern;
   const previewModeRequested =
-    applySpaPreviewMode === true || (applySpaPreviewMode !== false && isSpa);
+    !isModernSpa && (applySpaPreviewMode === true || (applySpaPreviewMode !== false && isSpa));
   let scriptStripStats = null;
   if (previewModeRequested) {
     const strip = stripOriginalScripts(preparedHtml);
@@ -720,6 +825,12 @@ function finalizeSwipe({ html, sourceUrl, texts, rewrites, productName, applySpa
     spa_safety_strips: spaSafetyStrips,
     spa_preview_mode_applied: previewModeRequested,
     spa_preview_script_strip: scriptStripStats,
+    // Telemetria modern-SPA: se isModernSpa=true abbiamo preservato il
+    // bundle originale (Vite/CRA/Replit/Lovable). reason indica quale
+    // signature ha matchato — utile in log per debug e per capire se la
+    // detection sta riconoscendo i casi che vediamo nel wild.
+    modern_spa_detected: isModernSpa,
+    modern_spa_reason: modernSpaCheck.reason,
     unresolved_text_ids: unresolvedIds,
     coverage_ratio: texts.length ? totalReplacements / texts.length : 0,
     provider: 'openclaw-local-inproc',
