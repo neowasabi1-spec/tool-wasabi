@@ -158,6 +158,39 @@ const tests = [
     },
   },
   {
+    name: 'Vite crossorigin link → crossorigin droppato (fix CORS Replit)',
+    html:
+      '<!DOCTYPE html><html><head>' +
+      // CDN absolute con crossorigin voluto → deve restare invariato
+      '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>' +
+      // Asset relativo Vite con crossorigin → href assolutizzato + crossorigin droppato
+      '<link rel="stylesheet" crossorigin href="/assets/index-3HlEuuN1.css" integrity="sha384-FOO">' +
+      // Asset assoluto del nostro stesso dominio con crossorigin → resta invariato
+      '<link rel="stylesheet" crossorigin href="https://cdn.example.com/lib.css">' +
+      '</head><body><div id="root"><h1>Hello</h1></div>' +
+      '<script type="module" crossorigin src="/assets/index-DOY.js"></script>' +
+      '</body></html>',
+    sourceUrl: 'https://fiber-muse-product-page.replit.app/',
+    texts: [{ id: 0, original: 'Hello', tag: 'mixed:h1' }],
+    rewrites: [{ id: 0, rewritten: 'Ciao' }],
+    expect: {
+      htmlIncludes: [
+        // crossorigin del CDN absolute resta
+        'href="https://fonts.gstatic.com" crossorigin',
+        // crossorigin del CDN absolute (https://cdn.example.com) resta
+        'href="https://cdn.example.com/lib.css"',
+        // link assolutizzato con href Replit (senza crossorigin/integrity)
+        'href="https://fiber-muse-product-page.replit.app/assets/index-3HlEuuN1.css"',
+      ],
+      htmlExcludes: [
+        // crossorigin droppato dal link assolutizzato
+        'href="https://fiber-muse-product-page.replit.app/assets/index-3HlEuuN1.css" integrity',
+        'crossorigin href="https://fiber-muse-product-page.replit.app/assets/index-3HlEuuN1.css"',
+        'integrity="sha384-FOO"',
+      ],
+    },
+  },
+  {
     name: '<a href> e <form action> NON vengono assolutizzati',
     html:
       '<!DOCTYPE html><html><head></head><body>' +

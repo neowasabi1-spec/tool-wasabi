@@ -315,20 +315,36 @@ function absolutizeAssetUrls(html, sourceUrl) {
   // Tag e attributi da assolutizzare. Niente <a> e niente <form>: vedi
   // commento d'apertura.
   // Ordine: tag → array di attributi-asset da risolvere come URL singola,
-  //         + opzionale 'srcset' per quelli che usano lo srcset.
+  //         + opzionale 'srcset' per quelli che usano lo srcset,
+  //         + opzionale 'stripCors' per droppare crossorigin/integrity DOPO
+  //           aver assolutizzato (fix CORS — vedi commento sotto).
+  //
+  // STRIP `crossorigin` su <link>/<script> assolutizzati:
+  // Le pagine Vite/Replit emettono `<link rel="stylesheet" crossorigin
+  // href="/assets/index-*.css">`. Quando il browser carica questo CSS
+  // dal NUOVO dominio (es. Wasabi preview) la presenza di `crossorigin`
+  // attiva il check CORS: il server sorgente (Replit) NON manda
+  // `Access-Control-Allow-Origin` → il browser scarica il file ma
+  // RIFIUTA di applicarne le regole CSS. Risultato: niente Tailwind,
+  // pagina sconfusionata (= bug "tutta rotta uguale" 26 mag '26).
+  // Dropping `crossorigin` riporta il caricamento al regime "no-cors"
+  // standard: il browser scarica E applica il CSS, cross-origin
+  // ammesso senza preflight. Strippiamo anche `integrity` (SRI)
+  // perche' alcune combinazioni di SRI + drop-crossorigin generano
+  // blocchi in Chrome.
   const tagAttrSpec = {
-    link:   { single: ['href'],          srcset: false },
-    script: { single: ['src'],           srcset: false },
-    img:    { single: ['src', 'poster'], srcset: true  },
-    source: { single: ['src'],           srcset: true  },
-    video:  { single: ['src', 'poster'], srcset: false },
-    audio:  { single: ['src'],           srcset: false },
-    iframe: { single: ['src'],           srcset: false },
-    embed:  { single: ['src'],           srcset: false },
-    object: { single: ['data'],          srcset: false },
-    use:    { single: ['href', 'xlink:href'], srcset: false },
-    track:  { single: ['src'],           srcset: false },
-    meta:   { single: ['content'],       srcset: false }, // og:image / twitter:image
+    link:   { single: ['href'],          srcset: false, stripCors: true  },
+    script: { single: ['src'],           srcset: false, stripCors: true  },
+    img:    { single: ['src', 'poster'], srcset: true,  stripCors: false },
+    source: { single: ['src'],           srcset: true,  stripCors: false },
+    video:  { single: ['src', 'poster'], srcset: false, stripCors: false },
+    audio:  { single: ['src'],           srcset: false, stripCors: false },
+    iframe: { single: ['src'],           srcset: false, stripCors: false },
+    embed:  { single: ['src'],           srcset: false, stripCors: false },
+    object: { single: ['data'],          srcset: false, stripCors: false },
+    use:    { single: ['href', 'xlink:href'], srcset: false, stripCors: false },
+    track:  { single: ['src'],           srcset: false, stripCors: false },
+    meta:   { single: ['content'],       srcset: false, stripCors: false }, // og:image / twitter:image
   };
 
   let working = html;
@@ -351,18 +367,29 @@ function absolutizeAssetUrls(html, sourceUrl) {
         if (!isAssetMeta) return full;
       }
       let newAttrs = attrs;
+      let didAbsolutize = false;
       for (const attrName of spec.single) {
         const attrRe = new RegExp(`(\\s${attrName.replace(':', '\\:')}\\s*=\\s*)(["'])([^"']+)\\2`, 'gi');
         newAttrs = newAttrs.replace(attrRe, (_m, head, q, val) => {
           const resolved = resolve(val);
+          if (resolved !== val) didAbsolutize = true;
           return `${head}${q}${resolved}${q}`;
         });
       }
       if (spec.srcset) {
         const srcsetRe = /(\ssrcset\s*=\s*)(["'])([^"']+)\2/gi;
         newAttrs = newAttrs.replace(srcsetRe, (_m, head, q, val) => {
-          return `${head}${q}${resolveSrcset(val)}${q}`;
+          const resolved = resolveSrcset(val);
+          if (resolved !== val) didAbsolutize = true;
+          return `${head}${q}${resolved}${q}`;
         });
+      }
+      // Strip crossorigin/integrity SOLO se abbiamo riscritto l'URL: cosi'
+      // i CDN assoluti con crossorigin voluto (es. fonts.googleapis.com,
+      // cdn.jsdelivr.net) mantengono il loro setting intatto.
+      if (spec.stripCors && didAbsolutize) {
+        newAttrs = newAttrs.replace(/\s+crossorigin(?:\s*=\s*(["'])[^"']*\1)?/gi, '');
+        newAttrs = newAttrs.replace(/\s+integrity\s*=\s*(["'])[^"']*\1/gi, '');
       }
       return `<${tag}${newAttrs}>`;
     });
