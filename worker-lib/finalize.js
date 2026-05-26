@@ -213,6 +213,164 @@ function replaceBrandInHtml(html, sourceUrl, originalHtml, productName) {
   return working;
 }
 
+// ──────────────────────────────────────────────────────────────────────
+// absolutizeAssetUrls — risolvi gli URL relativi degli ASSET contro
+// l'origin originale della pagina clonata.
+//
+// Perche' esiste:
+//   Playwright cattura l'HTML renderizzato di una pagina sorgente, ma
+//   ogni `<link href="/assets/index-ABCD.css">` / `<script src="/assets/
+//   index-XYZ.js">` / `<img src="/img/hero.jpg">` / ecc. resta col path
+//   RELATIVO. Quando l'HTML viene poi servito da un dominio diverso
+//   (preview Wasabi, Supabase Storage, CheckoutChamp, Funnelish, dominio
+//   custom del cliente), questi URL si risolvono contro il NUOVO dominio
+//   → 404 → niente CSS, niente immagini, niente font → la pagina renderizza
+//   senza stili = "tutta sconfusionata".
+//
+//   Tipico per:
+//     - App Vite/CRA su Replit/Lovable (CSS Tailwind in /assets/*.css)
+//     - Pagine Next.js SSR (CSS in /_next/static/css/*.css)
+//     - Funnelish/ClickFunnels classic (immagini in /images/*, asset/*)
+//
+//   Soluzione: convertiamo gli URL relativi in ASSOLUTI puntando al
+//   dominio sorgente. Il CSS / JS / immagini si caricano dal dominio
+//   originale, e la pagina ha il suo aspetto corretto ovunque venga
+//   servita.
+//
+// Cosa tocchiamo (asset, non navigazione):
+//   - <link href=...>                        (stylesheet, preload, icon, ecc.)
+//   - <script src=...>                       (bundle JS — se sopravvive allo strip)
+//   - <img src=...>, <img srcset=...>        (immagini + responsive)
+//   - <source src=...>, <source srcset=...>  (picture / video / audio)
+//   - <video src=...>, <video poster=...>
+//   - <audio src=...>
+//   - <iframe src=...>
+//   - <embed src=...>, <object data=...>
+//   - <use href=...>                         (SVG sprite)
+//   - meta og:image, twitter:image content (per i preview social)
+//
+// Cosa NON tocchiamo (navigation / utente naviga, non risolto):
+//   - <a href=...>                           (link interni alla SPA originale
+//                                            sarebbero rotti sul nuovo dominio;
+//                                            li lasciamo cosi' come sono per non
+//                                            mandare il visitatore al competitor)
+//   - <form action=...>                      (idem, il submit deve restare locale)
+//   - href dentro <use> per fragment puro (#...) → restano frammenti
+//
+// Regole di risoluzione:
+//   - `data:`, `blob:`, `javascript:`, `mailto:`, `tel:`        → invariato
+//   - `#fragment` (solo hash)                                    → invariato
+//   - `http://...` o `https://...` (gia' assoluti)               → invariato
+//   - `//cdn.x.com/foo` (protocol-relative)                      → `${proto}//cdn.x.com/foo`
+//   - `/path/to/asset` (root-relative)                           → `${origin}/path/to/asset`
+//   - `path/to/asset` (path-relative)                            → resolved via new URL()
+function absolutizeAssetUrls(html, sourceUrl) {
+  if (!html || typeof html !== 'string' || !sourceUrl) return html;
+  let base;
+  try {
+    base = new URL(sourceUrl);
+  } catch {
+    return html;
+  }
+  const origin = base.origin;
+  const proto = base.protocol;
+
+  function resolve(value) {
+    if (!value || typeof value !== 'string') return value;
+    const v = value.trim();
+    if (!v) return value;
+    // Skip schemes non-HTTP e fragment puri.
+    if (/^(?:data|blob|javascript|mailto|tel|sms|chrome|about|file):/i.test(v)) return value;
+    if (v.startsWith('#')) return value;
+    // Gia' assoluto.
+    if (/^https?:\/\//i.test(v)) return value;
+    // Protocol-relative: //cdn.x.com/foo
+    if (v.startsWith('//')) return `${proto}${v}`;
+    // Root-relative: /path/asset.css
+    if (v.startsWith('/')) return `${origin}${v}`;
+    // Path-relative (raro nelle pagine clonate via Playwright, ma capita).
+    try {
+      return new URL(v, base.href).toString();
+    } catch {
+      return value;
+    }
+  }
+
+  function resolveSrcset(value) {
+    if (!value || typeof value !== 'string') return value;
+    // srcset = comma-separated list di "url descrittore" (es "img-2x.png 2x")
+    // Risolvi solo la parte URL, mantieni il descrittore (1x/2x/100w/...).
+    return value
+      .split(',')
+      .map((part) => {
+        const s = part.trim();
+        if (!s) return s;
+        const m = s.match(/^(\S+)(\s+\S.*)?$/);
+        if (!m) return s;
+        return resolve(m[1]) + (m[2] || '');
+      })
+      .join(', ');
+  }
+
+  // Tag e attributi da assolutizzare. Niente <a> e niente <form>: vedi
+  // commento d'apertura.
+  // Ordine: tag → array di attributi-asset da risolvere come URL singola,
+  //         + opzionale 'srcset' per quelli che usano lo srcset.
+  const tagAttrSpec = {
+    link:   { single: ['href'],          srcset: false },
+    script: { single: ['src'],           srcset: false },
+    img:    { single: ['src', 'poster'], srcset: true  },
+    source: { single: ['src'],           srcset: true  },
+    video:  { single: ['src', 'poster'], srcset: false },
+    audio:  { single: ['src'],           srcset: false },
+    iframe: { single: ['src'],           srcset: false },
+    embed:  { single: ['src'],           srcset: false },
+    object: { single: ['data'],          srcset: false },
+    use:    { single: ['href', 'xlink:href'], srcset: false },
+    track:  { single: ['src'],           srcset: false },
+    meta:   { single: ['content'],       srcset: false }, // og:image / twitter:image
+  };
+
+  let working = html;
+
+  for (const [tagName, spec] of Object.entries(tagAttrSpec)) {
+    // Match aperture del tag (anche self-closing): <tag ...> oppure <tag ... />
+    // Case-insensitive. Catturiamo i soli attributi per riscriverli e
+    // ricomporre il tag esattamente uguale (no normalizzazione).
+    const tagRe = new RegExp(`<(${tagName})\\b([^>]*)>`, 'gi');
+    working = working.replace(tagRe, (full, tag, attrs) => {
+      // <meta content=...> va trattato solo per i metadata "asset-like"
+      // (og:image, twitter:image, msapplication-TileImage). Senza questo
+      // filtro assolutizzeremmo `<meta name="description" content="...">`
+      // e simili che sono testi, non URL.
+      if (tagName === 'meta') {
+        const isAssetMeta =
+          /(property|name)=["'](?:og:image|og:video|og:audio|twitter:image|twitter:player|msapplication-TileImage)["']/i.test(
+            attrs,
+          );
+        if (!isAssetMeta) return full;
+      }
+      let newAttrs = attrs;
+      for (const attrName of spec.single) {
+        const attrRe = new RegExp(`(\\s${attrName.replace(':', '\\:')}\\s*=\\s*)(["'])([^"']+)\\2`, 'gi');
+        newAttrs = newAttrs.replace(attrRe, (_m, head, q, val) => {
+          const resolved = resolve(val);
+          return `${head}${q}${resolved}${q}`;
+        });
+      }
+      if (spec.srcset) {
+        const srcsetRe = /(\ssrcset\s*=\s*)(["'])([^"']+)\2/gi;
+        newAttrs = newAttrs.replace(srcsetRe, (_m, head, q, val) => {
+          return `${head}${q}${resolveSrcset(val)}${q}`;
+        });
+      }
+      return `<${tag}${newAttrs}>`;
+    });
+  }
+
+  return working;
+}
+
 // Detect SPA: pagine costruite con Vue (data-v-*), React (data-reactroot,
 // __NEXT_DATA__), Svelte (svelte-*), Nuxt (__NUXT__), o page builders che
 // compilano a un componente (Funnelytics, ClickFunnels 2.0, Convertri,
@@ -460,7 +618,21 @@ function finalizeSwipe({ html, sourceUrl, texts, rewrites, productName, applySpa
   if (!Array.isArray(texts) || texts.length === 0) throw new Error('texts[] is required');
   if (!Array.isArray(rewrites)) throw new Error('rewrites[] is required');
 
-  const originalHtml = html;
+  // ASSOLUTIZZAZIONE asset URL (PRIMA cosa che facciamo sull'HTML grezzo).
+  //
+  // Playwright cattura `<link href="/assets/index-ABCD.css">` e simili con
+  // il path RELATIVO al dominio sorgente. Se serviamo questo HTML da un
+  // dominio diverso (Wasabi preview, Supabase Storage, hosting cliente),
+  // il path /assets/... colpisce il NUOVO origin → 404 → CSS non caricato
+  // → "pagina tutta sconfusionata" (Tailwind sparito, layout collassato).
+  //
+  // Fix: riscriviamo TUTTI gli URL relativi degli ASSET (CSS/JS/img/font/
+  // video/iframe/og:image…) puntandoli all'origin originale. La navigation
+  // (<a>, <form>) resta intatta per non re-indirizzare l'utente al
+  // competitor. Le `texts[]` arrivano dal worker DOPO la sostituzione
+  // pari pari, quindi non vengono toccate da questo passaggio (gli URL
+  // non rientrano nei texts estratti).
+  const originalHtml = sourceUrl ? absolutizeAssetUrls(html, sourceUrl) : html;
   const isSpa = detectSpa(originalHtml);
 
   // id → rewritten map. Quando la pagina e' SPA applichiamo SPA-safety:
@@ -752,29 +924,31 @@ function finalizeSwipe({ html, sourceUrl, texts, rewrites, productName, applySpa
   // Cosi' il preview e' interattivo anche quando il bundle originale
   // tenta di montare su un dominio che non e' il suo e fallisce.
   //
-  // ECCEZIONE — Modern SPA (Vite/CRA/Lovable/Replit):
-  // Per le pagine "modern SPA" (vedi detectModernSpa) lo strip e' RIBALTATO.
-  // Quelle pagine sono _completamente_ client-rendered: senza il bundle
-  // `<script type="module" src="/assets/index-*.js">` React/Vue non monta
-  // mai, e i fallback jQuery+Swiper non sostituiscono niente perche' non
-  // c'e' nessuna struttura jQuery-classic da rianimare. Il risultato e'
-  // una pagina-fotografia del clone Playwright completamente inerte
-  // (bottoni morti, routing morto, ogni interazione morta). Per queste:
-  //   1. SALTIAMO lo strip → bundle Vite preservato → React/Vue monta
-  //      normalmente sul dominio finale (Storage / preview / deploy)
-  //   2. SALTIAMO la FAQ_CSS_OVERRIDE + NEXTJS_NAVIGATION_FIX (non
-  //      servono e potrebbero conflittare con i propri CSS Tailwind /
-  //      router client-side)
-  //   3. SALTIAMO il FALLBACK_INIT_SCRIPT (jQuery/Swiper irrilevanti)
-  //   4. Il swipeScript continua ad essere iniettato sotto: il suo
-  //      MutationObserver intercetta i re-render di React e ri-applica i
-  //      replacement, quindi i testi riscritti si vedono comunque.
-  // Detection POSITIVA (signature Vite + hostname allowlist + all-modules
-  // check) → zero rischio di regressione per pagine legacy gia' funzionanti.
+  // Nota — Modern SPA (Vite/CRA/Lovable/Replit):
+  // In passato avevamo provato a PRESERVARE il bundle module per queste
+  // pagine, ma il risultato era una pagina con layout rotto: anche con il
+  // bundle preservato, gli URL relativi degli asset (CSS/JS) puntavano al
+  // dominio sbagliato e Tailwind non caricava → "tutta sconfusionata"
+  // (vedi commit 0ec7064 → revert). Oggi la strategia e' diversa:
+  //   1. ASSOLUTIZZIAMO TUTTI gli URL degli asset all'inizio
+  //      (absolutizeAssetUrls sopra) → il CSS Tailwind carica dall'origin
+  //      sorgente → layout integro.
+  //   2. STRIPPIAMO comunque gli script anche sui modern SPA → pagina
+  //      statica ma visualmente identica all'originale.
+  //   3. I rewrite testuali entrano via server-side replace + swipeScript
+  //      → la pagina e' un "fotogramma" rewritten dell'originale,
+  //      predicibile e privo di hydration mismatch React.
+  // detectModernSpa funge sia da telemetria sia da fallback per detectSpa
+  // — la regex SPA classica cerca markers come `<div id="root"></div>`
+  // VUOTO (signature pre-hydration), ma Playwright cattura il DOM gia'
+  // RENDERIZZATO con contenuto dentro, quindi `<div id="root"><h1>...`
+  // sfugge a detectSpa anche se la pagina e' di fatto un'app Vite/React.
+  // Includiamo detectModernSpa nel trigger per fermare questo edge case.
   const modernSpaCheck = detectModernSpa(originalHtml, sourceUrl);
   const isModernSpa = modernSpaCheck.isModern;
   const previewModeRequested =
-    !isModernSpa && (applySpaPreviewMode === true || (applySpaPreviewMode !== false && isSpa));
+    applySpaPreviewMode === true ||
+    (applySpaPreviewMode !== false && (isSpa || isModernSpa));
   let scriptStripStats = null;
   if (previewModeRequested) {
     const strip = stripOriginalScripts(preparedHtml);
@@ -825,12 +999,14 @@ function finalizeSwipe({ html, sourceUrl, texts, rewrites, productName, applySpa
     spa_safety_strips: spaSafetyStrips,
     spa_preview_mode_applied: previewModeRequested,
     spa_preview_script_strip: scriptStripStats,
-    // Telemetria modern-SPA: se isModernSpa=true abbiamo preservato il
-    // bundle originale (Vite/CRA/Replit/Lovable). reason indica quale
-    // signature ha matchato — utile in log per debug e per capire se la
-    // detection sta riconoscendo i casi che vediamo nel wild.
+    // Telemetria modern-SPA — informativa, NON cambia il flow (lo strip
+    // si applica comunque, vedi commento sopra). reason indica quale
+    // signature ha matchato (vite_module / replit_host / lovable_host /
+    // all_module_scripts) — utile per capire dal log che tipo di pagina
+    // sta arrivando dal wild.
     modern_spa_detected: isModernSpa,
     modern_spa_reason: modernSpaCheck.reason,
+    asset_urls_absolutized: Boolean(sourceUrl),
     unresolved_text_ids: unresolvedIds,
     coverage_ratio: texts.length ? totalReplacements / texts.length : 0,
     provider: 'openclaw-local-inproc',
