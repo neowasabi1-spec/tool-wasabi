@@ -1409,12 +1409,19 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
       const controller = new AbortController()
       const timeoutId = setTimeout(() => controller.abort(), CLAUDE_TIMEOUT_MS_RUNTIME)
 
+      // Defensive trim: copy-pasted keys often carry a trailing \n or stray
+      // whitespace. An invalid header value (esp. \n which is a CRLF
+      // injection vector) makes upstream proxies STRIP the x-api-key header
+      // entirely — Anthropic then returns 401 with EMPTY body. Trim before
+      // use to avoid this silent failure mode.
+      const anthropicKey = String(userProfile.anthropic_api_key || '').trim()
+
       try {
         claudeResponse = await fetch('https://api.anthropic.com/v1/messages', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'x-api-key': userProfile.anthropic_api_key,
+            'x-api-key': anthropicKey,
             'anthropic-version': '2023-06-01'
           },
           body: JSON.stringify({
@@ -1467,12 +1474,27 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
           parsedMsg = j?.error?.message || j?.message || null
         } catch { /* not JSON */ }
         const detail = parsedMsg || rawBody.slice(0, 500) || `HTTP ${status} (empty body)`
-        console.error(`[claude] HTTP ${status} on batch ${batchNumber + 1}: ${detail}`)
+
+        // Key diagnostics on 401: helps tell apart "wrong key" from "key
+        // mangled in DB". Logs only length + first/last 4 chars (safe to
+        // surface — not enough to reconstruct the secret).
+        const rawKey = String(userProfile.anthropic_api_key || '')
+        const trimmedKey = rawKey.trim()
+        const keyDiag = status === 401 ? {
+          keyLen: trimmedKey.length,
+          keyPrefix: trimmedKey.slice(0, 7),
+          keySuffix: trimmedKey.slice(-4),
+          hadWhitespace: rawKey.length !== trimmedKey.length,
+          startsWithSkAnt: trimmedKey.startsWith('sk-ant-'),
+        } : undefined
+
+        console.error(`[claude] HTTP ${status} on batch ${batchNumber + 1}: ${detail}`, keyDiag || '')
         return new Response(
           JSON.stringify({
             error: `Errore Claude API (HTTP ${status}): ${detail}`,
             status,
             rawBody: rawBody.slice(0, 2000),
+            keyDiag,
           }),
           { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         )
