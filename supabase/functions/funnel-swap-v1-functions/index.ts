@@ -551,7 +551,7 @@ serve(async (req) => {
     // which version of the function is actually serving requests. Critical
     // because GitHub pushes don't auto-deploy; if you don't see this exact
     // string in the logs you're still on the old build.
-    console.log(`🔖 funnel-swap build: v4.3-200k-section-limit (2026-05-10)`)
+    console.log(`🔖 funnel-swap build: v4.4-layout-overflow-fix (2026-05-27)`)
     console.log(`📋 Richiesta ricevuta: phase=${phase}, cloneMode=${cloneMode}, url=${url?.substring(0, 50)}...`)
     if (system_kb) {
       const kbChars = String(system_kb).length
@@ -1080,10 +1080,46 @@ html body .accordion-item.fb-collapsed .accordion-body{
 .fb-icon-rotated{transform:rotate(180deg) !important;transition:transform .2s !important;}
 html body .stickSection{display:block !important;visibility:visible !important;opacity:1 !important;}
 </style>`
+
+        // === LAYOUT OVERFLOW FIX ===
+        // Il testo riscritto dall'AI e' quasi sempre piu' lungo dell'originale.
+        // Template Tailwind/Vite (Replit, Vercel, ecc.) usano altezze fisse
+        // arbitrarie tipo md:h-[323px], aspect-[a/b], dimensionate sulla
+        // lunghezza del testo originale → cards che si sovrappongono, headings
+        // sopra paragrafi, CTA mangiate.
+        //
+        // Strategia:
+        //  1) CSS :has(): rilassa altezze fisse solo sui contenitori Tailwind
+        //     arbitrary-value che contengono testo (h*/p/li/blockquote/ul/ol).
+        //     Img/video/svg/iframe non matchano → galleria/slider intatti.
+        //     Selettore [class*="h-["] tocca SOLO Tailwind arbitrary, non
+        //     h-32/h-full/h-screen ne' CSS classico.
+        //  2) Rimozione line-clamp/truncate (dopo un rewrite e' sempre
+        //     sbagliato troncare il nuovo copy).
+        //  3) Fallback JS imperativo nel fallbackInitServerSide (MutationObserver)
+        //     per browser senza :has() e per ri-applicare dopo runtime DOM mutations.
+        const layoutOverflowFix = `<style data-fallback="layout-overflow-fix">
+@supports selector(:has(*)) {
+html body [class*="h-["]:has(p,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl),
+html body [class*="min-h-["]:has(p,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl),
+html body [class*="max-h-["]:has(p,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl),
+html body [class*="aspect-["]:has(p,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl),
+html body [style*="height:"]:has(p,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl),
+html body [style*="max-height:"]:has(p,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl),
+html body [style*="aspect-ratio:"]:has(p,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl){
+  height:auto !important;min-height:0 !important;max-height:none !important;
+  aspect-ratio:auto !important;overflow:visible !important;
+}
+}
+html body [class*="overflow-hidden"]:has(>h1,>h2,>h3,>h4,>h5,>h6,>p,>ul,>ol,>blockquote){overflow:visible !important;}
+html body [class*="line-clamp-"],html body [class*="truncate"]{-webkit-line-clamp:unset !important;line-clamp:unset !important;display:block !important;overflow:visible !important;text-overflow:clip !important;white-space:normal !important;}
+</style>`
+
+        const styleInjection = fbStyle + layoutOverflowFix
         if (clonedHTML.includes('</head>')) {
-          clonedHTML = clonedHTML.replace('</head>', fbStyle + '</head>')
+          clonedHTML = clonedHTML.replace('</head>', styleInjection + '</head>')
         } else if (clonedHTML.includes('<body')) {
-          clonedHTML = clonedHTML.replace(/(<body[^>]*>)/, fbStyle + '$1')
+          clonedHTML = clonedHTML.replace(/(<body[^>]*>)/, styleInjection + '$1')
         }
 
         // === FALLBACK INIT (FAQ + Swiper + thumb gallery) ===
@@ -1093,7 +1129,7 @@ html body .stickSection{display:block !important;visibility:visible !important;o
         // click thumb→main image. Idempotente: include FB_VERSION nel body
         // così il client può evitare doppia iniezione.
         const fallbackInitServerSide = `<script data-fallback="server-v1">(function(){
-  var FB_VERSION='server-v2-2026-05-05';
+  var FB_VERSION='server-v3-layout-overflow-2026-05-27';
   window.__FB_FALLBACK_INSTALLED=FB_VERSION;
   function loadCss(href){ if(document.querySelector('link[data-fb-css="'+href+'"]'))return; var l=document.createElement('link'); l.rel='stylesheet'; l.href=href; l.dataset.fbCss=href; document.head.appendChild(l); }
   function loadScript(src,cb){ var existing=document.querySelector('script[data-fb-src="'+src+'"]'); if(existing){ if(existing.__loaded){cb();} else { existing.addEventListener('load',cb); existing.addEventListener('error',cb); } return; } var s=document.createElement('script'); s.src=src; s.async=false; s.dataset.fbSrc=src; s.addEventListener('load',function(){s.__loaded=true; cb();}); s.addEventListener('error',function(){cb();}); (document.head||document.documentElement).appendChild(s); }
@@ -1119,8 +1155,47 @@ html body .stickSection{display:block !important;visibility:visible !important;o
   function bindFaq(){ if(document.body.__faqDelegateBound)return; document.body.__faqDelegateBound=true; document.body.addEventListener('click',function(ev){ var t=ev.target; if(!t||!t.closest)return; var actionable=t.closest('a,button,input,select,textarea,label,[role="button"],[onclick]'); var header=t.closest('.faq-header,.faq-question,.faq-title,.accordion-header,.accordion-question,.accordion-toggle,.accordion-button,[data-faq-toggle],[data-toggle="collapse"],summary'); if(!header)return; if(actionable && header.contains(actionable) && actionable!==header) return; ev.preventDefault(); ev.stopPropagation(); try{ toggleFaq(header); }catch(e){} },true); document.querySelectorAll('.faq-header,.faq-question,.faq-title,.accordion-header,.accordion-button,summary').forEach(function(h){ h.style.cursor='pointer'; }); }
   function bindThumbs(){ if(document.body.__thumbDelegateBound)return; document.body.__thumbDelegateBound=true; document.body.addEventListener('click',function(ev){ var t=ev.target; if(!t||!t.closest)return; var tc=t.closest('.thumbImage,.swiper-thumbs,[data-thumb-container]'); if(!tc)return; var ti=t.closest('.swiper-slide,[data-thumb],img'); if(!ti)return; var sib=Array.prototype.slice.call(tc.querySelectorAll('.swiper-slide,[data-thumb]')); if(!sib.length) sib=Array.prototype.slice.call(tc.querySelectorAll('img')); var idx=sib.indexOf(ti); if(idx<0){ var p=ti; while(p&&idx<0){ idx=sib.indexOf(p); p=p.parentElement; } } var mainEl=document.querySelector('.swiper.mainImage'); if(mainEl&&mainEl.swiper&&idx>=0){ try{ mainEl.swiper.slideTo(idx); }catch(_){} } var img=ti.tagName==='IMG'?ti:ti.querySelector('img'); if(img){ var src=img.currentSrc||img.src||img.getAttribute('data-src'); if(src){ var m=document.querySelector('.swiper.mainImage .swiper-slide-active img,.swiper.mainImage .swiper-slide img,.mainImage img:not(.thumb),.product-image img'); if(m){ m.src=src; m.removeAttribute('srcset'); } } } },true); }
   function initSwipers(){ if(typeof window.Swiper!=='function')return false; var thumbs=[]; document.querySelectorAll('.swiper.thumbImage,.swiper.swiper-thumbs').forEach(function(el){ if(el.swiper||el.__swBound)return; el.__swBound=true; try{ thumbs.push(new window.Swiper(el,{slidesPerView:'auto',spaceBetween:10,watchSlidesProgress:true,freeMode:true,slideToClickedSlide:true})); }catch(_){} }); document.querySelectorAll('.swiper.mainImage').forEach(function(el){ if(el.swiper||el.__swBound)return; el.__swBound=true; var opts={slidesPerView:1,spaceBetween:10,navigation:{nextEl:el.querySelector('.swiper-button-next'),prevEl:el.querySelector('.swiper-button-prev')},pagination:{el:el.querySelector('.swiper-pagination'),clickable:true}}; if(thumbs[0]) opts.thumbs={swiper:thumbs[0]}; try{ new window.Swiper(el,opts); }catch(_){} }); document.querySelectorAll('.swiper').forEach(function(el){ if(el.swiper||el.__swBound)return; el.__swBound=true; var ann=el.classList.contains('announcement_bar'); try{ new window.Swiper(el,{slidesPerView:1,spaceBetween:10,loop:ann,autoplay:ann?{delay:3500}:false,navigation:{nextEl:el.querySelector('.swiper-button-next'),prevEl:el.querySelector('.swiper-button-prev')},pagination:{el:el.querySelector('.swiper-pagination'),clickable:true}}); }catch(_){} }); document.querySelectorAll('.stickSection').forEach(function(s){ s.style.display=''; }); return true; }
-  function bootstrap(){ console.log('[fb-server]',FB_VERSION,'boot'); bindFaq(); bindThumbs(); var hasJq=typeof window.jQuery!=='undefined'; var hasSw=typeof window.Swiper==='function'; loadCss('https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.css'); var pending=0; function done(){ if(--pending<=0) finalize(); } if(!hasJq){ pending++; loadScript('https://code.jquery.com/jquery-3.5.1.min.js',done); } if(!hasSw){ pending++; loadScript('https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.js',done); } if(pending===0) finalize(); }
-  function finalize(){ initSwipers(); bindFaq(); bindThumbs(); setTimeout(function(){ initSwipers(); },1500); console.log('[fb-server]',FB_VERSION,'finalized'); }
+  // LAYOUT OVERFLOW FIX (JS imperativo): rilassa altezze fisse Tailwind
+  // arbitrary-value su contenitori con testo. Skip img/video/svg/iframe.
+  // Anche rimuove line-clamp/truncate. MutationObserver coverage per i
+  // replacement runtime via swipe-replacer.
+  function relaxFixedHeights(){try{
+    var sel='[class*="h-["],[class*="min-h-["],[class*="max-h-["],[class*="aspect-["],[style*="height:"],[style*="max-height:"],[style*="aspect-ratio:"]';
+    var nodes=document.querySelectorAll(sel);
+    for(var i=0;i<nodes.length;i++){
+      var el=nodes[i];var tn=el.tagName;
+      if(tn==='IMG'||tn==='VIDEO'||tn==='SVG'||tn==='svg'||tn==='CANVAS'||tn==='IFRAME'||tn==='PICTURE')continue;
+      if(!el.querySelector('p,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl'))continue;
+      if(el.__fbRelaxed)continue;el.__fbRelaxed=1;
+      el.style.setProperty('height','auto','important');
+      el.style.setProperty('min-height','0','important');
+      el.style.setProperty('max-height','none','important');
+      el.style.setProperty('aspect-ratio','auto','important');
+      el.style.setProperty('overflow','visible','important');
+    }
+    var clamps=document.querySelectorAll('[class*="line-clamp-"],.truncate,[class*="truncate"]');
+    for(var j=0;j<clamps.length;j++){
+      var c=clamps[j];if(c.__fbClamped)continue;c.__fbClamped=1;
+      c.style.setProperty('-webkit-line-clamp','unset','important');
+      c.style.setProperty('line-clamp','unset','important');
+      c.style.setProperty('display','block','important');
+      c.style.setProperty('overflow','visible','important');
+      c.style.setProperty('text-overflow','clip','important');
+      c.style.setProperty('white-space','normal','important');
+    }
+  }catch(_){}}
+  function watchRelax(){try{
+    if(window.__fbRelaxObs)return;
+    relaxFixedHeights();
+    var pending=null;
+    function schedule(){if(pending)return;pending=(window.requestAnimationFrame||function(cb){return setTimeout(cb,16);})(function(){pending=null;relaxFixedHeights();});}
+    var mo=new MutationObserver(schedule);
+    mo.observe(document.body||document.documentElement,{childList:true,subtree:true,characterData:true});
+    window.__fbRelaxObs=mo;
+    setTimeout(relaxFixedHeights,500);setTimeout(relaxFixedHeights,2000);setTimeout(relaxFixedHeights,5000);
+  }catch(_){}}
+  function bootstrap(){ console.log('[fb-server]',FB_VERSION,'boot'); bindFaq(); bindThumbs(); watchRelax(); var hasJq=typeof window.jQuery!=='undefined'; var hasSw=typeof window.Swiper==='function'; loadCss('https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.css'); var pending=0; function done(){ if(--pending<=0) finalize(); } if(!hasJq){ pending++; loadScript('https://code.jquery.com/jquery-3.5.1.min.js',done); } if(!hasSw){ pending++; loadScript('https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.js',done); } if(pending===0) finalize(); }
+  function finalize(){ initSwipers(); bindFaq(); bindThumbs(); relaxFixedHeights(); setTimeout(function(){ initSwipers(); relaxFixedHeights(); },1500); console.log('[fb-server]',FB_VERSION,'finalized'); }
   if(document.readyState==='loading'){ document.addEventListener('DOMContentLoaded',bootstrap); } else { setTimeout(bootstrap,50); }
 })();</script>`
         if (clonedHTML.includes('</body>')) {
