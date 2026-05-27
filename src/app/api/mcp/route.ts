@@ -3134,34 +3134,28 @@ export async function GET(req: NextRequest) {
     const messagesEndpoint = `${origin}/api/mcp`;
     const stream = new ReadableStream({
       start(controller) {
-        // Comment iniziale "kick" + commento descrittivo (le righe che iniziano
-        // con ':' sono SSE comments — vengono ignorate dai parser ma forzano
-        // i proxy a flushare i header subito).
-        controller.enqueue(encoder.encode(`: mcp-streamable-http server-initiated channel\n: protocol ${MCP_PROTOCOL_VERSION}\n\n`));
-        // ── Compat HTTP+SSE (transport MCP pre-Streamable) ──────────
-        // Vecchi client MCP (bundle-mcp di OpenClaw, alcuni SDK Python
-        // pre-1.x) aspettano un `event: endpoint` come primo messaggio
-        // per sapere dove fare POST. Senza, quando l'SSE si chiude a
-        // 25s vedono "failed to start server" / "SSE error: undefined"
-        // e l'agente entra in loop tentando di riconnettersi ogni
-        // 30s — sprecando token a ripetere lo stesso rewrite.
+        // ── Strategia "fast-close" per fixare bundle-mcp 30s timeout ──
         //
-        // Inviare l'event endpoint sblocca quei client: dopo averlo
-        // ricevuto, sanno fare POST a messagesEndpoint indipendente
-        // dalla persistenza dell'SSE GET stream. La chiusura a 25s
-        // diventa innocua (riapriranno l'SSE su richiesta).
+        // Storia: tenevamo lo stream SSE aperto per 25s con ping ogni
+        // 15s. Sintatticamente corretto, ma Netlify bufferizza lo stream
+        // SSE e i client bundle-mcp (OpenClaw) vedevano il primo byte
+        // arrivare dopo 15-20s — sforando il loro timeout di 30s e
+        // abortendo con "MCP server connection timed out after 30000ms".
         //
-        // Per i client Streamable HTTP nuovi, questo event viene
-        // ignorato senza side-effect (loro fanno POST diretto a /mcp).
+        // Soluzione: mandiamo SOLO l'`event: endpoint` (l'unica cosa
+        // davvero utile per i client HTTP+SSE pre-Streamable) e chiudiamo
+        // immediatamente. Niente keep-alive long-poll: il client riceve
+        // l'endpoint, lo stream si chiude pulito, e procede col POST
+        // initialize verso messagesEndpoint.
+        //
+        // Per i client Streamable HTTP nuovi: ignorano l'endpoint event
+        // e fanno POST diretto a /api/mcp. La chiusura immediata dello
+        // stream GET non li disturba (lo spec dice che è opzionale).
+        //
+        // Commento ':' iniziale forza il flush header del proxy.
+        controller.enqueue(encoder.encode(`: mcp-streamable-http\n: protocol ${MCP_PROTOCOL_VERSION}\n\n`));
         controller.enqueue(encoder.encode(`event: endpoint\ndata: ${messagesEndpoint}\n\n`));
-        const ping = setInterval(() => {
-          try { controller.enqueue(encoder.encode(`: ping ${Date.now()}\n\n`)); }
-          catch { clearInterval(ping); }
-        }, 15000);
-        setTimeout(() => {
-          clearInterval(ping);
-          try { controller.close(); } catch { /* already closed */ }
-        }, 25000);
+        try { controller.close(); } catch { /* already closed */ }
       },
     });
     return new NextResponse(stream, {
