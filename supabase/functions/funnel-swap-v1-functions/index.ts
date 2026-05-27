@@ -1453,9 +1453,27 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
       }
       
       if (!claudeResponse.ok) {
-        const error = await claudeResponse.json().catch(() => ({ error: { message: 'Unknown error' } }))
+        // Read body as TEXT first — Anthropic doesn't always return JSON on
+        // errors (e.g. 502/503 from the upstream balancer return plain HTML,
+        // 429 overload sometimes returns text/plain). Old code did .json()
+        // and fell through to 'Unknown error' on any non-JSON body, hiding
+        // the real cause. Now we surface status + first 500 chars of body
+        // so the UI / logs show what Anthropic actually said.
+        const status = claudeResponse.status
+        const rawBody = await claudeResponse.text().catch(() => '')
+        let parsedMsg: string | null = null
+        try {
+          const j = JSON.parse(rawBody)
+          parsedMsg = j?.error?.message || j?.message || null
+        } catch { /* not JSON */ }
+        const detail = parsedMsg || rawBody.slice(0, 500) || `HTTP ${status} (empty body)`
+        console.error(`[claude] HTTP ${status} on batch ${batchNumber + 1}: ${detail}`)
         return new Response(
-          JSON.stringify({ error: `Errore Claude API: ${error.error?.message || 'Unknown error'}` }),
+          JSON.stringify({
+            error: `Errore Claude API (HTTP ${status}): ${detail}`,
+            status,
+            rawBody: rawBody.slice(0, 2000),
+          }),
           { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         )
       }
