@@ -29,6 +29,7 @@ const { buildPrompts: buildSwipePrompts } = require('./worker-lib/build-prompts'
 const { extractBundleTexts } = require('./worker-lib/bundle-extractor');
 const { inlineBundleRewrites } = require('./worker-lib/bundle-inliner');
 const { finalizeSwipe: finalizeSwipeLocal } = require('./worker-lib/finalize');
+const { inlineExternalStylesheets } = require('./worker-lib/inline-css');
 
 // ===== STATIC EXTRA CONTEXT (per-worker) ============================
 // L'utente puo' mettere su questo PC un file di "knowledge personale"
@@ -1378,12 +1379,44 @@ async function processMessage(msg) {
               `Local fetch failed: ${fetched.error || 'no HTML returned'}`,
             );
           }
-          log(`    ✓ fetched ${fetched.html.length} chars via ${fetched.source} in ${(fetched.durationMs / 1000).toFixed(1)}s — finalising server-side`);
+          log(`    ✓ fetched ${fetched.html.length} chars via ${fetched.source} in ${(fetched.durationMs / 1000).toFixed(1)}s`);
+
+          // INLINE CSS ESTERNI prima del finalize server-side: cosi' anche
+          // la pagina CLONATA (non solo quella riscritta) e' autonoma e
+          // non rompe quando viene servita da Storage/preview/iframe per
+          // mancanza di CORS sull'origine (vedi worker-lib/inline-css.js).
+          let cloneHtml = fetched.html;
+          let cloneInlineCssStats = null;
+          try {
+            const inlineRes = await inlineExternalStylesheets(cloneHtml, job.url, {
+              log: (m) => log(`    · ${m}`),
+              warn: (m) => err(`    · ${m}`),
+            });
+            cloneHtml = inlineRes.html;
+            cloneInlineCssStats = {
+              inlined: inlineRes.inlined,
+              failed: inlineRes.failed,
+              skipped: inlineRes.skipped,
+              total_bytes: inlineRes.totalBytes,
+              sources: inlineRes.sources,
+              errors: inlineRes.errors,
+            };
+            if (inlineRes.inlined > 0) {
+              log(
+                `    ✓ inline-css: ${inlineRes.inlined} stylesheet inlinati (${(inlineRes.totalBytes / 1024).toFixed(1)} KB CSS embedded nell'HTML clonato)`,
+              );
+            }
+          } catch (e) {
+            err(`    ⚠ inline-css fallito (non fatale): ${e.message}`);
+            cloneInlineCssStats = { error: e.message };
+          }
+
+          log(`    · finalising server-side (${cloneHtml.length} chars)`);
           const finalised = await callToolApi(
             '/api/landing/clone/openclaw-finalize',
             {
               url: job.url,
-              html: fetched.html,
+              html: cloneHtml,
               removeScripts: job.removeScripts,
               methodUsed: fetched.source ? `openclaw-local-${fetched.source}` : 'openclaw-local',
               wasSpa:
@@ -1396,6 +1429,11 @@ async function processMessage(msg) {
           );
           if (finalised && finalised.success === false) {
             throw new Error(finalised.error || 'openclaw-finalize returned failure');
+          }
+          // Allega telemetria inline-css alla response del clone cosi'
+          // il frontend puo' mostrarla nell'UI.
+          if (finalised && cloneInlineCssStats) {
+            finalised.inline_css_stats = cloneInlineCssStats;
           }
           responsePayload = JSON.stringify(finalised);
           break;
@@ -1436,6 +1474,52 @@ async function processMessage(msg) {
             }
             originalHtml = fetched.html;
             log(`    ✓ fetched ${originalHtml.length} chars via ${fetched.source} in ${(fetched.durationMs / 1000).toFixed(1)}s`);
+          }
+
+          // 0.1 — INLINE CSS ESTERNI ─────────────────────────────────
+          // Le pagine moderne (Vite/Replit, Lovable, Next.js, CheckoutChamp,
+          // Funnelish, ecc.) servono il CSS come <link rel="stylesheet"
+          // crossorigin href="/assets/index-XXX.css">. Quando l'HTML
+          // viene poi servito da un dominio diverso (Storage, preview
+          // Wasabi, iframe srcdoc, dominio cliente) il browser rifiuta
+          // di applicare la CSS per CORS: l'origine (es. Replit) NON
+          // manda Access-Control-Allow-Origin. Risultato: pagina "tutta
+          // sconfusionata", niente Tailwind, layout collassato.
+          //
+          // Qui scarichiamo le CSS server-side (Node fetch — niente CORS)
+          // e le inlinizziamo come <style>. L'HTML diventa autonomo,
+          // funziona ovunque venga servito, e non dipende piu' da
+          // sourceUrl in run-time.
+          //
+          // Best-effort: se la fetch fallisce, andiamo avanti con i
+          // <link> originali. Il finalize successivo (absolutizeAssetUrls
+          // + crossorigin-strip in worker-lib/finalize.js) e' il
+          // safety-net per quel caso.
+          let inlineCssStats = null;
+          if (job.sourceUrl) {
+            try {
+              const inlineRes = await inlineExternalStylesheets(originalHtml, job.sourceUrl, {
+                log: (m) => log(`    · ${m}`),
+                warn: (m) => err(`    · ${m}`),
+              });
+              originalHtml = inlineRes.html;
+              inlineCssStats = {
+                inlined: inlineRes.inlined,
+                failed: inlineRes.failed,
+                skipped: inlineRes.skipped,
+                total_bytes: inlineRes.totalBytes,
+                sources: inlineRes.sources,
+                errors: inlineRes.errors,
+              };
+              if (inlineRes.inlined > 0) {
+                log(
+                  `    ✓ inline-css: ${inlineRes.inlined} stylesheet inlinati (${(inlineRes.totalBytes / 1024).toFixed(1)} KB CSS embedded nell'HTML)`,
+                );
+              }
+            } catch (e) {
+              err(`    ⚠ inline-css fallito (non fatale): ${e.message}`);
+              inlineCssStats = { error: e.message };
+            }
           }
 
           // 1. Build prompts (extract texts + system prompt + user message
@@ -1725,10 +1809,20 @@ ONESTA': se nei TUOI archivi non hai dati su questo prodotto/settore e non puoi 
               finalised.bundle_inline_stats = { error: e.message };
             }
           }
+          // Allega telemetria inline-css alla response cosi' il frontend
+          // (e l'utente) puo' vedere immediatamente quanti CSS sono stati
+          // embedded e se ci sono stati errori. Utile per il debug delle
+          // pagine "tutta sconfusionata".
+          if (inlineCssStats) {
+            finalised.inline_css_stats = inlineCssStats;
+          }
           log(`    ✓ swipe done: ${finalised.replacements}/${finalised.totalTexts} replacements, ${finalised.unresolved_text_ids?.length || 0} unresolved` +
             (finalised.is_spa_page ? ` (SPA: ${finalised.spa_safety_strips} strips, preview-mode=${finalised.spa_preview_mode_applied})` : '') +
             (finalised.modern_spa_detected
               ? ` [MODERN-SPA preserved bundle: ${finalised.modern_spa_reason}]`
+              : '') +
+            (inlineCssStats && inlineCssStats.inlined
+              ? ` [inline-css: ${inlineCssStats.inlined} stylesheet, ${(inlineCssStats.total_bytes / 1024).toFixed(1)} KB]`
               : ''));
           responsePayload = JSON.stringify(finalised);
           break;
