@@ -1145,12 +1145,43 @@ function finalizeSwipe({ html, sourceUrl, texts, rewrites, productName, applySpa
   }
 
   // Dedup swipe-replacer da run precedenti (idempotenza su re-finalize).
+  //
+  // Doppio sweep:
+  // 1. Rimuove blocchi <script data-swipe-replacer>...</script> ben formati
+  //    (caso normale)
+  // 2. Rimuove "tail orfani" lasciati nell'HTML da run precedenti del bug
+  //    $& storico — quando il vecchio codice faceva
+  //    `replace('</body>', swipeScript + '</body>')` con stringa, il `$&`
+  //    dentro lo swipeScript template (`'\\$&'`) veniva espanso a
+  //    `'\\</body>'`. Ogni "Riscrivi" successivo trovava quel `</body>`
+  //    letterale dentro la stringa quotata e ci infilava DENTRO un nuovo
+  //    swipeScript, generando swipe-replacer nidificati. Quando il dedup
+  //    "ben formato" rimuove il primo livello, restano dei frammenti
+  //    orfani del template (function normWS / var prepared / applyAll /
+  //    polling timer / `})();</script></body>');}`) che NON cominciano
+  //    con `<script data-swipe-replacer>` ma sono comunque "spazzatura"
+  //    visibile dal browser come testo nel body.
+  //    Il regex `SWIPE_REPLACER_ORPHAN_RE` cerca il pattern di "coda" del
+  //    bug: `</body>');}` immediatamente seguito da `function normWS(`,
+  //    che e' una signature univoca del nostro template — nessun sito
+  //    legittimo lo contiene.
   const SWIPE_REPLACER_DEDUP_RE = /<script\b[^>]*\bdata-swipe-replacer\b[^>]*>[\s\S]*?<\/script>/gi;
+  const SWIPE_REPLACER_ORPHAN_RE = /<\/body>'\);\}[\s\S]*?function normWS\(s\)\{[\s\S]*?<\/script>/gi;
+  preparedHtml = preparedHtml.replace(SWIPE_REPLACER_DEDUP_RE, '');
+  preparedHtml = preparedHtml.replace(SWIPE_REPLACER_ORPHAN_RE, '');
+  // Build marker visibile nell'HTML finale — utile per diagnosticare se
+  // il worker sta girando codice aggiornato dopo un restart. Cerca
+  // `data-finalize-build=` nell'HTML per vedere la versione attiva.
+  const FINALIZE_BUILD = 'worker-finalize-v2-dollar-amp-orphan-cleanup-2026-05-27';
+  const buildMarker = `<meta data-finalize-build="${FINALIZE_BUILD}">`;
+  preparedHtml = preparedHtml.replace(/<meta data-finalize-build="[^"]*">/gi, '');
+  if (preparedHtml.includes('</head>')) {
+    preparedHtml = preparedHtml.replace('</head>', () => buildMarker + '</head>');
+  }
   const resultHtml = safeInjectBefore(
     preparedHtml,
     '</body>',
     swipeScript,
-    SWIPE_REPLACER_DEDUP_RE,
   );
 
   const newTitle = serverSideTitlePairs[0]?.to

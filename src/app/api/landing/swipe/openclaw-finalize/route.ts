@@ -385,8 +385,26 @@ export async function POST(req: NextRequest) {
   let resultHtml = preparedHtml;
   // Lo swipeScript resta come safety net per testi che il replace stringa
   // server-side non ha trovato (es. testi presenti solo dopo idratazione).
+  //
+  // BUG STORICO ($&): replace('</body>', swipeScript + '</body>') con
+  // secondo argomento STRINGA fa interpretare `$&` (presente nel template
+  // letterale del swipeScript) come back-reference al match. Risultato:
+  // `'\\$&'` → `'\\</body>'`, e a ogni "Riscrivi" successivo lo stesso
+  // bug raddoppia perche' il `</body>` letterale dentro la stringa
+  // corrotta viene trovato dal replace successivo e ci si infila DENTRO
+  // un nuovo swipeScript → 5 swipeScript nidificati, parser HTML chiude
+  // gli script a meta', resto del codice appare come testo nel body.
+  // Fix: callback form di String.prototype.replace + dedup idempotente
+  // (rimuove qualsiasi swipe-replacer precedente, anche corrotto, prima
+  // di iniettare quello nuovo).
+  const SWIPE_REPLACER_DEDUP_RE = /<script\b[^>]*\bdata-swipe-replacer\b[^>]*>[\s\S]*?<\/script>/gi;
+  // Tail orfani lasciati da run precedenti del bug $&: vedi commento
+  // in worker-lib/finalize.js per il razionale completo.
+  const SWIPE_REPLACER_ORPHAN_RE = /<\/body>'\);\}[\s\S]*?function normWS\(s\)\{[\s\S]*?<\/script>/gi;
+  resultHtml = resultHtml.replace(SWIPE_REPLACER_DEDUP_RE, '');
+  resultHtml = resultHtml.replace(SWIPE_REPLACER_ORPHAN_RE, '');
   if (resultHtml.includes('</body>')) {
-    resultHtml = resultHtml.replace('</body>', swipeScript + '</body>');
+    resultHtml = resultHtml.replace('</body>', () => swipeScript + '</body>');
   } else {
     resultHtml += swipeScript;
   }
