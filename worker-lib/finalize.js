@@ -619,6 +619,36 @@ html body .faq.fb-collapsed .faq-content-wrapper,html body .faq.fb-collapsed .fa
 html body .stickSection{display:block !important;visibility:visible !important;opacity:1 !important;}
 </style>`;
 
+// LAYOUT OVERFLOW FIX: il testo riscritto dall'AI è quasi sempre piu' lungo
+// dell'originale. I template Tailwind/Vite (Replit & co.) usano spesso
+// altezze fisse arbitrarie tipo md:h-[323px], min-h-[400px], aspect-[a/b],
+// dimensionate sulla LUNGHEZZA del testo originale. Quando il testo cresce,
+// va in overflow e si sovrappone alle sezioni vicine (cards che si
+// pestano, headings sopra paragrafi, CTA mangiate, ecc.).
+//
+// Strategia: rilassiamo i constraint di altezza SOLO sui contenitori che
+// contengono effettivamente testo (heading/paragraph/list/blockquote),
+// usando il selettore :has(). Img/svg/video/canvas non hanno discendenti
+// di questo tipo quindi non vengono toccati: la photo gallery, gli sliders
+// e gli iframe restano intatti. Specificity alta (html body …) per
+// battere Tailwind utilities con specificity bassa.
+const LAYOUT_OVERFLOW_FIX = `<style data-fallback="layout-overflow-fix">
+@supports selector(:has(*)) {
+html body [class*="h-["]:has(p,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl),
+html body [class*="min-h-["]:has(p,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl),
+html body [class*="max-h-["]:has(p,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl),
+html body [class*="aspect-["]:has(p,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl),
+html body [style*="height:"]:has(p,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl),
+html body [style*="max-height:"]:has(p,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl),
+html body [style*="aspect-ratio:"]:has(p,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl){
+  height:auto !important;min-height:0 !important;max-height:none !important;
+  aspect-ratio:auto !important;overflow:visible !important;
+}
+}
+html body [class*="overflow-hidden"]:has(>h1,>h2,>h3,>h4,>h5,>h6,>p,>ul,>ol,>blockquote){overflow:visible !important;}
+html body [class*="line-clamp-"],html body [class*="truncate"]{-webkit-line-clamp:unset !important;line-clamp:unset !important;display:block !important;overflow:visible !important;text-overflow:clip !important;white-space:normal !important;}
+</style>`;
+
 // Fallback init server-side: jQuery + Swiper da CDN se mancano, FAQ
 // accordion delegato, thumb→main image binding, sticky CTA visibili.
 // Idempotente: window.__FB_FALLBACK_INSTALLED segna l'installazione.
@@ -632,8 +662,49 @@ const FALLBACK_INIT_SCRIPT = `<script data-fallback="init">(function(){
   function bindFaq(){if(document.body.__faqDelegateBound)return;document.body.__faqDelegateBound=true;document.body.addEventListener('click',function(ev){var t=ev.target;if(!t||!t.closest)return;var actionable=t.closest('a,button,input,select,textarea,label,[role="button"],[onclick]');var header=t.closest('.faq-header,.faq-question,.faq-title,.accordion-header,.accordion-question,.accordion-toggle,.accordion-button,[data-faq-toggle],[data-toggle="collapse"],summary');if(!header)return;if(actionable&&header.contains(actionable)&&actionable!==header)return;ev.preventDefault();ev.stopPropagation();try{toggleFaq(header);}catch(e){}},true);document.querySelectorAll('.faq-header,.faq-question,.faq-title,.accordion-header,.accordion-button,summary').forEach(function(h){h.style.cursor='pointer';});}
   function bindThumbs(){if(document.body.__thumbDelegateBound)return;document.body.__thumbDelegateBound=true;document.body.addEventListener('click',function(ev){var t=ev.target;if(!t||!t.closest)return;var tc=t.closest('.thumbImage,.swiper-thumbs,[data-thumb-container]');if(!tc)return;var ti=t.closest('.swiper-slide,[data-thumb],img');if(!ti)return;var sib=Array.prototype.slice.call(tc.querySelectorAll('.swiper-slide,[data-thumb]'));if(!sib.length)sib=Array.prototype.slice.call(tc.querySelectorAll('img'));var idx=sib.indexOf(ti);if(idx<0){var p=ti;while(p&&idx<0){idx=sib.indexOf(p);p=p.parentElement;}}var mainEl=document.querySelector('.swiper.mainImage');if(mainEl&&mainEl.swiper&&idx>=0){try{mainEl.swiper.slideTo(idx);}catch(_){}}var img=ti.tagName==='IMG'?ti:ti.querySelector('img');if(img){var src=img.currentSrc||img.src||img.getAttribute('data-src');if(src){var m=document.querySelector('.swiper.mainImage .swiper-slide-active img,.swiper.mainImage .swiper-slide img,.mainImage img:not(.thumb),.product-image img');if(m){m.src=src;m.removeAttribute('srcset');}}}},true);}
   function initSwipers(){if(typeof window.Swiper!=='function')return false;var thumbs=[];document.querySelectorAll('.swiper.thumbImage,.swiper.swiper-thumbs').forEach(function(el){if(el.swiper||el.__swBound)return;el.__swBound=true;try{thumbs.push(new window.Swiper(el,{slidesPerView:'auto',spaceBetween:10,watchSlidesProgress:true,freeMode:true,slideToClickedSlide:true}));}catch(_){}});document.querySelectorAll('.swiper.mainImage').forEach(function(el){if(el.swiper||el.__swBound)return;el.__swBound=true;var opts={slidesPerView:1,spaceBetween:10,navigation:{nextEl:el.querySelector('.swiper-button-next'),prevEl:el.querySelector('.swiper-button-prev')},pagination:{el:el.querySelector('.swiper-pagination'),clickable:true}};if(thumbs[0])opts.thumbs={swiper:thumbs[0]};try{new window.Swiper(el,opts);}catch(_){}});document.querySelectorAll('.swiper').forEach(function(el){if(el.swiper||el.__swBound)return;el.__swBound=true;var ann=el.classList.contains('announcement_bar');try{new window.Swiper(el,{slidesPerView:1,spaceBetween:10,loop:ann,autoplay:ann?{delay:3500}:false,navigation:{nextEl:el.querySelector('.swiper-button-next'),prevEl:el.querySelector('.swiper-button-prev')},pagination:{el:el.querySelector('.swiper-pagination'),clickable:true}});}catch(_){}});document.querySelectorAll('.stickSection').forEach(function(s){s.style.display='';});return true;}
-  function bootstrap(){bindFaq();bindThumbs();var hasJq=typeof window.jQuery!=='undefined';var hasSw=typeof window.Swiper==='function';loadCss('https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.css');var pending=0;function done(){if(--pending<=0)finalize();}if(!hasJq){pending++;loadScript('https://code.jquery.com/jquery-3.5.1.min.js',done);}if(!hasSw){pending++;loadScript('https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.js',done);}if(pending===0)finalize();}
-  function finalize(){initSwipers();bindFaq();bindThumbs();setTimeout(function(){initSwipers();},1500);}
+  // LAYOUT OVERFLOW FIX (JS fallback): se il browser non supporta :has(),
+  // o se i replacement runtime hanno gonfiato il testo dopo il primo render,
+  // rilassiamo imperativamente le altezze fisse sui contenitori che hanno
+  // discendenti testuali. Selettore selettivo: solo classi/style con
+  // arbitrary-height tailwind o inline; salta sempre img/video/svg/canvas/iframe.
+  function relaxFixedHeights(){try{
+    var sel='[class*="h-["],[class*="min-h-["],[class*="max-h-["],[class*="aspect-["],[style*="height:"],[style*="max-height:"],[style*="aspect-ratio:"]';
+    var nodes=document.querySelectorAll(sel);
+    for(var i=0;i<nodes.length;i++){
+      var el=nodes[i];
+      var tn=el.tagName;
+      if(tn==='IMG'||tn==='VIDEO'||tn==='SVG'||tn==='svg'||tn==='CANVAS'||tn==='IFRAME'||tn==='PICTURE')continue;
+      if(!el.querySelector('p,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl'))continue;
+      if(el.__fbRelaxed)continue; el.__fbRelaxed=1;
+      el.style.setProperty('height','auto','important');
+      el.style.setProperty('min-height','0','important');
+      el.style.setProperty('max-height','none','important');
+      el.style.setProperty('aspect-ratio','auto','important');
+      el.style.setProperty('overflow','visible','important');
+    }
+    var clamps=document.querySelectorAll('[class*="line-clamp-"],.truncate,[class*="truncate"]');
+    for(var j=0;j<clamps.length;j++){
+      var c=clamps[j];
+      c.style.setProperty('-webkit-line-clamp','unset','important');
+      c.style.setProperty('line-clamp','unset','important');
+      c.style.setProperty('display','block','important');
+      c.style.setProperty('overflow','visible','important');
+      c.style.setProperty('text-overflow','clip','important');
+      c.style.setProperty('white-space','normal','important');
+    }
+  }catch(_){}}
+  function watchRelax(){try{
+    if(window.__fbRelaxObs)return;
+    relaxFixedHeights();
+    var pending=null;
+    function schedule(){if(pending)return;pending=(window.requestAnimationFrame||function(cb){return setTimeout(cb,16);})(function(){pending=null;relaxFixedHeights();});}
+    var mo=new MutationObserver(schedule);
+    mo.observe(document.body||document.documentElement,{childList:true,subtree:true,characterData:true});
+    window.__fbRelaxObs=mo;
+    setTimeout(relaxFixedHeights,500);setTimeout(relaxFixedHeights,2000);setTimeout(relaxFixedHeights,5000);
+  }catch(_){}}
+  function bootstrap(){bindFaq();bindThumbs();watchRelax();var hasJq=typeof window.jQuery!=='undefined';var hasSw=typeof window.Swiper==='function';loadCss('https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.css');var pending=0;function done(){if(--pending<=0)finalize();}if(!hasJq){pending++;loadScript('https://code.jquery.com/jquery-3.5.1.min.js',done);}if(!hasSw){pending++;loadScript('https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.js',done);}if(pending===0)finalize();}
+  function finalize(){initSwipers();bindFaq();bindThumbs();relaxFixedHeights();setTimeout(function(){initSwipers();relaxFixedHeights();},1500);}
   if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',bootstrap);}else{setTimeout(bootstrap,50);}
 })();</script>`;
 
@@ -837,13 +908,57 @@ function finalizeSwipe({ html, sourceUrl, texts, rewrites, productName, applySpa
       preparedHtml = preparedHtml.replace(rxRaw, `$1${escHtml(tp.to)}$2`);
     }
   }
+  // SAFE-META WHITELIST: il server-side meta replace deve toccare SOLO i
+  // meta che sono "marketing copy" (description, keywords, og:*, twitter:*,
+  // article:*). MAI viewport/charset/robots/theme-color/format-detection/
+  // ecc. perche' sono valori tecnici che cambiano la resa della pagina
+  // (es. viewport rotto → layout mobile collassa).
+  //
+  // Il filtro a monte (text-extractor META_TECHNICAL_KEYS) gia' impedisce
+  // che il viewport entri nel pool LLM, ma:
+  //   1. il LLM puo' allucinare e produrre rewrite per testi che non
+  //      gli abbiamo chiesto (es. ha visto il viewport nell'HTML del
+  //      contesto e ha "risposto" con un messaggio italiano);
+  //   2. una mapping {from:"X", to:"Aspetta credo ci sia un malinteso..."}
+  //      con regex `content="X"` puo' colpire un meta tecnico per
+  //      coincidenza.
+  // Filtro hard difensivo qui = ultima linea di difesa.
+  const SAFE_META_NAMES = new Set([
+    'description', 'keywords', 'author', 'subject', 'abstract', 'summary',
+    // OpenGraph (marketing copy)
+    'og:title', 'og:description', 'og:site_name', 'og:type',
+    'og:locale', 'og:alternate_locale',
+    // Twitter card (marketing copy)
+    'twitter:title', 'twitter:description', 'twitter:card', 'twitter:creator',
+    'twitter:site',
+    // Article meta (blog/landing)
+    'article:author', 'article:section', 'article:tag',
+    // Itemprop (Schema.org embedded nei meta)
+    'itemprop:name', 'itemprop:description',
+  ]);
+  function isSafeMetaTag(metaTagStr) {
+    const nameM = metaTagStr.match(/\b(?:name|property|itemprop)\s*=\s*["']([^"']+)["']/i);
+    if (!nameM) return false; // niente name → meta strutturale (charset, http-equiv)
+    return SAFE_META_NAMES.has(nameM[1].toLowerCase());
+  }
   for (const mp of serverSideMetaPairs) {
-    const rxDQ = new RegExp(`(<meta\\b[^>]*\\bcontent=)"${escRxLiteral(escAttr(mp.from))}"`, 'gi');
-    const rxSQ = new RegExp(`(<meta\\b[^>]*\\bcontent=)'${escRxLiteral(escAttr(mp.from))}'`, 'gi');
-    preparedHtml = preparedHtml.replace(rxDQ, `$1"${escAttr(mp.to)}"`);
-    preparedHtml = preparedHtml.replace(rxSQ, `$1'${escAttr(mp.to)}'`);
-    const rxRaw = new RegExp(`(<meta\\b[^>]*\\bcontent=)(["'])${escRxLiteral(mp.from)}\\2`, 'gi');
-    preparedHtml = preparedHtml.replace(rxRaw, `$1$2${escAttr(mp.to)}$2`);
+    const replaceMetaContent = (htmlStr, fromValue, toValue) => {
+      // Match TUTTO il tag <meta ...> per poter ispezionare attrs prima
+      // di decidere se sostituire (whitelist sopra).
+      const tagRe = new RegExp(
+        `<meta\\b([^>]*?)\\bcontent\\s*=\\s*(["'])${escRxLiteral(fromValue)}\\2([^>]*)>`,
+        'gi',
+      );
+      return htmlStr.replace(tagRe, (full, attrsBefore, q, attrsAfter) => {
+        if (!isSafeMetaTag(full)) return full; // viewport/charset/ecc. → intatto
+        // Callback form: niente interpretazione di $& nel toValue.
+        return `<meta${attrsBefore}content=${q}${escAttr(toValue)}${q}${attrsAfter}>`;
+      });
+    };
+    preparedHtml = replaceMetaContent(preparedHtml, escAttr(mp.from), mp.to);
+    if (mp.from !== escAttr(mp.from)) {
+      preparedHtml = replaceMetaContent(preparedHtml, mp.from, mp.to);
+    }
   }
 
   // Server-side DOM text replace (per SPA che re-idratano).
@@ -976,33 +1091,67 @@ function finalizeSwipe({ html, sourceUrl, texts, rewrites, productName, applySpa
   const previewModeRequested =
     applySpaPreviewMode === true ||
     (applySpaPreviewMode !== false && (isSpa || isModernSpa));
+  // Helper: inietta `content` prima di `closeTag` SENZA interpretare $&/$1
+  // nel content (callback form di String.prototype.replace). Se `dedupRe`
+  // viene passato, rimuove tutte le occorrenze precedenti dello stesso
+  // tipo di nodo per evitare iniezioni cumulative quando finalize viene
+  // richiamato piu' volte sullo stesso HTML (utente che fa "Riscrivi"
+  // ripetutamente sulla stessa pagina cloned).
+  //
+  // BUG STORICO ($& in swipeScript): replace('</body>', swipeScript + '</body>')
+  // con secondo argomento STRINGA fa interpretare `$&` (presente nel
+  // template letterale del swipeScript) come back-reference al match —
+  // risultato `'\\$&'` → `'\\</body>'`, SyntaxError nel browser, replacement
+  // mai applicati lato client.
+  function safeInjectBefore(htmlStr, closeTag, content, dedupRe) {
+    let out = htmlStr;
+    if (dedupRe) out = out.replace(dedupRe, '');
+    if (out.includes(closeTag)) {
+      // callback form → niente espansione di $&/$1 nel content
+      out = out.replace(closeTag, () => content + closeTag);
+    } else {
+      out += content;
+    }
+    return out;
+  }
+  function safeInjectAfterRe(htmlStr, openRe, content) {
+    if (openRe.test(htmlStr)) {
+      openRe.lastIndex = 0;
+      return htmlStr.replace(openRe, (m) => content + m);
+    }
+    return content + htmlStr;
+  }
   let scriptStripStats = null;
   if (previewModeRequested) {
     const strip = stripOriginalScripts(preparedHtml);
     scriptStripStats = { before: strip.scriptsBefore, after: strip.scriptsAfter };
     preparedHtml = strip.html;
     // FAQ CSS + navigation fix nel <head>; fallback init prima di </body>.
-    const headInjection = FAQ_CSS_OVERRIDE + NEXTJS_NAVIGATION_FIX;
+    // Dedup-RE: matcha qualsiasi <style data-fallback="..."> o
+    // <script data-fallback="..."> inserito da una run precedente di
+    // finalize, cosi' non si moltiplicano se l'HTML cloned viene
+    // riprocessato.
+    const FALLBACK_DEDUP_RE = /<(?:style|script)\b[^>]*\bdata-fallback=("|')[^"']+\1[^>]*>[\s\S]*?<\/(?:style|script)>/gi;
+    preparedHtml = preparedHtml.replace(FALLBACK_DEDUP_RE, '');
+    const headInjection = FAQ_CSS_OVERRIDE + LAYOUT_OVERFLOW_FIX + NEXTJS_NAVIGATION_FIX;
     if (preparedHtml.includes('</head>')) {
-      preparedHtml = preparedHtml.replace('</head>', headInjection + '</head>');
-    } else if (preparedHtml.includes('<body')) {
-      preparedHtml = preparedHtml.replace(/(<body[^>]*>)/, headInjection + '$1');
+      preparedHtml = safeInjectBefore(preparedHtml, '</head>', headInjection);
+    } else if (/<body[^>]*>/.test(preparedHtml)) {
+      preparedHtml = safeInjectAfterRe(preparedHtml, /<body[^>]*>/, headInjection);
     } else {
       preparedHtml = headInjection + preparedHtml;
     }
-    if (preparedHtml.includes('</body>')) {
-      preparedHtml = preparedHtml.replace('</body>', FALLBACK_INIT_SCRIPT + '</body>');
-    } else {
-      preparedHtml += FALLBACK_INIT_SCRIPT;
-    }
+    preparedHtml = safeInjectBefore(preparedHtml, '</body>', FALLBACK_INIT_SCRIPT);
   }
 
-  let resultHtml = preparedHtml;
-  if (resultHtml.includes('</body>')) {
-    resultHtml = resultHtml.replace('</body>', swipeScript + '</body>');
-  } else {
-    resultHtml += swipeScript;
-  }
+  // Dedup swipe-replacer da run precedenti (idempotenza su re-finalize).
+  const SWIPE_REPLACER_DEDUP_RE = /<script\b[^>]*\bdata-swipe-replacer\b[^>]*>[\s\S]*?<\/script>/gi;
+  const resultHtml = safeInjectBefore(
+    preparedHtml,
+    '</body>',
+    swipeScript,
+    SWIPE_REPLACER_DEDUP_RE,
+  );
 
   const newTitle = serverSideTitlePairs[0]?.to
     || (texts.length > 0 ? replacementPairs.find((p) => !p.attr)?.to || '' : '');

@@ -154,6 +154,33 @@ async function fetchCssSafe(url) {
  *   - link senza rel=stylesheet
  *   - link con disabled attribute
  */
+// HTML entity decode dei soli pattern che possono apparire in attributi
+// `href` standard. Necessario perche' regex-scrape estrae il VALORE
+// HTML-encoded ("?family=A&amp;family=B") e ne fa l'URL: senza decode,
+// `new URL("https://x.com/?a=1&amp;b=2")` tiene `&amp;` letterale,
+// e poi quando ri-emettiamo `data-inlined-from="${rawHref}"` con un
+// escapeHtml otteniamo `&amp;amp;` (doppio escape).
+function decodeHtmlEntities(s) {
+  if (!s || typeof s !== 'string') return s;
+  return s
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => {
+      const cp = parseInt(hex, 16);
+      return Number.isFinite(cp) && cp >= 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : _;
+    })
+    .replace(/&#(\d+);/g, (_, dec) => {
+      const cp = parseInt(dec, 10);
+      return Number.isFinite(cp) && cp >= 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : _;
+    })
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&apos;/gi, "'")
+    .replace(/&nbsp;/gi, ' ')
+    // &amp; per ULTIMA: altrimenti decodificheremmo per primo &amp; lasciando
+    // i pattern doppi tipo `&amp;amp;` come `&amp;` invece di `&`.
+    .replace(/&amp;/gi, '&');
+}
+
 function findStylesheetCandidates(html, baseUrl) {
   if (!html || !baseUrl) return [];
   const out = [];
@@ -176,12 +203,20 @@ function findStylesheetCandidates(html, baseUrl) {
     const relVal = (relM[1] || relM[2] || relM[3] || '').toLowerCase();
     if (!/\bstylesheet\b/.test(relVal)) continue;
 
-    // Href.
+    // Href RAW (com'è nel sorgente HTML, eventualmente con entity).
     const hrefM = attrs.match(/\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i);
     if (!hrefM) continue;
-    const rawHref = (hrefM[1] || hrefM[2] || hrefM[3] || '').trim();
-    if (!rawHref) continue;
-    if (/^(data:|blob:|javascript:|#|mailto:|tel:)/i.test(rawHref)) continue;
+    const rawHrefEncoded = (hrefM[1] || hrefM[2] || hrefM[3] || '').trim();
+    if (!rawHrefEncoded) continue;
+    if (/^(data:|blob:|javascript:|#|mailto:|tel:)/i.test(rawHrefEncoded)) continue;
+
+    // Decode entity HTML PRIMA di risolvere come URL. Senza questo, un href
+    // tipo `?family=A&amp;family=B` viene passato a `new URL` con `&amp;`
+    // letterale → query string sbagliata, fetch sbagliato, font che non
+    // caricano. E in piu' poi finisce in `data-inlined-from="..."` con
+    // un secondo escapeHtml → `&amp;amp;` (doppio escape, gia' visto in
+    // produzione su lander Replit/Vite con Google Fonts).
+    const rawHref = decodeHtmlEntities(rawHrefEncoded);
 
     let absUrl;
     try {
@@ -193,7 +228,7 @@ function findStylesheetCandidates(html, baseUrl) {
     if (seenAbs.has(absUrl)) continue;
     seenAbs.add(absUrl);
 
-    out.push({ tag, attrs, rawHref, absUrl });
+    out.push({ tag, attrs, rawHref, rawHrefEncoded, absUrl });
   }
   return out;
 }
@@ -320,9 +355,14 @@ async function inlineExternalStylesheets(html, sourceUrl, opts = {}) {
     if (idx === -1) {
       // Tag non piu' trovato (forse e' stato modificato da una pass precedente).
       // Tentiamo un match piu' lasco basato sull'href esatto.
+      // ATTENZIONE: per il match nell'HTML originale serve la versione
+      // ENCODED dell'href (quella con &amp;), perche' l'HTML che stiamo
+      // ispezionando contiene le entity grezze. Se usassimo `rawHref`
+      // (decoded) avremmo un mancato match su qualunque href con `&`.
+      const hrefForMatch = candidate.rawHrefEncoded || candidate.rawHref;
       const looseRe = new RegExp(
         '<link\\b[^>]*?\\bhref\\s*=\\s*["\']' +
-          candidate.rawHref.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') +
+          hrefForMatch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') +
           '["\'][^>]*>',
         'i',
       );
