@@ -729,24 +729,41 @@ CRITICAL RULES:
         preparedHtml = preparedHtml.replace(rxRaw, `$1${escHtml(tp.to)}$2`);
       }
     }
+    // SAFE-META WHITELIST: vedi worker-lib/finalize.js per il razionale
+    // completo. Sintesi: il LLM puo' allucinare una rewrite per il
+    // <meta viewport> (es. "Aspetta credo ci sia un malinteso..."),
+    // e l'utente vede il layout mobile rotto. Filtriamo a livello di
+    // replace come ultima linea di difesa, anche se text-extractor.js
+    // gia' impedisce al viewport di entrare nel pool LLM.
+    const SAFE_META_NAMES = new Set<string>([
+      'description', 'keywords', 'author', 'subject', 'abstract', 'summary',
+      'og:title', 'og:description', 'og:site_name', 'og:type',
+      'og:locale', 'og:alternate_locale',
+      'twitter:title', 'twitter:description', 'twitter:card', 'twitter:creator',
+      'twitter:site',
+      'article:author', 'article:section', 'article:tag',
+      'itemprop:name', 'itemprop:description',
+    ]);
+    function isSafeMetaTag(metaTagStr: string): boolean {
+      const nameM = metaTagStr.match(/\b(?:name|property|itemprop)\s*=\s*["']([^"']+)["']/i);
+      if (!nameM) return false;
+      return SAFE_META_NAMES.has(nameM[1].toLowerCase());
+    }
     for (const mp of serverSideMetaPairs) {
-      // <meta ... content="...">  e  <meta ... content='...'>
-      const rxDQ = new RegExp(
-        `(<meta\\b[^>]*\\bcontent=)"${escRxLiteral(escAttr(mp.from))}"`,
-        'gi',
-      );
-      const rxSQ = new RegExp(
-        `(<meta\\b[^>]*\\bcontent=)'${escRxLiteral(escAttr(mp.from))}'`,
-        'gi',
-      );
-      preparedHtml = preparedHtml.replace(rxDQ, `$1"${escAttr(mp.to)}"`);
-      preparedHtml = preparedHtml.replace(rxSQ, `$1'${escAttr(mp.to)}'`);
-      // fallback: alcuni siti scrivono content senza escapare
-      const rxRaw = new RegExp(
-        `(<meta\\b[^>]*\\bcontent=)(["'])${escRxLiteral(mp.from)}\\2`,
-        'gi',
-      );
-      preparedHtml = preparedHtml.replace(rxRaw, `$1$2${escAttr(mp.to)}$2`);
+      const replaceMetaContent = (htmlStr: string, fromValue: string, toValue: string) => {
+        const tagRe = new RegExp(
+          `<meta\\b([^>]*?)\\bcontent\\s*=\\s*(["'])${escRxLiteral(fromValue)}\\2([^>]*)>`,
+          'gi',
+        );
+        return htmlStr.replace(tagRe, (full, attrsBefore, q, attrsAfter) => {
+          if (!isSafeMetaTag(full)) return full;
+          return `<meta${attrsBefore}content=${q}${escAttr(toValue)}${q}${attrsAfter}>`;
+        });
+      };
+      preparedHtml = replaceMetaContent(preparedHtml, escAttr(mp.from), mp.to);
+      if (mp.from !== escAttr(mp.from)) {
+        preparedHtml = replaceMetaContent(preparedHtml, mp.from, mp.to);
+      }
     }
 
     let resultHtml = preparedHtml;
@@ -766,6 +783,43 @@ CRITICAL RULES:
     const SWIPE_REPLACER_ORPHAN_RE = /<\/body>'\);\}[\s\S]*?function normWS\(s\)\{[\s\S]*?<\/script>/gi;
     resultHtml = resultHtml.replace(SWIPE_REPLACER_DEDUP_RE, '');
     resultHtml = resultHtml.replace(SWIPE_REPLACER_ORPHAN_RE, '');
+
+    // BUG STORICO — Auto-riparazione meta viewport corrotto. Pagine
+    // processate da release precedenti senza il filtro SAFE_META_NAMES
+    // possono avere il viewport valorizzato a testo libero (output LLM).
+    // Risultato: viewport responsive non applicato → pagina rotta su
+    // mobile. Heuristica: se il content NON contiene almeno una keyword
+    // viewport tipica, ripristina il default standard. Vedi commento
+    // dettagliato in worker-lib/finalize.js per il razionale completo.
+    const VIEWPORT_RE = /<meta\b([^>]*?)\bname\s*=\s*(["'])viewport\2([^>]*?)\bcontent\s*=\s*(["'])([^"']*)\4([^>]*)>/gi;
+    const VIEWPORT_RE_INV = /<meta\b([^>]*?)\bcontent\s*=\s*(["'])([^"']*)\2([^>]*?)\bname\s*=\s*(["'])viewport\5([^>]*)>/gi;
+    const VIEWPORT_SAFE_DEFAULT = 'width=device-width, initial-scale=1';
+    const VIEWPORT_TOKEN_RE = /\b(?:width|device-width|initial-scale|maximum-scale|minimum-scale|user-scalable|viewport-fit)\b/i;
+    resultHtml = resultHtml.replace(VIEWPORT_RE, (full, a1, q1, a2, q2, content, a3) => {
+      if (VIEWPORT_TOKEN_RE.test(content)) return full;
+      return `<meta${a1}name=${q1}viewport${q1}${a2}content=${q2}${VIEWPORT_SAFE_DEFAULT}${q2}${a3}>`;
+    });
+    resultHtml = resultHtml.replace(VIEWPORT_RE_INV, (full, a1, q1, content, a2, q2, a3) => {
+      if (VIEWPORT_TOKEN_RE.test(content)) return full;
+      return `<meta${a1}content=${q1}${VIEWPORT_SAFE_DEFAULT}${q1}${a2}name=${q2}viewport${q2}${a3}>`;
+    });
+
+    // BUG STORICO — Doppio escape `&amp;amp;` negli URL inlinati. Vedi commento
+    // dettagliato in `worker-lib/finalize.js`. Collapse difensivo idempotente
+    // limitato all'attributo `data-inlined-from` (sempre un URL, mai testo).
+    resultHtml = resultHtml.replace(
+      /\bdata-inlined-from\s*=\s*(["'])([^"']*)\1/gi,
+      (_full, q, val) => {
+        let v = val;
+        let prev;
+        do {
+          prev = v;
+          v = v.replace(/&amp;amp;/gi, '&amp;');
+        } while (v !== prev);
+        return `data-inlined-from=${q}${v}${q}`;
+      },
+    );
+
     if (resultHtml.includes('</body>')) {
       resultHtml = resultHtml.replace('</body>', () => swipeScript + '</body>');
     } else {

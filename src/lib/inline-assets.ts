@@ -37,6 +37,60 @@ const FONT_MIME: Record<string, string> = {
   eot: 'application/vnd.ms-fontobject',
 };
 
+// Decodifica le HTML entities che possono comparire dentro un attributo
+// `href` di un <link>. Allineato a `worker-lib/inline-css.js`:
+// senza questa decodifica, `?family=A&amp;family=B` viene passato a
+// `new URL()` con `&amp;` letterale dentro la query → URL sbagliato
+// → fetch sbagliato → CSS che non carica (font missing). Inoltre, se
+// poi il valore finisce in `data-inlined-from="..."` con un altro
+// escapeHtml() a valle, otteniamo `&amp;amp;` (doppio escape, gia'
+// visto in produzione su lander Replit/Vite con Google Fonts).
+//
+// `&amp;` viene gestito in LOOP perche' un single-pass
+// `replace(/&amp;/g, '&')` trasforma `&amp;amp;` in `&amp;` (NON in `&`):
+// la sostituzione `/g` scansiona il testo ORIGINALE una volta, non si
+// re-itera sulle parti gia' sostituite.
+function decodeHtmlEntities(s: string): string {
+  if (!s || typeof s !== 'string') return s;
+  let out = s
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex: string) => {
+      const cp = parseInt(hex, 16);
+      return Number.isFinite(cp) && cp >= 0 && cp <= 0x10ffff
+        ? String.fromCodePoint(cp)
+        : _;
+    })
+    .replace(/&#(\d+);/g, (_, dec: string) => {
+      const cp = parseInt(dec, 10);
+      return Number.isFinite(cp) && cp >= 0 && cp <= 0x10ffff
+        ? String.fromCodePoint(cp)
+        : _;
+    })
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&apos;/gi, "'")
+    .replace(/&nbsp;/gi, ' ');
+  let prev: string;
+  do {
+    prev = out;
+    out = out.replace(/&amp;/gi, '&');
+  } while (out !== prev);
+  return out;
+}
+
+// HTML-escape per valori di attributo. Dobbiamo essere noi a chiamarlo
+// quando interpoliamo URL dentro `data-inlined-from="..."`, altrimenti
+// caratteri come `&` finiscono come `&` letterale: HTML lo legge come
+// `&` decodificato, e una pass a valle che li ri-encoda li trasforma
+// in `&amp;` (sembra ok da solo, ma una SECONDA pass diventa `&amp;amp;`).
+function escapeHtmlAttr(s: string): string {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 interface CssLinkMatch {
   full: string;
   href: string;
@@ -52,8 +106,9 @@ function extractStylesheetLinks(html: string): CssLinkMatch[] {
     if (!/\brel\s*=\s*["']?stylesheet["']?/i.test(attrs)) continue;
     const hrefMatch = attrs.match(/\bhref\s*=\s*["']([^"']+)["']/i);
     if (!hrefMatch) continue;
-    const href = hrefMatch[1].trim();
-    if (!href || href.startsWith('data:') || href.startsWith('blob:') || href.startsWith('#')) continue;
+    const rawHref = hrefMatch[1].trim();
+    if (!rawHref || rawHref.startsWith('data:') || rawHref.startsWith('blob:') || rawHref.startsWith('#')) continue;
+    const href = decodeHtmlEntities(rawHref);
     const mediaMatch = attrs.match(/\bmedia\s*=\s*["']([^"']+)["']/i);
     matches.push({ full: m[0], href, media: mediaMatch?.[1] });
     if (matches.length >= MAX_STYLESHEETS) break;
@@ -233,8 +288,8 @@ export async function inlineExternalAssets(html: string, baseUrl: string): Promi
         } catch {
           /* font inlining failure: keep external url() references */
         }
-        const mediaAttr = link.media ? ` media="${link.media}"` : '';
-        const styleTag = `<style data-inlined-from="${absUrl}"${mediaAttr}>\n${escapeForStyleBlock(css)}\n</style>`;
+        const mediaAttr = link.media ? ` media="${escapeHtmlAttr(link.media)}"` : '';
+        const styleTag = `<style data-inlined-from="${escapeHtmlAttr(absUrl)}"${mediaAttr}>\n${escapeForStyleBlock(css)}\n</style>`;
         replacements.set(link.full, styleTag);
       }
     };

@@ -162,7 +162,7 @@ async function fetchCssSafe(url) {
 // escapeHtml otteniamo `&amp;amp;` (doppio escape).
 function decodeHtmlEntities(s) {
   if (!s || typeof s !== 'string') return s;
-  return s
+  let out = s
     .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => {
       const cp = parseInt(hex, 16);
       return Number.isFinite(cp) && cp >= 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : _;
@@ -175,10 +175,23 @@ function decodeHtmlEntities(s) {
     .replace(/&gt;/gi, '>')
     .replace(/&quot;/gi, '"')
     .replace(/&apos;/gi, "'")
-    .replace(/&nbsp;/gi, ' ')
-    // &amp; per ULTIMA: altrimenti decodificheremmo per primo &amp; lasciando
-    // i pattern doppi tipo `&amp;amp;` come `&amp;` invece di `&`.
-    .replace(/&amp;/gi, '&');
+    .replace(/&nbsp;/gi, ' ');
+  // BUG STORICO: `&amp;` DEVE essere decodificato in LOOP fino a stato stabile.
+  // Un single-pass replace(/&amp;/g, '&') trasforma `&amp;amp;` in `&amp;`
+  // (NON in `&`), perche' String.prototype.replace con flag /g/ scansiona il
+  // TESTO ORIGINALE una sola volta — non re-itera sui caratteri sostituiti.
+  // Per gli URL Google Fonts su Replit/Vite, l'HTML upstream arriva gia'
+  // doppio-encoded (`&amp;amp;`) perche' un altro step di pipeline ha gia'
+  // fatto un escapeHtml su un href che era gia' `&amp;`. Senza il loop, il
+  // doppio-encode non viene mai risolto e il browser fa fetch su un URL
+  // letterale `?family=A&amp;family=B` (query string sbagliata, font missing).
+  // Test: 'A&amp;amp;B' → loop 1: 'A&amp;B' → loop 2: 'A&B' → loop 3 = uguale, stop.
+  let prev;
+  do {
+    prev = out;
+    out = out.replace(/&amp;/gi, '&');
+  } while (out !== prev);
+  return out;
 }
 
 function findStylesheetCandidates(html, baseUrl) {

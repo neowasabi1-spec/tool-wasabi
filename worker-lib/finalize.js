@@ -1169,10 +1169,63 @@ function finalizeSwipe({ html, sourceUrl, texts, rewrites, productName, applySpa
   const SWIPE_REPLACER_ORPHAN_RE = /<\/body>'\);\}[\s\S]*?function normWS\(s\)\{[\s\S]*?<\/script>/gi;
   preparedHtml = preparedHtml.replace(SWIPE_REPLACER_DEDUP_RE, '');
   preparedHtml = preparedHtml.replace(SWIPE_REPLACER_ORPHAN_RE, '');
+
+  // BUG STORICO — Auto-riparazione meta viewport corrotto.
+  // Pagine processate da release precedenti del worker possono avere il
+  // `<meta name="viewport" content="...">` con un content valorizzato a
+  // testo libero (output LLM tipo "Aspetta, credo ci sia un malinteso...")
+  // perche' all'epoca il filtro `SAFE_META_NAMES` nelle route Next.js non
+  // c'era. Risultato: il browser non applica un viewport responsive e la
+  // pagina renderizza con scrollbar orizzontale, tutto microscopico su
+  // mobile, layout completamente rotto. Il filtro nuovo previene altre
+  // corruzioni, ma le pagine GIA' rotte rimangono rotte ad ogni nuovo
+  // Riscrivi (il filtro le ignora correttamente, ma non le ripara).
+  // Heuristica: se il content del viewport NON contiene almeno una keyword
+  // tipica (`width=`, `device-width`, `initial-scale=`, `user-scalable=`,
+  // `viewport-fit=`), assumiamo corruzione e ripristiniamo il default
+  // responsive standard. Falsi positivi praticamente impossibili: un sito
+  // legittimo non valorizza il viewport con frasi in linguaggio naturale.
+  const VIEWPORT_RE = /<meta\b([^>]*?)\bname\s*=\s*(["'])viewport\2([^>]*?)\bcontent\s*=\s*(["'])([^"']*)\4([^>]*)>/gi;
+  const VIEWPORT_SAFE_DEFAULT = 'width=device-width, initial-scale=1';
+  const VIEWPORT_TOKEN_RE = /\b(?:width|device-width|initial-scale|maximum-scale|minimum-scale|user-scalable|viewport-fit)\b/i;
+  preparedHtml = preparedHtml.replace(VIEWPORT_RE, (full, a1, q1, a2, q2, content, a3) => {
+    if (VIEWPORT_TOKEN_RE.test(content)) return full;
+    return `<meta${a1}name=${q1}viewport${q1}${a2}content=${q2}${VIEWPORT_SAFE_DEFAULT}${q2}${a3}>`;
+  });
+  // Stesso fix con name/content invertiti (`content="..." name="viewport"`).
+  const VIEWPORT_RE_INV = /<meta\b([^>]*?)\bcontent\s*=\s*(["'])([^"']*)\2([^>]*?)\bname\s*=\s*(["'])viewport\5([^>]*)>/gi;
+  preparedHtml = preparedHtml.replace(VIEWPORT_RE_INV, (full, a1, q1, content, a2, q2, a3) => {
+    if (VIEWPORT_TOKEN_RE.test(content)) return full;
+    return `<meta${a1}content=${q1}${VIEWPORT_SAFE_DEFAULT}${q1}${a2}name=${q2}viewport${q2}${a3}>`;
+  });
+
+  // BUG STORICO — Doppio escape `&amp;amp;` negli URL inlinati.
+  // Origine: in qualche pipeline a monte il valore href era gia' HTML-encoded
+  // (`&amp;`) e una pass di `escapeHtml` lo ha re-encodato a `&amp;amp;`.
+  // Effetto visibile nell'HTML: `<style data-inlined-from="...&amp;amp;family=...">`.
+  // Quando il browser legge l'attributo, decodifica una sola volta → ottiene
+  // `&amp;` letterale come parte dell'URL (sbagliato: l'URL valido contiene
+  // `&` semplice). Il fix in `worker-lib/inline-css.js` (decode loop) previene
+  // il problema per i nuovi clone, ma esistono HTML gia' rotti in archivio.
+  // Questo collapse difensivo riduce `&amp;amp;` → `&amp;` SOLO dentro attributi
+  // `data-inlined-from` e `data-inlined-bytes`, dove non possono esserci `&amp;`
+  // letterali legittimi (sono URL). Non tocca testo libero ne' altri attributi.
+  preparedHtml = preparedHtml.replace(
+    /\bdata-inlined-from\s*=\s*(["'])([^"']*)\1/gi,
+    (full, q, val) => {
+      let v = val;
+      let prev;
+      do {
+        prev = v;
+        v = v.replace(/&amp;amp;/gi, '&amp;');
+      } while (v !== prev);
+      return `data-inlined-from=${q}${v}${q}`;
+    },
+  );
   // Build marker visibile nell'HTML finale — utile per diagnosticare se
   // il worker sta girando codice aggiornato dopo un restart. Cerca
   // `data-finalize-build=` nell'HTML per vedere la versione attiva.
-  const FINALIZE_BUILD = 'worker-finalize-v2-dollar-amp-orphan-cleanup-2026-05-27';
+  const FINALIZE_BUILD = 'worker-finalize-v3-viewport-autorepair-amp-collapse-2026-05-28';
   const buildMarker = `<meta data-finalize-build="${FINALIZE_BUILD}">`;
   preparedHtml = preparedHtml.replace(/<meta data-finalize-build="[^"]*">/gi, '');
   if (preparedHtml.includes('</head>')) {
