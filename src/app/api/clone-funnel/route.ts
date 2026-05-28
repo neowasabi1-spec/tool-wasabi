@@ -848,21 +848,36 @@ export async function POST(request: NextRequest) {
       // Se chrome ha funzionato E non e' un guscio SPA, usalo subito.
       if (chromeAttempt.ok && !isSpaShell(chromeAttempt.html)) {
         const stabilizedHtml = stabilizeClonedHtml(chromeAttempt.html, cleanUrl);
+        // BUG STORICO — Senza inlineExternalAssets l'HTML clonato
+        // continua a puntare a `<link rel="stylesheet" href="https://
+        // origine/assets/...">`: il browser, una volta che la pagina e'
+        // servita dal nostro dominio Netlify, fallisce CORS sul fetch
+        // del CSS e la pagina renderizza senza stili (Tailwind, Vite,
+        // Replit -> "tutta sconfusionata"). L'inlining e' best-effort:
+        // fallisce in silenzio se i timeout scadono.
+        let finalHtml = stabilizedHtml;
+        let didInline = false;
+        try {
+          finalHtml = await inlineExternalAssets(stabilizedHtml, cleanUrl);
+          didInline = finalHtml.length !== stabilizedHtml.length;
+        } catch (e) {
+          console.warn(`[clone-funnel] inline-css failed (chrome path): ${e instanceof Error ? e.message : String(e)}`);
+        }
         const dt = Date.now() - t0;
-        console.log(`[clone-funnel] identical: direct OK via chrome ${stabilizedHtml.length}ch in ${dt}ms`);
+        console.log(`[clone-funnel] identical: direct OK via chrome ${finalHtml.length}ch in ${dt}ms (cssInlined=${didInline})`);
         return NextResponse.json({
           success: true,
-          content: stabilizedHtml,
+          content: finalHtml,
           mobileContent: null,
           format: 'html',
           mode: 'identical',
           originalSize: chromeAttempt.html.length,
-          finalSize: stabilizedHtml.length,
-          cssInlined: false,
+          finalSize: finalHtml.length,
+          cssInlined: didInline,
           jsRendered: false,
           method: 'fetch-chrome',
           timing: { chromeMs: chromeAttempt.ms, totalMs: dt },
-          title: stabilizedHtml.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || '',
+          title: finalHtml.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || '',
         });
       }
 
@@ -875,21 +890,33 @@ export async function POST(request: NextRequest) {
 
       if (botAttempt.ok && !isSpaShell(botAttempt.html)) {
         const stabilizedHtml = stabilizeClonedHtml(botAttempt.html, cleanUrl);
+        // Stesso motivo del chrome path sopra: senza inline-css il
+        // clone esposto dal nostro dominio Netlify non riesce a
+        // caricare i fogli di stile cross-origin -> pagina senza
+        // styling. Cfr. commento esteso piu' sopra.
+        let finalHtml = stabilizedHtml;
+        let didInline = false;
+        try {
+          finalHtml = await inlineExternalAssets(stabilizedHtml, cleanUrl);
+          didInline = finalHtml.length !== stabilizedHtml.length;
+        } catch (e) {
+          console.warn(`[clone-funnel] inline-css failed (googlebot path): ${e instanceof Error ? e.message : String(e)}`);
+        }
         const dt = Date.now() - t0;
-        console.log(`[clone-funnel] identical: direct OK via googlebot ${stabilizedHtml.length}ch in ${dt}ms`);
+        console.log(`[clone-funnel] identical: direct OK via googlebot ${finalHtml.length}ch in ${dt}ms (cssInlined=${didInline})`);
         return NextResponse.json({
           success: true,
-          content: stabilizedHtml,
+          content: finalHtml,
           mobileContent: null,
           format: 'html',
           mode: 'identical',
           originalSize: botAttempt.html.length,
-          finalSize: stabilizedHtml.length,
-          cssInlined: false,
+          finalSize: finalHtml.length,
+          cssInlined: didInline,
           jsRendered: false,
           method: 'fetch-googlebot',
           timing: { chromeMs: chromeAttempt.ms, botMs: botAttempt.ms, totalMs: dt },
-          title: stabilizedHtml.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || '',
+          title: finalHtml.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || '',
         });
       }
 
@@ -917,21 +944,40 @@ export async function POST(request: NextRequest) {
       const jinaMs = Date.now() - jinaT0;
 
       if (jinaHtml && jinaHtml.length > 200) {
+        // BUG STORICO — Questa via, per SPA Vite/Replit, era il caso
+        // peggiore. Jina ci da' il DOM post-render (testi visibili) MA
+        // l'HTML ritornato contiene ancora i <link rel="stylesheet">
+        // verso /assets/index-*.css dell'origine. Senza inline-css,
+        // il browser sul nostro dominio Netlify fa fetch cross-origin
+        // del CSS Tailwind/Vite -> CORS lo blocca -> render senza
+        // stili = "tutta sconfusionata". E precedentemente non
+        // chiamavamo NEMMENO stabilizeClonedHtml su questo path,
+        // quindi: niente <base href>, niente assolutizzazione URL,
+        // niente accordion-rescue. Ora si.
+        const stabilizedHtml = stabilizeClonedHtml(jinaHtml, cleanUrl);
+        let finalHtml = stabilizedHtml;
+        let didInline = false;
+        try {
+          finalHtml = await inlineExternalAssets(stabilizedHtml, cleanUrl);
+          didInline = finalHtml.length !== stabilizedHtml.length;
+        } catch (e) {
+          console.warn(`[clone-funnel] inline-css failed (jina path): ${e instanceof Error ? e.message : String(e)}`);
+        }
         const dt = Date.now() - t0;
-        console.log(`[clone-funnel] identical: Jina OK ${jinaHtml.length}ch in ${jinaMs}ms (total ${dt}ms) for ${cleanUrl}`);
+        console.log(`[clone-funnel] identical: Jina OK ${finalHtml.length}ch in ${jinaMs}ms (total ${dt}ms, cssInlined=${didInline}) for ${cleanUrl}`);
         return NextResponse.json({
           success: true,
-          content: jinaHtml,
+          content: finalHtml,
           mobileContent: null,
           format: 'html',
           mode: 'identical',
           originalSize: bestRaw.html.length || jinaHtml.length,
-          finalSize: jinaHtml.length,
-          cssInlined: false,
+          finalSize: finalHtml.length,
+          cssInlined: didInline,
           jsRendered: true,
           method: 'jina',
           timing: { chromeMs: chromeAttempt.ms, botMs: botAttempt.ms, jinaMs, totalMs: dt },
-          title: jinaHtml.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || '',
+          title: finalHtml.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || '',
         });
       }
 
@@ -941,21 +987,32 @@ export async function POST(request: NextRequest) {
       if (anyFetchOk && bestRaw.html.length > 200) {
         console.log(`[clone-funnel] identical: returning best fetch shell (${bestRaw.name}, ${bestRaw.html.length}ch) for ${cleanUrl}`);
         const shellStabilized = stabilizeClonedHtml(bestRaw.html, cleanUrl);
+        // Anche se e' solo lo shell SPA (no JS render), inlinare il CSS
+        // mantiene il poco contenuto che c'e' (header, fonts, viewport)
+        // visualmente coerente con l'originale.
+        let finalHtml = shellStabilized;
+        let didInline = false;
+        try {
+          finalHtml = await inlineExternalAssets(shellStabilized, cleanUrl);
+          didInline = finalHtml.length !== shellStabilized.length;
+        } catch (e) {
+          console.warn(`[clone-funnel] inline-css failed (shell path): ${e instanceof Error ? e.message : String(e)}`);
+        }
         const dt = Date.now() - t0;
         return NextResponse.json({
           success: true,
-          content: shellStabilized,
+          content: finalHtml,
           mobileContent: null,
           format: 'html',
           mode: 'identical',
           originalSize: bestRaw.html.length,
-          finalSize: shellStabilized.length,
-          cssInlined: false,
+          finalSize: finalHtml.length,
+          cssInlined: didInline,
           jsRendered: false,
           method: `fetch-shell-${bestRaw.name}`,
           timing: { chromeMs: chromeAttempt.ms, botMs: botAttempt.ms, jinaMs, totalMs: dt },
           warning: 'Page looks like an SPA shell — JS content not rendered. Jina fallback timed out.',
-          title: shellStabilized.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || '',
+          title: finalHtml.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || '',
         });
       }
 
