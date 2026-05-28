@@ -70,6 +70,8 @@ jobs.json
 # Local worker logs (regenerated on each run)
 openclaw-worker.log
 openclaw-worker.err.log
+worker-startup.log
+watchdog.log
 
 # Supabase CLI local cache
 supabase/.temp/
