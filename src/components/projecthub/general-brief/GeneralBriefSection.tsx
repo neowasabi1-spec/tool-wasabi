@@ -229,7 +229,7 @@ function GeneralBriefTabContent({ projectId, files, projectName }: {
           <h3 className="font-semibold text-sm flex items-center gap-2">
             <FileText className="w-4 h-4 text-primary" /> Market Research
           </h3>
-          <UploadBtn projectId={projectId} fileType="market_research" label="Aggiungi documento" accept=".pdf,.doc,.docx,.txt,.xlsx,.csv" />
+          <UploadBtn projectId={projectId} fileType="market_research" label="Aggiungi documento" accept=".pdf,.doc,.docx,.txt,.md,.markdown,.xlsx,.csv" />
         </div>
         {byType("market_research").length === 0 ? (
           <div className="border-2 border-dashed border-border rounded-lg p-8 text-center">
@@ -317,7 +317,7 @@ function ProductBriefTabContent({ section, stepIdx, projectId, files }: {
             {briefFiles.length > 0 && <Badge variant="secondary" className="text-[10px]">{briefFiles.length}</Badge>}
           </h3>
           <UploadBtn projectId={projectId} fileType={section.id} label="Aggiungi documento"
-            accept=".pdf,.doc,.docx,.txt,.xlsx,.csv" />
+            accept=".pdf,.doc,.docx,.txt,.md,.markdown,.xlsx,.csv" />
         </div>
         {briefFiles.length === 0 ? (
           <div className="border-2 border-dashed border-border rounded-lg p-8 text-center">
