@@ -110,7 +110,33 @@ function extractStylesheetLinks(html: string): CssLinkMatch[] {
     if (!rawHref || rawHref.startsWith('data:') || rawHref.startsWith('blob:') || rawHref.startsWith('#')) continue;
     const href = decodeHtmlEntities(rawHref);
     const mediaMatch = attrs.match(/\bmedia\s*=\s*["']([^"']+)["']/i);
-    matches.push({ full: m[0], href, media: mediaMatch?.[1] });
+    let media = mediaMatch?.[1];
+    // Filament Group "loadCSS" preload pattern, comunissimo in landing
+    // builder come CheckoutChamp / Funnelish / Replo:
+    //   <link rel="stylesheet" href="..." media="print" onload="this.media='all'">
+    // L'idea originale: caricare il CSS senza bloccare il rendering (il
+    // browser scarica anche i fogli `media="print"`), poi promuoverlo a
+    // tutti i media al load via JS. Se inliniamo come <style media="print">
+    // l'`onload` non scatta mai (non c'e' piu' il <link>) e il foglio resta
+    // confinato alla stampa: Font Awesome (icon font), web fonts,
+    // animate.css ecc. NON si applicano a video. Risultato: icone
+    // Font Awesome renderizzate come glyph PUA del font di sistema
+    // (emoji random tipo 👼) o invisibili.
+    //
+    // Detect: se l'onload contiene un assegnamento a `this.media`,
+    // promuoviamo a `media="all"` ignorando il media originale.
+    // Stessa logica per `media="not all"` (variante del pattern).
+    const onloadMatch = attrs.match(
+      /\bonload\s*=\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)')/i,
+    );
+    const onloadVal = onloadMatch ? (onloadMatch[1] ?? onloadMatch[2] ?? '') : '';
+    if (onloadVal && /this\.media\s*=/i.test(onloadVal)) {
+      media = undefined;
+    }
+    if (media && /^\s*not\s+all\s*$/i.test(media)) {
+      media = undefined;
+    }
+    matches.push({ full: m[0], href, media });
     if (matches.length >= MAX_STYLESHEETS) break;
   }
   return matches;
