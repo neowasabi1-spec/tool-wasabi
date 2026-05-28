@@ -406,7 +406,13 @@ const EDITOR_SCRIPT = `
     switch(m.type){
       case 'cmd-exec':document.execCommand(m.command,false,m.value||null);sendHtml();
         if(sel)window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');break;
-      case 'cmd-set-style':if(sel){sel.style[m.property]=m.value;sendHtml();
+      case 'cmd-set-style':if(sel){
+        var _csKebab=String(m.property||'').replace(/[A-Z]/g,function(c){return '-'+c.toLowerCase();});
+        if(_csKebab){
+          if(m.value===''||m.value==null){sel.style.removeProperty(_csKebab);}
+          else{sel.style.setProperty(_csKebab,m.value,'important');}
+        }
+        sendHtml();
         window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');}break;
       case 'cmd-remove-attr':if(sel){sel.removeAttribute(m.name);sendHtml();
         window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');}break;
