@@ -159,16 +159,23 @@ function prependDocumentTitle(texts, html) {
 const MAX_CHARS_PER_PROMPT = 2500;
 const MAX_PROMPTS_TO_EMBED = 12;
 // Cap globale della knowledge section (brief progetto + MR + libreria tecniche).
-// Alzato da 18k a 35k: a 18k il brief lungo + MR + 12 prompt venivano troncati
-// a meta', con la conseguenza che facts specifici (nome dottore, durata audio,
-// prezzi, garanzia) descritti in fondo al brief NON arrivavano al LLM e i
-// rewrite mantenevano i facts del competitor. 35k e' ancora sicuro per LLM
-// locali con context >= 16k token (il system prompt totale resta < 60k char).
-const MAX_KNOWLEDGE_CHARS = 35000;
-// Cap per la MR (porzione dentro la knowledge section). Alzato da 6k a 12k:
-// stessa logica del cap globale, i facts della MR (audience age/income,
-// pain-point esatti, claim approvati) sono spesso oltre i primi 6k char.
-const MAX_MR_CHARS = 12000;
+// Storia dei cap:
+//   - 18k: troppo stretto, brief lungo + MR + 12 prompt venivano troncati a meta'.
+//   - 35k: ok per brief medi (~30k char) ma su prodotti con MR ricche (es.
+//     NeuroFlush con MR 187k char ben strutturate da Morfeo) tagliamo via
+//     90%+ del materiale e l'LLM perde audience-fit / claim approvati.
+//   - 350k: ~85k token, ben dentro al context window di Claude Sonnet 4.5 /
+//     Opus 4 (200k) e degli LLM locali moderni che usiamo come fallback
+//     (Llama 3.x 128k, Qwen 2.5 128k+). Il system prompt totale rimane
+//     < 1M char anche su pagine grandi -> nessun rischio di overflow.
+const MAX_KNOWLEDGE_CHARS = 350_000;
+// Cap per la sola MR. Alzato da 12k a 220k: vogliamo poter passare per intero
+// una MR ben strutturata (Morfeo genera regolarmente blob da 150-200k). Il
+// cap esiste solo come safety-net contro MR pathologically huge (dumps di
+// 1M+ char di scraping competitor); a 220k restiamo sotto il SECTION budget
+// del path Claude (200k) di poco -> la pipeline non vede mai una MR piu'
+// grande di quella che gia' accetta da front-end-funnel.
+const MAX_MR_CHARS = 220_000;
 
 function truncate(s, max) {
   if (typeof s !== 'string') return '';
