@@ -1330,14 +1330,28 @@ export default function ProjectsPage() {
               <Link
                 key={project.id}
                 href={'/projects/' + project.id}
-                className="group bg-[#1A1D27] border border-[#2A2D3A] hover:border-blue-600/50 rounded-xl p-4 transition-colors flex flex-col"
+                className="group bg-[#1A1D27] border border-[#2A2D3A] hover:border-blue-600/50 rounded-xl p-4 transition-colors flex flex-col relative"
               >
+                {/* Delete icon — top-right, opacity on hover to keep the card tidy */}
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    deleteProject(project.id);
+                  }}
+                  title="Elimina progetto"
+                  aria-label={`Elimina progetto ${project.name}`}
+                  className="absolute top-2 right-2 p-1.5 rounded-md text-gray-500 hover:text-red-400 hover:bg-red-900/20 opacity-0 group-hover:opacity-100 transition-opacity z-10"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
                 <div className="flex items-start justify-between gap-2 mb-3">
                   <div className="w-10 h-10 rounded-lg bg-blue-600/20 flex items-center justify-center flex-shrink-0">
                     <FolderOpen className="w-5 h-5 text-blue-400" />
                   </div>
                   <span
-                    className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${
+                    className={`px-2 py-0.5 rounded-full text-[10px] font-medium mr-7 ${
                       STATUS_COLOR[project.status] || 'bg-gray-700 text-gray-300'
                     }`}
                   >
@@ -1451,6 +1465,20 @@ export default function ProjectsPage() {
                         Flows
                         <ChevronRight className="w-3.5 h-3.5" />
                       </Link>
+
+                      {/* Delete project — quick action, asks confirm */}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          deleteProject(project.id);
+                        }}
+                        title="Elimina progetto"
+                        aria-label={`Elimina progetto ${project.name}`}
+                        className="flex items-center gap-1.5 px-3 py-1.5 text-red-400 hover:text-red-300 hover:bg-red-900/20 text-xs font-medium rounded-lg transition-colors"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        Elimina
+                      </button>
 
                       {/* Expand chevron */}
                       {isOpen ? (

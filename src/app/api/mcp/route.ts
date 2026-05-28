@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
 import { createHash, randomUUID } from 'crypto';
+import {
+  parseSectionData,
+  buildSectionContent,
+  type SectionFile,
+} from '@/lib/project-sections';
 
 // Allow this route up to the Vercel maximum (300s on Pro). Anything longer
 // MUST go through the async pattern (swipe_landing_page_async / swipe_status)
@@ -602,16 +607,32 @@ const TOOLS = [
   },
   {
     name: 'update_project',
-    description: 'Update an existing project',
+    description: 'Update fields on an existing project, INCLUDING the multi-file section columns. To attach a generated document to a section (Brief/Frontend, Market Research, Backend, Compliance, Funnel) prefer the dedicated tool `add_document_to_project_section` which APPENDS without overwriting; use this tool only when you want to OVERWRITE the whole section blob or change top-level metadata.',
     inputSchema: {
       type: 'object',
       properties: {
-        id: { type: 'string', description: 'Project ID' },
+        id: { type: 'string', description: 'Project ID (UUID)' },
         name: { type: 'string' },
         description: { type: 'string' },
         status: { type: 'string' },
         tags: { type: 'array', items: { type: 'string' } },
         notes: { type: 'string' },
+        domain: { type: 'object', description: 'Domain config object' },
+        thumbnail_path: { type: 'string', description: 'Storage object key for the cover/thumbnail image' },
+        product_brief_sections: { type: 'string', description: 'JSON string of [{ id, label }] tabs to show inside the Product Brief section' },
+        // Multi-file legacy section columns. Each one is the JSONB blob
+        // `{ files: [{ name, content, size, type, uploadedAt }], notes, content }`.
+        // `brief` is the matching TEXT column (mirror of brief_files content).
+        // The projecthub UI (/projects/[id]) reads both real `project_files`
+        // rows AND these section blobs (via `legacyFilesForProject`), so
+        // anything you write here shows up under the corresponding tab.
+        market_research: { type: 'object', description: 'Market Research section blob. Shape: { files:[{name,content,size,type,uploadedAt}], notes, content }. Pass `null` to clear.' },
+        brief: { type: 'string', description: 'Brief text (TEXT column, mirrored from brief_files.content)' },
+        brief_files: { type: 'object', description: 'Product Brief / Frontend section blob (same shape as market_research). Surfaces under the Frontend tab in the projecthub UI.' },
+        front_end: { type: 'object', description: 'Frontend funnel rows blob (legacy)' },
+        back_end: { type: 'object', description: 'Backend section blob (same shape as market_research). Surfaces under the Backend tab.' },
+        compliance_funnel: { type: 'object', description: 'Compliance section blob (same shape as market_research). Surfaces under the Compliance tab.' },
+        funnel: { type: 'object', description: 'Funnel section blob (same shape as market_research). Surfaces under the Funnel tab.' },
       },
       required: ['id'],
     },
@@ -623,6 +644,33 @@ const TOOLS = [
       type: 'object',
       properties: { id: { type: 'string', description: 'Project ID' } },
       required: ['id'],
+    },
+  },
+  {
+    name: 'add_document_to_project_section',
+    description:
+      'Append a TEXT document (Markdown/plain text) to one of the multi-file sections of a project. This is the canonical way for the agent to "save the document Morfeo just generated into the Brief/Market Research/Backend/Compliance/Funnel section". It NEVER overwrites: the document is added to the end of the section\'s files array, and the concatenated `content` is rebuilt so the rewrite pipeline picks it up immediately. The new document is then visible in the projecthub UI (/projects/[id]) under the matching tab (Frontend, Market Research, Backend, Compliance, Funnel).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string', description: 'Project ID (UUID). Use `id` as an alias if you prefer.' },
+        id: { type: 'string', description: 'Alias of projectId' },
+        section: {
+          type: 'string',
+          description: 'Target section. Accepts the projecthub file_type or the legacy column name: pb_frontend|brief_files (Frontend / Product Brief), market_research, pb_backend|back_end, pb_compliance|compliance_funnel, pb_funnel|funnel.',
+          enum: [
+            'pb_frontend', 'brief_files', 'front_end',
+            'market_research',
+            'pb_backend', 'back_end',
+            'pb_compliance', 'compliance_funnel',
+            'pb_funnel', 'funnel',
+          ],
+        },
+        name: { type: 'string', description: 'Document filename, e.g. "Market Research v1.md". Used as the file label in the UI.' },
+        content: { type: 'string', description: 'Full document body (Markdown or plain text). Required, non-empty.' },
+        type: { type: 'string', description: 'Optional MIME type (default text/markdown).' },
+      },
+      required: ['section', 'name', 'content'],
     },
   },
 
@@ -2162,6 +2210,116 @@ async function executeTool(name: string, args: Record<string, unknown>): Promise
       const { error } = await supabase.from('projects').delete().eq('id', args.id);
       if (error) throw new Error(error.message);
       return { success: true };
+    }
+    case 'add_document_to_project_section': {
+      // Append a generated document (Markdown / plain text) to one of the
+      // multi-file section columns of a project. Mirrors the same shape and
+      // mirror-to-`brief`-TEXT logic that the projecthub upload route
+      // (/api/projecthub/projects/[id]/files) uses for real file uploads,
+      // so the new doc shows up under the matching tab in /projects/[id]
+      // (UI reads `legacyFilesForProject` over the same JSONB columns).
+      const projectId = String(args.projectId || args.id || '').trim();
+      if (!projectId) throw new Error('projectId required');
+      const rawSection = String(args.section || '').trim();
+      if (!rawSection) throw new Error('section required');
+      const name = String(args.name || '').trim();
+      if (!name) throw new Error('name required');
+      const content = typeof args.content === 'string' ? args.content : '';
+      if (!content.trim()) throw new Error('content required (non-empty)');
+      const mime = typeof args.type === 'string' && args.type ? args.type : 'text/markdown';
+
+      // section aliases → real DB column on `projects`
+      const SECTION_ALIAS: Record<string, 'brief_files' | 'market_research' | 'back_end' | 'compliance_funnel' | 'funnel'> = {
+        pb_frontend: 'brief_files',
+        brief_files: 'brief_files',
+        front_end: 'brief_files',
+        market_research: 'market_research',
+        pb_backend: 'back_end',
+        back_end: 'back_end',
+        pb_compliance: 'compliance_funnel',
+        compliance_funnel: 'compliance_funnel',
+        pb_funnel: 'funnel',
+        funnel: 'funnel',
+      };
+      const column = SECTION_ALIAS[rawSection];
+      if (!column) throw new Error(`Unknown section "${rawSection}". Use one of: ${Object.keys(SECTION_ALIAS).join(', ')}`);
+
+      // Read current section blob (and brief TEXT for the brief_files mirror).
+      const selectCols = column === 'brief_files' ? 'id, brief_files, brief' : `id, ${column}`;
+      let readRow = await supabase
+        .from('projects')
+        .select(selectCols)
+        .eq('id', projectId)
+        .single();
+
+      // Fallback: `brief_files` JSONB column may not exist yet on this DB
+      // (migration `supabase-migration-projects-section-files.sql` not run).
+      // Re-read without it so we can still surface the doc via the `brief`
+      // TEXT column and return a useful warning.
+      let briefFilesMissing = false;
+      if (
+        readRow.error &&
+        column === 'brief_files' &&
+        /brief_files/i.test(String(readRow.error.message || ''))
+      ) {
+        briefFilesMissing = true;
+        readRow = await supabase
+          .from('projects')
+          .select('id, brief')
+          .eq('id', projectId)
+          .single();
+      }
+      if (readRow.error || !readRow.data) {
+        throw new Error(readRow.error?.message || `Project ${projectId} not found`);
+      }
+      const row = readRow.data as Record<string, unknown>;
+
+      const current = parseSectionData(briefFilesMissing ? null : row[column]);
+      const newFile: SectionFile = {
+        name,
+        content,
+        size: content.length,
+        type: mime,
+        uploadedAt: new Date().toISOString(),
+      };
+      const nextFiles: SectionFile[] = [...current.files, newFile];
+      const nextContent = buildSectionContent(nextFiles, current.notes || '');
+
+      const update: Record<string, unknown> = {};
+      if (!briefFilesMissing) {
+        update[column] = {
+          files: nextFiles,
+          notes: current.notes || '',
+          content: nextContent,
+        };
+      }
+      // brief_files → mirror to the TEXT `brief` column so the legacy
+      // rewrite pipeline (getProjectBriefText) keeps working even without
+      // the brief_files migration.
+      if (column === 'brief_files') {
+        update.brief = nextContent;
+      }
+      if (Object.keys(update).length === 0) {
+        throw new Error('No columns to update — check DB schema');
+      }
+
+      const { error: updErr } = await supabase
+        .from('projects')
+        .update(update)
+        .eq('id', projectId);
+      if (updErr) throw new Error(updErr.message);
+
+      return {
+        success: true,
+        projectId,
+        section: column,
+        added: { name: newFile.name, size: newFile.size, type: newFile.type, uploadedAt: newFile.uploadedAt },
+        filesCount: nextFiles.length,
+        contentLength: nextContent.length,
+        warning: briefFilesMissing
+          ? 'brief_files JSONB column missing on the DB — saved only to the legacy `brief` TEXT column. Run supabase-migration-projects-section-files.sql to enable multi-file Frontend section.'
+          : undefined,
+      };
     }
 
     // ─── PROMPTS (saved_prompts table) ─────────────────────────────────
