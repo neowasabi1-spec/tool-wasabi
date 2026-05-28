@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireAnthropicKey } from '@/lib/anthropic-key';
 import { extractAllTextsUniversal } from '@/lib/universal-text-extractor';
 import { fetchHtmlSmart } from '@/lib/fetch-html-smart';
+import {
+  absolutizeUrlsInHtml,
+  injectNoReferrerAndEagerLoading,
+} from '@/lib/spa-rescue';
 
 export const maxDuration = 300;
 
@@ -437,55 +441,20 @@ async function clonePageHtml(url: string): Promise<string> {
   return absolutizeUrls(fetched.html, url);
 }
 
-function makeAbsolute(path: string, origin: string, basePath: string, protocol: string): string {
-  const trimmed = path.trim();
-  if (!trimmed || /^(https?:\/\/|data:|#|mailto:|javascript:)/i.test(trimmed)) return trimmed;
-  if (trimmed.startsWith('//')) return protocol + trimmed;
-  if (trimmed.startsWith('/')) return origin + trimmed;
-  return basePath + trimmed;
-}
-
-function fixMediaLoading(html: string): string {
-  let fixed = html.replace(/loading=["']lazy["']/gi, 'loading="eager"');
-  fixed = fixed.replace(/<img\b/gi, '<img referrerpolicy="no-referrer" ');
-  fixed = fixed.replace(/<video\b/gi, '<video referrerpolicy="no-referrer" ');
-  fixed = fixed.replace(/<source\b/gi, '<source referrerpolicy="no-referrer" ');
-  if (fixed.includes('<head>')) {
-    fixed = fixed.replace('<head>', '<head><meta name="referrer" content="no-referrer">');
-  } else if (fixed.includes('<head ')) {
-    fixed = fixed.replace(/<head\s/i, '<head><meta name="referrer" content="no-referrer"></head><head ');
-  } else {
-    fixed = '<meta name="referrer" content="no-referrer">' + fixed;
-  }
-  return fixed;
-}
-
-function absolutizeUrls(html: string, baseUrl: string): string {
-  const urlObj = new URL(baseUrl);
-  const origin = urlObj.origin;
-  const basePath = baseUrl.substring(0, baseUrl.lastIndexOf('/') + 1);
-  const protocol = urlObj.protocol;
-
-  return html
-    .replace(/(srcset)=(["'])(.*?)\2/gi, (_match, attr, quote, value) => {
-      if (/^\s*(https?:\/\/|\/\/)/i.test(value)) return `${attr}=${quote}${value}${quote}`;
-      const fixed = value.split(/,(?=\s)/).map((entry: string) => {
-        const parts = entry.trim().split(/\s+/);
-        if (parts.length === 0) return entry;
-        parts[0] = makeAbsolute(parts[0], origin, basePath, protocol);
-        return parts.join(' ');
-      }).join(', ');
-      return `${attr}=${quote}${fixed}${quote}`;
-    })
-    .replace(/(src|href|poster|data-src|data-lazy-src)=(["'])((?!https?:\/\/|data:|#|mailto:|javascript:|\/\/).*?)\2/gi,
-      (_match, attr, quote, path) => {
-        return `${attr}=${quote}${makeAbsolute(path, origin, basePath, protocol)}${quote}`;
-      })
-    .replace(/url\((['"]?)((?!https?:\/\/|data:|#)(?:\/[^)'"]+|[^)'"\s]+))\1\)/gi,
-      (_match, quote, path) => {
-        return `url(${quote}${makeAbsolute(path, origin, basePath, protocol)}${quote})`;
-      });
-}
+// `fixMediaLoading` e `absolutizeUrls` storiche operavano sull'INTERO
+// HTML, regex sparate, senza protezione di <script> e senza
+// idempotenza. Su SPA Vite/React (es. fiber-muse-product-page.replit
+// .app) le regex `<img\b` / `(src|href)=...` / `url(...)` matchavano
+// ANCHE letterali JS dentro <script> inline -> bundle corrotto a
+// runtime, SPA non si monta, pagina "tutta rotta" PRIMA del rewrite
+// LLM. Ora deleghiamo alle utility canoniche di `spa-rescue` che:
+//   - usano regex per-tag (es. <img\b[^>]*src=) e quindi NON toccano
+//     il contenuto di <script>;
+//   - estraggono <script>/<noscript> in placeholder prima dei replace
+//     di referrerpolicy / meta referrer e li reinseriscono intatti;
+//   - sono idempotenti.
+const absolutizeUrls = absolutizeUrlsInHtml;
+const fixMediaLoading = injectNoReferrerAndEagerLoading;
 
 export async function POST(request: NextRequest) {
   try {

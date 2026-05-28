@@ -594,6 +594,84 @@ function rewriteCssUrls(css: string, base: URL): string {
   );
 }
 
+/**
+ * Aggiunge `referrerpolicy="no-referrer"` a <img>/<video>/<source>, un
+ * `<meta name="referrer" content="no-referrer">` in `<head>`, e converte
+ * `loading="lazy"` -> `loading="eager"` (utile per i preview di clone
+ * che non vogliamo lazy: il visitatore della clone deve vedere TUTTO
+ * subito altrimenti il primo render appare bianco e "rotto").
+ *
+ * REGOLE FONDAMENTALI (motivo per cui c'e' una utility dedicata e non
+ * piu' regex sparse in 3 route diverse):
+ *
+ *   1) PROTEZIONE DEGLI <script> / <noscript>. La versione precedente
+ *      applicava `<img\b` direttamente sull'HTML completo: matchava
+ *      ANCHE letterali tipo `'<img src="/x">'` dentro stringhe JS in
+ *      <script> inline o JSON serializzato in
+ *      <script type="application/json">. Risultato: bundle JS
+ *      modificato a runtime (template literal o JSON con valore
+ *      sbagliato) e SPA che non si monta -> pagina "tutta rotta"
+ *      anche prima del rewrite LLM. Qui ESTRAIAMO PRIMA gli
+ *      <script>/<noscript> in placeholder, applichiamo le regex sul
+ *      resto, poi li REINSERIAMO intatti.
+ *
+ *   2) IDEMPOTENZA. La pipeline puo' richiamare la stessa pass piu'
+ *      volte (clone -> swipe -> nuovo swipe). Senza idempotenza,
+ *      `<img>` accumulava `referrerpolicy="no-referrer"
+ *      referrerpolicy="no-referrer" ...` e `<head>` si riempiva di
+ *      `<meta name="referrer">` duplicati. Qui usiamo:
+ *        - lookahead negativo per skip se l'attributo c'e' gia';
+ *        - test sull'intero HTML per il <meta> nel <head>.
+ *
+ *   3) `loading="lazy"` -> `loading="eager"` e' gia' idempotente
+ *      (dopo non c'e' piu' "lazy" da matchare).
+ */
+export function injectNoReferrerAndEagerLoading(html: string): string {
+  if (!html || typeof html !== 'string') return html;
+
+  // Estrai script/noscript in placeholder commento (non collide con
+  // pattern HTML reali — il prefisso __WS_PROTECT__ e' unico).
+  const SCRIPT_RE = /<(script|noscript)\b[^>]*>[\s\S]*?<\/\1\s*>/gi;
+  const stash: string[] = [];
+  let cleaned = html.replace(SCRIPT_RE, (m) => {
+    const idx = stash.length;
+    stash.push(m);
+    return `<!--__WS_PROTECT_${idx}__-->`;
+  });
+
+  cleaned = cleaned.replace(/loading=["']lazy["']/gi, 'loading="eager"');
+  cleaned = cleaned.replace(
+    /<img\b(?![^>]*\breferrerpolicy\s*=)/gi,
+    '<img referrerpolicy="no-referrer" ',
+  );
+  cleaned = cleaned.replace(
+    /<video\b(?![^>]*\breferrerpolicy\s*=)/gi,
+    '<video referrerpolicy="no-referrer" ',
+  );
+  cleaned = cleaned.replace(
+    /<source\b(?![^>]*\breferrerpolicy\s*=)/gi,
+    '<source referrerpolicy="no-referrer" ',
+  );
+
+  // Inject meta referrer (idempotente)
+  if (!/<meta\b[^>]*\bname\s*=\s*["']referrer["'][^>]*>/i.test(cleaned)) {
+    if (/<head\b[^>]*>/i.test(cleaned)) {
+      cleaned = cleaned.replace(
+        /<head\b[^>]*>/i,
+        (m) => `${m}<meta name="referrer" content="no-referrer">`,
+      );
+    } else {
+      cleaned = `<meta name="referrer" content="no-referrer">${cleaned}`;
+    }
+  }
+
+  // Reinserisci gli script/noscript ESATTAMENTE come erano.
+  return cleaned.replace(
+    /<!--__WS_PROTECT_(\d+)__-->/g,
+    (_m, n: string) => stash[Number(n)] ?? '',
+  );
+}
+
 function absolutize(u: string, base: URL): string {
   if (!u) return u;
   const trimmed = u.trim();

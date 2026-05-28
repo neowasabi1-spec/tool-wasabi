@@ -1,56 +1,25 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { inlineExternalAssets } from '@/lib/inline-assets';
 import { fetchHtmlSmart } from '@/lib/fetch-html-smart';
+import {
+  absolutizeUrlsInHtml,
+  injectNoReferrerAndEagerLoading,
+} from '@/lib/spa-rescue';
 
 export const maxDuration = 60;
 
-function makeAbsolute(path: string, origin: string, basePath: string, protocol: string): string {
-  const trimmed = path.trim();
-  if (!trimmed || /^(https?:\/\/|data:|#|mailto:|javascript:)/i.test(trimmed)) return trimmed;
-  if (trimmed.startsWith('//')) return protocol + trimmed;
-  if (trimmed.startsWith('/')) return origin + trimmed;
-  return basePath + trimmed;
-}
-
+// `fixClonedHtml` storico era una funzione locale con regex che
+// operavano sull'INTERO HTML, incluso il contenuto dei <script>. Per
+// le SPA (Vite/React/Replit) questo significa: stringhe JS letterali
+// tipo `'<img src="/x">'` o `'url(/y)'` dentro un <script> inline
+// venivano modificate -> bundle a runtime corrotto -> pagina rotta
+// PRIMA ANCORA del rewrite LLM. Ora deleghiamo a:
+//   - `absolutizeUrlsInHtml`: regex per-tag specifiche (<img\b[^>]*src=)
+//     -> non matcha stringhe dentro <script>.
+//   - `injectNoReferrerAndEagerLoading`: estrae <script>/<noscript> in
+//     placeholder, applica le regex, reinserisce, idempotente.
 function fixClonedHtml(html: string, sourceUrl: string): string {
-  let fixed = html;
-  fixed = fixed.replace(/loading=["']lazy["']/gi, 'loading="eager"');
-  fixed = fixed.replace(/<img\b/gi, '<img referrerpolicy="no-referrer" ');
-  fixed = fixed.replace(/<video\b/gi, '<video referrerpolicy="no-referrer" ');
-  fixed = fixed.replace(/<source\b/gi, '<source referrerpolicy="no-referrer" ');
-  if (fixed.includes('<head>')) {
-    fixed = fixed.replace('<head>', '<head><meta name="referrer" content="no-referrer">');
-  } else {
-    fixed = '<meta name="referrer" content="no-referrer">' + fixed;
-  }
-
-  try {
-    const urlObj = new URL(sourceUrl);
-    const origin = urlObj.origin;
-    const basePath = sourceUrl.substring(0, sourceUrl.lastIndexOf('/') + 1);
-    const protocol = urlObj.protocol;
-
-    fixed = fixed
-      .replace(/(srcset)=(["'])(.*?)\2/gi, (_match, attr, quote, value) => {
-        if (/^\s*(https?:\/\/|\/\/)/i.test(value)) return `${attr}=${quote}${value}${quote}`;
-        const parts = value.split(/,(?=\s)/).map((entry: string) => {
-          const segs = entry.trim().split(/\s+/);
-          if (segs.length === 0) return entry;
-          segs[0] = makeAbsolute(segs[0], origin, basePath, protocol);
-          return segs.join(' ');
-        });
-        return `${attr}=${quote}${parts.join(', ')}${quote}`;
-      })
-      .replace(
-        /(src|href|poster|data-src|data-lazy-src)=(["'])((?!https?:\/\/|data:|#|mailto:|javascript:|\/\/).*?)\2/gi,
-        (_m, attr, quote, path) => `${attr}=${quote}${makeAbsolute(path, origin, basePath, protocol)}${quote}`
-      )
-      .replace(
-        /url\((['"]?)((?!https?:\/\/|data:|#)(?:\/[^)'"]+|[^)'"\s]+))\1\)/gi,
-        (_m, quote, path) => `url(${quote}${makeAbsolute(path, origin, basePath, protocol)}${quote})`
-      );
-  } catch { /* sourceUrl parse failed */ }
-  return fixed;
+  return injectNoReferrerAndEagerLoading(absolutizeUrlsInHtml(html, sourceUrl));
 }
 
 export async function POST(request: NextRequest) {
