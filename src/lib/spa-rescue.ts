@@ -156,6 +156,15 @@ export function stabilizeClonedHtml(html: string, originUrl: string): string {
   out = unlockPageScroll(out);
   out = resetAccordionState(out);
   out = injectInteractivityRescue(out);
+  // Aggiunge `referrerpolicy="no-referrer"` a <img>/<video>/<source> e
+  // `<meta name="referrer" content="no-referrer">` in <head>. Senza
+  // questo, alcuni CDN (Cloudflare hotlink protection, Bunny, Replit
+  // free-tier) rifiutano la richiesta del media quando il Referer
+  // arriva dal nostro dominio Netlify -> immagini mancanti nel clone
+  // anche se l'URL e' corretto. Idempotente (lookahead negativo +
+  // skip se <meta name="referrer"> gia' presente). Protegge i tag
+  // <script>/<noscript> dalle regex.
+  out = injectNoReferrerAndEagerLoading(out);
   return out;
 }
 
@@ -587,10 +596,33 @@ export function absolutizeUrlsInHtml(html: string, originUrl: string): string {
   return out;
 }
 
+// Strip-pa le HTML entity di quote (`&quot;`, `&#34;`, `&apos;`, `&#39;`)
+// che possono trovarsi attorno (o dentro) un URL di `url(...)`. Si
+// presentano quando l'HTML originale conteneva un inline style con
+// CSS quotato:
+//   <div style="background-image: url(&quot;/foo.webp&quot;)">
+// Il parser CSS del browser decodifica `&quot;` come `"` e ottiene
+// `url("/foo.webp")` legale. MA se prima passa per il NOSTRO rewriter
+// (regex su stringa raw HTML), vede `&quot;/foo.webp&quot;` come URL
+// e fa `new URL(...).toString()` -> URL letterale contenente `&quot;`
+// -> 404 al fetch dell'immagine. Stripping idempotente.
+function stripHtmlQuoteEntities(s: string): string {
+  let v = s.trim();
+  // Loop perche' possono essere doppi-encoded (`&amp;quot;`).
+  let prev: string;
+  do {
+    prev = v;
+    v = v
+      .replace(/^(?:&quot;|&#34;|&apos;|&#39;)+/i, '')
+      .replace(/(?:&quot;|&#34;|&apos;|&#39;)+$/i, '');
+  } while (v !== prev);
+  return v;
+}
+
 function rewriteCssUrls(css: string, base: URL): string {
   return css.replace(
     /url\(\s*(["']?)([^"')]+)\1\s*\)/g,
-    (_m, q: string, u: string) => `url(${q}${absolutize(u, base)}${q})`,
+    (_m, q: string, u: string) => `url(${q}${absolutize(stripHtmlQuoteEntities(u), base)}${q})`,
   );
 }
 
