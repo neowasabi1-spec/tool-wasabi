@@ -2444,6 +2444,37 @@ export default function FrontEndFunnel() {
     });
   };
 
+  // ── Upload HTML diretto (alternativa al link) ──────────────────────
+  // Carica un file .html nella riga e lo tratta come "clonedData": da qui
+  // in poi tutto il flusso (Riscrivi / Clona / Ridai) usa htmlToRewrite =
+  // clonedData.html SENZA fare alcun fetch (il worker lo prevede già). Setto
+  // anche un urlToSwipe sintetico ma VALIDO (`https://uploaded.local/<file>`)
+  // così tutti i gate esistenti che richiedono un URL e le chiamate
+  // `new URL(...)` continuano a funzionare senza modifiche.
+  const handleUploadHtmlFile = (pageId: string, pageName: string, file: File) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const html = String(reader.result || '');
+      if (!html.trim()) { alert('Il file HTML è vuoto.'); return; }
+      const safeName = (file.name || 'pagina.html').replace(/[^a-zA-Z0-9._-]/g, '_');
+      updateFunnelPage(pageId, {
+        urlToSwipe: `https://uploaded.local/${safeName}`,
+        clonedData: {
+          html,
+          title: pageName || safeName,
+          method_used: 'upload',
+          content_length: html.length,
+          duration_seconds: 0,
+          cloned_at: new Date(),
+        },
+      });
+      void saveHtmlBlob(pageId, 'clonedData', html);
+    };
+    reader.onerror = () => alert('Errore nella lettura del file HTML.');
+    reader.readAsText(file);
+  };
+
   // Vision Analysis Functions
   const fetchVisionJobs = async (sourceUrl: string) => {
     setVisionLoading(true);
@@ -5461,16 +5492,16 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                         <div className="flex items-center gap-0.5">
                           <DebouncedInput
                             type="url"
-                            value={page.urlToSwipe}
+                            value={page.urlToSwipe?.startsWith('https://uploaded.local/') ? '' : page.urlToSwipe}
                             onChange={(v) =>
                               updateFunnelPage(page.id, {
                                 urlToSwipe: v,
                               })
                             }
-                            placeholder="https://..."
+                            placeholder={page.urlToSwipe?.startsWith('https://uploaded.local/') ? '📄 HTML caricato' : 'https://...'}
                             className="flex-1 truncate"
                           />
-                          {page.urlToSwipe && (
+                          {page.urlToSwipe && !page.urlToSwipe.startsWith('https://uploaded.local/') && (
                             <a
                               href={page.urlToSwipe}
                               target="_blank"
@@ -5480,6 +5511,22 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                               <ExternalLink className="w-3 h-3" />
                             </a>
                           )}
+                          <label
+                            className="text-gray-400 hover:text-blue-600 p-0.5 flex-shrink-0 cursor-pointer"
+                            title="Carica un file HTML al posto del link"
+                          >
+                            <input
+                              type="file"
+                              accept=".html,.htm,text/html"
+                              className="hidden"
+                              onChange={(e) => {
+                                const f = e.target.files?.[0];
+                                if (f) handleUploadHtmlFile(page.id, page.name, f);
+                                e.target.value = '';
+                              }}
+                            />
+                            <Upload className="w-3 h-3" />
+                          </label>
                         </div>
                       </td>
 
