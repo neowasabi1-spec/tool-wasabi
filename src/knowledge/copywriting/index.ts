@@ -61,6 +61,17 @@ export interface KnowledgeSource {
 const SOURCES: KnowledgeSource[] = [
   /* ──────────────────── Tier 1 — always loaded ──────────────────── */
   {
+    // Cheat-sheet operativa ad alta densita': distillato delle tecniche dei
+    // maestri (Schwartz awareness/sofisticazione, Georgi RMBC, Halbert/Caples
+    // headline, Bencivenga bullets, Sugarman trigger, PAS/AIDA/BAB, Sultanic).
+    // Prima fonte Tier 1 cosi' sopravvive a qualunque troncamento di budget.
+    id: 'techniques-operative-cheatsheet',
+    title: 'Tecniche operative dei maestri (cheat-sheet)',
+    filename: 'techniques-operative-cheatsheet.md',
+    tier: 1,
+    approxTokens: 2200,
+  },
+  {
     id: 'cos-engine',
     title: 'Conversion Operating System (COS Engine)',
     filename: 'cos-engine.md',

@@ -14,6 +14,13 @@ const MAX_TIER2_TOKENS = 35000;
 
 const SOURCES = [
   // ── Tier 1 — always loaded ──
+  // Cheat-sheet operativa: distillato ad alta densita' delle tecniche dei
+  // maestri (Schwartz awareness/sofisticazione, Georgi RMBC, Halbert/Caples
+  // headline, Bencivenga bullets, Sugarman trigger, framework PAS/AIDA/BAB,
+  // Sultanic). Messa PER PRIMA cosi' sopravvive al troncamento di
+  // MAX_BUILTIN_KB_CHARS: e' cio' che fa applicare DAVVERO le tecniche al
+  // modello locale (che non le ha in memoria), invece del solo cos-engine.
+  { id: 'techniques-operative-cheatsheet', title: 'Tecniche operative dei maestri (cheat-sheet)',       filename: 'techniques-operative-cheatsheet.md', tier: 1, approxTokens: 2200 },
   { id: 'cos-engine',                title: 'Conversion Operating System (COS Engine)',                 filename: 'cos-engine.md',                  tier: 1, approxTokens: 17000 },
   { id: 'tony-flores-mechanisms',    title: 'Tony Flores — Million Dollar Mechanisms',                  filename: 'tony-flores-mechanisms.md',      tier: 1, approxTokens: 2000 },
   { id: 'evaldo-16-word',            title: 'Evaldo Albuquerque — The 16-Word Sales Letter',            filename: 'evaldo-16-word.md',              tier: 1, approxTokens: 3500 },
