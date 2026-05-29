@@ -8267,6 +8267,23 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
               (Array.isArray(editorProject.logo) && editorProject.logo[0]?.url) ||
               '',
           } : undefined}
+          // Lista prodotti per il selettore nella modale AI: così Claude può
+          // scrivere il prompt su un prodotto scelto anche se la pagina è solo
+          // clonata (senza productId assegnato).
+          availableProducts={(projects || []).map((p) => ({
+            id: p.id,
+            name: p.name,
+            description: p.description || '',
+            brief: getProjectBriefText(p) || p.brief || '',
+            marketResearch: extractSectionContent(p.marketResearch),
+            imageUrl: (Array.isArray(p.logo) && p.logo[0]?.url) || '',
+          }))}
+          currentProductId={editorPage?.productId || ''}
+          // Assegna (e ricorda) il prodotto scelto sulla pagina, così lo swipe
+          // funziona anche dopo. Best-effort: non blocca la UI.
+          onProductChange={(productId) => {
+            if (editorPage) void updateFunnelPage(editorPage.id, { productId });
+          }}
           onSave={async (html, mobileHtml) => {
             setHtmlPreviewModal(prev => ({ ...prev, html, mobileHtml: mobileHtml || prev.mobileHtml }));
 

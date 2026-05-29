@@ -123,6 +123,24 @@ interface VisualHtmlEditorProps {
      *  via vision quando il brief/research non contengono colori espliciti. */
     imageUrl?: string;
   };
+  /** Lista prodotti (My Projects) per il selettore dentro la modale AI.
+   *  Permette di scegliere su quale prodotto basare il prompt anche quando
+   *  la pagina è solo clonata (senza productId assegnato) — così lo Swipe
+   *  e la generazione hanno sempre un prodotto di riferimento. */
+  availableProducts?: Array<{
+    id: string;
+    name: string;
+    description?: string;
+    brief?: string;
+    marketResearch?: string;
+    imageUrl?: string;
+  }>;
+  /** productId attualmente assegnato alla pagina: preseleziona il menu. */
+  currentProductId?: string;
+  /** Chiamato quando l'utente sceglie un prodotto dal menu nella modale.
+   *  Il parent lo assegna alla pagina (persistente) così lo swipe funziona
+   *  anche dopo, su pagine solo clonate. */
+  onProductChange?: (productId: string) => void;
 }
 
 /* ─────────── Brand Colors ─────────── */
@@ -1469,7 +1487,7 @@ const TEXT_EDITABLE_TAGS = new Set([
 
 /* ─────────── Component ─────────── */
 
-export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSave, onClose, pageTitle, productContext, sourceUrl }: VisualHtmlEditorProps) {
+export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSave, onClose, pageTitle, productContext, sourceUrl, availableProducts, currentProductId, onProductChange }: VisualHtmlEditorProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [mode, setMode] = useState<EditorMode>('visual');
   const [selectedElement, setSelectedElement] = useState<ElementInfo | null>(null);
@@ -1570,6 +1588,41 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   const [aiStyle, setAiStyle] = useState<'vivid' | 'natural'>('vivid');
   const [aiSourceImage, setAiSourceImage] = useState<string>('');
   const [aiSourceUploading, setAiSourceUploading] = useState(false);
+
+  /* ── Prodotto selezionato dentro la modale (My Projects) ──
+   * Inizializzato dal productId della pagina; l'utente può cambiarlo dal
+   * menu per basare il prompt su un altro prodotto anche se la pagina è
+   * solo clonata. `effectiveProduct` è la fonte unica usata da swipe /
+   * brand colors / analisi: prima il prodotto scelto dal menu, poi il
+   * `productContext` passato dal parent come fallback. */
+  const [selectedProductId, setSelectedProductId] = useState<string>(currentProductId || '');
+  useEffect(() => {
+    setSelectedProductId(currentProductId || '');
+  }, [currentProductId]);
+
+  const effectiveProduct = useMemo(() => {
+    const fromList = (availableProducts || []).find((p) => p.id === selectedProductId);
+    if (fromList) return fromList;
+    if (productContext) {
+      return {
+        id: '',
+        name: productContext.name || '',
+        description: productContext.description,
+        brief: productContext.brief,
+        marketResearch: productContext.marketResearch,
+        imageUrl: productContext.imageUrl,
+      };
+    }
+    return undefined;
+  }, [availableProducts, selectedProductId, productContext]);
+
+  const handleProductSelect = useCallback(
+    (id: string) => {
+      setSelectedProductId(id);
+      onProductChange?.(id);
+    },
+    [onProductChange],
+  );
   const [aiVideoDuration, setAiVideoDuration] = useState<5 | 10>(5);
   const [aiVideoLoop, setAiVideoLoop] = useState<boolean>(true);
   const [aiGenerating, setAiGenerating] = useState(false);
@@ -2076,6 +2129,60 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     }
   }, [aiSourceUploading]);
 
+  /* ── Analizza con Claude l'immagine di riferimento caricata ──
+   * Fa vedere a Claude l'immagine caricata + i dati del prodotto scelto e
+   * scrive un prompt mirato nel textarea. Usa l'analyzer immagini
+   * (/api/swipe-image/analyze) via runSwipeAnalysis: passando solo
+   * sourceImageUrl (URL pubblico Supabase) il server fa il fetch lato suo.
+   * Funziona in ogni tab — il prompt prodotto serve sia per generare/editare
+   * che per animare. */
+  const handleAnalyzeReferenceImage = useCallback(async () => {
+    if (!aiSourceImage || swipeVisionLoading || aiGenerating) return;
+
+    const productName = (effectiveProduct?.name || '').trim();
+    const productDesc = (effectiveProduct?.description || '').trim();
+    const productBrief = (effectiveProduct?.brief || '').trim().slice(0, 600);
+
+    const fallbackLines: string[] = [];
+    fallbackLines.push(
+      productName
+        ? `Photorealistic promotional image for ${productName}, inspired by the reference image.`
+        : 'Photorealistic promotional image inspired by the reference image.',
+    );
+    if (productDesc) fallbackLines.push(`What it is: ${productDesc}.`);
+    if (productBrief) fallbackLines.push(`Brief snippet: ${productBrief}`);
+    fallbackLines.push(
+      'Keep the composition/mood of the reference, integrate our product naturally, professional lighting, no on-image text.',
+    );
+
+    swipeAnalysisCtxRef.current = {
+      mediaKind: 'image',
+      sourceImageUrl: aiSourceImage,
+      posterFrames: [],
+      surroundingContext: {},
+      currentAlt: '',
+      pageTitle: pageTitle || '',
+      productName,
+      productDesc,
+      productBrief,
+      fallbackPrompt: fallbackLines.join('\n'),
+    };
+
+    setSwipeMediaKind('image');
+    setSwipeVisionError('');
+    setSwipeVisionLoading(true);
+    setSwipeStage('analyzing');
+    await runSwipeAnalysis({ extraGuidance: swipeExtraGuidance, autoFire: false });
+  }, [
+    aiSourceImage,
+    swipeVisionLoading,
+    aiGenerating,
+    effectiveProduct,
+    pageTitle,
+    runSwipeAnalysis,
+    swipeExtraGuidance,
+  ]);
+
   const handleAiGenerate = useCallback(async () => {
     if (aiGenerating) return;
     let finalPrompt = aiPrompt.trim();
@@ -2314,9 +2421,9 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                 currentAlt: ctx.currentAlt,
                 pageTitle: ctx.pageTitle,
                 productContext: {
-                  name: ctx.productName,
-                  description: ctx.productDesc,
-                  brief: ctx.productBrief,
+                  name: (effectiveProduct?.name || ctx.productName || '').trim(),
+                  description: (effectiveProduct?.description || ctx.productDesc || '').trim(),
+                  brief: (effectiveProduct?.brief || ctx.productBrief || '').trim().slice(0, 600),
                 },
                 surroundingContext: ctx.surroundingContext,
                 userGuidance: extraGuidance || undefined,
@@ -2327,9 +2434,9 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                 currentAlt: ctx.currentAlt,
                 pageTitle: ctx.pageTitle,
                 productContext: {
-                  name: ctx.productName,
-                  description: ctx.productDesc,
-                  brief: ctx.productBrief,
+                  name: (effectiveProduct?.name || ctx.productName || '').trim(),
+                  description: (effectiveProduct?.description || ctx.productDesc || '').trim(),
+                  brief: (effectiveProduct?.brief || ctx.productBrief || '').trim().slice(0, 600),
                 },
                 surroundingContext: ctx.surroundingContext,
                 userGuidance: extraGuidance || undefined,
@@ -2410,7 +2517,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
         setSwipeVisionLoading(false);
       }
     },
-    [aiPrompt],
+    [aiPrompt, effectiveProduct],
   );
 
   /* Rigenera il prompt usando le indicazioni extra dell'utente. Non
@@ -2457,9 +2564,9 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     })();
     const videoSrc = String(selectedElement.src || '').trim();
 
-    const productName = (productContext?.name || '').trim();
-    const productDesc = (productContext?.description || '').trim();
-    const productBrief = (productContext?.brief || '').trim().slice(0, 600);
+    const productName = (effectiveProduct?.name || '').trim();
+    const productDesc = (effectiveProduct?.description || '').trim();
+    const productBrief = (effectiveProduct?.brief || '').trim().slice(0, 600);
     /* Swipe for Product = TEXT-to-VIDEO: l'AI inventa la scena DA ZERO da
        prompt, senza foto sorgente obbligatoria. Differente da "Anima" che è
        image-to-video (animazione di una foto fissa). Il vincolo della foto
@@ -2565,7 +2672,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     await runSwipeAnalysis({ extraGuidance: '', autoFire: false });
   }, [
     selectedElement,
-    productContext,
+    effectiveProduct,
     pageTitle,
     runSwipeAnalysis,
     requestSwipeContext,
@@ -2584,9 +2691,9 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     const currentAlt = String(selectedElement.alt || '').trim();
     const imageSrc = String(selectedElement.src || '').trim();
 
-    const productName = (productContext?.name || '').trim();
-    const productDesc = (productContext?.description || '').trim();
-    const productBrief = (productContext?.brief || '').trim().slice(0, 600);
+    const productName = (effectiveProduct?.name || '').trim();
+    const productDesc = (effectiveProduct?.description || '').trim();
+    const productBrief = (effectiveProduct?.brief || '').trim().slice(0, 600);
 
     /* Fallback prompt T2I — scegli automaticamente split-frame se l'alt
        suggerisce before/after, altrimenti hero con hint del meccanismo. */
@@ -2682,7 +2789,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     await runSwipeAnalysis({ extraGuidance: '', autoFire: false });
   }, [
     selectedElement,
-    productContext,
+    effectiveProduct,
     pageTitle,
     runSwipeAnalysis,
     requestSwipeContext,
@@ -2872,11 +2979,11 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          brief: productContext?.brief || '',
-          marketResearch: productContext?.marketResearch || '',
-          productName: productContext?.name || '',
-          productDescription: productContext?.description || '',
-          imageUrl: overrideImageUrl || brandUploadedImageUrl || productContext?.imageUrl || '',
+          brief: effectiveProduct?.brief || '',
+          marketResearch: effectiveProduct?.marketResearch || '',
+          productName: effectiveProduct?.name || '',
+          productDescription: effectiveProduct?.description || '',
+          imageUrl: overrideImageUrl || brandUploadedImageUrl || effectiveProduct?.imageUrl || '',
         }),
       });
 
@@ -2926,7 +3033,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     } finally {
       setBrandExtractRunning(false);
     }
-  }, [productContext, brandUploadedImageUrl]);
+  }, [effectiveProduct, brandUploadedImageUrl]);
 
   // Auto-run quando l'utente apre il panel la prima volta (e non c'è già una palette).
   useEffect(() => {
@@ -4655,6 +4762,30 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
             </div>
 
             <div className="p-5 space-y-4 overflow-y-auto">
+              {/* Product selector (My Projects): basa il prompt sul prodotto
+                  scelto anche se la pagina è solo clonata senza prodotto. */}
+              {availableProducts && availableProducts.length > 0 && (
+                <div>
+                  <label className="text-[10px] text-violet-500 font-medium mb-1 block uppercase tracking-wider">Prodotto (My Projects)</label>
+                  <select
+                    value={selectedProductId}
+                    onChange={(e) => handleProductSelect(e.target.value)}
+                    disabled={aiGenerating}
+                    className="w-full px-2.5 py-2 text-xs border border-violet-200 rounded-lg focus:border-violet-400 outline-none bg-white"
+                  >
+                    <option value="">— Nessun prodotto —</option>
+                    {availableProducts.map((p) => (
+                      <option key={p.id} value={p.id}>{p.name}</option>
+                    ))}
+                  </select>
+                  <p className="text-[10px] text-slate-400 mt-1">
+                    {selectedProductId
+                      ? 'Claude scrive il prompt in base a questo prodotto.'
+                      : 'Selezionalo per far scrivere a Claude un prompt mirato (utile sulle pagine solo clonate).'}
+                  </p>
+                </div>
+              )}
+
               {/* Model selector */}
               <div>
                 <label className="text-[10px] text-violet-500 font-medium mb-1 block uppercase tracking-wider">Modello AI</label>
@@ -4670,44 +4801,66 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                 </select>
               </div>
 
-              {/* Source image upload (image2image / image2video) */}
-              {(aiMode === 'image2image' || aiMode === 'image2video') && (
-                <div>
-                  <label className="text-[10px] text-violet-500 font-medium mb-1 block uppercase tracking-wider">Immagine sorgente</label>
-                  {aiSourceImage ? (
-                    <div className="relative">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={aiSourceImage} alt="source" className="w-full max-h-40 object-contain rounded-lg border border-violet-200 bg-slate-50" />
-                      <button
-                        onClick={() => !aiGenerating && setAiSourceImage('')}
-                        className="absolute top-1.5 right-1.5 p-1 rounded-md bg-black/60 hover:bg-black/80 text-white"
-                        disabled={aiGenerating}
-                      >
-                        <X className="h-3 w-3" />
-                      </button>
-                    </div>
-                  ) : (
-                    <label className={`flex items-center justify-center gap-2 px-4 py-3 rounded-xl border-2 border-dashed border-violet-300 hover:border-violet-500 hover:bg-violet-50 transition-colors cursor-pointer text-xs text-violet-600 font-medium ${aiSourceUploading ? 'opacity-60 cursor-wait' : ''}`}>
-                      {aiSourceUploading ? (
-                        <><Loader2 className="h-4 w-4 animate-spin" /> Caricamento…</>
-                      ) : (
-                        <><Upload className="h-4 w-4" /> Carica immagine sorgente</>
-                      )}
-                      <input
-                        type="file"
-                        accept="image/*"
-                        className="hidden"
-                        disabled={aiSourceUploading || aiGenerating}
-                        onChange={(e) => {
-                          const f = e.target.files?.[0];
-                          if (f) handleAiSourceUpload(f);
-                          e.target.value = '';
-                        }}
-                      />
+              {/* Image upload: in Modifica/Anima è la sorgente (obbligatoria),
+                  in Genera/Swipe è un riferimento opzionale che Claude può
+                  analizzare per scrivere un prompt mirato al prodotto. */}
+              {(() => {
+                const isSource = aiMode === 'image2image' || aiMode === 'image2video';
+                return (
+                  <div>
+                    <label className="text-[10px] text-violet-500 font-medium mb-1 block uppercase tracking-wider">
+                      {isSource ? 'Immagine sorgente' : 'Immagine di riferimento (opzionale)'}
                     </label>
-                  )}
-                </div>
-              )}
+                    {aiSourceImage ? (
+                      <div className="space-y-2">
+                        <div className="relative">
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img src={aiSourceImage} alt="source" className="w-full max-h-40 object-contain rounded-lg border border-violet-200 bg-slate-50" />
+                          <button
+                            onClick={() => !aiGenerating && setAiSourceImage('')}
+                            className="absolute top-1.5 right-1.5 p-1 rounded-md bg-black/60 hover:bg-black/80 text-white"
+                            disabled={aiGenerating}
+                          >
+                            <X className="h-3 w-3" />
+                          </button>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleAnalyzeReferenceImage}
+                          disabled={aiGenerating || swipeVisionLoading}
+                          className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-fuchsia-600 hover:bg-fuchsia-700 disabled:opacity-50 text-white text-xs font-semibold transition-colors"
+                          title={effectiveProduct?.name ? `Claude analizza l'immagine e scrive il prompt per ${effectiveProduct.name}` : 'Seleziona un prodotto sopra per un prompt mirato'}
+                        >
+                          {swipeVisionLoading ? (
+                            <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Claude sta analizzando…</>
+                          ) : (
+                            <><Sparkles className="h-3.5 w-3.5" /> Analizza con Claude e scrivi il prompt</>
+                          )}
+                        </button>
+                      </div>
+                    ) : (
+                      <label className={`flex items-center justify-center gap-2 px-4 py-3 rounded-xl border-2 border-dashed border-violet-300 hover:border-violet-500 hover:bg-violet-50 transition-colors cursor-pointer text-xs text-violet-600 font-medium ${aiSourceUploading ? 'opacity-60 cursor-wait' : ''}`}>
+                        {aiSourceUploading ? (
+                          <><Loader2 className="h-4 w-4 animate-spin" /> Caricamento…</>
+                        ) : (
+                          <><Upload className="h-4 w-4" /> {isSource ? 'Carica immagine sorgente' : 'Carica immagine di riferimento'}</>
+                        )}
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          disabled={aiSourceUploading || aiGenerating}
+                          onChange={(e) => {
+                            const f = e.target.files?.[0];
+                            if (f) handleAiSourceUpload(f);
+                            e.target.value = '';
+                          }}
+                        />
+                      </label>
+                    )}
+                  </div>
+                );
+              })()}
 
               {/* Context (text2image only) */}
               {aiMode === 'text2image' && aiContextText && (
