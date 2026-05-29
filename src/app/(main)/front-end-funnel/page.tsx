@@ -3308,13 +3308,14 @@ export default function FrontEndFunnel() {
 
     try {
       if (mode === 'identical') {
-        // Identical clone - fetched directly by Next.js API with CSS inlining
-        const response = await fetch('/api/clone-funnel', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url, cloneMode: 'identical', viewport: cloneMobile ? 'both' : 'desktop', keepScripts: preserveScripts }),
-        });
-        const data = await parseJsonResponseOrThrow<{
+        // HTML caricato dall'utente (riga con url sintetico uploaded.local):
+        // niente fetch — quell'URL non esiste. Usiamo direttamente l'HTML
+        // gia' presente in clonedData.html. Tutto il resto del flusso resta
+        // identico (sanitize, preview, save).
+        const uploadedHtml = url.startsWith('https://uploaded.local/')
+          ? (currentPage?.clonedData?.html || '')
+          : '';
+        let data: {
           content?: string;
           mobileContent?: string | null;
           mobileFinalSize?: number;
@@ -3325,8 +3326,30 @@ export default function FrontEndFunnel() {
           jsRendered?: boolean;
           warning?: string;
           error?: string;
-        }>(response, '[clone identical]');
-        if (!response.ok || data.error) throw new Error(data.error || 'Clone failed');
+        };
+        if (uploadedHtml) {
+          data = { content: uploadedHtml, finalSize: uploadedHtml.length };
+        } else {
+          // Identical clone - fetched directly by Next.js API with CSS inlining
+          const response = await fetch('/api/clone-funnel', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url, cloneMode: 'identical', viewport: cloneMobile ? 'both' : 'desktop', keepScripts: preserveScripts }),
+          });
+          data = await parseJsonResponseOrThrow<{
+            content?: string;
+            mobileContent?: string | null;
+            mobileFinalSize?: number;
+            finalSize?: number;
+            cssInlined?: boolean;
+            cssCount?: number;
+            imgCount?: number;
+            jsRendered?: boolean;
+            warning?: string;
+            error?: string;
+          }>(response, '[clone identical]');
+          if (!response.ok || data.error) throw new Error(data.error || 'Clone failed');
+        }
 
         if (data.warning) {
           console.warn('⚠️ Clone warning:', data.warning);
