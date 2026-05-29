@@ -182,7 +182,7 @@ function ResultModal({ step, onClose }: { step: FunnelStep; onClose: () => void 
           </DialogTitle>
         </DialogHeader>
 
-        {content && looksLikeHtml && (
+        {content && (
           <div className="flex items-center gap-2 mt-2">
             <div className="inline-flex rounded-lg border border-border overflow-hidden">
               <button
@@ -211,7 +211,7 @@ function ResultModal({ step, onClose }: { step: FunnelStep; onClose: () => void 
         <div className="mt-4 flex-1 overflow-y-auto">
           {!content ? (
             <p className="text-muted-foreground italic text-sm">Nessun contenuto generato ancora. Premi SWIPE per generare.</p>
-          ) : view === "preview" && looksLikeHtml ? (
+          ) : view === "preview" ? (
             <iframe
               srcDoc={content}
               title={`preview-${step.id}`}
