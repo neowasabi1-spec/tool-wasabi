@@ -40,19 +40,42 @@ function pathFor(pageId: string, kind: HtmlKind, variant: 'desktop' | 'mobile'):
   return `funnel-html/${pageId}/${kind}-${variant}.html`;
 }
 
+/** Heuristica: l'errore di Storage indica che il content-type non e'
+ *  ammesso dalla allowlist `allowed_mime_types` del bucket? In quel caso
+ *  conviene ritentare con un MIME generico (octet-stream), che i bucket
+ *  senza allowlist accettano sempre. La copia resta comunque HTML: la
+ *  rehydrate la rilegge con `.text()` a prescindere dal content-type. */
+function isMimeRejection(message?: string): boolean {
+  if (!message) return false;
+  return /mime|content[\s-]?type|not\s+allowed|invalid_mime|unsupported/i.test(message);
+}
+
 async function uploadOne(pageId: string, kind: HtmlKind, variant: 'desktop' | 'mobile', html: string): Promise<string> {
   const sb = getSupabaseBrowser();
   if (!sb) throw new Error('Supabase browser client not configured');
 
   const path = pathFor(pageId, kind, variant);
-  const blob = new Blob([html], { type: 'text/html; charset=utf-8' });
 
-  const { error } = await sb.storage.from(BUCKET).upload(path, blob, {
-    contentType: 'text/html; charset=utf-8',
-    upsert: true,
-    // niente cache-control: vogliamo sempre la versione più fresca al boot
-    cacheControl: '0',
-  });
+  const doUpload = (contentType: string) =>
+    sb.storage.from(BUCKET).upload(path, new Blob([html], { type: contentType }), {
+      contentType,
+      upsert: true,
+      // niente cache-control: vogliamo sempre la versione più fresca al boot
+      cacheControl: '0',
+    });
+
+  let { error } = await doUpload('text/html; charset=utf-8');
+
+  // Bucket con allowlist MIME che non include text/html: ritenta con un
+  // content-type generico. Evita che l'edit dell'editor non venga mai
+  // persistito su Storage (e quindi sparisca al reload su altri device).
+  if (error && isMimeRejection(error.message)) {
+    console.warn(
+      `[funnel-html-storage] bucket "${BUCKET}" ha rifiutato text/html, ritento con application/octet-stream`,
+    );
+    ({ error } = await doUpload('application/octet-stream'));
+  }
+
   if (error) {
     if (error.message?.includes('Bucket not found')) {
       throw new Error(`Storage bucket "${BUCKET}" not found. Create it in Supabase → Storage and make it public.`);

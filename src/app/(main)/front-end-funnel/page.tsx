@@ -5744,14 +5744,14 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                 // Se nessuno dei tre ha l'HTML, mostra un messaggio
                                 // chiaro che dipende dallo stato (no-clone vs strippato).
                                 const fetchHtmlIfNeeded = async (
-                                  blob: { html?: string; mobileHtml?: string; jobId?: string; htmlSkipped?: boolean } | undefined,
+                                  blob: { html?: string; mobileHtml?: string; jobId?: string; htmlSkipped?: boolean; htmlUrl?: string; mobileHtmlUrl?: string } | undefined,
                                   target: 'clonedData' | 'swipedData',
                                 ): Promise<{ html: string; mobileHtml?: string } | null> => {
                                   if (!blob) return null;
                                   if (blob.html && blob.html.length > 0) {
                                     return { html: blob.html, mobileHtml: blob.mobileHtml };
                                   }
-                                  // 2) IndexedDB
+                                  // 2) IndexedDB (copia locale, scritta ad ogni Save dell'editor)
                                   try {
                                     const { loadHtmlBlob } = await import('@/lib/html-blob-store');
                                     const idb = await loadHtmlBlob(page.id, target);
@@ -5759,6 +5759,19 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                       return { html: idb.html, mobileHtml: idb.mobileHtml };
                                     }
                                   } catch { /* fall through */ }
+                                  // 2.5) Supabase Storage (htmlUrl) — copia cross-device. Serve
+                                  //      quando si clicca l'occhio prima che la rehydrate al boot
+                                  //      abbia ripopolato blob.html, o da un altro browser/device.
+                                  if (blob.htmlUrl) {
+                                    try {
+                                      const { fetchHtmlFromStorage } = await import('@/lib/funnel-html-storage');
+                                      const html = await fetchHtmlFromStorage(blob.htmlUrl);
+                                      const mobileHtml = blob.mobileHtmlUrl ? await fetchHtmlFromStorage(blob.mobileHtmlUrl) : undefined;
+                                      if (html) {
+                                        return { html, mobileHtml: mobileHtml || undefined };
+                                      }
+                                    } catch { /* fall through */ }
+                                  }
                                   // 3) openclaw_messages.response (richiede jobId)
                                   if (blob.jobId) {
                                     try {
