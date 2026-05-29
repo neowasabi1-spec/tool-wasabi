@@ -163,14 +163,41 @@ function ResultModal({ step, onClose }: { step: FunnelStep; onClose: () => void 
   const looksLikeHtml = /<(!doctype|html|head|body|div|section|main|header|img|h1|p|a|span)[\s>]/i.test(content);
   const [view, setView] = useState<"preview" | "code">(looksLikeHtml ? "preview" : "code");
 
+  // HTML "stabilizzato" per l'anteprima: riarma gli accordion/FAQ (Funnelish &
+  // generici sono puro JS e nello snapshot clonato non sono interattivi),
+  // inietta <base href> per gli asset relativi e sblocca lo scroll. Calcolato
+  // via dynamic import per non appesantire il bundle e cadere su `content` raw
+  // se qualcosa va storto.
+  const [previewHtml, setPreviewHtml] = useState<string>(content);
+  useEffect(() => {
+    let alive = true;
+    if (!content) {
+      setPreviewHtml("");
+      return;
+    }
+    setPreviewHtml(content);
+    (async () => {
+      try {
+        const { stabilizeClonedHtml } = await import("@/lib/spa-rescue");
+        const fixed = stabilizeClonedHtml(content, step.url || "");
+        if (alive) setPreviewHtml(fixed);
+      } catch {
+        /* fallback: content raw già impostato */
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [content, step.url]);
+
   const openInNewTab = useCallback(() => {
     if (!content) return;
-    const blob = new Blob([content], { type: "text/html" });
+    const blob = new Blob([previewHtml || content], { type: "text/html" });
     const url = URL.createObjectURL(blob);
     window.open(url, "_blank", "noopener,noreferrer");
     // Revoca differita: lascia il tempo al tab di caricare.
     setTimeout(() => URL.revokeObjectURL(url), 60_000);
-  }, [content]);
+  }, [content, previewHtml]);
 
   return (
     <Dialog open onOpenChange={onClose}>
@@ -213,7 +240,7 @@ function ResultModal({ step, onClose }: { step: FunnelStep; onClose: () => void 
             <p className="text-muted-foreground italic text-sm">Nessun contenuto generato ancora. Premi SWIPE per generare.</p>
           ) : view === "preview" ? (
             <iframe
-              srcDoc={content}
+              srcDoc={previewHtml || content}
               title={`preview-${step.id}`}
               className="w-full h-[70vh] rounded-xl border border-border bg-white"
               sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
