@@ -35,6 +35,7 @@ import {
   Settings,
   Wand2,
   X,
+  AlertTriangle,
   Image as ImageIcon,
   Layers,
   Lightbulb,
@@ -1171,6 +1172,38 @@ export default function FrontEndFunnel() {
   // "Funnel" di un'offerta in My Projects.
   const [saveTarget, setSaveTarget] = useState<'archive' | 'project'>('archive');
   const [saveProjectId, setSaveProjectId] = useState('');
+
+  // Avviso non bloccante quando l'HTML (clone/upload/edit) non e' riuscito a
+  // salvarsi su Supabase Storage: in quel caso resta solo la copia locale
+  // (IndexedDB) di QUESTO browser. Importante soprattutto per gli HTML
+  // caricati, che — a differenza degli URL — non hanno una sorgente da cui
+  // rigenerare.
+  const [storageWarning, setStorageWarning] = useState<string | null>(null);
+
+  // Dopo un save che tocca clonedData/swipedData, verifica l'esito della
+  // persistenza su Storage leggendo lo stato dello store: se l'HTML e'
+  // grande (> 50KB, quindi gestito via Storage) ma non ha ottenuto un
+  // `htmlUrl`, l'upload e' fallito (es. bucket con restrizione MIME) e la
+  // copia "ufficiale" cross-device non esiste. Avvisa l'utente.
+  const checkStoragePersistedOrWarn = (
+    pageId: string,
+    kind: 'clonedData' | 'swipedData',
+  ) => {
+    const p = useStore.getState().funnelPages.find((x) => x.id === pageId);
+    const blob = p?.[kind] as { html?: string; htmlUrl?: string } | undefined;
+    if (!blob) return;
+    const len = blob.html?.length || 0;
+    if (len > 50_000 && !blob.htmlUrl) {
+      setStorageWarning(
+        'HTML salvato solo in locale su questo browser: l\u2019upload su Supabase Storage \u00e8 fallito ' +
+        '(probabile restrizione MIME del bucket "media"). Non sar\u00e0 visibile dopo un reload su altri ' +
+        'device. Fix: nello SQL editor di Supabase esegui  update storage.buckets set public = true, ' +
+        'allowed_mime_types = null where id = \u2019media\u2019;',
+      );
+    } else {
+      setStorageWarning(null);
+    }
+  };
 
   // Salva il flow corrente come funnel_steps nel tab "Funnel" del progetto
   // selezionato (My Projects). Mappa ogni pagina del builder su uno step.
@@ -2517,11 +2550,13 @@ export default function FrontEndFunnel() {
   const handleUploadHtmlFile = (pageId: string, pageName: string, file: File) => {
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
       const html = String(reader.result || '');
       if (!html.trim()) { alert('Il file HTML è vuoto.'); return; }
       const safeName = (file.name || 'pagina.html').replace(/[^a-zA-Z0-9._-]/g, '_');
-      updateFunnelPage(pageId, {
+      // Copia locale immediata (sopravvive anche se Storage fallisce).
+      void saveHtmlBlob(pageId, 'clonedData', html);
+      await updateFunnelPage(pageId, {
         urlToSwipe: `https://uploaded.local/${safeName}`,
         clonedData: {
           html,
@@ -2532,7 +2567,7 @@ export default function FrontEndFunnel() {
           cloned_at: new Date(),
         },
       });
-      void saveHtmlBlob(pageId, 'clonedData', html);
+      checkStoragePersistedOrWarn(pageId, 'clonedData');
     };
     reader.onerror = () => alert('Errore nella lettura del file HTML.');
     reader.readAsText(file);
@@ -8265,7 +8300,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
               (Array.isArray(editorProject.logo) && editorProject.logo[0]?.url) ||
               '',
           } : undefined}
-          onSave={(html, mobileHtml) => {
+          onSave={async (html, mobileHtml) => {
             setHtmlPreviewModal(prev => ({ ...prev, html, mobileHtml: mobileHtml || prev.mobileHtml }));
 
             if (htmlPreviewModal.pageId) {
@@ -8273,15 +8308,17 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
               const page = (funnelPages || []).find(p => p.id === pid);
               if (page) {
                 if (htmlPreviewModal.sourceType === 'swiped' && page.swipedData) {
-                  updateFunnelPage(pid, {
+                  // Persisti il blob in IndexedDB PRIMA del round-trip: il
+                  // save Supabase strippa l'HTML > 50KB dal JSONB, quindi
+                  // senza questo l'edit andrebbe perso al reload.
+                  void saveHtmlBlob(pid, 'swipedData', html, mobileHtml || page.swipedData.mobileHtml);
+                  await updateFunnelPage(pid, {
                     swipedData: { ...page.swipedData, html, newLength: html.length },
                   });
-                  // Persisti il blob in IndexedDB: il round-trip Supabase
-                  // strippa l'HTML > 50KB dal JSONB, quindi senza questo
-                  // l'edit andrebbe perso al reload.
-                  void saveHtmlBlob(pid, 'swipedData', html, mobileHtml || page.swipedData.mobileHtml);
+                  checkStoragePersistedOrWarn(pid, 'swipedData');
                 } else if (page.clonedData) {
-                  updateFunnelPage(pid, {
+                  void saveHtmlBlob(pid, 'clonedData', html, mobileHtml || page.clonedData.mobileHtml);
+                  await updateFunnelPage(pid, {
                     clonedData: {
                       ...page.clonedData,
                       html,
@@ -8289,12 +8326,13 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                       content_length: html.length,
                     },
                   });
-                  void saveHtmlBlob(pid, 'clonedData', html, mobileHtml || page.clonedData.mobileHtml);
+                  checkStoragePersistedOrWarn(pid, 'clonedData');
                 } else {
                   // Pagina senza clonedData/swipedData ancora (es. HTML
                   // appena editato su una pagina importata): crea clonedData
                   // così l'edit ha un contenitore e viene comunque persistito.
-                  updateFunnelPage(pid, {
+                  void saveHtmlBlob(pid, 'clonedData', html, mobileHtml || undefined);
+                  await updateFunnelPage(pid, {
                     clonedData: {
                       html,
                       mobileHtml: mobileHtml || undefined,
@@ -8305,7 +8343,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                       cloned_at: new Date(),
                     },
                   });
-                  void saveHtmlBlob(pid, 'clonedData', html, mobileHtml || undefined);
+                  checkStoragePersistedOrWarn(pid, 'clonedData');
                 }
               }
             }
@@ -8314,6 +8352,26 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
         />
         );
       })()}
+      {/* Avviso persistenza Storage (non bloccante) */}
+      {storageWarning && (
+        <div className="fixed bottom-4 right-4 z-[60] max-w-md bg-amber-50 border border-amber-300 rounded-xl shadow-lg p-4">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <p className="text-sm font-semibold text-amber-800 mb-1">Salvataggio solo locale</p>
+              <p className="text-xs text-amber-700 whitespace-pre-wrap break-words">{storageWarning}</p>
+            </div>
+            <button
+              onClick={() => setStorageWarning(null)}
+              className="text-amber-500 hover:text-amber-700 flex-shrink-0"
+              title="Chiudi"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Save Funnel Modal */}
       {showSaveModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
