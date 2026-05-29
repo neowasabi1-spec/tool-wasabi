@@ -670,7 +670,7 @@ serve(async (req) => {
     // which version of the function is actually serving requests. Critical
     // because GitHub pushes don't auto-deploy; if you don't see this exact
     // string in the logs you're still on the old build.
-    console.log(`🔖 funnel-swap build: v4.4-layout-overflow-fix (2026-05-27)`)
+    console.log(`🔖 funnel-swap build: v4.7-ctx-overflow-fix (2026-05-29)`)
     console.log(`📋 Richiesta ricevuta: phase=${phase}, cloneMode=${cloneMode}, url=${url?.substring(0, 50)}...`)
     if (system_kb) {
       const kbChars = String(system_kb).length
@@ -1480,7 +1480,13 @@ html body [class*="line-clamp-"],html body [class*="truncate"]{-webkit-line-clam
       //
       // Funnel context still stays in the user prompt because it changes
       // between pages of the same Swipe-All run (different cache key).
-      const SECTION_CHAR_LIMIT = 200_000
+      // Cap brief/MR a 90k char ciascuno (~22k token). NON 200k: a quel livello
+      // brief(144k)+MR(64k) nei system block + product_description duplicata nel
+      // rewritePrompt + KB cached mandavano l'input a ~192k token che, sommato a
+      // max_tokens, sfora il context 200k di Claude (HTTP 400). Il page_blueprint
+      // distilla comunque l'intero brief/MR in ~4k, quindi 90k qui sono
+      // abbondanti per il grounding e lasciano margine sicuro al context.
+      const SECTION_CHAR_LIMIT = 90_000
       const briefTrimmed = brief ? String(brief).slice(0, SECTION_CHAR_LIMIT) : ''
       const researchTrimmed = market_research ? String(market_research).slice(0, SECTION_CHAR_LIMIT) : ''
       const funnelContextTrimmed = funnel_context ? String(funnel_context).slice(0, 8000) : ''
@@ -1498,7 +1504,7 @@ html body [class*="line-clamp-"],html body [class*="truncate"]{-webkit-line-clam
 ${pageBlueprint ? '\n🧭 Nel SYSTEM PROMPT trovi il BLUEPRINT DELLA PAGINA: è la strategia VINCOLANTE (grande idea, meccanismo unico, avatar/awareness, big promise, sequenza persuasiva, tono). Riscrivi OGNI testo come pezzo coerente di quel piano, non come frase isolata.\n' : ''}
 📋 INFORMAZIONI DEL NUOVO PRODOTTO (USA SOLO QUESTE):
 Nome prodotto: ${job.product_name}
-Descrizione prodotto: ${job.product_description}
+Descrizione prodotto: ${String(job.product_description || '').slice(0, 8000)}
 ${job.framework ? `Framework copywriting: ${job.framework}` : ''}
 ${job.target ? `Target audience: ${job.target}` : ''}
 ${job.custom_prompt ? `Istruzioni copy personalizzate: ${job.custom_prompt}` : ''}
@@ -1672,7 +1678,11 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
             // parser would fall back to the ORIGINAL text for the entire
             // batch (12 texts unchanged). Bumping to 16000 gives ~1300 tok
             // per text — comfortable headroom for long body copy.
-            max_tokens: 16000,
+            // 12000 (era 16000): un batch piccolo (~12 testi) produce ~7-8k token,
+            // quindi 12000 è ampio; lasciare 16000 + input grande sforava il
+            // context 200k. Con i cap su brief/MR/description sopra, input+output
+            // restano sotto il limite con margine.
+            max_tokens: 12000,
             temperature: 0.6,
             system: systemBlocks,
             messages: [{ role: 'user', content: rewritePrompt }]

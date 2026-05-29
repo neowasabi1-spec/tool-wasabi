@@ -371,9 +371,26 @@ function buildProductFactsBlock(facts) {
   return lines.join('\n');
 }
 
+// Cap per i campi-documento dentro il CONTESTO PRODOTTO. Questi testi
+// (description / marketing_brief / market_research) su progetti reali possono
+// essere ENORMI (es. NeuroFlush: description 144k, marketing_brief 144k, MR 64k)
+// e qui finivano INTERI e per giunta DUPLICATI col brief/MR della knowledge
+// section → il system prompt locale andava in overflow sul modello (Neo/Morfeo)
+// e TUTTI i replacement uscivano a 0 senza errore visibile. Il page-blueprint
+// distilla comunque l'intero brief/MR, e la knowledge section porta già il
+// brief/MR (cap MAX_KNOWLEDGE_CHARS): qui basta un estratto del contesto prodotto.
+const PRODUCT_CTX_FIELD_CAP = Math.max(
+  3000,
+  Math.min(40000, parseInt(process.env.PRODUCT_CTX_FIELD_CAP || '10000', 10) || 10000),
+);
+function capField(s) {
+  const str = String(s);
+  if (str.length <= PRODUCT_CTX_FIELD_CAP) return str;
+  return str.slice(0, PRODUCT_CTX_FIELD_CAP - 60) + '\n[...troncato — versione completa nel brief/blueprint...]';
+}
 function buildProductContextMarkdown(product) {
   const lines = [];
-  if (product.description) lines.push(`Description:\n${product.description}`);
+  if (product.description) lines.push(`Description:\n${capField(product.description)}`);
   if (Array.isArray(product.benefits) && product.benefits.length) {
     lines.push(`Benefits:\n${product.benefits.map((b) => `• ${String(b)}`).join('\n')}`);
   }
@@ -391,16 +408,16 @@ function buildProductContextMarkdown(product) {
   if (product.target_audience) lines.push(`Target audience: ${product.target_audience}`);
   if (product.social_proof) lines.push(`Social proof notes: ${product.social_proof}`);
   if (product.marketing_brief && product.marketing_brief.trim()) {
-    lines.push(`MARKETING BRIEF / POSITIONING:\n${product.marketing_brief.trim()}`);
+    lines.push(`MARKETING BRIEF / POSITIONING:\n${capField(product.marketing_brief.trim())}`);
   }
   if (product.market_research && String(product.market_research).trim()) {
-    lines.push(`MARKET RESEARCH:\n${String(product.market_research).trim()}`);
+    lines.push(`MARKET RESEARCH:\n${capField(String(product.market_research).trim())}`);
   }
   if (product.project_brief && product.project_brief.trim()) {
-    lines.push(`PROJECT CONTEXT:\n${product.project_brief.trim()}`);
+    lines.push(`PROJECT CONTEXT:\n${capField(product.project_brief.trim())}`);
   }
   if (product.additional_marketing_notes && product.additional_marketing_notes.trim()) {
-    lines.push(`ADDITIONAL CONTEXT:\n${product.additional_marketing_notes.trim()}`);
+    lines.push(`ADDITIONAL CONTEXT:\n${capField(product.additional_marketing_notes.trim())}`);
   }
   return lines.join('\n\n');
 }
