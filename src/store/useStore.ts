@@ -624,7 +624,7 @@ export const useStore = create<Store>()((set, get) => ({
         }
         if (targets.length === 0) return;
         // eslint-disable-next-line no-console
-        console.log(`[store] tentativo reidratazione HTML per ${targets.length} target (Storage URL → openclaw_messages → IndexedDB)…`);
+        console.log(`[store] tentativo reidratazione HTML per ${targets.length} target (IndexedDB → Storage URL → openclaw_messages)…`);
 
         const applyHydratedHtml = (
           pageId: string,
@@ -654,10 +654,25 @@ export const useStore = create<Store>()((set, get) => ({
           const slice = targets.slice(i, i + PARALLEL);
           await Promise.all(
             slice.map(async ({ pageId, target, jobId, htmlUrl, mobileHtmlUrl }) => {
-              // 0) Supabase Storage URL — fonte primaria per le edit del
-              //    VisualHtmlEditor. Cross-browser, cross-device. Se il
-              //    JSONB ha htmlUrl significa che il save ha fatto upload
-              //    su Storage, quindi la versione lì è la più aggiornata.
+              // 0) IndexedDB locale — PRIORITÀ MASSIMA. È l'ultimo salvataggio
+              //    su QUESTO browser: viene scritto ad ogni clone Identical e
+              //    ad ogni Save del VisualHtmlEditor. Deve vincere su htmlUrl,
+              //    altrimenti un htmlUrl vecchio (es. upload su page_html
+              //    fallito perché la migration / la service key mancano)
+              //    sovrascriverebbe la modifica con la clonazione iniziale.
+              try {
+                const blob = await loadHtmlBlob(pageId, target);
+                if (blob?.html) {
+                  applyHydratedHtml(pageId, target, blob.html, blob.mobileHtml);
+                  return;
+                }
+              } catch (err) {
+                // eslint-disable-next-line no-console
+                console.warn(`[store] IndexedDB rehydrate fallita per page ${pageId}/${target}, provo Storage/openclaw:`, err);
+              }
+
+              // 1) htmlUrl (page_html / Storage) — copia cross-device. Usata
+              //    quando IDB è vuoto (altro browser/device, cache pulita).
               if (htmlUrl) {
                 try {
                   const html = await fetchHtmlFromStorage(htmlUrl);
@@ -668,11 +683,12 @@ export const useStore = create<Store>()((set, get) => ({
                   }
                 } catch (err) {
                   // eslint-disable-next-line no-console
-                  console.warn(`[store] Storage rehydrate fallito per page ${pageId}/${target}, provo openclaw/IDB:`, err);
+                  console.warn(`[store] Storage rehydrate fallito per page ${pageId}/${target}, provo openclaw:`, err);
                 }
               }
 
-              // 1) openclaw_messages (solo se jobId)
+              // 2) openclaw_messages (solo se jobId) — risultato del worker
+              //    per i flussi rewrite/swipe non ancora editati a mano.
               if (jobId) {
                 try {
                   const r = await fetch(`/api/openclaw/queue?id=${encodeURIComponent(jobId)}`);
@@ -680,7 +696,7 @@ export const useStore = create<Store>()((set, get) => ({
                     const data = (await r.json()) as { status?: string; response?: string | null };
                     if (data.response) {
                       let parsed: { html?: string; mobileHtml?: string; new_title?: string } | null = null;
-                      try { parsed = JSON.parse(data.response); } catch { /* fall through to IDB */ }
+                      try { parsed = JSON.parse(data.response); } catch { /* nessuna fonte */ }
                       if (parsed?.html) {
                         applyHydratedHtml(pageId, target, parsed.html, parsed.mobileHtml);
                         return;
@@ -689,20 +705,8 @@ export const useStore = create<Store>()((set, get) => ({
                   }
                 } catch (err) {
                   // eslint-disable-next-line no-console
-                  console.warn(`[store] openclaw rehydrate fallito per page ${pageId} (job ${jobId.slice(0, 8)}), provo IndexedDB:`, err);
+                  console.warn(`[store] openclaw rehydrate fallito per page ${pageId} (job ${jobId.slice(0, 8)}):`, err);
                 }
-              }
-
-              // 2) IndexedDB locale — copre il clone Identical (no jobId)
-              //    e i casi in cui openclaw / Storage non hanno la response.
-              try {
-                const blob = await loadHtmlBlob(pageId, target);
-                if (blob?.html) {
-                  applyHydratedHtml(pageId, target, blob.html, blob.mobileHtml);
-                }
-              } catch (err) {
-                // eslint-disable-next-line no-console
-                console.warn(`[store] IndexedDB rehydrate fallita per page ${pageId}/${target}:`, err);
               }
             })
           );
