@@ -2129,60 +2129,6 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     }
   }, [aiSourceUploading]);
 
-  /* ── Analizza con Claude l'immagine di riferimento caricata ──
-   * Fa vedere a Claude l'immagine caricata + i dati del prodotto scelto e
-   * scrive un prompt mirato nel textarea. Usa l'analyzer immagini
-   * (/api/swipe-image/analyze) via runSwipeAnalysis: passando solo
-   * sourceImageUrl (URL pubblico Supabase) il server fa il fetch lato suo.
-   * Funziona in ogni tab — il prompt prodotto serve sia per generare/editare
-   * che per animare. */
-  const handleAnalyzeReferenceImage = useCallback(async () => {
-    if (!aiSourceImage || swipeVisionLoading || aiGenerating) return;
-
-    const productName = (effectiveProduct?.name || '').trim();
-    const productDesc = (effectiveProduct?.description || '').trim();
-    const productBrief = (effectiveProduct?.brief || '').trim().slice(0, 600);
-
-    const fallbackLines: string[] = [];
-    fallbackLines.push(
-      productName
-        ? `Photorealistic promotional image for ${productName}, inspired by the reference image.`
-        : 'Photorealistic promotional image inspired by the reference image.',
-    );
-    if (productDesc) fallbackLines.push(`What it is: ${productDesc}.`);
-    if (productBrief) fallbackLines.push(`Brief snippet: ${productBrief}`);
-    fallbackLines.push(
-      'Keep the composition/mood of the reference, integrate our product naturally, professional lighting, no on-image text.',
-    );
-
-    swipeAnalysisCtxRef.current = {
-      mediaKind: 'image',
-      sourceImageUrl: aiSourceImage,
-      posterFrames: [],
-      surroundingContext: {},
-      currentAlt: '',
-      pageTitle: pageTitle || '',
-      productName,
-      productDesc,
-      productBrief,
-      fallbackPrompt: fallbackLines.join('\n'),
-    };
-
-    setSwipeMediaKind('image');
-    setSwipeVisionError('');
-    setSwipeVisionLoading(true);
-    setSwipeStage('analyzing');
-    await runSwipeAnalysis({ extraGuidance: swipeExtraGuidance, autoFire: false });
-  }, [
-    aiSourceImage,
-    swipeVisionLoading,
-    aiGenerating,
-    effectiveProduct,
-    pageTitle,
-    runSwipeAnalysis,
-    swipeExtraGuidance,
-  ]);
-
   const handleAiGenerate = useCallback(async () => {
     if (aiGenerating) return;
     let finalPrompt = aiPrompt.trim();
@@ -2530,6 +2476,61 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
       autoFire: false,
     });
   }, [runSwipeAnalysis, swipeExtraGuidance, swipeVisionLoading]);
+
+  /* ── Analizza con Claude l'immagine di riferimento caricata ──
+   * Fa vedere a Claude l'immagine caricata + i dati del prodotto scelto e
+   * scrive un prompt mirato nel textarea. Usa l'analyzer immagini
+   * (/api/swipe-image/analyze) via runSwipeAnalysis: passando solo
+   * sourceImageUrl (URL pubblico Supabase) il server fa il fetch lato suo.
+   * Funziona in ogni tab — il prompt prodotto serve sia per generare/editare
+   * che per animare. Deve stare DOPO runSwipeAnalysis: referenziarlo prima
+   * nella dep array darebbe un TDZ ("cannot access before initialization"). */
+  const handleAnalyzeReferenceImage = useCallback(async () => {
+    if (!aiSourceImage || swipeVisionLoading || aiGenerating) return;
+
+    const productName = (effectiveProduct?.name || '').trim();
+    const productDesc = (effectiveProduct?.description || '').trim();
+    const productBrief = (effectiveProduct?.brief || '').trim().slice(0, 600);
+
+    const fallbackLines: string[] = [];
+    fallbackLines.push(
+      productName
+        ? `Photorealistic promotional image for ${productName}, inspired by the reference image.`
+        : 'Photorealistic promotional image inspired by the reference image.',
+    );
+    if (productDesc) fallbackLines.push(`What it is: ${productDesc}.`);
+    if (productBrief) fallbackLines.push(`Brief snippet: ${productBrief}`);
+    fallbackLines.push(
+      'Keep the composition/mood of the reference, integrate our product naturally, professional lighting, no on-image text.',
+    );
+
+    swipeAnalysisCtxRef.current = {
+      mediaKind: 'image',
+      sourceImageUrl: aiSourceImage,
+      posterFrames: [],
+      surroundingContext: {},
+      currentAlt: '',
+      pageTitle: pageTitle || '',
+      productName,
+      productDesc,
+      productBrief,
+      fallbackPrompt: fallbackLines.join('\n'),
+    };
+
+    setSwipeMediaKind('image');
+    setSwipeVisionError('');
+    setSwipeVisionLoading(true);
+    setSwipeStage('analyzing');
+    await runSwipeAnalysis({ extraGuidance: swipeExtraGuidance, autoFire: false });
+  }, [
+    aiSourceImage,
+    swipeVisionLoading,
+    aiGenerating,
+    effectiveProduct,
+    pageTitle,
+    runSwipeAnalysis,
+    swipeExtraGuidance,
+  ]);
 
   /* ── Swipe Video for Product ──
    * Sostituisce il video selezionato con un nuovo video AI-generato
