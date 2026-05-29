@@ -35,7 +35,6 @@ import {
   Settings,
   Wand2,
   X,
-  AlertTriangle,
   Image as ImageIcon,
   Layers,
   Lightbulb,
@@ -1173,43 +1172,6 @@ export default function FrontEndFunnel() {
   const [saveTarget, setSaveTarget] = useState<'archive' | 'project'>('archive');
   const [saveProjectId, setSaveProjectId] = useState('');
 
-  // Avviso non bloccante quando l'HTML (clone/upload/edit) non e' riuscito a
-  // salvarsi su Supabase Storage: in quel caso resta solo la copia locale
-  // (IndexedDB) di QUESTO browser. Importante soprattutto per gli HTML
-  // caricati, che — a differenza degli URL — non hanno una sorgente da cui
-  // rigenerare.
-  const [storageWarning, setStorageWarning] = useState<string | null>(null);
-
-  // Dopo un save che tocca clonedData/swipedData, verifica l'esito della
-  // persistenza su Storage leggendo lo stato dello store: se l'HTML e'
-  // grande (> 50KB, quindi gestito via Storage) ma non ha ottenuto un
-  // `htmlUrl`, l'upload e' fallito (es. bucket con restrizione MIME) e la
-  // copia "ufficiale" cross-device non esiste. Avvisa l'utente.
-  const checkStoragePersistedOrWarn = (
-    pageId: string,
-    kind: 'clonedData' | 'swipedData',
-  ) => {
-    const state = useStore.getState();
-    const p = state.funnelPages.find((x) => x.id === pageId);
-    const blob = p?.[kind] as { html?: string; htmlUrl?: string } | undefined;
-    if (!blob) return;
-    const len = blob.html?.length || 0;
-    const storageOk = !!blob.htmlUrl;
-    const realErr = state.lastStorageError;
-    // Avvisa solo se l'HTML e' grande (gestito via Storage) ma non ha
-    // ottenuto un htmlUrl: la copia cross-device non esiste.
-    if (len > 50_000 && !storageOk) {
-      setStorageWarning(
-        'HTML salvato solo in locale su questo browser (IndexedDB): l\u2019upload su Supabase Storage \u00e8 fallito, ' +
-        'quindi non sar\u00e0 disponibile dopo un reload su altri device.\n\n' +
-        (realErr ? `Errore reale: ${realErr}\n\n` : '') +
-        'Se parla di MIME: esegui  update storage.buckets set public=true, allowed_mime_types=null where id=\u2019media\u2019;\n' +
-        'Se parla di "row-level security"/policy: serve una policy che permetta l\u2019upload anon sul bucket media.',
-      );
-    } else {
-      setStorageWarning(null);
-    }
-  };
 
   // Salva il flow corrente come funnel_steps nel tab "Funnel" del progetto
   // selezionato (My Projects). Mappa ogni pagina del builder su uno step.
@@ -2573,7 +2535,6 @@ export default function FrontEndFunnel() {
           cloned_at: new Date(),
         },
       });
-      checkStoragePersistedOrWarn(pageId, 'clonedData');
     };
     reader.onerror = () => alert('Errore nella lettura del file HTML.');
     reader.readAsText(file);
@@ -8321,7 +8282,6 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                   await updateFunnelPage(pid, {
                     swipedData: { ...page.swipedData, html, newLength: html.length },
                   });
-                  checkStoragePersistedOrWarn(pid, 'swipedData');
                 } else if (page.clonedData) {
                   void saveHtmlBlob(pid, 'clonedData', html, mobileHtml || page.clonedData.mobileHtml);
                   await updateFunnelPage(pid, {
@@ -8332,7 +8292,6 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                       content_length: html.length,
                     },
                   });
-                  checkStoragePersistedOrWarn(pid, 'clonedData');
                 } else {
                   // Pagina senza clonedData/swipedData ancora (es. HTML
                   // appena editato su una pagina importata): crea clonedData
@@ -8349,7 +8308,6 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                       cloned_at: new Date(),
                     },
                   });
-                  checkStoragePersistedOrWarn(pid, 'clonedData');
                 }
               }
             }
@@ -8358,26 +8316,6 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
         />
         );
       })()}
-      {/* Avviso persistenza Storage (non bloccante) */}
-      {storageWarning && (
-        <div className="fixed bottom-4 right-4 z-[60] max-w-md bg-amber-50 border border-amber-300 rounded-xl shadow-lg p-4">
-          <div className="flex items-start gap-3">
-            <AlertTriangle className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
-            <div className="flex-1">
-              <p className="text-sm font-semibold text-amber-800 mb-1">Salvataggio solo locale</p>
-              <p className="text-xs text-amber-700 whitespace-pre-wrap break-words">{storageWarning}</p>
-            </div>
-            <button
-              onClick={() => setStorageWarning(null)}
-              className="text-amber-500 hover:text-amber-700 flex-shrink-0"
-              title="Chiudi"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
-      )}
-
       {/* Save Funnel Modal */}
       {showSaveModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
