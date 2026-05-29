@@ -3418,8 +3418,18 @@ export default function FrontEndFunnel() {
           console.warn('⚠️ Clone warning:', data.warning);
         }
 
-        const clonedHtml = sanitizeClonedHtml(data.content || '', url, { keepScripts: preserveScripts });
-        const clonedMobileHtml = data.mobileContent ? sanitizeClonedHtml(data.mobileContent, url, { keepScripts: preserveScripts }) : '';
+        // HTML caricato dall'utente: lo usiamo COSI' COM'E', senza
+        // sanitizeClonedHtml. Quel sanitize riscrive gli URL relativi in
+        // assoluti usando la base dell'URL: con `uploaded.local` ogni
+        // asset relativo (css/img) diventerebbe https://uploaded.local/...
+        // → 404 → pagina senza stili/immagini (sembra "vuota"). Il file
+        // dell'utente e' gia' self-contained o ha URL assoluti suoi.
+        const clonedHtml = uploadedHtml
+          ? (data.content || '')
+          : sanitizeClonedHtml(data.content || '', url, { keepScripts: preserveScripts });
+        const clonedMobileHtml = uploadedHtml
+          ? (data.mobileContent || '')
+          : (data.mobileContent ? sanitizeClonedHtml(data.mobileContent, url, { keepScripts: preserveScripts }) : '');
         const mobileInfo = clonedMobileHtml ? ` + mobile ${(data.mobileFinalSize || 0).toLocaleString()}` : '';
         const statusMsg = data.jsRendered
           ? `⚠️ JS-rendered page (${(data.finalSize || 0).toLocaleString()} chars) - content might be incomplete`
