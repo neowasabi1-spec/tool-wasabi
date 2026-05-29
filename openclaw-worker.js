@@ -799,6 +799,29 @@ function extractRewritesFromAiResponse(text) {
 // call) per garantire la massima copertura.
 const REWRITE_GAP_FILL_PASSES = parseInt(process.env.REWRITE_GAP_FILL_PASSES || '4', 10);
 
+// ─── (A) BLUEPRINT PASS ────────────────────────────────────────────
+// Prima di riscrivere i singoli blocchi, facciamo UNA call al modello che
+// legge brief/MR/contesto prodotto + l'outline della pagina e produce la
+// STRATEGIA della pagina (grande idea, meccanismo unico, lead, awareness,
+// sequenza prove/obiezioni, angle per sezione, tono). Quella strategia viene
+// poi iniettata come "north star" nel system prompt di OGNI batch, cosi' i
+// blocchi non vengono piu' riscritti isolati ma coerenti con un unico arco
+// persuasivo — la differenza tra "300 frasi scollegate" e una pagina scritta
+// da un copywriter. E' ADDITIVO e con FALLBACK TOTALE: se la call fallisce,
+// torna vuota o troppo corta, si procede ESATTAMENTE come prima (nessun
+// blueprint, stesso comportamento di oggi). Disattivabile con REWRITE_BLUEPRINT=0.
+const REWRITE_BLUEPRINT_ENABLED = String(process.env.REWRITE_BLUEPRINT || '1') !== '0';
+// Cap di sicurezza sulla lunghezza del blueprint iniettato nel system prompt:
+// tiene il context sotto controllo sui modelli locali stretti (evita l'overflow
+// che in passato ha causato "0 replacements").
+const REWRITE_BLUEPRINT_MAX_CHARS = Math.max(
+  600,
+  Math.min(6000, parseInt(process.env.REWRITE_BLUEPRINT_MAX_CHARS || '3000', 10) || 3000),
+);
+// Sotto questo numero di testi non vale la pena fare il blueprint (pagine
+// minuscole: l'overhead di una call extra non e' giustificato).
+const REWRITE_BLUEPRINT_MIN_TEXTS = 6;
+
 // ─── CONVERSATIONAL REWRITE (chat-style) ──────────────────────────
 // Estrae il "product context" + tono dal system prompt server-side.
 // Server-side il prompt e' in italiano e ha una sezione delimitata
@@ -919,6 +942,89 @@ async function rewriteOneTextChatStyle({ id, originalText, tag, productName, pro
   return cleaned;
 }
 
+// (A) Genera la STRATEGIA della pagina (blueprint) con UNA call al modello.
+// Ritorna SEMPRE una stringa: '' se disabilitato / pagina piccola / errore /
+// risposta vuota. Il chiamante usa il blueprint solo se non vuoto, quindi un
+// fallimento qui NON puo' rompere il rewrite (degrada al comportamento attuale).
+async function generatePageBlueprint(systemPrompt, texts) {
+  try {
+    if (!REWRITE_BLUEPRINT_ENABLED) return '';
+    if (!Array.isArray(texts) || texts.length < REWRITE_BLUEPRINT_MIN_TEXTS) return '';
+    const { productName, context: productContext } = extractProductContextFromSystemPrompt(systemPrompt);
+    const langMatch = systemPrompt.match(/(?:LINGUA|OUTPUT LANGUAGE).*?:\s*([a-zA-Z]+)/i);
+    const lang = langMatch ? langMatch[1].toLowerCase().slice(0, 2) : 'en';
+    const langLabel = lang === 'it' ? 'italiano' : lang === 'en' ? 'English' : lang;
+
+    // Outline compatta della pagina, in ordine di documento: [tag] testo
+    // troncato. Cap totale ~7000 char cosi' la call resta leggera anche su
+    // pagine enormi (rappresenta comunque l'intero arco della pagina).
+    const OUTLINE_MAX = 7000;
+    let outline = '';
+    for (const t of texts) {
+      if (!t || typeof t.text !== 'string') continue;
+      const tag = String(t.tag || '').replace(/^(tag|mixed|attr):/, '') || 'text';
+      const snippet = t.text.replace(/\s+/g, ' ').trim().slice(0, 140);
+      if (!snippet) continue;
+      const line = `[${tag}] ${snippet}\n`;
+      if (outline.length + line.length > OUTLINE_MAX) { outline += '[...resto della pagina omesso per brevità...]\n'; break; }
+      outline += line;
+    }
+    if (!outline.trim()) return '';
+
+    const sys = `Sei il direct-response strategist capo: il cervello che, PRIMA di scrivere una sola riga, decide la strategia con cui un copywriter di livello mondiale riscriverà un'intera landing page. NON riscrivere i testi adesso. Devi produrre il BLUEPRINT che guiderà la riscrittura di ogni blocco, così che la pagina risulti UN UNICO pezzo coerente (stessa grande idea, stesso meccanismo, stesso avatar) e non 300 frasi scollegate. Usa il brief / market research / contesto prodotto come fonte di verità. Scrivi in ${langLabel}. Sii conciso e operativo (max ~450 parole).`;
+
+    const user = [
+      `PRODOTTO: ${productName || '(dedurre dal contesto)'}`,
+      productContext ? `\nCONTESTO / BRIEF / MARKET RESEARCH:\n${productContext.slice(0, 12000)}` : '',
+      '',
+      'OUTLINE DELLA PAGINA DA RISCRIVERE (in ordine, [tag] = ruolo del blocco):',
+      outline,
+      '',
+      'Produci il BLUEPRINT con ESATTAMENTE queste sezioni (intestazioni in MAIUSCOLO, testo sotto, niente preamboli):',
+      '1. GRANDE IDEA — l\'angolo/concetto unico che tiene insieme tutta la pagina.',
+      '2. MECCANISMO UNICO — come funziona / perché è diverso (deve emergere ovunque).',
+      '3. AVATAR & AWARENESS — chi è, a quale livello di consapevolezza (Schwartz), in che stato emotivo.',
+      '4. SOFISTICAZIONE DEL MERCATO — e come differenziarsi dai competitor.',
+      '5. BIG PROMISE — la promessa centrale, concreta e credibile.',
+      '6. TIPO DI LEAD — (es. problema-soluzione, story, proclamation, secret) e perché.',
+      '7. SEQUENZA PERSUASIVA — l\'arco della pagina sezione per sezione (hero → lead → proof → offerta → obiezioni → CTA → FAQ): cosa deve fare ogni sezione.',
+      '8. PROVE DA USARE — numeri, studi, autorità, testimonianze approvate (solo fatti reali dal brief).',
+      '9. OBIEZIONI DA NEUTRALIZZARE — in che ordine.',
+      '10. TONO & VOICE — 3-5 aggettivi + do/don\'t di stile.',
+      '11. REGOLE DI COERENZA — frasi/parole-chiave ricorrenti che TUTTI i blocchi devono rispettare.',
+    ].filter(Boolean).join('\n');
+
+    log('  ▸ Blueprint pass: genero la strategia della pagina (1 call)…');
+    let raw;
+    try {
+      raw = await callOpenClaw([
+        { role: 'system', content: sys },
+        { role: 'user', content: user },
+      ]);
+    } catch (e) {
+      log(`  ⚠ Blueprint pass fallito (${e && e.message ? e.message : 'errore'}) — proseguo SENZA blueprint (comportamento standard).`);
+      return '';
+    }
+    if (typeof raw !== 'string') return '';
+    let bp = raw.replace(/```[a-z]*\s*/gi, '').replace(/```/g, '').trim();
+    // Sanity: una strategia vera ha almeno un paio di sezioni. Se è troppo
+    // corta o vuota, meglio NON iniettare nulla (fallback pulito).
+    if (bp.length < 120) {
+      log('  ⚠ Blueprint troppo corto/vuoto — proseguo SENZA blueprint.');
+      return '';
+    }
+    if (bp.length > REWRITE_BLUEPRINT_MAX_CHARS) {
+      bp = bp.slice(0, REWRITE_BLUEPRINT_MAX_CHARS - 40) + '\n[...blueprint troncato...]';
+    }
+    log(`  ✓ Blueprint pronto (${bp.length} char) — lo userò come north star per tutti i blocchi.`);
+    return bp;
+  } catch (e) {
+    // Cinghia di sicurezza finale: qualunque cosa vada storta, niente blueprint.
+    try { log(`  ⚠ Blueprint pass: eccezione (${e && e.message ? e.message : e}) — proseguo SENZA blueprint.`); } catch { /* noop */ }
+    return '';
+  }
+}
+
 async function runRewriteInBatches(systemPrompt, userMessage) {
   const parsed = parseTextsFromRewritePrompt(userMessage);
   if (!parsed) {
@@ -969,6 +1075,20 @@ async function runRewriteInBatches(systemPrompt, userMessage) {
     const skipped = total - trueRewrites;
     log(`  ▸ Rewrite done (chat-mode): ${trueRewrites}/${total} VERAMENTE riscritti, ${skipped} restano = originale`);
     return JSON.stringify(allRewrites);
+  }
+
+  // (A) BLUEPRINT PASS — calcola UNA volta la strategia della pagina e la
+  // inietta come "north star" nel system prompt di ogni batch. Se torna vuoto
+  // (disabilitato / errore / pagina piccola), `systemPrompt` resta invariato e
+  // il rewrite procede ESATTAMENTE come prima. Nessun effetto su texts/id/batch.
+  const pageBlueprint = await generatePageBlueprint(systemPrompt, texts);
+  if (pageBlueprint) {
+    systemPrompt = `${systemPrompt}
+
+=== BLUEPRINT DELLA PAGINA (NORTH STAR — VINCOLANTE) ===
+Questa è la strategia decisa per QUESTA pagina. OGNI blocco che riscrivi DEVE essere coerente con essa: stessa grande idea, stesso meccanismo unico, stesso avatar/awareness, stessa big promise, stesso tono. I blocchi sono pezzi di UN'UNICA pagina, non testi indipendenti — falli dialogare tra loro seguendo la SEQUENZA PERSUASIVA. Se un blocco sembra in conflitto con il blueprint, vince il blueprint.
+${pageBlueprint}
+=== FINE BLUEPRINT ===`;
   }
 
   // Map id -> rewritten string. Usiamo una Map così l'ultima riscrittura buona

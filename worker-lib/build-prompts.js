@@ -419,6 +419,23 @@ function buildPrompts({ html, sourceUrl, product, tone, language, knowledge, ext
   texts = prependDocumentTitle(texts, html);
   if (texts.length === 0) throw new Error('No text found in page');
 
+  // ── (B) COERENZA DI PAGINA: ordina i blocchi in ORDINE DI DOCUMENTO ──
+  // Sotto MAX_TEXTS_FOR_AI l'extractor restituisce gia' i testi in ordine di
+  // pagina; ma quando si supera il cap vengono ordinati per PRIORITA' di tag
+  // (title, h1, h2, p, ...) e cosi' arrivano al modello "a salti", scollegati
+  // dal flusso reale della landing. Un copywriter non puo' scrivere un copy
+  // coerente leggendo i blocchi in ordine sparso. Riordinandoli per `position`
+  // il modello legge la pagina dall'alto verso il basso (hero → lead → proof →
+  // CTA → FAQ) e puo' mantenere un arco persuasivo unico.
+  // Gli `id` vengono assegnati DOPO questo sort, con lo stesso indice sia in
+  // `textsForAi` sia nel mapping restituito: il legame id↔testo resta identico,
+  // quindi e' un cambiamento a rischio zero per il finalize/replacer.
+  texts = texts.slice().sort((a, b) => {
+    const pa = typeof a.position === 'number' ? a.position : 0;
+    const pb = typeof b.position === 'number' ? b.position : 0;
+    return pa - pb;
+  });
+
   const productCtx = buildProductContextMarkdown(product);
   const knowledgeMd = buildKnowledgeMarkdown(knowledge);
   const builtinKb = buildBuiltinKnowledge();

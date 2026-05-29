@@ -483,6 +483,125 @@ function replaceLiquidPlaceholders(html: string): string {
     .replace(/  +/g, ' ')
 }
 
+// ─── (A) PAGE BLUEPRINT (Claude) ───────────────────────────────────
+// Genera UNA volta per job la STRATEGIA dell'intera pagina (grande idea,
+// meccanismo unico, lead, awareness, sequenza prove/obiezioni, angle per
+// sezione, tono). Viene poi iniettata come "north star" nel system prompt di
+// OGNI batch, così Claude non riscrive 12 testi alla volta scollegati, ma
+// blocchi coerenti con un unico arco persuasivo (la differenza tra copy
+// "generico" e copy da copywriter). Ritorna SEMPRE una stringa: '' su
+// qualunque errore/timeout/risposta vuota → il chiamante procede senza
+// blueprint (comportamento identico a oggi). Nessun side-effect se fallisce.
+async function generateClaudePageBlueprint(opts: {
+  apiKey: string
+  // deno-lint-ignore no-explicit-any
+  supabase: any
+  jobId: string
+  // deno-lint-ignore no-explicit-any
+  job: any
+  brief: string
+  marketResearch: string
+  timeoutMs: number
+}): Promise<string> {
+  try {
+    const apiKey = String(opts.apiKey || '').trim()
+    if (!apiKey) return ''
+
+    // Outline completa della pagina (tutti i testi, in ordine di documento).
+    let outline = ''
+    try {
+      const { data: allTexts } = await opts.supabase
+        .from('cloning_texts')
+        .select('index, original_text, tag_name')
+        .eq('job_id', opts.jobId)
+        .order('index', { ascending: true })
+      if (Array.isArray(allTexts)) {
+        const OUTLINE_MAX = 8000
+        for (const t of allTexts) {
+          const tag = String(t.tag_name || 'text')
+          const snippet = String(t.original_text || '').replace(/\s+/g, ' ').trim().slice(0, 140)
+          if (!snippet) continue
+          const line = `[${tag}] ${snippet}\n`
+          if (outline.length + line.length > OUTLINE_MAX) { outline += '[...resto pagina omesso...]\n'; break }
+          outline += line
+        }
+      }
+    } catch { /* outline best-effort */ }
+
+    const productName = String(opts.job?.product_name || '').trim()
+    const productDescription = String(opts.job?.product_description || '').trim().slice(0, 12000)
+    const briefTrim = String(opts.brief || '').trim().slice(0, 60000)
+    const mrTrim = String(opts.marketResearch || '').trim().slice(0, 60000)
+
+    const sys = `Sei il direct-response strategist capo: il cervello che, PRIMA di scrivere una sola riga, decide la strategia con cui un copywriter di livello mondiale riscriverà un'intera landing page. NON riscrivere i testi adesso. Produci il BLUEPRINT che guiderà la riscrittura di OGNI blocco, così che la pagina risulti UN UNICO pezzo coerente (stessa grande idea, stesso meccanismo, stesso avatar) e non una somma di frasi scollegate. Brief e market research sono la fonte di verità. Sii conciso e operativo (max ~500 parole). Rispondi nella stessa lingua del brief/prodotto.`
+
+    const userParts = [
+      `PRODOTTO: ${productName || '(dedurre dal contesto)'}`,
+      productDescription ? `\nDESCRIZIONE / CONTESTO PRODOTTO:\n${productDescription}` : '',
+      briefTrim ? `\nPROJECT BRIEF:\n${briefTrim}` : '',
+      mrTrim ? `\nMARKET RESEARCH:\n${mrTrim}` : '',
+      outline ? `\nOUTLINE DELLA PAGINA DA RISCRIVERE (in ordine, [tag] = ruolo del blocco):\n${outline}` : '',
+      '',
+      'Produci il BLUEPRINT con ESATTAMENTE queste sezioni (intestazioni in MAIUSCOLO, niente preamboli):',
+      '1. GRANDE IDEA — l\'angolo unico che tiene insieme tutta la pagina.',
+      '2. MECCANISMO UNICO — come funziona / perché è diverso (deve emergere ovunque).',
+      '3. AVATAR & AWARENESS — chi è, a quale livello di consapevolezza (Schwartz), stato emotivo.',
+      '4. SOFISTICAZIONE DEL MERCATO — e come differenziarsi dai competitor.',
+      '5. BIG PROMISE — la promessa centrale, concreta e credibile.',
+      '6. TIPO DI LEAD — (problema-soluzione / story / proclamation / secret) e perché.',
+      '7. SEQUENZA PERSUASIVA — l\'arco sezione per sezione (hero → lead → proof → offerta → obiezioni → CTA → FAQ): cosa fa ogni sezione.',
+      '8. PROVE DA USARE — numeri, studi, autorità, testimonianze (solo fatti reali dal brief).',
+      '9. OBIEZIONI DA NEUTRALIZZARE — in che ordine.',
+      '10. TONO & VOICE — 3-5 aggettivi + do/don\'t.',
+      '11. REGOLE DI COERENZA — frasi/parole-chiave ricorrenti che TUTTI i blocchi devono rispettare.',
+    ].filter(Boolean).join('\n')
+
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), Math.max(20_000, Math.min(120_000, opts.timeoutMs || 90_000)))
+    let resp: Response
+    try {
+      resp = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 1500,
+          temperature: 0.5,
+          system: sys,
+          messages: [{ role: 'user', content: userParts }],
+        }),
+        signal: controller.signal,
+      })
+      clearTimeout(timeoutId)
+    } catch (e) {
+      clearTimeout(timeoutId)
+      console.warn(`⚠️ Blueprint pass: fetch fallita/timeout (${e instanceof Error ? e.message : e}) — procedo senza blueprint.`)
+      return ''
+    }
+    if (!resp.ok) {
+      console.warn(`⚠️ Blueprint pass: HTTP ${resp.status} — procedo senza blueprint.`)
+      return ''
+    }
+    const data = await resp.json().catch(() => null)
+    // deno-lint-ignore no-explicit-any
+    const blocks = (data && (data as any).content) || []
+    let bp = ''
+    if (Array.isArray(blocks)) {
+      bp = blocks.map((b: { type?: string; text?: string }) => (b && b.type === 'text' ? (b.text || '') : '')).join('').trim()
+    }
+    if (bp.length < 120) return ''
+    if (bp.length > 4000) bp = bp.slice(0, 3960) + '\n[...blueprint troncato...]'
+    return bp
+  } catch (e) {
+    console.warn(`⚠️ Blueprint pass: eccezione (${e instanceof Error ? e.message : e}) — procedo senza blueprint.`)
+    return ''
+  }
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
@@ -1265,6 +1384,36 @@ html body [class*="line-clamp-"],html body [class*="truncate"]{-webkit-line-clam
         )
       }
 
+      // (A) PAGE BLUEPRINT — strategia di pagina condivisa da tutti i batch.
+      // Generata UNA volta (sul primo batch) e persistita in
+      // cloning_jobs.page_blueprint; i batch successivi la rileggono. Degrada
+      // in modo SICURO: se la colonna non esiste ancora (migration non
+      // eseguita) o la generazione fallisce, `pageBlueprint` resta '' e il
+      // rewrite procede ESATTAMENTE come oggi.
+      let pageBlueprint = ''
+      try { pageBlueprint = (job.page_blueprint && String(job.page_blueprint).trim()) || '' } catch { pageBlueprint = '' }
+      if (!pageBlueprint && Number(batchNumber) === 0) {
+        pageBlueprint = await generateClaudePageBlueprint({
+          apiKey: String(userProfile.anthropic_api_key || '').trim(),
+          supabase,
+          jobId,
+          job,
+          brief: typeof brief === 'string' ? brief : '',
+          marketResearch: typeof market_research === 'string' ? market_research : '',
+          timeoutMs: CLAUDE_TIMEOUT_MS_RUNTIME,
+        })
+        if (pageBlueprint) {
+          console.log(`✓ Blueprint pagina pronto (${pageBlueprint.length} char) — north star per tutti i batch.`)
+          const { error: bpErr } = await supabase
+            .from('cloning_jobs')
+            .update({ page_blueprint: pageBlueprint })
+            .eq('id', jobId)
+          if (bpErr) {
+            console.warn(`⚠️ page_blueprint non salvato (probabile colonna mancante — esegui la migration add_page_blueprint): ${bpErr.message}. Il batch 0 lo usa comunque; i batch successivi gireranno senza finché la colonna non esiste.`)
+          }
+        }
+      }
+
       const batchTexts = textsToProcess.map(t => ({
         index: t.index,
         text: t.original_text,
@@ -1346,23 +1495,24 @@ html body [class*="line-clamp-"],html body [class*="truncate"]{-webkit-line-clam
       }
 
       const rewritePrompt = `La landing page è un TEMPLATE strutturale. Il tuo compito è riscrivere TUTTI i testi usando SOLO le informazioni del nuovo prodotto.
-
+${pageBlueprint ? '\n🧭 Nel SYSTEM PROMPT trovi il BLUEPRINT DELLA PAGINA: è la strategia VINCOLANTE (grande idea, meccanismo unico, avatar/awareness, big promise, sequenza persuasiva, tono). Riscrivi OGNI testo come pezzo coerente di quel piano, non come frase isolata.\n' : ''}
 📋 INFORMAZIONI DEL NUOVO PRODOTTO (USA SOLO QUESTE):
 Nome prodotto: ${job.product_name}
 Descrizione prodotto: ${job.product_description}
 ${job.framework ? `Framework copywriting: ${job.framework}` : ''}
 ${job.target ? `Target audience: ${job.target}` : ''}
 ${job.custom_prompt ? `Istruzioni copy personalizzate: ${job.custom_prompt}` : ''}
-${(briefTrimmed || researchTrimmed) ? `\n👉 Il PROJECT BRIEF e la MARKET RESEARCH completi (con tutti i file caricati su My Projects) sono stati forniti nel SYSTEM PROMPT come fonti primarie di verità. Usali attivamente per tono, positioning, pain points, value props, linguaggio del pubblico.\n` : ''}
+${(briefTrimmed || researchTrimmed) ? `\n👉 FONTE PRIMARIA DI VERITÀ: nel SYSTEM PROMPT trovi il PROJECT BRIEF e la MARKET RESEARCH completi (tutti i file caricati su My Projects, incluso l'eventuale "Mechanism Brief"). NON sono un contorno: sono il COSA dire. Costruisci OGNI rewrite attorno al MECCANISMO UNICO del prodotto, alla BIG PROMISE/positioning, all'avatar e al suo livello di consapevolezza, ai pain point reali, alle PROVE (numeri, studi, testimonianze approvate) e alle obiezioni descritte lì.\n` : ''}
 ${funnelContextTrimmed ? `\n🧵 FUNNEL NARRATIVE (pagine già riscritte di questo stesso funnel — DEVI mantenere COERENZA su tono di voce, angle/grande idea, big promise, pain point principale, audience, CTA logic. NON contraddire ciò che è stato detto prima; aggiungi profondità coerente con la posizione di questa pagina nel funnel):\n${funnelContextTrimmed}\n` : ''}
 
-🎯 COSA DEVI FARE:
-- I testi originali sono SOLO per capire: lunghezza approssimativa, tipo di testo (titolo/bottone/descrizione), formattazione
-- IGNORA completamente il contenuto dei testi originali - NON copiare NESSUNA parola dal testo originale
-- CREA nuovi testi da zero usando SOLO: nome prodotto, descrizione, framework, istruzioni copy
-- Ogni testo deve essere COERENTE con il nuovo prodotto, ma NON deve necessariamente CITARE il suo nome
-- Se il testo originale contiene &nbsp; o spazi all'inizio, mantieni la stessa formattazione ma riscrivi TUTTO il contenuto DOPO &nbsp; usando SOLO le informazioni del nuovo prodotto
-- IMPORTANTE: Riscrivi TUTTO il testo dopo &nbsp; con testo completamente nuovo adattato al prodotto - non lasciare parti del testo originale
+🎯 COSA DEVI FARE (METODO — applicalo a OGNI testo, non saltarlo):
+- Usa il testo originale SOLO per capire il RUOLO del blocco (headline / lead / body / bullet / CTA / label / FAQ), la lunghezza indicativa e la formattazione. NON copiare parole né fatti del competitor.
+- Riscrivi ogni blocco partendo dalle FONTI DI VERITÀ del system prompt (PROJECT BRIEF, MARKET RESEARCH, eventuale Mechanism Brief) + nome/descrizione/istruzioni prodotto. Se un fatto non è nelle fonti, NON inventarlo: usa un termine neutro ("the formula", "il prodotto", "our expert").
+- Costruisci OGNI rewrite attorno a: il MECCANISMO UNICO del prodotto (come funziona / perché è diverso — è il cuore di ogni pagina, fallo emergere), la BIG PROMISE/positioning, l'avatar e il suo LIVELLO DI CONSAPEVOLEZZA, i pain point reali, le PROVE e le obiezioni.
+- APPLICA le tecniche del cheat-sheet/framework forniti nel system prompt in base al ruolo del blocco: scegli il tipo di headline in base all'awareness dell'avatar (Schwartz) e alla sofisticazione del mercato; porta il MECCANISMO al centro (Georgi RMBC); usa formule concrete di headline (Halbert/Caples/Ogilvy) e di bullet (Bencivenga); inserisci i trigger psicologici adatti (Sugarman); struttura i blocchi lunghi con PAS / AIDA / BAB / FAB. Applica le tecniche in silenzio — NON nominarle nell'output.
+- ⚠️ Una headline "bella" ma scollegata dal meccanismo/fatti del brief è SBAGLIATA. Ogni blocco deve dire qualcosa di SPECIFICO del nostro prodotto (meccanismo, beneficio concreto, prova), MAI frasi generiche da catalogo tipo "Il miglior prodotto per te" o "Migliora il tuo benessere".
+- Il nome prodotto NON deve essere obbligatoriamente citato in ogni testo (vedi regole anti-ripetizione sotto).
+- Se il testo originale contiene &nbsp; o spazi all'inizio, mantieni la stessa formattazione ma riscrivi TUTTO il contenuto DOPO &nbsp; con copy completamente nuovo costruito sul nostro prodotto — non lasciare parti del testo originale.
 
 🚫 REGOLE ANTI-RIPETIZIONE DEL NOME PRODOTTO (CRITICAL — VIOLATION = REWRITE):
 - Il nome prodotto "${job.product_name}" può apparire MASSIMO 1 volta per testo se il testo è breve (heading, bottone, label, bullet, feature card).
@@ -1445,6 +1595,22 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
           text: `You are an expert senior direct-response copywriter integrated into the "Funnel Cloner Builder" tool. You rewrite landing-page copy from a structural template, applying proven direct-response frameworks (COS Engine, Tony Flores' Million Dollar Mechanisms, Evaldo's 16-Word Sales Letter, Anghelache's Crash Course, Peter Kell's Savage System, Brunson's 108 Split Test Winners). Apply the techniques naturally — do NOT name them in the output. Always reply in the language requested by the user. Never output anything other than the JSON array specified.`,
         },
       ]
+
+      // (A) Blueprint della pagina come blocco di sistema cached: è la STRATEGIA
+      // unica che tutti i batch devono rispettare. Va in alto, prima della KB,
+      // così pesa su ogni rewrite. Cached → costo pagato una volta per job.
+      if (pageBlueprint && pageBlueprint.length > 100) {
+        systemBlocks.push({
+          type: 'text',
+          text:
+            `🧭 BLUEPRINT DELLA PAGINA (NORTH STAR — VINCOLANTE). Questa è la strategia decisa per QUESTA pagina. ` +
+            `OGNI testo che riscrivi DEVE essere coerente con essa: stessa grande idea, stesso meccanismo unico, ` +
+            `stesso avatar/awareness, stessa big promise, stesso tono, seguendo la SEQUENZA PERSUASIVA. ` +
+            `I testi sono pezzi di UN'UNICA pagina, non frasi indipendenti. Se un testo sembra in conflitto col blueprint, vince il blueprint.\n\n` +
+            pageBlueprint,
+          cache_control: { type: 'ephemeral' },
+        })
+      }
 
       if (system_kb && typeof system_kb === 'string' && system_kb.length > 200) {
         systemBlocks.push({
