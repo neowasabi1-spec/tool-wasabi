@@ -8244,6 +8244,10 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                   updateFunnelPage(pid, {
                     swipedData: { ...page.swipedData, html, newLength: html.length },
                   });
+                  // Persisti il blob in IndexedDB: il round-trip Supabase
+                  // strippa l'HTML > 50KB dal JSONB, quindi senza questo
+                  // l'edit andrebbe perso al reload.
+                  void saveHtmlBlob(pid, 'swipedData', html, mobileHtml || page.swipedData.mobileHtml);
                 } else if (page.clonedData) {
                   updateFunnelPage(pid, {
                     clonedData: {
@@ -8253,6 +8257,23 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                       content_length: html.length,
                     },
                   });
+                  void saveHtmlBlob(pid, 'clonedData', html, mobileHtml || page.clonedData.mobileHtml);
+                } else {
+                  // Pagina senza clonedData/swipedData ancora (es. HTML
+                  // appena editato su una pagina importata): crea clonedData
+                  // così l'edit ha un contenitore e viene comunque persistito.
+                  updateFunnelPage(pid, {
+                    clonedData: {
+                      html,
+                      mobileHtml: mobileHtml || undefined,
+                      title: page.name || 'Edited',
+                      method_used: 'editor',
+                      content_length: html.length,
+                      duration_seconds: 0,
+                      cloned_at: new Date(),
+                    },
+                  });
+                  void saveHtmlBlob(pid, 'clonedData', html, mobileHtml || undefined);
                 }
               }
             }
