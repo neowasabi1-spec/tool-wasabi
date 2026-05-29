@@ -1189,16 +1189,22 @@ export default function FrontEndFunnel() {
     pageId: string,
     kind: 'clonedData' | 'swipedData',
   ) => {
-    const p = useStore.getState().funnelPages.find((x) => x.id === pageId);
+    const state = useStore.getState();
+    const p = state.funnelPages.find((x) => x.id === pageId);
     const blob = p?.[kind] as { html?: string; htmlUrl?: string } | undefined;
     if (!blob) return;
     const len = blob.html?.length || 0;
-    if (len > 50_000 && !blob.htmlUrl) {
+    const storageOk = !!blob.htmlUrl;
+    const realErr = state.lastStorageError;
+    // Avvisa solo se l'HTML e' grande (gestito via Storage) ma non ha
+    // ottenuto un htmlUrl: la copia cross-device non esiste.
+    if (len > 50_000 && !storageOk) {
       setStorageWarning(
-        'HTML salvato solo in locale su questo browser: l\u2019upload su Supabase Storage \u00e8 fallito ' +
-        '(probabile restrizione MIME del bucket "media"). Non sar\u00e0 visibile dopo un reload su altri ' +
-        'device. Fix: nello SQL editor di Supabase esegui  update storage.buckets set public = true, ' +
-        'allowed_mime_types = null where id = \u2019media\u2019;',
+        'HTML salvato solo in locale su questo browser (IndexedDB): l\u2019upload su Supabase Storage \u00e8 fallito, ' +
+        'quindi non sar\u00e0 disponibile dopo un reload su altri device.\n\n' +
+        (realErr ? `Errore reale: ${realErr}\n\n` : '') +
+        'Se parla di MIME: esegui  update storage.buckets set public=true, allowed_mime_types=null where id=\u2019media\u2019;\n' +
+        'Se parla di "row-level security"/policy: serve una policy che permetta l\u2019upload anon sul bucket media.',
       );
     } else {
       setStorageWarning(null);

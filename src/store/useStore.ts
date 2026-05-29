@@ -298,7 +298,11 @@ async function persistHtmlBlobs(
     swiped: Record<string, string> | null;
     extracted: Record<string, string> | null;
   };
+  // Messaggio dell'errore di upload su Storage, se presente. Permette alla
+  // UI di spiegare ESATTAMENTE perche' un save e' rimasto solo locale.
+  storageError?: string;
 }> {
+  let storageError: string | undefined;
   const { persistHtmlToStorage, HTML_STORAGE_THRESHOLD } = await import('@/lib/funnel-html-storage');
   const { saveHtmlBlob } = await import('@/lib/html-blob-store');
 
@@ -367,6 +371,7 @@ async function persistHtmlBlobs(
         // Storage upload failed — lasciamo il blob originale e
         // `stripHtmlFromJsonb` farà il vecchio strip. Almeno IDB salva.
         console.warn(`[useStore.persistHtmlBlobs] Storage upload failed for ${kind} of page ${pageId}, falling back to strip:`, err);
+        if (!storageError) storageError = err instanceof Error ? err.message : String(err);
         try {
           await saveHtmlBlob(pageId, idbTarget, htmlVal || '', mobileVal || undefined);
         } catch {
@@ -389,6 +394,7 @@ async function persistHtmlBlobs(
       swiped: urlsByKind.swiped,
       extracted: urlsByKind.extracted,
     },
+    storageError,
   };
 }
 
@@ -512,6 +518,11 @@ interface Store {
   loadArchivedFunnels: () => Promise<void>;
   saveCurrentFunnelAsArchive: (name: string, section?: string) => Promise<void>;
   deleteArchivedFunnel: (id: string) => Promise<void>;
+
+  // Ultimo errore di upload HTML su Supabase Storage (null = nessun errore).
+  // Settato da updateFunnelPage/persistHtmlBlobs; letto dalla UI per
+  // mostrare il motivo reale quando un save resta solo locale.
+  lastStorageError: string | null;
 }
 
 export const useStore = create<Store>()((set, get) => ({
@@ -519,6 +530,7 @@ export const useStore = create<Store>()((set, get) => ({
   isLoading: true,
   error: null,
   isInitialized: false,
+  lastStorageError: null,
 
   // Initialize data from Supabase (with timeout to prevent infinite loading)
   initializeData: async () => {
@@ -1011,6 +1023,9 @@ export const useStore = create<Store>()((set, get) => ({
           stepType: trackingStepType,
         },
       );
+
+      // Esponi l'esito dell'upload Storage alla UI (banner diagnostico).
+      set({ lastStorageError: persisted.storageError ?? null });
 
       // See `addFunnelPage`: write the selected Project id on `project_id`.
       // We only touch `product_id` if the caller explicitly cleared it
