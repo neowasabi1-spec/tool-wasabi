@@ -157,22 +157,71 @@ function InlineEdit({
 }
 
 function ResultModal({ step, onClose }: { step: FunnelStep; onClose: () => void }) {
+  const content = step.result_content || "";
+  // Heuristica: il contenuto è HTML renderizzabile? (clone/swipe producono
+  // markup). Se sì, default sull'anteprima visiva; altrimenti solo testo.
+  const looksLikeHtml = /<(!doctype|html|head|body|div|section|main|header|img|h1|p|a|span)[\s>]/i.test(content);
+  const [view, setView] = useState<"preview" | "code">(looksLikeHtml ? "preview" : "code");
+
+  const openInNewTab = useCallback(() => {
+    if (!content) return;
+    const blob = new Blob([content], { type: "text/html" });
+    const url = URL.createObjectURL(blob);
+    window.open(url, "_blank", "noopener,noreferrer");
+    // Revoca differita: lascia il tempo al tab di caricare.
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  }, [content]);
+
   return (
     <Dialog open onOpenChange={onClose}>
-      <DialogContent className="max-w-3xl max-h-[80vh] overflow-y-auto">
+      <DialogContent className="max-w-5xl max-h-[90vh] overflow-hidden flex flex-col">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Eye className="w-4 h-4 text-primary" />
             Risultato — {step.page_name || `Step ${step.step_number}`}
           </DialogTitle>
         </DialogHeader>
-        <div className="mt-4">
-          {step.result_content ? (
-            <div className="prose prose-sm max-w-none whitespace-pre-wrap text-sm text-foreground bg-muted/30 rounded-xl p-6 border border-border">
-              {step.result_content}
+
+        {content && looksLikeHtml && (
+          <div className="flex items-center gap-2 mt-2">
+            <div className="inline-flex rounded-lg border border-border overflow-hidden">
+              <button
+                onClick={() => setView("preview")}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors ${view === "preview" ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:text-foreground"}`}
+              >
+                <Globe className="w-3.5 h-3.5" /> Anteprima
+              </button>
+              <button
+                onClick={() => setView("code")}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors ${view === "code" ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:text-foreground"}`}
+              >
+                <FileCode className="w-3.5 h-3.5" /> HTML
+              </button>
             </div>
-          ) : (
+            <button
+              onClick={openInNewTab}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground border border-border rounded-lg transition-colors"
+              title="Apri la pagina in una nuova scheda"
+            >
+              <ExternalLink className="w-3.5 h-3.5" /> Apri in nuova scheda
+            </button>
+          </div>
+        )}
+
+        <div className="mt-4 flex-1 overflow-y-auto">
+          {!content ? (
             <p className="text-muted-foreground italic text-sm">Nessun contenuto generato ancora. Premi SWIPE per generare.</p>
+          ) : view === "preview" && looksLikeHtml ? (
+            <iframe
+              srcDoc={content}
+              title={`preview-${step.id}`}
+              className="w-full h-[70vh] rounded-xl border border-border bg-white"
+              sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
+            />
+          ) : (
+            <div className="prose prose-sm max-w-none whitespace-pre-wrap text-sm text-foreground bg-muted/30 rounded-xl p-6 border border-border">
+              {content}
+            </div>
           )}
         </div>
       </DialogContent>
