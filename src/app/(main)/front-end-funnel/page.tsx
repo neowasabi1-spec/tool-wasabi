@@ -1167,6 +1167,69 @@ export default function FrontEndFunnel() {
   const [showSaveModal, setShowSaveModal] = useState(false);
   const [saveFunnelName, setSaveFunnelName] = useState('');
   const [isSaving, setIsSaving] = useState(false);
+  // Destinazione del salvataggio: archivio (Saved Funnel) oppure il tab
+  // "Funnel" di un'offerta in My Projects.
+  const [saveTarget, setSaveTarget] = useState<'archive' | 'project'>('archive');
+  const [saveProjectId, setSaveProjectId] = useState('');
+
+  // Salva il flow corrente come funnel_steps nel tab "Funnel" del progetto
+  // selezionato (My Projects). Mappa ogni pagina del builder su uno step.
+  const saveCurrentFunnelToProject = async (projectId: string) => {
+    const pages = funnelPages || [];
+    if (!projectId) throw new Error('Nessun progetto selezionato');
+    if (pages.length === 0) throw new Error('Nessuna pagina da salvare');
+
+    const steps = pages.map((p, i) => {
+      const status =
+        p.swipeStatus === 'completed'
+          ? 'completed'
+          : p.swipeStatus === 'in_progress'
+            ? 'in_progress'
+            : 'pending';
+      const resultHtml =
+        p.swipedData?.html || p.clonedData?.html || '';
+      return {
+        step_number: i + 1,
+        page_name: p.name || `Step ${i + 1}`,
+        step_type: getPageTypeLabel(p.pageType),
+        template_name: templates.find(t => t.id === p.templateId)?.name || '',
+        url: p.urlToSwipe || '',
+        product: projects.find(pr => pr.id === p.productId)?.name || '',
+        prompt_notes: p.prompt || '',
+        feedback: p.feedback || '',
+        status,
+        result_content: resultHtml || null,
+      };
+    });
+
+    const res = await fetch(`/api/projecthub/projects/${projectId}/funnel-steps`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ steps }),
+    });
+    if (!res.ok) {
+      const txt = await res.text().catch(() => '');
+      throw new Error(txt || `Errore ${res.status}`);
+    }
+    return res.json();
+  };
+
+  // Conferma salvataggio dal modal: instrada verso archivio o progetto.
+  const handleConfirmSave = () => {
+    if (saveTarget === 'project') {
+      if (!saveProjectId) return;
+      setIsSaving(true);
+      saveCurrentFunnelToProject(saveProjectId)
+        .then(() => { setShowSaveModal(false); setIsSaving(false); })
+        .catch((e) => { setIsSaving(false); alert('Errore salvataggio nel progetto: ' + ((e as Error)?.message || '')); });
+      return;
+    }
+    if (!saveFunnelName.trim()) return;
+    setIsSaving(true);
+    saveCurrentFunnelAsArchive(saveFunnelName.trim())
+      .then(() => { setShowSaveModal(false); setIsSaving(false); })
+      .catch(() => { setIsSaving(false); alert('Error saving'); });
+  };
 
   /* ────────── Swipe All ──────────
    * Orchestratore che riscrive in sequenza TUTTE le pagine eligibili del
@@ -8204,25 +8267,74 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
           <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-md mx-4">
             <h3 className="text-lg font-bold text-gray-900 mb-1">Save Funnel</h3>
             <p className="text-sm text-gray-500 mb-4">
-              Save {funnelPages?.length || 0} steps to archive. Each page will be organized by type.
+              Salva {funnelPages?.length || 0} step. Scegli dove salvarli.
             </p>
-            <input
-              type="text"
-              value={saveFunnelName}
-              onChange={(e) => setSaveFunnelName(e.target.value)}
-              placeholder="Funnel name..."
-              className="w-full border border-gray-300 rounded-lg px-4 py-2.5 text-sm focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none"
-              autoFocus
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && saveFunnelName.trim()) {
-                  e.preventDefault();
-                  setIsSaving(true);
-                  saveCurrentFunnelAsArchive(saveFunnelName.trim())
-                    .then(() => { setShowSaveModal(false); setIsSaving(false); })
-                    .catch(() => { setIsSaving(false); alert('Error saving'); });
-                }
-              }}
-            />
+
+            {/* Selettore destinazione */}
+            <div className="grid grid-cols-2 gap-2 mb-4">
+              <button
+                type="button"
+                onClick={() => setSaveTarget('archive')}
+                disabled={isSaving}
+                className={`px-3 py-2 rounded-lg text-sm font-medium border transition-colors ${
+                  saveTarget === 'archive'
+                    ? 'bg-green-50 border-green-500 text-green-700'
+                    : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'
+                }`}
+              >
+                Archivio · Saved Funnel
+              </button>
+              <button
+                type="button"
+                onClick={() => setSaveTarget('project')}
+                disabled={isSaving}
+                className={`px-3 py-2 rounded-lg text-sm font-medium border transition-colors ${
+                  saveTarget === 'project'
+                    ? 'bg-green-50 border-green-500 text-green-700'
+                    : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'
+                }`}
+              >
+                Progetto · Funnel
+              </button>
+            </div>
+
+            {saveTarget === 'archive' ? (
+              <input
+                type="text"
+                value={saveFunnelName}
+                onChange={(e) => setSaveFunnelName(e.target.value)}
+                placeholder="Funnel name..."
+                className="w-full border border-gray-300 rounded-lg px-4 py-2.5 text-sm focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none"
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && saveFunnelName.trim()) {
+                    e.preventDefault();
+                    handleConfirmSave();
+                  }
+                }}
+              />
+            ) : (
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1">
+                  Offerta (My Projects)
+                </label>
+                <select
+                  value={saveProjectId}
+                  onChange={(e) => setSaveProjectId(e.target.value)}
+                  className="w-full border border-gray-300 rounded-lg px-4 py-2.5 text-sm focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none bg-white"
+                  autoFocus
+                >
+                  <option value="">— Seleziona un'offerta —</option>
+                  {(projects || []).map((pr) => (
+                    <option key={pr.id} value={pr.id}>{pr.name}</option>
+                  ))}
+                </select>
+                <p className="text-xs text-gray-400 mt-2">
+                  Gli step verranno aggiunti al tab <strong>Funnel</strong> del progetto scelto.
+                </p>
+              </div>
+            )}
+
             <div className="flex justify-end gap-3 mt-5">
               <button
                 onClick={() => setShowSaveModal(false)}
@@ -8232,14 +8344,12 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                 Cancel
               </button>
               <button
-                onClick={() => {
-                  if (!saveFunnelName.trim()) return;
-                  setIsSaving(true);
-                  saveCurrentFunnelAsArchive(saveFunnelName.trim())
-                    .then(() => { setShowSaveModal(false); setIsSaving(false); })
-                    .catch(() => { setIsSaving(false); alert('Error saving'); });
-                }}
-                disabled={!saveFunnelName.trim() || isSaving}
+                onClick={handleConfirmSave}
+                disabled={
+                  isSaving ||
+                  (saveTarget === 'archive' && !saveFunnelName.trim()) ||
+                  (saveTarget === 'project' && !saveProjectId)
+                }
                 className="px-5 py-2 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
               >
                 {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}

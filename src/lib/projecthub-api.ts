@@ -198,32 +198,65 @@ const emptyQuery = <T,>(): {
   refetch: async () => ({ data: undefined }),
 });
 
-const noopMutation = <TData, TVars>() => ({
-  mutate: (_: TVars) => {
-    console.warn('[projecthub-api] mutation not implemented yet');
-  },
-  mutateAsync: async (_: TVars): Promise<TData> => {
-    throw new Error('Mutation not implemented yet (port pending)');
-  },
-  isPending: false,
-  isError: false,
-  isSuccess: false,
-  data: undefined,
-  error: null,
-  reset: () => {},
-});
+export function useListFunnelSteps(
+  id: string | number | undefined,
+  opts?: QueryOpts<unknown[]>,
+) {
+  const queryKey =
+    opts?.query?.queryKey ||
+    (id ? getListFunnelStepsQueryKey(id) : ['projecthub', 'funnel-steps', 'noop']);
+  return useQuery<unknown[], Error, unknown[], readonly unknown[]>({
+    queryKey,
+    queryFn: () => fetchJson<unknown[]>(`${API_BASE}/projects/${id}/funnel-steps`),
+    enabled: (opts?.query?.enabled ?? true) && !!id,
+  });
+}
 
-export function useListFunnelSteps(_id: string | number | undefined, _opts?: unknown) {
-  return emptyQuery<unknown[]>();
+export function useCreateFunnelStep(
+  opts?: MutationOpts<unknown, { projectId: string; data: Record<string, unknown> }>,
+) {
+  return useMutation<unknown, Error, { projectId: string; data: Record<string, unknown> }>({
+    ...opts?.mutation,
+    mutationFn: ({ projectId, data }) =>
+      fetchJson<unknown>(`${API_BASE}/projects/${projectId}/funnel-steps`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      }),
+  });
 }
-export function useCreateFunnelStep<TVars = unknown>(_opts?: unknown) {
-  return noopMutation<unknown, TVars>();
+
+export function useUpdateFunnelStep(
+  opts?: MutationOpts<
+    unknown,
+    { projectId: string; stepId: number | string; data: Record<string, unknown> }
+  >,
+) {
+  return useMutation<
+    unknown,
+    Error,
+    { projectId: string; stepId: number | string; data: Record<string, unknown> }
+  >({
+    ...opts?.mutation,
+    mutationFn: ({ projectId, stepId, data }) =>
+      fetchJson<unknown>(`${API_BASE}/projects/${projectId}/funnel-steps/${stepId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      }),
+  });
 }
-export function useUpdateFunnelStep<TVars = unknown>(_opts?: unknown) {
-  return noopMutation<unknown, TVars>();
-}
-export function useDeleteFunnelStep<TVars = unknown>(_opts?: unknown) {
-  return noopMutation<unknown, TVars>();
+
+export function useDeleteFunnelStep(
+  opts?: MutationOpts<unknown, { projectId: string; stepId: number | string }>,
+) {
+  return useMutation<unknown, Error, { projectId: string; stepId: number | string }>({
+    ...opts?.mutation,
+    mutationFn: ({ projectId, stepId }) =>
+      fetchJson<unknown>(`${API_BASE}/projects/${projectId}/funnel-steps/${stepId}`, {
+        method: 'DELETE',
+      }),
+  });
 }
 export function useGetFunnelStepChat(
   _id: string | number | undefined,
