@@ -1588,6 +1588,11 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   const [aiStyle, setAiStyle] = useState<'vivid' | 'natural'>('vivid');
   const [aiSourceImage, setAiSourceImage] = useState<string>('');
   const [aiSourceUploading, setAiSourceUploading] = useState(false);
+  /* Seconda immagine per l'edit (image2image): la foto del NOSTRO prodotto
+   * da inserire al posto di quello nella sorgente. Passata come
+   * secondaryImageUrl ai modelli edit multi-immagine (Nano Banana 2 / GPT). */
+  const [aiProductImage, setAiProductImage] = useState<string>('');
+  const [aiProductUploading, setAiProductUploading] = useState(false);
 
   /* ── Prodotto selezionato dentro la modale (My Projects) ──
    * Inizializzato dal productId della pagina; l'utente può cambiarlo dal
@@ -2129,6 +2134,21 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     }
   }, [aiSourceUploading]);
 
+  /* Upload della foto del NOSTRO prodotto (seconda immagine per l'edit). */
+  const handleAiProductUpload = useCallback(async (file: File) => {
+    if (aiProductUploading) return;
+    setAiProductUploading(true);
+    setAiError('');
+    try {
+      const url = await directSupabaseUpload(file);
+      setAiProductImage(url);
+    } catch (err) {
+      setAiError(err instanceof Error ? `Upload fallito: ${err.message}` : 'Upload fallito');
+    } finally {
+      setAiProductUploading(false);
+    }
+  }, [aiProductUploading]);
+
   const handleAiGenerate = useCallback(async () => {
     if (aiGenerating) return;
     let finalPrompt = aiPrompt.trim();
@@ -2166,6 +2186,11 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
           size: aiSize,
           style: aiStyle,
           imageUrl: aiSourceImage || undefined,
+          // Seconda immagine (nostro prodotto) solo nell'edit image2image:
+          // i modelli Nano Banana 2 / GPT Image 2 edit la fondono con la
+          // sorgente per sostituire il prodotto.
+          secondaryImageUrl:
+            aiMode === 'image2image' && aiProductImage ? aiProductImage : undefined,
           duration:
             aiMode === 'image2video' || aiMode === 'text2video'
               ? aiVideoDuration
@@ -2261,6 +2286,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     aiSize,
     aiStyle,
     aiSourceImage,
+    aiProductImage,
     aiVideoDuration,
     aiVideoLoop,
     aiGenerating,
@@ -4862,6 +4888,61 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                   </div>
                 );
               })()}
+
+              {/* Immagine prodotto (solo Modifica): seconda immagine fusa con
+                  la sorgente per "metti il nostro prodotto al posto di questo". */}
+              {aiMode === 'image2image' && (
+                <div>
+                  <label className="text-[10px] text-violet-500 font-medium mb-1 block uppercase tracking-wider">Immagine prodotto (da inserire)</label>
+                  {aiProductImage ? (
+                    <div className="space-y-2">
+                      <div className="relative">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={aiProductImage} alt="prodotto" className="w-full max-h-40 object-contain rounded-lg border border-emerald-200 bg-slate-50" />
+                        <button
+                          onClick={() => !aiGenerating && setAiProductImage('')}
+                          className="absolute top-1.5 right-1.5 p-1 rounded-md bg-black/60 hover:bg-black/80 text-white"
+                          disabled={aiGenerating}
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setAiPrompt(
+                          `Replace the product shown in the first image with the product from the second image. Keep the same scene, composition, framing, lighting and background. Integrate our product naturally and realistically.${effectiveProduct?.name ? ` Our product is ${effectiveProduct.name}.` : ''}`,
+                        )}
+                        disabled={aiGenerating}
+                        className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-semibold transition-colors"
+                      >
+                        <Wand2 className="h-3.5 w-3.5" /> Usa prompt: sostituisci il prodotto
+                      </button>
+                    </div>
+                  ) : (
+                    <label className={`flex items-center justify-center gap-2 px-4 py-3 rounded-xl border-2 border-dashed border-emerald-300 hover:border-emerald-500 hover:bg-emerald-50 transition-colors cursor-pointer text-xs text-emerald-600 font-medium ${aiProductUploading ? 'opacity-60 cursor-wait' : ''}`}>
+                      {aiProductUploading ? (
+                        <><Loader2 className="h-4 w-4 animate-spin" /> Caricamento…</>
+                      ) : (
+                        <><Upload className="h-4 w-4" /> Carica foto del nostro prodotto</>
+                      )}
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        disabled={aiProductUploading || aiGenerating}
+                        onChange={(e) => {
+                          const f = e.target.files?.[0];
+                          if (f) handleAiProductUpload(f);
+                          e.target.value = '';
+                        }}
+                      />
+                    </label>
+                  )}
+                  <p className="text-[10px] text-slate-400 mt-1">
+                    Funziona con i modelli edit multi-immagine (Nano Banana 2 / GPT Image 2).
+                  </p>
+                </div>
+              )}
 
               {/* Context (text2image only) */}
               {aiMode === 'text2image' && aiContextText && (
