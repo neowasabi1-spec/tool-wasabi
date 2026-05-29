@@ -1,3 +1,4 @@
+
 // worker-lib/build-prompts.js
 //
 // Port JS puro di src/app/api/landing/swipe/openclaw-build-prompts/route.ts.
@@ -419,23 +420,6 @@ function buildPrompts({ html, sourceUrl, product, tone, language, knowledge, ext
   texts = prependDocumentTitle(texts, html);
   if (texts.length === 0) throw new Error('No text found in page');
 
-  // ── (B) COERENZA DI PAGINA: ordina i blocchi in ORDINE DI DOCUMENTO ──
-  // Sotto MAX_TEXTS_FOR_AI l'extractor restituisce gia' i testi in ordine di
-  // pagina; ma quando si supera il cap vengono ordinati per PRIORITA' di tag
-  // (title, h1, h2, p, ...) e cosi' arrivano al modello "a salti", scollegati
-  // dal flusso reale della landing. Un copywriter non puo' scrivere un copy
-  // coerente leggendo i blocchi in ordine sparso. Riordinandoli per `position`
-  // il modello legge la pagina dall'alto verso il basso (hero → lead → proof →
-  // CTA → FAQ) e puo' mantenere un arco persuasivo unico.
-  // Gli `id` vengono assegnati DOPO questo sort, con lo stesso indice sia in
-  // `textsForAi` sia nel mapping restituito: il legame id↔testo resta identico,
-  // quindi e' un cambiamento a rischio zero per il finalize/replacer.
-  texts = texts.slice().sort((a, b) => {
-    const pa = typeof a.position === 'number' ? a.position : 0;
-    const pb = typeof b.position === 'number' ? b.position : 0;
-    return pa - pb;
-  });
-
   const productCtx = buildProductContextMarkdown(product);
   const knowledgeMd = buildKnowledgeMarkdown(knowledge);
   const builtinKb = buildBuiltinKnowledge();
@@ -455,26 +439,26 @@ function buildPrompts({ html, sourceUrl, product, tone, language, knowledge, ext
     ? `\n=== KNOWLEDGE & TECNICHE DAL TOOL DELL'UTENTE (libreria personale + brief progetto). USALE ATTIVAMENTE come faresti se l'utente te le avesse appena scritte in chat. ===\n${knowledgeMd}\n=== FINE KNOWLEDGE TOOL ===\n`
     : '';
   const builtinKbSection = builtinKb
-    ? `\n=== COPYWRITING FRAMEWORK BUILT-IN — in cima trovi la CHEAT-SHEET OPERATIVA (Schwartz awareness/sofisticazione, Georgi RMBC + lead types, Halbert/Caples/Ogilvy headline, Bencivenga bullets, Sugarman trigger, PAS/AIDA/BAB/FAB/HSO, Sultanic) seguita dai framework COS Engine, Tony Flores, Evaldo 16-Word, Anghelache, Savage System, 108 Split Tests. QUESTE sono le tecniche da APPLICARE blocco-per-blocco — leggile e usale, non citarle per nome all'utente. ===\n${builtinKb}\n=== FINE COPYWRITING FRAMEWORK ===\n`
+    ? `\n=== COPYWRITING FRAMEWORK BUILT-IN (distillati: COS Engine, Tony Flores Mechanisms, Evaldo 16-Word, Anghelache, Savage System, 108 Split Tests + Landing Page Recipes). Sono i framework professionali su cui questo tool e' costruito — applicali silenziosamente in OGNI rewrite (non citarli per nome se non utile all'utente). ===\n${builtinKb}\n=== FINE COPYWRITING FRAMEWORK ===\n`
     : '';
 
-  const systemPrompt = `Sei un AGENTE specializzato in direct-response copywriting. Stai riscrivendo un competitor / template per venderlo come segue.
+  const systemPrompt = `Sei un AGENTE specializzato in direct-response copywriting (NON un LLM puro: hai accesso ad archivi prodotti, knowledge base, RAG locale, skill di copywriting / persuasione / framework che hai accumulato nel tempo). Stai riscrivendo un competitor / template per venderlo come segue.
 
-⚠️ LE TECNICHE DA USARE SONO SCRITTE QUI NEL PROMPT — NON devi ricordarle a memoria.
-Più in basso, nel blocco "COPYWRITING FRAMEWORK BUILT-IN", trovi una CHEAT-SHEET OPERATIVA con le tecniche dei maestri già distillate in regole pronte (Schwartz: livelli di consapevolezza e sofisticazione; Georgi: RMBC e tipi di lead; Halbert/Caples/Ogilvy: formule di headline; Bencivenga: bullet/fascination; Sugarman: trigger psicologici; PAS/AIDA/BAB/FAB/HSO; Sultanic/archetipi narrativi). È OBBLIGATORIO LEGGERLA e APPLICARLA blocco-per-blocco. NON improvvisare, NON scrivere "a senso".
+⚠️ PRIMA DI RISCRIVERE QUALSIASI BLOCCO: consulta nei TUOI archivi interni (RAG / knowledge base / corsi che hai studiato e che possiedi già) il METODO SWIPE e i corsi dei maestri elencati sotto, e APPLICALI attivamente. Li hai DENTRO di te: è OBBLIGATORIO recuperarli e usarli — NON improvvisare, NON scrivere "a senso", NON affidarti solo all'istinto.
 
-METODO per OGNI blocco (segui la "CHECKLIST DA APPLICARE A OGNI BLOCCO" in fondo alla cheat-sheet):
-1. Capisci il RUOLO del blocco (headline / lead / body / bullet / proof / CTA / FAQ).
-2. Deduci dal brief/MR l'AWARENESS dell'avatar e la SOFISTICAZIONE del mercato → scegli il tipo di headline/lead e l'angle giusto (cheat-sheet §1, §2, §4).
-3. Porta al centro il MECCANISMO UNICO del nostro prodotto (Georgi RMBC, §3).
-4. Scegli la FORMULA concreta (headline §6, bullet §7) e il FRAMEWORK di struttura (§9), inserisci i TRIGGER adatti (§8).
-5. Riconosci a te stesso quale tecnica stai usando (es: "qui Halbert headline", "qui RMBC mechanism", "qui PAS") e su quale fatto del nostro brief — poi scrivi il copy SENZA citare il framework all'utente.
+DOCUMENTO SWIPE (obbligatorio): apri dai tuoi archivi il metodo swipe etico (Anghelache "Copywriting Crash Course" + swipe-html-process SHARED-KNOWLEDGE) e segui i suoi 4 passi mentali per OGNI blocco prima di scrivere.
 
-⚠️ I DOCUMENTI CHE TI PASSIAMO SONO LA FONTE DI VERITÀ (il COSA dire): il BRIEF, la MARKET RESEARCH e i PRODUCT FACTS qui sotto sono i documenti del NOSTRO prodotto. La cheat-sheet ti dice COME scrivere; questi documenti ti dicono COSA dire. Costruisci OGNI rewrite attorno a:
+CORSI / MAESTRI da cui DEVI pescare la tecnica giusta per ogni blocco (li possiedi nei tuoi archivi interni):
+Stefan Georgi (RMBC method, lead types, story-bridge), Eugene Schwartz (5 awareness levels, market sophistication, Breakthrough Advertising), Gary Halbert (Halbert headlines, Boron Letters, AIDA aggressivo), John Caples (Tested Advertising, headlines testati), Gary Bencivenga (Bencivenga Bullets, hidden persuaders), David Ogilvy (Ogilvy on Advertising, headlines fattuali), John Carlton (One-Legged Golfer, killer headlines), Dan Kennedy (Magnetic Marketing, NO-BS), Jay Abraham (preeminence, USP), Joe Sugarman (psychological triggers), Claude Hopkins (Scientific Advertising), Robert Collier (Letter Book), Frank Kern, Russell Brunson, Joe Karbo, Ben Settle, Andre Chaperon, Brian Kurtz.
+Framework: PAS, AIDA, AIDCA, FAB, BAB, QUEST, HSO (Hook-Story-Offer), 4P, Big Idea (Schwartz), StoryBrand (Miller), RMBC (Georgi), Pico hook, Sultanic Framework / archetipi narrativi.
+
+⚠️ POI USA I DOCUMENTI CHE TI PASSIAMO PER SCRIVERE IL COPY: il BRIEF, la MARKET RESEARCH e i PRODUCT FACTS qui sotto sono i documenti del NOSTRO prodotto (la fonte di verità). DEVI leggerli e costruire OGNI rewrite attorno a:
 - il MECCANISMO UNICO del nostro prodotto (come funziona / perché è diverso) — è il cuore di ogni pagina, fallo emergere;
 - la BIG PROMISE / positioning, l'avatar e il suo livello di consapevolezza, i pain point reali;
 - le PROVE (studi, numeri, testimonianze approvate), le obiezioni da neutralizzare, prezzo e garanzia.
-Usa SEMPRE cheat-sheet + documenti insieme: una headline "bella" ma non ancorata al meccanismo/fatti del brief è SBAGLIATA.
+Il metodo/corso ti dice COME scrivere; questi documenti ti dicono COSA dire. Usa SEMPRE entrambi insieme.
+
+Per OGNI blocco, PRIMA di scrivere il "rewritten", scegli e riconosci a te stesso quale tecnica/corso stai applicando (es: "qui applico una Halbert headline", "qui uso RMBC di Georgi", "qui Sultanic NHB") e su quale fatto/meccanismo del nostro brief la stai applicando; poi scrivi il copy senza citare il framework all'utente.
 
 PRODOTTO: ${product.name}
 ${productFactsSection}
