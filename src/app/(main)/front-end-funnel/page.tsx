@@ -74,6 +74,50 @@ import {
 const SAVED_SECTIONS_KEY = 'funnel-swiper-saved-sections';
 const CLONED_URLS_KEY = 'funnel-swiper-cloned-urls';
 
+// ── Enqueue payload caps (Netlify ~6MB request-body hard limit) ──────────
+// L'enqueue worker (`/api/openclaw/queue`) finisce in una request Next su
+// Netlify: se il body supera ~6MB Netlify risponde "Internal Error. ID:..."
+// (500) PRIMA che la route giri → il client fa JSON.parse su quell'HTML e
+// crasha con "Unexpected token 'I', "Internal E"... is not valid JSON".
+// Il body si gonfia perché brief/market_research/description vengono spediti
+// (a volte duplicati) interi, anche se il worker li cappa comunque a ~35K
+// (vedi MAX_KNOWLEDGE_CHARS in worker-lib/build-prompts.js). Cappiamo qui i
+// campi-documento prima di spedirli: nessuna perdita reale (il worker li
+// troncava già) e body sempre ben sotto i 6MB.
+const ENQUEUE_DOC_CAP = 80_000;
+// HTML in cache: se troppo grosso non lo mandiamo — il worker rifà il fetch
+// via Playwright da sourceUrl (swipe_landing_local lo prevede già).
+const ENQUEUE_HTML_CAP = 3_000_000;
+const capDoc = (s: unknown, n = ENQUEUE_DOC_CAP): string | undefined => {
+  if (typeof s !== 'string') return undefined;
+  const t = s.trim();
+  if (!t) return undefined;
+  return t.length > n ? t.slice(0, n) : t;
+};
+// Restiamo ben sotto i ~6MB di Netlify lasciando margine per l'overhead JSON.
+const ENQUEUE_BODY_BUDGET = 5_000_000;
+// Serializza il messaggio swipe_landing_local garantendo che stia sotto il
+// budget: se sfora, prima toglie l'html in cache (il worker rifà il fetch),
+// poi sfoltisce la libreria prompts. Evita il 500 "Internal Error. ID:" di
+// Netlify a prescindere da quale campo sia diventato troppo grosso.
+function fitEnqueueMessage(msg: Record<string, unknown>): string {
+  let s = JSON.stringify(msg);
+  if (s.length <= ENQUEUE_BODY_BUDGET) return s;
+  if (msg.html) {
+    delete msg.html;
+    s = JSON.stringify(msg);
+    if (s.length <= ENQUEUE_BODY_BUDGET) return s;
+  }
+  const k = msg.knowledge as { prompts?: unknown[] } | undefined;
+  if (k && Array.isArray(k.prompts) && k.prompts.length) {
+    while (k.prompts.length > 0 && JSON.stringify(msg).length > ENQUEUE_BODY_BUDGET) {
+      k.prompts.pop();
+    }
+    s = JSON.stringify(msg);
+  }
+  return s;
+}
+
 // Robust JSON response parser. When an Edge/CDN/serverless gateway returns
 // an HTML error page (502, 504, 413, plain "Internal Server Error" pages,
 // Netlify "<HTML> <HEAD>..." gateway errors, etc.) the front-end used to
@@ -2688,14 +2732,20 @@ export default function FrontEndFunnel() {
         // Build a product info shape that matches what
         // /api/landing/swipe/openclaw-build-prompts expects (only
         // `name` is required; everything else is best-effort context).
+        // Cap dei campi-documento prima dell'enqueue (limite body Netlify
+        // ~6MB). Il worker li tronca comunque a ~35K, quindi nessuna perdita.
+        const briefCapped = capDoc(briefStr);
+        const mrCapped = capDoc(mrStr);
+        const descCapped = capDoc(project.description);
         const productPayload = {
           name: project.name,
-          description: project.description || '',
+          description: descCapped || '',
           brand_name: undefined,
           target_audience: undefined,
-          marketing_brief: briefStr || undefined,
-          market_research: mrStr || undefined,
-          project_brief: briefStr || undefined,
+          marketing_brief: briefCapped,
+          market_research: mrCapped,
+          // project_brief rimosso: duplicava marketing_brief/knowledge.project
+          // (stesso briefStr ×3) → body inutilmente +N MB → 500 a ~6MB.
         };
 
         // Knowledge per QUESTA pagina: libreria globale + brief del
@@ -2705,8 +2755,8 @@ export default function FrontEndFunnel() {
           prompts: globalPrompts,
           project: {
             name: project.name,
-            brief: briefStr || null,
-            market_research: mrStr || null,
+            brief: briefCapped || null,
+            market_research: mrCapped || null,
             notes: null,
           },
         };
@@ -2734,7 +2784,7 @@ export default function FrontEndFunnel() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             section: 'swipe_job',
-            message: JSON.stringify({
+            message: fitEnqueueMessage({
               action: 'swipe_landing_local',
               sourceUrl: url,
               product: productPayload,
@@ -3377,11 +3427,15 @@ export default function FrontEndFunnel() {
           // Build product context shape expected by /openclaw-build-prompts.
           // marketingResearch / brief sono passati come marketing_brief
           // così finiscono nel system prompt del rewrite.
+          // Cap dei campi-documento (limite body Netlify ~6MB; il worker li
+          // tronca comunque a ~35K → nessuna perdita reale).
+          const rowBriefCapped = capDoc(cloneConfig.brief || cloneConfig.customPrompt || '');
+          const rowMrCapped = capDoc(cloneConfig.marketResearch || '');
           const productPayloadForRow = {
             name: cloneConfig.productName,
-            description: cloneConfig.productDescription || '',
-            marketing_brief: (cloneConfig.brief || cloneConfig.customPrompt || '').trim() || undefined,
-            market_research: (cloneConfig.marketResearch || '').trim() || undefined,
+            description: capDoc(cloneConfig.productDescription || '') || '',
+            marketing_brief: rowBriefCapped,
+            market_research: rowMrCapped,
           };
           // Spedisci `html` SOLO se l'abbiamo gia' in cache (evita di
           // mandare megabyte attraverso Netlify per niente — il worker
@@ -3402,8 +3456,8 @@ export default function FrontEndFunnel() {
                 prompts: Array.isArray(kj.prompts) ? kj.prompts : [],
                 project: {
                   name: cloneConfig.productName,
-                  brief: (cloneConfig.brief || cloneConfig.customPrompt || '').trim() || null,
-                  market_research: (cloneConfig.marketResearch || '').trim() || null,
+                  brief: rowBriefCapped || null,
+                  market_research: rowMrCapped || null,
                   notes: null,
                 },
               };
@@ -3421,7 +3475,12 @@ export default function FrontEndFunnel() {
             language: cloneConfig.language || detectedLangSingle,
             knowledge: rowKnowledge,
           };
-          if (htmlToRewrite) swipePayload.html = htmlToRewrite;
+          // Manda l'html in cache solo se sotto il cap: se è enorme lo
+          // omettiamo e il worker rifà il fetch via Playwright da sourceUrl
+          // (altrimenti html + brief + MR sforano i ~6MB di Netlify → 500).
+          if (htmlToRewrite && htmlToRewrite.length <= ENQUEUE_HTML_CAP) {
+            swipePayload.html = htmlToRewrite;
+          }
 
           // ── SWIPE DEBUG MODAL ─────────────────────────────────
           // Mostra all'utente cosa sta per essere mandato a Neo/Morfeo
@@ -3487,7 +3546,7 @@ export default function FrontEndFunnel() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               section: 'swipe_job',
-              message: JSON.stringify(swipePayload),
+              message: fitEnqueueMessage(swipePayload),
               targetAgent: targetAgentForRewrite,
             }),
           });
