@@ -14,79 +14,55 @@
  *   al refresh della tab si perde, e le edit fatte dal VisualHtmlEditor
  *   tornano alla versione pre-edit (o spariscono del tutto).
  *
- * Soluzione: caricare l'HTML come file `.html` nel bucket Storage `media`
- * (path `funnel-html/{pageId}/{kind}.html`) PRIMA dello strip, e mettere
- * nel JSONB solo l'URL pubblico. È piccolo (< 200 byte), passa il timeout,
- * e persiste cross-browser / cross-device.
+ * Soluzione: salvare l'HTML in una tabella dedicata `page_html` (colonna
+ * text) tramite la route server `/api/funnel-html`, che scrive col SERVICE
+ * ROLE e quindi bypassa qualsiasi policy RLS. Nel JSONB resta solo una URL
+ * (< 200 byte) che punta alla GET della stessa route. Passa il timeout e
+ * persiste cross-browser / cross-device senza dipendere da Supabase Storage
+ * (niente bucket, niente allowlist MIME, niente policy da configurare).
  *
- * IndexedDB (`html-blob-store.ts`) resta come backup locale: se Storage
- * è momentaneamente irraggiungibile (rete, RLS, ecc.) l'edit non si perde
- * comunque sulla macchina dell'utente.
+ * IndexedDB (`html-blob-store.ts`) resta come backup locale: se la rete è
+ * momentaneamente irraggiungibile l'edit non si perde comunque sulla
+ * macchina dell'utente.
  */
 
-import { getSupabaseBrowser } from './supabase-browser';
 import { injectWasabiTracker, type TrackerStepType } from './wasabi-tracker-inject';
 
-const BUCKET = 'media';
-
-/** Soglia oltre la quale spostiamo l'HTML su Storage invece di lasciarlo
- *  nel JSONB. Tenuta in linea con `HTML_PERSIST_THRESHOLD` di
+/** Soglia oltre la quale spostiamo l'HTML nella tabella page_html invece di
+ *  lasciarlo nel JSONB. Tenuta in linea con `HTML_PERSIST_THRESHOLD` di
  *  supabase-operations.ts (entrambe servono lo stesso scopo). */
 export const HTML_STORAGE_THRESHOLD = 50_000;
 
 export type HtmlKind = 'cloned' | 'swiped' | 'extracted';
 
-function pathFor(pageId: string, kind: HtmlKind, variant: 'desktop' | 'mobile'): string {
-  return `funnel-html/${pageId}/${kind}-${variant}.html`;
-}
+/** Salva un singolo blob HTML via la route server (service role → tabella
+ *  page_html). Ritorna la URL GET da scrivere nel JSONB al posto dell'HTML. */
+async function uploadOne(
+  pageId: string,
+  kind: HtmlKind,
+  variant: 'desktop' | 'mobile',
+  html: string,
+): Promise<string> {
+  const res = await fetch('/api/funnel-html', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ pageId, kind, variant, html }),
+  });
 
-/** Heuristica: l'errore di Storage indica che il content-type non e'
- *  ammesso dalla allowlist `allowed_mime_types` del bucket? In quel caso
- *  conviene ritentare con un MIME generico (octet-stream), che i bucket
- *  senza allowlist accettano sempre. La copia resta comunque HTML: la
- *  rehydrate la rilegge con `.text()` a prescindere dal content-type. */
-function isMimeRejection(message?: string): boolean {
-  if (!message) return false;
-  return /mime|content[\s-]?type|not\s+allowed|invalid_mime|unsupported/i.test(message);
-}
-
-async function uploadOne(pageId: string, kind: HtmlKind, variant: 'desktop' | 'mobile', html: string): Promise<string> {
-  const sb = getSupabaseBrowser();
-  if (!sb) throw new Error('Supabase browser client not configured');
-
-  const path = pathFor(pageId, kind, variant);
-
-  const doUpload = (contentType: string) =>
-    sb.storage.from(BUCKET).upload(path, new Blob([html], { type: contentType }), {
-      contentType,
-      upsert: true,
-      // niente cache-control: vogliamo sempre la versione più fresca al boot
-      cacheControl: '0',
-    });
-
-  let { error } = await doUpload('text/html; charset=utf-8');
-
-  // Bucket con allowlist MIME che non include text/html: ritenta con un
-  // content-type generico. Evita che l'edit dell'editor non venga mai
-  // persistito su Storage (e quindi sparisca al reload su altri device).
-  if (error && isMimeRejection(error.message)) {
-    console.warn(
-      `[funnel-html-storage] bucket "${BUCKET}" ha rifiutato text/html, ritento con application/octet-stream`,
-    );
-    ({ error } = await doUpload('application/octet-stream'));
-  }
-
-  if (error) {
-    if (error.message?.includes('Bucket not found')) {
-      throw new Error(`Storage bucket "${BUCKET}" not found. Create it in Supabase → Storage and make it public.`);
+  if (!res.ok) {
+    let msg = res.statusText;
+    try {
+      const j = await res.json();
+      if (j?.error) msg = j.error;
+    } catch {
+      // body non-JSON: tieni lo statusText
     }
-    throw new Error(error.message);
+    throw new Error(`funnel-html save failed (${res.status}): ${msg}`);
   }
 
-  const { data } = sb.storage.from(BUCKET).getPublicUrl(path);
-  // Cache-buster: forziamo i client a rifare GET dopo ogni save anche se
-  // un CDN intermedio cachasse comunque.
-  return `${data.publicUrl}?v=${Date.now()}`;
+  const data = (await res.json()) as { url?: string };
+  if (!data?.url) throw new Error('funnel-html save: risposta senza url');
+  return data.url;
 }
 
 export interface PersistedHtmlUrls {
