@@ -3448,7 +3448,11 @@ export default function FrontEndFunnel() {
         try { autoSaveSections(clonedHtml, url, pageName); } catch {}
 
         setPreviewViewport('desktop');
-        setClonedPreviewMode('live');
+        // HTML caricato: niente URL reale da iframe-are → snapshot dell'HTML
+        // salvato. Altrimenti la live mode punterebbe a uploaded.local (404)
+        // e la preview resterebbe vuota.
+        const isUploadedClone = uploadedHtml.length > 0 || url.startsWith('https://uploaded.local/');
+        setClonedPreviewMode(isUploadedClone ? 'snapshot' : 'live');
         setHtmlPreviewModal({
           isOpen: true,
           title: data.jsRendered ? `⚠️ Clone (JS-rendered): ${pageName}` : `Clone: ${pageName}`,
@@ -3458,7 +3462,7 @@ export default function FrontEndFunnel() {
           metadata: { method: 'identical', length: data.finalSize || data.content?.length || 0, duration: 0 },
           pageId,
           sourceType: 'cloned',
-          sourceUrl: url,
+          sourceUrl: isUploadedClone ? undefined : url,
         });
 
       } else if (mode === 'rewrite') {
@@ -5812,9 +5816,14 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                 } else if (page.clonedData) {
                                   const got = await fetchHtmlIfNeeded(page.clonedData, 'clonedData');
                                   if (!got) return;
+                                  // HTML caricato: usa lo snapshot, non la live
+                                  // mode (che punterebbe a uploaded.local → vuoto).
+                                  const isUploaded =
+                                    page.clonedData.method_used === 'upload' ||
+                                    (page.urlToSwipe || '').startsWith('https://uploaded.local/');
                                   setPreviewViewport('desktop');
                                   setPreviewTab('preview');
-                                  setClonedPreviewMode('live');
+                                  setClonedPreviewMode(isUploaded ? 'snapshot' : 'live');
                                   setHtmlPreviewModal({
                                     isOpen: true,
                                     title: page.clonedData!.title || page.name,
@@ -5828,7 +5837,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                     },
                                     pageId: page.id,
                                     sourceType: 'cloned',
-                                    sourceUrl: page.urlToSwipe || undefined,
+                                    sourceUrl: isUploaded ? undefined : (page.urlToSwipe || undefined),
                                   });
                                 }
                               }}
