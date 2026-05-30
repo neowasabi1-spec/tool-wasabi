@@ -8358,7 +8358,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                   // senza questo l'edit andrebbe perso al reload.
                   void saveHtmlBlob(pid, 'swipedData', html, mobileHtml || page.swipedData.mobileHtml);
                   await updateFunnelPage(pid, {
-                    swipedData: { ...page.swipedData, html, newLength: html.length },
+                    swipedData: { ...page.swipedData, html, newLength: html.length, editedAt: Date.now() },
                   });
                 } else if (page.clonedData) {
                   void saveHtmlBlob(pid, 'clonedData', html, mobileHtml || page.clonedData.mobileHtml);
@@ -8368,6 +8368,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                       html,
                       mobileHtml: mobileHtml || page.clonedData.mobileHtml,
                       content_length: html.length,
+                      editedAt: Date.now(),
                     },
                   });
                 } else {
@@ -8384,6 +8385,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                       content_length: html.length,
                       duration_seconds: 0,
                       cloned_at: new Date(),
+                      editedAt: Date.now(),
                     },
                   });
                 }

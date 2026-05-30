@@ -123,6 +123,12 @@ interface AppFunnelPage {
     // in `initializeData` (Step 0).
     htmlUrl?: string;
     mobileHtmlUrl?: string;
+    // Timestamp (ms) dell'ultimo Save del VisualHtmlEditor. Persistito nel
+    // JSONB (pochi byte, sopravvive allo strip). Al boot lo confrontiamo con
+    // `savedAt` del blob IndexedDB: se l'IDB locale è >= editedAt, l'edit
+    // locale vince (anche se il write Supabase è fallito o la pagina è
+    // piccola e l'HTML nel JSONB è rimasto vecchio).
+    editedAt?: number;
   };
   swipedData?: {
     html: string;
@@ -142,6 +148,8 @@ interface AppFunnelPage {
     mobileHtmlSkipped?: boolean;
     htmlUrl?: string;
     mobileHtmlUrl?: string;
+    // Vedi clonedData.editedAt.
+    editedAt?: number;
   };
   analysisStatus?: SwipeStatus;
   analysisResult?: string;
@@ -601,24 +609,41 @@ export const useStore = create<Store>()((set, get) => ({
           jobId?: string;
           htmlUrl?: string;
           mobileHtmlUrl?: string;
+          // L'HTML è già presente nel JSONB (pagina piccola / non strippata)?
+          // Se sì NON serve fetch remoto: serve solo l'eventuale override
+          // dell'edit locale (IndexedDB) più recente.
+          htmlPresent: boolean;
+          // Timestamp dell'ultimo edit registrato sul server.
+          editedAt?: number;
         }> = [];
+        // IMPORTANTE: includiamo TUTTE le pagine con clonedData/swipedData,
+        // non solo quelle strippate. Motivo: l'edit dell'editor viene scritto
+        // SEMPRE in IndexedDB, ma il write su Supabase può fallire (RLS,
+        // sessione anonima, rete) o la pagina può essere piccola e mantenere
+        // nel JSONB l'HTML VECCHIO. In quei casi, senza controllare IndexedDB
+        // anche per le pagine con html presente, al reload si rivedrebbe la
+        // versione originale e l'edit andrebbe perso.
         for (const p of appFunnelPages) {
-          if (p.swipedData && (p.swipedData.htmlSkipped || !p.swipedData.html)) {
+          if (p.swipedData) {
             targets.push({
               pageId: p.id,
               target: 'swipedData',
               jobId: p.swipedData.jobId,
               htmlUrl: p.swipedData.htmlUrl,
               mobileHtmlUrl: p.swipedData.mobileHtmlUrl,
+              htmlPresent: !p.swipedData.htmlSkipped && !!p.swipedData.html,
+              editedAt: p.swipedData.editedAt,
             });
           }
-          if (p.clonedData && (p.clonedData.htmlSkipped || !p.clonedData.html)) {
+          if (p.clonedData) {
             targets.push({
               pageId: p.id,
               target: 'clonedData',
               jobId: p.clonedData.jobId,
               htmlUrl: p.clonedData.htmlUrl,
               mobileHtmlUrl: p.clonedData.mobileHtmlUrl,
+              htmlPresent: !p.clonedData.htmlSkipped && !!p.clonedData.html,
+              editedAt: p.clonedData.editedAt,
             });
           }
         }
@@ -653,16 +678,20 @@ export const useStore = create<Store>()((set, get) => ({
         for (let i = 0; i < targets.length; i += PARALLEL) {
           const slice = targets.slice(i, i + PARALLEL);
           await Promise.all(
-            slice.map(async ({ pageId, target, jobId, htmlUrl, mobileHtmlUrl }) => {
-              // 0) IndexedDB locale — PRIORITÀ MASSIMA. È l'ultimo salvataggio
+            slice.map(async ({ pageId, target, jobId, htmlUrl, mobileHtmlUrl, htmlPresent, editedAt }) => {
+              // 0) IndexedDB locale — PRIORITÀ MASSIMA quando è (almeno) fresco
+              //    quanto l'ultimo edit noto sul server. È l'ultimo salvataggio
               //    su QUESTO browser: viene scritto ad ogni clone Identical e
-              //    ad ogni Save del VisualHtmlEditor. Deve vincere su htmlUrl,
-              //    altrimenti un htmlUrl vecchio (es. upload su page_html
-              //    fallito perché la migration / la service key mancano)
-              //    sovrascriverebbe la modifica con la clonazione iniziale.
+              //    ad ogni Save del VisualHtmlEditor.
+              //    - Se editedAt sul server è più recente del blob locale, NON
+              //      sovrascriviamo (un altro device ha salvato dopo): lasciamo
+              //      vincere html presente / htmlUrl remoto.
+              //    - Altrimenti l'IDB locale vince su tutto, così l'edit
+              //      sopravvive al reload anche se il write Supabase è fallito
+              //      o la pagina è piccola e nel JSONB è rimasto l'HTML vecchio.
               try {
                 const blob = await loadHtmlBlob(pageId, target);
-                if (blob?.html) {
+                if (blob?.html && blob.savedAt >= (editedAt ?? 0)) {
                   applyHydratedHtml(pageId, target, blob.html, blob.mobileHtml);
                   return;
                 }
@@ -670,6 +699,12 @@ export const useStore = create<Store>()((set, get) => ({
                 // eslint-disable-next-line no-console
                 console.warn(`[store] IndexedDB rehydrate fallita per page ${pageId}/${target}, provo Storage/openclaw:`, err);
               }
+
+              // Se l'HTML è già presente nel JSONB (e l'IDB non l'ha vinto
+              // sopra) non serve nessun fetch remoto: lo state in memoria ha
+              // già l'HTML giusto. Evita anche di sovrascrivere con sorgenti
+              // più vecchie.
+              if (htmlPresent) return;
 
               // 1) htmlUrl (page_html / Storage) — copia cross-device. Usata
               //    quando IDB è vuoto (altro browser/device, cache pulita).
