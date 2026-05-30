@@ -73,6 +73,7 @@ interface ElementInfo {
   src: string;
   alt: string;
   childImg?: { src: string; alt: string } | null;
+  childBg?: { src: string } | null;
   isTextNode: boolean;
   hasChildren: boolean;
   childCount: number;
@@ -214,6 +215,29 @@ const EDITOR_SCRIPT = `
           if(!im)im=el.querySelector('img');
         }catch(e){}
         if(im)return{src:(im.currentSrc||im.src||im.getAttribute('src')||''),alt:im.getAttribute('alt')||''};
+        return null;
+      })(),
+      /* Background-image NEL BLOCCO: spesso l'hero/sezione ha l'immagine
+         come CSS background su SE STESSO o su un DIV figlio (non un <img>),
+         quindi il click seleziona il wrapper e non si riesce a cambiarla.
+         Cerchiamo l'elemento (self o discendente) con l'area piu' grande che
+         abbia un background-image url(...), ed esponiamo la sua URL cosi' il
+         pannello mostra "Immagine di sfondo (nel blocco)". */
+      childBg:(function(){
+        try{
+          var cand=[el].concat(Array.prototype.slice.call(el.querySelectorAll('*')));
+          var best=null,bestSrc='',ba=-1;
+          for(var i=0;i<cand.length;i++){
+            var c=cand[i];var bi='';try{bi=getComputedStyle(c).backgroundImage||'';}catch(e){continue;}
+            if(!bi||bi==='none'||bi.indexOf('url(')<0)continue;
+            var mm=bi.match(/url\((['"]?)(.*?)\1\)/i);if(!mm||!mm[2])continue;
+            /* Salta gradienti/data-uri minuscoli e spacer */
+            var u=mm[2];if(u.indexOf('data:image/svg')===0)continue;
+            var rr=c.getBoundingClientRect();var ar=rr.width*rr.height;
+            if(ar>ba){ba=ar;best=c;bestSrc=u;}
+          }
+          if(best)return{src:bestSrc};
+        }catch(e){}
         return null;
       })(),
       videoAttrs:(el.tagName==='VIDEO'?{
@@ -476,6 +500,26 @@ const EDITOR_SCRIPT = `
         var _LZB=['srcset','data-src','data-original','data-original-src','data-orig-src','data-lazy-src','data-lazy','data-lazyload','data-lazy-load','data-url','data-image-src','data-image','data-thumb','data-cfsrc','data-cmplz-src','data-wf-src','data-echo','data-defer-src','data-hi-res-src','data-actual','data-srcfallback','data-srcset','data-lazy-srcset','data-cfsrcset','data-cmplz-srcset','data-wf-srcset'];for(var _zb=0;_zb<_LZB.length;_zb++){_ci.removeAttribute(_LZB[_zb]);}
         sendHtml();
         window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');}}break;
+      case 'cmd-set-child-bg-image':if(sel){
+        /* Trova l'elemento (self o discendente) con l'area piu' grande che
+           ha un background-image url(...) — stessa euristica di gi().childBg
+           — e gli imposta la nuova immagine di sfondo. */
+        var _bgEl=null,_bba=-1;try{
+          var _bc=[sel].concat(Array.prototype.slice.call(sel.querySelectorAll('*')));
+          for(var _bi=0;_bi<_bc.length;_bi++){var _bs='';try{_bs=getComputedStyle(_bc[_bi]).backgroundImage||'';}catch(e){continue;}
+            if(!_bs||_bs==='none'||_bs.indexOf('url(')<0)continue;
+            var _bm=_bs.match(/url\((['"]?)(.*?)\1\)/i);if(!_bm||!_bm[2])continue;
+            if(_bm[2].indexOf('data:image/svg')===0)continue;
+            var _br=_bc[_bi].getBoundingClientRect();var _bar=_br.width*_br.height;
+            if(_bar>_bba){_bba=_bar;_bgEl=_bc[_bi];}}
+        }catch(e){}
+        if(_bgEl){_bgEl.style.setProperty('background-image','url("'+m.value+'")','important');
+          /* assicura che lo sfondo sia visibile (alcune sezioni hanno
+             background-size:0 o image:none inline che vince) */
+          if(!_bgEl.style.backgroundSize)_bgEl.style.backgroundSize='cover';
+          if(!_bgEl.style.backgroundPosition)_bgEl.style.backgroundPosition='center';
+          sendHtml();
+          window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');}}break;
       case 'cmd-set-text':if(sel){sel.textContent=m.value;sendHtml();
         window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');}break;
       case 'cmd-set-inner-html':if(sel){sel.innerHTML=m.value;sendHtml();
@@ -2141,6 +2185,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   const setStyle = (prop: string, val: string) => sendToIframe({ type: 'cmd-set-style', property: prop, value: val });
   const setAttr = (name: string, val: string) => sendToIframe({ type: 'cmd-set-attr', name, value: val });
   const setChildImgSrc = (val: string) => sendToIframe({ type: 'cmd-set-child-img-src', value: val });
+  const setChildBgImage = (val: string) => sendToIframe({ type: 'cmd-set-child-bg-image', value: val });
   const removeAttr = (name: string) => sendToIframe({ type: 'cmd-remove-attr', name });
   // Toggle di un attributo booleano HTML (es. loop, controls, muted...).
   // Aggiunge l'attributo (value="") se ON, lo rimuove se OFF.
@@ -2385,6 +2430,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   const vidUploadRef = useRef<HTMLInputElement>(null);
   const bgImgUploadRef = useRef<HTMLInputElement>(null);
   const childImgUploadRef = useRef<HTMLInputElement>(null);
+  const childBgUploadRef = useRef<HTMLInputElement>(null);
 
   const handleMediaUpload = useCallback(async (file: File, target: 'image' | 'video') => {
     if (uploading) return;
@@ -2440,6 +2486,23 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
       setUploading(false);
     }
   }, [uploading, setChildImgSrc]);
+
+  /* Carica e sostituisce l'immagine di SFONDO (CSS background-image) di un
+   * DIV figlio del blocco selezionato: copre l'hero/sezione il cui sfondo è
+   * su un discendente e quindi col click si selezionava solo il wrapper. */
+  const handleChildBgUpload = useCallback(async (file: File) => {
+    if (uploading) return;
+    setUploading(true);
+    setUploadError('');
+    try {
+      const publicUrl = await directSupabaseUpload(file);
+      setChildBgImage(publicUrl);
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : 'Upload failed');
+    } finally {
+      setUploading(false);
+    }
+  }, [uploading, setChildBgImage]);
 
   /* requestSwipeContext — chiede all'iframe il contesto strutturato
    * (heading + paragrafo + CTA + posizione) attorno all'elemento
@@ -4141,6 +4204,32 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                     >
                       {uploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
                       {uploading ? 'Uploading...' : 'Carica/sostituisci immagine'}
+                    </button>
+                  </div>
+                )}
+
+                {/* Background image NEL BLOCCO — quando l'immagine di sfondo è
+                    su un DIV figlio (non sull'elemento selezionato). Permette
+                    di cambiarla anche se il click ha preso il wrapper. Mostrato
+                    solo se il blocco selezionato NON ha già un suo background
+                    (quello è gestito dal controllo "Immagine di sfondo"). */}
+                {el.tagName !== 'img' && el.childBg && el.childBg.src &&
+                 (!el.styles.backgroundImage || el.styles.backgroundImage === 'none') && (
+                  <div className="p-3">
+                    <PropLabel icon={Image}>Immagine di sfondo (nel blocco)</PropLabel>
+                    <label className="text-[10px] text-slate-500 mb-0.5 block">Background image URL</label>
+                    <input type="url" defaultValue={el.childBg.src} key={el.childBg.src} className="prop-input"
+                      onBlur={(e) => setChildBgImage(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') setChildBgImage((e.target as HTMLInputElement).value); }} />
+                    <input ref={childBgUploadRef} type="file" accept="image/*,.gif,.webp,.avif,.svg" className="hidden"
+                      onChange={(e) => { const f = e.target.files?.[0]; if (f) handleChildBgUpload(f); e.target.value = ''; }} />
+                    <button
+                      onClick={() => childBgUploadRef.current?.click()}
+                      disabled={uploading}
+                      className="mt-1.5 w-full flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-lg bg-blue-50 border border-blue-200 hover:border-blue-300 hover:bg-blue-100 transition-all text-xs font-medium text-blue-700 disabled:opacity-50"
+                    >
+                      {uploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
+                      {uploading ? 'Uploading...' : 'Carica/sostituisci sfondo'}
                     </button>
                   </div>
                 )}
