@@ -181,6 +181,24 @@ const EDITOR_SCRIPT = `
     return p.join(' > ');
   }
 
+  /* Dato un elemento (anche una singola slide o <img>), risale al contenitore
+     del carosello/slider piu' ESTERNO (Replo, slick, swiper, glide, splide,
+     flickity, owl). Serve perche' cliccando una slide/immagine vogliamo poter
+     elencare e sostituire TUTTE le immagini del carosello, non solo quella.
+     NB: nell'editor gli script sono rimossi, quindi slick/swiper NON aggiungono
+     le loro classi runtime: ci appoggiamo alle classi/attributi gia' presenti
+     nello snapshot statico (Replo: data-replo-carousel/.left-slider/.slider-for). */
+  function carScope(el){
+    if(!el||el.nodeType!==1)return null;
+    var SEL='[data-replo-carousel],.slick-slider,.slick-list,.slick-slide,.slider-for,.left-slider,.swiper,.swiper-container,.carousel,.glide,.splide,.flickity-enabled,.owl-carousel';
+    var p=el,d=0,found=null;
+    while(p&&p.nodeType===1&&d<14){
+      try{if(p.matches&&p.matches(SEL))found=p;}catch(e){}
+      p=p.parentElement;d++;
+    }
+    return found;
+  }
+
   function gi(el){
     if(!el)return null;
     var cs=getComputedStyle(el),r=el.getBoundingClientRect();
@@ -230,9 +248,15 @@ const EDITOR_SCRIPT = `
          lista così l'utente sostituisce ogni immagine per indice (stabile in
          ordine DOM). Solo se >1 (per 1 sola basta childImg). */
       childImgs:(function(){
-        if(el.tagName==='IMG')return null;
+        /* 1) Se siamo dentro un carosello/slider (self o antenato), elenchiamo
+              TUTTE le immagini del contenitore: cosi' anche cliccando una sola
+              slide o l'immagine visibile, l'utente puo' sostituirle tutte.
+           2) Altrimenti, se il blocco selezionato (non-img) contiene piu' <img>,
+              usiamo il blocco stesso (gallery/griglia generica). */
+        var scope=carScope(el)||(el.tagName!=='IMG'?el:null);
+        if(!scope)return null;
         var out=[];try{
-          var ims=el.querySelectorAll('img');
+          var ims=scope.querySelectorAll('img');
           for(var i=0;i<ims.length&&i<60;i++){
             var s=ims[i].currentSrc||ims[i].src||ims[i].getAttribute('src')||'';
             out.push({src:s,alt:ims[i].getAttribute('alt')||''});
@@ -517,7 +541,7 @@ const EDITOR_SCRIPT = `
         var _LZB=['srcset','data-src','data-original','data-original-src','data-orig-src','data-lazy-src','data-lazy','data-lazyload','data-lazy-load','data-url','data-image-src','data-image','data-thumb','data-cfsrc','data-cmplz-src','data-wf-src','data-echo','data-defer-src','data-hi-res-src','data-actual','data-srcfallback','data-srcset','data-lazy-srcset','data-cfsrcset','data-cmplz-srcset','data-wf-srcset'];for(var _zb=0;_zb<_LZB.length;_zb++){_ci.removeAttribute(_LZB[_zb]);}
         sendHtml();
         window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');}}break;
-      case 'cmd-set-child-img-src-at':if(sel){var _ima=sel.querySelectorAll('img');var _ti=_ima[m.index];
+      case 'cmd-set-child-img-src-at':if(sel){var _scp=carScope(sel)||sel;var _ima=_scp.querySelectorAll('img');var _ti=_ima[m.index];
         if(_ti){_ti.setAttribute('src',m.value);
         var _LZD=['srcset','data-src','data-original','data-original-src','data-orig-src','data-lazy-src','data-lazy','data-lazyload','data-lazy-load','data-url','data-image-src','data-image','data-thumb','data-cfsrc','data-cmplz-src','data-wf-src','data-echo','data-defer-src','data-hi-res-src','data-actual','data-srcfallback','data-srcset','data-lazy-srcset','data-cfsrcset','data-cmplz-srcset','data-wf-srcset'];for(var _zd=0;_zd<_LZD.length;_zd++){_ti.removeAttribute(_LZD[_zd]);}
         sendHtml();
@@ -4189,7 +4213,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                     Le mostriamo TUTTE così l'utente sostituisce ognuna per
                     indice (nel carosello statico dell'editor ne vede una sola,
                     ma qui le tocca tutte). */}
-                {el.tagName !== 'img' && el.childImgs && el.childImgs.length > 1 && (
+                {el.childImgs && el.childImgs.length > 1 && (
                   <div className="p-3">
                     <PropLabel icon={Image}>Immagini nel blocco ({el.childImgs.length})</PropLabel>
                     <p className="text-[10px] text-slate-500 mb-2">Carosello/gallery: sostituisci ogni immagine singolarmente.</p>
