@@ -1229,7 +1229,28 @@ export default function FrontEndFunnel() {
       const txt = await res.text().catch(() => '');
       throw new Error(txt || `Errore ${res.status}`);
     }
-    return res.json();
+    const created = await res.json();
+
+    // Auto-sync: collega ogni pagina del builder allo step creato (per
+    // step_number = indice+1), così un successivo Save nel Visual Editor
+    // potrà aggiornare da solo il result_content dello step del progetto.
+    try {
+      if (Array.isArray(created)) {
+        const links = (created as Array<{ id?: number; step_number?: number }>)
+          .map((row) => {
+            const idx = (row.step_number || 0) - 1;
+            const page = pages[idx];
+            return page && row.id
+              ? { pageId: page.id, projectId, stepId: row.id }
+              : null;
+          })
+          .filter((x): x is { pageId: string; projectId: string; stepId: number } => !!x);
+        const { setFunnelStepLinks } = await import('@/lib/funnel-step-map');
+        setFunnelStepLinks(links);
+      }
+    } catch { /* best-effort: l'auto-sync è opzionale */ }
+
+    return created;
   };
 
   // Conferma salvataggio dal modal: instrada verso archivio o progetto.
@@ -8343,6 +8364,26 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                     },
                   });
                 }
+
+                // AUTO-SYNC verso il progetto: se questa pagina è stata
+                // salvata in un funnel di progetto, aggiorna il result_content
+                // dello step collegato così "Vedi/Editor" nel ProjectHub mostra
+                // subito l'ultima versione editata (niente ri-salvataggio
+                // manuale del funnel). Best-effort: non blocca né rompe il save.
+                try {
+                  const { getFunnelStepLink } = await import('@/lib/funnel-step-map');
+                  const link = getFunnelStepLink(pid);
+                  if (link) {
+                    void fetch(
+                      `/api/projecthub/projects/${link.projectId}/funnel-steps/${link.stepId}`,
+                      {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ result_content: html }),
+                      },
+                    ).catch(() => {});
+                  }
+                } catch { /* auto-sync opzionale */ }
               }
             }
           }}
