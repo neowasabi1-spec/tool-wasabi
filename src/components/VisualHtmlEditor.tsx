@@ -2430,7 +2430,6 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   const vidUploadRef = useRef<HTMLInputElement>(null);
   const bgImgUploadRef = useRef<HTMLInputElement>(null);
   const childImgUploadRef = useRef<HTMLInputElement>(null);
-  const childBgUploadRef = useRef<HTMLInputElement>(null);
 
   const handleMediaUpload = useCallback(async (file: File, target: 'image' | 'video') => {
     if (uploading) return;
@@ -2449,27 +2448,6 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     }
   }, [uploading, setAttr]);
 
-  /* Carica e sostituisce l'immagine di SFONDO (CSS background-image) di un
-   * elemento non-<img>: tipico delle hero Funnelish, che usano un div con
-   * background-image e quindi non venivano riconosciute come immagine
-   * modificabile. */
-  const handleBgImageUpload = useCallback(async (file: File) => {
-    if (uploading) return;
-    setUploading(true);
-    setUploadError('');
-    try {
-      const publicUrl = await directSupabaseUpload(file);
-      setStyle('backgroundImage', `url("${publicUrl}")`);
-      setStyle('backgroundSize', 'cover');
-      setStyle('backgroundPosition', 'center');
-      setStyle('backgroundRepeat', 'no-repeat');
-    } catch (err) {
-      setUploadError(err instanceof Error ? err.message : 'Upload failed');
-    } finally {
-      setUploading(false);
-    }
-  }, [uploading, setStyle]);
-
   /* Carica e sostituisce il primo <img> DENTRO l'elemento selezionato:
    * usato quando il click prende un wrapper/overlay invece dell'<img>
    * (ClickFunnels/Funnelish), cosi' l'immagine resta modificabile. */
@@ -2486,23 +2464,6 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
       setUploading(false);
     }
   }, [uploading, setChildImgSrc]);
-
-  /* Carica e sostituisce l'immagine di SFONDO (CSS background-image) di un
-   * DIV figlio del blocco selezionato: copre l'hero/sezione il cui sfondo è
-   * su un discendente e quindi col click si selezionava solo il wrapper. */
-  const handleChildBgUpload = useCallback(async (file: File) => {
-    if (uploading) return;
-    setUploading(true);
-    setUploadError('');
-    try {
-      const publicUrl = await directSupabaseUpload(file);
-      setChildBgImage(publicUrl);
-    } catch (err) {
-      setUploadError(err instanceof Error ? err.message : 'Upload failed');
-    } finally {
-      setUploading(false);
-    }
-  }, [uploading, setChildBgImage]);
 
   /* requestSwipeContext — chiede all'iframe il contesto strutturato
    * (heading + paragrafo + CTA + posizione) attorno all'elemento
@@ -4159,32 +4120,8 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                   </div>
                 )}
 
-                {/* Background image — per elementi non-<img> con un CSS
-                    background-image (hero Funnelish, sezioni con sfondo foto).
-                    Senza questo non c'era modo di cambiarle dall'editor. */}
-                {el.tagName !== 'img' && el.styles.backgroundImage && el.styles.backgroundImage !== 'none' && (() => {
-                  const m = el.styles.backgroundImage.match(/url\((['"]?)(.*?)\1\)/i);
-                  const currentBg = m ? m[2] : '';
-                  return (
-                    <div className="p-3">
-                      <PropLabel icon={Image}>Immagine di sfondo</PropLabel>
-                      <label className="text-[10px] text-slate-500 mb-0.5 block">Background image URL</label>
-                      <input type="url" defaultValue={currentBg} key={currentBg} className="prop-input"
-                        onBlur={(e) => setStyle('backgroundImage', e.target.value ? `url("${e.target.value}")` : 'none')}
-                        onKeyDown={(e) => { if (e.key === 'Enter') { const v = (e.target as HTMLInputElement).value; setStyle('backgroundImage', v ? `url("${v}")` : 'none'); } }} />
-                      <input ref={bgImgUploadRef} type="file" accept="image/*,.gif,.webp,.avif,.svg" className="hidden"
-                        onChange={(e) => { const f = e.target.files?.[0]; if (f) handleBgImageUpload(f); e.target.value = ''; }} />
-                      <button
-                        onClick={() => bgImgUploadRef.current?.click()}
-                        disabled={uploading}
-                        className="mt-1.5 w-full flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-lg bg-blue-50 border border-blue-200 hover:border-blue-300 hover:bg-blue-100 transition-all text-xs font-medium text-blue-700 disabled:opacity-50"
-                      >
-                        {uploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
-                        {uploading ? 'Uploading...' : 'Carica immagine di sfondo'}
-                      </button>
-                    </div>
-                  );
-                })()}
+                {/* (Le immagini di sfondo si modificano dalla sezione
+                    "Background" più sotto: controllo sempre disponibile.) */}
 
                 {/* Immagine dentro un wrapper — quando il click seleziona il
                     contenitore (.elImage / overlay) invece dell'<img>. */}
@@ -4204,32 +4141,6 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                     >
                       {uploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
                       {uploading ? 'Uploading...' : 'Carica/sostituisci immagine'}
-                    </button>
-                  </div>
-                )}
-
-                {/* Background image NEL BLOCCO — quando l'immagine di sfondo è
-                    su un DIV figlio (non sull'elemento selezionato). Permette
-                    di cambiarla anche se il click ha preso il wrapper. Mostrato
-                    solo se il blocco selezionato NON ha già un suo background
-                    (quello è gestito dal controllo "Immagine di sfondo"). */}
-                {el.tagName !== 'img' && el.childBg && el.childBg.src &&
-                 (!el.styles.backgroundImage || el.styles.backgroundImage === 'none') && (
-                  <div className="p-3">
-                    <PropLabel icon={Image}>Immagine di sfondo (nel blocco)</PropLabel>
-                    <label className="text-[10px] text-slate-500 mb-0.5 block">Background image URL</label>
-                    <input type="url" defaultValue={el.childBg.src} key={el.childBg.src} className="prop-input"
-                      onBlur={(e) => setChildBgImage(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === 'Enter') setChildBgImage((e.target as HTMLInputElement).value); }} />
-                    <input ref={childBgUploadRef} type="file" accept="image/*,.gif,.webp,.avif,.svg" className="hidden"
-                      onChange={(e) => { const f = e.target.files?.[0]; if (f) handleChildBgUpload(f); e.target.value = ''; }} />
-                    <button
-                      onClick={() => childBgUploadRef.current?.click()}
-                      disabled={uploading}
-                      className="mt-1.5 w-full flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-lg bg-blue-50 border border-blue-200 hover:border-blue-300 hover:bg-blue-100 transition-all text-xs font-medium text-blue-700 disabled:opacity-50"
-                    >
-                      {uploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
-                      {uploading ? 'Uploading...' : 'Carica/sostituisci sfondo'}
                     </button>
                   </div>
                 )}
@@ -4598,6 +4509,70 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                     <button onClick={() => setStyle('backgroundColor', 'transparent')}
                       className="ml-auto text-[10px] text-slate-400 hover:text-red-500">Reset</button>
                   </div>
+
+                  {/* Immagine di sfondo — SEMPRE disponibile per elementi non-<img>.
+                      Pre-compilata con l'eventuale background già presente
+                      (sull'elemento o, se assente, su un figlio del blocco —
+                      rilevato via getComputedStyle). Permette anche di
+                      AGGIUNGERNE una da zero dove non c'è. */}
+                  {el.tagName !== 'img' && (() => {
+                    const ownBg = el.styles.backgroundImage && el.styles.backgroundImage !== 'none'
+                      ? (el.styles.backgroundImage.match(/url\((['"]?)(.*?)\1\)/i)?.[2] || '')
+                      : '';
+                    const childBgSrc = el.childBg?.src || '';
+                    // Se l'elemento non ha un suo background ma un figlio sì,
+                    // agiamo sul figlio (setter "nel blocco"). Altrimenti
+                    // sull'elemento selezionato.
+                    const useChild = !ownBg && !!childBgSrc;
+                    const currentBg = ownBg || childBgSrc;
+                    const applyBg = (v: string) => {
+                      if (useChild) setChildBgImage(v);
+                      else setStyle('backgroundImage', v ? `url("${v}")` : 'none');
+                    };
+                    return (
+                      <div className="mt-2.5">
+                        <label className="text-[10px] text-slate-500 mb-0.5 block">
+                          Immagine di sfondo{useChild ? ' (nel blocco)' : ''} — URL
+                        </label>
+                        <input type="url" defaultValue={currentBg} key={currentBg || 'empty'}
+                          placeholder="https://… oppure carica sotto"
+                          className="prop-input"
+                          onBlur={(e) => applyBg(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') applyBg((e.target as HTMLInputElement).value); }} />
+                        <input ref={bgImgUploadRef} type="file" accept="image/*,.gif,.webp,.avif,.svg" className="hidden"
+                          onChange={async (e) => {
+                            const f = e.target.files?.[0]; e.target.value = '';
+                            if (!f || uploading) return;
+                            setUploading(true); setUploadError('');
+                            try {
+                              const url = await directSupabaseUpload(f);
+                              applyBg(url);
+                              if (!useChild) {
+                                setStyle('backgroundSize', 'cover');
+                                setStyle('backgroundPosition', 'center');
+                                setStyle('backgroundRepeat', 'no-repeat');
+                              }
+                            } catch (err) {
+                              setUploadError(err instanceof Error ? err.message : 'Upload failed');
+                            } finally {
+                              setUploading(false);
+                            }
+                          }} />
+                        <button
+                          onClick={() => bgImgUploadRef.current?.click()}
+                          disabled={uploading}
+                          className="mt-1.5 w-full flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-lg bg-blue-50 border border-blue-200 hover:border-blue-300 hover:bg-blue-100 transition-all text-xs font-medium text-blue-700 disabled:opacity-50"
+                        >
+                          {uploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
+                          {uploading ? 'Uploading...' : (currentBg ? 'Carica/sostituisci sfondo' : 'Carica immagine di sfondo')}
+                        </button>
+                        {currentBg && (
+                          <button onClick={() => applyBg('')}
+                            className="mt-1 w-full text-[10px] text-slate-400 hover:text-red-500">Rimuovi sfondo</button>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 {/* Dimensions */}
