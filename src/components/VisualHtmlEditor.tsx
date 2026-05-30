@@ -73,6 +73,7 @@ interface ElementInfo {
   src: string;
   alt: string;
   childImg?: { src: string; alt: string } | null;
+  childImgs?: { src: string; alt: string }[] | null;
   childBg?: { src: string } | null;
   isTextNode: boolean;
   hasChildren: boolean;
@@ -223,6 +224,22 @@ const EDITOR_SCRIPT = `
          Cerchiamo l'elemento (self o discendente) con l'area piu' grande che
          abbia un background-image url(...), ed esponiamo la sua URL cosi' il
          pannello mostra "Immagine di sfondo (nel blocco)". */
+      /* TUTTE le <img> nel blocco — serve per caroselli/gallery/Swiper dove
+         ci sono N slide e modificarne "una" col selettore singolo sembra
+         "scollegato" (cambia la slide sbagliata o invisibile). Esponiamo la
+         lista così l'utente sostituisce ogni immagine per indice (stabile in
+         ordine DOM). Solo se >1 (per 1 sola basta childImg). */
+      childImgs:(function(){
+        if(el.tagName==='IMG')return null;
+        var out=[];try{
+          var ims=el.querySelectorAll('img');
+          for(var i=0;i<ims.length&&i<60;i++){
+            var s=ims[i].currentSrc||ims[i].src||ims[i].getAttribute('src')||'';
+            out.push({src:s,alt:ims[i].getAttribute('alt')||''});
+          }
+        }catch(e){}
+        return out.length>1?out:null;
+      })(),
       childBg:(function(){
         try{
           var cand=[el].concat(Array.prototype.slice.call(el.querySelectorAll('*')));
@@ -498,6 +515,11 @@ const EDITOR_SCRIPT = `
         /* Vedi cmd-set-attr: togliamo TUTTI gli attributi lazy così la
            promozione alla riapertura non ripristina l'immagine vecchia. */
         var _LZB=['srcset','data-src','data-original','data-original-src','data-orig-src','data-lazy-src','data-lazy','data-lazyload','data-lazy-load','data-url','data-image-src','data-image','data-thumb','data-cfsrc','data-cmplz-src','data-wf-src','data-echo','data-defer-src','data-hi-res-src','data-actual','data-srcfallback','data-srcset','data-lazy-srcset','data-cfsrcset','data-cmplz-srcset','data-wf-srcset'];for(var _zb=0;_zb<_LZB.length;_zb++){_ci.removeAttribute(_LZB[_zb]);}
+        sendHtml();
+        window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');}}break;
+      case 'cmd-set-child-img-src-at':if(sel){var _ima=sel.querySelectorAll('img');var _ti=_ima[m.index];
+        if(_ti){_ti.setAttribute('src',m.value);
+        var _LZD=['srcset','data-src','data-original','data-original-src','data-orig-src','data-lazy-src','data-lazy','data-lazyload','data-lazy-load','data-url','data-image-src','data-image','data-thumb','data-cfsrc','data-cmplz-src','data-wf-src','data-echo','data-defer-src','data-hi-res-src','data-actual','data-srcfallback','data-srcset','data-lazy-srcset','data-cfsrcset','data-cmplz-srcset','data-wf-srcset'];for(var _zd=0;_zd<_LZD.length;_zd++){_ti.removeAttribute(_LZD[_zd]);}
         sendHtml();
         window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');}}break;
       case 'cmd-set-child-bg-image':if(sel){
@@ -2185,6 +2207,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   const setStyle = (prop: string, val: string) => sendToIframe({ type: 'cmd-set-style', property: prop, value: val });
   const setAttr = (name: string, val: string) => sendToIframe({ type: 'cmd-set-attr', name, value: val });
   const setChildImgSrc = (val: string) => sendToIframe({ type: 'cmd-set-child-img-src', value: val });
+  const setChildImgSrcAt = (index: number, val: string) => sendToIframe({ type: 'cmd-set-child-img-src-at', index, value: val });
   const setChildBgImage = (val: string) => sendToIframe({ type: 'cmd-set-child-bg-image', value: val });
   const removeAttr = (name: string) => sendToIframe({ type: 'cmd-remove-attr', name });
   // Toggle di un attributo booleano HTML (es. loop, controls, muted...).
@@ -2430,6 +2453,8 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   const vidUploadRef = useRef<HTMLInputElement>(null);
   const bgImgUploadRef = useRef<HTMLInputElement>(null);
   const childImgUploadRef = useRef<HTMLInputElement>(null);
+  const childImgsUploadRef = useRef<HTMLInputElement>(null);
+  const childImgsUploadIndexRef = useRef<number>(-1);
 
   const handleMediaUpload = useCallback(async (file: File, target: 'image' | 'video') => {
     if (uploading) return;
@@ -2464,6 +2489,21 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
       setUploading(false);
     }
   }, [uploading, setChildImgSrc]);
+
+  /* Sostituisce l'<img> N-esima dentro il blocco (caroselli/gallery). */
+  const handleChildImgUploadAt = useCallback(async (file: File, index: number) => {
+    if (uploading) return;
+    setUploading(true);
+    setUploadError('');
+    try {
+      const publicUrl = await directSupabaseUpload(file);
+      setChildImgSrcAt(index, publicUrl);
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : 'Upload failed');
+    } finally {
+      setUploading(false);
+    }
+  }, [uploading, setChildImgSrcAt]);
 
   /* requestSwipeContext — chiede all'iframe il contesto strutturato
    * (heading + paragrafo + CTA + posizione) attorno all'elemento
@@ -4125,7 +4165,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
 
                 {/* Immagine dentro un wrapper — quando il click seleziona il
                     contenitore (.elImage / overlay) invece dell'<img>. */}
-                {el.tagName !== 'img' && el.childImg && el.childImg.src && (
+                {el.tagName !== 'img' && el.childImg && el.childImg.src && !(el.childImgs && el.childImgs.length > 1) && (
                   <div className="p-3">
                     <PropLabel icon={Image}>Immagine (nel blocco)</PropLabel>
                     <label className="text-[10px] text-slate-500 mb-0.5 block">Image URL</label>
@@ -4142,6 +4182,45 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                       {uploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
                       {uploading ? 'Uploading...' : 'Carica/sostituisci immagine'}
                     </button>
+                  </div>
+                )}
+
+                {/* Carosello / gallery — più <img> nello stesso blocco.
+                    Le mostriamo TUTTE così l'utente sostituisce ognuna per
+                    indice (nel carosello statico dell'editor ne vede una sola,
+                    ma qui le tocca tutte). */}
+                {el.tagName !== 'img' && el.childImgs && el.childImgs.length > 1 && (
+                  <div className="p-3">
+                    <PropLabel icon={Image}>Immagini nel blocco ({el.childImgs.length})</PropLabel>
+                    <p className="text-[10px] text-slate-500 mb-2">Carosello/gallery: sostituisci ogni immagine singolarmente.</p>
+                    <input ref={childImgsUploadRef} type="file" accept="image/*,.gif,.webp,.avif,.svg" className="hidden"
+                      onChange={(e) => { const f = e.target.files?.[0]; const idx = childImgsUploadIndexRef.current; if (f && idx >= 0) handleChildImgUploadAt(f, idx); e.target.value = ''; }} />
+                    <div className="space-y-2">
+                      {el.childImgs.map((ci, i) => (
+                        <div key={i} className="flex items-center gap-2 p-1.5 rounded-lg border border-slate-200 bg-slate-50">
+                          <div className="w-10 h-10 rounded bg-white border border-slate-200 overflow-hidden flex-shrink-0 flex items-center justify-center">
+                            {ci.src
+                              ? <img src={ci.src} alt="" className="w-full h-full object-cover" />
+                              : <Image className="h-4 w-4 text-slate-300" />}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <span className="text-[10px] text-slate-400 block">#{i + 1}</span>
+                            <input type="url" defaultValue={ci.src} key={ci.src} placeholder="Image URL"
+                              className="prop-input !py-1 !text-[11px]"
+                              onBlur={(e) => { if (e.target.value !== ci.src) setChildImgSrcAt(i, e.target.value); }}
+                              onKeyDown={(e) => { if (e.key === 'Enter') setChildImgSrcAt(i, (e.target as HTMLInputElement).value); }} />
+                          </div>
+                          <button
+                            onClick={() => { childImgsUploadIndexRef.current = i; childImgsUploadRef.current?.click(); }}
+                            disabled={uploading}
+                            title="Carica/sostituisci"
+                            className="flex-shrink-0 p-2 rounded-lg bg-blue-50 border border-blue-200 hover:bg-blue-100 transition-all text-blue-700 disabled:opacity-50"
+                          >
+                            {uploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
+                          </button>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 )}
 
