@@ -1180,15 +1180,30 @@ export default function FrontEndFunnel() {
     if (!projectId) throw new Error('Nessun progetto selezionato');
     if (pages.length === 0) throw new Error('Nessuna pagina da salvare');
 
-    const steps = pages.map((p, i) => {
+    // L'ultima modifica del VisualHtmlEditor vive in memoria (clonedData/
+    // swipedData) e, per pagine grandi non ancora reidratate dopo un reload,
+    // in IndexedDB. Leggiamo l'HTML in memoria e, se vuoto, ricadiamo su IDB
+    // così lo snapshot salvato nel progetto è SEMPRE l'ultima versione.
+    const { loadHtmlBlob } = await import('@/lib/html-blob-store');
+    const steps = await Promise.all(pages.map(async (p, i) => {
       const status =
         p.swipeStatus === 'completed'
           ? 'completed'
           : p.swipeStatus === 'in_progress'
             ? 'in_progress'
             : 'pending';
-      const resultHtml =
-        p.swipedData?.html || p.clonedData?.html || '';
+      let resultHtml = p.swipedData?.html || p.clonedData?.html || '';
+      if (!resultHtml) {
+        try {
+          const target: 'swipedData' | 'clonedData' = p.swipedData ? 'swipedData' : 'clonedData';
+          const blob = await loadHtmlBlob(p.id, target);
+          resultHtml = blob?.html || '';
+          if (!resultHtml) {
+            const other = await loadHtmlBlob(p.id, target === 'swipedData' ? 'clonedData' : 'swipedData');
+            resultHtml = other?.html || '';
+          }
+        } catch { /* IDB non disponibile: resta vuoto */ }
+      }
       return {
         step_number: i + 1,
         page_name: p.name || `Step ${i + 1}`,
@@ -1201,12 +1216,14 @@ export default function FrontEndFunnel() {
         status,
         result_content: resultHtml || null,
       };
-    });
+    }));
 
     const res = await fetch(`/api/projecthub/projects/${projectId}/funnel-steps`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ steps }),
+      // replace: riallinea il funnel del progetto invece di accodare
+      // duplicati, così "Vedi/Editor" mostra sempre l'ultima versione.
+      body: JSON.stringify({ steps, replace: true }),
     });
     if (!res.ok) {
       const txt = await res.text().catch(() => '');

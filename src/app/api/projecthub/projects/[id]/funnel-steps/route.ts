@@ -76,6 +76,21 @@ export async function POST(
         typeof s.step_number === 'number' ? s.step_number : i + 1,
     }));
 
+    // replace=true: sostituisce l'intero funnel del progetto. Senza questo,
+    // ri-salvare dopo aver editato una pagina ACCODAVA step duplicati e i
+    // vecchi (con result_content del clone iniziale) restavano: l'editor
+    // del progetto mostrava ancora la versione vecchia. Cancellando prima,
+    // ogni salvataggio riallinea result_content all'ultima versione editata.
+    if (body.replace === true) {
+      const { error: delErr } = await supabase
+        .from('funnel_steps')
+        .delete()
+        .eq('project_id', params.id);
+      if (delErr && !/does not exist|funnel_steps/i.test(delErr.message || '')) {
+        return NextResponse.json({ error: delErr.message }, { status: 500 });
+      }
+    }
+
     const { data, error } = await supabase
       .from('funnel_steps')
       .insert(rows)
