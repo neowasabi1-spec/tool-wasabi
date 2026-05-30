@@ -398,11 +398,39 @@ function toggle(item,trigger){
   if(trigger&&trigger.setAttribute)trigger.setAttribute('aria-expanded',willOpen?'true':'false');
   setOpen(panel,willOpen);
 }
+function findExplicitPanel(item){
+  // Versione STRETTA di findPanel (no fallback "ultimo figlio"): usata solo
+  // per la chiusura iniziale, per non nascondere per sbaglio menu/dropdown.
+  try{var p=item.querySelector(PANEL);if(p)return p;}catch(e){}
+  if(item&&item.children){for(var i=0;i<item.children.length;i++){if(isPanelLike(item.children[i]))return item.children[i];}}
+  return null;
+}
+function closeAll(){
+  // Chiude TUTTI i pannelli accordion al caricamento, cosi' la pagina parte
+  // collassata (lo snapshot Jina li cattura aperti) e l'utente li apre col
+  // click. Chiude solo elementi che hanno davvero un pannello nascondibile.
+  var seen=[];
+  function tryClose(item){
+    if(!item||seen.indexOf(item)>=0)return;seen.push(item);
+    if(item.tagName==='DETAILS'){item.removeAttribute('open');return;}
+    var panel=findExplicitPanel(item);
+    if(!panel)return;
+    item.setAttribute('data-wasabi-open','0');
+    item.classList.remove('is-open');item.classList.remove('active');item.classList.remove('expanded');
+    panel.style.display='none';
+  }
+  try{
+    var known=document.querySelectorAll(ITEM);for(var i=0;i<known.length;i++)tryClose(known[i]);
+    var fuzzy=document.querySelectorAll('[class*="faq" i],[class*="accordion" i],[class*="toggle" i],[class*="collaps" i],[class*="expand" i],[class*="question" i],[class*="drop" i]');
+    for(var j=0;j<fuzzy.length;j++){var el=fuzzy[j];if(ITEM_RE.test(cls(el))&&findPanel(null,el))tryClose(el);}
+  }catch(e){}
+}
 function once(){
   // Flag su <html>: attiva il CSS (cursor:pointer sugli header, rotazione
   // icona, e l'hide-by-default dei pannelli Funnelish .faq-content) solo
   // se la pagina ha davvero una forma accordion.
   try{if(document.querySelector(TRIG)||document.querySelector('.faq-content-wrapper')||document.querySelector(ITEM)){document.documentElement.setAttribute('data-wasabi-rescue','1');}}catch(e){}
+  closeAll();
   document.addEventListener('click',function(ev){
     var t=ev.target;if(!(t instanceof Element))return;
     var actionable=t.closest('a[href]:not([href="#"]):not([href=""]),button[type="submit"],input,select,textarea');
