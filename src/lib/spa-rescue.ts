@@ -451,8 +451,22 @@ function once(){
       if(sel){try{var be=document.querySelector(sel);if(be){be.classList.toggle('show');setOpen(be,be.classList.contains('show'));}}catch(e){}}
       ev.preventDefault();ev.stopPropagation();return;
     }
-    // 3) native <details>: let the browser handle the summary click
-    if(t.closest('summary'))return;
+    // 3) native <details>/<summary>: NON delegare al browser. Alcuni builder
+    //    (FunnelKit/.fk-collapsible-list) mettono onclick="return false" SUL
+    //    <details>, che annulla il toggle nativo -> la FAQ resta bloccata.
+    //    Gestiamo noi il toggle dell'attributo `open` e fermiamo l'evento in
+    //    capture, cosi' il loro onclick velenoso non viene mai raggiunto.
+    var det0=t.closest('details');
+    if(det0){
+      if(t.closest('summary')){
+        var willOpenD=!det0.hasAttribute('open');
+        if(willOpenD)det0.setAttribute('open','');else det0.removeAttribute('open');
+        var sm0=det0.querySelector('summary');
+        if(sm0&&sm0.setAttribute)sm0.setAttribute('aria-expanded',willOpenD?'true':'false');
+        ev.preventDefault();ev.stopPropagation();
+      }
+      return; // mai cadere nel generico per i <details> (evita doppio toggle)
+    }
     // 4) Generic + heuristic: find nearest accordion-shaped item
     var item=findItem(t);
     if(item){

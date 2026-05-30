@@ -1218,18 +1218,54 @@ export default function FrontEndFunnel() {
       };
     }));
 
+    // Netlify/AWS Lambda impone un limite HARD di ~6MB sul body di UNA singola
+    // richiesta (vale anche col piano a pagamento: è un limite di Lambda, non
+    // del piano Netlify). Mandare N pagine clonate con l'HTML completo in un
+    // solo POST sfora facilmente → "Internal Error. ID: ...". Strategia:
+    //   1) creiamo TUTTI gli step SENZA result_content → body minuscolo, 1 POST
+    //      (replace:true riallinea il funnel invece di accodare duplicati).
+    //   2) carichiamo l'HTML pesante con una PATCH separata per step: una sola
+    //      pagina per richiesta sta ampiamente sotto i 6MB.
+    const lightSteps = steps.map((s) => ({ ...s, result_content: null }));
     const res = await fetch(`/api/projecthub/projects/${projectId}/funnel-steps`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      // replace: riallinea il funnel del progetto invece di accodare
-      // duplicati, così "Vedi/Editor" mostra sempre l'ultima versione.
-      body: JSON.stringify({ steps, replace: true }),
+      body: JSON.stringify({ steps: lightSteps, replace: true }),
     });
     if (!res.ok) {
       const txt = await res.text().catch(() => '');
       throw new Error(txt || `Errore ${res.status}`);
     }
     const created = await res.json();
+
+    // Step 2: HTML pesante caricato una pagina alla volta (sotto 6MB/richiesta).
+    if (Array.isArray(created)) {
+      const failed: string[] = [];
+      for (const row of created as Array<{ id?: number; step_number?: number }>) {
+        const idx = (row.step_number || 0) - 1;
+        const html = steps[idx]?.result_content;
+        if (!row.id || !html) continue;
+        try {
+          const pr = await fetch(
+            `/api/projecthub/projects/${projectId}/funnel-steps/${row.id}`,
+            {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ result_content: html }),
+            },
+          );
+          if (!pr.ok) failed.push(steps[idx]?.page_name || `Step ${idx + 1}`);
+        } catch {
+          failed.push(steps[idx]?.page_name || `Step ${idx + 1}`);
+        }
+      }
+      if (failed.length) {
+        throw new Error(
+          `Step creati, ma l'HTML non è stato salvato per: ${failed.join(', ')} ` +
+          `(la singola pagina supera ~6MB).`,
+        );
+      }
+    }
 
     // Auto-sync: collega ogni pagina del builder allo step creato (per
     // step_number = indice+1), così un successivo Save nel Visual Editor
