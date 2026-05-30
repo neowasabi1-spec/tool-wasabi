@@ -204,7 +204,15 @@ const EDITOR_SCRIPT = `
          comunque il controllo "cambia immagine". */
       childImg:(function(){
         if(el.tagName==='IMG'||el.tagName==='VIDEO')return null;
-        var im=null;try{im=el.querySelector('img');}catch(e){}
+        /* Scegliamo l'<img> PIU' GRANDE (per area renderizzata) dentro il
+           blocco, non il primo nel DOM: cosi' "cambia immagine" agisce
+           sull'immagine principale (es. hero in alto) e non su una piccola
+           icona dei bullet che capita prima nel markup. */
+        var im=null;try{
+          var _imgs=el.querySelectorAll('img');var _ba=-1;
+          for(var _i=0;_i<_imgs.length;_i++){var _r=_imgs[_i].getBoundingClientRect();var _a=_r.width*_r.height;if(_a>_ba){_ba=_a;im=_imgs[_i];}}
+          if(!im)im=el.querySelector('img');
+        }catch(e){}
         if(im)return{src:(im.currentSrc||im.src||im.getAttribute('src')||''),alt:im.getAttribute('alt')||''};
         return null;
       })(),
@@ -448,7 +456,14 @@ const EDITOR_SCRIPT = `
         window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');}break;
       case 'cmd-set-attr':if(sel){sel.setAttribute(m.name,m.value);sendHtml();
         window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');}break;
-      case 'cmd-set-child-img-src':if(sel){var _ci=null;try{_ci=sel.querySelector('img');}catch(e){}
+      case 'cmd-set-child-img-src':if(sel){var _ci=null;try{
+        /* Stessa euristica di gi().childImg: prendiamo l'<img> PIU' GRANDE
+           del blocco, cosi' sostituiamo l'immagine principale (hero) e non
+           la prima icona dei bullet. */
+        var _cim=sel.querySelectorAll('img');var _cba=-1;
+        for(var _ck=0;_ck<_cim.length;_ck++){var _cr=_cim[_ck].getBoundingClientRect();var _ca=_cr.width*_cr.height;if(_ca>_cba){_cba=_ca;_ci=_cim[_ck];}}
+        if(!_ci)_ci=sel.querySelector('img');
+      }catch(e){}
         if(_ci){_ci.setAttribute('src',m.value);_ci.removeAttribute('srcset');_ci.removeAttribute('data-src');sendHtml();
         window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');}}break;
       case 'cmd-set-text':if(sel){sel.textContent=m.value;sendHtml();
