@@ -5798,26 +5798,27 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                   target: 'clonedData' | 'swipedData',
                                 ): Promise<{ html: string; mobileHtml?: string } | null> => {
                                   if (!blob) return null;
-                                  // 1) IndexedDB (copia locale, scritta ad OGNI Save dell'editor
-                                  //    e ad ogni clone) — è l'ULTIMA versione editata su questo
-                                  //    browser. PRIORITÀ MASSIMA: l'HTML in memoria (blob.html)
-                                  //    può essere rimasto vecchio (reidratato da htmlUrl dopo un
-                                  //    reload), quindi "Edit Visually" aprirebbe la versione
-                                  //    vecchia invece dell'ultima modifica salvata.
+                                  const kind = target === 'swipedData' ? 'swiped' : 'cloned';
+                                  // 1) SERVER (tabella page_html) — SORGENTE DI VERITÀ. È quello
+                                  //    che l'editor sovrascrive ad ogni Save, quindi "Edit"/anteprima
+                                  //    riaprono SEMPRE l'ULTIMA versione salvata, anche da un altro
+                                  //    dispositivo. URL deterministica per (pageId, kind).
                                   try {
-                                    const { loadHtmlBlob } = await import('@/lib/html-blob-store');
-                                    const idb = await loadHtmlBlob(page.id, target);
-                                    if (idb?.html) {
-                                      return { html: idb.html, mobileHtml: idb.mobileHtml };
+                                    const { fetchHtmlFromStorage } = await import('@/lib/funnel-html-storage');
+                                    const base = `/api/funnel-html?pageId=${encodeURIComponent(page.id)}&kind=${kind}`;
+                                    const html = await fetchHtmlFromStorage(`${base}&variant=desktop`);
+                                    if (html) {
+                                      const mobileHtml = await fetchHtmlFromStorage(`${base}&variant=mobile`);
+                                      return { html, mobileHtml: mobileHtml || undefined };
                                     }
                                   } catch { /* fall through */ }
-                                  // 2) blob in memoria (Zustand)
+                                  // 2) blob in memoria (Zustand) — già sincronizzato col server al
+                                  //    boot e ad ogni Save. Fallback se il server non ha la riga.
                                   if (blob.html && blob.html.length > 0) {
                                     return { html: blob.html, mobileHtml: blob.mobileHtml };
                                   }
-                                  // 2.5) Supabase Storage (htmlUrl) — copia cross-device. Serve
-                                  //      quando si clicca l'occhio prima che la rehydrate al boot
-                                  //      abbia ripopolato blob.html, o da un altro browser/device.
+                                  // 2.5) htmlUrl legacy (vecchio Supabase Storage) per pagine
+                                  //      create prima di page_html.
                                   if (blob.htmlUrl) {
                                     try {
                                       const { fetchHtmlFromStorage } = await import('@/lib/funnel-html-storage');
@@ -5828,6 +5829,14 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                       }
                                     } catch { /* fall through */ }
                                   }
+                                  // 2.9) IndexedDB — solo offline / ultima spiaggia su questa macchina.
+                                  try {
+                                    const { loadHtmlBlob } = await import('@/lib/html-blob-store');
+                                    const idb = await loadHtmlBlob(page.id, target);
+                                    if (idb?.html) {
+                                      return { html: idb.html, mobileHtml: idb.mobileHtml };
+                                    }
+                                  } catch { /* fall through */ }
                                   // 3) openclaw_messages.response (richiede jobId)
                                   if (blob.jobId) {
                                     try {
