@@ -247,9 +247,9 @@ const EDITOR_SCRIPT = `
           for(var i=0;i<cand.length;i++){
             var c=cand[i];var bi='';try{bi=getComputedStyle(c).backgroundImage||'';}catch(e){continue;}
             if(!bi||bi==='none'||bi.indexOf('url(')<0)continue;
-            var mm=bi.match(/url\((['"]?)(.*?)\1\)/i);if(!mm||!mm[2])continue;
+            var mm=bi.match(/url[(]['"]?([^'")]*)['"]?[)]/i);if(!mm||!mm[1])continue;
             /* Salta gradienti/data-uri minuscoli e spacer */
-            var u=mm[2];if(u.indexOf('data:image/svg')===0)continue;
+            var u=mm[1];if(u.indexOf('data:image/svg')===0)continue;
             var rr=c.getBoundingClientRect();var ar=rr.width*rr.height;
             if(ar>ba){ba=ar;best=c;bestSrc=u;}
           }
@@ -530,8 +530,8 @@ const EDITOR_SCRIPT = `
           var _bc=[sel].concat(Array.prototype.slice.call(sel.querySelectorAll('*')));
           for(var _bi=0;_bi<_bc.length;_bi++){var _bs='';try{_bs=getComputedStyle(_bc[_bi]).backgroundImage||'';}catch(e){continue;}
             if(!_bs||_bs==='none'||_bs.indexOf('url(')<0)continue;
-            var _bm=_bs.match(/url\((['"]?)(.*?)\1\)/i);if(!_bm||!_bm[2])continue;
-            if(_bm[2].indexOf('data:image/svg')===0)continue;
+            var _bm=_bs.match(/url[(]['"]?([^'")]*)['"]?[)]/i);if(!_bm||!_bm[1])continue;
+            if(_bm[1].indexOf('data:image/svg')===0)continue;
             var _br=_bc[_bi].getBoundingClientRect();var _bar=_br.width*_br.height;
             if(_bar>_bba){_bba=_bar;_bgEl=_bc[_bi];}}
         }catch(e){}
