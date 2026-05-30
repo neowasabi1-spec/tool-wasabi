@@ -424,12 +424,65 @@ function closeAll(){
     for(var j=0;j<its.length;j++){its[j].classList.remove('is-open');its[j].classList.remove('active');its[j].classList.remove('expanded');}
   }catch(e){}
 }
+// ---- CAROSELLO RESCUE ----------------------------------------------------
+// Gli slider clonati (Replo/slick: .slider-for + frecce .lc-arrow + miniature
+// .slider-nav, oppure Swiper: .swiper-wrapper) perdono il loro JS: le frecce
+// non fanno nulla e le slide restano statiche. Ricostruiamo un carosello
+// minimale in vanilla JS: mostriamo una slide per volta e colleghiamo
+// frecce prev/next + click sulle miniature. Nessuna dipendenza esterna.
+function wbSlides(track){
+  var out=[];
+  for(var i=0;i<track.children.length;i++){
+    var c=track.children[i];
+    if(!c||c.nodeType!==1||c.tagName==='BUTTON')continue;
+    var hasImg=(c.querySelector&&c.querySelector('img'))||c.tagName==='IMG';
+    var clsSlide=/r-ldsnaw|slick-slide|swiper-slide/i.test(''+(c.className||''));
+    if(hasImg||clsSlide)out.push(c);
+  }
+  return out;
+}
+function bindCarousel(track){
+  if(!track||track.__wbCar)return;
+  var slides=wbSlides(track);
+  if(slides.length<2)return;
+  track.__wbCar=1;
+  var scope=(track.closest&&track.closest('[data-replo-carousel],.left-slider,.carousel,.swiper,.slick-slider,.r-16fpy55'))||track.parentElement||track;
+  var nav=scope.querySelector('.slider-nav,.slick-dots,.slider-nav-thumbnails,.swiper-pagination');
+  var thumbs=[];
+  if(nav){for(var n=0;n<nav.children.length;n++){var tc=nav.children[n];if(tc&&tc.nodeType===1&&((tc.querySelector&&tc.querySelector('img'))||tc.tagName==='IMG'))thumbs.push(tc);}}
+  var idx=0;
+  function show(k){
+    idx=(k%slides.length+slides.length)%slides.length;
+    for(var i=0;i<slides.length;i++){slides[i].style.display=(i===idx?'':'none');}
+    for(var j=0;j<thumbs.length;j++){
+      var on=(j===idx);
+      thumbs[j].style.opacity=on?'1':'0.5';
+      try{thumbs[j].classList.toggle('r-19wtxcv',on);thumbs[j].classList.toggle('slick-current',on);thumbs[j].classList.toggle('slick-active',on);thumbs[j].classList.toggle('swiper-pagination-bullet-active',on);}catch(e){}
+    }
+  }
+  var prev=scope.querySelector('.lc-arrow-prev,.slick-prev,.slider-prev,.swiper-button-prev,[aria-label="Previous slide"]');
+  var next=scope.querySelector('.lc-arrow-next,.slick-next,.slider-next,.swiper-button-next,[aria-label="Next slide"]');
+  if(prev){prev.style.cursor='pointer';prev.addEventListener('click',function(e){e.preventDefault();e.stopPropagation();show(idx-1);},true);}
+  if(next){next.style.cursor='pointer';next.addEventListener('click',function(e){e.preventDefault();e.stopPropagation();show(idx+1);},true);}
+  for(var t=0;t<thumbs.length;t++){(function(kk){thumbs[kk].style.cursor='pointer';thumbs[kk].addEventListener('click',function(e){e.preventDefault();e.stopPropagation();show(kk);},true);})(t);}
+  show(0);
+}
+function initCarousels(){
+  try{
+    var tracks=document.querySelectorAll('.slider-for,.swiper-wrapper');
+    for(var i=0;i<tracks.length;i++)bindCarousel(tracks[i]);
+  }catch(e){}
+}
 function once(){
   // Flag su <html>: attiva il CSS (cursor:pointer sugli header, rotazione
   // icona, e l'hide-by-default dei pannelli Funnelish .faq-content) solo
   // se la pagina ha davvero una forma accordion.
   try{if(document.querySelector(TRIG)||document.querySelector('.faq-content-wrapper')||document.querySelector(ITEM)){document.documentElement.setAttribute('data-wasabi-rescue','1');}}catch(e){}
   closeAll();
+  initCarousels();
+  // Retry: alcune pagine popolano le slide via script inline dopo il load.
+  // initCarousels e' idempotente (guard __wbCar), quindi e' sicuro ripetere.
+  setTimeout(initCarousels,600);setTimeout(initCarousels,1600);
   document.addEventListener('click',function(ev){
     var t=ev.target;if(!(t instanceof Element))return;
     var actionable=t.closest('a[href]:not([href="#"]):not([href=""]),button[type="submit"],input,select,textarea');
