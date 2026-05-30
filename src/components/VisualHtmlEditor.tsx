@@ -72,6 +72,7 @@ interface ElementInfo {
   href: string;
   src: string;
   alt: string;
+  childImg?: { src: string; alt: string } | null;
   isTextNode: boolean;
   hasChildren: boolean;
   childCount: number;
@@ -196,6 +197,17 @@ const EDITOR_SCRIPT = `
         ? (el.currentSrc||el.src||el.getAttribute('src')||'')
         : (el.getAttribute('src')||''),
       alt:el.getAttribute('alt')||'',
+      /* Fallback per i wrapper: se l'elemento selezionato NON e' un media
+         ma contiene un <img> (tipico ClickFunnels/Funnelish: il click
+         prende il div .elImage / un overlay invece dell'<img>), esponiamo
+         il src del primo <img> discendente cosi' il pannello mostra
+         comunque il controllo "cambia immagine". */
+      childImg:(function(){
+        if(el.tagName==='IMG'||el.tagName==='VIDEO')return null;
+        var im=null;try{im=el.querySelector('img');}catch(e){}
+        if(im)return{src:(im.currentSrc||im.src||im.getAttribute('src')||''),alt:im.getAttribute('alt')||''};
+        return null;
+      })(),
       videoAttrs:(el.tagName==='VIDEO'?{
         controls:el.hasAttribute('controls'),
         autoplay:el.hasAttribute('autoplay'),
@@ -436,6 +448,9 @@ const EDITOR_SCRIPT = `
         window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');}break;
       case 'cmd-set-attr':if(sel){sel.setAttribute(m.name,m.value);sendHtml();
         window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');}break;
+      case 'cmd-set-child-img-src':if(sel){var _ci=null;try{_ci=sel.querySelector('img');}catch(e){}
+        if(_ci){_ci.setAttribute('src',m.value);_ci.removeAttribute('srcset');_ci.removeAttribute('data-src');sendHtml();
+        window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');}}break;
       case 'cmd-set-text':if(sel){sel.textContent=m.value;sendHtml();
         window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');}break;
       case 'cmd-set-inner-html':if(sel){sel.innerHTML=m.value;sendHtml();
@@ -2092,6 +2107,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   const execCmd = (cmd: string, val?: string) => sendToIframe({ type: 'cmd-exec', command: cmd, value: val });
   const setStyle = (prop: string, val: string) => sendToIframe({ type: 'cmd-set-style', property: prop, value: val });
   const setAttr = (name: string, val: string) => sendToIframe({ type: 'cmd-set-attr', name, value: val });
+  const setChildImgSrc = (val: string) => sendToIframe({ type: 'cmd-set-child-img-src', value: val });
   const removeAttr = (name: string) => sendToIframe({ type: 'cmd-remove-attr', name });
   // Toggle di un attributo booleano HTML (es. loop, controls, muted...).
   // Aggiunge l'attributo (value="") se ON, lo rimuove se OFF.
@@ -2335,6 +2351,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   const imgUploadRef = useRef<HTMLInputElement>(null);
   const vidUploadRef = useRef<HTMLInputElement>(null);
   const bgImgUploadRef = useRef<HTMLInputElement>(null);
+  const childImgUploadRef = useRef<HTMLInputElement>(null);
 
   const handleMediaUpload = useCallback(async (file: File, target: 'image' | 'video') => {
     if (uploading) return;
@@ -2373,6 +2390,23 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
       setUploading(false);
     }
   }, [uploading, setStyle]);
+
+  /* Carica e sostituisce il primo <img> DENTRO l'elemento selezionato:
+   * usato quando il click prende un wrapper/overlay invece dell'<img>
+   * (ClickFunnels/Funnelish), cosi' l'immagine resta modificabile. */
+  const handleChildImgUpload = useCallback(async (file: File) => {
+    if (uploading) return;
+    setUploading(true);
+    setUploadError('');
+    try {
+      const publicUrl = await directSupabaseUpload(file);
+      setChildImgSrc(publicUrl);
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : 'Upload failed');
+    } finally {
+      setUploading(false);
+    }
+  }, [uploading, setChildImgSrc]);
 
   /* requestSwipeContext — chiede all'iframe il contesto strutturato
    * (heading + paragrafo + CTA + posizione) attorno all'elemento
@@ -4043,6 +4077,28 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                     </div>
                   );
                 })()}
+
+                {/* Immagine dentro un wrapper — quando il click seleziona il
+                    contenitore (.elImage / overlay) invece dell'<img>. */}
+                {el.tagName !== 'img' && el.childImg && el.childImg.src && (
+                  <div className="p-3">
+                    <PropLabel icon={Image}>Immagine (nel blocco)</PropLabel>
+                    <label className="text-[10px] text-slate-500 mb-0.5 block">Image URL</label>
+                    <input type="url" defaultValue={el.childImg.src} key={el.childImg.src} className="prop-input"
+                      onBlur={(e) => setChildImgSrc(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') setChildImgSrc((e.target as HTMLInputElement).value); }} />
+                    <input ref={childImgUploadRef} type="file" accept="image/*,.gif,.webp,.avif,.svg" className="hidden"
+                      onChange={(e) => { const f = e.target.files?.[0]; if (f) handleChildImgUpload(f); e.target.value = ''; }} />
+                    <button
+                      onClick={() => childImgUploadRef.current?.click()}
+                      disabled={uploading}
+                      className="mt-1.5 w-full flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-lg bg-blue-50 border border-blue-200 hover:border-blue-300 hover:bg-blue-100 transition-all text-xs font-medium text-blue-700 disabled:opacity-50"
+                    >
+                      {uploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
+                      {uploading ? 'Uploading...' : 'Carica/sostituisci immagine'}
+                    </button>
+                  </div>
+                )}
 
                 {/* Image */}
                 {el.tagName === 'img' && (
