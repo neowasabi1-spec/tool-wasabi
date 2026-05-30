@@ -330,16 +330,21 @@ async function persistHtmlBlobs(
 
     const htmlVal = typeof blob.html === 'string' ? (blob.html as string) : '';
     const mobileVal = typeof blob.mobileHtml === 'string' ? (blob.mobileHtml as string) : '';
-    const needsHtmlUpload = htmlVal.length > HTML_STORAGE_THRESHOLD;
-    const needsMobileUpload = mobileVal.length > HTML_STORAGE_THRESHOLD;
+    // SERVER SOURCE OF TRUTH: carichiamo SEMPRE l'HTML su page_html (anche
+    // i piccoli), così `htmlUrl` è sempre presente e aggiornato e al reload
+    // si rilegge dal server. Lo strip dal JSONB resta limitato ai grandi
+    // (per non sforare lo statement_timeout su Postgres); i piccoli restano
+    // anche nel JSONB come fallback offline.
+    const hasHtml = htmlVal.length > 0;
+    const hasMobile = mobileVal.length > 0;
 
-    if (needsHtmlUpload || needsMobileUpload) {
+    if (hasHtml || hasMobile) {
       try {
         const urls = await persistHtmlToStorage(
           pageId,
           kind,
-          needsHtmlUpload ? htmlVal : undefined,
-          needsMobileUpload ? mobileVal : undefined,
+          hasHtml ? htmlVal : undefined,
+          hasMobile ? mobileVal : undefined,
           // Solo per kind cloned/swiped (HTML "nostro"). 'extracted' resta
           // raw — persistHtmlToStorage stesso fa lo skip se kind ===
           // 'extracted', ma passiamo comunque il context per non
@@ -353,12 +358,16 @@ async function persistHtmlBlobs(
         for (const [htmlKey, urlKey] of STORAGE_HTML_FIELDS) {
           const v = htmlKey === 'html' ? htmlVal : mobileVal;
           const url = htmlKey === 'html' ? urls.htmlUrl : urls.mobileHtmlUrl;
-          if (v.length > HTML_STORAGE_THRESHOLD && url) {
+          if (v.length > 0 && url) {
             out[urlKey] = url;
-            out[`${htmlKey}Length`] = v.length;
-            out[`${htmlKey}Skipped`] = true;
-            delete out[htmlKey];
             collected[urlKey] = url;
+            // Strip dal JSONB SOLO per HTML grande (evita 57014 timeout).
+            // Per i piccoli teniamo l'html nel JSONB come fallback.
+            if (v.length > HTML_STORAGE_THRESHOLD) {
+              out[`${htmlKey}Length`] = v.length;
+              out[`${htmlKey}Skipped`] = true;
+              delete out[htmlKey];
+            }
           }
         }
         urlsByKind[kind] = collected;
@@ -678,36 +687,31 @@ export const useStore = create<Store>()((set, get) => ({
         for (let i = 0; i < targets.length; i += PARALLEL) {
           const slice = targets.slice(i, i + PARALLEL);
           await Promise.all(
-            slice.map(async ({ pageId, target, jobId, htmlUrl, mobileHtmlUrl, htmlPresent, editedAt }) => {
-              // 0) IndexedDB locale — PRIORITÀ MASSIMA quando è (almeno) fresco
-              //    quanto l'ultimo edit noto sul server. È l'ultimo salvataggio
-              //    su QUESTO browser: viene scritto ad ogni clone Identical e
-              //    ad ogni Save del VisualHtmlEditor.
-              //    - Se editedAt sul server è più recente del blob locale, NON
-              //      sovrascriviamo (un altro device ha salvato dopo): lasciamo
-              //      vincere html presente / htmlUrl remoto.
-              //    - Altrimenti l'IDB locale vince su tutto, così l'edit
-              //      sopravvive al reload anche se il write Supabase è fallito
-              //      o la pagina è piccola e nel JSONB è rimasto l'HTML vecchio.
+            slice.map(async ({ pageId, target, jobId, htmlUrl, mobileHtmlUrl, htmlPresent }) => {
+              const kind = target === 'swipedData' ? 'swiped' : 'cloned';
+
+              // 1) SERVER (tabella page_html via service role) — SORGENTE DI
+              //    VERITÀ per un'app online. L'editor ad ogni Save fa UPSERT su
+              //    page_html, quindi questa riga è sempre l'ULTIMA versione,
+              //    cross-device, indipendente dall'esito dell'UPDATE del JSONB
+              //    funnel_pages (che può fallire per RLS). L'URL è
+              //    deterministica per (pageId, kind, variant), così funziona
+              //    anche se il JSONB ha un htmlUrl vecchio o assente.
               try {
-                const blob = await loadHtmlBlob(pageId, target);
-                if (blob?.html && blob.savedAt >= (editedAt ?? 0)) {
-                  applyHydratedHtml(pageId, target, blob.html, blob.mobileHtml);
+                const base = `/api/funnel-html?pageId=${encodeURIComponent(pageId)}&kind=${kind}`;
+                const html = await fetchHtmlFromStorage(`${base}&variant=desktop`);
+                if (html) {
+                  const mobileHtml = await fetchHtmlFromStorage(`${base}&variant=mobile`);
+                  applyHydratedHtml(pageId, target, html, mobileHtml || undefined);
                   return;
                 }
               } catch (err) {
                 // eslint-disable-next-line no-console
-                console.warn(`[store] IndexedDB rehydrate fallita per page ${pageId}/${target}, provo Storage/openclaw:`, err);
+                console.warn(`[store] page_html rehydrate fallita per page ${pageId}/${target}, provo le altre fonti:`, err);
               }
 
-              // Se l'HTML è già presente nel JSONB (e l'IDB non l'ha vinto
-              // sopra) non serve nessun fetch remoto: lo state in memoria ha
-              // già l'HTML giusto. Evita anche di sovrascrivere con sorgenti
-              // più vecchie.
-              if (htmlPresent) return;
-
-              // 1) htmlUrl (page_html / Storage) — copia cross-device. Usata
-              //    quando IDB è vuoto (altro browser/device, cache pulita).
+              // 1b) htmlUrl legacy (vecchio Supabase Storage) — copia
+              //     cross-device per pagine create prima di page_html.
               if (htmlUrl) {
                 try {
                   const html = await fetchHtmlFromStorage(htmlUrl);
@@ -722,7 +726,11 @@ export const useStore = create<Store>()((set, get) => ({
                 }
               }
 
-              // 2) openclaw_messages (solo se jobId) — risultato del worker
+              // 2) HTML già presente nel JSONB (in memoria): è il fallback per
+              //    le pagine piccole mai finite su page_html. Niente da fare.
+              if (htmlPresent) return;
+
+              // 3) openclaw_messages (solo se jobId) — risultato del worker
               //    per i flussi rewrite/swipe non ancora editati a mano.
               if (jobId) {
                 try {
@@ -742,6 +750,20 @@ export const useStore = create<Store>()((set, get) => ({
                   // eslint-disable-next-line no-console
                   console.warn(`[store] openclaw rehydrate fallito per page ${pageId} (job ${jobId.slice(0, 8)}):`, err);
                 }
+              }
+
+              // 4) IndexedDB — ULTIMA risorsa, solo offline. Se il server non
+              //    risponde (rete giù) e non c'è nient'altro, recuperiamo
+              //    l'ultima copia salvata su QUESTA macchina così l'utente non
+              //    perde il lavoro. Non vince mai sul server.
+              try {
+                const blob = await loadHtmlBlob(pageId, target);
+                if (blob?.html) {
+                  applyHydratedHtml(pageId, target, blob.html, blob.mobileHtml);
+                }
+              } catch (err) {
+                // eslint-disable-next-line no-console
+                console.warn(`[store] IndexedDB rehydrate (ultima risorsa) fallita per page ${pageId}/${target}:`, err);
               }
             })
           );
