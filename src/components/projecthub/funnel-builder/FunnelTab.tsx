@@ -9,6 +9,7 @@ import {
   getGetFunnelStepChatQueryKey,
 } from "@/lib/projecthub-api";
 import { useQueryClient } from "@tanstack/react-query";
+import VisualHtmlEditor from "@/components/VisualHtmlEditor";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -157,7 +158,29 @@ function InlineEdit({
 }
 
 function ResultModal({ step, onClose }: { step: FunnelStep; onClose: () => void }) {
-  const content = step.result_content || "";
+  // Parte dal contenuto in cache ma RILEGGE l'ultima versione dal server
+  // all'apertura: il funnel del progetto può essere stato aggiornato
+  // (auto-sync dall'editor o re-save) DOPO che la lista è stata messa in
+  // cache da React Query, quindi la prop potrebbe essere vecchia.
+  const [content, setContent] = useState<string>(step.result_content || "");
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const res = await fetch(`/api/projecthub/projects/${step.project_id}/funnel-steps`);
+        if (!res.ok) return;
+        const rows = await res.json();
+        if (!alive || !Array.isArray(rows)) return;
+        const fresh = rows.find((r: { id: number }) => r.id === step.id) as
+          | { result_content?: string | null }
+          | undefined;
+        if (fresh && typeof fresh.result_content === "string") setContent(fresh.result_content);
+      } catch {
+        /* offline / errore: resta sulla copia in cache */
+      }
+    })();
+    return () => { alive = false; };
+  }, [step.id, step.project_id]);
   // Heuristica: il contenuto è HTML renderizzabile? (clone/swipe producono
   // markup). Se sì, default sull'anteprima visiva; altrimenti solo testo.
   const looksLikeHtml = /<(!doctype|html|head|body|div|section|main|header|img|h1|p|a|span)[\s>]/i.test(content);
@@ -680,10 +703,9 @@ export function FunnelTab({ projectId }: { projectId: string }) {
   });
 
   const [localSteps, setLocalSteps] = useState<FunnelStep[]>([]);
-  const [swipingSteps, setSwipingSteps] = useState<Set<number>>(new Set());
-  const [swipeProgress, setSwipeProgress] = useState<Record<number, string>>({});
   const [resultStep, setResultStep] = useState<FunnelStep | null>(null);
   const [chatStep, setChatStep] = useState<FunnelStep | null>(null);
+  const [editStep, setEditStep] = useState<FunnelStep | null>(null);
   const [domain, setDomain] = useState("");
   const [showImportDialog, setShowImportDialog] = useState(false);
   const [customTypeMode, setCustomTypeMode] = useState(false);
@@ -766,51 +788,22 @@ export function FunnelTab({ projectId }: { projectId: string }) {
     toast({ title: "URL generati!", description: `Domini assegnati su ${dom}` });
   };
 
-  const triggerSwipe = useCallback(async (step: FunnelStep) => {
-    if (swipingSteps.has(step.id)) return;
-    setSwipingSteps(prev => new Set(prev).add(step.id));
-    setSwipeProgress(prev => ({ ...prev, [step.id]: "" }));
-    setLocalSteps(prev => prev.map(s => s.id === step.id ? { ...s, status: "in_progress" } : s));
-
+  // Salva nel DB l'HTML editato dal Visual Editor (apertura "Editing" dalla
+  // tabella). Aggiorna result_content così "Vedi" mostra subito la modifica.
+  const saveEditedStep = useCallback(async (stepId: number, html: string) => {
+    setLocalSteps(prev => prev.map(s => s.id === stepId ? { ...s, result_content: html } : s));
     try {
-      const resp = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/funnel-steps/${step.id}/swipe`, {
-        method: "POST",
+      await fetch(`/api/projecthub/projects/${projectId}/funnel-steps/${stepId}`, {
+        method: "PATCH",
         headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ result_content: html }),
       });
-      if (!resp.body) throw new Error("No stream");
-      const reader = resp.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      let full = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-        for (const line of lines) {
-          if (!line.startsWith("data:")) continue;
-          try {
-            const d = JSON.parse(line.slice(5).trim());
-            if (d.content) { full += d.content; setSwipeProgress(prev => ({ ...prev, [step.id]: full })); }
-            if (d.done) {
-              setLocalSteps(prev => prev.map(s => s.id === step.id ? { ...s, status: "completed", result_content: full } : s));
-              queryClient.invalidateQueries({ queryKey: getListFunnelStepsQueryKey(projectId) });
-              toast({ title: "SWIPE completato!", description: `"${step.page_name || "Step"}" generato con successo.` });
-            }
-            if (d.error) throw new Error(d.error);
-          } catch { /* ignore parse */ }
-        }
-      }
+      queryClient.invalidateQueries({ queryKey: getListFunnelStepsQueryKey(projectId) });
+      toast({ title: "Modifiche salvate" });
     } catch {
-      setLocalSteps(prev => prev.map(s => s.id === step.id ? { ...s, status: "pending" } : s));
-      toast({ title: "SWIPE fallito", variant: "destructive" });
-    } finally {
-      setSwipingSteps(prev => { const n = new Set(prev); n.delete(step.id); return n; });
-      setSwipeProgress(prev => { const n = { ...prev }; delete n[step.id]; return n; });
+      toast({ title: "Errore salvataggio", variant: "destructive" });
     }
-  }, [swipingSteps, projectId, queryClient, toast]);
+  }, [projectId, queryClient, toast]);
 
   const cleanAll = () => {
     if (!localSteps.length) return;
@@ -958,8 +951,6 @@ export function FunnelTab({ projectId }: { projectId: string }) {
             </thead>
             <tbody>
               {localSteps.map((step, idx) => {
-                const swiping = swipingSteps.has(step.id);
-                const progress = swipeProgress[step.id];
                 const rowBg = idx % 2 === 0 ? "bg-card" : "bg-muted/20";
 
                 return (
@@ -1030,12 +1021,7 @@ export function FunnelTab({ projectId }: { projectId: string }) {
 
                     {/* Status */}
                     <td className="px-2 py-1 border-r border-border/50 text-center min-w-[90px]">
-                      {swiping && progress ? (
-                        <div className="flex items-center gap-1">
-                          <RefreshCw className="w-3 h-3 text-amber-500 animate-spin flex-shrink-0" />
-                          <span className="text-[9px] text-amber-600 truncate max-w-[60px]">Generating…</span>
-                        </div>
-                      ) : statusBadge(step.status)}
+                      {statusBadge(step.status)}
                     </td>
 
                     {/* Result */}
@@ -1061,19 +1047,15 @@ export function FunnelTab({ projectId }: { projectId: string }) {
                     {/* Actions */}
                     <td className="px-2 py-1 min-w-[140px]">
                       <div className="flex items-center gap-1">
-                        {/* SWIPE */}
+                        {/* EDITING — apre l'HTML dello step nel Visual Editor */}
                         <button
-                          onClick={() => triggerSwipe(step)}
-                          disabled={swiping}
-                          title="Genera con AI (SWIPE)"
-                          className={`flex items-center gap-0.5 px-2 py-1 rounded text-[10px] font-semibold transition-colors ${
-                            swiping
-                              ? "bg-amber-200 text-amber-700 cursor-not-allowed"
-                              : "bg-amber-400 hover:bg-amber-500 text-black"
-                          }`}
+                          onClick={() => setEditStep(step)}
+                          disabled={!step.result_content}
+                          title={step.result_content ? "Apri nel Visual Editor" : "Nessun contenuto da editare"}
+                          className="flex items-center gap-0.5 px-2 py-1 rounded text-[10px] font-semibold transition-colors bg-amber-400 hover:bg-amber-500 text-black disabled:opacity-40 disabled:cursor-not-allowed"
                         >
-                          {swiping ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
-                          SWIPE
+                          <Wand2 className="w-3 h-3" />
+                          Editing
                         </button>
 
                         {/* Chat */}
@@ -1114,6 +1096,20 @@ export function FunnelTab({ projectId }: { projectId: string }) {
 
       {/* Result Modal */}
       {resultStep && <ResultModal step={resultStep} onClose={() => setResultStep(null)} />}
+
+      {/* Visual Editor riusato dentro ProjectHub: edita l'HTML dello step e
+          salva il result_content (auto-refresh della tabella). */}
+      {editStep && editStep.result_content && (
+        <div className="fixed inset-0 z-[60] bg-background">
+          <VisualHtmlEditor
+            initialHtml={editStep.result_content}
+            pageTitle={editStep.page_name || `Step ${editStep.step_number}`}
+            sourceUrl={editStep.url || ""}
+            onSave={(html) => { void saveEditedStep(editStep.id, html); }}
+            onClose={() => setEditStep(null)}
+          />
+        </div>
+      )}
 
       {/* Chat Panel */}
       {chatStep && (
