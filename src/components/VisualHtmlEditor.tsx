@@ -5136,7 +5136,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
       {/* ═══ AI Image / Video Generation Popup ═══ */}
       {showAiImagePopup && (
         <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={() => { if (aiGenerating) return; setShowAiImagePopup(false); setSwipeMediaKind(null); }}>
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
+          <div className="bg-white text-slate-900 rounded-2xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
             <div className="bg-gradient-to-r from-violet-600 to-purple-600 px-5 py-4 flex items-center justify-between shrink-0">
               <div className="flex items-center gap-2.5">
                 <div className="w-8 h-8 rounded-lg bg-white/20 flex items-center justify-center">
@@ -5190,7 +5190,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                     value={selectedProductId}
                     onChange={(e) => handleProductSelect(e.target.value)}
                     disabled={aiGenerating}
-                    className="w-full px-2.5 py-2 text-xs border border-violet-200 rounded-lg focus:border-violet-400 outline-none bg-white"
+                    className="w-full px-2.5 py-2 text-xs text-slate-900 border border-violet-200 rounded-lg focus:border-violet-400 outline-none bg-white"
                   >
                     <option value="">— Nessun prodotto —</option>
                     {availableProducts.map((p) => (
@@ -5212,7 +5212,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                   value={aiModel}
                   onChange={(e) => setAiModel(e.target.value)}
                   disabled={aiGenerating}
-                  className="w-full px-2.5 py-2 text-xs border border-violet-200 rounded-lg focus:border-violet-400 outline-none bg-white"
+                  className="w-full px-2.5 py-2 text-xs text-slate-900 border border-violet-200 rounded-lg focus:border-violet-400 outline-none bg-white"
                 >
                   {AI_MODELS[aiMode].map((m) => (
                     <option key={m.id} value={m.id}>{m.label} — {m.hint}</option>
@@ -5256,6 +5256,26 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                             <><Sparkles className="h-3.5 w-3.5" /> Analizza con Claude e scrivi il prompt</>
                           )}
                         </button>
+                        {/* Permette di sostituire l'immagine senza dover prima
+                            cliccare la X: carica direttamente un altro file. */}
+                        <label className={`flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-violet-200 hover:border-violet-400 hover:bg-violet-50 transition-colors cursor-pointer text-xs text-violet-600 font-medium ${aiSourceUploading ? 'opacity-60 cursor-wait' : ''}`}>
+                          {aiSourceUploading ? (
+                            <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Caricamento…</>
+                          ) : (
+                            <><Upload className="h-3.5 w-3.5" /> Carica un'altra immagine</>
+                          )}
+                          <input
+                            type="file"
+                            accept="image/*"
+                            className="hidden"
+                            disabled={aiSourceUploading || aiGenerating}
+                            onChange={(e) => {
+                              const f = e.target.files?.[0];
+                              if (f) handleAiSourceUpload(f);
+                              e.target.value = '';
+                            }}
+                          />
+                        </label>
                       </div>
                     ) : (
                       <label className={`flex items-center justify-center gap-2 px-4 py-3 rounded-xl border-2 border-dashed border-violet-300 hover:border-violet-500 hover:bg-violet-50 transition-colors cursor-pointer text-xs text-violet-600 font-medium ${aiSourceUploading ? 'opacity-60 cursor-wait' : ''}`}>
@@ -5551,7 +5571,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                           : "Es: la persona sorride e fa l'occhiolino, leggero zoom in..."
                   }
                   rows={3}
-                  className="w-full px-3 py-2.5 text-sm border border-violet-200 rounded-xl focus:border-violet-400 focus:ring-2 focus:ring-violet-100 outline-none resize-none transition-all placeholder:text-slate-400"
+                  className="w-full px-3 py-2.5 text-sm text-slate-900 border border-violet-200 rounded-xl focus:border-violet-400 focus:ring-2 focus:ring-violet-100 outline-none resize-none transition-all placeholder:text-slate-400"
                   disabled={aiGenerating}
                 />
               </div>
@@ -5564,7 +5584,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                     <select
                       value={aiSize}
                       onChange={(e) => setAiSize(e.target.value as typeof aiSize)}
-                      className="w-full px-2.5 py-2 text-xs border border-violet-200 rounded-lg focus:border-violet-400 outline-none bg-white"
+                      className="w-full px-2.5 py-2 text-xs text-slate-900 border border-violet-200 rounded-lg focus:border-violet-400 outline-none bg-white"
                       disabled={aiGenerating}
                     >
                       <option value="1024x1024">Quadrato (1:1)</option>
@@ -5577,7 +5597,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                     <select
                       value={aiStyle}
                       onChange={(e) => setAiStyle(e.target.value as typeof aiStyle)}
-                      className="w-full px-2.5 py-2 text-xs border border-violet-200 rounded-lg focus:border-violet-400 outline-none bg-white"
+                      className="w-full px-2.5 py-2 text-xs text-slate-900 border border-violet-200 rounded-lg focus:border-violet-400 outline-none bg-white"
                       disabled={aiGenerating}
                     >
                       <option value="vivid">Vivid (colori intensi)</option>
@@ -5595,7 +5615,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                     <select
                       value={aiVideoDuration}
                       onChange={(e) => setAiVideoDuration(Number(e.target.value) as 5 | 10)}
-                      className="w-full px-2.5 py-2 text-xs border border-violet-200 rounded-lg focus:border-violet-400 outline-none bg-white"
+                      className="w-full px-2.5 py-2 text-xs text-slate-900 border border-violet-200 rounded-lg focus:border-violet-400 outline-none bg-white"
                       disabled={aiGenerating}
                     >
                       <option value={5}>5 secondi</option>
