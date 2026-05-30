@@ -1005,7 +1005,19 @@ function prepareEditorHtml(html: string, sourceUrl?: string): string {
     .toggle-content,
     .collapse-content,
     [data-faq-body],
-    details > *:not(summary) {
+    details > *:not(summary),
+    /* ClickFunnels / Funnelish 2.0 */
+    .elFAQItemAnswer,
+    .elFAQItem .elFAQItemAnswer,
+    /* Elementor */
+    .elementor-tab-content,
+    .e-n-accordion-item > .e-con,
+    .elementor-accordion .elementor-tab-content,
+    /* WP / Kadence / generici a11y */
+    .uk-accordion-content,
+    .wp-block-coblocks-accordion-item__content,
+    .kt-accordion-panel-inner,
+    [data-accordion-content] {
       display: block !important;
       max-height: none !important;
       height: auto !important;
@@ -1015,6 +1027,27 @@ function prepareEditorHtml(html: string, sourceUrl?: string): string {
       opacity: 1 !important;
       transform: none !important;
       pointer-events: auto !important;
+    }
+
+    /* CATCH-ALL: qualsiasi pannello "answer/content/body/panel" dentro un
+       contenitore la cui classe contiene "faq" o "accordion" (match
+       case-insensitive). Copre i markup custom non elencati sopra senza
+       toccare il resto della pagina. Le regole !important vincono anche
+       sugli stili inline display:none / max-height:0 dello snapshot. */
+    [class*="faq" i] [class*="answer" i],
+    [class*="faq" i] [class*="content" i],
+    [class*="faq" i] [class*="body" i],
+    [class*="faq" i] [class*="panel" i],
+    [class*="accordion" i] [class*="answer" i],
+    [class*="accordion" i] [class*="content" i],
+    [class*="accordion" i] [class*="body" i],
+    [class*="accordion" i] [class*="panel" i] {
+      display: block !important;
+      max-height: none !important;
+      height: auto !important;
+      overflow: visible !important;
+      visibility: visible !important;
+      opacity: 1 !important;
     }
     details[open], details:not([open]) { /* nop, just specificity */ }
     /* Bootstrap collapse + show — basta forzare display:block (gia' sopra) */
@@ -2301,6 +2334,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   const [uploadError, setUploadError] = useState('');
   const imgUploadRef = useRef<HTMLInputElement>(null);
   const vidUploadRef = useRef<HTMLInputElement>(null);
+  const bgImgUploadRef = useRef<HTMLInputElement>(null);
 
   const handleMediaUpload = useCallback(async (file: File, target: 'image' | 'video') => {
     if (uploading) return;
@@ -2318,6 +2352,27 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
       setUploading(false);
     }
   }, [uploading, setAttr]);
+
+  /* Carica e sostituisce l'immagine di SFONDO (CSS background-image) di un
+   * elemento non-<img>: tipico delle hero Funnelish, che usano un div con
+   * background-image e quindi non venivano riconosciute come immagine
+   * modificabile. */
+  const handleBgImageUpload = useCallback(async (file: File) => {
+    if (uploading) return;
+    setUploading(true);
+    setUploadError('');
+    try {
+      const publicUrl = await directSupabaseUpload(file);
+      setStyle('backgroundImage', `url("${publicUrl}")`);
+      setStyle('backgroundSize', 'cover');
+      setStyle('backgroundPosition', 'center');
+      setStyle('backgroundRepeat', 'no-repeat');
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : 'Upload failed');
+    } finally {
+      setUploading(false);
+    }
+  }, [uploading, setStyle]);
 
   /* requestSwipeContext — chiede all'iframe il contesto strutturato
    * (heading + paragrafo + CTA + posizione) attorno all'elemento
@@ -3224,6 +3279,23 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
           instruction,
         }),
       });
+      // Parsing robusto: in caso di timeout del gateway (Netlify/Vercel
+      // chiudono la funzione dopo pochi secondi) o errore 5xx, il server
+      // risponde con una PAGINA HTML d'errore, non JSON. Senza questo
+      // controllo `res.json()` lanciava "Unexpected token '<'".
+      const ct = res.headers.get('content-type') || '';
+      if (!res.ok || !ct.includes('application/json')) {
+        const text = await res.text().catch(() => '');
+        const isTimeout = res.status === 504 || res.status === 502 || res.status === 408 || res.status === 524;
+        const looksHtml = /^\s*<(?:!doctype|html|head|body)/i.test(text);
+        throw new Error(
+          isTimeout || (looksHtml && res.status >= 500)
+            ? 'Il server ha impiegato troppo e si è interrotto (timeout). Riprova, magari con una richiesta più semplice o su un elemento più piccolo.'
+            : looksHtml
+              ? `Il server ha risposto con una pagina d'errore (HTTP ${res.status}). Riprova tra poco.`
+              : (text.slice(0, 200) || `Errore HTTP ${res.status}`),
+        );
+      }
       const data = await res.json();
       if (data.error) throw new Error(data.error);
 
@@ -3944,6 +4016,33 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                       onKeyDown={(e) => { if (e.key === 'Enter') setAttr('href', (e.target as HTMLInputElement).value); }} />
                   </div>
                 )}
+
+                {/* Background image — per elementi non-<img> con un CSS
+                    background-image (hero Funnelish, sezioni con sfondo foto).
+                    Senza questo non c'era modo di cambiarle dall'editor. */}
+                {el.tagName !== 'img' && el.styles.backgroundImage && el.styles.backgroundImage !== 'none' && (() => {
+                  const m = el.styles.backgroundImage.match(/url\((['"]?)(.*?)\1\)/i);
+                  const currentBg = m ? m[2] : '';
+                  return (
+                    <div className="p-3">
+                      <PropLabel icon={Image}>Immagine di sfondo</PropLabel>
+                      <label className="text-[10px] text-slate-500 mb-0.5 block">Background image URL</label>
+                      <input type="url" defaultValue={currentBg} key={currentBg} className="prop-input"
+                        onBlur={(e) => setStyle('backgroundImage', e.target.value ? `url("${e.target.value}")` : 'none')}
+                        onKeyDown={(e) => { if (e.key === 'Enter') { const v = (e.target as HTMLInputElement).value; setStyle('backgroundImage', v ? `url("${v}")` : 'none'); } }} />
+                      <input ref={bgImgUploadRef} type="file" accept="image/*,.gif,.webp,.avif,.svg" className="hidden"
+                        onChange={(e) => { const f = e.target.files?.[0]; if (f) handleBgImageUpload(f); e.target.value = ''; }} />
+                      <button
+                        onClick={() => bgImgUploadRef.current?.click()}
+                        disabled={uploading}
+                        className="mt-1.5 w-full flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-lg bg-blue-50 border border-blue-200 hover:border-blue-300 hover:bg-blue-100 transition-all text-xs font-medium text-blue-700 disabled:opacity-50"
+                      >
+                        {uploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
+                        {uploading ? 'Uploading...' : 'Carica immagine di sfondo'}
+                      </button>
+                    </div>
+                  );
+                })()}
 
                 {/* Image */}
                 {el.tagName === 'img' && (

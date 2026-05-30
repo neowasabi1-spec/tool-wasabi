@@ -341,91 +341,113 @@ function injectInteractivityRescue(html: string): string {
     'html[data-wasabi-rescue="1"] li>br:only-child{display:none}' +
     '</style>';
 
+  // UNIVERSAL accordion handler. Strategy: on every click (capture phase,
+  // so we win over the site's own bubble-phase handlers) we look for the
+  // nearest "accordion item" ancestor — by KNOWN selector OR by a fuzzy
+  // class match (faq/accordion/toggle/collaps/expand/question/dropdown) —
+  // that actually contains a hide-able panel, then toggle that panel by
+  // reading its REAL computed state. This works even when the original
+  // site CSS/JS keeps the panel closed and the framework script never
+  // runs (Funnelish/ClickFunnels snapshots, stripped <script> in editor).
   const script = `<script id="wasabi-accordion-rescue">(function(){
-function $(s,r){return (r||document).querySelectorAll(s)}
-// Trigger selectors: includes Funnelish (.faq-header/.faq-title) +
-// generic accordion patterns. Order matters only for code clarity.
-var TRIG='.faq-header,.faq-title,.faq-question,.accordion-header,.accordion-button,.accordion-toggle,.toggle-header,[data-accordion-trigger],[data-faq-toggle]';
-var CONT='.faq,.faq-wrapper,.faq-item,.accordion-item,.accordion,.toggle-item,[data-faq],details';
-var PANEL='.faq-content-wrapper,.faq-content,.accordion-content,.accordion-body,.accordion-collapse,.faq-body,.faq-answer,.toggle-content,.collapse-content';
-function findPanel(trigger,container){
-  var n=trigger.nextElementSibling;
-  while(n){
-    if(n.matches&&n.matches(PANEL))return n;
-    n=n.nextElementSibling;
+var TRIG='.faq-header,.faq-title,.faq-question,.accordion-header,.accordion-button,.accordion-toggle,.toggle-header,.elFAQItemQuestion,[data-accordion-trigger],[data-faq-toggle]';
+var ITEM='.faq,.faq-wrapper,.faq-item,.accordion-item,.accordion,.toggle-item,.elFAQItem,[data-faq],details';
+var PANEL='.faq-content-wrapper,.faq-content,.accordion-content,.accordion-body,.accordion-collapse,.faq-body,.faq-answer,.elFAQItemAnswer,.toggle-content,.collapse-content,[data-accordion-content]';
+var ITEM_RE=/(faq|accordion|toggle|collaps|expand|question|drop.?down)/i;
+var PANEL_RE=/(content|answer|body|panel|collaps|detail|inner|text|wrapper)/i;
+function cls(el){if(!el)return '';var c=el.className;if(c&&typeof c==='object'&&'baseVal'in c)return c.baseVal;return ''+(c||'');}
+function isPanelLike(el){return el&&el.nodeType===1&&(PANEL_RE.test(cls(el))||(el.matches&&el.matches(PANEL)));}
+function findPanel(trigger,item){
+  try{var p=item.querySelector(PANEL);if(p)return p;}catch(e){}
+  var n=trigger&&trigger.nextElementSibling;
+  while(n){if(isPanelLike(n))return n;n=n.nextElementSibling;}
+  if(item&&item.children){
+    for(var i=0;i<item.children.length;i++){var k=item.children[i];if(k!==trigger&&isPanelLike(k))return k;}
+    if(item.children.length>=2){var last=item.children[item.children.length-1];if(last!==trigger&&!(trigger&&last.contains&&last.contains(trigger)))return last;}
   }
-  return container.querySelector(PANEL);
+  return null;
+}
+function findItem(t){
+  var el=t,depth=0;
+  while(el&&el.nodeType===1&&depth<10){
+    if(el.matches&&el.matches(ITEM))return el;
+    if(ITEM_RE.test(cls(el))&&findPanel(null,el))return el;
+    el=el.parentElement;depth++;
+  }
+  return null;
+}
+function setOpen(p,open){
+  if(!p)return;
+  if(open){p.style.display='block';p.style.maxHeight='none';p.style.height='auto';p.style.overflow='visible';p.style.visibility='visible';p.style.opacity='1';p.hidden=false;}
+  else{p.style.display='none';}
+}
+function isOpen(item,panel){
+  if(item.hasAttribute('data-wasabi-open'))return item.getAttribute('data-wasabi-open')==='1';
+  if(item.tagName==='DETAILS')return item.hasAttribute('open');
+  if(panel){try{return getComputedStyle(panel).display!=='none';}catch(e){}}
+  return false;
+}
+function toggle(item,trigger){
+  var panel=findPanel(trigger,item);
+  var willOpen=!isOpen(item,panel);
+  item.setAttribute('data-wasabi-open',willOpen?'1':'0');
+  item.classList.toggle('is-open',willOpen);
+  item.classList.toggle('active',willOpen);
+  item.classList.toggle('expanded',willOpen);
+  if(item.tagName==='DETAILS'){if(willOpen)item.setAttribute('open','');else item.removeAttribute('open');}
+  if(trigger&&trigger.setAttribute)trigger.setAttribute('aria-expanded',willOpen?'true':'false');
+  setOpen(panel,willOpen);
 }
 function once(){
-  // Tag <html> only if there's at least one Funnelish/accordion shape
-  // in the DOM. This prevents the CSS hide rule from blanking pages
-  // that don't have FAQs at all.
-  var hasShape=document.querySelector(TRIG)||document.querySelector('.faq-content-wrapper');
-  if(hasShape){document.documentElement.setAttribute('data-wasabi-rescue','1');}
-  // 2. ARIA pattern
+  // Flag su <html>: attiva il CSS (cursor:pointer sugli header, rotazione
+  // icona, e l'hide-by-default dei pannelli Funnelish .faq-content) solo
+  // se la pagina ha davvero una forma accordion.
+  try{if(document.querySelector(TRIG)||document.querySelector('.faq-content-wrapper')||document.querySelector(ITEM)){document.documentElement.setAttribute('data-wasabi-rescue','1');}}catch(e){}
   document.addEventListener('click',function(ev){
-    var t=ev.target;
-    if(!(t instanceof Element))return;
-    // Don't hijack actual links/buttons/form controls inside a header
+    var t=ev.target;if(!(t instanceof Element))return;
     var actionable=t.closest('a[href]:not([href="#"]):not([href=""]),button[type="submit"],input,select,textarea');
+    // 1) ARIA pattern
     var btn=t.closest('[aria-expanded][aria-controls]');
     if(btn){
       if(actionable&&btn.contains(actionable)&&actionable!==btn)return;
-      var open=btn.getAttribute('aria-expanded')==='true';
-      btn.setAttribute('aria-expanded',open?'false':'true');
-      var pid=btn.getAttribute('aria-controls');
-      var p=pid?document.getElementById(pid):null;
-      if(p){p.style.display=open?'none':'';p.hidden=open;}
-      return;
+      var op=btn.getAttribute('aria-expanded')==='true';
+      btn.setAttribute('aria-expanded',op?'false':'true');
+      var pid=btn.getAttribute('aria-controls');var ap=pid?document.getElementById(pid):null;
+      if(ap)setOpen(ap,!op);
+      ev.preventDefault();ev.stopPropagation();return;
     }
-    // 3. Bootstrap collapse
+    // 2) Bootstrap collapse
     var bs=t.closest('[data-bs-toggle="collapse"],[data-toggle="collapse"]');
     if(bs){
       if(actionable&&bs.contains(actionable)&&actionable!==bs)return;
       var sel=bs.getAttribute('data-bs-target')||bs.getAttribute('data-target')||bs.getAttribute('href');
-      if(sel){var el=document.querySelector(sel);if(el){el.classList.toggle('show');}}
-      return;
+      if(sel){try{var be=document.querySelector(sel);if(be){be.classList.toggle('show');setOpen(be,be.classList.contains('show'));}}catch(e){}}
+      ev.preventDefault();ev.stopPropagation();return;
     }
-    // 4. Generic / Funnelish header
-    var gh=t.closest(TRIG);
-    if(gh){
-      if(actionable&&gh.contains(actionable)&&actionable!==gh)return;
-      var item=gh.closest(CONT)||gh.parentElement;
-      if(item){
-        var willOpen=!item.classList.contains('is-open');
-        item.classList.toggle('is-open',willOpen);
-        item.classList.toggle('active',willOpen);
-        item.classList.toggle('expanded',willOpen);
-        if(item.tagName==='DETAILS'){
-          if(willOpen)item.setAttribute('open','');else item.removeAttribute('open');
-        }
-        gh.setAttribute('aria-expanded',willOpen?'true':'false');
-        // Inline display fallback for sites whose CSS we can't reach.
-        var content=findPanel(gh,item);
-        if(content){
-          // Clear any inline display so the CSS rule wins; only force
-          // display when the CSS rule didn't take effect.
-          content.style.display='';
-          var cs=getComputedStyle(content);
-          if(willOpen&&cs.display==='none')content.style.display='block';
-          if(!willOpen&&cs.display!=='none')content.style.display='none';
-        }
-        ev.preventDefault();ev.stopPropagation();
-      }
+    // 3) native <details>: let the browser handle the summary click
+    if(t.closest('summary'))return;
+    // 4) Generic + heuristic: find nearest accordion-shaped item
+    var item=findItem(t);
+    if(item){
+      if(actionable&&item.contains(actionable)&&actionable!==item)return;
+      // Don't collapse when the user clicks INSIDE an already-open panel
+      // (e.g. selecting answer text). Only header-region clicks toggle.
+      var openPanel=findPanel(null,item);
+      if(openPanel&&openPanel.contains(t)&&openPanel!==t){try{if(getComputedStyle(openPanel).display!=='none')return;}catch(e){}}
+      toggle(item,t.closest(TRIG)||t);
+      ev.preventDefault();ev.stopPropagation();
     }
   },true);
-  // Initial pass: hide every ARIA panel that we just reset.
-  $('[aria-controls]').forEach(function(b){
-    if(b.getAttribute('aria-expanded')==='false'){
-      var pid=b.getAttribute('aria-controls');
-      var p=pid?document.getElementById(pid):null;
-      if(p){p.style.display='none';}
-    }
-  });
 }
 if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',once)}else{once()}
 })();</script>`;
-  let out = html;
+  // Idempotenza: rimuovi eventuali iniezioni precedenti (lo snapshot
+  // clonato puo' gia' contenerle da una pipeline precedente). Due copie
+  // dello stesso handler in fase di capture si annullerebbero (doppio
+  // toggle = nessun toggle).
+  let out = html
+    .replace(/<style id="wasabi-accordion-rescue-style">[\s\S]*?<\/style>/gi, '')
+    .replace(/<script id="wasabi-accordion-rescue">[\s\S]*?<\/script>/gi, '');
   if (/<\/head>/i.test(out)) {
     out = out.replace(/<\/head>/i, `${styleTag}</head>`);
   } else if (/<head\b[^>]*>/i.test(out)) {
