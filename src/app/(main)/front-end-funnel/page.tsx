@@ -5798,10 +5798,12 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                   target: 'clonedData' | 'swipedData',
                                 ): Promise<{ html: string; mobileHtml?: string } | null> => {
                                   if (!blob) return null;
-                                  if (blob.html && blob.html.length > 0) {
-                                    return { html: blob.html, mobileHtml: blob.mobileHtml };
-                                  }
-                                  // 2) IndexedDB (copia locale, scritta ad ogni Save dell'editor)
+                                  // 1) IndexedDB (copia locale, scritta ad OGNI Save dell'editor
+                                  //    e ad ogni clone) — è l'ULTIMA versione editata su questo
+                                  //    browser. PRIORITÀ MASSIMA: l'HTML in memoria (blob.html)
+                                  //    può essere rimasto vecchio (reidratato da htmlUrl dopo un
+                                  //    reload), quindi "Edit Visually" aprirebbe la versione
+                                  //    vecchia invece dell'ultima modifica salvata.
                                   try {
                                     const { loadHtmlBlob } = await import('@/lib/html-blob-store');
                                     const idb = await loadHtmlBlob(page.id, target);
@@ -5809,6 +5811,10 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                       return { html: idb.html, mobileHtml: idb.mobileHtml };
                                     }
                                   } catch { /* fall through */ }
+                                  // 2) blob in memoria (Zustand)
+                                  if (blob.html && blob.html.length > 0) {
+                                    return { html: blob.html, mobileHtml: blob.mobileHtml };
+                                  }
                                   // 2.5) Supabase Storage (htmlUrl) — copia cross-device. Serve
                                   //      quando si clicca l'occhio prima che la rehydrate al boot
                                   //      abbia ripopolato blob.html, o da un altro browser/device.
