@@ -358,9 +358,16 @@ var PANEL_RE=/(content|answer|body|panel|collaps|detail|inner|text|wrapper)/i;
 function cls(el){if(!el)return '';var c=el.className;if(c&&typeof c==='object'&&'baseVal'in c)return c.baseVal;return ''+(c||'');}
 function isPanelLike(el){return el&&el.nodeType===1&&(PANEL_RE.test(cls(el))||(el.matches&&el.matches(PANEL)));}
 function findPanel(trigger,item){
-  try{var p=item.querySelector(PANEL);if(p)return p;}catch(e){}
+  // 1) Il FRATELLO dopo il trigger: gestisce sia le strutture "flat"
+  //    (header/answer alternati nello stesso contenitore) sia gli item in
+  //    cui header e pannello sono fratelli. PRIORITA' MASSIMA: senza questo,
+  //    querySelector(PANEL) tornava sempre il PRIMO pannello del contenitore
+  //    e il click apriva/chiudeva la FAQ sbagliata.
   var n=trigger&&trigger.nextElementSibling;
   while(n){if(isPanelLike(n))return n;n=n.nextElementSibling;}
+  // 2) pannello esplicito dentro l'item
+  try{var p=item&&item.querySelector(PANEL);if(p)return p;}catch(e){}
+  // 3) figlio diretto panel-like / fallback ultimo figlio
   if(item&&item.children){
     for(var i=0;i<item.children.length;i++){var k=item.children[i];if(k!==trigger&&isPanelLike(k))return k;}
     if(item.children.length>=2){var last=item.children[item.children.length-1];if(last!==trigger&&!(trigger&&last.contains&&last.contains(trigger)))return last;}
@@ -380,49 +387,41 @@ function setOpen(p,open){
   if(!p)return;
   if(open){p.style.display='block';p.style.maxHeight='none';p.style.height='auto';p.style.overflow='visible';p.style.visibility='visible';p.style.opacity='1';p.hidden=false;}
   else{p.style.display='none';}
+  // stato tracciato SUL PANNELLO (non sull'item): negli accordion "flat"
+  // l'item e' condiviso da piu' pannelli, quindi lo stato per-item sarebbe
+  // sbagliato.
+  p.setAttribute('data-wasabi-open',open?'1':'0');
 }
-function isOpen(item,panel){
-  if(item.hasAttribute('data-wasabi-open'))return item.getAttribute('data-wasabi-open')==='1';
-  if(item.tagName==='DETAILS')return item.hasAttribute('open');
-  if(panel){try{return getComputedStyle(panel).display!=='none';}catch(e){}}
-  return false;
+function panelOpen(p){
+  if(!p)return false;
+  if(p.hasAttribute('data-wasabi-open'))return p.getAttribute('data-wasabi-open')==='1';
+  try{return getComputedStyle(p).display!=='none';}catch(e){return false;}
 }
 function toggle(item,trigger){
   var panel=findPanel(trigger,item);
-  var willOpen=!isOpen(item,panel);
-  item.setAttribute('data-wasabi-open',willOpen?'1':'0');
-  item.classList.toggle('is-open',willOpen);
-  item.classList.toggle('active',willOpen);
-  item.classList.toggle('expanded',willOpen);
-  if(item.tagName==='DETAILS'){if(willOpen)item.setAttribute('open','');else item.removeAttribute('open');}
-  if(trigger&&trigger.setAttribute)trigger.setAttribute('aria-expanded',willOpen?'true':'false');
+  if(!panel)return;
+  var willOpen=!panelOpen(panel);
   setOpen(panel,willOpen);
-}
-function findExplicitPanel(item){
-  // Versione STRETTA di findPanel (no fallback "ultimo figlio"): usata solo
-  // per la chiusura iniziale, per non nascondere per sbaglio menu/dropdown.
-  try{var p=item.querySelector(PANEL);if(p)return p;}catch(e){}
-  if(item&&item.children){for(var i=0;i<item.children.length;i++){if(isPanelLike(item.children[i]))return item.children[i];}}
-  return null;
+  // cosmetica: classi/icona sull'item se e' un contenitore per-item
+  if(item&&item!==panel&&item.classList){
+    item.classList.toggle('is-open',willOpen);
+    item.classList.toggle('active',willOpen);
+    item.classList.toggle('expanded',willOpen);
+  }
+  if(item&&item.tagName==='DETAILS'){if(willOpen)item.setAttribute('open','');else item.removeAttribute('open');}
+  if(trigger&&trigger.setAttribute)trigger.setAttribute('aria-expanded',willOpen?'true':'false');
 }
 function closeAll(){
-  // Chiude TUTTI i pannelli accordion al caricamento, cosi' la pagina parte
-  // collassata (lo snapshot Jina li cattura aperti) e l'utente li apre col
-  // click. Chiude solo elementi che hanno davvero un pannello nascondibile.
-  var seen=[];
-  function tryClose(item){
-    if(!item||seen.indexOf(item)>=0)return;seen.push(item);
-    if(item.tagName==='DETAILS'){item.removeAttribute('open');return;}
-    var panel=findExplicitPanel(item);
-    if(!panel)return;
-    item.setAttribute('data-wasabi-open','0');
-    item.classList.remove('is-open');item.classList.remove('active');item.classList.remove('expanded');
-    panel.style.display='none';
-  }
+  // Chiude all'avvio TUTTI i pannelli noti (per classe PANEL) + i <details>,
+  // e resetta lo stato visivo degli item. Lo snapshot Jina li cattura aperti:
+  // cosi' la pagina parte collassata e l'utente li apre col click.
   try{
-    var known=document.querySelectorAll(ITEM);for(var i=0;i<known.length;i++)tryClose(known[i]);
-    var fuzzy=document.querySelectorAll('[class*="faq" i],[class*="accordion" i],[class*="toggle" i],[class*="collaps" i],[class*="expand" i],[class*="question" i],[class*="drop" i]');
-    for(var j=0;j<fuzzy.length;j++){var el=fuzzy[j];if(ITEM_RE.test(cls(el))&&findPanel(null,el))tryClose(el);}
+    var panels=document.querySelectorAll(PANEL);
+    for(var i=0;i<panels.length;i++){panels[i].style.display='none';panels[i].setAttribute('data-wasabi-open','0');}
+    var dets=document.querySelectorAll('details');
+    for(var k=0;k<dets.length;k++)dets[k].removeAttribute('open');
+    var its=document.querySelectorAll(ITEM);
+    for(var j=0;j<its.length;j++){its[j].classList.remove('is-open');its[j].classList.remove('active');its[j].classList.remove('expanded');}
   }catch(e){}
 }
 function once(){
@@ -458,10 +457,11 @@ function once(){
     var item=findItem(t);
     if(item){
       if(actionable&&item.contains(actionable)&&actionable!==item)return;
-      // Don't collapse when the user clicks INSIDE an already-open panel
-      // (e.g. selecting answer text). Only header-region clicks toggle.
-      var openPanel=findPanel(null,item);
-      if(openPanel&&openPanel.contains(t)&&openPanel!==t){try{if(getComputedStyle(openPanel).display!=='none')return;}catch(e){}}
+      // Non chiudere se si clicca DENTRO un pannello gia' aperto (es. per
+      // selezionare il testo della risposta): solo i click sull'header
+      // devono fare toggle.
+      var inPanel=t.closest(PANEL);
+      if(inPanel&&panelOpen(inPanel)){try{if(getComputedStyle(inPanel).display!=='none')return;}catch(e){}}
       toggle(item,t.closest(TRIG)||t);
       ev.preventDefault();ev.stopPropagation();
     }
