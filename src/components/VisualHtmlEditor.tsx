@@ -454,7 +454,13 @@ const EDITOR_SCRIPT = `
         window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');}break;
       case 'cmd-remove-attr':if(sel){sel.removeAttribute(m.name);sendHtml();
         window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');}break;
-      case 'cmd-set-attr':if(sel){sel.setAttribute(m.name,m.value);sendHtml();
+      case 'cmd-set-attr':if(sel){sel.setAttribute(m.name,m.value);
+        /* Quando cambiamo l'immagine (src), eliminiamo TUTTI gli attributi
+           lazy-load (data-src, data-original, srcset, data-srcset, ...).
+           Altrimenti prepareEditorHtml alla RIAPERTURA ripromuove quei
+           valori VECCHI dentro src e l'immagine torna a quella di prima. */
+        if(m.name==='src'){var _LZA=['srcset','data-src','data-original','data-original-src','data-orig-src','data-lazy-src','data-lazy','data-lazyload','data-lazy-load','data-url','data-image-src','data-image','data-thumb','data-cfsrc','data-cmplz-src','data-wf-src','data-echo','data-defer-src','data-hi-res-src','data-actual','data-srcfallback','data-srcset','data-lazy-srcset','data-cfsrcset','data-cmplz-srcset','data-wf-srcset'];for(var _zz=0;_zz<_LZA.length;_zz++){sel.removeAttribute(_LZA[_zz]);}}
+        sendHtml();
         window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');}break;
       case 'cmd-set-child-img-src':if(sel){var _ci=null;try{
         /* Stessa euristica di gi().childImg: prendiamo l'<img> PIU' GRANDE
@@ -464,7 +470,11 @@ const EDITOR_SCRIPT = `
         for(var _ck=0;_ck<_cim.length;_ck++){var _cr=_cim[_ck].getBoundingClientRect();var _ca=_cr.width*_cr.height;if(_ca>_cba){_cba=_ca;_ci=_cim[_ck];}}
         if(!_ci)_ci=sel.querySelector('img');
       }catch(e){}
-        if(_ci){_ci.setAttribute('src',m.value);_ci.removeAttribute('srcset');_ci.removeAttribute('data-src');sendHtml();
+        if(_ci){_ci.setAttribute('src',m.value);
+        /* Vedi cmd-set-attr: togliamo TUTTI gli attributi lazy così la
+           promozione alla riapertura non ripristina l'immagine vecchia. */
+        var _LZB=['srcset','data-src','data-original','data-original-src','data-orig-src','data-lazy-src','data-lazy','data-lazyload','data-lazy-load','data-url','data-image-src','data-image','data-thumb','data-cfsrc','data-cmplz-src','data-wf-src','data-echo','data-defer-src','data-hi-res-src','data-actual','data-srcfallback','data-srcset','data-lazy-srcset','data-cfsrcset','data-cmplz-srcset','data-wf-srcset'];for(var _zb=0;_zb<_LZB.length;_zb++){_ci.removeAttribute(_LZB[_zb]);}
+        sendHtml();
         window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');}}break;
       case 'cmd-set-text':if(sel){sel.textContent=m.value;sendHtml();
         window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');}break;
@@ -916,10 +926,18 @@ function prepareEditorHtml(html: string, sourceUrl?: string): string {
     };
     clean = clean.replace(MEDIA_TAG_RE, (_full, tag, attrs: string) => {
       let a = attrs;
+      // Promuoviamo i data-* nel src SOLO se il src attuale manca o è un
+      // placeholder. CRITICO: se l'utente ha sostituito l'immagine
+      // nell'editor, il src è già quello nuovo (reale) mentre i vecchi
+      // data-src/data-original/srcset possono essere rimasti col valore
+      // PRECEDENTE. Senza questo controllo la promozione sovrascriverebbe
+      // il src nuovo con quello vecchio → l'immagine torna a prima.
+      const existingSrc = getAttr(a, 'src');
+      const srcIsReal = !!existingSrc && !isPlaceholderSrc(existingSrc);
       const lazySrc = pickAttr(a, LAZY_SRC_ATTRS);
-      if (lazySrc) a = setAttr(a, 'src', lazySrc);
+      if (lazySrc && !srcIsReal) a = setAttr(a, 'src', lazySrc);
       const lazySrcset = pickAttr(a, LAZY_SRCSET_ATTRS);
-      if (lazySrcset) a = setAttr(a, 'srcset', lazySrcset);
+      if (lazySrcset && !srcIsReal) a = setAttr(a, 'srcset', lazySrcset);
       if (tag.toLowerCase() === 'video') {
         const lazyPoster = pickAttr(a, LAZY_POSTER_ATTRS);
         if (lazyPoster) a = setAttr(a, 'poster', lazyPoster);
