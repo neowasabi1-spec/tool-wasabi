@@ -6482,7 +6482,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                 )}
                 {htmlPreviewModal.html && !htmlPreviewModal.iframeSrc && (
                   <button
-                    onClick={() => {
+                    onClick={async () => {
                       // Apre l'HTML clonato in una vera tab del browser via blob URL.
                       // L'iframe ha permessi limitati (about:blank origin) e quindi
                       // CSS esterno e fetch cross-origin spesso non funzionano,
@@ -6497,9 +6497,16 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                       // param e il bundle vede affiliate=null -> redirect.
                       const rawHtml = previewViewport === 'mobile' && htmlPreviewModal.mobileHtml
                         ? htmlPreviewModal.mobileHtml : htmlPreviewModal.html;
-                      const htmlToOpen = htmlPreviewModal.sourceType === 'cloned'
+                      let htmlToOpen = htmlPreviewModal.sourceType === 'cloned'
                         ? prepareClonedHtmlForPreview(rawHtml)
                         : rawHtml;
+                      // Rende FAQ/accordion cliccabili anche nella tab nuova:
+                      // lo snapshot statico ha gli script originali spesso
+                      // rotti, quindi iniettiamo il toggler universale.
+                      try {
+                        const { injectInteractivityRescue } = await import('@/lib/spa-rescue');
+                        htmlToOpen = injectInteractivityRescue(htmlToOpen);
+                      } catch { /* fallback: html senza rescue */ }
                       const blob = new Blob([htmlToOpen], { type: 'text/html;charset=utf-8' });
                       const url = URL.createObjectURL(blob);
                       window.open(url, '_blank', 'noopener,noreferrer');
@@ -7367,13 +7374,23 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
               )}
               {htmlPreviewModal.html && (
                 <button
-                  onClick={() => {
+                  onClick={async () => {
+                    // Apri SUBITO la finestra (sincrono al click) per non
+                    // farla bloccare dal popup-blocker, poi inietta
+                    // l'interattività (FAQ/accordion cliccabili) e scrivi.
+                    // Senza injectInteractivityRescue lo snapshot statico
+                    // ha le FAQ congelate (gli script originali del clone
+                    // sono spesso rotti).
                     const newWin = window.open('', '_blank');
-                    if (newWin) {
-                      newWin.document.open();
-                      newWin.document.write(htmlPreviewModal.html);
-                      newWin.document.close();
-                    }
+                    if (!newWin) return;
+                    let html = htmlPreviewModal.html;
+                    try {
+                      const { injectInteractivityRescue } = await import('@/lib/spa-rescue');
+                      html = injectInteractivityRescue(html);
+                    } catch { /* fallback: html grezzo */ }
+                    newWin.document.open();
+                    newWin.document.write(html);
+                    newWin.document.close();
                   }}
                   className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors flex items-center gap-2"
                   title="Apre l'HTML clonato salvato in una nuova finestra"

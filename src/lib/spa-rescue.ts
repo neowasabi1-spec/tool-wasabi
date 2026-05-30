@@ -302,7 +302,7 @@ function resetAccordionState(html: string): string {
  * Event-delegated on document so dynamically-added accordions also
  * work. Runs once on DOMContentLoaded.
  */
-function injectInteractivityRescue(html: string): string {
+export function injectInteractivityRescue(html: string): string {
   // CSS guard: only kicks in when the rescue script has tagged <html>
   // with `data-wasabi-rescue="1"`. This avoids hiding/clobbering FAQs
   // on pages whose own runtime is fine — the script only sets the

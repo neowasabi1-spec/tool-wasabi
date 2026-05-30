@@ -3414,9 +3414,21 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
       return;
     }
     setPreviewReady(false);
+    // Inietta il toggler universale FAQ/accordion: nello snapshot statico
+    // gli script originali del clone sono spesso rotti, quindi senza questo
+    // le FAQ restano chiuse e non cliccabili in Preview (mentre in live mode
+    // funzionano perché è il sito reale). Best-effort: se l'import fallisce
+    // usiamo l'HTML grezzo.
+    let cancelled = false;
     setPreviewSnapshot(activeHtml);
+    void (async () => {
+      try {
+        const { injectInteractivityRescue } = await import('@/lib/spa-rescue');
+        if (!cancelled) setPreviewSnapshot(injectInteractivityRescue(activeHtml));
+      } catch { /* fallback già impostato sopra */ }
+    })();
     const t = setTimeout(() => setPreviewReady(true), 30);
-    return () => clearTimeout(t);
+    return () => { cancelled = true; clearTimeout(t); };
     // Volutamente NO dependency su activeHtml: lo snapshot si fa solo
     // quando si entra in preview mode. Per "ricaricare" l'utente puo'
     // tornare a Visual e ri-cliccare Preview.
