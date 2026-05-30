@@ -168,6 +168,20 @@ function resolveAgentIdentity() {
 }
 const OPENCLAW_AGENT = resolveAgentIdentity();
 
+// ── Routing della coda: di quali agenti questo worker raccoglie i job ──
+// Di default un worker prende solo i job taggati con la PROPRIA identita'
+// (+ quelli legacy senza tag). Con OPENCLAW_CLAIM_AGENTS si puo' allargare:
+//   OPENCLAW_CLAIM_AGENTS="openclaw:neo,openclaw:morfeo"
+// Cosi' UNA sola macchina (tipicamente quella col backend Anthropic/Claude)
+// serve sia le selezioni "neo" che "morfeo" dell'interfaccia: l'utente sceglie
+// come prima, ma a riscrivere e' sempre lo stesso motore. I job restano
+// taggati col loro target_agent originale (la UI non cambia).
+const OPENCLAW_CLAIM_AGENTS = (() => {
+  const raw = (process.env.OPENCLAW_CLAIM_AGENTS || '').trim();
+  if (raw) return raw.split(',').map((s) => s.trim()).filter(Boolean);
+  return OPENCLAW_AGENT ? [OPENCLAW_AGENT] : [];
+})();
+
 // ── OpenClaw model default ──────────────────────────────────────
 // Ogni worker invoca SEMPRE il suo agente principale, "openclaw/main".
 // Su ogni macchina l'agente "main" e' la persona che possiede quella
@@ -183,7 +197,15 @@ const OPENCLAW_AGENT = resolveAgentIdentity();
 // non hanno accesso a SHARED-KNOWLEDGE.
 // L'override resta possibile via env OPENCLAW_MODEL=openclaw/xxx per
 // chi vuole forzare uno specifico sub-agent.
-if (!OPENCLAW_MODEL) {
+if (OPENCLAW_BACKEND === 'anthropic') {
+  // Con backend Anthropic il campo `model` DEVE essere un nome Claude reale
+  // (es. claude-sonnet-4-20250514). 'openclaw/main' o qualsiasi alias
+  // openclaw/* farebbe 404 not_found. Se non e' stato forzato un modello
+  // Claude esplicito, usiamo il default (override via ANTHROPIC_MODEL).
+  if (!OPENCLAW_MODEL || /^openclaw\//i.test(OPENCLAW_MODEL)) {
+    OPENCLAW_MODEL = (process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-20250514').trim();
+  }
+} else if (!OPENCLAW_MODEL) {
   OPENCLAW_MODEL = 'openclaw/main';
 }
 
@@ -1074,6 +1096,14 @@ async function runRewriteInBatches(systemPrompt, userMessage) {
     }
     const skipped = total - trueRewrites;
     log(`  ▸ Rewrite done (chat-mode): ${trueRewrites}/${total} VERAMENTE riscritti, ${skipped} restano = originale`);
+    // FAIL-LOUD: se NESSUN testo e' stato riscritto davvero, il modello e'
+    // spento / in errore / fa solo echo → job in ERRORE, non "completato" finto.
+    if (trueRewrites === 0 && total > 0) {
+      throw new Error(
+        `Chat-mode: il modello non ha riscritto NESSUN testo (0/${total}). ` +
+        `Probabile modello spento o API key non valida. Job in ERRORE invece di "completato".`,
+      );
+    }
     return JSON.stringify(allRewrites);
   }
 
@@ -1162,12 +1192,23 @@ ${pageBlueprint}
   }
   const qualityBooster = buildQualityBooster();
 
+  // Telemetria affidabilita': quante chiamate al modello abbiamo tentato e
+  // quante sono FALLITE (eccezione: modello spento, rete, 4xx/5xx Anthropic).
+  // Serve a distinguere "il modello ha risposto ma ha fatto echo" da "il
+  // modello e' irraggiungibile" → in quest'ultimo caso il job deve ANDARE IN
+  // ERRORE, non chiudersi "completato" con echo (che e' il bug che faceva
+  // sembrare riuscite riscritture mai avvenute).
+  let callAttempts = 0;
+  let callFailures = 0;
+  let lastCallError = '';
+
   async function runBatchOnce(batch, label, extraSystemHint) {
     throwIfAborted();
     batchCount++;
     const batchUserMessage = `${beforeJson}\n${JSON.stringify(batch, null, 2)}\n${afterJson}${qualityBooster}`;
     log(`  ▸ Rewrite ${label} (${batch.length} testi, mode=${REWRITE_QUALITY_MODE})`);
     let raw = '';
+    callAttempts++;
     try {
       const sys = extraSystemHint
         ? `${systemPrompt}\n\nNOTA EXTRA: ${extraSystemHint}`
@@ -1177,7 +1218,9 @@ ${pageBlueprint}
         { role: 'user', content: batchUserMessage },
       ]);
     } catch (e) {
-      err(`  ✗ ${label} failed:`, e.message);
+      callFailures++;
+      lastCallError = e && e.message ? e.message : String(e);
+      err(`  ✗ ${label} failed:`, lastCallError);
       return { added: 0, parsed: 0 };
     }
     const rewrites = extractRewritesFromAiResponse(raw);
@@ -1359,6 +1402,35 @@ ${pageBlueprint}
     const original = idToOriginal.get(id);
     if (original && rewritten.trim() === original) echoFromRetry++;
     else trueRewrites++;
+  }
+
+  // ── FAIL-LOUD ────────────────────────────────────────────────────────
+  // Prima di ripiegare sull'echo, decidiamo se questo job e' un FALLIMENTO
+  // VERO (da segnare come errore) invece di un "completato" finto:
+  //
+  //   1) Modello irraggiungibile: TUTTE le chiamate hanno lanciato eccezione
+  //      (modello locale spento, chiave Anthropic errata/scaduta, 4xx/5xx,
+  //      timeout di rete). In questo caso NON abbiamo riscritto niente perche'
+  //      il writer non ha mai risposto → ERRORE esplicito.
+  //   2) Zero riscritture reali: il modello ha risposto ma 0/total testi sono
+  //      effettivamente cambiati (tutto echo / output non valido) → ERRORE,
+  //      cosi' l'utente sa che la pagina NON e' stata riscritta invece di
+  //      vedere "completato" con solo il brand-replace.
+  //
+  // Solo cosi' smettiamo di "mascherare un modello spento da no-op riuscito".
+  if (callAttempts > 0 && callFailures >= callAttempts) {
+    throw new Error(
+      `Writer irraggiungibile: tutte le ${callAttempts} chiamate al modello sono fallite ` +
+      `(ultimo errore: ${lastCallError || 'sconosciuto'}). Nessun testo riscritto — job in ERRORE ` +
+      `(controlla che il modello/worker sia acceso e la API key valida).`,
+    );
+  }
+  if (trueRewrites === 0 && total > 0) {
+    throw new Error(
+      `Il modello non ha riscritto NESSUN testo (0/${total} riscritti davvero, ` +
+      `${callFailures}/${callAttempts} chiamate fallite). Possibili cause: chiave/modello errati, ` +
+      `output non valido o solo echo. Job segnato come ERRORE invece di "completato" finto.`,
+    );
   }
 
   // Final fallback: per i testi che dopo tutti i pass restano senza rewrite,
@@ -2289,10 +2361,10 @@ async function poll() {
       .from('openclaw_messages')
       .select('*')
       .eq('status', 'pending');
-    if (OPENCLAW_AGENT) {
-      pollQuery = pollQuery.or(
-        `target_agent.is.null,target_agent.eq.${OPENCLAW_AGENT}`,
-      );
+    if (OPENCLAW_CLAIM_AGENTS.length > 0) {
+      const ors = ['target_agent.is.null']
+        .concat(OPENCLAW_CLAIM_AGENTS.map((a) => `target_agent.eq.${a}`));
+      pollQuery = pollQuery.or(ors.join(','));
     }
     const { data, error } = await pollQuery
       .order('created_at', { ascending: true })
@@ -3663,10 +3735,13 @@ function printBanner() {
       'OPENCLAW_BACKEND=anthropic but ANTHROPIC_API_KEY is empty — every checkpoint_audit and chat job will fail until you export ANTHROPIC_API_KEY=sk-ant-... and restart.',
     );
   }
-  if (OPENCLAW_AGENT) {
-    log(`Routing: this worker only claims jobs targeted at "${OPENCLAW_AGENT}" (or untagged legacy jobs).`);
+  if (OPENCLAW_CLAIM_AGENTS.length > 0) {
+    const multi = OPENCLAW_CLAIM_AGENTS.length > 1
+      ? ` [multi-agent: una sola macchina serve ${OPENCLAW_CLAIM_AGENTS.join(' + ')} — la UI mostra la scelta ma a girare e' SEMPRE questo backend (${OPENCLAW_BACKEND})]`
+      : '';
+    log(`Routing: this worker claims jobs targeted at ${OPENCLAW_CLAIM_AGENTS.map((a) => `"${a}"`).join(', ')} (or untagged legacy jobs).${multi}`);
   } else {
-    log('Routing: legacy mode — claims ANY pending job (set OPENCLAW_AGENT or rename the OS user to enable explicit routing).');
+    log('Routing: legacy mode — claims ANY pending job (set OPENCLAW_AGENT / OPENCLAW_CLAIM_AGENTS or rename the OS user to enable explicit routing).');
   }
   // Log esplicito su QUALE agente OpenClaw invoca il worker — cosi' si
   // capisce a colpo d'occhio se la UI dice "Neo" ma poi il worker chiama
