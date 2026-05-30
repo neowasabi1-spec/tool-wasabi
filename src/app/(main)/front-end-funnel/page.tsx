@@ -1289,6 +1289,63 @@ export default function FrontEndFunnel() {
     return created;
   };
 
+  // Persiste l'HTML editato nel Visual Editor sulla pagina corrente (memoria +
+  // IndexedDB + auto-sync verso lo step di progetto collegato). Estratto da
+  // onSave per poter essere riusato anche dal pulsante "Salva nel progetto".
+  const persistEditorHtmlToPage = async (html: string, mobileHtml?: string) => {
+    setHtmlPreviewModal(prev => ({ ...prev, html, mobileHtml: mobileHtml || prev.mobileHtml }));
+    if (!htmlPreviewModal.pageId) return;
+    const pid = htmlPreviewModal.pageId;
+    const page = (funnelPages || []).find(p => p.id === pid);
+    if (!page) return;
+    if (htmlPreviewModal.sourceType === 'swiped' && page.swipedData) {
+      void saveHtmlBlob(pid, 'swipedData', html, mobileHtml || page.swipedData.mobileHtml);
+      await updateFunnelPage(pid, {
+        swipedData: { ...page.swipedData, html, newLength: html.length, editedAt: Date.now() },
+      });
+    } else if (page.clonedData) {
+      void saveHtmlBlob(pid, 'clonedData', html, mobileHtml || page.clonedData.mobileHtml);
+      await updateFunnelPage(pid, {
+        clonedData: {
+          ...page.clonedData,
+          html,
+          mobileHtml: mobileHtml || page.clonedData.mobileHtml,
+          content_length: html.length,
+          editedAt: Date.now(),
+        },
+      });
+    } else {
+      void saveHtmlBlob(pid, 'clonedData', html, mobileHtml || undefined);
+      await updateFunnelPage(pid, {
+        clonedData: {
+          html,
+          mobileHtml: mobileHtml || undefined,
+          title: page.name || 'Edited',
+          method_used: 'editor',
+          content_length: html.length,
+          duration_seconds: 0,
+          cloned_at: new Date(),
+          editedAt: Date.now(),
+        },
+      });
+    }
+    // Auto-sync verso lo step di progetto collegato (best-effort).
+    try {
+      const { getFunnelStepLink } = await import('@/lib/funnel-step-map');
+      const link = getFunnelStepLink(pid);
+      if (link) {
+        void fetch(
+          `/api/projecthub/projects/${link.projectId}/funnel-steps/${link.stepId}`,
+          {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ result_content: html }),
+          },
+        ).catch(() => {});
+      }
+    } catch { /* auto-sync opzionale */ }
+  };
+
   // Conferma salvataggio dal modal: instrada verso archivio o progetto.
   const handleConfirmSave = () => {
     if (saveTarget === 'project') {
@@ -8391,71 +8448,15 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
             if (editorPage) void updateFunnelPage(editorPage.id, { productId });
           }}
           onSave={async (html, mobileHtml) => {
-            setHtmlPreviewModal(prev => ({ ...prev, html, mobileHtml: mobileHtml || prev.mobileHtml }));
-
-            if (htmlPreviewModal.pageId) {
-              const pid = htmlPreviewModal.pageId;
-              const page = (funnelPages || []).find(p => p.id === pid);
-              if (page) {
-                if (htmlPreviewModal.sourceType === 'swiped' && page.swipedData) {
-                  // Persisti il blob in IndexedDB PRIMA del round-trip: il
-                  // save Supabase strippa l'HTML > 50KB dal JSONB, quindi
-                  // senza questo l'edit andrebbe perso al reload.
-                  void saveHtmlBlob(pid, 'swipedData', html, mobileHtml || page.swipedData.mobileHtml);
-                  await updateFunnelPage(pid, {
-                    swipedData: { ...page.swipedData, html, newLength: html.length, editedAt: Date.now() },
-                  });
-                } else if (page.clonedData) {
-                  void saveHtmlBlob(pid, 'clonedData', html, mobileHtml || page.clonedData.mobileHtml);
-                  await updateFunnelPage(pid, {
-                    clonedData: {
-                      ...page.clonedData,
-                      html,
-                      mobileHtml: mobileHtml || page.clonedData.mobileHtml,
-                      content_length: html.length,
-                      editedAt: Date.now(),
-                    },
-                  });
-                } else {
-                  // Pagina senza clonedData/swipedData ancora (es. HTML
-                  // appena editato su una pagina importata): crea clonedData
-                  // così l'edit ha un contenitore e viene comunque persistito.
-                  void saveHtmlBlob(pid, 'clonedData', html, mobileHtml || undefined);
-                  await updateFunnelPage(pid, {
-                    clonedData: {
-                      html,
-                      mobileHtml: mobileHtml || undefined,
-                      title: page.name || 'Edited',
-                      method_used: 'editor',
-                      content_length: html.length,
-                      duration_seconds: 0,
-                      cloned_at: new Date(),
-                      editedAt: Date.now(),
-                    },
-                  });
-                }
-
-                // AUTO-SYNC verso il progetto: se questa pagina è stata
-                // salvata in un funnel di progetto, aggiorna il result_content
-                // dello step collegato così "Vedi/Editor" nel ProjectHub mostra
-                // subito l'ultima versione editata (niente ri-salvataggio
-                // manuale del funnel). Best-effort: non blocca né rompe il save.
-                try {
-                  const { getFunnelStepLink } = await import('@/lib/funnel-step-map');
-                  const link = getFunnelStepLink(pid);
-                  if (link) {
-                    void fetch(
-                      `/api/projecthub/projects/${link.projectId}/funnel-steps/${link.stepId}`,
-                      {
-                        method: 'PATCH',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ result_content: html }),
-                      },
-                    ).catch(() => {});
-                  }
-                } catch { /* auto-sync opzionale */ }
-              }
-            }
+            await persistEditorHtmlToPage(html, mobileHtml);
+          }}
+          // Salva nel progetto direttamente dall'editor: persiste l'edit
+          // corrente sulla pagina e apre il modal "Save Funnel" preselezionato
+          // su Progetto/Funnel (stessa logica del pulsante in frontend).
+          onSaveToProject={(html, mobileHtml) => {
+            void persistEditorHtmlToPage(html, mobileHtml);
+            setSaveTarget('project');
+            setShowSaveModal(true);
           }}
           onClose={() => setShowVisualEditor(false)}
         />
@@ -8463,7 +8464,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
       })()}
       {/* Save Funnel Modal */}
       {showSaveModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[90]">
           <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-md mx-4">
             <h3 className="text-lg font-bold text-gray-900 mb-1">Save Funnel</h3>
             <p className="text-sm text-gray-500 mb-4">

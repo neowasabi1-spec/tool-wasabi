@@ -95,6 +95,11 @@ interface VisualHtmlEditorProps {
   initialHtml: string;
   initialMobileHtml?: string;
   onSave: (html: string, mobileHtml?: string) => void;
+  /** Opzionale: salva la pagina corrente direttamente in un Progetto/Funnel
+   *  (stessa logica del modal "Save" in front-end-funnel). Se fornita, in
+   *  toolbar compare il pulsante "Salva nel progetto". Riceve l'HTML appena
+   *  flushato dall'iframe cosi' salva sempre l'ultima versione editata. */
+  onSaveToProject?: (html: string, mobileHtml?: string) => void;
   onClose: () => void;
   pageTitle?: string;
   /** URL originale da cui è stata clonata/swipata la pagina. Usato per:
@@ -1658,7 +1663,7 @@ const TEXT_EDITABLE_TAGS = new Set([
 
 /* ─────────── Component ─────────── */
 
-export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSave, onClose, pageTitle, productContext, sourceUrl, availableProducts, currentProductId, onProductChange }: VisualHtmlEditorProps) {
+export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSave, onSaveToProject, onClose, pageTitle, productContext, sourceUrl, availableProducts, currentProductId, onProductChange }: VisualHtmlEditorProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [mode, setMode] = useState<EditorMode>('visual');
   const [selectedElement, setSelectedElement] = useState<ElementInfo | null>(null);
@@ -2252,6 +2257,17 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
       onSave(currentHtmlRef.current, mobileHtml || undefined);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
+    }, 50);
+  };
+
+  // Salva la pagina corrente direttamente nel Progetto/Funnel (stessa logica
+  // del modal in front-end-funnel). Flusha prima l'HTML dall'iframe cosi' il
+  // parent riceve l'ultima versione, poi delega al parent l'apertura del modal.
+  const handleSaveToProject = () => {
+    if (!onSaveToProject) return;
+    sendToIframe({ type: 'cmd-flush-html' });
+    setTimeout(() => {
+      onSaveToProject(currentHtmlRef.current, mobileHtml || undefined);
     }, 50);
   };
 
@@ -3814,6 +3830,14 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
               saved ? 'bg-emerald-500 text-white' : 'bg-amber-500 hover:bg-amber-400 text-white'}`}>
             {saved ? <><CheckCircle className="h-3.5 w-3.5" />Saved</> : <><Save className="h-3.5 w-3.5" />Save</>}
           </button>
+          {onSaveToProject && (
+            <button onClick={handleSaveToProject}
+              title="Salva questa pagina nel Progetto / Funnel"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-blue-600 hover:bg-blue-500 text-white transition-all">
+              <BookmarkPlus className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Salva nel progetto</span>
+            </button>
+          )}
           <button onClick={handleClose} disabled={closing} className="ml-1 p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-700 transition-colors disabled:opacity-50 disabled:cursor-wait" title="Close editor">
             <X className="h-5 w-5" />
           </button>
@@ -5011,6 +5035,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
           { id: 'b-testimonial', icon: '💬', label: 'Testimonials', html: '<div style="padding:48px 20px;background:#f8fafc"><div style="max-width:960px;margin:0 auto"><h2 style="text-align:center;font-size:26px;font-weight:700;margin-bottom:32px;color:#1a1a1a">What Our Customers Say</h2><div style="display:flex;gap:20px;flex-wrap:wrap"><div style="flex:1;min-width:260px;background:#fff;border-radius:12px;padding:24px;box-shadow:0 1px 4px rgba(0,0,0,.08)"><div style="font-size:20px;color:#f59e0b;margin-bottom:12px">★★★★★</div><p style="font-size:14px;line-height:1.6;color:#555;font-style:italic">"This product completely changed my life. I can\'t recommend it enough to anyone looking for real results."</p><div style="margin-top:16px;font-size:13px;font-weight:600;color:#1a1a1a">— Sarah J.</div></div><div style="flex:1;min-width:260px;background:#fff;border-radius:12px;padding:24px;box-shadow:0 1px 4px rgba(0,0,0,.08)"><div style="font-size:20px;color:#f59e0b;margin-bottom:12px">★★★★★</div><p style="font-size:14px;line-height:1.6;color:#555;font-style:italic">"Amazing results in just a few weeks. The quality exceeded all my expectations. Highly recommended!"</p><div style="margin-top:16px;font-size:13px;font-weight:600;color:#1a1a1a">— Mike R.</div></div><div style="flex:1;min-width:260px;background:#fff;border-radius:12px;padding:24px;box-shadow:0 1px 4px rgba(0,0,0,.08)"><div style="font-size:20px;color:#f59e0b;margin-bottom:12px">★★★★★</div><p style="font-size:14px;line-height:1.6;color:#555;font-style:italic">"Best purchase I\'ve made this year. Customer service was also outstanding!"</p><div style="margin-top:16px;font-size:13px;font-weight:600;color:#1a1a1a">— Lisa T.</div></div></div></div></div>' },
           { id: 'b-hero', icon: '🎯', label: 'Hero Section', html: '<div style="padding:64px 20px;background:linear-gradient(135deg,#0f172a,#1e3a5f);text-align:center"><h1 style="font-size:42px;font-weight:800;color:#fff;margin-bottom:16px;line-height:1.2">The Headline That Grabs Attention</h1><p style="font-size:18px;color:rgba(255,255,255,.75);max-width:600px;margin:0 auto 32px;line-height:1.6">Your subheadline explains the main benefit and sets expectations</p><a href="#" style="display:inline-block;padding:16px 40px;background:#3b82f6;color:#fff;text-decoration:none;border-radius:10px;font-weight:700;font-size:16px">Get Started Now →</a></div>' },
           { id: 'b-faq', icon: '❓', label: 'FAQ', html: '<div style="padding:48px 20px;max-width:800px;margin:0 auto"><h2 style="font-size:28px;font-weight:700;text-align:center;margin-bottom:32px;color:#1a1a1a">Frequently Asked Questions</h2><div style="border-top:1px solid #e5e7eb"><div style="padding:20px 0;border-bottom:1px solid #e5e7eb"><h3 style="font-size:16px;font-weight:600;color:#1a1a1a;margin-bottom:8px">How does it work?</h3><p style="font-size:14px;color:#555;line-height:1.6">Explain how your product/service works in simple terms.</p></div><div style="padding:20px 0;border-bottom:1px solid #e5e7eb"><h3 style="font-size:16px;font-weight:600;color:#1a1a1a;margin-bottom:8px">Is there a guarantee?</h3><p style="font-size:14px;color:#555;line-height:1.6">Yes, we offer a 60-day money-back guarantee. No questions asked.</p></div><div style="padding:20px 0;border-bottom:1px solid #e5e7eb"><h3 style="font-size:16px;font-weight:600;color:#1a1a1a;margin-bottom:8px">How long until I see results?</h3><p style="font-size:14px;color:#555;line-height:1.6">Most customers see results within the first week of use.</p></div></div></div>' },
+          { id: 'b-carousel', icon: '🎠', label: 'Carosello', html: '<div data-replo-carousel="true" style="max-width:720px;margin:0 auto;padding:24px 20px;position:relative"><div class="slider-for" style="position:relative;overflow:hidden;border-radius:12px;background:#f1f5f9"><div class="r-ldsnaw"><img src="https://placehold.co/720x480/e2e8f0/64748b?text=Slide+1" alt="" style="width:100%;display:block" /></div><div class="r-ldsnaw"><img src="https://placehold.co/720x480/dbeafe/3b82f6?text=Slide+2" alt="" style="width:100%;display:block" /></div><div class="r-ldsnaw"><img src="https://placehold.co/720x480/fef3c7/d97706?text=Slide+3" alt="" style="width:100%;display:block" /></div><button type="button" aria-label="Previous slide" class="lc-arrow lc-arrow-prev" style="position:absolute;top:50%;left:10px;transform:translateY(-50%);z-index:2;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.5);color:#fff;border:none;border-radius:50%;width:40px;height:40px;font-size:18px;cursor:pointer">❮</button><button type="button" aria-label="Next slide" class="lc-arrow lc-arrow-next" style="position:absolute;top:50%;right:10px;transform:translateY(-50%);z-index:2;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.5);color:#fff;border:none;border-radius:50%;width:40px;height:40px;font-size:18px;cursor:pointer">❯</button></div><div class="slider-nav" style="display:flex;gap:8px;justify-content:center;margin-top:12px;flex-wrap:wrap"><div style="width:72px;cursor:pointer;border-radius:6px;overflow:hidden"><img src="https://placehold.co/720x480/e2e8f0/64748b?text=1" alt="" style="width:100%;display:block" /></div><div style="width:72px;cursor:pointer;border-radius:6px;overflow:hidden"><img src="https://placehold.co/720x480/dbeafe/3b82f6?text=2" alt="" style="width:100%;display:block" /></div><div style="width:72px;cursor:pointer;border-radius:6px;overflow:hidden"><img src="https://placehold.co/720x480/fef3c7/d97706?text=3" alt="" style="width:100%;display:block" /></div></div></div>' },
           { id: 'b-divider', icon: '➖', label: 'Divider', html: '<div style="padding:8px 20px;max-width:800px;margin:0 auto"><hr style="border:none;border-top:2px solid #e5e7eb" /></div>' },
         ];
 
