@@ -581,9 +581,25 @@ export default function TemplatesPage() {
       return;
     }
     if (pagePreview.savedHtml) {
-      setPreviewHtml(pagePreview.savedHtml);
-      setPreviewLoading(false);
-      return;
+      // L'HTML salvato e' spesso uno snapshot SPA con il JS originale
+      // rimosso in clonazione: in un iframe resta BIANCO perche' manca lo
+      // script che svela il contenuto. Iniettiamo lo stesso "spa-rescue"
+      // usato dal VisualHtmlEditor per renderizzarlo correttamente.
+      const saved = pagePreview.savedHtml;
+      let cancelled = false;
+      setPreviewLoading(true);
+      (async () => {
+        try {
+          const { injectInteractivityRescue } = await import('@/lib/spa-rescue');
+          const rescued = injectInteractivityRescue(saved);
+          if (!cancelled) setPreviewHtml(rescued);
+        } catch {
+          if (!cancelled) setPreviewHtml(saved);
+        } finally {
+          if (!cancelled) setPreviewLoading(false);
+        }
+      })();
+      return () => { cancelled = true; };
     }
     if (!pagePreview.url) {
       setPreviewHtml(null);
