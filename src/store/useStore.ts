@@ -1410,19 +1410,73 @@ export const useStore = create<Store>()((set, get) => ({
     const templates = get().templates;
     if (!pages || pages.length === 0) return;
 
-    const steps = pages.map((p, i) => ({
-      step_index: i + 1,
-      name: p.name,
-      page_type: p.pageType,
-      template_name: templates.find(t => t.id === p.templateId)?.name || '',
-      product_name: projects.find(pr => pr.id === p.productId)?.name || '',
-      url_to_swipe: p.urlToSwipe,
-      prompt: p.prompt || '',
-      feedback: p.feedback || '',
-      swipe_status: p.swipeStatus,
-      swipe_result: p.swipeResult || '',
-      swiped_data: p.swipedData || null,
-      cloned_data: p.clonedData || null,
+    // Materializza l'HTML di OGNI step prima di salvare in archivio, con la
+    // stessa catena di fallback usata dal save-to-project:
+    //   1) HTML inline in memoria (clonedData/swipedData.html)
+    //   2) IndexedDB (backup locale dell'ultima edit)
+    //   3) page_html via htmlUrl (snapshot server, sopravvive al reload)
+    // Senza questo, le pagine ricaricate da una sessione precedente hanno
+    // solo `htmlUrl` (HTML offloaded) → lo step finiva in archivio SENZA
+    // `.html` e, sparito il link sorgente, non restava nulla da mostrare.
+    const { loadHtmlBlob } = await import('@/lib/html-blob-store');
+    const { fetchHtmlFromStorage } = await import('@/lib/funnel-html-storage');
+
+    const materializeHtml = async (
+      p: typeof pages[number],
+    ): Promise<{ html: string; mobileHtml: string }> => {
+      let html = p.swipedData?.html || p.clonedData?.html || '';
+      let mobileHtml = p.swipedData?.mobileHtml || p.clonedData?.mobileHtml || '';
+      if (!html) {
+        try {
+          const target: 'swipedData' | 'clonedData' = p.swipedData ? 'swipedData' : 'clonedData';
+          const blob = await loadHtmlBlob(p.id, target);
+          html = blob?.html || '';
+          mobileHtml = mobileHtml || blob?.mobileHtml || '';
+          if (!html) {
+            const other = await loadHtmlBlob(p.id, target === 'swipedData' ? 'clonedData' : 'swipedData');
+            html = other?.html || '';
+            mobileHtml = mobileHtml || other?.mobileHtml || '';
+          }
+        } catch { /* IDB non disponibile */ }
+      }
+      if (!html) {
+        const url = p.swipedData?.htmlUrl || p.clonedData?.htmlUrl;
+        if (url) {
+          try { html = (await fetchHtmlFromStorage(url)) || ''; } catch { /* offline */ }
+        }
+        const mUrl = p.swipedData?.mobileHtmlUrl || p.clonedData?.mobileHtmlUrl;
+        if (!mobileHtml && mUrl) {
+          try { mobileHtml = (await fetchHtmlFromStorage(mUrl)) || ''; } catch { /* offline */ }
+        }
+      }
+      return { html, mobileHtml };
+    };
+
+    const steps = await Promise.all(pages.map(async (p, i) => {
+      const { html, mobileHtml } = await materializeHtml(p);
+      // Riattacca l'HTML materializzato al blob che la pagina My Archive
+      // legge (`swiped_data?.html || cloned_data?.html`). Preferiamo il
+      // bucket "swiped" se la pagina è stata riscritta, altrimenti "cloned".
+      const swiped_data = p.swipedData
+        ? { ...p.swipedData, html: html || p.swipedData.html, mobileHtml: mobileHtml || p.swipedData.mobileHtml }
+        : null;
+      const cloned_data = p.clonedData
+        ? { ...p.clonedData, html: (!p.swipedData ? (html || p.clonedData.html) : p.clonedData.html), mobileHtml: mobileHtml || p.clonedData.mobileHtml }
+        : (!p.swipedData && html ? { html, mobileHtml: mobileHtml || undefined } : null);
+      return {
+        step_index: i + 1,
+        name: p.name,
+        page_type: p.pageType,
+        template_name: templates.find(t => t.id === p.templateId)?.name || '',
+        product_name: projects.find(pr => pr.id === p.productId)?.name || '',
+        url_to_swipe: p.urlToSwipe,
+        prompt: p.prompt || '',
+        feedback: p.feedback || '',
+        swipe_status: p.swipeStatus,
+        swipe_result: p.swipeResult || '',
+        swiped_data,
+        cloned_data,
+      };
     }));
 
     try {
