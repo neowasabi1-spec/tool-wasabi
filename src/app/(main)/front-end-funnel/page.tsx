@@ -1385,6 +1385,19 @@ export default function FrontEndFunnel() {
   } | null>(null);
   const swipeAllCancelRef = useRef(false);
 
+  // ────────── Clona All ──────────
+  // Clonazione in blocco (HTML identico, senza riscrittura) di tutte le
+  // pagine con un URL valido. Stessa logica della clone identica singola,
+  // ma in sequenza e senza aprire la preview ad ogni step.
+  const [cloneAllJob, setCloneAllJob] = useState<{
+    isRunning: boolean;
+    currentIndex: number;
+    totalCount: number;
+    completed: number;
+    errors: number;
+  } | null>(null);
+  const cloneAllCancelRef = useRef(false);
+
   // ── Brief helper ────────────────────────────────────────────────
   // Il brief di un progetto puo' stare in DUE posti diversi:
   //  - project.brief        → campo TEXT legacy (puo' essere vuoto se
@@ -3471,6 +3484,111 @@ export default function FrontEndFunnel() {
     setSwipeAllJob((s) => (s ? { ...s, cancelRequested: true } : s));
   }, []);
 
+  /* ───────────── Clona All ─────────────
+   * Clona in sequenza (HTML identico) tutte le pagine con un URL valido.
+   * Le pagine già clonate vengono saltate. Niente riscrittura, niente
+   * preview per ogni step: solo download + sanitize + salvataggio HTML. */
+  const cancelCloneAll = useCallback(() => {
+    cloneAllCancelRef.current = true;
+  }, []);
+
+  const runCloneAll = useCallback(async () => {
+    const allPages = funnelPages || [];
+    const eligible = allPages.filter((p) => {
+      const u = p.urlToSwipe || '';
+      return /^https?:\/\/.+\..+/.test(u) && !u.startsWith('https://uploaded.local/');
+    });
+    if (!eligible.length) {
+      alert('Nessuna pagina con URL valido da clonare.');
+      return;
+    }
+    const ok = window.confirm(
+      `Clonare ${eligible.length} pagine in blocco?\n\n` +
+        `Verranno scaricate in sequenza come HTML identico (nessuna riscrittura). ` +
+        `Le pagine già clonate verranno saltate.\n\nProcedere?`,
+    );
+    if (!ok) return;
+
+    cloneAllCancelRef.current = false;
+    resetSwipeLog();
+    setCloneAllJob({ isRunning: true, currentIndex: 0, totalCount: eligible.length, completed: 0, errors: 0 });
+    pushSwipeLog('info', `Clona All start \u2014 ${eligible.length} pagine`);
+
+    for (let i = 0; i < eligible.length; i++) {
+      if (cloneAllCancelRef.current) break;
+      const page = eligible[i];
+      const url = page.urlToSwipe || '';
+      const pageName = page.name || `Step ${i + 1}`;
+      setCloneAllJob((s) => (s ? { ...s, currentIndex: i + 1 } : s));
+
+      // Già clonata → salta (riusa l'HTML esistente).
+      if (page.clonedData?.html || page.swipedData?.html) {
+        setCloneAllJob((s) => (s ? { ...s, completed: s.completed + 1 } : s));
+        pushSwipeLog('info', `\u21b7 ${pageName} gi\u00e0 clonata, salto`, pageName);
+        continue;
+      }
+
+      updateFunnelPage(page.id, {
+        swipeStatus: 'in_progress',
+        swipeResult: `Clona All ${i + 1}/${eligible.length} — Cloning...`,
+      });
+      pushSwipeLog('info', `\u25b6 Clono ${i + 1}/${eligible.length}`, pageName);
+
+      try {
+        const res = await fetch('/api/clone-funnel', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            url,
+            cloneMode: 'identical',
+            viewport: cloneMobile ? 'both' : 'desktop',
+            keepScripts: true,
+          }),
+        });
+        const data = await parseJsonResponseOrThrow<{
+          content?: string;
+          mobileContent?: string | null;
+          mobileFinalSize?: number;
+          finalSize?: number;
+          error?: string;
+        }>(res, '[clone-all]');
+        if (!res.ok || data.error) throw new Error(data.error || 'Clone fallito');
+
+        const clonedHtml = sanitizeClonedHtml(data.content || '', url, { keepScripts: true });
+        const clonedMobileHtml = data.mobileContent
+          ? sanitizeClonedHtml(data.mobileContent, url, { keepScripts: true })
+          : '';
+
+        updateFunnelPage(page.id, {
+          swipeStatus: 'completed',
+          swipeResult: `Clone OK (${(data.finalSize || clonedHtml.length).toLocaleString()} chars)`,
+          clonedData: {
+            html: clonedHtml,
+            mobileHtml: clonedMobileHtml || undefined,
+            title: pageName,
+            method_used: 'identical',
+            content_length: data.finalSize || clonedHtml.length,
+            duration_seconds: 0,
+            cloned_at: new Date(),
+          },
+        });
+        void saveHtmlBlob(page.id, 'clonedData', clonedHtml, clonedMobileHtml || undefined);
+        try { autoSaveSections(clonedHtml, url, pageName); } catch {}
+
+        setCloneAllJob((s) => (s ? { ...s, completed: s.completed + 1 } : s));
+        pushSwipeLog('success', `\u2713 Clonata (${(clonedHtml.length / 1024).toFixed(1)} KB)`, pageName);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        updateFunnelPage(page.id, { swipeStatus: 'failed', swipeResult: `Clona All: ${msg}` });
+        setCloneAllJob((s) => (s ? { ...s, errors: s.errors + 1 } : s));
+        pushSwipeLog('error', `\u2717 ${msg}`, pageName);
+      }
+    }
+
+    setCloneAllJob((s) => (s ? { ...s, isRunning: false } : s));
+    pushSwipeLog('info', '\u25fc Clona All finished');
+  }, [funnelPages, cloneMobile, resetSwipeLog, pushSwipeLog, updateFunnelPage]);
+
   const handleClone = async () => {
     const pageId = cloneModal.pageId;
     const url = cloneModal.url;
@@ -4960,6 +5078,43 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                 })}
               </div>
 
+              {/* Clona All — clona in blocco (HTML identico) tutte le pagine
+                 con URL valido, senza riscrittura. */}
+              <button
+                onClick={() => {
+                  if (cloneAllJob?.isRunning) {
+                    if (window.confirm('Annullare la clonazione in corso? La pagina attuale finirà comunque.')) {
+                      cancelCloneAll();
+                    }
+                    return;
+                  }
+                  void runCloneAll();
+                }}
+                disabled={!funnelPages || funnelPages.length === 0 || swipeAllJob?.isRunning}
+                className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-semibold transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
+                  cloneAllJob?.isRunning
+                    ? 'bg-amber-100 text-amber-800 hover:bg-amber-200 border border-amber-300'
+                    : 'bg-gradient-to-r from-sky-600 to-cyan-600 hover:from-sky-700 hover:to-cyan-700 text-white shadow-sm'
+                }`}
+                title={
+                  cloneAllJob?.isRunning
+                    ? 'Click per annullare la clonazione in corso'
+                    : 'Clona in sequenza tutte le pagine con URL valido (HTML identico, senza riscrittura)'
+                }
+              >
+                {cloneAllJob?.isRunning ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Cloning {cloneAllJob.currentIndex}/{cloneAllJob.totalCount}…
+                  </>
+                ) : (
+                  <>
+                    <Copy className="w-4 h-4" />
+                    Clona All
+                  </>
+                )}
+              </button>
+
               {/* Swipe All — riscrive in sequenza tutte le pagine eligibili
                  mantenendo coerenza narrativa tra una pagina e l'altra
                  (Claude vede il riassunto delle pagine già fatte). */}
@@ -4973,7 +5128,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                   }
                   void runSwipeAll();
                 }}
-                disabled={!funnelPages || funnelPages.length === 0}
+                disabled={!funnelPages || funnelPages.length === 0 || cloneAllJob?.isRunning}
                 className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-semibold transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
                   swipeAllJob?.isRunning
                     ? 'bg-amber-100 text-amber-800 hover:bg-amber-200 border border-amber-300'
