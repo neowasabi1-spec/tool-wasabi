@@ -603,8 +603,15 @@ export default function TemplatesPage() {
       setPreviewLoading(true);
       (async () => {
         try {
+          // Rimuovi gli <script> originali del sito clonato: nell'iframe
+          // vivo il bundle SPA del sito si ri-esegue e SVUOTA il DOM (la
+          // miniatura via html2canvas invece scatta prima e mostra il
+          // contenuto). Il testo/immagini sono gia' nel DOM statico, quindi
+          // togliendo gli script la pagina resa resta stabile. Poi
+          // iniettiamo SOLO il rescue, che rivela il contenuto nascosto.
+          const stripped = saved.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
           const { injectInteractivityRescue } = await import('@/lib/spa-rescue');
-          const rescued = injectInteractivityRescue(saved);
+          const rescued = injectInteractivityRescue(stripped);
           if (!cancelled) setPreviewHtml(rescued);
         } catch {
           if (!cancelled) setPreviewHtml(saved);
