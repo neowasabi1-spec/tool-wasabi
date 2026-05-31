@@ -16,6 +16,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import type { User } from '@supabase/supabase-js';
 import type { AppUserPermissions, AppRole } from '@/lib/auth/sections';
+import { authFetch } from '@/lib/auth/client-fetch';
 
 export interface CurrentUser {
   user: User;
@@ -47,19 +48,21 @@ function readStoredSession(): StoredSession | null {
  *  endpoint which uses the service-role admin client under the hood,
  *  so any RLS misconfiguration on app_user_permissions can NOT silently
  *  demote the user to role='user'/sections=[]. Returns the true row, or
- *  null if the call fails / times out. */
+ *  null if the call fails / times out.
+ *
+ *  Usa `authFetch` (non un fetch grezzo) cosi' se l'access_token e' scaduto
+ *  la 401 di whoami innesca il refresh automatico col refresh_token e la
+ *  richiesta viene riprovata col token nuovo. Senza questo, dopo la scadenza
+ *  del token (~30-60 min) whoami tornava 401 → permessi vuoti → /no-access,
+ *  buttando fuori l'utente periodicamente. */
 async function fetchWhoamiViaServer(
-  accessToken: string,
   timeoutMs: number,
 ): Promise<{ user: { id: string; email: string | null }; permissions: AppUserPermissions } | null> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch('/api/auth/whoami', {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        Accept: 'application/json',
-      },
+    const res = await authFetch('/api/auth/whoami', {
+      headers: { Accept: 'application/json' },
       signal: controller.signal,
     });
     if (!res.ok) {
@@ -86,7 +89,7 @@ export function useCurrentUser() {
   const [data, setData] = useState<CurrentUser | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const fetchPermissions = useCallback(async (user: User, accessToken: string): Promise<AppUserPermissions> => {
+  const fetchPermissions = useCallback(async (user: User): Promise<AppUserPermissions> => {
     const fallback: AppUserPermissions = {
       user_id: user.id,
       role: 'user' as AppRole,
@@ -94,7 +97,7 @@ export function useCurrentUser() {
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
-    const result = await fetchWhoamiViaServer(accessToken, 4000);
+    const result = await fetchWhoamiViaServer(4000);
     return result?.permissions ?? fallback;
   }, []);
 
@@ -135,7 +138,7 @@ export function useCurrentUser() {
         } as unknown as User;
 
         console.info('[useCurrentUser] step 1: fetchPermissions via REST');
-        let permissions = await fetchPermissions(user, stored.access_token);
+        let permissions = await fetchPermissions(user);
         console.info(
           '[useCurrentUser] step 1 done',
           `role=${permissions.role} sections=${permissions.sections.length}`,
@@ -153,12 +156,9 @@ export function useCurrentUser() {
             console.info('[useCurrentUser] no perms → trying claim-master');
             const controller = new AbortController();
             const t = setTimeout(() => controller.abort(), 3000);
-            const res = await fetch('/api/admin/claim-master', {
+            const res = await authFetch('/api/admin/claim-master', {
               method: 'POST',
-              headers: {
-                Authorization: `Bearer ${stored.access_token}`,
-                Accept: 'application/json',
-              },
+              headers: { Accept: 'application/json' },
               signal: controller.signal,
             }).finally(() => clearTimeout(t));
             if (res.ok) {
