@@ -60,15 +60,28 @@ async function htmlToScreenshot(html: string, cacheKey: string): Promise<string 
   const lsKey = `ss_${cacheKey}`;
   try { const cached = localStorage.getItem(lsKey); if (cached) { screenshotCache.set(cacheKey, cached); return cached; } } catch {}
 
+  // Gli snapshot SPA clonati hanno il JS originale rimosso: senza lo
+  // "spa-rescue" il body resta nascosto e lo screenshot viene bianco.
+  // Iniettiamo il rescue e abilitiamo gli script nell'iframe offscreen,
+  // poi aspettiamo che il rescue riveli il contenuto prima dello scatto.
+  let renderHtml = html;
+  try {
+    const { injectInteractivityRescue } = await import('@/lib/spa-rescue');
+    renderHtml = injectInteractivityRescue(html);
+  } catch { /* fallback: HTML grezzo */ }
+
   return new Promise((resolve) => {
     const iframe = document.createElement('iframe');
     iframe.style.cssText = 'position:fixed;left:-9999px;top:0;width:1280px;height:900px;border:none;visibility:hidden';
     iframe.sandbox.add('allow-same-origin');
-    iframe.srcdoc = html;
+    iframe.sandbox.add('allow-scripts');
+    iframe.srcdoc = renderHtml;
     document.body.appendChild(iframe);
     iframe.onload = async () => {
       try {
-        await new Promise(r => setTimeout(r, 500));
+        // Il rescue fa retry fino a ~1600ms per le SPA che popolano il DOM
+        // via script differiti: aspettiamo abbastanza da catturarle rese.
+        await new Promise(r => setTimeout(r, 1900));
         const html2canvas = (await import('html2canvas')).default;
         const body = iframe.contentDocument?.body;
         if (!body) { document.body.removeChild(iframe); resolve(null); return; }
