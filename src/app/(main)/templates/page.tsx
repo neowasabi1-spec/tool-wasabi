@@ -6,7 +6,7 @@ import Header from '@/components/Header';
 import { useStore } from '@/store/useStore';
 import { BUILT_IN_PAGE_TYPE_OPTIONS, PAGE_TYPE_CATEGORIES, PageType, PageTypeOption, TemplateCategory, TEMPLATE_CATEGORY_OPTIONS, TemplateViewFormat, TEMPLATE_VIEW_FORMAT_OPTIONS, LIBRARY_TEMPLATES } from '@/types';
 import type { ArchivedFunnel } from '@/types/database';
-import { Plus, Trash2, Edit2, Save, X, FileCode, ExternalLink, Tag, Filter, Eye, EyeOff, Maximize2, Layers, HelpCircle, FolderPlus, Settings, Monitor, Smartphone, BookOpen, ChevronDown, ChevronRight, FolderOpen, Archive, CheckSquare, Square, Package, Sparkles, Send, Loader2, MessageCircle, Search } from 'lucide-react';
+import { Plus, Trash2, Edit2, Save, X, FileCode, ExternalLink, Tag, Filter, Eye, EyeOff, Maximize2, Layers, HelpCircle, FolderPlus, Settings, Monitor, Smartphone, BookOpen, ChevronDown, ChevronRight, FolderOpen, Archive, CheckSquare, Square, Package, Sparkles, Send, Loader2, MessageCircle, Search, Download } from 'lucide-react';
 import CachedScreenshot from '@/components/CachedScreenshot';
 import QuizArchiveView from './QuizArchiveView';
 
@@ -912,6 +912,7 @@ export default function TemplatesPage() {
                           {steps.map((s, i) => {
                             const sp: SelectedPage = { name: s.name, page_type: s.page_type, url_to_swipe: s.url_to_swipe, prompt: s.prompt || '', funnel_name: funnel.name };
                             const checked = isPageSelected(sp);
+                            const stepHtml = s.swiped_data?.html || s.cloned_data?.html || null;
                             return (
                               <div
                                 key={i}
@@ -922,7 +923,6 @@ export default function TemplatesPage() {
                               >
                                 <div className="relative w-full h-[180px] overflow-hidden bg-gray-50">
                                   {(() => {
-                                    const stepHtml = s.swiped_data?.html || s.cloned_data?.html || null;
                                     const isRealUrl = s.url_to_swipe && /^https?:\/\/.+\..+/.test(s.url_to_swipe);
                                     if (stepHtml || isRealUrl) {
                                       return <PageThumbnail url={s.url_to_swipe} alt={s.name} savedHtml={stepHtml} />;
@@ -962,6 +962,30 @@ export default function TemplatesPage() {
                                   <span className="inline-block px-2 py-0.5 rounded-full text-[10px] font-medium bg-blue-50 text-blue-700">{getPageTypeLabel(s.page_type)}</span>
                                   {s.product_name && (
                                     <p className="text-[10px] text-gray-400 mt-1 truncate">{s.product_name}</p>
+                                  )}
+                                  {stepHtml && (
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        const blob = new Blob([stepHtml], { type: 'text/html;charset=utf-8' });
+                                        const href = URL.createObjectURL(blob);
+                                        const a = document.createElement('a');
+                                        a.href = href;
+                                        const safe = `${funnel.name}-${s.step_index}-${s.name}`
+                                          .replace(/[^a-z0-9]+/gi, '_')
+                                          .replace(/^_+|_+$/g, '')
+                                          .slice(0, 80) || `step-${s.step_index}`;
+                                        a.download = `${safe}.html`;
+                                        document.body.appendChild(a);
+                                        a.click();
+                                        document.body.removeChild(a);
+                                        setTimeout(() => URL.revokeObjectURL(href), 1000);
+                                      }}
+                                      className="mt-2 w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg text-[11px] font-medium bg-gray-100 text-gray-700 hover:bg-blue-50 hover:text-blue-700 transition-colors"
+                                      title="Scarica l'HTML di questo step"
+                                    >
+                                      <Download className="w-3.5 h-3.5" /> Scarica HTML
+                                    </button>
                                   )}
                                 </div>
                               </div>
