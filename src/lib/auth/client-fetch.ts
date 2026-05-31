@@ -24,8 +24,6 @@
 
 'use client';
 
-import { supabase } from '@/lib/supabase';
-
 interface StoredSession {
   access_token: string;
   refresh_token: string;
@@ -54,40 +52,83 @@ function getAccessToken(): string | null {
 /**
  * Tenta refresh del token. Ritorna il nuovo access_token o null se il
  * refresh e' fallito (refresh_token revocato / scaduto). Non lancia mai.
+ *
+ * IMPORTANTE: facciamo una chiamata REST DIRETTA all'endpoint token di
+ * Supabase invece di usare `supabase.auth.refreshSession()` dell'SDK.
+ * L'SDK avvolge le operazioni auth in `navigator.locks`, e quella lock
+ * resta ORFANA dopo un redirect soft di Next (es. AuthGate fa
+ * router.replace('/login') senza full reload): ogni refresh successivo
+ * aspetterebbe quella lock per sempre → spinner infinito / utente bloccato
+ * fuori. Una fetch diretta non tocca navigator.locks e ha un timeout
+ * hard, quindi non puo' mai deadlockare. Vedi supabase-browser.ts.
  */
 async function tryRefreshToken(): Promise<string | null> {
   if (typeof window === 'undefined') return null;
   const stored = readStoredSession();
   if (!stored?.refresh_token) return null;
+
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
+  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim();
+  if (!url || !anonKey) {
+    console.warn('[authFetch] missing Supabase env — cannot refresh');
+    return null;
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 4000);
   try {
-    const { data, error } = await supabase.auth.refreshSession({
-      refresh_token: stored.refresh_token,
+    const res = await fetch(`${url}/auth/v1/token?grant_type=refresh_token`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        apikey: anonKey,
+        Authorization: `Bearer ${anonKey}`,
+      },
+      body: JSON.stringify({ refresh_token: stored.refresh_token }),
+      cache: 'no-store',
+      signal: controller.signal,
     });
-    if (error || !data?.session?.access_token || !data?.session?.refresh_token) {
-      console.warn('[authFetch] refreshSession failed:', error?.message || 'no session returned');
+    if (!res.ok) {
+      console.warn(`[authFetch] token refresh HTTP ${res.status}`);
       return null;
     }
-    // Persisti la nuova sessione nel nostro storage SOTTO LA STESSA CHIAVE
-    // che usano sia `useCurrentUser` (lettura iniziale) sia questo modulo.
+    const data = (await res.json()) as {
+      access_token?: string;
+      refresh_token?: string;
+      expires_at?: number;
+      user?: { id?: string; email?: string | null };
+    };
+    if (!data?.access_token || !data?.refresh_token) {
+      console.warn('[authFetch] token refresh: response missing tokens');
+      return null;
+    }
+    // Persisti la nuova sessione SOTTO LA STESSA CHIAVE usata da
+    // useCurrentUser (lettura iniziale) e da questo modulo.
     try {
       window.localStorage.setItem(
         'wasabi_session',
         JSON.stringify({
-          access_token: data.session.access_token,
-          refresh_token: data.session.refresh_token,
-          user_id: data.session.user.id,
-          email: data.session.user.email ?? stored.email,
-          expires_at: data.session.expires_at,
+          access_token: data.access_token,
+          refresh_token: data.refresh_token,
+          user_id: data.user?.id ?? stored.user_id,
+          email: data.user?.email ?? stored.email,
+          expires_at: data.expires_at,
         }),
       );
     } catch {
-      // localStorage pieno o disabilitato: non blocchiamo, almeno il nuovo
-      // token viene usato per questa richiesta.
+      // localStorage pieno/disabilitato: il nuovo token viene comunque usato
+      // per questa richiesta.
     }
-    return data.session.access_token;
+    return data.access_token;
   } catch (err) {
-    console.warn('[authFetch] refreshSession threw:', err);
+    if ((err as { name?: string })?.name === 'AbortError') {
+      console.warn('[authFetch] token refresh aborted (timeout)');
+    } else {
+      console.warn('[authFetch] token refresh threw:', err);
+    }
     return null;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
