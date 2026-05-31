@@ -32,61 +32,9 @@ export default function LoginPageClient() {
         if (error) throw error;
         setMagicLinkSent(true);
       } else {
-        // Login via REST DIRETTO all'endpoint token di Supabase invece di
-        // supabase.auth.signInWithPassword(). L'SDK avvolge le operazioni
-        // auth in navigator.locks: dopo una navigazione soft di Next la lock
-        // puo' restare orfana e signInWithPassword resta in attesa per
-        // sempre → pulsante "Sign In" con rotellina infinita. Una fetch
-        // diretta con timeout non tocca le lock e non puo' deadlockare.
-        const url = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
-        const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim();
-        if (!url || !anonKey) {
-          throw new Error(
-            'Variabili Supabase mancanti: imposta NEXT_PUBLIC_SUPABASE_URL e NEXT_PUBLIC_SUPABASE_ANON_KEY in Netlify, poi rifai deploy.',
-          );
-        }
-
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 15000);
-        let session: {
-          access_token?: string;
-          refresh_token?: string;
-          expires_at?: number;
-          user?: { id?: string; email?: string | null };
-        };
-        try {
-          const res = await fetch(`${url}/auth/v1/token?grant_type=password`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              apikey: anonKey,
-              Authorization: `Bearer ${anonKey}`,
-            },
-            body: JSON.stringify({ email, password }),
-            cache: 'no-store',
-            signal: controller.signal,
-          });
-          const payload = await res.json().catch(() => ({}));
-          if (!res.ok) {
-            const msg =
-              (payload as { error_description?: string; msg?: string; error?: string })
-                ?.error_description ||
-              (payload as { msg?: string })?.msg ||
-              (payload as { error?: string })?.error ||
-              'Email o password non corretti.';
-            throw new Error(msg);
-          }
-          session = payload as typeof session;
-        } catch (e) {
-          if ((e as { name?: string })?.name === 'AbortError') {
-            throw new Error('Timeout durante il login. Controlla la connessione e riprova.');
-          }
-          throw e;
-        } finally {
-          clearTimeout(timer);
-        }
-
-        if (!session?.access_token || !session?.refresh_token) {
+        const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+        if (error) throw error;
+        if (!data?.session?.access_token || !data?.session?.refresh_token) {
           throw new Error(
             'Login riuscito ma la sessione non è stata creata. Controlla che il browser permetta localStorage per questo dominio.',
           );
@@ -94,14 +42,15 @@ export default function LoginPageClient() {
         // Save the session under OUR OWN key so we don't depend on the
         // SDK's internal storage logic (which has been flaky across
         // Next.js soft navigations / multiple tabs / locked refreshes).
-        // useCurrentUser reads this same key on mount.
+        // useCurrentUser reads this same key on mount and rehydrates
+        // the SDK via `supabase.auth.setSession()`.
         try {
           localStorage.setItem('wasabi_session', JSON.stringify({
-            access_token: session.access_token,
-            refresh_token: session.refresh_token,
-            user_id: session.user?.id,
-            email: session.user?.email,
-            expires_at: session.expires_at,
+            access_token: data.session.access_token,
+            refresh_token: data.session.refresh_token,
+            user_id: data.session.user.id,
+            email: data.session.user.email,
+            expires_at: data.session.expires_at,
           }));
         } catch {
           throw new Error(
@@ -109,8 +58,6 @@ export default function LoginPageClient() {
           );
         }
         const redirect = new URLSearchParams(window.location.search).get('redirect') || '/';
-        // Full reload (non soft nav): rigenera il documento e libera
-        // qualsiasi navigator.lock orfana lasciata da una sessione bloccata.
         window.location.href = redirect;
       }
     } catch (err) {
