@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { flushSync } from 'react-dom';
 import { useSearchParams, useRouter } from 'next/navigation';
 import Header from '@/components/Header';
 import { useStore } from '@/store/useStore';
@@ -1218,75 +1219,150 @@ export default function FrontEndFunnel() {
       };
     }));
 
-    // Netlify/AWS Lambda impone un limite HARD di ~6MB sul body di UNA singola
-    // richiesta (vale anche col piano a pagamento: è un limite di Lambda, non
-    // del piano Netlify). Mandare N pagine clonate con l'HTML completo in un
-    // solo POST sfora facilmente → "Internal Error. ID: ...". Strategia:
-    //   1) creiamo TUTTI gli step SENZA result_content → body minuscolo, 1 POST
-    //      (replace:true riallinea il funnel invece di accodare duplicati).
-    //   2) carichiamo l'HTML pesante con una PATCH separata per step: una sola
-    //      pagina per richiesta sta ampiamente sotto i 6MB.
-    const lightSteps = steps.map((s) => ({ ...s, result_content: null }));
-    const res = await fetch(`/api/projecthub/projects/${projectId}/funnel-steps`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ steps: lightSteps, replace: true }),
-    });
-    if (!res.ok) {
-      const txt = await res.text().catch(() => '');
-      throw new Error(txt || `Errore ${res.status}`);
-    }
-    const created = await res.json();
+    // ── Salvataggio NON distruttivo (merge per identità) ──────────────
+    // PRIMA mandavamo `replace: true`, che CANCELLAVA tutti gli step del
+    // progetto prima di reinserire: salvando nuove pagine si perdevano
+    // quelle già presenti. Ora facciamo un MERGE per identità
+    // (page_name + url):
+    //   • pagine già presenti  → AGGIORNATE (PATCH, result_content all'ultima
+    //     versione editata);
+    //   • pagine nuove          → AGGIUNTE in coda (POST replace:false).
+    // Nessuno step esistente viene mai eliminato.
+    //
+    // Netlify/AWS Lambda impone ~6MB sul body di UNA richiesta (limite di
+    // Lambda, non del piano): per questo l'HTML pesante (result_content)
+    // viaggia sempre con PATCH separate, una pagina per richiesta.
+    const norm = (s: string) => (s || '').trim().toLowerCase();
+    const keyOf = (pn: string, u: string) => `${norm(pn)}|||${norm(u)}`;
 
-    // Step 2: HTML pesante caricato una pagina alla volta (sotto 6MB/richiesta).
-    if (Array.isArray(created)) {
-      const failed: string[] = [];
-      for (const row of created as Array<{ id?: number; step_number?: number }>) {
-        const idx = (row.step_number || 0) - 1;
-        const html = steps[idx]?.result_content;
-        if (!row.id || !html) continue;
-        try {
-          const pr = await fetch(
-            `/api/projecthub/projects/${projectId}/funnel-steps/${row.id}`,
-            {
-              method: 'PATCH',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ result_content: html }),
-            },
-          );
-          if (!pr.ok) failed.push(steps[idx]?.page_name || `Step ${idx + 1}`);
-        } catch {
-          failed.push(steps[idx]?.page_name || `Step ${idx + 1}`);
+    // Leggo gli step già presenti nel progetto per decidere update vs insert.
+    let existingSteps: Array<{ id: number; step_number: number; page_name: string; url: string }> = [];
+    try {
+      const exRes = await fetch(`/api/projecthub/projects/${projectId}/funnel-steps`);
+      if (exRes.ok) {
+        const rows = await exRes.json();
+        if (Array.isArray(rows)) existingSteps = rows;
+      }
+    } catch { /* se non riesco a leggere, tratto tutto come nuovo (append) */ }
+
+    const existingByKey = new Map<string, { id: number; step_number: number }>();
+    for (const r of existingSteps) {
+      existingByKey.set(keyOf(r.page_name, r.url), { id: r.id, step_number: r.step_number });
+    }
+    let maxStep = existingSteps.reduce((m, r) => Math.max(m, r.step_number || 0), 0);
+
+    type StepPayload = (typeof steps)[number];
+    const toUpdate: Array<{ id: number; pageIdx: number; step: StepPayload }> = [];
+    const toInsert: Array<{ assignedStep: number; pageIdx: number; step: StepPayload }> = [];
+    steps.forEach((s, idx) => {
+      const match = existingByKey.get(keyOf(s.page_name, s.url));
+      if (match) {
+        toUpdate.push({ id: match.id, pageIdx: idx, step: s });
+      } else {
+        maxStep += 1;
+        toInsert.push({ assignedStep: maxStep, pageIdx: idx, step: { ...s, step_number: maxStep } });
+      }
+    });
+
+    // pageIdx → stepId (nuovo o aggiornato) per l'auto-sync finale.
+    const stepIdByPageIdx = new Map<number, number>();
+    const failedHtml: string[] = [];
+
+    // 1) INSERT delle pagine NUOVE (append). Body leggero (result_content:null);
+    //    l'HTML pesante arriva dopo via PATCH, una pagina per richiesta.
+    if (toInsert.length) {
+      const lightInsert = toInsert.map((t) => ({ ...t.step, result_content: null }));
+      const res = await fetch(`/api/projecthub/projects/${projectId}/funnel-steps`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ steps: lightInsert, replace: false }),
+      });
+      if (!res.ok) {
+        const txt = await res.text().catch(() => '');
+        throw new Error(txt || `Errore ${res.status}`);
+      }
+      const created = await res.json();
+      if (Array.isArray(created)) {
+        for (const row of created as Array<{ id?: number; step_number?: number }>) {
+          const ins = toInsert.find((t) => t.assignedStep === row.step_number);
+          if (!ins || !row.id) continue;
+          stepIdByPageIdx.set(ins.pageIdx, row.id);
+          const html = ins.step.result_content;
+          if (!html) continue;
+          try {
+            const pr = await fetch(
+              `/api/projecthub/projects/${projectId}/funnel-steps/${row.id}`,
+              {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ result_content: html }),
+              },
+            );
+            if (!pr.ok) failedHtml.push(ins.step.page_name || `Step ${row.step_number}`);
+          } catch {
+            failedHtml.push(ins.step.page_name || `Step ${row.step_number}`);
+          }
         }
       }
-      if (failed.length) {
-        throw new Error(
-          `Step creati, ma l'HTML non è stato salvato per: ${failed.join(', ')} ` +
-          `(la singola pagina supera ~6MB).`,
+    }
+
+    // 2) UPDATE delle pagine GIÀ presenti: 1 PATCH per step (campi leggeri +
+    //    result_content). Non sovrascrivo con stringhe vuote i campi già
+    //    compilati nel progetto: includo solo i valori valorizzati; status e
+    //    result_content vengono sempre riallineati all'ultima versione.
+    for (const u of toUpdate) {
+      const s = u.step;
+      stepIdByPageIdx.set(u.pageIdx, u.id);
+      const patch: Record<string, unknown> = {
+        status: s.status,
+        result_content: s.result_content ?? null,
+      };
+      if (s.page_name) patch.page_name = s.page_name;
+      if (s.step_type) patch.step_type = s.step_type;
+      if (s.template_name) patch.template_name = s.template_name;
+      if (s.url) patch.url = s.url;
+      if (s.product) patch.product = s.product;
+      if (s.prompt_notes) patch.prompt_notes = s.prompt_notes;
+      if (s.feedback) patch.feedback = s.feedback;
+      try {
+        const pr = await fetch(
+          `/api/projecthub/projects/${projectId}/funnel-steps/${u.id}`,
+          {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(patch),
+          },
         );
+        if (!pr.ok) failedHtml.push(s.page_name || `Step ${u.id}`);
+      } catch {
+        failedHtml.push(s.page_name || `Step ${u.id}`);
       }
     }
 
-    // Auto-sync: collega ogni pagina del builder allo step creato (per
-    // step_number = indice+1), così un successivo Save nel Visual Editor
-    // potrà aggiornare da solo il result_content dello step del progetto.
+    if (failedHtml.length) {
+      throw new Error(
+        `Salvataggio parziale: l'HTML non è stato salvato per: ${failedHtml.join(', ')} ` +
+        `(la singola pagina supera ~6MB).`,
+      );
+    }
+
+    // Auto-sync: collega ogni pagina del builder allo step (nuovo o
+    // aggiornato), così un Save successivo nel Visual Editor potrà aggiornare
+    // da solo il result_content dello step del progetto.
     try {
-      if (Array.isArray(created)) {
-        const links = (created as Array<{ id?: number; step_number?: number }>)
-          .map((row) => {
-            const idx = (row.step_number || 0) - 1;
-            const page = pages[idx];
-            return page && row.id
-              ? { pageId: page.id, projectId, stepId: row.id }
-              : null;
-          })
-          .filter((x): x is { pageId: string; projectId: string; stepId: number } => !!x);
+      const links = Array.from(stepIdByPageIdx.entries())
+        .map(([idx, stepId]) => {
+          const page = pages[idx];
+          return page ? { pageId: page.id, projectId, stepId } : null;
+        })
+        .filter((x): x is { pageId: string; projectId: string; stepId: number } => !!x);
+      if (links.length) {
         const { setFunnelStepLinks } = await import('@/lib/funnel-step-map');
         setFunnelStepLinks(links);
       }
     } catch { /* best-effort: l'auto-sync è opzionale */ }
 
-    return created;
+    return { added: toInsert.length, updated: toUpdate.length };
   };
 
   // Persiste l'HTML editato nel Visual Editor sulla pagina corrente (memoria +
@@ -1397,6 +1473,13 @@ export default function FrontEndFunnel() {
     errors: number;
   } | null>(null);
   const cloneAllCancelRef = useRef(false);
+
+  // Ref alla versione più recente di handleClone (definita più sotto). Lo
+  // dichiariamo qui in alto così runSwipeAll può referenziarlo senza
+  // "use before declaration". L'assegnazione avviene dopo handleClone.
+  const handleCloneRef = useRef<
+    ((opts?: { silent?: boolean }) => Promise<{ ok: boolean; error?: string }>) | null
+  >(null);
 
   // ── Brief helper ────────────────────────────────────────────────
   // Il brief di un progetto puo' stare in DUE posti diversi:
@@ -3214,27 +3297,26 @@ export default function FrontEndFunnel() {
     });
     pushSwipeLog('info', `Swipe All start \u2014 ${eligible.length} pages in queue`);
 
-    const DEFAULT_USER_ID = '00000000-0000-0000-0000-000000000001';
-    const SB_MAX_BATCHES = 400;
-    const funnelNarrativeBlocks: string[] = [];
-
+    // ── Swipe All = loop del "Riscrivi" manuale ───────────────────────
+    // Per ogni pagina impostiamo lo stato ESATTAMENTE come fa openCloneModal
+    // (ma in modalità 'rewrite') in modo SINCRONO via flushSync, poi
+    // invochiamo la STESSA funzione del pulsante manuale (handleClone, in
+    // modalità silenziosa). Quando una pagina è completata parte la
+    // successiva — identico a farlo a mano, ma in sequenza. Niente più
+    // orchestratore separato che impilava brief + research + funnel_context
+    // in un'unica richiesta Claude (causa dell'errore "prompt too long").
     for (let i = 0; i < eligible.length; i++) {
       if (swipeAllCancelRef.current) break;
       const page = eligible[i];
       const project = (projects || []).find((p) => p.id === page.productId);
-      const url = page.urlToSwipe || '';
       const pageName = page.name || `Step ${i + 1}`;
 
       setSwipeAllJob((s) =>
         s
-          ? { ...s, currentIndex: i + 1, currentPageName: pageName, currentStep: 'cloning', batchInfo: '' }
+          ? { ...s, currentIndex: i + 1, currentPageName: pageName, currentStep: 'rewriting', batchInfo: '' }
           : s
       );
-      pushSwipeLog('info', `\u25b6 Page ${i + 1}/${eligible.length} \u2014 starting clone`, pageName);
-      updateFunnelPage(page.id, {
-        swipeStatus: 'in_progress',
-        swipeResult: `Swipe All ${i + 1}/${eligible.length} — Cloning...`,
-      });
+      pushSwipeLog('info', `\u25b6 Pagina ${i + 1}/${eligible.length} \u2014 riscrittura (come manuale)`, pageName);
 
       if (!project) {
         const msg = `Project non trovato per la pagina (productId=${page.productId})`;
@@ -3242,235 +3324,34 @@ export default function FrontEndFunnel() {
         setSwipeAllJob((s) =>
           s ? { ...s, errors: [...s.errors, { pageId: page.id, pageName, message: msg }] } : s
         );
+        pushSwipeLog('error', `\u2717 ${msg}`, pageName);
         continue;
       }
 
-      try {
-        // === Step 1: clone identical (or reuse existing) ============
-        let html = page.clonedData?.html || page.swipedData?.html || '';
-        if (!html) {
-          const cloneRes = await fetch('/api/clone-funnel', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              url,
-              cloneMode: 'identical',
-              viewport: 'desktop',
-              keepScripts: true,
-            }),
-          });
-          const cloneData = await parseJsonResponseOrThrow<{ content?: string; error?: string }>(
-            cloneRes,
-            '[swipe-all clone]'
-          );
-          if (!cloneRes.ok || cloneData.error) {
-            throw new Error(cloneData.error || 'Clone fallito');
-          }
-          html = sanitizeClonedHtml(cloneData.content || '', url, { keepScripts: true });
-        }
-        if (swipeAllCancelRef.current) break;
-        pushSwipeLog('success', `\u2713 Cloned: ${(html.length / 1024).toFixed(1)} KB of HTML`, pageName);
-
-        // === Step 2: rewrite via Edge function ======================
-        setSwipeAllJob((s) => (s ? { ...s, currentStep: 'rewriting', batchInfo: 'estrazione testi…' } : s));
-        pushSwipeLog('info', '\u2192 Extracting texts to rewrite\u2026', pageName);
-        updateFunnelPage(page.id, {
-          swipeStatus: 'in_progress',
-          swipeResult: `Swipe All ${i + 1}/${eligible.length} — Estrazione testi...`,
+      const researchText = extractSectionContent(project.marketResearch);
+      flushSync(() => {
+        setCloneConfig({
+          productName: project.name || '',
+          productDescription: buildProjectContext(project),
+          framework: '',
+          target: '',
+          customPrompt: page.prompt || '',
+          language: '',
+          targetLanguage: 'Auto (rileva dalla pagina)',
+          useOpenClaw: false,
+          brief: getProjectBriefText(project),
+          marketResearch: researchText.trim(),
         });
+        setCloneMode('rewrite');
+        setCloneModal({ isOpen: false, pageId: page.id, pageName: page.name, url: page.urlToSwipe || '' });
+      });
 
-        const funnelContextStr = funnelNarrativeBlocks.length
-          ? [
-              `Funnel position of CURRENT page: step ${i + 1}/${eligible.length} — ${pageName}${
-                page.pageType ? ` (${page.pageType})` : ''
-              }.`,
-              '',
-              'Pages already rewritten in this same funnel (keep voice, angle, big promise, pain point and CTA logic CONSISTENT with these — do not contradict, do not restart the argument from scratch):',
-              '',
-              ...funnelNarrativeBlocks,
-            ].join('\n')
-          : '';
-
-        const briefStr = getProjectBriefText(project);
-        // marketResearch is now a multi-file blob: { files, notes, content }.
-        // We feed Claude the pre-built `content` (concatenated file text +
-        // notes) so the prompt stays human-readable and we don't ship raw
-        // JSON/files metadata into the LLM context.
-        const researchStr = extractSectionContent(project.marketResearch);
-
-        // Smart routing payload. The proxy uses these (when present) to:
-        //   1. Pick the right copywriting KB Tier 2 for this pageType
-        //   2. Select only the brief/research files that match this pageType
-        //      (always-include foundational docs + page-type-specific docs)
-        // If either is missing, the proxy falls back to brief/market_research.
-        const routingPayload = {
-          pageType: page.pageType || 'other',
-          brief_files: project.briefData?.files ?? [],
-          brief_notes: project.briefData?.notes ?? '',
-          research_files: project.marketResearchData?.files ?? [],
-          research_notes: project.marketResearchData?.notes ?? '',
-        };
-
-        const SUPABASE_FN_URL = '/api/funnel-swap-proxy';
-
-        const extractRes = await fetch(SUPABASE_FN_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            phase: 'extract',
-            url,
-            cloneMode: 'rewrite',
-            productName: project.name,
-            productDescription: project.description || '',
-            framework: '',
-            target: '',
-            customPrompt: '',
-            targetLanguage: detectPageLanguage(url, html),
-            userId: DEFAULT_USER_ID,
-            renderedHtml: html,
-            brief: briefStr || undefined,
-            market_research: researchStr || undefined,
-            funnel_context: funnelContextStr || undefined,
-            ...routingPayload,
-          }),
-        });
-        const extractData = await extractRes.json();
-        if (!extractRes.ok || extractData.error) {
-          throw new Error(extractData.error || extractData.details || 'Extract fallito');
-        }
-        if (!extractData.jobId) throw new Error('Extract: nessun jobId');
-
-        const sbJobId = extractData.jobId as string;
-        const sbTotal = (extractData.totalTexts as number) || 0;
-        pushSwipeLog('success', `\u2713 ${sbTotal} texts extracted \u2014 sending to Claude`, pageName);
-        let sbBatch = 0;
-        let sbProcessed = 0;
-        let sbFinalHtml = '';
-        let sbReplacements = 0;
-
-        while (sbBatch < SB_MAX_BATCHES) {
-          if (swipeAllCancelRef.current) break;
-          const { res: procRes, raw } = await fetchWithRetry(
-            SUPABASE_FN_URL,
-            {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                phase: 'process',
-                jobId: sbJobId,
-                cloneMode: 'rewrite',
-                batchNumber: sbBatch,
-                userId: DEFAULT_USER_ID,
-                brief: briefStr || undefined,
-                market_research: researchStr || undefined,
-                funnel_context: funnelContextStr || undefined,
-                ...routingPayload,
-              }),
-            },
-            { retries: 2, baseDelayMs: 2000, label: `swipeall-proc-${i}-${sbBatch}` },
-          );
-          let procData: {
-            success?: boolean;
-            phase?: string;
-            jobId?: string;
-            content?: string;
-            batchProcessed?: number;
-            remainingTexts?: number;
-            continue?: boolean;
-            replacements?: number;
-            error?: string;
-            rewrites?: Array<{ original?: string; rewritten?: string }>;
-          };
-          try {
-            procData = raw ? JSON.parse(raw) : {};
-          } catch {
-            throw new Error(`Process batch ${sbBatch} non-JSON (${procRes.status}): ${raw.substring(0, 300)}`);
-          }
-          if (!procRes.ok || procData.error) {
-            throw new Error(procData.error || `Process batch ${sbBatch} HTTP ${procRes.status}`);
-          }
-
-          // Push the per-batch (original → rewritten) preview pairs into
-          // the live rewrite stream so the cinematic overlay can show the
-          // actual copy changes as they happen. Works for both 'process'
-          // (intermediate) and 'completed' (final batch) responses.
-          pushRewrites(procData.rewrites, pageName);
-
-          if (procData.phase === 'completed' && procData.content) {
-            sbFinalHtml = procData.content;
-            sbReplacements = procData.replacements || 0;
-            break;
-          }
-
-          const justRewritten = procData.batchProcessed || 0;
-          sbProcessed += justRewritten;
-          const batchInfo = `batch ${sbBatch + 1} (${sbProcessed}/${sbTotal})`;
-          setSwipeAllJob((s) => (s ? { ...s, batchInfo } : s));
-          updateFunnelPage(page.id, {
-            swipeStatus: 'in_progress',
-            swipeResult: `Swipe All ${i + 1}/${eligible.length} — ${batchInfo}`,
-          });
-          if (justRewritten > 0) {
-            pushSwipeLog(
-              'rewrite',
-              `\u270d Batch ${sbBatch + 1}: rewrote ${justRewritten} texts (${sbProcessed}/${sbTotal})`,
-              pageName,
-            );
-          }
-          if (!procData.continue && !procData.remainingTexts) break;
-          sbBatch++;
-        }
-
-        if (swipeAllCancelRef.current) break;
-        if (!sbFinalHtml) throw new Error('Edge function non ha restituito HTML completato');
-
-        updateFunnelPage(page.id, {
-          swipeStatus: 'completed',
-          swipeResult: `Rewrite OK (${sbReplacements} sostituzioni)`,
-          clonedData: {
-            html: sbFinalHtml,
-            mobileHtml: page.clonedData?.mobileHtml,
-            title: page.clonedData?.title || pageName,
-            method_used: 'rewrite',
-            content_length: sbFinalHtml.length,
-            duration_seconds: 0,
-            cloned_at: new Date(),
-          },
-        });
-        pushSwipeLog('success', `\u2713 Rewrite complete: ${sbReplacements} replacements applied`, pageName);
-
-        // === Step 3: extract narrative for next pages ===============
-        setSwipeAllJob((s) =>
-          s ? { ...s, currentStep: 'narrative', batchInfo: 'analisi narrative…' } : s
-        );
-        pushSwipeLog('info', '\u2192 Extracting narrative for funnel coherence\u2026', pageName);
-        try {
-          const narrativeRes = await fetch('/api/swipe-all/extract-narrative', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              html: sbFinalHtml,
-              pageName,
-              pageType: page.pageType || '',
-              stepIndex: i + 1,
-              totalSteps: eligible.length,
-            }),
-          });
-          const narrativeData = await narrativeRes.json();
-          if (narrativeData.ok && typeof narrativeData.blockText === 'string') {
-            funnelNarrativeBlocks.push(narrativeData.blockText);
-          }
-        } catch {
-          /* narrative extraction is best-effort: a failure here does not
-             block the rest of the swipe-all run, the next pages just won't
-             get this page's summary in their context. */
-        }
-
+      const res = await handleCloneRef.current?.({ silent: true });
+      if (res?.ok) {
         setSwipeAllJob((s) => (s ? { ...s, completed: s.completed + 1 } : s));
-        pushSwipeLog('success', `\u2713\u2713 Page done`, pageName);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : 'Errore sconosciuto';
-        updateFunnelPage(page.id, { swipeStatus: 'failed', swipeResult: `Swipe All: ${msg}` });
+        pushSwipeLog('success', `\u2713\u2713 Pagina completata`, pageName);
+      } else {
+        const msg = res?.error || 'Riscrittura fallita';
         setSwipeAllJob((s) =>
           s ? { ...s, errors: [...s.errors, { pageId: page.id, pageName, message: msg }] } : s
         );
@@ -3482,7 +3363,7 @@ export default function FrontEndFunnel() {
       s ? { ...s, isRunning: false, currentStep: 'idle', batchInfo: '' } : s
     );
     pushSwipeLog('info', '\u25fc Swipe All finished');
-  }, [funnelPages, projects, updateFunnelPage, pushSwipeLog, pushRewrites, resetSwipeLog, runSwipeAllViaOpenclaw]);
+  }, [funnelPages, projects, updateFunnelPage, pushSwipeLog, resetSwipeLog, runSwipeAllViaOpenclaw]);
 
   const cancelSwipeAll = useCallback(() => {
     swipeAllCancelRef.current = true;
@@ -3594,7 +3475,14 @@ export default function FrontEndFunnel() {
     pushSwipeLog('info', '\u25fc Clona All finished');
   }, [funnelPages, cloneMobile, resetSwipeLog, pushSwipeLog, updateFunnelPage]);
 
-  const handleClone = async () => {
+  const handleClone = async (opts?: { silent?: boolean }) => {
+    // `silent` = invocazione programmatica (es. dal loop "Swipe All").
+    // In quel caso NON apriamo il modal di anteprima ad ogni pagina, non
+    // resettiamo il log (vogliamo un log continuo) e non mostriamo il
+    // debug modal del worker: il flusso deve scorrere senza interruzioni,
+    // esattamente come se l'utente cliccasse "Riscrivi" su ogni riga.
+    const silent = opts?.silent === true;
+    let cloneResult: { ok: boolean; error?: string } = { ok: true };
     const pageId = cloneModal.pageId;
     const url = cloneModal.url;
     const pageName = cloneModal.pageName;
@@ -3605,7 +3493,7 @@ export default function FrontEndFunnel() {
     // Reset the live activity log + rewrite stream so the cinematic
     // overlay starts from a clean slate for this clone (otherwise it
     // would still show entries from the previous Swipe All / Rewrite).
-    resetSwipeLog();
+    if (!silent) resetSwipeLog();
 
     const currentPage = (funnelPages || []).find(p => p.id === pageId);
     // Riconoscimento quiz: privilegia l'URL del modal (che è quello effettivo
@@ -3877,7 +3765,7 @@ export default function FrontEndFunnel() {
           );
           const mrForDebug = (rowKnowledge.project as { market_research?: unknown } | null)
             ?.market_research;
-          const debugProceed = await confirmSwipeDebug(
+          const debugProceed = silent ? true : await confirmSwipeDebug(
             buildSwipeDebugInfo({
               agent: chosenAuditor as 'neo' | 'morfeo',
               agentLabel: AUDITOR_LABEL[chosenAuditor],
@@ -4505,18 +4393,20 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
           },
         });
 
-        setPreviewTab('preview');
-        setHtmlPreviewModal({
-          isOpen: true,
-          title: `Rewrite: ${pageName}`,
-          html: rewrittenHtml,
-          mobileHtml: '',
-          iframeSrc: '',
-          metadata: { method: 'claude-rewrite', length: rewrittenHtml.length, duration: 0 },
-          pageId,
-          sourceType: 'swiped',
-          sourceUrl: url,
-        });
+        if (!silent) {
+          setPreviewTab('preview');
+          setHtmlPreviewModal({
+            isOpen: true,
+            title: `Rewrite: ${pageName}`,
+            html: rewrittenHtml,
+            mobileHtml: '',
+            iframeSrc: '',
+            metadata: { method: 'claude-rewrite', length: rewrittenHtml.length, duration: 0 },
+            pageId,
+            sourceType: 'swiped',
+            sourceUrl: url,
+          });
+        }
 
       } else if (mode === 'translate') {
         // Translate mode: need clonedData HTML first
@@ -4675,28 +4565,39 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
         });
         void saveHtmlBlob(pageId, 'swipedData', translatedHtml);
 
-        setHtmlPreviewModal({
-          isOpen: true,
-          title: newTitle,
-          html: translatedHtml,
-          mobileHtml: '',
-          iframeSrc: '',
-          metadata: { method: 'translate-batch', length: translatedHtml.length, duration: durationMs },
-          pageId,
-          sourceType: 'swiped',
-          sourceUrl: url,
-        });
+        if (!silent) {
+          setHtmlPreviewModal({
+            isOpen: true,
+            title: newTitle,
+            html: translatedHtml,
+            mobileHtml: '',
+            iframeSrc: '',
+            metadata: { method: 'translate-batch', length: translatedHtml.length, duration: durationMs },
+            pageId,
+            sourceType: 'swiped',
+            sourceUrl: url,
+          });
+        }
       }
     } catch (error) {
       setCloneProgress(null);
+      const msg = error instanceof Error ? error.message : 'Clone error';
+      cloneResult = { ok: false, error: msg };
       updateFunnelPage(pageId, {
         swipeStatus: 'failed',
-        swipeResult: error instanceof Error ? error.message : 'Clone error',
+        swipeResult: msg,
       });
     } finally {
       setCloningIds(prev => prev.filter(i => i !== pageId));
     }
+    return cloneResult;
   };
+
+  // Mantiene il ref (dichiarato più in alto) puntato alla versione più
+  // recente di handleClone, così il loop "Swipe All" può invocarla DOPO
+  // aver impostato lo stato (cloneConfig/cloneModal/mode) via flushSync,
+  // leggendo sempre i valori freschi.
+  handleCloneRef.current = handleClone;
 
   const toggleSectionExpanded = (index: number) => {
     setExpandedSections(prev =>
@@ -8511,7 +8412,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                 Cancel
               </button>
               <button
-                onClick={handleClone}
+                onClick={() => handleClone()}
                 disabled={
                   (cloneMode === 'rewrite' && (!cloneConfig.productName || !cloneConfig.productDescription)) ||
                   (cloneMode === 'translate' && translateHtmlSource !== 'memory' && translateHtmlSource !== 'indexeddb')

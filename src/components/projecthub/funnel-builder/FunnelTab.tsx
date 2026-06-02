@@ -805,6 +805,61 @@ export function FunnelTab({ projectId }: { projectId: string }) {
     }
   }, [projectId, queryClient, toast]);
 
+  // Scarica l'HTML dello step come file. Rilegge SEMPRE l'ultima versione
+  // dal server (come fa ResultModal) così esporta la pagina con le ultime
+  // modifiche fatte nel Visual Editor; se il server non risponde usa la
+  // copia in cache (result_content) e, in ultima istanza, il file caricato.
+  const downloadStepHtml = useCallback(async (step: FunnelStep) => {
+    let html = step.result_content || "";
+    try {
+      const res = await fetch(`/api/projecthub/projects/${projectId}/funnel-steps`);
+      if (res.ok) {
+        const rows = await res.json();
+        if (Array.isArray(rows)) {
+          const fresh = rows.find((r: { id: number }) => r.id === step.id) as
+            | { result_content?: string | null }
+            | undefined;
+          if (fresh && typeof fresh.result_content === "string" && fresh.result_content.trim()) {
+            html = fresh.result_content;
+          }
+        }
+      }
+    } catch {
+      /* offline / errore: resta sulla copia in cache */
+    }
+    // Fallback: nessun result_content ma esiste un file HTML caricato.
+    if (!html.trim() && step.html_file_path) {
+      try {
+        const fileRes = await fetch(step.html_file_path);
+        if (fileRes.ok) html = await fileRes.text();
+      } catch {
+        /* fall through */
+      }
+    }
+    if (!html.trim()) {
+      toast({
+        title: "HTML non disponibile",
+        description: "Questo step non ha ancora contenuto da scaricare (esegui Clone/Rewrite o un'edit).",
+        variant: "destructive",
+      });
+      return;
+    }
+    const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+    const href = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = href;
+    const safe =
+      `${step.page_name || `step-${step.step_number}`}`
+        .replace(/[^a-z0-9]+/gi, "_")
+        .replace(/^_+|_+$/g, "")
+        .slice(0, 80) || "step";
+    a.download = `${safe}.html`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(href), 1000);
+  }, [projectId, toast]);
+
   const cleanAll = () => {
     if (!localSteps.length) return;
     if (!confirm("Eliminare tutti gli step?")) return;
@@ -1056,6 +1111,20 @@ export function FunnelTab({ projectId }: { projectId: string }) {
                         >
                           <Wand2 className="w-3 h-3" />
                           Editing
+                        </button>
+
+                        {/* Scarica HTML — esporta la pagina (con le ultime edit) */}
+                        <button
+                          onClick={() => downloadStepHtml(step)}
+                          disabled={!step.result_content && !step.html_file_path}
+                          title={
+                            step.result_content || step.html_file_path
+                              ? "Scarica HTML (ultima versione editata)"
+                              : "Nessun contenuto da scaricare"
+                          }
+                          className="p-1 rounded bg-sky-100 text-sky-700 hover:bg-sky-200 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                        >
+                          <ArrowDownToLine className="w-3.5 h-3.5" />
                         </button>
 
                         {/* Chat */}
