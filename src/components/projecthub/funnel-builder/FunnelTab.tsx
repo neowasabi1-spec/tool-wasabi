@@ -10,6 +10,7 @@ import {
 } from "@/lib/projecthub-api";
 import { useQueryClient } from "@tanstack/react-query";
 import VisualHtmlEditor from "@/components/VisualHtmlEditor";
+import { stripCompetitorTracking } from "@/lib/strip-tracking";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -704,6 +705,8 @@ export function FunnelTab({ projectId }: { projectId: string }) {
 
   const [localSteps, setLocalSteps] = useState<FunnelStep[]>([]);
   const [resultStep, setResultStep] = useState<FunnelStep | null>(null);
+  // Popup "Sanamento pagina" mostrato durante la pulizia tracker al download.
+  const [sanitizeMsg, setSanitizeMsg] = useState<{ phase: "working" | "done"; text: string } | null>(null);
   const [chatStep, setChatStep] = useState<FunnelStep | null>(null);
   const [editStep, setEditStep] = useState<FunnelStep | null>(null);
   const [domain, setDomain] = useState("");
@@ -844,7 +847,14 @@ export function FunnelTab({ projectId }: { projectId: string }) {
       });
       return;
     }
-    const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+
+    // Sanamento: rimuove i tracker del competitor (pixel, GTM, analytics)
+    // SOLO dal file scaricato. Mostriamo un popup durante la pulizia.
+    setSanitizeMsg({ phase: "working", text: "Sanamento pagina… rimozione tracker competitor" });
+    await new Promise((r) => setTimeout(r, 200));
+    const clean = stripCompetitorTracking(html);
+
+    const blob = new Blob([clean.html], { type: "text/html;charset=utf-8" });
     const href = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = href;
@@ -858,6 +868,14 @@ export function FunnelTab({ projectId }: { projectId: string }) {
     a.click();
     document.body.removeChild(a);
     setTimeout(() => URL.revokeObjectURL(href), 1000);
+
+    setSanitizeMsg({
+      phase: "done",
+      text: clean.removedCount
+        ? `Pagina sanata: rimossi ${clean.removedCount} tracker (${clean.categories.join(", ")})`
+        : "Nessun tracker rilevato — pagina già pulita",
+    });
+    setTimeout(() => setSanitizeMsg(null), 1800);
   }, [projectId, toast]);
 
   const cleanAll = () => {
@@ -1160,6 +1178,23 @@ export function FunnelTab({ projectId }: { projectId: string }) {
               })}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* Popup "Sanamento pagina" durante la pulizia tracker al download */}
+      {sanitizeMsg && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/40">
+          <div className="bg-background rounded-xl shadow-2xl border border-border px-6 py-5 max-w-sm w-[90%] text-center">
+            {sanitizeMsg.phase === "working" ? (
+              <RefreshCw className="w-8 h-8 text-primary mx-auto mb-3 animate-spin" />
+            ) : (
+              <Check className="w-8 h-8 text-green-600 mx-auto mb-3" />
+            )}
+            <p className="text-sm font-medium text-foreground">
+              {sanitizeMsg.phase === "working" ? "Sanamento pagina" : "Fatto"}
+            </p>
+            <p className="text-xs text-muted-foreground mt-1">{sanitizeMsg.text}</p>
+          </div>
         </div>
       )}
 

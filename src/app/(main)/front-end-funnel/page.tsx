@@ -1474,6 +1474,10 @@ export default function FrontEndFunnel() {
   } | null>(null);
   const cloneAllCancelRef = useRef(false);
 
+  // Popup "Sanamento pagina" mostrato durante la rimozione dei tracker
+  // competitor al download dell'HTML.
+  const [sanitizeMsg, setSanitizeMsg] = useState<{ phase: 'working' | 'done'; text: string } | null>(null);
+
   // Ref alla versione più recente di handleClone (definita più sotto). Lo
   // dichiariamo qui in alto così runSwipeAll può referenziarlo senza
   // "use before declaration". L'assegnazione avviene dopo handleClone.
@@ -6227,7 +6231,13 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                   alert('HTML non disponibile per questa pagina.\n\nEsegui Clone o Rewrite per generarlo.');
                                   return;
                                 }
-                                const fileBlob = new Blob([html], { type: 'text/html;charset=utf-8' });
+                                // Sanamento: rimuove i tracker del competitor
+                                // (pixel, GTM, analytics) SOLO dal file scaricato.
+                                setSanitizeMsg({ phase: 'working', text: 'Sanamento pagina… rimozione tracker competitor' });
+                                await new Promise((r) => setTimeout(r, 200));
+                                const { stripCompetitorTracking } = await import('@/lib/strip-tracking');
+                                const clean = stripCompetitorTracking(html);
+                                const fileBlob = new Blob([clean.html], { type: 'text/html;charset=utf-8' });
                                 const href = URL.createObjectURL(fileBlob);
                                 const a = document.createElement('a');
                                 a.href = href;
@@ -6240,6 +6250,13 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                 a.click();
                                 document.body.removeChild(a);
                                 setTimeout(() => URL.revokeObjectURL(href), 1000);
+                                setSanitizeMsg({
+                                  phase: 'done',
+                                  text: clean.removedCount
+                                    ? `Pagina sanata: rimossi ${clean.removedCount} tracker (${clean.categories.join(', ')})`
+                                    : 'Nessun tracker rilevato — pagina già pulita',
+                                });
+                                setTimeout(() => setSanitizeMsg(null), 1800);
                               }}
                               className="p-1 rounded bg-sky-100 text-sky-700 hover:bg-sky-200 transition-colors"
                               title="Scarica HTML"
@@ -8577,6 +8594,23 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
         );
       })()}
       {/* Save Funnel Modal */}
+      {/* Popup "Sanamento pagina": rimozione tracker competitor al download */}
+      {sanitizeMsg && (
+        <div className="fixed inset-0 z-[95] flex items-center justify-center bg-black/40">
+          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 px-6 py-5 max-w-sm w-[90%] mx-4 text-center">
+            {sanitizeMsg.phase === 'working' ? (
+              <Loader2 className="w-8 h-8 text-blue-600 mx-auto mb-3 animate-spin" />
+            ) : (
+              <CheckCircle className="w-8 h-8 text-green-600 mx-auto mb-3" />
+            )}
+            <p className="text-sm font-semibold text-gray-900">
+              {sanitizeMsg.phase === 'working' ? 'Sanamento pagina' : 'Fatto'}
+            </p>
+            <p className="text-xs text-gray-500 mt-1">{sanitizeMsg.text}</p>
+          </div>
+        </div>
+      )}
+
       {showSaveModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[90]">
           <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-md mx-4">

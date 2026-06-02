@@ -12,7 +12,7 @@ import {
   Smartphone, Monitor, Upload, Film, Paperclip,
   BookmarkPlus, Library, Tag, Clock, FileCode, Search,
   BookOpen, ArrowDownToLine, Eye as EyeIcon,
-  Link2, Link2Off,
+  Link2, Link2Off, ChevronDown,
 } from 'lucide-react';
 import { SavedSection, SECTION_TYPE_OPTIONS, OUTPUT_STACK_OPTIONS, type OutputStack } from '@/types';
 import { createClient } from '@supabase/supabase-js';
@@ -512,8 +512,36 @@ const EDITOR_SCRIPT = `
   window.addEventListener('message',function(e){
     if(!e.data||!e.data.type)return;var m=e.data;
     switch(m.type){
-      case 'cmd-exec':document.execCommand(m.command,false,m.value||null);sendHtml();
-        if(sel)window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');break;
+      case 'cmd-exec':{
+        // Formattazione robusta. Cliccando un pulsante della toolbar (che vive
+        // nel parent) l'iframe perde il focus e la selezione collassa, quindi
+        // document.execCommand non aveva nulla su cui agire ("a volte non fa il
+        // grassetto"). Qui: 1) prendiamo come target l'elemento in editing o,
+        // se non si sta editando, quello semplicemente selezionato; 2) lo
+        // rendiamo editabile e gli ridiamo il focus; 3) se la selezione non è
+        // più dentro al target, selezioniamo tutto il suo contenuto. Così
+        // bold/italic/underline/heading/align si applicano sempre.
+        var __ce=(editing&&editEl)?editEl:sel;
+        if(__ce){
+          var __wasEditing=!!(editing&&editEl&&editEl===__ce);
+          var __prevCE=__ce.getAttribute('contenteditable');
+          if(!__wasEditing){try{__ce.contentEditable='true';}catch(_e){}}
+          try{__ce.focus();}catch(_e2){}
+          var __s=window.getSelection?window.getSelection():null;
+          if(__s&&(!__s.rangeCount||__s.isCollapsed||(__s.anchorNode&&!__ce.contains(__s.anchorNode)))){
+            try{var __r=document.createRange();__r.selectNodeContents(__ce);__s.removeAllRanges();__s.addRange(__r);}catch(_e3){}
+          }
+          document.execCommand(m.command,false,m.value||null);
+          if(!__wasEditing){
+            if(__prevCE===null)__ce.removeAttribute('contenteditable');else __ce.contentEditable=__prevCE;
+          }
+        }else{
+          document.execCommand(m.command,false,m.value||null);
+        }
+        sendHtml();
+        if(sel)window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');
+        break;
+      }
       case 'cmd-set-style':if(sel){
         var _csKebab=String(m.property||'').replace(/[A-Z]/g,function(c){return '-'+c.toLowerCase();});
         if(_csKebab){
@@ -2495,6 +2523,9 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   const childImgUploadRef = useRef<HTMLInputElement>(null);
   const childImgsUploadRef = useRef<HTMLInputElement>(null);
   const childImgsUploadIndexRef = useRef<number>(-1);
+  // Pannello "Immagini nel blocco" come menu a tendina: con caroselli/gallery
+  // da decine di immagini la lista è lunghissima, quindi parte chiuso.
+  const [childImgsOpen, setChildImgsOpen] = useState(false);
 
   const handleMediaUpload = useCallback(async (file: File, target: 'image' | 'video') => {
     if (uploading) return;
@@ -4239,36 +4270,53 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                     ma qui le tocca tutte). */}
                 {el.childImgs && el.childImgs.length > 1 && (
                   <div className="p-3">
-                    <PropLabel icon={Image}>Immagini nel blocco ({el.childImgs.length})</PropLabel>
-                    <p className="text-[10px] text-slate-500 mb-2">Carosello/gallery: sostituisci ogni immagine singolarmente.</p>
+                    {/* Header cliccabile: apre/chiude la lista (menu a tendina).
+                        Con caroselli da decine di immagini la lista è lunga,
+                        così resta compatta finché non serve. */}
+                    <button
+                      type="button"
+                      onClick={() => setChildImgsOpen((v) => !v)}
+                      className="w-full flex items-center justify-between gap-2 mb-1"
+                    >
+                      <PropLabel icon={Image}>Immagini nel blocco ({el.childImgs.length})</PropLabel>
+                      <ChevronDown
+                        className={`h-4 w-4 text-slate-400 transition-transform flex-shrink-0 ${childImgsOpen ? 'rotate-180' : ''}`}
+                      />
+                    </button>
+                    <p className="text-[10px] text-slate-500 mb-2">
+                      Carosello/gallery: sostituisci ogni immagine singolarmente.
+                      {!childImgsOpen && ' Clicca per espandere.'}
+                    </p>
                     <input ref={childImgsUploadRef} type="file" accept="image/*,.gif,.webp,.avif,.svg" className="hidden"
                       onChange={(e) => { const f = e.target.files?.[0]; const idx = childImgsUploadIndexRef.current; if (f && idx >= 0) handleChildImgUploadAt(f, idx); e.target.value = ''; }} />
-                    <div className="space-y-2">
-                      {el.childImgs.map((ci, i) => (
-                        <div key={i} className="flex items-center gap-2 p-1.5 rounded-lg border border-slate-200 bg-slate-50">
-                          <div className="w-10 h-10 rounded bg-white border border-slate-200 overflow-hidden flex-shrink-0 flex items-center justify-center">
-                            {ci.src
-                              ? <img src={ci.src} alt="" className="w-full h-full object-cover" />
-                              : <Image className="h-4 w-4 text-slate-300" />}
+                    {childImgsOpen && (
+                      <div className="space-y-2 max-h-[420px] overflow-y-auto pr-0.5">
+                        {el.childImgs.map((ci, i) => (
+                          <div key={i} className="flex items-center gap-2 p-1.5 rounded-lg border border-slate-200 bg-slate-50">
+                            <div className="w-10 h-10 rounded bg-white border border-slate-200 overflow-hidden flex-shrink-0 flex items-center justify-center">
+                              {ci.src
+                                ? <img src={ci.src} alt="" className="w-full h-full object-cover" />
+                                : <Image className="h-4 w-4 text-slate-300" />}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <span className="text-[10px] text-slate-400 block">#{i + 1}</span>
+                              <input type="url" defaultValue={ci.src} key={ci.src} placeholder="Image URL"
+                                className="prop-input !py-1 !text-[11px]"
+                                onBlur={(e) => { if (e.target.value !== ci.src) setChildImgSrcAt(i, e.target.value); }}
+                                onKeyDown={(e) => { if (e.key === 'Enter') setChildImgSrcAt(i, (e.target as HTMLInputElement).value); }} />
+                            </div>
+                            <button
+                              onClick={() => { childImgsUploadIndexRef.current = i; childImgsUploadRef.current?.click(); }}
+                              disabled={uploading}
+                              title="Carica/sostituisci"
+                              className="flex-shrink-0 p-2 rounded-lg bg-blue-50 border border-blue-200 hover:bg-blue-100 transition-all text-blue-700 disabled:opacity-50"
+                            >
+                              {uploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
+                            </button>
                           </div>
-                          <div className="flex-1 min-w-0">
-                            <span className="text-[10px] text-slate-400 block">#{i + 1}</span>
-                            <input type="url" defaultValue={ci.src} key={ci.src} placeholder="Image URL"
-                              className="prop-input !py-1 !text-[11px]"
-                              onBlur={(e) => { if (e.target.value !== ci.src) setChildImgSrcAt(i, e.target.value); }}
-                              onKeyDown={(e) => { if (e.key === 'Enter') setChildImgSrcAt(i, (e.target as HTMLInputElement).value); }} />
-                          </div>
-                          <button
-                            onClick={() => { childImgsUploadIndexRef.current = i; childImgsUploadRef.current?.click(); }}
-                            disabled={uploading}
-                            title="Carica/sostituisci"
-                            className="flex-shrink-0 p-2 rounded-lg bg-blue-50 border border-blue-200 hover:bg-blue-100 transition-all text-blue-700 disabled:opacity-50"
-                          >
-                            {uploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
-                          </button>
-                        </div>
-                      ))}
-                    </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -6473,7 +6521,12 @@ function ToolBtn({ icon: Icon, title, onClick, danger }: {
   danger?: boolean;
 }) {
   return (
-    <button onClick={onClick} title={title}
+    // onMouseDown→preventDefault: cliccando il pulsante NON spostiamo il
+    // focus/selezione fuori dall'editor. Senza questo, mousedown rubava il
+    // focus all'elemento in editing nell'iframe → la selezione collassava e
+    // execCommand('bold'/'italic'/…) non aveva nulla su cui agire ("a volte
+    // non fa il grassetto").
+    <button onClick={onClick} onMouseDown={(e) => e.preventDefault()} title={title}
       className={`p-1.5 rounded-md transition-colors ${
         danger
           ? 'text-slate-500 hover:bg-red-50 hover:text-red-600'
