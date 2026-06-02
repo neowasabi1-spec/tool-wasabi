@@ -3169,10 +3169,15 @@ export default function FrontEndFunnel() {
    *
    * Pagine eligibili = hanno urlToSwipe + productId valido. */
   const runSwipeAll = useCallback(async () => {
-    // Branch globale: se l'utente ha scelto Neo/Morfeo, delega
-    // all'orchestratore worker-driven (no Netlify timeout, no quota
-    // Anthropic). Altrimenti procede con la versione Claude esistente.
-    if (auditorRef.current !== 'claude') {
+    // Decisione di prodotto: la selezione Neo/Morfeo/Claude resta visibile
+    // nell'UI, ma lo Swipe All riscrive SEMPRE con Claude (come lo Swipe
+    // singolo). È più affidabile, riusa l'HTML già clonato in memoria e non
+    // dipende dal worker locale/Playwright — che falliva con
+    // ERR_NAME_NOT_RESOLVED sulle pagine caricate a mano (uploaded.local).
+    // L'orchestratore worker resta disponibile dietro questo flag per usi
+    // futuri, ma non è più il percorso di default.
+    const USE_LOCAL_WORKER_FOR_SWIPE_ALL = false;
+    if (USE_LOCAL_WORKER_FOR_SWIPE_ALL && auditorRef.current !== 'claude') {
       await runSwipeAllViaOpenclaw(auditorRef.current);
       return;
     }
