@@ -6293,6 +6293,59 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                               <ShieldCheck className="w-3.5 h-3.5" />
                             )}
                           </button>
+                          {/* Download HTML Button — esporta l'HTML dello step.
+                              Stessa catena di fallback di "Vedi": server
+                              page_html → blob in memoria → htmlUrl → IndexedDB. */}
+                          {(page.swipedData || page.clonedData) && (
+                            <button
+                              onClick={async () => {
+                                const target: 'swipedData' | 'clonedData' = page.swipedData ? 'swipedData' : 'clonedData';
+                                const kind = target === 'swipedData' ? 'swiped' : 'cloned';
+                                const blob = (page.swipedData || page.clonedData) as { html?: string; htmlUrl?: string } | undefined;
+                                let html = '';
+                                try {
+                                  const { fetchHtmlFromStorage } = await import('@/lib/funnel-html-storage');
+                                  const base = `/api/funnel-html?pageId=${encodeURIComponent(page.id)}&kind=${kind}`;
+                                  html = (await fetchHtmlFromStorage(`${base}&variant=desktop`)) || '';
+                                } catch { /* fall through */ }
+                                if (!html && blob?.html) html = blob.html;
+                                if (!html && blob?.htmlUrl) {
+                                  try {
+                                    const { fetchHtmlFromStorage } = await import('@/lib/funnel-html-storage');
+                                    html = (await fetchHtmlFromStorage(blob.htmlUrl)) || '';
+                                  } catch { /* fall through */ }
+                                }
+                                if (!html) {
+                                  try {
+                                    const { loadHtmlBlob } = await import('@/lib/html-blob-store');
+                                    const idb = await loadHtmlBlob(page.id, target);
+                                    html = idb?.html || '';
+                                  } catch { /* fall through */ }
+                                }
+                                if (!html) {
+                                  alert('HTML non disponibile per questa pagina.\n\nEsegui Clone o Rewrite per generarlo.');
+                                  return;
+                                }
+                                const fileBlob = new Blob([html], { type: 'text/html;charset=utf-8' });
+                                const href = URL.createObjectURL(fileBlob);
+                                const a = document.createElement('a');
+                                a.href = href;
+                                const safe = `${page.name || 'step'}`
+                                  .replace(/[^a-z0-9]+/gi, '_')
+                                  .replace(/^_+|_+$/g, '')
+                                  .slice(0, 80) || 'step';
+                                a.download = `${safe}.html`;
+                                document.body.appendChild(a);
+                                a.click();
+                                document.body.removeChild(a);
+                                setTimeout(() => URL.revokeObjectURL(href), 1000);
+                              }}
+                              className="p-1 rounded bg-sky-100 text-sky-700 hover:bg-sky-200 transition-colors"
+                              title="Scarica HTML"
+                            >
+                              <Download className="w-3.5 h-3.5" />
+                            </button>
+                          )}
                           {/* Delete Button */}
                           <button
                             onClick={() => deleteFunnelPage(page.id)}
