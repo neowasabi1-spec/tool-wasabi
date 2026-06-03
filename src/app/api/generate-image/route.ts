@@ -37,6 +37,9 @@ interface BuildInputOpts {
    *  `imageUrl` nei modelli edit multi-immagine (Nano Banana 2 / GPT Image 2).
    *  Permette "metti il nostro prodotto al posto di quello nella sorgente". */
   secondaryImageUrl?: string;
+  /** Immagini aggiuntive (collage / più foto da combinare) per i modelli
+   *  edit multi-immagine. Si accodano a [imageUrl, secondaryImageUrl]. */
+  extraImageUrls?: string[];
   duration?: number;
 }
 
@@ -109,10 +112,10 @@ const MODELS: Record<string, ModelDef> = {
   'nano-banana-2-edit': {
     endpoint: 'fal-ai/nano-banana-2/edit',
     mediaType: 'image',
-    buildInput: ({ prompt, imageUrl, secondaryImageUrl }) => ({
+    buildInput: ({ prompt, imageUrl, secondaryImageUrl, extraImageUrls }) => ({
       prompt,
-      // Nano Banana 2 edit accetta piu' immagini: [sorgente, prodotto].
-      image_urls: [imageUrl, secondaryImageUrl].filter(Boolean) as string[],
+      // Nano Banana 2 edit accetta piu' immagini: [sorgente, prodotto, ...collage].
+      image_urls: [imageUrl, secondaryImageUrl, ...(extraImageUrls || [])].filter(Boolean) as string[],
       num_images: 1,
       output_format: 'png',
     }),
@@ -132,9 +135,9 @@ const MODELS: Record<string, ModelDef> = {
   'gpt-image-2-edit': {
     endpoint: 'openai/gpt-image-2/edit',
     mediaType: 'image',
-    buildInput: ({ prompt, imageUrl, secondaryImageUrl }) => ({
+    buildInput: ({ prompt, imageUrl, secondaryImageUrl, extraImageUrls }) => ({
       prompt,
-      image_urls: [imageUrl, secondaryImageUrl].filter(Boolean) as string[],
+      image_urls: [imageUrl, secondaryImageUrl, ...(extraImageUrls || [])].filter(Boolean) as string[],
       image_size: 'auto',
       quality: 'medium',
       num_images: 1,
@@ -378,6 +381,7 @@ export async function POST(req: NextRequest) {
     model?: string;
     imageUrl?: string;
     secondaryImageUrl?: string;
+    extraImageUrls?: string[];
     duration?: number;
     action?: 'submit' | 'poll';
     requestId?: string;
@@ -482,6 +486,7 @@ export async function POST(req: NextRequest) {
     aspectRatio,
     imageUrl: body.imageUrl,
     secondaryImageUrl: body.secondaryImageUrl,
+    extraImageUrls: body.extraImageUrls,
     duration: body.duration,
   });
 

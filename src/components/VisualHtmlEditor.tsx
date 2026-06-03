@@ -1832,6 +1832,10 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
    * secondaryImageUrl ai modelli edit multi-immagine (Nano Banana 2 / GPT). */
   const [aiProductImage, setAiProductImage] = useState<string>('');
   const [aiProductUploading, setAiProductUploading] = useState(false);
+  /* Immagini extra per il collage/edit multi-immagine (image2image): l'utente
+   * può aggiungerne quante vuole col pulsante "+". Passate come extraImageUrls. */
+  const [aiExtraImages, setAiExtraImages] = useState<string[]>([]);
+  const [aiExtraUploading, setAiExtraUploading] = useState(false);
 
   /* ── Prodotto selezionato dentro la modale (My Projects) ──
    * Inizializzato dal productId della pagina; l'utente può cambiarlo dal
@@ -2440,6 +2444,24 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     }
   }, [aiProductUploading]);
 
+  /* Upload di una o più immagini extra (collage) per l'edit multi-immagine. */
+  const handleAiExtraUpload = useCallback(async (files: FileList | File[]) => {
+    const list = Array.from(files);
+    if (!list.length || aiExtraUploading) return;
+    setAiExtraUploading(true);
+    setAiError('');
+    try {
+      for (const f of list) {
+        const url = await directSupabaseUpload(f);
+        setAiExtraImages((prev) => [...prev, url]);
+      }
+    } catch (err) {
+      setAiError(err instanceof Error ? `Upload fallito: ${err.message}` : 'Upload fallito');
+    } finally {
+      setAiExtraUploading(false);
+    }
+  }, [aiExtraUploading]);
+
   const handleAiGenerate = useCallback(async () => {
     if (aiGenerating) return;
     let finalPrompt = aiPrompt.trim();
@@ -2482,6 +2504,10 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
           // sorgente per sostituire il prodotto.
           secondaryImageUrl:
             aiMode === 'image2image' && aiProductImage ? aiProductImage : undefined,
+          // Collage / immagini extra: si accodano alla sorgente nei modelli
+          // edit multi-immagine (Nano Banana 2 / GPT Image 2).
+          extraImageUrls:
+            aiMode === 'image2image' && aiExtraImages.length ? aiExtraImages : undefined,
           duration:
             aiMode === 'image2video' || aiMode === 'text2video'
               ? aiVideoDuration
@@ -2578,6 +2604,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     aiStyle,
     aiSourceImage,
     aiProductImage,
+    aiExtraImages,
     aiVideoDuration,
     aiVideoLoop,
     aiGenerating,
@@ -2586,6 +2613,27 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     setAttr,
     sendToIframe,
   ]);
+
+  /* Default sorgente: quando si apre il modal su Modifica (image2image) o
+   * Anima (image2video) e non c'è ancora una sorgente, precompila con
+   * l'immagine della sezione/elemento selezionato (img, immagine nel blocco
+   * o background-image). L'utente può sempre sostituirla caricandone un'altra.
+   * Usiamo l'update funzionale (prev || cand) così non sovrascriviamo una
+   * scelta dell'utente e non re-iniettiamo dopo una rimozione manuale. */
+  useEffect(() => {
+    if (!showAiImagePopup) return;
+    if (aiMode !== 'image2video' && aiMode !== 'image2image') return;
+    const e = selectedElement;
+    if (!e) return;
+    const cand =
+      (e.tagName === 'img' ? e.src : '') ||
+      e.childImg?.src ||
+      (e.childImgs && e.childImgs[0]?.src) ||
+      e.childBg?.src ||
+      '';
+    if (!cand || !/^https?:\/\//.test(cand)) return;
+    setAiSourceImage((prev) => prev || cand);
+  }, [showAiImagePopup, aiMode, selectedElement]);
 
   /* ── Media Upload ── */
   const [uploading, setUploading] = useState(false);
@@ -4690,6 +4738,8 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                         // useful if the user immediately switches to Modifica/Anima.
                         const currentSrc = el.src;
                         setAiSourceImage(currentSrc && /^https?:\/\//.test(currentSrc) ? currentSrc : '');
+                        setAiProductImage('');
+                        setAiExtraImages([]);
                         sendToIframe({ type: 'cmd-get-context-text' });
                         setShowAiImagePopup(true);
                       }}
@@ -5263,7 +5313,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
 
       {/* ═══ AI Image / Video Generation Popup ═══ */}
       {showAiImagePopup && (
-        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={() => { if (aiGenerating) return; setShowAiImagePopup(false); setSwipeMediaKind(null); }}>
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={() => { if (aiGenerating) return; setShowAiImagePopup(false); setSwipeMediaKind(null); setAiExtraImages([]); }}>
           <div className="bg-white text-slate-900 rounded-2xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
             <div className="bg-gradient-to-r from-violet-600 to-purple-600 px-5 py-4 flex items-center justify-between shrink-0">
               <div className="flex items-center gap-2.5">
@@ -5275,7 +5325,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                   <p className="text-[10px] text-violet-200">fal.ai — text-to-image, image edit e image-to-video</p>
                 </div>
               </div>
-              <button onClick={() => { if (aiGenerating) return; setShowAiImagePopup(false); setSwipeMediaKind(null); }} className="p-1.5 rounded-lg hover:bg-white/20 transition-colors" disabled={aiGenerating}>
+              <button onClick={() => { if (aiGenerating) return; setShowAiImagePopup(false); setSwipeMediaKind(null); setAiExtraImages([]); }} className="p-1.5 rounded-lg hover:bg-white/20 transition-colors" disabled={aiGenerating}>
                 <X className="h-4 w-4 text-white" />
               </button>
             </div>
@@ -5480,6 +5530,44 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                   )}
                   <p className="text-[10px] text-slate-400 mt-1">
                     Funziona con i modelli edit multi-immagine (Nano Banana 2 / GPT Image 2).
+                  </p>
+                </div>
+              )}
+
+              {/* Immagini extra (collage): più foto da combinare nell'edit
+                  multi-immagine. Pulsante "+" per aggiungerne quante servono. */}
+              {aiMode === 'image2image' && (
+                <div>
+                  <label className="text-[10px] text-violet-500 font-medium mb-1 block uppercase tracking-wider">Immagini extra (collage)</label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {aiExtraImages.map((src, i) => (
+                      <div key={i} className="relative aspect-square rounded-lg border border-violet-200 overflow-hidden bg-slate-50">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={src} alt={`extra ${i + 1}`} className="w-full h-full object-cover" />
+                        <button
+                          onClick={() => !aiGenerating && setAiExtraImages((prev) => prev.filter((_, j) => j !== i))}
+                          className="absolute top-0.5 right-0.5 p-0.5 rounded bg-black/60 hover:bg-black/80 text-white"
+                          disabled={aiGenerating}
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                    ))}
+                    <label className={`aspect-square flex flex-col items-center justify-center gap-1 rounded-lg border-2 border-dashed border-violet-300 hover:border-violet-500 hover:bg-violet-50 transition-colors cursor-pointer text-violet-500 ${aiExtraUploading ? 'opacity-60 cursor-wait' : ''}`}>
+                      {aiExtraUploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <ImagePlus className="h-5 w-5" />}
+                      <span className="text-[9px] font-medium">Aggiungi</span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        multiple
+                        className="hidden"
+                        disabled={aiExtraUploading || aiGenerating}
+                        onChange={(e) => { if (e.target.files?.length) handleAiExtraUpload(e.target.files); e.target.value = ''; }}
+                      />
+                    </label>
+                  </div>
+                  <p className="text-[10px] text-slate-400 mt-1">
+                    Aggiungi più foto da combinare in un collage. Si sommano alla sorgente e alla foto prodotto.
                   </p>
                 </div>
               )}
