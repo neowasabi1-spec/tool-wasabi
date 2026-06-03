@@ -560,6 +560,41 @@ const EDITOR_SCRIPT = `
         if(m.name==='src'){var _LZA=['srcset','data-src','data-original','data-original-src','data-orig-src','data-lazy-src','data-lazy','data-lazyload','data-lazy-load','data-url','data-image-src','data-image','data-thumb','data-cfsrc','data-cmplz-src','data-wf-src','data-echo','data-defer-src','data-hi-res-src','data-actual','data-srcfallback','data-srcset','data-lazy-srcset','data-cfsrcset','data-cmplz-srcset','data-wf-srcset'];for(var _zz=0;_zz<_LZA.length;_zz++){sel.removeAttribute(_LZA[_zz]);}}
         sendHtml();
         window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');}break;
+      case 'cmd-set-shape':if(sel){
+        /* Trova i target: se sel e' un <img> agiamo su quello; altrimenti
+           cerchiamo le <img> nel blocco (scope='all' -> tutte; 'main' ->
+           solo la piu' grande, coerente con childImg). Se non ci sono <img>
+           trattiamo sel come elemento con background-image. */
+        var _shp=m.shape;var _scope=m.scope||'main';var _tgts=[];var _asBg=false;
+        var _stag=(sel.tagName||'').toLowerCase();
+        if(_stag==='img'){_tgts=[sel];}
+        else{
+          var _sscope=(typeof carScope==='function'&&carScope(sel))||sel;
+          var _simgs=_sscope.querySelectorAll('img');
+          if(_simgs.length){
+            if(_scope==='all'){for(var _si=0;_si<_simgs.length;_si++)_tgts.push(_simgs[_si]);}
+            else{var _sba=0,_sbest=null;for(var _sj=0;_sj<_simgs.length;_sj++){var _sr=_simgs[_sj].getBoundingClientRect();var _sa=_sr.width*_sr.height;if(_sa>=_sba){_sba=_sa;_sbest=_simgs[_sj];}}if(_sbest)_tgts=[_sbest];}
+          }
+        }
+        if(!_tgts.length){_tgts=[sel];_asBg=true;}
+        var _applyShape=function(elx,asBg){
+          elx.style.removeProperty('border-radius');
+          elx.style.removeProperty('aspect-ratio');
+          if(!asBg)elx.style.removeProperty('object-fit');
+          if(_shp==='rect'){elx.style.setProperty('border-radius','0','important');}
+          else if(_shp==='rounded'){elx.style.setProperty('border-radius','16px','important');}
+          else if(_shp==='pill'){elx.style.setProperty('border-radius','9999px','important');}
+          else if(_shp==='circle'||_shp==='square'){
+            elx.style.setProperty('border-radius',_shp==='circle'?'50%':'0','important');
+            elx.style.setProperty('aspect-ratio','1 / 1','important');
+            if(asBg){elx.style.setProperty('background-size','cover','important');elx.style.setProperty('background-position','center','important');}
+            else{elx.style.setProperty('object-fit','cover','important');}
+          }
+          if(asBg){elx.style.setProperty('overflow','hidden','important');}
+        };
+        for(var _ti2=0;_ti2<_tgts.length;_ti2++)_applyShape(_tgts[_ti2],_asBg);
+        sendHtml();
+        window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');}break;
       case 'cmd-set-child-img-src':if(sel){var _ci=null;try{
         /* Stessa euristica di gi().childImg: prendiamo l'<img> PIU' GRANDE
            del blocco, cosi' sostituiamo l'immagine principale (hero) e non
@@ -2266,6 +2301,44 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   const setChildImgSrc = (val: string) => sendToIframe({ type: 'cmd-set-child-img-src', value: val });
   const setChildImgSrcAt = (index: number, val: string) => sendToIframe({ type: 'cmd-set-child-img-src-at', index, value: val });
   const setChildBgImage = (val: string) => sendToIframe({ type: 'cmd-set-child-bg-image', value: val });
+  // Forma immagine: applica border-radius/aspect-ratio/object-fit all'immagine
+  // selezionata (o a TUTTE quelle del blocco se scope='all', per caroselli).
+  const setShape = (shape: string, scope: 'main' | 'all' = 'main') =>
+    sendToIframe({ type: 'cmd-set-shape', shape, scope });
+  // Selettore visuale di forma per le immagini. Ogni pulsante mostra
+  // un'anteprima della forma e la applica all'immagine (o a tutte, scope='all').
+  const ShapeRow = ({ scope = 'main' as 'main' | 'all' }: { scope?: 'main' | 'all' }) => {
+    const shapes: { id: string; label: string; w: number; h: number; r: string }[] = [
+      { id: 'rect', label: 'Rett.', w: 24, h: 14, r: '2px' },
+      { id: 'rounded', label: 'Tondo', w: 24, h: 14, r: '6px' },
+      { id: 'square', label: 'Quadr.', w: 16, h: 16, r: '2px' },
+      { id: 'circle', label: 'Cerchio', w: 16, h: 16, r: '50%' },
+      { id: 'pill', label: 'Pillola', w: 24, h: 12, r: '9999px' },
+    ];
+    return (
+      <div className="mt-2">
+        <label className="text-[10px] text-slate-500 mb-1 block">
+          Forma immagine{scope === 'all' ? ' (tutte)' : ''}
+        </label>
+        <div className="grid grid-cols-5 gap-1">
+          {shapes.map((s) => (
+            <button
+              key={s.id}
+              type="button"
+              onClick={() => setShape(s.id, scope)}
+              title={s.label}
+              className="flex flex-col items-center justify-center gap-1 py-1.5 rounded-lg border border-slate-200 bg-slate-50 hover:bg-blue-50 hover:border-blue-300 transition-all"
+            >
+              <span
+                style={{ width: s.w, height: s.h, borderRadius: s.r, background: '#94a3b8', display: 'block' }}
+              />
+              <span className="text-[9px] text-slate-500 leading-none">{s.label}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  };
   const removeAttr = (name: string) => sendToIframe({ type: 'cmd-remove-attr', name });
   // Toggle di un attributo booleano HTML (es. loop, controls, muted...).
   // Aggiunge l'attributo (value="") se ON, lo rimuove se OFF.
@@ -4261,6 +4334,9 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                       {uploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
                       {uploading ? 'Uploading...' : 'Carica/sostituisci immagine'}
                     </button>
+
+                    {/* Forma immagine */}
+                    <ShapeRow scope="main" />
                   </div>
                 )}
 
@@ -4289,8 +4365,9 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                     </p>
                     <input ref={childImgsUploadRef} type="file" accept="image/*,.gif,.webp,.avif,.svg" className="hidden"
                       onChange={(e) => { const f = e.target.files?.[0]; const idx = childImgsUploadIndexRef.current; if (f && idx >= 0) handleChildImgUploadAt(f, idx); e.target.value = ''; }} />
+                    {childImgsOpen && <ShapeRow scope="all" />}
                     {childImgsOpen && (
-                      <div className="space-y-2 max-h-[420px] overflow-y-auto pr-0.5">
+                      <div className="space-y-2 max-h-[420px] overflow-y-auto pr-0.5 mt-2">
                         {el.childImgs.map((ci, i) => (
                           <div key={i} className="flex items-center gap-2 p-1.5 rounded-lg border border-slate-200 bg-slate-50">
                             <div className="w-10 h-10 rounded bg-white border border-slate-200 overflow-hidden flex-shrink-0 flex items-center justify-center">
@@ -4368,6 +4445,9 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                         <img src={el.src} alt={el.alt || 'preview'} className="w-full h-auto max-h-32 object-contain" />
                       </div>
                     )}
+
+                    {/* Forma immagine */}
+                    <ShapeRow scope="main" />
                   </div>
                 )}
 

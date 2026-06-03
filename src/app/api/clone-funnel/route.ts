@@ -26,6 +26,39 @@ function getKb(): string {
 
 const IS_SERVERLESS = !!process.env.VERCEL || !!process.env.AWS_LAMBDA_FUNCTION_NAME;
 
+/**
+ * Normalizza l'URL prima del clone.
+ *
+ * Caso Telegram: una pagina post `t.me/<canale>/<id>` NON contiene la foto
+ * nel sorgente. L'HTML statico ha solo `<script src="telegram-widget.js"
+ * data-telegram-post="...">`, che a runtime inietta un <iframe> verso la
+ * variante `?embed=1`. Clonando l'URL nudo prendiamo solo lo shell + un SVG
+ * segnaposto come og:image -> nessuna immagine nell'editor (dove gli script
+ * sono rimossi/sandboxati). La variante `?embed=1` invece restituisce l'HTML
+ * vero del messaggio con foto/video come <img>/background-image su CDN
+ * telesco.pe. Riscriviamo quindi i post t.me alla loro versione embed.
+ */
+function normalizeCloneUrl(rawUrl: string): string {
+  const trimmed = (rawUrl || '').trim();
+  try {
+    const u = new URL(trimmed);
+    const host = u.hostname.replace(/^www\./, '').toLowerCase();
+    if (host === 't.me' || host === 'telegram.me') {
+      // /canale/123 (canale alfanumerico + id numerico del post)
+      const m = u.pathname.match(/^\/([A-Za-z0-9_]{3,})\/(\d+)\/?$/);
+      if (m && !u.searchParams.has('embed')) {
+        u.searchParams.set('embed', '1');
+        u.searchParams.set('mode', 'tme');
+        console.log(`[clone-funnel] normalize: Telegram post -> embed (${u.toString()})`);
+        return u.toString();
+      }
+    }
+    return trimmed;
+  } catch {
+    return trimmed;
+  }
+}
+
 async function getBrowser() {
   const { getSingletonBrowser } = await import('@/lib/get-browser');
   return getSingletonBrowser();
@@ -753,7 +786,8 @@ export async function POST(request: NextRequest) {
     } catch (jsonErr) {
       return NextResponse.json({ error: `Invalid JSON body: ${jsonErr instanceof Error ? jsonErr.message : 'parse error'}` }, { status: 400 });
     }
-    const { cloneMode, url } = body as { cloneMode?: string; url?: string };
+    const { cloneMode } = body as { cloneMode?: string };
+    let url = (body as { url?: string }).url;
     const viewport: 'desktop' | 'mobile' | 'both' = (body.viewport as 'desktop' | 'mobile' | 'both') || 'desktop';
     const keepScriptsFlag: boolean = !!body.keepScripts;
     console.log(`[clone-funnel] request: mode=${cloneMode}, url=${url}, viewport=${viewport}, serverless=${IS_SERVERLESS}`);
@@ -778,7 +812,7 @@ export async function POST(request: NextRequest) {
     // di User-Agent diversi, niente worker locale. Tutto in una sola
     // route Netlify-friendly.
     if (cloneMode === 'identical' && url) {
-      const cleanUrl = String(url).trim();
+      const cleanUrl = normalizeCloneUrl(String(url));
       if (!/^https?:\/\//i.test(cleanUrl)) {
         return NextResponse.json(
           { error: `Invalid URL (must start with http:// or https://): ${cleanUrl}` },
@@ -1037,6 +1071,10 @@ export async function POST(request: NextRequest) {
       if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
         return NextResponse.json({ error: 'Supabase not configured.' }, { status: 500 });
       }
+
+      // t.me post -> embed (vedi normalizeCloneUrl): senza questo il rewrite
+      // estrae lo shell del widget Telegram, non il testo/foto del messaggio.
+      url = normalizeCloneUrl(url);
 
       if (IS_SERVERLESS) {
         console.log(`⚠️ Serverless detected, using fetch fallback for rewrite extract: ${url}`);
