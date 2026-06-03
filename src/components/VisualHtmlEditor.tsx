@@ -1938,25 +1938,25 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
 
   const AI_MODELS: Record<AiMode, { id: string; label: string; hint: string }[]> = {
     text2image: [
-      { id: 'nano-banana-2', label: 'Nano Banana 2 (Gemini 3.1 Flash)', hint: 'Veloce, qualita alta, default' },
-      { id: 'gpt-image-2', label: 'ChatGPT Image 2 (OpenAI)', hint: 'Top per testo nelle immagini, costoso' },
-      { id: 'flux-schnell', label: 'FLUX Schnell', hint: 'Super rapido (~2s), economico' },
-      { id: 'flux-dev', label: 'FLUX Dev', hint: 'Qualita superiore, piu lento' },
-      { id: 'imagen4', label: 'Google Imagen 4 Fast', hint: 'Buono per realismo' },
+      { id: 'nano-banana-2', label: 'Nano Banana 2 (Gemini 3.1 Flash)', hint: 'Fast, high quality, default' },
+      { id: 'gpt-image-2', label: 'ChatGPT Image 2 (OpenAI)', hint: 'Top for text in images, expensive' },
+      { id: 'flux-schnell', label: 'FLUX Schnell', hint: 'Super fast (~2s), cheap' },
+      { id: 'flux-dev', label: 'FLUX Dev', hint: 'Higher quality, slower' },
+      { id: 'imagen4', label: 'Google Imagen 4 Fast', hint: 'Good for realism' },
     ],
     image2image: [
-      { id: 'nano-banana-2-edit', label: 'Nano Banana 2 Edit', hint: 'Edit mirato, conserva soggetto' },
-      { id: 'gpt-image-2-edit', label: 'ChatGPT Image 2 Edit (OpenAI)', hint: 'Editing fine, costoso' },
-      { id: 'flux-kontext', label: 'FLUX Pro Kontext', hint: 'Riedit avanzato' },
+      { id: 'nano-banana-2-edit', label: 'Nano Banana 2 Edit', hint: 'Targeted edit, preserves subject' },
+      { id: 'gpt-image-2-edit', label: 'ChatGPT Image 2 Edit (OpenAI)', hint: 'Fine editing, expensive' },
+      { id: 'flux-kontext', label: 'FLUX Pro Kontext', hint: 'Advanced re-edit' },
     ],
     image2video: [
-      { id: 'seedance-2', label: 'Bytedance Seedance 2.0', hint: '5/10s, qualità top, multi-resolution' },
-      { id: 'veo3-fast', label: 'Google Veo 3 Fast', hint: 'Qualita top, 5/8s' },
-      { id: 'kling-21', label: 'Kling 2.1 Standard', hint: '5/10s, naturalezza alta' },
+      { id: 'seedance-2', label: 'Bytedance Seedance 2.0', hint: '5/10s, top quality, multi-resolution' },
+      { id: 'veo3-fast', label: 'Google Veo 3 Fast', hint: 'Top quality, 5/8s' },
+      { id: 'kling-21', label: 'Kling 2.1 Standard', hint: '5/10s, high naturalness' },
     ],
     text2video: [
-      { id: 'seedance-2-t2v', label: 'Bytedance Seedance 2.0 (T2V)', hint: '5/10s, scena inventata da prompt, qualità top' },
-      { id: 'seedance-2-t2v-fast', label: 'Bytedance Seedance 2.0 Fast (T2V)', hint: '5/10s, più economico, render più rapido' },
+      { id: 'seedance-2-t2v', label: 'Bytedance Seedance 2.0 (T2V)', hint: '5/10s, scene invented from prompt, top quality' },
+      { id: 'seedance-2-t2v-fast', label: 'Bytedance Seedance 2.0 Fast (T2V)', hint: '5/10s, cheaper, faster render' },
     ],
   };
 
@@ -2313,16 +2313,16 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   // un'anteprima della forma e la applica all'immagine (o a tutte, scope='all').
   const ShapeRow = ({ scope = 'main' as 'main' | 'all' }: { scope?: 'main' | 'all' }) => {
     const shapes: { id: string; label: string; w: number; h: number; r: string }[] = [
-      { id: 'rect', label: 'Rett.', w: 24, h: 14, r: '2px' },
-      { id: 'rounded', label: 'Tondo', w: 24, h: 14, r: '6px' },
-      { id: 'square', label: 'Quadr.', w: 16, h: 16, r: '2px' },
-      { id: 'circle', label: 'Cerchio', w: 16, h: 16, r: '50%' },
-      { id: 'pill', label: 'Pillola', w: 24, h: 12, r: '9999px' },
+      { id: 'rect', label: 'Rect.', w: 24, h: 14, r: '2px' },
+      { id: 'rounded', label: 'Rounded', w: 24, h: 14, r: '6px' },
+      { id: 'square', label: 'Square', w: 16, h: 16, r: '2px' },
+      { id: 'circle', label: 'Circle', w: 16, h: 16, r: '50%' },
+      { id: 'pill', label: 'Pill', w: 24, h: 12, r: '9999px' },
     ];
     return (
       <div className="mt-2">
         <label className="text-[10px] text-slate-500 mb-1 block">
-          Forma immagine{scope === 'all' ? ' (tutte)' : ''}
+          Image shape{scope === 'all' ? ' (all)' : ''}
         </label>
         <div className="grid grid-cols-5 gap-1">
           {shapes.map((s) => (
@@ -2407,8 +2407,8 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
         ok: false,
         error:
           res.status === 504 || res.status === 502
-            ? `Timeout della funzione (${res.status}). Riprova: il modello ci ha messo troppo.`
-            : `Risposta non-JSON (${res.status}): ${snippet}`,
+            ? `Function timeout (${res.status}). Try again: the model took too long.`
+            : `Non-JSON response (${res.status}): ${snippet}`,
       };
     }
   };
@@ -2423,7 +2423,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
       const url = await directSupabaseUpload(file);
       setAiSourceImage(url);
     } catch (err) {
-      setAiError(err instanceof Error ? `Upload fallito: ${err.message}` : 'Upload fallito');
+      setAiError(err instanceof Error ? `Upload failed: ${err.message}` : 'Upload failed');
     } finally {
       setAiSourceUploading(false);
     }
@@ -2438,7 +2438,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
       const url = await directSupabaseUpload(file);
       setAiProductImage(url);
     } catch (err) {
-      setAiError(err instanceof Error ? `Upload fallito: ${err.message}` : 'Upload fallito');
+      setAiError(err instanceof Error ? `Upload failed: ${err.message}` : 'Upload failed');
     } finally {
       setAiProductUploading(false);
     }
@@ -2456,7 +2456,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
         setAiExtraImages((prev) => [...prev, url]);
       }
     } catch (err) {
-      setAiError(err instanceof Error ? `Upload fallito: ${err.message}` : 'Upload fallito');
+      setAiError(err instanceof Error ? `Upload failed: ${err.message}` : 'Upload failed');
     } finally {
       setAiExtraUploading(false);
     }
@@ -2471,17 +2471,17 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     if (!finalPrompt) {
       setAiError(
         aiMode === 'image2video'
-          ? "Inserisci una descrizione di come animare l'immagine"
+          ? 'Enter a description of how to animate the image'
           : aiMode === 'image2image'
-            ? "Descrivi la modifica da applicare all'immagine"
+            ? 'Describe the change to apply to the image'
             : aiMode === 'text2video'
-              ? 'Descrivi la scena del video da generare'
-              : 'Inserisci un prompt o seleziona un elemento con testo vicino',
+              ? 'Describe the video scene to generate'
+              : 'Enter a prompt or select an element with nearby text',
       );
       return;
     }
     if ((aiMode === 'image2image' || aiMode === 'image2video') && !aiSourceImage) {
-      setAiError("Carica prima un'immagine sorgente.");
+      setAiError('Upload a source image first.');
       return;
     }
 
@@ -2529,13 +2529,13 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
         error?: string;
       };
       if (!submitRes.ok || data.status === 'error') {
-        throw new Error(data.error || 'Errore generazione');
+        throw new Error(data.error || 'Generation error');
       }
 
       const POLL_DEADLINE = Date.now() + 5 * 60_000;
       while (data.status === 'pending' && data.requestId) {
         if (Date.now() > POLL_DEADLINE) {
-          throw new Error('Timeout: la generazione ha richiesto piu di 5 minuti.');
+          throw new Error('Timeout: generation took more than 5 minutes.');
         }
         await new Promise((r) => setTimeout(r, 1500));
         const pollRes = await fetch('/api/generate-image', {
@@ -2563,7 +2563,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
       }
 
       if (data.status !== 'completed' || !data.url) {
-        throw new Error(data.error || 'Nessun media ritornato dal modello');
+        throw new Error(data.error || 'No media returned by the model');
       }
 
       const url = data.url;
@@ -2829,9 +2829,9 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
           : suggested;
         setAiPrompt(finalPrompt);
         const ctxParts: string[] = [];
-        if (desc) ctxParts.push(`Originale: ${desc}`);
-        if (mech) ctxParts.push(`Meccanismo: ${mech}`);
-        if (transf) ctxParts.push(`Trasformazione: ${transf}`);
+        if (desc) ctxParts.push(`Original: ${desc}`);
+        if (mech) ctxParts.push(`Mechanism: ${mech}`);
+        if (transf) ctxParts.push(`Transformation: ${transf}`);
         if (ctxParts.length > 0) setAiContextText(ctxParts.join(' • '));
         setSwipeVisionMode(data.mode || 'text');
         setSwipeVisionIntent(data.intent || '');
@@ -2861,7 +2861,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
         setSwipeVisionMode(null);
         setSwipeStage('idle');
         setSwipeVisionError(
-          err instanceof Error ? err.message : 'Analisi non disponibile'
+          err instanceof Error ? err.message : 'Analysis not available'
         );
       } finally {
         setSwipeVisionLoading(false);
@@ -3613,10 +3613,10 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
         const looksHtml = /^\s*<(?:!doctype|html|head|body)/i.test(text);
         throw new Error(
           isTimeout || (looksHtml && res.status >= 500)
-            ? 'Il server ha impiegato troppo e si è interrotto (timeout). Riprova, magari con una richiesta più semplice o su un elemento più piccolo.'
+            ? 'The server took too long and timed out. Try again, maybe with a simpler request or on a smaller element.'
             : looksHtml
-              ? `Il server ha risposto con una pagina d'errore (HTTP ${res.status}). Riprova tra poco.`
-              : (text.slice(0, 200) || `Errore HTTP ${res.status}`),
+              ? `The server returned an error page (HTTP ${res.status}). Try again shortly.`
+              : (text.slice(0, 200) || `HTTP error ${res.status}`),
         );
       }
       const data = await res.json();
@@ -3984,10 +3984,10 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
           </button>
           {onSaveToProject && (
             <button onClick={handleSaveToProject}
-              title="Salva questa pagina nel Progetto / Funnel"
+              title="Save this page to the Project / Funnel"
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-blue-600 hover:bg-blue-500 text-white transition-all">
               <BookmarkPlus className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Salva nel progetto</span>
+              <span className="hidden sm:inline">Save to project</span>
             </button>
           )}
           <button onClick={handleClose} disabled={closing} className="ml-1 p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-700 transition-colors disabled:opacity-50 disabled:cursor-wait" title="Close editor">
@@ -4367,7 +4367,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                     contenitore (.elImage / overlay) invece dell'<img>. */}
                 {el.tagName !== 'img' && el.childImg && el.childImg.src && !(el.childImgs && el.childImgs.length > 1) && (
                   <div className="p-3">
-                    <PropLabel icon={Image}>Immagine (nel blocco)</PropLabel>
+                    <PropLabel icon={Image}>Image (in block)</PropLabel>
                     <label className="text-[10px] text-slate-500 mb-0.5 block">Image URL</label>
                     <input type="url" defaultValue={el.childImg.src} key={el.childImg.src} className="prop-input"
                       onBlur={(e) => setChildImgSrc(e.target.value)}
@@ -4380,7 +4380,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                       className="mt-1.5 w-full flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-lg bg-blue-50 border border-blue-200 hover:border-blue-300 hover:bg-blue-100 transition-all text-xs font-medium text-blue-700 disabled:opacity-50"
                     >
                       {uploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
-                      {uploading ? 'Uploading...' : 'Carica/sostituisci immagine'}
+                      {uploading ? 'Uploading...' : 'Upload/replace image'}
                     </button>
 
                     {/* Forma immagine */}
@@ -4402,14 +4402,14 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                       onClick={() => setChildImgsOpen((v) => !v)}
                       className="w-full flex items-center justify-between gap-2 mb-1"
                     >
-                      <PropLabel icon={Image}>Immagini nel blocco ({el.childImgs.length})</PropLabel>
+                      <PropLabel icon={Image}>Images in block ({el.childImgs.length})</PropLabel>
                       <ChevronDown
                         className={`h-4 w-4 text-slate-400 transition-transform flex-shrink-0 ${childImgsOpen ? 'rotate-180' : ''}`}
                       />
                     </button>
                     <p className="text-[10px] text-slate-500 mb-2">
-                      Carosello/gallery: sostituisci ogni immagine singolarmente.
-                      {!childImgsOpen && ' Clicca per espandere.'}
+                      Carousel/gallery: replace each image individually.
+                      {!childImgsOpen && ' Click to expand.'}
                     </p>
                     <input ref={childImgsUploadRef} type="file" accept="image/*,.gif,.webp,.avif,.svg" className="hidden"
                       onChange={(e) => { const f = e.target.files?.[0]; const idx = childImgsUploadIndexRef.current; if (f && idx >= 0) handleChildImgUploadAt(f, idx); e.target.value = ''; }} />
@@ -4433,7 +4433,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                             <button
                               onClick={() => { childImgsUploadIndexRef.current = i; childImgsUploadRef.current?.click(); }}
                               disabled={uploading}
-                              title="Carica/sostituisci"
+                              title="Upload/replace"
                               className="flex-shrink-0 p-2 rounded-lg bg-blue-50 border border-blue-200 hover:bg-blue-100 transition-all text-blue-700 disabled:opacity-50"
                             >
                               {uploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
@@ -4475,7 +4475,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                     <button
                       onClick={handleSwipeImageForProduct}
                       disabled={uploading}
-                      title="Sostituisce l'immagine con una coerente per il tuo prodotto, generata con AI (text-to-image). Pre-compila il prompt usando il contesto della pagina e i dati del Project."
+                      title="Replaces the image with one consistent with your product, generated with AI (text-to-image). Pre-fills the prompt using the page context and the Project data."
                       className="mt-1.5 w-full flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-lg bg-gradient-to-r from-violet-500 via-fuchsia-500 to-pink-500 hover:from-violet-600 hover:via-fuchsia-600 hover:to-pink-600 transition-all text-xs font-semibold text-white shadow-sm disabled:opacity-50"
                     >
                       <Sparkles className="h-3.5 w-3.5" />
@@ -4528,7 +4528,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                       <button
                         onClick={handleSwipeVideoForProduct}
                         disabled={uploading}
-                        title="Sostituisce il video con uno coerente per il tuo prodotto, generato con AI (Seedance 2.0). Pre-compila il prompt usando il contesto della pagina e i dati del Project."
+                        title="Replaces the video with one consistent with your product, generated with AI (Seedance 2.0). Pre-fills the prompt using the page context and the Project data."
                         className="mt-1.5 w-full flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-lg bg-gradient-to-r from-violet-500 via-fuchsia-500 to-pink-500 hover:from-violet-600 hover:via-fuchsia-600 hover:to-pink-600 transition-all text-xs font-semibold text-white shadow-sm disabled:opacity-50"
                       >
                         <Sparkles className="h-3.5 w-3.5" />
@@ -4563,19 +4563,19 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                           <div className="grid grid-cols-2 gap-1.5">
                             <Toggle
                               label="Controls"
-                              hint="Mostra/nascondi i comandi (play, volume, ecc.) sul video"
+                              hint="Show/hide the controls (play, volume, etc.) on the video"
                               on={va.controls}
                               onChange={(v) => setBoolAttr('controls', v)}
                             />
                             <Toggle
                               label="Loop"
-                              hint="Riavvia automaticamente il video alla fine"
+                              hint="Automatically restart the video when it ends"
                               on={va.loop}
                               onChange={(v) => setBoolAttr('loop', v)}
                             />
                             <Toggle
                               label="Autoplay"
-                              hint="Parte automaticamente al caricamento (di solito serve anche Muted)"
+                              hint="Starts automatically on load (usually also needs Muted)"
                               on={va.autoplay}
                               onChange={(v) => {
                                 setBoolAttr('autoplay', v);
@@ -4584,13 +4584,13 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                             />
                             <Toggle
                               label="Muted"
-                              hint="Audio disattivato di default. Necessario per autoplay sui browser moderni."
+                              hint="Audio off by default. Required for autoplay on modern browsers."
                               on={va.muted}
                               onChange={(v) => setBoolAttr('muted', v)}
                             />
                             <Toggle
                               label="Inline (mobile)"
-                              hint="Riproduzione in linea su iPhone (senza fullscreen forzato)"
+                              hint="Inline playback on iPhone (without forced fullscreen)"
                               on={va.playsinline}
                               onChange={(v) => setBoolAttr('playsinline', v)}
                             />
@@ -4600,7 +4600,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                                 value={va.preload}
                                 className="prop-select"
                                 onChange={(e) => setAttr('preload', e.target.value)}
-                                title="Quanto del video pre-caricare prima del play"
+                                title="How much of the video to preload before playing"
                               >
                                 <option value="none">none (lazy)</option>
                                 <option value="metadata">metadata</option>
@@ -4609,12 +4609,12 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                             </div>
                           </div>
                           <div>
-                            <label className="text-[10px] text-slate-400 block mb-0.5 mt-1">Poster (immagine prima del play)</label>
+                            <label className="text-[10px] text-slate-400 block mb-0.5 mt-1">Poster (image shown before play)</label>
                             <input
                               type="url"
                               defaultValue={va.poster}
                               key={`poster-${va.poster}`}
-                              placeholder="https://... (oppure lascia vuoto)"
+                              placeholder="https://... (or leave empty)"
                               className="prop-input"
                               onBlur={(e) => {
                                 const v = e.target.value.trim();
@@ -4637,7 +4637,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                                 setBoolAttr('controls', false);
                               }}
                               className="text-[10px] py-1.5 rounded-md bg-amber-50 border border-amber-200 text-amber-700 hover:bg-amber-100 font-medium"
-                              title="Autoplay + Loop + Muted, senza barra controlli — come una GIF"
+                              title="Autoplay + Loop + Muted, without control bar — like a GIF"
                             >
                               GIF-like
                             </button>
@@ -4650,7 +4650,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                                 setBoolAttr('muted', false);
                               }}
                               className="text-[10px] py-1.5 rounded-md bg-slate-50 border border-slate-200 text-slate-600 hover:bg-slate-100 font-medium"
-                              title="Solo controlli visibili, niente autoplay/loop/muted"
+                              title="Only controls visible, no autoplay/loop/muted"
                             >
                               Standard
                             </button>
@@ -4684,7 +4684,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                       onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
                     />
                     <p className="text-[10px] text-slate-400 mt-1">
-                      Incolla un URL YouTube/Vimeo (anche /watch?v=) o un embed pronto.
+                      Paste a YouTube/Vimeo URL (also /watch?v=) or a ready embed.
                     </p>
 
                     {/* Convert iframe → native <video>. UX:
@@ -4695,13 +4695,13 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                         - Link secondario: converte in <video> vuoto se l'utente
                           vuole solo cambiare la sorgente in un secondo momento. */}
                     <div className="mt-3 pt-3 border-t border-slate-100">
-                      <p className="text-[10px] text-slate-500 mb-1.5">Vuoi caricare un tuo video invece di usare un embed?</p>
+                      <p className="text-[10px] text-slate-500 mb-1.5">Want to upload your own video instead of using an embed?</p>
                       <button
                         type="button"
                         onClick={handleIframeToVideoUpload}
                         disabled={uploading}
                         className="w-full flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-lg bg-purple-50 border border-purple-200 hover:border-purple-300 hover:bg-purple-100 transition-all text-xs font-medium text-purple-700 disabled:opacity-50"
-                        title="Apre la finestra di scelta file, carica il video, e lo inserisce gia' pronto."
+                        title="Opens the file picker, uploads the video, and inserts it ready to go."
                       >
                         {uploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
                         {uploading ? 'Uploading...' : 'Upload your own video instead'}
@@ -4712,9 +4712,9 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                         onClick={() => sendToIframe({ type: 'cmd-convert-iframe-to-video' })}
                         disabled={uploading}
                         className="w-full mt-1.5 text-[10px] text-slate-400 hover:text-slate-600 underline disabled:opacity-50"
-                        title="Crea un &lt;video&gt; vuoto. Dovrai poi cliccare il video e usare 'Upload Video' nella sidebar."
+                        title="Creates an empty &lt;video&gt;. You'll then need to click the video and use 'Upload Video' in the sidebar."
                       >
-                        oppure converti in &lt;video&gt; vuoto (carico dopo)
+                        or convert to an empty &lt;video&gt; (upload later)
                       </button>
                     </div>
                   </div>
@@ -4837,10 +4837,10 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                     return (
                       <div className="mt-2.5">
                         <label className="text-[10px] text-slate-500 mb-0.5 block">
-                          Immagine di sfondo{useChild ? ' (nel blocco)' : ''} — URL
+                          Background image{useChild ? ' (in block)' : ''} — URL
                         </label>
                         <input type="url" defaultValue={currentBg} key={currentBg || 'empty'}
-                          placeholder="https://… oppure carica sotto"
+                          placeholder="https://… or upload below"
                           className="prop-input"
                           onBlur={(e) => applyBg(e.target.value)}
                           onKeyDown={(e) => { if (e.key === 'Enter') applyBg((e.target as HTMLInputElement).value); }} />
@@ -4869,11 +4869,11 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                           className="mt-1.5 w-full flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-lg bg-blue-50 border border-blue-200 hover:border-blue-300 hover:bg-blue-100 transition-all text-xs font-medium text-blue-700 disabled:opacity-50"
                         >
                           {uploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
-                          {uploading ? 'Uploading...' : (currentBg ? 'Carica/sostituisci sfondo' : 'Carica immagine di sfondo')}
+                          {uploading ? 'Uploading...' : (currentBg ? 'Upload/replace background' : 'Upload background image')}
                         </button>
                         {currentBg && (
                           <button onClick={() => applyBg('')}
-                            className="mt-1 w-full text-[10px] text-slate-400 hover:text-red-500">Rimuovi sfondo</button>
+                            className="mt-1 w-full text-[10px] text-slate-400 hover:text-red-500">Remove background</button>
                         )}
                       </div>
                     );
@@ -4953,11 +4953,11 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                   {/* PADDING — interno (spazio tra bordo e contenuto) */}
                   <div className="mt-1">
                     <div className="flex items-center justify-between mb-1">
-                      <span className="text-[10px] font-semibold text-slate-500">Padding (interno)</span>
+                      <span className="text-[10px] font-semibold text-slate-500">Padding (inner)</span>
                       <button
                         type="button"
                         onClick={() => setPaddingLinked((v) => !v)}
-                        title={paddingLinked ? 'Lati legati — modifica uno = applica a tutti' : 'Lati indipendenti — clicca per legare'}
+                        title={paddingLinked ? 'Sides linked — edit one = apply to all' : 'Independent sides — click to link'}
                         className={`p-1 rounded ${paddingLinked ? 'bg-amber-100 text-amber-700' : 'text-slate-400 hover:bg-slate-100'}`}
                       >
                         {paddingLinked ? <Link2 className="h-3 w-3" /> : <Link2Off className="h-3 w-3" />}
@@ -4995,11 +4995,11 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                   {/* MARGIN — esterno (spazio tra elemento e vicini) */}
                   <div className="mt-3">
                     <div className="flex items-center justify-between mb-1">
-                      <span className="text-[10px] font-semibold text-slate-500">Margin (esterno)</span>
+                      <span className="text-[10px] font-semibold text-slate-500">Margin (outer)</span>
                       <button
                         type="button"
                         onClick={() => setMarginLinked((v) => !v)}
-                        title={marginLinked ? 'Lati legati — modifica uno = applica a tutti' : 'Lati indipendenti — clicca per legare'}
+                        title={marginLinked ? 'Sides linked — edit one = apply to all' : 'Independent sides — click to link'}
                         className={`p-1 rounded ${marginLinked ? 'bg-amber-100 text-amber-700' : 'text-slate-400 hover:bg-slate-100'}`}
                       >
                         {marginLinked ? <Link2 className="h-3 w-3" /> : <Link2Off className="h-3 w-3" />}
@@ -5037,13 +5037,13 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                         </div>
                       ))}
                     </div>
-                    <p className="text-[10px] text-slate-400 mt-1">Tip: scrivi <code>auto</code> per centrare orizzontalmente.</p>
+                    <p className="text-[10px] text-slate-400 mt-1">Tip: type <code>auto</code> to center horizontally.</p>
                   </div>
 
                   {/* Preset rapidi spaziatura verticale (top+bottom) — utile per
                       aumentare/ridurre l'aria sopra/sotto un blocco con un click. */}
                   <div className="mt-3">
-                    <div className="text-[10px] font-semibold text-slate-500 mb-1">Preset verticale (T+B)</div>
+                    <div className="text-[10px] font-semibold text-slate-500 mb-1">Vertical preset (T+B)</div>
                     <div className="grid grid-cols-5 gap-1">
                       {([
                         ['0', 0],
@@ -5213,7 +5213,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
           { id: 'b-testimonial', icon: '💬', label: 'Testimonials', html: '<div style="padding:48px 20px;background:#f8fafc"><div style="max-width:960px;margin:0 auto"><h2 style="text-align:center;font-size:26px;font-weight:700;margin-bottom:32px;color:#1a1a1a">What Our Customers Say</h2><div style="display:flex;gap:20px;flex-wrap:wrap"><div style="flex:1;min-width:260px;background:#fff;border-radius:12px;padding:24px;box-shadow:0 1px 4px rgba(0,0,0,.08)"><div style="font-size:20px;color:#f59e0b;margin-bottom:12px">★★★★★</div><p style="font-size:14px;line-height:1.6;color:#555;font-style:italic">"This product completely changed my life. I can\'t recommend it enough to anyone looking for real results."</p><div style="margin-top:16px;font-size:13px;font-weight:600;color:#1a1a1a">— Sarah J.</div></div><div style="flex:1;min-width:260px;background:#fff;border-radius:12px;padding:24px;box-shadow:0 1px 4px rgba(0,0,0,.08)"><div style="font-size:20px;color:#f59e0b;margin-bottom:12px">★★★★★</div><p style="font-size:14px;line-height:1.6;color:#555;font-style:italic">"Amazing results in just a few weeks. The quality exceeded all my expectations. Highly recommended!"</p><div style="margin-top:16px;font-size:13px;font-weight:600;color:#1a1a1a">— Mike R.</div></div><div style="flex:1;min-width:260px;background:#fff;border-radius:12px;padding:24px;box-shadow:0 1px 4px rgba(0,0,0,.08)"><div style="font-size:20px;color:#f59e0b;margin-bottom:12px">★★★★★</div><p style="font-size:14px;line-height:1.6;color:#555;font-style:italic">"Best purchase I\'ve made this year. Customer service was also outstanding!"</p><div style="margin-top:16px;font-size:13px;font-weight:600;color:#1a1a1a">— Lisa T.</div></div></div></div></div>' },
           { id: 'b-hero', icon: '🎯', label: 'Hero Section', html: '<div style="padding:64px 20px;background:linear-gradient(135deg,#0f172a,#1e3a5f);text-align:center"><h1 style="font-size:42px;font-weight:800;color:#fff;margin-bottom:16px;line-height:1.2">The Headline That Grabs Attention</h1><p style="font-size:18px;color:rgba(255,255,255,.75);max-width:600px;margin:0 auto 32px;line-height:1.6">Your subheadline explains the main benefit and sets expectations</p><a href="#" style="display:inline-block;padding:16px 40px;background:#3b82f6;color:#fff;text-decoration:none;border-radius:10px;font-weight:700;font-size:16px">Get Started Now →</a></div>' },
           { id: 'b-faq', icon: '❓', label: 'FAQ', html: '<div style="padding:48px 20px;max-width:800px;margin:0 auto"><h2 style="font-size:28px;font-weight:700;text-align:center;margin-bottom:32px;color:#1a1a1a">Frequently Asked Questions</h2><div style="border-top:1px solid #e5e7eb"><div style="padding:20px 0;border-bottom:1px solid #e5e7eb"><h3 style="font-size:16px;font-weight:600;color:#1a1a1a;margin-bottom:8px">How does it work?</h3><p style="font-size:14px;color:#555;line-height:1.6">Explain how your product/service works in simple terms.</p></div><div style="padding:20px 0;border-bottom:1px solid #e5e7eb"><h3 style="font-size:16px;font-weight:600;color:#1a1a1a;margin-bottom:8px">Is there a guarantee?</h3><p style="font-size:14px;color:#555;line-height:1.6">Yes, we offer a 60-day money-back guarantee. No questions asked.</p></div><div style="padding:20px 0;border-bottom:1px solid #e5e7eb"><h3 style="font-size:16px;font-weight:600;color:#1a1a1a;margin-bottom:8px">How long until I see results?</h3><p style="font-size:14px;color:#555;line-height:1.6">Most customers see results within the first week of use.</p></div></div></div>' },
-          { id: 'b-carousel', icon: '🎠', label: 'Carosello', html: '<div data-replo-carousel="true" style="max-width:720px;margin:0 auto;padding:24px 20px;position:relative"><div class="slider-for" style="position:relative;overflow:hidden;border-radius:12px;background:#f1f5f9"><div class="r-ldsnaw"><img src="https://placehold.co/720x480/e2e8f0/64748b?text=Slide+1" alt="" style="width:100%;display:block" /></div><div class="r-ldsnaw"><img src="https://placehold.co/720x480/dbeafe/3b82f6?text=Slide+2" alt="" style="width:100%;display:block" /></div><div class="r-ldsnaw"><img src="https://placehold.co/720x480/fef3c7/d97706?text=Slide+3" alt="" style="width:100%;display:block" /></div><button type="button" aria-label="Previous slide" class="lc-arrow lc-arrow-prev" style="position:absolute;top:50%;left:10px;transform:translateY(-50%);z-index:2;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.5);color:#fff;border:none;border-radius:50%;width:40px;height:40px;font-size:18px;cursor:pointer">❮</button><button type="button" aria-label="Next slide" class="lc-arrow lc-arrow-next" style="position:absolute;top:50%;right:10px;transform:translateY(-50%);z-index:2;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.5);color:#fff;border:none;border-radius:50%;width:40px;height:40px;font-size:18px;cursor:pointer">❯</button></div><div class="slider-nav" style="display:flex;gap:8px;justify-content:center;margin-top:12px;flex-wrap:wrap"><div style="width:72px;cursor:pointer;border-radius:6px;overflow:hidden"><img src="https://placehold.co/720x480/e2e8f0/64748b?text=1" alt="" style="width:100%;display:block" /></div><div style="width:72px;cursor:pointer;border-radius:6px;overflow:hidden"><img src="https://placehold.co/720x480/dbeafe/3b82f6?text=2" alt="" style="width:100%;display:block" /></div><div style="width:72px;cursor:pointer;border-radius:6px;overflow:hidden"><img src="https://placehold.co/720x480/fef3c7/d97706?text=3" alt="" style="width:100%;display:block" /></div></div></div>' },
+          { id: 'b-carousel', icon: '🎠', label: 'Carousel', html: '<div data-replo-carousel="true" style="max-width:720px;margin:0 auto;padding:24px 20px;position:relative"><div class="slider-for" style="position:relative;overflow:hidden;border-radius:12px;background:#f1f5f9"><div class="r-ldsnaw"><img src="https://placehold.co/720x480/e2e8f0/64748b?text=Slide+1" alt="" style="width:100%;display:block" /></div><div class="r-ldsnaw"><img src="https://placehold.co/720x480/dbeafe/3b82f6?text=Slide+2" alt="" style="width:100%;display:block" /></div><div class="r-ldsnaw"><img src="https://placehold.co/720x480/fef3c7/d97706?text=Slide+3" alt="" style="width:100%;display:block" /></div><button type="button" aria-label="Previous slide" class="lc-arrow lc-arrow-prev" style="position:absolute;top:50%;left:10px;transform:translateY(-50%);z-index:2;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.5);color:#fff;border:none;border-radius:50%;width:40px;height:40px;font-size:18px;cursor:pointer">❮</button><button type="button" aria-label="Next slide" class="lc-arrow lc-arrow-next" style="position:absolute;top:50%;right:10px;transform:translateY(-50%);z-index:2;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.5);color:#fff;border:none;border-radius:50%;width:40px;height:40px;font-size:18px;cursor:pointer">❯</button></div><div class="slider-nav" style="display:flex;gap:8px;justify-content:center;margin-top:12px;flex-wrap:wrap"><div style="width:72px;cursor:pointer;border-radius:6px;overflow:hidden"><img src="https://placehold.co/720x480/e2e8f0/64748b?text=1" alt="" style="width:100%;display:block" /></div><div style="width:72px;cursor:pointer;border-radius:6px;overflow:hidden"><img src="https://placehold.co/720x480/dbeafe/3b82f6?text=2" alt="" style="width:100%;display:block" /></div><div style="width:72px;cursor:pointer;border-radius:6px;overflow:hidden"><img src="https://placehold.co/720x480/fef3c7/d97706?text=3" alt="" style="width:100%;display:block" /></div></div></div>' },
           { id: 'b-divider', icon: '➖', label: 'Divider', html: '<div style="padding:8px 20px;max-width:800px;margin:0 auto"><hr style="border:none;border-top:2px solid #e5e7eb" /></div>' },
         ];
 
@@ -5321,8 +5321,8 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                   <Sparkles className="h-4 w-4 text-white" />
                 </div>
                 <div>
-                  <h3 className="text-sm font-bold text-white">Genera Media con AI</h3>
-                  <p className="text-[10px] text-violet-200">fal.ai — text-to-image, image edit e image-to-video</p>
+                  <h3 className="text-sm font-bold text-white">Generate Media with AI</h3>
+                  <p className="text-[10px] text-violet-200">fal.ai — text-to-image, image edit and image-to-video</p>
                 </div>
               </div>
               <button onClick={() => { if (aiGenerating) return; setShowAiImagePopup(false); setSwipeMediaKind(null); setAiExtraImages([]); }} className="p-1.5 rounded-lg hover:bg-white/20 transition-colors" disabled={aiGenerating}>
@@ -5333,9 +5333,9 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
             {/* Tabs */}
             <div className="flex border-b border-slate-200 bg-slate-50 shrink-0">
               {([
-                { id: 'text2image', label: 'Genera', icon: ImagePlus },
-                { id: 'image2image', label: 'Modifica', icon: Wand2 },
-                { id: 'image2video', label: 'Anima', icon: Film },
+                { id: 'text2image', label: 'Generate', icon: ImagePlus },
+                { id: 'image2image', label: 'Edit', icon: Wand2 },
+                { id: 'image2video', label: 'Animate', icon: Film },
                 { id: 'text2video', label: 'Swipe', icon: Sparkles },
               ] as const).map((tab) => {
                 const Icon = tab.icon;
@@ -5363,29 +5363,29 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                   scelto anche se la pagina è solo clonata senza prodotto. */}
               {availableProducts && availableProducts.length > 0 && (
                 <div>
-                  <label className="text-[10px] text-violet-500 font-medium mb-1 block uppercase tracking-wider">Prodotto (My Projects)</label>
+                  <label className="text-[10px] text-violet-500 font-medium mb-1 block uppercase tracking-wider">Product (My Projects)</label>
                   <select
                     value={selectedProductId}
                     onChange={(e) => handleProductSelect(e.target.value)}
                     disabled={aiGenerating}
                     className="w-full px-2.5 py-2 text-xs text-slate-900 border border-violet-200 rounded-lg focus:border-violet-400 outline-none bg-white"
                   >
-                    <option value="">— Nessun prodotto —</option>
+                    <option value="">— No product —</option>
                     {availableProducts.map((p) => (
                       <option key={p.id} value={p.id}>{p.name}</option>
                     ))}
                   </select>
                   <p className="text-[10px] text-slate-400 mt-1">
                     {selectedProductId
-                      ? 'Claude scrive il prompt in base a questo prodotto.'
-                      : 'Selezionalo per far scrivere a Claude un prompt mirato (utile sulle pagine solo clonate).'}
+                      ? 'Claude writes the prompt based on this product.'
+                      : 'Select it so Claude can write a targeted prompt (useful on cloned-only pages).'}
                   </p>
                 </div>
               )}
 
               {/* Model selector */}
               <div>
-                <label className="text-[10px] text-violet-500 font-medium mb-1 block uppercase tracking-wider">Modello AI</label>
+                <label className="text-[10px] text-violet-500 font-medium mb-1 block uppercase tracking-wider">AI Model</label>
                 <select
                   value={aiModel}
                   onChange={(e) => setAiModel(e.target.value)}
@@ -5406,7 +5406,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                 return (
                   <div>
                     <label className="text-[10px] text-violet-500 font-medium mb-1 block uppercase tracking-wider">
-                      {isSource ? 'Immagine sorgente' : 'Immagine di riferimento (opzionale)'}
+                      {isSource ? 'Source image' : 'Reference image (optional)'}
                     </label>
                     {aiSourceImage ? (
                       <div className="space-y-2">
@@ -5426,21 +5426,21 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                           onClick={handleAnalyzeReferenceImage}
                           disabled={aiGenerating || swipeVisionLoading}
                           className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-fuchsia-600 hover:bg-fuchsia-700 disabled:opacity-50 text-white text-xs font-semibold transition-colors"
-                          title={effectiveProduct?.name ? `Claude analizza l'immagine e scrive il prompt per ${effectiveProduct.name}` : 'Seleziona un prodotto sopra per un prompt mirato'}
+                          title={effectiveProduct?.name ? `Claude analyzes the image and writes the prompt for ${effectiveProduct.name}` : 'Select a product above for a targeted prompt'}
                         >
                           {swipeVisionLoading ? (
-                            <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Claude sta analizzando…</>
+                            <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Claude is analyzing…</>
                           ) : (
-                            <><Sparkles className="h-3.5 w-3.5" /> Analizza con Claude e scrivi il prompt</>
+                            <><Sparkles className="h-3.5 w-3.5" /> Analyze with Claude and write the prompt</>
                           )}
                         </button>
                         {/* Permette di sostituire l'immagine senza dover prima
                             cliccare la X: carica direttamente un altro file. */}
                         <label className={`flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-violet-200 hover:border-violet-400 hover:bg-violet-50 transition-colors cursor-pointer text-xs text-violet-600 font-medium ${aiSourceUploading ? 'opacity-60 cursor-wait' : ''}`}>
                           {aiSourceUploading ? (
-                            <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Caricamento…</>
+                            <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Uploading…</>
                           ) : (
-                            <><Upload className="h-3.5 w-3.5" /> Carica un'altra immagine</>
+                            <><Upload className="h-3.5 w-3.5" /> Upload another image</>
                           )}
                           <input
                             type="file"
@@ -5458,9 +5458,9 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                     ) : (
                       <label className={`flex items-center justify-center gap-2 px-4 py-3 rounded-xl border-2 border-dashed border-violet-300 hover:border-violet-500 hover:bg-violet-50 transition-colors cursor-pointer text-xs text-violet-600 font-medium ${aiSourceUploading ? 'opacity-60 cursor-wait' : ''}`}>
                         {aiSourceUploading ? (
-                          <><Loader2 className="h-4 w-4 animate-spin" /> Caricamento…</>
+                          <><Loader2 className="h-4 w-4 animate-spin" /> Uploading…</>
                         ) : (
-                          <><Upload className="h-4 w-4" /> {isSource ? 'Carica immagine sorgente' : 'Carica immagine di riferimento'}</>
+                          <><Upload className="h-4 w-4" /> {isSource ? 'Upload source image' : 'Upload reference image'}</>
                         )}
                         <input
                           type="file"
@@ -5483,7 +5483,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                   la sorgente per "metti il nostro prodotto al posto di questo". */}
               {aiMode === 'image2image' && (
                 <div>
-                  <label className="text-[10px] text-violet-500 font-medium mb-1 block uppercase tracking-wider">Immagine prodotto (da inserire)</label>
+                  <label className="text-[10px] text-violet-500 font-medium mb-1 block uppercase tracking-wider">Product image (to insert)</label>
                   {aiProductImage ? (
                     <div className="space-y-2">
                       <div className="relative">
@@ -5505,15 +5505,15 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                         disabled={aiGenerating}
                         className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-semibold transition-colors"
                       >
-                        <Wand2 className="h-3.5 w-3.5" /> Usa prompt: sostituisci il prodotto
+                        <Wand2 className="h-3.5 w-3.5" /> Use prompt: replace the product
                       </button>
                     </div>
                   ) : (
                     <label className={`flex items-center justify-center gap-2 px-4 py-3 rounded-xl border-2 border-dashed border-emerald-300 hover:border-emerald-500 hover:bg-emerald-50 transition-colors cursor-pointer text-xs text-emerald-600 font-medium ${aiProductUploading ? 'opacity-60 cursor-wait' : ''}`}>
                       {aiProductUploading ? (
-                        <><Loader2 className="h-4 w-4 animate-spin" /> Caricamento…</>
+                        <><Loader2 className="h-4 w-4 animate-spin" /> Uploading…</>
                       ) : (
-                        <><Upload className="h-4 w-4" /> Carica foto del nostro prodotto</>
+                        <><Upload className="h-4 w-4" /> Upload our product photo</>
                       )}
                       <input
                         type="file"
@@ -5529,7 +5529,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                     </label>
                   )}
                   <p className="text-[10px] text-slate-400 mt-1">
-                    Funziona con i modelli edit multi-immagine (Nano Banana 2 / GPT Image 2).
+                    Works with multi-image edit models (Nano Banana 2 / GPT Image 2).
                   </p>
                 </div>
               )}
@@ -5538,7 +5538,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                   multi-immagine. Pulsante "+" per aggiungerne quante servono. */}
               {aiMode === 'image2image' && (
                 <div>
-                  <label className="text-[10px] text-violet-500 font-medium mb-1 block uppercase tracking-wider">Immagini extra (collage)</label>
+                  <label className="text-[10px] text-violet-500 font-medium mb-1 block uppercase tracking-wider">Extra images (collage)</label>
                   <div className="grid grid-cols-3 gap-2">
                     {aiExtraImages.map((src, i) => (
                       <div key={i} className="relative aspect-square rounded-lg border border-violet-200 overflow-hidden bg-slate-50">
@@ -5555,7 +5555,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                     ))}
                     <label className={`aspect-square flex flex-col items-center justify-center gap-1 rounded-lg border-2 border-dashed border-violet-300 hover:border-violet-500 hover:bg-violet-50 transition-colors cursor-pointer text-violet-500 ${aiExtraUploading ? 'opacity-60 cursor-wait' : ''}`}>
                       {aiExtraUploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <ImagePlus className="h-5 w-5" />}
-                      <span className="text-[9px] font-medium">Aggiungi</span>
+                      <span className="text-[9px] font-medium">Add</span>
                       <input
                         type="file"
                         accept="image/*"
@@ -5567,7 +5567,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                     </label>
                   </div>
                   <p className="text-[10px] text-slate-400 mt-1">
-                    Aggiungi più foto da combinare in un collage. Si sommano alla sorgente e alla foto prodotto.
+                    Add more photos to combine into a collage. They add to the source and the product photo.
                   </p>
                 </div>
               )}
@@ -5575,7 +5575,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
               {/* Context (text2image only) */}
               {aiMode === 'text2image' && aiContextText && (
                 <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
-                  <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Contesto rilevato automaticamente</p>
+                  <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Automatically detected context</p>
                   <p className="text-xs text-slate-600 leading-relaxed line-clamp-3">{aiContextText}</p>
                 </div>
               )}
@@ -5595,21 +5595,21 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                           {swipeVisionLoading
                             ? swipeStage === 'extracting'
                               ? swipeMediaKind === 'image'
-                                ? 'Estraggo il contesto dell\u2019immagine\u2026'
-                                : 'Estraggo 3 frame dal video\u2026'
+                                ? 'Extracting the image context\u2026'
+                                : 'Extracting 3 frames from the video\u2026'
                               : swipeMediaKind === 'image'
-                                ? 'Claude sta esaminando l\u2019immagine\u2026'
-                                : 'Claude sta esaminando i frame\u2026'
+                                ? 'Claude is examining the image\u2026'
+                                : 'Claude is examining the frames\u2026'
                             : aiGenerating
                               ? swipeMediaKind === 'image'
-                                ? 'Sto facendo lo swipe dell\u2019immagine per il tuo prodotto\u2026'
-                                : 'Sto facendo lo swipe del video per il tuo prodotto\u2026'
+                                ? 'Swiping the image for your product\u2026'
+                                : 'Swiping the video for your product\u2026'
                               : swipeMediaKind === 'image'
                                 ? 'Swipe Image for Product'
                                 : 'Swipe Video for Product'}
                         </p>
                         {!swipeVisionLoading && swipeFramesUsed > 0 && swipeMediaKind === 'video' && (
-                          <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-emerald-100 text-emerald-700" title="Numero di frame del clip originale che Claude ha analizzato">
+                          <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-emerald-100 text-emerald-700" title="Number of frames from the original clip that Claude analyzed">
                             {swipeFramesUsed} frame
                           </span>
                         )}
@@ -5624,7 +5624,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                           </span>
                         )}
                         {swipeVisionMode === 'text' && !swipeVisionLoading && (
-                          <span className="text-[9px] uppercase tracking-wider font-medium text-slate-500" title="Sorgente non disponibile, analisi solo testuale">
+                          <span className="text-[9px] uppercase tracking-wider font-medium text-slate-500" title="Source not available, text-only analysis">
                             text-only
                           </span>
                         )}
@@ -5632,8 +5632,8 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                           className="text-[9px] uppercase tracking-wider font-medium text-violet-600 ml-auto"
                           title={
                             swipeMediaKind === 'image'
-                              ? "Text-to-Image: l'AI inventa la composizione da prompt, senza foto sorgente"
-                              : "Text-to-Video: l'AI inventa la scena da prompt, senza foto sorgente"
+                              ? 'Text-to-Image: the AI invents the composition from the prompt, without a source photo'
+                              : 'Text-to-Video: the AI invents the scene from the prompt, without a source photo'
                           }
                         >
                           {swipeMediaKind === 'image' ? 'T2I' : 'T2V'}
@@ -5643,22 +5643,22 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                       {swipeVisionLoading ? (
                         <p className="text-[11px] text-slate-600 leading-relaxed mt-0.5">
                           {swipeMediaKind === 'image'
-                            ? 'Claude sta analizzando l\u2019immagine per capire l\u2019intent (hero / before-after / lifestyle / diagram\u2026) e suggerire un prompt mirato per il tuo prodotto.'
-                            : 'Claude sta analizzando il poster del clip per capire l\u2019intent (demo / before-after / lifestyle\u2026) e suggerire un prompt mirato per il tuo prodotto.'}
+                            ? 'Claude is analyzing the image to understand the intent (hero / before-after / lifestyle / diagram\u2026) and suggest a targeted prompt for your product.'
+                            : 'Claude is analyzing the clip poster to understand the intent (demo / before-after / lifestyle\u2026) and suggest a targeted prompt for your product.'}
                         </p>
                       ) : (
                         <>
                           {aiContextText && (
                             <p className="text-[11px] text-slate-600 leading-relaxed mt-0.5">
                               <span className="text-slate-500">
-                                {swipeMediaKind === 'image' ? 'Immagine originale:' : 'Clip originale:'}
+                                {swipeMediaKind === 'image' ? 'Original image:' : 'Original clip:'}
                               </span>{' '}
                               <span className="italic text-slate-700">&ldquo;{aiContextText.substring(0, 200)}{aiContextText.length > 200 ? '…' : ''}&rdquo;</span>
                             </p>
                           )}
                           {swipeVisionError ? (
                             <p className="text-[11px] text-amber-700 leading-relaxed mt-1">
-                              Analisi vision non riuscita ({swipeVisionError}). Ti ho lasciato un prompt generico — modificalo pure prima di generare.
+                              Vision analysis failed ({swipeVisionError}). I left you a generic prompt — feel free to edit it before generating.
                             </p>
                           ) : (
                             <>
@@ -5680,7 +5680,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                                   {swipeAnalysis && (
                                     <details className="group">
                                       <summary className="cursor-pointer text-[10px] font-semibold text-fuchsia-700 hover:text-fuchsia-900 select-none">
-                                        ▸ Analisi tecnica
+                                        ▸ Technical analysis
                                       </summary>
                                       <p className="text-[10px] text-slate-600 leading-snug mt-1 pl-3 border-l-2 border-fuchsia-200">
                                         {swipeAnalysis}
@@ -5692,11 +5692,11 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                               <p className="text-[11px] text-slate-600 leading-relaxed mt-2">
                                 {swipeMediaKind === 'image' ? (
                                   <>
-                                    Il prompt qui sotto descrive la <strong>composizione completa</strong> per il modello text-to-image. Modificalo o usa i preset qui sotto.
+                                    The prompt below describes the <strong>full composition</strong> for the text-to-image model. Edit it or use the presets below.
                                   </>
                                 ) : (
                                   <>
-                                    Il prompt qui sotto descrive l&apos;<strong>intera scena</strong> per Seedance 2.0 text-to-video. Modificalo o usa i preset qui sotto.
+                                    The prompt below describes the <strong>entire scene</strong> for Seedance 2.0 text-to-video. Edit it or use the presets below.
                                   </>
                                 )}
                               </p>
@@ -5709,11 +5709,11 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                               {/* Preset rapidi: angolazioni narrative pronte */}
                               <div className="flex flex-wrap gap-1 mb-2">
                                 {[
-                                  { key: 'dramatic', label: 'Più drammatico', tip: 'Make it more dramatic and emotional WITHOUT changing the original format/genre: stronger emotional contrast, higher stakes, more intense expression and lighting. If (and only if) it is a before/after, widen the gap between the before-pain and the after-relief; otherwise just intensify the emotion within the same kind of shot.' },
-                                  { key: 'scientific', label: 'Più scientifico', tip: 'Make it more scientific and clinical: a doctor or expert visible, lab/clinic setting, infographic overlays of the mechanism (cross-section, glowing pathways), confident expert voice in the framing.' },
-                                  { key: 'emotional', label: 'Più emotivo', tip: 'Make it more emotional and human: tears of relief, hugging family members, real human moments — the transformation must hit the heart, not just the eyes.' },
-                                  { key: 'mechanism', label: 'Mostra meccanismo', tip: 'Make the unique mechanism the absolute hero of the visual: zoom into the mechanism in action (audio waves, ingredient stream, device glow) for the longest middle beat. Make it impossible to miss what makes this product different.' },
-                                  { key: 'lifestyle', label: 'Più lifestyle', tip: 'Tone it down — make it a confident lifestyle vibe instead of a clinical demo: real-life setting, golden hour, the protagonist living their best life with the product naturally integrated.' },
+                                  { key: 'dramatic', label: 'More dramatic', tip: 'Make it more dramatic and emotional WITHOUT changing the original format/genre: stronger emotional contrast, higher stakes, more intense expression and lighting. If (and only if) it is a before/after, widen the gap between the before-pain and the after-relief; otherwise just intensify the emotion within the same kind of shot.' },
+                                  { key: 'scientific', label: 'More scientific', tip: 'Make it more scientific and clinical: a doctor or expert visible, lab/clinic setting, infographic overlays of the mechanism (cross-section, glowing pathways), confident expert voice in the framing.' },
+                                  { key: 'emotional', label: 'More emotional', tip: 'Make it more emotional and human: tears of relief, hugging family members, real human moments — the transformation must hit the heart, not just the eyes.' },
+                                  { key: 'mechanism', label: 'Show mechanism', tip: 'Make the unique mechanism the absolute hero of the visual: zoom into the mechanism in action (audio waves, ingredient stream, device glow) for the longest middle beat. Make it impossible to miss what makes this product different.' },
+                                  { key: 'lifestyle', label: 'More lifestyle', tip: 'Tone it down — make it a confident lifestyle vibe instead of a clinical demo: real-life setting, golden hour, the protagonist living their best life with the product naturally integrated.' },
                                 ].map((p) => (
                                   <button
                                     key={p.key}
@@ -5733,13 +5733,13 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                               </div>
 
                               <label className="text-[10px] font-bold uppercase tracking-wider text-fuchsia-700 block mb-1">
-                                Oppure scrivi tu (opzionale)
+                                Or write your own (optional)
                               </label>
                               <textarea
                                 value={swipeExtraGuidance}
                                 onChange={(e) => setSwipeExtraGuidance(e.target.value)}
                                 disabled={swipeVisionLoading}
-                                placeholder="Es: fai vedere il meccanismo unico — una persona grassa che ascolta la frequenza con le cuffie e poi è dimagrita."
+                                placeholder="E.g.: show the unique mechanism — an overweight person listening to the frequency with headphones and then slimmed down."
                                 rows={2}
                                 className="w-full px-2 py-1.5 text-[11px] rounded-md border border-fuchsia-200 bg-white text-slate-700 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-fuchsia-400 resize-none"
                               />
@@ -5750,9 +5750,9 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                                 className="mt-1.5 inline-flex items-center gap-1 px-2 py-1 text-[10px] font-semibold rounded-md bg-fuchsia-600 hover:bg-fuchsia-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white transition-colors"
                               >
                                 {swipeVisionLoading ? (
-                                  <><Loader2 className="h-3 w-3 animate-spin" /> Rigenero…</>
+                                  <><Loader2 className="h-3 w-3 animate-spin" /> Regenerating…</>
                                 ) : (
-                                  <><Sparkles className="h-3 w-3" /> Rigenera prompt</>
+                                  <><Sparkles className="h-3 w-3" /> Regenerate prompt</>
                                 )}
                               </button>
                             </div>
@@ -5767,24 +5767,24 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
               <div>
                 <label className="text-xs text-violet-700 font-semibold mb-1.5 block">
                   {aiMode === 'text2image'
-                    ? 'Prompt (opzionale)'
+                    ? 'Prompt (optional)'
                     : aiMode === 'image2image'
-                      ? 'Cosa modificare'
+                      ? 'What to edit'
                       : aiMode === 'text2video'
-                        ? 'Descrivi la scena del video'
-                        : 'Come animare'}
+                        ? 'Describe the video scene'
+                        : 'How to animate'}
                 </label>
                 <textarea
                   value={aiPrompt}
                   onChange={(e) => setAiPrompt(e.target.value)}
                   placeholder={
                     aiMode === 'text2image'
-                      ? (aiContextText ? "Lascia vuoto per generare dal contesto sopra, oppure descrivi l'immagine..." : "Descrivi l'immagine che vuoi generare...")
+                      ? (aiContextText ? 'Leave empty to generate from the context above, or describe the image...' : 'Describe the image you want to generate...')
                       : aiMode === 'image2image'
-                        ? "Es: cambia lo sfondo in una spiaggia tropicale, aggiungi occhiali da sole..."
+                        ? 'E.g.: change the background to a tropical beach, add sunglasses...'
                         : aiMode === 'text2video'
-                          ? "Es: medium shot di una donna sul divano che indossa Metabolic Wave headphones, luce calda, slow push-in di 5s, cinematic, no text, no audio."
-                          : "Es: la persona sorride e fa l'occhiolino, leggero zoom in..."
+                          ? 'E.g.: medium shot of a woman on the couch wearing Metabolic Wave headphones, warm light, 5s slow push-in, cinematic, no text, no audio.'
+                          : 'E.g.: the person smiles and winks, slight zoom in...'
                   }
                   rows={3}
                   className="w-full px-3 py-2.5 text-sm text-slate-900 border border-violet-200 rounded-xl focus:border-violet-400 focus:ring-2 focus:ring-violet-100 outline-none resize-none transition-all placeholder:text-slate-400"
@@ -5796,28 +5796,28 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
               {aiMode === 'text2image' && (
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="text-[10px] text-violet-500 font-medium mb-1 block">Formato</label>
+                    <label className="text-[10px] text-violet-500 font-medium mb-1 block">Format</label>
                     <select
                       value={aiSize}
                       onChange={(e) => setAiSize(e.target.value as typeof aiSize)}
                       className="w-full px-2.5 py-2 text-xs text-slate-900 border border-violet-200 rounded-lg focus:border-violet-400 outline-none bg-white"
                       disabled={aiGenerating}
                     >
-                      <option value="1024x1024">Quadrato (1:1)</option>
+                      <option value="1024x1024">Square (1:1)</option>
                       <option value="1792x1024">Landscape (16:9)</option>
                       <option value="1024x1792">Portrait (9:16)</option>
                     </select>
                   </div>
                   <div>
-                    <label className="text-[10px] text-violet-500 font-medium mb-1 block">Stile</label>
+                    <label className="text-[10px] text-violet-500 font-medium mb-1 block">Style</label>
                     <select
                       value={aiStyle}
                       onChange={(e) => setAiStyle(e.target.value as typeof aiStyle)}
                       className="w-full px-2.5 py-2 text-xs text-slate-900 border border-violet-200 rounded-lg focus:border-violet-400 outline-none bg-white"
                       disabled={aiGenerating}
                     >
-                      <option value="vivid">Vivid (colori intensi)</option>
-                      <option value="natural">Natural (fotorealistico)</option>
+                      <option value="vivid">Vivid (intense colors)</option>
+                      <option value="natural">Natural (photorealistic)</option>
                     </select>
                   </div>
                 </div>
@@ -5827,19 +5827,19 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
               {aiMode === 'image2video' && (
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="text-[10px] text-violet-500 font-medium mb-1 block">Durata</label>
+                    <label className="text-[10px] text-violet-500 font-medium mb-1 block">Duration</label>
                     <select
                       value={aiVideoDuration}
                       onChange={(e) => setAiVideoDuration(Number(e.target.value) as 5 | 10)}
                       className="w-full px-2.5 py-2 text-xs text-slate-900 border border-violet-200 rounded-lg focus:border-violet-400 outline-none bg-white"
                       disabled={aiGenerating}
                     >
-                      <option value={5}>5 secondi</option>
-                      <option value={10}>10 secondi</option>
+                      <option value={5}>5 seconds</option>
+                      <option value={10}>10 seconds</option>
                     </select>
                   </div>
                   <div>
-                    <label className="text-[10px] text-violet-500 font-medium mb-1 block">Riproduzione</label>
+                    <label className="text-[10px] text-violet-500 font-medium mb-1 block">Playback</label>
                     <label className="flex items-center gap-2 px-2.5 py-2 text-xs border border-violet-200 rounded-lg bg-white cursor-pointer">
                       <input
                         type="checkbox"
@@ -5848,7 +5848,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                         disabled={aiGenerating}
                         className="accent-violet-600"
                       />
-                      <span className="text-slate-700">Loop (come GIF)</span>
+                      <span className="text-slate-700">Loop (like GIF)</span>
                     </label>
                   </div>
                 </div>
@@ -5863,28 +5863,28 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                   <>
                     <Loader2 className="h-4 w-4 animate-spin" />
                     {aiMode === 'image2video' || aiMode === 'text2video'
-                      ? 'Generando video... (puo richiedere 1-2 min)'
-                      : 'Generando...'}
+                      ? 'Generating video... (may take 1-2 min)'
+                      : 'Generating...'}
                   </>
                 ) : aiMode === 'text2image' ? (
                   <>
                     <ImagePlus className="h-4 w-4" />
-                    {aiPrompt.trim() ? 'Genera Immagine' : aiContextText ? 'Genera dal Contesto' : 'Genera Immagine'}
+                    {aiPrompt.trim() ? 'Generate Image' : aiContextText ? 'Generate from Context' : 'Generate Image'}
                   </>
                 ) : aiMode === 'image2image' ? (
                   <>
                     <Wand2 className="h-4 w-4" />
-                    Modifica Immagine
+                    Edit Image
                   </>
                 ) : aiMode === 'text2video' ? (
                   <>
                     <Sparkles className="h-4 w-4" />
-                    Genera Video (Swipe)
+                    Generate Video (Swipe)
                   </>
                 ) : (
                   <>
                     <Film className="h-4 w-4" />
-                    Anima Immagine
+                    Animate Image
                   </>
                 )}
               </button>
@@ -5897,7 +5897,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
 
               {aiRevisedPrompt && (
                 <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200">
-                  <p className="text-[10px] text-emerald-600 font-semibold mb-0.5">Descrizione generata dal modello:</p>
+                  <p className="text-[10px] text-emerald-600 font-semibold mb-0.5">Description generated by the model:</p>
                   <p className="text-xs text-emerald-700 leading-relaxed">{aiRevisedPrompt}</p>
                 </div>
               )}
