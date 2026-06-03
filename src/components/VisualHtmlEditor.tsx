@@ -5135,7 +5135,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                   onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleElAiSend(); } }}
                   onPaste={handleElAiPaste}
                   placeholder={el ? 'E.g.: Make text bigger...' : 'E.g.: Add tracking script before </head>...'}
-                  className="flex-1 px-2.5 py-1.5 border border-slate-200 rounded-lg text-[11px] focus:ring-1 focus:ring-violet-500 focus:border-violet-500 outline-none"
+                  className="flex-1 px-2.5 py-2.5 border border-slate-200 rounded-lg text-[12px] text-slate-900 bg-white placeholder:text-slate-400 focus:ring-1 focus:ring-violet-500 focus:border-violet-500 outline-none"
                   disabled={elAiLoading}
                 />
                 <button
