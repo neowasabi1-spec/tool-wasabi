@@ -67,24 +67,47 @@ function getClient(): SupabaseClient {
       return '';
     })();
     const isAuthEndpoint = urlString.includes('/auth/v1/');
-    let authInjected = false;
-    if (!isAuthEndpoint && !headers.has('Authorization')) {
+
+    // CRITICAL: by default the Supabase JS client sets
+    // `Authorization: Bearer <anon_key>` on every REST request when no
+    // session is attached. From Postgres' point of view that makes
+    // `auth.uid()` return NULL, which then trips our phase-1 RLS
+    // fallback (`OR auth.uid() IS NULL`) and grants the request access
+    // to EVERY row — the exact data leak we're trying to plug.
+    //
+    // The first version of this wrapper only added Authorization when
+    // it wasn't already present — which meant the SDK's anon Bearer
+    // always won. We now OVERRIDE the header whenever a wasabi_session
+    // exists so RLS sees the real user.
+    //
+    // Auth endpoints (/auth/v1/...) are left alone: those flows
+    // (sign-in, magic link, password reset) MUST use the anon key as
+    // the bearer, not the user JWT.
+    let mode: 'replaced' | 'kept-custom' | 'none' | 'anon' = 'anon';
+    if (isAuthEndpoint) {
+      mode = 'kept-custom';
+    } else {
       const token = readWasabiAccessToken();
       if (token) {
         headers.set('Authorization', `Bearer ${token}`);
-        authInjected = true;
+        mode = 'replaced';
+      } else if (!headers.has('Authorization')) {
+        mode = 'none';
       }
     }
+
     // One-line per-request diagnostic so we can confirm in the browser
     // console whether the multi-tenancy JWT injection is happening for
-    // each REST call. Strip later once isolation has been verified by
-    // the user.
+    // each REST call. Strip later once isolation has been verified.
     if (typeof window !== 'undefined' && urlString.includes('/rest/v1/')) {
       const table = urlString.split('/rest/v1/')[1]?.split('?')[0]?.split('/')[0] || '?';
+      const label =
+        mode === 'replaced' ? 'JWT ✓ (user)'
+        : mode === 'kept-custom' ? 'JWT (custom)'
+        : mode === 'none' ? 'NO JWT ✗'
+        : 'JWT (anon — no wasabi_session)';
       // eslint-disable-next-line no-console
-      console.info(
-        `[supabase fetch] ${table} → ${authInjected ? 'JWT ✓' : (headers.has('Authorization') ? 'JWT (custom)' : 'NO JWT ✗')}`,
-      );
+      console.info(`[supabase fetch] ${table} → ${label}`);
     }
     return fetch(input, { ...init, headers, cache: 'no-store' });
   };
