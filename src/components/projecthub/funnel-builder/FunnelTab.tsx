@@ -57,6 +57,10 @@ import {
   Upload,
   FileCode,
   ExternalLink,
+  LayoutGrid,
+  Monitor,
+  Smartphone,
+  Loader2,
 } from "lucide-react";
 
 type FunnelStep = {
@@ -872,6 +876,64 @@ export function FunnelTab({ projectId }: { projectId: string }) {
     cancelRenameFlow();
   }, [editingFlowDraft, projectId, updateStep, cancelRenameFlow, toast]);
 
+  // ── Flow "Views" modal ──────────────────────────────────────────
+  // viewsModalFlow = flowKey ('__no_flow__' per il bucket legacy) del
+  // flow di cui mostrare la grid di card. previewStep = step aperto in
+  // visualizzazione Desktop+Mobile dentro al modal Views.
+  const [viewsModalFlow, setViewsModalFlow] = useState<string | null>(null);
+  const [previewStep, setPreviewStep] = useState<FunnelStep | null>(null);
+  const [previewHtml, setPreviewHtml] = useState<string>('');
+  const [previewLoading, setPreviewLoading] = useState(false);
+
+  const viewsModalSteps = useMemo(() => {
+    if (!viewsModalFlow) return [] as FunnelStep[];
+    const wanted = viewsModalFlow === '__no_flow__' ? null : viewsModalFlow;
+    return sortedSteps.filter(s => (s.flow_name || null) === wanted);
+  }, [viewsModalFlow, sortedSteps]);
+
+  // Risolve l'HTML "vero" di uno step seguendo lo stesso ordine di
+  // downloadStepHtml: 1) result_content fresh dal DB, 2) result_content
+  // in cache, 3) html_file_path. Restituisce stringa vuota se nulla.
+  const loadStepHtml = useCallback(async (step: FunnelStep): Promise<string> => {
+    let html = step.result_content || '';
+    try {
+      const res = await fetch(`/api/projecthub/projects/${projectId}/funnel-steps`);
+      if (res.ok) {
+        const rows = await res.json();
+        if (Array.isArray(rows)) {
+          const fresh = rows.find((r: { id: number }) => r.id === step.id) as
+            | { result_content?: string | null }
+            | undefined;
+          if (fresh && typeof fresh.result_content === 'string' && fresh.result_content.trim()) {
+            html = fresh.result_content;
+          }
+        }
+      }
+    } catch { /* offline → uso cache */ }
+    if (!html.trim() && step.html_file_path) {
+      try {
+        const fileRes = await fetch(step.html_file_path);
+        if (fileRes.ok) html = await fileRes.text();
+      } catch { /* ignore */ }
+    }
+    return html;
+  }, [projectId]);
+
+  const openStepPreview = useCallback(async (step: FunnelStep) => {
+    setPreviewStep(step);
+    setPreviewHtml('');
+    setPreviewLoading(true);
+    const html = await loadStepHtml(step);
+    setPreviewHtml(html);
+    setPreviewLoading(false);
+  }, [loadStepHtml]);
+
+  const closeStepPreview = useCallback(() => {
+    setPreviewStep(null);
+    setPreviewHtml('');
+    setPreviewLoading(false);
+  }, []);
+
   const autoNameSteps = () => {
     if (!domain.trim()) { toast({ title: "Enter a domain first", variant: "destructive" }); return; }
     const dom = domain.replace(/https?:\/\//, "").replace(/\/$/, "");
@@ -1177,6 +1239,15 @@ export function FunnelTab({ projectId }: { projectId: string }) {
                                 >
                                   <Pencil className="w-3 h-3" />
                                 </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setViewsModalFlow(flowKey)}
+                                  title="Apri vista a card di questo flow"
+                                  className="ml-1 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-primary/20 hover:bg-primary/30 text-primary transition-colors flex items-center gap-1"
+                                >
+                                  <LayoutGrid className="w-3 h-3" />
+                                  <span>Views</span>
+                                </button>
                               </>
                             )}
                             <span className="text-[10px] font-normal text-muted-foreground normal-case tracking-normal ml-auto">
@@ -1400,6 +1471,206 @@ export function FunnelTab({ projectId }: { projectId: string }) {
           queryClient.invalidateQueries({ queryKey: getListFunnelStepsQueryKey(projectId) });
         }}
       />
+
+      {/* ── Flow "Views" modal — card grid degli step del flow ───────
+          Stessa estetica della vista "Templates archiviati": una griglia
+          responsive di card con preview HTML e click → modal Desktop+Mobile.
+          Click sul backdrop chiude. */}
+      {viewsModalFlow !== null && (
+        <div
+          className="fixed inset-0 z-[60] bg-black/80 flex flex-col"
+          onClick={() => setViewsModalFlow(null)}
+        >
+          <div
+            className="px-6 py-4 flex items-center justify-between bg-gray-900 flex-shrink-0 border-b border-gray-800"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3">
+              <LayoutGrid className="w-6 h-6 text-primary" />
+              <div>
+                <h2 className="text-lg font-bold text-white">
+                  {viewsModalFlow === '__no_flow__'
+                    ? <span className="italic text-gray-300">Senza Flow (legacy)</span>
+                    : <>Flow: <span className="text-primary">{viewsModalFlow}</span></>}
+                </h2>
+                <p className="text-gray-400 text-xs">
+                  {viewsModalSteps.length} step{viewsModalSteps.length === 1 ? '' : ''}
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => setViewsModalFlow(null)}
+              className="text-white/80 hover:text-white text-3xl font-bold px-2"
+              title="Chiudi"
+            >×</button>
+          </div>
+
+          <div
+            className="flex-1 overflow-auto p-6"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {viewsModalSteps.length === 0 ? (
+              <div className="text-center text-gray-400 py-20">
+                Nessuno step in questo flow.
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+                {viewsModalSteps.map((s, i) => {
+                  const hasContent = !!(s.result_content && s.result_content.trim()) || !!s.html_file_path;
+                  const hue = (i * 47 + 200) % 360;
+                  return (
+                    <div
+                      key={s.id}
+                      onClick={() => hasContent && openStepPreview(s)}
+                      className={`group bg-white rounded-xl border overflow-hidden transition-all ${
+                        hasContent
+                          ? 'border-gray-200 hover:shadow-lg hover:border-primary cursor-pointer'
+                          : 'border-gray-200 opacity-60 cursor-not-allowed'
+                      }`}
+                      title={hasContent ? 'Apri anteprima Desktop + Mobile' : 'Nessun HTML disponibile per questo step'}
+                    >
+                      <div className="relative w-full h-[180px] overflow-hidden bg-gray-50">
+                        {s.result_content && s.result_content.trim() ? (
+                          <iframe
+                            srcDoc={s.result_content}
+                            className="w-full h-full border-0 pointer-events-none"
+                            sandbox="allow-same-origin"
+                            title={`thumb-${s.id}`}
+                            style={{ transform: 'scale(0.5)', transformOrigin: '0 0', width: '200%', height: '200%' }}
+                          />
+                        ) : (
+                          <div
+                            className="w-full h-full flex flex-col items-center justify-center p-4 text-center"
+                            style={{ background: `linear-gradient(135deg, hsl(${hue}, 50%, 55%), hsl(${(hue + 40) % 360}, 55%, 45%))` }}
+                          >
+                            <span className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center text-white font-bold text-lg mb-2">{s.step_number}</span>
+                            <span className="text-white/90 text-xs font-medium line-clamp-2 leading-relaxed">{s.page_name || '(senza nome)'}</span>
+                            <span className="mt-1 px-2 py-0.5 bg-white/20 rounded-full text-[9px] text-white/80 font-medium">{s.step_type}</span>
+                          </div>
+                        )}
+                        {s.url && /^https?:\/\//.test(s.url) && (
+                          <a
+                            href={s.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity bg-white/90 rounded-full p-1.5 shadow"
+                            title="Apri URL originale"
+                          >
+                            <ExternalLink className="w-3.5 h-3.5 text-gray-700" />
+                          </a>
+                        )}
+                      </div>
+                      <div className="p-3">
+                        <div className="flex items-center gap-2 mb-1.5">
+                          <span className="text-xs font-bold text-gray-400 bg-gray-100 rounded-full w-5 h-5 flex items-center justify-center">{s.step_number}</span>
+                          <span className="font-semibold text-sm text-gray-900 truncate flex-1">{s.page_name || '(senza nome)'}</span>
+                        </div>
+                        <span className="inline-block px-2 py-0.5 rounded-full text-[10px] font-medium bg-blue-50 text-blue-700">{s.step_type}</span>
+                        {!hasContent && (
+                          <p className="text-[10px] text-gray-400 mt-1 italic">Nessun HTML</p>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Step preview modal — Desktop + Mobile side-by-side ──────
+          Aperto cliccando una card della grid Views. Carica result_content
+          (fallback su html_file_path) e renderizza due iframe affiancate. */}
+      {previewStep && (
+        <div
+          className="fixed inset-0 z-[70] bg-black/90 flex flex-col"
+          onClick={closeStepPreview}
+        >
+          <div
+            className="px-6 py-4 flex items-center justify-between bg-gray-900 flex-shrink-0"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3">
+              <Eye className="w-6 h-6 text-white" />
+              <div>
+                <h2 className="text-lg font-bold text-white">{previewStep.page_name || `Step ${previewStep.step_number}`}</h2>
+                <p className="text-gray-400 text-sm truncate max-w-xl">{previewStep.url || '(no URL)'}</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-3">
+              {previewStep.url && /^https?:\/\//.test(previewStep.url) && (
+                <a
+                  href={previewStep.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm"
+                >
+                  <ExternalLink className="w-4 h-4" /> Open in new tab
+                </a>
+              )}
+              <button
+                onClick={closeStepPreview}
+                className="text-white/80 hover:text-white text-3xl font-bold px-2"
+                title="Chiudi"
+              >×</button>
+            </div>
+          </div>
+
+          <div
+            className="flex-1 flex gap-6 p-6 overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {previewLoading ? (
+              <div className="flex-1 flex items-center justify-center">
+                <div className="text-center">
+                  <Loader2 className="w-12 h-12 text-primary animate-spin mx-auto mb-4" />
+                  <p className="text-white text-lg font-medium">Caricamento pagina…</p>
+                </div>
+              </div>
+            ) : previewHtml ? (
+              <>
+                <div className="flex-1 flex flex-col min-w-0">
+                  <div className="flex items-center gap-2 mb-3">
+                    <Monitor className="w-4 h-4 text-blue-400" />
+                    <span className="text-blue-400 text-sm font-semibold">Desktop</span>
+                  </div>
+                  <div className="flex-1 bg-white rounded-xl overflow-hidden shadow-2xl">
+                    <iframe
+                      srcDoc={previewHtml}
+                      className="w-full h-full border-0"
+                      title="Desktop Preview"
+                      sandbox="allow-same-origin allow-scripts"
+                    />
+                  </div>
+                </div>
+                <div className="flex flex-col items-center" style={{ width: '375px', flexShrink: 0 }}>
+                  <div className="flex items-center gap-2 mb-3">
+                    <Smartphone className="w-4 h-4 text-green-400" />
+                    <span className="text-green-400 text-sm font-semibold">Mobile</span>
+                  </div>
+                  <div className="w-[375px] h-full bg-white rounded-[32px] overflow-hidden shadow-2xl border-[6px] border-gray-700">
+                    <iframe
+                      srcDoc={previewHtml}
+                      className="w-full h-full border-0"
+                      title="Mobile Preview"
+                      sandbox="allow-same-origin allow-scripts"
+                    />
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="flex-1 flex items-center justify-center">
+                <div className="text-center">
+                  <p className="text-white text-lg font-medium">Nessun HTML disponibile</p>
+                  <p className="text-gray-400 text-sm mt-2">Questo step non ha ancora una pagina riscritta o caricata.</p>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
