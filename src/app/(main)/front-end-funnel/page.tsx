@@ -1172,6 +1172,10 @@ export default function FrontEndFunnel() {
   // "Funnel" di un'offerta in My Projects.
   const [saveTarget, setSaveTarget] = useState<'archive' | 'project'>('archive');
   const [saveProjectId, setSaveProjectId] = useState('');
+  // Etichetta "Flow" applicata agli step salvati nel progetto. Permette
+  // di tenere più flow separati nello stesso progetto (es. "Flow A",
+  // "Flow B"): nel FunnelTab gli step vengono raggruppati per flow_name.
+  const [saveFlowName, setSaveFlowName] = useState('');
 
   // ── Per-row selection (Save subset) ──────────────────────────────
   // Quando l'utente spunta una o più righe della tabella, il bottone
@@ -1190,7 +1194,11 @@ export default function FrontEndFunnel() {
 
   // Salva il flow corrente come funnel_steps nel tab "Funnel" del progetto
   // selezionato (My Projects). Mappa ogni pagina del builder su uno step.
-  const saveCurrentFunnelToProject = async (projectId: string, pageIds?: string[]) => {
+  const saveCurrentFunnelToProject = async (
+    projectId: string,
+    pageIds?: string[],
+    flowName?: string,
+  ) => {
     const allPages = funnelPages || [];
     if (!projectId) throw new Error('Nessun progetto selezionato');
     if (allPages.length === 0) throw new Error('Nessuna pagina da salvare');
@@ -1202,6 +1210,10 @@ export default function FrontEndFunnel() {
       ? allPages.filter((p) => pageIds.includes(p.id))
       : allPages;
     if (pages.length === 0) throw new Error('Nessuna pagina selezionata');
+
+    // Flow label: trimmed string or null. null = legacy "no flow" bucket
+    // (back-compat with steps saved before the flow feature shipped).
+    const flowLabel = (flowName || '').trim() || null;
 
     // L'ultima modifica del VisualHtmlEditor vive in memoria (clonedData/
     // swipedData) e, per pagine grandi non ancora reidratate dopo un reload,
@@ -1238,6 +1250,9 @@ export default function FrontEndFunnel() {
         feedback: p.feedback || '',
         status,
         result_content: resultHtml || null,
+        // flow_name is attached to every saved step so the FunnelTab can
+        // group them. NULL when the user didn't pick a flow (legacy bucket).
+        flow_name: flowLabel,
       };
     }));
 
@@ -1255,10 +1270,15 @@ export default function FrontEndFunnel() {
     // Lambda, non del piano): per questo l'HTML pesante (result_content)
     // viaggia sempre con PATCH separate, una pagina per richiesta.
     const norm = (s: string) => (s || '').trim().toLowerCase();
-    const keyOf = (pn: string, u: string) => `${norm(pn)}|||${norm(u)}`;
+    // Identity key now includes flow_name: lo stesso (page_name, url) può
+    // esistere in più Flow dello stesso progetto come step indipendenti.
+    // Senza flow_name nella key, saving "Flow B / Landing" avrebbe fatto
+    // match con "Flow A / Landing" già presente e l'avrebbe aggiornato.
+    const keyOf = (fn: string | null | undefined, pn: string, u: string) =>
+      `${norm(fn || '')}|||${norm(pn)}|||${norm(u)}`;
 
     // Leggo gli step già presenti nel progetto per decidere update vs insert.
-    let existingSteps: Array<{ id: number; step_number: number; page_name: string; url: string }> = [];
+    let existingSteps: Array<{ id: number; step_number: number; page_name: string; url: string; flow_name?: string | null }> = [];
     try {
       const exRes = await fetch(`/api/projecthub/projects/${projectId}/funnel-steps`);
       if (exRes.ok) {
@@ -1268,21 +1288,28 @@ export default function FrontEndFunnel() {
     } catch { /* se non riesco a leggere, tratto tutto come nuovo (append) */ }
 
     const existingByKey = new Map<string, { id: number; step_number: number }>();
+    // step_number è LOCALE al flow: ogni flow ha la sua sequenza 1..N
+    // che parte da zero quando il flow non esiste ancora. Senza questo,
+    // un nuovo "Flow B" partirebbe da N+1 di "Flow A" (numeri saltati).
+    const maxStepByFlow = new Map<string, number>();
     for (const r of existingSteps) {
-      existingByKey.set(keyOf(r.page_name, r.url), { id: r.id, step_number: r.step_number });
+      const fk = norm(r.flow_name || '');
+      existingByKey.set(keyOf(r.flow_name, r.page_name, r.url), { id: r.id, step_number: r.step_number });
+      maxStepByFlow.set(fk, Math.max(maxStepByFlow.get(fk) ?? 0, r.step_number || 0));
     }
-    let maxStep = existingSteps.reduce((m, r) => Math.max(m, r.step_number || 0), 0);
 
     type StepPayload = (typeof steps)[number];
     const toUpdate: Array<{ id: number; pageIdx: number; step: StepPayload }> = [];
     const toInsert: Array<{ assignedStep: number; pageIdx: number; step: StepPayload }> = [];
+    const flowKey = norm(flowLabel || '');
     steps.forEach((s, idx) => {
-      const match = existingByKey.get(keyOf(s.page_name, s.url));
+      const match = existingByKey.get(keyOf(flowLabel, s.page_name, s.url));
       if (match) {
         toUpdate.push({ id: match.id, pageIdx: idx, step: s });
       } else {
-        maxStep += 1;
-        toInsert.push({ assignedStep: maxStep, pageIdx: idx, step: { ...s, step_number: maxStep } });
+        const next = (maxStepByFlow.get(flowKey) ?? 0) + 1;
+        maxStepByFlow.set(flowKey, next);
+        toInsert.push({ assignedStep: next, pageIdx: idx, step: { ...s, step_number: next } });
       }
     });
 
@@ -1452,9 +1479,17 @@ export default function FrontEndFunnel() {
     const subset = selectedStepIds.size > 0 ? Array.from(selectedStepIds) : undefined;
     if (saveTarget === 'project') {
       if (!saveProjectId) return;
+      // Il Flow name è obbligatorio per il save su progetto: senza, gli
+      // step finirebbero nel bucket "Senza Flow" insieme a quelli legacy
+      // perdendo l'identificazione che l'utente ha richiesto.
+      const flowLabel = saveFlowName.trim();
+      if (!flowLabel) {
+        alert('Inserisci un nome per il Flow (es. "Flow Plastilean", "Flow Calminity").');
+        return;
+      }
       setIsSaving(true);
-      saveCurrentFunnelToProject(saveProjectId, subset)
-        .then(() => { setShowSaveModal(false); setIsSaving(false); })
+      saveCurrentFunnelToProject(saveProjectId, subset, flowLabel)
+        .then(() => { setShowSaveModal(false); setIsSaving(false); setSaveFlowName(''); })
         .catch((e) => { setIsSaving(false); alert('Errore salvataggio nel progetto: ' + ((e as Error)?.message || '')); });
       return;
     }
@@ -8693,7 +8728,9 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
           <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-md mx-4">
             <h3 className="text-lg font-bold text-gray-900 mb-1">Save Funnel</h3>
             <p className="text-sm text-gray-500 mb-4">
-              Salva {funnelPages?.length || 0} step. Scegli dove salvarli.
+              Salva {selectedStepIds.size > 0 ? selectedStepIds.size : (funnelPages?.length || 0)} step
+              {selectedStepIds.size > 0 ? <span className="text-purple-700 font-medium"> (selezionati)</span> : null}
+              . Scegli dove salvarli.
             </p>
 
             {/* Selettore destinazione */}
@@ -8740,24 +8777,45 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                 }}
               />
             ) : (
-              <div>
-                <label className="block text-xs font-medium text-gray-500 mb-1">
-                  Offerta (My Projects)
-                </label>
-                <select
-                  value={saveProjectId}
-                  onChange={(e) => setSaveProjectId(e.target.value)}
-                  className="w-full border border-gray-300 rounded-lg px-4 py-2.5 text-sm focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none bg-white"
-                  autoFocus
-                >
-                  <option value="">— Seleziona un'offerta —</option>
-                  {(projects || []).map((pr) => (
-                    <option key={pr.id} value={pr.id}>{pr.name}</option>
-                  ))}
-                </select>
-                <p className="text-xs text-gray-400 mt-2">
-                  Gli step verranno aggiunti al tab <strong>Funnel</strong> del progetto scelto.
-                </p>
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">
+                    Offerta (My Projects)
+                  </label>
+                  <select
+                    value={saveProjectId}
+                    onChange={(e) => setSaveProjectId(e.target.value)}
+                    className="w-full border border-gray-300 rounded-lg px-4 py-2.5 text-sm focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none bg-white"
+                    autoFocus
+                  >
+                    <option value="">— Seleziona un'offerta —</option>
+                    {(projects || []).map((pr) => (
+                      <option key={pr.id} value={pr.id}>{pr.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">
+                    Nome Flow <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={saveFlowName}
+                    onChange={(e) => setSaveFlowName(e.target.value)}
+                    placeholder='Es. "Flow Plastilean", "Flow Calminity"...'
+                    className="w-full border border-gray-300 rounded-lg px-4 py-2.5 text-sm focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && saveProjectId && saveFlowName.trim()) {
+                        e.preventDefault();
+                        handleConfirmSave();
+                      }
+                    }}
+                  />
+                  <p className="text-xs text-gray-400 mt-1.5">
+                    Gli step verranno aggiunti al tab <strong>Funnel</strong> del progetto, raggruppati sotto questo nome di Flow.
+                    Riusando lo stesso nome aggiorni gli step di quel Flow.
+                  </p>
+                </div>
               </div>
             )}
 
@@ -8774,7 +8832,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                 disabled={
                   isSaving ||
                   (saveTarget === 'archive' && !saveFunnelName.trim()) ||
-                  (saveTarget === 'project' && !saveProjectId)
+                  (saveTarget === 'project' && (!saveProjectId || !saveFlowName.trim()))
                 }
                 className="px-5 py-2 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
               >

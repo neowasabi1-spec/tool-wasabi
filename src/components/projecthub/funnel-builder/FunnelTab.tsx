@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import {
   useListFunnelSteps,
   useCreateFunnelStep,
@@ -77,6 +77,10 @@ type FunnelStep = {
   result_content: string | null;
   feedback: string;
   created_at: string;
+  // Optional grouping label set when steps are saved from the
+  // front-end-funnel builder with a Flow name. NULL on legacy rows
+  // saved before the feature shipped → rendered under "Senza Flow".
+  flow_name?: string | null;
 };
 
 type ChatMsg = { role: "user" | "assistant"; message: string };
@@ -89,8 +93,8 @@ const STEP_TYPES = [
 const BASE_URL = "";
 
 function statusBadge(status: string) {
-  if (status === "completed") return <Badge className="bg-green-100 text-green-700 border-green-200 text-[10px] px-1.5 py-0.5 whitespace-nowrap">Completato</Badge>;
-  if (status === "in_progress") return <Badge className="bg-amber-100 text-amber-700 border-amber-200 text-[10px] px-1.5 py-0.5 whitespace-nowrap">In Corso</Badge>;
+  if (status === "completed") return <Badge className="bg-green-100 text-green-700 border-green-200 text-[10px] px-1.5 py-0.5 whitespace-nowrap">Completed</Badge>;
+  if (status === "in_progress") return <Badge className="bg-amber-100 text-amber-700 border-amber-200 text-[10px] px-1.5 py-0.5 whitespace-nowrap">In Progress</Badge>;
   return <Badge variant="secondary" className="text-[10px] px-1.5 py-0.5 whitespace-nowrap text-muted-foreground">Pending</Badge>;
 }
 
@@ -229,7 +233,7 @@ function ResultModal({ step, onClose }: { step: FunnelStep; onClose: () => void 
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Eye className="w-4 h-4 text-primary" />
-            Risultato — {step.page_name || `Step ${step.step_number}`}
+            Result — {step.page_name || `Step ${step.step_number}`}
           </DialogTitle>
         </DialogHeader>
 
@@ -240,7 +244,7 @@ function ResultModal({ step, onClose }: { step: FunnelStep; onClose: () => void 
                 onClick={() => setView("preview")}
                 className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors ${view === "preview" ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:text-foreground"}`}
               >
-                <Globe className="w-3.5 h-3.5" /> Anteprima
+                <Globe className="w-3.5 h-3.5" /> Preview
               </button>
               <button
                 onClick={() => setView("code")}
@@ -252,16 +256,16 @@ function ResultModal({ step, onClose }: { step: FunnelStep; onClose: () => void 
             <button
               onClick={openInNewTab}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground border border-border rounded-lg transition-colors"
-              title="Apri la pagina in una nuova scheda"
+              title="Open the page in a new tab"
             >
-              <ExternalLink className="w-3.5 h-3.5" /> Apri in nuova scheda
+              <ExternalLink className="w-3.5 h-3.5" /> Open in new tab
             </button>
           </div>
         )}
 
         <div className="mt-4 flex-1 overflow-y-auto">
           {!content ? (
-            <p className="text-muted-foreground italic text-sm">Nessun contenuto generato ancora. Premi SWIPE per generare.</p>
+            <p className="text-muted-foreground italic text-sm">No content generated yet. Press SWIPE to generate.</p>
           ) : view === "preview" ? (
             <iframe
               srcDoc={previewHtml || content}
@@ -351,7 +355,7 @@ function ChatPanel({
         }
       }
     } catch {
-      toast({ title: "Errore chat", variant: "destructive" });
+      toast({ title: "Chat error", variant: "destructive" });
     } finally {
       setStreaming(false);
     }
@@ -375,8 +379,8 @@ function ChatPanel({
         {messages.length === 0 && !streaming && (
           <div className="text-center py-8">
             <MessageSquare className="w-8 h-8 text-muted-foreground/40 mx-auto mb-2" />
-            <p className="text-xs text-muted-foreground">Chiedi all'AI di modificare il contenuto del funnel step.</p>
-            <p className="text-xs text-muted-foreground mt-1">Es: "Rendi il titolo più aggressivo" o "Aggiungi una sezione testimonial"</p>
+            <p className="text-xs text-muted-foreground">Ask the AI to edit the funnel step content.</p>
+            <p className="text-xs text-muted-foreground mt-1">Eg: "Make the headline more aggressive" or "Add a testimonial section"</p>
           </div>
         )}
         {messages.map((m, i) => (
@@ -400,7 +404,7 @@ function ChatPanel({
         )}
         {streaming && !streamingText && (
           <div className="flex justify-start">
-            <div className="bg-muted rounded-xl px-3 py-2 text-xs text-muted-foreground">Generando…</div>
+            <div className="bg-muted rounded-xl px-3 py-2 text-xs text-muted-foreground">Generating…</div>
           </div>
         )}
         <div ref={bottomRef} />
@@ -413,7 +417,7 @@ function ChatPanel({
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } }}
-            placeholder="Descrivi cosa vuoi modificare…"
+            placeholder="Describe what you want to change…"
             rows={2}
             className="text-xs flex-1 resize-none"
             disabled={streaming}
@@ -468,7 +472,7 @@ function FunnelLibraryDialog({
         setLoading(false);
       })
       .catch(() => {
-        toast({ title: "Errore caricamento libreria", variant: "destructive" });
+        toast({ title: "Error loading library", variant: "destructive" });
         setLoading(false);
       });
   }, [open, currentProjectId, toast]);
@@ -487,14 +491,14 @@ function FunnelLibraryDialog({
       });
       if (r.ok) {
         setImported(prev => new Set(prev).add(source.id));
-        toast({ title: "Funnel importato!", description: `${source.stepCount} step aggiunti da "${source.name}".` });
+        toast({ title: "Funnel imported!", description: `${source.stepCount} steps added from "${source.name}".` });
         onImported();
       } else {
         const err = await r.json();
-        toast({ title: "Errore importazione", description: err.error ?? "Errore sconosciuto", variant: "destructive" });
+        toast({ title: "Import error", description: err.error ?? "Unknown error", variant: "destructive" });
       }
     } catch {
-      toast({ title: "Errore di rete", variant: "destructive" });
+      toast({ title: "Network error", variant: "destructive" });
     } finally {
       setImporting(null);
     }
@@ -506,9 +510,9 @@ function FunnelLibraryDialog({
         <DialogHeader className="px-6 pt-6 pb-0">
           <DialogTitle className="flex items-center gap-2 text-base">
             <Library className="w-4 h-4 text-primary" />
-            Importa da Funnel Esistente
+            Import from Existing Funnel
           </DialogTitle>
-          <p className="text-xs text-muted-foreground mt-1">Seleziona un funnel salvato da un altro brand o competitor per importarne gli step.</p>
+          <p className="text-xs text-muted-foreground mt-1">Select a funnel saved from another brand or competitor to import its steps.</p>
         </DialogHeader>
 
         {/* Search */}
@@ -519,7 +523,7 @@ function FunnelLibraryDialog({
               autoFocus
               value={search}
               onChange={e => setSearch(e.target.value)}
-              placeholder="Cerca funnel per nome o tipo..."
+              placeholder="Search funnels by name or type..."
               className="w-full pl-9 pr-3 py-2 text-sm border border-border rounded-lg bg-background focus:outline-none focus:ring-2 focus:ring-primary/30"
             />
           </div>
@@ -528,11 +532,11 @@ function FunnelLibraryDialog({
         {/* List */}
         <div className="px-6 pb-6 max-h-[380px] overflow-y-auto space-y-1.5">
           {loading && (
-            <div className="py-10 text-center text-sm text-muted-foreground">Caricamento libreria…</div>
+            <div className="py-10 text-center text-sm text-muted-foreground">Loading library…</div>
           )}
           {!loading && filtered.length === 0 && (
             <div className="py-10 text-center text-sm text-muted-foreground">
-              {library.length === 0 ? "Nessun funnel salvato in altri progetti." : "Nessun risultato per la ricerca."}
+              {library.length === 0 ? "No funnels saved in other projects." : "No results for your search."}
             </div>
           )}
           {!loading && filtered.map(f => {
@@ -564,11 +568,11 @@ function FunnelLibraryDialog({
                   }`}
                 >
                   {isImported ? (
-                    <><Check className="w-3 h-3" /> Importato</>
+                    <><Check className="w-3 h-3" /> Imported</>
                   ) : isImporting ? (
-                    <><RefreshCw className="w-3 h-3 animate-spin" /> Importo…</>
+                    <><RefreshCw className="w-3 h-3 animate-spin" /> Importing…</>
                   ) : (
-                    <><ArrowDownToLine className="w-3 h-3" /> Importa</>
+                    <><ArrowDownToLine className="w-3 h-3" /> Import</>
                   )}
                 </button>
               </div>
@@ -613,13 +617,13 @@ function UrlOrHtmlCell({
       if (r.ok) {
         const updated = await r.json() as FunnelStep;
         onStepUpdate(updated);
-        toast({ title: "HTML caricato!", description: file.name });
+        toast({ title: "HTML uploaded!", description: file.name });
       } else {
         const err = await r.json();
-        toast({ title: "Errore upload", description: err.error, variant: "destructive" });
+        toast({ title: "Upload error", description: err.error, variant: "destructive" });
       }
     } catch {
-      toast({ title: "Errore di rete", variant: "destructive" });
+      toast({ title: "Network error", variant: "destructive" });
     } finally {
       setUploading(false);
       if (fileRef.current) fileRef.current.value = "";
@@ -633,10 +637,10 @@ function UrlOrHtmlCell({
       if (r.ok) {
         const updated = await r.json() as FunnelStep;
         onStepUpdate(updated);
-        toast({ title: "HTML rimosso" });
+        toast({ title: "HTML removed" });
       }
     } catch {
-      toast({ title: "Errore", variant: "destructive" });
+      toast({ title: "Error", variant: "destructive" });
     } finally {
       setRemoving(false);
     }
@@ -655,7 +659,7 @@ function UrlOrHtmlCell({
             href={htmlUrl}
             target="_blank"
             rel="noopener noreferrer"
-            title="Anteprima HTML"
+            title="HTML preview"
             className="text-blue-500 hover:text-blue-700 flex-shrink-0"
           >
             <ExternalLink className="w-3 h-3" />
@@ -663,7 +667,7 @@ function UrlOrHtmlCell({
           <button
             onClick={handleRemoveHtml}
             disabled={removing}
-            title="Rimuovi HTML"
+            title="Remove HTML"
             className="p-0.5 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors flex-shrink-0"
           >
             {removing ? <RefreshCw className="w-2.5 h-2.5 animate-spin" /> : <X className="w-2.5 h-2.5" />}
@@ -685,7 +689,7 @@ function UrlOrHtmlCell({
       <button
         onClick={() => fileRef.current?.click()}
         disabled={uploading}
-        title={hasHtml ? "Sostituisci file HTML" : "Carica file HTML"}
+        title={hasHtml ? "Replace HTML file" : "Upload HTML file"}
         className="p-0.5 rounded hover:bg-blue-50 text-muted-foreground hover:text-blue-600 transition-colors flex-shrink-0"
       >
         {uploading ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Upload className="w-3 h-3" />}
@@ -719,12 +723,54 @@ export function FunnelTab({ projectId }: { projectId: string }) {
     if (steps !== undefined) setLocalSteps(steps as FunnelStep[]);
   }, [steps]);
 
+  // ── Flow grouping ───────────────────────────────────────────────
+  // Riordino gli step per (flow_name, step_number) così la tabella
+  // mostra ogni Flow come blocco contiguo con la sua sequenza 1..N.
+  // Gli step senza flow_name (legacy o salvati prima del feature)
+  // finiscono in coda nel bucket "Senza Flow".
+  const sortedSteps = useMemo(() => {
+    const flowRank = (name: string | null | undefined): string => {
+      const trimmed = (name || '').trim();
+      // empty/null go last via a high-sort sentinel; named flows sorted
+      // alphabetically (case-insensitive) — stable + predictable.
+      return trimmed ? `0_${trimmed.toLowerCase()}` : '1_zzzz';
+    };
+    return [...localSteps].sort((a, b) => {
+      const fa = flowRank(a.flow_name);
+      const fb = flowRank(b.flow_name);
+      if (fa !== fb) return fa < fb ? -1 : 1;
+      return (a.step_number || 0) - (b.step_number || 0);
+    });
+  }, [localSteps]);
+
+  // Map<flow_label, count> per la badge nel separator row.
+  const flowCounts = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const s of sortedSteps) {
+      const label = (s.flow_name || '').trim() || '__no_flow__';
+      m.set(label, (m.get(label) || 0) + 1);
+    }
+    return m;
+  }, [sortedSteps]);
+
+  // Collapse-state per flow (default: tutti espansi). Persisto per
+  // sessione corrente — al refresh tutto torna espanso (intenzionale:
+  // non vogliamo che un flow nascosto sparisca silenziosamente).
+  const [collapsedFlows, setCollapsedFlows] = useState<Set<string>>(new Set());
+  const toggleFlowCollapsed = useCallback((label: string) => {
+    setCollapsedFlows(prev => {
+      const next = new Set(prev);
+      if (next.has(label)) next.delete(label); else next.add(label);
+      return next;
+    });
+  }, []);
+
   const createStep = useCreateFunnelStep({
     mutation: {
       onSuccess: () => {
         queryClient.invalidateQueries({ queryKey: getListFunnelStepsQueryKey(projectId) });
       },
-      onError: () => toast({ title: "Errore", description: "Impossibile aggiungere step.", variant: "destructive" }),
+      onError: () => toast({ title: "Error", description: "Unable to add step.", variant: "destructive" }),
     },
   });
 
@@ -741,7 +787,7 @@ export function FunnelTab({ projectId }: { projectId: string }) {
     mutation: {
       onSuccess: () => {
         queryClient.invalidateQueries({ queryKey: getListFunnelStepsQueryKey(projectId) });
-        toast({ title: "Step eliminato" });
+        toast({ title: "Step deleted" });
       },
     },
   });
@@ -760,7 +806,7 @@ export function FunnelTab({ projectId }: { projectId: string }) {
       projectId,
       data: {
         step_number: nextNum,
-        page_name: `${step.page_name} (copia)`,
+        page_name: `${step.page_name} (copy)`,
         step_type: step.step_type,
         url: step.url,
         target: step.target,
@@ -779,7 +825,7 @@ export function FunnelTab({ projectId }: { projectId: string }) {
   };
 
   const autoNameSteps = () => {
-    if (!domain.trim()) { toast({ title: "Inserisci un dominio prima", variant: "destructive" }); return; }
+    if (!domain.trim()) { toast({ title: "Enter a domain first", variant: "destructive" }); return; }
     const dom = domain.replace(/https?:\/\//, "").replace(/\/$/, "");
     localSteps.forEach((step, i) => {
       const slug = step.page_name
@@ -788,7 +834,7 @@ export function FunnelTab({ projectId }: { projectId: string }) {
       const url = `https://${dom}/${slug}${i > 0 ? `-${i + 1}` : ""}`;
       patchStep(step.id, { url });
     });
-    toast({ title: "URL generati!", description: `Domini assegnati su ${dom}` });
+    toast({ title: "URLs generated!", description: `Domains assigned on ${dom}` });
   };
 
   // Salva nel DB l'HTML editato dal Visual Editor (apertura "Editing" dalla
@@ -802,9 +848,9 @@ export function FunnelTab({ projectId }: { projectId: string }) {
         body: JSON.stringify({ result_content: html }),
       });
       queryClient.invalidateQueries({ queryKey: getListFunnelStepsQueryKey(projectId) });
-      toast({ title: "Modifiche salvate" });
+      toast({ title: "Changes saved" });
     } catch {
-      toast({ title: "Errore salvataggio", variant: "destructive" });
+      toast({ title: "Error saving", variant: "destructive" });
     }
   }, [projectId, queryClient, toast]);
 
@@ -841,8 +887,8 @@ export function FunnelTab({ projectId }: { projectId: string }) {
     }
     if (!html.trim()) {
       toast({
-        title: "HTML non disponibile",
-        description: "Questo step non ha ancora contenuto da scaricare (esegui Clone/Rewrite o un'edit).",
+        title: "HTML not available",
+        description: "This step has no content to download yet (run Clone/Rewrite or an edit).",
         variant: "destructive",
       });
       return;
@@ -850,7 +896,7 @@ export function FunnelTab({ projectId }: { projectId: string }) {
 
     // Sanamento: rimuove i tracker del competitor (pixel, GTM, analytics)
     // SOLO dal file scaricato. Mostriamo un popup durante la pulizia.
-    setSanitizeMsg({ phase: "working", text: "Sanamento pagina… rimozione tracker competitor" });
+    setSanitizeMsg({ phase: "working", text: "Sanitizing page… removing competitor trackers" });
     await new Promise((r) => setTimeout(r, 200));
     const clean = stripCompetitorTracking(html);
 
@@ -872,19 +918,19 @@ export function FunnelTab({ projectId }: { projectId: string }) {
     setSanitizeMsg({
       phase: "done",
       text: clean.removedCount
-        ? `Pagina sanata: rimossi ${clean.removedCount} tracker (${clean.categories.join(", ")})`
-        : "Nessun tracker rilevato — pagina già pulita",
+        ? `Page sanitized: removed ${clean.removedCount} trackers (${clean.categories.join(", ")})`
+        : "No tracker detected — page already clean",
     });
     setTimeout(() => setSanitizeMsg(null), 1800);
   }, [projectId, toast]);
 
   const cleanAll = () => {
     if (!localSteps.length) return;
-    if (!confirm("Eliminare tutti gli step?")) return;
+    if (!confirm("Delete all steps?")) return;
     localSteps.forEach(s => deleteStep.mutate({ projectId, stepId: s.id }));
   };
 
-  if (isLoading) return <div className="py-12 text-center text-sm text-muted-foreground">Caricamento…</div>;
+  if (isLoading) return <div className="py-12 text-center text-sm text-muted-foreground">Loading…</div>;
 
   return (
     <div className="space-y-4 relative">
@@ -894,7 +940,7 @@ export function FunnelTab({ projectId }: { projectId: string }) {
           <DropdownMenuTrigger asChild>
             <Button className="bg-primary hover:bg-primary/90 text-primary-foreground gap-2" size="sm">
               <Plus className="w-3.5 h-3.5" />
-              Aggiungi Step
+              Add Step
               <ChevronDown className="w-3 h-3" />
             </Button>
           </DropdownMenuTrigger>
@@ -918,7 +964,7 @@ export function FunnelTab({ projectId }: { projectId: string }) {
               className="text-primary font-medium gap-1.5"
             >
               <Plus className="w-3.5 h-3.5" />
-              Personalizzato…
+              Custom…
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -932,13 +978,13 @@ export function FunnelTab({ projectId }: { projectId: string }) {
           onClick={() => setShowImportDialog(true)}
         >
           <Library className="w-3.5 h-3.5" />
-          Importa da Funnel Esistente
+          Import from Existing Funnel
         </Button>
 
         <div className="ml-auto flex items-center gap-2">
           <Button size="sm" variant="outline" className="gap-1.5 text-destructive hover:text-destructive" onClick={cleanAll}>
             <Trash2 className="w-3.5 h-3.5" />
-            Pulisci
+            Clear
           </Button>
         </div>
       </div>
@@ -947,7 +993,7 @@ export function FunnelTab({ projectId }: { projectId: string }) {
       {customTypeMode && (
         <div className="flex items-center gap-2 p-3 bg-primary/5 border border-primary/20 rounded-lg">
           <Plus className="w-3.5 h-3.5 text-primary flex-shrink-0" />
-          <span className="text-sm text-primary font-medium whitespace-nowrap">Tipo step:</span>
+          <span className="text-sm text-primary font-medium whitespace-nowrap">Step type:</span>
           <input
             ref={customTypeRef}
             value={customTypeName}
@@ -959,7 +1005,7 @@ export function FunnelTab({ projectId }: { projectId: string }) {
               }
               if (e.key === "Escape") { setCustomTypeMode(false); setCustomTypeName(""); }
             }}
-            placeholder="Es. Order Bump, Lead Gen, Webinar…"
+            placeholder="Eg. Order Bump, Lead Gen, Webinar…"
             className="flex-1 px-3 py-1.5 text-sm border border-border rounded-md bg-background focus:outline-none focus:ring-2 focus:ring-primary/30 max-w-xs"
           />
           <button
@@ -970,7 +1016,7 @@ export function FunnelTab({ projectId }: { projectId: string }) {
             disabled={!customTypeName.trim()}
             className="px-3 py-1.5 text-xs font-semibold rounded-md bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
-            Aggiungi
+            Add
           </button>
           <button
             onClick={() => { setCustomTypeMode(false); setCustomTypeName(""); }}
@@ -984,7 +1030,7 @@ export function FunnelTab({ projectId }: { projectId: string }) {
       {/* Domain row */}
       <div className="flex items-center gap-3">
         <Globe className="w-4 h-4 text-muted-foreground flex-shrink-0" />
-        <span className="text-sm text-muted-foreground">Dominio:</span>
+        <span className="text-sm text-muted-foreground">Domain:</span>
         <Input
           value={domain}
           onChange={(e) => setDomain(e.target.value)}
@@ -1001,10 +1047,10 @@ export function FunnelTab({ projectId }: { projectId: string }) {
       {localSteps.length === 0 && (
         <div className="py-16 text-center border-2 border-dashed border-border rounded-xl">
           <Zap className="w-10 h-10 text-muted-foreground/40 mx-auto mb-3" />
-          <p className="text-sm font-medium text-foreground mb-1">Nessun step ancora</p>
-          <p className="text-xs text-muted-foreground mb-4">Aggiungi il primo step del tuo funnel</p>
+          <p className="text-sm font-medium text-foreground mb-1">No steps yet</p>
+          <p className="text-xs text-muted-foreground mb-4">Add the first step of your funnel</p>
           <Button onClick={() => addStep()} size="sm" className="bg-primary text-primary-foreground gap-1.5">
-            <Plus className="w-3.5 h-3.5" /> Aggiungi Step
+            <Plus className="w-3.5 h-3.5" /> Add Step
           </Button>
         </div>
       )}
@@ -1015,7 +1061,7 @@ export function FunnelTab({ projectId }: { projectId: string }) {
           <table className="w-full text-xs border-collapse min-w-[1400px]">
             <thead>
               <tr className="bg-muted/60 border-b border-border">
-                {["#", "Pagina", "Tipo", "URL", "Target", "Angolo", "Prompt / Note", "Auto-gen", "Fidelity", "Prodotto", "Status", "Risultato", "Feedback", "Azioni"].map(h => (
+                {["#", "Page", "Type", "URL", "Target", "Angle", "Prompt / Notes", "Auto-gen", "Fidelity", "Product", "Status", "Result", "Feedback", "Actions"].map(h => (
                   <th key={h} className="text-left px-3 py-2 font-semibold text-muted-foreground text-[10px] uppercase tracking-wider whitespace-nowrap border-r border-border/50 last:border-r-0">
                     {h}
                   </th>
@@ -1023,11 +1069,53 @@ export function FunnelTab({ projectId }: { projectId: string }) {
               </tr>
             </thead>
             <tbody>
-              {localSteps.map((step, idx) => {
-                const rowBg = idx % 2 === 0 ? "bg-card" : "bg-muted/20";
+              {(() => {
+                // Render sortedSteps but insert a "Flow: X" separator row
+                // each time flow_name changes. Skip step rows belonging to
+                // a collapsed flow. zebra-stripe by visible step index so
+                // the alternating bg stays clean even after collapse.
+                const rows: React.ReactNode[] = [];
+                let prevFlowLabel: string | null = null;
+                let visibleIdx = -1;
+                sortedSteps.forEach((step) => {
+                  const flowLabel = (step.flow_name || '').trim();
+                  const flowKey = flowLabel || '__no_flow__';
+                  // Separator at every flow boundary (incl. very first row).
+                  if (flowKey !== prevFlowLabel) {
+                    const isCollapsed = collapsedFlows.has(flowKey);
+                    const count = flowCounts.get(flowKey) || 0;
+                    rows.push(
+                      <tr key={`flow-sep-${flowKey}`} className="bg-primary/10 hover:bg-primary/15 transition-colors border-y-2 border-primary/30">
+                        <td colSpan={14} className="px-3 py-1.5">
+                          <button
+                            type="button"
+                            onClick={() => toggleFlowCollapsed(flowKey)}
+                            className="flex items-center gap-2 text-xs font-bold text-primary uppercase tracking-wider w-full text-left"
+                          >
+                            <ChevronDown className={`w-3 h-3 transition-transform ${isCollapsed ? '-rotate-90' : ''}`} />
+                            <span>
+                              {flowLabel
+                                ? <>Flow: <span className="text-foreground">{flowLabel}</span></>
+                                : <span className="text-muted-foreground italic">Senza Flow (legacy)</span>}
+                            </span>
+                            <span className="text-[10px] font-normal text-muted-foreground normal-case tracking-normal">
+                              ({count} step{count === 1 ? '' : ''})
+                            </span>
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                    prevFlowLabel = flowKey;
+                  }
 
-                return (
-                  <tr key={step.id} className={`${rowBg} border-b border-border/50 last:border-b-0 hover:bg-primary/5 transition-colors group`}>
+                  // Skip body row when flow is collapsed.
+                  if (collapsedFlows.has(flowKey)) return;
+
+                  visibleIdx += 1;
+                  const rowBg = visibleIdx % 2 === 0 ? "bg-card" : "bg-muted/20";
+
+                  rows.push(
+                    <tr key={step.id} className={`${rowBg} border-b border-border/50 last:border-b-0 hover:bg-primary/5 transition-colors group`}>
                     {/* # */}
                     <td className="px-3 py-2 border-r border-border/50 text-center">
                       <span className="w-5 h-5 rounded-full bg-muted flex items-center justify-center text-[10px] font-mono font-bold text-muted-foreground mx-auto">
@@ -1037,7 +1125,7 @@ export function FunnelTab({ projectId }: { projectId: string }) {
 
                     {/* Page name */}
                     <td className="px-2 py-1 border-r border-border/50 min-w-[140px] max-w-[180px]">
-                      <InlineEdit value={step.page_name} onChange={v => patchStep(step.id, { page_name: v })} placeholder="Nome pagina" />
+                      <InlineEdit value={step.page_name} onChange={v => patchStep(step.id, { page_name: v })} placeholder="Page name" />
                     </td>
 
                     {/* Type */}
@@ -1069,12 +1157,12 @@ export function FunnelTab({ projectId }: { projectId: string }) {
 
                     {/* Angle */}
                     <td className="px-2 py-1 border-r border-border/50 min-w-[120px] max-w-[150px]">
-                      <InlineEdit value={step.angle} onChange={v => patchStep(step.id, { angle: v })} placeholder="Angolo…" />
+                      <InlineEdit value={step.angle} onChange={v => patchStep(step.id, { angle: v })} placeholder="Angle…" />
                     </td>
 
                     {/* Prompt/Notes */}
                     <td className="px-2 py-1 border-r border-border/50 min-w-[140px] max-w-[180px]">
-                      <InlineEdit value={step.prompt_notes} onChange={v => patchStep(step.id, { prompt_notes: v })} placeholder="Note AI…" multiline />
+                      <InlineEdit value={step.prompt_notes} onChange={v => patchStep(step.id, { prompt_notes: v })} placeholder="AI notes…" multiline />
                     </td>
 
                     {/* Auto-gen */}
@@ -1089,7 +1177,7 @@ export function FunnelTab({ projectId }: { projectId: string }) {
 
                     {/* Product */}
                     <td className="px-2 py-1 border-r border-border/50 min-w-[100px] max-w-[130px]">
-                      <InlineEdit value={step.product} onChange={v => patchStep(step.id, { product: v })} placeholder="Prodotto…" />
+                      <InlineEdit value={step.product} onChange={v => patchStep(step.id, { product: v })} placeholder="Product…" />
                     </td>
 
                     {/* Status */}
@@ -1105,7 +1193,7 @@ export function FunnelTab({ projectId }: { projectId: string }) {
                           className="text-[10px] text-primary hover:underline flex items-center gap-1 mx-auto"
                         >
                           <Eye className="w-3 h-3" />
-                          Vedi
+                          View
                         </button>
                       ) : (
                         <span className="text-muted-foreground text-[10px]">—</span>
@@ -1124,7 +1212,7 @@ export function FunnelTab({ projectId }: { projectId: string }) {
                         <button
                           onClick={() => setEditStep(step)}
                           disabled={!step.result_content}
-                          title={step.result_content ? "Apri nel Visual Editor" : "Nessun contenuto da editare"}
+                          title={step.result_content ? "Open in Visual Editor" : "No content to edit"}
                           className="flex items-center gap-0.5 px-2 py-1 rounded text-[10px] font-semibold transition-colors bg-amber-400 hover:bg-amber-500 text-black disabled:opacity-40 disabled:cursor-not-allowed"
                         >
                           <Wand2 className="w-3 h-3" />
@@ -1137,8 +1225,8 @@ export function FunnelTab({ projectId }: { projectId: string }) {
                           disabled={!step.result_content && !step.html_file_path}
                           title={
                             step.result_content || step.html_file_path
-                              ? "Scarica HTML (ultima versione editata)"
-                              : "Nessun contenuto da scaricare"
+                              ? "Download HTML (latest edited version)"
+                              : "No content to download"
                           }
                           className="p-1 rounded bg-sky-100 text-sky-700 hover:bg-sky-200 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                         >
@@ -1157,7 +1245,7 @@ export function FunnelTab({ projectId }: { projectId: string }) {
                         {/* Duplicate */}
                         <button
                           onClick={() => duplicateStep(step)}
-                          title="Duplica step"
+                          title="Duplicate step"
                           className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
                         >
                           <Copy className="w-3.5 h-3.5" />
@@ -1166,7 +1254,7 @@ export function FunnelTab({ projectId }: { projectId: string }) {
                         {/* Delete */}
                         <button
                           onClick={() => deleteStep.mutate({ projectId, stepId: step.id })}
-                          title="Elimina step"
+                          title="Delete step"
                           className="p-1 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
@@ -1174,8 +1262,10 @@ export function FunnelTab({ projectId }: { projectId: string }) {
                       </div>
                     </td>
                   </tr>
-                );
-              })}
+                  );
+                });
+                return rows;
+              })()}
             </tbody>
           </table>
         </div>
@@ -1191,7 +1281,7 @@ export function FunnelTab({ projectId }: { projectId: string }) {
               <Check className="w-8 h-8 text-green-600 mx-auto mb-3" />
             )}
             <p className="text-sm font-medium text-foreground">
-              {sanitizeMsg.phase === "working" ? "Sanamento pagina" : "Fatto"}
+              {sanitizeMsg.phase === "working" ? "Sanitizing page" : "Done"}
             </p>
             <p className="text-xs text-muted-foreground mt-1">{sanitizeMsg.text}</p>
           </div>

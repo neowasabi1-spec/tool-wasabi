@@ -25,6 +25,10 @@ const WRITABLE = [
   'status',
   'result_content',
   'feedback',
+  // Flow grouping: optional label that lets multiple independent
+  // funnel sequences live under the same project (e.g. "Flow A",
+  // "Flow B"). Whitelisted so client-side payloads can persist it.
+  'flow_name',
 ] as const;
 
 function pickWritable(src: Record<string, unknown>): Record<string, unknown> {
