@@ -220,10 +220,16 @@ CREATE POLICY "products_owner_or_master_delete" ON public.products FOR DELETE
 -- A.3 funnel_pages -----------------------------------------------
 ALTER TABLE public.funnel_pages
   ADD COLUMN IF NOT EXISTS owner_user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL;
-UPDATE public.funnel_pages fp
-   SET owner_user_id = COALESCE(p.owner_user_id, public.get_master_id())
-  FROM public.projects p
- WHERE fp.project_id = p.id AND fp.owner_user_id IS NULL;
+-- project_id was added by a separate migration; if absent the JOIN
+-- below errors out. Wrap in EXCEPTION handler — falls through to the
+-- master backfill so the schema is still left in a valid state.
+DO $$ BEGIN
+  UPDATE public.funnel_pages fp
+     SET owner_user_id = COALESCE(p.owner_user_id, public.get_master_id())
+    FROM public.projects p
+   WHERE fp.project_id = p.id AND fp.owner_user_id IS NULL;
+EXCEPTION WHEN undefined_column OR undefined_table THEN NULL;
+END $$;
 UPDATE public.funnel_pages SET owner_user_id = public.get_master_id() WHERE owner_user_id IS NULL;
 DO $$ BEGIN
   IF (SELECT COUNT(*) FROM public.funnel_pages WHERE owner_user_id IS NULL) = 0 THEN
@@ -254,10 +260,15 @@ CREATE POLICY "funnel_pages_owner_or_master_delete" ON public.funnel_pages FOR D
 -- A.4 swipe_templates --------------------------------------------
 ALTER TABLE public.swipe_templates
   ADD COLUMN IF NOT EXISTS owner_user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL;
-UPDATE public.swipe_templates st
-   SET owner_user_id = COALESCE(p.owner_user_id, public.get_master_id())
-  FROM public.projects p
- WHERE st.project_id = p.id AND st.owner_user_id IS NULL;
+-- project_id may not exist if the project-id-links migration was
+-- never run — defensive EXCEPTION wrapper.
+DO $$ BEGIN
+  UPDATE public.swipe_templates st
+     SET owner_user_id = COALESCE(p.owner_user_id, public.get_master_id())
+    FROM public.projects p
+   WHERE st.project_id = p.id AND st.owner_user_id IS NULL;
+EXCEPTION WHEN undefined_column OR undefined_table THEN NULL;
+END $$;
 UPDATE public.swipe_templates SET owner_user_id = public.get_master_id() WHERE owner_user_id IS NULL;
 DO $$ BEGIN
   IF (SELECT COUNT(*) FROM public.swipe_templates WHERE owner_user_id IS NULL) = 0 THEN
@@ -288,10 +299,14 @@ CREATE POLICY "swipe_templates_owner_or_master_delete" ON public.swipe_templates
 -- A.5 archived_funnels -------------------------------------------
 ALTER TABLE public.archived_funnels
   ADD COLUMN IF NOT EXISTS owner_user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL;
-UPDATE public.archived_funnels af
-   SET owner_user_id = COALESCE(p.owner_user_id, public.get_master_id())
-  FROM public.projects p
- WHERE af.project_id = p.id AND af.owner_user_id IS NULL;
+-- project_id may not exist on older schemas.
+DO $$ BEGIN
+  UPDATE public.archived_funnels af
+     SET owner_user_id = COALESCE(p.owner_user_id, public.get_master_id())
+    FROM public.projects p
+   WHERE af.project_id = p.id AND af.owner_user_id IS NULL;
+EXCEPTION WHEN undefined_column OR undefined_table THEN NULL;
+END $$;
 UPDATE public.archived_funnels SET owner_user_id = public.get_master_id() WHERE owner_user_id IS NULL;
 DO $$ BEGIN
   IF (SELECT COUNT(*) FROM public.archived_funnels WHERE owner_user_id IS NULL) = 0 THEN
@@ -651,12 +666,16 @@ CREATE POLICY "funnel_flows_owner_or_master_delete" ON public.funnel_flows FOR D
 
 -- A.17 page_html ---------------------------------------------------
 -- Inherits owner from funnel_pages via page_id when possible.
+-- page_id is TEXT (no FK), so cast both sides to TEXT for matching.
 ALTER TABLE public.page_html
   ADD COLUMN IF NOT EXISTS owner_user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL;
-UPDATE public.page_html ph
-   SET owner_user_id = COALESCE(fp.owner_user_id, public.get_master_id())
-  FROM public.funnel_pages fp
- WHERE ph.page_id::text = fp.id::text AND ph.owner_user_id IS NULL;
+DO $$ BEGIN
+  UPDATE public.page_html ph
+     SET owner_user_id = COALESCE(fp.owner_user_id, public.get_master_id())
+    FROM public.funnel_pages fp
+   WHERE ph.page_id::text = fp.id::text AND ph.owner_user_id IS NULL;
+EXCEPTION WHEN undefined_column OR undefined_table OR invalid_text_representation THEN NULL;
+END $$;
 UPDATE public.page_html SET owner_user_id = public.get_master_id() WHERE owner_user_id IS NULL;
 DO $$ BEGIN
   IF (SELECT COUNT(*) FROM public.page_html WHERE owner_user_id IS NULL) = 0 THEN
@@ -688,10 +707,13 @@ CREATE POLICY "page_html_owner_or_master_delete" ON public.page_html FOR DELETE
 -- B.1 project_files (child of projects) ---------------------------
 ALTER TABLE public.project_files
   ADD COLUMN IF NOT EXISTS owner_user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL;
-UPDATE public.project_files pf
-   SET owner_user_id = COALESCE(p.owner_user_id, public.get_master_id())
-  FROM public.projects p
- WHERE pf.project_id = p.id AND pf.owner_user_id IS NULL;
+DO $$ BEGIN
+  UPDATE public.project_files pf
+     SET owner_user_id = COALESCE(p.owner_user_id, public.get_master_id())
+    FROM public.projects p
+   WHERE pf.project_id = p.id AND pf.owner_user_id IS NULL;
+EXCEPTION WHEN undefined_column OR undefined_table THEN NULL;
+END $$;
 UPDATE public.project_files SET owner_user_id = public.get_master_id() WHERE owner_user_id IS NULL;
 DO $$ BEGIN
   IF (SELECT COUNT(*) FROM public.project_files WHERE owner_user_id IS NULL) = 0 THEN
@@ -721,10 +743,13 @@ CREATE POLICY "project_files_owner_or_master_delete" ON public.project_files FOR
 -- B.2 funnel_steps (child of projects) ---------------------------
 ALTER TABLE public.funnel_steps
   ADD COLUMN IF NOT EXISTS owner_user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL;
-UPDATE public.funnel_steps fs
-   SET owner_user_id = COALESCE(p.owner_user_id, public.get_master_id())
-  FROM public.projects p
- WHERE fs.project_id = p.id AND fs.owner_user_id IS NULL;
+DO $$ BEGIN
+  UPDATE public.funnel_steps fs
+     SET owner_user_id = COALESCE(p.owner_user_id, public.get_master_id())
+    FROM public.projects p
+   WHERE fs.project_id = p.id AND fs.owner_user_id IS NULL;
+EXCEPTION WHEN undefined_column OR undefined_table THEN NULL;
+END $$;
 UPDATE public.funnel_steps SET owner_user_id = public.get_master_id() WHERE owner_user_id IS NULL;
 DO $$ BEGIN
   IF (SELECT COUNT(*) FROM public.funnel_steps WHERE owner_user_id IS NULL) = 0 THEN
@@ -754,10 +779,13 @@ CREATE POLICY "funnel_steps_owner_or_master_delete" ON public.funnel_steps FOR D
 -- B.3 post_purchase_pages (child of products) --------------------
 ALTER TABLE public.post_purchase_pages
   ADD COLUMN IF NOT EXISTS owner_user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL;
-UPDATE public.post_purchase_pages ppp
-   SET owner_user_id = COALESCE(pr.owner_user_id, public.get_master_id())
-  FROM public.products pr
- WHERE ppp.product_id = pr.id AND ppp.owner_user_id IS NULL;
+DO $$ BEGIN
+  UPDATE public.post_purchase_pages ppp
+     SET owner_user_id = COALESCE(pr.owner_user_id, public.get_master_id())
+    FROM public.products pr
+   WHERE ppp.product_id = pr.id AND ppp.owner_user_id IS NULL;
+EXCEPTION WHEN undefined_column OR undefined_table THEN NULL;
+END $$;
 UPDATE public.post_purchase_pages SET owner_user_id = public.get_master_id() WHERE owner_user_id IS NULL;
 DO $$ BEGIN
   IF (SELECT COUNT(*) FROM public.post_purchase_pages WHERE owner_user_id IS NULL) = 0 THEN
@@ -784,13 +812,19 @@ CREATE POLICY "post_purchase_pages_owner_or_master_update" ON public.post_purcha
 CREATE POLICY "post_purchase_pages_owner_or_master_delete" ON public.post_purchase_pages FOR DELETE
   USING (owner_user_id = auth.uid() OR public.is_master(auth.uid()) OR auth.uid() IS NULL);
 
--- B.4 funnel_crawl_steps (child of funnel_crawl_jobs) ------------
+-- B.4 funnel_crawl_steps (no FK to funnel_crawl_jobs, just match
+-- by entry_url best-effort, else fall back to master). The schema
+-- (supabase-migration-funnel-crawl-steps.sql) deliberately stores
+-- entry_url instead of a job_id FK.
 ALTER TABLE public.funnel_crawl_steps
   ADD COLUMN IF NOT EXISTS owner_user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL;
-UPDATE public.funnel_crawl_steps fcs
-   SET owner_user_id = COALESCE(fcj.owner_user_id, public.get_master_id())
-  FROM public.funnel_crawl_jobs fcj
- WHERE fcs.job_id = fcj.id AND fcs.owner_user_id IS NULL;
+DO $$ BEGIN
+  UPDATE public.funnel_crawl_steps fcs
+     SET owner_user_id = COALESCE(fcj.owner_user_id, public.get_master_id())
+    FROM public.funnel_crawl_jobs fcj
+   WHERE fcs.entry_url = fcj.entry_url AND fcs.owner_user_id IS NULL;
+EXCEPTION WHEN undefined_column OR undefined_table THEN NULL;
+END $$;
 UPDATE public.funnel_crawl_steps SET owner_user_id = public.get_master_id() WHERE owner_user_id IS NULL;
 DO $$ BEGIN
   IF (SELECT COUNT(*) FROM public.funnel_crawl_steps WHERE owner_user_id IS NULL) = 0 THEN
@@ -820,10 +854,13 @@ CREATE POLICY "funnel_crawl_steps_owner_or_master_delete" ON public.funnel_crawl
 -- B.5 cloning_texts (child of cloning_jobs) ----------------------
 ALTER TABLE public.cloning_texts
   ADD COLUMN IF NOT EXISTS owner_user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL;
-UPDATE public.cloning_texts ct
-   SET owner_user_id = COALESCE(cj.owner_user_id, public.get_master_id())
-  FROM public.cloning_jobs cj
- WHERE ct.job_id = cj.id AND ct.owner_user_id IS NULL;
+DO $$ BEGIN
+  UPDATE public.cloning_texts ct
+     SET owner_user_id = COALESCE(cj.owner_user_id, public.get_master_id())
+    FROM public.cloning_jobs cj
+   WHERE ct.job_id = cj.id AND ct.owner_user_id IS NULL;
+EXCEPTION WHEN undefined_column OR undefined_table THEN NULL;
+END $$;
 UPDATE public.cloning_texts SET owner_user_id = public.get_master_id() WHERE owner_user_id IS NULL;
 DO $$ BEGIN
   IF (SELECT COUNT(*) FROM public.cloning_texts WHERE owner_user_id IS NULL) = 0 THEN
@@ -851,12 +888,17 @@ CREATE POLICY "cloning_texts_owner_or_master_delete" ON public.cloning_texts FOR
   USING (owner_user_id = auth.uid() OR public.is_master(auth.uid()) OR auth.uid() IS NULL);
 
 -- B.6 funnel_checkpoints (child of checkpoint_funnels) -----------
+-- NOTE: the FK column is `checkpoint_funnel_id`, NOT `funnel_id`
+-- (see supabase-migration-funnel-checkpoints.sql).
 ALTER TABLE public.funnel_checkpoints
   ADD COLUMN IF NOT EXISTS owner_user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL;
-UPDATE public.funnel_checkpoints fc
-   SET owner_user_id = COALESCE(cf.owner_user_id, public.get_master_id())
-  FROM public.checkpoint_funnels cf
- WHERE fc.funnel_id = cf.id AND fc.owner_user_id IS NULL;
+DO $$ BEGIN
+  UPDATE public.funnel_checkpoints fc
+     SET owner_user_id = COALESCE(cf.owner_user_id, public.get_master_id())
+    FROM public.checkpoint_funnels cf
+   WHERE fc.checkpoint_funnel_id = cf.id AND fc.owner_user_id IS NULL;
+EXCEPTION WHEN undefined_column OR undefined_table THEN NULL;
+END $$;
 UPDATE public.funnel_checkpoints SET owner_user_id = public.get_master_id() WHERE owner_user_id IS NULL;
 DO $$ BEGIN
   IF (SELECT COUNT(*) FROM public.funnel_checkpoints WHERE owner_user_id IS NULL) = 0 THEN
@@ -886,10 +928,13 @@ CREATE POLICY "funnel_checkpoints_owner_or_master_delete" ON public.funnel_check
 -- B.7 flow_steps (child of funnel_flows) -------------------------
 ALTER TABLE public.flow_steps
   ADD COLUMN IF NOT EXISTS owner_user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL;
-UPDATE public.flow_steps fs2
-   SET owner_user_id = COALESCE(ff.owner_user_id, public.get_master_id())
-  FROM public.funnel_flows ff
- WHERE fs2.flow_id = ff.id AND fs2.owner_user_id IS NULL;
+DO $$ BEGIN
+  UPDATE public.flow_steps fs2
+     SET owner_user_id = COALESCE(ff.owner_user_id, public.get_master_id())
+    FROM public.funnel_flows ff
+   WHERE fs2.flow_id = ff.id AND fs2.owner_user_id IS NULL;
+EXCEPTION WHEN undefined_column OR undefined_table THEN NULL;
+END $$;
 UPDATE public.flow_steps SET owner_user_id = public.get_master_id() WHERE owner_user_id IS NULL;
 DO $$ BEGIN
   IF (SELECT COUNT(*) FROM public.flow_steps WHERE owner_user_id IS NULL) = 0 THEN
