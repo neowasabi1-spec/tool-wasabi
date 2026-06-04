@@ -48,6 +48,7 @@ import {
   Send,
   Globe,
   Wand2,
+  Pencil,
   RefreshCw,
   Library,
   Search,
@@ -824,6 +825,53 @@ export function FunnelTab({ projectId }: { projectId: string }) {
     updateStep.mutate({ projectId, stepId, data: patch });
   };
 
+  // ── Rename / re-bucket Flow ─────────────────────────────────────
+  // L'utente clicca su un header Flow → input editabile. Submit:
+  // patcho TUTTI gli step appartenenti al vecchio Flow con il nuovo
+  // flow_name (o NULL se nuovo nome vuoto = sposto sotto "Senza Flow").
+  // Optimistic update di localSteps + fire-and-forget delle PATCH:
+  // così la UI risponde subito anche su flow con tanti step.
+  const [editingFlowKey, setEditingFlowKey] = useState<string | null>(null);
+  const [editingFlowDraft, setEditingFlowDraft] = useState('');
+  const beginRenameFlow = useCallback((flowKey: string, currentLabel: string) => {
+    setEditingFlowKey(flowKey);
+    setEditingFlowDraft(currentLabel);
+  }, []);
+  const cancelRenameFlow = useCallback(() => {
+    setEditingFlowKey(null);
+    setEditingFlowDraft('');
+  }, []);
+  const commitRenameFlow = useCallback((oldFlowKey: string) => {
+    const newName = editingFlowDraft.trim();
+    // Risolvi il valore "vero" del vecchio flow (null per il bucket legacy)
+    const oldFlowValue = oldFlowKey === '__no_flow__' ? null : oldFlowKey;
+    // No-op se l'utente preme Enter senza cambiare niente.
+    if ((oldFlowValue || '') === newName) {
+      cancelRenameFlow();
+      return;
+    }
+    const newFlowValue: string | null = newName || null;
+    const affectedIds: number[] = [];
+    setLocalSteps(prev => prev.map(s => {
+      const matches = (s.flow_name || null) === oldFlowValue;
+      if (matches) {
+        affectedIds.push(s.id);
+        return { ...s, flow_name: newFlowValue };
+      }
+      return s;
+    }));
+    // PATCH per step. Best-effort: se uno fallisce la cache react-query
+    // torna in sync col DB al prossimo refetch.
+    affectedIds.forEach(id => {
+      updateStep.mutate({ projectId, stepId: id, data: { flow_name: newFlowValue } });
+    });
+    toast({
+      title: newFlowValue ? `Flow rinominato in "${newFlowValue}"` : 'Flow rimosso',
+      description: `${affectedIds.length} step aggiornati`,
+    });
+    cancelRenameFlow();
+  }, [editingFlowDraft, projectId, updateStep, cancelRenameFlow, toast]);
+
   const autoNameSteps = () => {
     if (!domain.trim()) { toast({ title: "Enter a domain first", variant: "destructive" }); return; }
     const dom = domain.replace(/https?:\/\//, "").replace(/\/$/, "");
@@ -1084,24 +1132,57 @@ export function FunnelTab({ projectId }: { projectId: string }) {
                   if (flowKey !== prevFlowLabel) {
                     const isCollapsed = collapsedFlows.has(flowKey);
                     const count = flowCounts.get(flowKey) || 0;
+                    const isEditingThis = editingFlowKey === flowKey;
                     rows.push(
                       <tr key={`flow-sep-${flowKey}`} className="bg-primary/10 hover:bg-primary/15 transition-colors border-y-2 border-primary/30">
                         <td colSpan={14} className="px-3 py-1.5">
-                          <button
-                            type="button"
-                            onClick={() => toggleFlowCollapsed(flowKey)}
-                            className="flex items-center gap-2 text-xs font-bold text-primary uppercase tracking-wider w-full text-left"
-                          >
-                            <ChevronDown className={`w-3 h-3 transition-transform ${isCollapsed ? '-rotate-90' : ''}`} />
-                            <span>
-                              {flowLabel
-                                ? <>Flow: <span className="text-foreground">{flowLabel}</span></>
-                                : <span className="text-muted-foreground italic">Senza Flow (legacy)</span>}
+                          <div className="flex items-center gap-2 text-xs font-bold text-primary uppercase tracking-wider">
+                            {/* Toggle collapse — click on chevron OR the count */}
+                            <button
+                              type="button"
+                              onClick={() => toggleFlowCollapsed(flowKey)}
+                              title={isCollapsed ? "Espandi flow" : "Collassa flow"}
+                              className="hover:bg-primary/20 rounded p-0.5 transition-colors"
+                            >
+                              <ChevronDown className={`w-3 h-3 transition-transform ${isCollapsed ? '-rotate-90' : ''}`} />
+                            </button>
+
+                            {/* Label — editabile on double-click OR single-click on the pencil */}
+                            {isEditingThis ? (
+                              <input
+                                type="text"
+                                autoFocus
+                                value={editingFlowDraft}
+                                onChange={(e) => setEditingFlowDraft(e.target.value)}
+                                onBlur={() => commitRenameFlow(flowKey)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') { e.preventDefault(); commitRenameFlow(flowKey); }
+                                  else if (e.key === 'Escape') { e.preventDefault(); cancelRenameFlow(); }
+                                }}
+                                placeholder='Nome flow (vuoto = "Senza Flow")'
+                                className="flex-1 max-w-[300px] bg-background border border-primary/40 rounded px-2 py-0.5 text-xs font-bold uppercase tracking-wider text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40"
+                              />
+                            ) : (
+                              <>
+                                <span className="flex items-center gap-1">
+                                  {flowLabel
+                                    ? <>Flow: <span className="text-foreground">{flowLabel}</span></>
+                                    : <span className="text-muted-foreground italic">Senza Flow (legacy)</span>}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => beginRenameFlow(flowKey, flowLabel)}
+                                  title="Rinomina flow (Enter per salvare, Esc per annullare)"
+                                  className="p-0.5 rounded hover:bg-primary/20 text-primary/70 hover:text-primary transition-colors"
+                                >
+                                  <Pencil className="w-3 h-3" />
+                                </button>
+                              </>
+                            )}
+                            <span className="text-[10px] font-normal text-muted-foreground normal-case tracking-normal ml-auto">
+                              {count} step
                             </span>
-                            <span className="text-[10px] font-normal text-muted-foreground normal-case tracking-normal">
-                              ({count} step{count === 1 ? '' : ''})
-                            </span>
-                          </button>
+                          </div>
                         </td>
                       </tr>
                     );
