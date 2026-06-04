@@ -1173,13 +1173,35 @@ export default function FrontEndFunnel() {
   const [saveTarget, setSaveTarget] = useState<'archive' | 'project'>('archive');
   const [saveProjectId, setSaveProjectId] = useState('');
 
+  // ── Per-row selection (Save subset) ──────────────────────────────
+  // Quando l'utente spunta una o più righe della tabella, il bottone
+  // "Save" salva SOLO quelle (sia su archivio che su progetto). Quando
+  // la selezione è vuota, fallback al comportamento storico (salva
+  // tutte le pagine del funnel). Usiamo un Set di id per O(1) toggle.
+  const [selectedStepIds, setSelectedStepIds] = useState<Set<string>>(new Set());
+  const toggleStepSelected = useCallback((pageId: string) => {
+    setSelectedStepIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(pageId)) next.delete(pageId); else next.add(pageId);
+      return next;
+    });
+  }, []);
+
 
   // Salva il flow corrente come funnel_steps nel tab "Funnel" del progetto
   // selezionato (My Projects). Mappa ogni pagina del builder su uno step.
-  const saveCurrentFunnelToProject = async (projectId: string) => {
-    const pages = funnelPages || [];
+  const saveCurrentFunnelToProject = async (projectId: string, pageIds?: string[]) => {
+    const allPages = funnelPages || [];
     if (!projectId) throw new Error('Nessun progetto selezionato');
-    if (pages.length === 0) throw new Error('Nessuna pagina da salvare');
+    if (allPages.length === 0) throw new Error('Nessuna pagina da salvare');
+
+    // Subset selection: same contract as saveCurrentFunnelAsArchive — when
+    // pageIds is provided and non-empty, save only the matching rows (in
+    // their original funnel order); otherwise persist every step (legacy).
+    const pages = (pageIds && pageIds.length > 0)
+      ? allPages.filter((p) => pageIds.includes(p.id))
+      : allPages;
+    if (pages.length === 0) throw new Error('Nessuna pagina selezionata');
 
     // L'ultima modifica del VisualHtmlEditor vive in memoria (clonedData/
     // swipedData) e, per pagine grandi non ancora reidratate dopo un reload,
@@ -1424,17 +1446,21 @@ export default function FrontEndFunnel() {
 
   // Conferma salvataggio dal modal: instrada verso archivio o progetto.
   const handleConfirmSave = () => {
+    // Se l'utente ha spuntato righe specifiche → salva quel subset.
+    // Selezione vuota → salva tutte (back-compat). Convertiamo il Set
+    // in array per propagarlo a saveCurrentFunnelTo{Project,Archive}.
+    const subset = selectedStepIds.size > 0 ? Array.from(selectedStepIds) : undefined;
     if (saveTarget === 'project') {
       if (!saveProjectId) return;
       setIsSaving(true);
-      saveCurrentFunnelToProject(saveProjectId)
+      saveCurrentFunnelToProject(saveProjectId, subset)
         .then(() => { setShowSaveModal(false); setIsSaving(false); })
         .catch((e) => { setIsSaving(false); alert('Errore salvataggio nel progetto: ' + ((e as Error)?.message || '')); });
       return;
     }
     if (!saveFunnelName.trim()) return;
     setIsSaving(true);
-    saveCurrentFunnelAsArchive(saveFunnelName.trim())
+    saveCurrentFunnelAsArchive(saveFunnelName.trim(), undefined, subset)
       .then(() => { setShowSaveModal(false); setIsSaving(false); })
       .catch(() => { setIsSaving(false); alert('Error saving'); });
   };
@@ -5063,7 +5089,9 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                 )}
               </button>
 
-              {/* Save Funnel */}
+              {/* Save Funnel — quando ci sono righe spuntate mostra il
+                 count e cambia label/colore per ricordare che salverà
+                 solo il subset (e NON tutte le pagine). */}
               <button
                 onClick={() => {
                   if (!funnelPages || funnelPages.length === 0) {
@@ -5073,11 +5101,19 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                   setSaveFunnelName('');
                   setShowSaveModal(true);
                 }}
-                className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium bg-green-50 text-green-700 hover:bg-green-100 transition-colors"
-                title="Save all steps as funnel in archive"
+                className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  selectedStepIds.size > 0
+                    ? 'bg-purple-100 text-purple-800 hover:bg-purple-200 ring-1 ring-purple-300'
+                    : 'bg-green-50 text-green-700 hover:bg-green-100'
+                }`}
+                title={selectedStepIds.size > 0
+                  ? `Save ONLY the ${selectedStepIds.size} selected step${selectedStepIds.size === 1 ? '' : 's'}`
+                  : 'Save all steps as funnel in archive'}
               >
                 <Download className="w-4 h-4" />
-                Save
+                {selectedStepIds.size > 0
+                  ? `Save (${selectedStepIds.size})`
+                  : 'Save'}
               </button>
 
               {/* Emergency Stop — kills all queued/running swipe + crawl jobs
@@ -5628,6 +5664,32 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
             <table className="excel-table text-sm">
               <thead>
                 <tr>
+                  {/* Master checkbox — selects/deselects every visible row.
+                     Indeterminate visualizza lo stato "alcuni ma non tutti
+                     selezionati" così l'utente capisce a colpo d'occhio. */}
+                  <th className="w-8 px-1 text-center" title="Select rows to save (empty = save all)">
+                    <input
+                      type="checkbox"
+                      aria-label="Select all steps"
+                      className="cursor-pointer accent-purple-600"
+                      ref={(el) => {
+                        if (!el) return;
+                        const pages = funnelPages || [];
+                        const total = pages.length;
+                        const sel = pages.filter((p) => selectedStepIds.has(p.id)).length;
+                        el.indeterminate = sel > 0 && sel < total;
+                      }}
+                      checked={(funnelPages || []).length > 0 && (funnelPages || []).every((p) => selectedStepIds.has(p.id))}
+                      onChange={(e) => {
+                        const pages = funnelPages || [];
+                        if (e.target.checked) {
+                          setSelectedStepIds(new Set(pages.map((p) => p.id)));
+                        } else {
+                          setSelectedStepIds(new Set());
+                        }
+                      }}
+                    />
+                  </th>
                   <th className="w-10 px-2" title="Step order (1 = first page of funnel)">Step</th>
                   <th className="min-w-[120px]">Page</th>
                   <th className="min-w-[100px]">Type</th>
@@ -5647,13 +5709,27 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
               <tbody>
                 {(funnelPages || []).length === 0 ? (
                   <tr>
-                    <td colSpan={13} className="text-center py-8 text-gray-500">
+                    <td colSpan={14} className="text-center py-8 text-gray-500">
                       No steps. Click &quot;Add Step&quot; to start from Step 1.
                     </td>
                   </tr>
                 ) : (
-                  (funnelPages || []).map((page, index) => (
-                    <tr key={page.id}>
+                  (funnelPages || []).map((page, index) => {
+                    const isSelected = selectedStepIds.has(page.id);
+                    return (
+                    <tr key={page.id} className={isSelected ? 'bg-purple-50/50' : undefined}>
+                      {/* Per-row select checkbox — drives the Save subset.
+                         Sfondo righe selezionate viola tenue per dare
+                         feedback visivo della selezione attiva. */}
+                      <td className="text-center px-1 bg-gray-50">
+                        <input
+                          type="checkbox"
+                          aria-label={`Select step ${index + 1}`}
+                          className="cursor-pointer accent-purple-600"
+                          checked={isSelected}
+                          onChange={() => toggleStepSelected(page.id)}
+                        />
+                      </td>
                       {/* Step number (sequential: 1 = first, 2 = second, etc.) */}
                       <td className="text-center text-gray-500 bg-gray-50 font-medium">
                         {index + 1}
@@ -6299,7 +6375,8 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                         </div>
                       </td>
                     </tr>
-                  ))
+                    );
+                  })
                 )}
               </tbody>
             </table>

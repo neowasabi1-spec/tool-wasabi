@@ -533,7 +533,7 @@ interface Store {
   archivedFunnels: ArchivedFunnel[];
   archivedFunnelsLoaded: boolean;
   loadArchivedFunnels: () => Promise<void>;
-  saveCurrentFunnelAsArchive: (name: string, section?: string) => Promise<void>;
+  saveCurrentFunnelAsArchive: (name: string, section?: string, pageIds?: string[]) => Promise<void>;
   deleteArchivedFunnel: (id: string) => Promise<void>;
 
   // Ultimo errore di upload HTML su Supabase Storage (null = nessun errore).
@@ -1403,12 +1403,22 @@ export const useStore = create<Store>()((set, get) => ({
     }
   },
 
-  saveCurrentFunnelAsArchive: async (name: string, section?: string) => {
-    const pages = get().funnelPages;
+  saveCurrentFunnelAsArchive: async (name: string, section?: string, pageIds?: string[]) => {
+    const allPages = get().funnelPages;
     // funnelPages.productId now references a Project (My Projects).
     const projects = get().projects;
     const templates = get().templates;
-    if (!pages || pages.length === 0) return;
+    if (!allPages || allPages.length === 0) return;
+
+    // Optional subset: when the UI passes `pageIds`, save ONLY those
+    // checked rows (preserving their original order). When omitted /
+    // empty, fall back to the legacy behaviour of saving every step —
+    // so existing call sites that don't pass the third argument keep
+    // working exactly as before.
+    const pages = (pageIds && pageIds.length > 0)
+      ? allPages.filter((p) => pageIds.includes(p.id))
+      : allPages;
+    if (pages.length === 0) return;
 
     // Materializza l'HTML di OGNI step prima di salvare in archivio, con la
     // stessa catena di fallback usata dal save-to-project:
