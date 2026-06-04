@@ -67,9 +67,24 @@ function getClient(): SupabaseClient {
       return '';
     })();
     const isAuthEndpoint = urlString.includes('/auth/v1/');
+    let authInjected = false;
     if (!isAuthEndpoint && !headers.has('Authorization')) {
       const token = readWasabiAccessToken();
-      if (token) headers.set('Authorization', `Bearer ${token}`);
+      if (token) {
+        headers.set('Authorization', `Bearer ${token}`);
+        authInjected = true;
+      }
+    }
+    // One-line per-request diagnostic so we can confirm in the browser
+    // console whether the multi-tenancy JWT injection is happening for
+    // each REST call. Strip later once isolation has been verified by
+    // the user.
+    if (typeof window !== 'undefined' && urlString.includes('/rest/v1/')) {
+      const table = urlString.split('/rest/v1/')[1]?.split('?')[0]?.split('/')[0] || '?';
+      // eslint-disable-next-line no-console
+      console.info(
+        `[supabase fetch] ${table} → ${authInjected ? 'JWT ✓' : (headers.has('Authorization') ? 'JWT (custom)' : 'NO JWT ✗')}`,
+      );
     }
     return fetch(input, { ...init, headers, cache: 'no-store' });
   };
