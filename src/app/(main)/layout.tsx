@@ -1,13 +1,20 @@
 import AuthGate from '@/components/AuthGate';
 import ConditionalLayout from '@/components/ConditionalLayout';
 import { SupabaseProvider } from '@/components/SupabaseProvider';
+import FetchAuthBootstrap from '@/components/FetchAuthBootstrap';
 
 export default function MainAppLayout({ children }: { children: React.ReactNode }) {
   return (
-    <AuthGate>
-      <SupabaseProvider>
-        <ConditionalLayout>{children}</ConditionalLayout>
-      </SupabaseProvider>
-    </AuthGate>
+    <>
+      {/* Install the global fetch interceptor BEFORE the AuthGate so any
+          early /api/* call made during the auth resolution phase already
+          carries the Bearer token. */}
+      <FetchAuthBootstrap />
+      <AuthGate>
+        <SupabaseProvider>
+          <ConditionalLayout>{children}</ConditionalLayout>
+        </SupabaseProvider>
+      </AuthGate>
+    </>
   );
 }
