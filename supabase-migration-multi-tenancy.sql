@@ -38,6 +38,37 @@
 BEGIN;
 
 -- ─────────────────────────────────────────────────────────────────────
+-- 0a) PRE-CLEANUP — wipe legacy permissive policies
+-- ─────────────────────────────────────────────────────────────────────
+-- Postgres OR's all PERMISSIVE policies on a table, so any leftover
+-- `USING (true)` policy would silently grant access to everyone and
+-- vanificare every owner_or_master_* policy we install below.
+-- The most common offenders on this project are named like:
+--     "Allow all operations on funnel_pages"
+--     "Allow all operations on archived_funnels"
+--     "Allow public read access"
+--     "Enable all access for authenticated users"
+-- so we proactively drop ANYTHING starting with "Allow " or "Enable "
+-- on every table that has (or is about to have) owner_user_id. The
+-- per-table DROP POLICY statements further down still cover their
+-- specific names; this block is just the belt-and-braces.
+DO $$
+DECLARE r RECORD;
+BEGIN
+  FOR r IN
+    SELECT n.nspname AS schema_name, c.relname AS table_name, pol.polname AS policy_name
+    FROM pg_policy pol
+    JOIN pg_class c ON c.oid = pol.polrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public'
+      AND (pol.polname ILIKE 'Allow %' OR pol.polname ILIKE 'Enable %')
+  LOOP
+    EXECUTE format('DROP POLICY IF EXISTS %I ON %I.%I',
+      r.policy_name, r.schema_name, r.table_name);
+  END LOOP;
+END $$;
+
+-- ─────────────────────────────────────────────────────────────────────
 -- 0) Helpers
 -- ─────────────────────────────────────────────────────────────────────
 
