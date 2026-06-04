@@ -1,10 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
+import { getCurrentUserId } from '@/lib/auth/get-current-user';
 
 export async function POST(req: NextRequest) {
   const { message, systemPrompt, section, chatHistory, targetAgent } =
     await req.json();
   if (!message) return NextResponse.json({ error: 'Missing message' }, { status: 400 });
+
+  // Multi-tenancy: tag the job with the requester so the response
+  // (and the `openclaw_messages` row) is only visible to them (or
+  // the master). Service-role workers bypass RLS for the polling
+  // side, so they'll still see all pending jobs regardless of owner.
+  const userId = await getCurrentUserId(req);
 
   // `targetAgent` (e.g. "openclaw:neo", "openclaw:morfeo") routes the
   // job to a specific worker. Without it, ANY worker can claim the
@@ -23,6 +30,7 @@ export async function POST(req: NextRequest) {
   if (typeof targetAgent === 'string' && targetAgent.trim()) {
     insert.target_agent = targetAgent.trim();
   }
+  if (userId) insert.owner_user_id = userId;
 
   const { data, error } = await supabase
     .from('openclaw_messages')

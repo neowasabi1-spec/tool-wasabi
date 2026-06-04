@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
+import { getUserAccessContext } from '@/lib/auth/get-current-user';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,6 +21,10 @@ const WRITABLE = [
   'status',
   'result_content',
   'feedback',
+  // Mirror the bulk POST whitelist so flow renames (PATCH with
+  // { flow_name }) actually persist. Without this the field was
+  // silently dropped at this layer.
+  'flow_name',
 ] as const;
 
 function pickWritable(src: Record<string, unknown>): Record<string, unknown> {
@@ -30,11 +35,35 @@ function pickWritable(src: Record<string, unknown>): Record<string, unknown> {
   return out;
 }
 
+/** Multi-tenancy: require the caller to either be the owner of the
+ *  parent project or the master before mutating a step. Anonymous
+ *  callers bypass — phase 2 of the RLS rollout locks them out. */
+async function checkStepAccess(
+  req: NextRequest,
+  projectId: string,
+): Promise<{ deny: NextResponse | null }> {
+  const ctx = await getUserAccessContext(req);
+  if (!ctx.userId || ctx.isMaster) return { deny: null };
+  const { data: project } = await supabase
+    .from('projects')
+    .select('owner_user_id')
+    .eq('id', projectId)
+    .maybeSingle();
+  const ownerId = (project as { owner_user_id?: string } | null)?.owner_user_id;
+  if (!project || ownerId !== ctx.userId) {
+    return { deny: NextResponse.json({ error: 'Not found' }, { status: 404 }) };
+  }
+  return { deny: null };
+}
+
 /** PATCH — update a single funnel step (inline edits from the Funnel tab). */
 export async function PATCH(
   req: NextRequest,
   { params }: { params: { id: string; stepId: string } },
 ) {
+  const { deny } = await checkStepAccess(req, params.id);
+  if (deny) return deny;
+
   const body = await req.json().catch(() => ({}));
   const patch = pickWritable(body as Record<string, unknown>);
   if (Object.keys(patch).length === 0) {
@@ -57,9 +86,12 @@ export async function PATCH(
 
 /** DELETE — remove a single funnel step. */
 export async function DELETE(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: { id: string; stepId: string } },
 ) {
+  const { deny } = await checkStepAccess(req, params.id);
+  if (deny) return deny;
+
   const { error } = await supabase
     .from('funnel_steps')
     .delete()

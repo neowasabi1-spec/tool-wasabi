@@ -4,20 +4,30 @@ import {
   derivedProductBriefSections,
   legacyFilesForProject,
 } from '@/lib/projecthub-legacy';
+import { getUserAccessContext } from '@/lib/auth/get-current-user';
 
 export const dynamic = 'force-dynamic';
 
+// Multi-tenancy helper: returns true when the caller is allowed to
+// see/touch `ownerId`. Master → always allowed. Otherwise must match.
+// When the caller has no session (server-to-server, worker), we allow
+// it for now — phase 2 of the RLS rollout will lock this down.
+function canAccessRow(
+  ctx: { userId: string | null; isMaster: boolean },
+  ownerId: string | null | undefined,
+): boolean {
+  if (!ctx.userId) return true; // legacy / unauthenticated — see "all"
+  if (ctx.isMaster) return true;
+  return !!ownerId && ownerId === ctx.userId;
+}
+
 export async function GET(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: { id: string } },
 ) {
   const { id } = params;
+  const ctx = await getUserAccessContext(req);
 
-  // Use `*` so the route is resilient to any subset of legacy columns
-  // existing on the projects table. Listing them explicitly previously
-  // caused the whole select to fail with "column does not exist" the
-  // moment a single legacy column was missing (e.g. brief_files), which
-  // wiped out every legacy file from the merged response.
   const { data: project, error } = await supabase
     .from('projects')
     .select('*')
@@ -32,6 +42,9 @@ export async function GET(
   }
 
   const projectRow = project as unknown as Record<string, unknown>;
+  if (!canAccessRow(ctx, projectRow.owner_user_id as string | null | undefined)) {
+    return NextResponse.json({ error: 'Not found' }, { status: 404 });
+  }
 
   const { data: realFiles } = await supabase
     .from('project_files')
@@ -58,6 +71,20 @@ export async function PATCH(
 ) {
   const { id } = params;
   const body = await req.json().catch(() => ({}));
+
+  const ctx = await getUserAccessContext(req);
+  // Ownership check BEFORE write — return 404 to avoid leaking the
+  // existence of a project the caller doesn't own.
+  if (ctx.userId && !ctx.isMaster) {
+    const { data: owned } = await supabase
+      .from('projects')
+      .select('owner_user_id')
+      .eq('id', id)
+      .maybeSingle();
+    if (!owned || (owned as { owner_user_id?: string }).owner_user_id !== ctx.userId) {
+      return NextResponse.json({ error: 'Not found' }, { status: 404 });
+    }
+  }
 
   const allowed = ['name', 'description', 'thumbnail_path', 'product_brief_sections', 'status', 'notes', 'domain'];
   const update: Record<string, unknown> = {};
@@ -99,10 +126,22 @@ export async function PATCH(
 }
 
 export async function DELETE(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: { id: string } },
 ) {
   const { id } = params;
+
+  const ctx = await getUserAccessContext(req);
+  if (ctx.userId && !ctx.isMaster) {
+    const { data: owned } = await supabase
+      .from('projects')
+      .select('owner_user_id')
+      .eq('id', id)
+      .maybeSingle();
+    if (!owned || (owned as { owner_user_id?: string }).owner_user_id !== ctx.userId) {
+      return NextResponse.json({ error: 'Not found' }, { status: 404 });
+    }
+  }
 
   const { data: files } = await supabase
     .from('project_files')

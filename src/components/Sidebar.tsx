@@ -64,9 +64,42 @@ export default function Sidebar() {
 
   async function handleSignOut() {
     const supabase = getSupabaseBrowser();
+    // Multi-tenancy hygiene: when a different user logs in on the same
+    // browser, none of the previous user's cached data must leak into
+    // their view. We aggressively wipe ALL client-side state:
+    //   - the wasabi_session shim
+    //   - the entire Zustand store (products, projects, funnel pages,
+    //     archived funnels — anything persisted via persist())
+    //   - any IndexedDB / cache keys we might own
+    //   - all auth tokens (sb-*, supabase.auth.token)
+    // The router.replace('/login') below triggers a fresh page load
+    // anyway, which clears in-memory React Query caches.
     try { localStorage.removeItem('wasabi_session'); } catch { /* ignore */ }
+    try {
+      const keysToClear: string[] = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (!k) continue;
+        if (
+          k.startsWith('wasabi') ||
+          k.startsWith('sb-') ||
+          k.startsWith('supabase.') ||
+          k === 'funnel-app-store' /* persist key for useStore */
+        ) {
+          keysToClear.push(k);
+        }
+      }
+      for (const k of keysToClear) localStorage.removeItem(k);
+    } catch { /* ignore */ }
+    try { sessionStorage.clear(); } catch { /* ignore */ }
     if (supabase) await supabase.auth.signOut().catch(() => {});
-    router.replace('/login');
+    // Hard reload — ensures every in-memory store/query/state resets,
+    // not just the keys we know to clear.
+    if (typeof window !== 'undefined') {
+      window.location.href = '/login';
+    } else {
+      router.replace('/login');
+    }
   }
 
   return (

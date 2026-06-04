@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
+import { getUserAccessContext } from '@/lib/auth/get-current-user';
 
 export const dynamic = 'force-dynamic';
 
@@ -11,16 +12,28 @@ const PROJECT_COLS_LEGACY =
 export async function GET(req: NextRequest) {
   const search = req.nextUrl.searchParams.get('search');
 
-  let { data, error } = await supabase
+  // Multi-tenancy: regular users see only their own projects, masters
+  // see everything. Anonymous server-to-server callers (no JWT) fall
+  // through to the legacy "see everything" branch until phase 2 of the
+  // RLS rollout flips that to fail-closed.
+  const ctx = await getUserAccessContext(req);
+  const applyOwnerFilter = ctx.userId !== null && !ctx.isMaster;
+
+  let query = supabase
     .from('projects')
     .select(PROJECT_COLS)
     .order('created_at', { ascending: false });
+  if (applyOwnerFilter) query = query.eq('owner_user_id', ctx.userId!);
+
+  let { data, error } = await query;
 
   if (error && /thumbnail_path|product_brief_sections/i.test(error.message || '')) {
-    const retry = await supabase
+    let retryQuery = supabase
       .from('projects')
       .select(PROJECT_COLS_LEGACY)
       .order('created_at', { ascending: false });
+    if (applyOwnerFilter) retryQuery = retryQuery.eq('owner_user_id', ctx.userId!);
+    const retry = await retryQuery;
     data = retry.data;
     error = retry.error;
     console.warn(
@@ -62,6 +75,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Missing name' }, { status: 400 });
   }
 
+  // Multi-tenancy: tag the new project with the creator. If no JWT is
+  // present (anon server-to-server), we leave it null and the DB
+  // trigger will fall back to the master account.
+  const ctx = await getUserAccessContext(req);
+
   const insert: Record<string, unknown> = {
     name: String(body.name).trim(),
     status: 'active',
@@ -70,6 +88,7 @@ export async function POST(req: NextRequest) {
   if (body.product_brief_sections) {
     insert.product_brief_sections = body.product_brief_sections;
   }
+  if (ctx.userId) insert.owner_user_id = ctx.userId;
 
   let { data: project, error } = await supabase
     .from('projects')

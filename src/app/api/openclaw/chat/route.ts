@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
+import { getCurrentUserId } from '@/lib/auth/get-current-user';
 
 export const maxDuration = 60;
 
@@ -22,15 +23,20 @@ export async function POST(req: NextRequest) {
     .slice(0, -1)
     .map((m: { role: string; content: string }) => ({ role: m.role, content: m.content }));
 
+  // Multi-tenancy: scope the chat to the requesting user.
+  const userId = await getCurrentUserId(req);
+  const insertPayload: Record<string, unknown> = {
+    user_message: lastMessage.content,
+    system_prompt: systemPrompt || DEFAULT_SYSTEM,
+    chat_history: chatHistory.length > 0 ? JSON.stringify(chatHistory) : null,
+    section: 'Affiliate Browser Chat',
+    status: 'pending',
+  };
+  if (userId) insertPayload.owner_user_id = userId;
+
   const { data, error } = await supabase
     .from('openclaw_messages')
-    .insert({
-      user_message: lastMessage.content,
-      system_prompt: systemPrompt || DEFAULT_SYSTEM,
-      chat_history: chatHistory.length > 0 ? JSON.stringify(chatHistory) : null,
-      section: 'Affiliate Browser Chat',
-      status: 'pending',
-    })
+    .insert(insertPayload)
     .select('id')
     .single();
 
