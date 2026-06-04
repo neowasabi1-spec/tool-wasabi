@@ -33,7 +33,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { getCurrentUserId } from '@/lib/auth/get-current-user';
+import { getUserAccessContext } from '@/lib/auth/get-current-user';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -41,10 +41,16 @@ export const runtime = 'nodejs';
 const TABLE = 'funnel_pages';
 
 export async function GET(req: NextRequest) {
-  const callerUserId = await getCurrentUserId(req);
-  if (!callerUserId) {
+  const ctx = await getUserAccessContext(req);
+  if (!ctx.userId) {
     return NextResponse.json({ error: 'no_jwt', message: 'No user JWT detected in request' }, { status: 401 });
   }
+  // Master-only: this endpoint leaks the master_id and per-table row
+  // counts. Useful for debug but not for regular users.
+  if (!ctx.isMaster) {
+    return NextResponse.json({ error: 'forbidden', message: 'Master only' }, { status: 403 });
+  }
+  const callerUserId = ctx.userId;
 
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
   const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;

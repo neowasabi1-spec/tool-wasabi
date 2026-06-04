@@ -75,39 +75,16 @@ function getClient(): SupabaseClient {
     // fallback (`OR auth.uid() IS NULL`) and grants the request access
     // to EVERY row — the exact data leak we're trying to plug.
     //
-    // The first version of this wrapper only added Authorization when
-    // it wasn't already present — which meant the SDK's anon Bearer
-    // always won. We now OVERRIDE the header whenever a wasabi_session
-    // exists so RLS sees the real user.
+    // So we OVERRIDE the header whenever a wasabi_session exists, so
+    // RLS sees the real user. Without a wasabi_session we leave the
+    // SDK's anon bearer in place (logged-out flows, public reads).
     //
     // Auth endpoints (/auth/v1/...) are left alone: those flows
     // (sign-in, magic link, password reset) MUST use the anon key as
     // the bearer, not the user JWT.
-    let mode: 'replaced' | 'kept-custom' | 'none' | 'anon' = 'anon';
-    if (isAuthEndpoint) {
-      mode = 'kept-custom';
-    } else {
+    if (!isAuthEndpoint) {
       const token = readWasabiAccessToken();
-      if (token) {
-        headers.set('Authorization', `Bearer ${token}`);
-        mode = 'replaced';
-      } else if (!headers.has('Authorization')) {
-        mode = 'none';
-      }
-    }
-
-    // One-line per-request diagnostic so we can confirm in the browser
-    // console whether the multi-tenancy JWT injection is happening for
-    // each REST call. Strip later once isolation has been verified.
-    if (typeof window !== 'undefined' && urlString.includes('/rest/v1/')) {
-      const table = urlString.split('/rest/v1/')[1]?.split('?')[0]?.split('/')[0] || '?';
-      const label =
-        mode === 'replaced' ? 'JWT ✓ (user)'
-        : mode === 'kept-custom' ? 'JWT (custom)'
-        : mode === 'none' ? 'NO JWT ✗'
-        : 'JWT (anon — no wasabi_session)';
-      // eslint-disable-next-line no-console
-      console.info(`[supabase fetch] ${table} → ${label}`);
+      if (token) headers.set('Authorization', `Bearer ${token}`);
     }
     return fetch(input, { ...init, headers, cache: 'no-store' });
   };
