@@ -66,15 +66,18 @@ export async function GET(req: NextRequest) {
       .select('id, name, total_steps, steps, section, created_at, owner_user_id, show_in_valchiria')
       .order('created_at', { ascending: false });
 
-    // Master / no-JWT branch: see everything. We still tag isShared
-    // based on master ownership so the UI can distinguish "this is the
-    // library row" from "this is a personal copy".
+    // Master / no-JWT branch: see everything. The "Shared" badge is a
+    // hint for OTHER users that a row belongs to the master library,
+    // so from the master's own perspective every row is just "mine" —
+    // we always emit isShared=false here. (Same for service-role / no-
+    // JWT callers: they have no user identity to compare against, so
+    // the badge would be meaningless.)
     if (ctx.isMaster || !ctx.userId) {
       const { data, error } = await baseSelect;
       if (error) throw error;
       const rows: ValchiriaFunnelRow[] = (data || []).map((r) => ({
         ...r,
-        isShared: !!masterId && r.owner_user_id === masterId,
+        isShared: false,
       }));
       return NextResponse.json({ success: true, funnels: rows });
     }
