@@ -6,6 +6,7 @@ import { useSearchParams, useRouter } from 'next/navigation';
 import Header from '@/components/Header';
 import { useStore } from '@/store/useStore';
 import { fetchAffiliateSavedFunnels } from '@/lib/supabase-operations';
+import { supabase } from '@/lib/supabase';
 import { extractSectionContent, type SectionData } from '@/lib/project-sections';
 import SwipeDebugModal, {
   buildSwipeDebugInfo,
@@ -1350,6 +1351,34 @@ export default function FrontEndFunnel() {
       failed.push({ label, reason });
     };
 
+    /** Heavy-payload fallback: when a step PATCH fails via the API
+     *  route (typically a 500 from Netlify's 6MB body cap on Function
+     *  requests for large cloned HTML), retry the write going DIRECTLY
+     *  to Supabase REST. The browser supabase client carries the
+     *  user's JWT so RLS (`has_project_access(project_id, auth.uid())`)
+     *  authorises the write the same way the server route would, but
+     *  we sidestep the Netlify gateway and its 6MB limit. Returns true
+     *  on success, false on failure (caller records the reason). */
+    const patchStepDirect = async (
+      stepId: number,
+      patch: Record<string, unknown>,
+    ): Promise<{ ok: true } | { ok: false; reason: string }> => {
+      try {
+        const { error } = await supabase
+          .from('funnel_steps')
+          .update(patch)
+          .eq('id', stepId)
+          .eq('project_id', projectId);
+        if (error) {
+          return { ok: false, reason: `direct write failed: ${error.message}` };
+        }
+        return { ok: true };
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return { ok: false, reason: `direct write threw: ${msg}` };
+      }
+    };
+
     // 1) INSERT delle pagine NUOVE (append). Body leggero (result_content:null);
     //    l'HTML pesante arriva dopo via PATCH, una pagina per richiesta.
     if (toInsert.length) {
@@ -1372,8 +1401,10 @@ export default function FrontEndFunnel() {
           const html = ins.step.result_content;
           if (!html) continue;
           const label = ins.step.page_name || `Step ${row.step_number}`;
+          let apiOk = false;
+          let apiResponse: Response | null = null;
           try {
-            const pr = await fetch(
+            apiResponse = await fetch(
               `/api/projecthub/projects/${projectId}/funnel-steps/${row.id}`,
               {
                 method: 'PATCH',
@@ -1381,9 +1412,22 @@ export default function FrontEndFunnel() {
                 body: JSON.stringify({ result_content: html }),
               },
             );
-            if (!pr.ok) await recordFailure(label, pr);
+            apiOk = apiResponse.ok;
           } catch (err) {
+            // Fall through to direct-write fallback below.
             await recordFailure(label, null, err);
+            // Use a dummy non-null fallback marker so we still try direct.
+            apiResponse = null;
+            apiOk = false;
+          }
+          if (!apiOk) {
+            // API failed (usually Netlify 6MB cap on big cloned HTML).
+            // Try direct supabase write — same RLS, no 6MB gateway cap.
+            const direct = await patchStepDirect(row.id, { result_content: html });
+            if (!direct.ok) {
+              if (apiResponse) await recordFailure(label, apiResponse);
+              failed.push({ label, reason: direct.reason });
+            }
           }
         }
       }
@@ -1408,8 +1452,10 @@ export default function FrontEndFunnel() {
       if (s.prompt_notes) patch.prompt_notes = s.prompt_notes;
       if (s.feedback) patch.feedback = s.feedback;
       const label = s.page_name || `Step ${u.id}`;
+      let apiOk = false;
+      let apiResponse: Response | null = null;
       try {
-        const pr = await fetch(
+        apiResponse = await fetch(
           `/api/projecthub/projects/${projectId}/funnel-steps/${u.id}`,
           {
             method: 'PATCH',
@@ -1417,9 +1463,21 @@ export default function FrontEndFunnel() {
             body: JSON.stringify(patch),
           },
         );
-        if (!pr.ok) await recordFailure(label, pr);
+        apiOk = apiResponse.ok;
       } catch (err) {
         await recordFailure(label, null, err);
+        apiResponse = null;
+        apiOk = false;
+      }
+      if (!apiOk) {
+        // API failed (usually Netlify 6MB cap on big cloned HTML in
+        // result_content). Retry directly against Supabase REST so the
+        // gateway is out of the picture; RLS still authorises.
+        const direct = await patchStepDirect(u.id, patch);
+        if (!direct.ok) {
+          if (apiResponse) await recordFailure(label, apiResponse);
+          failed.push({ label, reason: direct.reason });
+        }
       }
     }
 
