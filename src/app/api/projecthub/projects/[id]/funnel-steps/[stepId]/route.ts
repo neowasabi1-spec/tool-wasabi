@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
-import { getUserAccessContext } from '@/lib/auth/get-current-user';
+import { canAccessProject } from '@/lib/auth/project-access';
 
 export const dynamic = 'force-dynamic';
 
@@ -36,21 +36,16 @@ function pickWritable(src: Record<string, unknown>): Record<string, unknown> {
 }
 
 /** Multi-tenancy: require the caller to either be the owner of the
- *  parent project or the master before mutating a step. Anonymous
- *  callers bypass — phase 2 of the RLS rollout locks them out. */
+ *  parent project, the master, OR a project_shares collaborator before
+ *  mutating a step. Anonymous callers bypass — phase 2 of the RLS
+ *  rollout locks them out. Centralised in canAccessProject so this
+ *  stays in lock-step with the matching RLS policies. */
 async function checkStepAccess(
   req: NextRequest,
   projectId: string,
 ): Promise<{ deny: NextResponse | null }> {
-  const ctx = await getUserAccessContext(req);
-  if (!ctx.userId || ctx.isMaster) return { deny: null };
-  const { data: project } = await supabase
-    .from('projects')
-    .select('owner_user_id')
-    .eq('id', projectId)
-    .maybeSingle();
-  const ownerId = (project as { owner_user_id?: string } | null)?.owner_user_id;
-  if (!project || ownerId !== ctx.userId) {
+  const { allowed } = await canAccessProject(req, projectId);
+  if (!allowed) {
     return { deny: NextResponse.json({ error: 'Not found' }, { status: 404 }) };
   }
   return { deny: null };

@@ -1,29 +1,39 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
 import { getUserAccessContext } from '@/lib/auth/get-current-user';
+import { listAccessibleProjectIds } from '@/lib/auth/project-access';
 
 export const dynamic = 'force-dynamic';
 
 const PROJECT_COLS =
-  'id, name, status, description, domain, notes, created_at, updated_at, thumbnail_path, product_brief_sections';
+  'id, name, status, description, domain, notes, created_at, updated_at, thumbnail_path, product_brief_sections, owner_user_id';
 const PROJECT_COLS_LEGACY =
-  'id, name, status, description, domain, notes, created_at, updated_at';
+  'id, name, status, description, domain, notes, created_at, updated_at, owner_user_id';
 
 export async function GET(req: NextRequest) {
   const search = req.nextUrl.searchParams.get('search');
 
-  // Multi-tenancy: regular users see only their own projects, masters
-  // see everything. Anonymous server-to-server callers (no JWT) fall
-  // through to the legacy "see everything" branch until phase 2 of the
-  // RLS rollout flips that to fail-closed.
+  // Multi-tenancy:
+  //   - master / no-JWT → see everything (phase-1 transitional)
+  //   - regular user    → own projects UNION projects shared with them
+  //                       via the project_shares table (the master can
+  //                       grant per-user collaborative access).
   const ctx = await getUserAccessContext(req);
-  const applyOwnerFilter = ctx.userId !== null && !ctx.isMaster;
+  let visibleIds: string[] | null = null;
+  if (ctx.userId && !ctx.isMaster) {
+    const { ownedIds, sharedIds } = await listAccessibleProjectIds(ctx.userId);
+    visibleIds = Array.from(new Set([...ownedIds, ...sharedIds]));
+    // No accessible projects at all → short-circuit; avoids a useless
+    // round-trip with `.in('id', [])` returning everything on some
+    // PostgREST versions.
+    if (visibleIds.length === 0) return NextResponse.json([]);
+  }
 
   let query = supabase
     .from('projects')
     .select(PROJECT_COLS)
     .order('created_at', { ascending: false });
-  if (applyOwnerFilter) query = query.eq('owner_user_id', ctx.userId!);
+  if (visibleIds) query = query.in('id', visibleIds);
 
   let { data, error } = await query;
 
@@ -32,7 +42,7 @@ export async function GET(req: NextRequest) {
       .from('projects')
       .select(PROJECT_COLS_LEGACY)
       .order('created_at', { ascending: false });
-    if (applyOwnerFilter) retryQuery = retryQuery.eq('owner_user_id', ctx.userId!);
+    if (visibleIds) retryQuery = retryQuery.in('id', visibleIds);
     const retry = await retryQuery;
     data = retry.data;
     error = retry.error;

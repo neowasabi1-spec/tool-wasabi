@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin, hasServiceRoleKey } from '@/lib/supabase-admin';
 import { extractTextFromUpload } from '@/lib/server-text-extract';
 import { getUserAccessContext } from '@/lib/auth/get-current-user';
+import { canAccessProject } from '@/lib/auth/project-access';
 import {
   parseSectionData,
   buildSectionContent,
@@ -17,20 +18,18 @@ export const maxDuration = 300;
 const BUCKET = 'project-files';
 
 /** Multi-tenancy gate: returns null when the caller is allowed to
- *  read/write files of `projectId`, or a Response to bail with. */
+ *  read/write files of `projectId`, or a Response to bail with.
+ *
+ *  Allowed cases: owner / master / shared collaborator (project_shares
+ *  row) / unauthenticated server-call (phase-1 fallback). Centralised
+ *  in canAccessProject() so this stays in lock-step with the matching
+ *  RLS policies. */
 async function checkProjectAccess(
   req: NextRequest,
   projectId: string,
 ): Promise<{ ctx: Awaited<ReturnType<typeof getUserAccessContext>>; deny: NextResponse | null }> {
-  const ctx = await getUserAccessContext(req);
-  if (!ctx.userId || ctx.isMaster) return { ctx, deny: null };
-  const { data: project } = await supabaseAdmin
-    .from('projects')
-    .select('owner_user_id')
-    .eq('id', projectId)
-    .maybeSingle();
-  const ownerId = (project as { owner_user_id?: string } | null)?.owner_user_id;
-  if (!project || ownerId !== ctx.userId) {
+  const { ctx, allowed } = await canAccessProject(req, projectId);
+  if (!allowed) {
     return { ctx, deny: NextResponse.json({ error: 'Not found' }, { status: 404 }) };
   }
   return { ctx, deny: null };

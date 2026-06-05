@@ -4,10 +4,11 @@ import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import Header from '@/components/Header';
 import { supabase } from '@/lib/supabase';
+import { useCurrentUser } from '@/hooks/useCurrentUser';
 import {
   Plus, FolderOpen, ChevronRight, ChevronDown, Layers,
   Trash2, Search, Save, X, Upload, Loader2, FileText, Eye,
-  ShieldCheck, LayoutGrid, LayoutList,
+  ShieldCheck, LayoutGrid, LayoutList, Share2, Users,
 } from 'lucide-react';
 import {
   parseSectionData, buildSectionBlob, formatFileSize,
@@ -38,6 +39,10 @@ interface Project {
   notes: string;
   created_at: string;
   updated_at: string;
+  /** UUID of the project owner. Set by the multi-tenancy trigger; used
+   *  client-side to tell "owned by me" (no badge) apart from "shared
+   *  with me" (SHARED badge, no delete button). */
+  owner_user_id?: string | null;
   // brief is TEXT; brief_files is JSONB with the file list.
   brief?: string | null;
   brief_files?: any;
@@ -47,6 +52,18 @@ interface Project {
   back_end?: any;
   compliance_funnel?: any;
   funnel?: any;
+}
+
+interface ProjectShareRow {
+  user_id: string;
+  email: string | null;
+  shared_at: string;
+}
+
+interface AdminUserRow {
+  user_id: string;
+  email: string;
+  role: 'master' | 'user';
 }
 
 const TABS = ['Overview', 'Market Research', 'Brief', 'Front End', 'Back End', 'Compliance', 'Funnel'] as const;
@@ -1033,6 +1050,81 @@ export default function ProjectsPage() {
   // The choice is persisted in localStorage so it sticks across sessions.
   const [view, setView] = useState<ViewMode>('cards');
 
+  // ── Sharing ────────────────────────────────────────────────────────
+  // Master only: assign per-user collaborative access on a project.
+  // Regular users see a "SHARED" badge on cards they don't own but
+  // don't get the Share button itself.
+  const { user: currentUser, permissions } = useCurrentUser();
+  const isMaster = permissions?.role === 'master';
+  const currentUserId = currentUser?.id || null;
+  const [shareTarget, setShareTarget] = useState<Project | null>(null);
+  const [shareUsers, setShareUsers] = useState<AdminUserRow[]>([]);
+  const [shareSelected, setShareSelected] = useState<Set<string>>(new Set());
+  const [shareLoading, setShareLoading] = useState(false);
+  const [shareSaving, setShareSaving] = useState(false);
+  const [shareError, setShareError] = useState<string | null>(null);
+
+  async function openShareModal(project: Project) {
+    setShareTarget(project);
+    setShareError(null);
+    setShareLoading(true);
+    setShareSelected(new Set());
+    try {
+      // Pull users + current shares in parallel. Master is filtered out
+      // (sharing a project with the master is meaningless — they see
+      // everything via the role check).
+      const [usersRes, sharesRes] = await Promise.all([
+        fetch('/api/admin/users', { cache: 'no-store' }),
+        fetch(`/api/projecthub/projects/${project.id}/shares`, { cache: 'no-store' }),
+      ]);
+      if (!usersRes.ok) throw new Error(`users HTTP ${usersRes.status}`);
+      if (!sharesRes.ok) throw new Error(`shares HTTP ${sharesRes.status}`);
+      const usersBody = (await usersRes.json()) as { users: AdminUserRow[] };
+      const sharesBody = (await sharesRes.json()) as { shares: ProjectShareRow[] };
+      const ownerId = project.owner_user_id || null;
+      const eligible = (usersBody.users || []).filter(
+        (u) => u.role !== 'master' && u.user_id !== ownerId,
+      );
+      setShareUsers(eligible);
+      setShareSelected(new Set((sharesBody.shares || []).map((s) => s.user_id)));
+    } catch (e) {
+      setShareError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setShareLoading(false);
+    }
+  }
+
+  function toggleShareUser(userId: string) {
+    setShareSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(userId)) next.delete(userId);
+      else next.add(userId);
+      return next;
+    });
+  }
+
+  async function saveShares() {
+    if (!shareTarget) return;
+    setShareSaving(true);
+    setShareError(null);
+    try {
+      const res = await fetch(`/api/projecthub/projects/${shareTarget.id}/shares`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_ids: Array.from(shareSelected) }),
+      });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(body?.error || `HTTP ${res.status}`);
+      }
+      setShareTarget(null);
+    } catch (e) {
+      setShareError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setShareSaving(false);
+    }
+  }
+
   useEffect(() => {
     loadProjects();
   }, []);
@@ -1055,7 +1147,12 @@ export default function ProjectsPage() {
 
   async function loadProjects() {
     setLoading(true);
-    const COLS = 'id, name, status, description, domain, notes, created_at, updated_at, market_research, brief, brief_files, front_end, back_end, compliance_funnel, funnel';
+    // owner_user_id is included so the UI can tell apart "owned by me"
+    // (no badge, can delete) from "shared with me" (SHARED badge, no
+    // delete button). On older installs without the multi-tenancy
+    // column this just comes back as undefined and the UI degrades to
+    // the legacy "everything looks owned by me" behavior.
+    const COLS = 'id, name, status, description, domain, notes, created_at, updated_at, market_research, brief, brief_files, front_end, back_end, compliance_funnel, funnel, owner_user_id';
     const { data, error } = await supabase
       .from('projects')
       .select(COLS)
@@ -1067,7 +1164,7 @@ export default function ProjectsPage() {
       ? data
       : (await supabase
           .from('projects')
-          .select('id, name, status, description, domain, notes, created_at, updated_at, market_research, brief, front_end, back_end, compliance_funnel, funnel')
+          .select('id, name, status, description, domain, notes, created_at, updated_at, market_research, brief, front_end, back_end, compliance_funnel, funnel, owner_user_id')
           .order('created_at', { ascending: false })).data;
 
     if (rows) {
@@ -1081,6 +1178,7 @@ export default function ProjectsPage() {
           notes: typeof p.notes === 'string' ? p.notes : '',
           created_at: typeof p.created_at === 'string' ? p.created_at : '',
           updated_at: typeof p.updated_at === 'string' ? p.updated_at : '',
+          owner_user_id: typeof p.owner_user_id === 'string' ? p.owner_user_id : null,
           brief: typeof p.brief === 'string' ? p.brief : '',
           brief_files: p.brief_files ?? null,
           market_research: p.market_research ?? null,
@@ -1326,41 +1424,81 @@ export default function ProjectsPage() {
         ) : view === 'grid' ? (
           /* Grid view — compact tiles, click to navigate to /projects/[id]/flow */
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-            {filtered.map(project => (
+            {filtered.map(project => {
+              // "Shared with me": regular user seeing a project they
+              // don't own (only possible because the master gave them
+              // a project_shares row). Master view never shows the
+              // badge — they own/see everything by definition.
+              const isOwned = !project.owner_user_id || project.owner_user_id === currentUserId;
+              const showSharedBadge = !isMaster && currentUserId !== null && !isOwned;
+              return (
               <Link
                 key={project.id}
                 href={'/projects/' + project.id}
                 className="group bg-[#1A1D27] border border-[#2A2D3A] hover:border-blue-600/50 rounded-xl p-4 transition-colors flex flex-col relative"
               >
-                {/* Delete icon — top-right, opacity on hover to keep the card tidy */}
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    deleteProject(project.id);
-                  }}
-                  title="Delete project"
-                  aria-label={`Delete project ${project.name}`}
-                  className="absolute top-2 right-2 p-1.5 rounded-md text-gray-500 hover:text-red-400 hover:bg-red-900/20 opacity-0 group-hover:opacity-100 transition-opacity z-10"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
+                {/* Top-right actions: Delete (owner/master only) +
+                    Share (master only). Collaborators must NOT see the
+                    delete button — backend will 403 anyway, but
+                    hiding it avoids confusion. */}
+                <div className="absolute top-2 right-2 flex items-center gap-1 z-10">
+                  {isMaster && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        openShareModal(project);
+                      }}
+                      title="Share with users"
+                      aria-label={`Share project ${project.name}`}
+                      className="p-1.5 rounded-md text-gray-500 hover:text-indigo-400 hover:bg-indigo-900/20 opacity-0 group-hover:opacity-100 transition-opacity"
+                    >
+                      <Share2 className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                  {(isMaster || isOwned) && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        deleteProject(project.id);
+                      }}
+                      title="Delete project"
+                      aria-label={`Delete project ${project.name}`}
+                      className="p-1.5 rounded-md text-gray-500 hover:text-red-400 hover:bg-red-900/20 opacity-0 group-hover:opacity-100 transition-opacity"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
                 <div className="flex items-start justify-between gap-2 mb-3">
                   <div className="w-10 h-10 rounded-lg bg-blue-600/20 flex items-center justify-center flex-shrink-0">
                     <FolderOpen className="w-5 h-5 text-blue-400" />
                   </div>
                   <span
-                    className={`px-2 py-0.5 rounded-full text-[10px] font-medium mr-7 ${
+                    className={`px-2 py-0.5 rounded-full text-[10px] font-medium mr-14 ${
                       STATUS_COLOR[project.status] || 'bg-gray-700 text-gray-300'
                     }`}
                   >
                     {project.status}
                   </span>
                 </div>
-                <h3 className="text-white font-semibold text-sm truncate">
-                  {project.name}
-                </h3>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-white font-semibold text-sm truncate">
+                    {project.name}
+                  </h3>
+                  {showSharedBadge && (
+                    <span
+                      className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-semibold bg-indigo-900/40 text-indigo-300 border border-indigo-700/50 flex-shrink-0"
+                      title="This project was shared with you"
+                    >
+                      <Share2 className="w-2.5 h-2.5" />
+                      SHARED
+                    </span>
+                  )}
+                </div>
                 {project.domain ? (
                   <p className="text-blue-400 text-xs mt-0.5 truncate">{project.domain}</p>
                 ) : (
@@ -1394,12 +1532,15 @@ export default function ProjectsPage() {
                   </span>
                 </div>
               </Link>
-            ))}
+              );
+            })}
           </div>
         ) : (
           <div className="space-y-3">
             {filtered.map(project => {
               const isOpen = expandedId === project.id;
+              const isOwned = !project.owner_user_id || project.owner_user_id === currentUserId;
+              const showSharedBadge = !isMaster && currentUserId !== null && !isOwned;
               return (
                 <div
                   key={project.id}
@@ -1417,7 +1558,18 @@ export default function ProjectsPage() {
                         <FolderOpen className="w-5 h-5 text-blue-400" />
                       </div>
                       <div className="min-w-0 flex-1">
-                        <h3 className="text-white font-semibold text-base truncate">{project.name}</h3>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <h3 className="text-white font-semibold text-base truncate">{project.name}</h3>
+                          {showSharedBadge && (
+                            <span
+                              className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold bg-indigo-900/40 text-indigo-300 border border-indigo-700/50 flex-shrink-0"
+                              title="This project was shared with you"
+                            >
+                              <Share2 className="w-3 h-3" />
+                              SHARED
+                            </span>
+                          )}
+                        </div>
                         {project.description ? (
                           <p
                             className="text-gray-400 text-sm mt-0.5 truncate"
@@ -1466,19 +1618,40 @@ export default function ProjectsPage() {
                         <ChevronRight className="w-3.5 h-3.5" />
                       </Link>
 
-                      {/* Delete project — quick action, asks confirm */}
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          deleteProject(project.id);
-                        }}
-                        title="Delete project"
-                        aria-label={`Delete project ${project.name}`}
-                        className="flex items-center gap-1.5 px-3 py-1.5 text-red-400 hover:text-red-300 hover:bg-red-900/20 text-xs font-medium rounded-lg transition-colors"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                        Delete
-                      </button>
+                      {/* Share — master only. Opens the modal that
+                          assigns per-user collaborative access. */}
+                      {isMaster && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openShareModal(project);
+                          }}
+                          title="Share with users"
+                          aria-label={`Share project ${project.name}`}
+                          className="flex items-center gap-1.5 px-3 py-1.5 text-indigo-400 hover:text-indigo-300 hover:bg-indigo-900/20 text-xs font-medium rounded-lg transition-colors"
+                        >
+                          <Share2 className="w-3.5 h-3.5" />
+                          Share
+                        </button>
+                      )}
+
+                      {/* Delete project — owner/master only.
+                          Collaborators must not delete the master's
+                          project (backend also returns 403). */}
+                      {(isMaster || isOwned) && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            deleteProject(project.id);
+                          }}
+                          title="Delete project"
+                          aria-label={`Delete project ${project.name}`}
+                          className="flex items-center gap-1.5 px-3 py-1.5 text-red-400 hover:text-red-300 hover:bg-red-900/20 text-xs font-medium rounded-lg transition-colors"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          Delete
+                        </button>
+                      )}
 
                       {/* Expand chevron */}
                       {isOpen ? (
@@ -1515,6 +1688,123 @@ export default function ProjectsPage() {
         projectName={checkpointTarget?.name ?? ''}
         detectedUrls={checkpointTarget ? detectFunnelUrls(checkpointTarget) : []}
       />
+
+      {/* Share modal — master only. Master picks which regular users
+          get collaborative access (read + edit, no delete) on the
+          selected project. Backed by PUT /api/projecthub/projects/:id/shares
+          which does a full-replace diff. */}
+      {shareTarget && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4"
+          onClick={() => !shareSaving && setShareTarget(null)}
+        >
+          <div
+            className="bg-[#1A1D27] border border-[#2A2D3A] rounded-2xl shadow-2xl w-full max-w-md max-h-[85vh] flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3 p-5 border-b border-[#2A2D3A]">
+              <div className="min-w-0">
+                <h2 className="text-white font-semibold text-base flex items-center gap-2">
+                  <Share2 className="w-4 h-4 text-indigo-400" />
+                  Share project
+                </h2>
+                <p className="text-gray-400 text-xs mt-1 truncate" title={shareTarget.name}>
+                  {shareTarget.name}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => !shareSaving && setShareTarget(null)}
+                className="p-1.5 rounded-md text-gray-500 hover:text-white hover:bg-white/5"
+                aria-label="Close"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-5">
+              {shareLoading ? (
+                <div className="flex items-center justify-center text-gray-400 py-10 gap-2">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Loading users…
+                </div>
+              ) : shareError ? (
+                <div className="text-sm text-red-300 bg-red-900/20 border border-red-700/40 rounded-lg p-3">
+                  {shareError}
+                </div>
+              ) : shareUsers.length === 0 ? (
+                <div className="text-center text-gray-400 text-sm py-10">
+                  <Users className="w-8 h-8 mx-auto mb-2 opacity-40" />
+                  No other users to share with yet.
+                  <br />
+                  Create users from the <span className="text-indigo-300">Users</span> section.
+                </div>
+              ) : (
+                <>
+                  <p className="text-xs text-gray-400 mb-3">
+                    Selected users will see this project in their <em>My Projects</em>
+                    {' '}and will be able to edit brief, files and funnel steps. They
+                    won&apos;t be able to delete the project.
+                  </p>
+                  <ul className="space-y-1.5">
+                    {shareUsers.map((u) => {
+                      const checked = shareSelected.has(u.user_id);
+                      return (
+                        <li key={u.user_id}>
+                          <label
+                            className={`flex items-center gap-3 px-3 py-2 rounded-lg cursor-pointer transition-colors ${
+                              checked
+                                ? 'bg-indigo-600/20 border border-indigo-500/50'
+                                : 'bg-[#0F1117] border border-[#2A2D3A] hover:border-[#3A3D4A]'
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => toggleShareUser(u.user_id)}
+                              className="accent-indigo-500 w-4 h-4"
+                            />
+                            <span className="text-sm text-white truncate">{u.email}</span>
+                          </label>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end gap-2 p-5 border-t border-[#2A2D3A]">
+              <button
+                type="button"
+                onClick={() => setShareTarget(null)}
+                disabled={shareSaving}
+                className="px-4 py-2 text-sm text-gray-300 hover:text-white rounded-lg transition-colors disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={saveShares}
+                disabled={shareSaving || shareLoading}
+                className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white rounded-lg transition-colors"
+              >
+                {shareSaving ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Saving…
+                  </>
+                ) : (
+                  <>
+                    <Save className="w-4 h-4" />
+                    Save
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

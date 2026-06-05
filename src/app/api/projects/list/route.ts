@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
 import { getUserAccessContext } from '@/lib/auth/get-current-user';
+import { listAccessibleProjectIds } from '@/lib/auth/project-access';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -22,13 +23,20 @@ export const maxDuration = 15;
 export async function GET(req: NextRequest) {
   try {
     const ctx = await getUserAccessContext(req);
+    let visibleIds: string[] | null = null;
+    if (ctx.userId && !ctx.isMaster) {
+      // Owned UNION shared. Master / no-JWT skip the filter entirely.
+      const { ownedIds, sharedIds } = await listAccessibleProjectIds(ctx.userId);
+      visibleIds = Array.from(new Set([...ownedIds, ...sharedIds]));
+      if (visibleIds.length === 0) {
+        return NextResponse.json({ success: true, projects: [] });
+      }
+    }
     let query = supabase
       .from('projects')
       .select('id, name, description, brief, status')
       .order('updated_at', { ascending: false });
-    if (ctx.userId && !ctx.isMaster) {
-      query = query.eq('owner_user_id', ctx.userId);
-    }
+    if (visibleIds) query = query.in('id', visibleIds);
     const { data, error } = await query;
     if (error) throw error;
     const projects = (data || []).map((p) => ({
