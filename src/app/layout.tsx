@@ -6,7 +6,7 @@ const inter = Inter({ subsets: ['latin'] });
 
 export const metadata: Metadata = {
   title: 'Funnel Swiper Dashboard',
-  description: 'Gestione attività di swipe funnel',
+  description: 'Funnel swipe activity management',
 };
 
 /**

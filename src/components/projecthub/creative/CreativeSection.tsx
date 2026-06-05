@@ -84,7 +84,7 @@ const ITER_GRADIENTS = [
 function getGradient(index: number) { return ITER_GRADIENTS[index % ITER_GRADIENTS.length]; }
 
 function formatDate(d: string) {
-  return new Date(d).toLocaleDateString("it-IT", { day: "2-digit", month: "short", year: "numeric" });
+  return new Date(d).toLocaleDateString("en-US", { day: "2-digit", month: "short", year: "numeric" });
 }
 
 // ─── TAB 1: TEMPLATE SALVATI ───
@@ -116,7 +116,7 @@ function TemplateSalvati({ projectId }: { projectId: string }) {
   const upload = async (e: React.FormEvent) => {
     e.preventDefault();
     const file = fileRef.current?.files?.[0];
-    if (!file) { toast({ title: "Seleziona un file", variant: "destructive" }); return; }
+    if (!file) { toast({ title: "Select a file", variant: "destructive" }); return; }
     setUploading(true);
     try {
       const fd = new FormData();
@@ -126,15 +126,15 @@ function TemplateSalvati({ projectId }: { projectId: string }) {
       if (r.ok) {
         const t = await r.json(); setTemplates(prev => [...prev, t]);
         setUploadOpen(false); setForm({ name: "", source_brand: "", category: "", tags: "" }); setFileLabel("");
-        toast({ title: "Template salvato!" });
+        toast({ title: "Template saved!" });
       }
-    } catch { toast({ title: "Errore upload", variant: "destructive" }); } finally { setUploading(false); }
+    } catch { toast({ title: "Upload error", variant: "destructive" }); } finally { setUploading(false); }
   };
 
   const del = async (id: number) => {
     setTemplates(prev => prev.filter(t => t.id !== id));
     await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/creative/templates/${id}`, { method: "DELETE" });
-    toast({ title: "Template eliminato" });
+    toast({ title: "Template deleted" });
   };
 
   const delSelected = async () => {
@@ -142,7 +142,7 @@ function TemplateSalvati({ projectId }: { projectId: string }) {
     setTemplates(prev => prev.filter(t => !selected.has(t.id)));
     setSelected(new Set()); setSelectionMode(false);
     await Promise.all(ids.map(id => fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/creative/templates/${id}`, { method: "DELETE" })));
-    toast({ title: `${ids.length} template eliminati` });
+    toast({ title: `${ids.length} templates deleted` });
   };
 
   const toggleSelect = (id: number) => {
@@ -174,10 +174,10 @@ function TemplateSalvati({ projectId }: { projectId: string }) {
       <div className="flex items-center justify-between">
         <div>
           <h3 className="text-base font-bold text-foreground">I miei template</h3>
-          <p className="text-xs text-muted-foreground">{templates.length} template salvati</p>
+          <p className="text-xs text-muted-foreground">{templates.length} saved templates</p>
         </div>
         <Button onClick={() => setUploadOpen(true)} className="bg-primary text-white gap-1.5 text-sm">
-          <Upload className="w-4 h-4" /> Carica un template
+          <Upload className="w-4 h-4" /> Upload a template
         </Button>
       </div>
 
@@ -186,7 +186,7 @@ function TemplateSalvati({ projectId }: { projectId: string }) {
         {/* Search */}
         <div className="relative flex-1 min-w-48">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
-          <Input value={search} onChange={e => setSearch(e.target.value)} placeholder="Cerca template..." className="pl-8 h-8 text-sm" />
+          <Input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search templates..." className="pl-8 h-8 text-sm" />
         </div>
 
         {/* Filter */}
@@ -194,7 +194,7 @@ function TemplateSalvati({ projectId }: { projectId: string }) {
           {(["all", "image", "video"] as const).map(f => (
             <button key={f} onClick={() => setFilter(f)}
               className={`px-3 py-1 text-xs rounded-md font-medium transition-colors ${f === filter ? "bg-white shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"}`}>
-              {f === "all" ? "Tutti" : f === "image" ? "Immagini" : "Video"}
+              {f === "all" ? "All" : f === "image" ? "Images" : "Video"}
             </button>
           ))}
         </div>
@@ -204,20 +204,20 @@ function TemplateSalvati({ projectId }: { projectId: string }) {
           <DropdownMenuTrigger asChild>
             <button className="flex items-center gap-1.5 px-3 py-1.5 text-xs border border-border rounded-lg bg-background hover:bg-muted transition-colors font-medium">
               <ArrowUpDown className="w-3 h-3" />
-              {sort === "newest" ? "Più recenti" : "Più vecchi"}
+              {sort === "newest" ? "Newest" : "Oldest"}
               <ChevronDown className="w-3 h-3 text-muted-foreground" />
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="text-sm">
-            <DropdownMenuItem onClick={() => setSort("newest")}>Più recenti</DropdownMenuItem>
-            <DropdownMenuItem onClick={() => setSort("oldest")}>Più vecchi</DropdownMenuItem>
+            <DropdownMenuItem onClick={() => setSort("newest")}>Newest</DropdownMenuItem>
+            <DropdownMenuItem onClick={() => setSort("oldest")}>Oldest</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
 
         {/* Selection toggle */}
         <button onClick={() => { setSelectionMode(v => !v); setSelected(new Set()); }}
           className={`flex items-center gap-1.5 px-3 py-1.5 text-xs border rounded-lg font-medium transition-colors ${selectionMode ? "border-primary text-primary bg-primary/5" : "border-border bg-background hover:bg-muted"}`}>
-          <SlidersHorizontal className="w-3 h-3" /> Seleziona
+          <SlidersHorizontal className="w-3 h-3" /> Select
         </button>
       </div>
 
@@ -227,14 +227,14 @@ function TemplateSalvati({ projectId }: { projectId: string }) {
           <label className="flex items-center gap-2 cursor-pointer text-sm font-medium text-foreground">
             <input type="checkbox" checked={allSelected} onChange={toggleAll}
               className="w-4 h-4 rounded accent-primary" />
-            {allSelected ? "Deseleziona tutti" : "Seleziona tutti"}
+            {allSelected ? "Deselect all" : "Select all"}
           </label>
           {selected.size > 0 && (
             <>
-              <span className="text-xs text-muted-foreground">{selected.size} selezionati</span>
+              <span className="text-xs text-muted-foreground">{selected.size} selected</span>
               <button onClick={delSelected}
                 className="ml-auto flex items-center gap-1.5 text-xs text-destructive hover:bg-destructive/10 px-3 py-1.5 rounded-lg transition-colors font-medium border border-destructive/30">
-                <Trash2 className="w-3 h-3" /> Elimina selezionati
+                <Trash2 className="w-3 h-3" /> Delete selected
               </button>
             </>
           )}
@@ -243,19 +243,19 @@ function TemplateSalvati({ projectId }: { projectId: string }) {
 
       {/* Grid */}
       {loading ? (
-        <div className="py-16 text-center text-sm text-muted-foreground">Caricamento...</div>
+        <div className="py-16 text-center text-sm text-muted-foreground">Loading...</div>
       ) : allFiltered.length === 0 ? (
         <div className="py-20 text-center border-2 border-dashed border-border rounded-2xl">
           <BookmarkCheck className="w-12 h-12 text-muted-foreground/30 mx-auto mb-3" />
           <p className="text-sm font-semibold text-foreground mb-1">
-            {search ? "Nessun risultato" : "Nessun template salvato"}
+            {search ? "No results" : "No saved templates"}
           </p>
           <p className="text-xs text-muted-foreground mb-4">
-            {search ? "Prova con un'altra ricerca." : "Carica le tue migliori creative o salvale dai competitor."}
+            {search ? "Try a different search." : "Upload your best creatives or save them from competitors."}
           </p>
           {!search && (
             <Button size="sm" onClick={() => setUploadOpen(true)} className="bg-primary text-white gap-1.5">
-              <Upload className="w-3.5 h-3.5" /> Carica un template
+              <Upload className="w-3.5 h-3.5" /> Upload a template
             </Button>
           )}
         </div>
@@ -308,14 +308,14 @@ function TemplateSalvati({ projectId }: { projectId: string }) {
                   {!selectionMode && (
                     <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-2">
                       <button
-                        onClick={e => { e.stopPropagation(); toast({ title: "Funzione in arrivo", description: "Usa template per swipe/iterazione" }); }}
+                        onClick={e => { e.stopPropagation(); toast({ title: "Coming soon", description: "Use templates for swipe/iteration" }); }}
                         className="flex items-center gap-1.5 bg-white text-black text-xs font-bold px-4 py-2 rounded-full hover:bg-primary hover:text-white transition-colors shadow-lg">
                         <Bookmark className="w-3.5 h-3.5" /> Usa template
                       </button>
                       <button
                         onClick={e => { e.stopPropagation(); del(t.id); }}
                         className="flex items-center gap-1 text-white/70 hover:text-red-400 text-[10px] transition-colors">
-                        <Trash2 className="w-3 h-3" /> Elimina
+                        <Trash2 className="w-3 h-3" /> Delete
                       </button>
                     </div>
                   )}
@@ -344,21 +344,21 @@ function TemplateSalvati({ projectId }: { projectId: string }) {
       {/* Upload Dialog */}
       <Dialog open={uploadOpen} onOpenChange={v => { setUploadOpen(v); if (!v) { setFileLabel(""); setForm({ name: "", source_brand: "", category: "", tags: "" }); } }}>
         <DialogContent className="max-w-md">
-          <DialogHeader><DialogTitle>Salva Template Creative</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>Save Creative Template</DialogTitle></DialogHeader>
           <form onSubmit={upload} className="space-y-4 mt-2">
             <div className="border-2 border-dashed border-border rounded-xl p-5 text-center cursor-pointer hover:border-primary/50 hover:bg-primary/5 transition-colors"
               onClick={() => fileRef.current?.click()}>
               <Upload className="w-7 h-7 text-muted-foreground mx-auto mb-2" />
-              <p className="text-xs text-muted-foreground font-medium">{fileLabel || "Clicca per selezionare (immagine o video)"}</p>
+              <p className="text-xs text-muted-foreground font-medium">{fileLabel || "Click to select (image or video)"}</p>
               <input ref={fileRef} type="file" accept="image/*,video/*" className="hidden" onChange={() => {
                 const f = fileRef.current?.files?.[0];
                 if (f) { setFileLabel(f.name); if (!form.name) setForm(prev => ({ ...prev, name: f.name.replace(/\.[^.]+$/, "") })); }
               }} />
             </div>
             {[
-              { label: "Nome *", key: "name", placeholder: "Es. Prima/Dopo UGC" },
+              { label: "Name *", key: "name", placeholder: "E.g. Before/After UGC" },
               { label: "Brand Sorgente (Competitor)", key: "source_brand", placeholder: "Es. bioma.health, ProDentim…" },
-              { label: "Categoria", key: "category", placeholder: "Es. UGC, Testimonial, Demo..." },
+              { label: "Category", key: "category", placeholder: "E.g. UGC, Testimonial, Demo..." },
               { label: "Tag", key: "tags", placeholder: "Es. before-after, urgency..." },
             ].map(({ label, key, placeholder }) => (
               <div key={key} className="space-y-1">
@@ -367,9 +367,9 @@ function TemplateSalvati({ projectId }: { projectId: string }) {
               </div>
             ))}
             <div className="flex justify-end gap-2 pt-2">
-              <Button type="button" variant="outline" onClick={() => setUploadOpen(false)}>Annulla</Button>
+              <Button type="button" variant="outline" onClick={() => setUploadOpen(false)}>Cancel</Button>
               <Button type="submit" disabled={uploading} className="bg-primary text-white gap-1.5">
-                {uploading ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Caricamento...</> : <><Bookmark className="w-3.5 h-3.5" /> Salva Template</>}
+                {uploading ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Loading...</> : <><Bookmark className="w-3.5 h-3.5" /> Save Template</>}
               </Button>
             </div>
           </form>
@@ -396,7 +396,7 @@ function IterationPopup({ iteration, onClose }: { iteration: CreativeIteration; 
             <div className="absolute inset-0 opacity-20 bg-gradient-to-br from-slate-700 to-slate-900" />
             <div className="absolute top-3 left-3 z-10">
               <span className="text-[10px] font-bold px-3 py-1 bg-white/20 text-white rounded-full backdrop-blur-sm border border-white/30">
-                Ad Originale
+                Original Ad
               </span>
             </div>
             <div className={`relative z-10 w-36 h-48 rounded-2xl bg-gradient-to-br ${gComp.bg} shadow-2xl flex flex-col items-start justify-end p-4 overflow-hidden`}>
@@ -411,7 +411,7 @@ function IterationPopup({ iteration, onClose }: { iteration: CreativeIteration; 
             <div className="absolute top-3 left-3 z-10">
               <span className="text-[10px] font-bold px-3 py-1 rounded-full flex items-center gap-1.5 border border-white/60 bg-white/60 backdrop-blur-sm"
                 style={{ color: gIter.accent }}>
-                <Sparkles className="w-3 h-3" /> Iterata
+                <Sparkles className="w-3 h-3" /> Iterated
               </span>
             </div>
             <div className={`relative z-10 w-36 h-48 rounded-2xl bg-gradient-to-br ${gIter.bg} shadow-2xl flex flex-col items-start justify-end p-4 overflow-hidden`}>
@@ -435,7 +435,7 @@ function IterationPopup({ iteration, onClose }: { iteration: CreativeIteration; 
             </div>
             <div className="flex gap-2 flex-shrink-0">
               <Button size="sm" className="h-8 text-xs bg-amber-500 hover:bg-amber-600 text-black font-bold gap-1.5">
-                <Zap className="w-3.5 h-3.5" /> Genera altre
+                <Zap className="w-3.5 h-3.5" /> Generate more
               </Button>
               <button onClick={onClose} className="p-2 rounded-lg hover:bg-muted transition-colors">
                 <X className="w-4 h-4 text-muted-foreground" />
@@ -446,7 +446,7 @@ function IterationPopup({ iteration, onClose }: { iteration: CreativeIteration; 
           {/* Copy blocks */}
           <div className="grid grid-cols-2 gap-3">
             <div className="bg-muted/30 border border-border rounded-lg p-3">
-              <p className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider mb-2">Ad Originale</p>
+              <p className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider mb-2">Original Ad</p>
               <div className="space-y-1.5">
                 <div><span className="text-[10px] font-semibold text-foreground">Headline: </span><span className="text-[10px] text-muted-foreground">{iteration.competitor_headline}</span></div>
                 <div><span className="text-[10px] font-semibold text-foreground">Hook: </span><span className="text-[10px] text-muted-foreground">{iteration.competitor_hook}</span></div>
@@ -454,7 +454,7 @@ function IterationPopup({ iteration, onClose }: { iteration: CreativeIteration; 
               </div>
             </div>
             <div className="border rounded-lg p-3" style={{ borderColor: `${gIter.accent}40`, backgroundColor: `${gIter.accent}08` }}>
-              <p className="text-[9px] font-bold uppercase tracking-wider mb-2" style={{ color: gIter.accent }}>Iterazione</p>
+              <p className="text-[9px] font-bold uppercase tracking-wider mb-2" style={{ color: gIter.accent }}>Iteration</p>
               <div className="space-y-1.5">
                 <div><span className="text-[10px] font-semibold text-foreground">Headline: </span><span className="text-[10px] text-foreground">{iteration.iteration_headline}</span></div>
                 <div><span className="text-[10px] font-semibold text-foreground">Hook: </span><span className="text-[10px] text-foreground">{iteration.iteration_hook}</span></div>
@@ -482,7 +482,7 @@ function IterationPopup({ iteration, onClose }: { iteration: CreativeIteration; 
           {iteration.analysis && (
             <div className="bg-violet-50 border border-violet-200 rounded-xl p-3">
               <p className="text-[10px] font-bold text-violet-700 uppercase tracking-wider mb-1 flex items-center gap-1">
-                <Sparkles className="w-3 h-3" /> Analisi Iterazione
+                <Sparkles className="w-3 h-3" /> Iteration Analysis
               </p>
               <p className="text-xs text-violet-900 leading-relaxed">{iteration.analysis}</p>
             </div>
@@ -550,11 +550,11 @@ function Iterazione({ projectId }: { projectId: string }) {
   const deleteIteration = async (id: number) => {
     setIterations(prev => prev.filter(i => i.id !== id));
     await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/creative/iterations/${id}`, { method: "DELETE" });
-    toast({ title: "Iterazione eliminata" });
+    toast({ title: "Iteration deleted" });
   };
 
   const generate = async () => {
-    if (!selectedAd) { toast({ title: "Seleziona prima un'ad competitor", variant: "destructive" }); return; }
+    if (!selectedAd) { toast({ title: "Select a competitor ad first", variant: "destructive" }); return; }
     setGenerating(true); setStreamText("");
     let full = "";
     try {
@@ -579,7 +579,7 @@ function Iterazione({ projectId }: { projectId: string }) {
             const d = JSON.parse(line.slice(5).trim());
             if (d.content) { full += d.content; setStreamText(full); }
             if (d.done) {
-              toast({ title: `${iterCount} iterazioni generate!`, description: "Salvate nella sezione sotto." });
+              toast({ title: `${iterCount} iterations generated!`, description: "Saved in the section below." });
               // Parse and save each iteration
               const blocks = full.split(/(?:═══|---|\*\*\*|ITERAZIONE\s*\d+|Creative\s*\d+:)/i)
                 .map(b => b.trim()).filter(b => b.length > 30);
@@ -597,27 +597,27 @@ function Iterazione({ projectId }: { projectId: string }) {
                   competitor_hook: selectedAd.hook,
                   competitor_body: selectedAd.body_text,
                   competitor_gradient: String(selectedAd.id % ITER_GRADIENTS.length),
-                  iteration_headline: hlMatch?.[1]?.trim() ?? `Iterazione ${i + 1} di ${selectedAd.headline}`,
-                  iteration_hook: hookMatch?.[1]?.trim() ?? `Nuovo angolo per ${selectedAd.brand_name}`,
+                  iteration_headline: hlMatch?.[1]?.trim() ?? `Iteration ${i + 1} of ${selectedAd.headline}`,
+                  iteration_hook: hookMatch?.[1]?.trim() ?? `New angle for ${selectedAd.brand_name}`,
                   iteration_body: bodyMatch?.[1]?.trim() ?? "",
                   angle_notes: angleNotes,
-                  elements_json: JSON.stringify(elemMatch?.[1]?.split(/[,;]/).map(s => s.trim()).filter(Boolean) ?? ["Headline", "Hook", "Angolo"]),
+                  elements_json: JSON.stringify(elemMatch?.[1]?.split(/[,;]/).map(s => s.trim()).filter(Boolean) ?? ["Headline", "Hook", "Angle"]),
                   analysis: analysisMatch?.[1]?.trim() ?? block.slice(0, 200),
                   created_at: new Date().toISOString(),
                 });
               }
               loadIterations();
             }
-            if (d.error) toast({ title: "Errore", variant: "destructive" });
+            if (d.error) toast({ title: "Error", variant: "destructive" });
           } catch { /* ignore */ }
         }
       }
-    } catch { toast({ title: "Errore generazione", variant: "destructive" }); } finally { setGenerating(false); }
+    } catch { toast({ title: "Generation error", variant: "destructive" }); } finally { setGenerating(false); }
   };
 
   const PERIOD_LABELS: Record<IterPeriod, string> = {
-    today: "Oggi", yesterday: "Ieri", week: "Settimana scorsa",
-    month: "Mese corrente", custom: "Personalizzata",
+    today: "Today", yesterday: "Yesterday", week: "Last week",
+    month: "Current month", custom: "Custom",
   };
 
   return (
@@ -627,9 +627,9 @@ function Iterazione({ projectId }: { projectId: string }) {
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-border bg-muted/20">
           <div>
             <h3 className="text-sm font-bold text-foreground flex items-center gap-2">
-              <Layers className="w-4 h-4 text-sky-500" /> Ads Competitor in Esame
+              <Layers className="w-4 h-4 text-sky-500" /> Competitor Ads Under Review
             </h3>
-            <p className="text-[11px] text-muted-foreground mt-0.5">Seleziona un'ad per avviare l'iterazione AI</p>
+            <p className="text-[11px] text-muted-foreground mt-0.5">Select an ad to start the AI iteration</p>
           </div>
           {selectedAd && (
             <button onClick={() => setSelectedAd(null)} className="text-[10px] text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1">
@@ -641,12 +641,12 @@ function Iterazione({ projectId }: { projectId: string }) {
         <div className="p-4">
           {loadingAds ? (
             <div className="py-12 text-center text-sm text-muted-foreground flex items-center justify-center gap-2">
-              <RefreshCw className="w-4 h-4 animate-spin" /> Caricamento ads...
+              <RefreshCw className="w-4 h-4 animate-spin" /> Loading ads...
             </div>
           ) : competitorAds.length === 0 ? (
             <div className="py-12 text-center">
               <Globe className="w-10 h-10 text-muted-foreground/20 mx-auto mb-2" />
-              <p className="text-sm text-muted-foreground">Nessuna ad competitor. Aggiungile dalla <strong>Competitor Library</strong>.</p>
+              <p className="text-sm text-muted-foreground">No competitor ads. Add them from the <strong>Competitor Library</strong>.</p>
             </div>
           ) : (
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-3">
@@ -675,7 +675,7 @@ function Iterazione({ projectId }: { projectId: string }) {
                       {/* Hover overlay */}
                       <div className={`absolute inset-0 bg-black/40 flex items-center justify-center transition-opacity ${isSelected ? "opacity-0" : "opacity-0 group-hover:opacity-100"}`}>
                         <span className="text-[10px] font-bold text-white bg-white/20 px-2 py-1 rounded-full backdrop-blur-sm">
-                          Seleziona
+                          Select
                         </span>
                       </div>
                       {/* Text */}
@@ -699,10 +699,10 @@ function Iterazione({ projectId }: { projectId: string }) {
               <div className="flex-1 min-w-48 space-y-1">
                 <label className="text-xs font-medium text-foreground">Angolo da preservare (opzionale)</label>
                 <Input value={angleNotes} onChange={e => setAngleNotes(e.target.value)}
-                  placeholder="Es. Mantieni hook urgente, adatta al nostro prodotto" className="text-xs h-8" disabled={generating} />
+                  placeholder="E.g. Keep urgent hook, adapt to our product" className="text-xs h-8" disabled={generating} />
               </div>
               <div className="space-y-1">
-                <label className="text-xs font-medium text-foreground">N° iterazioni</label>
+                <label className="text-xs font-medium text-foreground">No. of iterations</label>
                 <div className="flex gap-1.5">
                   {[1, 3, 5].map(n => (
                     <button key={n} onClick={() => setIterCount(n)}
@@ -715,7 +715,7 @@ function Iterazione({ projectId }: { projectId: string }) {
               <Button onClick={generate} disabled={generating} className="bg-amber-500 hover:bg-amber-600 text-black font-bold gap-1.5 h-9 self-end">
                 {generating
                   ? <><RefreshCw className="w-4 h-4 animate-spin" /> Generando...</>
-                  : <><Zap className="w-4 h-4" /> Genera {iterCount} Iterazioni</>}
+                  : <><Zap className="w-4 h-4" /> Generate {iterCount} Iterations</>}
               </Button>
             </div>
             {/* Ad sorgente preview */}
@@ -742,10 +742,10 @@ function Iterazione({ projectId }: { projectId: string }) {
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-border bg-muted/20 flex-wrap gap-3">
           <div>
             <h3 className="text-sm font-bold text-foreground flex items-center gap-2">
-              <Repeat2 className="w-4 h-4 text-amber-500" /> Iterazioni
+              <Repeat2 className="w-4 h-4 text-amber-500" /> Iterations
               {iterations.length > 0 && <span className="text-[10px] font-bold px-2 py-0.5 bg-amber-100 text-amber-700 rounded-full">{iterations.length}</span>}
             </h3>
-            <p className="text-[11px] text-muted-foreground mt-0.5">Clicca su un'iterazione per vedere il confronto con l'originale</p>
+            <p className="text-[11px] text-muted-foreground mt-0.5">Click on an iteration to see the comparison with the original</p>
           </div>
           {/* Period filter */}
           <div className="flex items-center gap-1 flex-wrap">
@@ -764,12 +764,12 @@ function Iterazione({ projectId }: { projectId: string }) {
         {period === "custom" && (
           <div className="px-5 py-3 border-b border-border bg-muted/10 flex items-center gap-3 flex-wrap">
             <div className="flex items-center gap-2">
-              <label className="text-xs font-medium text-foreground">Dal</label>
+              <label className="text-xs font-medium text-foreground">From</label>
               <input type="date" value={customStart} onChange={e => setCustomStart(e.target.value)}
                 className="text-xs border border-border rounded-lg px-2 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-primary" />
             </div>
             <div className="flex items-center gap-2">
-              <label className="text-xs font-medium text-foreground">Al</label>
+              <label className="text-xs font-medium text-foreground">To</label>
               <input type="date" value={customEnd} onChange={e => setCustomEnd(e.target.value)}
                 className="text-xs border border-border rounded-lg px-2 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-primary" />
             </div>
@@ -783,13 +783,13 @@ function Iterazione({ projectId }: { projectId: string }) {
         <div className="p-4">
           {loadingIters ? (
             <div className="py-16 text-center text-sm text-muted-foreground flex items-center justify-center gap-2">
-              <RefreshCw className="w-4 h-4 animate-spin" /> Caricamento...
+              <RefreshCw className="w-4 h-4 animate-spin" /> Loading...
             </div>
           ) : iterations.length === 0 ? (
             <div className="py-16 text-center border-2 border-dashed border-border rounded-xl">
               <Repeat2 className="w-10 h-10 text-muted-foreground/20 mx-auto mb-2" />
-              <p className="text-sm font-semibold text-foreground mb-1">Nessuna iterazione {PERIOD_LABELS[period].toLowerCase()}</p>
-              <p className="text-xs text-muted-foreground">Seleziona un'ad competitor e genera le prime iterazioni.</p>
+              <p className="text-sm font-semibold text-foreground mb-1">No iterations {PERIOD_LABELS[period].toLowerCase()}</p>
+              <p className="text-xs text-muted-foreground">Select a competitor ad and generate the first iterations.</p>
             </div>
           ) : (
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-3">
@@ -818,7 +818,7 @@ function Iterazione({ projectId }: { projectId: string }) {
                     </div>
                     <div className="bg-card px-2.5 py-1.5 flex items-center justify-between border-t border-border/50">
                       <p className="text-[10px] text-muted-foreground truncate flex-1">
-                        {new Date(iter.created_at).toLocaleDateString("it-IT", { day: "2-digit", month: "short" })}
+                        {new Date(iter.created_at).toLocaleDateString("en-US", { day: "2-digit", month: "short" })}
                       </p>
                       <button onClick={e => { e.stopPropagation(); deleteIteration(iter.id); }}
                         className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive p-0.5 ml-1">
@@ -852,7 +852,7 @@ function SwipePopup({ swipe, onClose }: { swipe: CreativeSwipe; onClose: () => v
           <div className="relative bg-slate-800 flex flex-col items-center justify-center p-6 overflow-hidden">
             <div className="absolute inset-0 opacity-10 bg-gradient-to-br from-slate-600 to-slate-900" />
             <div className="absolute top-3 left-3 z-10">
-              <span className="text-[10px] font-bold px-3 py-1 bg-white/20 text-white rounded-full backdrop-blur-sm border border-white/30">Ad Originale</span>
+              <span className="text-[10px] font-bold px-3 py-1 bg-white/20 text-white rounded-full backdrop-blur-sm border border-white/30">Original Ad</span>
             </div>
             <div className={`relative z-10 w-36 h-48 rounded-2xl bg-gradient-to-br ${gComp.bg} shadow-2xl flex flex-col items-start justify-end p-4 overflow-hidden`}>
               <div className="absolute inset-0 opacity-10 bg-white rounded-2xl" />
@@ -881,7 +881,7 @@ function SwipePopup({ swipe, onClose }: { swipe: CreativeSwipe; onClose: () => v
               <div className="flex items-center gap-2 mb-1 flex-wrap">
                 <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 bg-sky-100 text-sky-700 rounded-full">{swipe.brand_name}</span>
                 <span className="text-[10px] text-muted-foreground">
-                  {new Date(swipe.created_at).toLocaleString("it-IT", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}
+                  {new Date(swipe.created_at).toLocaleString("en-US", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}
                 </span>
               </div>
               <p className="text-sm font-bold text-foreground mb-0.5">{swipe.swipe_headline}</p>
@@ -889,7 +889,7 @@ function SwipePopup({ swipe, onClose }: { swipe: CreativeSwipe; onClose: () => v
             </div>
             <div className="flex gap-2 flex-shrink-0">
               <Button size="sm" className="h-8 text-xs bg-amber-500 hover:bg-amber-600 text-black font-bold gap-1.5">
-                <Zap className="w-3.5 h-3.5" /> Genera 10 Iterazioni
+                <Zap className="w-3.5 h-3.5" /> Generate 10 Iterations
               </Button>
               <button onClick={onClose} className="p-2 rounded-lg hover:bg-muted transition-colors">
                 <X className="w-4 h-4 text-muted-foreground" />
@@ -898,7 +898,7 @@ function SwipePopup({ swipe, onClose }: { swipe: CreativeSwipe; onClose: () => v
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="bg-muted/30 border border-border rounded-lg p-3">
-              <p className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider mb-2">Ad Originale</p>
+              <p className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider mb-2">Original Ad</p>
               <div className="space-y-1.5">
                 <div><span className="text-[10px] font-semibold text-foreground">Headline: </span><span className="text-[10px] text-muted-foreground">{swipe.competitor_headline}</span></div>
                 <div><span className="text-[10px] font-semibold text-foreground">Hook: </span><span className="text-[10px] text-muted-foreground">{swipe.competitor_hook}</span></div>
@@ -916,7 +916,7 @@ function SwipePopup({ swipe, onClose }: { swipe: CreativeSwipe; onClose: () => v
           </div>
           {elements.length > 0 && (
             <div>
-              <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider mb-2">Elementi Swipati</p>
+              <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider mb-2">Swiped Elements</p>
               <div className="flex flex-wrap gap-1.5">
                 {elements.map((el, i) => (
                   <span key={i} className="text-[10px] font-medium px-2 py-0.5 rounded-full border"
@@ -930,7 +930,7 @@ function SwipePopup({ swipe, onClose }: { swipe: CreativeSwipe; onClose: () => v
           {swipe.analysis && (
             <div className="bg-violet-50 border border-violet-200 rounded-xl p-3">
               <p className="text-[10px] font-bold text-violet-700 uppercase tracking-wider mb-1 flex items-center gap-1">
-                <Sparkles className="w-3 h-3" /> Analisi Swipe
+                <Sparkles className="w-3 h-3" /> Swipe Analysis
               </p>
               <p className="text-xs text-violet-900 leading-relaxed">{swipe.analysis}</p>
             </div>
@@ -1003,7 +1003,7 @@ function SwipeTab({ projectId }: { projectId: string }) {
   const deleteSwipe = async (id: number) => {
     setAllSwipes(prev => prev.filter(s => s.id !== id));
     await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/creative/swipes/${id}`, { method: "DELETE" });
-    toast({ title: "Swipe eliminata" });
+    toast({ title: "Swipe deleted" });
   };
 
   const generateSwipeForAd = async (ad: CompetitorAdWithBrand) => {
@@ -1015,7 +1015,7 @@ function SwipeTab({ projectId }: { projectId: string }) {
       const refDesc = `Headline: "${ad.headline}". Hook: "${ad.hook}". ${ad.body_text ? `Body: "${ad.body_text}".` : ""} Brand: ${ad.brand_name}.`;
       const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/creative/swipe-generate`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ reference_description: refDesc, swipe_instructions: "Adatta al prodotto del progetto mantenendo la struttura e l'angolo originale dell'ad." }),
+        body: JSON.stringify({ reference_description: refDesc, swipe_instructions: "Adapt to the project's product while keeping the original structure and angle of the ad." }),
       });
       if (!r.body) throw new Error();
       const reader = r.body.getReader(); const decoder = new TextDecoder(); let buf = "";
@@ -1044,19 +1044,19 @@ function SwipeTab({ projectId }: { projectId: string }) {
                 analysis: analysis ?? full.slice(0, 300),
                 created_at: new Date().toISOString(),
               });
-              toast({ title: "Swipe creata e salvata!" });
+              toast({ title: "Swipe created and saved!" });
               if (saved) setPreviewSwipe(saved);
             }
-            if (d.error) toast({ title: "Errore generazione", variant: "destructive" });
+            if (d.error) toast({ title: "Generation error", variant: "destructive" });
           } catch { /* ignore */ }
         }
       }
-    } catch { toast({ title: "Errore generazione", variant: "destructive" });
+    } catch { toast({ title: "Generation error", variant: "destructive" });
     } finally { setGeneratingFor(null); setGenStream(prev => { const n = { ...prev }; delete n[ad.id]; return n; }); }
   };
 
   const PERIOD_LABELS: Record<SwipePeriod, string> = {
-    today: "Oggi", yesterday: "Ieri", week: "Settimana scorsa", month: "Mese corrente",
+    today: "Today", yesterday: "Yesterday", week: "Last week", month: "Current month",
   };
 
   return (
@@ -1067,17 +1067,17 @@ function SwipeTab({ projectId }: { projectId: string }) {
           <h3 className="text-sm font-bold text-foreground flex items-center gap-2">
             <LayoutGrid className="w-4 h-4 text-violet-500" /> Dashboard Brand
           </h3>
-          <p className="text-[11px] text-muted-foreground mt-0.5">Espandi un brand per vedere le ads importate e le swipe create</p>
+          <p className="text-[11px] text-muted-foreground mt-0.5">Expand a brand to see imported ads and created swipes</p>
         </div>
 
         {loadingBrands ? (
           <div className="py-10 text-center text-sm text-muted-foreground flex items-center justify-center gap-2">
-            <RefreshCw className="w-4 h-4 animate-spin" /> Caricamento...
+            <RefreshCw className="w-4 h-4 animate-spin" /> Loading...
           </div>
         ) : brands.length === 0 ? (
           <div className="py-12 text-center p-6">
             <Globe className="w-10 h-10 text-muted-foreground/20 mx-auto mb-2" />
-            <p className="text-sm text-muted-foreground">Nessun competitor. Aggiungili dalla tab <strong>Lista Competitors</strong>.</p>
+            <p className="text-sm text-muted-foreground">No competitors. Add them from the <strong>Competitors List</strong> tab.</p>
           </div>
         ) : (
           brands.map((brand, brandIdx) => {
@@ -1096,7 +1096,7 @@ function SwipeTab({ projectId }: { projectId: string }) {
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-bold text-foreground">{brand.name}</p>
                     <p className="text-[11px] text-muted-foreground mt-0.5">
-                      {bAds.length} ads importate
+                      {bAds.length} imported ads
                       <span className="mx-1.5 opacity-40">•</span>
                       <span className={bSwipes.length > 0 ? "text-primary font-semibold" : ""}>{bSwipes.length} swipate</span>
                     </p>
@@ -1114,7 +1114,7 @@ function SwipeTab({ projectId }: { projectId: string }) {
                 {isExpanded && (
                   <div className="border-t border-border/50 bg-muted/5">
                     {bAds.length === 0 ? (
-                      <div className="py-8 text-center text-sm text-muted-foreground">Nessuna ad importata per questo brand.</div>
+                      <div className="py-8 text-center text-sm text-muted-foreground">No ads imported for this brand.</div>
                     ) : (
                       <div className="divide-y divide-border/30">
                         {bAds.map((ad) => {
@@ -1152,13 +1152,13 @@ function SwipeTab({ projectId }: { projectId: string }) {
                               ) : isGen ? (
                                 <div className="w-[72px] h-24 rounded-xl bg-muted border-2 border-dashed border-primary/40 flex flex-col items-center justify-center gap-1.5 flex-shrink-0">
                                   <RefreshCw className="w-4 h-4 text-primary animate-spin" />
-                                  <p className="text-[8px] text-primary font-medium">Generando...</p>
+                                  <p className="text-[8px] text-primary font-medium">Generating...</p>
                                 </div>
                               ) : (
                                 <button onClick={() => generateSwipeForAd(ad)} disabled={generatingFor !== null}
                                   className="w-[72px] h-24 rounded-xl bg-background border-2 border-dashed border-border hover:border-primary/50 hover:bg-primary/5 transition-all flex flex-col items-center justify-center gap-1.5 flex-shrink-0 group/btn disabled:opacity-40 disabled:cursor-not-allowed">
                                   <Zap className="w-4 h-4 text-muted-foreground group-hover/btn:text-primary transition-colors" />
-                                  <p className="text-[8px] text-muted-foreground group-hover/btn:text-primary font-medium text-center leading-tight transition-colors">Swipa<br/>questa ad</p>
+                                  <p className="text-[8px] text-muted-foreground group-hover/btn:text-primary font-medium text-center leading-tight transition-colors">Swipe<br/>this ad</p>
                                 </button>
                               )}
                               {/* Info + stream */}
@@ -1169,7 +1169,7 @@ function SwipeTab({ projectId }: { projectId: string }) {
                                   <div className="flex items-center gap-2 mt-1.5">
                                     <p className="text-[9px] text-primary font-medium flex items-center gap-1">
                                       <CheckCircle className="w-2.5 h-2.5" />
-                                      Swipata il {new Date(existing.created_at).toLocaleDateString("it-IT", { day: "2-digit", month: "short" })}
+                                      Swiped on {new Date(existing.created_at).toLocaleDateString("en-US", { day: "2-digit", month: "short" })}
                                     </p>
                                   </div>
                                 )}
@@ -1217,7 +1217,7 @@ function SwipeTab({ projectId }: { projectId: string }) {
                 <span className="text-[10px] font-bold px-2 py-0.5 bg-amber-100 text-amber-700 rounded-full">{boardSwipes.length}</span>
               )}
             </h3>
-            <p className="text-[11px] text-muted-foreground mt-0.5">Clicca su una card per vedere il confronto con l'ad originale e il brand di riferimento</p>
+            <p className="text-[11px] text-muted-foreground mt-0.5">Click a card to see the comparison with the original ad and the reference brand</p>
           </div>
           <div className="flex items-center gap-1 flex-wrap">
             {(["today", "yesterday", "week", "month"] as SwipePeriod[]).map(p => (
@@ -1234,12 +1234,12 @@ function SwipeTab({ projectId }: { projectId: string }) {
         <div className="p-4">
           {loadingSwipes ? (
             <div className="py-16 text-center text-sm text-muted-foreground flex items-center justify-center gap-2">
-              <RefreshCw className="w-4 h-4 animate-spin" /> Caricamento...
+              <RefreshCw className="w-4 h-4 animate-spin" /> Loading...
             </div>
           ) : boardSwipes.length === 0 ? (
             <div className="py-16 text-center border-2 border-dashed border-border rounded-xl">
               <Copy className="w-10 h-10 text-muted-foreground/20 mx-auto mb-2" />
-              <p className="text-sm font-semibold text-foreground mb-1">Nessuna swipe {PERIOD_LABELS[boardPeriod].toLowerCase()}</p>
+              <p className="text-sm font-semibold text-foreground mb-1">No swipes {PERIOD_LABELS[boardPeriod].toLowerCase()}</p>
               <p className="text-xs text-muted-foreground">Usa il pulsante "Swipa" sulle ads nel dashboard brand qui sopra.</p>
             </div>
           ) : (
@@ -1272,7 +1272,7 @@ function SwipeTab({ projectId }: { projectId: string }) {
                     </div>
                     <div className="flex items-center justify-between border-t border-border/40 pt-2">
                       <p className="text-[10px] text-muted-foreground">
-                        {new Date(swipe.created_at).toLocaleString("it-IT", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}
+                        {new Date(swipe.created_at).toLocaleString("en-US", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}
                       </p>
                       <span className="text-[10px] font-semibold text-primary opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1">
                         <Eye className="w-3 h-3" /> Confronta
@@ -1378,12 +1378,12 @@ function NuoveCreative({ projectId }: { projectId: string }) {
           try {
             const d = JSON.parse(line.slice(5).trim());
             if (d.content) { full += d.content; setAnalyzeStream(full); }
-            if (d.done) { toast({ title: "Analisi completata!" }); await loadAll(); }
-            if (d.error) toast({ title: "Errore analisi", variant: "destructive" });
+            if (d.done) { toast({ title: "Analysis completed!" }); await loadAll(); }
+            if (d.error) toast({ title: "Analysis error", variant: "destructive" });
           } catch { /* ignore */ }
         }
       }
-    } catch { toast({ title: "Errore", variant: "destructive" }); } finally { setAnalyzing(false); }
+    } catch { toast({ title: "Error", variant: "destructive" }); } finally { setAnalyzing(false); }
   };
 
   const deleteAngle = async (id: number) => {
@@ -1411,12 +1411,12 @@ function NuoveCreative({ projectId }: { projectId: string }) {
           try {
             const d = JSON.parse(line.slice(5).trim());
             if (d.content) { full += d.content; setGenStream(full); }
-            if (d.done) { toast({ title: `${genCount} creative generate!` }); setGenPanel(null); await loadAll(); }
-            if (d.error) toast({ title: "Errore generazione", variant: "destructive" });
+            if (d.done) { toast({ title: `${genCount} creatives generated!` }); setGenPanel(null); await loadAll(); }
+            if (d.error) toast({ title: "Generation error", variant: "destructive" });
           } catch { /* ignore */ }
         }
       }
-    } catch { toast({ title: "Errore", variant: "destructive" }); } finally { setGeneratingAngle(false); }
+    } catch { toast({ title: "Error", variant: "destructive" }); } finally { setGeneratingAngle(false); }
   };
 
   const deleteGenerated = async (id: number) => {
@@ -1431,14 +1431,14 @@ function NuoveCreative({ projectId }: { projectId: string }) {
     });
   };
 
-  const PERIOD_LABELS: Record<GenPeriod, string> = { today: "Oggi", yesterday: "Ieri", week: "Settimana scorsa", month: "Mese corrente" };
+  const PERIOD_LABELS: Record<GenPeriod, string> = { today: "Today", yesterday: "Yesterday", week: "Last week", month: "Current month" };
 
   const TABLE_COLS: { key: keyof CreativeAngle; label: string; w: string; bg: string; textColor: string }[] = [
-    { key: "rationale", label: "Perché funziona", w: "min-w-[190px]", bg: "bg-violet-50/60", textColor: "text-violet-900" },
-    { key: "competitor_insights", label: "Analisi Competitor", w: "min-w-[190px]", bg: "bg-red-50/50", textColor: "text-red-900" },
-    { key: "our_ads_insights", label: "Nostre Ads", w: "min-w-[180px]", bg: "bg-blue-50/50", textColor: "text-blue-900" },
-    { key: "market_insights", label: "Ricerca Mercato", w: "min-w-[180px]", bg: "bg-emerald-50/50", textColor: "text-emerald-900" },
-    { key: "ad_style", label: "Stile Ad", w: "min-w-[110px]", bg: "bg-amber-50/50", textColor: "text-amber-900" },
+    { key: "rationale", label: "Why it works", w: "min-w-[190px]", bg: "bg-violet-50/60", textColor: "text-violet-900" },
+    { key: "competitor_insights", label: "Competitor Analysis", w: "min-w-[190px]", bg: "bg-red-50/50", textColor: "text-red-900" },
+    { key: "our_ads_insights", label: "Our Ads", w: "min-w-[180px]", bg: "bg-blue-50/50", textColor: "text-blue-900" },
+    { key: "market_insights", label: "Market Research", w: "min-w-[180px]", bg: "bg-emerald-50/50", textColor: "text-emerald-900" },
+    { key: "ad_style", label: "Ad Style", w: "min-w-[110px]", bg: "bg-amber-50/50", textColor: "text-amber-900" },
     { key: "target", label: "Target", w: "min-w-[150px]", bg: "bg-sky-50/50", textColor: "text-sky-900" },
     { key: "hook_angle", label: "Hook", w: "min-w-[130px]", bg: "bg-pink-50/50", textColor: "text-pink-900" },
   ];
@@ -1454,20 +1454,20 @@ function NuoveCreative({ projectId }: { projectId: string }) {
             <div className="bg-white/10 border border-white/15 backdrop-blur-sm rounded-2xl rounded-tl-sm px-4 py-3 mb-3">
               <p className="text-white text-xs leading-relaxed">
                 {analyzing
-                  ? "Sto analizzando le ads competitor, i brief di progetto e i pattern di mercato... elaboro i migliori angoli creativi 🧠"
+                  ? "I'm analyzing competitor ads, project briefs and market patterns... working out the best creative angles 🧠"
                   : angles.length > 0
-                  ? `Ho trovato ${angles.length} angoli creativi ad alto potenziale. Clicca su un angolo e poi su "Genera" per creare le creative. 🚀`
-                  : "Ciao! Sono il tuo AI creativo. Clicca \"Analizza Angoli\" per farmi scansionare competitor, nostre ads e ricerca di mercato. Troverò i migliori angoli creativi. 💡"}
+                  ? `I found ${angles.length} high-potential creative angles. Click an angle and then "Generate" to create the creatives. 🚀`
+                  : "Hi! I'm your creative AI. Click \"Analyze Angles\" to scan competitors, our ads and market research. I'll find the best creative angles. 💡"}
               </p>
             </div>
             <div className="flex items-center gap-3">
               <Button onClick={analyzeAngles} disabled={analyzing}
                 className="bg-primary hover:bg-primary/90 text-white font-bold gap-2 h-9 text-xs">
                 {analyzing
-                  ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Analisi in corso…</>
+                  ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Analyzing…</>
                   : angles.length > 0
-                  ? <><RefreshCw className="w-3.5 h-3.5" /> Rigenera Angoli</>
-                  : <><Zap className="w-3.5 h-3.5" /> Analizza Angoli</>}
+                  ? <><RefreshCw className="w-3.5 h-3.5" /> Regenerate Angles</>
+                  : <><Zap className="w-3.5 h-3.5" /> Analyze Angles</>}
               </Button>
               {angles.length > 0 && !analyzing && (
                 <span className="text-xs text-white/50">{angles.length} angoli trovati</span>
@@ -1490,8 +1490,8 @@ function NuoveCreative({ projectId }: { projectId: string }) {
             <div className="w-16 h-16 rounded-2xl bg-muted/50 flex items-center justify-center mx-auto mb-3">
               <Zap className="w-8 h-8 text-muted-foreground/30" />
             </div>
-            <p className="text-sm font-semibold text-foreground mb-1">Nessun angolo ancora</p>
-            <p className="text-xs text-muted-foreground">Premi "Analizza Angoli" per far partire l'analisi AI.</p>
+            <p className="text-sm font-semibold text-foreground mb-1">No angle yet</p>
+            <p className="text-xs text-muted-foreground">Press "Analyze Angles" to start the AI analysis.</p>
           </div>
         )}
 
@@ -1502,13 +1502,13 @@ function NuoveCreative({ projectId }: { projectId: string }) {
               <thead>
                 <tr className="bg-muted/30 border-b-2 border-border">
                   <th className="sticky left-0 z-10 bg-muted/40 text-left px-3 py-2.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground w-10 border-r border-border">#</th>
-                  <th className="sticky left-10 z-10 bg-muted/40 text-left px-3 py-2.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground min-w-[150px] border-r border-border">Angolo</th>
+                  <th className="sticky left-10 z-10 bg-muted/40 text-left px-3 py-2.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground min-w-[150px] border-r border-border">Angle</th>
                   {TABLE_COLS.map(col => (
                     <th key={col.key} className={`text-left px-3 py-2.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground ${col.w} ${col.bg} border-r border-border/50 last:border-r-0`}>
                       {col.label}
                     </th>
                   ))}
-                  <th className="text-center px-3 py-2.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground min-w-[80px]">Azione</th>
+                  <th className="text-center px-3 py-2.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground min-w-[80px]">Action</th>
                 </tr>
               </thead>
               <tbody>
@@ -1566,7 +1566,7 @@ function NuoveCreative({ projectId }: { projectId: string }) {
           <DialogContent className="max-w-lg">
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2 text-sm">
-                <Zap className="w-4 h-4 text-primary" /> Genera Creative — {genPanel.angle_name}
+                <Zap className="w-4 h-4 text-primary" /> Generate Creatives — {genPanel.angle_name}
               </DialogTitle>
             </DialogHeader>
             <div className="space-y-4">
@@ -1586,7 +1586,7 @@ function NuoveCreative({ projectId }: { projectId: string }) {
               })()}
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1.5">
-                  <label className="text-xs font-medium">Quante creative</label>
+                  <label className="text-xs font-medium">How many creatives</label>
                   <div className="flex gap-1.5">
                     {[1, 3, 5].map(n => (
                       <button key={n} onClick={() => setGenCount(n)}
@@ -1595,7 +1595,7 @@ function NuoveCreative({ projectId }: { projectId: string }) {
                   </div>
                 </div>
                 <div className="space-y-1.5">
-                  <label className="text-xs font-medium">Formato</label>
+                  <label className="text-xs font-medium">Format</label>
                   <div className="flex gap-1.5">
                     {[{ v: "images", l: "Img" }, { v: "video", l: "Video" }, { v: "both", l: "Mix" }].map(({ v, l }) => (
                       <button key={v} onClick={() => setGenFormat(v)}
@@ -1611,9 +1611,9 @@ function NuoveCreative({ projectId }: { projectId: string }) {
                 </div>
               )}
               <div className="flex justify-end gap-2">
-                <Button variant="outline" size="sm" onClick={() => setGenPanel(null)} disabled={generatingAngle}>Annulla</Button>
+                <Button variant="outline" size="sm" onClick={() => setGenPanel(null)} disabled={generatingAngle}>Cancel</Button>
                 <Button size="sm" onClick={generateFromAngle} disabled={generatingAngle} className="bg-primary text-white font-bold gap-2">
-                  {generatingAngle ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Generando {genCount}…</> : <><Zap className="w-3.5 h-3.5" /> Genera {genCount} Creative</>}
+                  {generatingAngle ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Generating {genCount}…</> : <><Zap className="w-3.5 h-3.5" /> Generate {genCount} Creatives</>}
                 </Button>
               </div>
             </div>
@@ -1626,10 +1626,10 @@ function NuoveCreative({ projectId }: { projectId: string }) {
         <div className="px-5 py-3.5 border-b border-border bg-muted/20 flex items-center justify-between flex-wrap gap-3">
           <div>
             <h3 className="text-sm font-bold text-foreground flex items-center gap-2">
-              <LayoutGrid className="w-4 h-4 text-primary" /> Board Creative Generate
+              <LayoutGrid className="w-4 h-4 text-primary" /> Generated Creatives Board
               {boardItems.length > 0 && <span className="text-[10px] font-bold px-2 py-0.5 bg-primary/10 text-primary rounded-full">{boardItems.length}</span>}
             </h3>
-            <p className="text-[11px] text-muted-foreground mt-0.5">Creative generate dall'AI, organizzate per data</p>
+            <p className="text-[11px] text-muted-foreground mt-0.5">AI-generated creatives, organized by date</p>
           </div>
           <div className="flex items-center gap-1">
             {(["today", "yesterday", "week", "month"] as GenPeriod[]).map(p => (
@@ -1645,12 +1645,12 @@ function NuoveCreative({ projectId }: { projectId: string }) {
         <div className="p-4">
           {loadingGenerated ? (
             <div className="py-16 text-center text-sm text-muted-foreground flex items-center justify-center gap-2">
-              <RefreshCw className="w-4 h-4 animate-spin" /> Caricamento…
+              <RefreshCw className="w-4 h-4 animate-spin" /> Loading…
             </div>
           ) : boardItems.length === 0 ? (
             <div className="py-16 text-center border-2 border-dashed border-border rounded-xl">
               <LayoutGrid className="w-10 h-10 text-muted-foreground/20 mx-auto mb-2" />
-              <p className="text-sm font-semibold text-foreground mb-1">Nessuna creativa {PERIOD_LABELS[boardPeriod].toLowerCase()}</p>
+              <p className="text-sm font-semibold text-foreground mb-1">No creatives {PERIOD_LABELS[boardPeriod].toLowerCase()}</p>
               <p className="text-xs text-muted-foreground">Usa "Genera" su un angolo della tabella qui sopra.</p>
             </div>
           ) : (
@@ -1682,7 +1682,7 @@ function NuoveCreative({ projectId }: { projectId: string }) {
                       </div>
                       <p className="text-[10px] text-muted-foreground line-clamp-2 leading-snug mb-2">{gen.body}</p>
                       <div className="flex items-center justify-between gap-1">
-                        <p className="text-[9px] text-muted-foreground">{new Date(gen.created_at).toLocaleString("it-IT", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}</p>
+                        <p className="text-[9px] text-muted-foreground">{new Date(gen.created_at).toLocaleString("en-US", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}</p>
                         {gen.status === "draft" && (
                           <div className="flex gap-1">
                             <button onClick={() => updateGenerated(gen.id, "approved")}
@@ -1741,8 +1741,8 @@ function CreativeDashboard({ projectId }: { projectId: string }) {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ...brandForm, brand_type: brandType, scrape_count: Number(brandForm.scrape_count) }),
       });
-      if (r.ok) { const brand = await r.json(); setBrands(prev => [...prev, brand]); setAddBrandOpen(false); setBrandForm({ name: "", ads_library_url: "", scrape_count: "10", frequency: "every_7_days", notes: "", creative_quality_notes: "" }); toast({ title: "Brand aggiunto!" }); }
-    } catch { toast({ title: "Errore", variant: "destructive" }); }
+      if (r.ok) { const brand = await r.json(); setBrands(prev => [...prev, brand]); setAddBrandOpen(false); setBrandForm({ name: "", ads_library_url: "", scrape_count: "10", frequency: "every_7_days", notes: "", creative_quality_notes: "" }); toast({ title: "Brand added!" }); }
+    } catch { toast({ title: "Error", variant: "destructive" }); }
   };
 
   const addJob = async (e: React.FormEvent) => {
@@ -1752,8 +1752,8 @@ function CreativeDashboard({ projectId }: { projectId: string }) {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ...jobForm, ads_count: Number(jobForm.ads_count), iterations_per_ad: Number(jobForm.iterations_per_ad), brand_id: jobForm.brand_id || null }),
       });
-      if (r.ok) { const job = await r.json(); setJobs(prev => [...prev, job]); setAddJobOpen(false); toast({ title: "Job creato!" }); }
-    } catch { toast({ title: "Errore", variant: "destructive" }); }
+      if (r.ok) { const job = await r.json(); setJobs(prev => [...prev, job]); setAddJobOpen(false); toast({ title: "Job created!" }); }
+    } catch { toast({ title: "Error", variant: "destructive" }); }
   };
 
   const delBrand = async (id: number) => {
@@ -1783,21 +1783,21 @@ function CreativeDashboard({ projectId }: { projectId: string }) {
   const BrandTable = ({ items, type }: { items: CompetitorBrand[]; type: "competitor" | "inspiration" }) => (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
-        <h4 className="font-semibold text-sm text-foreground">{type === "competitor" ? "Brand Competitor" : "Brand Ispiratori"}</h4>
+        <h4 className="font-semibold text-sm text-foreground">{type === "competitor" ? "Competitor Brands" : "Inspiration Brands"}</h4>
         <Button size="sm" onClick={() => { setBrandType(type); setAddBrandOpen(true); }} className="bg-primary text-white gap-1.5 h-7 text-xs">
-          <Plus className="w-3 h-3" /> Aggiungi
+          <Plus className="w-3 h-3" /> Add
         </Button>
       </div>
       {items.length === 0 ? (
         <p className="text-xs text-muted-foreground italic py-4 text-center border border-dashed border-border rounded-lg">
-          Nessun brand aggiunto ancora.
+          No brand added yet.
         </p>
       ) : (
         <div className="overflow-x-auto rounded-lg border border-border">
           <table className="w-full text-xs">
             <thead>
               <tr className="bg-muted/60 border-b border-border">
-                {["Brand", "Ads Library URL", "N° Ads", "Frequenza", "Attivo", "Azioni"].map(h => (
+                {["Brand", "Ads Library URL", "No. Ads", "Frequency", "Active", "Actions"].map(h => (
                   <th key={h} className="text-left px-3 py-2 font-semibold text-muted-foreground text-[10px] uppercase tracking-wider">{h}</th>
                 ))}
               </tr>
@@ -1862,18 +1862,18 @@ function CreativeDashboard({ projectId }: { projectId: string }) {
           <div className="flex gap-2">
             <Button size="sm" variant="outline" className="text-xs h-7 gap-1">Run All Now</Button>
             <Button size="sm" onClick={() => setAddJobOpen(true)} className="bg-primary text-white gap-1.5 h-7 text-xs">
-              <Plus className="w-3 h-3" /> Nuovo Job
+              <Plus className="w-3 h-3" /> New Job
             </Button>
           </div>
         </div>
         {jobs.length === 0 ? (
-          <p className="text-xs text-muted-foreground italic py-4 text-center border border-dashed border-border rounded-lg">Nessun job configurato.</p>
+          <p className="text-xs text-muted-foreground italic py-4 text-center border border-dashed border-border rounded-lg">No job configured.</p>
         ) : (
           <div className="overflow-x-auto rounded-lg border border-border">
             <table className="w-full text-xs">
               <thead>
                 <tr className="bg-muted/60 border-b border-border">
-                  {["Modalità", "Freq.", "Media", "# Ads", "Iter./Ad", "Status", "Azioni"].map(h => (
+                  {["Mode", "Freq.", "Media", "# Ads", "Iter./Ad", "Status", "Actions"].map(h => (
                     <th key={h} className="text-left px-3 py-2 font-semibold text-muted-foreground text-[10px] uppercase tracking-wider">{h}</th>
                   ))}
                 </tr>
@@ -1883,7 +1883,7 @@ function CreativeDashboard({ projectId }: { projectId: string }) {
                   <tr key={j.id} className="border-b border-border/50 last:border-b-0 hover:bg-muted/20">
                     <td className="px-3 py-2">
                       <Badge className={`text-[9px] ${j.mode === "iteration" ? "bg-purple-100 text-purple-700" : j.mode === "swipe" ? "bg-amber-100 text-amber-700" : j.mode === "new" ? "bg-blue-100 text-blue-700" : "bg-green-100 text-green-700"}`}>
-                        {j.mode === "iteration" ? "🔁 Iterazione" : j.mode === "swipe" ? "🔀 Swipe" : j.mode === "new" ? "✨ Nuove" : "📌 Template"}
+                        {j.mode === "iteration" ? "🔁 Iteration" : j.mode === "swipe" ? "🔀 Swipe" : j.mode === "new" ? "✨ New" : "📌 Template"}
                       </Badge>
                     </td>
                     <td className="px-3 py-2 text-muted-foreground">{j.frequency}</td>
@@ -1912,14 +1912,14 @@ function CreativeDashboard({ projectId }: { projectId: string }) {
       {/* Add Brand Modal */}
       <Dialog open={addBrandOpen} onOpenChange={setAddBrandOpen}>
         <DialogContent className="max-w-md">
-          <DialogHeader><DialogTitle>Aggiungi {brandType === "competitor" ? "Competitor" : "Brand Ispirazione"}</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>Add {brandType === "competitor" ? "Competitor" : "Inspiration Brand"}</DialogTitle></DialogHeader>
           <form onSubmit={addBrand} className="space-y-3 mt-2">
             {[
-              { label: "Nome Brand *", key: "name", placeholder: "Es. HerbaLife" },
+              { label: "Brand Name *", key: "name", placeholder: "E.g. HerbaLife" },
               { label: "Ads Library URL", key: "ads_library_url", placeholder: "https://facebook.com/ads/library/..." },
-              { label: "N° Ads da scrapare", key: "scrape_count", placeholder: "10" },
-              ...(brandType === "inspiration" ? [{ label: "Note qualità creative", key: "creative_quality_notes", placeholder: "Perché questo brand è ispirazione..." }] : []),
-              { label: "Note", key: "notes", placeholder: "Note aggiuntive..." },
+              { label: "No. Ads to scrape", key: "scrape_count", placeholder: "10" },
+              ...(brandType === "inspiration" ? [{ label: "Creative quality notes", key: "creative_quality_notes", placeholder: "Why this brand is inspiration..." }] : []),
+              { label: "Notes", key: "notes", placeholder: "Additional notes..." },
             ].map(({ label, key, placeholder }) => (
               <div key={key} className="space-y-1">
                 <label className="text-xs font-medium text-foreground">{label}</label>
@@ -1927,14 +1927,14 @@ function CreativeDashboard({ projectId }: { projectId: string }) {
               </div>
             ))}
             <div className="space-y-1">
-              <label className="text-xs font-medium text-foreground">Frequenza</label>
+              <label className="text-xs font-medium text-foreground">Frequency</label>
               <select value={brandForm.frequency} onChange={e => setBrandForm(prev => ({ ...prev, frequency: e.target.value }))} className="w-full text-sm border border-border rounded-md px-3 py-2 bg-background focus:outline-none focus:ring-1 focus:ring-primary">
                 {["once", "daily", "every_3_days", "every_5_days", "every_7_days"].map(f => <option key={f} value={f}>{f.replace(/_/g, " ")}</option>)}
               </select>
             </div>
             <div className="flex justify-end gap-2 pt-2">
-              <Button type="button" variant="outline" onClick={() => setAddBrandOpen(false)}>Annulla</Button>
-              <Button type="submit" className="bg-primary text-white">Aggiungi</Button>
+              <Button type="button" variant="outline" onClick={() => setAddBrandOpen(false)}>Cancel</Button>
+              <Button type="submit" className="bg-primary text-white">Add</Button>
             </div>
           </form>
         </DialogContent>
@@ -1943,20 +1943,20 @@ function CreativeDashboard({ projectId }: { projectId: string }) {
       {/* Add Job Modal */}
       <Dialog open={addJobOpen} onOpenChange={setAddJobOpen}>
         <DialogContent className="max-w-md">
-          <DialogHeader><DialogTitle>Nuovo Automation Job</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>New Automation Job</DialogTitle></DialogHeader>
           <form onSubmit={addJob} className="space-y-3 mt-2">
             <div className="space-y-1">
               <label className="text-xs font-medium text-foreground">Brand</label>
               <select value={jobForm.brand_id} onChange={e => setJobForm(prev => ({ ...prev, brand_id: e.target.value }))} className="w-full text-sm border border-border rounded-md px-3 py-2 bg-background focus:outline-none focus:ring-1 focus:ring-primary">
-                <option value="">Nessun brand specifico</option>
+                <option value="">No specific brand</option>
                 {brands.map(b => <option key={b.id} value={b.id}>{b.name} ({b.brand_type})</option>)}
               </select>
             </div>
             <div className="grid grid-cols-2 gap-3">
               {[
-                { label: "Modalità", key: "mode", opts: [{ v: "swipe", l: "Swipe" }, { v: "iteration", l: "Iterazione" }, { v: "new", l: "Nuove" }, { v: "template", l: "Template" }] },
-                { label: "Frequenza", key: "frequency", opts: [{ v: "daily", l: "Giornaliero" }, { v: "every_3_days", l: "Ogni 3gg" }, { v: "every_7_days", l: "Ogni 7gg" }] },
-                { label: "Media", key: "media_type", opts: [{ v: "images", l: "Immagini" }, { v: "videos", l: "Video" }, { v: "both", l: "Entrambi" }] },
+                { label: "Mode", key: "mode", opts: [{ v: "swipe", l: "Swipe" }, { v: "iteration", l: "Iteration" }, { v: "new", l: "New" }, { v: "template", l: "Template" }] },
+                { label: "Frequency", key: "frequency", opts: [{ v: "daily", l: "Daily" }, { v: "every_3_days", l: "Every 3d" }, { v: "every_7_days", l: "Every 7d" }] },
+                { label: "Media", key: "media_type", opts: [{ v: "images", l: "Images" }, { v: "videos", l: "Videos" }, { v: "both", l: "Both" }] },
               ].map(({ label, key, opts }) => (
                 <div key={key} className="space-y-1">
                   <label className="text-xs font-medium text-foreground">{label}</label>
@@ -1965,7 +1965,7 @@ function CreativeDashboard({ projectId }: { projectId: string }) {
                   </select>
                 </div>
               ))}
-              {[{ label: "N° Ads", key: "ads_count", placeholder: "5" }, { label: "Iter./Ad", key: "iterations_per_ad", placeholder: "3" }].map(({ label, key, placeholder }) => (
+              {[{ label: "No. Ads", key: "ads_count", placeholder: "5" }, { label: "Iter./Ad", key: "iterations_per_ad", placeholder: "3" }].map(({ label, key, placeholder }) => (
                 <div key={key} className="space-y-1">
                   <label className="text-xs font-medium text-foreground">{label}</label>
                   <Input value={jobForm[key as keyof typeof jobForm]} onChange={e => setJobForm(prev => ({ ...prev, [key]: e.target.value }))} placeholder={placeholder} className="text-xs h-8" type="number" min="1" />
@@ -1973,8 +1973,8 @@ function CreativeDashboard({ projectId }: { projectId: string }) {
               ))}
             </div>
             <div className="flex justify-end gap-2 pt-2">
-              <Button type="button" variant="outline" onClick={() => setAddJobOpen(false)}>Annulla</Button>
-              <Button type="submit" className="bg-primary text-white">Crea Job</Button>
+              <Button type="button" variant="outline" onClick={() => setAddJobOpen(false)}>Cancel</Button>
+              <Button type="submit" className="bg-primary text-white">Create Job</Button>
             </div>
           </form>
         </DialogContent>
@@ -2003,7 +2003,7 @@ function ListaCompetitors({ projectId }: { projectId: string }) {
 
   const add = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!form.name.trim()) { toast({ title: "Inserisci il nome", variant: "destructive" }); return; }
+    if (!form.name.trim()) { toast({ title: "Enter the name", variant: "destructive" }); return; }
     setAdding(true);
     try {
       const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/creative/brands`, {
@@ -2013,18 +2013,18 @@ function ListaCompetitors({ projectId }: { projectId: string }) {
       if (r.ok) {
         const b = await r.json(); setItems(prev => [...prev, b]);
         setForm({ name: "", ads_library_url: "", scrape_count: "10", frequency: "every_7_days" });
-        setShowForm(false); toast({ title: "Competitor aggiunto!" });
+        setShowForm(false); toast({ title: "Competitor added!" });
       }
-    } catch { toast({ title: "Errore", variant: "destructive" }); } finally { setAdding(false); }
+    } catch { toast({ title: "Error", variant: "destructive" }); } finally { setAdding(false); }
   };
 
   const del = async (id: number) => {
     setItems(prev => prev.filter(b => b.id !== id));
     await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/creative/brands/${id}`, { method: "DELETE" });
-    toast({ title: "Competitor rimosso" });
+    toast({ title: "Competitor removed" });
   };
 
-  const FREQ_LABELS: Record<string, string> = { once: "Una volta", daily: "Giornaliero", every_3_days: "Ogni 3 giorni", every_5_days: "Ogni 5 giorni", every_7_days: "Ogni 7 giorni" };
+  const FREQ_LABELS: Record<string, string> = { once: "Once", daily: "Daily", every_3_days: "Every 3 days", every_5_days: "Every 5 days", every_7_days: "Every 7 days" };
 
   return (
     <div className="space-y-5">
@@ -2033,12 +2033,12 @@ function ListaCompetitors({ projectId }: { projectId: string }) {
         <div className="flex items-center justify-between">
           <div>
             <h3 className="font-semibold text-red-900 text-sm flex items-center gap-2">
-              <Globe className="w-4 h-4 text-red-500" /> Lista Competitors
+              <Globe className="w-4 h-4 text-red-500" /> Competitors List
             </h3>
-            <p className="text-xs text-red-600/70 mt-0.5">Brand competitor da monitorare per scraping ads e analisi creativa.</p>
+            <p className="text-xs text-red-600/70 mt-0.5">Competitor brands to monitor for ad scraping and creative analysis.</p>
           </div>
           <Button size="sm" onClick={() => setShowForm(v => !v)} className="bg-red-500 hover:bg-red-600 text-white gap-1.5 h-7 text-xs">
-            <Plus className="w-3 h-3" /> Aggiungi Competitor
+            <Plus className="w-3 h-3" /> Add Competitor
           </Button>
         </div>
 
@@ -2046,28 +2046,28 @@ function ListaCompetitors({ projectId }: { projectId: string }) {
           <form onSubmit={add} className="bg-white/70 border border-red-100 rounded-lg p-4 space-y-3">
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">
-                <label className="text-xs font-medium text-red-900">Nome Competitor *</label>
-                <Input value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} placeholder="Es. HerbaLife, NutraVista…" className="text-sm border-red-200 focus:ring-red-300" />
+                <label className="text-xs font-medium text-red-900">Competitor Name *</label>
+                <Input value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} placeholder="E.g. HerbaLife, NutraVista…" className="text-sm border-red-200 focus:ring-red-300" />
               </div>
               <div className="space-y-1">
-                <label className="text-xs font-medium text-red-900">Link Ads Library</label>
+                <label className="text-xs font-medium text-red-900">Ads Library Link</label>
                 <Input value={form.ads_library_url} onChange={e => setForm(p => ({ ...p, ads_library_url: e.target.value }))} placeholder="https://facebook.com/ads/library/…" className="text-sm border-red-200" />
               </div>
               <div className="space-y-1">
-                <label className="text-xs font-medium text-red-900">N° Ads da scrapare</label>
+                <label className="text-xs font-medium text-red-900">No. Ads to scrape</label>
                 <Input type="number" min="1" value={form.scrape_count} onChange={e => setForm(p => ({ ...p, scrape_count: e.target.value }))} className="text-sm border-red-200" />
               </div>
               <div className="space-y-1">
-                <label className="text-xs font-medium text-red-900">Frequenza scraping</label>
+                <label className="text-xs font-medium text-red-900">Scraping frequency</label>
                 <select value={form.frequency} onChange={e => setForm(p => ({ ...p, frequency: e.target.value }))} className="w-full text-sm border border-red-200 rounded-md px-3 py-2 bg-white focus:outline-none focus:ring-1 focus:ring-red-300">
                   {Object.entries(FREQ_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
                 </select>
               </div>
             </div>
             <div className="flex justify-end gap-2">
-              <Button type="button" variant="outline" size="sm" onClick={() => setShowForm(false)}>Annulla</Button>
+              <Button type="button" variant="outline" size="sm" onClick={() => setShowForm(false)}>Cancel</Button>
               <Button type="submit" size="sm" disabled={adding} className="bg-red-500 hover:bg-red-600 text-white">
-                {adding ? "Salvataggio…" : "Aggiungi"}
+                {adding ? "Saving…" : "Add"}
               </Button>
             </div>
           </form>
@@ -2076,19 +2076,19 @@ function ListaCompetitors({ projectId }: { projectId: string }) {
 
       {/* List */}
       {loading ? (
-        <div className="py-8 text-center text-sm text-muted-foreground">Caricamento…</div>
+        <div className="py-8 text-center text-sm text-muted-foreground">Loading…</div>
       ) : items.length === 0 ? (
         <div className="py-12 text-center border-2 border-dashed border-red-200 rounded-xl bg-red-50/30">
           <Globe className="w-8 h-8 text-red-300 mx-auto mb-2" />
-          <p className="text-sm font-medium text-red-700">Nessun competitor aggiunto</p>
-          <p className="text-xs text-red-500/70 mt-1">Clicca "Aggiungi Competitor" per iniziare.</p>
+          <p className="text-sm font-medium text-red-700">No competitor added</p>
+          <p className="text-xs text-red-500/70 mt-1">Click "Add Competitor" to get started.</p>
         </div>
       ) : (
         <div className="overflow-x-auto rounded-xl border border-red-200">
           <table className="w-full text-xs">
             <thead>
               <tr className="bg-red-100/60 border-b border-red-200">
-                {["Brand", "Ads Library", "N° Ads", "Frequenza", "Azioni"].map(h => (
+                {["Brand", "Ads Library", "No. Ads", "Frequency", "Actions"].map(h => (
                   <th key={h} className="text-left px-4 py-2.5 font-semibold text-red-700 text-[10px] uppercase tracking-wider">{h}</th>
                 ))}
               </tr>
@@ -2100,7 +2100,7 @@ function ListaCompetitors({ projectId }: { projectId: string }) {
                   <td className="px-4 py-2.5">
                     {b.ads_library_url ? (
                       <a href={b.ads_library_url} target="_blank" rel="noopener noreferrer" className="text-red-600 hover:underline flex items-center gap-1">
-                        Apri <ExternalLink className="w-2.5 h-2.5" />
+                        Open <ExternalLink className="w-2.5 h-2.5" />
                       </a>
                     ) : <span className="text-muted-foreground">—</span>}
                   </td>
@@ -2141,7 +2141,7 @@ function ListaBrand({ projectId }: { projectId: string }) {
 
   const add = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!form.name.trim()) { toast({ title: "Inserisci il nome", variant: "destructive" }); return; }
+    if (!form.name.trim()) { toast({ title: "Enter the name", variant: "destructive" }); return; }
     setAdding(true);
     try {
       const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/creative/brands`, {
@@ -2151,18 +2151,18 @@ function ListaBrand({ projectId }: { projectId: string }) {
       if (r.ok) {
         const b = await r.json(); setItems(prev => [...prev, b]);
         setForm({ name: "", ads_library_url: "", scrape_count: "10", frequency: "every_7_days" });
-        setShowForm(false); toast({ title: "Brand aggiunto!" });
+        setShowForm(false); toast({ title: "Brand added!" });
       }
-    } catch { toast({ title: "Errore", variant: "destructive" }); } finally { setAdding(false); }
+    } catch { toast({ title: "Error", variant: "destructive" }); } finally { setAdding(false); }
   };
 
   const del = async (id: number) => {
     setItems(prev => prev.filter(b => b.id !== id));
     await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/creative/brands/${id}`, { method: "DELETE" });
-    toast({ title: "Brand rimosso" });
+    toast({ title: "Brand removed" });
   };
 
-  const FREQ_LABELS: Record<string, string> = { once: "Una volta", daily: "Giornaliero", every_3_days: "Ogni 3 giorni", every_5_days: "Ogni 5 giorni", every_7_days: "Ogni 7 giorni" };
+  const FREQ_LABELS: Record<string, string> = { once: "Once", daily: "Daily", every_3_days: "Every 3 days", every_5_days: "Every 5 days", every_7_days: "Every 7 days" };
 
   return (
     <div className="space-y-5">
@@ -2171,12 +2171,12 @@ function ListaBrand({ projectId }: { projectId: string }) {
         <div className="flex items-center justify-between">
           <div>
             <h3 className="font-semibold text-rose-900 text-sm flex items-center gap-2">
-              <LayoutGrid className="w-4 h-4 text-rose-400" /> Lista Brand
+              <LayoutGrid className="w-4 h-4 text-rose-400" /> Brand List
             </h3>
-            <p className="text-xs text-rose-600/70 mt-0.5">Brand di ispirazione da monitorare per benchmark e riferimento creativo.</p>
+            <p className="text-xs text-rose-600/70 mt-0.5">Inspiration brands to monitor for benchmark and creative reference.</p>
           </div>
           <Button size="sm" onClick={() => setShowForm(v => !v)} className="bg-rose-400 hover:bg-rose-500 text-white gap-1.5 h-7 text-xs">
-            <Plus className="w-3 h-3" /> Aggiungi Brand
+            <Plus className="w-3 h-3" /> Add Brand
           </Button>
         </div>
 
@@ -2184,28 +2184,28 @@ function ListaBrand({ projectId }: { projectId: string }) {
           <form onSubmit={add} className="bg-white/70 border border-rose-100 rounded-lg p-4 space-y-3">
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">
-                <label className="text-xs font-medium text-rose-900">Nome Brand *</label>
-                <Input value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} placeholder="Es. Bioma, ProDentim…" className="text-sm" style={{ borderColor: "#fecdd3" }} />
+                <label className="text-xs font-medium text-rose-900">Brand Name *</label>
+                <Input value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} placeholder="E.g. Bioma, ProDentim…" className="text-sm" style={{ borderColor: "#fecdd3" }} />
               </div>
               <div className="space-y-1">
-                <label className="text-xs font-medium text-rose-900">Link Ads Library</label>
+                <label className="text-xs font-medium text-rose-900">Ads Library Link</label>
                 <Input value={form.ads_library_url} onChange={e => setForm(p => ({ ...p, ads_library_url: e.target.value }))} placeholder="https://facebook.com/ads/library/…" className="text-sm" style={{ borderColor: "#fecdd3" }} />
               </div>
               <div className="space-y-1">
-                <label className="text-xs font-medium text-rose-900">N° Ads da scrapare</label>
+                <label className="text-xs font-medium text-rose-900">No. Ads to scrape</label>
                 <Input type="number" min="1" value={form.scrape_count} onChange={e => setForm(p => ({ ...p, scrape_count: e.target.value }))} className="text-sm" style={{ borderColor: "#fecdd3" }} />
               </div>
               <div className="space-y-1">
-                <label className="text-xs font-medium text-rose-900">Frequenza scraping</label>
+                <label className="text-xs font-medium text-rose-900">Scraping frequency</label>
                 <select value={form.frequency} onChange={e => setForm(p => ({ ...p, frequency: e.target.value }))} className="w-full text-sm border rounded-md px-3 py-2 bg-white focus:outline-none focus:ring-1 focus:ring-rose-300" style={{ borderColor: "#fecdd3" }}>
                   {Object.entries(FREQ_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
                 </select>
               </div>
             </div>
             <div className="flex justify-end gap-2">
-              <Button type="button" variant="outline" size="sm" onClick={() => setShowForm(false)}>Annulla</Button>
+              <Button type="button" variant="outline" size="sm" onClick={() => setShowForm(false)}>Cancel</Button>
               <Button type="submit" size="sm" disabled={adding} className="bg-rose-400 hover:bg-rose-500 text-white">
-                {adding ? "Salvataggio…" : "Aggiungi"}
+                {adding ? "Saving…" : "Add"}
               </Button>
             </div>
           </form>
@@ -2214,19 +2214,19 @@ function ListaBrand({ projectId }: { projectId: string }) {
 
       {/* List */}
       {loading ? (
-        <div className="py-8 text-center text-sm text-muted-foreground">Caricamento…</div>
+        <div className="py-8 text-center text-sm text-muted-foreground">Loading…</div>
       ) : items.length === 0 ? (
         <div className="py-12 text-center border-2 border-dashed rounded-xl" style={{ borderColor: "#fecdd3", background: "rgba(255,228,230,0.2)" }}>
           <LayoutGrid className="w-8 h-8 mx-auto mb-2" style={{ color: "#fda4af" }} />
-          <p className="text-sm font-medium text-rose-700">Nessun brand aggiunto</p>
-          <p className="text-xs text-rose-500/70 mt-1">Clicca "Aggiungi Brand" per iniziare.</p>
+          <p className="text-sm font-medium text-rose-700">No brand added</p>
+          <p className="text-xs text-rose-500/70 mt-1">Click "Add Brand" to get started.</p>
         </div>
       ) : (
         <div className="overflow-x-auto rounded-xl border" style={{ borderColor: "#fecdd3" }}>
           <table className="w-full text-xs">
             <thead>
               <tr className="border-b" style={{ background: "rgba(255,228,230,0.4)", borderColor: "#fecdd3" }}>
-                {["Brand", "Ads Library", "N° Ads", "Frequenza", "Azioni"].map(h => (
+                {["Brand", "Ads Library", "No. Ads", "Frequency", "Actions"].map(h => (
                   <th key={h} className="text-left px-4 py-2.5 font-semibold text-[10px] uppercase tracking-wider" style={{ color: "#be123c" }}>{h}</th>
                 ))}
               </tr>
@@ -2238,7 +2238,7 @@ function ListaBrand({ projectId }: { projectId: string }) {
                   <td className="px-4 py-2.5">
                     {b.ads_library_url ? (
                       <a href={b.ads_library_url} target="_blank" rel="noopener noreferrer" className="text-rose-500 hover:underline flex items-center gap-1">
-                        Apri <ExternalLink className="w-2.5 h-2.5" />
+                        Open <ExternalLink className="w-2.5 h-2.5" />
                       </a>
                     ) : <span className="text-muted-foreground">—</span>}
                   </td>
@@ -2261,12 +2261,12 @@ function ListaBrand({ projectId }: { projectId: string }) {
 
 // ─── MAIN CREATIVE SECTION ───
 const CREATIVE_TABS = [
-  { id: "competitors", label: "Lista Competitors", yellow: true },
-  { id: "brand", label: "Lista Brand", yellow: true },
-  { id: "templates", label: "Template Salvati", yellow: false },
-  { id: "iterazione", label: "Iterazione", yellow: false },
+  { id: "competitors", label: "Competitors List", yellow: true },
+  { id: "brand", label: "Brand List", yellow: true },
+  { id: "templates", label: "Saved Templates", yellow: false },
+  { id: "iterazione", label: "Iteration", yellow: false },
   { id: "swipe", label: "Swipe", yellow: false },
-  { id: "nuove", label: "Nuove Creative", yellow: false },
+  { id: "nuove", label: "New Creatives", yellow: false },
   { id: "dashboard", label: "Dashboard", yellow: false },
 ] as const;
 
@@ -2281,7 +2281,7 @@ export function CreativeSection({ projectId }: { projectId: string }) {
         <h2 className="text-xl font-semibold text-foreground mb-1 flex items-center gap-2">
           <Palette className="w-5 h-5 text-primary" /> Creative
         </h2>
-        <p className="text-sm text-muted-foreground">Template, iterazioni, swipe e generazione autonoma di creative pubblicitarie.</p>
+        <p className="text-sm text-muted-foreground">Templates, iterations, swipes and autonomous generation of ad creatives.</p>
       </div>
 
       <div className="flex gap-0 border-b border-border overflow-x-auto">

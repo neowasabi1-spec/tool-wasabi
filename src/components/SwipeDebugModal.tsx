@@ -82,24 +82,31 @@ export default function SwipeDebugModal({
   const mr = info.payload.knowledge.project.market_research;
   const mrStr =
     typeof mr === 'string' ? mr : mr ? JSON.stringify(mr, null, 2) : '';
+  // Display labels for source enums (literal values must remain in Italian
+  // because they are checked via === 'mancante' / 'manuale' / 'progetto').
+  const sourceLabel: Record<'manuale' | 'progetto' | 'mancante', string> = {
+    manuale: 'manual',
+    progetto: 'project',
+    mancante: 'missing',
+  };
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[100] p-4">
       <div className="bg-white rounded-xl shadow-2xl max-w-5xl w-full max-h-[90vh] overflow-hidden flex flex-col">
         <div className="px-6 py-4 border-b border-gray-200 bg-gradient-to-r from-purple-600 to-indigo-600 flex items-center justify-between">
           <div>
             <h2 className="text-xl font-bold text-white">
-              Swipe Debug — cosa verra&apos; passato a {info.agentName}
+              Swipe Debug — what will be passed to {info.agentName}
             </h2>
             <p className="text-white/80 text-sm">
               {info.batchInfo
-                ? `Verranno mandati ${info.batchInfo.totalPages} job, uno per pagina. Esempio sotto: payload della 1ª pagina "${info.batchInfo.firstPageName}". Brief/product cambiano per pagina, regole + agente sono uguali.`
-                : 'Verifica prima di lanciare: brief, market research, product facts, regole iniettate.'}
+                ? `${info.batchInfo.totalPages} jobs will be sent, one per page. Example below: payload of the 1st page "${info.batchInfo.firstPageName}". Brief/product change per page, rules + agent are the same.`
+                : 'Verify before launching: brief, market research, product facts, injected rules.'}
             </p>
           </div>
           <button
             onClick={() => onResolve(false)}
             className="text-white/80 hover:text-white text-2xl leading-none"
-            title="Annulla"
+            title="Cancel"
           >
             ×
           </button>
@@ -108,22 +115,22 @@ export default function SwipeDebugModal({
         <div className="overflow-y-auto p-6 space-y-5 text-sm">
           {/* AGENTE */}
           <section>
-            <h3 className="font-semibold text-gray-900 mb-2">🤖 Agente scelto</h3>
+            <h3 className="font-semibold text-gray-900 mb-2">🤖 Chosen agent</h3>
             <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 space-y-1">
               <div>
-                <span className="text-gray-500">Nome:</span>{' '}
+                <span className="text-gray-500">Name:</span>{' '}
                 <strong>{info.agentName}</strong>
               </div>
               <div>
                 <span className="text-gray-500">
-                  target_agent (routing Supabase):
+                  target_agent (Supabase routing):
                 </span>{' '}
                 <code className="text-purple-700">
-                  {info.targetAgent || '(null = qualunque worker)'}
+                  {info.targetAgent || '(null = any worker)'}
                 </code>
               </div>
               <div>
-                <span className="text-gray-500">Workspace OpenClaw:</span>{' '}
+                <span className="text-gray-500">OpenClaw workspace:</span>{' '}
                 <code className="text-xs text-gray-700 break-all">
                   {info.workspaceDir}
                 </code>
@@ -134,7 +141,7 @@ export default function SwipeDebugModal({
           {/* DOCUMENTO INTERNO */}
           <section>
             <h3 className="font-semibold text-gray-900 mb-2">
-              📄 Documento SHARED-KNOWLEDGE usato per gli swipe
+              📄 SHARED-KNOWLEDGE document used for swipes
             </h3>
             <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 whitespace-pre-line text-gray-700">
               {info.sharedKnowledgeDoc}
@@ -144,7 +151,7 @@ export default function SwipeDebugModal({
           {/* REGOLE OBBLIGATORIE INIETTATE */}
           <section>
             <h3 className="font-semibold text-gray-900 mb-2">
-              ⚠️ Regole obbligatorie iniettate in ogni call (openclaw-extra-context.md)
+              ⚠️ Mandatory rules injected into every call (openclaw-extra-context.md)
             </h3>
             <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-gray-800">
               {info.rulesInjected}
@@ -153,7 +160,7 @@ export default function SwipeDebugModal({
 
           {/* PRODOTTO */}
           <section>
-            <h3 className="font-semibold text-gray-900 mb-2">🛍️ Prodotto target</h3>
+            <h3 className="font-semibold text-gray-900 mb-2">🛍️ Target product</h3>
             <pre className="bg-gray-50 border border-gray-200 rounded-lg p-3 overflow-x-auto text-xs whitespace-pre-wrap">
               {JSON.stringify(info.payload.product, null, 2)}
             </pre>
@@ -170,9 +177,9 @@ export default function SwipeDebugModal({
                     : 'text-green-700'
                 }
               >
-                {info.briefSource}
+                {sourceLabel[info.briefSource]}
               </span>
-              , {briefStr.length} char)
+              , {briefStr.length} chars)
             </h3>
             {briefStr ? (
               <pre className="bg-gray-50 border border-gray-200 rounded-lg p-3 overflow-x-auto text-xs whitespace-pre-wrap max-h-60">
@@ -180,8 +187,8 @@ export default function SwipeDebugModal({
               </pre>
             ) : (
               <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-red-700">
-                ⚠ Nessun brief: l&apos;agente dovra&apos; ricostruirlo dai suoi archivi nel
-                primer step (qualita&apos; inferiore).
+                ⚠ No brief: the agent will have to rebuild it from its archives in the
+                primer step (lower quality).
               </div>
             )}
           </section>
@@ -195,9 +202,9 @@ export default function SwipeDebugModal({
                   info.mrSource === 'mancante' ? 'text-red-600' : 'text-green-700'
                 }
               >
-                {info.mrSource}
+                {sourceLabel[info.mrSource]}
               </span>
-              , {mrStr.length} char)
+              , {mrStr.length} chars)
             </h3>
             {mrStr ? (
               <pre className="bg-gray-50 border border-gray-200 rounded-lg p-3 overflow-x-auto text-xs whitespace-pre-wrap max-h-60">
@@ -205,7 +212,7 @@ export default function SwipeDebugModal({
               </pre>
             ) : (
               <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-red-700">
-                ⚠ Nessuna market research.
+                ⚠ No market research.
               </div>
             )}
           </section>
@@ -213,12 +220,12 @@ export default function SwipeDebugModal({
           {/* KNOWLEDGE PROMPTS */}
           <section>
             <h3 className="font-semibold text-gray-900 mb-2">
-              📚 Tecniche libreria saved_prompts ({info.payload.knowledge.prompts.length})
+              📚 saved_prompts library techniques ({info.payload.knowledge.prompts.length})
             </h3>
             {info.payload.knowledge.prompts.length === 0 ? (
               <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 text-yellow-800">
-                Nessuna tecnica caricata dalla libreria. L&apos;agente usera&apos; solo
-                le sue tecniche interne (Schwartz/Sultanic/Georgi/Halbert/ecc).
+                No techniques loaded from the library. The agent will only use
+                its internal techniques (Schwartz/Sultanic/Georgi/Halbert/etc).
               </div>
             ) : (
               <ul className="bg-gray-50 border border-gray-200 rounded-lg p-3 space-y-1 max-h-40 overflow-y-auto">
@@ -237,7 +244,7 @@ export default function SwipeDebugModal({
 
           {/* PAYLOAD META */}
           <section>
-            <h3 className="font-semibold text-gray-900 mb-2">⚙️ Payload tecnico</h3>
+            <h3 className="font-semibold text-gray-900 mb-2">⚙️ Technical payload</h3>
             <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 text-xs space-y-1">
               <div>
                 <span className="text-gray-500">Action:</span>{' '}
@@ -247,20 +254,20 @@ export default function SwipeDebugModal({
                 <span className="text-gray-500">Source URL:</span>{' '}
                 <code className="break-all">
                   {info.payload.sourceUrl ||
-                    '(nessuna, viene usato html clonato)'}
+                    '(none, cloned html is used)'}
                 </code>
               </div>
               <div>
-                <span className="text-gray-500">Tono:</span>{' '}
+                <span className="text-gray-500">Tone:</span>{' '}
                 <code>{info.payload.tone}</code>
               </div>
               <div>
-                <span className="text-gray-500">Lingua output:</span>{' '}
+                <span className="text-gray-500">Output language:</span>{' '}
                 <code>{info.payload.language}</code>
               </div>
               <div>
-                <span className="text-gray-500">HTML originale:</span>{' '}
-                <code>{info.payload.htmlLength} char</code>
+                <span className="text-gray-500">Original HTML:</span>{' '}
+                <code>{info.payload.htmlLength} chars</code>
               </div>
             </div>
           </section>
@@ -271,15 +278,15 @@ export default function SwipeDebugModal({
             onClick={() => onResolve(false)}
             className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors"
           >
-            Annulla
+            Cancel
           </button>
           <button
             onClick={() => onResolve(true)}
             className="px-6 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors font-semibold"
           >
             {info.batchInfo
-              ? `Procedi con ${info.batchInfo.totalPages} pagine →`
-              : 'Procedi col swipe →'}
+              ? `Proceed with ${info.batchInfo.totalPages} pages →`
+              : 'Proceed with swipe →'}
           </button>
         </div>
       </div>

@@ -76,25 +76,25 @@ function UploadBtn({ projectId, fileType, label, accept, multiple }: {
         const failures = !Array.isArray(body) ? body?.failures || [] : [];
         if (failures.length > 0) {
           toast({
-            title: "Alcuni file non sono stati caricati",
+            title: "Some files were not uploaded",
             description: failures.map(f => `${f.name}: ${f.reason}`).join("\n"),
             variant: "destructive",
           });
         } else {
-          toast({ title: "File caricato!" });
+          toast({ title: "File uploaded!" });
         }
       } else {
         const reason = !Array.isArray(body) ? body?.error : null;
         const hint = !Array.isArray(body) ? body?.hint : null;
         toast({
-          title: "Errore upload",
+          title: "Upload error",
           description: [reason, hint].filter(Boolean).join("\n") || `HTTP ${r.status}`,
           variant: "destructive",
         });
       }
     } catch (err) {
       toast({
-        title: "Errore di rete",
+        title: "Network error",
         description: err instanceof Error ? err.message : String(err),
         variant: "destructive",
       });
@@ -109,7 +109,7 @@ function UploadBtn({ projectId, fileType, label, accept, multiple }: {
       <Button type="button" variant="outline" size="sm" disabled={uploading}
         onClick={() => inputRef.current?.click()} className="gap-1.5 text-xs h-8">
         <Upload className="w-3.5 h-3.5" />
-        {uploading ? "Caricamento..." : label}
+        {uploading ? "Uploading..." : label}
       </Button>
       <input ref={inputRef} type="file" accept={accept} multiple={multiple} className="hidden"
         onChange={(e) => handleFiles(Array.from(e.target.files || []))} />
@@ -127,9 +127,9 @@ function FileRow({ file, onDelete }: { file: ProjectFile; onDelete: (id: number)
       const r = await fetch(`${BASE_URL}/api/projecthub/projects/${file.project_id ?? 0}/files/${file.id}`, { method: "DELETE" });
       if (r.ok || r.status === 204) {
         onDelete(file.id);
-        toast({ title: "File eliminato" });
+        toast({ title: "File deleted" });
       }
-    } catch { toast({ title: "Errore eliminazione", variant: "destructive" }); }
+    } catch { toast({ title: "Delete error", variant: "destructive" }); }
   };
 
   return (
@@ -179,13 +179,13 @@ function GeneralBriefTabContent({ projectId, files, projectName }: {
       if (r.ok) {
         queryClient.invalidateQueries({ queryKey: getGetProjectQueryKey(projectId) });
         queryClient.invalidateQueries({ queryKey: getListProjectsQueryKey() });
-        toast({ title: "Nome aggiornato!" });
+        toast({ title: "Name updated!" });
         setEditingName(false);
       } else {
-        toast({ title: "Errore salvataggio", variant: "destructive" });
+        toast({ title: "Error saving", variant: "destructive" });
       }
     } catch {
-      toast({ title: "Errore di rete", variant: "destructive" });
+      toast({ title: "Network error", variant: "destructive" });
     } finally { setSavingName(false); }
   };
 
@@ -195,18 +195,18 @@ function GeneralBriefTabContent({ projectId, files, projectName }: {
 
   return (
     <div className="space-y-6">
-      {/* Nome Progetto */}
+      {/* Project Name */}
       <div className="bg-card border border-border rounded-xl p-5 space-y-3">
         <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-2">
-          <FolderOpen className="w-3.5 h-3.5 text-primary" /> Nome Progetto
+          <FolderOpen className="w-3.5 h-3.5 text-primary" /> Project Name
         </h3>
         {editingName ? (
           <div className="flex items-center gap-2">
             <Input autoFocus value={nameDraft} onChange={e => setNameDraft(e.target.value)}
               onKeyDown={e => { if (e.key === "Enter") saveName(); if (e.key === "Escape") { setEditingName(false); setNameDraft(projectName); } }}
-              className="text-base font-medium max-w-sm" placeholder="Nome progetto..." disabled={savingName} />
+              className="text-base font-medium max-w-sm" placeholder="Project name..." disabled={savingName} />
             <Button size="sm" onClick={saveName} disabled={savingName} className="bg-primary text-white gap-1.5">
-              <Check className="w-3.5 h-3.5" /> {savingName ? "Salvataggio..." : "Salva"}
+              <Check className="w-3.5 h-3.5" /> {savingName ? "Saving..." : "Save"}
             </Button>
             <Button size="sm" variant="outline" onClick={() => { setEditingName(false); setNameDraft(projectName); }}>
               <X className="w-3.5 h-3.5" />
@@ -229,12 +229,12 @@ function GeneralBriefTabContent({ projectId, files, projectName }: {
           <h3 className="font-semibold text-sm flex items-center gap-2">
             <FileText className="w-4 h-4 text-primary" /> Market Research
           </h3>
-          <UploadBtn projectId={projectId} fileType="market_research" label="Aggiungi documento" accept=".pdf,.doc,.docx,.txt,.md,.markdown,.xlsx,.csv" />
+          <UploadBtn projectId={projectId} fileType="market_research" label="Add document" accept=".pdf,.doc,.docx,.txt,.md,.markdown,.xlsx,.csv" />
         </div>
         {byType("market_research").length === 0 ? (
           <div className="border-2 border-dashed border-border rounded-lg p-8 text-center">
             <FileText className="w-8 h-8 text-muted-foreground/30 mx-auto mb-2" />
-            <p className="text-sm text-muted-foreground italic">Nessun documento caricato</p>
+            <p className="text-sm text-muted-foreground italic">No documents uploaded</p>
           </div>
         ) : (
           <div className="space-y-2">
@@ -245,19 +245,19 @@ function GeneralBriefTabContent({ projectId, files, projectName }: {
         )}
       </div>
 
-      {/* Foto UGC */}
+      {/* UGC Photos */}
       <div className="bg-card border border-border rounded-xl p-5 space-y-4">
         <div className="flex items-center justify-between">
           <h3 className="font-semibold text-sm flex items-center gap-2">
-            <Image className="w-4 h-4 text-primary" /> Foto UGC
+            <Image className="w-4 h-4 text-primary" /> UGC Photos
             {byType("ugc").length > 0 && <Badge variant="secondary" className="text-[10px]">{byType("ugc").length}</Badge>}
           </h3>
-          <UploadBtn projectId={projectId} fileType="ugc" label="Aggiungi foto" accept=".jpg,.jpeg,.png,.webp" multiple />
+          <UploadBtn projectId={projectId} fileType="ugc" label="Add photo" accept=".jpg,.jpeg,.png,.webp" multiple />
         </div>
         {byType("ugc").length === 0 ? (
           <div className="border-2 border-dashed border-border rounded-lg p-8 text-center">
             <Image className="w-8 h-8 text-muted-foreground/30 mx-auto mb-2" />
-            <p className="text-sm text-muted-foreground italic">Nessuna foto caricata</p>
+            <p className="text-sm text-muted-foreground italic">No photos uploaded</p>
           </div>
         ) : (
           <div className="grid grid-cols-4 sm:grid-cols-5 md:grid-cols-6 gap-2.5">
@@ -305,7 +305,7 @@ function ProductBriefTabContent({ section, stepIdx, projectId, files }: {
       {/* Step badge */}
       <div className="flex items-center gap-3">
         <span className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold ${stepColor}`}>
-          Prodotto {stepIdx + 1} — {section.label}
+          Product {stepIdx + 1} — {section.label}
         </span>
       </div>
 
@@ -316,14 +316,14 @@ function ProductBriefTabContent({ section, stepIdx, projectId, files }: {
             <FileText className="w-4 h-4 text-primary" /> Product Brief
             {briefFiles.length > 0 && <Badge variant="secondary" className="text-[10px]">{briefFiles.length}</Badge>}
           </h3>
-          <UploadBtn projectId={projectId} fileType={section.id} label="Aggiungi documento"
+          <UploadBtn projectId={projectId} fileType={section.id} label="Add document"
             accept=".pdf,.doc,.docx,.txt,.md,.markdown,.xlsx,.csv" />
         </div>
         {briefFiles.length === 0 ? (
           <div className="border-2 border-dashed border-border rounded-lg p-8 text-center">
             <FileText className="w-8 h-8 text-muted-foreground/30 mx-auto mb-2" />
-            <p className="text-sm text-muted-foreground italic">Nessun documento caricato</p>
-            <p className="text-xs text-muted-foreground/60 mt-1">Carica il product brief per questo step del funnel</p>
+            <p className="text-sm text-muted-foreground italic">No documents uploaded</p>
+            <p className="text-xs text-muted-foreground/60 mt-1">Upload the product brief for this funnel step</p>
           </div>
         ) : (
           <div className="space-y-2">
@@ -338,17 +338,17 @@ function ProductBriefTabContent({ section, stepIdx, projectId, files }: {
       <div className="bg-card border border-border rounded-xl p-5 space-y-4">
         <div className="flex items-center justify-between">
           <h3 className="font-semibold text-sm flex items-center gap-2">
-            <Image className="w-4 h-4 text-primary" /> Mockup Immagini Prodotto
+            <Image className="w-4 h-4 text-primary" /> Product Image Mockups
             {mockupFiles.length > 0 && <Badge variant="secondary" className="text-[10px]">{mockupFiles.length}</Badge>}
           </h3>
-          <UploadBtn projectId={projectId} fileType={`img_${section.id}`} label="Aggiungi immagini"
+          <UploadBtn projectId={projectId} fileType={`img_${section.id}`} label="Add images"
             accept=".jpg,.jpeg,.png,.webp" multiple />
         </div>
         {mockupFiles.length === 0 ? (
           <div className="border-2 border-dashed border-border rounded-lg p-8 text-center">
             <Image className="w-8 h-8 text-muted-foreground/30 mx-auto mb-2" />
-            <p className="text-sm text-muted-foreground italic">Nessuna immagine caricata</p>
-            <p className="text-xs text-muted-foreground/60 mt-1">Mockup, render, screenshot del prodotto</p>
+            <p className="text-sm text-muted-foreground italic">No images uploaded</p>
+            <p className="text-xs text-muted-foreground/60 mt-1">Mockups, renders, product screenshots</p>
           </div>
         ) : (
           <div className="grid grid-cols-4 sm:grid-cols-5 md:grid-cols-6 gap-2.5">
@@ -475,7 +475,7 @@ export function GeneralBriefSection({ projectId, files, projectName }: {
       const remaining = pbSections.filter(s => s.id !== id);
       setActiveTab(remaining.length > 0 ? remaining[remaining.length - 1].id : "general");
     }
-    toast({ title: "Scheda eliminata" });
+    toast({ title: "Tab deleted" });
   };
 
   const saveRename = (id: string) => {
@@ -486,7 +486,7 @@ export function GeneralBriefSection({ projectId, files, projectName }: {
   };
 
   if (!pbLoaded) {
-    return <div className="py-12 text-center text-xs text-muted-foreground">Caricamento...</div>;
+    return <div className="py-12 text-center text-xs text-muted-foreground">Loading...</div>;
   }
 
   return (
@@ -536,7 +536,7 @@ export function GeneralBriefSection({ projectId, files, projectName }: {
                     onBlur={() => saveRename(section.id)}
                     onClick={e => e.stopPropagation()}
                     className="w-24 text-sm font-medium bg-transparent border-b border-primary outline-none text-foreground"
-                    placeholder="Nome..."
+                    placeholder="Name..."
                   />
                 ) : (
                   <span>Product Brief — {section.label}</span>
@@ -548,13 +548,13 @@ export function GeneralBriefSection({ projectId, files, projectName }: {
                   <button
                     onClick={(e) => { e.stopPropagation(); setRenameDraft(section.label); setRenamingId(section.id); setActiveTab(section.id); }}
                     className="p-0.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
-                    title="Rinomina">
+                    title="Rename">
                     <Pencil className="w-3 h-3" />
                   </button>
                   <button
                     onClick={(e) => { e.stopPropagation(); deleteSection(section.id); }}
                     className="p-0.5 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors"
-                    title="Elimina scheda">
+                    title="Delete tab">
                     <X className="w-3 h-3" />
                   </button>
                 </div>
@@ -568,7 +568,7 @@ export function GeneralBriefSection({ projectId, files, projectName }: {
           onClick={addSection}
           className="flex items-center gap-1.5 px-3 py-2.5 text-xs font-semibold text-muted-foreground hover:text-primary hover:bg-primary/5 rounded-t-lg transition-all whitespace-nowrap border-b-2 border-transparent -mb-px">
           <Plus className="w-3.5 h-3.5" />
-          Aggiungi
+          Add
         </button>
       </div>
 

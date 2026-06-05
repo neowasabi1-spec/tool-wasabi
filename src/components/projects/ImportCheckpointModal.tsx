@@ -92,7 +92,7 @@ export default function ImportCheckpointModal({
               .map((r) => ({ name: r.name, url: r.url }));
 
       if (items.length === 0) {
-        throw new Error('Nessun URL selezionato.');
+        throw new Error('No URL selected.');
       }
 
       // v2: 'all' mode now collapses every selected step into ONE
@@ -168,12 +168,12 @@ export default function ImportCheckpointModal({
             </div>
             <div>
               <h2 className="text-base font-semibold text-white">
-                Importa nel Checkpoint
+                Import into Checkpoint
               </h2>
               <p className="text-xs text-gray-400 mt-0.5">
-                Aggiungi le pagine di{' '}
-                <strong className="text-gray-200">{projectName}</strong> alla
-                libreria di audit.
+                Add the pages of{' '}
+                <strong className="text-gray-200">{projectName}</strong> to the
+                audit library.
               </p>
             </div>
           </div>
@@ -191,15 +191,15 @@ export default function ImportCheckpointModal({
             active={mode === 'all'}
             onClick={() => setMode('all')}
             icon={<Layers className="w-4 h-4" />}
-            title="Tutto il funnel"
-            subtitle={`Crea UN funnel multi-step con tutte le ${rows.length || ''} pagine in sequenza (per il check Navigazione).`}
+            title="Whole funnel"
+            subtitle={`Create ONE multi-step funnel with all ${rows.length || ''} pages in sequence (for the Navigation check).`}
           />
           <ModeCard
             active={mode === 'single'}
             onClick={() => setMode('single')}
             icon={<FileText className="w-4 h-4" />}
-            title="Singola pagina"
-            subtitle="Audit mirato su una sola pagina del funnel."
+            title="Single page"
+            subtitle="Focused audit on a single funnel page."
           />
         </div>
 
@@ -209,11 +209,11 @@ export default function ImportCheckpointModal({
             <div className="py-12 text-center">
               <AlertCircle className="w-8 h-8 mx-auto text-gray-600" />
               <p className="text-sm text-gray-400 mt-2">
-                Nessun URL trovato in questo progetto.
+                No URL found in this project.
               </p>
               <p className="text-xs text-gray-500 mt-1 max-w-xs mx-auto">
-                Aggiungi step nelle tab Front End / Back End del progetto, oppure
-                imposta un Domain nell&apos;Overview.
+                Add steps in the project&apos;s Front End / Back End tabs, or
+                set a Domain in the Overview.
               </p>
             </div>
           ) : (
@@ -221,22 +221,21 @@ export default function ImportCheckpointModal({
               {mode === 'all' && (
                 <div className="flex items-center justify-between text-xs text-gray-400 mb-2">
                   <span>
-                    {rows.length} pagina{rows.length !== 1 ? 'e' : ''} rilevata
-                    {rows.length !== 1 ? 'e' : ''}
+                    {rows.length} page{rows.length !== 1 ? 's' : ''} detected
                   </span>
                   <div className="flex items-center gap-2">
                     <button
                       onClick={() => toggleAll(true)}
                       className="text-blue-400 hover:underline"
                     >
-                      Seleziona tutte
+                      Select all
                     </button>
                     <span className="text-gray-700">·</span>
                     <button
                       onClick={() => toggleAll(false)}
                       className="text-gray-500 hover:text-gray-300 hover:underline"
                     >
-                      Deseleziona
+                      Deselect
                     </button>
                   </div>
                 </div>
@@ -282,7 +281,7 @@ export default function ImportCheckpointModal({
                           onChange={(e) =>
                             updateRow(i, { name: e.target.value })
                           }
-                          placeholder="Nome pagina"
+                          placeholder="Page name"
                           className="bg-[#0F1117] border border-[#2A2D3A] rounded px-2 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
                         />
                         <input
@@ -314,8 +313,8 @@ export default function ImportCheckpointModal({
         {/* Footer */}
         <div className="px-6 py-4 border-t border-[#2A2D3A] flex items-center justify-between">
           <span className="text-xs text-gray-500">
-            {selectedCount} pagina{selectedCount !== 1 ? 'e' : ''} pront
-            {selectedCount !== 1 ? 'e' : 'a'} per il Checkpoint
+            {selectedCount} page{selectedCount !== 1 ? 's' : ''} ready for
+            Checkpoint
           </span>
           <div className="flex items-center gap-2">
             <button
@@ -323,7 +322,7 @@ export default function ImportCheckpointModal({
               disabled={importing}
               className="px-4 py-2 text-sm text-gray-300 hover:text-white rounded-lg disabled:opacity-50"
             >
-              Annulla
+              Cancel
             </button>
             <button
               onClick={handleImport}
@@ -333,14 +332,14 @@ export default function ImportCheckpointModal({
               {importing ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin" />
-                  Importo...
+                  Importing...
                 </>
               ) : (
                 <>
                   <CheckCircle2 className="w-4 h-4" />
                   {mode === 'single'
-                    ? 'Importa e apri'
-                    : `Importa ${selectedCount} pagine`}
+                    ? 'Import and open'
+                    : `Import ${selectedCount} pages`}
                 </>
               )}
             </button>

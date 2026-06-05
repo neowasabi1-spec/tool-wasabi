@@ -67,8 +67,8 @@ type Snapshot = {
 // ── Utilities ──────────────────────────────────────────────────────────────
 
 const FREQ_LABELS: Record<string, string> = {
-  daily: "Ogni giorno", every_7_days: "Ogni 7 giorni",
-  every_15_days: "Ogni 15 giorni", every_30_days: "Ogni 30 giorni",
+  daily: "Daily", every_7_days: "Every 7 days",
+  every_15_days: "Every 15 days", every_30_days: "Every 30 days",
 };
 
 function parseSafe<T>(json: string, fallback: T): T {
@@ -85,19 +85,19 @@ function formatDateTime(d: string) {
 
 function getSeverity(changes: Change[]) {
   const n = changes.length;
-  if (n === 0) return { label: "Nessun Cambiamento", color: "text-muted-foreground", bg: "bg-muted/50 text-muted-foreground", dot: "bg-muted-foreground/30 border-2 border-muted-foreground/20" };
+  if (n === 0) return { label: "No Changes", color: "text-muted-foreground", bg: "bg-muted/50 text-muted-foreground", dot: "bg-muted-foreground/30 border-2 border-muted-foreground/20" };
   if (n === 1) return { label: "Minor", color: "text-blue-600", bg: "bg-blue-50 text-blue-700 border border-blue-200", dot: "bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.4)]" };
   if (n <= 3) return { label: "Moderate", color: "text-amber-600", bg: "bg-amber-50 text-amber-700 border border-amber-200", dot: "bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.4)]" };
-  return { label: "Significativo", color: "text-red-600", bg: "bg-red-50 text-red-700 border border-red-200", dot: "bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.4)]" };
+  return { label: "Significant", color: "text-red-600", bg: "bg-red-50 text-red-700 border border-red-200", dot: "bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.4)]" };
 }
 
 function getImpact(changes: Change[], aiAnalysis: string) {
   const positiveCount = changes.filter(c => c.impact === "positive").length;
   const negativeCount = changes.filter(c => c.impact === "negative").length;
-  if (changes.length === 0) return { label: "Neutro", icon: "→", color: "text-muted-foreground", bg: "bg-muted/50 text-muted-foreground" };
-  if (positiveCount > negativeCount) return { label: "Positivo", icon: "↑", color: "text-green-600", bg: "bg-green-50 text-green-700 border border-green-200" };
-  if (negativeCount > positiveCount) return { label: "Negativo", icon: "↓", color: "text-red-600", bg: "bg-red-50 text-red-700 border border-red-200" };
-  return { label: "Neutro", icon: "→", color: "text-muted-foreground", bg: "bg-muted/50 text-muted-foreground" };
+  if (changes.length === 0) return { label: "Neutral", icon: "→", color: "text-muted-foreground", bg: "bg-muted/50 text-muted-foreground" };
+  if (positiveCount > negativeCount) return { label: "Positive", icon: "↑", color: "text-green-600", bg: "bg-green-50 text-green-700 border border-green-200" };
+  if (negativeCount > positiveCount) return { label: "Negative", icon: "↓", color: "text-red-600", bg: "bg-red-50 text-red-700 border border-red-200" };
+  return { label: "Neutral", icon: "→", color: "text-muted-foreground", bg: "bg-muted/50 text-muted-foreground" };
 }
 
 // ── Screenshot with overlay highlights ─────────────────────────────────────
@@ -147,7 +147,7 @@ function ScreenshotWithHighlights({ url, highlights = [], label }: { url: string
         ) : (
           <div className="absolute inset-0 flex flex-col items-center justify-center bg-muted/30 text-muted-foreground">
             <Globe className="w-8 h-8 mb-2 opacity-30" />
-            <p className="text-xs">Screenshot non disponibile</p>
+            <p className="text-xs">Screenshot unavailable</p>
           </div>
         )}
       </div>
@@ -185,7 +185,7 @@ function ChangeCard({ change }: { change: Change }) {
         <div className="flex items-center gap-2">
           <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: catColor }} />
           <span className="text-[10px] font-bold uppercase tracking-wider" style={{ color: catColor }}>
-            {change.categoria ?? "Cambiamento"}
+            {change.categoria ?? "Change"}
           </span>
         </div>
         {change.element && <span className="text-[10px] text-muted-foreground truncate ml-2">{change.element}</span>}
@@ -195,11 +195,11 @@ function ChangeCard({ change }: { change: Change }) {
         {/* Before → After */}
         <div className="grid grid-cols-2 gap-2">
           <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-            <p className="text-[9px] font-bold text-red-500 uppercase tracking-wider mb-1.5">PRIMA</p>
+            <p className="text-[9px] font-bold text-red-500 uppercase tracking-wider mb-1.5">BEFORE</p>
             <p className="text-xs text-red-800 leading-relaxed line-through opacity-70">{change.prima}</p>
           </div>
           <div className="bg-green-50 border border-green-200 rounded-lg p-3">
-            <p className="text-[9px] font-bold text-green-600 uppercase tracking-wider mb-1.5">DOPO</p>
+            <p className="text-[9px] font-bold text-green-600 uppercase tracking-wider mb-1.5">AFTER</p>
             <p className="text-xs text-green-800 leading-relaxed font-medium">{change.dopo}</p>
           </div>
         </div>
@@ -208,7 +208,7 @@ function ChangeCard({ change }: { change: Change }) {
         <div className="flex gap-2 bg-sky-50 border border-sky-200 rounded-lg p-3">
           <Lightbulb className="w-3.5 h-3.5 text-sky-500 flex-shrink-0 mt-0.5" />
           <div>
-            <p className="text-[9px] font-bold text-sky-600 uppercase tracking-wider mb-1">IPOTESI CRO</p>
+            <p className="text-[9px] font-bold text-sky-600 uppercase tracking-wider mb-1">CRO HYPOTHESIS</p>
             <p className="text-xs text-sky-800 leading-relaxed">{change.ipotesi}</p>
           </div>
         </div>
@@ -216,7 +216,7 @@ function ChangeCard({ change }: { change: Change }) {
         {/* Impact */}
         {change.impact && (
           <div className={`inline-flex items-center gap-1.5 text-[10px] font-semibold px-2.5 py-1 rounded-full border ${impactClass}`}>
-            {change.impact === "positive" ? "↑" : change.impact === "negative" ? "↓" : "→"} Impatto {change.impact === "positive" ? "Positivo" : change.impact === "negative" ? "Negativo" : "Neutro"}
+            {change.impact === "positive" ? "↑" : change.impact === "negative" ? "↓" : "→"} {change.impact === "positive" ? "Positive" : change.impact === "negative" ? "Negative" : "Neutral"} Impact
           </div>
         )}
       </div>
@@ -324,27 +324,27 @@ function SnapshotTimelineRow({
             {(prevSnapshot || snapshot.screenshot_url) && (
               <div>
                 <p className="text-xs font-bold text-foreground uppercase tracking-wider mb-3 flex items-center gap-2">
-                  <Eye className="w-4 h-4 text-primary" /> Confronto Visivo
+                  <Eye className="w-4 h-4 text-primary" /> Visual Comparison
                 </p>
                 <div className="flex gap-4">
                   {prevSnapshot ? (
                     <ScreenshotWithHighlights
                       url={prevSnapshot.screenshot_url}
                       highlights={allHighlightsBefore}
-                      label={`Prima — ${formatDateTime(prevSnapshot.checked_at).date}`}
+                      label={`Before — ${formatDateTime(prevSnapshot.checked_at).date}`}
                     />
                   ) : (
                     <div className="flex-1 flex items-center justify-center border-2 border-dashed border-border rounded-xl py-8 text-muted-foreground text-xs text-center">
                       <div>
                         <Globe className="w-6 h-6 mx-auto mb-1 opacity-30" />
-                        Prima analisi baseline
+                        First baseline analysis
                       </div>
                     </div>
                   )}
                   <ScreenshotWithHighlights
                     url={snapshot.screenshot_url}
                     highlights={allHighlightsAfter}
-                    label={`Dopo — ${date}`}
+                    label={`After — ${date}`}
                   />
                 </div>
               </div>
@@ -354,7 +354,7 @@ function SnapshotTimelineRow({
             {changes.length > 0 && (
               <div>
                 <p className="text-xs font-bold text-foreground uppercase tracking-wider mb-3 flex items-center gap-2">
-                  <AlertTriangle className="w-4 h-4 text-amber-500" /> {changes.length} Cambiament{changes.length === 1 ? "o" : "i"} Rilevat{changes.length === 1 ? "o" : "i"}
+                  <AlertTriangle className="w-4 h-4 text-amber-500" /> {changes.length} Change{changes.length === 1 ? "" : "s"} Detected
                 </p>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   {changes.map((c, i) => <ChangeCard key={i} change={c} />)}
@@ -364,7 +364,7 @@ function SnapshotTimelineRow({
 
             {changes.length === 0 && !isFirst && (
               <div className="flex items-center gap-3 bg-green-50 border border-green-200 rounded-xl px-4 py-3 text-sm text-green-700">
-                <CheckCircle className="w-5 h-5" /> Nessun cambiamento rilevato rispetto all'analisi precedente.
+                <CheckCircle className="w-5 h-5" /> No changes detected compared to the previous analysis.
               </div>
             )}
 
@@ -375,7 +375,7 @@ function SnapshotTimelineRow({
                   <div className="bg-card border border-border rounded-xl p-4">
                     <div className="flex items-center justify-between mb-3">
                       <p className="text-xs font-bold text-foreground flex items-center gap-1.5">
-                        <Target className="w-3.5 h-3.5 text-primary" /> Raccomandazioni
+                        <Target className="w-3.5 h-3.5 text-primary" /> Recommendations
                       </p>
                       <span className="text-[10px] font-bold px-2 py-0.5 bg-primary/10 text-primary rounded-full">{recommendations.length}</span>
                     </div>
@@ -392,7 +392,7 @@ function SnapshotTimelineRow({
                   <div className="bg-card border border-border rounded-xl p-4">
                     <div className="flex items-center justify-between mb-3">
                       <p className="text-xs font-bold text-foreground flex items-center gap-1.5">
-                        <Star className="w-3.5 h-3.5 text-amber-500" /> Osservazioni Chiave
+                        <Star className="w-3.5 h-3.5 text-amber-500" /> Key Observations
                       </p>
                       <span className="text-[10px] font-bold px-2 py-0.5 bg-amber-50 text-amber-700 rounded-full border border-amber-200">{keyObservations.length}</span>
                     </div>
@@ -412,7 +412,7 @@ function SnapshotTimelineRow({
             {snapshot.ai_analysis && (
               <div className="bg-gradient-to-br from-violet-50 to-indigo-50 border border-violet-200 rounded-xl p-4">
                 <p className="text-[10px] font-bold text-violet-700 uppercase tracking-wider mb-2 flex items-center gap-1.5">
-                  <TrendingUp className="w-3.5 h-3.5" /> Analisi Strategica AI
+                  <TrendingUp className="w-3.5 h-3.5" /> AI Strategic Analysis
                 </p>
                 <p className="text-sm text-violet-900 leading-relaxed">{snapshot.ai_analysis}</p>
               </div>
@@ -450,20 +450,20 @@ function MonitorDetail({ monitor, projectId, onDelete }: { monitor: Monitor; pro
 
   const runCheck = async () => {
     setChecking(true);
-    toast({ title: `Analisi in corso per ${monitor.brand_name}…`, description: "Sto navigando il funnel. Attendi." });
+    toast({ title: `Analyzing ${monitor.brand_name}…`, description: "Navigating the funnel. Please wait." });
     try {
       const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/funnel-monitoring/${monitor.id}/check`, { method: "POST" });
       if (r.ok) {
         const { snapshot, is_first_check } = await r.json();
         const changes = parseSafe<Change[]>(snapshot.changes_json, []);
         toast({
-          title: is_first_check ? "Prima analisi completata!" : `${changes.length} cambiament${changes.length === 1 ? "o" : "i"} rilevat${changes.length === 1 ? "o" : "i"}`,
-          description: is_first_check ? "Snapshot baseline salvato." : changes.length > 0 ? "Scorri la timeline per i dettagli." : "Nessun cambiamento significativo.",
+          title: is_first_check ? "First analysis complete!" : `${changes.length} change${changes.length === 1 ? "" : "s"} detected`,
+          description: is_first_check ? "Baseline snapshot saved." : changes.length > 0 ? "Scroll the timeline for details." : "No significant changes.",
         });
         setSnapshots(p => [snapshot, ...p]);
         setExpandedId(snapshot.id);
-      } else { toast({ title: "Errore durante l'analisi", variant: "destructive" }); }
-    } catch { toast({ title: "Errore di rete", variant: "destructive" }); } finally { setChecking(false); }
+      } else { toast({ title: "Error during analysis", variant: "destructive" }); }
+    } catch { toast({ title: "Network error", variant: "destructive" }); } finally { setChecking(false); }
   };
 
   const toggleStatus = async () => {
@@ -475,14 +475,14 @@ function MonitorDetail({ monitor, projectId, onDelete }: { monitor: Monitor; pro
     });
     monitor.status = newStatus;
     setToggling(false);
-    toast({ title: newStatus === "active" ? "Monitor attivato" : "Monitor in pausa" });
+    toast({ title: newStatus === "active" ? "Monitor activated" : "Monitor paused" });
   };
 
   const deleteMonitor = async () => {
-    if (!confirm(`Eliminare il monitor per ${monitor.brand_name}?`)) return;
+    if (!confirm(`Delete the monitor for ${monitor.brand_name}?`)) return;
     await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/funnel-monitoring/${monitor.id}`, { method: "DELETE" });
     onDelete();
-    toast({ title: "Monitor eliminato" });
+    toast({ title: "Monitor deleted" });
   };
 
   return (
@@ -503,9 +503,9 @@ function MonitorDetail({ monitor, projectId, onDelete }: { monitor: Monitor; pro
         <div className="flex items-center gap-1.5 flex-shrink-0">
           <span className="text-[10px] text-muted-foreground hidden sm:block">{FREQ_LABELS[monitor.frequency] ?? monitor.frequency}</span>
           <Button size="sm" onClick={runCheck} disabled={checking} className="h-7 px-3 text-xs bg-primary text-white gap-1.5">
-            {checking ? <><RefreshCw className="w-3 h-3 animate-spin" /> Analisi…</> : <><Eye className="w-3 h-3" /> Controlla ora</>}
+            {checking ? <><RefreshCw className="w-3 h-3 animate-spin" /> Analyzing…</> : <><Eye className="w-3 h-3" /> Check now</>}
           </Button>
-          <button onClick={toggleStatus} disabled={toggling} className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground transition-colors" title={monitor.status === "active" ? "Pausa" : "Riattiva"}>
+          <button onClick={toggleStatus} disabled={toggling} className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground transition-colors" title={monitor.status === "active" ? "Pause" : "Reactivate"}>
             {monitor.status === "active" ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
           </button>
           <button onClick={deleteMonitor} className="p-1.5 rounded-lg hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors">
@@ -517,15 +517,15 @@ function MonitorDetail({ monitor, projectId, onDelete }: { monitor: Monitor; pro
       {/* Timeline */}
       {loading ? (
         <div className="py-16 text-center text-sm text-muted-foreground flex items-center justify-center gap-2">
-          <RefreshCw className="w-4 h-4 animate-spin" /> Caricamento timeline…
+          <RefreshCw className="w-4 h-4 animate-spin" /> Loading timeline…
         </div>
       ) : snapshots.length === 0 ? (
         <div className="py-20 text-center border-2 border-dashed border-border rounded-2xl">
           <Globe className="w-10 h-10 text-muted-foreground/30 mx-auto mb-3" />
-          <p className="text-base font-semibold text-foreground mb-1">Nessun check effettuato</p>
-          <p className="text-sm text-muted-foreground mb-4">Clicca "Controlla ora" per avviare la prima analisi del funnel.</p>
+          <p className="text-base font-semibold text-foreground mb-1">No checks yet</p>
+          <p className="text-sm text-muted-foreground mb-4">Click "Check now" to start the first funnel analysis.</p>
           <Button onClick={runCheck} disabled={checking} className="bg-primary text-white gap-1.5">
-            {checking ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Analisi…</> : <><Eye className="w-3.5 h-3.5" /> Prima analisi</>}
+            {checking ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Analyzing…</> : <><Eye className="w-3.5 h-3.5" /> First analysis</>}
           </Button>
         </div>
       ) : (
@@ -577,7 +577,7 @@ export function FunnelMonitoringSection({ projectId }: { projectId: string }) {
   const add = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!form.brand_name.trim() || !form.url.trim()) {
-      toast({ title: "Brand name e URL sono obbligatori", variant: "destructive" }); return;
+      toast({ title: "Brand name and URL are required", variant: "destructive" }); return;
     }
     let url = form.url.trim();
     if (!url.startsWith("http")) url = `https://${url}`;
@@ -593,15 +593,15 @@ export function FunnelMonitoringSection({ projectId }: { projectId: string }) {
         setSelectedMonitorId(mon.id);
         setAddOpen(false);
         setForm({ brand_name: "", url: "", frequency: "every_15_days", notes: "" });
-        toast({ title: "Monitor aggiunto!", description: "Clicca 'Controlla ora' per avviare la prima analisi." });
+        toast({ title: "Monitor added!", description: "Click 'Check now' to start the first analysis." });
       }
-    } catch { toast({ title: "Errore", variant: "destructive" }); } finally { setAdding(false); }
+    } catch { toast({ title: "Error", variant: "destructive" }); } finally { setAdding(false); }
   };
 
   if (loading) {
     return (
       <div className="py-24 text-center text-sm text-muted-foreground flex items-center justify-center gap-2">
-        <RefreshCw className="w-4 h-4 animate-spin" /> Caricamento…
+        <RefreshCw className="w-4 h-4 animate-spin" /> Loading…
       </div>
     );
   }
@@ -615,11 +615,11 @@ export function FunnelMonitoringSection({ projectId }: { projectId: string }) {
             <TrendingUp className="w-5 h-5 text-primary" /> Funnel Monitoring
           </h3>
           <p className="text-sm text-muted-foreground mt-0.5">
-            Timeline dei cambiamenti AI-detected con analisi CRO e confronto prima/dopo.
+            Timeline of AI-detected changes with CRO analysis and before/after comparison.
           </p>
         </div>
         <Button onClick={() => setAddOpen(true)} className="bg-primary text-white gap-1.5 text-sm flex-shrink-0">
-          <Plus className="w-4 h-4" /> Aggiungi Brand
+          <Plus className="w-4 h-4" /> Add Brand
         </Button>
       </div>
 
@@ -629,18 +629,18 @@ export function FunnelMonitoringSection({ projectId }: { projectId: string }) {
           <div className="bg-gradient-to-r from-violet-50 to-indigo-50 border border-violet-200 rounded-2xl px-5 py-4 flex items-start gap-3">
             <Zap className="w-5 h-5 text-violet-600 flex-shrink-0 mt-0.5" />
             <div>
-              <p className="text-xs font-semibold text-violet-800 mb-1">Come funziona</p>
+              <p className="text-xs font-semibold text-violet-800 mb-1">How it works</p>
               <p className="text-xs text-violet-700 leading-relaxed">
-                Aggiungi un brand con il link del funnel → Clicca <strong>"Controlla ora"</strong> → L'AI analizza la pagina, identifica elementi CRO e, nei check successivi, ti mostra prima/dopo con i cambiamenti evidenziati e ipotizza il perché.
+                Add a brand with the funnel link → Click <strong>"Check now"</strong> → The AI analyzes the page, identifies CRO elements and, on subsequent checks, shows you before/after with highlighted changes and hypothesizes why.
               </p>
             </div>
           </div>
           <div className="py-20 text-center border-2 border-dashed border-border rounded-2xl">
             <Globe className="w-12 h-12 text-muted-foreground/30 mx-auto mb-3" />
-            <p className="text-base font-semibold text-foreground mb-1">Nessun funnel monitorato</p>
-            <p className="text-sm text-muted-foreground mb-4">Aggiungi un competitor con il link della sua landing page.</p>
+            <p className="text-base font-semibold text-foreground mb-1">No funnels monitored</p>
+            <p className="text-sm text-muted-foreground mb-4">Add a competitor with the link to their landing page.</p>
             <Button onClick={() => setAddOpen(true)} className="bg-primary text-white gap-1.5">
-              <Plus className="w-4 h-4" /> Aggiungi il primo brand
+              <Plus className="w-4 h-4" /> Add your first brand
             </Button>
           </div>
         </div>
@@ -679,37 +679,37 @@ export function FunnelMonitoringSection({ projectId }: { projectId: string }) {
       {/* Add dialog */}
       <Dialog open={addOpen} onOpenChange={setAddOpen}>
         <DialogContent className="max-w-md">
-          <DialogHeader><DialogTitle>Aggiungi Brand da Monitorare</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>Add Brand to Monitor</DialogTitle></DialogHeader>
           <form onSubmit={add} className="space-y-4 mt-2">
             <div className="space-y-1">
-              <label className="text-xs font-medium text-foreground">Nome Brand *</label>
+              <label className="text-xs font-medium text-foreground">Brand Name *</label>
               <Input value={form.brand_name} onChange={e => setForm(p => ({ ...p, brand_name: e.target.value }))}
-                placeholder="Es. bioma.health, MyProtein…" className="text-sm" autoFocus />
+                placeholder="E.g. bioma.health, MyProtein…" className="text-sm" autoFocus />
             </div>
             <div className="space-y-1">
-              <label className="text-xs font-medium text-foreground">URL Funnel / Landing Page *</label>
+              <label className="text-xs font-medium text-foreground">Funnel / Landing Page URL *</label>
               <Input value={form.url} onChange={e => setForm(p => ({ ...p, url: e.target.value }))}
                 placeholder="https://www.bioma.health/" className="text-sm" />
             </div>
             <div className="space-y-1">
-              <label className="text-xs font-medium text-foreground">Frequenza</label>
+              <label className="text-xs font-medium text-foreground">Frequency</label>
               <select value={form.frequency} onChange={e => setForm(p => ({ ...p, frequency: e.target.value }))}
                 className="w-full text-sm border border-border rounded-md px-3 py-2 bg-background focus:outline-none focus:ring-1 focus:ring-primary">
-                <option value="daily">Ogni giorno</option>
-                <option value="every_7_days">Ogni 7 giorni</option>
-                <option value="every_15_days">Ogni 15 giorni</option>
-                <option value="every_30_days">Ogni 30 giorni</option>
+                <option value="daily">Daily</option>
+                <option value="every_7_days">Every 7 days</option>
+                <option value="every_15_days">Every 15 days</option>
+                <option value="every_30_days">Every 30 days</option>
               </select>
             </div>
             <div className="space-y-1">
-              <label className="text-xs font-medium text-foreground">Note (opzionale)</label>
+              <label className="text-xs font-medium text-foreground">Notes (optional)</label>
               <Input value={form.notes} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))}
-                placeholder="Es. Focus sul checkout, monitorare il pricing…" className="text-sm" />
+                placeholder="E.g. Focus on checkout, monitor pricing…" className="text-sm" />
             </div>
             <div className="flex justify-end gap-2 pt-2">
-              <Button type="button" variant="outline" onClick={() => setAddOpen(false)}>Annulla</Button>
+              <Button type="button" variant="outline" onClick={() => setAddOpen(false)}>Cancel</Button>
               <Button type="submit" disabled={adding} className="bg-primary text-white gap-1.5">
-                {adding ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Aggiungendo…</> : <><Plus className="w-3.5 h-3.5" /> Aggiungi</>}
+                {adding ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Adding…</> : <><Plus className="w-3.5 h-3.5" /> Add</>}
               </Button>
             </div>
           </form>

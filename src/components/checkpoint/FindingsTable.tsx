@@ -147,30 +147,30 @@ export default function FindingsTable({ results }: Props) {
     <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
       <div className="border-b border-gray-100 px-5 pt-4">
         <h3 className="text-base font-semibold text-gray-900">
-          Riepilogo findings
+          Findings summary
         </h3>
         <p className="text-xs text-gray-500 mt-0.5">
-          Tutto quello che il bot ha trovato, aggregato per priorità.
+          Everything the bot found, aggregated by priority.
         </p>
         <div className="mt-3 flex items-center gap-1 -mb-px">
           <TabButton
             active={tab === 'fix'}
             onClick={() => setTab('fix')}
-            label="Da correggere"
+            label="To fix"
             count={counts.fix}
             color="red"
           />
           <TabButton
             active={tab === 'improve'}
             onClick={() => setTab('improve')}
-            label="Da migliorare"
+            label="To improve"
             count={counts.improve}
             color="amber"
           />
           <TabButton
             active={tab === 'good'}
             onClick={() => setTab('good')}
-            label="Va bene"
+            label="Looks good"
             count={counts.good}
             color="emerald"
           />
@@ -185,7 +185,7 @@ export default function FindingsTable({ results }: Props) {
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Cerca nel testo..."
+            placeholder="Search in text..."
             className="w-full pl-9 pr-3 py-1.5 border border-gray-200 rounded-md text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
         </div>
@@ -198,7 +198,7 @@ export default function FindingsTable({ results }: Props) {
             }
             className="appearance-none pl-9 pr-7 py-1.5 border border-gray-200 rounded-md text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
           >
-            <option value="all">Tutte le categorie</option>
+            <option value="all">All categories</option>
             {usedCategories.map((cat) => (
               <option key={cat} value={cat}>
                 {CHECKPOINT_CATEGORY_LABELS[cat]}
@@ -213,7 +213,7 @@ export default function FindingsTable({ results }: Props) {
         {tab === 'fix' && (
           <FindingList
             rows={filteredFix}
-            empty="Nessun problema critico o warning trovato."
+            empty="No critical or warning issues found."
             renderRow={(row, key) => (
               <FixRow
                 key={key}
@@ -229,7 +229,7 @@ export default function FindingsTable({ results }: Props) {
         {tab === 'improve' && (
           <FindingList
             rows={filteredImprove}
-            empty="Nessun suggerimento o nota informativa."
+            empty="No suggestions or informational notes."
             renderRow={(item, key) =>
               item.kind === 'issue' ? (
                 <FixRow
@@ -256,7 +256,7 @@ export default function FindingsTable({ results }: Props) {
         {tab === 'good' && (
           <FindingList
             rows={filteredPass}
-            empty="Nessuna categoria ha ancora superato la soglia di pass."
+            empty="No category has reached the pass threshold yet."
             renderRow={(row, key) => <PassRowView key={key} row={row} />}
           />
         )}
@@ -412,7 +412,7 @@ function SuggestionRowView({
             </span>
             <CategoryChip category={row.category} />
             <span className="text-[10px] uppercase tracking-wide font-semibold text-blue-600">
-              suggerimento
+              suggestion
             </span>
           </div>
           {!expanded && row.detail && (
@@ -483,7 +483,7 @@ function SeverityChip({
   if (severity === 'critical')
     return (
       <span className="text-[10px] uppercase tracking-wide font-semibold text-red-700 bg-red-100 px-1.5 py-0.5 rounded">
-        critico
+        critical
       </span>
     );
   if (severity === 'warning')

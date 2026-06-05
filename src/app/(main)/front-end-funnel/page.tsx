@@ -182,7 +182,7 @@ function prepareClonedHtmlForPreview(rawHtml: string): string {
         (widthMatch ? `width:${widthMatch[2]}${/[%]$/.test(widthMatch[2]) ? '' : 'px'};` : 'width:100%;') +
         (heightMatch ? `height:${heightMatch[2]}${/[%]$/.test(heightMatch[2]) ? '' : 'px'};` : 'min-height:200px;');
       const safeSrc = src.replace(/"/g, '&quot;');
-      return `<div data-preview-embed-placeholder="${label.replace(/"/g, '&quot;')}" style="${inlineStyle.replace(/"/g, '&quot;')}box-sizing:border-box;display:flex;align-items:center;justify-content:center;background:#f3f4f6;border:1px dashed #cbd5e1;border-radius:6px;color:#475569;font:500 12px/1.4 system-ui,sans-serif;padding:12px;text-align:center;"><span>📎 Embed bloccato in preview<br><strong>${label}</strong><br><span style="opacity:.6;font-size:11px;word-break:break-all">${safeSrc.slice(0, 80)}${safeSrc.length > 80 ? '…' : ''}</span></span></div>`;
+      return `<div data-preview-embed-placeholder="${label.replace(/"/g, '&quot;')}" style="${inlineStyle.replace(/"/g, '&quot;')}box-sizing:border-box;display:flex;align-items:center;justify-content:center;background:#f3f4f6;border:1px dashed #cbd5e1;border-radius:6px;color:#475569;font:500 12px/1.4 system-ui,sans-serif;padding:12px;text-align:center;"><span>📎 Embed blocked in preview<br><strong>${label}</strong><br><span style="opacity:.6;font-size:11px;word-break:break-all">${safeSrc.slice(0, 80)}${safeSrc.length > 80 ? '…' : ''}</span></span></div>`;
     }
   );
 
@@ -1200,8 +1200,8 @@ export default function FrontEndFunnel() {
     flowName?: string,
   ) => {
     const allPages = funnelPages || [];
-    if (!projectId) throw new Error('Nessun progetto selezionato');
-    if (allPages.length === 0) throw new Error('Nessuna pagina da salvare');
+    if (!projectId) throw new Error('No project selected');
+    if (allPages.length === 0) throw new Error('No page to save');
 
     // Subset selection: same contract as saveCurrentFunnelAsArchive — when
     // pageIds is provided and non-empty, save only the matching rows (in
@@ -1209,7 +1209,7 @@ export default function FrontEndFunnel() {
     const pages = (pageIds && pageIds.length > 0)
       ? allPages.filter((p) => pageIds.includes(p.id))
       : allPages;
-    if (pages.length === 0) throw new Error('Nessuna pagina selezionata');
+    if (pages.length === 0) throw new Error('No page selected');
 
     // Flow label: trimmed string or null. null = legacy "no flow" bucket
     // (back-compat with steps saved before the flow feature shipped).
@@ -1328,7 +1328,7 @@ export default function FrontEndFunnel() {
       });
       if (!res.ok) {
         const txt = await res.text().catch(() => '');
-        throw new Error(txt || `Errore ${res.status}`);
+        throw new Error(txt || `Error ${res.status}`);
       }
       const created = await res.json();
       if (Array.isArray(created)) {
@@ -1390,8 +1390,8 @@ export default function FrontEndFunnel() {
 
     if (failedHtml.length) {
       throw new Error(
-        `Salvataggio parziale: l'HTML non è stato salvato per: ${failedHtml.join(', ')} ` +
-        `(la singola pagina supera ~6MB).`,
+        `Partial save: HTML was not saved for: ${failedHtml.join(', ')} ` +
+        `(the single page exceeds ~6MB).`,
       );
     }
 
@@ -1484,13 +1484,13 @@ export default function FrontEndFunnel() {
       // perdendo l'identificazione che l'utente ha richiesto.
       const flowLabel = saveFlowName.trim();
       if (!flowLabel) {
-        alert('Inserisci un nome per il Flow (es. "Flow Plastilean", "Flow Calminity").');
+        alert('Enter a name for the Flow (e.g. "Flow Plastilean", "Flow Calminity").');
         return;
       }
       setIsSaving(true);
       saveCurrentFunnelToProject(saveProjectId, subset, flowLabel)
         .then(() => { setShowSaveModal(false); setIsSaving(false); setSaveFlowName(''); })
-        .catch((e) => { setIsSaving(false); alert('Errore salvataggio nel progetto: ' + ((e as Error)?.message || '')); });
+        .catch((e) => { setIsSaving(false); alert('Error saving to project: ' + ((e as Error)?.message || '')); });
       return;
     }
     if (!saveFunnelName.trim()) return;
@@ -2021,7 +2021,7 @@ export default function FrontEndFunnel() {
       if (!page) return;
       const url = (page.urlToSwipe || '').trim();
       if (!url) {
-        alert('Questa riga non ha un URL: aggiungilo prima di mandarlo al Checkpoint.');
+        alert('This row has no URL: add one before sending it to Checkpoint.');
         return;
       }
       setCheckpointingIds((prev) => [...prev, pageId]);
@@ -2047,9 +2047,9 @@ export default function FrontEndFunnel() {
           router.push('/checkpoint');
           return;
         }
-        throw new Error(skipped[0]?.reason ?? 'Import non riuscito.');
+        throw new Error(skipped[0]?.reason ?? 'Import failed.');
       } catch (err) {
-        alert(`Errore Checkpoint: ${err instanceof Error ? err.message : String(err)}`);
+        alert(`Checkpoint error: ${err instanceof Error ? err.message : String(err)}`);
       } finally {
         setCheckpointingIds((prev) => prev.filter((id) => id !== pageId));
       }
@@ -2065,12 +2065,12 @@ export default function FrontEndFunnel() {
   const handleCheckpointAll = useCallback(async () => {
     const pages = (funnelPages || []).filter((p) => (p.urlToSwipe || '').trim());
     if (pages.length === 0) {
-      alert('Nessuno step con URL valido da importare.');
+      alert('No step with valid URL to import.');
       return;
     }
     if (
       !confirm(
-        `Importare ${pages.length} pagina${pages.length === 1 ? '' : 'e'} nel Checkpoint?`,
+        `Import ${pages.length} page${pages.length === 1 ? '' : 's'} into Checkpoint?`,
       )
     ) {
       return;
@@ -2115,7 +2115,7 @@ export default function FrontEndFunnel() {
       if (allSkipped > 0) params.set('skipped', String(allSkipped));
       router.push(`/checkpoint?${params.toString()}`);
     } catch (err) {
-      alert(`Errore Checkpoint bulk: ${err instanceof Error ? err.message : String(err)}`);
+      alert(`Bulk Checkpoint error: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setBulkCheckpointing(false);
     }
@@ -2812,7 +2812,7 @@ export default function FrontEndFunnel() {
     const reader = new FileReader();
     reader.onload = async () => {
       const html = String(reader.result || '');
-      if (!html.trim()) { alert('Il file HTML è vuoto.'); return; }
+      if (!html.trim()) { alert('The HTML file is empty.'); return; }
       const safeName = (file.name || 'pagina.html').replace(/[^a-zA-Z0-9._-]/g, '_');
       // Copia locale immediata (sopravvive anche se Storage fallisce).
       void saveHtmlBlob(pageId, 'clonedData', html);
@@ -2828,7 +2828,7 @@ export default function FrontEndFunnel() {
         },
       });
     };
-    reader.onerror = () => alert('Errore nella lettura del file HTML.');
+    reader.onerror = () => alert('Error reading the HTML file.');
     reader.readAsText(file);
   };
 
@@ -2972,7 +2972,7 @@ export default function FrontEndFunnel() {
     const allPages = funnelPages || [];
     const eligible = allPages.filter((p) => p.urlToSwipe && p.productId);
     if (!eligible.length) {
-      alert('Nessuna pagina eligibile (servono URL competitor + Project su ogni riga).');
+      alert('No eligible page (each row needs competitor URL + Project).');
       return;
     }
 
@@ -3080,9 +3080,9 @@ export default function FrontEndFunnel() {
         const kj = await kRes.json();
         if (Array.isArray(kj.prompts)) globalPrompts = kj.prompts;
       }
-      pushSwipeLog('info', `Knowledge: ${globalPrompts.length} tecniche caricate dalla libreria`);
+      pushSwipeLog('info', `Knowledge: ${globalPrompts.length} techniques loaded from library`);
     } catch {
-      pushSwipeLog('info', 'Knowledge libreria non disponibile, vado avanti');
+      pushSwipeLog('info', 'Knowledge library not available, continuing');
     }
 
     for (let i = 0; i < eligible.length; i++) {
@@ -3093,16 +3093,16 @@ export default function FrontEndFunnel() {
       const pageName = page.name || `Step ${i + 1}`;
 
       setSwipeAllJob((s) =>
-        s ? { ...s, currentIndex: i + 1, currentPageName: pageName, currentStep: 'cloning', batchInfo: `coda ${AUDITOR_LABEL[chosen]}…` } : s
+        s ? { ...s, currentIndex: i + 1, currentPageName: pageName, currentStep: 'cloning', batchInfo: `queued ${AUDITOR_LABEL[chosen]}…` } : s
       );
       pushSwipeLog('info', `\u25b6 Page ${i + 1}/${eligible.length} \u2014 enqueue worker job`, pageName);
       updateFunnelPage(page.id, {
         swipeStatus: 'in_progress',
-        swipeResult: `Swipe All ${i + 1}/${eligible.length} — Coda OpenClaw…`,
+        swipeResult: `Swipe All ${i + 1}/${eligible.length} — OpenClaw queue…`,
       });
 
       if (!project) {
-        const msg = `Project non trovato per la pagina (productId=${page.productId})`;
+        const msg = `Project not found for the page (productId=${page.productId})`;
         updateFunnelPage(page.id, { swipeStatus: 'failed', swipeResult: msg });
         setSwipeAllJob((s) =>
           s ? { ...s, errors: [...s.errors, { pageId: page.id, pageName, message: msg }] } : s
@@ -3155,7 +3155,7 @@ export default function FrontEndFunnel() {
         if (briefStr.length === 0) {
           pushSwipeLog(
             'error',
-            `⚠ BRIEF VUOTO mandato a ${AUDITOR_LABEL[chosen]} → l'agente ricostruira' dai SUOI archivi → testi GENERICI (no dottore, no durate del nostro prodotto). Carica il brief in "${project.name}" prima di riscrivere.`,
+            `⚠ EMPTY BRIEF sent to ${AUDITOR_LABEL[chosen]} → the agent will reconstruct from ITS OWN archives → GENERIC texts (no doctor, no durations of our product). Load the brief in "${project.name}" before rewriting.`,
             pageName,
           );
         } else {
@@ -3200,7 +3200,7 @@ export default function FrontEndFunnel() {
           }
           if (Date.now() - t0 > PAGE_TIMEOUT_MS) {
             await cancelWorkerJob(enqueued.id, `UI timeout after ${Math.round(PAGE_TIMEOUT_MS / 60000)}min`);
-            throw new Error(`Timeout UI: ${AUDITOR_LABEL[chosen]} non ha completato in ${Math.round(PAGE_TIMEOUT_MS / 60000)} min. Job cancellato in coda Supabase per non sprecare token. Per landing grosse usa REWRITE_QUALITY_MODE=oneshot sul worker (~5x piu' veloce).`);
+            throw new Error(`UI timeout: ${AUDITOR_LABEL[chosen]} did not complete within ${Math.round(PAGE_TIMEOUT_MS / 60000)} min. Job cancelled in Supabase queue to avoid wasting tokens. For large landings, use REWRITE_QUALITY_MODE=oneshot on the worker (~5x faster).`);
           }
           await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
           const pollRes = await fetch(`/api/openclaw/queue?id=${encodeURIComponent(enqueued.id)}`);
@@ -3221,10 +3221,10 @@ export default function FrontEndFunnel() {
             if (!polled.worker_busy_with) {
               await cancelWorkerJob(enqueued.id, `No-pickup after ${NO_PICKUP_TIMEOUT_MS / 1000}s (worker offline?)`);
               throw new Error(
-                `${AUDITOR_LABEL[chosen]} non ha preso il job in ${NO_PICKUP_TIMEOUT_MS / 1000}s e nessun altro job risulta in elaborazione per quel worker. ` +
-                `Cause probabili: worker offline / OpenClaw locale (127.0.0.1:18789) non risponde / repo non aggiornato. ` +
-                `Job rimosso dalla coda Supabase (status=error) cosi' non verra' processato in seguito. ` +
-                `Workaround immediato: riprova selezionando ${chosen === 'neo' ? '"Morfeo"' : '"Neo"'} come auditor.`,
+                `${AUDITOR_LABEL[chosen]} did not pick up the job in ${NO_PICKUP_TIMEOUT_MS / 1000}s and no other job is being processed by that worker. ` +
+                `Likely causes: worker offline / local OpenClaw (127.0.0.1:18789) not responding / repo not updated. ` +
+                `Job removed from Supabase queue (status=error) so it won't be processed later. ` +
+                `Immediate workaround: retry by selecting ${chosen === 'neo' ? '"Morfeo"' : '"Neo"'} as auditor.`,
               );
             } else if (!busyAnnounced) {
               busyAnnounced = true;
@@ -3233,7 +3233,7 @@ export default function FrontEndFunnel() {
                 : null;
               pushSwipeLog(
                 'info',
-                `\u2026 worker occupato con job #${polled.worker_busy_with.id.slice(0, 8)} (${polled.worker_busy_with.section || '?'})${startedAgo ? `, in corso da ${startedAgo}s` : ''} \u2014 attendo che si liberi`,
+                `\u2026 worker busy with job #${polled.worker_busy_with.id.slice(0, 8)} (${polled.worker_busy_with.section || '?'})${startedAgo ? `, running for ${startedAgo}s` : ''} \u2014 waiting for it to free up`,
                 pageName,
               );
             }
@@ -3241,11 +3241,11 @@ export default function FrontEndFunnel() {
           if (polled.status && polled.status !== lastStatus) {
             lastStatus = polled.status;
             if (polled.status === 'processing') {
-              setSwipeAllJob((s) => (s ? { ...s, currentStep: 'rewriting', batchInfo: 'fetch + rewrite locale…' } : s));
-              pushSwipeLog('info', `\u2192 Worker ha preso il job (fetch + LLM in locale)`, pageName);
+              setSwipeAllJob((s) => (s ? { ...s, currentStep: 'rewriting', batchInfo: 'fetch + local rewrite…' } : s));
+              pushSwipeLog('info', `\u2192 Worker has picked up the job (fetch + LLM locally)`, pageName);
               updateFunnelPage(page.id, {
                 swipeStatus: 'in_progress',
-                swipeResult: `Swipe All ${i + 1}/${eligible.length} — worker locale…`,
+                swipeResult: `Swipe All ${i + 1}/${eligible.length} — local worker…`,
               });
             }
           }
@@ -3253,19 +3253,19 @@ export default function FrontEndFunnel() {
             try {
               final = JSON.parse(polled.content);
             } catch {
-              throw new Error('Worker response non e JSON valido');
+              throw new Error('Worker response is not valid JSON');
             }
             break;
           }
           if (polled.status === 'error' || polled.status === 'failed') {
-            const raw = polled.error || 'Worker ha fallito';
+            const raw = polled.error || 'Worker failed';
             let hint = '';
             if (/Unknown swipe_job action.*swipe_landing_local/i.test(raw)) {
-              hint = ` — Worker ${AUDITOR_LABEL[chosen]} su commit vecchio: \`git pull\` + restart su quel PC.`;
+              hint = ` — Worker ${AUDITOR_LABEL[chosen]} on old commit: \`git pull\` + restart on that PC.`;
             } else if (/(ECONNREFUSED|HTTP 404|fetch failed).*(18789|chat\/completions)/i.test(raw)) {
-              hint = ` — OpenClaw locale di ${AUDITOR_LABEL[chosen]} non risponde su 127.0.0.1:18789.`;
+              hint = ` — ${AUDITOR_LABEL[chosen]}'s local OpenClaw is not responding on 127.0.0.1:18789.`;
             } else if (/Local fetch failed|Playwright|net::ERR/i.test(raw)) {
-              hint = ` — Playwright sul PC di ${AUDITOR_LABEL[chosen]} non scarica la pagina (\`npx playwright install chromium\`).`;
+              hint = ` — Playwright on ${AUDITOR_LABEL[chosen]}'s PC cannot download the page (\`npx playwright install chromium\`).`;
             }
             throw new Error(`${raw}${hint}`);
           }
@@ -3273,14 +3273,14 @@ export default function FrontEndFunnel() {
 
         if (swipeAllCancelRef.current) break;
         if (!final || final.success === false || !final.html) {
-          throw new Error(final?.error || 'Worker ha completato senza HTML');
+          throw new Error(final?.error || 'Worker completed without HTML');
         }
 
         const replacements = final.replacements ?? 0;
         const totalTexts = final.totalTexts ?? 0;
         updateFunnelPage(page.id, {
           swipeStatus: 'completed',
-          swipeResult: `Rewrite OK (${replacements}/${totalTexts} sostituzioni via ${AUDITOR_LABEL[chosen]})`,
+          swipeResult: `Rewrite OK (${replacements}/${totalTexts} replacements via ${AUDITOR_LABEL[chosen]})`,
           clonedData: {
             html: final.html,
             mobileHtml: page.clonedData?.mobileHtml,
@@ -3293,9 +3293,9 @@ export default function FrontEndFunnel() {
           },
         });
         setSwipeAllJob((s) => (s ? { ...s, completed: s.completed + 1 } : s));
-        pushSwipeLog('success', `\u2713\u2713 Done: ${replacements}/${totalTexts} sostituzioni`, pageName);
+        pushSwipeLog('success', `\u2713\u2713 Done: ${replacements}/${totalTexts} replacements`, pageName);
       } catch (err) {
-        const msg = err instanceof Error ? err.message : 'Errore sconosciuto';
+        const msg = err instanceof Error ? err.message : 'Unknown error';
         updateFunnelPage(page.id, { swipeStatus: 'failed', swipeResult: `Swipe All (${chosen}): ${msg}` });
         setSwipeAllJob((s) =>
           s ? { ...s, errors: [...s.errors, { pageId: page.id, pageName, message: msg }] } : s
@@ -3334,15 +3334,15 @@ export default function FrontEndFunnel() {
       (p) => p.urlToSwipe && p.productId
     );
     if (!eligible.length) {
-      alert('Nessuna pagina eligibile (servono URL competitor + Project su ogni riga).');
+      alert('No eligible page (each row needs competitor URL + Project).');
       return;
     }
     const ok = window.confirm(
-      `Avvio Swipe All su ${eligible.length} pagine.\n\n` +
-        `Verranno riscritte in sequenza, mantenendo coerenza narrativa ` +
-        `tra una pagina e l'altra (Claude vede il riassunto delle pagine ` +
-        `già fatte). Tempo stimato: ${Math.max(1, Math.round(eligible.length * 1.2))}-` +
-        `${Math.max(2, Math.round(eligible.length * 2.5))} minuti.\n\nProcedere?`
+      `Starting Swipe All on ${eligible.length} pages.\n\n` +
+        `They will be rewritten in sequence, maintaining narrative coherence ` +
+        `between one page and the next (Claude sees the summary of pages ` +
+        `already done). Estimated time: ${Math.max(1, Math.round(eligible.length * 1.2))}-` +
+        `${Math.max(2, Math.round(eligible.length * 2.5))} minutes.\n\nProceed?`
     );
     if (!ok) return;
 
@@ -3381,10 +3381,10 @@ export default function FrontEndFunnel() {
           ? { ...s, currentIndex: i + 1, currentPageName: pageName, currentStep: 'rewriting', batchInfo: '' }
           : s
       );
-      pushSwipeLog('info', `\u25b6 Pagina ${i + 1}/${eligible.length} \u2014 riscrittura (come manuale)`, pageName);
+      pushSwipeLog('info', `\u25b6 Page ${i + 1}/${eligible.length} \u2014 rewrite (like manual)`, pageName);
 
       if (!project) {
-        const msg = `Project non trovato per la pagina (productId=${page.productId})`;
+        const msg = `Project not found for the page (productId=${page.productId})`;
         updateFunnelPage(page.id, { swipeStatus: 'failed', swipeResult: msg });
         setSwipeAllJob((s) =>
           s ? { ...s, errors: [...s.errors, { pageId: page.id, pageName, message: msg }] } : s
@@ -3416,7 +3416,7 @@ export default function FrontEndFunnel() {
         setSwipeAllJob((s) => (s ? { ...s, completed: s.completed + 1 } : s));
         pushSwipeLog('success', `\u2713\u2713 Pagina completata`, pageName);
       } else {
-        const msg = res?.error || 'Riscrittura fallita';
+        const msg = res?.error || 'Rewrite failed';
         setSwipeAllJob((s) =>
           s ? { ...s, errors: [...s.errors, { pageId: page.id, pageName, message: msg }] } : s
         );
@@ -3450,20 +3450,20 @@ export default function FrontEndFunnel() {
       return /^https?:\/\/.+\..+/.test(u) && !u.startsWith('https://uploaded.local/');
     });
     if (!eligible.length) {
-      alert('Nessuna pagina con URL valido da clonare.');
+      alert('No page with valid URL to clone.');
       return;
     }
     const ok = window.confirm(
-      `Clonare ${eligible.length} pagine in blocco?\n\n` +
-        `Verranno scaricate in sequenza come HTML identico (nessuna riscrittura). ` +
-        `Le pagine già clonate verranno saltate.\n\nProcedere?`,
+      `Clone ${eligible.length} pages in bulk?\n\n` +
+        `They will be downloaded in sequence as identical HTML (no rewrite). ` +
+        `Already-cloned pages will be skipped.\n\nProceed?`,
     );
     if (!ok) return;
 
     cloneAllCancelRef.current = false;
     resetSwipeLog();
     setCloneAllJob({ isRunning: true, currentIndex: 0, totalCount: eligible.length, completed: 0, errors: 0 });
-    pushSwipeLog('info', `Clona All start \u2014 ${eligible.length} pagine`);
+    pushSwipeLog('info', `Clona All start \u2014 ${eligible.length} pages`);
 
     for (let i = 0; i < eligible.length; i++) {
       if (cloneAllCancelRef.current) break;
@@ -3475,7 +3475,7 @@ export default function FrontEndFunnel() {
       // Già clonata → salta (riusa l'HTML esistente).
       if (page.clonedData?.html || page.swipedData?.html) {
         setCloneAllJob((s) => (s ? { ...s, completed: s.completed + 1 } : s));
-        pushSwipeLog('info', `\u21b7 ${pageName} gi\u00e0 clonata, salto`, pageName);
+        pushSwipeLog('info', `\u21b7 ${pageName} already cloned, skipping`, pageName);
         continue;
       }
 
@@ -3483,7 +3483,7 @@ export default function FrontEndFunnel() {
         swipeStatus: 'in_progress',
         swipeResult: `Clona All ${i + 1}/${eligible.length} — Cloning...`,
       });
-      pushSwipeLog('info', `\u25b6 Clono ${i + 1}/${eligible.length}`, pageName);
+      pushSwipeLog('info', `\u25b6 Cloning ${i + 1}/${eligible.length}`, pageName);
 
       try {
         const res = await fetch('/api/clone-funnel', {
@@ -3503,7 +3503,7 @@ export default function FrontEndFunnel() {
           finalSize?: number;
           error?: string;
         }>(res, '[clone-all]');
-        if (!res.ok || data.error) throw new Error(data.error || 'Clone fallito');
+        if (!res.ok || data.error) throw new Error(data.error || 'Clone failed');
 
         const clonedHtml = sanitizeClonedHtml(data.content || '', url, { keepScripts: true });
         const clonedMobileHtml = data.mobileContent
@@ -3527,7 +3527,7 @@ export default function FrontEndFunnel() {
         try { autoSaveSections(clonedHtml, url, pageName); } catch {}
 
         setCloneAllJob((s) => (s ? { ...s, completed: s.completed + 1 } : s));
-        pushSwipeLog('success', `\u2713 Clonata (${(clonedHtml.length / 1024).toFixed(1)} KB)`, pageName);
+        pushSwipeLog('success', `\u2713 Cloned (${(clonedHtml.length / 1024).toFixed(1)} KB)`, pageName);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         updateFunnelPage(page.id, { swipeStatus: 'failed', swipeResult: `Clona All: ${msg}` });
@@ -3701,7 +3701,7 @@ export default function FrontEndFunnel() {
             phase: 'extract',
             totalTexts: 0,
             processedTexts: 0,
-            message: 'Clono prima la pagina...',
+            message: 'Cloning page first...',
           });
           const cloneRes = await fetch('/api/clone-funnel', {
             method: 'POST',
@@ -3857,7 +3857,7 @@ export default function FrontEndFunnel() {
             }),
           );
           if (!debugProceed) {
-            throw new Error("Annullato dall'utente nel preview debug.");
+            throw new Error("Cancelled by user in debug preview.");
           }
 
           // Log visibile: chi sta riscrivendo e con quanto brief.
@@ -3870,7 +3870,7 @@ export default function FrontEndFunnel() {
           if (briefLen === 0) {
             pushSwipeLog(
               'error',
-              `⚠ BRIEF VUOTO mandato a ${AUDITOR_LABEL[chosenAuditor]} → l'agente ricostruira' dai SUOI archivi → testi GENERICI (no dottore, no durate del nostro prodotto). Carica il brief nel project prima di riscrivere.`,
+              `⚠ EMPTY BRIEF sent to ${AUDITOR_LABEL[chosenAuditor]} → the agent will reconstruct from ITS OWN archives → GENERIC texts (no doctor, no durations of our product). Load the brief in the project before rewriting.`,
               pageName,
             );
           } else {
@@ -3898,7 +3898,7 @@ export default function FrontEndFunnel() {
             phase: 'processing',
             totalTexts: 0,
             processedTexts: 0,
-            message: `In coda → ${AUDITOR_LABEL[chosenAuditor]} (job ${enqueued.id.slice(0, 8)})…`,
+            message: `Queued → ${AUDITOR_LABEL[chosenAuditor]} (job ${enqueued.id.slice(0, 8)})…`,
           });
 
           const PAGE_TIMEOUT_MS = 60 * 60 * 1000; // 60 min: landing grosse (250+ testi) richiedono 35-50 min
@@ -3926,7 +3926,7 @@ export default function FrontEndFunnel() {
           while (true) {
             if (Date.now() - t0 > PAGE_TIMEOUT_MS) {
               await cancelWorkerJob(enqueued.id, `UI timeout after ${Math.round(PAGE_TIMEOUT_MS / 60000)}min`);
-              throw new Error(`Timeout UI: ${AUDITOR_LABEL[chosenAuditor]} non ha completato in ${Math.round(PAGE_TIMEOUT_MS / 60000)} min. Job cancellato in coda Supabase per non sprecare token. Per landing grosse usa REWRITE_QUALITY_MODE=oneshot sul worker (~5x piu' veloce).`);
+              throw new Error(`UI timeout: ${AUDITOR_LABEL[chosenAuditor]} did not complete within ${Math.round(PAGE_TIMEOUT_MS / 60000)} min. Job cancelled in Supabase queue to avoid wasting tokens. For large landings, use REWRITE_QUALITY_MODE=oneshot on the worker (~5x faster).`);
             }
             await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
             const pollRes = await fetch(`/api/openclaw/queue?id=${encodeURIComponent(enqueued.id)}`);
@@ -3944,10 +3944,10 @@ export default function FrontEndFunnel() {
               if (!polled.worker_busy_with) {
                 await cancelWorkerJob(enqueued.id, `No-pickup after ${NO_PICKUP_TIMEOUT_MS / 1000}s (worker offline?)`);
                 throw new Error(
-                  `${AUDITOR_LABEL[chosenAuditor]} non ha preso il job in ${NO_PICKUP_TIMEOUT_MS / 1000}s e nessun altro job risulta in elaborazione per quel worker. ` +
-                    `Cause probabili: worker spento / OpenClaw locale (127.0.0.1:18789) non risponde / repo non aggiornato. ` +
-                    `Job rimosso dalla coda Supabase (status=error) cosi' non verra' processato in seguito. ` +
-                    `Workaround immediato: riprova selezionando ${chosenAuditor === 'neo' ? '"Morfeo"' : '"Neo"'} come auditor.`,
+                  `${AUDITOR_LABEL[chosenAuditor]} did not pick up the job in ${NO_PICKUP_TIMEOUT_MS / 1000}s and no other job is being processed by that worker. ` +
+                    `Likely causes: worker off / local OpenClaw (127.0.0.1:18789) not responding / repo not updated. ` +
+                    `Job removed from Supabase queue (status=error) so it won't be processed later. ` +
+                    `Immediate workaround: retry by selecting ${chosenAuditor === 'neo' ? '"Morfeo"' : '"Neo"'} as auditor.`,
                 );
               } else if (!busyAnnounced) {
                 busyAnnounced = true;
@@ -3958,7 +3958,7 @@ export default function FrontEndFunnel() {
                   phase: 'processing',
                   totalTexts: 0,
                   processedTexts: 0,
-                  message: `Worker occupato con job #${polled.worker_busy_with.id.slice(0, 8)} (${polled.worker_busy_with.section || '?'})${startedAgo ? `, in corso da ${startedAgo}s` : ''} — attendo che si liberi…`,
+                  message: `Worker busy with job #${polled.worker_busy_with.id.slice(0, 8)} (${polled.worker_busy_with.section || '?'})${startedAgo ? `, running for ${startedAgo}s` : ''} — waiting for it to free up…`,
                 });
               }
             }
@@ -3969,33 +3969,33 @@ export default function FrontEndFunnel() {
                   phase: 'processing',
                   totalTexts: 0,
                   processedTexts: 0,
-                  message: `${AUDITOR_LABEL[chosenAuditor]} sta lavorando: estrazione + rewrite locale → finalize…`,
+                  message: `${AUDITOR_LABEL[chosenAuditor]} working: extraction + local rewrite → finalize…`,
                 });
               }
             }
             if (polled.status === 'completed' && polled.content) {
               try { final = JSON.parse(polled.content); }
-              catch { throw new Error('Worker response non e JSON valido'); }
+              catch { throw new Error('Worker response is not valid JSON'); }
               break;
             }
             if (polled.status === 'error' || polled.status === 'failed') {
-              const raw = polled.error || 'Worker ha fallito';
+              const raw = polled.error || 'Worker failed';
               // Heuristics su errori comuni del worker per dare
               // un'azione concreta all'utente invece del solo testo
               // grezzo dal worker.
               let hint = '';
               if (/Unknown swipe_job action.*swipe_landing_local/i.test(raw)) {
-                hint = ` — Il worker ${AUDITOR_LABEL[chosenAuditor]} non conosce 'swipe_landing_local' = sta girando su un commit vecchio. Su quel PC: \`git pull\` + riavvio worker.`;
+                hint = ` — Worker ${AUDITOR_LABEL[chosenAuditor]} does not know 'swipe_landing_local' = it's running on an old commit. On that PC: \`git pull\` + worker restart.`;
               } else if (/(ECONNREFUSED|HTTP 404|fetch failed).*(18789|chat\/completions)/i.test(raw)) {
-                hint = ` — Il worker risponde ma il suo OpenClaw locale non risponde su 127.0.0.1:18789. Verifica \`openclaw gateway status\` su quel PC.`;
+                hint = ` — The worker responds but its local OpenClaw is not responding on 127.0.0.1:18789. Check \`openclaw gateway status\` on that PC.`;
               } else if (/Local fetch failed|Playwright|net::ERR/i.test(raw)) {
-                hint = ` — Il worker non riesce a scaricare la pagina. Probabilmente Playwright non e' installato (\`npx playwright install chromium\`) o il sito blocca l'IP del worker.`;
+                hint = ` — The worker cannot download the page. Probably Playwright is not installed (\`npx playwright install chromium\`) or the site blocks the worker's IP.`;
               }
               throw new Error(`${raw}${hint}`);
             }
           }
           if (!final || final.success === false || !final.html) {
-            throw new Error(final?.error || 'Worker ha completato senza HTML');
+            throw new Error(final?.error || 'Worker completed without HTML');
           }
           rewriteData = {
             html: final.html,
@@ -4018,7 +4018,7 @@ export default function FrontEndFunnel() {
           // Why: Netlify caps sync functions at ~26s. We split work in 3 routes
           // (init / anthropic-batch / finalize) and the browser drives the loop
           // so each function call stays well under that limit.
-          setCloneProgress({ phase: 'processing', totalTexts: 0, processedTexts: 0, message: 'Trinity sta riscrivendo...' });
+          setCloneProgress({ phase: 'processing', totalTexts: 0, processedTexts: 0, message: 'Trinity is rewriting...' });
 
           // === Rewrite via Next.js proxy (/api/funnel-swap-proxy) ===
           // Il proxy server-side inietta la knowledge base copywriting (COS,
@@ -4030,7 +4030,7 @@ export default function FrontEndFunnel() {
           const SUPABASE_FN_URL = '/api/funnel-swap-proxy';
           const DEFAULT_USER_ID = '00000000-0000-0000-0000-000000000001';
           const sourceUrlForSwap = url || '';
-          if (!sourceUrlForSwap) throw new Error('Manca URL competitor per il rewrite via Supabase Edge Function');
+          if (!sourceUrlForSwap) throw new Error('Missing competitor URL for the rewrite via Supabase Edge Function');
 
           // Brief inviato alla function = productDescription + (customPrompt come knowledge swipe).
           // La function legge anche framework / target / customPrompt separatamente.
@@ -4044,7 +4044,7 @@ export default function FrontEndFunnel() {
             phase: 'processing',
             totalTexts: 0,
             processedTexts: 0,
-            message: 'Estrazione testi dal competitor...',
+            message: 'Extracting texts from competitor...',
           });
 
           // Smart routing payload (see runSwipeAll for explanation).
@@ -4098,7 +4098,7 @@ export default function FrontEndFunnel() {
           if (!extractRes.ok || extractData.error) {
             throw new Error(extractData.error || extractData.details || `Extract HTTP ${extractRes.status}`);
           }
-          if (!extractData.jobId) throw new Error('Extract: nessun jobId restituito');
+          if (!extractData.jobId) throw new Error('Extract: no jobId returned');
 
           const sbJobId = extractData.jobId;
           const sbTotal = extractData.totalTexts || 0;
@@ -4160,12 +4160,12 @@ export default function FrontEndFunnel() {
             if (procData.phase === 'completed' && procData.content) {
               sbFinalHtml = procData.content;
               sbReplacements = procData.replacements || 0;
-              setCloneProgress({
-                phase: 'processing',
-                totalTexts: sbTotal,
-                processedTexts: sbTotal,
-                message: `Trinity completato (${sbReplacements} sostituzioni)`,
-              });
+          setCloneProgress({
+            phase: 'processing',
+            totalTexts: sbTotal,
+            processedTexts: sbTotal,
+            message: `Trinity completed (${sbReplacements} replacements)`,
+          });
               break;
             }
 
@@ -4175,7 +4175,7 @@ export default function FrontEndFunnel() {
               phase: 'processing',
               totalTexts: sbTotal,
               processedTexts: sbProcessed,
-              message: `Trinity batch ${sbBatch + 1} (${sbProcessed}/${sbTotal}, ${remaining} rimasti)`,
+              message: `Trinity batch ${sbBatch + 1} (${sbProcessed}/${sbTotal}, ${remaining} remaining)`,
             });
 
             if (!procData.continue && !remaining) break;
@@ -4183,7 +4183,7 @@ export default function FrontEndFunnel() {
           }
 
           if (!sbFinalHtml) {
-            throw new Error(`Edge Function non ha restituito HTML completato dopo ${sbBatch + 1} batch`);
+            throw new Error(`Edge Function did not return completed HTML after ${sbBatch + 1} batches`);
           }
 
           rewriteData = {
@@ -4289,7 +4289,7 @@ export default function FrontEndFunnel() {
               phase: 'processing',
               totalTexts: jobTotalTexts,
               processedTexts: idToRewrite.size,
-              message: `Trinity batch ${i + 1}/${totalBatches} (${idToRewrite.size}/${jobTotalTexts} testi)`,
+              message: `Trinity batch ${i + 1}/${totalBatches} (${idToRewrite.size}/${jobTotalTexts} texts)`,
             });
           }
 
@@ -4303,7 +4303,7 @@ export default function FrontEndFunnel() {
               phase: 'processing',
               totalTexts: jobTotalTexts,
               processedTexts: idToRewrite.size,
-              message: `Gap-fill p${pass}: ${missing.length} testi rimasti`,
+              message: `Gap-fill p${pass}: ${missing.length} texts remaining`,
             });
             for (let j = 0; j < missing.length; j += GAP_BATCH) {
               const ids = missing.slice(j, j + GAP_BATCH);
@@ -4327,7 +4327,7 @@ export default function FrontEndFunnel() {
                 phase: 'processing',
                 totalTexts: jobTotalTexts,
                 processedTexts: idToRewrite.size,
-                message: `Gap-fill p${pass}: ${idToRewrite.size}/${jobTotalTexts} riscritti`,
+                message: `Gap-fill p${pass}: ${idToRewrite.size}/${jobTotalTexts} rewritten`,
               });
             }
           }
@@ -4371,7 +4371,7 @@ export default function FrontEndFunnel() {
                 phase: 'processing',
                 totalTexts: jobTotalTexts,
                 processedTexts: idToRewrite.size,
-                message: `Lingua: traduco ${langSuspectIds.length} testi rimasti in inglese...`,
+                message: `Language: translating ${langSuspectIds.length} texts still in English...`,
               });
 
               const TRANSLATE_BATCH = 12;
@@ -4582,7 +4582,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
             phase: 'translating',
             totalTexts: extracted.length,
             processedTexts: idToTranslated.size,
-            message: `Translating to ${targetLang} — ${bi + 1}/${totalBatches} batch (${idToTranslated.size}/${extracted.length} testi)...`,
+            message: `Translating to ${targetLang} — ${bi + 1}/${totalBatches} batch (${idToTranslated.size}/${extracted.length} texts)...`,
           });
         }
 
@@ -4904,14 +4904,14 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                   onClick={handleCheckpointAll}
                   disabled={bulkCheckpointing}
                   className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 transition-colors disabled:opacity-60"
-                  title="Importa tutti gli step nel Checkpoint"
+                  title="Import all steps into Checkpoint"
                 >
                   {bulkCheckpointing ? (
                     <Loader2 className="w-4 h-4 animate-spin" />
                   ) : (
                     <ShieldCheck className="w-4 h-4" />
                   )}
-                  {bulkCheckpointing ? 'Importo...' : 'Checkpoint All'}
+                  {bulkCheckpointing ? 'Importing...' : 'Checkpoint All'}
                 </button>
               )}
               {/* Bulk Project Selector */}
@@ -5020,7 +5020,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                       ? 'bg-emerald-50 border-emerald-300 ring-2 ring-emerald-100'
                       : 'bg-blue-50 border-blue-300 ring-2 ring-blue-100'
                 }`}
-                title="Sceglie chi esegue clone + swipe + rewrite. Claude = Netlify (Anthropic). Neo / Morfeo = job in coda OpenClaw, worker locale fa fetch + LLM in locale."
+                title="Selects who runs clone + swipe + rewrite. Claude = Netlify (Anthropic). Neo / Morfeo = job queued in OpenClaw, local worker performs fetch + LLM locally."
               >
                 <span className="text-xs font-medium text-gray-600 pr-1">Auditor:</span>
                 {(['claude', 'neo', 'morfeo'] as const).map((opt) => {
@@ -5039,8 +5039,8 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                       className={`text-xs px-2 py-1 rounded border transition-colors disabled:opacity-50 ${colour}`}
                       title={
                         opt === 'claude'
-                          ? 'Server-side via Anthropic + Edge Function (puo fallire su funnel grossi / quota Anthropic finita)'
-                          : `Job in coda OpenClaw, worker ${opt} fa fetch + rewrite LLM in locale (no 504, no quota Anthropic)`
+                          ? 'Server-side via Anthropic + Edge Function (may fail on large funnels / Anthropic quota exhausted)'
+                          : `Job queued in OpenClaw, worker ${opt} performs fetch + LLM rewrite locally (no 504, no Anthropic quota)`
                       }
                     >
                       {opt === 'claude' ? 'Claude' : opt === 'neo' ? 'Neo' : 'Morfeo'}
@@ -5054,7 +5054,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
               <button
                 onClick={() => {
                   if (cloneAllJob?.isRunning) {
-                    if (window.confirm('Annullare la clonazione in corso? La pagina attuale finirà comunque.')) {
+                    if (window.confirm('Cancel the clone in progress? The current page will finish anyway.')) {
                       cancelCloneAll();
                     }
                     return;
@@ -5069,8 +5069,8 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                 }`}
                 title={
                   cloneAllJob?.isRunning
-                    ? 'Click per annullare la clonazione in corso'
-                    : 'Clona in sequenza tutte le pagine con URL valido (HTML identico, senza riscrittura)'
+                    ? 'Click to cancel the clone in progress'
+                    : 'Clone in sequence all pages with valid URL (identical HTML, no rewrite)'
                 }
               >
                 {cloneAllJob?.isRunning ? (
@@ -5092,7 +5092,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
               <button
                 onClick={() => {
                   if (swipeAllJob?.isRunning) {
-                    if (window.confirm('Annullare lo Swipe All in corso? La pagina attuale finirà comunque.')) {
+                    if (window.confirm('Cancel Swipe All in progress? The current page will finish anyway.')) {
                       cancelSwipeAll();
                     }
                     return;
@@ -5107,8 +5107,8 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                 }`}
                 title={
                   swipeAllJob?.isRunning
-                    ? 'Click per annullare lo Swipe All in corso'
-                    : 'Swipe sequenziale di tutte le pagine, mantenendo coerenza narrativa tra una pagina e l\'altra (Claude vede il riassunto delle pagine già riscritte)'
+                    ? 'Click to cancel the Swipe All in progress'
+                    : 'Sequential swipe of all pages, maintaining narrative coherence between one page and the next (Claude sees the summary of pages already rewritten)'
                 }
               >
                 {swipeAllJob?.isRunning ? (
@@ -5159,12 +5159,12 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                 onClick={async () => {
                   if (
                     !confirm(
-                      'Fermare TUTTI gli swipe in corso?\n\n' +
-                        '• Marca come error tutti i job pending/processing in coda Supabase\n' +
-                        '• Resetta a idle le pagine in stato in_progress\n' +
-                        '• Aborta il Swipe All locale se in corso\n\n' +
-                        'NON killa i processi Node sul tuo PC — quelli si fermano da soli quando vedono lo stato error.\n\n' +
-                        'Procedere?',
+                      'Stop ALL swipes in progress?\n\n' +
+                        '• Mark as error all pending/processing jobs in Supabase queue\n' +
+                        '• Reset to idle the in_progress pages\n' +
+                        '• Abort the local Swipe All if in progress\n\n' +
+                        'It does NOT kill Node processes on your PC — they stop on their own when they see the error status.\n\n' +
+                        'Proceed?',
                     )
                   ) {
                     return;
@@ -5180,28 +5180,28 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                     const data = await res.json();
                     if (!res.ok || !data.ok) {
                       const errs = (data.errors || []).join('\n') || 'Unknown error';
-                      alert(`Stop parziale.\n\n${errs}`);
+                      alert(`Partial stop.\n\n${errs}`);
                       return;
                     }
                     alert(
-                      `Stop completato (${data.durationMs}ms)\n\n` +
-                        `Job killati: ${data.totalKilled}\n` +
+                      `Stop completed (${data.durationMs}ms)\n\n` +
+                        `Jobs killed: ${data.totalKilled}\n` +
                         `  • openclaw_messages: ${data.openclawMessagesKilled}\n` +
                         `  • funnel_crawl_jobs: ${data.funnelCrawlJobsKilled}\n` +
                         `  • funnel_pages reset: ${data.funnelPagesReset}\n\n` +
-                        'I worker locali smetteranno di thrasshare appena vedono lo stato error.\n' +
-                        'Se invece vuoi anche killare i processi Node, fallo da PowerShell.',
+                        'Local workers will stop thrashing as soon as they see the error status.\n' +
+                        'If you also want to kill the Node processes, do it from PowerShell.',
                     );
                   } catch (err) {
                     alert(
-                      `Errore nella richiesta: ${
+                      `Request error: ${
                         err instanceof Error ? err.message : 'unknown'
                       }`,
                     );
                   }
                 }}
                 className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-bold bg-red-600 text-white hover:bg-red-700 transition-colors"
-                title="STOP — Marca come error tutti i job swipe pending/processing in coda Supabase. Il worker locale rileva lo status flippato entro 5s e abortisce il job in corso senza altre call al modello (no token sprecati). Da usare quando un rewrite e' partito male o sta thrasshing."
+                title="STOP — Marks as error all swipe jobs pending/processing in the Supabase queue. The local worker detects the flipped status within 5s and aborts the job in progress without further calls to the model (no wasted tokens). Use when a rewrite has gone wrong or is thrashing."
               >
                 <Octagon className="w-4 h-4" />
                 Stop
@@ -5252,7 +5252,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                     <button
                       onClick={() => setSwipeAllJob(null)}
                       className="text-xs text-gray-500 hover:text-gray-700"
-                      title="Chiudi pannello"
+                      title="Close panel"
                     >
                       ×
                     </button>
@@ -5281,13 +5281,13 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                   </span>
                   {swipeAllJob.currentStep === 'cloning' && ' · cloning…'}
                   {swipeAllJob.currentStep === 'rewriting' && ` · rewriting${swipeAllJob.batchInfo ? ` (${swipeAllJob.batchInfo})` : ''}`}
-                  {swipeAllJob.currentStep === 'narrative' && ' · estrazione narrative per coerenza con le prossime pagine…'}
+                  {swipeAllJob.currentStep === 'narrative' && ' · extracting narrative for coherence with next pages…'}
                 </p>
               )}
 
               {!swipeAllJob.isRunning && swipeAllJob.errors.length === 0 && swipeAllJob.completed > 0 && (
                 <p className="text-xs text-emerald-700">
-                  ✓ Tutte e {swipeAllJob.completed} le pagine sono state riscritte con coerenza narrativa.
+                  ✓ All {swipeAllJob.completed} pages have been rewritten with narrative coherence.
                 </p>
               )}
 
@@ -5907,7 +5907,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                 urlToSwipe: v,
                               })
                             }
-                            placeholder={page.urlToSwipe?.startsWith('https://uploaded.local/') ? '📄 HTML caricato' : 'https://...'}
+                            placeholder={page.urlToSwipe?.startsWith('https://uploaded.local/') ? '📄 HTML loaded' : 'https://...'}
                             className="flex-1 truncate"
                           />
                           {page.urlToSwipe && !page.urlToSwipe.startsWith('https://uploaded.local/') && (
@@ -5922,7 +5922,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                           )}
                           <label
                             className="text-gray-400 hover:text-blue-600 p-0.5 flex-shrink-0 cursor-pointer"
-                            title="Carica un file HTML al posto del link"
+                            title="Upload an HTML file instead of the link"
                           >
                             <input
                               type="file"
@@ -6018,7 +6018,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                             updateFunnelPage(page.id, { productId: newProjectId }).catch((err) => {
                               console.error('[project-select] Supabase update failed for page', page.id, '→ project', newProjectId, err);
                               const detail = err instanceof Error ? err.message : String(err);
-                              window.alert(`Errore salvataggio progetto: ${detail}\n\nIl valore tornera' a quello precedente. Controlla la console per dettagli.`);
+                              window.alert(`Error saving project: ${detail}\n\nThe value will revert to the previous one. Check the console for details.`);
                             });
                           }}
                           className="truncate"
@@ -6112,14 +6112,14 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                       const r = await fetch(`/api/openclaw/queue?id=${encodeURIComponent(blob.jobId)}`);
                                       if (!r.ok) throw new Error(`HTTP ${r.status}`);
                                       const data = (await r.json()) as { response?: string | null };
-                                      if (!data.response) throw new Error('response vuota');
+                                      if (!data.response) throw new Error('empty response');
                                       const parsed = JSON.parse(data.response) as { html?: string; mobileHtml?: string };
-                                      if (!parsed.html) throw new Error('html mancante nella response');
+                                      if (!parsed.html) throw new Error('html missing in response');
                                       return { html: parsed.html, mobileHtml: parsed.mobileHtml };
                                     } catch (err) {
                                       alert(
-                                        `Impossibile recuperare l'HTML dal job ${blob.jobId.slice(0, 8)}...:\n${err instanceof Error ? err.message : String(err)}\n\n` +
-                                        'Il job potrebbe essere stato eliminato o la response e\' scaduta. Riesegui il Rewrite.'
+                                        `Unable to retrieve HTML from job ${blob.jobId.slice(0, 8)}...:\n${err instanceof Error ? err.message : String(err)}\n\n` +
+                                        'The job may have been deleted or the response has expired. Re-run the Rewrite.'
                                       );
                                       return null;
                                     }
@@ -6128,15 +6128,15 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                   const wasSkipped = !!blob.htmlSkipped;
                                   alert(
                                     wasSkipped
-                                      ? 'HTML non disponibile per questa pagina.\n\n' +
-                                        'L\'HTML era > 50KB e Supabase l\'ha strippato per evitare timeout. ' +
-                                        'Il browser non ha una copia in IndexedDB (probabilmente un altro device, ' +
-                                        'sessione anonima, o cache pulita).\n\n' +
-                                        'Riesegui Clone o Rewrite per rigenerarlo.'
-                                      : 'HTML non disponibile per questa pagina.\n\n' +
-                                        'Questa riga non ha ancora un HTML clonato/riscritto, ' +
-                                        'oppure e\' stata generata su un\'altra macchina.\n\n' +
-                                        'Esegui Clone (Identical / Rewrite) per generare l\'HTML.'
+                                      ? 'HTML not available for this page.\n\n' +
+                                        'The HTML was > 50KB and Supabase stripped it to avoid timeouts. ' +
+                                        'The browser does not have a copy in IndexedDB (probably another device, ' +
+                                        'anonymous session, or cleared cache).\n\n' +
+                                        'Re-run Clone or Rewrite to regenerate it.'
+                                      : 'HTML not available for this page.\n\n' +
+                                        'This row does not yet have a cloned/rewritten HTML, ' +
+                                        'or it was generated on another machine.\n\n' +
+                                        'Run Clone (Identical / Rewrite) to generate the HTML.'
                                   );
                                   return null;
                                 };
@@ -6301,7 +6301,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                 ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
                                 : 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200'
                             }`}
-                            title="Audita questa pagina nel Checkpoint"
+                            title="Audit this page in Checkpoint"
                           >
                             {checkpointingIds.includes(page.id) ? (
                               <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -6339,12 +6339,12 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                   } catch { /* fall through */ }
                                 }
                                 if (!html) {
-                                  alert('HTML non disponibile per questa pagina.\n\nEsegui Clone o Rewrite per generarlo.');
+                                  alert('HTML not available for this page.\n\nRun Clone or Rewrite to generate it.');
                                   return;
                                 }
                                 // Sanamento: rimuove i tracker del competitor
                                 // (pixel, GTM, analytics) SOLO dal file scaricato.
-                                setSanitizeMsg({ phase: 'working', text: 'Sanamento pagina… rimozione tracker competitor' });
+                                setSanitizeMsg({ phase: 'working', text: 'Sanitizing page… removing competitor trackers' });
                                 await new Promise((r) => setTimeout(r, 200));
                                 const { stripCompetitorTracking } = await import('@/lib/strip-tracking');
                                 const clean = stripCompetitorTracking(html);
@@ -6364,13 +6364,13 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                 setSanitizeMsg({
                                   phase: 'done',
                                   text: clean.removedCount
-                                    ? `Pagina sanata: rimossi ${clean.removedCount} tracker (${clean.categories.join(', ')})`
-                                    : 'Nessun tracker rilevato — pagina già pulita',
+                                    ? `Page sanitized: removed ${clean.removedCount} trackers (${clean.categories.join(', ')})`
+                                    : 'No tracker detected — page already clean',
                                 });
                                 setTimeout(() => setSanitizeMsg(null), 1800);
                               }}
                               className="p-1 rounded bg-sky-100 text-sky-700 hover:bg-sky-200 transition-colors"
-                              title="Scarica HTML"
+                              title="Download HTML"
                             >
                               <Download className="w-3.5 h-3.5" />
                             </button>
@@ -6726,7 +6726,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                           ? 'bg-white text-blue-700'
                           : 'text-white/80 hover:text-white'
                       }`}
-                      title="Carica direttamente la URL originale (layout 1:1, richiede che il sito non blocchi iframe)"
+                      title="Loads the original URL directly (1:1 layout, requires the site not to block iframes)"
                     >
                       Live
                     </button>
@@ -6741,7 +6741,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                           ? 'bg-white text-blue-700'
                           : 'text-white/80 hover:text-white'
                       }`}
-                      title="Renderizza l'HTML clonato salvato (statico, senza script)"
+                      title="Renders the saved cloned HTML (static, without scripts)"
                     >
                       Snapshot HTML
                     </button>
@@ -6956,7 +6956,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                           <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                           <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
                         </svg>
-                        <span className="text-sm font-medium">Caricamento anteprima…</span>
+                        <span className="text-sm font-medium">Loading preview…</span>
                       </div>
                     </div>
                   )}
@@ -7212,7 +7212,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                     (widthMatch ? `width:${widthMatch[2]}${/[%]$/.test(widthMatch[2]) ? '' : 'px'};` : 'width:100%;') +
                                     (heightMatch ? `height:${heightMatch[2]}${/[%]$/.test(heightMatch[2]) ? '' : 'px'};` : 'min-height:200px;');
                                   const safeSrc = src.replace(/"/g, '&quot;');
-                                  return `<div data-preview-embed-placeholder="${label.replace(/"/g, '&quot;')}" style="${inlineStyle.replace(/"/g, '&quot;')}box-sizing:border-box;display:flex;align-items:center;justify-content:center;background:#f3f4f6;border:1px dashed #cbd5e1;border-radius:6px;color:#475569;font:500 12px/1.4 system-ui,sans-serif;padding:12px;text-align:center;"><span>📎 Embed bloccato in preview<br><strong>${label}</strong><br><span style="opacity:.6;font-size:11px;word-break:break-all">${safeSrc.slice(0, 80)}${safeSrc.length > 80 ? '…' : ''}</span></span></div>`;
+                                  return `<div data-preview-embed-placeholder="${label.replace(/"/g, '&quot;')}" style="${inlineStyle.replace(/"/g, '&quot;')}box-sizing:border-box;display:flex;align-items:center;justify-content:center;background:#f3f4f6;border:1px dashed #cbd5e1;border-radius:6px;color:#475569;font:500 12px/1.4 system-ui,sans-serif;padding:12px;text-align:center;"><span>📎 Embed blocked in preview<br><strong>${label}</strong><br><span style="opacity:.6;font-size:11px;word-break:break-all">${safeSrc.slice(0, 80)}${safeSrc.length > 80 ? '…' : ''}</span></span></div>`;
                                 }
                               );
                               const frameBusterGuard = `<script data-preview-fbk>(function(){
@@ -7711,10 +7711,10 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                     window.open(htmlPreviewModal.sourceUrl, '_blank', 'noopener,noreferrer');
                   }}
                   className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors flex items-center gap-2"
-                  title="Apre la pagina live in una nuova finestra del browser (navigabile, niente iframe)"
+                  title="Opens the live page in a new browser window (navigable, no iframe)"
                 >
                   <ExternalLink className="w-4 h-4" />
-                  Apri live navigabile
+                  Open live navigable
                 </button>
               )}
               {htmlPreviewModal.html && (
@@ -7738,10 +7738,10 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                     newWin.document.close();
                   }}
                   className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors flex items-center gap-2"
-                  title="Apre l'HTML clonato salvato in una nuova finestra"
+                  title="Opens the saved cloned HTML in a new window"
                 >
                   <ExternalLink className="w-4 h-4" />
-                  Open HTML clonato
+                  Open Cloned HTML
                 </button>
               )}
               {htmlPreviewModal.html && (
@@ -8716,7 +8716,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
               <CheckCircle className="w-8 h-8 text-green-600 mx-auto mb-3" />
             )}
             <p className="text-sm font-semibold text-gray-900">
-              {sanitizeMsg.phase === 'working' ? 'Sanamento pagina' : 'Fatto'}
+              {sanitizeMsg.phase === 'working' ? 'Sanitizing page' : 'Done'}
             </p>
             <p className="text-xs text-gray-500 mt-1">{sanitizeMsg.text}</p>
           </div>
@@ -8728,9 +8728,9 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
           <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-md mx-4">
             <h3 className="text-lg font-bold text-gray-900 mb-1">Save Funnel</h3>
             <p className="text-sm text-gray-500 mb-4">
-              Salva {selectedStepIds.size > 0 ? selectedStepIds.size : (funnelPages?.length || 0)} step
-              {selectedStepIds.size > 0 ? <span className="text-purple-700 font-medium"> (selezionati)</span> : null}
-              . Scegli dove salvarli.
+              Save {selectedStepIds.size > 0 ? selectedStepIds.size : (funnelPages?.length || 0)} step
+              {selectedStepIds.size > 0 ? <span className="text-purple-700 font-medium"> (selected)</span> : null}
+              . Choose where to save them.
             </p>
 
             {/* Selettore destinazione */}
@@ -8745,7 +8745,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                     : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'
                 }`}
               >
-                Archivio · Saved Funnel
+                Archive · Saved Funnel
               </button>
               <button
                 type="button"
@@ -8757,7 +8757,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                     : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'
                 }`}
               >
-                Progetto · Funnel
+                Project · Funnel
               </button>
             </div>
 
@@ -8780,7 +8780,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
               <div className="space-y-3">
                 <div>
                   <label className="block text-xs font-medium text-gray-500 mb-1">
-                    Offerta (My Projects)
+                    Offer (My Projects)
                   </label>
                   <select
                     value={saveProjectId}
@@ -8788,7 +8788,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                     className="w-full border border-gray-300 rounded-lg px-4 py-2.5 text-sm focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none bg-white"
                     autoFocus
                   >
-                    <option value="">— Seleziona un'offerta —</option>
+                    <option value="">— Select an offer —</option>
                     {(projects || []).map((pr) => (
                       <option key={pr.id} value={pr.id}>{pr.name}</option>
                     ))}
@@ -8796,13 +8796,13 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-gray-500 mb-1">
-                    Nome Flow <span className="text-red-500">*</span>
+                    Flow Name <span className="text-red-500">*</span>
                   </label>
                   <input
                     type="text"
                     value={saveFlowName}
                     onChange={(e) => setSaveFlowName(e.target.value)}
-                    placeholder='Es. "Flow Plastilean", "Flow Calminity"...'
+                    placeholder='E.g. "Flow Plastilean", "Flow Calminity"...'
                     className="w-full border border-gray-300 rounded-lg px-4 py-2.5 text-sm focus:ring-2 focus:ring-green-500 focus:border-green-500 outline-none"
                     onKeyDown={(e) => {
                       if (e.key === 'Enter' && saveProjectId && saveFlowName.trim()) {
@@ -8812,8 +8812,8 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                     }}
                   />
                   <p className="text-xs text-gray-400 mt-1.5">
-                    Gli step verranno aggiunti al tab <strong>Funnel</strong> del progetto, raggruppati sotto questo nome di Flow.
-                    Riusando lo stesso nome aggiorni gli step di quel Flow.
+                    Steps will be added to the project's <strong>Funnel</strong> tab, grouped under this Flow name.
+                    Reusing the same name updates the steps of that Flow.
                   </p>
                 </div>
               </div>

@@ -376,7 +376,7 @@ export default function CheckpointDetailPage({
     if (isNewRun) {
       pushEvent(
         'info',
-        `Run #${run.id.slice(0, 8)} osservata (status: ${run.status})`,
+        `Run #${run.id.slice(0, 8)} observed (status: ${run.status})`,
       );
     }
     if (prev && prev.id === run.id) {
@@ -385,17 +385,17 @@ export default function CheckpointDetailPage({
         if (run.status === 'completed') {
           pushEvent(
             'success',
-            `Run completata · score finale ${run.score_overall ?? '–'}/100`,
+            `Run completed · final score ${run.score_overall ?? '–'}/100`,
           );
         } else if (run.status === 'failed') {
           pushEvent(
             'error',
-            `Run fallita${run.error && !run.error.startsWith('[stage]') ? `: ${run.error}` : ''}`,
+            `Run failed${run.error && !run.error.startsWith('[stage]') ? `: ${run.error}` : ''}`,
           );
         } else if (run.status === 'partial') {
           pushEvent(
             'warn',
-            'Run completata parzialmente — alcune categorie hanno avuto errori',
+            'Run completed partially — some categories had errors',
           );
         }
       }
@@ -430,13 +430,13 @@ export default function CheckpointDetailPage({
       const after = run.results?.[cat];
       if (!before && after) {
         if (after.status === 'error') {
-          pushEvent('error', `${cat} · errore: ${after.error ?? 'sconosciuto'}`);
+          pushEvent('error', `${cat} · error: ${after.error ?? 'unknown'}`);
         } else if (after.status === 'skipped') {
-          pushEvent('warn', `${cat} · skippata (${after.summary || 'non applicabile'})`);
+          pushEvent('warn', `${cat} · skipped (${after.summary || 'not applicable'})`);
         } else {
           pushEvent(
             'success',
-            `${cat} · completata (${after.score ?? '–'}/100, ${after.issues?.length ?? 0} criticità, ${after.suggestions?.length ?? 0} azioni)`,
+            `${cat} · completed (${after.score ?? '–'}/100, ${after.issues?.length ?? 0} issues, ${after.suggestions?.length ?? 0} actions)`,
           );
         }
       }
@@ -526,7 +526,7 @@ export default function CheckpointDetailPage({
     setLastChangeAt(lastChangeAtRef.current);
     setQueueStatus(null);
     lastQueueStatusRef.current = null;
-    pushEvent('info', `Run avviata · auditor: ${auditorLabel(auditor)}`);
+    pushEvent('info', `Run started · auditor: ${auditorLabel(auditor)}`);
 
     const ctrl = new AbortController();
     abortRef.current = ctrl;
@@ -582,12 +582,12 @@ export default function CheckpointDetailPage({
       }
     } catch (err) {
       if ((err as Error).name === 'AbortError') {
-        setRunError("Run interrotta dall'utente.");
-        pushEvent('warn', "Run interrotta dall'utente");
+        setRunError("Run interrupted by user.");
+        pushEvent('warn', "Run interrupted by user");
       } else {
         const msg = err instanceof Error ? err.message : String(err);
         setRunError(msg);
-        pushEvent('error', `POST /run fallita: ${msg}`);
+        pushEvent('error', `POST /run failed: ${msg}`);
       }
     } finally {
       // Stop polling, allow any in-flight final tick to settle.
@@ -626,16 +626,16 @@ export default function CheckpointDetailPage({
           if (data.status === 'pending') {
             pushEvent(
               'info',
-              `In coda OpenClaw · in attesa che ${target} prenda il job…`,
+              `In OpenClaw queue · waiting for ${target} to pick up the job…`,
             );
           } else if (data.status === 'processing') {
-            pushEvent('success', `${target} ha preso il job · sta processando`);
+            pushEvent('success', `${target} picked up the job · processing`);
           } else if (data.status === 'completed') {
-            pushEvent('success', `${target} · prep completato lato worker`);
+            pushEvent('success', `${target} · prep completed on worker`);
           } else if (data.status === 'error') {
             pushEvent(
               'error',
-              `${target} · errore worker: ${data.error_message ?? 'sconosciuto'}`,
+              `${target} · worker error: ${data.error_message ?? 'unknown'}`,
             );
             // The worker died/errored before it could call
             // /openclaw-finalize → the funnel_checkpoints row would
@@ -649,7 +649,7 @@ export default function CheckpointDetailPage({
             // "Marca come fallita" button in the banner.
             handleForceFail(
               runId,
-              `Worker ${target} ha riportato errore: ${data.error_message ?? 'sconosciuto'}`,
+              `Worker ${target} reported error: ${data.error_message ?? 'unknown'}`,
             ).catch(() => {});
           }
           lastQueueStatusRef.current = data.status;
@@ -752,7 +752,7 @@ export default function CheckpointDetailPage({
    *  "in corso (in background)" forever. */
   const handleForceFail = async (runId: string, reason?: string) => {
     try {
-      pushEvent('warn', 'Marco la run come fallita su richiesta utente…');
+      pushEvent('warn', 'Marking the run as failed at user request…');
       const res = await fetch(
         `/api/checkpoint/runs/${runId}/force-fail`,
         {
@@ -767,7 +767,7 @@ export default function CheckpointDetailPage({
         };
         throw new Error(body.error ?? `HTTP ${res.status}`);
       }
-      pushEvent('error', 'Run marcata come fallita.');
+      pushEvent('error', 'Run marked as failed.');
       // Stop the polling loop and refresh the row so the badge
       // and history flip to the new state immediately.
       abortRef.current?.abort();
@@ -777,7 +777,7 @@ export default function CheckpointDetailPage({
       await refetch(true);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      pushEvent('error', `force-fail fallita: ${msg}`);
+      pushEvent('error', `force-fail failed: ${msg}`);
     }
   };
 
@@ -844,7 +844,7 @@ export default function CheckpointDetailPage({
   if (loading && !data) {
     return (
       <div className="min-h-screen bg-gray-50">
-        <Header title="Checkpoint" subtitle="Caricamento..." />
+        <Header title="Checkpoint" subtitle="Loading..." />
         <div className="p-12 text-center">
           <Loader2 className="w-6 h-6 animate-spin mx-auto text-blue-500" />
         </div>
@@ -855,16 +855,16 @@ export default function CheckpointDetailPage({
   if (loadError || !data) {
     return (
       <div className="min-h-screen bg-gray-50">
-        <Header title="Checkpoint" subtitle="Errore" />
+        <Header title="Checkpoint" subtitle="Error" />
         <div className="p-6">
           <Link
             href="/checkpoint"
             className="inline-flex items-center gap-2 text-sm text-blue-600 hover:underline mb-4"
           >
-            <ArrowLeft className="w-4 h-4" /> Torna alla lista
+            <ArrowLeft className="w-4 h-4" /> Back to list
           </Link>
           <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-sm text-red-700">
-            <strong>Errore:</strong> {loadError ?? 'Funnel non trovato'}
+            <strong>Error:</strong> {loadError ?? 'Funnel not found'}
           </div>
         </div>
       </div>
@@ -884,8 +884,8 @@ export default function CheckpointDetailPage({
         title={funnel.name}
         subtitle={
           pageCount > 1
-            ? `Funnel multi-step · ${pageCount} pagine in sequenza`
-            : funnel.url || 'Senza URL'
+            ? `Multi-step funnel · ${pageCount} pages in sequence`
+            : funnel.url || 'No URL'
         }
       />
 
@@ -917,10 +917,10 @@ export default function CheckpointDetailPage({
           <div className="bg-white rounded-xl border border-gray-200 p-4">
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-sm font-semibold text-gray-900">
-                Sequenza del funnel ({pageCount} step)
+                Funnel sequence ({pageCount} steps)
               </h3>
               <span className="text-xs text-gray-500">
-                Il check &quot;Navigazione&quot; verifica le transizioni 1→{pageCount}.
+                The &quot;Navigation&quot; check verifies transitions 1→{pageCount}.
               </span>
             </div>
             <ol className="space-y-2">
@@ -942,7 +942,7 @@ export default function CheckpointDetailPage({
                       target="_blank"
                       rel="noopener noreferrer"
                       className="flex-shrink-0"
-                      title="Apri screenshot full size"
+                      title="Open full-size screenshot"
                     >
                       <img
                         src={p.screenshotUrl}
@@ -980,7 +980,7 @@ export default function CheckpointDetailPage({
             href="/checkpoint"
             className="inline-flex items-center gap-2 text-sm text-gray-600 hover:text-blue-600"
           >
-            <ArrowLeft className="w-4 h-4" /> Lista checkpoint
+            <ArrowLeft className="w-4 h-4" /> Checkpoint list
           </Link>
           <div className="flex items-center gap-2">
             {funnel.url && (
@@ -990,7 +990,7 @@ export default function CheckpointDetailPage({
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-2 px-3 py-2 bg-white border border-gray-300 text-sm text-gray-700 rounded-lg hover:bg-gray-50"
               >
-                <ExternalLink className="w-4 h-4" /> Apri pagina
+                <ExternalLink className="w-4 h-4" /> Open page
               </a>
             )}
             {/* Diagnose: shows whether the SPA fallback is needed for
@@ -1002,14 +1002,14 @@ export default function CheckpointDetailPage({
                 onClick={handleDiagnose}
                 disabled={diagLoading}
                 className="inline-flex items-center gap-2 px-3 py-2 bg-white border border-gray-300 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-50 disabled:opacity-50"
-                title="Verifica come viene scaricato l'HTML di questa pagina"
+                title="Check how this page's HTML is downloaded"
               >
                 {diagLoading ? (
                   <Loader2 className="w-4 h-4 animate-spin" />
                 ) : (
                   <Stethoscope className="w-4 h-4" />
                 )}
-                Diagnosi
+                Diagnose
               </button>
             )}
             {running ? (
@@ -1018,7 +1018,7 @@ export default function CheckpointDetailPage({
                 className="inline-flex items-center gap-2 px-4 py-2 bg-red-600 text-white text-sm font-medium rounded-lg hover:bg-red-700"
               >
                 <StopCircle className="w-4 h-4" />
-                Interrompi
+                Stop
               </button>
             ) : (
               <div className="inline-flex rounded-lg shadow-sm overflow-hidden">
@@ -1026,7 +1026,7 @@ export default function CheckpointDetailPage({
                   value={auditor}
                   onChange={(e) => setAuditor(e.target.value as AuditorOption)}
                   className="px-3 py-2 bg-white border border-r-0 border-gray-300 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500 rounded-l-lg"
-                  title="Chi esegue l'audit (Neo/Morfeo girano sui PC OpenClaw)"
+                  title="Who runs the audit (Neo/Morfeo run on OpenClaw PCs)"
                 >
                   <option value="claude">Claude (built-in)</option>
                   <option value="openclaw:neo">Neo (OpenClaw)</option>
@@ -1038,11 +1038,11 @@ export default function CheckpointDetailPage({
                 >
                   {data.runs.length > 0 ? (
                     <>
-                      <RefreshCw className="w-4 h-4" /> Ri-esegui Checkpoint
+                      <RefreshCw className="w-4 h-4" /> Re-run Checkpoint
                     </>
                   ) : (
                     <>
-                      <Play className="w-4 h-4" /> Esegui Checkpoint
+                      <Play className="w-4 h-4" /> Run Checkpoint
                     </>
                   )}
                 </button>
@@ -1055,7 +1055,7 @@ export default function CheckpointDetailPage({
           <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700 flex items-start gap-2">
             <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
             <div>
-              <strong>Run fallita:</strong> {runError}
+              <strong>Run failed:</strong> {runError}
             </div>
           </div>
         )}
@@ -1067,13 +1067,13 @@ export default function CheckpointDetailPage({
             {funnel.url}
           </code>
           <span className="text-gray-300">·</span>
-          <span className="text-gray-500">Aggiunto:</span>
+          <span className="text-gray-500">Added:</span>
           <span className="text-gray-700">
             {formatDateTime(funnel.created_at)}
           </span>
           <span className="text-gray-300">·</span>
           <span className="text-gray-500">
-            {data.runs.length} run in storia
+            {data.runs.length} runs in history
           </span>
         </div>
 
@@ -1082,7 +1082,7 @@ export default function CheckpointDetailPage({
         {!running && data.runs.length > 1 && (
           <div className="bg-white rounded-lg border border-gray-200 p-3">
             <div className="text-xs text-gray-500 uppercase tracking-wide mb-2">
-              Storico run
+              Run history
             </div>
             <div className="flex flex-wrap gap-2">
               {data.runs.map((r, idx) => {
@@ -1098,7 +1098,7 @@ export default function CheckpointDetailPage({
                     }`}
                   >
                     <span className="font-medium">
-                      {idx === 0 ? 'Ultima' : `#${data.runs.length - idx}`}
+                      {idx === 0 ? 'Latest' : `#${data.runs.length - idx}`}
                     </span>{' '}
                     · {formatDateTime(r.created_at)} ·{' '}
                     {r.score_overall ?? '–'}/100
@@ -1117,12 +1117,12 @@ export default function CheckpointDetailPage({
           <div className="bg-white rounded-lg border border-gray-200 p-12 text-center">
             <HelpCircle className="w-10 h-10 mx-auto text-gray-300" />
             <h3 className="mt-3 font-medium text-gray-700">
-              Nessun checkpoint ancora
+              No checkpoint yet
             </h3>
             <p className="text-sm text-gray-500 mt-1 max-w-md mx-auto">
-              Premi <strong>Esegui Checkpoint</strong> per lanciare l&apos;audit
-              su CRO, Coerenza, Tone of Voice, Compliance e Copy Quality.
-              Vedrai il bot lavorare step-by-step.
+              Click <strong>Run Checkpoint</strong> to launch the audit
+              for CRO, Coherence, Tone of Voice, Compliance and Copy Quality.
+              You&apos;ll see the bot work step-by-step.
             </p>
           </div>
         ) : (
@@ -1195,7 +1195,7 @@ export default function CheckpointDetailPage({
           >
             <div className="flex items-center justify-between px-5 py-3 border-b">
               <h3 className="font-semibold text-gray-900 flex items-center gap-2">
-                <Stethoscope className="w-5 h-5" /> Diagnosi fetch HTML
+                <Stethoscope className="w-5 h-5" /> HTML fetch diagnosis
               </h3>
               <button
                 onClick={() => setDiagOpen(false)}
@@ -1213,8 +1213,8 @@ export default function CheckpointDetailPage({
               </div>
               {diagLoading && (
                 <div className="flex items-center gap-2 text-gray-700">
-                  <Loader2 className="w-4 h-4 animate-spin" /> Sto provando a
-                  scaricare l&apos;HTML…
+                  <Loader2 className="w-4 h-4 animate-spin" /> Trying to
+                  download the HTML…
                 </div>
               )}
               {!diagLoading && diag && (
@@ -1229,18 +1229,18 @@ export default function CheckpointDetailPage({
                     {diag.ok ? (
                       <>
                         <div className="font-semibold">
-                          Fetch riuscito ({diag.htmlLength.toLocaleString()}{' '}
-                          caratteri in {(diag.durationMs / 1000).toFixed(1)}s)
+                          Fetch succeeded ({diag.htmlLength.toLocaleString()}{' '}
+                          characters in {(diag.durationMs / 1000).toFixed(1)}s)
                         </div>
                         <div className="mt-1">
-                          Strategia usata: <strong>{diag.source}</strong>
-                          {diag.wasSpa && ' — pagina rilevata come SPA'}
+                          Strategy used: <strong>{diag.source}</strong>
+                          {diag.wasSpa && ' — page detected as SPA'}
                         </div>
                       </>
                     ) : (
                       <>
-                        <div className="font-semibold">Fetch fallito</div>
-                        <div className="mt-1">{diag.error || 'Errore sconosciuto.'}</div>
+                        <div className="font-semibold">Fetch failed</div>
+                        <div className="mt-1">{diag.error || 'Unknown error.'}</div>
                       </>
                     )}
                   </div>
@@ -1248,10 +1248,10 @@ export default function CheckpointDetailPage({
                   {diag.env && (
                     <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-xs">
                       <div className="font-semibold text-blue-900 mb-1">
-                        Ambiente:{' '}
+                        Environment:{' '}
                         {diag.env.isServerless
                           ? 'serverless (Netlify/Lambda)'
-                          : 'locale (npm run dev)'}
+                          : 'local (npm run dev)'}
                       </div>
                       <div className="text-blue-800 font-mono">
                         NETLIFY={String(diag.env.NETLIFY)} | NODE=
@@ -1263,7 +1263,7 @@ export default function CheckpointDetailPage({
                   {diag.attempts.length > 0 && (
                     <div>
                       <div className="font-medium text-gray-800 mb-1">
-                        Tentativi:
+                        Attempts:
                       </div>
                       <ol className="list-decimal pl-5 space-y-1 text-gray-700">
                         {diag.attempts.map((a, i) => (
@@ -1278,7 +1278,7 @@ export default function CheckpointDetailPage({
                   {diag.htmlPreview && (
                     <details className="bg-gray-50 rounded-lg p-3">
                       <summary className="cursor-pointer text-gray-700 font-medium">
-                        Anteprima HTML (primi 1500 caratteri)
+                        HTML preview (first 1500 characters)
                       </summary>
                       <pre className="mt-2 text-xs bg-white p-2 rounded border overflow-x-auto whitespace-pre-wrap">
                         {diag.htmlPreview}
@@ -1287,23 +1287,23 @@ export default function CheckpointDetailPage({
                   )}
 
                   <div className="text-xs text-gray-500 border-t pt-2">
-                    <strong>Cosa significa:</strong>
+                    <strong>What it means:</strong>
                     <ul className="list-disc pl-5 mt-1 space-y-0.5">
                       <li>
-                        <code>fetch</code> = la pagina è server-rendered, fetch
-                        normale OK
+                        <code>fetch</code> = the page is server-rendered, plain
+                        fetch OK
                       </li>
                       <li>
-                        <code>playwright-spa</code> = la pagina è una SPA, il
-                        browser headless ha funzionato
+                        <code>playwright-spa</code> = the page is an SPA, the
+                        headless browser worked
                       </li>
                       <li>
-                        <code>jina-spa-fallback</code> = Playwright è fallito,
-                        Jina Reader ha salvato il giorno
+                        <code>jina-spa-fallback</code> = Playwright failed,
+                        Jina Reader saved the day
                       </li>
                       <li>
-                        <code>fetch-spa-failed</code> = SPA ma nessun fallback
-                        ha funzionato (audit avrà solo la shell vuota)
+                        <code>fetch-spa-failed</code> = SPA but no fallback
+                        worked (audit will only have the empty shell)
                       </li>
                     </ul>
                   </div>
@@ -1356,19 +1356,19 @@ function FunnelTypeBar({
     <div className="bg-white rounded-xl border border-gray-200 px-4 py-3 flex flex-wrap items-center gap-3">
       <div className="flex items-center gap-2">
         <span className="text-xs uppercase tracking-wide text-gray-500 font-semibold">
-          Tipo funnel
+          Funnel type
         </span>
         {isQuiz && (
           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-violet-100 text-violet-700 border border-violet-200">
-            QUIZ MODE ATTIVA
+            QUIZ MODE ACTIVE
           </span>
         )}
         {!allSameType && (
           <span
             className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-50 text-amber-700 border border-amber-200"
-            title="Gli step hanno tipi misti — cambiando il valore qui sotto verranno tutti uniformati"
+            title="Steps have mixed types — changing the value below will make them uniform"
           >
-            misto
+            mixed
           </span>
         )}
       </div>
@@ -1376,10 +1376,10 @@ function FunnelTypeBar({
         value={currentType}
         onChange={(e) => onChange(e.target.value)}
         disabled={disabled || saving}
-        title="Applica il tipo a TUTTI gli step del funnel. Quiz Funnel attiva il rubric quiz (judge-by-content invece di judge-by-URL)."
+        title="Applies the type to ALL funnel steps. Quiz Funnel activates the quiz rubric (judge-by-content instead of judge-by-URL)."
         className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-violet-500 disabled:bg-gray-50 disabled:opacity-60"
       >
-        <option value="">Auto / Standard (rubric default)</option>
+        <option value="">Auto / Standard (default rubric)</option>
         {PAGE_TYPE_CATEGORIES.map((cat) => {
           const opts = BUILT_IN_PAGE_TYPE_OPTIONS.filter(
             (o: PageTypeOption) => o.category === cat.value,
@@ -1397,12 +1397,12 @@ function FunnelTypeBar({
         })}
       </select>
       <span className="text-xs text-gray-400">
-        applicato a {totalPages} {totalPages === 1 ? 'pagina' : 'pagine'}
+        applied to {totalPages} {totalPages === 1 ? 'page' : 'pages'}
       </span>
       {saving && (
         <span className="inline-flex items-center gap-1 text-xs text-violet-600">
           <Loader2 className="w-3 h-3 animate-spin" />
-          salvo…
+          saving…
         </span>
       )}
       {!saving && error && (
@@ -1410,8 +1410,8 @@ function FunnelTypeBar({
       )}
       {!saving && !error && isQuiz && (
         <span className="text-xs text-violet-700">
-          ✓ Il prossimo run userà i prompt quiz (no più "URL identici =
-          funnel rotto").
+          ✓ The next run will use the quiz prompts (no more "identical URLs =
+          broken funnel").
         </span>
       )}
     </div>
@@ -1444,7 +1444,7 @@ function ScoreBanner({ run }: { run: CheckpointRun }) {
       <Icon className="w-10 h-10 shrink-0" />
       <div>
         <div className="text-xs uppercase tracking-wide text-gray-500">
-          Score complessivo · ultima run
+          Overall score · last run
         </div>
         <div className="text-4xl font-bold">
           {overall !== null ? overall : '–'}
@@ -1454,16 +1454,16 @@ function ScoreBanner({ run }: { run: CheckpointRun }) {
       <div className="text-xs text-gray-500 flex flex-col gap-1 ml-auto">
         <span className="inline-flex items-center gap-1">
           <Clock className="w-3 h-3" />
-          Eseguito {formatDateTime(run.created_at)}
+          Run on {formatDateTime(run.created_at)}
         </span>
         {run.completed_at && (
           <span>
-            Completato in {durationSec(run.created_at, run.completed_at)}s
+            Completed in {durationSec(run.created_at, run.completed_at)}s
           </span>
         )}
         {run.triggered_by_name && (
           <span>
-            Da <strong className="text-gray-700">{run.triggered_by_name}</strong>
+            By <strong className="text-gray-700">{run.triggered_by_name}</strong>
           </span>
         )}
       </div>
@@ -1481,7 +1481,7 @@ function computeOverall(results: CheckpointResults): number | null {
 
 function formatDateTime(iso: string): string {
   try {
-    return new Date(iso).toLocaleString('it-IT', {
+    return new Date(iso).toLocaleString('en-US', {
       day: '2-digit',
       month: 'short',
       hour: '2-digit',
@@ -1605,13 +1605,13 @@ function RunActivityMonitor({
   if (!isRunning) {
     if (runStatus === 'failed') {
       stateBadge = {
-        label: 'fallita',
+        label: 'failed',
         cls: 'bg-red-100 text-red-700 border-red-200',
         icon: <XCircle className="w-3.5 h-3.5" />,
       };
     } else if (runStatus === 'partial') {
       stateBadge = {
-        label: 'parziale',
+        label: 'partial',
         cls: 'bg-amber-100 text-amber-700 border-amber-200',
         icon: <AlertTriangle className="w-3.5 h-3.5" />,
       };
@@ -1619,20 +1619,20 @@ function RunActivityMonitor({
       // Polling loop dropped out (timeout / abort / page reload)
       // but the DB row says we're still going. Tell the user.
       stateBadge = {
-        label: 'in corso (in background)',
+        label: 'in progress (in background)',
         cls: 'bg-blue-100 text-blue-700 border-blue-200',
         icon: <Loader2 className="w-3.5 h-3.5 animate-spin" />,
       };
     } else {
       stateBadge = {
-        label: 'completata',
+        label: 'completed',
         cls: 'bg-emerald-100 text-emerald-700 border-emerald-200',
         icon: <CheckCircle2 className="w-3.5 h-3.5" />,
       };
     }
   } else if (stalled) {
     stateBadge = {
-      label: 'nessuna risposta',
+      label: 'no response',
       cls: 'bg-amber-100 text-amber-700 border-amber-200',
       icon: <AlertTriangle className="w-3.5 h-3.5" />,
     };
@@ -1642,13 +1642,13 @@ function RunActivityMonitor({
     queueStatus.status === 'pending'
   ) {
     stateBadge = {
-      label: `in coda · attesa ${queueStatus.target_agent ?? 'worker'}`,
+      label: `in queue · waiting for ${queueStatus.target_agent ?? 'worker'}`,
       cls: 'bg-blue-100 text-blue-700 border-blue-200',
       icon: <Inbox className="w-3.5 h-3.5" />,
     };
   } else {
     stateBadge = {
-      label: 'in elaborazione',
+      label: 'processing',
       cls: 'bg-blue-100 text-blue-700 border-blue-200',
       icon: <Loader2 className="w-3.5 h-3.5 animate-spin" />,
     };
@@ -1658,7 +1658,7 @@ function RunActivityMonitor({
     <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
       <div className="px-4 py-3 border-b border-gray-100 bg-gradient-to-r from-slate-50 to-white flex flex-wrap items-center gap-3">
         <Activity className="w-4 h-4 text-slate-500 shrink-0" />
-        <h3 className="text-sm font-semibold text-gray-900">Attività audit</h3>
+        <h3 className="text-sm font-semibold text-gray-900">Audit activity</h3>
 
         <span
           className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-semibold border ${stateBadge.cls}`}
@@ -1675,7 +1675,7 @@ function RunActivityMonitor({
         {startedAt && (
           <span
             className="inline-flex items-center gap-1.5 text-[11px] font-mono text-gray-700"
-            title="Tempo dall'avvio della run"
+            title="Time since the run started"
           >
             <Clock className="w-3.5 h-3.5 text-gray-400" />
             {formatHms(elapsedMs)}
@@ -1685,10 +1685,10 @@ function RunActivityMonitor({
         {isRunning && lastChangeAt && (
           <span
             className={`inline-flex items-center gap-1.5 text-[11px] ${stalled ? 'text-amber-700 font-semibold' : 'text-gray-500'}`}
-            title="Tempo trascorso dall'ultima attività osservata"
+            title="Time since the last observed activity"
           >
             <Zap className="w-3.5 h-3.5" />
-            ultimo aggiornamento {formatHmsShort(sinceLastMs)} fa
+            last update {formatHmsShort(sinceLastMs)} ago
           </span>
         )}
       </div>
@@ -1697,21 +1697,21 @@ function RunActivityMonitor({
         <div className="px-4 py-2 border-b border-amber-200 bg-amber-50 text-xs text-amber-800 flex items-start gap-2">
           <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
           <div className="flex-1">
-            <strong>Nessun aggiornamento da {formatHmsShort(sinceLastMs)}.</strong>{' '}
+            <strong>No updates for {formatHmsShort(sinceLastMs)}.</strong>{' '}
             {auditor.startsWith('openclaw:')
               ? queueStatus?.status === 'error'
-                ? `Il worker ${queueStatus?.target_agent ?? auditor.split(':')[1]} ha riportato un errore (${queueStatus?.error_message ?? 'sconosciuto'}). Probabile versione del worker non aggiornata: nel terminale Cursor fai "git pull" e riavvia "node openclaw-worker.js", poi rilancia l'audit.`
-                : `Verifica che il worker ${queueStatus?.target_agent ?? auditor.split(':')[1]} sia avviato (terminale Cursor con "node openclaw-worker.js"). Se è online il job potrebbe richiedere ancora qualche secondo.`
-              : "L'API Claude potrebbe essere lenta o la function su Netlify è andata in timeout (504). Il run continua in background, riprova fra poco a refreshare la pagina."}
+                ? `Worker ${queueStatus?.target_agent ?? auditor.split(':')[1]} reported an error (${queueStatus?.error_message ?? 'unknown'}). Worker version is probably out of date: in the Cursor terminal run "git pull" and restart "node openclaw-worker.js", then re-launch the audit.`
+                : `Check that the ${queueStatus?.target_agent ?? auditor.split(':')[1]} worker is running (Cursor terminal with "node openclaw-worker.js"). If it's online the job may still need a few more seconds.`
+              : "The Claude API may be slow or the Netlify function timed out (504). The run continues in the background; try refreshing the page again in a moment."}
           </div>
           {runId && sinceLastMs > 90_000 && (
             <button
-              onClick={() => onForceFail(runId, `Run interrotta dall'utente dopo ${formatHmsShort(sinceLastMs)} di inattività.`)}
+              onClick={() => onForceFail(runId, `Run interrupted by user after ${formatHmsShort(sinceLastMs)} of inactivity.`)}
               className="shrink-0 inline-flex items-center gap-1 px-2 py-1 rounded bg-red-600 text-white text-[11px] font-semibold hover:bg-red-700"
-              title="Marca questa run come fallita nel DB così la UI smette di mostrarla 'in corso'"
+              title="Mark this run as failed in the DB so the UI stops showing it as 'in progress'"
             >
               <XCircle className="w-3 h-3" />
-              Marca come fallita
+              Mark as failed
             </button>
           )}
         </div>
@@ -1726,18 +1726,18 @@ function RunActivityMonitor({
         <div className="px-4 py-2 border-b border-blue-200 bg-blue-50 text-xs text-blue-800 flex items-start gap-2">
           <Loader2 className="w-4 h-4 shrink-0 mt-0.5 animate-spin" />
           <div className="flex-1">
-            <strong>Questa run risulta ancora in corso nel DB.</strong>{' '}
-            Il polling client si è chiuso ma il worker potrebbe ancora
-            essere vivo (controlla il terminale dove gira{' '}
-            <code className="px-1 py-0.5 rounded bg-white/70 font-mono text-[10px]">node openclaw-worker.js</code>).
-            Se sei certa che sia bloccato, chiudila a forza qui sotto.
+            <strong>This run still appears to be in progress in the DB.</strong>{' '}
+            The client polling has closed but the worker may still be
+            alive (check the terminal where{' '}
+            <code className="px-1 py-0.5 rounded bg-white/70 font-mono text-[10px]">node openclaw-worker.js</code> is running).
+            If you&apos;re sure it&apos;s stuck, force-close it below.
           </div>
           <button
-            onClick={() => onForceFail(runId, 'Run marcata come fallita dall\'utente — DB ancora in stato running ma worker presumibilmente morto.')}
+            onClick={() => onForceFail(runId, 'Run marked as failed by user — DB still in running state but worker presumed dead.')}
             className="shrink-0 inline-flex items-center gap-1 px-2 py-1 rounded bg-red-600 text-white text-[11px] font-semibold hover:bg-red-700"
           >
             <XCircle className="w-3 h-3" />
-            Marca come fallita
+            Mark as failed
           </button>
         </div>
       )}
@@ -1747,7 +1747,7 @@ function RunActivityMonitor({
         className="max-h-56 overflow-y-auto bg-slate-950 text-slate-200 font-mono text-[11px] leading-relaxed px-3 py-2"
       >
         {events.length === 0 ? (
-          <div className="text-slate-500 italic">In attesa del primo evento…</div>
+          <div className="text-slate-500 italic">Waiting for the first event…</div>
         ) : (
           events.map((ev, i) => (
             <div key={i} className="flex gap-2 items-start">
@@ -2020,7 +2020,7 @@ function SheetColumn({
     stateMessage =
       firstSourceResult.error ||
       firstSourceResult.summary ||
-      'Audit fallito su questa categoria.';
+      'Audit failed for this category.';
   } else {
     const allDone =
       sourcesWithResult.length > 0 &&
@@ -2060,23 +2060,23 @@ function SheetColumn({
           {rows.length === 0 && infoRows.length === 0 ? (
             <div className="px-3 py-6 text-center text-xs">
               {status === 'idle' && (
-                <span className="text-gray-500/80">In attesa di analisi…</span>
+                <span className="text-gray-500/80">Waiting for analysis…</span>
               )}
               {status === 'running' && (
                 <span className="inline-flex items-center gap-1 text-gray-500/80">
                   <Loader2 className="w-3 h-3 animate-spin" />
-                  Analisi in corso…
+                  Analysis in progress…
                 </span>
               )}
               {status === 'done' && (
                 <span className="text-gray-500/80">
-                  Nessuna criticità trovata.
+                  No issues found.
                 </span>
               )}
               {status === 'skipped' && (
                 <div className="flex flex-col items-center gap-2 px-2 text-gray-700">
                   <SkipForward className="w-4 h-4 text-gray-500" />
-                  <div className="font-medium">Categoria non eseguita</div>
+                  <div className="font-medium">Category not run</div>
                   {stateMessage && (
                     <div className="text-[11px] leading-snug text-gray-600">
                       {stateMessage}
@@ -2087,7 +2087,7 @@ function SheetColumn({
               {status === 'error' && (
                 <div className="flex flex-col items-center gap-2 px-2 text-red-700">
                   <Ban className="w-4 h-4" />
-                  <div className="font-medium">Audit fallito</div>
+                  <div className="font-medium">Audit failed</div>
                   {stateMessage && (
                     <div className="text-[11px] leading-snug text-red-700/80 break-words">
                       {stateMessage}
@@ -2172,7 +2172,7 @@ function ColumnSuggestionsBlock({
         <div className="flex items-center gap-2">
           <Lightbulb className="w-3.5 h-3.5 text-amber-600" />
           <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-700">
-            Fix proposti · {rows.length}
+            Proposed fixes · {rows.length}
           </span>
         </div>
         {open ? (
@@ -2197,7 +2197,7 @@ function ColumnSuggestionsBlock({
                 <div className="mt-2 grid grid-cols-1 gap-1.5">
                   <div className="rounded border border-red-200 bg-red-50/60 px-2 py-1.5">
                     <div className="text-[9px] font-bold uppercase tracking-wider text-red-700 mb-0.5">
-                      Adesso
+                      Now
                     </div>
                     <div className="text-[11px] text-red-900 leading-snug whitespace-pre-line">
                       {s.currentText}
@@ -2205,7 +2205,7 @@ function ColumnSuggestionsBlock({
                   </div>
                   <div className="rounded border border-emerald-200 bg-emerald-50/60 px-2 py-1.5">
                     <div className="text-[9px] font-bold uppercase tracking-wider text-emerald-700 mb-0.5">
-                      Sostituisci con
+                      Replace with
                     </div>
                     <div className="text-[11px] text-emerald-900 leading-snug whitespace-pre-line">
                       {s.targetText}
@@ -2252,8 +2252,8 @@ function ColumnInfoBlock({
           <Info className="w-3.5 h-3.5 text-blue-600" />
           <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-700">
             {notVerifiedCount > 0
-              ? `${notVerifiedCount} non verificati · ${rows.length - notVerifiedCount} info`
-              : `${rows.length} note informative`}
+              ? `${notVerifiedCount} not verified · ${rows.length - notVerifiedCount} info`
+              : `${rows.length} informational notes`}
           </span>
         </div>
         {open ? (
@@ -2452,17 +2452,17 @@ function ActionChecklist({
       <div className="bg-white rounded-xl border border-gray-200 p-6">
         <div className="flex items-center gap-2 mb-2">
           <Lightbulb className="w-5 h-5 text-amber-500" />
-          <h3 className="font-semibold text-gray-900">Cose da fare</h3>
+          <h3 className="font-semibold text-gray-900">Things to do</h3>
         </div>
         <div className="text-sm text-gray-500">
           {isRunning ? (
             <span className="inline-flex items-center gap-2">
               <Loader2 className="w-4 h-4 animate-spin" />
-              In arrivo… le riscritture concrete compariranno qui mano a mano
-              che le categorie completano l&apos;analisi.
+              Coming up… concrete rewrites will appear here as each
+              category finishes its analysis.
             </span>
           ) : (
-            "Nessuna azione consigliata per quest'ultima run."
+            "No recommended actions for this latest run."
           )}
         </div>
       </div>
@@ -2474,15 +2474,15 @@ function ActionChecklist({
       <div className="px-5 py-3 border-b border-gray-200 bg-gradient-to-r from-amber-50 to-white flex items-center justify-between gap-3 flex-wrap">
         <div className="flex items-center gap-2">
           <Lightbulb className="w-5 h-5 text-amber-500" />
-          <h3 className="font-semibold text-gray-900">Cose da fare</h3>
+          <h3 className="font-semibold text-gray-900">Things to do</h3>
           <span className="text-xs text-gray-500">
-            riscritture pronte da incollare in pagina
+            rewrites ready to paste into the page
           </span>
         </div>
         <div className="flex items-center gap-3">
           <span className="text-xs text-gray-600">
             <strong className="text-gray-900">{completed}</strong> /{' '}
-            {totalActions} completate
+            {totalActions} completed
           </span>
           <div className="w-32 h-1.5 bg-gray-100 rounded-full overflow-hidden">
             <div
@@ -2506,7 +2506,7 @@ function ActionChecklist({
                 {g.title}
               </span>
               <span className="text-[11px] text-gray-400">
-                {g.actions.length} {g.actions.length === 1 ? 'azione' : 'azioni'}
+                {g.actions.length} {g.actions.length === 1 ? 'action' : 'actions'}
               </span>
             </div>
             <ul className="space-y-2">
@@ -2568,7 +2568,7 @@ function ChecklistItem({
               ? 'bg-emerald-500 border-emerald-500'
               : 'bg-white border-gray-300 hover:border-emerald-400'
           }`}
-          title={isDone ? 'Segna come da fare' : 'Segna come fatta'}
+          title={isDone ? 'Mark as to do' : 'Mark as done'}
         >
           {isDone && <CheckCircle2 className="w-3 h-3 text-white" />}
         </button>
@@ -2589,7 +2589,7 @@ function ChecklistItem({
             <div className="grid sm:grid-cols-2 gap-2 mt-1">
               <div className="rounded-md border border-red-100 bg-red-50/40 px-3 py-2">
                 <div className="text-[10px] font-semibold uppercase tracking-wide text-red-600 mb-1">
-                  Ora è
+                  Now reads
                 </div>
                 <div className="text-xs italic text-gray-700 leading-snug whitespace-pre-wrap">
                   &ldquo;{row.currentText}&rdquo;
@@ -2597,12 +2597,12 @@ function ChecklistItem({
               </div>
               <div className="rounded-md border border-emerald-100 bg-emerald-50/40 px-3 py-2 relative">
                 <div className="text-[10px] font-semibold uppercase tracking-wide text-emerald-700 mb-1 flex items-center justify-between">
-                  <span>Cambialo in</span>
+                  <span>Change to</span>
                   <button
                     onClick={handleCopy}
                     className="text-[10px] font-semibold uppercase tracking-wide text-emerald-700 hover:text-emerald-900 underline-offset-2 hover:underline"
                   >
-                    {copied ? 'copiato ✓' : 'copia'}
+                    {copied ? 'copied ✓' : 'copy'}
                   </button>
                 </div>
                 <div className="text-xs text-gray-800 leading-snug whitespace-pre-wrap">
@@ -2614,12 +2614,12 @@ function ChecklistItem({
           {!hasRewrite && row.targetText && (
             <div className="rounded-md border border-emerald-100 bg-emerald-50/40 px-3 py-2 relative">
               <div className="text-[10px] font-semibold uppercase tracking-wide text-emerald-700 mb-1 flex items-center justify-between">
-                <span>Da aggiungere</span>
+                <span>To add</span>
                 <button
                   onClick={handleCopy}
                   className="text-[10px] font-semibold uppercase tracking-wide text-emerald-700 hover:text-emerald-900 underline-offset-2 hover:underline"
                 >
-                  {copied ? 'copiato ✓' : 'copia'}
+                  {copied ? 'copied ✓' : 'copy'}
                 </button>
               </div>
               <div className="text-xs text-gray-800 leading-snug whitespace-pre-wrap">
@@ -2628,7 +2628,7 @@ function ChecklistItem({
             </div>
           )}
           <div className="text-[10px] text-gray-400 uppercase tracking-wide">
-            fonte: {row.sourceCategory}
+            source: {row.sourceCategory}
           </div>
         </div>
       </div>
@@ -2671,7 +2671,7 @@ function SheetRowView({
           icon: 'text-red-600',
           badge: 'bg-red-100 text-red-800 border-red-200',
           stripe: 'border-l-red-400',
-          label: 'CRITICA',
+          label: 'CRITICAL',
         }
       : row.severity === 'warning'
         ? {
@@ -2773,7 +2773,7 @@ function SheetStatusBadge({
   if (status === 'error') {
     return (
       <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-red-100 text-red-700 border border-red-300">
-        errore
+        error
       </span>
     );
   }
@@ -2786,7 +2786,7 @@ function SheetStatusBadge({
       <span
         className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold border ${tone}`}
       >
-        {count} criticità
+        {count} issues
       </span>
     );
   }

@@ -59,13 +59,13 @@ function ReportView({ report, url, onClose }: { report: CroReport; url: string; 
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h3 className="font-semibold text-foreground">Analisi CRO</h3>
+          <h3 className="font-semibold text-foreground">CRO Analysis</h3>
           <a href={url} target="_blank" rel="noopener noreferrer" className="text-xs text-primary hover:underline flex items-center gap-1">
             <Globe className="w-3 h-3" /> {url}
           </a>
         </div>
         <Button size="sm" variant="outline" onClick={onClose} className="gap-1.5">
-          <X className="w-3.5 h-3.5" /> Chiudi
+          <X className="w-3.5 h-3.5" /> Close
         </Button>
       </div>
 
@@ -81,7 +81,7 @@ function ReportView({ report, url, onClose }: { report: CroReport; url: string; 
         {/* Strengths */}
         <div className="bg-card border border-border rounded-xl p-5 space-y-3">
           <h4 className="font-semibold text-foreground text-sm flex items-center gap-2">
-            <CheckCircle className="w-4 h-4 text-green-500" /> Punti di Forza
+            <CheckCircle className="w-4 h-4 text-green-500" /> Strengths
           </h4>
           <ul className="space-y-2">
             {(report.strengths || []).map((s, i) => (
@@ -95,7 +95,7 @@ function ReportView({ report, url, onClose }: { report: CroReport; url: string; 
         {/* Assumptions */}
         <div className="bg-card border border-border rounded-xl p-5 space-y-3">
           <h4 className="font-semibold text-foreground text-sm flex items-center gap-2">
-            <Lightbulb className="w-4 h-4 text-amber-500" /> Ipotesi
+            <Lightbulb className="w-4 h-4 text-amber-500" /> Assumptions
           </h4>
           <ul className="space-y-2">
             {(report.assumptions || []).map((a, i) => (
@@ -110,7 +110,7 @@ function ReportView({ report, url, onClose }: { report: CroReport; url: string; 
       {/* Critical Issues */}
       <div className="bg-card border border-border rounded-xl p-5 space-y-4">
         <h4 className="font-semibold text-foreground text-sm flex items-center gap-2">
-          <AlertTriangle className="w-4 h-4 text-red-500" /> Problemi Critici ({(report.critical_issues || []).length})
+          <AlertTriangle className="w-4 h-4 text-red-500" /> Critical Issues ({(report.critical_issues || []).length})
         </h4>
         <div className="space-y-3">
           {(report.critical_issues || []).sort((a, b) => a.priority - b.priority).map((issue, i) => (
@@ -122,8 +122,8 @@ function ReportView({ report, url, onClose }: { report: CroReport; url: string; 
                 </div>
                 <Badge className={`text-[10px] border ${impactColor(issue.impact)}`}>{issue.impact}</Badge>
               </div>
-              <p className="text-xs text-muted-foreground"><span className="font-medium">Elemento:</span> {issue.element}</p>
-              <p className="text-xs text-foreground/80"><span className="font-medium text-red-600">Problema:</span> {issue.problem}</p>
+              <p className="text-xs text-muted-foreground"><span className="font-medium">Element:</span> {issue.element}</p>
+              <p className="text-xs text-foreground/80"><span className="font-medium text-red-600">Problem:</span> {issue.problem}</p>
               <p className="text-xs text-foreground/80"><span className="font-medium text-green-600">Fix:</span> {issue.fix}</p>
             </div>
           ))}
@@ -134,7 +134,7 @@ function ReportView({ report, url, onClose }: { report: CroReport; url: string; 
         {/* A/B Tests */}
         <div className="bg-card border border-border rounded-xl p-5 space-y-3">
           <h4 className="font-semibold text-foreground text-sm flex items-center gap-2">
-            <FlaskConical className="w-4 h-4 text-purple-500" /> Idee A/B Test
+            <FlaskConical className="w-4 h-4 text-purple-500" /> A/B Test Ideas
           </h4>
           <ul className="space-y-2">
             {(report.ab_tests || []).map((t, i) => (
@@ -148,7 +148,7 @@ function ReportView({ report, url, onClose }: { report: CroReport; url: string; 
         {/* Priority Actions */}
         <div className="bg-primary/5 border border-primary/20 rounded-xl p-5 space-y-3">
           <h4 className="font-semibold text-foreground text-sm flex items-center gap-2">
-            <Zap className="w-4 h-4 text-primary" /> Piano d'Azione Prioritario
+            <Zap className="w-4 h-4 text-primary" /> Priority Action Plan
           </h4>
           <ol className="space-y-2">
             {(report.priority_actions || []).map((a, i) => (
@@ -189,10 +189,10 @@ export function ChiefSection({ projectId }: { projectId: string }) {
   }, [activeTab]);
 
   const analyze = async () => {
-    if (!url.trim()) { toast({ title: "Inserisci un URL", variant: "destructive" }); return; }
+    if (!url.trim()) { toast({ title: "Enter a URL", variant: "destructive" }); return; }
     setAnalyzing(true);
     setStreamText("");
-    setStatusMsg("Avvio analisi...");
+    setStatusMsg("Starting analysis...");
     setCurrentReport(null);
     streamRef.current = "";
 
@@ -222,17 +222,17 @@ export function ChiefSection({ projectId }: { projectId: string }) {
             if (d.done) {
               const parsed = parseReport(streamRef.current);
               if (parsed) setCurrentReport({ report: parsed, url: url.trim() });
-              else toast({ title: "Analisi completata", description: "Risultati salvati." });
+              else toast({ title: "Analysis complete", description: "Results saved." });
               setStatusMsg("");
               loadHistory();
-              toast({ title: "Analisi completata!", description: "Rapporto CRO generato con successo." });
+              toast({ title: "Analysis complete!", description: "CRO report generated successfully." });
             }
-            if (d.error) { toast({ title: "Errore analisi", variant: "destructive" }); setStatusMsg(""); }
+            if (d.error) { toast({ title: "Analysis error", variant: "destructive" }); setStatusMsg(""); }
           } catch { /* ignore */ }
         }
       }
     } catch {
-      toast({ title: "Errore", description: "Analisi fallita", variant: "destructive" });
+      toast({ title: "Error", description: "Analysis failed", variant: "destructive" });
     } finally {
       setAnalyzing(false);
     }
@@ -252,7 +252,7 @@ export function ChiefSection({ projectId }: { projectId: string }) {
         <h2 className="text-xl font-semibold text-foreground mb-1 flex items-center gap-2">
           <Brain className="w-5 h-5 text-primary" /> Chief — CRO Analyzer
         </h2>
-        <p className="text-sm text-muted-foreground">Analisi CRO AI-powered basata sulla metodologia Dan Sultanic e best practice direct-response.</p>
+        <p className="text-sm text-muted-foreground">AI-powered CRO analysis based on the Dan Sultanic methodology and direct-response best practices.</p>
       </div>
 
       {/* Tabs */}
@@ -260,7 +260,7 @@ export function ChiefSection({ projectId }: { projectId: string }) {
         {(["analyze", "history"] as const).map(tab => (
           <button key={tab} onClick={() => setActiveTab(tab)}
             className={`px-4 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px ${tab === activeTab ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}>
-            {tab === "analyze" ? "Analizza" : "Storico"}
+            {tab === "analyze" ? "Analyze" : "History"}
           </button>
         ))}
       </div>
@@ -272,10 +272,10 @@ export function ChiefSection({ projectId }: { projectId: string }) {
             <ReportView report={currentReport.report} url={currentReport.url} onClose={() => setCurrentReport(null)} />
           ) : (
             <div className="bg-card border border-border rounded-xl p-6 space-y-4">
-              <h3 className="font-semibold text-foreground text-sm">Nuova Analisi</h3>
+              <h3 className="font-semibold text-foreground text-sm">New Analysis</h3>
               <div className="space-y-3">
                 <div className="space-y-1.5">
-                  <label className="text-xs font-medium text-foreground">URL da analizzare *</label>
+                  <label className="text-xs font-medium text-foreground">URL to analyze *</label>
                   <div className="flex gap-2">
                     <div className="relative flex-1">
                       <Globe className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
@@ -286,14 +286,14 @@ export function ChiefSection({ projectId }: { projectId: string }) {
                   </div>
                 </div>
                 <div className="space-y-1.5">
-                  <label className="text-xs font-medium text-foreground">Contesto aggiuntivo (opzionale)</label>
+                  <label className="text-xs font-medium text-foreground">Additional context (optional)</label>
                   <Textarea value={contextNotes} onChange={e => setContextNotes(e.target.value)}
-                    placeholder="Es. Questa è una VSL page per donne 50+, prodotto dental supplement..."
+                    placeholder="E.g. This is a VSL page for women 50+, dental supplement product..."
                     rows={2} disabled={analyzing} />
                 </div>
                 <Button onClick={analyze} disabled={analyzing || !url.trim()}
                   className="bg-primary hover:bg-primary/90 text-primary-foreground gap-2">
-                  {analyzing ? <><RefreshCw className="w-4 h-4 animate-spin" /> {statusMsg || "Analisi in corso..."}</> : <><Brain className="w-4 h-4" /> Analizza Funnel</>}
+                  {analyzing ? <><RefreshCw className="w-4 h-4 animate-spin" /> {statusMsg || "Analysis in progress..."}</> : <><Brain className="w-4 h-4" /> Analyze Funnel</>}
                 </Button>
               </div>
 
@@ -312,11 +312,11 @@ export function ChiefSection({ projectId }: { projectId: string }) {
       {activeTab === "history" && (
         <div className="space-y-4">
           {loadingHistory ? (
-            <div className="py-12 text-center text-sm text-muted-foreground">Caricamento...</div>
+            <div className="py-12 text-center text-sm text-muted-foreground">Loading...</div>
           ) : history.length === 0 ? (
             <div className="py-16 text-center border-2 border-dashed border-border rounded-xl">
               <Clock className="w-10 h-10 text-muted-foreground/40 mx-auto mb-3" />
-              <p className="text-sm text-muted-foreground">Nessuna analisi ancora. Esegui la tua prima analisi CRO!</p>
+              <p className="text-sm text-muted-foreground">No analyses yet. Run your first CRO analysis!</p>
             </div>
           ) : (
             <div className="space-y-3">
@@ -336,7 +336,7 @@ export function ChiefSection({ projectId }: { projectId: string }) {
                           </span>
                           {parsed && (
                             <span className="text-xs text-muted-foreground">
-                              {parsed.critical_issues?.length || 0} problemi · {parsed.priority_actions?.length || 0} azioni
+                              {parsed.critical_issues?.length || 0} issues · {parsed.priority_actions?.length || 0} actions
                             </span>
                           )}
                         </div>
@@ -344,7 +344,7 @@ export function ChiefSection({ projectId }: { projectId: string }) {
                       </div>
                       <Button size="sm" variant="outline" onClick={() => viewHistoryItem(item)}
                         className="gap-1.5 ml-4 flex-shrink-0" disabled={!parsed}>
-                        Vedi <ChevronRight className="w-3.5 h-3.5" />
+                        View <ChevronRight className="w-3.5 h-3.5" />
                       </Button>
                     </div>
                   </div>

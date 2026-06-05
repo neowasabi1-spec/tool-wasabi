@@ -35,7 +35,7 @@ export async function parseJsonResponse<T = unknown>(
       ok: false,
       status,
       data: null,
-      error: `Impossibile leggere la risposta: ${err instanceof Error ? err.message : String(err)}`,
+      error: `Unable to read the response: ${err instanceof Error ? err.message : String(err)}`,
       rawPreview: null,
       contentType,
     };
@@ -48,7 +48,7 @@ export async function parseJsonResponse<T = unknown>(
       ok: response.ok && (status === 204 || status === 205),
       status,
       data: null,
-      error: response.ok ? null : `Risposta vuota (HTTP ${status})`,
+      error: response.ok ? null : `Empty response (HTTP ${status})`,
       rawPreview: null,
       contentType,
     };
@@ -75,16 +75,16 @@ export async function parseJsonResponse<T = unknown>(
     let friendly: string;
     if (status === 504 || raw.toLowerCase().includes('gateway timeout')) {
       friendly =
-        'La richiesta è andata in timeout (la function ha superato il tetto Netlify). Riprova: il cold-start del browser headless può richiedere 10-15s.';
+        'The request timed out (the function exceeded the Netlify limit). Try again: the headless browser cold start can take 10-15s.';
     } else if (status === 502 || raw.toLowerCase().includes('bad gateway')) {
       friendly =
-        'La function è crashata (502 Bad Gateway). Probabile out-of-memory o errore non catturato lato server. Controlla i log Netlify.';
+        'The function crashed (502 Bad Gateway). Likely out-of-memory or an uncaught server-side error. Check the Netlify logs.';
     } else if (status >= 500) {
-      friendly = `Errore interno del server (HTTP ${status}). La risposta non è JSON.`;
+      friendly = `Internal server error (HTTP ${status}). The response is not JSON.`;
     } else if (isHtml) {
-      friendly = `Il server ha risposto con HTML invece di JSON (HTTP ${status}). Probabile errore 4xx/5xx mascherato da pagina di errore.`;
+      friendly = `The server responded with HTML instead of JSON (HTTP ${status}). Likely a 4xx/5xx error masked as an error page.`;
     } else {
-      friendly = `Risposta non parseable come JSON (HTTP ${status}).`;
+      friendly = `Response cannot be parsed as JSON (HTTP ${status}).`;
     }
     return {
       ok: false,

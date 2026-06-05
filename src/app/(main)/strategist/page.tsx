@@ -39,15 +39,15 @@ interface StrategistTopic {
 }
 
 const STRATEGIST_TOPICS: StrategistTopic[] = [
-  { id: 'angle', label: 'Angle', icon: Target, question: 'Qual è il miglior angle per questo prodotto? Analizziamo insieme i possibili angoli di attacco per il mercato.' },
-  { id: 'brief', label: 'Brief', icon: PenTool, question: 'Creiamo il brief strategico per questo progetto. Di cosa abbiamo bisogno per partire?' },
-  { id: 'mockup', label: 'Mockup & Layout', icon: Layers, question: 'Definiamo la struttura e il layout del funnel. Come deve essere organizzata ogni pagina?' },
-  { id: 'colors', label: 'Colori & Brand', icon: Palette, question: 'Definiamo la palette colori e l\'identità visiva del brand. Che sensazione vogliamo trasmettere?' },
-  { id: 'tov', label: 'Tone of Voice', icon: Type, question: 'Qual è il tone of voice giusto per questo progetto? Formale, colloquiale, urgente, empatico?' },
-  { id: 'copy', label: 'Copy & Headlines', icon: Megaphone, question: 'Lavoriamo sulla copy: headline, sub-headline, CTA e testi persuasivi per ogni step del funnel.' },
-  { id: 'funnel', label: 'Strategia Funnel', icon: BarChart3, question: 'Progettiamo l\'architettura completa del funnel: landing, checkout, upsell, downsell, thank you page.' },
-  { id: 'audience', label: 'Pubblico Target', icon: Users, question: 'Definiamo il pubblico target: chi sono, dove li troviamo, quali sono i loro problemi e desideri.' },
-  { id: 'launch', label: 'Piano Lancio', icon: Rocket, question: 'Pianifichiamo il lancio: timeline, canali, budget, creatività, metriche di successo.' },
+  { id: 'angle', label: 'Angle', icon: Target, question: 'What is the best angle for this product? Let\'s analyze the possible attack angles for the market together.' },
+  { id: 'brief', label: 'Brief', icon: PenTool, question: 'Let\'s create the strategic brief for this project. What do we need to get started?' },
+  { id: 'mockup', label: 'Mockup & Layout', icon: Layers, question: 'Let\'s define the structure and layout of the funnel. How should each page be organized?' },
+  { id: 'colors', label: 'Colors & Brand', icon: Palette, question: 'Let\'s define the color palette and visual identity of the brand. What feeling do we want to convey?' },
+  { id: 'tov', label: 'Tone of Voice', icon: Type, question: 'What is the right tone of voice for this project? Formal, casual, urgent, empathetic?' },
+  { id: 'copy', label: 'Copy & Headlines', icon: Megaphone, question: 'Let\'s work on the copy: headlines, sub-headlines, CTAs and persuasive text for each step of the funnel.' },
+  { id: 'funnel', label: 'Funnel Strategy', icon: BarChart3, question: 'Let\'s design the complete funnel architecture: landing, checkout, upsell, downsell, thank you page.' },
+  { id: 'audience', label: 'Target Audience', icon: Users, question: 'Let\'s define the target audience: who they are, where to find them, what their problems and desires are.' },
+  { id: 'launch', label: 'Launch Plan', icon: Rocket, question: 'Let\'s plan the launch: timeline, channels, budget, creatives, success metrics.' },
 ];
 
 const STORAGE_KEY = 'strategist_chat_history';
@@ -203,7 +203,7 @@ REGOLE:
 
       const queueData = await res.json();
       if (queueData.error) {
-        addMessage('system', `Errore: ${queueData.error}`);
+        addMessage('system', `Error: ${queueData.error}`);
         return;
       }
 
@@ -211,7 +211,7 @@ REGOLE:
       const assistantId = generateId();
       setMessages((prev) => [
         ...prev,
-        { id: assistantId, role: 'assistant', content: '⏳ Strategist sta elaborando...', timestamp: new Date() },
+        { id: assistantId, role: 'assistant', content: '⏳ Strategist is processing...', timestamp: new Date() },
       ]);
 
       let attempts = 0;
@@ -235,7 +235,7 @@ REGOLE:
             setMessages((prev) =>
               prev.map((m) =>
                 m.id === assistantId
-                  ? { ...m, role: 'system' as const, content: `Errore: ${pollData.error || 'Errore OpenClaw'}` }
+                  ? { ...m, role: 'system' as const, content: `Error: ${pollData.error || 'OpenClaw error'}` }
                   : m
               )
             );
@@ -246,7 +246,7 @@ REGOLE:
             setMessages((prev) =>
               prev.map((m) =>
                 m.id === assistantId
-                  ? { ...m, role: 'system' as const, content: 'Errore: Timeout risposta (30min)' }
+                  ? { ...m, role: 'system' as const, content: 'Error: Response timeout (30min)' }
                   : m
               )
             );
@@ -256,7 +256,7 @@ REGOLE:
           const dots = '.'.repeat((attempts % 3) + 1);
           setMessages((prev) =>
             prev.map((m) =>
-              m.id === assistantId ? { ...m, content: `⏳ Strategist sta elaborando${dots}` } : m
+              m.id === assistantId ? { ...m, content: `⏳ Strategist is processing${dots}` } : m
             )
           );
 
@@ -270,7 +270,7 @@ REGOLE:
           setMessages((prev) =>
             prev.map((m) =>
               m.id === assistantId
-                ? { ...m, role: 'system' as const, content: 'Errore: Connessione persa' }
+                ? { ...m, role: 'system' as const, content: 'Error: Connection lost' }
                 : m
             )
           );
@@ -279,7 +279,7 @@ REGOLE:
 
       await poll();
     } catch (err) {
-      addMessage('system', `Connessione fallita: ${(err as Error).message}`);
+      addMessage('system', `Connection failed: ${(err as Error).message}`);
     } finally {
       setIsLoading(false);
     }
@@ -304,7 +304,7 @@ REGOLE:
 
   const handleStartSession = () => {
     if (!product) return;
-    const intro = `Ciao! Ho selezionato il prodotto "${product.name}" (€${product.price}). Voglio costruire una strategia completa per questo prodotto. Guidami passo dopo passo partendo dall'analisi iniziale.${product.description ? `\n\nDescrizione: ${product.description}` : ''}${product.benefits?.length ? `\nBenefici: ${product.benefits.join(', ')}` : ''}${product.category ? `\nCategoria: ${product.category}` : ''}`;
+    const intro = `Hi! I selected the product "${product.name}" (€${product.price}). I want to build a complete strategy for this product. Guide me step by step starting from the initial analysis.${product.description ? `\n\nDescription: ${product.description}` : ''}${product.benefits?.length ? `\nBenefits: ${product.benefits.join(', ')}` : ''}${product.category ? `\nCategory: ${product.category}` : ''}`;
     addMessage('user', intro);
     sendToOpenClaw(intro);
   };
@@ -348,7 +348,7 @@ REGOLE:
                 onChange={(e) => setSelectedProduct(e.target.value)}
                 className="w-full appearance-none pl-10 pr-10 py-2.5 bg-white border border-gray-200 rounded-xl text-sm font-medium text-gray-800 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 shadow-sm cursor-pointer"
               >
-                <option value="">Seleziona un prodotto...</option>
+                <option value="">Select a product...</option>
                 {products.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.name} {p.price > 0 ? `— €${p.price}` : ''}
@@ -362,7 +362,7 @@ REGOLE:
             {product && (
               <span className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50 text-indigo-700 text-xs font-medium rounded-full border border-indigo-200">
                 <Sparkles className="w-3 h-3" />
-                {product.category || product.brandName || 'Prodotto attivo'}
+                {product.category || product.brandName || 'Active product'}
               </span>
             )}
           </div>
@@ -383,7 +383,7 @@ REGOLE:
               {showTopics && (
                 <div className="absolute right-0 top-full mt-2 w-72 bg-white rounded-xl border border-gray-200 shadow-2xl z-50 overflow-hidden">
                   <div className="px-4 py-2.5 border-b border-gray-100 bg-gray-50">
-                    <p className="text-xs font-semibold text-gray-500 uppercase">Scegli un topic strategico</p>
+                    <p className="text-xs font-semibold text-gray-500 uppercase">Choose a strategic topic</p>
                   </div>
                   <div className="max-h-80 overflow-y-auto">
                     {STRATEGIST_TOPICS.map((topic) => {
@@ -411,7 +411,7 @@ REGOLE:
               <button
                 onClick={clearChat}
                 className="flex items-center gap-2 px-3 py-2.5 bg-white border border-gray-200 rounded-xl text-sm text-gray-500 hover:bg-red-50 hover:text-red-600 hover:border-red-200 shadow-sm transition-colors"
-                title="Nuova sessione"
+                title="New session"
               >
                 <Trash2 className="w-4 h-4" />
                 <span className="hidden sm:inline">Reset</span>
@@ -432,8 +432,8 @@ REGOLE:
                 </div>
                 <h3 className="text-xl font-bold text-gray-900 mb-2">Strategist AI</h3>
                 <p className="text-gray-500 text-sm text-center max-w-md mb-6">
-                  Seleziona un prodotto e inizia una sessione strategica. Ti guider&ograve; nella definizione di
-                  angle, brief, mockup, colori, tone of voice, copy, strategia funnel, target e piano lancio.
+                  Select a product and start a strategic session. I will guide you through defining
+                  angle, brief, mockup, colors, tone of voice, copy, funnel strategy, target and launch plan.
                 </p>
 
                 {product ? (
@@ -452,7 +452,7 @@ REGOLE:
                         className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors disabled:bg-gray-300 shrink-0 flex items-center gap-2"
                       >
                         <Rocket className="w-4 h-4" />
-                        Inizia
+                        Start
                       </button>
                     </div>
 
@@ -476,9 +476,9 @@ REGOLE:
                 ) : (
                   <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 max-w-sm text-center">
                     <Package className="w-6 h-6 text-amber-500 mx-auto mb-2" />
-                    <p className="text-sm text-amber-800 font-medium">Seleziona un prodotto</p>
+                    <p className="text-sm text-amber-800 font-medium">Select a product</p>
                     <p className="text-xs text-amber-600 mt-1">
-                      Scegli un prodotto dal menu in alto per iniziare la sessione strategica
+                      Choose a product from the menu above to start the strategic session
                     </p>
                   </div>
                 )}
@@ -554,10 +554,10 @@ REGOLE:
                 onKeyDown={handleKeyDown}
                 placeholder={
                   isLoading
-                    ? 'Strategist sta elaborando...'
+                    ? 'Strategist is processing...'
                     : product
-                    ? `Chiedi allo Strategist su ${product.name}...`
-                    : 'Seleziona un prodotto per iniziare...'
+                    ? `Ask the Strategist about ${product.name}...`
+                    : 'Select a product to start...'
                 }
                 disabled={isLoading}
                 rows={1}

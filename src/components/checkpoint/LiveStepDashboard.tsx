@@ -77,20 +77,20 @@ export default function LiveStepDashboard({
             <div className="text-sm font-semibold text-gray-900">
               {isRunning ? (
                 <span className="flex items-center gap-2">
-                  Audit in corso
+                  Audit in progress
                   <span className="inline-flex h-2 w-2 rounded-full bg-emerald-500 animate-ping" />
                 </span>
               ) : doneCount === total && total > 0 ? (
-                'Audit completo'
+                'Audit complete'
               ) : (
-                'Audit pronto'
+                'Audit ready'
               )}
             </div>
             <div className="text-xs text-gray-500">
-              {doneCount}/{total} step completati
+              {doneCount}/{total} steps completed
               {isRunning && activeIndex >= 0 && steps[activeIndex] && (
                 <>
-                  {' '}· lavora su{' '}
+                  {' '}· working on{' '}
                   <strong>
                     {CHECKPOINT_CATEGORY_LABELS[steps[activeIndex].category]}
                   </strong>
@@ -153,23 +153,23 @@ export default function LiveStepDashboard({
             {isRunning && doneCount === 0 && prepStage ? (
               // Preparation phase: dominate the footer with the
               // current stage so the user sees activity immediately
-              // (instead of a deceptively static "0/N step completati"
+              // (instead of a deceptively static "0/N steps completed"
               // for ~30-90s while we fetch pages + screenshot them).
               <span className="inline-flex items-center gap-1.5 text-blue-700">
                 <Loader2 className="w-3 h-3 animate-spin" />
                 <span>
-                  Preparazione · <strong>{prepStage}</strong>
+                  Preparing · <strong>{prepStage}</strong>
                 </span>
               </span>
             ) : isRunning && activeIndex >= 0 && steps[activeIndex] ? (
               <span className="inline-flex items-center gap-1.5">
                 <Loader2 className="w-3 h-3 animate-spin text-blue-600" />
                 <span>
-                  Step {activeIndex + 1} di {total} ·{' '}
+                  Step {activeIndex + 1} of {total} ·{' '}
                   <strong className="text-gray-700">
                     {CHECKPOINT_CATEGORY_LABELS[steps[activeIndex].category]}
                   </strong>{' '}
-                  in analisi
+                  under analysis
                 </span>
               </span>
             ) : isRunning && doneCount === 0 ? (
@@ -178,18 +178,17 @@ export default function LiveStepDashboard({
               <span className="inline-flex items-center gap-1.5 text-blue-700">
                 <Loader2 className="w-3 h-3 animate-spin" />
                 <span>
-                  Preparazione audit (download pagine + screenshot mobili)…
+                  Preparing audit (downloading pages + mobile screenshots)…
                 </span>
               </span>
             ) : doneCount === total && total > 0 ? (
               <span className="inline-flex items-center gap-1.5 text-emerald-700">
                 <CheckCircle2 className="w-3 h-3" />
-                Tutti gli step completati
+                All steps completed
               </span>
             ) : (
               <span>
-                {doneCount} di {total} step
-                {total === 1 ? '' : ''} completat{doneCount === 1 ? 'o' : 'i'}
+                {doneCount} of {total} step{total === 1 ? '' : 's'} completed
               </span>
             )}
           </span>

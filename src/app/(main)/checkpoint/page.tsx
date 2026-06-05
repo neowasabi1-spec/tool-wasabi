@@ -69,7 +69,7 @@ function ScorePill({ score }: { score: number | null }) {
     return (
       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-gray-100 text-gray-500 border border-gray-200">
         <HelpCircle className="w-3 h-3" />
-        Mai controllato
+        Never audited
       </span>
     );
   }
@@ -95,7 +95,7 @@ function ScorePill({ score }: { score: number | null }) {
 function formatDate(iso: string | null): string {
   if (!iso) return '—';
   try {
-    return new Date(iso).toLocaleDateString('it-IT', {
+    return new Date(iso).toLocaleDateString('en-US', {
       day: '2-digit',
       month: 'short',
       year: 'numeric',
@@ -465,7 +465,7 @@ export default function CheckpointPage() {
       })
       .filter((p) => !!p.url);
     if (pages.length === 0) {
-      throw new Error('Inserisci almeno una URL.');
+      throw new Error('Enter at least one URL.');
     }
     const res = await fetch('/api/checkpoint/funnels', {
       method: 'POST',
@@ -630,7 +630,7 @@ export default function CheckpointPage() {
           }[];
           if (steps.length === 0) {
             throw new Error(
-              "Il crawler non ha trovato pagine. Prova in modalità manuale.",
+              "The crawler didn't find any pages. Try manual mode.",
             );
           }
           // Show every step the agent traversed, even when the URL is
@@ -658,13 +658,13 @@ export default function CheckpointPage() {
           return;
         }
         if (statusBody.status === 'failed') {
-          throw new Error(statusBody.error ?? 'Crawl fallito.');
+          throw new Error(statusBody.error ?? 'Crawl failed.');
         }
         // status === 'pending' (worker hasn't claimed it yet) or
         // 'running' (worker is mid-flight) → keep polling silently.
       }
       throw new Error(
-        `Timeout: il worker non ha completato in 15 minuti. Lo step più alto raggiunto è ${lastSeenStep}. Controlla i log del worker (Neo / Morfeo) per il motivo, oppure passa alla modalità manuale.`,
+        `Timeout: the worker didn't complete within 15 minutes. The highest step reached is ${lastSeenStep}. Check the worker logs (Neo / Morfeo) for the reason, or switch to manual mode.`,
       );
     } catch (err) {
       setAddError(err instanceof Error ? err.message : String(err));
@@ -683,7 +683,7 @@ export default function CheckpointPage() {
   };
 
   const handleDelete = async (id: string, name: string) => {
-    if (!confirm(`Eliminare "${name}" e tutto lo storico dei suoi checkpoint?`)) {
+    if (!confirm(`Delete "${name}" and all its checkpoint history?`)) {
       return;
     }
     setDeletingId(id);
@@ -695,7 +695,7 @@ export default function CheckpointPage() {
       }
       setFunnels((prev) => prev.filter((f) => f.id !== id));
     } catch (err) {
-      alert(`Errore eliminazione: ${err instanceof Error ? err.message : String(err)}`);
+      alert(`Delete error: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setDeletingId(null);
     }
@@ -705,7 +705,7 @@ export default function CheckpointPage() {
     <div className="min-h-screen bg-gray-50">
       <Header
         title="Checkpoint"
-        subtitle="Audit qualitativo dei funnel multi-step: navigazione, coerenza interna, copy quality"
+        subtitle="Qualitative audit of multi-step funnels: navigation, internal coherence, copy quality"
       />
 
       <div className="px-6 py-6 space-y-6">
@@ -717,26 +717,24 @@ export default function CheckpointPage() {
             <div className="flex-1 min-w-0">
               <p className="text-sm font-medium text-emerald-900">
                 {importedIds.length > 0
-                  ? `${importedIds.length} pagina${importedIds.length === 1 ? '' : 'e'} importata${importedIds.length === 1 ? '' : 'e'} dal progetto.`
-                  : 'Import completato.'}
+                  ? `${importedIds.length} page${importedIds.length === 1 ? '' : 's'} imported from the project.`
+                  : 'Import complete.'}
                 {skippedCount > 0 && (
                   <span className="text-emerald-700 font-normal">
                     {' '}
-                    {skippedCount} ignorat{skippedCount === 1 ? 'a' : 'e'} (URL
-                    duplicat{skippedCount === 1 ? 'o' : 'i'} o non valid
-                    {skippedCount === 1 ? 'o' : 'i'}).
+                    {skippedCount} skipped (duplicate or invalid URL{skippedCount === 1 ? '' : 's'}).
                   </span>
                 )}
               </p>
               <p className="text-xs text-emerald-700 mt-0.5">
-                Ora puoi avviare il checkpoint su una singola pagina cliccandola
-                qui sotto.
+                You can now run the checkpoint on a single page by clicking it
+                below.
               </p>
             </div>
             <button
               onClick={dismissBanner}
               className="p-1 text-emerald-700 hover:bg-emerald-100 rounded"
-              title="Chiudi"
+              title="Close"
             >
               <X className="w-4 h-4" />
             </button>
@@ -745,8 +743,8 @@ export default function CheckpointPage() {
 
         {/* Stats strip */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <StatCard label="Totale" value={stats.total} />
-          <StatCard label="Controllati" value={stats.checked} accent="blue" />
+          <StatCard label="Total" value={stats.total} />
+          <StatCard label="Audited" value={stats.checked} accent="blue" />
           <StatCard label="Pass (≥80)" value={stats.passing} accent="emerald" />
           <StatCard label="Fail (<50)" value={stats.failing} accent="red" />
         </div>
@@ -760,7 +758,7 @@ export default function CheckpointPage() {
                 type="text"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Cerca per nome o URL..."
+                placeholder="Search by name or URL..."
                 className="w-full pl-9 pr-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
@@ -770,8 +768,8 @@ export default function CheckpointPage() {
               value={statusFilter}
               onChange={(v) => setStatusFilter(v as StatusFilter)}
               options={[
-                { value: 'all', label: 'Qualunque stato' },
-                { value: 'never', label: 'Mai controllati' },
+                { value: 'all', label: 'Any status' },
+                { value: 'never', label: 'Never audited' },
                 { value: 'pass', label: 'Pass (≥80)' },
                 { value: 'warn', label: 'Warning (50-79)' },
                 { value: 'fail', label: 'Fail (<50)' },
@@ -781,7 +779,7 @@ export default function CheckpointPage() {
             <button
               onClick={openLog}
               className="inline-flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-50 transition-colors"
-              title="Mostra il log di tutti i checkpoint eseguiti"
+              title="Show the log of all checkpoints run"
             >
               <History className="w-4 h-4" />
               Log
@@ -797,8 +795,8 @@ export default function CheckpointPage() {
               }`}
               title={
                 selectedProject
-                  ? `Progetto attivo: ${selectedProject.name} — clicca per cambiarlo`
-                  : 'Scegli un progetto, poi usa Landing o Funnel'
+                  ? `Active project: ${selectedProject.name} — click to change`
+                  : 'Pick a project, then use Landing or Funnel'
               }
             >
               <FolderOpen className="w-4 h-4" />
@@ -813,7 +811,7 @@ export default function CheckpointPage() {
                   ? 'bg-emerald-700 text-white ring-2 ring-emerald-300'
                   : 'bg-emerald-600 text-white hover:bg-emerald-700'
               }`}
-              title="Audit di una singola pagina"
+              title="Audit a single page"
             >
               <Globe className="w-4 h-4" />
               Landing
@@ -828,7 +826,7 @@ export default function CheckpointPage() {
                   ? 'bg-blue-700 text-white ring-2 ring-blue-300'
                   : 'bg-blue-600 text-white hover:bg-blue-700'
               }`}
-              title="Audit di un funnel multi-step"
+              title="Audit a multi-step funnel"
             >
               <Layers className="w-4 h-4" />
               Funnel
@@ -843,14 +841,13 @@ export default function CheckpointPage() {
             <div className="mt-3 flex items-center gap-2 text-xs px-3 py-2 bg-indigo-50 border border-indigo-200 rounded-lg">
               <FolderOpen className="w-3.5 h-3.5 text-indigo-600" />
               <span className="text-indigo-900">
-                Operando su:{' '}
+                Operating on:{' '}
                 <strong className="font-semibold">
                   {selectedProject.name}
                 </strong>{' '}
                 <span className="text-indigo-600 font-normal">
-                  · {selectedProject.detectedUrls.length} URL rilevat
-                  {selectedProject.detectedUrls.length === 1 ? 'o' : 'i'} ·
-                  Landing = singola pagina · Funnel = tutto il flusso
+                  · {selectedProject.detectedUrls.length} URL{selectedProject.detectedUrls.length === 1 ? '' : 's'} detected ·
+                  Landing = single page · Funnel = full flow
                 </span>
               </span>
               <button
@@ -858,13 +855,13 @@ export default function CheckpointPage() {
                 onClick={() => setShowProjectsImport(true)}
                 className="ml-auto text-indigo-600 hover:text-indigo-800 hover:underline"
               >
-                Cambia
+                Change
               </button>
               <button
                 type="button"
                 onClick={clearSelectedProject}
                 className="p-0.5 text-indigo-500 hover:bg-indigo-100 rounded"
-                title="Rimuovi progetto attivo"
+                title="Remove active project"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
@@ -875,7 +872,7 @@ export default function CheckpointPage() {
               once the users table lands. */}
           <div className="mt-3 flex items-center gap-2 text-xs text-gray-500">
             <UserIcon className="w-3.5 h-3.5" />
-            <span>Stai operando come:</span>
+            <span>You are operating as:</span>
             {editingUser ? (
               <>
                 <input
@@ -887,20 +884,20 @@ export default function CheckpointPage() {
                     if (e.key === 'Enter') commitUserName();
                     if (e.key === 'Escape') setEditingUser(false);
                   }}
-                  placeholder="Tuo nome"
+                  placeholder="Your name"
                   className="px-2 py-0.5 border border-gray-300 rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-500 w-40"
                 />
                 <button
                   onClick={commitUserName}
                   className="p-1 text-emerald-600 hover:bg-emerald-50 rounded"
-                  title="Salva"
+                  title="Save"
                 >
                   <Check className="w-3.5 h-3.5" />
                 </button>
                 <button
                   onClick={() => setEditingUser(false)}
                   className="p-1 text-gray-400 hover:bg-gray-100 rounded"
-                  title="Annulla"
+                  title="Cancel"
                 >
                   <X className="w-3.5 h-3.5" />
                 </button>
@@ -914,12 +911,12 @@ export default function CheckpointPage() {
                     setEditingUser(true);
                   }}
                   className="p-1 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded"
-                  title="Cambia nome"
+                  title="Change name"
                 >
                   <Pencil className="w-3 h-3" />
                 </button>
                 <span className="text-gray-400">
-                  · ogni run viene loggato con questo nome
+                  · every run is logged with this name
                 </span>
               </>
             )}
@@ -948,12 +945,12 @@ export default function CheckpointPage() {
                   <Layers className="w-4 h-4 text-blue-600" />
                 )}
                 <h3 className="text-sm font-semibold text-gray-900">
-                  {addMode === 'landing' && 'Aggiungi una landing'}
-                  {addMode === 'funnel-pick' && 'Aggiungi un funnel'}
+                  {addMode === 'landing' && 'Add a landing'}
+                  {addMode === 'funnel-pick' && 'Add a funnel'}
                   {addMode === 'funnel-manual' &&
-                    'Funnel multi-step (manuale)'}
+                    'Multi-step funnel (manual)'}
                   {addMode === 'funnel-auto' &&
-                    'Funnel da URL iniziale (auto)'}
+                    'Funnel from entry URL (auto)'}
                 </h3>
                 {(addMode === 'funnel-manual' ||
                   addMode === 'funnel-auto') && (
@@ -967,7 +964,7 @@ export default function CheckpointPage() {
                     className="ml-2 inline-flex items-center gap-1 text-xs text-gray-500 hover:text-blue-600"
                   >
                     <ArrowLeft className="w-3 h-3" />
-                    Cambia modalità
+                    Change mode
                   </button>
                 )}
               </div>
@@ -975,7 +972,7 @@ export default function CheckpointPage() {
                 onClick={closeAddPanel}
                 disabled={adding || autoCrawling}
                 className="p-1 text-gray-400 hover:text-gray-600 disabled:opacity-50"
-                title="Chiudi"
+                title="Close"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -995,10 +992,10 @@ export default function CheckpointPage() {
                   selectedProject.detectedUrls.length > 0 && (
                     <div className="border border-indigo-200 bg-indigo-50/40 rounded-lg p-3">
                       <div className="text-xs font-medium text-indigo-700 mb-2">
-                        Pagine di{' '}
+                        Pages of{' '}
                         <strong>{selectedProject.name}</strong>{' '}
                         <span className="text-indigo-500 font-normal">
-                          — scegli quale audire
+                          — pick which one to audit
                         </span>
                       </div>
                       <ul className="space-y-1 max-h-48 overflow-y-auto">
@@ -1050,7 +1047,7 @@ export default function CheckpointPage() {
                 <div className="flex flex-wrap items-end gap-3">
                   <div className="flex-1 min-w-[260px]">
                     <label className="block text-xs font-medium text-gray-700 mb-1">
-                      URL della landing{' '}
+                      Landing URL{' '}
                       <span className="text-red-500">*</span>
                     </label>
                     <input
@@ -1058,20 +1055,20 @@ export default function CheckpointPage() {
                       type="url"
                       value={landingUrl}
                       onChange={(e) => setLandingUrl(e.target.value)}
-                      placeholder="https://esempio.com/landing"
+                      placeholder="https://example.com/landing"
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500"
                       autoFocus={!selectedProject}
                     />
                   </div>
                   <div className="w-56">
                     <label className="block text-xs font-medium text-gray-700 mb-1">
-                      Nome (opzionale)
+                      Name (optional)
                     </label>
                     <input
                       type="text"
                       value={formName}
                       onChange={(e) => setFormName(e.target.value)}
-                      placeholder="Es: Landing v3"
+                      placeholder="Eg: Landing v3"
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
                     />
                   </div>
@@ -1083,12 +1080,12 @@ export default function CheckpointPage() {
                     {adding ? (
                       <>
                         <Loader2 className="w-4 h-4 animate-spin" />
-                        Aggiungo...
+                        Adding...
                       </>
                     ) : (
                       <>
                         <Plus className="w-4 h-4" />
-                        Aggiungi
+                        Add
                       </>
                     )}
                   </button>
@@ -1102,14 +1099,14 @@ export default function CheckpointPage() {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <ModeCard
                   icon={<MousePointer2 className="w-5 h-5" />}
-                  title="Multi-step manuale"
-                  description="Incolla a mano tutti gli URL del funnel, in ordine."
+                  title="Multi-step manual"
+                  description="Paste all the funnel URLs by hand, in order."
                   onClick={() => setAddMode('funnel-manual')}
                 />
                 <ModeCard
                   icon={<Wand2 className="w-5 h-5" />}
-                  title="Da URL iniziale"
-                  description="Dai solo il primo URL: il bot naviga il funnel e ti mostra gli step trovati."
+                  title="From entry URL"
+                  description="Just give the first URL: the bot navigates the funnel and shows you the steps it found."
                   onClick={() => setAddMode('funnel-auto')}
                   accent="violet"
                 />
@@ -1125,16 +1122,16 @@ export default function CheckpointPage() {
                 {selectedProject &&
                   selectedProject.detectedUrls.length > 0 && (
                     <div className="text-xs text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-md px-3 py-2">
-                      Pre-compilato dalle pagine di{' '}
-                      <strong>{selectedProject.name}</strong>. Puoi
-                      rimuovere o riordinare gli step come preferisci.
+                      Pre-filled from the pages of{' '}
+                      <strong>{selectedProject.name}</strong>. You can
+                      remove or reorder the steps as you wish.
                     </div>
                   )}
                 <div>
                   <label className="block text-xs font-medium text-gray-700 mb-1">
-                    URL degli step <span className="text-red-500">*</span>{' '}
+                    Step URLs <span className="text-red-500">*</span>{' '}
                     <span className="text-gray-400 font-normal">
-                      — in ordine, dal primo all&apos;ultimo
+                      — in order, from first to last
                     </span>
                   </label>
                   <div className="space-y-2">
@@ -1153,10 +1150,10 @@ export default function CheckpointPage() {
                           }}
                           placeholder={
                             i === 0
-                              ? 'https://esempio.com/landing'
+                              ? 'https://example.com/landing'
                               : i === 1
-                                ? 'https://esempio.com/checkout'
-                                : 'https://esempio.com/...'
+                                ? 'https://example.com/checkout'
+                                : 'https://example.com/...'
                           }
                           className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
                           autoFocus={i === 0 && url === ''}
@@ -1172,7 +1169,7 @@ export default function CheckpointPage() {
                           }
                           disabled={manualPages.length <= 1}
                           className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded disabled:opacity-30 disabled:cursor-not-allowed"
-                          title="Rimuovi step"
+                          title="Remove step"
                         >
                           <Trash2 className="w-4 h-4" />
                         </button>
@@ -1190,11 +1187,11 @@ export default function CheckpointPage() {
                     className="mt-2 inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-700 disabled:opacity-50"
                   >
                     <Plus className="w-3 h-3" />
-                    Aggiungi step
+                    Add step
                   </button>
                   <p className="text-xs text-gray-400 mt-2">
-                    Il check &quot;Navigazione&quot; richiede almeno 2 step.
-                    Massimo 100.
+                    The &quot;Navigation&quot; check requires at least 2 steps.
+                    Maximum 100.
                   </p>
                 </div>
                 <NameField value={formName} onChange={setFormName} />
@@ -1218,7 +1215,7 @@ export default function CheckpointPage() {
                     <div className="flex flex-wrap items-end gap-3">
                       <div className="flex-1 min-w-[280px]">
                         <label className="block text-xs font-medium text-gray-700 mb-1">
-                          URL iniziale del funnel{' '}
+                          Funnel entry URL{' '}
                           <span className="text-red-500">*</span>
                         </label>
                         <input
@@ -1226,7 +1223,7 @@ export default function CheckpointPage() {
                           type="url"
                           value={autoEntryUrl}
                           onChange={(e) => setAutoEntryUrl(e.target.value)}
-                          placeholder="https://esempio.com/landing"
+                          placeholder="https://example.com/landing"
                           disabled={autoCrawling}
                           className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-violet-500 disabled:bg-gray-50"
                           autoFocus
@@ -1234,13 +1231,13 @@ export default function CheckpointPage() {
                       </div>
                       <div>
                         <label className="block text-xs font-medium text-gray-700 mb-1">
-                          Tipo funnel
+                          Funnel type
                         </label>
                         <select
                           value={autoFunnelType}
                           onChange={(e) => setAutoFunnelType(e.target.value)}
                           disabled={autoCrawling}
-                          title="Pick 'Quiz Funnel' per funnel SPA dove ogni step ha lo stesso URL — l'audit userà il rubric quiz e giudicherà dai contenuti / screenshot, non dagli URL."
+                          title="Pick 'Quiz Funnel' for SPA funnels where every step has the same URL — the audit will use the quiz rubric and judge from content / screenshots, not from URLs."
                           className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-violet-500 disabled:bg-gray-50"
                         >
                           <option value="">Auto / Standard</option>
@@ -1266,7 +1263,7 @@ export default function CheckpointPage() {
                       </div>
                       <div>
                         <label className="block text-xs font-medium text-gray-700 mb-1">
-                          Naviga con
+                          Navigate with
                         </label>
                         <div className="inline-flex rounded-lg border border-gray-300 bg-white p-0.5">
                           {(['any', 'neo', 'morfeo'] as const).map((opt) => {
@@ -1303,21 +1300,21 @@ export default function CheckpointPage() {
                         {autoCrawling ? (
                           <>
                             <Loader2 className="w-4 h-4 animate-spin" />
-                            Sto esplorando...
+                            Exploring...
                           </>
                         ) : (
                           <>
                             <Wand2 className="w-4 h-4" />
-                            Scopri pagine
+                            Discover pages
                           </>
                         )}
                       </button>
                     </div>
                     <p className="text-xs text-gray-400 -mt-2">
-                      Il bot apre la pagina con un browser reale, segue le
-                      CTA e raccoglie fino a 100 step (si ferma da solo
-                      quando il funnel finisce). Su funnel lunghi può
-                      richiedere qualche minuto.
+                      The bot opens the page with a real browser, follows
+                      CTAs and collects up to 100 steps (it stops on its own
+                      when the funnel ends). On long funnels it may take a
+                      few minutes.
                     </p>
 
                     {autoCrawling && (
@@ -1325,12 +1322,12 @@ export default function CheckpointPage() {
                         <div className="flex items-center gap-2 text-sm text-violet-800">
                           <Loader2 className="w-4 h-4 animate-spin" />
                           <span className="font-medium">
-                            Esploro il funnel...
+                            Exploring the funnel...
                           </span>
                         </div>
                         {autoProgress && autoProgress.current > 0 && (
                           <div className="mt-2 text-xs text-violet-700">
-                            Step trovati finora:{' '}
+                            Steps found so far:{' '}
                             <strong>{autoProgress.current}</strong>
                           </div>
                         )}
@@ -1361,11 +1358,11 @@ export default function CheckpointPage() {
                         <strong className="text-gray-900">
                           {autoSteps.length}
                         </strong>{' '}
-                        <span className="text-gray-600">step trovati · </span>
+                        <span className="text-gray-600">steps found · </span>
                         <strong className="text-violet-700">
                           {autoSelected.size}
                         </strong>
-                        <span className="text-gray-600"> selezionati</span>
+                        <span className="text-gray-600"> selected</span>
                       </div>
                       <button
                         type="button"
@@ -1379,7 +1376,7 @@ export default function CheckpointPage() {
                         className="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700"
                       >
                         <RefreshCw className="w-3 h-3" />
-                        Riprova
+                        Retry
                       </button>
                     </div>
 
@@ -1412,7 +1409,7 @@ export default function CheckpointPage() {
                                 rel="noopener noreferrer"
                                 onClick={(e) => e.stopPropagation()}
                                 className="flex-shrink-0"
-                                title="Apri screenshot full size"
+                                title="Open full-size screenshot"
                               >
                                 <img
                                   src={s.screenshotUrl}
@@ -1458,9 +1455,9 @@ export default function CheckpointPage() {
                         "broken funnel — 25 identical URLs". */}
                     <div>
                       <label className="block text-xs font-medium text-gray-700 mb-1">
-                        Tipo funnel{' '}
+                        Funnel type{' '}
                         <span className="text-gray-400 font-normal">
-                          — applicato a tutti gli step selezionati
+                          — applied to all selected steps
                         </span>
                       </label>
                       <select
@@ -1470,7 +1467,7 @@ export default function CheckpointPage() {
                         className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-violet-500 disabled:bg-gray-50"
                       >
                         <option value="">
-                          Auto / Standard (rubric default)
+                          Auto / Standard (default rubric)
                         </option>
                         {PAGE_TYPE_CATEGORIES.map((cat) => {
                           const opts = BUILT_IN_PAGE_TYPE_OPTIONS.filter(
@@ -1493,9 +1490,9 @@ export default function CheckpointPage() {
                       </select>
                       {autoFunnelType === 'quiz_funnel' && (
                         <p className="text-[11px] text-violet-700 mt-1">
-                          ✓ Modalità Quiz attiva — l&apos;audit saprà che
-                          gli step di un quiz SPA condividono URL e
-                          giudicherà dai contenuti / screenshot.
+                          ✓ Quiz mode active — the audit will know that
+                          the steps of an SPA quiz share a URL and will
+                          judge from content / screenshots.
                         </p>
                       )}
                     </div>
@@ -1505,7 +1502,7 @@ export default function CheckpointPage() {
                       onCancel={closeAddPanel}
                       disabled={adding || autoSelected.size === 0}
                       loading={adding}
-                      label={`Aggiungi ${autoSelected.size} step`}
+                      label={`Add ${autoSelected.size} steps`}
                     />
                   </form>
                 )}
@@ -1518,19 +1515,19 @@ export default function CheckpointPage() {
         {loading ? (
           <div className="bg-white rounded-lg border border-gray-200 p-12 text-center">
             <Loader2 className="w-6 h-6 animate-spin mx-auto text-blue-500" />
-            <p className="text-sm text-gray-500 mt-3">Carico funnel...</p>
+            <p className="text-sm text-gray-500 mt-3">Loading funnels...</p>
           </div>
         ) : error ? (
           <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-sm text-red-700">
-            <strong>Errore:</strong> {error}
+            <strong>Error:</strong> {error}
           </div>
         ) : filtered.length === 0 ? (
           <div className="bg-white rounded-lg border border-gray-200 p-12 text-center">
             <ShieldCheck className="w-10 h-10 mx-auto text-gray-300" />
             <p className="text-sm text-gray-500 mt-3">
               {funnels.length === 0
-                ? 'Nessun funnel ancora. Clicca "Aggiungi funnel" per iniziare.'
-                : 'Nessun funnel corrisponde ai filtri.'}
+                ? 'No funnels yet. Click "Add funnel" to get started.'
+                : 'No funnels match the filters.'}
             </p>
           </div>
         ) : (
@@ -1539,8 +1536,8 @@ export default function CheckpointPage() {
               <thead className="bg-gray-50 border-b border-gray-200">
                 <tr className="text-left text-xs text-gray-500 uppercase tracking-wide">
                   <th className="px-4 py-3 font-medium">Funnel</th>
-                  <th className="px-4 py-3 font-medium">Ultimo checkpoint</th>
-                  <th className="px-4 py-3 font-medium">Aggiunto</th>
+                  <th className="px-4 py-3 font-medium">Last checkpoint</th>
+                  <th className="px-4 py-3 font-medium">Added</th>
                   <th className="px-4 py-3 font-medium w-32"></th>
                 </tr>
               </thead>
@@ -1573,8 +1570,8 @@ export default function CheckpointPage() {
                             }`}
                             title={
                               f.pages.length >= 2
-                                ? `Funnel multi-step (${f.pages.length} pagine in sequenza)`
-                                : 'Singola pagina'
+                                ? `Multi-step funnel (${f.pages.length} pages in sequence)`
+                                : 'Single page'
                             }
                           >
                             {f.pages.length} step
@@ -1611,14 +1608,14 @@ export default function CheckpointPage() {
                           href={`/checkpoint/${f.id}`}
                           className="inline-flex items-center gap-1 px-3 py-1.5 bg-blue-600 text-white text-xs font-medium rounded-md hover:bg-blue-700 transition-colors"
                         >
-                          Apri
+                          Open
                           <ArrowRight className="w-3 h-3" />
                         </Link>
                         <button
                           onClick={() => handleDelete(f.id, f.name)}
                           disabled={deletingId === f.id}
                           className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors disabled:opacity-50"
-                          title="Elimina funnel"
+                          title="Delete funnel"
                         >
                           {deletingId === f.id ? (
                             <Loader2 className="w-4 h-4 animate-spin" />
@@ -1651,10 +1648,10 @@ export default function CheckpointPage() {
               <div>
                 <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
                   <History className="w-5 h-5 text-gray-500" />
-                  Log Checkpoint
+                  Checkpoint Log
                 </h2>
                 <p className="text-xs text-gray-500 mt-0.5">
-                  Storico di tutti i checkpoint eseguiti — chi, cosa, quando.
+                  History of every checkpoint run — who, what, when.
                 </p>
               </div>
               <button
@@ -1669,28 +1666,28 @@ export default function CheckpointPage() {
               {logLoading ? (
                 <div className="p-12 text-center">
                   <Loader2 className="w-6 h-6 animate-spin mx-auto text-blue-500" />
-                  <p className="text-sm text-gray-500 mt-3">Carico log...</p>
+                  <p className="text-sm text-gray-500 mt-3">Loading log...</p>
                 </div>
               ) : logError ? (
                 <div className="m-6 bg-red-50 border border-red-200 rounded-lg p-4 text-sm text-red-700">
-                  <strong>Errore:</strong> {logError}
+                  <strong>Error:</strong> {logError}
                 </div>
               ) : logEntries.length === 0 ? (
                 <div className="p-12 text-center">
                   <History className="w-10 h-10 mx-auto text-gray-300" />
                   <p className="text-sm text-gray-500 mt-3">
-                    Nessun checkpoint ancora eseguito.
+                    No checkpoints run yet.
                   </p>
                 </div>
               ) : (
                 <table className="w-full text-sm">
                   <thead className="bg-gray-50 border-b border-gray-200 sticky top-0">
                     <tr className="text-left text-xs text-gray-500 uppercase tracking-wide">
-                      <th className="px-4 py-2 font-medium">Quando</th>
-                      <th className="px-4 py-2 font-medium">Chi</th>
+                      <th className="px-4 py-2 font-medium">When</th>
+                      <th className="px-4 py-2 font-medium">Who</th>
                       <th className="px-4 py-2 font-medium">Funnel</th>
-                      <th className="px-4 py-2 font-medium">Esito</th>
-                      <th className="px-4 py-2 font-medium">Durata</th>
+                      <th className="px-4 py-2 font-medium">Outcome</th>
+                      <th className="px-4 py-2 font-medium">Duration</th>
                       <th className="px-4 py-2 font-medium w-16"></th>
                     </tr>
                   </thead>
@@ -1705,7 +1702,7 @@ export default function CheckpointPage() {
                             <UserIcon className="w-3 h-3 text-gray-400" />
                             <span className="font-medium text-gray-700">
                               {entry.triggered_by_name ?? (
-                                <em className="text-gray-400">— sconosciuto —</em>
+                                <em className="text-gray-400">— unknown —</em>
                               )}
                             </span>
                           </span>
@@ -1737,7 +1734,7 @@ export default function CheckpointPage() {
                             onClick={() => setShowLog(false)}
                             className="text-xs text-blue-600 hover:underline inline-flex items-center gap-1"
                           >
-                            Apri
+                            Open
                             <ArrowRight className="w-3 h-3" />
                           </Link>
                         </td>
@@ -1749,13 +1746,13 @@ export default function CheckpointPage() {
             </div>
 
             <div className="px-6 py-3 border-t border-gray-100 text-xs text-gray-400 flex items-center justify-between">
-              <span>{logEntries.length} run mostrati (max 200)</span>
+              <span>{logEntries.length} runs shown (max 200)</span>
               <button
                 onClick={openLog}
                 disabled={logLoading}
                 className="text-blue-600 hover:underline disabled:opacity-50"
               >
-                Aggiorna
+                Refresh
               </button>
             </div>
           </div>
@@ -1777,7 +1774,7 @@ export default function CheckpointPage() {
 
 function formatDateTime(iso: string): string {
   try {
-    return new Date(iso).toLocaleString('it-IT', {
+    return new Date(iso).toLocaleString('en-US', {
       day: '2-digit',
       month: 'short',
       year: '2-digit',
@@ -1800,7 +1797,7 @@ function RunStatusBadge({
     return (
       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-blue-100 text-blue-700 border border-blue-200">
         <Loader2 className="w-3 h-3 animate-spin" />
-        In corso
+        In progress
       </span>
     );
   }
@@ -1808,7 +1805,7 @@ function RunStatusBadge({
     return (
       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-red-100 text-red-700 border border-red-200">
         <XCircle className="w-3 h-3" />
-        Fallito
+        Failed
       </span>
     );
   }
@@ -1816,7 +1813,7 @@ function RunStatusBadge({
     return (
       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-amber-100 text-amber-700 border border-amber-200">
         <AlertTriangle className="w-3 h-3" />
-        Parziale {score !== null ? `· ${score}/100` : ''}
+        Partial {score !== null ? `· ${score}/100` : ''}
       </span>
     );
   }
@@ -1921,10 +1918,10 @@ function PageTypeSelect({
   return (
     <div>
       <label className="block text-xs font-medium text-gray-700 mb-1">
-        Tipo di pagina <span className="text-red-500">*</span>{' '}
+        Page type <span className="text-red-500">*</span>{' '}
         <span className="text-gray-400 font-normal">
-          — seleziona il ruolo della pagina nel funnel così l&apos;audit
-          usa il knowledge bundle giusto
+          — pick the page&apos;s role in the funnel so the audit
+          uses the right knowledge bundle
         </span>
       </label>
       <select
@@ -1956,17 +1953,17 @@ function NameField({
   return (
     <div>
       <label className="block text-xs font-medium text-gray-700 mb-1">
-        Nome del funnel (opzionale)
+        Funnel name (optional)
       </label>
       <input
         type="text"
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        placeholder="Es: Nooro – Funnel completo v3"
+        placeholder="Eg: Nooro – Full funnel v3"
         className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
       />
       <p className="text-xs text-gray-400 mt-1">
-        Se vuoto, useremo il dominio della prima pagina.
+        If empty, we&apos;ll use the first page&apos;s domain.
       </p>
     </div>
   );
@@ -2018,13 +2015,13 @@ function CrawlStopDiagPanel({
 }) {
   const reasonLabel: Record<typeof diag.reason, string> = {
     no_advance_button:
-      'Il crawler non ha trovato nessun bottone "next/continue/avanti" cliccabile.',
+      'The crawler did not find any clickable "next/continue" button.',
     stuck_fingerprint:
-      'Il bottone è stato cliccato ma la pagina non è cambiata (stesso testo per 3 tentativi).',
+      'The button was clicked but the page did not change (same text for 3 attempts).',
     checkout_like_page:
-      "Il crawler ha riconosciuto questa pagina come checkout/landing finale e si è fermato qui (comportamento voluto).",
+      "The crawler recognised this page as a checkout/final landing and stopped here (intended behaviour).",
     reached_max_steps:
-      'Il crawler ha raggiunto il limite di step impostato.',
+      'The crawler reached the configured step limit.',
   };
 
   const isCheckout = diag.reason === 'checkout_like_page';
@@ -2043,12 +2040,12 @@ function CrawlStopDiagPanel({
   return (
     <div className={`rounded-lg border px-3 py-3 ${tone.wrap}`}>
       <div className={`text-sm font-semibold mb-1 ${tone.title}`}>
-        Crawl fermato a step {diag.atStep}/{diag.maxSteps}
+        Crawl stopped at step {diag.atStep}/{diag.maxSteps}
       </div>
       <div className={`text-xs ${tone.body}`}>{reasonLabel[diag.reason]}</div>
       {diag.label && (
         <div className="text-xs text-gray-700 mt-2">
-          <span className="text-gray-500">Pagina:</span>{' '}
+          <span className="text-gray-500">Page:</span>{' '}
           <strong>{diag.label}</strong>
         </div>
       )}
@@ -2060,26 +2057,26 @@ function CrawlStopDiagPanel({
       {!isCheckout && (
         <details className="mt-2">
           <summary className="text-xs text-amber-900 hover:underline cursor-pointer">
-            Cosa fare adesso?
+            What to do now?
           </summary>
           <div className="text-xs text-amber-800 mt-1 leading-relaxed space-y-1">
             <div>
-              1. Verifica con i tuoi occhi: apri l&apos;URL qui sopra e vedi se
-              c&apos;è davvero un bottone &quot;next&quot; visibile a quello step.
+              1. Check with your own eyes: open the URL above and see if
+              there really is a visible &quot;next&quot; button at that step.
             </div>
             <div>
-              2. Se il bottone esiste ma ha un testo non standard
-              (es. &quot;I&apos;m ready&quot;, &quot;Tell me more&quot;), copialo e
-              dimmi il testo: lo aggiungo al matcher.
+              2. If the button exists but has non-standard text
+              (e.g. &quot;I&apos;m ready&quot;, &quot;Tell me more&quot;), copy it and
+              tell me the text: I&apos;ll add it to the matcher.
             </div>
             <div>
-              3. Se il funnel ha davvero N step (e non 25), seleziona quelli
-              utili qui sotto e procedi.
+              3. If the funnel really has N steps (and not 25), select the
+              useful ones below and proceed.
             </div>
             <div>
-              4. Se vuoi forzare il proseguimento manuale, prendi gli step
-              trovati ora, premi &quot;Riprova&quot; o passa a modalità
-              &quot;Multi-step manuale&quot; per inserire gli URL mancanti.
+              4. If you want to force manual continuation, take the steps
+              found now, click &quot;Retry&quot; or switch to
+              &quot;Multi-step manual&quot; mode to enter the missing URLs.
             </div>
           </div>
         </details>
@@ -2087,7 +2084,7 @@ function CrawlStopDiagPanel({
       {diag.inventory && diag.inventory.length > 0 && (
         <details className="mt-2">
           <summary className="text-xs text-amber-900 hover:underline cursor-pointer">
-            Bottoni visti dal crawler ({diag.inventory.length})
+            Buttons seen by the crawler ({diag.inventory.length})
           </summary>
           <div className="mt-1 max-h-48 overflow-y-auto bg-white/70 rounded border border-amber-200 px-2 py-1 font-mono text-[10px] text-gray-700 leading-relaxed">
             {diag.inventory.slice(0, 30).map((it, i) => (
@@ -2112,7 +2109,7 @@ function CrawlStopDiagPanel({
             ))}
             {diag.inventory.length > 30 && (
               <div className="text-gray-400 italic">
-                +{diag.inventory.length - 30} altri non mostrati
+                +{diag.inventory.length - 30} more not shown
               </div>
             )}
           </div>
@@ -2126,7 +2123,7 @@ function SubmitBar({
   onCancel,
   disabled,
   loading,
-  label = 'Aggiungi',
+  label = 'Add',
 }: {
   onCancel: () => void;
   disabled: boolean;
@@ -2141,7 +2138,7 @@ function SubmitBar({
         disabled={loading}
         className="px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-lg disabled:opacity-50"
       >
-        Annulla
+        Cancel
       </button>
       <button
         type="submit"
@@ -2151,7 +2148,7 @@ function SubmitBar({
         {loading ? (
           <>
             <Loader2 className="w-4 h-4 animate-spin" />
-            Aggiungo...
+            Adding...
           </>
         ) : (
           <>

@@ -21,7 +21,7 @@ export default function LoginPageClient() {
       const supabase = getSupabaseBrowser();
       if (!supabase) {
         throw new Error(
-          'Variabili Supabase mancanti: imposta NEXT_PUBLIC_SUPABASE_URL e NEXT_PUBLIC_SUPABASE_ANON_KEY in Netlify (Site settings → Environment variables), poi rifai deploy.',
+          'Missing Supabase variables: set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY in Netlify (Site settings → Environment variables), then redeploy.',
         );
       }
       if (mode === 'magic_link') {
@@ -36,7 +36,7 @@ export default function LoginPageClient() {
         if (error) throw error;
         if (!data?.session?.access_token || !data?.session?.refresh_token) {
           throw new Error(
-            'Login riuscito ma la sessione non è stata creata. Controlla che il browser permetta localStorage per questo dominio.',
+            'Login succeeded but the session was not created. Check that the browser allows localStorage for this domain.',
           );
         }
         // Save the session under OUR OWN key so we don't depend on the
@@ -54,7 +54,7 @@ export default function LoginPageClient() {
           }));
         } catch {
           throw new Error(
-            'Impossibile salvare la sessione in localStorage. Esci dalla modalità in incognito o abilita lo storage per questo dominio.',
+            'Unable to save the session in localStorage. Exit incognito mode or enable storage for this domain.',
           );
         }
         const redirect = new URLSearchParams(window.location.search).get('redirect') || '/';
