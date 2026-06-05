@@ -1121,7 +1121,12 @@ export default function FrontEndFunnel() {
   //                che il sito non blocchi il framing (X-Frame-Options).
   //   'snapshot' = doc.write dell'HTML salvato (statico, niente script).
   //                Fallback per siti che bloccano l'embedding.
-  const [clonedPreviewMode, setClonedPreviewMode] = useState<'live' | 'snapshot'>('live');
+  // Default to 'snapshot': the saved HTML always renders inside our
+  // iframe sandbox, while 'live' mode points the iframe at the original
+  // URL and gets blocked by X-Frame-Options / CSP on most modern sites
+  // — that left users staring at a blank placeholder. The toggle in
+  // the header still lets them switch to Live on demand.
+  const [clonedPreviewMode, setClonedPreviewMode] = useState<'live' | 'snapshot'>('snapshot');
 
   const [showVisualEditor, setShowVisualEditor] = useState(false);
 
@@ -3682,7 +3687,13 @@ export default function FrontEndFunnel() {
         // salvato. Altrimenti la live mode punterebbe a uploaded.local (404)
         // e la preview resterebbe vuota.
         const isUploadedClone = uploadedHtml.length > 0 || url.startsWith('https://uploaded.local/');
-        setClonedPreviewMode(isUploadedClone ? 'snapshot' : 'live');
+        // Always default to 'snapshot' — the saved HTML always renders
+        // inside our sandbox, while pointing the iframe at the live URL
+        // gets blocked by X-Frame-Options / CSP on most modern sites.
+        // The toggle in the modal header still exposes Live for the
+        // rare cases where it works (and the user wants pixel-perfect).
+        // isUploadedClone still feeds sourceUrl below.
+        setClonedPreviewMode('snapshot');
         setHtmlPreviewModal({
           isOpen: true,
           title: data.jsRendered ? `⚠️ Clone (JS-rendered): ${pageName}` : `Clone: ${pageName}`,
