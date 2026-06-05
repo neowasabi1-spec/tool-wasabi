@@ -39,8 +39,12 @@ interface ValchiriaFunnelRow {
   created_at: string;
   owner_user_id: string | null;
   show_in_valchiria: boolean;
+  share_with_users: boolean;
   isShared: boolean;
 }
+
+const SELECT_COLS =
+  'id, name, total_steps, steps, section, created_at, owner_user_id, show_in_valchiria, share_with_users';
 
 async function getMasterId(): Promise<string | null> {
   const { data } = await supabaseAdmin
@@ -63,7 +67,7 @@ export async function GET(req: NextRequest) {
     // the RLS we'd otherwise rely on.
     const baseSelect = supabaseAdmin
       .from('archived_funnels')
-      .select('id, name, total_steps, steps, section, created_at, owner_user_id, show_in_valchiria')
+      .select(SELECT_COLS)
       .order('created_at', { ascending: false });
 
     // Master / no-JWT branch: see everything. The "Shared" badge is a
@@ -83,17 +87,18 @@ export async function GET(req: NextRequest) {
     }
 
     // Regular user branch: own rows + master's shared library.
-    // Two queries kept separate so we can tag isShared accurately and
-    // never accidentally expose a different user's row through a
-    // mis-built `or(...)` clause.
+    // The "shared library" is now gated on `share_with_users = TRUE`
+    // (master-only opt-in), NOT on the personal show_in_valchiria flag
+    // — so the master can keep a funnel in their personal Valchiria
+    // without exposing it to every collaborator.
     const [ownRes, sharedRes] = await Promise.all([
       baseSelect.eq('owner_user_id', ctx.userId),
       masterId
         ? supabaseAdmin
             .from('archived_funnels')
-            .select('id, name, total_steps, steps, section, created_at, owner_user_id, show_in_valchiria')
+            .select(SELECT_COLS)
             .eq('owner_user_id', masterId)
-            .eq('show_in_valchiria', true)
+            .eq('share_with_users', true)
             .order('created_at', { ascending: false })
         : Promise.resolve({ data: [], error: null } as { data: unknown[]; error: null }),
     ]);
