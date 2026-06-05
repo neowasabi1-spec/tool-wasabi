@@ -494,6 +494,15 @@ export interface Database {
            *  is NOT the master. The UI uses this to hide edit/delete
            *  controls on shared rows. Not present on direct table reads. */
           isShared?: boolean;
+          /** Stitched in by /api/valchiria/funnels — resolved per
+           *  caller. TRUE when the row should appear in the caller's
+           *  own /protocollo-valchiria:
+           *    - own rows: collapses to show_in_valchiria
+           *    - master-shared rows: TRUE only when the caller has
+           *      explicitly picked the row (valchiria_user_picks)
+           *  This is the flag the "Add to Valchiria" UI toggle reads
+           *  and writes (via in_my_valchiria on PATCH). */
+          isInMyValchiria?: boolean;
         };
         Insert: {
           id?: string;

@@ -1547,18 +1547,31 @@ export const useStore = create<Store>()((set, get) => ({
 
   setArchivedFunnelValchiriaFlag: async (id: string, value: boolean) => {
     // Optimistic update first so the toggle feels instant; we roll back
-    // if the server rejects (403 / 404 / network).
+    // if the server rejects (403 / 404 / network). We update BOTH
+    // isInMyValchiria (the caller-resolved flag used by /protocollo-
+    // valchiria) and show_in_valchiria (for caller-owned rows) so the
+    // UI reflects the change regardless of which field it reads.
     const previous = get().archivedFunnels;
     set((state) => ({
       archivedFunnels: state.archivedFunnels.map((f) =>
-        f.id === id ? { ...f, show_in_valchiria: value } : f,
+        f.id === id
+          ? {
+              ...f,
+              isInMyValchiria: value,
+              // For shared rows (isShared=true) we MUST NOT touch
+              // show_in_valchiria — that flag is row-level and reflects
+              // the master's intent, not ours. The server picks the
+              // right primitive (pick vs row update); we just mirror.
+              show_in_valchiria: f.isShared ? f.show_in_valchiria : value,
+            }
+          : f,
       ),
     }));
     try {
       const res = await fetch(`/api/valchiria/funnels/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ show_in_valchiria: value }),
+        body: JSON.stringify({ in_my_valchiria: value }),
       });
       if (!res.ok) {
         const txt = await res.text().catch(() => '');

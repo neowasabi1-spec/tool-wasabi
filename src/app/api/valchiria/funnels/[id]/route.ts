@@ -1,18 +1,30 @@
 /**
  * PATCH /api/valchiria/funnels/[id]
  *
- * Updates the two Valchiria flags on an archived funnel.
- *   { show_in_valchiria?: boolean }  — personal visibility, any owner
- *   { share_with_users?: boolean }   — master-only opt-in. Putting it
- *                                      in the body from a non-master
- *                                      caller fails with 403.
+ * Three independent flags can be sent (at least one is required):
  *
- * At least one of the two must be present. The row owner (or the
- * master) is the only one allowed to touch the row. We re-check
- * ownership inside the route rather than trusting RLS alone because
- * the admin client used here bypasses RLS on writes (canonical
- * "service-role + manual gate" pattern used elsewhere in the
- * codebase, see /api/projecthub/projects/[id]/route.ts).
+ *   { show_in_valchiria?: boolean }
+ *       Personal visibility on the row itself — only the row owner
+ *       (or the master) can change this. Used for funnels the caller
+ *       OWNS.
+ *
+ *   { share_with_users?: boolean }
+ *       Master-only opt-in switch. When TRUE on a master-owned row,
+ *       every other authenticated user sees the row read-only in
+ *       their My Archive. Non-master callers get 403 if they try.
+ *
+ *   { in_my_valchiria?: boolean }
+ *       Caller-side preference: "I want this row to appear in MY
+ *       /protocollo-valchiria". When the caller owns the row it
+ *       collapses to `show_in_valchiria`. When the caller does NOT
+ *       own it (shared library row), we insert/delete a row in
+ *       `valchiria_user_picks` instead, which is a per-user junction.
+ *       This is the flag the UI's "Add to Valchiria" toggle uses, so
+ *       it Just Works regardless of ownership.
+ *
+ * The admin client below bypasses RLS, so every branch re-checks
+ * ownership manually (canonical service-role + manual-gate pattern,
+ * see /api/projecthub/projects/[id]/route.ts).
  */
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -26,6 +38,7 @@ export const maxDuration = 15;
 interface PatchBody {
   show_in_valchiria?: boolean;
   share_with_users?: boolean;
+  in_my_valchiria?: boolean;
 }
 
 export async function PATCH(
@@ -41,11 +54,13 @@ export async function PATCH(
     const body = (await req.json().catch(() => ({}))) as PatchBody;
     const hasShow = typeof body.show_in_valchiria === 'boolean';
     const hasShare = typeof body.share_with_users === 'boolean';
-    if (!hasShow && !hasShare) {
+    const hasMine = typeof body.in_my_valchiria === 'boolean';
+    if (!hasShow && !hasShare && !hasMine) {
       return NextResponse.json(
         {
           error: 'invalid_body',
-          message: 'Expected at least one of { show_in_valchiria, share_with_users }',
+          message:
+            'Expected at least one of { show_in_valchiria, share_with_users, in_my_valchiria }',
         },
         { status: 400 },
       );
@@ -67,38 +82,91 @@ export async function PATCH(
       );
     }
 
-    // Ownership check for non-master: they can only touch rows they own.
-    if (!ctx.isMaster) {
-      const { data: row, error: lookupErr } = await supabaseAdmin
-        .from('archived_funnels')
-        .select('owner_user_id')
-        .eq('id', id)
-        .maybeSingle();
-      if (lookupErr) throw lookupErr;
-      if (!row) {
-        return NextResponse.json({ error: 'not_found' }, { status: 404 });
-      }
-      if (row.owner_user_id !== ctx.userId) {
+    // Fetch the row once — we need to know who owns it for both the
+    // ownership gate and the in_my_valchiria branch routing.
+    const { data: row, error: lookupErr } = await supabaseAdmin
+      .from('archived_funnels')
+      .select('owner_user_id, share_with_users')
+      .eq('id', id)
+      .maybeSingle();
+    if (lookupErr) throw lookupErr;
+    if (!row) {
+      return NextResponse.json({ error: 'not_found' }, { status: 404 });
+    }
+
+    const callerOwnsRow = row.owner_user_id === ctx.userId;
+    const isMasterRow = row.owner_user_id !== null && !callerOwnsRow && row.share_with_users === true;
+
+    // Direct row-level updates are reserved for owner/master.
+    if ((hasShow || hasShare) && !callerOwnsRow && !ctx.isMaster) {
+      return NextResponse.json({ error: 'forbidden' }, { status: 403 });
+    }
+
+    const update: Pick<PatchBody, 'show_in_valchiria' | 'share_with_users'> = {};
+    if (hasShow) update.show_in_valchiria = body.show_in_valchiria;
+    if (hasShare) update.share_with_users = body.share_with_users;
+
+    // Translate in_my_valchiria into the right primitive:
+    //   - caller owns the row → equivalent to show_in_valchiria
+    //   - row is a shared-library row visible to caller → manage a
+    //     personal pick in valchiria_user_picks
+    //   - any other combo (e.g. a row the caller cannot see) → 403
+    let pickAction: 'insert' | 'delete' | null = null;
+    if (hasMine) {
+      if (callerOwnsRow || ctx.isMaster) {
+        update.show_in_valchiria = body.in_my_valchiria;
+      } else if (isMasterRow) {
+        pickAction = body.in_my_valchiria ? 'insert' : 'delete';
+      } else {
         return NextResponse.json({ error: 'forbidden' }, { status: 403 });
       }
     }
 
-    const update: PatchBody = {};
-    if (hasShow) update.show_in_valchiria = body.show_in_valchiria;
-    if (hasShare) update.share_with_users = body.share_with_users;
-
-    const { data, error } = await supabaseAdmin
-      .from('archived_funnels')
-      .update(update)
-      .eq('id', id)
-      .select('id, show_in_valchiria, share_with_users')
-      .maybeSingle();
-    if (error) throw error;
-    if (!data) {
-      return NextResponse.json({ error: 'not_found' }, { status: 404 });
+    if (Object.keys(update).length > 0) {
+      const { error: updErr } = await supabaseAdmin
+        .from('archived_funnels')
+        .update(update)
+        .eq('id', id);
+      if (updErr) throw updErr;
     }
 
-    return NextResponse.json({ success: true, ...data });
+    if (pickAction === 'insert') {
+      // Upsert: ON CONFLICT do nothing — composite PK on (user_id,
+      // funnel_id) makes this idempotent.
+      const { error: pickErr } = await supabaseAdmin
+        .from('valchiria_user_picks')
+        .upsert(
+          { user_id: ctx.userId, funnel_id: id },
+          { onConflict: 'user_id,funnel_id', ignoreDuplicates: true },
+        );
+      if (pickErr) throw pickErr;
+    } else if (pickAction === 'delete') {
+      const { error: pickErr } = await supabaseAdmin
+        .from('valchiria_user_picks')
+        .delete()
+        .eq('user_id', ctx.userId)
+        .eq('funnel_id', id);
+      if (pickErr) throw pickErr;
+    }
+
+    // Recompute the resolved flag for the caller so the client can
+    // update its local state without a refetch.
+    const isInMyValchiria = (() => {
+      if (callerOwnsRow || ctx.isMaster) {
+        return update.show_in_valchiria ?? body.show_in_valchiria ?? false;
+      }
+      if (pickAction === 'insert') return true;
+      if (pickAction === 'delete') return false;
+      return undefined;
+    })();
+
+    return NextResponse.json({
+      success: true,
+      id,
+      ...(hasShow ? { show_in_valchiria: body.show_in_valchiria } : {}),
+      ...(hasShare ? { share_with_users: body.share_with_users } : {}),
+      ...(typeof isInMyValchiria === 'boolean' ? { isInMyValchiria } : {}),
+    });
   } catch (e) {
     return NextResponse.json(
       {
