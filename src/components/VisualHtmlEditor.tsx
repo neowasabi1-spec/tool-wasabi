@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { SavedSection, SECTION_TYPE_OPTIONS, OUTPUT_STACK_OPTIONS, type OutputStack } from '@/types';
 import { createClient } from '@supabase/supabase-js';
+import { recolorPage } from '@/lib/recolor-page';
 
 /* ── Direct browser → Supabase Storage upload (bypasses Vercel 4.5MB body limit) ── */
 const ALLOWED_UPLOAD_TYPES: Record<string, string> = {
@@ -3492,47 +3493,46 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     try {
       const targetHtml = editorViewport === 'mobile' && mobileHtml ? mobileHtml : currentHtml;
 
-      const res = await fetch('/api/recolor-page', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          html: targetHtml,
-          palette: {
-            primary: brandPalette.primary,
-            secondary: brandPalette.secondary,
-            accent: brandPalette.accent,
-            background: brandPalette.background,
-            text: brandPalette.text,
-          },
-        }),
-      });
+      // Recolouring runs ENTIRELY in the browser — no network call.
+      //
+      // Why: the previous implementation POSTed the full HTML to
+      // /api/recolor-page, which on heavy cloned landings (>6MB after
+      // inline base64 images) hit Netlify's hard 6MB request-body cap.
+      // Netlify rejected the request with its own HTML 500 page and the
+      // user saw "Server returned non-JSON (HTTP 500)". The route is
+      // 100% deterministic (no LLM, no DB), so calling the shared lib
+      // directly is functionally identical AND removes the size cliff.
+      //
+      // We use a microtask yield so React paints the "Applying…" state
+      // before the (sync, ~50–500ms on a big page) recolouring blocks
+      // the main thread.
+      await new Promise<void>((r) => setTimeout(r, 0));
 
-      const ctype = (res.headers.get('content-type') || '').toLowerCase();
-      const rawText = await res.text();
-      let data: { ok?: boolean; html?: string; error?: string; replacements?: number } | null = null;
-      if (ctype.includes('application/json')) {
-        try { data = JSON.parse(rawText); } catch { data = null; }
-      } else {
-        try { data = JSON.parse(rawText); } catch { data = null; }
+      let result: ReturnType<typeof recolorPage>;
+      try {
+        result = recolorPage(targetHtml, {
+          primary: brandPalette.primary,
+          secondary: brandPalette.secondary,
+          accent: brandPalette.accent,
+          background: brandPalette.background,
+          text: brandPalette.text,
+        });
+      } catch (e) {
+        throw new Error(e instanceof Error ? e.message : 'Recolour failed');
       }
 
-      if (!data) {
-        throw new Error(`Server returned non-JSON (HTTP ${res.status}). Try again.`);
-      }
-      if (!res.ok || !data.ok || !data.html) {
-        throw new Error(data.error || `HTTP ${res.status}`);
-      }
+      const nextHtml = result.html;
 
       setIframeVersion(v => v + 1);
       if (editorViewport === 'mobile' && mobileHtml) {
         setAiEditHistory(prev => [...prev, mobileHtml]);
-        setMobileHtml(data.html);
-        setMobileCodeHtml(data.html);
+        setMobileHtml(nextHtml);
+        setMobileCodeHtml(nextHtml);
       } else {
         setAiEditHistory(prev => [...prev, currentHtml]);
-        setCurrentHtml(data.html);
-        setCodeHtml(data.html);
-        pushUndo(data.html);
+        setCurrentHtml(nextHtml);
+        setCodeHtml(nextHtml);
+        pushUndo(nextHtml);
       }
 
       setShowBrandColorsPanel(false);
