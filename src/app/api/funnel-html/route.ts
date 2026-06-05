@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { getCurrentUserId } from '@/lib/auth/get-current-user';
 
 export const dynamic = 'force-dynamic';
 
@@ -35,18 +36,23 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // Multi-tenancy: tag the page-html row with the caller so the master
+  // can audit per-user storage. If no JWT is present (worker / cron /
+  // unauthenticated) we fall back to the DB trigger, which assigns the
+  // master account.
+  const userId = await getCurrentUserId(req);
+  const row: Record<string, unknown> = {
+    page_id: pageId,
+    kind,
+    variant,
+    html,
+    updated_at: new Date().toISOString(),
+  };
+  if (userId) row.owner_user_id = userId;
+
   const { error } = await supabaseAdmin
     .from('page_html')
-    .upsert(
-      {
-        page_id: pageId,
-        kind,
-        variant,
-        html,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: 'page_id,kind,variant' },
-    );
+    .upsert(row, { onConflict: 'page_id,kind,variant' });
 
   if (error) {
     if (isMissingTable(error.message)) {

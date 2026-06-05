@@ -161,7 +161,7 @@ export default function ProtocolloValchiriaPage() {
       router.push('/front-end-funnel');
     } catch (error) {
       console.error('Error loading steps into Front End Funnel:', error);
-      alert('Errore nel caricamento degli step. Riprova.');
+      alert('Error loading steps. Please try again.');
     } finally {
       setIsSwipping(false);
     }
@@ -173,7 +173,7 @@ export default function ProtocolloValchiriaPage() {
         <Header />
         <div className="flex items-center justify-center py-32">
           <Loader2 className="w-8 h-8 animate-spin text-purple-500" />
-          <span className="ml-3 text-gray-500 font-medium">Caricamento funnel...</span>
+          <span className="ml-3 text-gray-500 font-medium">Loading funnels...</span>
         </div>
       </div>
     );
@@ -191,12 +191,12 @@ export default function ProtocolloValchiriaPage() {
             </div>
             <div>
               <h1 className="text-2xl font-bold text-gray-900">Protocollo Valchiria</h1>
-              <p className="text-gray-500 text-sm">Espandi ogni funnel, seleziona gli step da swippare</p>
+              <p className="text-gray-500 text-sm">Expand each funnel, select the steps to swipe</p>
             </div>
           </div>
           {selectedCount > 0 && (
             <div className="bg-purple-50 border border-purple-200 rounded-lg px-4 py-2">
-              <span className="text-purple-700 text-sm font-semibold">{selectedCount} step selezionati</span>
+              <span className="text-purple-700 text-sm font-semibold">{selectedCount} steps selected</span>
             </div>
           )}
         </div>
@@ -213,14 +213,14 @@ export default function ProtocolloValchiriaPage() {
               }`}
             >
               <Package className="w-5 h-5" />
-              {targetProductId ? products.find(p => p.id === targetProductId)?.name || 'Prodotto' : 'Seleziona Prodotto Target'}
+              {targetProductId ? products.find(p => p.id === targetProductId)?.name || 'Product' : 'Select Target Product'}
               <ChevronDown className={`w-4 h-4 transition-transform ${showTargetPicker ? 'rotate-180' : ''}`} />
             </button>
 
             {showTargetPicker && (
               <div className="absolute top-full left-0 mt-2 w-80 bg-white rounded-xl border border-gray-200 shadow-2xl z-50 max-h-72 overflow-y-auto">
                 <div className="px-4 py-2.5 border-b border-gray-100">
-                  <p className="text-xs font-semibold text-gray-500 uppercase">Per quale prodotto vuoi swippare?</p>
+                  <p className="text-xs font-semibold text-gray-500 uppercase">Which product do you want to swipe for?</p>
                 </div>
                 {products.map((p) => (
                   <button
@@ -249,8 +249,8 @@ export default function ProtocolloValchiriaPage() {
             >
               {isSwipping ? <Loader2 className="w-4 h-4 animate-spin" /> : <Wand2 className="w-4 h-4" />}
               {isSwipping
-                ? 'Caricamento in Front End Funnel...'
-                : `Swipe ${selectedCount} step per ${products.find(p => p.id === targetProductId)?.name}`
+                ? 'Loading into Front End Funnel...'
+                : `Swipe ${selectedCount} steps for ${products.find(p => p.id === targetProductId)?.name}`
               }
             </button>
           )}
@@ -260,7 +260,7 @@ export default function ProtocolloValchiriaPage() {
               onClick={() => setSelectedSteps(new Set())}
               className="text-sm text-gray-400 hover:text-red-500 transition-colors"
             >
-              Deseleziona tutti
+              Deselect all
             </button>
           )}
         </div>
@@ -270,8 +270,8 @@ export default function ProtocolloValchiriaPage() {
           {swipeFunnels.length === 0 ? (
             <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-12 text-center">
               <Swords className="w-12 h-12 text-gray-300 mx-auto mb-3" />
-              <p className="text-gray-500 font-medium">Nessun funnel [SWIPE] trovato</p>
-              <p className="text-gray-400 text-sm mt-1">Salva funnel con &quot;[SWIPE]&quot; nel nome dalla sezione Saved Funnels</p>
+              <p className="text-gray-500 font-medium">No [SWIPE] funnel found</p>
+              <p className="text-gray-400 text-sm mt-1">Save funnels with &quot;[SWIPE]&quot; in the name from the Saved Funnels section</p>
             </div>
           ) : (
             swipeFunnels.map((funnel, index) => {
@@ -292,7 +292,7 @@ export default function ProtocolloValchiriaPage() {
                     <button
                       onClick={() => toggleAllStepsInFunnel(funnel)}
                       className="shrink-0"
-                      title={allSelected ? 'Deseleziona tutti gli step' : 'Seleziona tutti gli step'}
+                      title={allSelected ? 'Deselect all steps' : 'Select all steps'}
                     >
                       {allSelected
                         ? <CheckSquare className="w-5 h-5 text-purple-600" />
@@ -312,16 +312,16 @@ export default function ProtocolloValchiriaPage() {
                     >
                       <h3 className="text-base font-semibold text-gray-900">{funnel.name}</h3>
                       <div className="flex items-center gap-3 mt-0.5">
-                        <span className="text-xs text-gray-400">{funnel.total_steps} step</span>
+                        <span className="text-xs text-gray-400">{funnel.total_steps} steps</span>
                         {funnelSelectedCount > 0 && (
                           <>
                             <span className="text-xs text-gray-300">&bull;</span>
-                            <span className="text-xs text-purple-500 font-medium">{funnelSelectedCount} selezionati</span>
+                            <span className="text-xs text-purple-500 font-medium">{funnelSelectedCount} selected</span>
                           </>
                         )}
                         <span className="text-xs text-gray-300">&bull;</span>
                         <span className="text-xs text-gray-400">
-                          {new Date(funnel.created_at).toLocaleDateString('it-IT', { day: '2-digit', month: 'short', year: 'numeric' })}
+                          {new Date(funnel.created_at).toLocaleDateString('en-US', { day: '2-digit', month: 'short', year: 'numeric' })}
                         </span>
                       </div>
                     </div>
@@ -383,8 +383,8 @@ export default function ProtocolloValchiriaPage() {
 
         {/* Footer */}
         <div className="mt-4 text-xs text-gray-400">
-          {swipeFunnels.length} funnel &bull; {swipeFunnels.reduce((acc, f) => acc + f.total_steps, 0)} step totali
-          {selectedCount > 0 && <span className="ml-2 text-purple-500 font-medium">&bull; {selectedCount} selezionati</span>}
+          {swipeFunnels.length} funnels &bull; {swipeFunnels.reduce((acc, f) => acc + f.total_steps, 0)} total steps
+          {selectedCount > 0 && <span className="ml-2 text-purple-500 font-medium">&bull; {selectedCount} selected</span>}
         </div>
       </main>
     </div>

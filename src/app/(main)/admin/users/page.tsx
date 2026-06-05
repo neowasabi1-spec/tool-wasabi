@@ -92,7 +92,7 @@ export default function AdminUsersPage() {
 
   return (
     <div className="space-y-6">
-      <Header title="Users" subtitle="Gestisci chi pu\u00f2 accedere al tool e quali sezioni vede." />
+      <Header title="Users" subtitle="Manage who can access the tool and which sections they see." />
 
       {error && (
         <div className="bg-red-500/10 border border-red-500/30 text-red-300 rounded-lg p-3 flex items-start gap-2 text-sm">
@@ -108,15 +108,15 @@ export default function AdminUsersPage() {
       <div className="flex items-center justify-between">
         <p className="text-sm text-gray-400">
           {users.length === 0 && !loading
-            ? 'Nessun utente ancora.'
-            : `${users.length} utente${users.length === 1 ? '' : 'i'}`}
+            ? 'No users yet.'
+            : `${users.length} user${users.length === 1 ? '' : 's'}`}
         </p>
         <button
           onClick={() => setShowCreate(v => !v)}
           className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors"
         >
           {showCreate ? <X className="w-4 h-4" /> : <UserPlus className="w-4 h-4" />}
-          {showCreate ? 'Annulla' : 'Nuovo utente'}
+          {showCreate ? 'Cancel' : 'New user'}
         </button>
       </div>
 
@@ -125,7 +125,7 @@ export default function AdminUsersPage() {
         <form onSubmit={handleCreate} className="bg-gray-900 border border-gray-800 rounded-2xl p-5 space-y-4">
           <h3 className="text-sm font-medium text-white flex items-center gap-2">
             <UserPlus className="w-4 h-4 text-purple-400" />
-            Crea nuovo utente
+            Create new user
           </h3>
           <div className="grid grid-cols-2 gap-4">
             <div>
@@ -136,12 +136,12 @@ export default function AdminUsersPage() {
                 value={newEmail}
                 onChange={e => setNewEmail(e.target.value)}
                 className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-purple-500"
-                placeholder="nome@dominio.com"
+                placeholder="name@domain.com"
                 autoComplete="off"
               />
             </div>
             <div>
-              <label className="block text-xs text-gray-400 mb-1">Password (min 8 caratteri)</label>
+              <label className="block text-xs text-gray-400 mb-1">Password (min 8 characters)</label>
               <input
                 type="text"
                 required
@@ -149,14 +149,14 @@ export default function AdminUsersPage() {
                 value={newPassword}
                 onChange={e => setNewPassword(e.target.value)}
                 className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white font-mono focus:outline-none focus:border-purple-500"
-                placeholder="password iniziale"
+                placeholder="initial password"
                 autoComplete="new-password"
               />
             </div>
           </div>
 
           <div>
-            <label className="block text-xs text-gray-400 mb-2">Ruolo</label>
+            <label className="block text-xs text-gray-400 mb-2">Role</label>
             <div className="flex gap-2">
               <button
                 type="button"
@@ -180,7 +180,7 @@ export default function AdminUsersPage() {
                 }`}
               >
                 <ShieldCheck className="w-3.5 h-3.5 inline mr-1.5" />
-                Master (tutte le sezioni)
+                Master (all sections)
               </button>
             </div>
           </div>
@@ -188,21 +188,21 @@ export default function AdminUsersPage() {
           {newRole === 'user' && (
             <div>
               <div className="flex items-center justify-between mb-2">
-                <label className="text-xs text-gray-400">Sezioni accessibili</label>
+                <label className="text-xs text-gray-400">Accessible sections</label>
                 <div className="flex gap-2">
                   <button
                     type="button"
                     onClick={() => setNewSections([...ALL_SECTION_IDS])}
                     className="text-[11px] text-purple-400 hover:text-purple-300"
                   >
-                    Seleziona tutto
+                    Select all
                   </button>
                   <button
                     type="button"
                     onClick={() => setNewSections([])}
                     className="text-[11px] text-gray-400 hover:text-white"
                   >
-                    Deseleziona tutto
+                    Deselect all
                   </button>
                 </div>
               </div>
@@ -216,7 +216,7 @@ export default function AdminUsersPage() {
               onClick={() => setShowCreate(false)}
               className="px-3 py-1.5 text-sm text-gray-400 hover:text-white"
             >
-              Annulla
+              Cancel
             </button>
             <button
               type="submit"
@@ -224,7 +224,7 @@ export default function AdminUsersPage() {
               className="inline-flex items-center gap-1.5 px-4 py-1.5 text-sm bg-purple-600 hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg"
             >
               {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
-              Crea utente
+              Create user
             </button>
           </div>
         </form>
@@ -317,7 +317,7 @@ function UserRow({
   }
 
   async function remove() {
-    if (!confirm(`Eliminare l'utente ${user.email}? Non si pu\u00f2 annullare.`)) return;
+    if (!confirm(`Delete user ${user.email}? This cannot be undone.`)) return;
     setBusy(true);
     try {
       const r = await authFetch(`/api/admin/users/${user.user_id}`, { method: 'DELETE' });
@@ -346,7 +346,7 @@ function UserRow({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <span className="text-sm font-medium text-white truncate">{user.email}</span>
-            {isMe && <span className="text-[10px] uppercase tracking-wider text-purple-300 bg-purple-500/10 px-1.5 py-0.5 rounded">tu</span>}
+            {isMe && <span className="text-[10px] uppercase tracking-wider text-purple-300 bg-purple-500/10 px-1.5 py-0.5 rounded">you</span>}
             <span className={`text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded ${
               user.role === 'master' ? 'bg-amber-500/10 text-amber-300' : 'bg-gray-700 text-gray-300'
             }`}>
@@ -355,9 +355,9 @@ function UserRow({
           </div>
           <p className="text-xs text-gray-500 mt-0.5">
             {user.role === 'master'
-              ? 'Tutte le sezioni'
-              : `${user.sections.length} sezion${user.sections.length === 1 ? 'e' : 'i'}`}
-            {user.last_sign_in_at && ` \u00b7 ultimo login ${new Date(user.last_sign_in_at).toLocaleDateString()}`}
+              ? 'All sections'
+              : `${user.sections.length} section${user.sections.length === 1 ? '' : 's'}`}
+            {user.last_sign_in_at && ` \u00b7 last login ${new Date(user.last_sign_in_at).toLocaleDateString()}`}
           </p>
         </div>
         {savedFlash && (
@@ -369,7 +369,7 @@ function UserRow({
         <div className="border-t border-gray-800 p-4 space-y-4 bg-gray-950/50">
           {/* Role toggle */}
           <div>
-            <label className="block text-xs text-gray-400 mb-2">Ruolo</label>
+            <label className="block text-xs text-gray-400 mb-2">Role</label>
             <div className="flex gap-2">
               <button
                 onClick={() => setDraftRole('user')}
@@ -400,19 +400,19 @@ function UserRow({
           {draftRole === 'user' && (
             <div>
               <div className="flex items-center justify-between mb-2">
-                <label className="text-xs text-gray-400">Sezioni accessibili</label>
+                <label className="text-xs text-gray-400">Accessible sections</label>
                 <div className="flex gap-2">
                   <button
                     onClick={() => setDraftSections([...ALL_SECTION_IDS])}
                     className="text-[11px] text-purple-400 hover:text-purple-300"
                   >
-                    Tutte
+                    All
                   </button>
                   <button
                     onClick={() => setDraftSections([])}
                     className="text-[11px] text-gray-400 hover:text-white"
                   >
-                    Nessuna
+                    None
                   </button>
                 </div>
               </div>
@@ -422,14 +422,14 @@ function UserRow({
 
           {/* Password reset */}
           <div>
-            <label className="block text-xs text-gray-400 mb-1">Reset password (lascia vuoto per non cambiare)</label>
+            <label className="block text-xs text-gray-400 mb-1">Reset password (leave empty to keep unchanged)</label>
             <div className="flex items-center gap-2">
               <KeyRound className="w-4 h-4 text-gray-500 flex-shrink-0" />
               <input
                 type="text"
                 value={newPassword}
                 onChange={e => setNewPassword(e.target.value)}
-                placeholder="nuova password (min 8)"
+                placeholder="new password (min 8)"
                 className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white font-mono focus:outline-none focus:border-purple-500"
                 autoComplete="new-password"
               />
@@ -441,10 +441,10 @@ function UserRow({
               onClick={remove}
               disabled={busy || isMe}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs text-red-300 hover:text-white hover:bg-red-500/20 rounded-lg disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-              title={isMe ? 'Non puoi eliminare il tuo stesso account' : 'Elimina utente'}
+              title={isMe ? 'You cannot delete your own account' : 'Delete user'}
             >
               <Trash2 className="w-3.5 h-3.5" />
-              Elimina utente
+              Delete user
             </button>
             <button
               onClick={save}
@@ -452,7 +452,7 @@ function UserRow({
               className="inline-flex items-center gap-1.5 px-4 py-1.5 text-sm bg-purple-600 hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg transition-colors"
             >
               {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-              Salva
+              Save
             </button>
           </div>
         </div>

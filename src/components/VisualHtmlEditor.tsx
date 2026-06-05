@@ -4816,7 +4816,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                   </div>
 
                   {/* Immagine di sfondo — SEMPRE disponibile per elementi non-<img>.
-                      Pre-compilata con l'eventuale background già presente
+                      Pre-filled with the existing background, if any
                       (sull'elemento o, se assente, su un figlio del blocco —
                       rilevato via getComputedStyle). Permette anche di
                       AGGIUNGERNE una da zero dove non c'è. */}

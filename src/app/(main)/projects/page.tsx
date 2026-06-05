@@ -1248,7 +1248,7 @@ export default function ProjectsPage() {
                 role="tab"
                 aria-selected={view === 'cards'}
                 onClick={() => setViewMode('cards')}
-                title="Schede"
+                title="Cards"
                 className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors ${
                   view === 'cards'
                     ? 'bg-blue-600 text-white'
@@ -1256,14 +1256,14 @@ export default function ProjectsPage() {
                 }`}
               >
                 <LayoutList className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">Schede</span>
+                <span className="hidden sm:inline">Cards</span>
               </button>
               <button
                 type="button"
                 role="tab"
                 aria-selected={view === 'grid'}
                 onClick={() => setViewMode('grid')}
-                title="Griglia"
+                title="Grid"
                 className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors ${
                   view === 'grid'
                     ? 'bg-blue-600 text-white'
@@ -1271,7 +1271,7 @@ export default function ProjectsPage() {
                 }`}
               >
                 <LayoutGrid className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">Griglia</span>
+                <span className="hidden sm:inline">Grid</span>
               </button>
             </div>
 
@@ -1340,8 +1340,8 @@ export default function ProjectsPage() {
                     e.stopPropagation();
                     deleteProject(project.id);
                   }}
-                  title="Elimina progetto"
-                  aria-label={`Elimina progetto ${project.name}`}
+                  title="Delete project"
+                  aria-label={`Delete project ${project.name}`}
                   className="absolute top-2 right-2 p-1.5 rounded-md text-gray-500 hover:text-red-400 hover:bg-red-900/20 opacity-0 group-hover:opacity-100 transition-opacity z-10"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
@@ -1383,7 +1383,7 @@ export default function ProjectsPage() {
                       setCheckpointTarget(project);
                     }}
                     className="flex items-center gap-1 px-2 py-1 bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-medium rounded transition-colors"
-                    title="Importa nel Checkpoint"
+                    title="Import to Checkpoint"
                   >
                     <ShieldCheck className="w-3 h-3" />
                     Checkpoint
@@ -1449,7 +1449,7 @@ export default function ProjectsPage() {
                           setCheckpointTarget(project);
                         }}
                         className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-medium rounded-lg transition-colors"
-                        title="Importa le pagine di questo progetto nel Checkpoint"
+                        title="Import this project's pages into Checkpoint"
                       >
                         <ShieldCheck className="w-3.5 h-3.5" />
                         Checkpoint
@@ -1472,12 +1472,12 @@ export default function ProjectsPage() {
                           e.stopPropagation();
                           deleteProject(project.id);
                         }}
-                        title="Elimina progetto"
-                        aria-label={`Elimina progetto ${project.name}`}
+                        title="Delete project"
+                        aria-label={`Delete project ${project.name}`}
                         className="flex items-center gap-1.5 px-3 py-1.5 text-red-400 hover:text-red-300 hover:bg-red-900/20 text-xs font-medium rounded-lg transition-colors"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
-                        Elimina
+                        Delete
                       </button>
 
                       {/* Expand chevron */}

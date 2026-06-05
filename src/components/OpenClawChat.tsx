@@ -345,15 +345,15 @@ REGOLE:
 
       setConnectionStatus('online');
 
-      let response = data.content || 'Nessuna risposta';
+      let response = data.content || 'No response';
       if (data.actionExecuted) {
         const badge = data.actionSuccess ? '\u2705' : '\u274C';
-        response = `${badge} **${data.actionExecuted}** ${data.actionSuccess ? 'eseguito' : 'fallito'}\n\n${response}`;
+        response = `${badge} **${data.actionExecuted}** ${data.actionSuccess ? 'executed' : 'failed'}\n\n${response}`;
       }
 
       addMessage('assistant', response);
     } catch (err) {
-      addMessage('system', `Connessione fallita: ${(err as Error).message}`);
+      addMessage('system', `Connection failed: ${(err as Error).message}`);
       setConnectionStatus('offline');
     }
     setIsLoading(false);
@@ -495,8 +495,8 @@ REGOLE:
             {messages.length === 0 && (
               <div className="text-center py-8">
                 <Zap className="w-10 h-10 text-orange-300 mx-auto mb-3" />
-                <p className="text-gray-500 text-sm font-medium">Merlino pronto</p>
-                <p className="text-gray-400 text-xs mt-1">Chiedimi qualsiasi cosa su {section.name}</p>
+                <p className="text-gray-500 text-sm font-medium">Merlino ready</p>
+                <p className="text-gray-400 text-xs mt-1">Ask me anything about {section.name}</p>
                 <p className="text-gray-300 text-[10px] mt-1">You can also drop files, images, or PDFs</p>
                 <div className="mt-4 space-y-2">
                   {[
@@ -549,7 +549,7 @@ REGOLE:
                 <div className="bg-gray-100 rounded-2xl rounded-bl-md px-4 py-3">
                   <div className="flex items-center gap-2">
                     <Loader2 className="w-4 h-4 text-orange-500 animate-spin" />
-                    <span className="text-xs text-gray-500">Merlino sta pensando...</span>
+                    <span className="text-xs text-gray-500">Merlino is thinking...</span>
                   </div>
                 </div>
               </div>
@@ -601,7 +601,7 @@ REGOLE:
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
                 onPaste={handlePaste}
-                placeholder={`Chiedi a Merlino...`}
+                placeholder={`Ask Merlino...`}
                 rows={1}
                 className="flex-1 resize-none px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent max-h-24"
                 style={{ minHeight: '42px' }}

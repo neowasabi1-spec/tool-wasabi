@@ -127,7 +127,7 @@ export default function ImportFromProjectsModal({ open, onClose, onPick }: Props
         .order('updated_at', { ascending: false });
       if (cancelled) return;
       if (dbErr) {
-        setError(dbErr.message || 'Errore caricamento progetti');
+        setError(dbErr.message || 'Error loading projects');
         setProjects([]);
       } else {
         setProjects(
@@ -182,12 +182,12 @@ export default function ImportFromProjectsModal({ open, onClose, onPick }: Props
             </div>
             <div>
               <h2 className="text-base font-semibold text-gray-900">
-                Scegli un progetto
+                Pick a project
               </h2>
               <p className="text-xs text-gray-500 mt-0.5">
-                Una volta selezionato, usa i bottoni{' '}
-                <strong>Landing</strong> o <strong>Funnel</strong> qui sotto per
-                scegliere cosa importare.
+                Once selected, use the <strong>Landing</strong> or{' '}
+                <strong>Funnel</strong> buttons below to choose what to
+                import.
               </p>
             </div>
           </div>
@@ -208,7 +208,7 @@ export default function ImportFromProjectsModal({ open, onClose, onPick }: Props
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Cerca progetto..."
+              placeholder="Search project..."
               className="w-full pl-9 pr-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
               autoFocus
             />
@@ -217,7 +217,7 @@ export default function ImportFromProjectsModal({ open, onClose, onPick }: Props
           {loading ? (
             <div className="py-12 text-center">
               <Loader2 className="w-6 h-6 animate-spin mx-auto text-indigo-500" />
-              <p className="text-sm text-gray-500 mt-3">Carico progetti...</p>
+              <p className="text-sm text-gray-500 mt-3">Loading projects...</p>
             </div>
           ) : error ? (
             <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700 flex items-start gap-2">
@@ -229,8 +229,8 @@ export default function ImportFromProjectsModal({ open, onClose, onPick }: Props
               <FolderOpen className="w-10 h-10 mx-auto text-gray-300" />
               <p className="text-sm text-gray-500 mt-2">
                 {projects.length === 0
-                  ? 'Nessun progetto ancora. Creane uno da "My Projects".'
-                  : 'Nessun progetto corrisponde alla ricerca.'}
+                  ? 'No projects yet. Create one from "My Projects".'
+                  : 'No projects match the search.'}
               </p>
             </div>
           ) : (
@@ -247,8 +247,8 @@ export default function ImportFromProjectsModal({ open, onClose, onPick }: Props
                       className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-indigo-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                       title={
                         count === 0
-                          ? 'Questo progetto non ha URL nel Front End / Back End / Domain'
-                          : `${count} URL rilevat${count === 1 ? 'o' : 'i'}`
+                          ? 'This project has no URLs in Front End / Back End / Domain'
+                          : `${count} URL${count === 1 ? '' : 's'} detected`
                       }
                     >
                       <div className="w-9 h-9 rounded-lg bg-indigo-100 flex items-center justify-center flex-shrink-0">

@@ -234,7 +234,7 @@ export default function ApiKeysPage() {
             OpenClaw Connection
           </h3>
           <p className="text-orange-700 text-sm mb-4">
-            Configura l&apos;URL del tunnel Cloudflare. Quando riavvii cloudflared, incolla qui il nuovo URL.
+            Configure the Cloudflare tunnel URL. When you restart cloudflared, paste the new URL here.
           </p>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <div>

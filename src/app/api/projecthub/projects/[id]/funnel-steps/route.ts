@@ -1,10 +1,33 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
+import { getUserAccessContext } from '@/lib/auth/get-current-user';
 
 export const dynamic = 'force-dynamic';
 
 const MIGRATION_HINT =
   'Migration not run — execute supabase-migration-projecthub.sql (funnel_steps)';
+
+/** Multi-tenancy guard: verify the caller can access the parent project
+ *  before reading/writing any of its funnel_steps. Returns null when OK,
+ *  or a NextResponse to bail with. Anonymous callers (no JWT) bypass —
+ *  RLS phase-2 will lock those down later. */
+async function checkProjectAccess(
+  req: NextRequest,
+  projectId: string,
+): Promise<{ ctx: Awaited<ReturnType<typeof getUserAccessContext>>; deny: NextResponse | null }> {
+  const ctx = await getUserAccessContext(req);
+  if (!ctx.userId || ctx.isMaster) return { ctx, deny: null };
+  const { data: project } = await supabase
+    .from('projects')
+    .select('owner_user_id')
+    .eq('id', projectId)
+    .maybeSingle();
+  const ownerId = (project as { owner_user_id?: string } | null)?.owner_user_id;
+  if (!project || ownerId !== ctx.userId) {
+    return { ctx, deny: NextResponse.json({ error: 'Not found' }, { status: 404 }) };
+  }
+  return { ctx, deny: null };
+}
 
 // Whitelist of writable columns on funnel_steps. Keeps the insert/patch
 // payload safe and avoids "column does not exist" surprises.
@@ -41,9 +64,12 @@ function pickWritable(src: Record<string, unknown>): Record<string, unknown> {
 
 /** GET — list every funnel step for a project, ordered by step number. */
 export async function GET(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: { id: string } },
 ) {
+  const { deny } = await checkProjectAccess(req, params.id);
+  if (deny) return deny;
+
   const { data, error } = await supabase
     .from('funnel_steps')
     .select('*')
@@ -66,6 +92,9 @@ export async function POST(
   req: NextRequest,
   { params }: { params: { id: string } },
 ) {
+  const { ctx, deny } = await checkProjectAccess(req, params.id);
+  if (deny) return deny;
+
   const body = await req.json().catch(() => ({}));
 
   // Bulk insert path: { steps: [...] } — used by "Save funnel into project".
@@ -78,6 +107,7 @@ export async function POST(
       project_id: params.id,
       step_number:
         typeof s.step_number === 'number' ? s.step_number : i + 1,
+      ...(ctx.userId ? { owner_user_id: ctx.userId } : {}),
     }));
 
     // replace=true: sostituisce l'intero funnel del progetto. Senza questo,
@@ -115,6 +145,7 @@ export async function POST(
     project_id: params.id,
     step_number:
       typeof body?.step_number === 'number' ? body.step_number : 1,
+    ...(ctx.userId ? { owner_user_id: ctx.userId } : {}),
   };
 
   const { data, error } = await supabase

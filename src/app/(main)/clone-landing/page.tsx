@@ -184,7 +184,7 @@ export default function CloneLandingPage() {
    */
   const handleCloneViaOpenclaw = async (chosen: Auditor) => {
     const targetAgent = AUDITOR_TARGET_AGENT[chosen];
-    pushProgress(`Coda OpenClaw → ${AUDITOR_LABEL[chosen]}`);
+    pushProgress(`OpenClaw queue → ${AUDITOR_LABEL[chosen]}`);
 
     const enqueueRes = await fetch('/api/openclaw/queue', {
       method: 'POST',
@@ -201,9 +201,9 @@ export default function CloneLandingPage() {
     });
     const enqueued = (await enqueueRes.json()) as { id?: string; error?: string };
     if (!enqueueRes.ok || !enqueued.id) {
-      throw new Error(`Enqueue fallito: ${enqueued.error || `HTTP ${enqueueRes.status}`}`);
+      throw new Error(`Enqueue failed: ${enqueued.error || `HTTP ${enqueueRes.status}`}`);
     }
-    pushProgress(`Job #${enqueued.id.slice(0, 8)} in coda · in attesa che il worker lo prenda`);
+    pushProgress(`Job #${enqueued.id.slice(0, 8)} queued · waiting for the worker to pick it up`);
 
     // Poll for completion. The worker's own fetchCheckpointPageHtml has a
     // 20s plain-fetch + 30s Playwright budget per page, so we give it
@@ -215,7 +215,7 @@ export default function CloneLandingPage() {
     let lastStatus: string | null = null;
     while (true) {
       if (Date.now() - t0 > POLL_TIMEOUT_MS) {
-        throw new Error(`Timeout: il worker non ha completato il job in ${POLL_TIMEOUT_MS / 1000}s.`);
+        throw new Error(`Timeout: the worker did not complete the job within ${POLL_TIMEOUT_MS / 1000}s.`);
       }
       await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
       const pollRes = await fetch(`/api/openclaw/queue?id=${encodeURIComponent(enqueued.id)}`);
@@ -226,23 +226,23 @@ export default function CloneLandingPage() {
       };
       if (polled.status && polled.status !== lastStatus) {
         lastStatus = polled.status;
-        if (polled.status === 'processing') pushProgress(`Worker ha preso il job · sta scaricando la pagina in locale…`);
+        if (polled.status === 'processing') pushProgress(`Worker picked up the job · downloading the page locally…`);
       }
       if (polled.status === 'completed' && polled.content) {
-        pushProgress(`Job completato`);
+        pushProgress(`Job completed`);
         let parsed: { success?: boolean; html?: string; url?: string; method_used?: string; error?: string } = {};
         try {
           parsed = JSON.parse(polled.content);
         } catch {
-          throw new Error('Risposta del worker non è JSON valido');
+          throw new Error('Worker response is not valid JSON');
         }
         if (parsed.success === false || !parsed.html) {
-          throw new Error(parsed.error || 'Worker ha completato senza HTML');
+          throw new Error(parsed.error || 'Worker completed without HTML');
         }
         return { html: parsed.html, url: parsed.url ?? url, methodUsed: parsed.method_used };
       }
       if (polled.status === 'error' || polled.status === 'failed') {
-        throw new Error(polled.error || 'Worker ha fallito il job');
+        throw new Error(polled.error || 'Worker failed the job');
       }
     }
   };
@@ -329,14 +329,14 @@ export default function CloneLandingPage() {
     if (!result?.html) throw new Error('No cloned HTML to swipe — clone first');
     const targetAgent = AUDITOR_TARGET_AGENT[chosen];
 
-    pushProgress(`Coda OpenClaw → ${AUDITOR_LABEL[chosen]} (swipe)`);
+    pushProgress(`OpenClaw queue → ${AUDITOR_LABEL[chosen]} (swipe)`);
 
     // Carica la libreria saved_prompts E il progetto (se selezionato).
     // PRECEDENZA brief/MR: textarea manuali > brief/MR del progetto. Cosi'
     // l'utente puo' overrideare a mano, ma se le textarea sono vuote NON
     // perdiamo il brief del progetto (era il bug: Neo/Morfeo non sostituivano
     // nome dottore / durata audio / prezzi perche' il brief non arrivava).
-    pushProgress('Carico libreria tecniche dal tool…');
+    pushProgress('Loading techniques library from the tool…');
     let prompts: unknown[] = [];
     let projName: string | undefined;
     let projBriefFromDb = '';
@@ -373,7 +373,7 @@ export default function CloneLandingPage() {
       if (!briefForJob) missing.push('brief');
       if (!mrForJob) missing.push('market research');
       pushProgress(
-        `Nessun ${missing.join(' + ')} fornito (ne' a mano ne' dal progetto) — Neo/Morfeo li ricostruira' dai LORO archivi nel primer step.`,
+        `No ${missing.join(' + ')} provided (neither manually nor from the project) — Neo/Morfeo will rebuild them from THEIR archives in the primer step.`,
       );
     }
 
@@ -384,7 +384,7 @@ export default function CloneLandingPage() {
       projectName: projName,
     });
     pushProgress(
-      `Knowledge: ${prompts.length} tecniche + brief ${briefForJob.length} char (${briefSource}) + MR ${mrForJob.length} char (${mrSource})${projName ? ` · progetto "${projName}"` : ''}`,
+      `Knowledge: ${prompts.length} techniques + brief ${briefForJob.length} chars (${briefSource}) + MR ${mrForJob.length} chars (${mrSource})${projName ? ` · project "${projName}"` : ''}`,
     );
 
     const knowledge = {
@@ -422,9 +422,9 @@ export default function CloneLandingPage() {
     });
     const enqueued = (await enqueueRes.json()) as { id?: string; error?: string };
     if (!enqueueRes.ok || !enqueued.id) {
-      throw new Error(`Enqueue fallito: ${enqueued.error || `HTTP ${enqueueRes.status}`}`);
+      throw new Error(`Enqueue failed: ${enqueued.error || `HTTP ${enqueueRes.status}`}`);
     }
-    pushProgress(`Job #${enqueued.id.slice(0, 8)} in coda · in attesa che il worker lo prenda`);
+    pushProgress(`Job #${enqueued.id.slice(0, 8)} queued · waiting for the worker to pick it up`);
 
     // Swipe takes a LONG time on local agents: per ogni testo il modello
     // locale (Trinity / equiv) processa ~25K char di system prompt (KB
@@ -441,10 +441,10 @@ export default function CloneLandingPage() {
     while (true) {
       if (Date.now() - t0 > POLL_TIMEOUT_MS) {
         throw new Error(
-          `Timeout: il worker non ha completato lo swipe in ${POLL_TIMEOUT_MS / 1000}s. `
-          + 'Controlla openclaw-worker.log: se il worker era ancora in elaborazione, il risultato e\' '
-          + 'salvato in Supabase ma la UI non puo\' piu\' recuperarlo. Riduci la dimensione della landing '
-          + 'o usa un LLM piu\' veloce.',
+          `Timeout: the worker did not complete the swipe within ${POLL_TIMEOUT_MS / 1000}s. `
+          + 'Check openclaw-worker.log: if the worker was still processing, the result is '
+          + 'saved in Supabase but the UI can no longer retrieve it. Reduce the size of the landing '
+          + 'or use a faster LLM.',
         );
       }
       await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
@@ -457,11 +457,11 @@ export default function CloneLandingPage() {
       if (polled.status && polled.status !== lastStatus) {
         lastStatus = polled.status;
         if (polled.status === 'processing') {
-          pushProgress(`Worker ha preso il job · estrazione testi → rewrite locale → finalize`);
+          pushProgress(`Worker picked up the job · text extraction → local rewrite → finalize`);
         }
       }
       if (polled.status === 'completed' && polled.content) {
-        pushProgress(`Job completato`);
+        pushProgress(`Job completed`);
         let parsed: {
           success?: boolean;
           html?: string;
@@ -477,10 +477,10 @@ export default function CloneLandingPage() {
         try {
           parsed = JSON.parse(polled.content);
         } catch {
-          throw new Error('Risposta del worker non è JSON valido');
+          throw new Error('Worker response is not valid JSON');
         }
         if (parsed.success === false || !parsed.html) {
-          throw new Error(parsed.error || 'Worker ha completato senza HTML swipato');
+          throw new Error(parsed.error || 'Worker completed without swiped HTML');
         }
         // changes_made shape differs slightly: server returns
         // [{from,to}], UI expects string[]. Normalise.
@@ -491,9 +491,9 @@ export default function CloneLandingPage() {
           : undefined;
         if (parsed.replacements !== undefined && parsed.totalTexts !== undefined) {
           pushProgress(
-            `${parsed.replacements}/${parsed.totalTexts} testi sostituiti${
+            `${parsed.replacements}/${parsed.totalTexts} texts replaced${
               parsed.unresolved_text_ids?.length
-                ? ` · ${parsed.unresolved_text_ids.length} non risolti`
+                ? ` · ${parsed.unresolved_text_ids.length} unresolved`
                 : ''
             }`,
           );
@@ -509,7 +509,7 @@ export default function CloneLandingPage() {
         };
       }
       if (polled.status === 'error' || polled.status === 'failed') {
-        throw new Error(polled.error || 'Worker ha fallito lo swipe');
+        throw new Error(polled.error || 'Worker failed the swipe');
       }
     }
   };
@@ -687,7 +687,7 @@ export default function CloneLandingPage() {
 
           {/* Auditor selector — Claude server-side vs Neo/Morfeo via OpenClaw */}
           <div className="mt-3 flex flex-wrap items-center gap-2">
-            <span className="text-sm font-medium text-gray-700">Esegui con:</span>
+            <span className="text-sm font-medium text-gray-700">Run with:</span>
             {(['claude', 'neo', 'morfeo'] as const).map((opt) => {
               const active = auditor === opt;
               const baseClasses =
@@ -708,8 +708,8 @@ export default function CloneLandingPage() {
                   className={`${baseClasses} ${colourClasses}`}
                   title={
                     opt === 'claude'
-                      ? 'Clone + swipe server-side via Anthropic + Playwright Netlify (può fallire su SPA grossi o swipe lunghi)'
-                      : `Clone + swipe in coda OpenClaw → worker ${opt} fa fetch + rewrite LLM in locale (no 504)`
+                      ? 'Clone + swipe server-side via Anthropic + Playwright Netlify (may fail on large SPAs or long swipes)'
+                      : `Clone + swipe via OpenClaw queue → worker ${opt} runs fetch + LLM rewrite locally (no 504)`
                   }
                 >
                   {AUDITOR_LABEL[opt]}
@@ -718,7 +718,7 @@ export default function CloneLandingPage() {
             })}
             {auditor !== 'claude' && (
               <span className="text-xs text-gray-500 ml-1">
-                clone + swipe sul PC del worker (no Netlify timeout, LLM locale)
+                clone + swipe on the worker PC (no Netlify timeout, local LLM)
               </span>
             )}
           </div>
@@ -763,20 +763,20 @@ export default function CloneLandingPage() {
               <h3 className="text-lg font-semibold text-gray-900">
                 {isSwiping
                   ? auditor === 'claude'
-                    ? 'Swipe in corso…'
+                    ? 'Swipe in progress…'
                     : `Swipe via ${AUDITOR_LABEL[auditor]}…`
                   : auditor === 'claude'
-                    ? 'Cloning in corso…'
+                    ? 'Cloning in progress…'
                     : `Cloning via ${AUDITOR_LABEL[auditor]}…`}
               </h3>
               <p className="text-gray-500 mt-1 text-sm">
                 {isSwiping
                   ? auditor === 'claude'
-                    ? 'Adatto la landing al tuo prodotto (server-side)'
-                    : 'Il worker rewrite ogni testo con il modello locale (no 504, no quota Anthropic)'
+                    ? 'Adapting the landing to your product (server-side)'
+                    : 'The worker rewrites each text with the local model (no 504, no Anthropic quota)'
                   : auditor === 'claude'
-                    ? 'Scarico e processo la pagina sul server Netlify'
-                    : 'Il worker scarica la pagina con Playwright in locale (no 504)'}
+                    ? 'Downloading and processing the page on the Netlify server'
+                    : 'The worker downloads the page locally with Playwright (no 504)'}
               </p>
             </div>
 
@@ -853,24 +853,24 @@ export default function CloneLandingPage() {
                           <label className="block text-sm font-semibold text-gray-800 mb-1">
                             Brief & Market Research
                             {auditor !== 'claude' && (
-                              <span className="ml-1 text-red-600 font-bold">* OBBLIGATORI per Neo/Morfeo</span>
+                              <span className="ml-1 text-red-600 font-bold">* REQUIRED for Neo/Morfeo</span>
                             )}
                           </label>
                           <p className="text-xs text-gray-600 mb-3">
-                            Neo e Morfeo usano questi due testi per scegliere big idea + leve, e applicano le tecniche di <b>Stefan Georgi, Sultanic, Eugene Schwartz, Gary Halbert, John Caples, Gary Bencivenga, David Ogilvy, John Carlton, Dan Kennedy, Sugarman, Hopkins, Collier</b> dai loro archivi interni.
+                            Neo and Morfeo use these two texts to choose the big idea + levers, and apply the techniques of <b>Stefan Georgi, Sultanic, Eugene Schwartz, Gary Halbert, John Caples, Gary Bencivenga, David Ogilvy, John Carlton, Dan Kennedy, Sugarman, Hopkins, Collier</b> from their internal archives.
                           </p>
 
                           {availableProjects.length > 0 && (
                             <div className="mb-3">
                               <label className="block text-xs font-medium text-gray-600 mb-1">
-                                Pre-popola da un progetto esistente (opzionale)
+                                Pre-fill from an existing project (optional)
                               </label>
                               <select
                                 value={selectedProjectId}
                                 onChange={(e) => handleSelectProject(e.target.value)}
                                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-orange-500 text-sm"
                               >
-                                <option value="">— Nessuno (compila a mano sotto) —</option>
+                                <option value="">— None (fill in manually below) —</option>
                                 {availableProjects.map((p) => (
                                   <option key={p.id} value={p.id}>
                                     {p.name}
@@ -883,15 +883,15 @@ export default function CloneLandingPage() {
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                             <div>
                               <label className="block text-xs font-medium text-gray-700 mb-1">
-                                Brief del progetto {auditor !== 'claude' && <span className="text-red-600">*</span>}
+                                Project brief {auditor !== 'claude' && <span className="text-red-600">*</span>}
                                 <span className={`ml-2 ${briefOk ? 'text-emerald-600' : 'text-red-600'}`}>
-                                  {briefText.trim().length} char {briefOk ? '✓' : '(min 30)'}
+                                  {briefText.trim().length} chars {briefOk ? '✓' : '(min 30)'}
                                 </span>
                               </label>
                               <textarea
                                 value={briefText}
                                 onChange={(e) => setBriefText(e.target.value)}
-                                placeholder="Cosa stiamo vendendo, a chi, con che positioning, USP, claim approvati, voice/tone, vincoli legali. Anche poche righe ma concrete (es: target avatar, 3 obiezioni principali, 2 USP unici, prezzo, social proof disponibili)."
+                                placeholder="What we are selling, to whom, with what positioning, USP, approved claims, voice/tone, legal constraints. Even just a few concrete lines (e.g. target avatar, 3 main objections, 2 unique USPs, price, available social proof)."
                                 rows={6}
                                 className={`w-full px-3 py-2 border rounded-lg focus:ring-2 text-sm font-mono ${
                                   auditor !== 'claude' && !briefOk
@@ -904,13 +904,13 @@ export default function CloneLandingPage() {
                               <label className="block text-xs font-medium text-gray-700 mb-1">
                                 Market research {auditor !== 'claude' && <span className="text-red-600">*</span>}
                                 <span className={`ml-2 ${mrOk ? 'text-emerald-600' : 'text-red-600'}`}>
-                                  {marketResearchText.trim().length} char {mrOk ? '✓' : '(min 30)'}
+                                  {marketResearchText.trim().length} chars {mrOk ? '✓' : '(min 30)'}
                                 </span>
                               </label>
                               <textarea
                                 value={marketResearchText}
                                 onChange={(e) => setMarketResearchText(e.target.value)}
-                                placeholder="Awareness level (Schwartz), market sophistication, big competitor, angle che funzionano nel settore, language pattern del target, pain points, desideri primari/secondari, formati creativi vincenti, recensioni dei concorrenti."
+                                placeholder="Awareness level (Schwartz), market sophistication, big competitor, angles that work in the niche, target language patterns, pain points, primary/secondary desires, winning creative formats, competitor reviews."
                                 rows={6}
                                 className={`w-full px-3 py-2 border rounded-lg focus:ring-2 text-sm font-mono ${
                                   auditor !== 'claude' && !mrOk
@@ -924,11 +924,11 @@ export default function CloneLandingPage() {
                           {knowledgeBadge && (
                             <div className="mt-3 flex flex-wrap gap-2 text-xs">
                               <span className="inline-flex items-center gap-1 px-2 py-1 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-full">
-                                ✓ {knowledgeBadge.techniques} tecniche libreria
+                                ✓ {knowledgeBadge.techniques} library techniques
                               </span>
                               {knowledgeBadge.projectName && (
                                 <span className="inline-flex items-center gap-1 px-2 py-1 bg-blue-50 text-blue-700 border border-blue-200 rounded-full">
-                                  Progetto "{knowledgeBadge.projectName}"
+                                  Project "{knowledgeBadge.projectName}"
                                 </span>
                               )}
                             </div>
@@ -1105,7 +1105,7 @@ export default function CloneLandingPage() {
                   ) : (
                     <>
                       <Wand2 className="w-5 h-5" />
-                      Swipa Landing
+                      Swipe Landing
                     </>
                   )}
                 </button>

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin, hasServiceRoleKey } from '@/lib/supabase-admin';
 import { extractTextFromUpload } from '@/lib/server-text-extract';
+import { getUserAccessContext } from '@/lib/auth/get-current-user';
 import {
   parseSectionData,
   buildSectionContent,
@@ -15,10 +16,33 @@ export const maxDuration = 300;
 
 const BUCKET = 'project-files';
 
+/** Multi-tenancy gate: returns null when the caller is allowed to
+ *  read/write files of `projectId`, or a Response to bail with. */
+async function checkProjectAccess(
+  req: NextRequest,
+  projectId: string,
+): Promise<{ ctx: Awaited<ReturnType<typeof getUserAccessContext>>; deny: NextResponse | null }> {
+  const ctx = await getUserAccessContext(req);
+  if (!ctx.userId || ctx.isMaster) return { ctx, deny: null };
+  const { data: project } = await supabaseAdmin
+    .from('projects')
+    .select('owner_user_id')
+    .eq('id', projectId)
+    .maybeSingle();
+  const ownerId = (project as { owner_user_id?: string } | null)?.owner_user_id;
+  if (!project || ownerId !== ctx.userId) {
+    return { ctx, deny: NextResponse.json({ error: 'Not found' }, { status: 404 }) };
+  }
+  return { ctx, deny: null };
+}
+
 export async function GET(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: { id: string } },
 ) {
+  const { deny } = await checkProjectAccess(req, params.id);
+  if (deny) return deny;
+
   const { data, error } = await supabaseAdmin
     .from('project_files')
     .select('*')
@@ -153,6 +177,9 @@ export async function POST(
   { params }: { params: { id: string } },
 ) {
   const projectId = params.id;
+  const { ctx, deny } = await checkProjectAccess(req, projectId);
+  if (deny) return deny;
+
   const fd = await req.formData();
   const fileType = String(fd.get('file_type') || 'misc');
 
@@ -192,14 +219,16 @@ export async function POST(
       failures.push({ name: file.name, reason });
       continue;
     }
+    const fileRow: Record<string, unknown> = {
+      project_id: projectId,
+      file_type: fileType,
+      file_path: objectKey,
+      original_name: file.name,
+    };
+    if (ctx.userId) fileRow.owner_user_id = ctx.userId;
     const { data, error } = await supabaseAdmin
       .from('project_files')
-      .insert({
-        project_id: projectId,
-        file_type: fileType,
-        file_path: objectKey,
-        original_name: file.name,
-      })
+      .insert(fileRow)
       .select()
       .single();
     if (error) {

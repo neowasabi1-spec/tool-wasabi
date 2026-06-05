@@ -457,7 +457,7 @@ function FunnelLibraryDialog({
 }: {
   open: boolean;
   onClose: () => void;
-  currentprojectId: string;
+  currentProjectId: string;
   onImported: () => void;
 }) {
   const { toast } = useToast();
@@ -473,7 +473,7 @@ function FunnelLibraryDialog({
     fetch(`${BASE_URL}/api/projecthub/funnel-library`)
       .then(r => r.json())
       .then((data: FunnelLibraryEntry[]) => {
-        setLibrary(data.filter(f => f.id !== currentProjectId));
+        setLibrary(data.filter(f => String(f.id) !== currentProjectId));
         setLoading(false);
       })
       .catch(() => {
@@ -870,8 +870,8 @@ export function FunnelTab({ projectId }: { projectId: string }) {
       updateStep.mutate({ projectId, stepId: id, data: { flow_name: newFlowValue } });
     });
     toast({
-      title: newFlowValue ? `Flow rinominato in "${newFlowValue}"` : 'Flow rimosso',
-      description: `${affectedIds.length} step aggiornati`,
+      title: newFlowValue ? `Flow renamed to "${newFlowValue}"` : 'Flow removed',
+      description: `${affectedIds.length} steps updated`,
     });
     cancelRenameFlow();
   }, [editingFlowDraft, projectId, updateStep, cancelRenameFlow, toast]);
@@ -1203,7 +1203,7 @@ export function FunnelTab({ projectId }: { projectId: string }) {
                             <button
                               type="button"
                               onClick={() => toggleFlowCollapsed(flowKey)}
-                              title={isCollapsed ? "Espandi flow" : "Collassa flow"}
+                              title={isCollapsed ? "Expand flow" : "Collapse flow"}
                               className="hover:bg-primary/20 rounded p-0.5 transition-colors"
                             >
                               <ChevronDown className={`w-3 h-3 transition-transform ${isCollapsed ? '-rotate-90' : ''}`} />
@@ -1221,7 +1221,7 @@ export function FunnelTab({ projectId }: { projectId: string }) {
                                   if (e.key === 'Enter') { e.preventDefault(); commitRenameFlow(flowKey); }
                                   else if (e.key === 'Escape') { e.preventDefault(); cancelRenameFlow(); }
                                 }}
-                                placeholder='Nome flow (vuoto = "Senza Flow")'
+                                placeholder='Flow name (empty = "No Flow")'
                                 className="flex-1 max-w-[300px] bg-background border border-primary/40 rounded px-2 py-0.5 text-xs font-bold uppercase tracking-wider text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40"
                               />
                             ) : (
@@ -1229,12 +1229,12 @@ export function FunnelTab({ projectId }: { projectId: string }) {
                                 <span className="flex items-center gap-1">
                                   {flowLabel
                                     ? <>Flow: <span className="text-foreground">{flowLabel}</span></>
-                                    : <span className="text-muted-foreground italic">Senza Flow (legacy)</span>}
+                                    : <span className="text-muted-foreground italic">No Flow (legacy)</span>}
                                 </span>
                                 <button
                                   type="button"
                                   onClick={() => beginRenameFlow(flowKey, flowLabel)}
-                                  title="Rinomina flow (Enter per salvare, Esc per annullare)"
+                                  title="Rename flow (Enter to save, Esc to cancel)"
                                   className="p-0.5 rounded hover:bg-primary/20 text-primary/70 hover:text-primary transition-colors"
                                 >
                                   <Pencil className="w-3 h-3" />
@@ -1242,7 +1242,7 @@ export function FunnelTab({ projectId }: { projectId: string }) {
                                 <button
                                   type="button"
                                   onClick={() => setViewsModalFlow(flowKey)}
-                                  title="Apri vista a card di questo flow"
+                                  title="Open card view of this flow"
                                   className="ml-1 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-primary/20 hover:bg-primary/30 text-primary transition-colors flex items-center gap-1"
                                 >
                                   <LayoutGrid className="w-3 h-3" />
@@ -1490,7 +1490,7 @@ export function FunnelTab({ projectId }: { projectId: string }) {
               <div>
                 <h2 className="text-lg font-bold text-white">
                   {viewsModalFlow === '__no_flow__'
-                    ? <span className="italic text-gray-300">Senza Flow (legacy)</span>
+                    ? <span className="italic text-gray-300">No Flow (legacy)</span>
                     : <>Flow: <span className="text-primary">{viewsModalFlow}</span></>}
                 </h2>
                 <p className="text-gray-400 text-xs">
@@ -1501,7 +1501,7 @@ export function FunnelTab({ projectId }: { projectId: string }) {
             <button
               onClick={() => setViewsModalFlow(null)}
               className="text-white/80 hover:text-white text-3xl font-bold px-2"
-              title="Chiudi"
+              title="Close"
             >×</button>
           </div>
 
@@ -1511,7 +1511,7 @@ export function FunnelTab({ projectId }: { projectId: string }) {
           >
             {viewsModalSteps.length === 0 ? (
               <div className="text-center text-gray-400 py-20">
-                Nessuno step in questo flow.
+                No steps in this flow.
               </div>
             ) : (
               <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
@@ -1527,7 +1527,7 @@ export function FunnelTab({ projectId }: { projectId: string }) {
                           ? 'border-gray-200 hover:shadow-lg hover:border-primary cursor-pointer'
                           : 'border-gray-200 opacity-60 cursor-not-allowed'
                       }`}
-                      title={hasContent ? 'Apri anteprima Desktop + Mobile' : 'Nessun HTML disponibile per questo step'}
+                      title={hasContent ? 'Open Desktop + Mobile preview' : 'No HTML available for this step'}
                     >
                       <div className="relative w-full h-[180px] overflow-hidden bg-gray-50">
                         {s.result_content && s.result_content.trim() ? (
@@ -1544,7 +1544,7 @@ export function FunnelTab({ projectId }: { projectId: string }) {
                             style={{ background: `linear-gradient(135deg, hsl(${hue}, 50%, 55%), hsl(${(hue + 40) % 360}, 55%, 45%))` }}
                           >
                             <span className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center text-white font-bold text-lg mb-2">{s.step_number}</span>
-                            <span className="text-white/90 text-xs font-medium line-clamp-2 leading-relaxed">{s.page_name || '(senza nome)'}</span>
+                            <span className="text-white/90 text-xs font-medium line-clamp-2 leading-relaxed">{s.page_name || '(no name)'}</span>
                             <span className="mt-1 px-2 py-0.5 bg-white/20 rounded-full text-[9px] text-white/80 font-medium">{s.step_type}</span>
                           </div>
                         )}
@@ -1555,7 +1555,7 @@ export function FunnelTab({ projectId }: { projectId: string }) {
                             rel="noopener noreferrer"
                             onClick={(e) => e.stopPropagation()}
                             className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity bg-white/90 rounded-full p-1.5 shadow"
-                            title="Apri URL originale"
+                            title="Open original URL"
                           >
                             <ExternalLink className="w-3.5 h-3.5 text-gray-700" />
                           </a>
@@ -1564,11 +1564,11 @@ export function FunnelTab({ projectId }: { projectId: string }) {
                       <div className="p-3">
                         <div className="flex items-center gap-2 mb-1.5">
                           <span className="text-xs font-bold text-gray-400 bg-gray-100 rounded-full w-5 h-5 flex items-center justify-center">{s.step_number}</span>
-                          <span className="font-semibold text-sm text-gray-900 truncate flex-1">{s.page_name || '(senza nome)'}</span>
+                          <span className="font-semibold text-sm text-gray-900 truncate flex-1">{s.page_name || '(no name)'}</span>
                         </div>
                         <span className="inline-block px-2 py-0.5 rounded-full text-[10px] font-medium bg-blue-50 text-blue-700">{s.step_type}</span>
                         {!hasContent && (
-                          <p className="text-[10px] text-gray-400 mt-1 italic">Nessun HTML</p>
+                          <p className="text-[10px] text-gray-400 mt-1 italic">No HTML</p>
                         )}
                       </div>
                     </div>
@@ -1613,7 +1613,7 @@ export function FunnelTab({ projectId }: { projectId: string }) {
               <button
                 onClick={closeStepPreview}
                 className="text-white/80 hover:text-white text-3xl font-bold px-2"
-                title="Chiudi"
+                title="Close"
               >×</button>
             </div>
           </div>
@@ -1626,7 +1626,7 @@ export function FunnelTab({ projectId }: { projectId: string }) {
               <div className="flex-1 flex items-center justify-center">
                 <div className="text-center">
                   <Loader2 className="w-12 h-12 text-primary animate-spin mx-auto mb-4" />
-                  <p className="text-white text-lg font-medium">Caricamento pagina…</p>
+                  <p className="text-white text-lg font-medium">Loading page…</p>
                 </div>
               </div>
             ) : previewHtml ? (
@@ -1663,8 +1663,8 @@ export function FunnelTab({ projectId }: { projectId: string }) {
             ) : (
               <div className="flex-1 flex items-center justify-center">
                 <div className="text-center">
-                  <p className="text-white text-lg font-medium">Nessun HTML disponibile</p>
-                  <p className="text-gray-400 text-sm mt-2">Questo step non ha ancora una pagina riscritta o caricata.</p>
+                  <p className="text-white text-lg font-medium">No HTML available</p>
+                  <p className="text-gray-400 text-sm mt-2">This step does not have a rewritten or uploaded page yet.</p>
                 </div>
               </div>
             )}

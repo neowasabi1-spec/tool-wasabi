@@ -91,10 +91,10 @@ export function AnalyticsSection({ projectId }: { projectId: string }) {
       const resp = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/analytics`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ step_name: "Nuovo Step", step_type: "Landing Page", section: activeSection }),
+        body: JSON.stringify({ step_name: "New Step", step_type: "Landing Page", section: activeSection }),
       });
       if (resp.ok) { const s = await resp.json(); setSteps(prev => [...prev, s]); }
-    } catch { toast({ title: "Errore", variant: "destructive" }); }
+    } catch { toast({ title: "Error", variant: "destructive" }); }
   };
 
   const updateStep = async (stepId: number, patch: Partial<AnalyticsStep>) => {
@@ -128,8 +128,8 @@ export function AnalyticsSection({ projectId }: { projectId: string }) {
     ? (visibleSteps.reduce((s, x) => s + (parseFloat(x.aov) || 0), 0) / visibleSteps.length)
     : 0;
 
-  const feColumns = ["# ", "Step", "Tipo", "Impression", "Click", "CTR %", "CR %", "CPA €", "Azioni"];
-  const beColumns = ["# ", "Step", "Tipo", "AOV €", "Upsell %", "Refund %", "Azioni"];
+  const feColumns = ["# ", "Step", "Type", "Impressions", "Clicks", "CTR %", "CR %", "CPA €", "Actions"];
+  const beColumns = ["# ", "Step", "Type", "AOV €", "Upsell %", "Refund %", "Actions"];
 
   return (
     <div className="space-y-6">
@@ -137,26 +137,26 @@ export function AnalyticsSection({ projectId }: { projectId: string }) {
         <h2 className="text-xl font-semibold text-foreground mb-1 flex items-center gap-2">
           <BarChart2 className="w-5 h-5 text-primary" /> Analytics
         </h2>
-        <p className="text-sm text-muted-foreground">Performance metriche del funnel. Inserimento dati manuale.</p>
+        <p className="text-sm text-muted-foreground">Funnel performance metrics. Manual data entry.</p>
       </div>
 
       {/* Stats Cards */}
       <div className="grid grid-cols-4 gap-3">
         <div className="bg-card border border-border rounded-xl px-4 py-3 text-center">
           <p className="text-xl font-bold text-foreground">{totalImpressions.toLocaleString("it-IT")}</p>
-          <p className="text-xs text-muted-foreground">Impressioni</p>
+          <p className="text-xs text-muted-foreground">Impressions</p>
         </div>
         <div className="bg-card border border-border rounded-xl px-4 py-3 text-center">
           <p className="text-xl font-bold text-foreground">{totalClicks.toLocaleString("it-IT")}</p>
-          <p className="text-xs text-muted-foreground">Click Totali</p>
+          <p className="text-xs text-muted-foreground">Total Clicks</p>
         </div>
         <div className="bg-card border border-border rounded-xl px-4 py-3 text-center">
           <p className={`text-xl font-bold ${avgCR >= 3 ? "text-green-600" : "text-amber-600"}`}>{avgCR.toFixed(2)}%</p>
-          <p className="text-xs text-muted-foreground">CVR Medio</p>
+          <p className="text-xs text-muted-foreground">Avg CVR</p>
         </div>
         <div className="bg-card border border-border rounded-xl px-4 py-3 text-center">
           <p className="text-xl font-bold text-foreground">€{avgAOV.toFixed(2)}</p>
-          <p className="text-xs text-muted-foreground">AOV Medio</p>
+          <p className="text-xs text-muted-foreground">Avg AOV</p>
         </div>
       </div>
 
@@ -171,20 +171,20 @@ export function AnalyticsSection({ projectId }: { projectId: string }) {
           ))}
         </div>
         <Button size="sm" onClick={addStep} className="bg-primary text-primary-foreground gap-1.5">
-          <Plus className="w-3.5 h-3.5" /> Aggiungi Step
+          <Plus className="w-3.5 h-3.5" /> Add Step
         </Button>
       </div>
 
       {/* Table */}
       {loading ? (
-        <div className="py-12 text-center text-sm text-muted-foreground">Caricamento...</div>
+        <div className="py-12 text-center text-sm text-muted-foreground">Loading...</div>
       ) : visibleSteps.length === 0 ? (
         <div className="py-16 text-center border-2 border-dashed border-border rounded-xl">
           <BarChart2 className="w-10 h-10 text-muted-foreground/40 mx-auto mb-3" />
-          <p className="text-sm font-medium text-foreground mb-1">Nessun dato ancora</p>
-          <p className="text-xs text-muted-foreground mb-4">Aggiungi gli step del funnel e inserisci le metriche di performance.</p>
+          <p className="text-sm font-medium text-foreground mb-1">No data yet</p>
+          <p className="text-xs text-muted-foreground mb-4">Add funnel steps and enter performance metrics.</p>
           <Button size="sm" onClick={addStep} className="bg-primary text-primary-foreground gap-1.5">
-            <Plus className="w-3.5 h-3.5" /> Aggiungi Step
+            <Plus className="w-3.5 h-3.5" /> Add Step
           </Button>
         </div>
       ) : (
@@ -207,7 +207,7 @@ export function AnalyticsSection({ projectId }: { projectId: string }) {
                       <span className="w-5 h-5 rounded-full bg-primary/10 text-primary flex items-center justify-center text-[10px] font-bold mx-auto">{idx + 1}</span>
                     </td>
                     <td className="px-2 py-1 border-r border-border/50 min-w-[130px]">
-                      <EditableCell value={step.step_name} onChange={v => updateStep(step.id, { step_name: v })} placeholder="Nome step" />
+                      <EditableCell value={step.step_name} onChange={v => updateStep(step.id, { step_name: v })} placeholder="Step name" />
                     </td>
                     <td className="px-2 py-1 border-r border-border/50 min-w-[120px]">
                       <select value={step.step_type} onChange={e => updateStep(step.id, { step_type: e.target.value })}
@@ -265,7 +265,7 @@ export function AnalyticsSection({ projectId }: { projectId: string }) {
           {visibleSteps.length > 0 && (
             <div className="bg-card border border-border rounded-xl p-6">
               <h3 className="font-semibold text-foreground text-sm mb-4 flex items-center gap-2">
-                <TrendingUp className="w-4 h-4 text-primary" /> Mappa Funnel Visuale
+                <TrendingUp className="w-4 h-4 text-primary" /> Visual Funnel Map
               </h3>
               <div className="flex items-center gap-0 overflow-x-auto pb-2">
                 {visibleSteps.map((step, i) => {
@@ -300,9 +300,9 @@ export function AnalyticsSection({ projectId }: { projectId: string }) {
                 })}
               </div>
               <div className="flex items-center gap-4 mt-3">
-                <div className="flex items-center gap-1.5"><div className="w-3 h-3 rounded-full bg-green-400" /><span className="text-xs text-muted-foreground">Alta performance</span></div>
-                <div className="flex items-center gap-1.5"><div className="w-3 h-3 rounded-full bg-amber-400" /><span className="text-xs text-muted-foreground">Media performance</span></div>
-                <div className="flex items-center gap-1.5"><div className="w-3 h-3 rounded-full bg-red-400" /><span className="text-xs text-muted-foreground">Bassa performance</span></div>
+                <div className="flex items-center gap-1.5"><div className="w-3 h-3 rounded-full bg-green-400" /><span className="text-xs text-muted-foreground">High performance</span></div>
+                <div className="flex items-center gap-1.5"><div className="w-3 h-3 rounded-full bg-amber-400" /><span className="text-xs text-muted-foreground">Medium performance</span></div>
+                <div className="flex items-center gap-1.5"><div className="w-3 h-3 rounded-full bg-red-400" /><span className="text-xs text-muted-foreground">Low performance</span></div>
               </div>
             </div>
           )}
@@ -311,12 +311,12 @@ export function AnalyticsSection({ projectId }: { projectId: string }) {
 
       {/* Data Connections */}
       <div className="bg-muted/30 border border-dashed border-border rounded-xl p-5">
-        <h3 className="font-semibold text-foreground text-sm mb-3">Connessioni Dati</h3>
+        <h3 className="font-semibold text-foreground text-sm mb-3">Data Connections</h3>
         <div className="flex flex-wrap gap-2">
           {["Facebook Ads", "TikTok Ads", "CheckoutChamp", "Hyros"].map(name => (
             <Button key={name} size="sm" variant="outline" className="text-xs gap-1.5 opacity-60 cursor-not-allowed">
               <Plus className="w-3 h-3" /> {name}
-              <Badge variant="secondary" className="text-[9px] ml-1">Prossimamente</Badge>
+              <Badge variant="secondary" className="text-[9px] ml-1">Coming soon</Badge>
             </Button>
           ))}
         </div>
