@@ -6,9 +6,10 @@ import Header from '@/components/Header';
 import { useStore } from '@/store/useStore';
 import { BUILT_IN_PAGE_TYPE_OPTIONS, PAGE_TYPE_CATEGORIES, PageType, PageTypeOption, TemplateCategory, TEMPLATE_CATEGORY_OPTIONS, TemplateViewFormat, TEMPLATE_VIEW_FORMAT_OPTIONS, LIBRARY_TEMPLATES } from '@/types';
 import type { ArchivedFunnel } from '@/types/database';
-import { Plus, Trash2, Edit2, Save, X, FileCode, ExternalLink, Tag, Filter, Eye, EyeOff, Maximize2, Layers, HelpCircle, FolderPlus, Settings, Monitor, Smartphone, BookOpen, ChevronDown, ChevronRight, FolderOpen, Archive, CheckSquare, Square, Package, Sparkles, Send, Loader2, MessageCircle, Search, Download, Swords, Lock } from 'lucide-react';
+import { Plus, Trash2, Edit2, Save, X, FileCode, ExternalLink, Tag, Filter, Eye, EyeOff, Maximize2, Layers, HelpCircle, FolderPlus, Settings, Monitor, Smartphone, BookOpen, ChevronDown, ChevronRight, FolderOpen, Archive, CheckSquare, Square, Package, Sparkles, Send, Loader2, MessageCircle, Search, Download, Swords, Lock, Share2 } from 'lucide-react';
 import CachedScreenshot from '@/components/CachedScreenshot';
 import QuizArchiveView from './QuizArchiveView';
+import { useCurrentUser } from '@/hooks/useCurrentUser';
 
 interface SelectedPage {
   name: string;
@@ -167,8 +168,11 @@ function PageThumbnail({ url, alt, height = '180px', savedHtml }: { url: string;
 }
 
 export default function TemplatesPage() {
-  const { templates, addTemplate, updateTemplate, deleteTemplate, customPageTypes, addCustomPageType, deleteCustomPageType, archivedFunnels, archivedFunnelsLoaded, loadArchivedFunnels, deleteArchivedFunnel, setArchivedFunnelValchiriaFlag, products, addFunnelPage, funnelPages, deleteFunnelPage } = useStore();
+  const { templates, addTemplate, updateTemplate, deleteTemplate, customPageTypes, addCustomPageType, deleteCustomPageType, archivedFunnels, archivedFunnelsLoaded, loadArchivedFunnels, deleteArchivedFunnel, setArchivedFunnelValchiriaFlag, setArchivedFunnelShareFlag, products, addFunnelPage, funnelPages, deleteFunnelPage } = useStore();
   const [valchiriaTogglingId, setValchiriaTogglingId] = useState<string | null>(null);
+  const [shareTogglingId, setShareTogglingId] = useState<string | null>(null);
+  const { permissions: currentUserPermissions } = useCurrentUser();
+  const isMaster = currentUserPermissions?.role === 'master';
   const router = useRouter();
   
   const [mainView, setMainView] = useState<'templates' | 'funnels' | 'byType' | 'quiz'>('templates');
@@ -930,6 +934,41 @@ export default function TemplatesPage() {
                             : <Swords className="w-3.5 h-3.5" />
                           }
                           {funnel.show_in_valchiria ? 'In Valchiria' : 'Add to Valchiria'}
+                        </button>
+                      )}
+                      {/* Share-with-users toggle — master only. Decoupled
+                          from the personal show_in_valchiria flag so the
+                          master can keep a funnel in their own Valchiria
+                          without exposing it to every collaborator. */}
+                      {!funnel.isShared && isMaster && (
+                        <button
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            if (shareTogglingId) return;
+                            setShareTogglingId(funnel.id);
+                            try {
+                              await setArchivedFunnelShareFlag(funnel.id, !funnel.share_with_users);
+                            } catch (err) {
+                              alert(`Could not update share flag: ${err instanceof Error ? err.message : String(err)}`);
+                            } finally {
+                              setShareTogglingId(null);
+                            }
+                          }}
+                          disabled={shareTogglingId === funnel.id}
+                          title={funnel.share_with_users
+                            ? 'Stop sharing with users (only you will see it in Valchiria)'
+                            : 'Share with every user (read-only in their Valchiria + My Archive)'}
+                          className={`ml-2 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
+                            funnel.share_with_users
+                              ? 'bg-amber-50 border-amber-300 text-amber-800 hover:bg-amber-100'
+                              : 'bg-white border-gray-200 text-gray-500 hover:border-amber-300 hover:text-amber-700'
+                          } disabled:opacity-60 disabled:cursor-not-allowed`}
+                        >
+                          {shareTogglingId === funnel.id
+                            ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            : <Share2 className="w-3.5 h-3.5" />
+                          }
+                          {funnel.share_with_users ? 'Shared' : 'Share with users'}
                         </button>
                       )}
                       {!funnel.isShared && (

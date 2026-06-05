@@ -535,10 +535,13 @@ interface Store {
   loadArchivedFunnels: () => Promise<void>;
   saveCurrentFunnelAsArchive: (name: string, section?: string, pageIds?: string[]) => Promise<void>;
   deleteArchivedFunnel: (id: string) => Promise<void>;
-  /** Toggle whether an archived funnel surfaces in Protocollo Valchiria.
-   *  Hits the dedicated API route (server-side ownership check) and
-   *  optimistically updates the in-memory list. */
+  /** Toggle whether an archived funnel surfaces in the OWNER's own
+   *  Protocollo Valchiria. Hits the dedicated API route (server-side
+   *  ownership check) and optimistically updates the in-memory list. */
   setArchivedFunnelValchiriaFlag: (id: string, value: boolean) => Promise<void>;
+  /** Master-only: toggle whether a master-owned funnel is shared as
+   *  read-only with every other authenticated user. */
+  setArchivedFunnelShareFlag: (id: string, value: boolean) => Promise<void>;
 
   // Ultimo errore di upload HTML su Supabase Storage (null = nessun errore).
   // Settato da updateFunnelPage/persistHtmlBlobs; letto dalla UI per
@@ -1563,6 +1566,30 @@ export const useStore = create<Store>()((set, get) => ({
       }
     } catch (error) {
       console.error('Error toggling Valchiria flag:', error);
+      set({ archivedFunnels: previous });
+      throw error;
+    }
+  },
+
+  setArchivedFunnelShareFlag: async (id: string, value: boolean) => {
+    const previous = get().archivedFunnels;
+    set((state) => ({
+      archivedFunnels: state.archivedFunnels.map((f) =>
+        f.id === id ? { ...f, share_with_users: value } : f,
+      ),
+    }));
+    try {
+      const res = await fetch(`/api/valchiria/funnels/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ share_with_users: value }),
+      });
+      if (!res.ok) {
+        const txt = await res.text().catch(() => '');
+        throw new Error(`HTTP ${res.status} ${txt}`);
+      }
+    } catch (error) {
+      console.error('Error toggling share-with-users flag:', error);
       set({ archivedFunnels: previous });
       throw error;
     }
