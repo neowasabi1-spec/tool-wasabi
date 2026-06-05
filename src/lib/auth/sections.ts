@@ -80,6 +80,12 @@ export const DASHBOARD_SECTIONS: DashboardSection[] = [
     extraPathPrefixes: ['/admin/'],
     masterOnlyByDefault: true,
   },
+  {
+    id: 'strategist',
+    label: 'Strategist',
+    path: '/strategist',
+    masterOnlyByDefault: true,
+  },
 ];
 
 /** All section ids — used by the SQL migration's master grant and by the

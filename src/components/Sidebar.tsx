@@ -38,7 +38,7 @@ interface MenuItem {
 
 const menuItems: MenuItem[] = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard, sectionId: null },
-  { name: 'Strategist', href: '/strategist', icon: Brain, sectionId: null },
+  { name: 'Strategist', href: '/strategist', icon: Brain, sectionId: null, masterOnly: true },
   { name: 'Clone / Swipe', href: '/front-end-funnel', icon: Copy, sectionId: 'front-end-funnel' },
   { name: 'Clone / Swipe Quiz', href: '/quiz-swipe', icon: HelpCircle, sectionId: 'quiz-swipe' },
   { name: 'My Archive', href: '/templates', icon: FileCode, sectionId: 'templates' },
@@ -57,8 +57,10 @@ export default function Sidebar() {
   const { user, permissions, loading } = useCurrentUser();
 
   const visibleItems = menuItems.filter(item => {
-    if (item.sectionId === null) return true; // dashboard etc. — always visible
+    // masterOnly wins over everything else — even items without a sectionId
+    // (e.g. Strategist) must be hidden to non-masters.
     if (item.masterOnly && permissions?.role !== 'master') return false;
+    if (item.sectionId === null) return true; // dashboard etc. — always visible
     return canAccessSection(permissions, item.sectionId);
   });
 
