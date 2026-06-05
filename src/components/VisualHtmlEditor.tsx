@@ -1273,6 +1273,13 @@ function prepareEditorHtml(html: string, sourceUrl?: string): string {
      * scroll-snap-style), neutralizziamo i transform sul wrapper,
      * e mostriamo le freccette/dots come riferimento di stile (ma
      * disabilitate). Tutti i pattern comuni coperti. */
+    /* Track/wrapper: stackiamo verticalmente DENTRO la colonna parent
+     * invece di fare grid orizzontale a 3 per riga. Il vecchio approccio
+     * (flex-wrap + min-width:280px sui figli) "gonfiava" il wrapper
+     * piu' largo della sua colonna grid/flex, spingendo fuori-schermo
+     * la colonna adiacente (es. il riquadro prezzo/ATC accanto al
+     * carosello immagini prodotto). Stack verticale = larghezza
+     * sempre uguale al parent, nessun blowout orizzontale. */
     .swiper-wrapper,
     .swiper-container,
     .swiper,
@@ -1299,9 +1306,11 @@ function prepareEditorHtml(html: string, sourceUrl?: string): string {
       width: auto !important;
       height: auto !important;
       max-width: 100% !important;
+      min-width: 0 !important;
       display: flex !important;
-      flex-wrap: wrap !important;
-      gap: 16px !important;
+      flex-direction: column !important;
+      flex-wrap: nowrap !important;
+      gap: 12px !important;
       overflow: visible !important;
       position: relative !important;
       left: auto !important;
@@ -1328,10 +1337,10 @@ function prepareEditorHtml(html: string, sourceUrl?: string): string {
       position: relative !important;
       left: auto !important;
       top: auto !important;
-      width: auto !important;
-      min-width: 280px !important;
+      width: 100% !important;
+      min-width: 0 !important;
       max-width: 100% !important;
-      flex: 0 1 calc(33.333% - 16px) !important;
+      flex: 0 0 auto !important;
       height: auto !important;
       pointer-events: auto !important;
     }
@@ -1343,13 +1352,15 @@ function prepareEditorHtml(html: string, sourceUrl?: string): string {
       visibility: visible !important;
       opacity: 1 !important;
     }
-    /* Mobile: 1 colonna invece di 3 */
+    /* Mobile: già stack verticale via regole sopra; nessun override
+     * extra serve, ma teniamo la regola per chiarezza/regressione. */
     @media (max-width: 768px) {
       .swiper-slide, .slick-slide, .owl-item, .glide__slide,
       .splide__slide, .carousel-item, .carousel-cell, .flickity-cell,
       .testimonial-slide, .review-slide, .slider-item,
       [class*="carousel"][class*="item"], [class*="slider"][class*="item"] {
-        flex: 0 1 100% !important;
+        width: 100% !important;
+        flex: 0 0 auto !important;
       }
     }
 
