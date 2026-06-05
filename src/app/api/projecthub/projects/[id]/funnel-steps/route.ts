@@ -4,6 +4,11 @@ import { getUserAccessContext } from '@/lib/auth/get-current-user';
 import { canAccessProject } from '@/lib/auth/project-access';
 
 export const dynamic = 'force-dynamic';
+export const runtime = 'nodejs';
+// Bulk insert can carry several MB of cloned HTML across many steps.
+// Default 10s wasn't enough on slow upstreams. Mirrors the value on
+// the per-step PATCH route.
+export const maxDuration = 60;
 
 const MIGRATION_HINT =
   'Migration not run — execute supabase-migration-projecthub.sql (funnel_steps)';

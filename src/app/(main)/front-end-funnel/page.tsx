@@ -1322,6 +1322,34 @@ export default function FrontEndFunnel() {
     const stepIdByPageIdx = new Map<number, number>();
     const failedHtml: string[] = [];
 
+    // Track failures per-step WITH the actual HTTP reason (status,
+    // body snippet) so the user sees the true cause (oversized payload,
+    // 504 timeout, 401 auth, etc.) instead of the old hardcoded
+    // "~6MB" guess.
+    type FailedStep = { label: string; reason: string };
+    const failed: FailedStep[] = [];
+    const recordFailure = async (label: string, pr: Response | null, err?: unknown) => {
+      let reason: string;
+      if (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        reason = /abort|network|fetch failed|timeout/i.test(msg)
+          ? `network/timeout (${msg})`
+          : `network error (${msg})`;
+      } else if (pr) {
+        const status = pr.status;
+        const body = await pr.text().catch(() => '');
+        const bodySnippet = body.slice(0, 140).replace(/\s+/g, ' ').trim();
+        if (status === 413) reason = 'HTML too large (>6MB)';
+        else if (status === 504) reason = 'server timeout (504)';
+        else if (status === 401 || status === 403) reason = `not authorized (${status})`;
+        else if (status === 404) reason = 'step not found (404)';
+        else reason = bodySnippet ? `HTTP ${status} — ${bodySnippet}` : `HTTP ${status}`;
+      } else {
+        reason = 'unknown';
+      }
+      failed.push({ label, reason });
+    };
+
     // 1) INSERT delle pagine NUOVE (append). Body leggero (result_content:null);
     //    l'HTML pesante arriva dopo via PATCH, una pagina per richiesta.
     if (toInsert.length) {
@@ -1343,6 +1371,7 @@ export default function FrontEndFunnel() {
           stepIdByPageIdx.set(ins.pageIdx, row.id);
           const html = ins.step.result_content;
           if (!html) continue;
+          const label = ins.step.page_name || `Step ${row.step_number}`;
           try {
             const pr = await fetch(
               `/api/projecthub/projects/${projectId}/funnel-steps/${row.id}`,
@@ -1352,9 +1381,9 @@ export default function FrontEndFunnel() {
                 body: JSON.stringify({ result_content: html }),
               },
             );
-            if (!pr.ok) failedHtml.push(ins.step.page_name || `Step ${row.step_number}`);
-          } catch {
-            failedHtml.push(ins.step.page_name || `Step ${row.step_number}`);
+            if (!pr.ok) await recordFailure(label, pr);
+          } catch (err) {
+            await recordFailure(label, null, err);
           }
         }
       }
@@ -1378,6 +1407,7 @@ export default function FrontEndFunnel() {
       if (s.product) patch.product = s.product;
       if (s.prompt_notes) patch.prompt_notes = s.prompt_notes;
       if (s.feedback) patch.feedback = s.feedback;
+      const label = s.page_name || `Step ${u.id}`;
       try {
         const pr = await fetch(
           `/api/projecthub/projects/${projectId}/funnel-steps/${u.id}`,
@@ -1387,17 +1417,17 @@ export default function FrontEndFunnel() {
             body: JSON.stringify(patch),
           },
         );
-        if (!pr.ok) failedHtml.push(s.page_name || `Step ${u.id}`);
-      } catch {
-        failedHtml.push(s.page_name || `Step ${u.id}`);
+        if (!pr.ok) await recordFailure(label, pr);
+      } catch (err) {
+        await recordFailure(label, null, err);
       }
     }
 
-    if (failedHtml.length) {
-      throw new Error(
-        `Partial save: HTML was not saved for: ${failedHtml.join(', ')} ` +
-        `(the single page exceeds ~6MB).`,
-      );
+    if (failed.length) {
+      const details = failed
+        .map((f) => `${f.label} (${f.reason})`)
+        .join(', ');
+      throw new Error(`Partial save: HTML was not saved for: ${details}.`);
     }
 
     // Auto-sync: collega ogni pagina del builder allo step (nuovo o

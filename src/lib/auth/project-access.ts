@@ -49,24 +49,23 @@ export async function canAccessProject(
 ): Promise<ProjectAccessDecision> {
   const ctx = await getUserAccessContext(req);
 
-  // Legacy / server-to-server: phase-1 transitional behavior.
+  // Legacy / server-to-server: phase-1 transitional behavior. Skip
+  // every Supabase round-trip; we don't even need ownerUserId because
+  // the caller is allowed regardless (and the field is only used for
+  // the SHARED-vs-OWNED badge logic, which doesn't apply server-side).
   if (!ctx.userId) {
     return { ctx, allowed: true, ownerUserId: null, viaShare: false };
   }
 
-  // Master sees everything; no per-row lookup needed.
+  // Master sees everything. We deliberately DO NOT lookup the project
+  // row here either: master is allowed regardless of who owns it, and
+  // adding a Supabase round-trip to every API call the master makes
+  // was just enough extra latency to push large PATCH requests
+  // (funnel-step HTML save) past the Netlify 10s timeout, causing the
+  // "Partial save" UI error even on healthy data. Callers that need
+  // ownerUserId for UX purposes should fetch it themselves.
   if (ctx.isMaster) {
-    const { data } = await supabaseAdmin
-      .from('projects')
-      .select('owner_user_id')
-      .eq('id', projectId)
-      .maybeSingle();
-    return {
-      ctx,
-      allowed: true,
-      ownerUserId: (data as { owner_user_id?: string } | null)?.owner_user_id ?? null,
-      viaShare: false,
-    };
+    return { ctx, allowed: true, ownerUserId: null, viaShare: false };
   }
 
   // Regular user: must be owner OR have a share row. We fetch both in

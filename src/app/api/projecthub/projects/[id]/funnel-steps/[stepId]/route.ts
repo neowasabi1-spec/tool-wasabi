@@ -3,6 +3,13 @@ import { supabase } from '@/lib/supabase';
 import { canAccessProject } from '@/lib/auth/project-access';
 
 export const dynamic = 'force-dynamic';
+export const runtime = 'nodejs';
+// The "Save Funnel into project" flow PATCHes one step per page with
+// `result_content` carrying multi-MB cloned HTML. Default 10s wasn't
+// enough on slow upstreams and was triggering the misleading
+// "Partial save... ~6MB" error from the client. Bumped to 60s — well
+// under Netlify's max-function-duration cap.
+export const maxDuration = 60;
 
 const WRITABLE = [
   'step_number',
