@@ -1363,19 +1363,43 @@ export default function FrontEndFunnel() {
       stepId: number,
       patch: Record<string, unknown>,
     ): Promise<{ ok: true } | { ok: false; reason: string }> => {
+      // Approximate payload size for diagnostics — JSON.stringify is
+      // close enough to the wire size to distinguish "couple MB" from
+      // "20MB+" cases.
+      let payloadBytes = 0;
       try {
-        const { error } = await supabase
+        payloadBytes = new Blob([JSON.stringify(patch)]).size;
+      } catch {
+        payloadBytes = 0;
+      }
+      const mb = (payloadBytes / 1024 / 1024).toFixed(2);
+      try {
+        // `select('id')` is critical: it forces PostgREST to return the
+        // rows it actually updated. Without it RLS filtering is a SILENT
+        // success (no error, no rows touched) and the user would see
+        // "saved" while the row never moved in the DB.
+        const { data, error } = await supabase
           .from('funnel_steps')
           .update(patch)
           .eq('id', stepId)
-          .eq('project_id', projectId);
+          .eq('project_id', projectId)
+          .select('id');
         if (error) {
-          return { ok: false, reason: `direct write failed: ${error.message}` };
+          return {
+            ok: false,
+            reason: `direct write failed (${mb}MB): ${error.message}`,
+          };
+        }
+        if (!data || data.length === 0) {
+          return {
+            ok: false,
+            reason: `direct write blocked by RLS (0 rows updated for step ${stepId}, payload ${mb}MB — apply supabase-migration-project-shares.sql or verify user can update funnel_steps for this project)`,
+          };
         }
         return { ok: true };
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        return { ok: false, reason: `direct write threw: ${msg}` };
+        return { ok: false, reason: `direct write threw (${mb}MB): ${msg}` };
       }
     };
 
