@@ -40,7 +40,17 @@ interface ValchiriaFunnelRow {
   owner_user_id: string | null;
   show_in_valchiria: boolean;
   share_with_users: boolean;
+  /** TRUE when the row is part of the master's library and the caller
+   *  is NOT the master. UI uses this to hide edit/delete + render the
+   *  Shared badge. */
   isShared: boolean;
+  /** Resolved per-caller: TRUE when the row should appear in the
+   *  caller's own /protocollo-valchiria.
+   *   - Own rows: equal to show_in_valchiria.
+   *   - Shared rows (for non-master callers): TRUE only if the caller
+   *     has explicitly picked it via the /api/valchiria/funnels/[id]
+   *     PATCH endpoint. */
+  isInMyValchiria: boolean;
 }
 
 const SELECT_COLS =
@@ -82,16 +92,18 @@ export async function GET(req: NextRequest) {
       const rows: ValchiriaFunnelRow[] = (data || []).map((r) => ({
         ...r,
         isShared: false,
+        // The master uses show_in_valchiria directly. No picks needed.
+        isInMyValchiria: !!r.show_in_valchiria,
       }));
       return NextResponse.json({ success: true, funnels: rows });
     }
 
     // Regular user branch: own rows + master's shared library.
-    // The "shared library" is now gated on `share_with_users = TRUE`
-    // (master-only opt-in), NOT on the personal show_in_valchiria flag
-    // — so the master can keep a funnel in their personal Valchiria
-    // without exposing it to every collaborator.
-    const [ownRes, sharedRes] = await Promise.all([
+    // The "shared library" is gated on `share_with_users = TRUE` (master
+    // opt-in); each shared row appears in My Archive but does NOT auto-
+    // show in the user's Valchiria — the user must explicitly pick it
+    // via a row in `valchiria_user_picks`.
+    const [ownRes, sharedRes, picksRes] = await Promise.all([
       baseSelect.eq('owner_user_id', ctx.userId),
       masterId
         ? supabaseAdmin
@@ -101,19 +113,31 @@ export async function GET(req: NextRequest) {
             .eq('share_with_users', true)
             .order('created_at', { ascending: false })
         : Promise.resolve({ data: [], error: null } as { data: unknown[]; error: null }),
+      supabaseAdmin
+        .from('valchiria_user_picks')
+        .select('funnel_id')
+        .eq('user_id', ctx.userId),
     ]);
 
     if (ownRes.error) throw ownRes.error;
     if ('error' in sharedRes && sharedRes.error) throw sharedRes.error;
+    // Picks failure shouldn't poison the whole response — fall back to
+    // "no picks" so the Valchiria page still works (the user just won't
+    // see their shared selections this round).
+    const pickedIds = new Set<string>(
+      (picksRes.error ? [] : (picksRes.data || [])).map((p: { funnel_id: string }) => p.funnel_id),
+    );
 
     const ownRows: ValchiriaFunnelRow[] = (ownRes.data || []).map((r) => ({
       ...r,
       isShared: false,
+      isInMyValchiria: !!r.show_in_valchiria,
     }));
     const sharedRowsRaw = (sharedRes as { data: ValchiriaFunnelRow[] }).data || [];
     const sharedRows: ValchiriaFunnelRow[] = sharedRowsRaw.map((r) => ({
       ...r,
       isShared: true,
+      isInMyValchiria: pickedIds.has(r.id),
     }));
 
     // Sort merged set newest-first across both buckets so the UI shows

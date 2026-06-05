@@ -52,15 +52,20 @@ export default function ProtocolloValchiriaPage() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Source of truth: the `show_in_valchiria` flag set from /templates.
-  // We also still accept the legacy `[SWIPE]` naming convention for
-  // backward compatibility — the SQL backfill should have promoted
-  // those rows automatically, but a row could still pre-date the
-  // migration in dev environments. Both buckets feed the same list.
+  // Source of truth: the per-caller `isInMyValchiria` flag computed
+  // by /api/valchiria/funnels. For OWN rows it equals show_in_valchiria;
+  // for master-shared rows it equals whether the caller picked the row
+  // via the dedicated toggle in My Archive (valchiria_user_picks).
+  //
+  // We still fall through to show_in_valchiria + the legacy `[SWIPE]`
+  // naming for the rare path where the page boots before the new API
+  // resolves (or in dev environments where the migration hasn't been
+  // applied yet) so the existing behaviour never regresses.
   const swipeFunnels = useMemo(() =>
-    archivedFunnels.filter((f: ArchivedFunnel) =>
-      f.show_in_valchiria === true || f.name.includes('[SWIPE]')
-    ),
+    archivedFunnels.filter((f: ArchivedFunnel) => {
+      if (typeof f.isInMyValchiria === 'boolean') return f.isInMyValchiria;
+      return f.show_in_valchiria === true || f.name.includes('[SWIPE]');
+    }),
     [archivedFunnels]
   );
 
