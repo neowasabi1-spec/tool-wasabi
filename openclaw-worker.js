@@ -404,10 +404,10 @@ function computeCostUsd(provider, model, inputTokens, outputTokens) {
 // caller. If the table doesn't exist yet (migration not applied) we
 // silently swallow; the worker keeps running and the user just sees
 // $0 in the dashboard until they apply supabase-migration-api-usage-log.sql.
-async function logApiUsage({ provider, model, inputTokens, outputTokens, source, durationMs, metadata }) {
+async function logApiUsage({ provider, model, inputTokens, outputTokens, source, durationMs, metadata, ownerUserId }) {
   try {
     const cost = computeCostUsd(provider, model, inputTokens, outputTokens);
-    await supabase.from('api_usage_log').insert({
+    const row = {
       provider,
       model,
       input_tokens: inputTokens || 0,
@@ -417,7 +417,12 @@ async function logApiUsage({ provider, model, inputTokens, outputTokens, source,
       agent: OPENCLAW_AGENT || null,
       duration_ms: durationMs ?? null,
       metadata: metadata || null,
-    });
+    };
+    // owner_user_id is set only when the worker has it on the job —
+    // older rows (pre-multi-tenancy) stay NULL and surface under
+    // "Unattributed" in the dashboard.
+    if (ownerUserId) row.owner_user_id = ownerUserId;
+    await supabase.from('api_usage_log').insert(row);
   } catch (e) {
     // Non-fatal — usage logging must never break the actual job.
     err(`logApiUsage failed: ${e.message}`);
@@ -530,6 +535,10 @@ function callAnthropic(messages) {
                 source: (callCtx && callCtx.source) || 'worker',
                 durationMs: Date.now() - callStartedAt,
                 metadata: callCtx && callCtx.metadata,
+                // Fall back to the module-level _currentJobOwnerUserId
+                // (captured at processMessage start) so any callCtx that
+                // forgot to set ownerUserId still gets attributed.
+                ownerUserId: (callCtx && callCtx.ownerUserId) || _currentJobOwnerUserId,
               }).catch(() => {});
               resolve(text);
             } catch (e) {
@@ -1466,6 +1475,13 @@ ${pageBlueprint}
 }
 
 // ===== MESSAGE PROCESSING =========================================
+// Module-level holder for the current job's owner. Captured once at
+// the top of processMessage and read by callAnthropic via a fallback
+// when no _callContext.ownerUserId is set — this attributes every LLM
+// spend row to the user who enqueued the job, without forcing every
+// existing `_callContext = {...}` call site to thread ownerUserId.
+let _currentJobOwnerUserId = null;
+
 async function processMessage(msg) {
   const isSwipeJob = msg.section === 'swipe_job';
   const preview = String(msg.user_message || '').substring(0, 60).replace(/\n/g, ' ');
@@ -1478,6 +1494,10 @@ async function processMessage(msg) {
   activeJobId = msg.id;
   jobAbortRequested = false;
   jobAbortReason = '';
+  // Stash the job owner so callAnthropic → logApiUsage can tag the
+  // spend row. Old rows in openclaw_messages (pre-multi-tenancy) have
+  // no owner_user_id; we just leave the call unattributed.
+  _currentJobOwnerUserId = msg.owner_user_id || null;
   let abortPoll = null;
 
   try {
@@ -2338,6 +2358,7 @@ ONESTA': se nei TUOI archivi non hai dati su questo prodotto/settore e non puoi 
     activeJobId = null;
     jobAbortRequested = false;
     jobAbortReason = '';
+    _currentJobOwnerUserId = null;
   }
 }
 

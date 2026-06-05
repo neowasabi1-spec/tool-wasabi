@@ -17,6 +17,13 @@ interface SummaryRow {
   duration_ms: number | null;
 }
 
+interface ByUserRow {
+  user_id: string | null;
+  email: string | null;
+  cost_usd: number;
+  calls: number;
+}
+
 interface SummaryResponse {
   totalCostUsd: number;
   todayCostUsd: number;
@@ -24,6 +31,10 @@ interface SummaryResponse {
   last30dCostUsd: number;
   byProvider: { provider: string; cost_usd: number; calls: number }[];
   bySource: { source: string; cost_usd: number; calls: number }[];
+  byUser: ByUserRow[];
+  /** 'all' when caller is master / no-auth (sees the whole org).
+   *  'self' when caller is a regular user (own spend only). */
+  scope: 'all' | 'self';
   recent: SummaryRow[];
   warning: string | null;
 }
@@ -92,6 +103,11 @@ export default function ApiUsagePage() {
             <p className="text-sm text-gray-600 mt-1">
               Costo cumulato delle chiamate LLM a pagamento (Anthropic / OpenAI / Gemini).
               Trinity locale (Neo) non è incluso perché gratuito.
+              {data?.scope === 'self' && (
+                <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-200">
+                  Solo i tuoi consumi
+                </span>
+              )}
             </p>
           </div>
           <button
@@ -194,6 +210,54 @@ export default function ApiUsagePage() {
                 )}
               </Section>
             </div>
+
+            {/* Per-user breakdown — master view only. Hidden for regular
+                users since their breakdown would be a single row. */}
+            {data.scope === 'all' && (
+              <div className="mb-8">
+                <Section title="Spesa per utente (ultimi 30 giorni)">
+                  {data.byUser.length === 0 ? (
+                    <EmptyState text="Nessuna chiamata utente loggata negli ultimi 30 giorni. Controlla che la migration supabase-migration-api-usage-owner.sql sia stata applicata e che il worker stia girando con la build aggiornata." />
+                  ) : (
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="text-left text-xs font-medium text-gray-500 uppercase border-b border-gray-200">
+                          <th className="py-2">Utente</th>
+                          <th className="py-2 text-right">Chiamate</th>
+                          <th className="py-2 text-right">Costo</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {data.byUser.map((u) => (
+                          <tr
+                            key={u.user_id || 'unattributed'}
+                            className="border-b border-gray-100 last:border-0"
+                          >
+                            <td className="py-2 font-medium text-gray-900">
+                              {u.email
+                                ? u.email
+                                : u.user_id
+                                  ? (
+                                    <span className="font-mono text-xs text-gray-500">
+                                      {u.user_id.slice(0, 8)}…
+                                    </span>
+                                  )
+                                  : (
+                                    <span className="italic text-gray-500">
+                                      Unattributed (pre-multi-tenancy)
+                                    </span>
+                                  )}
+                            </td>
+                            <td className="py-2 text-right text-gray-700">{fmtInt(u.calls)}</td>
+                            <td className="py-2 text-right font-mono text-gray-900">{fmtUsd(u.cost_usd)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </Section>
+              </div>
+            )}
 
             {/* Recent calls */}
             <Section title="Ultime 50 chiamate">
