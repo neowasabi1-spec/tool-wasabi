@@ -6,7 +6,7 @@ import Header from '@/components/Header';
 import { useStore } from '@/store/useStore';
 import { BUILT_IN_PAGE_TYPE_OPTIONS, PAGE_TYPE_CATEGORIES, PageType, PageTypeOption, TemplateCategory, TEMPLATE_CATEGORY_OPTIONS, TemplateViewFormat, TEMPLATE_VIEW_FORMAT_OPTIONS, LIBRARY_TEMPLATES } from '@/types';
 import type { ArchivedFunnel } from '@/types/database';
-import { Plus, Trash2, Edit2, Save, X, FileCode, ExternalLink, Tag, Filter, Eye, EyeOff, Maximize2, Layers, HelpCircle, FolderPlus, Settings, Monitor, Smartphone, BookOpen, ChevronDown, ChevronRight, FolderOpen, Archive, CheckSquare, Square, Package, Sparkles, Send, Loader2, MessageCircle, Search, Download } from 'lucide-react';
+import { Plus, Trash2, Edit2, Save, X, FileCode, ExternalLink, Tag, Filter, Eye, EyeOff, Maximize2, Layers, HelpCircle, FolderPlus, Settings, Monitor, Smartphone, BookOpen, ChevronDown, ChevronRight, FolderOpen, Archive, CheckSquare, Square, Package, Sparkles, Send, Loader2, MessageCircle, Search, Download, Swords, Lock } from 'lucide-react';
 import CachedScreenshot from '@/components/CachedScreenshot';
 import QuizArchiveView from './QuizArchiveView';
 
@@ -167,7 +167,8 @@ function PageThumbnail({ url, alt, height = '180px', savedHtml }: { url: string;
 }
 
 export default function TemplatesPage() {
-  const { templates, addTemplate, updateTemplate, deleteTemplate, customPageTypes, addCustomPageType, deleteCustomPageType, archivedFunnels, archivedFunnelsLoaded, loadArchivedFunnels, deleteArchivedFunnel, products, addFunnelPage, funnelPages, deleteFunnelPage } = useStore();
+  const { templates, addTemplate, updateTemplate, deleteTemplate, customPageTypes, addCustomPageType, deleteCustomPageType, archivedFunnels, archivedFunnelsLoaded, loadArchivedFunnels, deleteArchivedFunnel, setArchivedFunnelValchiriaFlag, products, addFunnelPage, funnelPages, deleteFunnelPage } = useStore();
+  const [valchiriaTogglingId, setValchiriaTogglingId] = useState<string | null>(null);
   const router = useRouter();
   
   const [mainView, setMainView] = useState<'templates' | 'funnels' | 'byType' | 'quiz'>('templates');
@@ -892,18 +893,56 @@ export default function TemplatesPage() {
                         <div className="flex-1">
                           <span className="font-semibold text-gray-900 text-base">{funnel.name}</span>
                           <span className="ml-3 text-sm text-gray-400">{funnel.total_steps} step</span>
+                          {funnel.isShared && (
+                            <span className="ml-3 inline-flex items-center gap-1 px-2 py-0.5 bg-amber-50 border border-amber-200 rounded-full text-[10px] font-semibold text-amber-700 uppercase tracking-wide" title="Shared library funnel — read only">
+                              <Lock className="w-3 h-3" /> Shared
+                            </span>
+                          )}
                         </div>
                         <span className="text-xs text-gray-400">{new Date(funnel.created_at).toLocaleDateString('en-US', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
                       </div>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (confirm(`Delete funnel "${funnel.name}"?`)) deleteArchivedFunnel(funnel.id);
-                        }}
-                        className="ml-2 p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                      {/* Valchiria toggle — only on rows the caller owns
+                          (shared rows from the master are read-only). */}
+                      {!funnel.isShared && (
+                        <button
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            if (valchiriaTogglingId) return;
+                            setValchiriaTogglingId(funnel.id);
+                            try {
+                              await setArchivedFunnelValchiriaFlag(funnel.id, !funnel.show_in_valchiria);
+                            } catch (err) {
+                              alert(`Could not update Valchiria flag: ${err instanceof Error ? err.message : String(err)}`);
+                            } finally {
+                              setValchiriaTogglingId(null);
+                            }
+                          }}
+                          disabled={valchiriaTogglingId === funnel.id}
+                          title={funnel.show_in_valchiria ? 'Hide from Protocollo Valchiria' : 'Show in Protocollo Valchiria'}
+                          className={`ml-2 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
+                            funnel.show_in_valchiria
+                              ? 'bg-purple-50 border-purple-300 text-purple-700 hover:bg-purple-100'
+                              : 'bg-white border-gray-200 text-gray-500 hover:border-purple-300 hover:text-purple-600'
+                          } disabled:opacity-60 disabled:cursor-not-allowed`}
+                        >
+                          {valchiriaTogglingId === funnel.id
+                            ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            : <Swords className="w-3.5 h-3.5" />
+                          }
+                          {funnel.show_in_valchiria ? 'In Valchiria' : 'Add to Valchiria'}
+                        </button>
+                      )}
+                      {!funnel.isShared && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (confirm(`Delete funnel "${funnel.name}"?`)) deleteArchivedFunnel(funnel.id);
+                          }}
+                          className="ml-2 p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      )}
                     </div>
                     {isExpanded && steps.length > 0 && (
                       <div className="border-t border-gray-100 p-5 space-y-5">

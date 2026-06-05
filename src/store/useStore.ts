@@ -535,6 +535,10 @@ interface Store {
   loadArchivedFunnels: () => Promise<void>;
   saveCurrentFunnelAsArchive: (name: string, section?: string, pageIds?: string[]) => Promise<void>;
   deleteArchivedFunnel: (id: string) => Promise<void>;
+  /** Toggle whether an archived funnel surfaces in Protocollo Valchiria.
+   *  Hits the dedicated API route (server-side ownership check) and
+   *  optimistically updates the in-memory list. */
+  setArchivedFunnelValchiriaFlag: (id: string, value: boolean) => Promise<void>;
 
   // Ultimo errore di upload HTML su Supabase Storage (null = nessun errore).
   // Settato da updateFunnelPage/persistHtmlBlobs; letto dalla UI per
@@ -1396,6 +1400,27 @@ export const useStore = create<Store>()((set, get) => ({
   loadArchivedFunnels: async () => {
     if (get().archivedFunnelsLoaded) return;
     try {
+      // Prefer the multi-tenancy aware endpoint so we get
+      //   (a) the caller's own funnels
+      //   (b) the master's shared library (rows flagged
+      //       show_in_valchiria=true), each tagged with isShared.
+      // If the endpoint fails for any reason we fall back to the direct
+      // Supabase query so the rest of the app keeps working — RLS will
+      // still scope rows to the caller, so this is a strict superset.
+      try {
+        const res = await fetch('/api/valchiria/funnels', { cache: 'no-store' });
+        if (res.ok) {
+          const json = await res.json();
+          if (json?.success && Array.isArray(json.funnels)) {
+            set({ archivedFunnels: json.funnels as ArchivedFunnel[], archivedFunnelsLoaded: true });
+            return;
+          }
+        }
+      } catch (apiErr) {
+        if (process.env.NODE_ENV !== 'production') {
+          console.warn('[loadArchivedFunnels] /api/valchiria/funnels failed, falling back to direct fetch:', apiErr);
+        }
+      }
       const data = await supabaseOps.fetchArchivedFunnels();
       set({ archivedFunnels: data, archivedFunnelsLoaded: true });
     } catch (error) {
@@ -1513,6 +1538,32 @@ export const useStore = create<Store>()((set, get) => ({
       }));
     } catch (error) {
       console.error('Error deleting archived funnel:', error);
+      throw error;
+    }
+  },
+
+  setArchivedFunnelValchiriaFlag: async (id: string, value: boolean) => {
+    // Optimistic update first so the toggle feels instant; we roll back
+    // if the server rejects (403 / 404 / network).
+    const previous = get().archivedFunnels;
+    set((state) => ({
+      archivedFunnels: state.archivedFunnels.map((f) =>
+        f.id === id ? { ...f, show_in_valchiria: value } : f,
+      ),
+    }));
+    try {
+      const res = await fetch(`/api/valchiria/funnels/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ show_in_valchiria: value }),
+      });
+      if (!res.ok) {
+        const txt = await res.text().catch(() => '');
+        throw new Error(`HTTP ${res.status} ${txt}`);
+      }
+    } catch (error) {
+      console.error('Error toggling Valchiria flag:', error);
+      set({ archivedFunnels: previous });
       throw error;
     }
   },

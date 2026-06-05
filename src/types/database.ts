@@ -481,6 +481,15 @@ export interface Database {
           section: string;
           project_id: string | null;
           created_at: string;
+          /** When TRUE, this funnel surfaces in Protocollo Valchiria.
+           *  If the row is owner by the master, it's also visible
+           *  to every other authenticated user (shared library). */
+          show_in_valchiria?: boolean;
+          /** Stitched in by /api/valchiria/funnels — `true` when the
+           *  row is part of the master's shared library and the caller
+           *  is NOT the master. The UI uses this to hide edit/delete
+           *  controls on shared rows. Not present on direct table reads. */
+          isShared?: boolean;
         };
         Insert: {
           id?: string;
@@ -491,6 +500,7 @@ export interface Database {
           section?: string;
           project_id?: string | null;
           created_at?: string;
+          show_in_valchiria?: boolean;
         };
         Update: {
           id?: string;
@@ -500,6 +510,7 @@ export interface Database {
           analysis?: string | null;
           section?: string;
           project_id?: string | null;
+          show_in_valchiria?: boolean;
         };
       };
       projects: {
