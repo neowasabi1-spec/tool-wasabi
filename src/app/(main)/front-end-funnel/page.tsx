@@ -1646,6 +1646,12 @@ export default function FrontEndFunnel() {
   // anteprima…" mentre la doc.write avviene in setTimeout(0) cosi' il
   // browser puo' almeno disegnare lo spinner prima del freeze.
   const [previewLoading, setPreviewLoading] = useState(false);
+  // Tracks whether the live iframe for a cloned step failed to render
+  // (X-Frame-Options / CSP frame-ancestors block, network error, etc.).
+  // When true we hide the empty broken-image iframe behind a centered
+  // action panel so the user gets useful affordances instead of a sad
+  // placeholder. Reset to false at every (re)load attempt.
+  const [previewLiveFailed, setPreviewLiveFailed] = useState(false);
   // Defensive: se per qualunque motivo setPreviewLoading(false) non viene
   // chiamato (ref callback non re-eseguita, errore prima del cleanup,
   // HTML enorme che blocca il main thread...) lo spinner resta a vita.
@@ -1657,6 +1663,11 @@ export default function FrontEndFunnel() {
       setPreviewLoading(false);
     }, 15000);
     return () => clearTimeout(t);
+  }, [previewLoading]);
+  // Reset the "live failed" flag whenever a new load begins so the
+  // fallback panel disappears while the iframe re-attempts to render.
+  useEffect(() => {
+    if (previewLoading) setPreviewLiveFailed(false);
   }, [previewLoading]);
   const [editableHtml, setEditableHtml] = useState('');
   const [cloneConfig, setCloneConfig] = useState({
@@ -6960,6 +6971,82 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                       </div>
                     </div>
                   )}
+                  {/* ── Fallback overlay quando l'iframe live non rende ─────
+                      Si attiva quando il sito blocca il framing (X-Frame-
+                      Options / CSP frame-ancestors) o il body è vuoto. Al
+                      posto del placeholder bianco con icona broken-image
+                      mostriamo i pulsanti d'azione utili centrati: l'utente
+                      può aprire il live in una vera tab, passare allo
+                      snapshot HTML salvato o scaricare l'HTML. */}
+                  {previewLiveFailed && !previewLoading && (
+                    <div className="absolute inset-0 z-20 flex items-center justify-center bg-gray-100 p-6">
+                      <div className="max-w-md w-full text-center">
+                        <p className="text-sm text-gray-600 mb-5">
+                          Preview unavailable — the page blocks framing.
+                          Use one of the actions below to open it.
+                        </p>
+                        <div className="flex flex-wrap items-center justify-center gap-2">
+                          {htmlPreviewModal.sourceUrl && (
+                            <button
+                              onClick={() => window.open(htmlPreviewModal.sourceUrl, '_blank', 'noopener,noreferrer')}
+                              className="inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors text-sm font-medium"
+                            >
+                              <ExternalLink className="w-4 h-4" />
+                              Open live navigable
+                            </button>
+                          )}
+                          {htmlPreviewModal.html && htmlPreviewModal.sourceType === 'cloned' && (
+                            <button
+                              onClick={() => {
+                                setPreviewLoading(true);
+                                setClonedPreviewMode('snapshot');
+                              }}
+                              className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium"
+                            >
+                              <Code className="w-4 h-4" />
+                              Show Snapshot HTML
+                            </button>
+                          )}
+                          {htmlPreviewModal.html && (
+                            <button
+                              onClick={async () => {
+                                const newWin = window.open('', '_blank');
+                                if (!newWin) return;
+                                let html = htmlPreviewModal.html;
+                                try {
+                                  const { injectInteractivityRescue } = await import('@/lib/spa-rescue');
+                                  html = injectInteractivityRescue(html);
+                                } catch { /* fallback */ }
+                                newWin.document.open();
+                                newWin.document.write(html);
+                                newWin.document.close();
+                              }}
+                              className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors text-sm font-medium"
+                            >
+                              <ExternalLink className="w-4 h-4" />
+                              Open Cloned HTML
+                            </button>
+                          )}
+                          {htmlPreviewModal.html && (
+                            <button
+                              onClick={() => {
+                                const blob = new Blob([htmlPreviewModal.html], { type: 'text/html' });
+                                const url = URL.createObjectURL(blob);
+                                const a = document.createElement('a');
+                                a.href = url;
+                                a.download = `${htmlPreviewModal.title.replace(/[^a-z0-9]/gi, '_')}.html`;
+                                a.click();
+                                URL.revokeObjectURL(url);
+                              }}
+                              className="inline-flex items-center gap-2 px-4 py-2 bg-gray-700 text-white rounded-lg hover:bg-gray-800 transition-colors text-sm font-medium"
+                            >
+                              Download HTML
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
                   <iframe
                     key={`${previewViewport}-${htmlPreviewModal.html?.length || ''}-${htmlPreviewModal.iframeSrc || 'empty'}-${clonedPreviewMode}`}
                     ref={(iframe) => {
@@ -6990,13 +7077,38 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                           : null;
                       if (liveCloneSrc) {
                         iframe.src = liveCloneSrc;
-                        iframe.addEventListener('load', () => setPreviewLoading(false), { once: true });
+                        let loadFired = false;
+                        iframe.addEventListener(
+                          'load',
+                          () => {
+                            loadFired = true;
+                            setPreviewLoading(false);
+                            // Best-effort same-origin probe: if we CAN
+                            // reach the iframe's document, also sanity-
+                            // check that it actually has a <body> with
+                            // some content. Cross-origin frames will
+                            // throw on access here, which is fine — we
+                            // treat that as "loaded successfully" since
+                            // the browser drew SOMETHING.
+                            try {
+                              const doc = iframe.contentDocument;
+                              const bodyHtml = doc?.body?.innerHTML?.trim();
+                              if (doc && (!bodyHtml || bodyHtml.length < 20)) {
+                                setPreviewLiveFailed(true);
+                              }
+                            } catch { /* cross-origin → treat as success */ }
+                          },
+                          { once: true },
+                        );
                         // Fallback: se il sito blocca il framing (X-Frame-Options
                         // / CSP frame-ancestors), `load` non scatta e lo spinner
-                        // resta. Dopo 6s nascondiamo lo spinner comunque e
-                        // l'utente vede il messaggio del browser ("Refused to
-                        // connect"); puo' allora switchare a Snapshot HTML.
-                        setTimeout(() => setPreviewLoading(false), 6000);
+                        // resta. Dopo 6s nascondiamo lo spinner E marchiamo il
+                        // preview come fallito → l'overlay con i bottoni
+                        // centrati appare al posto dell'iframe nudo.
+                        setTimeout(() => {
+                          setPreviewLoading(false);
+                          if (!loadFired) setPreviewLiveFailed(true);
+                        }, 6000);
                         return;
                       }
                       if (htmlPreviewModal.iframeSrc) {
