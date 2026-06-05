@@ -7,7 +7,7 @@ import { useStore } from '@/store/useStore';
 import { ArchivedFunnel, PageType } from '@/types/database';
 import {
   Swords, ChevronDown, ChevronRight, Package, Check, Wand2,
-  ExternalLink, Loader2, CheckSquare, Square,
+  ExternalLink, Loader2, CheckSquare, Square, Lock,
 } from 'lucide-react';
 
 interface StepKey {
@@ -52,8 +52,15 @@ export default function ProtocolloValchiriaPage() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
+  // Source of truth: the `show_in_valchiria` flag set from /templates.
+  // We also still accept the legacy `[SWIPE]` naming convention for
+  // backward compatibility — the SQL backfill should have promoted
+  // those rows automatically, but a row could still pre-date the
+  // migration in dev environments. Both buckets feed the same list.
   const swipeFunnels = useMemo(() =>
-    archivedFunnels.filter((f: ArchivedFunnel) => f.name.includes('[SWIPE]')),
+    archivedFunnels.filter((f: ArchivedFunnel) =>
+      f.show_in_valchiria === true || f.name.includes('[SWIPE]')
+    ),
     [archivedFunnels]
   );
 
@@ -270,8 +277,12 @@ export default function ProtocolloValchiriaPage() {
           {swipeFunnels.length === 0 ? (
             <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-12 text-center">
               <Swords className="w-12 h-12 text-gray-300 mx-auto mb-3" />
-              <p className="text-gray-500 font-medium">No [SWIPE] funnel found</p>
-              <p className="text-gray-400 text-sm mt-1">Save funnels with &quot;[SWIPE]&quot; in the name from the Saved Funnels section</p>
+              <p className="text-gray-500 font-medium">No funnels in Protocollo Valchiria yet</p>
+              <p className="text-gray-400 text-sm mt-1">
+                Open <span className="font-semibold">My Archive</span> and click{' '}
+                <span className="font-semibold">&ldquo;Add to Valchiria&rdquo;</span> on any saved funnel
+                to make it available here.
+              </p>
             </div>
           ) : (
             swipeFunnels.map((funnel, index) => {
@@ -310,7 +321,17 @@ export default function ProtocolloValchiriaPage() {
                       className="flex-1 min-w-0 cursor-pointer"
                       onClick={() => toggleExpand(funnel.id)}
                     >
-                      <h3 className="text-base font-semibold text-gray-900">{funnel.name}</h3>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <h3 className="text-base font-semibold text-gray-900">{funnel.name}</h3>
+                        {funnel.isShared && (
+                          <span
+                            className="inline-flex items-center gap-1 px-2 py-0.5 bg-amber-50 border border-amber-200 rounded-full text-[10px] font-semibold text-amber-700 uppercase tracking-wide"
+                            title="Shared library funnel from the master account"
+                          >
+                            <Lock className="w-3 h-3" /> Shared
+                          </span>
+                        )}
+                      </div>
                       <div className="flex items-center gap-3 mt-0.5">
                         <span className="text-xs text-gray-400">{funnel.total_steps} steps</span>
                         {funnelSelectedCount > 0 && (
