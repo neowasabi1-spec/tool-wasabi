@@ -546,20 +546,16 @@ function initCarousels(){
   }catch(e){}
 }
 function once(){
-  // Flag su <html> SEMPRE attivo: lo gating "solo se trovi TRIG/ITEM"
-  // tagliava fuori le pagine con markup custom (es. .elBlock,
-  // .faq__row, .elementor-widget__faq-item). In quei casi closeAll qui
-  // sotto trova comunque gli accordion via euristica, ma il CSS che
-  // serviva a renderli "cliccabili" (cursor:pointer) non veniva mai
-  // attivato e l'utente non capiva che si poteva interagire.
   try{document.documentElement.setAttribute('data-wasabi-rescue','1');}catch(e){}
   closeAll();
   initCarousels();
+  try{console.log('[wasabi-rescue] active. ITEM matches:',document.querySelectorAll(ITEM).length,'PANEL matches:',document.querySelectorAll(PANEL).length);}catch(e){}
   // Retry: alcune pagine popolano le slide via script inline dopo il load.
   // initCarousels e' idempotente (guard __wbCar), quindi e' sicuro ripetere.
   setTimeout(initCarousels,600);setTimeout(initCarousels,1600);
   document.addEventListener('click',function(ev){
     var t=ev.target;if(!(t instanceof Element))return;
+    try{console.log('[wasabi-rescue] CLICK',t.tagName,'.'+(t.className||'').toString().slice(0,80));}catch(e){}
     var actionable=t.closest('a[href]:not([href="#"]):not([href=""]),button[type="submit"],input,select,textarea');
     // 1) ARIA pattern
     var btn=t.closest('[aria-expanded][aria-controls]');
@@ -620,13 +616,14 @@ function once(){
     }
     if(item){
       if(actionable&&item.contains(actionable)&&actionable!==item)return;
-      // Non chiudere se si clicca DENTRO un pannello gia' aperto (es. per
-      // selezionare il testo della risposta): solo i click sull'header
-      // devono fare toggle.
       var inPanel=t.closest(PANEL);
       if(inPanel&&panelOpen(inPanel)){try{if(getComputedStyle(inPanel).display!=='none')return;}catch(e){}}
-      toggle(item,t.closest(TRIG)||t);
+      var trig=t.closest(TRIG)||t;
+      try{var pnl=findPanel(trig,item);console.log('[wasabi-rescue] TOGGLE item=',item.tagName+'.'+(item.className||'').toString().slice(0,60),'trig=',trig.tagName,'panel=',pnl?pnl.tagName+'.'+(pnl.className||'').toString().slice(0,60):'NULL');}catch(e){}
+      toggle(item,trig);
       ev.preventDefault();ev.stopPropagation();
+    }else{
+      try{console.log('[wasabi-rescue] NO ITEM FOUND for click target — no toggle');}catch(e){}
     }
   },true);
 }
