@@ -456,71 +456,139 @@ const EDITOR_SCRIPT = `
   function isUI(el){return el===plusBtn||el===delBtn||plusBtn.contains(el)||delBtn.contains(el);}
 
   /* ── FAQ/ACCORDION CLICK DELEGATE (editor) ─────────────────────────
-   * In editor abbiamo strippato gli <script> della pagina, quindi gli
-   * accordion FAQ non rispondono piu' al click (lo "ruba" sempre il
-   * selector). Lo sostituiamo con un toggle generico controllato da
-   * un attributo nostro: data-editor-faq-closed="true" sull'item.
-   * Il CSS (vedi sotto) usa quell'attributo per nascondere il pannello
-   * risposta solo per gli item chiusi — gli altri restano aperti come
-   * prima. Cosi' l'utente puo' aprire/chiudere e verificare il
-   * comportamento reale prima di pubblicare. */
-  var FAQ_TRIGGER_SEL='summary,'+
-    '.faq-question,.faq-header,.faq-title,.faq-trigger,.faq-toggle,'+
-    '.faq__question,.faq__title,'+
-    '[data-faq-trigger],[data-faq-question],'+
-    '.accordion-header,.accordion-title,.accordion-toggle,.accordion-trigger,.accordion-button,'+
-    '[data-accordion-trigger],[data-accordion-target],'+
+   * Toggle reale apri/chiudi DENTRO l'editor anche per accordion senza
+   * classi note. Riusiamo la stessa euristica del rescue script in
+   * preview (vedi src/lib/spa-rescue.ts): elenco di selettori "buoni"
+   * + fuzzy match per classe + ispezione strutturale (fratello dopo il
+   * trigger, primo figlio panel-like).
+   *
+   * Cosi' funzionano:
+   *   - .faq-question / .accordion-header e simili noti
+   *   - <details>/<summary>
+   *   - <label for="x"> + <input type="checkbox" id="x"> (CSS-only)
+   *   - container ".elBlock"/"faq__row"/qualsiasi cosa con "faq",
+   *     "accordion", "toggle", "collaps", "expand", "question",
+   *     "dropdown" nel className + un figlio panel-shaped.
+   *
+   * Lo stato chiuso viene applicato inline con display:none !important
+   * sul pannello: vince sulle regole "force-open" del CSS editor e su
+   * eventuali !important della pagina originale. */
+  var FAQ_TRIG='.faq-header,.faq-title,.faq-question,.faq-trigger,.faq-toggle,.faq__question,.faq__title,'+
+    '.accordion-header,.accordion-button,.accordion-toggle,.accordion-trigger,.accordion-title,.toggle-header,'+
     '.elFAQItemQuestion,.elementor-tab-title,.e-n-accordion-item-title,'+
     '.uk-accordion-title,.wp-block-coblocks-accordion-item__title,.kt-accordion-header,'+
-    '[aria-controls]';
-  var FAQ_ITEM_SEL='details,.faq-item,.faq,.faq-wrapper > *,'+
-    '.accordion-item,.accordion,.accordion > *,'+
-    '.elFAQItem,.elementor-accordion-item,.e-n-accordion-item,'+
-    '.uk-accordion > li,.wp-block-coblocks-accordion-item,.kt-accordion-pane';
-  function faqTriggerFor(target){
-    if(!target||target.nodeType!==1)return null;
-    try{
-      var t=target.closest(FAQ_TRIGGER_SEL);
-      if(!t)return null;
-      /* Evita falsi positivi: input/select dentro form con aria-controls non
-         sono accordion. */
-      var tn=t.tagName&&t.tagName.toLowerCase();
-      if(tn==='input'||tn==='select'||tn==='textarea')return null;
-      return t;
-    }catch(e){return null;}
+    '[data-accordion-trigger],[data-faq-toggle],[data-faq-trigger],[data-faq-question],'+
+    '[aria-controls],summary,label[for]';
+  var FAQ_ITEM_SEL='.faq,.faq-wrapper,.faq-item,.accordion-item,.accordion,.toggle-item,.elFAQItem,[data-faq],details';
+  var FAQ_PANEL='.faq-content-wrapper,.faq-content,.accordion-content,.accordion-body,.accordion-collapse,'+
+    '.faq-body,.faq-answer,.elFAQItemAnswer,.toggle-content,.collapse-content,[data-accordion-content]';
+  var FAQ_ITEM_RE=/(faq|accordion|toggle|collaps|expand|question|drop.?down)/i;
+  var FAQ_PANEL_RE=/(content|answer|body|panel|collaps|detail|inner|text|wrapper)/i;
+  function _faqCls(el){if(!el)return '';var c=el.className;if(c&&typeof c==='object'&&'baseVal'in c)return c.baseVal;return ''+(c||'');}
+  function _isPanelLike(el){return el&&el.nodeType===1&&(FAQ_PANEL_RE.test(_faqCls(el))||(el.matches&&el.matches(FAQ_PANEL)));}
+  function _findFaqPanel(trigger,item){
+    /* 1) FRATELLO immediato dopo il trigger (struttura flat header→panel) */
+    var n=trigger&&trigger.nextElementSibling;
+    while(n){if(_isPanelLike(n))return n;n=n.nextElementSibling;}
+    /* 2) Pannello esplicito dentro l'item */
+    try{var p=item&&item.querySelector(FAQ_PANEL);if(p)return p;}catch(e){}
+    /* 3) Primo figlio panel-like, oppure ultimo figlio come fallback */
+    if(item&&item.children){
+      for(var i=0;i<item.children.length;i++){var k=item.children[i];if(k!==trigger&&_isPanelLike(k))return k;}
+      if(item.children.length>=2){var last=item.children[item.children.length-1];if(last!==trigger&&!(trigger&&last.contains&&last.contains(trigger)))return last;}
+    }
+    return null;
   }
-  function faqItemFor(trigger){
-    if(!trigger)return null;
+  function _findFaqItem(t){
+    var el=t,depth=0;
+    while(el&&el.nodeType===1&&depth<10){
+      try{if(el.matches&&el.matches(FAQ_ITEM_SEL))return el;}catch(_){}
+      if(FAQ_ITEM_RE.test(_faqCls(el))&&_findFaqPanel(null,el))return el;
+      el=el.parentElement;depth++;
+    }
+    return null;
+  }
+  function _faqTriggerFor(t){
+    if(!t||t.nodeType!==1)return null;
     try{
-      var it=trigger.closest(FAQ_ITEM_SEL);
-      if(it)return it;
-      /* Fallback: contenitore con classe che contiene "faq" o "accordion". */
-      var p=trigger.parentElement,d=0;
-      while(p&&d<8){
-        var cn=(typeof p.className==='string'?p.className:'').toLowerCase();
-        if(/faq|accordion/.test(cn))return p;
-        p=p.parentElement;d++;
+      /* Non considerare actionable form fields (l'utente clicca un input
+         vero, non un accordion) tranne i <label> che spesso fanno da
+         trigger di checkbox accordion. */
+      var actionable=t.closest('a[href]:not([href="#"]):not([href=""]):not([href^="#"]),button[type="submit"],select,textarea');
+      if(actionable)return null;
+      var direct=t.closest(FAQ_TRIG);
+      if(direct){
+        var dt=direct.tagName&&direct.tagName.toLowerCase();
+        if(dt==='input'&&direct.type!=='checkbox')return null;
+        if(dt==='select'||dt==='textarea')return null;
+        return direct;
+      }
+      /* Fuzzy: dentro un item-shaped, considera trigger il PRIMO figlio
+         (tipico header senza class nota). */
+      var it=_findFaqItem(t);
+      if(it&&it.children.length>=2){
+        var first=it.children[0];
+        if(first&&(first===t||(first.contains&&first.contains(t))))return first;
       }
     }catch(e){}
-    return trigger.parentElement;
+    return null;
   }
-  function toggleFaqItem(item){
-    if(!item)return false;
-    var isClosed=item.getAttribute('data-editor-faq-closed')==='true';
-    if(isClosed){
-      item.removeAttribute('data-editor-faq-closed');
-      if(item.tagName==='DETAILS')try{item.open=true;}catch(_){ }
-    }else{
-      item.setAttribute('data-editor-faq-closed','true');
-      if(item.tagName==='DETAILS')try{item.open=false;}catch(_){ }
-    }
-    /* Sync aria-expanded sui trigger conosciuti, cosi' la freccia ruota
-       se la pagina ha CSS che usa l'attributo. */
+  function _setFaqOpen(panel,open){
+    if(!panel)return;
     try{
-      var trs=item.querySelectorAll('[aria-expanded]');
-      for(var i=0;i<trs.length;i++)trs[i].setAttribute('aria-expanded', isClosed?'true':'false');
+      if(open){
+        panel.style.setProperty('display','block','important');
+        panel.style.setProperty('max-height','none','important');
+        panel.style.setProperty('height','auto','important');
+        panel.style.setProperty('overflow','visible','important');
+        panel.style.setProperty('visibility','visible','important');
+        panel.style.setProperty('opacity','1','important');
+        panel.style.setProperty('pointer-events','auto','important');
+      }else{
+        panel.style.setProperty('display','none','important');
+      }
+    }catch(e){panel.style.display=open?'block':'none';}
+    panel.setAttribute('data-wasabi-open',open?'1':'0');
+  }
+  function _faqPanelOpen(p){
+    if(!p)return false;
+    if(p.hasAttribute('data-wasabi-open'))return p.getAttribute('data-wasabi-open')==='1';
+    try{return getComputedStyle(p).display!=='none';}catch(e){return true;}
+  }
+  function _toggleFaq(target){
+    var trigger=_faqTriggerFor(target);
+    if(!trigger)return null;
+    var item=_findFaqItem(trigger)||trigger.parentElement;
+    if(!item)return null;
+    var panel=_findFaqPanel(trigger,item);
+    if(!panel)return null;
+    /* Click DENTRO un pannello aperto = lascia passare (l'utente sta
+       cercando di selezionare/editare il contenuto, non chiudere). */
+    var inPanel=target.closest&&target.closest(FAQ_PANEL);
+    if(inPanel&&_faqPanelOpen(inPanel))return null;
+    var willOpen=!_faqPanelOpen(panel);
+    _setFaqOpen(panel,willOpen);
+    if(item&&item!==panel&&item.classList){
+      item.classList.toggle('is-open',willOpen);
+      item.classList.toggle('active',willOpen);
+      item.classList.toggle('expanded',willOpen);
+      item.classList.toggle('open',willOpen);
+    }
+    if(item&&item.tagName==='DETAILS'){if(willOpen)item.setAttribute('open','');else item.removeAttribute('open');}
+    try{
+      var aria=item.querySelectorAll('[aria-expanded]');
+      for(var i=0;i<aria.length;i++)aria[i].setAttribute('aria-expanded',willOpen?'true':'false');
     }catch(e){}
-    return true;
+    /* Accordion CSS-only basati su <input type="checkbox">: sincronizza
+       lo stato del box (sia se il trigger e' <label for> sia se l'input
+       e' un fratello/figlio dell'item). */
+    try{
+      var box=null;
+      if(trigger.tagName==='LABEL'&&trigger.htmlFor)box=document.getElementById(trigger.htmlFor);
+      if(!box)box=item.querySelector('input[type="checkbox"],input[type="radio"]');
+      if(box){box.checked=willOpen;}
+    }catch(e){}
+    return trigger;
   }
 
   document.addEventListener('mouseover',function(e){
@@ -553,15 +621,13 @@ const EDITOR_SCRIPT = `
     if(isUI(e.target))return;
     if(editing&&editEl&&!editEl.contains(e.target)){finishEdit();}
     if(editing&&editEl&&editEl.contains(e.target))return;
-    /* FAQ/accordion: clicco un trigger → toggle + select (cosi' l'utente
-       puo' verificare il comportamento E continuare a stilare il trigger
-       dalla toolbar). preventDefault impedisce che il browser segua un
-       eventuale href="#"/submit. */
-    var faqTr=faqTriggerFor(e.target);
-    if(faqTr){
+    /* FAQ/accordion: prova il toggle. Se restituisce il trigger,
+       blocchiamo l'evento (niente href="#"/submit/altri side-effect) e
+       selezioniamo l'header cosi' l'utente puo' anche stilizzarlo. */
+    var faqTrig=_toggleFaq(e.target);
+    if(faqTrig){
       e.preventDefault();e.stopPropagation();
-      toggleFaqItem(faqItemFor(faqTr));
-      selectEl(faqTr);
+      selectEl(faqTrig);
       return;
     }
     e.preventDefault();e.stopPropagation();
@@ -1262,132 +1328,12 @@ function prepareEditorHtml(html: string, sourceUrl?: string): string {
       user-select: none !important;
     }
 
-    /* ── FORZA APERTE TUTTE LE FAQ/ACCORDION IN EDITOR ────────────
-     * In editor abbiamo strippato tutti gli <script> della pagina
-     * (per non rubare i click di selezione). Conseguenza: la JS
-     * dell'accordion FAQ non parte e i pannelli restano chiusi
-     * via CSS (display:none, max-height:0, ecc). L'utente non puo'
-     * vedere/editare il contenuto delle FAQ.
-     * Fix: override CSS che riapre tutto. Copre i pattern piu'
-     * comuni — Funnelish (.faq-content-wrapper / .faq-content),
-     * Bootstrap (.collapse, .accordion-collapse), generici
-     * (.accordion-content / .accordion-body), e <details>.
-     * Solo display/visibility/opacity/max-height/height —
-     * non tocchiamo niente che possa rompere il layout.
-     */
-    .faq .faq-content-wrapper,
-    .faq .faq-content,
-    .faq-wrapper .faq-content-wrapper,
-    .faq-wrapper .faq-content,
-    .faq-item .faq-body,
-    .faq-item .faq-answer,
-    .faq-answer,
-    .faq-body,
-    .accordion-item .accordion-content,
-    .accordion-item .accordion-body,
-    .accordion-item .accordion-collapse,
-    .accordion-content,
-    .accordion-body,
-    .accordion-collapse,
-    .collapse,
-    .toggle-content,
-    .collapse-content,
-    [data-faq-body],
-    details > *:not(summary),
-    /* ClickFunnels / Funnelish 2.0 */
-    .elFAQItemAnswer,
-    .elFAQItem .elFAQItemAnswer,
-    /* Elementor */
-    .elementor-tab-content,
-    .e-n-accordion-item > .e-con,
-    .elementor-accordion .elementor-tab-content,
-    /* WP / Kadence / generici a11y */
-    .uk-accordion-content,
-    .wp-block-coblocks-accordion-item__content,
-    .kt-accordion-panel-inner,
-    [data-accordion-content] {
-      display: block !important;
-      max-height: none !important;
-      height: auto !important;
-      min-height: 0 !important;
-      overflow: visible !important;
-      visibility: visible !important;
-      opacity: 1 !important;
-      transform: none !important;
-      pointer-events: auto !important;
-    }
-
-    /* CATCH-ALL: qualsiasi pannello "answer/content/body/panel" dentro un
-       contenitore la cui classe contiene "faq" o "accordion" (match
-       case-insensitive). Copre i markup custom non elencati sopra senza
-       toccare il resto della pagina. Le regole !important vincono anche
-       sugli stili inline display:none / max-height:0 dello snapshot. */
-    [class*="faq" i] [class*="answer" i],
-    [class*="faq" i] [class*="content" i],
-    [class*="faq" i] [class*="body" i],
-    [class*="faq" i] [class*="panel" i],
-    [class*="accordion" i] [class*="answer" i],
-    [class*="accordion" i] [class*="content" i],
-    [class*="accordion" i] [class*="body" i],
-    [class*="accordion" i] [class*="panel" i] {
-      display: block !important;
-      max-height: none !important;
-      height: auto !important;
-      overflow: visible !important;
-      visibility: visible !important;
-      opacity: 1 !important;
-    }
-    details[open], details:not([open]) { /* nop, just specificity */ }
-    /* Bootstrap collapse + show — basta forzare display:block (gia' sopra) */
-    /* Icona rotazione "+/-" → ferma allo stato chiuso visivamente, non
-       importa perche' l'utente non clicca per chiudere, gli serve solo
-       vedere/editare il contenuto. */
-
-    /* ── FAQ CHIUSE (toggle utente in editor) ──────────────────────
-     * Quando l'utente clicca un trigger FAQ il delegate JS aggiunge
-     * data-editor-faq-closed="true" sull'item: queste regole vincono
-     * sulle "force open" qui sopra (stessa specificita' ma vengono
-     * dopo + selettore con attributo). Ripristina lo stato chiuso del
-     * pannello risposta. Il click successivo rimuove l'attributo e
-     * torna aperto. */
-    [data-editor-faq-closed="true"] .faq-content-wrapper,
-    [data-editor-faq-closed="true"] .faq-content,
-    [data-editor-faq-closed="true"] .faq-body,
-    [data-editor-faq-closed="true"] .faq-answer,
-    [data-editor-faq-closed="true"] .accordion-content,
-    [data-editor-faq-closed="true"] .accordion-body,
-    [data-editor-faq-closed="true"] .accordion-collapse,
-    [data-editor-faq-closed="true"] .collapse,
-    [data-editor-faq-closed="true"] .toggle-content,
-    [data-editor-faq-closed="true"] .collapse-content,
-    [data-editor-faq-closed="true"] [data-faq-body],
-    [data-editor-faq-closed="true"] [data-accordion-content],
-    [data-editor-faq-closed="true"] .elFAQItemAnswer,
-    [data-editor-faq-closed="true"] .elementor-tab-content,
-    [data-editor-faq-closed="true"] .e-n-accordion-item > .e-con,
-    [data-editor-faq-closed="true"] .uk-accordion-content,
-    [data-editor-faq-closed="true"] .wp-block-coblocks-accordion-item__content,
-    [data-editor-faq-closed="true"] .kt-accordion-panel-inner,
-    [data-editor-faq-closed="true"] [class*="answer" i],
-    [data-editor-faq-closed="true"] [class*="panel" i] {
-      display: none !important;
-      max-height: 0 !important;
-      height: 0 !important;
-      min-height: 0 !important;
-      overflow: hidden !important;
-      visibility: hidden !important;
-      opacity: 0 !important;
-      padding-top: 0 !important;
-      padding-bottom: 0 !important;
-      margin-top: 0 !important;
-      margin-bottom: 0 !important;
-    }
-    /* <details> chiuso esplicitamente */
-    details[data-editor-faq-closed="true"] > *:not(summary) {
-      display: none !important;
-    }
-    /* Chevron/freccia: ruota se la pagina usa aria-expanded come stato.
-       Non tocchiamo classi proprietarie per evitare effetti indesiderati. */
+    /* FAQ/ACCORDION in editor: lascio lo stato originale della pagina
+     * clonata (di norma chiuse). Il delegate _toggleFaq nel script
+     * dell'iframe gestisce apri/chiudi al click: setta inline
+     * display:block/none con !important sul pannello, vincendo sia
+     * sui display:none originali sia su eventuali !important della
+     * pagina. Niente force-open. */
 
     /* ── CAROUSEL/SLIDER: FORZA TUTTI GLI SLIDE VISIBILI ──────────
      * In editor abbiamo strippato gli <script>. Conseguenza: Swiper /
