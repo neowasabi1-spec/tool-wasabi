@@ -468,44 +468,6 @@ function toggle(item,trigger){
     if(box){box.checked=willOpen;if(willOpen)box.setAttribute('checked','');else box.removeAttribute('checked');}
   }catch(e){}
 }
-// Salta i sibling "icona" (svg/img/i, classi plus/minus/chevron/arrow/
-// icon/toggle/indicator/spacer, oppure testo ≤2 char tipo "+"/"−"/"±").
-// Senza questa skip, header tipo
-//   <h3>The Results</h3>
-//   <span class="icon">±</span>
-//   <div>content</div>
-// venivano "toggliati" sull'icona invece che sul contenuto.
-function _wbIsSkippable(el){
-  if(!el||el.nodeType!==1)return true;
-  if(/^(SCRIPT|STYLE|HR|BR|NOSCRIPT|TEMPLATE|HEAD|META|LINK|SVG|IMG|I|USE|PATH)$/i.test(el.tagName))return true;
-  var c=el.className;c=c&&(typeof c==='string'?c:(c.baseVal||''));
-  if(/(^|[\s\-_])(plus|minus|chevron|caret|arrow|icon|toggle|indicator|spacer|sign|symbol)([\s\-_]|$)/i.test(c))return true;
-  var txt=(el.textContent||'').trim();
-  if(txt.length<=2)return true; // 1-2 char = quasi sempre +/-/±/▼
-  return false;
-}
-function _wbFindPanelFor(hd){
-  if(!hd)return null;
-  // 1) Sibling DOPO l'header, saltando icone/spacer.
-  var sib=hd.nextElementSibling;
-  while(sib){
-    if(!_wbIsSkippable(sib))return sib;
-    sib=sib.nextElementSibling;
-  }
-  // 2) Fallback: se l'header e' in fondo al suo parent, prova il sibling
-  //    DEL PARENT (es. <div class="row"><h3>...</h3><span>±</span></div>
-  //                  <div>content</div>).
-  var p=hd.parentElement;
-  if(p){
-    sib=p.nextElementSibling;
-    while(sib){
-      if(!_wbIsSkippable(sib))return sib;
-      sib=sib.nextElementSibling;
-    }
-  }
-  return null;
-}
-
 function closeAll(){
   // Solo PANEL noti + <details>. La parte "heading+icon → marca trigger"
   // l'avevo aggiunta io ma generava 50 bug diversi (pickava icone sbagliate,
