@@ -440,20 +440,59 @@ function toggle(item,trigger){
   }catch(e){}
 }
 function closeAll(){
-  // SOLO pannelli e item con classi conosciute. Lo scan euristico
-  // (ITEM_RE/findPanel su tutto il DOM) era troppo aggressivo:
-  // ITEM_RE matchava 'toggle-button', 'faq-section' (container intero,
-  // non il pannello), PANEL_RE matchava 'content/wrapper/text' →
-  // nascondeva sezioni intere della pagina. Il toggle per i markup
-  // custom lo lasciamo al solo click handler (che usa l'euristica in
-  // modo sicuro: parte dal target del click).
+  // Chiude (1) pannelli e item con classi conosciute + <details>, e
+  // (2) un pattern molto comune ma "anonimo": header (h1-h6/button/
+  // role=button) che CONTIENE un'icona +/-/chevron seguito da un
+  // FRATELLO non-header. Quel fratello e' la tendina. Chiudiamo solo
+  // questi due casi: zero scan generico, zero false positives su
+  // sezioni normali della pagina.
   try{
+    // (1) pattern noti
     var panels=document.querySelectorAll(PANEL);
     for(var i=0;i<panels.length;i++){try{panels[i].style.setProperty('display','none','important');}catch(_){panels[i].style.display='none';}panels[i].setAttribute('data-wasabi-open','0');}
     var dets=document.querySelectorAll('details');
     for(var k=0;k<dets.length;k++)dets[k].removeAttribute('open');
     var its=document.querySelectorAll(ITEM);
     for(var j=0;j<its.length;j++){its[j].classList.remove('is-open');its[j].classList.remove('active');its[j].classList.remove('expanded');its[j].classList.remove('open');}
+    // (2) heading+icon → fratello = pannello
+    var ICON_TXT=/[+\-\u2212\u25BC\u25BE\u25B8\u25B6\u2796\u2795\u2304\u2303\u00BB]/;
+    var ICON_CLS='[class*="plus" i],[class*="minus" i],[class*="chevron" i],[class*="caret" i],[class*="arrow" i],[class*="icon" i],[class*="toggle" i],[class*="indicator" i],svg';
+    var HEAD_SEL='h1,h2,h3,h4,h5,h6,[role="button"],button,.faq-question,.accordion-title,.toggle-title';
+    var heads=document.querySelectorAll(HEAD_SEL);
+    for(var h=0;h<heads.length;h++){
+      var hd=heads[h];
+      if(!hd||hd.nodeType!==1)continue;
+      // Skip cose chiaramente non-accordion: link a URL reali, submit
+      // buttons. Restano i bottoni puri (cursor pointer).
+      if(hd.tagName==='A'){
+        var hr=hd.getAttribute('href')||'';
+        if(hr&&hr!=='#'&&hr.charAt(0)!=='#')continue;
+      }
+      if(hd.tagName==='BUTTON'&&(hd.type||'').toLowerCase()==='submit')continue;
+      // Marker icona: testo (+/-/▼) ESCLUSIVO, oppure elemento figlio
+      // con classe iconica/svg. Il testo deve essere short (<3 char puri
+      // di icona) perche' un h2 "Just $9 - Limited Time" matcha 'minus'
+      // ma NON e' una tendina. Quindi richiediamo:
+      //   - svg/icon child, OPPURE
+      //   - testo dell'header che termina con un char-icona ed e' breve
+      var ownText=(hd.textContent||'').trim();
+      var lastChar=ownText.slice(-1);
+      var hasIconChild=!!hd.querySelector(ICON_CLS);
+      var hasIconAtEnd=ICON_TXT.test(lastChar);
+      if(!hasIconChild&&!hasIconAtEnd)continue;
+      // Fratello successivo: deve esistere ed essere un block-level non
+      // header, non form control, non hr/br.
+      var sib=hd.nextElementSibling;
+      while(sib&&sib.nodeType===1&&/^(SCRIPT|STYLE|HR|BR|NOSCRIPT|TEMPLATE)$/i.test(sib.tagName))sib=sib.nextElementSibling;
+      if(!sib||sib.nodeType!==1)continue;
+      if(/^(H[1-6]|BUTTON|INPUT|SELECT|TEXTAREA|LABEL|A|FORM)$/i.test(sib.tagName))continue;
+      // Chiudi e marca cliccabile
+      try{sib.style.setProperty('display','none','important');}catch(_){sib.style.display='none';}
+      sib.setAttribute('data-wasabi-open','0');
+      sib.setAttribute('data-wasabi-panel-of-prev','1');
+      hd.setAttribute('data-wasabi-trigger','1');
+      try{hd.style.cursor='pointer';}catch(_){ }
+    }
   }catch(e){}
 }
 // ---- CAROSELLO RESCUE ----------------------------------------------------
@@ -521,6 +560,20 @@ function once(){
   document.addEventListener('click',function(ev){
     var t=ev.target;if(!(t instanceof Element))return;
     var actionable=t.closest('a[href]:not([href="#"]):not([href=""]),button[type="submit"],input,select,textarea');
+    // 0) Header marcato da closeAll (heading+icon → fratello = pannello).
+    //    Massima priorita': pattern molto preciso, niente euristica al click.
+    var hdT=t.closest('[data-wasabi-trigger]');
+    if(hdT){
+      if(actionable&&hdT.contains(actionable)&&actionable!==hdT)return;
+      var sb=hdT.nextElementSibling;
+      while(sb&&sb.nodeType===1&&/^(SCRIPT|STYLE|HR|BR|NOSCRIPT|TEMPLATE)$/i.test(sb.tagName))sb=sb.nextElementSibling;
+      if(sb){
+        var willOpenS=!panelOpen(sb);
+        setOpen(sb,willOpenS);
+        hdT.setAttribute('aria-expanded',willOpenS?'true':'false');
+      }
+      ev.preventDefault();ev.stopPropagation();return;
+    }
     // 1) ARIA pattern
     var btn=t.closest('[aria-expanded][aria-controls]');
     if(btn){
