@@ -449,12 +449,13 @@ function setOpen(p,open){
     try{p.removeAttribute('hidden');p.removeAttribute('aria-hidden');}catch(e){}
   }else{
     try{
+      // SOLO display:none. NON rimuovere animation/transition/max-height
+      // inline: se lo facciamo, le animazioni CSS della pagina (es.
+      // 'animation: openAnim 0.3s forwards' sul .content) si ri-attivano
+      // e RIAPRONO il pannello da sole pochi ms dopo la chiusura.
+      // Lasciamo animation:none e transition:none permanenti sul pannello
+      // cosi' la pagina non puo' piu' riprendere il controllo.
       p.style.setProperty('display','none','important');
-      p.style.removeProperty('max-height');
-      p.style.removeProperty('opacity');
-      p.style.removeProperty('transform');
-      p.style.removeProperty('animation');
-      p.style.removeProperty('transition');
     }catch(e){p.style.display='none';}
   }
   p.setAttribute('data-wasabi-open',open?'1':'0');
