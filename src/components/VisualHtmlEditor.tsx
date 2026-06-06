@@ -1738,6 +1738,283 @@ const TEXT_EDITABLE_TAGS = new Set([
   'del', 'ins', 'dt', 'dd', 'caption', 'summary', 'legend',
 ]);
 
+/* ─────────── Background gradient parsing + editor ───────────
+ *
+ * Adds linear/radial gradient support to the per-element Background panel.
+ * Backed by `background-image`, so it coexists with the existing solid
+ * `background-color` picker right above it: the underlying color is still
+ * what you pick in the color input, and any gradient is rendered ON TOP.
+ *
+ * The editor is fully driven by `el.styles.backgroundImage`: on mount /
+ * selection change we re-parse the current value so the controls always
+ * reflect what's actually applied (linear angle, two colours, radial
+ * shape). Setting Type = "Solid" clears the gradient by writing
+ * `background-image: none`. */
+
+interface ParsedLinear { type: 'linear'; angle: number; c1: string; c2: string }
+interface ParsedRadial { type: 'radial'; c1: string; c2: string }
+type ParsedGradient = ParsedLinear | ParsedRadial;
+
+function splitTopLevel(s: string): string[] {
+  // Split CSS comma list but ignore commas inside parens (rgb(), rgba())
+  const out: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === '(') depth++;
+    else if (c === ')') depth--;
+    else if (c === ',' && depth === 0) {
+      out.push(s.slice(start, i));
+      start = i + 1;
+    }
+  }
+  out.push(s.slice(start));
+  return out;
+}
+
+function rgbAnyToHex(input: string): string {
+  const s = input.trim();
+  if (s.startsWith('#')) {
+    return s.length === 4
+      ? `#${s[1]}${s[1]}${s[2]}${s[2]}${s[3]}${s[3]}`
+      : s.length >= 7
+        ? s.slice(0, 7).toLowerCase()
+        : s;
+  }
+  const rgb = s.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+  if (rgb) {
+    const h = (n: string) => parseInt(n, 10).toString(16).padStart(2, '0');
+    return `#${h(rgb[1])}${h(rgb[2])}${h(rgb[3])}`;
+  }
+  // unknown (named colour, hsl, …) — leave as-is, picker will fall back
+  return s;
+}
+
+function parseGradient(bg: string | undefined | null): ParsedGradient | null {
+  if (!bg) return null;
+  const v = bg.trim();
+  if (!v || v === 'none') return null;
+
+  const linear = v.match(/linear-gradient\(\s*([\s\S]+)\)\s*$/i);
+  if (linear) {
+    const parts = splitTopLevel(linear[1]);
+    let angle = 180; // CSS default for "to bottom"
+    const colours: string[] = [];
+    for (const raw of parts) {
+      const t = raw.trim();
+      const am = t.match(/^(-?\d+(?:\.\d+)?)deg$/i);
+      if (am) {
+        angle = Number(am[1]);
+        continue;
+      }
+      if (/^to\s+/i.test(t)) {
+        // direction keyword — best-effort fallback to default
+        continue;
+      }
+      // strip any "stop" position suffix ("#fff 50%")
+      colours.push(t.replace(/\s+\d+(?:\.\d+)?%?$/, '').trim());
+    }
+    if (colours.length >= 2) {
+      return {
+        type: 'linear',
+        angle,
+        c1: rgbAnyToHex(colours[0]),
+        c2: rgbAnyToHex(colours[colours.length - 1]),
+      };
+    }
+    return null;
+  }
+
+  const radial = v.match(/radial-gradient\(\s*([\s\S]+)\)\s*$/i);
+  if (radial) {
+    const parts = splitTopLevel(radial[1]);
+    const colours: string[] = [];
+    for (const raw of parts) {
+      const t = raw.trim();
+      if (/^(circle|ellipse)\b/i.test(t) || /^at\s+/i.test(t) || /^(closest|farthest)-(side|corner)/i.test(t)) continue;
+      colours.push(t.replace(/\s+\d+(?:\.\d+)?%?$/, '').trim());
+    }
+    if (colours.length >= 2) {
+      return {
+        type: 'radial',
+        c1: rgbAnyToHex(colours[0]),
+        c2: rgbAnyToHex(colours[colours.length - 1]),
+      };
+    }
+    return null;
+  }
+
+  return null;
+}
+
+function BgGradientEditor({
+  bgImage,
+  seedColor,
+  onChange,
+}: {
+  bgImage: string | undefined;
+  seedColor: string;
+  onChange: (nextBgImage: string) => void;
+}) {
+  // Mode follows whatever the element currently has, but we remember
+  // the user's last picked colours/angle while toggling so they don't
+  // lose them when temporarily switching to Solid and back.
+  const parsed = useMemo(() => parseGradient(bgImage || ''), [bgImage]);
+  const initialMode: 'none' | 'linear' | 'radial' = parsed ? parsed.type : 'none';
+  const [mode, setMode] = useState<'none' | 'linear' | 'radial'>(initialMode);
+  const [angle, setAngle] = useState<number>(parsed?.type === 'linear' ? parsed.angle : 135);
+  const [c1, setC1] = useState<string>(parsed?.c1 || seedColor || '#3b82f6');
+  const [c2, setC2] = useState<string>(parsed?.c2 || '#a855f7');
+
+  // Re-sync internal state whenever the parent selection changes a
+  // different element (bgImage prop swap). Without this, switching
+  // between two elements with different gradients would leave stale
+  // values in the controls.
+  useEffect(() => {
+    if (parsed) {
+      setMode(parsed.type);
+      if (parsed.type === 'linear') setAngle(parsed.angle);
+      setC1(parsed.c1);
+      setC2(parsed.c2);
+    } else {
+      setMode('none');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bgImage]);
+
+  const emit = (m: typeof mode, a: number, ca: string, cb: string) => {
+    if (m === 'none') {
+      onChange('none');
+    } else if (m === 'linear') {
+      onChange(`linear-gradient(${a}deg, ${ca}, ${cb})`);
+    } else {
+      onChange(`radial-gradient(circle, ${ca}, ${cb})`);
+    }
+  };
+
+  return (
+    <div className="mt-2.5 border-t border-slate-100 pt-2">
+      <label className="text-[10px] text-slate-500 mb-1 block">Gradient</label>
+      <div className="grid grid-cols-3 gap-1 mb-1.5">
+        {([
+          { id: 'none', label: 'Solid' },
+          { id: 'linear', label: 'Linear' },
+          { id: 'radial', label: 'Radial' },
+        ] as const).map((opt) => (
+          <button
+            key={opt.id}
+            type="button"
+            className={`px-1.5 py-1 rounded text-[10px] font-medium border transition-colors ${
+              mode === opt.id
+                ? 'bg-violet-50 border-violet-300 text-violet-700'
+                : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+            }`}
+            onClick={() => {
+              setMode(opt.id);
+              emit(opt.id, angle, c1, c2);
+            }}
+          >
+            {opt.label}
+          </button>
+        ))}
+      </div>
+      {mode !== 'none' && (
+        <div className="space-y-1.5">
+          <div className="flex items-center gap-1.5">
+            <input
+              type="color"
+              value={c1}
+              className="w-6 h-6 rounded cursor-pointer border border-slate-200"
+              onChange={(e) => { setC1(e.target.value); emit(mode, angle, e.target.value, c2); }}
+              title="Start color"
+            />
+            <span className="text-[9px] font-mono text-slate-500 w-12 truncate">{c1}</span>
+            <span className="text-[10px] text-slate-400">→</span>
+            <input
+              type="color"
+              value={c2}
+              className="w-6 h-6 rounded cursor-pointer border border-slate-200"
+              onChange={(e) => { setC2(e.target.value); emit(mode, angle, c1, e.target.value); }}
+              title="End color"
+            />
+            <span className="text-[9px] font-mono text-slate-500 w-12 truncate">{c2}</span>
+            <button
+              type="button"
+              onClick={() => { const a = c2, b = c1; setC1(a); setC2(b); emit(mode, angle, a, b); }}
+              className="ml-auto text-[10px] text-slate-400 hover:text-violet-600"
+              title="Swap colors"
+            >
+              ⇄
+            </button>
+          </div>
+          {mode === 'linear' && (
+            <div className="flex items-center gap-2">
+              <label className="text-[10px] text-slate-500 shrink-0">Angle</label>
+              <input
+                type="range"
+                min={0}
+                max={360}
+                value={angle}
+                className="flex-1 h-1 accent-violet-500"
+                onChange={(e) => { const a = Number(e.target.value); setAngle(a); emit(mode, a, c1, c2); }}
+              />
+              <input
+                type="number"
+                min={0}
+                max={360}
+                value={angle}
+                className="w-12 px-1 py-0.5 text-[10px] font-mono text-slate-700 border border-slate-200 rounded text-right"
+                onChange={(e) => { const a = Math.max(0, Math.min(360, Number(e.target.value) || 0)); setAngle(a); emit(mode, a, c1, c2); }}
+              />
+              <span className="text-[10px] text-slate-400">°</span>
+            </div>
+          )}
+          <div
+            className="h-6 rounded border border-slate-200"
+            style={{
+              background: mode === 'linear'
+                ? `linear-gradient(${angle}deg, ${c1}, ${c2})`
+                : `radial-gradient(circle, ${c1}, ${c2})`,
+            }}
+            title="Preview"
+          />
+          {/* Preset suggestions: 6 common direction/style combos to
+              one-click a sensible gradient without dragging the slider. */}
+          <div className="flex flex-wrap gap-1 pt-1">
+            {([
+              { label: '↘ 135°', kind: 'linear' as const, a: 135 },
+              { label: '↓ 180°', kind: 'linear' as const, a: 180 },
+              { label: '→ 90°', kind: 'linear' as const, a: 90 },
+              { label: '◯ Radial', kind: 'radial' as const, a: 0 },
+            ]).map((p) => (
+              <button
+                key={p.label}
+                type="button"
+                onClick={() => {
+                  setMode(p.kind);
+                  if (p.kind === 'linear') setAngle(p.a);
+                  emit(p.kind, p.a, c1, c2);
+                }}
+                className="px-1.5 py-0.5 text-[9px] rounded border border-slate-200 bg-white hover:bg-violet-50 hover:border-violet-300 hover:text-violet-700 text-slate-600 transition-colors"
+                style={{
+                  background: p.kind === 'linear'
+                    ? `linear-gradient(${p.a}deg, ${c1}, ${c2})`
+                    : `radial-gradient(circle, ${c1}, ${c2})`,
+                  color: '#fff',
+                  textShadow: '0 1px 2px rgba(0,0,0,.5)',
+                }}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ─────────── Component ─────────── */
 
 export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSave, onSaveToProject, onClose, pageTitle, productContext, sourceUrl, availableProducts, currentProductId, onProductChange }: VisualHtmlEditorProps) {
@@ -4854,6 +5131,18 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                     <button onClick={() => setStyle('backgroundColor', 'transparent')}
                       className="ml-auto text-[10px] text-slate-400 hover:text-red-500">Reset</button>
                   </div>
+
+                  {/* Gradient editor (linear / radial) — drives `background-image`
+                      so it stacks on top of the solid color picker above and
+                      coexists with the URL/image bg field below. Setting type
+                      "Solid" writes `background-image:none` to clear it. */}
+                  {el.tagName !== 'img' && (
+                    <BgGradientEditor
+                      bgImage={el.styles.backgroundImage}
+                      seedColor={rgbToHex(el.styles.backgroundColor)}
+                      onChange={(nextBgImage) => setStyle('backgroundImage', nextBgImage)}
+                    />
+                  )}
 
                   {/* Immagine di sfondo — SEMPRE disponibile per elementi non-<img>.
                       Pre-filled with the existing background, if any
