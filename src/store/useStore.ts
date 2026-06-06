@@ -532,7 +532,15 @@ interface Store {
   // Archived Funnels
   archivedFunnels: ArchivedFunnel[];
   archivedFunnelsLoaded: boolean;
-  loadArchivedFunnels: () => Promise<void>;
+  /** Last load error (e.g. RLS denied, 500 from /api/valchiria/funnels,
+   *  missing column in production DB). Surfaced in the UI so the user
+   *  doesn't see a generic "No saved funnels" when the real cause is a
+   *  failed network call. Cleared on a successful load. */
+  archivedFunnelsError: string | null;
+  archivedFunnelsLoading: boolean;
+  /** `force=true` bypasses the loaded-cache and re-runs the fetch.
+   *  Used by the "Retry" button in the empty state. */
+  loadArchivedFunnels: (force?: boolean) => Promise<void>;
   saveCurrentFunnelAsArchive: (name: string, section?: string, pageIds?: string[]) => Promise<void>;
   deleteArchivedFunnel: (id: string) => Promise<void>;
   /** Toggle whether an archived funnel surfaces in the OWNER's own
@@ -1399,9 +1407,17 @@ export const useStore = create<Store>()((set, get) => ({
   // Archived Funnels
   archivedFunnels: [],
   archivedFunnelsLoaded: false,
+  archivedFunnelsError: null,
+  archivedFunnelsLoading: false,
 
-  loadArchivedFunnels: async () => {
-    if (get().archivedFunnelsLoaded) return;
+  loadArchivedFunnels: async (force = false) => {
+    if (!force && get().archivedFunnelsLoaded) return;
+    set({ archivedFunnelsLoading: true, archivedFunnelsError: null });
+    // Track the last reason we couldn't load so we can show it in the
+    // empty state. Without this the UI says "No saved funnels" whether
+    // the table is genuinely empty OR the request 500'd, which is
+    // exactly the confusion the master ran into.
+    let apiReason: string | null = null;
     try {
       // Prefer the multi-tenancy aware endpoint so we get
       //   (a) the caller's own funnels
@@ -1412,22 +1428,63 @@ export const useStore = create<Store>()((set, get) => ({
       // still scope rows to the caller, so this is a strict superset.
       try {
         const res = await fetch('/api/valchiria/funnels', { cache: 'no-store' });
-        if (res.ok) {
-          const json = await res.json();
-          if (json?.success && Array.isArray(json.funnels)) {
-            set({ archivedFunnels: json.funnels as ArchivedFunnel[], archivedFunnelsLoaded: true });
-            return;
-          }
+        const raw = await res.text();
+        let json: { success?: boolean; funnels?: unknown; error?: string } | null = null;
+        try {
+          json = raw ? JSON.parse(raw) : null;
+        } catch {
+          json = null;
         }
+        if (res.ok && json?.success && Array.isArray(json.funnels)) {
+          set({
+            archivedFunnels: json.funnels as ArchivedFunnel[],
+            archivedFunnelsLoaded: true,
+            archivedFunnelsLoading: false,
+            archivedFunnelsError: null,
+          });
+          return;
+        }
+        // Capture the REAL reason so the fallback can either succeed
+        // (replacing it) or hand it back to the UI for display.
+        apiReason = json?.error
+          ? `API /api/valchiria/funnels → HTTP ${res.status}: ${json.error}`
+          : `API /api/valchiria/funnels → HTTP ${res.status}${
+              raw ? ` — ${raw.slice(0, 180).replace(/\s+/g, ' ').trim()}` : ''
+            }`;
+        console.warn('[loadArchivedFunnels]', apiReason);
       } catch (apiErr) {
-        if (process.env.NODE_ENV !== 'production') {
-          console.warn('[loadArchivedFunnels] /api/valchiria/funnels failed, falling back to direct fetch:', apiErr);
-        }
+        apiReason = `API /api/valchiria/funnels threw: ${
+          apiErr instanceof Error ? apiErr.message : String(apiErr)
+        }`;
+        console.warn('[loadArchivedFunnels]', apiReason);
       }
-      const data = await supabaseOps.fetchArchivedFunnels();
-      set({ archivedFunnels: data, archivedFunnelsLoaded: true });
+      // Direct Supabase fallback — RLS scopes rows; for the master this
+      // returns everything via `is_master(auth.uid())`.
+      try {
+        const data = await supabaseOps.fetchArchivedFunnels();
+        set({
+          archivedFunnels: data,
+          archivedFunnelsLoaded: true,
+          archivedFunnelsLoading: false,
+          archivedFunnelsError: null,
+        });
+      } catch (fallbackErr) {
+        const fallbackReason =
+          fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
+        set({
+          archivedFunnels: [],
+          archivedFunnelsLoaded: true,
+          archivedFunnelsLoading: false,
+          archivedFunnelsError: `${apiReason || 'API failed'}. Fallback also failed: ${fallbackReason}`,
+        });
+      }
     } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
       console.error('Error loading archived funnels:', error);
+      set({
+        archivedFunnelsLoading: false,
+        archivedFunnelsError: msg,
+      });
     }
   },
 

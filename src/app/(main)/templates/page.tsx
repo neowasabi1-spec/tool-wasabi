@@ -168,7 +168,7 @@ function PageThumbnail({ url, alt, height = '180px', savedHtml }: { url: string;
 }
 
 export default function TemplatesPage() {
-  const { templates, addTemplate, updateTemplate, deleteTemplate, customPageTypes, addCustomPageType, deleteCustomPageType, archivedFunnels, archivedFunnelsLoaded, loadArchivedFunnels, deleteArchivedFunnel, setArchivedFunnelValchiriaFlag, setArchivedFunnelShareFlag, products, addFunnelPage, funnelPages, deleteFunnelPage } = useStore();
+  const { templates, addTemplate, updateTemplate, deleteTemplate, customPageTypes, addCustomPageType, deleteCustomPageType, archivedFunnels, archivedFunnelsLoaded, archivedFunnelsError, archivedFunnelsLoading, loadArchivedFunnels, deleteArchivedFunnel, setArchivedFunnelValchiriaFlag, setArchivedFunnelShareFlag, products, addFunnelPage, funnelPages, deleteFunnelPage } = useStore();
   const [valchiriaTogglingId, setValchiriaTogglingId] = useState<string | null>(null);
   const [shareTogglingId, setShareTogglingId] = useState<string | null>(null);
   const { permissions: currentUserPermissions } = useCurrentUser();
@@ -868,8 +868,34 @@ export default function TemplatesPage() {
             {filteredArchivedFunnels.length === 0 ? (
               <div className="bg-white rounded-lg border border-gray-200 p-12 text-center">
                 <Archive className="w-12 h-12 text-gray-300 mx-auto mb-3" />
-                <p className="text-gray-500 text-lg font-medium">{archiveSearch ? 'No results found' : 'No saved funnels'}</p>
-                <p className="text-gray-400 text-sm mt-1">{archiveSearch ? 'Try a different search term' : 'Go to Front End Funnel and click "Save" to archive a funnel'}</p>
+                <p className="text-gray-500 text-lg font-medium">
+                  {archiveSearch
+                    ? 'No results found'
+                    : archivedFunnelsError
+                    ? 'Could not load saved funnels'
+                    : archivedFunnelsLoading
+                    ? 'Loading saved funnels…'
+                    : 'No saved funnels'}
+                </p>
+                <p className="text-gray-400 text-sm mt-1 max-w-2xl mx-auto break-words">
+                  {archiveSearch
+                    ? 'Try a different search term'
+                    : archivedFunnelsError
+                    ? archivedFunnelsError
+                    : archivedFunnelsLoading
+                    ? null
+                    : 'Go to Front End Funnel and click "Save" to archive a funnel'}
+                </p>
+                {!archiveSearch && (archivedFunnelsError || archivedFunnelsLoaded) && (
+                  <button
+                    type="button"
+                    onClick={() => loadArchivedFunnels(true)}
+                    disabled={archivedFunnelsLoading}
+                    className="mt-4 inline-flex items-center gap-2 px-3 py-1.5 bg-gray-900 text-white text-sm rounded-lg hover:bg-gray-700 disabled:opacity-50"
+                  >
+                    {archivedFunnelsLoading ? 'Reloading…' : 'Reload'}
+                  </button>
+                )}
               </div>
             ) : (
               filteredArchivedFunnels.map((funnel) => {
