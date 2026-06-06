@@ -468,15 +468,28 @@ function toggle(item,trigger){
     if(box){box.checked=willOpen;if(willOpen)box.setAttribute('checked','');else box.removeAttribute('checked');}
   }catch(e){}
 }
+// Trova ancestor toggleabile dal click handler (matches ITEM o classe FAQ-like
+// con un pannello rilevabile). Se manca, NON chiudere il pannello: senza un
+// ancestor riconoscibile, il click handler non trovera' findItem e il pannello
+// resterebbe chiuso per sempre = bug "prende i click ma non apre nulla".
+function findToggleAncestor(el){
+  var p=el&&el.parentElement, d=0;
+  while(p&&d<10){
+    try{if(p.matches&&p.matches(ITEM))return p;}catch(_){}
+    if(ITEM_RE.test(cls(p)))return p;
+    p=p.parentElement;d++;
+  }
+  return null;
+}
 function closeAll(){
-  // Solo PANEL noti + <details>. La parte "heading+icon → marca trigger"
-  // l'avevo aggiunta io ma generava 50 bug diversi (pickava icone sbagliate,
-  // marcava header che non lo erano, sbagliava il pannello). L'editor non ha
-  // mai usato closeAll: si limita a un click delegate fuzzy e funziona. Qui
-  // facciamo uguale (vedi step 4 del click handler).
   try{
+    // Pannelli con classi note: chiudi SOLO se hanno ancestor toggleabile
     var panels=document.querySelectorAll(PANEL);
-    for(var i=0;i<panels.length;i++){try{panels[i].style.setProperty('display','none','important');}catch(_){panels[i].style.display='none';}panels[i].setAttribute('data-wasabi-open','0');}
+    for(var i=0;i<panels.length;i++){
+      if(!findToggleAncestor(panels[i]))continue;
+      try{panels[i].style.setProperty('display','none','important');}catch(_){panels[i].style.display='none';}
+      panels[i].setAttribute('data-wasabi-open','0');
+    }
     var dets=document.querySelectorAll('details');
     for(var k=0;k<dets.length;k++)dets[k].removeAttribute('open');
     var its=document.querySelectorAll(ITEM);
@@ -584,6 +597,27 @@ function once(){
     }
     // 4) Generic + heuristic: find nearest accordion-shaped item
     var item=findItem(t);
+    // 4b) Fallback strutturale: se il container non ha classe FAQ-like
+    //     (es. <div class="card"> con dentro header + .faq-content), cerca
+    //     un ancestor SMALL (2-5 figli) che contiene un panel-like child.
+    //     Limitato a 5 figli per non matchare body/section/main.
+    if(!item){
+      var p=t.parentElement, d=0;
+      while(p&&d<6){
+        try{
+          var n=p.children?p.children.length:0;
+          if(n>=2&&n<=6){
+            for(var ci=0;ci<n;ci++){
+              var ch=p.children[ci];
+              if(ch===t||(ch.contains&&ch.contains(t)))continue;
+              if(isPanelLike(ch)){item=p;break;}
+            }
+            if(item)break;
+          }
+        }catch(_){}
+        p=p.parentElement;d++;
+      }
+    }
     if(item){
       if(actionable&&item.contains(actionable)&&actionable!==item)return;
       // Non chiudere se si clicca DENTRO un pannello gia' aperto (es. per
