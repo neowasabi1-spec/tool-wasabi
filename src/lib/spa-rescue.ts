@@ -302,7 +302,36 @@ function resetAccordionState(html: string): string {
  * Event-delegated on document so dynamically-added accordions also
  * work. Runs once on DOMContentLoaded.
  */
+/**
+ * Strip every <script> tag (inline + external) from the cloned HTML.
+ *
+ * Why: when we render the snapshot in a Preview iframe the page's
+ * original scripts re-bind their own click handlers (Funnelish's
+ * jQuery accordion, Shopify Dawn's <details> polyfill, custom
+ * "show/hide FAQ" inline scripts). Those handlers fight with our
+ * rescue delegate (capture vs bubble, double-toggle, race condition
+ * with closeAll), so accordions either don't open or instantly
+ * snap back closed/open.
+ *
+ * Mirrors the same stripping the Visual editor does in
+ * `prepareEditorHtml` so behaviour is consistent between Editor and
+ * Preview. Loses live interactivity on purpose - if the user needs
+ * the real runtime they can open "Live navigable".
+ */
+function stripAllScripts(html: string): string {
+  let out = html;
+  out = out.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
+  out = out.replace(/<script\b[^>]*\/>/gi, '');
+  return out;
+}
+
 export function injectInteractivityRescue(html: string): string {
+  // 1) Buttiamo via gli script della pagina (vedi stripAllScripts).
+  //    Senza questo, in Preview gli accordion non rispondevano al click
+  //    pur essendoci il rescue: la pagina riassegnava i suoi handler in
+  //    bubble e annullava il toggle del rescue (capture).
+  html = stripAllScripts(html);
+
   // CSS guard: only kicks in when the rescue script has tagged <html>
   // with `data-wasabi-rescue="1"`. This avoids hiding/clobbering FAQs
   // on pages whose own runtime is fine — the script only sets the
