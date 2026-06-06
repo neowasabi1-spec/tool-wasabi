@@ -457,6 +457,11 @@ function setOpen(p,open){
     }catch(e){p.style.display='none';}
   }
   p.setAttribute('data-wasabi-open',open?'1':'0');
+  // FORCE REFLOW/REPAINT sincrono. Senza questo, alcuni browser (specie
+  // dentro iframe sandbox) deferiscono il repaint fino al PROSSIMO evento
+  // utente, che da' l'effetto "serve un secondo click fuori per vedere
+  // il toggle". Leggere offsetHeight forza il layout subito.
+  try{void p.offsetHeight;}catch(e){}
 }
 function panelOpen(p){
   if(!p)return false;
