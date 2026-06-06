@@ -6300,9 +6300,13 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                   // Default = snapshot (HTML clonato), come
                                   // richiesto: l'utente vede subito il
                                   // contenuto editato/salvato, non l'URL
-                                  // originale via iframe (che potrebbe essere
-                                  // diverso o non raggiungibile). Si puo'
-                                  // sempre passare a "Live" col toggle.
+                                  // originale via iframe. Si puo' sempre
+                                  // passare a "Live" col toggle (a meno che
+                                  // la pagina sia un upload locale, in quel
+                                  // caso non c'e' un URL live da mostrare).
+                                  const isUploaded =
+                                    page.clonedData.method_used === 'upload' ||
+                                    (page.urlToSwipe || '').startsWith('https://uploaded.local/');
                                   setPreviewViewport('desktop');
                                   setPreviewTab('preview');
                                   setClonedPreviewMode('snapshot');
