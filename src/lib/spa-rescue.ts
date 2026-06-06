@@ -445,9 +445,19 @@ export function injectInteractivityRescue(html: string): string {
     // L'img riempie la slide al 100% width, height auto (preserva
     // aspect ratio). La slide e' block normale; bindCarousel mostra
     // solo quella corrente e nasconde le altre con display:none.
-    '.slider-for{position:relative;display:block;width:100%;overflow:hidden}' +
-    '.slider-for>.r-ldsnaw{display:block;width:100%}' +
-    '.slider-for img,.slider-for .r-1lm4acq{display:block;width:100%;height:auto;max-width:100%}' +
+    // NEUTRALIZZA padding-bottom:100% (aspect-ratio trick di Replo che
+    // crea uno spazio vuoto enorme sotto la slide visibile quando il
+    // runtime Replo non e' attivo per posizionare le slide absolute).
+    // Replo CSS ha selettore .slider-for{padding-bottom:100%} -> qui
+    // forziamo 0 cosi' il container ha altezza = slide naturale.
+    '.slider-for{position:relative!important;display:block!important;width:100%!important;overflow:hidden!important;padding-bottom:0!important;height:auto!important}' +
+    '.slider-for>.r-ldsnaw{display:block!important;width:100%!important;position:relative!important;height:auto!important}' +
+    // L'img Replo (.r-1lm4acq) ha specificita' artificiale alta via
+    // :not(#\\20):not(#\\20) per height:100%;object-fit:cover. Con
+    // parent collapsed (height auto), 100% sarebbe 0. Forziamo
+    // width:100% + height:auto cosi' l'immagine ha aspect ratio
+    // naturale e il container la accoglie.
+    '.slider-for img,.slider-for .r-1lm4acq{display:block!important;width:100%!important;height:auto!important;max-width:100%!important;max-height:none!important;min-height:0!important;object-fit:contain!important}' +
     // STRISCIA THUMBNAIL ORIZZONTALE. Replo CSS originale fa
     // display:flex con thumbnail piccole; senza, le .r-35xly6 stanno
     // block-level (full width) e con la nostra regola img:width:100%

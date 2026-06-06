@@ -1557,9 +1557,16 @@ function prepareEditorHtml(html: string, sourceUrl?: string): string {
      * height=""> non ha dimensioni e i contenitori .slider-for /
      * .r-ldsnaw non hanno layout -> immagine carousel invisibile.
      * Diamo layout minimo: img al 100% width, height auto. */
-    .slider-for { position: relative; display: block; width: 100%; overflow: hidden; }
-    .slider-for > .r-ldsnaw { display: block; width: 100%; }
-    .slider-for img, .slider-for .r-1lm4acq { display: block; width: 100%; height: auto; max-width: 100%; }
+    /* Neutralizza il trucco aspect-ratio di Replo
+       (.slider-for{padding-bottom:100%}) che senza il runtime crea
+       spazio vuoto enorme sotto la slide. Forza container ad altezza
+       naturale della slide corrente. */
+    .slider-for { position: relative !important; display: block !important; width: 100% !important; overflow: hidden !important; padding-bottom: 0 !important; height: auto !important; }
+    .slider-for > .r-ldsnaw { display: block !important; width: 100% !important; position: relative !important; height: auto !important; }
+    /* L'img Replo ha specificita' alta (:not(#\\20):not(#\\20).r-1lm4acq)
+       per height:100%;object-fit:cover. Override con !important per
+       width:100%/height:auto cosi' aspect ratio naturale. */
+    .slider-for img, .slider-for .r-1lm4acq { display: block !important; width: 100% !important; height: auto !important; max-width: 100% !important; max-height: none !important; min-height: 0 !important; object-fit: contain !important; }
     /* Striscia thumbnail orizzontale: Replo CSS fa flex con thumb
        piccole; senza, .r-35xly6 sono block-level (full width) e con la
        regola sopra (img 100% width) diventerebbero 7 immagini giganti
