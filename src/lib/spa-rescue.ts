@@ -379,9 +379,9 @@ export function injectInteractivityRescue(html: string): string {
   // site CSS/JS keeps the panel closed and the framework script never
   // runs (Funnelish/ClickFunnels snapshots, stripped <script> in editor).
   const script = `<script id="wasabi-accordion-rescue">(function(){
-var TRIG='.faq-header,.faq-title,.faq-question,.accordion-header,.accordion-button,.accordion-toggle,.toggle-header,.elFAQItemQuestion,[data-accordion-trigger],[data-faq-toggle],label[for]';
-var ITEM='.faq,.faq-wrapper,.faq-item,.accordion-item,.accordion,.toggle-item,.elFAQItem,[data-faq],details';
-var PANEL='.faq-content-wrapper,.faq-content,.accordion-content,.accordion-body,.accordion-collapse,.faq-body,.faq-answer,.elFAQItemAnswer,.toggle-content,.collapse-content,[data-accordion-content]';
+var TRIG='.faq-header,.faq-title,.faq-question,.accordion-header,.accordion-button,.accordion-toggle,.toggle-header,.elFAQItemQuestion,[data-accordion-trigger],[data-faq-toggle],label[for],.fk-collapsible-list-label,.fk-collapsible-list-right-label';
+var ITEM='.faq,.faq-wrapper,.faq-item,.accordion-item,.accordion,.toggle-item,.elFAQItem,[data-faq],details,.fk-collapsible-list-item,li.fk-collapsible-list-item';
+var PANEL='.faq-content-wrapper,.faq-content,.accordion-content,.accordion-body,.accordion-collapse,.faq-body,.faq-answer,.elFAQItemAnswer,.toggle-content,.collapse-content,[data-accordion-content],.fk-collapsible-list-content';
 var ITEM_RE=/(faq|accordion|toggle|collaps|expand|question|drop.?down)/i;
 var PANEL_RE=/(content|answer|body|panel|collaps|detail|inner|text|wrapper)/i;
 function cls(el){if(!el)return '';var c=el.className;if(c&&typeof c==='object'&&'baseVal'in c)return c.baseVal;return ''+(c||'');}
@@ -404,9 +404,15 @@ function findPanel(trigger,item){
   return null;
 }
 function findItem(t){
+  // Pass 1: closest ancestor che matcha ITEM ESPLICITAMENTE. Sicuro,
+  // niente fuzzy "esplosivo": es. .fk-collapsible-list-right-label matcha
+  // 'collaps' (fuzzy) ma e' SOLO l'header, non l'item completo. Senza
+  // questo pass, findItem si fermava la' e findPanel restituiva il
+  // .label-text invece del .fk-collapsible-list-content esterno.
+  try{var hit=t.closest&&t.closest(ITEM);if(hit)return hit;}catch(_){}
+  // Pass 2: fuzzy fallback per pagine con classi totalmente custom.
   var el=t,depth=0;
   while(el&&el.nodeType===1&&depth<10){
-    if(el.matches&&el.matches(ITEM))return el;
     if(ITEM_RE.test(cls(el))&&findPanel(null,el))return el;
     el=el.parentElement;depth++;
   }
@@ -549,13 +555,11 @@ function once(){
   try{document.documentElement.setAttribute('data-wasabi-rescue','1');}catch(e){}
   closeAll();
   initCarousels();
-  try{console.log('[wasabi-rescue] active. ITEM matches:',document.querySelectorAll(ITEM).length,'PANEL matches:',document.querySelectorAll(PANEL).length);}catch(e){}
   // Retry: alcune pagine popolano le slide via script inline dopo il load.
   // initCarousels e' idempotente (guard __wbCar), quindi e' sicuro ripetere.
   setTimeout(initCarousels,600);setTimeout(initCarousels,1600);
   document.addEventListener('click',function(ev){
     var t=ev.target;if(!(t instanceof Element))return;
-    try{console.log('[wasabi-rescue] CLICK',t.tagName,'.'+(t.className||'').toString().slice(0,80));}catch(e){}
     var actionable=t.closest('a[href]:not([href="#"]):not([href=""]),button[type="submit"],input,select,textarea');
     // 1) ARIA pattern
     var btn=t.closest('[aria-expanded][aria-controls]');
@@ -618,12 +622,8 @@ function once(){
       if(actionable&&item.contains(actionable)&&actionable!==item)return;
       var inPanel=t.closest(PANEL);
       if(inPanel&&panelOpen(inPanel)){try{if(getComputedStyle(inPanel).display!=='none')return;}catch(e){}}
-      var trig=t.closest(TRIG)||t;
-      try{var pnl=findPanel(trig,item);console.log('[wasabi-rescue] TOGGLE item=',item.tagName+'.'+(item.className||'').toString().slice(0,60),'trig=',trig.tagName,'panel=',pnl?pnl.tagName+'.'+(pnl.className||'').toString().slice(0,60):'NULL');}catch(e){}
-      toggle(item,trig);
+      toggle(item,t.closest(TRIG)||t);
       ev.preventDefault();ev.stopPropagation();
-    }else{
-      try{console.log('[wasabi-rescue] NO ITEM FOUND for click target — no toggle');}catch(e){}
     }
   },true);
 }
