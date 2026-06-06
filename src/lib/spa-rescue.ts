@@ -385,7 +385,18 @@ var PANEL='.faq-content-wrapper,.faq-content,.accordion-content,.accordion-body,
 var ITEM_RE=/(faq|accordion|toggle|collaps|expand|question|drop.?down)/i;
 var PANEL_RE=/(content|answer|body|panel|collaps|detail|inner|text|wrapper)/i;
 function cls(el){if(!el)return '';var c=el.className;if(c&&typeof c==='object'&&'baseVal'in c)return c.baseVal;return ''+(c||'');}
-function isPanelLike(el){return el&&el.nodeType===1&&(PANEL_RE.test(cls(el))||(el.matches&&el.matches(PANEL)));}
+// Classi che chiaramente NON sono pannelli di contenuto: header/icone/
+// toggle/label. Senza questo filtro, librerie tipo FunnelKit (dove TUTTE
+// le sub-classi contengono "collaps" perche' fa parte del nome) facevano
+// matchare .fk-collapsible-list-label-icon come "panel" e il sibling-walk
+// si fermava la' invece di salire fino al .fk-collapsible-list-content.
+var PANEL_REJECT_RE=/(^|[\s\-_])(icon|toggle|header|footer|label|title|caption|trigger|button|chevron|arrow|caret|plus|minus|indicator|spacer|symbol|sign|head|nav|menu)([\s\-_]|$)/i;
+function isPanelLike(el){
+  if(!el||el.nodeType!==1)return false;
+  var c=cls(el);
+  if(PANEL_REJECT_RE.test(c))return false;
+  return PANEL_RE.test(c)||(el.matches&&el.matches(PANEL));
+}
 function findPanel(trigger,item){
   // 1) Il FRATELLO dopo il trigger: gestisce sia le strutture "flat"
   //    (header/answer alternati nello stesso contenitore) sia gli item in
@@ -629,24 +640,7 @@ function once(){
       if(actionable&&item.contains(actionable)&&actionable!==item)return;
       var inPanel=t.closest(PANEL);
       if(inPanel&&panelOpen(inPanel)){try{if(getComputedStyle(inPanel).display!=='none')return;}catch(e){}}
-      var trigUsed=itemTrig||t;
-      var pnlBefore=findPanel(trigUsed,item);
-      var openBefore=pnlBefore?panelOpen(pnlBefore):null;
-      toggle(item,trigUsed);
-      try{
-        var pnlAfter=findPanel(trigUsed,item);
-        console.log('[wb] click toggle',
-          'item=',item.tagName+'.'+(item.className||'').toString().slice(0,40),
-          'trig=',trigUsed.tagName+'.'+(trigUsed.className||'').toString().slice(0,40),
-          'panel=',pnlAfter?pnlAfter.tagName+'.'+(pnlAfter.className||'').toString().slice(0,40):'NULL',
-          'wasOpen=',openBefore,
-          'nowOpen=',pnlAfter?panelOpen(pnlAfter):'-',
-          'display=',pnlAfter?getComputedStyle(pnlAfter).display:'-');
-        // Check di nuovo dopo 400ms: se il display e' tornato a 'none'
-        // significa che c'e' una transition/animation CSS o un altro
-        // handler che richiude il pannello.
-        if(pnlAfter){setTimeout(function(){try{console.log('[wb] +400ms: display=',getComputedStyle(pnlAfter).display,'data-wasabi-open=',pnlAfter.getAttribute('data-wasabi-open'));}catch(e){}},400);}
-      }catch(e){}
+      toggle(item,itemTrig||t);
       ev.preventDefault();ev.stopPropagation();
     }
   },true);
