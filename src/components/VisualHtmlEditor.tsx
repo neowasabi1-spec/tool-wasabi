@@ -1540,7 +1540,7 @@ function prepareEditorHtml(html: string, sourceUrl?: string): string {
      * sui display:none originali sia su eventuali !important della
      * pagina. Niente force-open. */
 
-    /* ── CAROUSEL: zero overrides ──────────────────────────────
+    /* ── CAROUSEL: zero overrides per librerie standard ────────
      * Manteniamo gli script di Swiper/Slick/etc. (vedi
      * stripNonCarouselScripts). Le librerie calcolano da sole le
      * larghezze delle slide in base alla loro config (slidesPerView,
@@ -1548,6 +1548,19 @@ function prepareEditorHtml(html: string, sourceUrl?: string): string {
      * rompeva il calcolo e impilava le slide a tutta larghezza.
      * Risultato: editor e preview hanno carousel PIXEL-PERFECT
      * identico alla pagina originale. */
+
+    /* ── REPLO CAROUSEL FALLBACK (.slider-for > .r-ldsnaw > img) ──
+     * Pagine come gethirelief.com usano il pattern Replo dove il
+     * layout CSS (dimensioni di .slider-for / .r-ldsnaw / img.r-1lm4acq)
+     * e' caricato dinamicamente dal runtime Replo (script esterno che
+     * NON possiamo eseguire). Senza quella CSS, lo <img width=""
+     * height=""> non ha dimensioni e i contenitori .slider-for /
+     * .r-ldsnaw non hanno layout -> immagine carousel invisibile.
+     * Diamo layout minimo: img al 100% width, height auto. */
+    .slider-for { position: relative; display: block; width: 100%; overflow: hidden; }
+    .slider-for > .r-ldsnaw { display: block; width: 100%; }
+    .slider-for img, .slider-for .r-1lm4acq { display: block; width: 100%; height: auto; max-width: 100%; }
+    .slider-nav .r-35xly6 img { display: block; width: 100%; height: auto; max-width: 100%; }
 
     /* ── FALLBACK PER ICON-FONT MANCANTI (FontAwesome SVG-with-JS) ─
      * Pattern <i class="fas fa-star"></i> renderizzato dal JS di FA.

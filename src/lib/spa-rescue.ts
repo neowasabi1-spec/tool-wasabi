@@ -430,6 +430,27 @@ export function injectInteractivityRescue(html: string): string {
   // .faq parent (or nearest accordion container) gets .is-open.
   const styleTag =
     '<style id="wasabi-accordion-rescue-style">' +
+    // REPLO carousel fallback: pagine come gethirelief.com usano il
+    // pattern Replo (.slider-for > .r-ldsnaw > img.r-1lm4acq). Il loro
+    // layout CSS (.r-ldsnaw, .slider-for dimensioni, img sizing) e'
+    // caricato dinamicamente dal runtime Replo (script esterno che NON
+    // possiamo eseguire nel nostro iframe). Senza quella CSS:
+    //   - <img width="" height=""> sui slide ha dimensioni undefined
+    //   - .slider-for non ha height -> contenitore vuoto
+    //   - .r-ldsnaw non ha sizing -> slide invisibili
+    // Risultato: l'utente vede solo le frecce (lc-arrow) ma niente
+    // immagine al centro del carosello (vedi screenshot HiRelief).
+    //
+    // Fix: regole CSS minime che danno layout sensato al pattern Replo.
+    // L'img riempie la slide al 100% width, height auto (preserva
+    // aspect ratio). La slide e' block normale; bindCarousel mostra
+    // solo quella corrente e nasconde le altre con display:none.
+    '.slider-for{position:relative;display:block;width:100%;overflow:hidden}' +
+    '.slider-for>.r-ldsnaw{display:block;width:100%}' +
+    '.slider-for img,.slider-for .r-1lm4acq{display:block;width:100%;height:auto;max-width:100%}' +
+    // Stessa cosa per le miniature del slider-nav (.r-35xly6 e' la
+    // classe della thumbnail Replo).
+    '.slider-nav .r-35xly6 img{display:block;width:100%;height:auto;max-width:100%}' +
     'html[data-wasabi-rescue="1"] .faq .faq-content-wrapper,' +
     'html[data-wasabi-rescue="1"] .faq .faq-content,' +
     'html[data-wasabi-rescue="1"] .faq-wrapper .faq-content-wrapper,' +
