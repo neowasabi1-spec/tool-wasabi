@@ -468,6 +468,44 @@ function toggle(item,trigger){
     if(box){box.checked=willOpen;if(willOpen)box.setAttribute('checked','');else box.removeAttribute('checked');}
   }catch(e){}
 }
+// Salta i sibling "icona" (svg/img/i, classi plus/minus/chevron/arrow/
+// icon/toggle/indicator/spacer, oppure testo ≤2 char tipo "+"/"−"/"±").
+// Senza questa skip, header tipo
+//   <h3>The Results</h3>
+//   <span class="icon">±</span>
+//   <div>content</div>
+// venivano "toggliati" sull'icona invece che sul contenuto.
+function _wbIsSkippable(el){
+  if(!el||el.nodeType!==1)return true;
+  if(/^(SCRIPT|STYLE|HR|BR|NOSCRIPT|TEMPLATE|HEAD|META|LINK|SVG|IMG|I|USE|PATH)$/i.test(el.tagName))return true;
+  var c=el.className;c=c&&(typeof c==='string'?c:(c.baseVal||''));
+  if(/(^|[\s\-_])(plus|minus|chevron|caret|arrow|icon|toggle|indicator|spacer|sign|symbol)([\s\-_]|$)/i.test(c))return true;
+  var txt=(el.textContent||'').trim();
+  if(txt.length<=2)return true; // 1-2 char = quasi sempre +/-/±/▼
+  return false;
+}
+function _wbFindPanelFor(hd){
+  if(!hd)return null;
+  // 1) Sibling DOPO l'header, saltando icone/spacer.
+  var sib=hd.nextElementSibling;
+  while(sib){
+    if(!_wbIsSkippable(sib))return sib;
+    sib=sib.nextElementSibling;
+  }
+  // 2) Fallback: se l'header e' in fondo al suo parent, prova il sibling
+  //    DEL PARENT (es. <div class="row"><h3>...</h3><span>±</span></div>
+  //                  <div>content</div>).
+  var p=hd.parentElement;
+  if(p){
+    sib=p.nextElementSibling;
+    while(sib){
+      if(!_wbIsSkippable(sib))return sib;
+      sib=sib.nextElementSibling;
+    }
+  }
+  return null;
+}
+
 function closeAll(){
   // Chiude (1) pannelli e item con classi conosciute + <details>, e
   // (2) un pattern molto comune ma "anonimo": header (h1-h6/button/
@@ -509,10 +547,10 @@ function closeAll(){
       var hasIconChild=!!hd.querySelector(ICON_CLS);
       var hasIconAtEnd=ICON_TXT.test(lastChar);
       if(!hasIconChild&&!hasIconAtEnd)continue;
-      // Fratello successivo: deve esistere ed essere un block-level non
-      // header, non form control, non hr/br.
-      var sib=hd.nextElementSibling;
-      while(sib&&sib.nodeType===1&&/^(SCRIPT|STYLE|HR|BR|NOSCRIPT|TEMPLATE)$/i.test(sib.tagName))sib=sib.nextElementSibling;
+      // Pannello: prima icone/spacer skippate, poi rifiuta fratelli che
+      // sono altri header / form control / link / form (chiaramente non
+      // pannelli di una tendina).
+      var sib=_wbFindPanelFor(hd);
       if(!sib||sib.nodeType!==1)continue;
       if(/^(H[1-6]|BUTTON|INPUT|SELECT|TEXTAREA|LABEL|A|FORM)$/i.test(sib.tagName))continue;
       // Chiudi e marca cliccabile
@@ -594,8 +632,7 @@ function once(){
     var hdT=t.closest('[data-wasabi-trigger]');
     if(hdT){
       if(actionable&&hdT.contains(actionable)&&actionable!==hdT)return;
-      var sb=hdT.nextElementSibling;
-      while(sb&&sb.nodeType===1&&/^(SCRIPT|STYLE|HR|BR|NOSCRIPT|TEMPLATE)$/i.test(sb.tagName))sb=sb.nextElementSibling;
+      var sb=_wbFindPanelFor(hdT);
       if(sb){
         var willOpenS=!panelOpen(sb);
         setOpen(sb,willOpenS);
