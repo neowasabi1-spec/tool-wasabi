@@ -628,17 +628,29 @@ const EDITOR_SCRIPT = `
     var nav=scope.querySelector(CAR_NAV);
     var thumbs=[];
     if(nav){for(var n=0;n<nav.children.length;n++){var tc=nav.children[n];if(tc&&tc.nodeType===1&&((tc.querySelector&&tc.querySelector('img'))||tc.tagName==='IMG'))thumbs.push(tc);}}
-    /* Editor-only: bind solo se ci sono controlli reali. Senza prev/next/
-       thumbs un carousel monocoma non e' navigabile e e' meglio lasciare
-       tutte le slide impilate dal CSS. */
-    if(!prev&&!next&&thumbs.length<2)return null;
+    /* Bind SEMPRE se ci sono >=2 slide. Anche senza controlli espliciti,
+       mostriamo una slide alla volta cosi' l'editor corrisponde al
+       preview. Se la pagina non ha frecce/thumbs riconosciute, l'utente
+       puo' navigare in altro modo (es. usando il pannello laterale
+       delle immagini), ma almeno non vede 5+ slide impilate. */
     track.__wbCar={idx:0,slides:slides,prev:prev,next:next,thumbs:thumbs};
     var car=track.__wbCar;
     car.show=function(k){
       car.idx=(k%slides.length+slides.length)%slides.length;
       for(var i=0;i<slides.length;i++){
+        /* !important obbligatorio: l'editorCss e/o regole della pagina
+           hanno display:block !important sulle .swiper-slide /
+           .slick-slide. Senza !important inline qui, show() viene
+           ignorata e le slide restano tutte visibili. */
         if(i===car.idx){slides[i].style.removeProperty('display');}
         else{slides[i].style.setProperty('display','none','important');}
+        /* Reset transform/position per-slide: Slick/Swiper lasciano
+           inline-transforms che spostano la slide visibile fuori-vista. */
+        try{
+          slides[i].style.setProperty('transform','none','important');
+          slides[i].style.setProperty('position','relative','important');
+          slides[i].style.setProperty('left','auto','important');
+        }catch(e){}
       }
       for(var j=0;j<thumbs.length;j++){
         var on=(j===car.idx);
@@ -646,15 +658,16 @@ const EDITOR_SCRIPT = `
         try{thumbs[j].classList.toggle('r-19wtxcv',on);thumbs[j].classList.toggle('slick-current',on);thumbs[j].classList.toggle('slick-active',on);thumbs[j].classList.toggle('swiper-pagination-bullet-active',on);}catch(e){}
       }
     };
-    /* Forza display flex/visibile sul TRACK (puo' avere display:none o
-       transform da slick/swiper originale): cosi' show() puo' realmente
-       togglare le slide. */
+    /* Neutralizza il translate3d/transform che slick/swiper originali
+       hanno lasciato sul TRACK. Senza JS attivo, il translate sposta
+       il wrapper fuori-vista o su una slide sbagliata. */
     try{
-      track.style.setProperty('display','block','important');
       track.style.setProperty('transform','none','important');
+      track.style.setProperty('-webkit-transform','none','important');
       track.style.setProperty('transition','none','important');
       track.style.setProperty('width','auto','important');
-      track.style.setProperty('height','auto','important');
+      track.style.setProperty('left','auto','important');
+      track.style.setProperty('display','block','important');
     }catch(e){}
     if(prev){prev.style.cursor='pointer';prev.setAttribute('data-wb-car-ctl','prev');}
     if(next){next.style.cursor='pointer';next.setAttribute('data-wb-car-ctl','next');}
