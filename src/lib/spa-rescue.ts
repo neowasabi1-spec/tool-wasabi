@@ -591,6 +591,47 @@ function once(){
   document.addEventListener('click',function(ev){
     var t=ev.target;if(!(t instanceof Element))return;
     var actionable=t.closest('a[href]:not([href="#"]):not([href=""]),button[type="submit"],input,select,textarea');
+    // 0) FunnelKit Collapsible List - handler DEDICATO.
+    //    Le pagine FunnelKit (Rosabella, AICashClone, etc.) hanno una
+    //    struttura specifica dove TUTTE le sub-classi contengono "collaps"
+    //    (e' nel nome della libreria: fk-COLLAPSIBLE-list-*), il che fa
+    //    impazzire le euristiche generiche. Qui detection diretta:
+    //    qualsiasi click su un elemento .fk-collapsible-list-* (eccetto
+    //    dentro al content gia' aperto) -> trova l'antenato che CONTIENE
+    //    direttamente un .fk-collapsible-list-content figlio -> toggle.
+    var fkHit=t.closest('[class*="fk-collapsible-list"]');
+    if(fkHit){
+      // Click DENTRO un content gia' aperto = lascia passare (l'utente
+      // legge/seleziona la risposta, non vuole richiuderla).
+      var fkInside=t.closest('.fk-collapsible-list-content');
+      if(fkInside){try{if(getComputedStyle(fkInside).display!=='none')return;}catch(e){}}
+      // Trova l'ITEM: ancestor che ha un .fk-collapsible-list-content come
+      // figlio diretto. Questo e' SEMPRE il vero contenitore della FAQ.
+      var fkItem=null, fkP=fkHit;
+      while(fkP&&fkP.nodeType===1){
+        for(var fci=0;fci<fkP.children.length;fci++){
+          var fcc=fkP.children[fci];
+          if(fcc.classList&&fcc.classList.contains('fk-collapsible-list-content')){fkItem=fkP;break;}
+        }
+        if(fkItem)break;
+        if(fkP===document.body)break;
+        fkP=fkP.parentElement;
+      }
+      if(fkItem){
+        var fkContent=null;
+        for(var fci2=0;fci2<fkItem.children.length;fci2++){
+          var fcc2=fkItem.children[fci2];
+          if(fcc2.classList&&fcc2.classList.contains('fk-collapsible-list-content')){fkContent=fcc2;break;}
+        }
+        if(fkContent){
+          var fkWillOpen=!panelOpen(fkContent);
+          setOpen(fkContent,fkWillOpen);
+          try{fkItem.classList.toggle('fk-collapsible-list-item-open',fkWillOpen);}catch(_){}
+          ev.preventDefault();ev.stopPropagation();
+          return;
+        }
+      }
+    }
     // 1) ARIA pattern
     var btn=t.closest('[aria-expanded][aria-controls]');
     if(btn){
