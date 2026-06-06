@@ -404,18 +404,13 @@ function findPanel(trigger,item){
   return null;
 }
 function findItem(t){
-  // Pass 1: closest ancestor che matcha ITEM ESPLICITAMENTE. Sicuro,
-  // niente fuzzy "esplosivo": es. .fk-collapsible-list-right-label matcha
-  // 'collaps' (fuzzy) ma e' SOLO l'header, non l'item completo. Senza
-  // questo pass, findItem si fermava la' e findPanel restituiva il
-  // .label-text invece del .fk-collapsible-list-content esterno.
-  try{var hit=t.closest&&t.closest(ITEM);if(hit)return hit;}catch(_){}
-  // Pass 2: fuzzy fallback per pagine con classi totalmente custom.
+  try{var hit=t.closest&&t.closest(ITEM);if(hit){try{console.log('[wb] findItem explicit hit:',hit.tagName+'.'+(hit.className||'').toString().slice(0,80));}catch(_){}return hit;}}catch(_){}
   var el=t,depth=0;
   while(el&&el.nodeType===1&&depth<10){
-    if(ITEM_RE.test(cls(el))&&findPanel(null,el))return el;
+    if(ITEM_RE.test(cls(el))&&findPanel(null,el)){try{console.log('[wb] findItem fuzzy hit:',el.tagName+'.'+(el.className||'').toString().slice(0,80));}catch(_){}return el;}
     el=el.parentElement;depth++;
   }
+  try{console.log('[wb] findItem MISS - target:',t.tagName+'.'+(t.className||'').toString().slice(0,80),'parent chain:',(function(){var p=t,arr=[],d=0;while(p&&d<8){arr.push(p.tagName+'.'+(p.className||'').toString().slice(0,40));p=p.parentElement;d++;}return arr.join(' > ');})());}catch(_){}
   return null;
 }
 function setOpen(p,open){
@@ -622,7 +617,10 @@ function once(){
       if(actionable&&item.contains(actionable)&&actionable!==item)return;
       var inPanel=t.closest(PANEL);
       if(inPanel&&panelOpen(inPanel)){try{if(getComputedStyle(inPanel).display!=='none')return;}catch(e){}}
-      toggle(item,t.closest(TRIG)||t);
+      var trig=t.closest(TRIG)||t;
+      try{var pnl=findPanel(trig,item);console.log('[wb] toggle item=',item.tagName+'.'+(item.className||'').toString().slice(0,60),'trig=',trig.tagName+'.'+(trig.className||'').toString().slice(0,40),'panel=',pnl?pnl.tagName+'.'+(pnl.className||'').toString().slice(0,60):'NULL','panelOpenBefore=',pnl?panelOpen(pnl):'-');}catch(e){}
+      toggle(item,trig);
+      try{var pnl2=findPanel(trig,item);console.log('[wb] after toggle: panelOpen=',pnl2?panelOpen(pnl2):'-','display=',pnl2?getComputedStyle(pnl2).display:'-');}catch(e){}
       ev.preventDefault();ev.stopPropagation();
     }
   },true);
