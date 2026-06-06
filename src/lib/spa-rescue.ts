@@ -404,13 +404,12 @@ function findPanel(trigger,item){
   return null;
 }
 function findItem(t){
-  try{var hit=t.closest&&t.closest(ITEM);if(hit){try{console.log('[wb] findItem explicit hit:',hit.tagName+'.'+(hit.className||'').toString().slice(0,80));}catch(_){}return hit;}}catch(_){}
+  try{var hit=t.closest&&t.closest(ITEM);if(hit)return hit;}catch(_){}
   var el=t,depth=0;
   while(el&&el.nodeType===1&&depth<10){
-    if(ITEM_RE.test(cls(el))&&findPanel(null,el)){try{console.log('[wb] findItem fuzzy hit:',el.tagName+'.'+(el.className||'').toString().slice(0,80));}catch(_){}return el;}
+    if(ITEM_RE.test(cls(el))&&findPanel(null,el))return el;
     el=el.parentElement;depth++;
   }
-  try{console.log('[wb] findItem MISS - target:',t.tagName+'.'+(t.className||'').toString().slice(0,80),'parent chain:',(function(){var p=t,arr=[],d=0;while(p&&d<8){arr.push(p.tagName+'.'+(p.className||'').toString().slice(0,40));p=p.parentElement;d++;}return arr.join(' > ');})());}catch(_){}
   return null;
 }
 function setOpen(p,open){
@@ -590,37 +589,47 @@ function once(){
       }
       return; // mai cadere nel generico per i <details> (evita doppio toggle)
     }
-    // 4) Generic + heuristic: find nearest accordion-shaped item
-    var item=findItem(t);
-    // 4b) Fallback strutturale: se il container non ha classe FAQ-like
-    //     (es. <div class="card"> con dentro header + .faq-content), cerca
-    //     un ancestor SMALL (2-5 figli) che contiene un panel-like child.
-    //     Limitato a 5 figli per non matchare body/section/main.
+    // 4) Trova accordion. Strategia in tre passi:
+    //   4a) ITEM ESPLICITO via closest (.faq-item, .accordion-item, etc.)
+    //   4b) SIBLING-WALK: risali dal target cercando l'ancestor il cui
+    //       NEXT SIBLING e' panel-like. Questo gestisce strutture nidificate
+    //       come FunnelKit dove il click target e' DENTRO l'header e il
+    //       panel e' fratello di un ancestor di 2+ livelli su:
+    //         <li>
+    //           <div.label>                   <- ancestor con sibling panel
+    //             <div.right-label>           <- click target
+    //               <div.label-text>Q?</div>
+    //             <div.toggle>+</div>
+    //           </div>
+    //           <div.content>A</div>          <- panel (sibling di .label)
+    //         </li>
+    //       Il vecchio findItem fuzzy matchava .right-label su 'collaps' e
+    //       findPanel restituiva .label-text come "panel" (matcha 'text'),
+    //       quindi cliccare nascondeva la domanda invece di aprire la risposta.
+    //   4c) FUZZY class match come last resort per pagine senza struttura
+    //       sibling-walk pulita.
+    var item=null, itemTrig=null;
+    try{var ex=t.closest&&t.closest(ITEM); if(ex){item=ex; itemTrig=t.closest(TRIG)||t;}}catch(_){}
     if(!item){
-      var p=t.parentElement, d=0;
-      while(p&&d<6){
-        try{
-          var n=p.children?p.children.length:0;
-          if(n>=2&&n<=6){
-            for(var ci=0;ci<n;ci++){
-              var ch=p.children[ci];
-              if(ch===t||(ch.contains&&ch.contains(t)))continue;
-              if(isPanelLike(ch)){item=p;break;}
-            }
-            if(item)break;
-          }
-        }catch(_){}
-        p=p.parentElement;d++;
+      var w=t, wd=0;
+      while(w&&w.nodeType===1&&wd<8&&w!==document.body&&w!==document.documentElement){
+        var ws=w.nextElementSibling;
+        while(ws){
+          if(isPanelLike(ws)){itemTrig=w; item=w.parentElement||w; break;}
+          ws=ws.nextElementSibling;
+        }
+        if(item)break;
+        w=w.parentElement;wd++;
       }
+    }
+    if(!item){
+      var fz=findItem(t); if(fz){item=fz; itemTrig=t.closest(TRIG)||t;}
     }
     if(item){
       if(actionable&&item.contains(actionable)&&actionable!==item)return;
       var inPanel=t.closest(PANEL);
       if(inPanel&&panelOpen(inPanel)){try{if(getComputedStyle(inPanel).display!=='none')return;}catch(e){}}
-      var trig=t.closest(TRIG)||t;
-      try{var pnl=findPanel(trig,item);console.log('[wb] toggle item=',item.tagName+'.'+(item.className||'').toString().slice(0,60),'trig=',trig.tagName+'.'+(trig.className||'').toString().slice(0,40),'panel=',pnl?pnl.tagName+'.'+(pnl.className||'').toString().slice(0,60):'NULL','panelOpenBefore=',pnl?panelOpen(pnl):'-');}catch(e){}
-      toggle(item,trig);
-      try{var pnl2=findPanel(trig,item);console.log('[wb] after toggle: panelOpen=',pnl2?panelOpen(pnl2):'-','display=',pnl2?getComputedStyle(pnl2).display:'-');}catch(e){}
+      toggle(item,itemTrig||t);
       ev.preventDefault();ev.stopPropagation();
     }
   },true);
