@@ -325,12 +325,57 @@ function stripAllScripts(html: string): string {
   return out;
 }
 
+/**
+ * Selective script stripper: removes EVERY <script> except those that
+ * are part of well-known carousel/slider libraries (Swiper, Slick,
+ * Flickity, Glide, Splide, OwlCarousel) and their inline init code.
+ *
+ * Rationale: pages like the Rosabella product carousel rely on Swiper
+ * being instantiated at runtime (`new Swiper(".mySwiper", {...})`).
+ * Stripping ALL scripts disabled the carousel entirely and forced us
+ * to write a brittle re-implementation. By keeping just the library
+ * scripts + their init calls we get pixel-perfect carousel behaviour
+ * for free, while still killing analytics/redirects/FAQ-fighting JS.
+ *
+ * Also keeps jQuery (Slick et al depend on it). The cost: a little
+ * more JS executes in the iframe (~50KB Swiper or ~80KB jQuery), but
+ * the page now LOOKS and BEHAVES identical to the live site.
+ *
+ * Exported so the Visual editor can use the same logic.
+ */
+export function stripNonCarouselScripts(html: string): string {
+  // Regex breakdown:
+  //   - src= containing one of: swiper|slick|flickity|glide|splide|
+  //     owl-carousel|jquery (the major slider libs + jQuery dep)
+  //   - OR inline body containing one of the init signatures:
+  //     `new Swiper(`, `.slick(`, `.flickity(`, `.glide(`,
+  //     `new Splide(`, `.owlCarousel(`, `Swiper.create(`
+  const KEEP_SRC = /\b(?:swiper|slick|flickity|glide|splide|owl-carousel|owl\.carousel|jquery)\b/i;
+  const KEEP_INLINE = /(?:new\s+Swiper\s*\(|Swiper\.create\s*\(|\.slick\s*\(|\.flickity\s*\(|\.glide\s*\(|new\s+Splide\s*\(|\.owlCarousel\s*\()/;
+  return html.replace(
+    /<script\b([^>]*)>([\s\S]*?)<\/script>/gi,
+    (full, attrs: string, body: string) => {
+      // External script: look at src=
+      const srcMatch = attrs.match(/\bsrc\s*=\s*["']([^"']+)["']/i);
+      if (srcMatch) {
+        return KEEP_SRC.test(srcMatch[1]) ? full : '';
+      }
+      // Inline script: look at body
+      return KEEP_INLINE.test(body) ? full : '';
+    },
+  ).replace(/<script\b[^>]*\/>/gi, '');
+}
+
 export function injectInteractivityRescue(html: string): string {
-  // 1) Buttiamo via gli script della pagina (vedi stripAllScripts).
-  //    Senza questo, in Preview gli accordion non rispondevano al click
-  //    pur essendoci il rescue: la pagina riassegnava i suoi handler in
-  //    bubble e annullava il toggle del rescue (capture).
-  html = stripAllScripts(html);
+  // 1) Strip SELETTIVO degli script: manteniamo le librerie carousel
+  //    (Swiper, Slick, Flickity, Glide, Splide, Owl) + jQuery + i loro
+  //    init inline. Cosi' i carousel della pagina funzionano REAL
+  //    (Rosabella usa Swiper(".mySwiper") con autoplay/pagination/etc.,
+  //    impossibile da replicare 1:1 con un fallback custom).
+  //    Tutto il resto (analytics, popup, FunnelKit FAQ JS, redirect,
+  //    pixel) viene rimosso: lasciarli farebbe combattere i loro
+  //    click-handler col nostro rescue FAQ in capture phase.
+  html = stripNonCarouselScripts(html);
 
   // CSS guard: only kicks in when the rescue script has tagged <html>
   // with `data-wasabi-rescue="1"`. This avoids hiding/clobbering FAQs
@@ -610,8 +655,19 @@ function bindCarousel(track){
 }
 function initCarousels(){
   try{
+    // Se Swiper (o Slick via jQuery) e' stato caricato dalla pagina e
+    // ha gia' inizializzato i carosello (classe '.swiper-initialized'
+    // / '.slick-initialized'), NON sostituirsi: il bind nativo e'
+    // pixel-perfect, il nostro fallback e' un compromesso. Per gli
+    // altri tracks senza initializer originale, applichiamo bind.
     var tracks=document.querySelectorAll('.slider-for,.swiper-wrapper');
-    for(var i=0;i<tracks.length;i++)bindCarousel(tracks[i]);
+    for(var i=0;i<tracks.length;i++){
+      var tr=tracks[i];
+      var parent=tr.parentElement;
+      var alreadyInit=(parent&&(parent.classList.contains('swiper-initialized')||parent.classList.contains('slick-initialized')))||tr.classList.contains('swiper-initialized')||tr.classList.contains('slick-initialized');
+      if(alreadyInit)continue;
+      bindCarousel(tr);
+    }
   }catch(e){}
 }
 function once(){

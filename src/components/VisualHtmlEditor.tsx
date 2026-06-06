@@ -19,6 +19,7 @@ import { createClient } from '@supabase/supabase-js';
 import { recolorPage } from '@/lib/recolor-page';
 import { useStore } from '@/store/useStore';
 import { extractSectionContent } from '@/lib/project-sections';
+import { stripNonCarouselScripts } from '@/lib/spa-rescue';
 
 /* ── Direct browser → Supabase Storage upload (bypasses Vercel 4.5MB body limit) ── */
 const ALLOWED_UPLOAD_TYPES: Record<string, string> = {
@@ -678,7 +679,17 @@ const EDITOR_SCRIPT = `
   function _initCarousels(){
     try{
       var tracks=document.querySelectorAll(CAR_TRACK);
-      for(var i=0;i<tracks.length;i++)_bindCarousel(tracks[i]);
+      for(var i=0;i<tracks.length;i++){
+        var tr=tracks[i];
+        /* Se Swiper/Slick nativi della pagina hanno gia' inizializzato
+           il carousel (verifichiamo via classe), non sostituirsi: il
+           bind nativo e' pixel-perfect. Il nostro _bindCarousel e' un
+           FALLBACK per pagine in cui la library non e' presente. */
+        var par=tr.parentElement;
+        var alreadyInit=(par&&(par.classList.contains('swiper-initialized')||par.classList.contains('slick-initialized')))||tr.classList.contains('swiper-initialized')||tr.classList.contains('slick-initialized');
+        if(alreadyInit)continue;
+        _bindCarousel(tr);
+      }
     }catch(e){}
   }
   /* Gestisce click su una freccia/thumb di un carousel: trova il track
@@ -733,9 +744,26 @@ const EDITOR_SCRIPT = `
     if(isUI(e.target))return;
     if(editing&&editEl&&!editEl.contains(e.target)){finishEdit();}
     if(editing&&editEl&&editEl.contains(e.target))return;
-    /* CAROUSEL: se ho cliccato una freccia/thumb di un carousel,
-       scorri (show prev/next/idx) e seleziona il contenitore cosi'
-       l'utente puo' anche stilizzarlo. */
+    /* NATIVE CAROUSEL CONTROLS: se ho cliccato una freccia/dot/thumb di
+       Swiper/Slick/etc., lascia che il LIBRARY NATIVE handler scorra
+       il carousel. Non preventDefault, non stopPropagation, non
+       selectEl: il delegate dell'editor non deve rubare questi click. */
+    var nativeCtl=e.target.closest&&e.target.closest(
+      '.swiper-button-prev,.swiper-button-next,.swiper-pagination-bullet,'+
+      '.slick-prev,.slick-next,.slick-dots button,.slick-dots li,'+
+      '.glide__arrow,.glide__bullet,'+
+      '.splide__arrow,.splide__pagination__page,'+
+      '.flickity-prev-next-button,.flickity-page-dot,'+
+      '.owl-prev,.owl-next,.owl-dot,'+
+      '[data-wb-car-ctl]'
+    );
+    if(nativeCtl){
+      /* Lascia passare al library; non selezionare il bottone. */
+      return;
+    }
+    /* CAROUSEL FALLBACK (solo per pagine senza Swiper/Slick/etc. che il
+       nostro _bindCarousel ha legato manualmente): scorri e seleziona
+       lo scope. _handleCarouselClick ritorna null se non c'e' binding. */
     var carScopeEl=_handleCarouselClick(e.target);
     if(carScopeEl){
       e.preventDefault();e.stopPropagation();
@@ -1272,28 +1300,24 @@ function prepareEditorHtml(html: string, sourceUrl?: string): string {
   // e un HUD: dentro l'editor visuale rubano i click di selezione.
   clean = clean.replace(/<script\b[^>]*data-fallback=[^>]*>[\s\S]*?<\/script>/gi, '');
   clean = clean.replace(/<style\b[^>]*data-fallback=[^>]*>[\s\S]*?<\/style>/gi, '');
-  // ── STRIP AGGRESSIVO TUTTI GLI SCRIPT DELLA PAGINA ───────────────
-  // In modalita' EDITOR l'utente sta modificando copy/stili. Gli script
-  // della pagina originale (analytics, popup di exit-intent, sticky bar
-  // JS-driven, geolocation tracker, A/B testing, Funnelish runtime,
-  // tracking pixel, retargeting...) non servono a nulla per editare e
-  // anzi:
+  // ── STRIP SELETTIVO DEGLI SCRIPT DELLA PAGINA ────────────────────
+  // In modalita' EDITOR l'utente sta modificando copy/stili. Strippiamo
+  // analytics/popup/sticky/A-B test/tracking/retargeting/etc. perche':
   //   - intercettano i click con stopPropagation/preventDefault e
   //     impediscono al nostro click-delegate selectEl() di vedere il
   //     target -> "clicco e non si seleziona niente"
   //   - aprono popup/modal che coprono la pagina
-  //   - rilanciano fetch a CDN morti -> errori in console che fanno
-  //     panicare l'utente
+  //   - rilanciano fetch a CDN morti -> errori in console
   //   - in alcuni casi sostituiscono il body via JS riscrivendo la
   //     pagina e cancellando il nostro EDITOR_SCRIPT al volo
   //
-  // Quindi: tolti TUTTI i <script> della pagina. Riniettiamo SOLO il
-  // nostro EDITOR_SCRIPT (sotto) + il noRetryGuard CKC (sopra).
-  // Lo strip avviene DOPO il noRetryGuard CKC injection cosi' quello
-  // viene rimosso anche lui, ma per l'editor non serve (gli script
-  // CKC veri sono comunque andati via in questo replace).
-  clean = clean.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
-  clean = clean.replace(/<script\b[^>]*\/>/gi, '');
+  // MA manteniamo le librerie di CAROUSEL/SLIDER (Swiper, Slick,
+  // Flickity, Glide, Splide, OwlCarousel, jQuery dep) + i loro init
+  // inline. Solo cosi' un carousel Swiper della pagina (es. Rosabella
+  // .mySwiper con autoplay+pagination) si comporta PIXEL-PERFECT
+  // identico al sito originale, sia in editor che in preview.
+  // (vedi stripNonCarouselScripts in src/lib/spa-rescue.ts)
+  clean = stripNonCarouselScripts(clean);
   // Toglie anche noscript: contengono spesso pixel di tracking che
   // diventano visibili se i loro <script> wrapper sono spariti.
   clean = clean.replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, '');
@@ -1464,51 +1488,14 @@ function prepareEditorHtml(html: string, sourceUrl?: string): string {
      * sui display:none originali sia su eventuali !important della
      * pagina. Niente force-open. */
 
-    /* ── CAROUSEL/SLIDER: EDITOR = PREVIEW ──────────────────────
-     * Il rescue script dell'editor (_initCarousels nel EDITOR_SCRIPT)
-     * ricostruisce il comportamento carousel: una slide alla volta,
-     * frecce prev/next + click sulle thumbnails per scorrere. Quindi
-     * NON forziamo piu' tutti gli slide visibili come stack verticale:
-     * deve apparire ESATTAMENTE come in preview.
-     *
-     * Per i carousel SENZA controlli (rari), _bindCarousel rinuncia e
-     * resta lo stato originale dello snapshot. Le regole sotto
-     * normalizzano solo i transform/translate3d/larghezze fuori-scala
-     * lasciati dagli script Swiper/Slick originali, per non rompere
-     * il layout della colonna grid/flex parent (il carousel non deve
-     * mai spingere fuori-schermo le colonne adiacenti tipo prezzo/ATC). */
-    .swiper-wrapper,
-    .swiper-container,
-    .swiper,
-    .slick-track,
-    .slick-list,
-    .owl-stage,
-    .owl-stage-outer,
-    .glide__track,
-    .glide__slides,
-    .flickity-slider,
-    .flickity-viewport,
-    .splide__track,
-    .splide__list,
-    .carousel-inner,
-    [class*="carousel"][class*="wrapper"],
-    [class*="slider"][class*="wrapper"],
-    [class*="slider"][class*="track"] {
-      max-width: 100% !important;
-      min-width: 0 !important;
-    }
-    .swiper-slide,
-    .slick-slide,
-    .owl-item,
-    .glide__slide,
-    .splide__slide,
-    .carousel-item,
-    .carousel-cell,
-    .flickity-cell,
-    .slider-item {
-      max-width: 100% !important;
-      min-width: 0 !important;
-    }
+    /* ── CAROUSEL: zero overrides ──────────────────────────────
+     * Manteniamo gli script di Swiper/Slick/etc. (vedi
+     * stripNonCarouselScripts). Le librerie calcolano da sole le
+     * larghezze delle slide in base alla loro config (slidesPerView,
+     * spaceBetween, breakpoints, etc.). Forzare max-width:100% qui
+     * rompeva il calcolo e impilava le slide a tutta larghezza.
+     * Risultato: editor e preview hanno carousel PIXEL-PERFECT
+     * identico alla pagina originale. */
 
     /* ── FALLBACK PER ICON-FONT MANCANTI (FontAwesome SVG-with-JS) ─
      * Pattern <i class="fas fa-star"></i> renderizzato dal JS di FA.
