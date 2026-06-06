@@ -629,7 +629,24 @@ function once(){
       if(actionable&&item.contains(actionable)&&actionable!==item)return;
       var inPanel=t.closest(PANEL);
       if(inPanel&&panelOpen(inPanel)){try{if(getComputedStyle(inPanel).display!=='none')return;}catch(e){}}
-      toggle(item,itemTrig||t);
+      var trigUsed=itemTrig||t;
+      var pnlBefore=findPanel(trigUsed,item);
+      var openBefore=pnlBefore?panelOpen(pnlBefore):null;
+      toggle(item,trigUsed);
+      try{
+        var pnlAfter=findPanel(trigUsed,item);
+        console.log('[wb] click toggle',
+          'item=',item.tagName+'.'+(item.className||'').toString().slice(0,40),
+          'trig=',trigUsed.tagName+'.'+(trigUsed.className||'').toString().slice(0,40),
+          'panel=',pnlAfter?pnlAfter.tagName+'.'+(pnlAfter.className||'').toString().slice(0,40):'NULL',
+          'wasOpen=',openBefore,
+          'nowOpen=',pnlAfter?panelOpen(pnlAfter):'-',
+          'display=',pnlAfter?getComputedStyle(pnlAfter).display:'-');
+        // Check di nuovo dopo 400ms: se il display e' tornato a 'none'
+        // significa che c'e' una transition/animation CSS o un altro
+        // handler che richiude il pannello.
+        if(pnlAfter){setTimeout(function(){try{console.log('[wb] +400ms: display=',getComputedStyle(pnlAfter).display,'data-wasabi-open=',pnlAfter.getAttribute('data-wasabi-open'));}catch(e){}},400);}
+      }catch(e){}
       ev.preventDefault();ev.stopPropagation();
     }
   },true);
