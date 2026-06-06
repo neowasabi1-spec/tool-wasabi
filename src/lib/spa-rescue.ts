@@ -426,27 +426,36 @@ function findItem(t){
 function setOpen(p,open){
   if(!p)return;
   // setProperty(...,'important') vince anche sui rule "!important" della
-  // pagina originale (es. Funnelish .faq-content{display:none!important}).
-  // Senza l'!important inline, lo style="display:block" del setOpen veniva
-  // bypassato e il pannello restava chiuso anche dopo il click in Preview.
+  // pagina originale. Brute-force: copriamo display/max-height/height/
+  // overflow/visibility/opacity/pointer-events/transform/clip-path
+  // perche' framework diversi nascondono in modi diversi (Funnelish:
+  // display:none, FunnelKit: max-height:0 + opacity, Elementor:
+  // transform:scaleY(0), etc.). Inoltre rimuoviamo aria-hidden e
+  // l'attributo hidden che alcuni framework leggono per "mostrare".
   if(open){
     try{
       p.style.setProperty('display','block','important');
       p.style.setProperty('max-height','none','important');
       p.style.setProperty('height','auto','important');
+      p.style.setProperty('min-height','0','important');
       p.style.setProperty('overflow','visible','important');
       p.style.setProperty('visibility','visible','important');
       p.style.setProperty('opacity','1','important');
       p.style.setProperty('pointer-events','auto','important');
+      p.style.setProperty('transform','none','important');
+      p.style.setProperty('clip-path','none','important');
+      p.style.setProperty('clip','auto','important');
     }catch(e){p.style.display='block';p.style.maxHeight='none';p.style.height='auto';p.style.overflow='visible';p.style.visibility='visible';p.style.opacity='1';}
     p.hidden=false;
+    try{p.removeAttribute('hidden');p.removeAttribute('aria-hidden');}catch(e){}
   }else{
-    try{p.style.setProperty('display','none','important');}
-    catch(e){p.style.display='none';}
+    try{
+      p.style.setProperty('display','none','important');
+      p.style.removeProperty('max-height');
+      p.style.removeProperty('opacity');
+      p.style.removeProperty('transform');
+    }catch(e){p.style.display='none';}
   }
-  // stato tracciato SUL PANNELLO (non sull'item): negli accordion "flat"
-  // l'item e' condiviso da piu' pannelli, quindi lo stato per-item sarebbe
-  // sbagliato.
   p.setAttribute('data-wasabi-open',open?'1':'0');
 }
 function panelOpen(p){
@@ -459,12 +468,28 @@ function toggle(item,trigger){
   if(!panel)return;
   var willOpen=!panelOpen(panel);
   setOpen(panel,willOpen);
-  // cosmetica: classi/icona sull'item se e' un contenitore per-item
+  // Aggiungi classi "open" comuni a piu' framework: alcuni (FunnelKit,
+  // Elementor, Bootstrap) hanno CSS che mostra/nasconde il pannello in
+  // base alla classe sull'ITEM (non sull'inline style del pannello).
+  // Senza queste classi il nostro display:block !important viene
+  // sovrascritto perche' la regola .container .panel{display:none} ha
+  // specificita' maggiore (e !important).
   if(item&&item!==panel&&item.classList){
     item.classList.toggle('is-open',willOpen);
     item.classList.toggle('active',willOpen);
     item.classList.toggle('expanded',willOpen);
     item.classList.toggle('open',willOpen);
+    item.classList.toggle('show',willOpen);
+    item.classList.toggle('fk-collapsible-list-item-open',willOpen);
+    item.classList.toggle('elementor-active',willOpen);
+    item.classList.toggle('uk-open',willOpen);
+  }
+  // Anche sul pannello: alcuni framework (Bootstrap collapse, Foundation)
+  // applicano lo stato sul pannello stesso via classe.
+  if(panel&&panel.classList){
+    panel.classList.toggle('show',willOpen);
+    panel.classList.toggle('in',willOpen);
+    panel.classList.toggle('active',willOpen);
   }
   if(item&&item.tagName==='DETAILS'){if(willOpen)item.setAttribute('open','');else item.removeAttribute('open');}
   if(trigger&&trigger.setAttribute)trigger.setAttribute('aria-expanded',willOpen?'true':'false');
