@@ -7340,6 +7340,24 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                             const isClonedPreview = htmlPreviewModal.sourceType === 'cloned';
                             if (isClonedPreview) {
                               safeHtml = prepareClonedHtmlForPreview(safeHtml);
+                              // ── INIETTA RESCUE INTERATTIVITA' ─────────────────
+                              // prepareClonedHtmlForPreview strippa TUTTI gli script
+                              // della pagina originale (anti-redirect, anti-bouncer):
+                              // senza di noi a iniettare il click delegate, FAQ e
+                              // accordion nel preview non rispondono ai click —
+                              // l'utente vede una pagina morta. injectInteractivityRescue
+                              // aggiunge lo stesso handler usato dall'editor (vedi
+                              // src/lib/spa-rescue.ts), idempotente e safe da
+                              // riapplicare. NB: sync require: il dynamic import
+                              // qui dentro causerebbe race con la doc.write subito
+                              // dopo (l'iframe verrebbe popolato prima dell'inject).
+                              try {
+                                // eslint-disable-next-line @typescript-eslint/no-require-imports
+                                const { injectInteractivityRescue } = require('@/lib/spa-rescue');
+                                safeHtml = injectInteractivityRescue(safeHtml);
+                              } catch (e) {
+                                console.warn('[preview] rescue inject fallita:', e);
+                              }
                             }
                             if (false /* legacy inline block disabled — see prepareClonedHtmlForPreview */ ) {
                               // ── ANTI-FRAME-BUSTER + STRIP META REFRESH ──────────
