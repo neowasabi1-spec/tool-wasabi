@@ -350,7 +350,7 @@ export function injectInteractivityRescue(html: string): string {
   // site CSS/JS keeps the panel closed and the framework script never
   // runs (Funnelish/ClickFunnels snapshots, stripped <script> in editor).
   const script = `<script id="wasabi-accordion-rescue">(function(){
-var TRIG='.faq-header,.faq-title,.faq-question,.accordion-header,.accordion-button,.accordion-toggle,.toggle-header,.elFAQItemQuestion,[data-accordion-trigger],[data-faq-toggle]';
+var TRIG='.faq-header,.faq-title,.faq-question,.accordion-header,.accordion-button,.accordion-toggle,.toggle-header,.elFAQItemQuestion,[data-accordion-trigger],[data-faq-toggle],label[for]';
 var ITEM='.faq,.faq-wrapper,.faq-item,.accordion-item,.accordion,.toggle-item,.elFAQItem,[data-faq],details';
 var PANEL='.faq-content-wrapper,.faq-content,.accordion-content,.accordion-body,.accordion-collapse,.faq-body,.faq-answer,.elFAQItemAnswer,.toggle-content,.collapse-content,[data-accordion-content]';
 var ITEM_RE=/(faq|accordion|toggle|collaps|expand|question|drop.?down)/i;
@@ -424,21 +424,64 @@ function toggle(item,trigger){
     item.classList.toggle('is-open',willOpen);
     item.classList.toggle('active',willOpen);
     item.classList.toggle('expanded',willOpen);
+    item.classList.toggle('open',willOpen);
   }
   if(item&&item.tagName==='DETAILS'){if(willOpen)item.setAttribute('open','');else item.removeAttribute('open');}
   if(trigger&&trigger.setAttribute)trigger.setAttribute('aria-expanded',willOpen?'true':'false');
+  // Accordion CSS-only basati su <input type="checkbox">: se trigger e'
+  // un <label for="x"> o c'e' un input checkbox/radio dentro l'item,
+  // sincronizziamo .checked cosi' eventuali selettori :checked della
+  // pagina (icona/colore) si aggiornano coerentemente.
+  try{
+    var box=null;
+    if(trigger&&trigger.tagName==='LABEL'&&trigger.htmlFor)box=document.getElementById(trigger.htmlFor);
+    if(!box&&item&&item.querySelector)box=item.querySelector('input[type="checkbox"],input[type="radio"]');
+    if(box){box.checked=willOpen;if(willOpen)box.setAttribute('checked','');else box.removeAttribute('checked');}
+  }catch(e){}
 }
 function closeAll(){
-  // Chiude all'avvio TUTTI i pannelli noti (per classe PANEL) + i <details>,
-  // e resetta lo stato visivo degli item. Lo snapshot Jina li cattura aperti:
-  // cosi' la pagina parte collassata e l'utente li apre col click.
+  // Chiude all'avvio TUTTI i pannelli accordion noti + quelli inferiti
+  // euristicamente. Lo snapshot Jina li cattura quasi sempre aperti
+  // (perche' il browser headless scrolla e li espande), quindi senza
+  // questa chiusura le FAQ in preview restano "tutte aperte come testo"
+  // e l'utente non puo' testarne il toggle.
   try{
+    // 1) Pannelli con classi conosciute
     var panels=document.querySelectorAll(PANEL);
     for(var i=0;i<panels.length;i++){try{panels[i].style.setProperty('display','none','important');}catch(_){panels[i].style.display='none';}panels[i].setAttribute('data-wasabi-open','0');}
+    // 2) <details> aperti -> chiusi
     var dets=document.querySelectorAll('details');
     for(var k=0;k<dets.length;k++)dets[k].removeAttribute('open');
+    // 3) Item con classi conosciute -> rimuovi stati open
     var its=document.querySelectorAll(ITEM);
-    for(var j=0;j<its.length;j++){its[j].classList.remove('is-open');its[j].classList.remove('active');its[j].classList.remove('expanded');}
+    for(var j=0;j<its.length;j++){its[j].classList.remove('is-open');its[j].classList.remove('active');its[j].classList.remove('expanded');its[j].classList.remove('open');}
+    // 4) Euristica: container con classe che CONTIENE faq/accordion/
+    //    toggle/collaps/expand/question/dropdown E che ha un figlio
+    //    panel-shaped (per il regex PANEL_RE). Chiudo il panel.
+    //    Limito a div/section/article/li per non scansionare tutto il DOM.
+    var cands=document.querySelectorAll('div,section,article,li');
+    for(var n=0;n<cands.length;n++){
+      var c=cands[n];if(!c||c.nodeType!==1)continue;
+      if(!ITEM_RE.test(cls(c)))continue;
+      var p2=findPanel(null,c);
+      if(p2&&!p2.hasAttribute('data-wasabi-open')){
+        try{p2.style.setProperty('display','none','important');}catch(_){p2.style.display='none';}
+        p2.setAttribute('data-wasabi-open','0');
+      }
+      try{c.classList.remove('is-open');c.classList.remove('active');c.classList.remove('expanded');c.classList.remove('open');}catch(_){ }
+    }
+    // 5) Accordion CSS-only: <input type="checkbox"> dichiarati "checked"
+    //    nello snapshot → forziamo unchecked, cosi' selettori :checked
+    //    della pagina si comportano come fresh-load.
+    var boxes=document.querySelectorAll('input[type="checkbox"],input[type="radio"]');
+    for(var b=0;b<boxes.length;b++){
+      try{
+        var lbl=boxes[b].id?document.querySelector('label[for="'+boxes[b].id+'"]'):null;
+        var insideFaq=lbl?(ITEM_RE.test(cls(lbl))||(lbl.closest&&lbl.closest('[class]')&&ITEM_RE.test(cls(lbl.closest('[class]')))))
+                         :(boxes[b].closest&&boxes[b].closest('[class]')&&ITEM_RE.test(cls(boxes[b].closest('[class]'))));
+        if(insideFaq){boxes[b].checked=false;boxes[b].removeAttribute('checked');}
+      }catch(_){ }
+    }
   }catch(e){}
 }
 // ---- CAROSELLO RESCUE ----------------------------------------------------
@@ -491,10 +534,13 @@ function initCarousels(){
   }catch(e){}
 }
 function once(){
-  // Flag su <html>: attiva il CSS (cursor:pointer sugli header, rotazione
-  // icona, e l'hide-by-default dei pannelli Funnelish .faq-content) solo
-  // se la pagina ha davvero una forma accordion.
-  try{if(document.querySelector(TRIG)||document.querySelector('.faq-content-wrapper')||document.querySelector(ITEM)){document.documentElement.setAttribute('data-wasabi-rescue','1');}}catch(e){}
+  // Flag su <html> SEMPRE attivo: lo gating "solo se trovi TRIG/ITEM"
+  // tagliava fuori le pagine con markup custom (es. .elBlock,
+  // .faq__row, .elementor-widget__faq-item). In quei casi closeAll qui
+  // sotto trova comunque gli accordion via euristica, ma il CSS che
+  // serviva a renderli "cliccabili" (cursor:pointer) non veniva mai
+  // attivato e l'utente non capiva che si poteva interagire.
+  try{document.documentElement.setAttribute('data-wasabi-rescue','1');}catch(e){}
   closeAll();
   initCarousels();
   // Retry: alcune pagine popolano le slide via script inline dopo il load.
