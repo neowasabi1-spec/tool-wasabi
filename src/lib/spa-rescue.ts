@@ -344,13 +344,29 @@ function stripAllScripts(html: string): string {
  * Exported so the Visual editor can use the same logic.
  */
 export function stripNonCarouselScripts(html: string): string {
-  // Regex breakdown:
-  //   - src= containing one of: swiper|slick|flickity|glide|splide|
-  //     owl-carousel|jquery (the major slider libs + jQuery dep)
-  //   - OR inline body containing one of the init signatures:
-  //     `new Swiper(`, `.slick(`, `.flickity(`, `.glide(`,
-  //     `new Splide(`, `.owlCarousel(`, `Swiper.create(`
-  const KEEP_SRC = /\b(?:swiper|slick|flickity|glide|splide|owl-carousel|owl\.carousel|jquery)\b/i;
+  // Whitelist regex — keep <script> tags whose:
+  //   - src= contains a known interactive library name. We include the
+  //     major slider libs (Swiper, Slick, Flickity, Glide, Splide, Owl),
+  //     jQuery (Slick depends on it), Bootstrap (Bootstrap collapse used
+  //     by countless landing accordions), and Popper (Bootstrap dep).
+  //   - inline body contains a known carousel init signature:
+  //     `new Swiper(`, `Swiper.create(`, `.slick(`, `.flickity(`,
+  //     `.glide(`, `new Splide(`, `.owlCarousel(`.
+  //
+  // PERCHE' NON manteniamo loader come FunnelKit `fkDynamicScript`:
+  // il loader fa `var s=document.createElement('script'); s.src =
+  // getAbsolutePath(window.location.href)+'/index.js?f=...';`. Nel
+  // nostro iframe srcDoc `window.location.href` e' 'about:srcdoc',
+  // quindi il loader o crasha (TypeError su `parts[2].indexOf`) o
+  // genera una URL invalida che fa 404. In entrambi i casi il runtime
+  // non si avvia mai. Il nostro rescue FAQ (toggle attributo 'open'
+  // su <details>) gestisce il pattern FunnelKit nativamente, senza
+  // bisogno di caricare il loro JS.
+  //
+  // Tutto il resto (analytics, tracking pixel, popup exit-intent,
+  // GA/FB pixel, A/B testing, geolocation tracker, FunnelKit loader)
+  // viene strippato.
+  const KEEP_SRC = /\b(?:swiper|slick|flickity|glide|splide|owl-carousel|owl\.carousel|jquery|bootstrap|popper)\b/i;
   const KEEP_INLINE = /(?:new\s+Swiper\s*\(|Swiper\.create\s*\(|\.slick\s*\(|\.flickity\s*\(|\.glide\s*\(|new\s+Splide\s*\(|\.owlCarousel\s*\()/;
   return html.replace(
     /<script\b([^>]*)>([\s\S]*?)<\/script>/gi,
@@ -568,14 +584,24 @@ function findToggleAncestor(el){
 function closeAll(){
   try{
     // Pannelli con classi note: chiudi SOLO se hanno ancestor toggleabile
+    // E NON sono dentro un <details> (in quel caso ci pensa il rendering
+    // nativo, l'inline display:none rovinerebbe il re-open via attributo).
     var panels=document.querySelectorAll(PANEL);
     for(var i=0;i<panels.length;i++){
-      if(!findToggleAncestor(panels[i]))continue;
-      try{panels[i].style.setProperty('display','none','important');}catch(_){panels[i].style.display='none';}
-      panels[i].setAttribute('data-wasabi-open','0');
+      var pn=panels[i];
+      if(!findToggleAncestor(pn))continue;
+      if(pn.closest&&pn.closest('details'))continue;
+      try{pn.style.setProperty('display','none','important');}catch(_){pn.style.display='none';}
+      pn.setAttribute('data-wasabi-open','0');
     }
+    // <details>: rimuovi 'open' (browser nasconde i figli automaticamente)
+    // e sincronizza data-open sul wrapper FunnelKit se presente.
     var dets=document.querySelectorAll('details');
-    for(var k=0;k<dets.length;k++)dets[k].removeAttribute('open');
+    for(var k=0;k<dets.length;k++){
+      dets[k].removeAttribute('open');
+      var wDO=dets[k].closest&&dets[k].closest('[data-open]');
+      if(wDO)wDO.setAttribute('data-open','false');
+    }
     var its=document.querySelectorAll(ITEM);
     for(var j=0;j<its.length;j++){its[j].classList.remove('is-open');its[j].classList.remove('active');its[j].classList.remove('expanded');its[j].classList.remove('open');}
   }catch(e){}
@@ -717,6 +743,34 @@ function once(){
       }
       try{console.log('[wb] step0 explicit-child',exItem?'HIT item='+exItem.tagName+'.'+(exItem.className||'').toString().slice(0,40)+' content='+exContent.tagName+'.'+(exContent.className||'').toString().slice(0,40):'MISS','clickedOn='+t.tagName+'.'+(t.className||'').toString().slice(0,60));}catch(e){}
       if(exItem&&exContent){
+        // CASO SPECIALE <details>: il browser nasconde i figli quando manca
+        // l'attributo 'open' a livello di rendering tree (UA shadow DOM),
+        // non via CSS. Anche un display:block !important sul content NON
+        // lo mostra se il details e' chiuso. L'unico modo per togglare e'
+        // flippare l'attributo 'open'. Pattern usato da FunnelKit (Rosabella):
+        //   <details open onclick="return false">
+        //     <summary>...</summary>
+        //     <div class="fk-collapsible-list-content">...</div>
+        //   </details>
+        // Il loro onclick="return false" annulla il toggle nativo, ma lo
+        // stopPropagation in capture sotto impedisce che venga raggiunto,
+        // quindi il toggle qui funziona pulito.
+        if(exItem.tagName==='DETAILS'){
+          var willOpenDet=!exItem.hasAttribute('open');
+          if(willOpenDet)exItem.setAttribute('open','');else exItem.removeAttribute('open');
+          // Pulisci eventuali stili inline che setOpen() potrebbe avere
+          // applicato in un passaggio precedente (es. utente che clicca
+          // velocemente prima del re-binding): sui <details> non li vogliamo.
+          try{exContent.style.removeProperty('display');exContent.style.removeProperty('max-height');exContent.style.removeProperty('overflow');}catch(_){}
+          // Aggiorna anche data-open sul wrapper FunnelKit per coerenza
+          // (CSS della pagina puo' usarlo per icone open/close).
+          var wrapDO=exItem.closest&&exItem.closest('[data-open]');
+          if(wrapDO)wrapDO.setAttribute('data-open',willOpenDet?'true':'false');
+          var sumDet=exItem.querySelector&&exItem.querySelector('summary');
+          if(sumDet&&sumDet.setAttribute)sumDet.setAttribute('aria-expanded',willOpenDet?'true':'false');
+          ev.preventDefault();ev.stopPropagation();
+          return;
+        }
         var exWillOpen=!panelOpen(exContent);
         setOpen(exContent,exWillOpen);
         try{
@@ -728,7 +782,6 @@ function once(){
           exItem.classList.toggle('fk-collapsible-list-item-open',exWillOpen);
           exItem.classList.toggle('elementor-active',exWillOpen);
         }catch(_){}
-        try{console.log('[wb] step0 toggle done. content display=',getComputedStyle(exContent).display,'item classes=',exItem.className);}catch(e){}
         ev.preventDefault();ev.stopPropagation();
         return;
       }

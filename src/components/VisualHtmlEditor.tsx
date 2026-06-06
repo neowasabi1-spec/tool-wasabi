@@ -567,6 +567,22 @@ const EDITOR_SCRIPT = `
        cercando di selezionare/editare il contenuto, non chiudere). */
     var inPanel=target.closest&&target.closest(FAQ_PANEL);
     if(inPanel&&_faqPanelOpen(inPanel))return null;
+    /* CASO SPECIALE <details>: il browser nasconde i figli quando manca
+       l'attributo 'open'. NON toccare inline display sul content (combatte
+       con la UA stylesheet e crea stati inconsistenti); flippa solo
+       l'attributo. Pattern usato da FunnelKit, builder che generano
+       <details open onclick="return false">. La CSS della pagina (es.
+       details[open] .fk-... per icone open/close) gia' fa il resto. */
+    if(item&&item.tagName==='DETAILS'){
+      var willOpenD=!item.hasAttribute('open');
+      if(willOpenD)item.setAttribute('open','');else item.removeAttribute('open');
+      try{panel.style.removeProperty('display');panel.style.removeProperty('max-height');panel.style.removeProperty('overflow');panel.removeAttribute('data-wasabi-open');}catch(_){}
+      var wrapDO=item.closest&&item.closest('[data-open]');
+      if(wrapDO)wrapDO.setAttribute('data-open',willOpenD?'true':'false');
+      var sumDOEd=item.querySelector&&item.querySelector('summary');
+      if(sumDOEd&&sumDOEd.setAttribute)sumDOEd.setAttribute('aria-expanded',willOpenD?'true':'false');
+      return trigger;
+    }
     var willOpen=!_faqPanelOpen(panel);
     _setFaqOpen(panel,willOpen);
     if(item&&item!==panel&&item.classList){
@@ -575,7 +591,6 @@ const EDITOR_SCRIPT = `
       item.classList.toggle('expanded',willOpen);
       item.classList.toggle('open',willOpen);
     }
-    if(item&&item.tagName==='DETAILS'){if(willOpen)item.setAttribute('open','');else item.removeAttribute('open');}
     try{
       var aria=item.querySelectorAll('[aria-expanded]');
       for(var i=0;i<aria.length;i++)aria[i].setAttribute('aria-expanded',willOpen?'true':'false');
@@ -1143,6 +1158,22 @@ const EDITOR_SCRIPT = `
     el.style.pointerEvents='none';
     el.style.userSelect='none';
   });
+
+  /* CHIUDI TUTTI I <details> ALL'AVVIO. Alcune landing (FunnelKit,
+     Rosabella) spediscono <details open onclick="return false"> per
+     ogni FAQ: il loro runtime JS poi le chiude e gestisce il toggle
+     via attributo 'open'. Noi abbiamo strippato/non-eseguito quel
+     runtime (l'iframe e' srcDoc, window.location.href = about:srcdoc,
+     il loader di /index.js fallisce). Risultato senza fix: tutte le
+     FAQ aperte e il primo click le chiude. Removendo 'open' iniziale
+     allineamo lo stato di partenza al comportamento atteso. */
+  try{
+    document.querySelectorAll('details').forEach(function(d){
+      d.removeAttribute('open');
+      var wDO=d.closest&&d.closest('[data-open]');
+      if(wDO)wDO.setAttribute('data-open','false');
+    });
+  }catch(e){}
 
   /* Inizializza i carousel ORA + retry differiti: alcune landing
      popolano dinamicamente le slide via inline-script (rimosso) o
