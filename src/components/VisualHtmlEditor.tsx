@@ -591,6 +591,105 @@ const EDITOR_SCRIPT = `
     return trigger;
   }
 
+  /* ── CAROUSEL RESCUE (editor) ──────────────────────────────────────
+   * Identico a spa-rescue.ts: gli script di slick/swiper/replo sono
+   * stati strippati dall'editor, quindi i carousel restano statici
+   * (tutte le slide impilate o solo la prima visibile). Qui ricostruiamo
+   * un mini-carousel: show(k) mostra una slide alla volta, le frecce
+   * prev/next e le thumbs scorrono.
+   *
+   * Idempotente via track.__wbCar e bound solo se trova controlli
+   * (frecce o thumbs); senza controlli rinuncia e lascia che la CSS
+   * di stacking impilata (vedi prepareEditorHtml) faccia vedere tutte
+   * le slide. */
+  var CAR_PREV='.lc-arrow-prev,.slick-prev,.slider-prev,.swiper-button-prev,[aria-label="Previous slide"]';
+  var CAR_NEXT='.lc-arrow-next,.slick-next,.slider-next,.swiper-button-next,[aria-label="Next slide"]';
+  var CAR_NAV='.slider-nav,.slick-dots,.slider-nav-thumbnails,.swiper-pagination';
+  var CAR_SCOPE='[data-replo-carousel],.left-slider,.carousel,.swiper,.slick-slider,.r-16fpy55';
+  var CAR_TRACK='.slider-for,.swiper-wrapper';
+  function _wbSlides(track){
+    var out=[];
+    for(var i=0;i<track.children.length;i++){
+      var c=track.children[i];
+      if(!c||c.nodeType!==1||c.tagName==='BUTTON')continue;
+      var hasImg=(c.querySelector&&c.querySelector('img'))||c.tagName==='IMG';
+      var clsSlide=/r-ldsnaw|slick-slide|swiper-slide/i.test(''+(c.className||''));
+      if(hasImg||clsSlide)out.push(c);
+    }
+    return out;
+  }
+  function _bindCarousel(track){
+    if(!track||track.__wbCar)return null;
+    var slides=_wbSlides(track);
+    if(slides.length<2)return null;
+    var scope=(track.closest&&track.closest(CAR_SCOPE))||track.parentElement||track;
+    var prev=scope.querySelector(CAR_PREV);
+    var next=scope.querySelector(CAR_NEXT);
+    var nav=scope.querySelector(CAR_NAV);
+    var thumbs=[];
+    if(nav){for(var n=0;n<nav.children.length;n++){var tc=nav.children[n];if(tc&&tc.nodeType===1&&((tc.querySelector&&tc.querySelector('img'))||tc.tagName==='IMG'))thumbs.push(tc);}}
+    /* Editor-only: bind solo se ci sono controlli reali. Senza prev/next/
+       thumbs un carousel monocoma non e' navigabile e e' meglio lasciare
+       tutte le slide impilate dal CSS. */
+    if(!prev&&!next&&thumbs.length<2)return null;
+    track.__wbCar={idx:0,slides:slides,prev:prev,next:next,thumbs:thumbs};
+    var car=track.__wbCar;
+    car.show=function(k){
+      car.idx=(k%slides.length+slides.length)%slides.length;
+      for(var i=0;i<slides.length;i++){
+        if(i===car.idx){slides[i].style.removeProperty('display');}
+        else{slides[i].style.setProperty('display','none','important');}
+      }
+      for(var j=0;j<thumbs.length;j++){
+        var on=(j===car.idx);
+        thumbs[j].style.opacity=on?'1':'0.5';
+        try{thumbs[j].classList.toggle('r-19wtxcv',on);thumbs[j].classList.toggle('slick-current',on);thumbs[j].classList.toggle('slick-active',on);thumbs[j].classList.toggle('swiper-pagination-bullet-active',on);}catch(e){}
+      }
+    };
+    /* Forza display flex/visibile sul TRACK (puo' avere display:none o
+       transform da slick/swiper originale): cosi' show() puo' realmente
+       togglare le slide. */
+    try{
+      track.style.setProperty('display','block','important');
+      track.style.setProperty('transform','none','important');
+      track.style.setProperty('transition','none','important');
+      track.style.setProperty('width','auto','important');
+      track.style.setProperty('height','auto','important');
+    }catch(e){}
+    if(prev){prev.style.cursor='pointer';prev.setAttribute('data-wb-car-ctl','prev');}
+    if(next){next.style.cursor='pointer';next.setAttribute('data-wb-car-ctl','next');}
+    for(var t=0;t<thumbs.length;t++){thumbs[t].style.cursor='pointer';thumbs[t].setAttribute('data-wb-car-ctl','thumb');thumbs[t].setAttribute('data-wb-car-thumb-idx',String(t));}
+    car.show(0);
+    return car;
+  }
+  function _initCarousels(){
+    try{
+      var tracks=document.querySelectorAll(CAR_TRACK);
+      for(var i=0;i<tracks.length;i++)_bindCarousel(tracks[i]);
+    }catch(e){}
+  }
+  /* Gestisce click su una freccia/thumb di un carousel: trova il track
+     legato, sposta la slide, ritorna lo scope da selezionare. Null se
+     non e' un controllo carousel riconosciuto. */
+  function _handleCarouselClick(t){
+    if(!t||t.nodeType!==1)return null;
+    var ctl=t.closest('[data-wb-car-ctl]');
+    if(!ctl)return null;
+    var scope=ctl.closest(CAR_SCOPE)||ctl.parentElement;
+    if(!scope)return null;
+    var track=scope.querySelector(CAR_TRACK);
+    if(!track||!track.__wbCar)return null;
+    var car=track.__wbCar;
+    var kind=ctl.getAttribute('data-wb-car-ctl');
+    if(kind==='prev')car.show(car.idx-1);
+    else if(kind==='next')car.show(car.idx+1);
+    else if(kind==='thumb'){
+      var idx=parseInt(ctl.getAttribute('data-wb-car-thumb-idx')||'0',10);
+      car.show(idx);
+    }
+    return scope;
+  }
+
   document.addEventListener('mouseover',function(e){
     if(editing)return;var el=e.target;if(sk(el)||el===sel||isUI(el))return;
     if(hover&&hover!==sel)co(hover);hover=el;el.style.outline=HS;el.style.outlineOffset='1px';
@@ -621,6 +720,15 @@ const EDITOR_SCRIPT = `
     if(isUI(e.target))return;
     if(editing&&editEl&&!editEl.contains(e.target)){finishEdit();}
     if(editing&&editEl&&editEl.contains(e.target))return;
+    /* CAROUSEL: se ho cliccato una freccia/thumb di un carousel,
+       scorri (show prev/next/idx) e seleziona il contenitore cosi'
+       l'utente puo' anche stilizzarlo. */
+    var carScopeEl=_handleCarouselClick(e.target);
+    if(carScopeEl){
+      e.preventDefault();e.stopPropagation();
+      selectEl(carScopeEl);
+      return;
+    }
     /* FAQ/accordion: prova il toggle. Se restituisce il trigger,
        blocchiamo l'evento (niente href="#"/submit/altri side-effect) e
        selezioniamo l'header cosi' l'utente puo' anche stilizzarlo. */
@@ -995,6 +1103,14 @@ const EDITOR_SCRIPT = `
     el.style.userSelect='none';
   });
 
+  /* Inizializza i carousel ORA + retry differiti: alcune landing
+     popolano dinamicamente le slide via inline-script (rimosso) o
+     via lazy-loader; un secondo init a 400/1200ms cattura anche
+     quei casi. _bindCarousel e' idempotente (guard track.__wbCar). */
+  _initCarousels();
+  setTimeout(_initCarousels,400);
+  setTimeout(_initCarousels,1200);
+
   window.parent.postMessage({type:'editor-ready'},'*');
 })();
 `;
@@ -1335,25 +1451,19 @@ function prepareEditorHtml(html: string, sourceUrl?: string): string {
      * sui display:none originali sia su eventuali !important della
      * pagina. Niente force-open. */
 
-    /* ── CAROUSEL/SLIDER: FORZA TUTTI GLI SLIDE VISIBILI ──────────
-     * In editor abbiamo strippato gli <script>. Conseguenza: Swiper /
-     * Slick / Owl / Glide non partono. Risultato: solo il primo slide
-     * e' visibile, gli altri sono nascosti con display:none o
-     * transform:translateX(-9999px) sul wrapper. L'utente vede solo
-     * una testimonianza/recensione/feature invece di tutte → si
-     * lamenta che "mancano immagini e stelline".
+    /* ── CAROUSEL/SLIDER: EDITOR = PREVIEW ──────────────────────
+     * Il rescue script dell'editor (_initCarousels nel EDITOR_SCRIPT)
+     * ricostruisce il comportamento carousel: una slide alla volta,
+     * frecce prev/next + click sulle thumbnails per scorrere. Quindi
+     * NON forziamo piu' tutti gli slide visibili come stack verticale:
+     * deve apparire ESATTAMENTE come in preview.
      *
-     * Fix: forziamo TUTTI gli slide visibili (uno sotto l'altro,
-     * scroll-snap-style), neutralizziamo i transform sul wrapper,
-     * e mostriamo le freccette/dots come riferimento di stile (ma
-     * disabilitate). Tutti i pattern comuni coperti. */
-    /* Track/wrapper: stackiamo verticalmente DENTRO la colonna parent
-     * invece di fare grid orizzontale a 3 per riga. Il vecchio approccio
-     * (flex-wrap + min-width:280px sui figli) "gonfiava" il wrapper
-     * piu' largo della sua colonna grid/flex, spingendo fuori-schermo
-     * la colonna adiacente (es. il riquadro prezzo/ATC accanto al
-     * carosello immagini prodotto). Stack verticale = larghezza
-     * sempre uguale al parent, nessun blowout orizzontale. */
+     * Per i carousel SENZA controlli (rari), _bindCarousel rinuncia e
+     * resta lo stato originale dello snapshot. Le regole sotto
+     * normalizzano solo i transform/translate3d/larghezze fuori-scala
+     * lasciati dagli script Swiper/Slick originali, per non rompere
+     * il layout della colonna grid/flex parent (il carousel non deve
+     * mai spingere fuori-schermo le colonne adiacenti tipo prezzo/ATC). */
     .swiper-wrapper,
     .swiper-container,
     .swiper,
@@ -1361,34 +1471,18 @@ function prepareEditorHtml(html: string, sourceUrl?: string): string {
     .slick-list,
     .owl-stage,
     .owl-stage-outer,
-    .owl-carousel,
     .glide__track,
     .glide__slides,
-    .glide,
     .flickity-slider,
     .flickity-viewport,
     .splide__track,
     .splide__list,
     .carousel-inner,
-    .carousel-items,
     [class*="carousel"][class*="wrapper"],
     [class*="slider"][class*="wrapper"],
     [class*="slider"][class*="track"] {
-      transform: none !important;
-      -webkit-transform: none !important;
-      transition: none !important;
-      width: auto !important;
-      height: auto !important;
       max-width: 100% !important;
       min-width: 0 !important;
-      display: flex !important;
-      flex-direction: column !important;
-      flex-wrap: nowrap !important;
-      gap: 12px !important;
-      overflow: visible !important;
-      position: relative !important;
-      left: auto !important;
-      top: auto !important;
     }
     .swiper-slide,
     .slick-slide,
@@ -1398,44 +1492,9 @@ function prepareEditorHtml(html: string, sourceUrl?: string): string {
     .carousel-item,
     .carousel-cell,
     .flickity-cell,
-    .testimonial-slide,
-    .review-slide,
-    .slider-item,
-    [class*="carousel"][class*="item"],
-    [class*="slider"][class*="item"] {
-      display: block !important;
-      visibility: visible !important;
-      opacity: 1 !important;
-      transform: none !important;
-      -webkit-transform: none !important;
-      position: relative !important;
-      left: auto !important;
-      top: auto !important;
-      width: 100% !important;
-      min-width: 0 !important;
+    .slider-item {
       max-width: 100% !important;
-      flex: 0 0 auto !important;
-      height: auto !important;
-      pointer-events: auto !important;
-    }
-    /* Slick/Swiper a volte usano aria-hidden + tabindex per nascondere */
-    .slick-slide[aria-hidden="true"],
-    .swiper-slide[aria-hidden="true"],
-    [aria-hidden="true"][class*="slide"] {
-      display: block !important;
-      visibility: visible !important;
-      opacity: 1 !important;
-    }
-    /* Mobile: già stack verticale via regole sopra; nessun override
-     * extra serve, ma teniamo la regola per chiarezza/regressione. */
-    @media (max-width: 768px) {
-      .swiper-slide, .slick-slide, .owl-item, .glide__slide,
-      .splide__slide, .carousel-item, .carousel-cell, .flickity-cell,
-      .testimonial-slide, .review-slide, .slider-item,
-      [class*="carousel"][class*="item"], [class*="slider"][class*="item"] {
-        width: 100% !important;
-        flex: 0 0 auto !important;
-      }
+      min-width: 0 !important;
     }
 
     /* ── FALLBACK PER ICON-FONT MANCANTI (FontAwesome SVG-with-JS) ─
