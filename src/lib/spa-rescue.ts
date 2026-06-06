@@ -448,9 +448,16 @@ export function injectInteractivityRescue(html: string): string {
     '.slider-for{position:relative;display:block;width:100%;overflow:hidden}' +
     '.slider-for>.r-ldsnaw{display:block;width:100%}' +
     '.slider-for img,.slider-for .r-1lm4acq{display:block;width:100%;height:auto;max-width:100%}' +
-    // Stessa cosa per le miniature del slider-nav (.r-35xly6 e' la
-    // classe della thumbnail Replo).
-    '.slider-nav .r-35xly6 img{display:block;width:100%;height:auto;max-width:100%}' +
+    // STRISCIA THUMBNAIL ORIZZONTALE. Replo CSS originale fa
+    // display:flex con thumbnail piccole; senza, le .r-35xly6 stanno
+    // block-level (full width) e con la nostra regola img:width:100%
+    // diventerebbero 7 immagini gigantesche impilate sotto al carosello
+    // (poi l'utente vede solo la prima slide e niente striscia thumb).
+    // Forziamo flex horizontal con thumb a 80px e overflow-x:auto cosi'
+    // se sono troppe scorrono lateralmente.
+    '.slider-nav{display:flex!important;flex-direction:row!important;flex-wrap:nowrap!important;gap:6px;overflow-x:auto;overflow-y:hidden;margin-top:8px;align-items:stretch}' +
+    '.slider-nav>.r-35xly6{flex:0 0 auto;width:80px;cursor:pointer;display:block}' +
+    '.slider-nav>.r-35xly6 img{display:block;width:100%;height:auto;max-width:100%;border-radius:4px}' +
     'html[data-wasabi-rescue="1"] .faq .faq-content-wrapper,' +
     'html[data-wasabi-rescue="1"] .faq .faq-content,' +
     'html[data-wasabi-rescue="1"] .faq-wrapper .faq-content-wrapper,' +

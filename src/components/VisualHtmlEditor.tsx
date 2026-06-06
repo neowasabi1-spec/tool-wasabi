@@ -1560,7 +1560,13 @@ function prepareEditorHtml(html: string, sourceUrl?: string): string {
     .slider-for { position: relative; display: block; width: 100%; overflow: hidden; }
     .slider-for > .r-ldsnaw { display: block; width: 100%; }
     .slider-for img, .slider-for .r-1lm4acq { display: block; width: 100%; height: auto; max-width: 100%; }
-    .slider-nav .r-35xly6 img { display: block; width: 100%; height: auto; max-width: 100%; }
+    /* Striscia thumbnail orizzontale: Replo CSS fa flex con thumb
+       piccole; senza, .r-35xly6 sono block-level (full width) e con la
+       regola sopra (img 100% width) diventerebbero 7 immagini giganti
+       impilate. Flex horizontal con 80px per thumb + overflow-x scroll. */
+    .slider-nav { display: flex !important; flex-direction: row !important; flex-wrap: nowrap !important; gap: 6px; overflow-x: auto; overflow-y: hidden; margin-top: 8px; align-items: stretch; }
+    .slider-nav > .r-35xly6 { flex: 0 0 auto; width: 80px; cursor: pointer; display: block; }
+    .slider-nav > .r-35xly6 img { display: block; width: 100%; height: auto; max-width: 100%; border-radius: 4px; }
 
     /* ── FALLBACK PER ICON-FONT MANCANTI (FontAwesome SVG-with-JS) ─
      * Pattern <i class="fas fa-star"></i> renderizzato dal JS di FA.
