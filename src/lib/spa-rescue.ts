@@ -425,13 +425,6 @@ function findItem(t){
 }
 function setOpen(p,open){
   if(!p)return;
-  // setProperty(...,'important') vince anche sui rule "!important" della
-  // pagina originale. Brute-force: copriamo display/max-height/height/
-  // overflow/visibility/opacity/pointer-events/transform/clip-path
-  // perche' framework diversi nascondono in modi diversi (Funnelish:
-  // display:none, FunnelKit: max-height:0 + opacity, Elementor:
-  // transform:scaleY(0), etc.). Inoltre rimuoviamo aria-hidden e
-  // l'attributo hidden che alcuni framework leggono per "mostrare".
   if(open){
     try{
       p.style.setProperty('display','block','important');
@@ -445,22 +438,55 @@ function setOpen(p,open){
       p.style.setProperty('transform','none','important');
       p.style.setProperty('clip-path','none','important');
       p.style.setProperty('clip','auto','important');
+      // CSS animations OVERRIDE inline styles. Senza animation:none,
+      // un keyframe animation con fill-mode:forwards (es. close 0.3s
+      // forwards) re-nasconde il pannello dopo poco. Bloccare l'animation
+      // e' l'unico modo per impedirlo.
+      p.style.setProperty('animation','none','important');
+      p.style.setProperty('transition','none','important');
     }catch(e){p.style.display='block';p.style.maxHeight='none';p.style.height='auto';p.style.overflow='visible';p.style.visibility='visible';p.style.opacity='1';}
     p.hidden=false;
     try{p.removeAttribute('hidden');p.removeAttribute('aria-hidden');}catch(e){}
+    // Watcher: se qualcosa (CSS animation residua, mutation di class,
+    // etc.) tenta di re-nascondere il pannello mentre noi lo vogliamo
+    // aperto, riapplichiamo. Idempotente (flag __wbReapplying per evitare
+    // loop infiniti dell'observer su se stesso).
+    try{
+      if(!p.__wbObs){
+        var pp=p;
+        pp.__wbReapplying=false;
+        pp.__wbObs=new MutationObserver(function(){
+          if(pp.__wbReapplying)return;
+          if(pp.getAttribute('data-wasabi-open')!=='1')return;
+          try{
+            var d=getComputedStyle(pp).display;
+            if(d==='none'){
+              pp.__wbReapplying=true;
+              pp.style.setProperty('display','block','important');
+              pp.style.setProperty('max-height','none','important');
+              pp.style.setProperty('opacity','1','important');
+              pp.style.setProperty('transform','none','important');
+              pp.style.setProperty('animation','none','important');
+              setTimeout(function(){pp.__wbReapplying=false;},80);
+            }
+          }catch(e){}
+        });
+        pp.__wbObs.observe(pp,{attributes:true,attributeFilter:['style','class','hidden']});
+        var par=pp.parentElement;
+        if(par)pp.__wbObs.observe(par,{attributes:true,attributeFilter:['class']});
+      }
+    }catch(e){}
   }else{
     try{
       p.style.setProperty('display','none','important');
       p.style.removeProperty('max-height');
       p.style.removeProperty('opacity');
       p.style.removeProperty('transform');
+      p.style.removeProperty('animation');
+      p.style.removeProperty('transition');
     }catch(e){p.style.display='none';}
   }
   p.setAttribute('data-wasabi-open',open?'1':'0');
-  // FORCE REFLOW/REPAINT sincrono. Senza questo, alcuni browser (specie
-  // dentro iframe sandbox) deferiscono il repaint fino al PROSSIMO evento
-  // utente, che da' l'effetto "serve un secondo click fuori per vedere
-  // il toggle". Leggere offsetHeight forza il layout subito.
   try{void p.offsetHeight;}catch(e){}
 }
 function panelOpen(p){
