@@ -56,10 +56,50 @@ function processScreenshotQueue() {
   }
 }
 
+// Minimum size for a thumbnail dataURL to be considered "real".
+// A blank/near-white 384x270 JPEG at quality 0.7 is typically ~1.5-2KB.
+// A real rendered page is at least 5-10KB. We use 4KB as a safe lower
+// bound: anything smaller is almost certainly a failed render (iframe
+// didn't paint, html2canvas grabbed an empty body, SPA never ran).
+const MIN_THUMBNAIL_BYTES = 4 * 1024;
+
+/** Rough byte length of a base64 dataURL: strip the data: prefix and
+ *  apply the base64 → bytes ratio (3/4). Cheap; no Blob alloc. */
+function dataUrlByteLength(dataUrl: string): number {
+  const comma = dataUrl.indexOf(',');
+  if (comma < 0) return 0;
+  const b64 = dataUrl.slice(comma + 1);
+  return Math.floor((b64.length * 3) / 4);
+}
+
+function isProbablyBlank(dataUrl: string | null | undefined): boolean {
+  if (!dataUrl) return true;
+  return dataUrlByteLength(dataUrl) < MIN_THUMBNAIL_BYTES;
+}
+
 async function htmlToScreenshot(html: string, cacheKey: string): Promise<string | null> {
-  if (screenshotCache.has(cacheKey)) return screenshotCache.get(cacheKey)!;
+  // In-memory cache (per session). Validate: if a tiny/blank dataURL
+  // slipped in earlier (e.g. before this fix shipped) drop it.
+  const memCached = screenshotCache.get(cacheKey);
+  if (memCached) {
+    if (!isProbablyBlank(memCached)) return memCached;
+    screenshotCache.delete(cacheKey);
+  }
+
+  // localStorage cache. Same validation — a previously cached blank
+  // would otherwise stick forever and the user would see white cards
+  // on EVERY visit. Bad entries are evicted on read.
   const lsKey = `ss_${cacheKey}`;
-  try { const cached = localStorage.getItem(lsKey); if (cached) { screenshotCache.set(cacheKey, cached); return cached; } } catch {}
+  try {
+    const cached = localStorage.getItem(lsKey);
+    if (cached) {
+      if (!isProbablyBlank(cached)) {
+        screenshotCache.set(cacheKey, cached);
+        return cached;
+      }
+      try { localStorage.removeItem(lsKey); } catch { /* ignore */ }
+    }
+  } catch { /* ignore */ }
 
   // Gli snapshot SPA clonati hanno il JS originale rimosso: senza lo
   // "spa-rescue" il body resta nascosto e lo screenshot viene bianco.
@@ -88,16 +128,23 @@ async function htmlToScreenshot(html: string, cacheKey: string): Promise<string 
         if (!body) { document.body.removeChild(iframe); resolve(null); return; }
         const canvas = await html2canvas(body, { width: 1280, height: 900, scale: 0.3, useCORS: true, allowTaint: true, logging: false });
         const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
-        screenshotCache.set(cacheKey, dataUrl);
-        try { localStorage.setItem(lsKey, dataUrl); } catch {}
         document.body.removeChild(iframe);
+        // Only cache real renders. Persisting a blank dataURL is the
+        // worst-case for UX: every subsequent visit short-circuits to
+        // the same blank image because the cache "hits".
+        if (isProbablyBlank(dataUrl)) {
+          resolve(null);
+          return;
+        }
+        screenshotCache.set(cacheKey, dataUrl);
+        try { localStorage.setItem(lsKey, dataUrl); } catch { /* quota — ignore */ }
         resolve(dataUrl);
       } catch {
-        document.body.removeChild(iframe);
+        try { document.body.removeChild(iframe); } catch {}
         resolve(null);
       }
     };
-    iframe.onerror = () => { document.body.removeChild(iframe); resolve(null); };
+    iframe.onerror = () => { try { document.body.removeChild(iframe); } catch {} resolve(null); };
     setTimeout(() => { try { document.body.removeChild(iframe); } catch {} resolve(null); }, 15000);
   });
 }
@@ -105,15 +152,43 @@ async function htmlToScreenshot(html: string, cacheKey: string): Promise<string 
 function PageThumbnail({ url, alt, height = '180px', savedHtml }: { url: string; alt: string; height?: string; savedHtml?: string | null }) {
   const [imgSrc, setImgSrc] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  // Bumped to force a fresh render (skip cache) when the user clicks
+  // "Regenerate". Without this the cached-blank case would re-display
+  // the same null and stay blank forever.
+  const [regenNonce, setRegenNonce] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
   const startedRef = useRef(false);
 
   useEffect(() => {
-    if (startedRef.current) return;
+    startedRef.current = false;
+    setImgSrc(null);
+    setLoading(true);
+
     const cacheKey = savedHtml ? `h_${savedHtml.length}_${savedHtml.substring(0, 100)}` : `u_${url}`;
-    const cached = screenshotCache.get(cacheKey);
-    if (cached) { setImgSrc(cached); setLoading(false); return; }
-    try { const ls = localStorage.getItem(`ss_${cacheKey}`); if (ls) { screenshotCache.set(cacheKey, ls); setImgSrc(ls); setLoading(false); return; } } catch {}
+    // Force-regenerate: skip both in-memory and localStorage caches,
+    // and evict whatever blank/corrupt entry was there. The next
+    // capture will run from scratch and store a fresh one if it
+    // succeeds the blank-size check.
+    if (regenNonce > 0) {
+      screenshotCache.delete(cacheKey);
+      try { localStorage.removeItem(`ss_${cacheKey}`); } catch { /* ignore */ }
+    } else {
+      const cached = screenshotCache.get(cacheKey);
+      if (cached && !isProbablyBlank(cached)) { setImgSrc(cached); setLoading(false); return; }
+      if (cached && isProbablyBlank(cached)) screenshotCache.delete(cacheKey);
+      try {
+        const ls = localStorage.getItem(`ss_${cacheKey}`);
+        if (ls) {
+          if (!isProbablyBlank(ls)) {
+            screenshotCache.set(cacheKey, ls);
+            setImgSrc(ls);
+            setLoading(false);
+            return;
+          }
+          try { localStorage.removeItem(`ss_${cacheKey}`); } catch { /* ignore */ }
+        }
+      } catch { /* ignore */ }
+    }
 
     const observer = new IntersectionObserver((entries) => {
       if (!entries[0]?.isIntersecting || startedRef.current) return;
@@ -148,10 +223,10 @@ function PageThumbnail({ url, alt, height = '180px', savedHtml }: { url: string;
 
     if (containerRef.current) observer.observe(containerRef.current);
     return () => observer.disconnect();
-  }, [url, savedHtml]);
+  }, [url, savedHtml, regenNonce]);
 
   return (
-    <div ref={containerRef} className="w-full overflow-hidden bg-gray-50" style={{ height }}>
+    <div ref={containerRef} className="relative w-full overflow-hidden bg-gray-50" style={{ height }}>
       {imgSrc ? (
         <img src={imgSrc} alt={alt} className="w-full h-full object-cover object-top" />
       ) : loading ? (
@@ -159,8 +234,17 @@ function PageThumbnail({ url, alt, height = '180px', savedHtml }: { url: string;
           <div className="w-6 h-6 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
         </div>
       ) : (
-        <div className="w-full h-full flex items-center justify-center bg-gray-100">
+        <div className="w-full h-full flex flex-col items-center justify-center bg-gray-100 gap-2">
           <span className="text-gray-400 text-xs">No preview</span>
+          {(savedHtml || url) && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); setRegenNonce(n => n + 1); }}
+              className="px-2 py-0.5 text-[10px] bg-white border border-gray-300 rounded text-gray-600 hover:bg-blue-50 hover:text-blue-700 hover:border-blue-300 transition-colors"
+            >
+              Regenerate
+            </button>
+          )}
         </div>
       )}
     </div>
