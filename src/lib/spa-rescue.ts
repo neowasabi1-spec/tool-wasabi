@@ -612,11 +612,21 @@ function once(){
         var exChildren=exWalker.children;
         for(var exi=0;exi<exChildren.length;exi++){
           var exCh=exChildren[exi];
-          if(exCh.matches&&exCh.matches(PANEL)&&!exCh.contains(t)){exItem=exWalker;exContent=exCh;break;}
+          if(!exCh.matches||!exCh.matches(PANEL))continue;
+          if(exCh.contains(t))continue;
+          // Deve essere DOPO il click target in DOM order (gestisce strutture
+          // "flat" tipo .label, .content, .label, .content, .label, .content
+          // dentro un singolo wrapper - prende il content corretto vicino).
+          try{
+            var pos=t.compareDocumentPosition(exCh);
+            if(!(pos & 4))continue; // 4 = DOCUMENT_POSITION_FOLLOWING
+          }catch(_){}
+          exItem=exWalker;exContent=exCh;break;
         }
         if(exItem)break;
         exWalker=exWalker.parentElement;
       }
+      try{console.log('[wb] step0 explicit-child',exItem?'HIT item='+exItem.tagName+'.'+(exItem.className||'').toString().slice(0,40)+' content='+exContent.tagName+'.'+(exContent.className||'').toString().slice(0,40):'MISS','clickedOn='+t.tagName+'.'+(t.className||'').toString().slice(0,60));}catch(e){}
       if(exItem&&exContent){
         var exWillOpen=!panelOpen(exContent);
         setOpen(exContent,exWillOpen);
@@ -629,6 +639,7 @@ function once(){
           exItem.classList.toggle('fk-collapsible-list-item-open',exWillOpen);
           exItem.classList.toggle('elementor-active',exWillOpen);
         }catch(_){}
+        try{console.log('[wb] step0 toggle done. content display=',getComputedStyle(exContent).display,'item classes=',exItem.className);}catch(e){}
         ev.preventDefault();ev.stopPropagation();
         return;
       }
