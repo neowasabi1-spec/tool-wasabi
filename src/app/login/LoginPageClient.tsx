@@ -14,8 +14,18 @@ export default function LoginPageClient() {
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
+    if (loading) return; // Double-submit guard (Enter pressed twice)
     setLoading(true);
     setError('');
+
+    // Defensive sanitisation. The most common cause of intermittent
+    // "Invalid login credentials" errors is paste-with-whitespace
+    // (newline/space at the end of email or password) and case
+    // variations on the email. Supabase treats emails as
+    // case-insensitive but stores the original casing, and any
+    // whitespace will make the credential check fail outright.
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanPassword = password; // password — DO NOT trim or lowercase
 
     try {
       const supabase = getSupabaseBrowser();
@@ -24,16 +34,75 @@ export default function LoginPageClient() {
           'Missing Supabase variables: set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY in Netlify (Site settings → Environment variables), then redeploy.',
         );
       }
+
+      // Wipe any stale local session BEFORE signing in. Without this,
+      // the SDK's autoRefreshToken can race with the new sign-in: it
+      // tries to refresh an expired token in the background, the
+      // refresh fails, and the failure handler clobbers the brand-new
+      // session that signInWithPassword just produced. The user sees
+      // a successful auth that then mysteriously dumps them back to
+      // login on the next page. `scope: 'local'` only clears the
+      // browser-side storage, no network call.
+      try {
+        await supabase.auth.signOut({ scope: 'local' });
+      } catch {
+        /* ignore — best-effort cleanup */
+      }
+      try {
+        localStorage.removeItem('wasabi_session');
+      } catch {
+        /* ignore */
+      }
+
       if (mode === 'magic_link') {
         const { error } = await supabase.auth.signInWithOtp({
-          email,
+          email: cleanEmail,
           options: { emailRedirectTo: `${window.location.origin}/auth/callback` },
         });
         if (error) throw error;
         setMagicLinkSent(true);
       } else {
-        const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-        if (error) throw error;
+        // Retry exactly ONCE on transient failures (5xx, network drop,
+        // 429 rate limit). We deliberately do NOT retry on 400/401/422
+        // (real credential rejection) — retrying those would just look
+        // like account enumeration and accumulate rate-limit hits.
+        const attemptSignIn = async () =>
+          supabase.auth.signInWithPassword({ email: cleanEmail, password: cleanPassword });
+
+        let { data, error: authErr } = await attemptSignIn();
+        if (authErr) {
+          const status = (authErr as { status?: number }).status;
+          const isTransient =
+            !status ||
+            status === 0 ||
+            status === 408 ||
+            status === 429 ||
+            (status >= 500 && status < 600);
+          if (isTransient) {
+            await new Promise((r) => setTimeout(r, 800));
+            const retry = await attemptSignIn();
+            data = retry.data;
+            authErr = retry.error;
+          }
+        }
+        if (authErr) {
+          const status = (authErr as { status?: number }).status;
+          // Surface a more actionable message when Supabase says
+          // "invalid credentials" — the user usually thinks our app
+          // is broken, but the real culprit is almost always paste
+          // whitespace, browser autofill or caps-lock.
+          if (status === 400 || /invalid login credentials/i.test(authErr.message)) {
+            throw new Error(
+              'Wrong email or password. Common causes: trailing space in the pasted email/password, browser autofill picking the wrong saved entry, or Caps Lock. Try typing them manually.',
+            );
+          }
+          if (status === 429) {
+            throw new Error(
+              'Too many login attempts. Wait ~30 seconds and try again.',
+            );
+          }
+          throw authErr;
+        }
         if (!data?.session?.access_token || !data?.session?.refresh_token) {
           throw new Error(
             'Login succeeded but the session was not created. Check that the browser allows localStorage for this domain.',
