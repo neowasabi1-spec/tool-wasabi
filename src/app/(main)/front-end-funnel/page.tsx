@@ -8,6 +8,7 @@ import { useStore } from '@/store/useStore';
 import { fetchAffiliateSavedFunnels } from '@/lib/supabase-operations';
 import { supabase } from '@/lib/supabase';
 import { extractSectionContent, type SectionData } from '@/lib/project-sections';
+import { injectInteractivityRescue } from '@/lib/spa-rescue';
 import SwipeDebugModal, {
   buildSwipeDebugInfo,
   type SwipeDebugInfo,
@@ -7348,12 +7349,10 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                               // l'utente vede una pagina morta. injectInteractivityRescue
                               // aggiunge lo stesso handler usato dall'editor (vedi
                               // src/lib/spa-rescue.ts), idempotente e safe da
-                              // riapplicare. NB: sync require: il dynamic import
-                              // qui dentro causerebbe race con la doc.write subito
-                              // dopo (l'iframe verrebbe popolato prima dell'inject).
+                              // riapplicare. Import statico in cima al file: il
+                              // dynamic require('@/...') NON viene risolto dal
+                              // bundler client e falliva silenziosamente.
                               try {
-                                // eslint-disable-next-line @typescript-eslint/no-require-imports
-                                const { injectInteractivityRescue } = require('@/lib/spa-rescue');
                                 safeHtml = injectInteractivityRescue(safeHtml);
                               } catch (e) {
                                 console.warn('[preview] rescue inject fallita:', e);
@@ -7921,11 +7920,18 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                     {...(htmlPreviewModal.sourceType === 'cloned'
                       ? clonedPreviewMode === 'snapshot'
                         ? {
-                            // Snapshot mode = doc.write dell'HTML clonato senza
-                            // script. prepareClonedHtmlForPreview ha gia'
-                            // rimosso tutti gli <script>, quindi allow-scripts
-                            // non serve.
-                            sandbox: 'allow-same-origin allow-forms allow-popups allow-modals',
+                            // Snapshot mode = doc.write dell'HTML clonato.
+                            // prepareClonedHtmlForPreview strippa tutti gli
+                            // script ORIGINALI della pagina (anti-bouncer),
+                            // poi NOI iniettiamo il rescue script per FAQ/
+                            // accordion/carousel (vedi spa-rescue.ts +
+                            // injectInteractivityRescue piu' su). Senza
+                            // allow-scripts quel rescue viene bloccato dal
+                            // sandbox -> click sulle FAQ non fanno nulla.
+                            // L'origine "null" del sandbox tiene comunque
+                            // isolato il contenuto dal nostro origin.
+                            sandbox:
+                              'allow-scripts allow-same-origin allow-forms allow-popups allow-modals',
                           }
                         : {
                             // Live mode = iframe.src diretto alla URL originale.
