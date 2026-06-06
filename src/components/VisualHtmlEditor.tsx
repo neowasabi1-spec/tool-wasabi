@@ -455,6 +455,74 @@ const EDITOR_SCRIPT = `
 
   function isUI(el){return el===plusBtn||el===delBtn||plusBtn.contains(el)||delBtn.contains(el);}
 
+  /* ── FAQ/ACCORDION CLICK DELEGATE (editor) ─────────────────────────
+   * In editor abbiamo strippato gli <script> della pagina, quindi gli
+   * accordion FAQ non rispondono piu' al click (lo "ruba" sempre il
+   * selector). Lo sostituiamo con un toggle generico controllato da
+   * un attributo nostro: data-editor-faq-closed="true" sull'item.
+   * Il CSS (vedi sotto) usa quell'attributo per nascondere il pannello
+   * risposta solo per gli item chiusi — gli altri restano aperti come
+   * prima. Cosi' l'utente puo' aprire/chiudere e verificare il
+   * comportamento reale prima di pubblicare. */
+  var FAQ_TRIGGER_SEL='summary,'+
+    '.faq-question,.faq-header,.faq-title,.faq-trigger,.faq-toggle,'+
+    '.faq__question,.faq__title,'+
+    '[data-faq-trigger],[data-faq-question],'+
+    '.accordion-header,.accordion-title,.accordion-toggle,.accordion-trigger,.accordion-button,'+
+    '[data-accordion-trigger],[data-accordion-target],'+
+    '.elFAQItemQuestion,.elementor-tab-title,.e-n-accordion-item-title,'+
+    '.uk-accordion-title,.wp-block-coblocks-accordion-item__title,.kt-accordion-header,'+
+    '[aria-controls]';
+  var FAQ_ITEM_SEL='details,.faq-item,.faq,.faq-wrapper > *,'+
+    '.accordion-item,.accordion,.accordion > *,'+
+    '.elFAQItem,.elementor-accordion-item,.e-n-accordion-item,'+
+    '.uk-accordion > li,.wp-block-coblocks-accordion-item,.kt-accordion-pane';
+  function faqTriggerFor(target){
+    if(!target||target.nodeType!==1)return null;
+    try{
+      var t=target.closest(FAQ_TRIGGER_SEL);
+      if(!t)return null;
+      /* Evita falsi positivi: input/select dentro form con aria-controls non
+         sono accordion. */
+      var tn=t.tagName&&t.tagName.toLowerCase();
+      if(tn==='input'||tn==='select'||tn==='textarea')return null;
+      return t;
+    }catch(e){return null;}
+  }
+  function faqItemFor(trigger){
+    if(!trigger)return null;
+    try{
+      var it=trigger.closest(FAQ_ITEM_SEL);
+      if(it)return it;
+      /* Fallback: contenitore con classe che contiene "faq" o "accordion". */
+      var p=trigger.parentElement,d=0;
+      while(p&&d<8){
+        var cn=(typeof p.className==='string'?p.className:'').toLowerCase();
+        if(/faq|accordion/.test(cn))return p;
+        p=p.parentElement;d++;
+      }
+    }catch(e){}
+    return trigger.parentElement;
+  }
+  function toggleFaqItem(item){
+    if(!item)return false;
+    var isClosed=item.getAttribute('data-editor-faq-closed')==='true';
+    if(isClosed){
+      item.removeAttribute('data-editor-faq-closed');
+      if(item.tagName==='DETAILS')try{item.open=true;}catch(_){ }
+    }else{
+      item.setAttribute('data-editor-faq-closed','true');
+      if(item.tagName==='DETAILS')try{item.open=false;}catch(_){ }
+    }
+    /* Sync aria-expanded sui trigger conosciuti, cosi' la freccia ruota
+       se la pagina ha CSS che usa l'attributo. */
+    try{
+      var trs=item.querySelectorAll('[aria-expanded]');
+      for(var i=0;i<trs.length;i++)trs[i].setAttribute('aria-expanded', isClosed?'true':'false');
+    }catch(e){}
+    return true;
+  }
+
   document.addEventListener('mouseover',function(e){
     if(editing)return;var el=e.target;if(sk(el)||el===sel||isUI(el))return;
     if(hover&&hover!==sel)co(hover);hover=el;el.style.outline=HS;el.style.outlineOffset='1px';
@@ -485,6 +553,17 @@ const EDITOR_SCRIPT = `
     if(isUI(e.target))return;
     if(editing&&editEl&&!editEl.contains(e.target)){finishEdit();}
     if(editing&&editEl&&editEl.contains(e.target))return;
+    /* FAQ/accordion: clicco un trigger → toggle + select (cosi' l'utente
+       puo' verificare il comportamento E continuare a stilare il trigger
+       dalla toolbar). preventDefault impedisce che il browser segua un
+       eventuale href="#"/submit. */
+    var faqTr=faqTriggerFor(e.target);
+    if(faqTr){
+      e.preventDefault();e.stopPropagation();
+      toggleFaqItem(faqItemFor(faqTr));
+      selectEl(faqTr);
+      return;
+    }
     e.preventDefault();e.stopPropagation();
     var el=e.target;if(sk(el))return;
     selectEl(el);
@@ -1263,6 +1342,52 @@ function prepareEditorHtml(html: string, sourceUrl?: string): string {
     /* Icona rotazione "+/-" → ferma allo stato chiuso visivamente, non
        importa perche' l'utente non clicca per chiudere, gli serve solo
        vedere/editare il contenuto. */
+
+    /* ── FAQ CHIUSE (toggle utente in editor) ──────────────────────
+     * Quando l'utente clicca un trigger FAQ il delegate JS aggiunge
+     * data-editor-faq-closed="true" sull'item: queste regole vincono
+     * sulle "force open" qui sopra (stessa specificita' ma vengono
+     * dopo + selettore con attributo). Ripristina lo stato chiuso del
+     * pannello risposta. Il click successivo rimuove l'attributo e
+     * torna aperto. */
+    [data-editor-faq-closed="true"] .faq-content-wrapper,
+    [data-editor-faq-closed="true"] .faq-content,
+    [data-editor-faq-closed="true"] .faq-body,
+    [data-editor-faq-closed="true"] .faq-answer,
+    [data-editor-faq-closed="true"] .accordion-content,
+    [data-editor-faq-closed="true"] .accordion-body,
+    [data-editor-faq-closed="true"] .accordion-collapse,
+    [data-editor-faq-closed="true"] .collapse,
+    [data-editor-faq-closed="true"] .toggle-content,
+    [data-editor-faq-closed="true"] .collapse-content,
+    [data-editor-faq-closed="true"] [data-faq-body],
+    [data-editor-faq-closed="true"] [data-accordion-content],
+    [data-editor-faq-closed="true"] .elFAQItemAnswer,
+    [data-editor-faq-closed="true"] .elementor-tab-content,
+    [data-editor-faq-closed="true"] .e-n-accordion-item > .e-con,
+    [data-editor-faq-closed="true"] .uk-accordion-content,
+    [data-editor-faq-closed="true"] .wp-block-coblocks-accordion-item__content,
+    [data-editor-faq-closed="true"] .kt-accordion-panel-inner,
+    [data-editor-faq-closed="true"] [class*="answer" i],
+    [data-editor-faq-closed="true"] [class*="panel" i] {
+      display: none !important;
+      max-height: 0 !important;
+      height: 0 !important;
+      min-height: 0 !important;
+      overflow: hidden !important;
+      visibility: hidden !important;
+      opacity: 0 !important;
+      padding-top: 0 !important;
+      padding-bottom: 0 !important;
+      margin-top: 0 !important;
+      margin-bottom: 0 !important;
+    }
+    /* <details> chiuso esplicitamente */
+    details[data-editor-faq-closed="true"] > *:not(summary) {
+      display: none !important;
+    }
+    /* Chevron/freccia: ruota se la pagina usa aria-expanded come stato.
+       Non tocchiamo classi proprietarie per evitare effetti indesiderati. */
 
     /* ── CAROUSEL/SLIDER: FORZA TUTTI GLI SLIDE VISIBILI ──────────
      * In editor abbiamo strippato gli <script>. Conseguenza: Swiper /

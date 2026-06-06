@@ -385,8 +385,25 @@ function findItem(t){
 }
 function setOpen(p,open){
   if(!p)return;
-  if(open){p.style.display='block';p.style.maxHeight='none';p.style.height='auto';p.style.overflow='visible';p.style.visibility='visible';p.style.opacity='1';p.hidden=false;}
-  else{p.style.display='none';}
+  // setProperty(...,'important') vince anche sui rule "!important" della
+  // pagina originale (es. Funnelish .faq-content{display:none!important}).
+  // Senza l'!important inline, lo style="display:block" del setOpen veniva
+  // bypassato e il pannello restava chiuso anche dopo il click in Preview.
+  if(open){
+    try{
+      p.style.setProperty('display','block','important');
+      p.style.setProperty('max-height','none','important');
+      p.style.setProperty('height','auto','important');
+      p.style.setProperty('overflow','visible','important');
+      p.style.setProperty('visibility','visible','important');
+      p.style.setProperty('opacity','1','important');
+      p.style.setProperty('pointer-events','auto','important');
+    }catch(e){p.style.display='block';p.style.maxHeight='none';p.style.height='auto';p.style.overflow='visible';p.style.visibility='visible';p.style.opacity='1';}
+    p.hidden=false;
+  }else{
+    try{p.style.setProperty('display','none','important');}
+    catch(e){p.style.display='none';}
+  }
   // stato tracciato SUL PANNELLO (non sull'item): negli accordion "flat"
   // l'item e' condiviso da piu' pannelli, quindi lo stato per-item sarebbe
   // sbagliato.
@@ -417,7 +434,7 @@ function closeAll(){
   // cosi' la pagina parte collassata e l'utente li apre col click.
   try{
     var panels=document.querySelectorAll(PANEL);
-    for(var i=0;i<panels.length;i++){panels[i].style.display='none';panels[i].setAttribute('data-wasabi-open','0');}
+    for(var i=0;i<panels.length;i++){try{panels[i].style.setProperty('display','none','important');}catch(_){panels[i].style.display='none';}panels[i].setAttribute('data-wasabi-open','0');}
     var dets=document.querySelectorAll('details');
     for(var k=0;k<dets.length;k++)dets[k].removeAttribute('open');
     var its=document.querySelectorAll(ITEM);
