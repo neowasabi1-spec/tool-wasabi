@@ -440,48 +440,20 @@ function toggle(item,trigger){
   }catch(e){}
 }
 function closeAll(){
-  // Chiude all'avvio TUTTI i pannelli accordion noti + quelli inferiti
-  // euristicamente. Lo snapshot Jina li cattura quasi sempre aperti
-  // (perche' il browser headless scrolla e li espande), quindi senza
-  // questa chiusura le FAQ in preview restano "tutte aperte come testo"
-  // e l'utente non puo' testarne il toggle.
+  // SOLO pannelli e item con classi conosciute. Lo scan euristico
+  // (ITEM_RE/findPanel su tutto il DOM) era troppo aggressivo:
+  // ITEM_RE matchava 'toggle-button', 'faq-section' (container intero,
+  // non il pannello), PANEL_RE matchava 'content/wrapper/text' →
+  // nascondeva sezioni intere della pagina. Il toggle per i markup
+  // custom lo lasciamo al solo click handler (che usa l'euristica in
+  // modo sicuro: parte dal target del click).
   try{
-    // 1) Pannelli con classi conosciute
     var panels=document.querySelectorAll(PANEL);
     for(var i=0;i<panels.length;i++){try{panels[i].style.setProperty('display','none','important');}catch(_){panels[i].style.display='none';}panels[i].setAttribute('data-wasabi-open','0');}
-    // 2) <details> aperti -> chiusi
     var dets=document.querySelectorAll('details');
     for(var k=0;k<dets.length;k++)dets[k].removeAttribute('open');
-    // 3) Item con classi conosciute -> rimuovi stati open
     var its=document.querySelectorAll(ITEM);
     for(var j=0;j<its.length;j++){its[j].classList.remove('is-open');its[j].classList.remove('active');its[j].classList.remove('expanded');its[j].classList.remove('open');}
-    // 4) Euristica: container con classe che CONTIENE faq/accordion/
-    //    toggle/collaps/expand/question/dropdown E che ha un figlio
-    //    panel-shaped (per il regex PANEL_RE). Chiudo il panel.
-    //    Limito a div/section/article/li per non scansionare tutto il DOM.
-    var cands=document.querySelectorAll('div,section,article,li');
-    for(var n=0;n<cands.length;n++){
-      var c=cands[n];if(!c||c.nodeType!==1)continue;
-      if(!ITEM_RE.test(cls(c)))continue;
-      var p2=findPanel(null,c);
-      if(p2&&!p2.hasAttribute('data-wasabi-open')){
-        try{p2.style.setProperty('display','none','important');}catch(_){p2.style.display='none';}
-        p2.setAttribute('data-wasabi-open','0');
-      }
-      try{c.classList.remove('is-open');c.classList.remove('active');c.classList.remove('expanded');c.classList.remove('open');}catch(_){ }
-    }
-    // 5) Accordion CSS-only: <input type="checkbox"> dichiarati "checked"
-    //    nello snapshot → forziamo unchecked, cosi' selettori :checked
-    //    della pagina si comportano come fresh-load.
-    var boxes=document.querySelectorAll('input[type="checkbox"],input[type="radio"]');
-    for(var b=0;b<boxes.length;b++){
-      try{
-        var lbl=boxes[b].id?document.querySelector('label[for="'+boxes[b].id+'"]'):null;
-        var insideFaq=lbl?(ITEM_RE.test(cls(lbl))||(lbl.closest&&lbl.closest('[class]')&&ITEM_RE.test(cls(lbl.closest('[class]')))))
-                         :(boxes[b].closest&&boxes[b].closest('[class]')&&ITEM_RE.test(cls(boxes[b].closest('[class]'))));
-        if(insideFaq){boxes[b].checked=false;boxes[b].removeAttribute('checked');}
-      }catch(_){ }
-    }
   }catch(e){}
 }
 // ---- CAROSELLO RESCUE ----------------------------------------------------
