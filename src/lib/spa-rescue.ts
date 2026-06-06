@@ -591,45 +591,46 @@ function once(){
   document.addEventListener('click',function(ev){
     var t=ev.target;if(!(t instanceof Element))return;
     var actionable=t.closest('a[href]:not([href="#"]):not([href=""]),button[type="submit"],input,select,textarea');
-    // 0) FunnelKit Collapsible List - handler DEDICATO.
-    //    Le pagine FunnelKit (Rosabella, AICashClone, etc.) hanno una
-    //    struttura specifica dove TUTTE le sub-classi contengono "collaps"
-    //    (e' nel nome della libreria: fk-COLLAPSIBLE-list-*), il che fa
-    //    impazzire le euristiche generiche. Qui detection diretta:
-    //    qualsiasi click su un elemento .fk-collapsible-list-* (eccetto
-    //    dentro al content gia' aperto) -> trova l'antenato che CONTIENE
-    //    direttamente un .fk-collapsible-list-content figlio -> toggle.
-    var fkHit=t.closest('[class*="fk-collapsible-list"]');
-    if(fkHit){
-      // Click DENTRO un content gia' aperto = lascia passare (l'utente
-      // legge/seleziona la risposta, non vuole richiuderla).
-      var fkInside=t.closest('.fk-collapsible-list-content');
-      if(fkInside){try{if(getComputedStyle(fkInside).display!=='none')return;}catch(e){}}
-      // Trova l'ITEM: ancestor che ha un .fk-collapsible-list-content come
-      // figlio diretto. Questo e' SEMPRE il vero contenitore della FAQ.
-      var fkItem=null, fkP=fkHit;
-      while(fkP&&fkP.nodeType===1){
-        for(var fci=0;fci<fkP.children.length;fci++){
-          var fcc=fkP.children[fci];
-          if(fcc.classList&&fcc.classList.contains('fk-collapsible-list-content')){fkItem=fkP;break;}
+    // 0) EXPLICIT PANEL CHILD - handler universale che batte tutti i
+    //    framework con una FAQ tradizionale (header + content). Strategia:
+    //    risali dal click target cercando il PRIMO ancestor che ha un
+    //    figlio diretto matching PANEL (lista di classi note:
+    //    .faq-content / .accordion-body / .fk-collapsible-list-content /
+    //    etc.). Quel figlio E' la risposta da toggleare.
+    //    
+    //    Funziona per: FunnelKit (Rosabella, AICashClone), ClickFunnels,
+    //    Funnelish, GoHighLevel, Elementor accordion, Divi toggle,
+    //    Bootstrap, qualsiasi pattern con classe content nota.
+    //
+    //    Bypassa: il fuzzy matching che si confondeva sulle sub-classi
+    //    quando il nome del componente contiene parole tipo "collaps"
+    //    (es. FunnelKit: TUTTE le sub-classi hanno "collaps" nel nome).
+    var inOpenPanel=t.closest(PANEL);
+    if(!(inOpenPanel&&panelOpen(inOpenPanel))){
+      var exItem=null, exContent=null, exWalker=t;
+      while(exWalker&&exWalker.nodeType===1&&exWalker!==document.body){
+        var exChildren=exWalker.children;
+        for(var exi=0;exi<exChildren.length;exi++){
+          var exCh=exChildren[exi];
+          if(exCh.matches&&exCh.matches(PANEL)&&!exCh.contains(t)){exItem=exWalker;exContent=exCh;break;}
         }
-        if(fkItem)break;
-        if(fkP===document.body)break;
-        fkP=fkP.parentElement;
+        if(exItem)break;
+        exWalker=exWalker.parentElement;
       }
-      if(fkItem){
-        var fkContent=null;
-        for(var fci2=0;fci2<fkItem.children.length;fci2++){
-          var fcc2=fkItem.children[fci2];
-          if(fcc2.classList&&fcc2.classList.contains('fk-collapsible-list-content')){fkContent=fcc2;break;}
-        }
-        if(fkContent){
-          var fkWillOpen=!panelOpen(fkContent);
-          setOpen(fkContent,fkWillOpen);
-          try{fkItem.classList.toggle('fk-collapsible-list-item-open',fkWillOpen);}catch(_){}
-          ev.preventDefault();ev.stopPropagation();
-          return;
-        }
+      if(exItem&&exContent){
+        var exWillOpen=!panelOpen(exContent);
+        setOpen(exContent,exWillOpen);
+        try{
+          exItem.classList.toggle('is-open',exWillOpen);
+          exItem.classList.toggle('active',exWillOpen);
+          exItem.classList.toggle('open',exWillOpen);
+          exItem.classList.toggle('expanded',exWillOpen);
+          exItem.classList.toggle('show',exWillOpen);
+          exItem.classList.toggle('fk-collapsible-list-item-open',exWillOpen);
+          exItem.classList.toggle('elementor-active',exWillOpen);
+        }catch(_){}
+        ev.preventDefault();ev.stopPropagation();
+        return;
       }
     }
     // 1) ARIA pattern
