@@ -57,11 +57,12 @@ function processScreenshotQueue() {
 }
 
 // Minimum size for a thumbnail dataURL to be considered "real".
-// A blank/near-white 384x270 JPEG at quality 0.7 is typically ~1.5-2KB.
-// A real rendered page is at least 5-10KB. We use 4KB as a safe lower
-// bound: anything smaller is almost certainly a failed render (iframe
-// didn't paint, html2canvas grabbed an empty body, SPA never ran).
-const MIN_THUMBNAIL_BYTES = 4 * 1024;
+// A truly empty/all-white JPEG at our render size compresses to
+// ~600-1100 bytes. Pages with a bit of color/typography sit between
+// 2-5KB. We pick 1.8KB as a conservative lower bound: catches the
+// genuinely-blank failures while NOT filtering out minimalist
+// landings (lots of whitespace, one CTA, small logo).
+const MIN_THUMBNAIL_BYTES = 1800;
 
 /** Rough byte length of a base64 dataURL: strip the data: prefix and
  *  apply the base64 → bytes ratio (3/4). Cheap; no Blob alloc. */
@@ -110,6 +111,55 @@ async function htmlToScreenshot(html: string, cacheKey: string): Promise<string 
     const { injectInteractivityRescue } = await import('@/lib/spa-rescue');
     renderHtml = injectInteractivityRescue(html);
   } catch { /* fallback: HTML grezzo */ }
+
+  // Anti-taint sanitisation. html2canvas refuses to read pixels from a
+  // canvas that has been "tainted" by cross-origin content drawn
+  // without proper CORS headers, so a single image from a CDN that
+  // doesn't return `Access-Control-Allow-Origin: *` is enough to make
+  // the WHOLE thumbnail go blank (toDataURL throws → we resolve null).
+  // The same applies to <iframe> embeds (videos, ads) which can't be
+  // captured at all.
+  //
+  // To get a useful preview anyway, we walk the HTML before render and:
+  //   - swap every <img>/<video>/poster src for a 1x1 grey data-URI,
+  //     keeping width/height attributes (and any css size) so the
+  //     layout stays the same;
+  //   - replace <iframe>s with a same-size <div> with a grey bg;
+  //   - drop CSS background-image URLs pointing off-origin.
+  //
+  // We deliberately keep text, fonts, colors, gradients and SVG — those
+  // render fine on a non-tainted canvas and carry enough visual info
+  // for the user to recognise the page.
+  const GREY_1x1 =
+    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+  try {
+    renderHtml = renderHtml
+      // 1) Inline <img src=...> → grey placeholder. Preserve width/height
+      //    attrs so layout doesn't collapse. Only target absolute/https
+      //    URLs (relative same-origin srcdoc=about:blank URLs would just
+      //    404 quietly, but stripping them too is the safe play).
+      .replace(/<img\b([^>]*?)\ssrc\s*=\s*(["'])(https?:[^"']+)\2/gi,
+        (_m, attrs: string, q: string, _url: string) =>
+          `<img${attrs} src=${q}${GREY_1x1}${q}`)
+      // 2) srcset (responsive images) — drop entirely to force the (now
+      //    placeholder) src to be used.
+      .replace(/\ssrcset\s*=\s*(["'])[^"']*\1/gi, '')
+      // 3) <iframe ...> → grey div with same dims (best effort: extract
+      //    width/height attributes if present).
+      .replace(/<iframe\b([^>]*)>[\s\S]*?<\/iframe>/gi, (_m, attrs: string) => {
+        const w = /(?:^|\s)width\s*=\s*["']?(\d+)["']?/i.exec(attrs)?.[1] || '100%';
+        const h = /(?:^|\s)height\s*=\s*["']?(\d+)["']?/i.exec(attrs)?.[1] || '200';
+        const wCss = /^\d+$/.test(String(w)) ? `${w}px` : String(w);
+        const hCss = /^\d+$/.test(String(h)) ? `${h}px` : String(h);
+        return `<div style="width:${wCss};height:${hCss};background:#e5e7eb;display:inline-block"></div>`;
+      })
+      // 4) <video ...src=...> → drop src so it renders as empty box.
+      .replace(/<video\b([^>]*?)\ssrc\s*=\s*(["'])https?:[^"']+\2/gi,
+        (_m, attrs: string, _q: string) => `<video${attrs}`)
+      // 5) inline style "background-image: url('https://...')" → drop
+      .replace(/background-image\s*:\s*url\(\s*(["']?)https?:[^)'"]+\1\s*\)/gi,
+        'background-image:none');
+  } catch { /* sanitisation failed — fall through with original HTML */ }
 
   return new Promise((resolve) => {
     const iframe = document.createElement('iframe');
