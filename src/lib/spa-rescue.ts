@@ -562,9 +562,39 @@ function bindCarousel(track){
   var thumbs=[];
   if(nav){for(var n=0;n<nav.children.length;n++){var tc=nav.children[n];if(tc&&tc.nodeType===1&&((tc.querySelector&&tc.querySelector('img'))||tc.tagName==='IMG'))thumbs.push(tc);}}
   var idx=0;
+  // Neutralizza transform/translate3d ereditati da slick/swiper. Senza
+  // questo, il TRACK e' spostato fuori-schermo (translate3d(-9999px,0,0))
+  // o posizionato su una slide specifica: anche se show() nasconde le
+  // altre slide, quella visibile e' in un punto sbagliato e l'utente
+  // vede uno "stack vuoto" o niente.
+  try{
+    track.style.setProperty('transform','none','important');
+    track.style.setProperty('-webkit-transform','none','important');
+    track.style.setProperty('transition','none','important');
+    track.style.setProperty('width','auto','important');
+    track.style.setProperty('left','auto','important');
+    track.style.setProperty('display','block','important');
+  }catch(e){}
   function show(k){
     idx=(k%slides.length+slides.length)%slides.length;
-    for(var i=0;i<slides.length;i++){slides[i].style.display=(i===idx?'':'none');}
+    for(var i=0;i<slides.length;i++){
+      // !important inline obbligatorio: l'editorCss che la pagina ha
+      // ereditato dal Visual editor (o regole !important della pagina
+      // originale) hanno display:block !important sulle .swiper-slide /
+      // .slick-slide. Senza !important qui, show() viene ignorata e
+      // l'utente vede TUTTE le slide impilate.
+      if(i===idx){
+        slides[i].style.removeProperty('display');
+      }else{
+        slides[i].style.setProperty('display','none','important');
+      }
+      // Pulizia per-slide: stesso motivo del track.
+      try{
+        slides[i].style.setProperty('transform','none','important');
+        slides[i].style.setProperty('position','relative','important');
+        slides[i].style.setProperty('left','auto','important');
+      }catch(e){}
+    }
     for(var j=0;j<thumbs.length;j++){
       var on=(j===idx);
       thumbs[j].style.opacity=on?'1':'0.5';
