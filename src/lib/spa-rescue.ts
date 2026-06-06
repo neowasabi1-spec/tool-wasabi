@@ -390,7 +390,7 @@ function cls(el){if(!el)return '';var c=el.className;if(c&&typeof c==='object'&&
 // le sub-classi contengono "collaps" perche' fa parte del nome) facevano
 // matchare .fk-collapsible-list-label-icon come "panel" e il sibling-walk
 // si fermava la' invece di salire fino al .fk-collapsible-list-content.
-var PANEL_REJECT_RE=/(^|[\s\-_])(icon|toggle|header|footer|label|title|caption|trigger|button|chevron|arrow|caret|plus|minus|indicator|spacer|symbol|sign|head|nav|menu)([\s\-_]|$)/i;
+var PANEL_REJECT_RE=/(^|[ _-])(icon|toggle|header|footer|label|title|caption|trigger|button|chevron|arrow|caret|plus|minus|indicator|spacer|symbol|sign|head|nav|menu)([ _-]|$)/i;
 function isPanelLike(el){
   if(!el||el.nodeType!==1)return false;
   var c=cls(el);
