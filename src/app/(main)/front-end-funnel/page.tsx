@@ -6297,14 +6297,15 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                 } else if (page.clonedData) {
                                   const got = await fetchHtmlIfNeeded(page.clonedData, 'clonedData');
                                   if (!got) return;
-                                  // HTML caricato: usa lo snapshot, non la live
-                                  // mode (che punterebbe a uploaded.local → vuoto).
-                                  const isUploaded =
-                                    page.clonedData.method_used === 'upload' ||
-                                    (page.urlToSwipe || '').startsWith('https://uploaded.local/');
+                                  // Default = snapshot (HTML clonato), come
+                                  // richiesto: l'utente vede subito il
+                                  // contenuto editato/salvato, non l'URL
+                                  // originale via iframe (che potrebbe essere
+                                  // diverso o non raggiungibile). Si puo'
+                                  // sempre passare a "Live" col toggle.
                                   setPreviewViewport('desktop');
                                   setPreviewTab('preview');
-                                  setClonedPreviewMode(isUploaded ? 'snapshot' : 'live');
+                                  setClonedPreviewMode('snapshot');
                                   setHtmlPreviewModal({
                                     isOpen: true,
                                     title: page.clonedData!.title || page.name,
