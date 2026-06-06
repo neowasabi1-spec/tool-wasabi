@@ -17,6 +17,8 @@ import {
 import { SavedSection, SECTION_TYPE_OPTIONS, OUTPUT_STACK_OPTIONS, type OutputStack } from '@/types';
 import { createClient } from '@supabase/supabase-js';
 import { recolorPage } from '@/lib/recolor-page';
+import { useStore } from '@/store/useStore';
+import { extractSectionContent } from '@/lib/project-sections';
 
 /* ── Direct browser → Supabase Storage upload (bypasses Vercel 4.5MB body limit) ── */
 const ALLOWED_UPLOAD_TYPES: Record<string, string> = {
@@ -1860,8 +1862,35 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     setSelectedProductId(currentProductId || '');
   }, [currentProductId]);
 
+  /* Fallback automatico ai projects dello store quando il parent NON
+   * passa `availableProducts`. Prima il selettore "Product (My Projects)"
+   * usciva SOLO da front-end-funnel (l'unico callsite che ricordava di
+   * passare la prop); aprendo lo stesso editor da ProjectHub/FunnelTab,
+   * Clone Landing o Agentic Swipe il menu spariva e Claude tornava a
+   * indovinare il prodotto dall'HTML — è proprio la regressione "non
+   * vedo più la tendina" che l'utente ha segnalato.
+   *
+   * Adesso ogni entry-point eredita gratis l'intera lista My Projects
+   * dallo store. Se il parent vuole comunque imporre una lista custom
+   * (caso raro), passare `availableProducts` continua a vincere. */
+  const storeProjects = useStore((s) => s.projects);
+  const resolvedAvailableProducts = useMemo(() => {
+    if (availableProducts) return availableProducts;
+    return (storeProjects || []).map((p) => ({
+      id: p.id,
+      name: p.name,
+      description: p.description || '',
+      // Stessa logica del fallback in front-end-funnel: prima i file
+      // parsati (briefData), poi il blob legacy `brief` come fallback.
+      brief:
+        extractSectionContent(p.briefData).trim() || (p.brief || '').trim(),
+      marketResearch: extractSectionContent(p.marketResearchData),
+      imageUrl: (Array.isArray(p.logo) && p.logo[0]?.url) || '',
+    }));
+  }, [availableProducts, storeProjects]);
+
   const effectiveProduct = useMemo(() => {
-    const fromList = (availableProducts || []).find((p) => p.id === selectedProductId);
+    const fromList = resolvedAvailableProducts.find((p) => p.id === selectedProductId);
     if (fromList) return fromList;
     if (productContext) {
       return {
@@ -1874,7 +1903,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
       };
     }
     return undefined;
-  }, [availableProducts, selectedProductId, productContext]);
+  }, [resolvedAvailableProducts, selectedProductId, productContext]);
 
   const handleProductSelect = useCallback(
     (id: string) => {
@@ -5371,8 +5400,11 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
 
             <div className="p-5 space-y-4 overflow-y-auto">
               {/* Product selector (My Projects): basa il prompt sul prodotto
-                  scelto anche se la pagina è solo clonata senza prodotto. */}
-              {availableProducts && availableProducts.length > 0 && (
+                  scelto anche se la pagina è solo clonata senza prodotto.
+                  Usa `resolvedAvailableProducts` (prop oppure fallback dallo
+                  store) — vedi commento sul fallback più sopra: senza questo
+                  il selettore appariva solo da front-end-funnel. */}
+              {resolvedAvailableProducts.length > 0 && (
                 <div>
                   <label className="text-[10px] text-violet-500 font-medium mb-1 block uppercase tracking-wider">Product (My Projects)</label>
                   <select
@@ -5382,7 +5414,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                     className="w-full px-2.5 py-2 text-xs text-slate-900 border border-violet-200 rounded-lg focus:border-violet-400 outline-none bg-white"
                   >
                     <option value="">— No product —</option>
-                    {availableProducts.map((p) => (
+                    {resolvedAvailableProducts.map((p) => (
                       <option key={p.id} value={p.id}>{p.name}</option>
                     ))}
                   </select>
