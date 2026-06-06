@@ -567,22 +567,14 @@ const EDITOR_SCRIPT = `
        cercando di selezionare/editare il contenuto, non chiudere). */
     var inPanel=target.closest&&target.closest(FAQ_PANEL);
     if(inPanel&&_faqPanelOpen(inPanel))return null;
-    /* CASO SPECIALE <details>: il browser nasconde i figli quando manca
-       l'attributo 'open'. NON toccare inline display sul content (combatte
-       con la UA stylesheet e crea stati inconsistenti); flippa solo
-       l'attributo. Pattern usato da FunnelKit, builder che generano
-       <details open onclick="return false">. La CSS della pagina (es.
-       details[open] .fk-... per icone open/close) gia' fa il resto. */
-    if(item&&item.tagName==='DETAILS'){
-      var willOpenD=!item.hasAttribute('open');
-      if(willOpenD)item.setAttribute('open','');else item.removeAttribute('open');
-      try{panel.style.removeProperty('display');panel.style.removeProperty('max-height');panel.style.removeProperty('overflow');panel.removeAttribute('data-wasabi-open');}catch(_){}
-      var wrapDO=item.closest&&item.closest('[data-open]');
-      if(wrapDO)wrapDO.setAttribute('data-open',willOpenD?'true':'false');
-      var sumDOEd=item.querySelector&&item.querySelector('summary');
-      if(sumDOEd&&sumDOEd.setAttribute)sumDOEd.setAttribute('aria-expanded',willOpenD?'true':'false');
-      return trigger;
-    }
+    /* I <details> sono gestiti dal browser nativamente. prepareEditorHtml
+       ha gia' rimosso onclick="return false" e l'attributo open, quindi
+       click su summary fa il toggle UA-shadow-DOM perfetto. Il bypass
+       'sumDet' nel click delegate principale ferma il dispatch qui PRIMA
+       che _toggleFaq venga chiamato. Se per qualche motivo arriviamo qui
+       con un <details> (target non-summary dentro details), ritorniamo
+       null cosi' il browser continua col flow nativo senza interferenze. */
+    if(item&&item.tagName==='DETAILS')return null;
     var willOpen=!_faqPanelOpen(panel);
     _setFaqOpen(panel,willOpen);
     if(item&&item!==panel&&item.classList){
@@ -785,9 +777,21 @@ const EDITOR_SCRIPT = `
       selectEl(carScopeEl);
       return;
     }
-    /* FAQ/accordion: prova il toggle. Se restituisce il trigger,
-       blocchiamo l'evento (niente href="#"/submit/altri side-effect) e
-       selezioniamo l'header cosi' l'utente puo' anche stilizzarlo. */
+    /* <details>+<summary>: il browser gestisce il toggle nativamente
+       (l'HTML ha gia' avuto onclick="return false" e 'open' rimossi in
+       prepareEditorHtml). NON facciamo preventDefault: bloccherebbe il
+       toggle. Selezioniamo il summary per consentire styling dell'header
+       e lasciamo che il browser apra/chiuda il details da solo. */
+    var sumDet=e.target.closest&&e.target.closest('summary');
+    if(sumDet){
+      e.stopPropagation();
+      selectEl(sumDet);
+      return; // NIENTE preventDefault - il browser fa il toggle nativo
+    }
+    /* FAQ/accordion non-details: prova il toggle custom. Se restituisce
+       il trigger, blocchiamo l'evento (niente href="#"/submit/altri
+       side-effect) e selezioniamo l'header cosi' l'utente puo' anche
+       stilizzarlo. */
     var faqTrig=_toggleFaq(e.target);
     if(faqTrig){
       e.preventDefault();e.stopPropagation();
@@ -1352,6 +1356,23 @@ function prepareEditorHtml(html: string, sourceUrl?: string): string {
   // Toglie anche noscript: contengono spesso pixel di tracking che
   // diventano visibili se i loro <script> wrapper sono spariti.
   clean = clean.replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, '');
+
+  // NEUTRALIZZA <details onclick="return false" open>. Pattern FunnelKit
+  // (Rosabella, ecc.): blocca il toggle nativo per delegarlo al loro
+  // runtime JS - che noi non eseguiamo. Rimuoviamo onclick e `open`
+  // cosi' il browser fa il toggle nativo perfetto: FAQ chiuse al load,
+  // click su summary apre/chiude via shadow DOM nativo, la CSS della
+  // pagina basata su details[open] funziona al 100%. Zero JS custom
+  // necessario. Stesso approccio del preview (injectInteractivityRescue).
+  clean = clean.replace(
+    /<details\b([^>]*)>/gi,
+    (_full: string, attrs: string) => {
+      const out = attrs
+        .replace(/\sonclick\s*=\s*(?:"[^"]*return\s+false[^"]*"|'[^']*return\s+false[^']*')/gi, '')
+        .replace(/\sopen(?=\s|=|>|$)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?/gi, '');
+      return `<details${out}>`;
+    },
+  );
 
   // ── PROMOZIONE STATICA LAZY-LOAD ────────────────────────────────────
   // Avendo strippato tutti gli script, le librerie lazy-load (LazyLoad.js,

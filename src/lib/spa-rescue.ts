@@ -393,6 +393,35 @@ export function injectInteractivityRescue(html: string): string {
   //    click-handler col nostro rescue FAQ in capture phase.
   html = stripNonCarouselScripts(html);
 
+  // 2) NEUTRALIZZA <details onclick="return false" open>. Pattern usato
+  //    da FunnelKit (Rosabella, AICashClone, ecc.) per inibire il toggle
+  //    NATIVO del browser cosi' il loro runtime JS prende il controllo
+  //    via /index.js. Noi abbiamo strippato quel runtime: senza una
+  //    contromisura, il click sull <summary> non fa nulla (l onclick
+  //    return-false annulla il toggle nativo) o serve un nostro JS
+  //    custom per gestirlo, che e' stato fonte di bug ricorrenti.
+  //
+  //    Strategia ZERO-JS: rimuovi onclick="return false" (cosi' il
+  //    browser fa il toggle nativo del details) e rimuovi `open` (cosi'
+  //    le FAQ partono CHIUSE come la pagina viva mostra dopo che il
+  //    runtime FunnelKit le ha chiuse). Il browser fa tutto:
+  //    - click su summary → toggle attributo open
+  //    - rendering shadow-DOM nativo per mostrare/nascondere il contenuto
+  //    - la CSS della pagina basata su `details[open] .icon` funziona
+  //      al 100% senza nostre interferenze.
+  //
+  //    Non tocchiamo l'attributo `data-open` sul wrapper FunnelKit:
+  //    e' usato dal loro runtime (che non gira), non da CSS visible.
+  html = html.replace(
+    /<details\b([^>]*)>/gi,
+    (_full, attrs: string) => {
+      let out = attrs
+        .replace(/\sonclick\s*=\s*(?:"[^"]*return\s+false[^"]*"|'[^']*return\s+false[^']*')/gi, '')
+        .replace(/\sopen(?=\s|=|>|$)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?/gi, '');
+      return `<details${out}>`;
+    },
+  );
+
   // CSS guard: only kicks in when the rescue script has tagged <html>
   // with `data-wasabi-rescue="1"`. This avoids hiding/clobbering FAQs
   // on pages whose own runtime is fine — the script only sets the
@@ -705,6 +734,12 @@ function once(){
   setTimeout(initCarousels,600);setTimeout(initCarousels,1600);
   document.addEventListener('click',function(ev){
     var t=ev.target;if(!(t instanceof Element))return;
+    // 0a) <details>: il browser fa gia' il toggle nativo. injectInteractivityRescue
+    //     ha rimosso 'onclick="return false"' e 'open' dall'HTML, quindi il
+    //     click su <summary> apre/chiude il details via meccanismo nativo
+    //     (shadow DOM). Noi NON dobbiamo fare niente - qualsiasi nostra
+    //     preventDefault qui bloccherebbe il toggle nativo.
+    if(t.closest&&t.closest('details'))return;
     var actionable=t.closest('a[href]:not([href="#"]):not([href=""]),button[type="submit"],input,select,textarea');
     // 0) EXPLICIT PANEL CHILD - handler universale che batte tutti i
     //    framework con una FAQ tradizionale (header + content). Strategia:
@@ -743,34 +778,10 @@ function once(){
       }
       try{console.log('[wb] step0 explicit-child',exItem?'HIT item='+exItem.tagName+'.'+(exItem.className||'').toString().slice(0,40)+' content='+exContent.tagName+'.'+(exContent.className||'').toString().slice(0,40):'MISS','clickedOn='+t.tagName+'.'+(t.className||'').toString().slice(0,60));}catch(e){}
       if(exItem&&exContent){
-        // CASO SPECIALE <details>: il browser nasconde i figli quando manca
-        // l'attributo 'open' a livello di rendering tree (UA shadow DOM),
-        // non via CSS. Anche un display:block !important sul content NON
-        // lo mostra se il details e' chiuso. L'unico modo per togglare e'
-        // flippare l'attributo 'open'. Pattern usato da FunnelKit (Rosabella):
-        //   <details open onclick="return false">
-        //     <summary>...</summary>
-        //     <div class="fk-collapsible-list-content">...</div>
-        //   </details>
-        // Il loro onclick="return false" annulla il toggle nativo, ma lo
-        // stopPropagation in capture sotto impedisce che venga raggiunto,
-        // quindi il toggle qui funziona pulito.
-        if(exItem.tagName==='DETAILS'){
-          var willOpenDet=!exItem.hasAttribute('open');
-          if(willOpenDet)exItem.setAttribute('open','');else exItem.removeAttribute('open');
-          // Pulisci eventuali stili inline che setOpen() potrebbe avere
-          // applicato in un passaggio precedente (es. utente che clicca
-          // velocemente prima del re-binding): sui <details> non li vogliamo.
-          try{exContent.style.removeProperty('display');exContent.style.removeProperty('max-height');exContent.style.removeProperty('overflow');}catch(_){}
-          // Aggiorna anche data-open sul wrapper FunnelKit per coerenza
-          // (CSS della pagina puo' usarlo per icone open/close).
-          var wrapDO=exItem.closest&&exItem.closest('[data-open]');
-          if(wrapDO)wrapDO.setAttribute('data-open',willOpenDet?'true':'false');
-          var sumDet=exItem.querySelector&&exItem.querySelector('summary');
-          if(sumDet&&sumDet.setAttribute)sumDet.setAttribute('aria-expanded',willOpenDet?'true':'false');
-          ev.preventDefault();ev.stopPropagation();
-          return;
-        }
+        // I <details> sono gia' stati gestiti dal bypass 0a in cima
+        // (il browser fa il toggle nativo dopo aver rimosso onclick/open
+        // in injectInteractivityRescue). Qui processiamo solo i pattern
+        // non-details (Funnelish, ClickFunnels, Elementor, custom).
         var exWillOpen=!panelOpen(exContent);
         setOpen(exContent,exWillOpen);
         try{
