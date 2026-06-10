@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+// Service-role client: RLS on `projects` / `project_files` would
+// otherwise reject every UPDATE / DELETE coming through this handler
+// because server-side `auth.uid()` is NULL (the JWT-splicing in
+// src/lib/supabase.ts only runs in the browser). Permission is enforced
+// in code via canAccessProject() before any write, so bypassing RLS is
+// safe and matches the pattern used by the rest of the projecthub API.
+import { supabaseAdmin } from '@/lib/supabase-admin';
 import {
   derivedProductBriefSections,
   legacyFilesForProject,
@@ -20,7 +26,7 @@ export async function GET(
     return NextResponse.json({ error: 'Not found' }, { status: 404 });
   }
 
-  const { data: project, error } = await supabase
+  const { data: project, error } = await supabaseAdmin
     .from('projects')
     .select('*')
     .eq('id', id)
@@ -35,7 +41,7 @@ export async function GET(
 
   const projectRow = project as unknown as Record<string, unknown>;
 
-  const { data: realFiles } = await supabase
+  const { data: realFiles } = await supabaseAdmin
     .from('project_files')
     .select('*')
     .eq('project_id', id)
@@ -78,7 +84,7 @@ export async function PATCH(
     return NextResponse.json({ error: 'No allowed fields' }, { status: 400 });
   }
 
-  let { data, error } = await supabase
+  let { data, error } = await supabaseAdmin
     .from('projects')
     .update(update)
     .eq('id', id)
@@ -94,7 +100,7 @@ export async function PATCH(
         { status: 500 },
       );
     }
-    const retry = await supabase
+    const retry = await supabaseAdmin
       .from('projects')
       .update(update)
       .eq('id', id)
@@ -132,18 +138,18 @@ export async function DELETE(
     }
   }
 
-  const { data: files } = await supabase
+  const { data: files } = await supabaseAdmin
     .from('project_files')
     .select('file_path')
     .eq('project_id', id);
   if (files && files.length > 0) {
     const keys = files.map((f: { file_path: string }) => f.file_path).filter(Boolean);
     if (keys.length > 0) {
-      await supabase.storage.from('project-files').remove(keys);
+      await supabaseAdmin.storage.from('project-files').remove(keys);
     }
   }
 
-  const { error } = await supabase.from('projects').delete().eq('id', id);
+  const { error } = await supabaseAdmin.from('projects').delete().eq('id', id);
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ success: true });
 }

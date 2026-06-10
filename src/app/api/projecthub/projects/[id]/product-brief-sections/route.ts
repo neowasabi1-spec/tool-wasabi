@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+// Service-role client so the PATCH on `projects.product_brief_sections`
+// isn't blocked by RLS for regular users. canAccessProject is not
+// invoked here yet (this route was anonymous-friendly historically) —
+// the bigger PATCH on /projects/[id] does enforce it. Switching just
+// the client keeps existing behaviour for callers (incl. the editor
+// which calls this on every blur) while unbreaking saves under RLS.
+import { supabaseAdmin } from '@/lib/supabase-admin';
 import { derivedProductBriefSections } from '@/lib/projecthub-legacy';
 
 export const dynamic = 'force-dynamic';
@@ -30,7 +36,7 @@ export async function GET(
   // Try fetching with all columns; if any are missing, fall back to a
   // minimal set so this endpoint never 500s.
   const tryWith = async (cols: string[]) =>
-    supabase.from('projects').select(cols.join(', ')).eq('id', params.id).single();
+    supabaseAdmin.from('projects').select(cols.join(', ')).eq('id', params.id).single();
 
   let { data: project, error } = await tryWith(FETCH_COLS);
   if (error && /does not exist/i.test(error.message || '')) {

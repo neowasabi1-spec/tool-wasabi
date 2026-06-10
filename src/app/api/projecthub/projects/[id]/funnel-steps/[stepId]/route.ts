@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+// supabaseAdmin (service-role) so RLS doesn't block PATCH/DELETE for
+// regular users. Permission is enforced in code via canAccessProject.
+import { supabaseAdmin } from '@/lib/supabase-admin';
 import { canAccessProject } from '@/lib/auth/project-access';
 
 export const dynamic = 'force-dynamic';
@@ -72,7 +74,7 @@ export async function PATCH(
     return NextResponse.json({ error: 'no writable fields' }, { status: 400 });
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await supabaseAdmin
     .from('funnel_steps')
     .update(patch)
     .eq('id', params.stepId)
@@ -81,6 +83,12 @@ export async function PATCH(
     .single();
 
   if (error) {
+    console.error('[funnel-steps] PATCH failed:', {
+      message: error.message,
+      code: (error as { code?: string }).code,
+      projectId: params.id,
+      stepId: params.stepId,
+    });
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
   return NextResponse.json(data);
@@ -94,7 +102,7 @@ export async function DELETE(
   const { deny } = await checkStepAccess(req, params.id);
   if (deny) return deny;
 
-  const { error } = await supabase
+  const { error } = await supabaseAdmin
     .from('funnel_steps')
     .delete()
     .eq('id', params.stepId)

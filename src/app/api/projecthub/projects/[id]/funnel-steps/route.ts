@@ -1,5 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+// Server-side: use supabaseAdmin (service-role) so RLS doesn't block
+// inserts/updates for regular users. The browser-side JWT-splicing in
+// src/lib/supabase.ts does NOT run server-side (it reads from
+// window.localStorage), so the anon client would hit Postgres with
+// auth.uid()=NULL and the phase-2 funnel_steps RLS policy
+//   WITH CHECK (public.has_project_access(project_id, auth.uid()))
+// would reject the insert. Permission is already enforced in code by
+// canAccessProject() above, so bypassing RLS here is safe.
+import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getUserAccessContext } from '@/lib/auth/get-current-user';
 import { canAccessProject } from '@/lib/auth/project-access';
 
@@ -72,7 +80,7 @@ export async function GET(
   const { deny } = await checkProjectAccess(req, params.id);
   if (deny) return deny;
 
-  const { data, error } = await supabase
+  const { data, error } = await supabaseAdmin
     .from('funnel_steps')
     .select('*')
     .eq('project_id', params.id)
@@ -118,7 +126,7 @@ export async function POST(
     // del progetto mostrava ancora la versione vecchia. Cancellando prima,
     // ogni salvataggio riallinea result_content all'ultima versione editata.
     if (body.replace === true) {
-      const { error: delErr } = await supabase
+      const { error: delErr } = await supabaseAdmin
         .from('funnel_steps')
         .delete()
         .eq('project_id', params.id);
@@ -127,7 +135,7 @@ export async function POST(
       }
     }
 
-    const { data, error } = await supabase
+    const { data, error } = await supabaseAdmin
       .from('funnel_steps')
       .insert(rows)
       .select('*');
@@ -150,7 +158,7 @@ export async function POST(
     ...(ctx.userId ? { owner_user_id: ctx.userId } : {}),
   };
 
-  const { data, error } = await supabase
+  const { data, error } = await supabaseAdmin
     .from('funnel_steps')
     .insert(row)
     .select('*')
@@ -160,6 +168,12 @@ export async function POST(
     if (/does not exist|funnel_steps/i.test(error.message || '')) {
       return NextResponse.json({ error: MIGRATION_HINT }, { status: 500 });
     }
+    console.error('[funnel-steps] single insert failed:', {
+      message: error.message,
+      code: (error as { code?: string }).code,
+      projectId: params.id,
+      hasUser: !!ctx.userId,
+    });
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
