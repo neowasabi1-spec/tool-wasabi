@@ -1,5 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+// IMPORTANT: usa il client admin (service-role) NON il client anon.
+// Il client anon lato server non ha il JWT dell'utente (il JWT splicing
+// in src/lib/supabase.ts legge da window.localStorage che esiste solo
+// nel browser), quindi su Postgres auth.uid()=NULL. Le policy RLS
+// INSERT installate da phase-2 e dalla migration project_shares
+// richiedono owner_user_id = auth.uid(), quindi l'insert da utente
+// normale veniva rifiutato silenziosamente ("Insert failed"). Con il
+// service-role bypassiamo RLS e ricostruiamo la permission lato codice
+// via getUserAccessContext / listAccessibleProjectIds — stesso pattern
+// gia' usato dalle altre rotte (vedi src/lib/auth/project-access.ts).
+import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getUserAccessContext } from '@/lib/auth/get-current-user';
 import { listAccessibleProjectIds } from '@/lib/auth/project-access';
 
@@ -29,7 +39,7 @@ export async function GET(req: NextRequest) {
     if (visibleIds.length === 0) return NextResponse.json([]);
   }
 
-  let query = supabase
+  let query = supabaseAdmin
     .from('projects')
     .select(PROJECT_COLS)
     .order('created_at', { ascending: false });
@@ -38,7 +48,7 @@ export async function GET(req: NextRequest) {
   let { data, error } = await query;
 
   if (error && /thumbnail_path|product_brief_sections/i.test(error.message || '')) {
-    let retryQuery = supabase
+    let retryQuery = supabaseAdmin
       .from('projects')
       .select(PROJECT_COLS_LEGACY)
       .order('created_at', { ascending: false });
@@ -100,7 +110,7 @@ export async function POST(req: NextRequest) {
   }
   if (ctx.userId) insert.owner_user_id = ctx.userId;
 
-  let { data: project, error } = await supabase
+  let { data: project, error } = await supabaseAdmin
     .from('projects')
     .insert(insert)
     .select(PROJECT_COLS)
@@ -108,7 +118,7 @@ export async function POST(req: NextRequest) {
 
   if (error && /product_brief_sections/i.test(error.message || '')) {
     delete insert.product_brief_sections;
-    const retry = await supabase
+    const retry = await supabaseAdmin
       .from('projects')
       .insert(insert)
       .select(PROJECT_COLS_LEGACY)
@@ -118,6 +128,14 @@ export async function POST(req: NextRequest) {
   }
 
   if (error || !project) {
+    // Log esplicito: cosi' in produzione (Vercel logs) vediamo subito
+    // se l'insert fallisce per RLS, FK mancante, o constraint nome.
+    console.error('[projecthub] project insert failed:', {
+      message: error?.message,
+      code: (error as { code?: string } | null)?.code,
+      hasUser: !!ctx.userId,
+      isMaster: ctx.isMaster,
+    });
     return NextResponse.json(
       { error: error?.message || 'Insert failed' },
       { status: 500 },
@@ -144,7 +162,7 @@ async function uploadFilesAndRecord(
     const safe = u.file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
     const objectKey = `${projectId}/${u.fileType}/${Date.now()}_${safe}`;
     const ab = await u.file.arrayBuffer();
-    const { error: upErr } = await supabase.storage
+    const { error: upErr } = await supabaseAdmin.storage
       .from('project-files')
       .upload(objectKey, Buffer.from(ab), {
         contentType: u.file.type || 'application/octet-stream',
@@ -154,7 +172,7 @@ async function uploadFilesAndRecord(
       console.warn('[projecthub] storage upload failed:', upErr.message);
       continue;
     }
-    const { data, error } = await supabase
+    const { data, error } = await supabaseAdmin
       .from('project_files')
       .insert({
         project_id: projectId,
