@@ -1195,36 +1195,41 @@ export default function ProjectsPage() {
   async function addProject() {
     if (!newName.trim()) return;
     setAdding(true);
-    const COLS_FULL = 'id, name, status, description, domain, notes, created_at, updated_at, market_research, brief, brief_files, front_end, back_end, compliance_funnel, funnel';
-    const COLS_LEGACY = 'id, name, status, description, domain, notes, created_at, updated_at, market_research, brief, front_end, back_end, compliance_funnel, funnel';
 
-    let { data, error } = await supabase
-      .from('projects')
-      .insert({ name: newName.trim(), status: 'active', description: '' })
-      .select(COLS_FULL)
-      .single();
+    // IMPORTANT: do NOT call supabase.from('projects').insert() directly
+    // from the browser. With phase-2 multi-tenancy RLS the INSERT policy
+    // is `owner_user_id = auth.uid() OR is_master(auth.uid())`. The
+    // browser client splices the JWT into requests, so in theory
+    // auth.uid() = the logged-in user — but in practice users were
+    // hitting "row-level security for table projects" because the JWT
+    // was either not attached (stale wasabi_session), or expired, or
+    // the auto_owner_user_id trigger isn't installed on this DB,
+    // leaving owner_user_id NULL and the WITH CHECK clause failing.
+    //
+    // Going through the API route is the canonical, defensively-safe
+    // path: it verifies the user JWT server-side (getCurrentUserId),
+    // uses supabaseAdmin (service-role → bypasses RLS), and sets
+    // owner_user_id explicitly. Works regardless of trigger state.
+    const res = await fetch('/api/projecthub/projects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: newName.trim() }),
+    });
 
-    // brief_files column may be missing if the section-files migration
-    // hasn't been applied yet — retry without it (same pattern as
-    // loadProjects / updateProject).
-    if (error && /brief_files/i.test(String(error.message || ''))) {
-      const retry = await supabase
-        .from('projects')
-        .insert({ name: newName.trim(), status: 'active', description: '' })
-        .select(COLS_LEGACY)
-        .single();
-      data = retry.data;
-      error = retry.error;
-      if (!error) {
-        console.warn('[projects] brief_files column missing — run supabase-migration-projects-section-files.sql');
-      }
-    }
-
-    if (error || !data) {
+    if (!res.ok) {
+      const body = (await res.json().catch(() => null)) as { error?: string } | null;
       setAdding(false);
-      alert(`Create failed: ${error?.message || 'unknown error'}`);
+      alert(`Create failed: ${body?.error || `HTTP ${res.status}`}`);
       return;
     }
+
+    const data = (await res.json()) as {
+      id: string;
+      name?: string;
+      status?: string;
+      created_at?: string;
+      updated_at?: string;
+    };
 
     const newProject: Project = {
       id: String(data.id),
