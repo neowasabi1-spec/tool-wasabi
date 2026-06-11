@@ -3594,6 +3594,59 @@ function isCheckoutLikePage(url, title) {
   return /checkout|carrello|cart|pagamento|payment|acquista|buy\s*now|ordine|order\s*summary|pay\s*now/i.test(u);
 }
 
+// Fetch every <link rel="stylesheet"> in the page (same-origin in the
+// Playwright context → no CORS) and replace it with an inline <style> so
+// the serialised HTML is self-contained. Also rewrites relative url(...)
+// references inside the CSS to absolute URLs so fonts/background images
+// still resolve. Best-effort: any stylesheet that fails to fetch is left
+// untouched. Caps total inlined CSS to avoid pathological bloat.
+async function inlineStylesheetsForCapture(page) {
+  const count = await page
+    .evaluate(async () => {
+      const MAX_TOTAL = 1_500_000; // ~1.5MB of CSS per step, hard cap
+      let total = 0;
+      let inlined = 0;
+      const links = Array.from(
+        document.querySelectorAll('link[rel~="stylesheet"][href]'),
+      );
+      for (const link of links) {
+        const href = link.href; // already absolute (resolved by browser)
+        if (!href || /^data:/i.test(href)) continue;
+        try {
+          const res = await fetch(href, { credentials: 'include' });
+          if (!res || !res.ok) continue;
+          let css = await res.text();
+          if (!css) continue;
+          // Resolve relative url(...) against the stylesheet's own URL.
+          css = css.replace(
+            /url\(\s*(['"]?)(?!data:|https?:|\/\/)([^'")]+)\1\s*\)/gi,
+            (m, q, u) => {
+              try {
+                return 'url(' + new URL(u, href).href + ')';
+              } catch {
+                return m;
+              }
+            },
+          );
+          total += css.length;
+          if (total > MAX_TOTAL) break;
+          const style = document.createElement('style');
+          style.setAttribute('data-inlined-from', href);
+          style.textContent = css;
+          if (link.parentNode) {
+            link.parentNode.replaceChild(style, link);
+            inlined++;
+          }
+        } catch {
+          /* leave this <link> as-is */
+        }
+      }
+      return inlined;
+    })
+    .catch(() => -1);
+  log(`  · inlined ${count} stylesheet(s) into captured HTML`);
+}
+
 async function processCrawlJob(row) {
   const startedAt = Date.now();
   const jobId = row.id;
@@ -3726,6 +3779,14 @@ async function processCrawlJob(row) {
       // copre i quiz SPA dove il fetch raw e' un guscio vuoto.
       let stepHtml = null;
       if (params.captureHtml) {
+        // Inline external stylesheets BEFORE serialising so the captured
+        // HTML renders self-contained in the editor/preview. Otherwise the
+        // preview depends on a <base href> loading the live site's CSS
+        // (e.g. https://bioma.health/_next/static/css/*.css) cross-origin,
+        // which works on some browsers/networks (master) but is blocked on
+        // others (regular users) → "text stacked / no CSS". Runs in the
+        // page context where fetch() is same-origin = no CORS.
+        await inlineStylesheetsForCapture(page);
         stepHtml = await page.content().catch(() => null);
       }
 
