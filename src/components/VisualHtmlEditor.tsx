@@ -13,6 +13,10 @@ import {
   BookmarkPlus, Library, Tag, Clock, FileCode, Search,
   BookOpen, ArrowDownToLine, Eye as EyeIcon,
   Link2, Link2Off, ChevronDown,
+  // Icona del pulsante "Tracking" nella toolbar — apre il popup per
+  // inserire uno snippet (es. Meta Pixel, GA, tracker custom) che
+  // viene piazzato subito dopo il tag <head>.
+  Activity,
 } from 'lucide-react';
 import { SavedSection, SECTION_TYPE_OPTIONS, OUTPUT_STACK_OPTIONS, type OutputStack } from '@/types';
 import { createClient } from '@supabase/supabase-js';
@@ -2545,6 +2549,20 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   const [insertSearch, setInsertSearch] = useState('');
   const [showSaveDialog, setShowSaveDialog] = useState(false);
   const [saveSectionName, setSaveSectionName] = useState('');
+
+  // ── Tracking snippet dialog ──
+  // Pulsante in toolbar -> popup dove l'utente incolla un URL o uno
+  // snippet HTML completo (es. Meta Pixel, GA4, tracker proprietario)
+  // che vogliamo piazzare SUBITO DOPO il tag <head>. Volutamente
+  // permissivo:
+  //   - se l'input parte con `<` lo usiamo as-is (script/meta/link/...)
+  //   - altrimenti lo trattiamo come URL e lo avvolgiamo in
+  //     <script src="..." async></script>
+  // Idempotente: ri-applicare lo stesso snippet non lo duplica nell'HTML.
+  const [showTrackingDialog, setShowTrackingDialog] = useState(false);
+  const [trackingInput, setTrackingInput] = useState('');
+  const [trackingApplied, setTrackingApplied] = useState(false);
+  const [trackingError, setTrackingError] = useState<string | null>(null);
   const [saveSectionType, setSaveSectionType] = useState('other');
   const [saveSectionTags, setSaveSectionTags] = useState('');
   const [saveSectionAiRewrite, setSaveSectionAiRewrite] = useState(false);
@@ -2916,6 +2934,72 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
 
   const handleCopy = () => {
     navigator.clipboard.writeText(currentHtml);
+  };
+
+  /* ── Tracking snippet inject ──
+   *  Apre/chiude il popup e applica lo snippet alla pagina corrente.
+   *  Comportamento:
+   *    - Input vuoto: errore inline, nessuna modifica all'HTML.
+   *    - Input che inizia con `<`: usato as-is (es. tag completo Meta
+   *      Pixel/GA4/script proprietario/meta verification).
+   *    - Altrimenti: trattato come URL e avvolto in
+   *        <script src="..." async></script>.
+   *    - Idempotency: se lo snippet (normalizzato) e' gia' presente
+   *      nell'HTML, non viene duplicato.
+   *  Inserimento: subito dopo il tag `<head>` (preservando attributi
+   *  tipo `<head lang="en">`). Se la pagina non ha `<head>` ricadiamo
+   *  prima di `</head>` (chiusura), come ultima ancora prima di `<body>`.
+   *  Aggiorna currentHtml + codeHtml + undo stack e bumpa iframeVersion
+   *  per forzare il re-mount dell'iframe con la nuova srcDoc. */
+  const handleApplyTracking = () => {
+    const raw = trackingInput.trim();
+    if (!raw) {
+      setTrackingError('Incolla un URL o uno snippet HTML.');
+      return;
+    }
+    const snippet = raw.startsWith('<')
+      ? raw
+      : `<script src="${raw.replace(/"/g, '&quot;')}" async></script>`;
+
+    // Idempotency: normalizza whitespace e confronta. Cosi' re-aprire
+    // il dialog e ri-cliccare Apply non duplica lo stesso tag.
+    const norm = (s: string) => s.replace(/\s+/g, ' ').trim();
+    if (norm(currentHtml).includes(norm(snippet))) {
+      setTrackingError('Questo snippet e\' gia\' presente nella pagina.');
+      return;
+    }
+
+    let updated: string;
+    if (/<head\b[^>]*>/i.test(currentHtml)) {
+      updated = currentHtml.replace(
+        /(<head\b[^>]*>)/i,
+        `$1\n  ${snippet}`,
+      );
+    } else if (/<\/head\s*>/i.test(currentHtml)) {
+      updated = currentHtml.replace(/<\/head\s*>/i, `  ${snippet}\n</head>`);
+    } else if (/<body\b[^>]*>/i.test(currentHtml)) {
+      // Frammenti senza <head>: ancoriamo prima del <body>.
+      updated = currentHtml.replace(
+        /(<body\b[^>]*>)/i,
+        `${snippet}\n$1`,
+      );
+    } else {
+      // Last resort: prepend. Niente <head>/<body> = frammento HTML.
+      updated = `${snippet}\n${currentHtml}`;
+    }
+
+    setIframeVersion(v => v + 1);
+    setCurrentHtml(updated);
+    setCodeHtml(updated);
+    pushUndo(updated);
+
+    setTrackingApplied(true);
+    setTrackingError(null);
+    setTimeout(() => {
+      setTrackingApplied(false);
+      setShowTrackingDialog(false);
+      setTrackingInput('');
+    }, 900);
   };
 
   /* ── AI Image Generation ── */
@@ -4491,6 +4575,22 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
             <Palette className="h-4 w-4" />
             <span className="hidden sm:inline">Brand Colors</span>
             {(brandApplying || brandExtractRunning) && <Loader2 className="h-3 w-3 animate-spin" />}
+          </button>
+
+          {/* Tracking snippet — apre il popup per incollare URL o tag
+              completo (Meta Pixel, GA4, custom tracker, ...) che viene
+              iniettato subito dopo <head>. Idempotente sul re-apply. */}
+          <button
+            onClick={() => {
+              setTrackingError(null);
+              setTrackingApplied(false);
+              setShowTrackingDialog(true);
+            }}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-slate-800 text-emerald-300 hover:bg-emerald-600/30 hover:text-emerald-200 transition-all"
+            title="Insert a tracking snippet right after <head>"
+          >
+            <Activity className="h-4 w-4" />
+            <span className="hidden sm:inline">Tracking</span>
           </button>
 
           <div className="w-px h-6 bg-slate-700 mx-1" />
@@ -6441,6 +6541,104 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                   <p className="text-xs text-emerald-700 leading-relaxed">{aiRevisedPrompt}</p>
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ═══ Tracking Snippet Dialog ═══
+          Popup attivato dal pulsante "Tracking" in toolbar. L'utente
+          incolla un URL (es. https://cdn.example.com/track.js) o un
+          tag completo (Meta Pixel, GA4, custom). Lo snippet viene
+          iniettato subito dopo `<head>` da handleApplyTracking. */}
+      {showTrackingDialog && (
+        <div
+          className="fixed inset-0 z-[80] flex items-center justify-center bg-black/50 backdrop-blur-sm"
+          onClick={() => !trackingApplied && setShowTrackingDialog(false)}
+        >
+          <div
+            className="bg-white rounded-2xl shadow-2xl w-[560px] max-w-[95vw] overflow-hidden"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between p-4 bg-gradient-to-r from-emerald-500 to-teal-500 text-white">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-lg bg-white/15">
+                  <Activity className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 className="font-semibold text-base leading-tight">Insert tracking snippet</h3>
+                  <p className="text-xs text-white/80 leading-tight">Injected right after &lt;head&gt;</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowTrackingDialog(false)}
+                className="p-1 rounded-lg hover:bg-white/20 transition-colors"
+                aria-label="Close"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-3">
+              <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wide">
+                URL or HTML snippet
+              </label>
+              <textarea
+                value={trackingInput}
+                onChange={e => {
+                  setTrackingInput(e.target.value);
+                  if (trackingError) setTrackingError(null);
+                }}
+                onKeyDown={e => {
+                  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                    e.preventDefault();
+                    handleApplyTracking();
+                  }
+                }}
+                placeholder={'https://cdn.example.com/track.js\n\nor paste a full tag:\n\n<script>\n  !function(){/* Meta Pixel / GA4 / custom */}();\n</script>'}
+                rows={8}
+                className="w-full px-3 py-2.5 rounded-lg border border-slate-300 text-sm font-mono text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-400 focus:border-transparent resize-y"
+                autoFocus
+              />
+              <p className="text-[11px] text-slate-500 leading-relaxed">
+                Bare URLs are wrapped in <code className="font-mono bg-slate-100 px-1 rounded">&lt;script src async&gt;</code>.
+                Tags starting with <code className="font-mono bg-slate-100 px-1 rounded">&lt;</code> are used as-is.
+                Re-applying the same snippet does NOT duplicate it.
+              </p>
+
+              {trackingError && (
+                <div className="p-2.5 rounded-lg bg-red-50 border border-red-200">
+                  <p className="text-xs text-red-600 font-medium">{trackingError}</p>
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end gap-2 px-5 py-3 bg-slate-50 border-t border-slate-200">
+              <button
+                onClick={() => setShowTrackingDialog(false)}
+                className="px-3 py-1.5 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-200 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleApplyTracking}
+                disabled={trackingApplied || !trackingInput.trim()}
+                className={`flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-semibold text-white transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
+                  trackingApplied ? 'bg-emerald-500' : 'bg-emerald-600 hover:bg-emerald-500'
+                }`}
+              >
+                {trackingApplied ? (
+                  <>
+                    <CheckCircle className="h-4 w-4" />
+                    Inserted
+                  </>
+                ) : (
+                  <>
+                    <Activity className="h-4 w-4" />
+                    Insert into &lt;head&gt;
+                  </>
+                )}
+              </button>
             </div>
           </div>
         </div>
