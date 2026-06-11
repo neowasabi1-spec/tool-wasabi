@@ -145,11 +145,25 @@ export default function QuizSwipePage() {
   // Bulk select per Save to Project.
   const [selectedStepIndices, setSelectedStepIndices] = useState<Set<number>>(new Set());
 
+  // ── Full-quiz preview (bundle) ────────────────────────────────────
+  // Apre un iframe con il bundle single-page: l'utente vede il quiz
+  // clonato funzionare esattamente come l'originale (Next avanza, no
+  // cambio URL).  Serve a verificare visivamente PRIMA di salvare.
+  const [showFullQuizPreview, setShowFullQuizPreview] = useState(false);
+
   // ── Save to Project modal ─────────────────────────────────────────
   const [showSaveDialog, setShowSaveDialog] = useState(false);
   const [saveProjectId, setSaveProjectId] = useState<string>('');
   const [saveFlowName, setSaveFlowName] = useState('');
   const [saveReplace, setSaveReplace] = useState(false);
+  // single-page  = 1 funnel_step con bundle interattivo (Bioma-like:
+  //                quiz SPA single-URL, Next interno avanza al div
+  //                successivo, no cambio URL).  Comportamento "uguale
+  //                all'originale" che chiedeva l'utente.
+  // multi-page   = N funnel_steps, uno per snapshot (vecchio behaviour).
+  //                Utile per quiz dove ogni step E' una pagina diversa
+  //                gia' linkata via href.
+  const [saveMode, setSaveMode] = useState<'single-page' | 'multi-page'>('single-page');
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState<string | null>(null);
@@ -400,20 +414,46 @@ export default function QuizSwipePage() {
     [editingStep],
   );
 
+  // ── Build the single-page quiz bundle on demand ──────────────────
+  // Usato da: Export, Preview-quiz modal, Save (single-page mode).
+  // Sempre la stessa identica funzione cosi' quello che vedi nel
+  // Preview === quello che esporti === quello che salvi nel progetto.
+  const buildBundle = useCallback((): string => {
+    const stepsToBundle = (snapshot?.result?.steps || []).filter((s) => {
+      const swiped = swipeStates[s.stepIndex]?.swipedHtml;
+      const edited = editedOriginalHtml[s.stepIndex];
+      return Boolean(swiped || edited || s.html);
+    });
+    if (stepsToBundle.length === 0) return '';
+    return buildSinglePageQuiz(
+      stepsToBundle,
+      swipeStates,
+      editedOriginalHtml,
+      snapshot?.entryUrl || '',
+    );
+  }, [snapshot, swipeStates, editedOriginalHtml]);
+
   // ── Save selected steps to a project ──
   // Bulk insert in funnel_steps via /api/projecthub/projects/[id]/funnel-steps
   // (POST con body { steps: [...] }).  La route usa supabaseAdmin quindi
   // bypassa RLS, e l'JWT viene attaccato automaticamente dall'interceptor
   // globale (FetchAuthBootstrap) per attribuire l'owner_user_id.
+  //
+  // Due modalita':
+  // - 'single-page': inseriamo UN solo funnel_step il cui result_content
+  //   e' il bundle interattivo (Bioma-like).  Aperto da /projects/[id]
+  //   diventa un quiz funzionante 1:1 come l'originale.
+  // - 'multi-page': inseriamo N funnel_steps, uno per snapshot.  Utile
+  //   per quiz dove ogni step e' una pagina con URL propria.
   async function handleSaveToProject() {
     if (!saveProjectId) {
       setSaveError('Seleziona un progetto.');
       return;
     }
-    const steps = snapshot?.result?.steps || [];
+    const allSteps = snapshot?.result?.steps || [];
     const target = selectedStepIndices.size > 0
-      ? steps.filter((s) => selectedStepIndices.has(s.stepIndex))
-      : steps;
+      ? allSteps.filter((s) => selectedStepIndices.has(s.stepIndex))
+      : allSteps;
     if (target.length === 0) {
       setSaveError('Nessuno step da salvare.');
       return;
@@ -423,22 +463,44 @@ export default function QuizSwipePage() {
     setSaveSuccess(null);
     try {
       const flowName = saveFlowName.trim() || `Quiz · ${new Date().toLocaleDateString()}`;
-      const rows = target.map((s, i) => {
-        const html =
-          swipeStates[s.stepIndex]?.swipedHtml ||
-          editedOriginalHtml[s.stepIndex] ||
-          s.html ||
-          '';
-        return {
-          step_number: i + 1,
-          page_name: s.quizStepLabel || s.title || `Step ${s.stepIndex}`,
+      let rows: Array<Record<string, unknown>>;
+      if (saveMode === 'single-page') {
+        // Costruisci il bundle SOLO con gli step selezionati (rispetta
+        // la selezione checkbox dell'utente).
+        const bundleHtml = buildSinglePageQuiz(
+          target,
+          swipeStates,
+          editedOriginalHtml,
+          snapshot?.entryUrl || '',
+        );
+        const anySwiped = target.some((s) => swipeStates[s.stepIndex]?.swipedHtml);
+        rows = [{
+          step_number: 1,
+          page_name: snapshot?.result?.steps?.[0]?.title || 'Quiz',
           step_type: 'quiz',
-          url: s.url,
-          status: swipeStates[s.stepIndex]?.swipedHtml ? 'swiped' : 'cloned',
-          result_content: html,
+          url: snapshot?.entryUrl || '',
+          status: anySwiped ? 'swiped' : 'cloned',
+          result_content: bundleHtml,
           flow_name: flowName,
-        };
-      });
+        }];
+      } else {
+        rows = target.map((s, i) => {
+          const html =
+            swipeStates[s.stepIndex]?.swipedHtml ||
+            editedOriginalHtml[s.stepIndex] ||
+            s.html ||
+            '';
+          return {
+            step_number: i + 1,
+            page_name: s.quizStepLabel || s.title || `Step ${s.stepIndex}`,
+            step_type: 'quiz',
+            url: s.url,
+            status: swipeStates[s.stepIndex]?.swipedHtml ? 'swiped' : 'cloned',
+            result_content: html,
+            flow_name: flowName,
+          };
+        });
+      }
       const res = await fetch(
         `/api/projecthub/projects/${encodeURIComponent(saveProjectId)}/funnel-steps`,
         {
@@ -453,12 +515,16 @@ export default function QuizSwipePage() {
         setSaveError(typeof body === 'object' && body && 'error' in body ? String(body.error) : `HTTP ${res.status}`);
         return;
       }
-      const insertedCount = Array.isArray(body) ? body.length : target.length;
-      setSaveSuccess(`Salvati ${insertedCount} step nel progetto.  Aprilo da My Projects.`);
+      const insertedCount = Array.isArray(body) ? body.length : rows.length;
+      setSaveSuccess(
+        saveMode === 'single-page'
+          ? `Salvato come quiz interattivo (1 step con tutti i ${target.length} pannelli).  Aprilo da My Projects.`
+          : `Salvati ${insertedCount} step nel progetto.  Aprilo da My Projects.`
+      );
       setTimeout(() => {
         setShowSaveDialog(false);
         setSaveSuccess(null);
-      }, 1800);
+      }, 2000);
     } catch (e) {
       setSaveError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -553,15 +619,26 @@ export default function QuizSwipePage() {
                 </button>
               )}
 
-              {anySwipeDone && (
+              {steps.length > 0 && (
+                <button
+                  onClick={() => setShowFullQuizPreview(true)}
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium bg-indigo-50 text-indigo-700 hover:bg-indigo-100 border border-indigo-200 transition-colors"
+                  title="Open the cloned quiz exactly as it works on the original site — Next button advances, no URL change"
+                >
+                  <Eye className="w-4 h-4" />
+                  Preview Quiz
+                </button>
+              )}
+
+              {steps.length > 0 && (
                 <button
                   onClick={exportSinglePageQuiz}
                   disabled={isExporting}
                   className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium bg-gray-50 text-gray-600 hover:bg-gray-100 border border-gray-200 transition-colors disabled:opacity-50"
-                  title="Bundle every step into a single self-contained HTML"
+                  title="Download the cloned quiz as a single self-contained HTML file"
                 >
                   <Download className="w-4 h-4" />
-                  Export single-page
+                  Export .html
                 </button>
               )}
 
@@ -990,6 +1067,44 @@ export default function QuizSwipePage() {
 
             <div className="p-5 space-y-4">
               <div>
+                <label className="block text-xs font-semibold text-gray-600 uppercase tracking-wide mb-2">Save mode</label>
+                <div className="space-y-2">
+                  <label className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${saveMode === 'single-page' ? 'border-emerald-400 bg-emerald-50' : 'border-gray-200 hover:bg-gray-50'}`}>
+                    <input
+                      type="radio"
+                      name="saveMode"
+                      value="single-page"
+                      checked={saveMode === 'single-page'}
+                      onChange={() => setSaveMode('single-page')}
+                      className="mt-1 accent-emerald-600"
+                    />
+                    <div className="flex-1 text-xs">
+                      <div className="font-semibold text-gray-900">Single-page quiz <span className="text-emerald-700">(works like the original)</span></div>
+                      <div className="text-gray-600 mt-0.5">
+                        Bundles every step into ONE funnel_step.  Click Next inside the quiz → next step appears, URL stays the same.  Pick this for SPA quizzes (bioma-style).
+                      </div>
+                    </div>
+                  </label>
+                  <label className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${saveMode === 'multi-page' ? 'border-emerald-400 bg-emerald-50' : 'border-gray-200 hover:bg-gray-50'}`}>
+                    <input
+                      type="radio"
+                      name="saveMode"
+                      value="multi-page"
+                      checked={saveMode === 'multi-page'}
+                      onChange={() => setSaveMode('multi-page')}
+                      className="mt-1 accent-emerald-600"
+                    />
+                    <div className="flex-1 text-xs">
+                      <div className="font-semibold text-gray-900">Multi-page funnel</div>
+                      <div className="text-gray-600 mt-0.5">
+                        Each captured step becomes a separate funnel_step (independent HTML).  Pick this only if the original quiz uses a real URL per step.
+                      </div>
+                    </div>
+                  </label>
+                </div>
+              </div>
+
+              <div>
                 <label className="block text-xs font-semibold text-gray-600 uppercase tracking-wide mb-1">Target project</label>
                 <select
                   value={saveProjectId}
@@ -1101,6 +1216,36 @@ export default function QuizSwipePage() {
         </div>
       )}
 
+      {/* ═══ Full-quiz Preview Modal (bundle, exactly like Export) ═══ */}
+      {showFullQuizPreview && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" onClick={() => setShowFullQuizPreview(false)}>
+          <div className="bg-white rounded-xl shadow-2xl w-[95vw] h-[92vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="px-5 py-3 border-b border-gray-200 flex items-center justify-between bg-gradient-to-r from-indigo-600 to-purple-600">
+              <div className="flex items-center gap-3 min-w-0">
+                <Eye className="w-5 h-5 text-white" />
+                <div className="min-w-0">
+                  <div className="text-white font-semibold truncate">Quiz preview — exactly like the original</div>
+                  <div className="text-white/80 text-xs truncate">{snapshot?.entryUrl} · {steps.length} step{steps.length === 1 ? '' : 's'} · Click Next inside → next step appears</div>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowFullQuizPreview(false)}
+                className="text-white/80 hover:text-white text-2xl font-bold"
+              >
+                ×
+              </button>
+            </div>
+            <iframe
+              key={`quiz-bundle-${steps.length}-${Object.keys(swipeStates).length}-${Object.keys(editedOriginalHtml).length}`}
+              srcDoc={buildBundle()}
+              sandbox="allow-same-origin allow-scripts"
+              className="flex-1 w-full bg-white"
+              title="Full quiz preview"
+            />
+          </div>
+        </div>
+      )}
+
       {/* ═══ Visual Editor (full-screen overlay) ═══ */}
       {editingStep && (
         <div className="fixed inset-0 z-[60] bg-white">
@@ -1131,16 +1276,39 @@ export default function QuizSwipePage() {
 }
 
 /**
- * Bundle N step in un singolo HTML self-contained.  Per ogni step prendiamo:
- *   1) swipedHtml (priorita' massima)
- *   2) editedOriginalHtml (modifiche del VisualHtmlEditor sull'originale)
- *   3) html originale
+ * Bundle N step in un singolo HTML self-contained che si comporta come
+ * il quiz originale single-URL.
  *
- * Strategy: wrap ogni body in <div class="quiz-step" data-step="N">,
- * usa il <head> del primo step come head comune (con tutti gli script
- * originali strippati cosi' un mount fuori dal dominio originale non
- * fa fetch 404), e inietta uno script vanilla minimo che mostra uno
- * step alla volta + intercetta i click su Next per avanzare.
+ * Per ogni step prendiamo, in ordine:
+ *   1) swipedHtml (priorita' massima — riscritto da Claude)
+ *   2) editedOriginalHtml (modifiche manuali dal VisualHtmlEditor)
+ *   3) html originale catturato dal walker
+ *
+ * STRATEGIA NAVIGAZIONE (importante):
+ *
+ *   Il problema dei quiz SPA tipo Bioma e' che ogni step ha layout
+ *   diversi: a volte un bottone "Continue" enorme in fondo, a volte
+ *   delle answer-cards (radio nascoste) che auto-avanzano al click,
+ *   a volte entrambi.  Intercettare TUTTI i <button> e' sbagliato
+ *   (rompe toggle, accordion, language switcher, ecc.).
+ *
+ *   Quindi facciamo detection PER-STEP a build-time:
+ *     1) Cerchiamo in HTML il bottone con testo che matcha
+ *        /next|continue|avanti|.../ → e' il primary advance.
+ *     2) Marchiamo TUTTI gli input[type=radio] + le answer-card
+ *        come "tap to advance" (mimica del comportamento Bioma).
+ *     3) Marchiamo input[type=submit] dentro form come advance.
+ *
+ *   A runtime, il navScript:
+ *     - Intercetta SOLO click su elementi marcati [data-wq-advance]
+ *     - I click su un radio/option fanno highlight visivo e avanzano
+ *       dopo 300ms (come fa Bioma davvero)
+ *     - Frecce destra/Invio = next, Frecce sinistra/Esc = prev
+ *     - Mostra un piccolo progress bar in alto (step N di M)
+ *
+ *   Stripping degli script originali: i <script> del React/Vue bundle
+ *   originale farebbero fetch 404 fuori dal dominio sorgente, quindi
+ *   vanno via.  Lasciamo solo lo head dello step 1 (CSS, font, meta).
  */
 function buildSinglePageQuiz(
   steps: QuizWalkStep[],
@@ -1180,39 +1348,129 @@ function buildSinglePageQuiz(
 
   const stepsHtml = steps
     .map((s, i) => {
-      const body = extractBody(pick(s)).replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
-      return `<div class="quiz-step" data-step="${s.stepIndex}" style="${i === 0 ? '' : 'display:none'}">${body}</div>`;
+      const body = extractBody(pick(s))
+        // Via tutti gli script originali: rifarebbero fetch a backend
+        // che non risponde (CORS / 404) e potrebbero anche fare redirect
+        // fuori dal nostro bundle.
+        .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
+        // Disarma i form: un submit su un form esterno porta via dal bundle.
+        // Preferiamo che il navScript li gestisca come advance.
+        .replace(/<form\b/gi, '<form data-wq-form action="#" onsubmit="return false;"');
+      return `<section class="quiz-step" data-step="${s.stepIndex}" data-step-index="${i}"${i === 0 ? '' : ' hidden'}>${body}</section>`;
     })
     .join('\n');
 
+  // navScript: detection runtime perche' i regex su HTML grezzo sono
+  // fragili.  Cosi' lavoriamo sul DOM vero costruito dal browser.
   const navScript = `
 <script>
 (function(){
-  var steps = document.querySelectorAll('.quiz-step');
+  var ADVANCE_TEXT_RE = /^\\s*(next|continue|avanti|continua|prossimo|submit|invia|inizia|start|begin|go|vai|proceed|finish|done|fatto|see\\s*(my|the)?\\s*result|get\\s*(my|your)?\\s*result|claim|ottieni|scopri|siguiente|weiter|suivant|continuer|próximo|next\\s*step|→)\\s*$/i;
+  var STOP_BUBBLE_TARGETS = 'a[href],button,[role=button],input[type=submit],label,[role=radio]';
+  var steps = Array.prototype.slice.call(document.querySelectorAll('.quiz-step'));
   if (!steps.length) return;
   var idx = 0;
+
+  // Progress bar UI in alto
+  var bar = document.createElement('div');
+  bar.id = '__wq_bar';
+  bar.style.cssText = 'position:fixed;top:0;left:0;right:0;height:4px;background:rgba(0,0,0,0.08);z-index:2147483647;pointer-events:none';
+  var fill = document.createElement('div');
+  fill.style.cssText = 'height:100%;background:linear-gradient(90deg,#6366f1,#8b5cf6);width:0%;transition:width .25s ease';
+  bar.appendChild(fill);
+  document.body.appendChild(bar);
+
   function show(i){
-    steps.forEach(function(el, k){ el.style.display = (k===i?'block':'none'); });
+    if (i < 0 || i >= steps.length) return;
+    steps.forEach(function(el, k){
+      if (k === i) { el.removeAttribute('hidden'); el.style.display = 'block'; }
+      else { el.setAttribute('hidden', ''); el.style.display = 'none'; }
+    });
     idx = i;
-    window.scrollTo(0,0);
+    fill.style.width = ((i + 1) / steps.length * 100) + '%';
+    window.scrollTo(0, 0);
   }
-  function next(){ if (idx < steps.length-1) show(idx+1); }
-  function prev(){ if (idx > 0) show(idx-1); }
+  function next(){ if (idx < steps.length - 1) show(idx + 1); }
+  function prev(){ if (idx > 0) show(idx - 1); }
+
+  function markAdvanceInStep(stepEl){
+    // 1) Bottoni con testo che matcha "Next/Continue/Avanti/..."
+    var btns = stepEl.querySelectorAll('button,[role=button],input[type=submit],a.btn,a.button,a[class*=btn],a[class*=cta]');
+    var primary = null;
+    var primaryArea = 0;
+    Array.prototype.forEach.call(btns, function(b){
+      var txt = (b.innerText || b.value || '').trim();
+      if (!txt) return;
+      if (ADVANCE_TEXT_RE.test(txt)) {
+        b.setAttribute('data-wq-advance', 'btn');
+        return;
+      }
+      // Fallback: bottone piu' grande dello step (visivamente il primary CTA)
+      var r = b.getBoundingClientRect();
+      var area = r.width * r.height;
+      if (area > primaryArea) { primaryArea = area; primary = b; }
+    });
+    if (primary && !primary.hasAttribute('data-wq-advance')) {
+      primary.setAttribute('data-wq-advance', 'primary');
+    }
+    // 2) Radio / answer-cards / option / choice → tap to advance (Bioma-style)
+    var opts = stepEl.querySelectorAll(
+      'input[type=radio],label[for],[class*=option]:not(form),[class*=answer]:not(form),[class*=choice]:not(form),[role=radio]'
+    );
+    Array.prototype.forEach.call(opts, function(o){
+      // Evita di marcare label che contengono input non-radio
+      if (o.tagName === 'LABEL') {
+        var forId = o.getAttribute('for');
+        if (forId) {
+          var input = document.getElementById(forId);
+          if (input && input.type && input.type !== 'radio' && input.type !== 'checkbox') return;
+        }
+      }
+      o.setAttribute('data-wq-advance', 'option');
+    });
+  }
+  steps.forEach(markAdvanceInStep);
+
+  // Highlight visivo quando clicco un'opzione, poi avanzo
+  var pendingTimer = null;
+  function highlightAndAdvance(el){
+    if (pendingTimer) return; // debounce
+    el.style.outline = '3px solid #8b5cf6';
+    el.style.outlineOffset = '2px';
+    pendingTimer = setTimeout(function(){ pendingTimer = null; next(); }, 280);
+  }
+
+  // Intercetta SOLO elementi marcati
   document.addEventListener('click', function(e){
     var t = e.target;
     while (t && t !== document.body){
-      if (t.matches && (t.matches('[data-quiz-next]') || t.matches('button') || t.matches('.next-button') || t.matches('.cta'))){
+      if (t.nodeType === 1 && t.hasAttribute && t.hasAttribute('data-wq-advance')){
+        var kind = t.getAttribute('data-wq-advance');
         e.preventDefault();
-        next();
+        e.stopPropagation();
+        if (kind === 'option') {
+          highlightAndAdvance(t);
+        } else {
+          next();
+        }
         return;
       }
       t = t.parentElement;
     }
-  });
+  }, true);
+
+  // Keyboard nav
   document.addEventListener('keydown', function(e){
-    if (e.key === 'ArrowRight' || e.key === 'Enter') next();
-    if (e.key === 'ArrowLeft' || e.key === 'Escape') prev();
+    if (e.key === 'ArrowRight' || e.key === 'Enter') { e.preventDefault(); next(); }
+    if (e.key === 'ArrowLeft' || e.key === 'Escape') { e.preventDefault(); prev(); }
   });
+
+  // Disarma i form (gia' fatto a build-time, ridondanza runtime se srcDoc-mangled)
+  Array.prototype.forEach.call(document.querySelectorAll('form'), function(f){
+    f.addEventListener('submit', function(e){ e.preventDefault(); next(); return false; });
+  });
+
+  show(0);
 })();
 </script>`;
 
@@ -1222,7 +1480,10 @@ function buildSinglePageQuiz(
 ${baseHref}
 ${firstHead}
 <style>
-.quiz-step { width: 100%; }
+.quiz-step { width: 100%; min-height: 100vh; }
+.quiz-step[hidden] { display: none !important; }
+[data-wq-advance] { cursor: pointer; }
+[data-wq-advance='option']:hover { filter: brightness(0.97); }
 </style>
 </head>
 <body>
