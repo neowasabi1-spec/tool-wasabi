@@ -69,7 +69,7 @@ export async function PATCH(
     return NextResponse.json({ error: 'sections array required' }, { status: 400 });
   }
 
-  const { error } = await supabase
+  const { error } = await supabaseAdmin
     .from('projects')
     .update({ product_brief_sections: JSON.stringify(sections) })
     .eq('id', params.id);
