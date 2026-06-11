@@ -3779,14 +3779,6 @@ async function processCrawlJob(row) {
       // copre i quiz SPA dove il fetch raw e' un guscio vuoto.
       let stepHtml = null;
       if (params.captureHtml) {
-        // Inline external stylesheets BEFORE serialising so the captured
-        // HTML renders self-contained in the editor/preview. Otherwise the
-        // preview depends on a <base href> loading the live site's CSS
-        // (e.g. https://bioma.health/_next/static/css/*.css) cross-origin,
-        // which works on some browsers/networks (master) but is blocked on
-        // others (regular users) → "text stacked / no CSS". Runs in the
-        // page context where fetch() is same-origin = no CORS.
-        await inlineStylesheetsForCapture(page);
         stepHtml = await page.content().catch(() => null);
       }
 
