@@ -261,7 +261,7 @@ export async function runCrawl(jobId: string, params: CrawlParams): Promise<void
 
         const seenFingerprints = new Set<string>();
         let consecutiveSameFingerprint = 0;
-        const maxQuizSteps = Math.min(quizMaxSteps, 35);
+        const maxQuizSteps = Math.min(quizMaxSteps, 60);
 
         const captureQuizStep = async (): Promise<FunnelCrawlStep> => {
           if (!quizPage) throw new Error('Page closed');

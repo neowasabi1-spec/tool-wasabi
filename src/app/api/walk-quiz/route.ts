@@ -42,7 +42,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const cappedMaxSteps = Math.min(Math.max(1, Number(maxSteps) || 15), 30);
+    const cappedMaxSteps = Math.min(Math.max(1, Number(maxSteps) || 15), 60);
 
     const params = {
       entryUrl: url.trim(),

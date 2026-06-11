@@ -980,12 +980,12 @@ export default function QuizSwipePage() {
                   <input
                     type="number"
                     min={1}
-                    max={30}
+                    max={60}
                     value={maxSteps}
-                    onChange={(e) => setMaxSteps(Math.max(1, Math.min(30, Number(e.target.value) || 1)))}
+                    onChange={(e) => setMaxSteps(Math.max(1, Math.min(60, Number(e.target.value) || 1)))}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent text-sm"
                   />
-                  <p className="text-[11px] text-gray-500 mt-1">Hard cap 30.</p>
+                  <p className="text-[11px] text-gray-500 mt-1">Hard cap 60.</p>
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-gray-600 uppercase tracking-wide mb-1">Swipe target (project)</label>
