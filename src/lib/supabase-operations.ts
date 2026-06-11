@@ -157,11 +157,25 @@ export async function deleteProject(id: string): Promise<void> {
 // =====================================================
 
 export async function fetchTemplates(): Promise<SwipeTemplate[]> {
+  // Read the SHARED template catalog through the server endpoint, which
+  // uses the service-role client and bypasses the per-owner RLS SELECT
+  // policy. Reading directly from `swipe_templates` here would filter to
+  // the caller's own rows (a regular user saw only 4 templates while the
+  // master saw all 19). The global fetch interceptor attaches the JWT.
+  try {
+    const res = await fetch('/api/templates', { cache: 'no-store' });
+    if (res.ok) {
+      return (await res.json()) as SwipeTemplate[];
+    }
+    console.error('Error fetching templates: HTTP', res.status);
+  } catch (err) {
+    console.error('Error fetching templates via API, falling back to direct read:', err);
+  }
+  // Fallback (SSR / interceptor not installed): direct read, RLS-scoped.
   const { data, error } = await supabase
     .from('swipe_templates')
     .select('*')
     .order('created_at', { ascending: false });
-  
   if (error) {
     console.error('Error fetching templates:', error);
     throw error;
