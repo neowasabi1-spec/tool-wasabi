@@ -3133,7 +3133,7 @@ Quale index clicco per andare avanti nel funnel?`;
 }
 
 async function clickCrawlAdvance(page, patternSource) {
-  return page.evaluate((src) => {
+  return page.evaluate(async (src) => {
     const pattern = new RegExp(src, 'i');
     const NEG_PATTERN = /^(skip|salta|indietro|back|prev|previous|cancel|annulla|chiudi|close|home|privacy|cookie|termini|terms|login|accedi|menu|languag)/i;
 
@@ -3182,6 +3182,108 @@ async function clickCrawlAdvance(page, patternSource) {
     }
     function getText(el) {
       return ((el.innerText || el.value || el.getAttribute('aria-label') || el.placeholder || '') + '').trim();
+    }
+
+    // ─── PASS 0: quiz question — select an answer, THEN click Next ─
+    // The single most important pass for real multi-step quizzes.
+    // Many funnels (e.g. bioma.health/weight-loss) gate progress behind
+    // a "Next" button that is `disabled` until you pick an option — and
+    // render each option as a styled <div id="quiz__...--option--*">
+    // wrapping a 0px hidden <input type=radio> with a DUPLICATE id. The
+    // old code clicked the (inert) Next first and stalled at "1 of 20".
+    // Here we: pick the first answer card (climbing from each radio to
+    // its clickable ancestor), then poll for either an auto-advance or a
+    // now-enabled Next/Continue. Validated live: walks all 20 steps on
+    // both multi-select (Next-gated) and single-select (auto-advance)
+    // questions. Runs BEFORE the generic CTA pass on purpose.
+    {
+      const BAD_ID = /question|label|subtitle|secondary|progress|back|logo|title|header|footer|next|button|nav/i;
+      const ansSeen = new Set();
+      const ansCards = [];
+      const pushAns = (el) => {
+        if (!el || ansSeen.has(el)) return;
+        if (!isElVisible(el)) return;
+        const t = getText(el);
+        if (!t || t.length > 160) return;
+        if (NEG_PATTERN.test(t)) return;
+        if (pattern.test(t)) return; // that's a Next CTA, not an answer
+        if (BAD_ID.test(el.id || '')) return;
+        const r = el.getBoundingClientRect();
+        if (r.height < 36) return; // answer cards are chunky; skip tiny chrome
+        if (el.closest('header, nav, footer')) return;
+        ansSeen.add(el);
+        ansCards.push({ el, top: r.top });
+      };
+      // Primary, reliable signal: each radio/checkbox climbed to its card.
+      document
+        .querySelectorAll('input[type="radio"], input[type="checkbox"], [role="radio"]')
+        .forEach((r) => pushAns(resolveRadioTarget(r)));
+      // Fallback ONLY when there are no radios — keep narrow so we don't
+      // disturb intro-question-style card quizzes that already work.
+      if (ansCards.length === 0) {
+        document
+          .querySelectorAll('[id*="answer"], [id*="option"], [class*="answer"], [class*="option"], [class*="choice"]')
+          .forEach((el) => pushAns(el));
+      }
+      if (ansCards.length >= 1) {
+        ansCards.sort((a, b) => a.top - b.top);
+        const card = ansCards[0].el;
+        const labelSig = () =>
+          location.href + '|' +
+          (((document.body.innerText || '').match(/\d+\s*(of|\/|su|di)\s*\d+/i) || [''])[0]);
+        const sigBefore = labelSig();
+        try {
+          card.scrollIntoView({ block: 'center', behavior: 'instant' });
+        } catch {
+          /* ignore */
+        }
+        try {
+          card.click();
+        } catch {
+          /* ignore */
+        }
+        // Poll up to ~2.2s: either the click auto-advanced, or a now-
+        // enabled Next/Continue appeared (isVisible rejects disabled).
+        for (let waited = 0; waited < 2200; waited += 150) {
+          await new Promise((res) => setTimeout(res, 150));
+          if (labelSig() !== sigBefore) {
+            // eslint-disable-next-line no-console
+            console.log(`[crawl] answer auto-advanced: "${getText(card).slice(0, 40)}"`);
+            return true;
+          }
+          let nextCta = null;
+          for (const el of document.querySelectorAll(PRIMARY_SEL)) {
+            const t = getText(el);
+            if (!t || t.length > 80) continue;
+            if (NEG_PATTERN.test(t)) continue;
+            if (!pattern.test(t)) continue;
+            if (!isVisible(el)) continue; // rejects disabled / hidden
+            nextCta = el;
+            break;
+          }
+          if (nextCta) {
+            try {
+              nextCta.scrollIntoView({ block: 'center', behavior: 'instant' });
+            } catch {
+              /* ignore */
+            }
+            try {
+              nextCta.click();
+              // eslint-disable-next-line no-console
+              console.log(`[crawl] answer + Next: "${getText(card).slice(0, 30)}"`);
+              return true;
+            } catch {
+              /* fall through to keep polling */
+            }
+          }
+        }
+        // Selected something but nothing advanced yet — still report we
+        // acted; the loop's stuck-fingerprint guard will stop us if this
+        // genuinely goes nowhere.
+        // eslint-disable-next-line no-console
+        console.log(`[crawl] answer selected (no Next yet): "${getText(card).slice(0, 40)}"`);
+        return true;
+      }
     }
 
     // ─── PASS 1: explicit CTA buttons ────────────────────────────
@@ -3252,32 +3354,76 @@ async function clickCrawlAdvance(page, patternSource) {
     // input has no text and ~0px size, so the generic answer-card pass
     // below skips it. Handle it explicitly: click the label (or the
     // input) of the FIRST option to select an answer and advance.
+    // Resolve the real clickable target for a (often hidden) radio:
+    //   1. <label for="id">  — but ONLY when the id is unique. Bioma &
+    //      co. ship 4 radios all with id="radio-button" (invalid HTML),
+    //      so label[for] would always resolve to the FIRST option →
+    //      every answer maps to option 1 and we never really pick the
+    //      visible card. We detect duplicate ids and skip the label path.
+    //   2. wrapping <label>.
+    //   3. CLIMB ANCESTORS to the nearest "card-like" element: one with
+    //      cursor:pointer (computed OR styled-components `cursor` attr)
+    //      or an id/class that screams answer/option/quiz/choice. This is
+    //      what fixes bioma.health/weight-loss, where the answer is a
+    //      <div id="quiz__single-answer--option-often" cursor="pointer">
+    //      wrapping a 0px hidden <input type=radio>.
+    function isElVisible(el) {
+      const rect = el.getBoundingClientRect();
+      const style = window.getComputedStyle(el);
+      return (
+        rect.width >= 24 && rect.height >= 20 &&
+        style.visibility !== 'hidden' && style.display !== 'none' && style.opacity !== '0' &&
+        rect.bottom >= 0 && rect.top <= viewportH * 3
+      );
+    }
+    function looksLikeCard(el) {
+      if (!el || el === document.body || el === document.documentElement) return false;
+      const style = window.getComputedStyle(el);
+      const idc = ((el.id || '') + ' ' + (typeof el.className === 'string' ? el.className : '')).toLowerCase();
+      const cursorAttr = (el.getAttribute && el.getAttribute('cursor')) || '';
+      const clickable =
+        style.cursor === 'pointer' || cursorAttr === 'pointer' ||
+        /option|answer|choice|quiz|select|card/.test(idc) ||
+        el.getAttribute('role') === 'button' || el.getAttribute('role') === 'radio';
+      return clickable && isElVisible(el);
+    }
+    function resolveRadioTarget(r) {
+      const id = r.getAttribute('id');
+      if (id) {
+        let escaped = id;
+        try { escaped = (window.CSS && CSS.escape) ? CSS.escape(id) : id.replace(/"/g, '\\"'); } catch { /* noop */ }
+        const sameId = document.querySelectorAll('#' + escaped);
+        // Only trust label[for] when the id is actually unique.
+        if (sameId.length === 1) {
+          const lbl = document.querySelector('label[for="' + escaped + '"]');
+          if (lbl && isElVisible(lbl)) return lbl;
+        }
+      }
+      const wrapLabel = r.closest('label');
+      if (wrapLabel && isElVisible(wrapLabel)) return wrapLabel;
+      // Climb up to the nearest card-like, visible ancestor.
+      let node = r.parentElement;
+      let best = null;
+      for (let depth = 0; depth < 8 && node; depth++, node = node.parentElement) {
+        if (looksLikeCard(node)) { best = node; break; }
+      }
+      if (best) return best;
+      // Last resort: the smallest visible ancestor (gives the click a
+      // real hit target instead of the 0px input).
+      node = r.parentElement;
+      for (let depth = 0; depth < 8 && node; depth++, node = node.parentElement) {
+        if (isElVisible(node)) return node;
+      }
+      return r;
+    }
+
     const radios = Array.from(
       document.querySelectorAll('input[type="radio"], input[type="checkbox"], [role="radio"]'),
     );
     for (const r of radios) {
       const rRect = r.getBoundingClientRect();
-      // On-screen-ish check (radios are often offscreen-positioned but
-      // their label is visible, so we resolve a clickable target below).
-      let target = r;
-      const id = r.getAttribute('id');
-      if (id) {
-        let escaped = id;
-        try { escaped = (window.CSS && CSS.escape) ? CSS.escape(id) : id.replace(/"/g, '\\"'); } catch { /* noop */ }
-        const lbl = document.querySelector('label[for="' + escaped + '"]');
-        if (lbl) target = lbl;
-      }
-      if (target === r) {
-        const wrapLabel = r.closest('label');
-        if (wrapLabel) target = wrapLabel;
-      }
-      // Skip if the resolved target is genuinely invisible.
-      const tRect = target.getBoundingClientRect();
-      const tStyle = window.getComputedStyle(target);
-      const targetVisible =
-        tRect.width >= 12 && tRect.height >= 12 &&
-        tStyle.visibility !== 'hidden' && tStyle.display !== 'none' && tStyle.opacity !== '0' &&
-        tRect.bottom >= 0 && tRect.top <= viewportH * 3;
+      const target = resolveRadioTarget(r);
+      const targetVisible = target !== r && isElVisible(target);
       if (!targetVisible && !(rRect.width >= 12 && rRect.height >= 12)) continue;
       try {
         target.scrollIntoView({ block: 'center', behavior: 'instant' });
@@ -3285,7 +3431,7 @@ async function clickCrawlAdvance(page, patternSource) {
       try {
         target.click();
         // eslint-disable-next-line no-console
-        console.log('[crawl] radio/checkbox answer clicked');
+        console.log(`[crawl] radio answer clicked via ${target.id || target.tagName}`);
         return true;
       } catch {
         /* try next radio */
