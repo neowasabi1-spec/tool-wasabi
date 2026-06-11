@@ -3364,6 +3364,63 @@ async function clickCrawlAdvance(page, patternSource) {
       }
     }
 
+    // ─── PASS 2c: cursor:pointer cards (no semantic class/role) ──
+    // Bioma-style SPAs often render answer cards as plain <div> with NO
+    // role, NO onclick attribute and NO answer/option/quiz class — the
+    // click handler is attached in JS and the only DOM tell is the
+    // computed `cursor: pointer`. PASS 2b's selector misses these, so we
+    // scan the viewport for visible pointer elements that look like
+    // distinct cards and click the first. This is what turns a step-3
+    // `no_advance_button` into a full walk.
+    const pointerCandidates = [];
+    const pSeen = new Set();
+    const allEls = document.querySelectorAll('div, li, a, span, label, section, article');
+    for (const el of allEls) {
+      if (pSeen.has(el)) continue;
+      const style = window.getComputedStyle(el);
+      if (style.cursor !== 'pointer') continue;
+      const text = getText(el);
+      if (!text || text.length < 2 || text.length > 160) continue;
+      if (NEG_PATTERN.test(text)) continue;
+      if (pattern.test(text)) continue; // pass 1 territory
+      if (!isVisible(el)) continue;
+      // Skip if it fully contains another pointer candidate (prefer the
+      // innermost clickable card, not its wrapper).
+      let hasPointerChild = false;
+      for (const child of el.querySelectorAll('*')) {
+        try {
+          if (window.getComputedStyle(child).cursor === 'pointer') {
+            hasPointerChild = true;
+            break;
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+      if (hasPointerChild) continue;
+      const rect = el.getBoundingClientRect();
+      pointerCandidates.push({ el, text, top: rect.top, area: rect.width * rect.height });
+    }
+    if (pointerCandidates.length >= 1) {
+      // First by document order (top-to-bottom) so we pick the first
+      // answer like a human would.
+      pointerCandidates.sort((a, b) => a.top - b.top);
+      const winner = pointerCandidates[0];
+      try {
+        winner.el.scrollIntoView({ block: 'center', behavior: 'instant' });
+      } catch {
+        /* ignore */
+      }
+      try {
+        winner.el.click();
+        // eslint-disable-next-line no-console
+        console.log(`[crawl] pointer-card clicked: "${winner.text.slice(0, 60)}"`);
+        return true;
+      } catch {
+        /* fall through */
+      }
+    }
+
     // ─── PASS 3: last resort, any remaining primary candidate ────
     // If pass 1 had a non-pattern winner (e.g. a generic <button>),
     // click it now as a final attempt to advance.

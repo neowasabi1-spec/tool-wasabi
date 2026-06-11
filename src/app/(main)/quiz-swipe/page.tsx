@@ -121,6 +121,12 @@ export default function QuizSwipePage() {
   // ── Walk Quiz form (vive nel modal) ───────────────────────────────
   const [url, setUrl] = useState('');
   const [maxSteps, setMaxSteps] = useState(15);
+  // Worker che eseguira' il walk. 'auto' = qualunque worker libero
+  // (lotteria, sconsigliato se hai worker con codice diverso); 'neo' /
+  // 'morfeo' = forza un worker specifico via target_agent, esattamente
+  // come fa front-end-funnel. Cosi' eviti che un worker vecchio prenda
+  // il job e si fermi presto.
+  const [workerTarget, setWorkerTarget] = useState<'auto' | 'neo' | 'morfeo'>('neo');
   const [productId, setProductId] = useState<string>('');
   const [customPrompt, setCustomPrompt] = useState('');
   const [showWalkDialog, setShowWalkDialog] = useState(false);
@@ -262,7 +268,11 @@ export default function QuizSwipePage() {
       const res = await fetch('/api/walk-quiz', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: url.trim(), maxSteps }),
+        body: JSON.stringify({
+          url: url.trim(),
+          maxSteps,
+          targetAgent: workerTarget === 'auto' ? null : workerTarget,
+        }),
       });
       const ct = res.headers.get('content-type') || '';
       if (!res.ok) {
@@ -1001,6 +1011,22 @@ export default function QuizSwipePage() {
                   </select>
                   <p className="text-[11px] text-gray-500 mt-1">Claude will rewrite copy for this project.</p>
                 </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-gray-600 uppercase tracking-wide mb-1">Worker</label>
+                <select
+                  value={workerTarget}
+                  onChange={(e) => setWorkerTarget(e.target.value as 'auto' | 'neo' | 'morfeo')}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent text-sm bg-white"
+                >
+                  <option value="neo">Neo (OpenClaw locale)</option>
+                  <option value="morfeo">Morfeo (OpenClaw locale)</option>
+                  <option value="auto">Auto (primo worker libero)</option>
+                </select>
+                <p className="text-[11px] text-gray-500 mt-1">
+                  Forza il worker aggiornato. &quot;Auto&quot; lascia il job al primo libero: usalo solo se tutti i worker hanno l&apos;ultimo codice.
+                </p>
               </div>
 
               <div>
