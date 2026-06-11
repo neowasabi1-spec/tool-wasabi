@@ -3161,7 +3161,10 @@ async function clickCrawlAdvance(page, patternSource) {
     // also pick up <div>/<li>/<label> with role="button" or known answer
     // class names.
     const ANSWER_SEL =
-      'button, [role="button"], [role="option"], [class*="option"], [class*="answer"], [class*="choice"], [class*="card"][onclick], li[onclick], div[onclick], label[for]';
+      'button, [role="button"], [role="option"], [role="radio"], [aria-checked], ' +
+      'input[type="radio"], input[type="checkbox"], ' +
+      '[class*="option"], [class*="answer"], [class*="choice"], [class*="quiz"], ' +
+      '[class*="select"], [class*="card"][onclick], li[onclick], div[onclick], label, label[for]';
 
     const viewportH = window.innerHeight || 800;
     const viewportW = window.innerWidth || 1280;
@@ -3243,7 +3246,53 @@ async function clickCrawlAdvance(page, patternSource) {
       }
     }
 
-    // ─── PASS 2: quiz answer cards ───────────────────────────────
+    // ─── PASS 2a: radio / checkbox quizzes ───────────────────────
+    // Many SPA quizzes (Bioma, Noom-style, etc.) render each answer as
+    // a visually-hidden <input type="radio"> + a styled <label>. The
+    // input has no text and ~0px size, so the generic answer-card pass
+    // below skips it. Handle it explicitly: click the label (or the
+    // input) of the FIRST option to select an answer and advance.
+    const radios = Array.from(
+      document.querySelectorAll('input[type="radio"], input[type="checkbox"], [role="radio"]'),
+    );
+    for (const r of radios) {
+      const rRect = r.getBoundingClientRect();
+      // On-screen-ish check (radios are often offscreen-positioned but
+      // their label is visible, so we resolve a clickable target below).
+      let target = r;
+      const id = r.getAttribute('id');
+      if (id) {
+        let escaped = id;
+        try { escaped = (window.CSS && CSS.escape) ? CSS.escape(id) : id.replace(/"/g, '\\"'); } catch { /* noop */ }
+        const lbl = document.querySelector('label[for="' + escaped + '"]');
+        if (lbl) target = lbl;
+      }
+      if (target === r) {
+        const wrapLabel = r.closest('label');
+        if (wrapLabel) target = wrapLabel;
+      }
+      // Skip if the resolved target is genuinely invisible.
+      const tRect = target.getBoundingClientRect();
+      const tStyle = window.getComputedStyle(target);
+      const targetVisible =
+        tRect.width >= 12 && tRect.height >= 12 &&
+        tStyle.visibility !== 'hidden' && tStyle.display !== 'none' && tStyle.opacity !== '0' &&
+        tRect.bottom >= 0 && tRect.top <= viewportH * 3;
+      if (!targetVisible && !(rRect.width >= 12 && rRect.height >= 12)) continue;
+      try {
+        target.scrollIntoView({ block: 'center', behavior: 'instant' });
+      } catch { /* ignore */ }
+      try {
+        target.click();
+        // eslint-disable-next-line no-console
+        console.log('[crawl] radio/checkbox answer clicked');
+        return true;
+      } catch {
+        /* try next radio */
+      }
+    }
+
+    // ─── PASS 2b: quiz answer cards ──────────────────────────────
     // No CTA matched. Look for groups of clickable elements that look
     // like answer choices (multiple visible items, similar size, none
     // is a Next button). Click the FIRST one — the actual answer
@@ -3278,10 +3327,20 @@ async function clickCrawlAdvance(page, patternSource) {
       answerCandidates.push({ el, priority, text, top: rect.top });
     });
 
-    if (answerCandidates.length >= 2) {
+    // Accept the pass when there are >=2 candidates (classic multi-choice
+    // question) OR a single candidate that is clearly an answer (answer/
+    // option/choice/quiz class or role), so we don't stall on a question
+    // that renders only one selectable card at a time.
+    const strongAnswers = answerCandidates.filter((c) =>
+      /answer|choice|option|quiz/i.test(
+        ((c.el.className || '') + ' ' + (c.el.getAttribute('role') || '')),
+      ),
+    );
+    const answerPool = answerCandidates.length >= 2 ? answerCandidates : strongAnswers;
+    if (answerPool.length >= 1) {
       // Sort: highest priority first, then top-to-bottom.
-      answerCandidates.sort((a, b) => b.priority - a.priority || a.top - b.top);
-      const winner = answerCandidates[0];
+      answerPool.sort((a, b) => b.priority - a.priority || a.top - b.top);
+      const winner = answerPool[0];
       try {
         winner.el.scrollIntoView({ block: 'center', behavior: 'instant' });
       } catch {
@@ -3294,9 +3353,9 @@ async function clickCrawlAdvance(page, patternSource) {
         return true;
       } catch {
         /* try second-best */
-        if (answerCandidates[1]) {
+        if (answerPool[1]) {
           try {
-            answerCandidates[1].el.click();
+            answerPool[1].el.click();
             return true;
           } catch {
             /* give up */
@@ -3548,11 +3607,14 @@ async function processCrawlJob(row) {
       let advanced = await clickCrawlAdvance(page, QUIZ_NEXT_PATTERN_SOURCE).catch(
         () => false,
       );
-      // Retry once after a short wait. On animated SPA quizzes the CTA
-      // sometimes appears 500-1500ms after the previous transition; a
-      // single retry catches those without making the happy path slow.
-      if (!advanced) {
-        await new Promise((r) => setTimeout(r, 1200));
+      // Retry with escalating waits. On animated SPA quizzes (Bioma,
+      // Noom-style) the answer cards / CTA render 0.5-3s AFTER the
+      // previous transition, so a single early attempt sees an empty
+      // DOM and stalls at the first question ("1 of 20"). We give it a
+      // few progressively longer chances before declaring no advance.
+      const RETRY_WAITS_MS = [1000, 1800, 2500];
+      for (let attempt = 0; !advanced && attempt < RETRY_WAITS_MS.length; attempt++) {
+        await new Promise((r) => setTimeout(r, RETRY_WAITS_MS[attempt]));
         advanced = await clickCrawlAdvance(page, QUIZ_NEXT_PATTERN_SOURCE).catch(
           () => false,
         );
