@@ -289,6 +289,64 @@ function ResultModal({ step, onClose }: { step: FunnelStep; onClose: () => void 
   );
 }
 
+function PromptNotesModal({
+  step,
+  onSave,
+  onClose,
+}: {
+  step: FunnelStep;
+  onSave: (value: string) => void;
+  onClose: () => void;
+}) {
+  const [draft, setDraft] = useState(step.prompt_notes || "");
+
+  const commit = () => {
+    if (draft !== (step.prompt_notes || "")) onSave(draft);
+    onClose();
+  };
+
+  return (
+    <Dialog open onOpenChange={v => { if (!v) commit(); }}>
+      <DialogContent className="max-w-2xl max-h-[85vh] overflow-hidden flex flex-col">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 text-base">
+            <Pencil className="w-4 h-4 text-primary" />
+            Prompt / Notes
+            <span className="text-muted-foreground font-normal text-xs truncate">
+              — {step.page_name || `Step ${step.step_number}`}
+            </span>
+          </DialogTitle>
+        </DialogHeader>
+        <textarea
+          value={draft}
+          onChange={e => setDraft(e.target.value)}
+          autoFocus
+          placeholder="Scrivi qui il prompt / le note per l'AI…"
+          className="flex-1 min-h-[45vh] w-full resize-none rounded-md border border-border bg-background p-3 text-sm leading-relaxed focus:outline-none focus:ring-1 focus:ring-primary font-mono"
+        />
+        <div className="flex items-center justify-between gap-2 pt-2">
+          <span className="text-[11px] text-muted-foreground">{draft.length} caratteri</span>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={onClose}
+              className="px-3 py-1.5 text-xs rounded-md border border-border hover:bg-muted/40 transition-colors"
+            >
+              Annulla
+            </button>
+            <button
+              onClick={commit}
+              className="px-3 py-1.5 text-xs rounded-md bg-primary text-primary-foreground hover:opacity-90 transition-opacity flex items-center gap-1"
+            >
+              <Check className="w-3 h-3" />
+              Salva
+            </button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function ChatPanel({
   step,
   projectId,
@@ -714,6 +772,7 @@ export function FunnelTab({ projectId }: { projectId: string }) {
 
   const [localSteps, setLocalSteps] = useState<FunnelStep[]>([]);
   const [resultStep, setResultStep] = useState<FunnelStep | null>(null);
+  const [promptStep, setPromptStep] = useState<FunnelStep | null>(null);
   // Popup "Sanamento pagina" mostrato durante la pulizia tracker al download.
   const [sanitizeMsg, setSanitizeMsg] = useState<{ phase: "working" | "done"; text: string } | null>(null);
   const [chatStep, setChatStep] = useState<FunnelStep | null>(null);
@@ -1312,9 +1371,18 @@ export function FunnelTab({ projectId }: { projectId: string }) {
                       <InlineEdit value={step.angle} onChange={v => patchStep(step.id, { angle: v })} placeholder="Angle…" />
                     </td>
 
-                    {/* Prompt/Notes */}
-                    <td className="px-2 py-1 border-r border-border/50 min-w-[140px] max-w-[180px]">
-                      <InlineEdit value={step.prompt_notes} onChange={v => patchStep(step.id, { prompt_notes: v })} placeholder="AI notes…" multiline />
+                    {/* Prompt/Notes — chiuso, si apre in popup (il testo è lungo) */}
+                    <td className="px-2 py-1 border-r border-border/50 w-[160px] min-w-[160px] max-w-[160px]">
+                      <button
+                        onClick={() => setPromptStep(step)}
+                        title={step.prompt_notes || "Aggiungi prompt / note"}
+                        className={`group/pn w-full flex items-start gap-1 text-left text-[11px] rounded px-1 py-0.5 hover:bg-muted/40 transition-colors ${step.prompt_notes ? "text-foreground" : "text-muted-foreground italic"}`}
+                      >
+                        <Pencil className="w-3 h-3 mt-[2px] shrink-0 text-muted-foreground group-hover/pn:text-primary" />
+                        <span className="line-clamp-2 break-words">
+                          {step.prompt_notes || "AI notes…"}
+                        </span>
+                      </button>
                     </td>
 
                     {/* Auto-gen */}
@@ -1442,6 +1510,15 @@ export function FunnelTab({ projectId }: { projectId: string }) {
 
       {/* Result Modal */}
       {resultStep && <ResultModal step={resultStep} onClose={() => setResultStep(null)} />}
+
+      {/* Prompt / Notes Modal */}
+      {promptStep && (
+        <PromptNotesModal
+          step={promptStep}
+          onSave={v => patchStep(promptStep.id, { prompt_notes: v })}
+          onClose={() => setPromptStep(null)}
+        />
+      )}
 
       {/* Visual Editor riusato dentro ProjectHub: edita l'HTML dello step e
           salva il result_content (auto-refresh della tabella). */}
