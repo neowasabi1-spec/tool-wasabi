@@ -3594,57 +3594,131 @@ function isCheckoutLikePage(url, title) {
   return /checkout|carrello|cart|pagamento|payment|acquista|buy\s*now|ordine|order\s*summary|pay\s*now/i.test(u);
 }
 
-// Fetch every <link rel="stylesheet"> in the page (same-origin in the
-// Playwright context → no CORS) and replace it with an inline <style> so
-// the serialised HTML is self-contained. Also rewrites relative url(...)
-// references inside the CSS to absolute URLs so fonts/background images
-// still resolve. Best-effort: any stylesheet that fails to fetch is left
-// untouched. Caps total inlined CSS to avoid pathological bloat.
-async function inlineStylesheetsForCapture(page) {
-  const count = await page
-    .evaluate(async () => {
-      const MAX_TOTAL = 1_500_000; // ~1.5MB of CSS per step, hard cap
-      let total = 0;
-      let inlined = 0;
-      const links = Array.from(
-        document.querySelectorAll('link[rel~="stylesheet"][href]'),
-      );
-      for (const link of links) {
-        const href = link.href; // already absolute (resolved by browser)
-        if (!href || /^data:/i.test(href)) continue;
+// Snapshot the LIVE CSSOM into a single <style> so the captured HTML is
+// self-contained and renders correctly in the editor (which neutralises the
+// page scripts). Reading document.styleSheets[].cssRules captures EVERYTHING
+// that is actually applied — including CSS injected at runtime by the SPA
+// framework (Tailwind/emotion/styled-components, adoptedStyleSheets, etc.)
+// which page.content() alone does NOT serialise. Relative url(...) refs are
+// rewritten to absolute so fonts/background images still resolve.
+//
+// Why not fetch <link> files instead? On these SPA quizzes the linked CSS
+// does NOT contain the layout — the visual styling lives in runtime-injected
+// rules. Without this, the editor preview shows raw stacked text.
+async function captureFullCssom(page) {
+  const stats = await page
+    .evaluate(() => {
+      const origin = location.origin;
+      const MAX_TOTAL = 3_000_000; // ~3MB hard cap
+      // The worker navigates the SAME page across steps, so a <style> we
+      // injected on a previous step is still in the DOM. Remove stale ones
+      // before snapshotting, otherwise they accumulate (N steps × CSS size).
+      document
+        .querySelectorAll('style[data-captured-cssom]')
+        .forEach((e) => e.remove());
+      const rewrite = (css) =>
+        css.replace(
+          /url\(\s*(['"]?)(?!data:|https?:|\/\/|#)([^'")]+)\1\s*\)/gi,
+          (m, q, u) => {
+            try {
+              return 'url(' + new URL(u, origin).href + ')';
+            } catch {
+              return m;
+            }
+          },
+        );
+      let css = '';
+      let sheets = 0;
+      let rules = 0;
+      let blocked = 0;
+      let dupes = 0;
+      // Dedupe identical rules: SPA frameworks (emotion/styled-components)
+      // re-inject the same rules on every route change, so the CSSOM grows
+      // unbounded across steps.
+      const seen = new Set();
+      // Keep only rules whose selector matches an element currently in the
+      // DOM. SPA frameworks leave behind dead per-route rules (unique hashed
+      // class names) that accumulate across steps — filtering to the live DOM
+      // keeps each captured step small and self-contained.
+      const selectorMatches = (selectorText) => {
+        if (!selectorText) return true;
+        for (let part of selectorText.split(',')) {
+          // Strip pseudo-classes/elements so :hover/::before still resolve.
+          const probe = part.replace(/::?[\w-]+(\([^)]*\))?/g, '').trim();
+          if (!probe) return true; // pure pseudo (e.g. ::selection) — keep
+          try {
+            if (document.querySelector(probe)) return true;
+          } catch {
+            return true; // unparseable selector — keep to be safe
+          }
+        }
+        return false;
+      };
+      // Serialise a rule, recursing into @media/@supports and dropping
+      // non-matching style rules. @keyframes/@font-face/@import kept as-is.
+      const serializeRule = (rule) => {
         try {
-          const res = await fetch(href, { credentials: 'include' });
-          if (!res || !res.ok) continue;
-          let css = await res.text();
-          if (!css) continue;
-          // Resolve relative url(...) against the stylesheet's own URL.
-          css = css.replace(
-            /url\(\s*(['"]?)(?!data:|https?:|\/\/)([^'")]+)\1\s*\)/gi,
-            (m, q, u) => {
-              try {
-                return 'url(' + new URL(u, href).href + ')';
-              } catch {
-                return m;
-              }
-            },
-          );
-          total += css.length;
-          if (total > MAX_TOTAL) break;
-          const style = document.createElement('style');
-          style.setAttribute('data-inlined-from', href);
-          style.textContent = css;
-          if (link.parentNode) {
-            link.parentNode.replaceChild(style, link);
-            inlined++;
+          if (rule.selectorText !== undefined && rule.style) {
+            return selectorMatches(rule.selectorText) ? rule.cssText : '';
+          }
+          if (rule.cssRules && (rule.media || rule.conditionText !== undefined)) {
+            let inner = '';
+            for (const r of rule.cssRules) inner += serializeRule(r);
+            if (!inner) return '';
+            const cond =
+              rule.conditionText || (rule.media && rule.media.mediaText) || '';
+            const at = rule.type === 4 ? '@media' : '@supports';
+            return `${at} ${cond}{${inner}}`;
           }
         } catch {
-          /* leave this <link> as-is */
+          /* fall through */
         }
-      }
-      return inlined;
+        return rule.cssText || '';
+      };
+      const collect = (list) => {
+        for (const sheet of list || []) {
+          sheets++;
+          let cssRules;
+          try {
+            cssRules = sheet.cssRules;
+          } catch {
+            blocked++;
+            continue;
+          }
+          for (const rule of cssRules) {
+            const text = serializeRule(rule);
+            if (!text) continue;
+            if (seen.has(text)) {
+              dupes++;
+              continue;
+            }
+            seen.add(text);
+            css += text + '\n';
+            rules++;
+            if (css.length > MAX_TOTAL) break;
+          }
+          if (css.length > MAX_TOTAL) break;
+        }
+      };
+      collect(document.styleSheets);
+      collect(document.adoptedStyleSheets || []);
+      if (!css) return { sheets, rules, blocked, dupes, cssLen: 0 };
+      css = rewrite(css);
+      const style = document.createElement('style');
+      style.setAttribute('data-captured-cssom', '');
+      style.textContent = css;
+      // Append last so it wins the cascade over earlier same-specificity rules.
+      (document.head || document.documentElement).appendChild(style);
+      return { sheets, rules, blocked, cssLen: css.length };
     })
-    .catch(() => -1);
-  log(`  · inlined ${count} stylesheet(s) into captured HTML`);
+    .catch(() => null);
+  if (stats) {
+    log(
+      `  · CSSOM snapshot: ${stats.rules} rules / ${Math.round(
+        stats.cssLen / 1024,
+      )}KB (${stats.blocked} cross-origin sheets skipped)`,
+    );
+  }
 }
 
 async function processCrawlJob(row) {
@@ -3779,6 +3853,10 @@ async function processCrawlJob(row) {
       // copre i quiz SPA dove il fetch raw e' un guscio vuoto.
       let stepHtml = null;
       if (params.captureHtml) {
+        // Snapshot the live CSSOM into the page BEFORE serialising so the
+        // captured HTML renders styled in the editor without re-running the
+        // SPA scripts (which the editor neutralises).
+        await captureFullCssom(page);
         stepHtml = await page.content().catch(() => null);
       }
 
