@@ -3132,7 +3132,149 @@ Quale index clicco per andare avanti nel funnel?`;
   return { done: false, clicked: true };
 }
 
+// Pick the best element to click for a given role using the page's live DOM
+// and return it as a Playwright ElementHandle so the caller can perform a
+// REAL pointer click (full pointerdown/mousedown/click sequence).
+//   kind === 'answer' → first visible answer card / radio / checkbox
+//   kind === 'next'   → first visible, ENABLED CTA whose text matches pattern
+// Returns null when nothing suitable is on the page.
+async function pickCrawlClickTarget(page, kind, patternSource) {
+  const handle = await page
+    .evaluateHandle(
+      (args) => {
+        const [k, src] = args;
+        const pattern = new RegExp(src, 'i');
+        const NEG =
+          /^(skip|salta|indietro|back|prev|previous|cancel|annulla|chiudi|close|home|privacy|cookie|termini|terms|login|accedi|menu|languag)/i;
+        const vis = (el) => {
+          if (!el) return false;
+          const r = el.getBoundingClientRect();
+          if (r.width < 20 || r.height < 16) return false;
+          const s = getComputedStyle(el);
+          return (
+            s.visibility !== 'hidden' &&
+            s.display !== 'none' &&
+            s.opacity !== '0'
+          );
+        };
+        const txt = (el) =>
+          ((el.innerText || el.value || el.getAttribute('aria-label') || '') + '')
+            .replace(/\s+/g, ' ')
+            .trim();
+        if (k === 'answer') {
+          const sel =
+            'input[type="radio"], input[type="checkbox"], [role="radio"], [role="option"], ' +
+            '[class*="option"], [class*="answer"], [class*="choice"]';
+          let els = [...document.querySelectorAll(sel)].filter((el) => {
+            const t = txt(el);
+            if (t && (NEG.test(t) || pattern.test(t))) return false; // not a Next/Back
+            return vis(el) || el.tagName === 'INPUT';
+          });
+          els.sort(
+            (a, b) =>
+              a.getBoundingClientRect().top - b.getBoundingClientRect().top,
+          );
+          let el = els[0];
+          if (el && el.tagName === 'INPUT') {
+            // Climb a hidden input to its clickable label/card.
+            el =
+              el.closest('label') ||
+              (el.id && document.querySelector(`label[for="${CSS.escape(el.id)}"]`)) ||
+              el.closest('[class*="option"], [class*="answer"], [class*="choice"]') ||
+              el.parentElement ||
+              el;
+          }
+          return el || null;
+        }
+        if (k === 'next') {
+          const cand = [
+            ...document.querySelectorAll(
+              'button, [role="button"], a[href], input[type="submit"], input[type="button"]',
+            ),
+          ];
+          for (const el of cand) {
+            if (!vis(el)) continue;
+            const t = txt(el);
+            if (!t || t.length > 60) continue;
+            if (NEG.test(t)) continue;
+            if (!pattern.test(t)) continue;
+            if (el.disabled || el.getAttribute('aria-disabled') === 'true')
+              continue;
+            return el;
+          }
+          return null;
+        }
+        return null;
+      },
+      [kind, patternSource],
+    )
+    .catch(() => null);
+  if (!handle) return null;
+  const el = handle.asElement();
+  if (!el) {
+    await handle.dispose().catch(() => {});
+    return null;
+  }
+  return el;
+}
+
+// Advance a quiz using REAL Playwright clicks. Synthetic in-page el.click()
+// on some SPA quizzes (e.g. Bioma on Next.js App Router) follows the <a href>
+// default and triggers a HARD document navigation that lands on the
+// un-hydrated server shell — the captured step is blank and the crawl stalls.
+// Real pointer clicks let React's onClick run preventDefault → SOFT client
+// navigation → the next question renders in place. Returns true if it acted.
+async function advanceQuizWithRealClicks(page, patternSource) {
+  const before = page.url();
+  let acted = false;
+
+  // 1) Select an answer if the page shows answer cards / radios.
+  const answer = await pickCrawlClickTarget(page, 'answer', patternSource);
+  if (answer) {
+    try {
+      await answer.scrollIntoViewIfNeeded({ timeout: 1500 }).catch(() => {});
+      await answer.click({ timeout: 2500 });
+      acted = true;
+    } catch {
+      /* ignore — fall through to Next detection */
+    }
+    await answer.dispose().catch(() => {});
+    await page.waitForTimeout(500);
+    // Single-select questions auto-advance on selection.
+    if (page.url() !== before) return true;
+  }
+
+  // 2) Click an enabled Next/Continue CTA — poll, it may enable after select.
+  for (let waited = 0; waited < 2400; waited += 200) {
+    const next = await pickCrawlClickTarget(page, 'next', patternSource);
+    if (next) {
+      let ok = false;
+      try {
+        await next.scrollIntoViewIfNeeded({ timeout: 1500 }).catch(() => {});
+        await next.click({ timeout: 2500 });
+        ok = true;
+      } catch {
+        /* keep polling */
+      }
+      await next.dispose().catch(() => {});
+      if (ok) return true;
+    }
+    if (page.url() !== before) return true;
+    await page.waitForTimeout(200);
+  }
+  return acted;
+}
+
 async function clickCrawlAdvance(page, patternSource) {
+  // Try real Playwright clicks first (soft-nav safe). Falls back to the
+  // in-page heuristic below when it can't act (e.g. landing/checkout CTAs
+  // with no answer cards and no matching Next).
+  try {
+    const acted = await advanceQuizWithRealClicks(page, patternSource);
+    if (acted) return true;
+  } catch {
+    /* fall through to in-page heuristic */
+  }
   return page.evaluate(async (src) => {
     const pattern = new RegExp(src, 'i');
     const NEG_PATTERN = /^(skip|salta|indietro|back|prev|previous|cancel|annulla|chiudi|close|home|privacy|cookie|termini|terms|login|accedi|menu|languag)/i;
@@ -3606,13 +3748,12 @@ function isCheckoutLikePage(url, title) {
 // does NOT contain the layout — the visual styling lives in runtime-injected
 // rules. Without this, the editor preview shows raw stacked text.
 async function captureFullCssom(page) {
-  const stats = await page
+  const result = await page
     .evaluate(() => {
       const origin = location.origin;
       const MAX_TOTAL = 3_000_000; // ~3MB hard cap
-      // The worker navigates the SAME page across steps, so a <style> we
-      // injected on a previous step is still in the DOM. Remove stale ones
-      // before snapshotting, otherwise they accumulate (N steps × CSS size).
+      // Remove any stale snapshot styles from a previous step (the SPA keeps
+      // the same document across soft navigations).
       document
         .querySelectorAll('style[data-captured-cssom]')
         .forEach((e) => e.remove());
@@ -3702,23 +3843,64 @@ async function captureFullCssom(page) {
       };
       collect(document.styleSheets);
       collect(document.adoptedStyleSheets || []);
-      if (!css) return { sheets, rules, blocked, dupes, cssLen: 0 };
-      css = rewrite(css);
-      const style = document.createElement('style');
-      style.setAttribute('data-captured-cssom', '');
-      style.textContent = css;
-      // Append last so it wins the cascade over earlier same-specificity rules.
-      (document.head || document.documentElement).appendChild(style);
-      return { sheets, rules, blocked, cssLen: css.length };
+      // Serialise the live DOM and inject the CSSOM snapshot ATOMICALLY into
+      // the HTML string (NOT into the live DOM). Next.js/React manage <head>
+      // and strip foreign <style> nodes before page.content() can serialise
+      // them, so appending to the DOM silently loses the styles. Building the
+      // string here guarantees the snapshot is in the captured HTML.
+      const styleTag = css
+        ? '<style data-captured-cssom>' + rewrite(css) + '</style>'
+        : '';
+      let html = '<!DOCTYPE html>' + document.documentElement.outerHTML;
+      if (styleTag) {
+        if (/<\/head>/i.test(html)) {
+          html = html.replace(/<\/head>/i, styleTag + '</head>');
+        } else {
+          html = styleTag + html;
+        }
+      }
+      return { html, sheets, rules, blocked, dupes, cssLen: css.length };
     })
     .catch(() => null);
-  if (stats) {
+  if (result) {
     log(
-      `  · CSSOM snapshot: ${stats.rules} rules / ${Math.round(
-        stats.cssLen / 1024,
-      )}KB (${stats.blocked} cross-origin sheets skipped)`,
+      `  · CSSOM snapshot: ${result.rules} rules / ${Math.round(
+        result.cssLen / 1024,
+      )}KB (${result.blocked} cross-origin sheets skipped)`,
     );
+    return result.html || null;
   }
+  return null;
+}
+
+// Resolve once the page has a real, visible interactive/content element —
+// i.e. client-side hydration finished. Returns true if hydrated, false on
+// timeout (page is still the streaming shell or genuinely empty).
+async function waitForQuizHydration(page, timeoutMs) {
+  return page
+    .waitForFunction(
+      () => {
+        const els = document.querySelectorAll(
+          'button, [role="button"], input, a[class*="btn"], [class*="cta"], [class*="answer"], [class*="option"], [class*="choice"], h1, h2',
+        );
+        for (const el of els) {
+          const r = el.getBoundingClientRect();
+          if (r.width >= 20 && r.height >= 12) {
+            const s = window.getComputedStyle(el);
+            if (
+              s.visibility !== 'hidden' &&
+              s.display !== 'none' &&
+              s.opacity !== '0'
+            )
+              return true;
+          }
+        }
+        return false;
+      },
+      { timeout: timeoutMs },
+    )
+    .then(() => true)
+    .catch(() => false);
 }
 
 async function processCrawlJob(row) {
@@ -3834,6 +4016,13 @@ async function processCrawlJob(row) {
         .catch(() => []);
 
     while (steps.length < maxSteps) {
+      // Wait for client-side hydration BEFORE reading/capturing this step,
+      // so we never serialise the pre-hydration streaming shell. The advance
+      // step uses REAL Playwright clicks which keep the SPA on a soft
+      // (client-side) navigation, so the next question renders in place and
+      // this wait resolves quickly.
+      await waitForQuizHydration(page, 6000);
+
       const fp = await getQuizFingerprint(page).catch(() => '');
       const title = await page.title().catch(() => '');
       const url = page.url();
@@ -3853,11 +4042,12 @@ async function processCrawlJob(row) {
       // copre i quiz SPA dove il fetch raw e' un guscio vuoto.
       let stepHtml = null;
       if (params.captureHtml) {
-        // Snapshot the live CSSOM into the page BEFORE serialising so the
+        // Serialise the DOM with a live CSSOM snapshot injected, so the
         // captured HTML renders styled in the editor without re-running the
-        // SPA scripts (which the editor neutralises).
-        await captureFullCssom(page);
-        stepHtml = await page.content().catch(() => null);
+        // SPA scripts (which the editor neutralises). Falls back to plain
+        // page.content() if the snapshot couldn't be built.
+        stepHtml = await captureFullCssom(page);
+        if (!stepHtml) stepHtml = await page.content().catch(() => null);
       }
 
       steps.push({
