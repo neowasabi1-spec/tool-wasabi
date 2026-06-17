@@ -30,7 +30,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-const CLAUDE_MODEL = 'claude-sonnet-4-20250514'
+const CLAUDE_MODEL = 'claude-opus-4-8'
 const CLAUDE_MAX_TOKENS = 16000
 const CLAUDE_TIMEOUT_MS = 90_000
 // Hard cap sul numero di testi per singola call. Sopra ~30 testi il

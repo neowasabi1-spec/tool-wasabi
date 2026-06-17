@@ -734,7 +734,7 @@ Start with <!DOCTYPE html>. Zero explanations, zero markdown.`;
   });
 
   const stream = await anthropic.messages.stream({
-    model: 'claude-sonnet-4-20250514',
+    model: 'claude-opus-4-8',
     max_tokens: 64000,
     temperature: 0.4,
     system: systemPrompt,

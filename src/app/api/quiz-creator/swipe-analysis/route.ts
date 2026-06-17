@@ -20,7 +20,7 @@ async function callClaude(
   system?: string
 ): Promise<string> {
   const body: Record<string, unknown> = {
-    model: 'claude-sonnet-4-20250514',
+    model: 'claude-opus-4-8',
     max_tokens: maxTokens,
     messages,
   };

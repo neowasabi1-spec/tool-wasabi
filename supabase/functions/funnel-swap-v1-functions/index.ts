@@ -568,7 +568,7 @@ async function generateClaudePageBlueprint(opts: {
           'anthropic-version': '2023-06-01',
         },
         body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
+          model: 'claude-opus-4-8',
           max_tokens: 1500,
           temperature: 0.5,
           system: sys,
@@ -1672,7 +1672,7 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
             'anthropic-version': '2023-06-01'
           },
           body: JSON.stringify({
-            model: 'claude-sonnet-4-20250514',
+            model: 'claude-opus-4-8',
             // 6000 was too tight: 12 texts × ~500 tok avg = 6000 tok, so any
             // single long body paragraph would cut the JSON mid-way and the
             // parser would fall back to the ORIGINAL text for the entire

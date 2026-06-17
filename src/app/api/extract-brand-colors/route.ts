@@ -176,7 +176,7 @@ async function claudeJson(
 
   const anthropic = new Anthropic({ apiKey });
   const response = await anthropic.messages.create({
-    model: 'claude-sonnet-4-20250514',
+    model: 'claude-opus-4-8',
     max_tokens: 1024,
     system:
       systemInstruction +

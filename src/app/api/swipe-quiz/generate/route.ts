@@ -347,7 +347,7 @@ async function runChunkedGeneration(
     `Output ONLY pure CSS without <style> tag and without explanations.`;
 
   const cssStream = await client.messages.stream({
-    model: 'claude-sonnet-4-20250514',
+    model: 'claude-opus-4-8',
     max_tokens: 8000,
     temperature: 0.3,
     system: SYSTEM_PROMPT_CHUNK_CSS,
@@ -423,7 +423,7 @@ async function runChunkedGeneration(
     `Output ONLY pure JavaScript without <script> tag and without explanations.`;
 
   const jsStream = await client.messages.stream({
-    model: 'claude-sonnet-4-20250514',
+    model: 'claude-opus-4-8',
     max_tokens: 12000,
     temperature: 0.3,
     system: SYSTEM_PROMPT_CHUNK_JS,
@@ -490,7 +490,7 @@ async function runChunkedGeneration(
   htmlUserContent.push({ type: 'text', text: htmlTextPrompt });
 
   const htmlStream = await client.messages.stream({
-    model: 'claude-sonnet-4-20250514',
+    model: 'claude-opus-4-8',
     max_tokens: 16000,
     temperature: 0.4,
     system: SYSTEM_PROMPT_CHUNK_HTML,
@@ -735,7 +735,7 @@ export async function POST(request: NextRequest) {
     userContent.push({ type: 'text', text: textPrompt });
 
     const stream = await client.messages.stream({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-opus-4-8',
       max_tokens: 32000,
       temperature: temperature ?? (isSwapMode ? 0.5 : 0.7),
       system: isSwapMode ? SYSTEM_PROMPT_SWAP : SYSTEM_PROMPT_SIMPLE,

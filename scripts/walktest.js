@@ -8,6 +8,7 @@ const sb = createClient(URL_, KEY);
 
 const entryUrl = process.argv[2] || 'https://bioma.health/weight-loss';
 const maxSteps = Number(process.argv[3] || 25);
+const TARGET = process.env.WALKTEST_TARGET || 'openclaw:walktest';
 
 (async () => {
   const params = {
@@ -16,11 +17,11 @@ const maxSteps = Number(process.argv[3] || 25);
     viewportWidth: 1280, viewportHeight: 800,
   };
   const { data, error } = await sb.from('funnel_crawl_jobs')
-    .insert({ status: 'pending', entry_url: entryUrl, params, current_step: 0, total_steps: 0, target_agent: 'openclaw:walktest' })
+    .insert({ status: 'pending', entry_url: entryUrl, params, current_step: 0, total_steps: 0, target_agent: TARGET })
     .select('id').single();
   if (error) { console.error('insert error:', error.message); process.exit(1); }
   const id = data.id;
-  console.log('enqueued job', id, 'target=openclaw:walktest url=', entryUrl, 'maxSteps=', maxSteps);
+  console.log('enqueued job', id, 'target=' + TARGET + ' url=', entryUrl, 'maxSteps=', maxSteps);
 
   const deadline = Date.now() + 4 * 60 * 1000;
   let last = '';

@@ -141,7 +141,7 @@ async function editWithClaude(
     onChunk({ type: 'chunk-start', chunkIndex: 0, totalChunks: 1, label: 'Full page' });
 
     const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-opus-4-8',
       max_tokens: 16000,
       system: CHUNK_SYSTEM_PROMPT,
       messages: [
@@ -170,7 +170,7 @@ async function editWithClaude(
   });
 
   const headResponse = await anthropic.messages.create({
-    model: 'claude-sonnet-4-20250514',
+    model: 'claude-opus-4-8',
     max_tokens: 8000,
     system: CHUNK_SYSTEM_PROMPT,
     messages: [
@@ -195,7 +195,7 @@ async function editWithClaude(
     });
 
     const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-opus-4-8',
       max_tokens: 16000,
       system: CHUNK_SYSTEM_PROMPT,
       messages: [

@@ -570,7 +570,7 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
             'anthropic-version': '2023-06-01'
           },
           body: JSON.stringify({
-            model: 'claude-sonnet-4-20250514',
+            model: 'claude-opus-4-8',
             max_tokens: 6000,
             temperature: 0.6,
             messages: [{ role: 'user', content: rewritePrompt }]

@@ -205,7 +205,7 @@ async function parseWithClaudeDocument(apiKey: string, buffer: Buffer, mediaType
       'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-opus-4-8',
       max_tokens: 8192,
       messages: [{
         role: 'user',
@@ -235,7 +235,7 @@ async function parseWithClaudeVision(apiKey: string, base64: string, mimeType: s
       'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-opus-4-8',
       max_tokens: 8192,
       messages: [{
         role: 'user',
@@ -265,7 +265,7 @@ async function parseTextWithClaude(apiKey: string, text: string): Promise<Record
       'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-opus-4-8',
       max_tokens: 8192,
       system: EXTRACT_PROMPT,
       messages: [{ role: 'user', content: `Extract products from this document:\n\n${text}` }],

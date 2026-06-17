@@ -199,11 +199,11 @@ const OPENCLAW_CLAIM_AGENTS = (() => {
 // chi vuole forzare uno specifico sub-agent.
 if (OPENCLAW_BACKEND === 'anthropic') {
   // Con backend Anthropic il campo `model` DEVE essere un nome Claude reale
-  // (es. claude-sonnet-4-20250514). 'openclaw/main' o qualsiasi alias
+  // (es. claude-opus-4-8). 'openclaw/main' o qualsiasi alias
   // openclaw/* farebbe 404 not_found. Se non e' stato forzato un modello
   // Claude esplicito, usiamo il default (override via ANTHROPIC_MODEL).
   if (!OPENCLAW_MODEL || /^openclaw\//i.test(OPENCLAW_MODEL)) {
-    OPENCLAW_MODEL = (process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-20250514').trim();
+    OPENCLAW_MODEL = (process.env.ANTHROPIC_MODEL || 'claude-opus-4-8').trim();
   }
 } else if (!OPENCLAW_MODEL) {
   OPENCLAW_MODEL = 'openclaw/main';
@@ -376,6 +376,15 @@ function callOpenClawNative(messages) {
 // and tag `metadata.pricing_fallback = true` so the dashboard can show
 // it as an estimate.
 const ANTHROPIC_PRICING = {
+  'claude-opus-4-8':                { input: 15.00, output: 75.00 },
+  'claude-opus-4-7':                { input: 15.00, output: 75.00 },
+  'claude-opus-4-6':                { input: 15.00, output: 75.00 },
+  'claude-opus-4-5-20251101':       { input: 15.00, output: 75.00 },
+  'claude-sonnet-4-6':              { input: 3.00,  output: 15.00 },
+  'claude-sonnet-4-5-20250929':     { input: 3.00,  output: 15.00 },
+  'claude-haiku-4-5-20251001':      { input: 0.80,  output: 4.00  },
+  'claude-opus-4-1-20250805':       { input: 15.00, output: 75.00 },
+  'claude-fable-5':                 { input: 3.00,  output: 15.00 },
   'claude-sonnet-4-20250514':       { input: 3.00,  output: 15.00 },
   'claude-3-5-sonnet-20241022':     { input: 3.00,  output: 15.00 },
   'claude-3-5-sonnet-20240620':     { input: 3.00,  output: 15.00 },
@@ -2843,7 +2852,16 @@ async function getQuizFingerprint(page) {
         stepEl.getAttribute('data-question') ||
         stepEl.className
       : '';
-    return `${h1}|${h2}|${stepAttr}|${text.length}|${text.slice(0, 800)}`;
+    // Normalise volatile content (countdown timers like "09:58", social-proof
+    // counters like "47 people taking the quiz") to a placeholder so a static
+    // sales/results page isn't seen as a brand-new step every second. Without
+    // this, a ticking timer makes the fingerprint change forever and the crawl
+    // re-captures the same final page until it hits maxSteps.
+    const norm = (s) =>
+      (s || '')
+        .replace(/\d{1,2}[:.]\d{2}([:.]\d{2})?/g, '#') // timers
+        .replace(/\d[\d.,]*/g, '#'); // any other number
+    return `${norm(h1)}|${norm(h2)}|${stepAttr}|${norm(text.slice(0, 800))}`;
   });
 }
 
@@ -3224,6 +3242,99 @@ async function pickCrawlClickTarget(page, kind, patternSource) {
 // un-hydrated server shell — the captured step is blank and the crawl stalls.
 // Real pointer clicks let React's onClick run preventDefault → SOFT client
 // navigation → the next question renders in place. Returns true if it acted.
+// Choose a sensible value for a quiz input from its name/placeholder/label.
+function quizInputValue(meta) {
+  const h = meta.hint || '';
+  if (meta.type === 'email' || /email|e-mail/.test(h)) return 'test@example.com';
+  if (meta.type === 'tel' || /phone|tel|cell|mobile|telefono/.test(h))
+    return '3331234567';
+  // Weight-goal steps have CURRENT and GOAL fields; the goal must be lower
+  // than the current weight or the Next button won't advance.
+  if (/goal|target|desired|obiettiv|vorresti|like to (lose|weigh)/.test(h))
+    return '150';
+  if (/current|attuale|now/.test(h)) return '180';
+  // A single "height (inches)" field expects TOTAL inches (e.g. 65 = 5'5"),
+  // not the inches-remainder of a separate ft/in pair.
+  if (/height/.test(h) && /inch|pollic/.test(h)) return '65';
+  if (/inch|\bin\b|pollic/.test(h)) return '8';
+  if (/feet|\bft\b|piede|piedi/.test(h)) return '5';
+  if (/\bcm\b|centim/.test(h)) return '170';
+  if (/\bkg\b|chilo/.test(h)) return '70';
+  if (/\blb\b|\blbs\b|pound|libbre/.test(h)) return '170';
+  if (/height|altezza/.test(h)) return '170';
+  if (/weight|peso/.test(h)) return '170';
+  if (/age|et[aà]|\byear|anni/.test(h)) return '30';
+  if (/zip|postal|\bcap\b/.test(h)) return '00100';
+  if (/first.*name|nome|given.*name|prenom/.test(h)) return 'Mario';
+  if (/last.*name|surname|cognome|family.*name/.test(h)) return 'Rossi';
+  if (/name|nome/.test(h)) return 'Mario Rossi';
+  if (meta.type === 'number') return '5';
+  if (meta.type === 'date') return '1990-01-01';
+  return 'Test';
+}
+
+// Fill any visible empty text/number inputs with REAL Playwright .fill() so
+// React controlled inputs update their state and the (otherwise disabled)
+// Next button enables. Handles height (ft/in or cm), weight, age, etc.
+async function fillQuizInputsRealClick(page) {
+  let filled = 0;
+  const all = page.locator('input, textarea');
+  const n = await all.count().catch(() => 0);
+  for (let i = 0; i < n; i++) {
+    const inp = all.nth(i);
+    const meta = await inp
+      .evaluate((el) => {
+        const r = el.getBoundingClientRect();
+        const s = getComputedStyle(el);
+        const visible =
+          r.width > 5 &&
+          r.height > 5 &&
+          s.visibility !== 'hidden' &&
+          s.display !== 'none';
+        let labelText = '';
+        try {
+          labelText =
+            (el.closest('label') && el.closest('label').innerText) ||
+            (el.id &&
+              (document.querySelector(`label[for="${CSS.escape(el.id)}"]`) || {})
+                .innerText) ||
+            (el.parentElement && el.parentElement.innerText) ||
+            '';
+        } catch {
+          /* ignore */
+        }
+        return {
+          visible,
+          disabled: !!el.disabled,
+          type: (el.type || '').toLowerCase(),
+          val: el.value,
+          hint: `${el.name || ''} ${el.id || ''} ${el.placeholder || ''} ${
+            el.getAttribute('aria-label') || ''
+          } ${labelText}`
+            .toLowerCase()
+            .slice(0, 120),
+        };
+      })
+      .catch(() => null);
+    if (!meta || !meta.visible || meta.disabled) continue;
+    if (
+      ['checkbox', 'radio', 'hidden', 'submit', 'button', 'file', 'range'].includes(
+        meta.type,
+      )
+    )
+      continue;
+    if (meta.val && meta.val.trim()) continue; // already has a value
+    const value = quizInputValue(meta);
+    try {
+      await inp.fill(value, { timeout: 2000 });
+      filled++;
+    } catch {
+      /* ignore this input */
+    }
+  }
+  return filled;
+}
+
 async function advanceQuizWithRealClicks(page, patternSource) {
   const before = page.url();
   let acted = false;
@@ -3242,6 +3353,17 @@ async function advanceQuizWithRealClicks(page, patternSource) {
     await page.waitForTimeout(500);
     // Single-select questions auto-advance on selection.
     if (page.url() !== before) return true;
+  } else {
+    // No answer cards → this is a free-text step (height/weight/age/email…).
+    // Fill its inputs with real .fill() so React updates state and the
+    // otherwise-disabled Next button enables. Only done here (not on card
+    // questions) so we never disturb a working multiple-choice step.
+    const filled = await fillQuizInputsRealClick(page).catch((e) => {
+      log(`  · [advance] fill error: ${e.message}`);
+      return 0;
+    });
+    log(`  · [advance] no answer cards — filled ${filled} input(s)`);
+    if (filled > 0) acted = true;
   }
 
   // 2) Click an enabled Next/Continue CTA — poll, it may enable after select.
@@ -3257,11 +3379,15 @@ async function advanceQuizWithRealClicks(page, patternSource) {
         /* keep polling */
       }
       await next.dispose().catch(() => {});
-      if (ok) return true;
+      if (ok) {
+        log(`  · [advance] clicked Next (real click)`);
+        return true;
+      }
     }
     if (page.url() !== before) return true;
     await page.waitForTimeout(200);
   }
+  log(`  · [advance] no enabled Next found after fill/answer (acted=${acted})`);
   return acted;
 }
 
@@ -3977,6 +4103,11 @@ async function processCrawlJob(row) {
     await page.waitForLoadState('load', { timeout: 4000 }).catch(() => {});
 
     let consecutiveSame = 0;
+    // Normalised fingerprint of the last step we actually CAPTURED. Used to
+    // skip re-capturing an identical page (e.g. a static sales/results page
+    // the funnel ends on) so the result doesn't contain the same screenshot
+    // repeated N times.
+    let lastCapturedFp = null;
     // Populated whenever the loop breaks BEFORE reaching maxSteps.
     // Persisted into `result.stopDiagnostic` at the end so the user
     // (and we) can post-mortem the crawl without needing access to
@@ -4028,56 +4159,92 @@ async function processCrawlJob(row) {
       const url = page.url();
       const label = await getStepLabel(page);
 
-      const nextIndex = steps.length + 1;
-      // Capture the screenshot BEFORE pushing the step so we can attach
-      // the URL inline. We do it before the click that advances the
-      // funnel, so the thumbnail shows what the user saw at that step.
-      const screenshotUrl = await captureCrawlScreenshot(page, jobId, nextIndex);
+      // Skip capturing a page identical to the one we just captured. Funnels
+      // that end on a static sales/results page (often with a ticking timer)
+      // would otherwise be re-captured every loop, filling the result with
+      // duplicate screenshots of the same final step.
+      const isDuplicate = lastCapturedFp !== null && fp === lastCapturedFp;
+      if (!isDuplicate) {
+        // Give lazy images/fonts a moment to paint so the screenshot and
+        // captured HTML aren't missing content ("parts missing — not enough
+        // load time"). Waits per-image with a hard cap so a slow CDN image
+        // never blocks the crawl.
+        await page
+          .evaluate(
+            () =>
+              Promise.all(
+                [...document.images]
+                  .filter(
+                    (img) =>
+                      !img.complete &&
+                      img.getBoundingClientRect().width > 0,
+                  )
+                  .map(
+                    (img) =>
+                      new Promise((res) => {
+                        img.addEventListener('load', res, { once: true });
+                        img.addEventListener('error', res, { once: true });
+                        setTimeout(res, 3000);
+                      }),
+                  ),
+              ),
+          )
+          .catch(() => {});
 
-      // OPT-IN: cattura anche l'HTML renderizzato per step. Usato dalla
-      // sezione Clone/Swipe Quiz, dove serve l'HTML di OGNI domanda per
-      // poterla swipare singolarmente. Default OFF per non gonfiare i
-      // crawl del Funnel Analyzer / Checkpoint che vivono di solo
-      // screenshot + URL. page.content() include il DOM post-React quindi
-      // copre i quiz SPA dove il fetch raw e' un guscio vuoto.
-      let stepHtml = null;
-      if (params.captureHtml) {
-        // Serialise the DOM with a live CSSOM snapshot injected, so the
-        // captured HTML renders styled in the editor without re-running the
-        // SPA scripts (which the editor neutralises). Falls back to plain
-        // page.content() if the snapshot couldn't be built.
-        stepHtml = await captureFullCssom(page);
-        if (!stepHtml) stepHtml = await page.content().catch(() => null);
+        const nextIndex = steps.length + 1;
+        // Capture the screenshot BEFORE pushing the step so we can attach
+        // the URL inline. We do it before the click that advances the
+        // funnel, so the thumbnail shows what the user saw at that step.
+        const screenshotUrl = await captureCrawlScreenshot(page, jobId, nextIndex);
+
+        // OPT-IN: cattura anche l'HTML renderizzato per step. Usato dalla
+        // sezione Clone/Swipe Quiz, dove serve l'HTML di OGNI domanda per
+        // poterla swipare singolarmente. Default OFF per non gonfiare i
+        // crawl del Funnel Analyzer / Checkpoint che vivono di solo
+        // screenshot + URL. page.content() include il DOM post-React quindi
+        // copre i quiz SPA dove il fetch raw e' un guscio vuoto.
+        let stepHtml = null;
+        if (params.captureHtml) {
+          // Serialise the DOM with a live CSSOM snapshot injected, so the
+          // captured HTML renders styled in the editor without re-running the
+          // SPA scripts (which the editor neutralises). Falls back to plain
+          // page.content() if the snapshot couldn't be built.
+          stepHtml = await captureFullCssom(page);
+          if (!stepHtml) stepHtml = await page.content().catch(() => null);
+        }
+
+        steps.push({
+          stepIndex: nextIndex,
+          url,
+          title,
+          // `quizStepLabel` is what the checkpoint modal renders as the
+          // row title — for SPA funnels (URL never changes) it's the only
+          // way for the user to tell steps apart. Falls back to title +
+          // index so the row is never blank.
+          quizStepLabel: label || title || `Step ${nextIndex}`,
+          // Public Supabase Storage URL. Null if upload failed; the UI
+          // gracefully falls back to URL-only when missing.
+          screenshotUrl,
+          // Full post-render HTML del DOM, solo se params.captureHtml=true.
+          // null altrimenti (non popolato sui crawl Funnel Analyzer).
+          html: stepHtml,
+          htmlLength: stepHtml ? stepHtml.length : 0,
+          timestamp: new Date().toISOString(),
+          isQuizStep: true,
+        });
+        lastCapturedFp = fp;
+        log(
+          `  · step ${steps.length}/${maxSteps}: ${url}` +
+            (label ? `  ⟶ ${label.slice(0, 80)}` : '') +
+            (screenshotUrl ? '  📸' : ''),
+        );
+        await updateCrawlJob(jobId, {
+          currentStep: steps.length,
+          totalSteps: maxSteps,
+        });
+      } else {
+        log(`  · duplicate page (same as last captured) — not re-capturing`);
       }
-
-      steps.push({
-        stepIndex: nextIndex,
-        url,
-        title,
-        // `quizStepLabel` is what the checkpoint modal renders as the
-        // row title — for SPA funnels (URL never changes) it's the only
-        // way for the user to tell steps apart. Falls back to title +
-        // index so the row is never blank.
-        quizStepLabel: label || title || `Step ${nextIndex}`,
-        // Public Supabase Storage URL. Null if upload failed; the UI
-        // gracefully falls back to URL-only when missing.
-        screenshotUrl,
-        // Full post-render HTML del DOM, solo se params.captureHtml=true.
-        // null altrimenti (non popolato sui crawl Funnel Analyzer).
-        html: stepHtml,
-        htmlLength: stepHtml ? stepHtml.length : 0,
-        timestamp: new Date().toISOString(),
-        isQuizStep: true,
-      });
-      log(
-        `  · step ${steps.length}/${maxSteps}: ${url}` +
-          (label ? `  ⟶ ${label.slice(0, 80)}` : '') +
-          (screenshotUrl ? '  📸' : ''),
-      );
-      await updateCrawlJob(jobId, {
-        currentStep: steps.length,
-        totalSteps: maxSteps,
-      });
 
       if (isCheckoutLikePage(url, title)) {
         log(`  · checkout-like page detected, stopping`);
@@ -4122,7 +4289,14 @@ async function processCrawlJob(row) {
              diagnostic. */
         });
 
-      await fillCrawlFormFields(page).catch(() => 0);
+      // For quiz captures we fill inputs with REAL Playwright .fill() inside
+      // advanceQuizWithRealClicks (synthetic value-setting doesn't update
+      // React controlled inputs, leaving the Next button disabled on
+      // height/weight/age steps). The in-page synthetic filler would set a
+      // stale DOM value that then BLOCKS the real fill, so skip it here.
+      if (!params.captureHtml) {
+        await fillCrawlFormFields(page).catch(() => 0);
+      }
 
       // Pure Playwright + heuristic. Previous version asked the LLM
       // per click, but that was both very slow (Trinity ~30-60s per

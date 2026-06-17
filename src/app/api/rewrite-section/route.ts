@@ -119,7 +119,7 @@ HTML SECTION TO REWRITE:
 ${sectionHtml}`;
 
   const response = await anthropic.messages.create({
-    model: 'claude-sonnet-4-20250514',
+    model: 'claude-opus-4-8',
     max_tokens: 16000,
     system: systemPrompt,
     messages: [{ role: 'user', content: userPrompt }],

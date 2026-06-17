@@ -27,7 +27,7 @@ import {
 
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
-const DEFAULT_MODEL = 'claude-sonnet-4-20250514';
+const DEFAULT_MODEL = 'claude-opus-4-8';
 
 /** Optional image attachment for vision-capable models. URL-source
  *  only — base64 is supported by the Anthropic API but our pipeline

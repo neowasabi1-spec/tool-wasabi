@@ -229,7 +229,7 @@ Return ONLY a valid JSON object (no markdown, no code blocks) with this EXACT st
 // =====================================================
 
 async function callClaude(prompt: string, apiKey: string): Promise<{ text: string; model: string }> {
-  const model = 'claude-sonnet-4-20250514';
+  const model = 'claude-opus-4-8';
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {

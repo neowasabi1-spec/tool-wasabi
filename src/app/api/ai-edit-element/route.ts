@@ -70,7 +70,7 @@ export async function POST(request: NextRequest) {
 
     if (isPageLevel) {
       const response = await anthropic.messages.create({
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-opus-4-8',
         max_tokens: 4096,
         system: PAGE_SYSTEM,
         messages: [{ role: 'user', content: instruction }],
@@ -98,7 +98,7 @@ export async function POST(request: NextRequest) {
       }
     } else {
       const response = await anthropic.messages.create({
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-opus-4-8',
         max_tokens: 4096,
         system: ELEMENT_SYSTEM,
         messages: [{
