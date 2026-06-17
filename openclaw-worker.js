@@ -205,6 +205,26 @@ if (OPENCLAW_BACKEND === 'anthropic') {
   if (!OPENCLAW_MODEL || /^openclaw\//i.test(OPENCLAW_MODEL)) {
     OPENCLAW_MODEL = (process.env.ANTHROPIC_MODEL || 'claude-opus-4-8').trim();
   }
+  // Defense-in-depth: Anthropic RETIRED some model ids (they now 404
+  // not_found and break every rewrite). If an old env (ANTHROPIC_MODEL /
+  // OPENCLAW_MODEL) still points at one — e.g. a machine that didn't clear
+  // its shell profile — silently remap it to a current model instead of
+  // failing the whole job.
+  const RETIRED_MODEL_REMAP = {
+    'claude-sonnet-4-20250514': 'claude-opus-4-8',
+    'claude-opus-4-20250514': 'claude-opus-4-8',
+    'claude-haiku-4-20250514': 'claude-haiku-4-5-20251001',
+    'claude-3-5-sonnet-20241022': 'claude-sonnet-4-6',
+    'claude-3-5-sonnet-20240620': 'claude-sonnet-4-6',
+    'claude-3-opus-20240229': 'claude-opus-4-8',
+  };
+  if (RETIRED_MODEL_REMAP[OPENCLAW_MODEL]) {
+    const from = OPENCLAW_MODEL;
+    OPENCLAW_MODEL = RETIRED_MODEL_REMAP[OPENCLAW_MODEL];
+    console.warn(
+      `[model] "${from}" is retired by Anthropic — auto-remapped to "${OPENCLAW_MODEL}".`,
+    );
+  }
 } else if (!OPENCLAW_MODEL) {
   OPENCLAW_MODEL = 'openclaw/main';
 }
