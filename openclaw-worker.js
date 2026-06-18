@@ -1532,10 +1532,33 @@ async function processMessage(msg) {
   let abortPoll = null;
 
   try {
-    await supabase
+    // ── ATOMIC CLAIM ──────────────────────────────────────────────
+    // Race-free claim: flip pending→processing ONLY if the row is still
+    // 'pending'. With two workers on the shared queue (Neo on PC,
+    // Morfeo on Mac) a plain unconditional update let BOTH claim the
+    // same row — the faster-failing worker (e.g. a misconfigured
+    // openai-compat box without a local LLM → HTTP 404) would then
+    // overwrite the row to 'error' and the other worker, mid-rewrite,
+    // would abort ("status_changed_to_error"). By gating on
+    // .eq('status','pending') and reading back the affected rows, only
+    // ONE worker wins; the loser sees 0 rows and bails out cleanly
+    // (no error write, no wasted tokens). Requires both workers to run
+    // this code — keep Neo (PC) and Morfeo (Mac) on the same version.
+    const { data: claimed, error: claimErr } = await supabase
       .from('openclaw_messages')
       .update({ status: 'processing' })
-      .eq('id', msg.id);
+      .eq('id', msg.id)
+      .eq('status', 'pending')
+      .select('id');
+
+    if (claimErr) {
+      log(`  ! #${msg.id}: claim fallito (${claimErr.message}) — lascio il job ad un altro worker`);
+      return;
+    }
+    if (!claimed || claimed.length === 0) {
+      log(`  ↪ #${msg.id}: già rivendicato da un altro worker — skip (claim atomico)`);
+      return;
+    }
 
     abortPoll = setInterval(async () => {
       if (jobAbortRequested) return;
@@ -4662,7 +4685,14 @@ async function maybeFallbackBackend() {
         },
         (res) => {
           res.resume();
-          done(res.statusCode > 0 && res.statusCode < 500);
+          // Treat the local LLM as usable ONLY on a 2xx from /v1/models.
+          // A 401/403/404 means *something* is squatting the port (e.g.
+          // an embedded agent server that needs auth, like the ~/.openclaw
+          // gateway) but it is NOT an OpenAI-compatible LLM — falling
+          // through to it would 401/404 every single rewrite. Requiring
+          // 2xx makes a mis-configured worker fall back to Anthropic
+          // instead of silently failing all jobs.
+          done(res.statusCode >= 200 && res.statusCode < 300);
         },
       );
       req.on('timeout', () => {
