@@ -2680,34 +2680,6 @@ async function fetchCheckpointPageHtml(url) {
         return route.continue();
       });
       const page = await ctx.newPage();
-      await page.goto(url, {
-        waitUntil: 'domcontentloaded',
-        timeout: CHECKPOINT_PLAYWRIGHT_TIMEOUT_MS,
-      });
-      await page.waitForLoadState('networkidle', { timeout: 5_000 }).catch(() => {});
-      // Wait until the page has REAL content (body text above the SPA-shell
-      // threshold and no challenge marker) before serialising, so we never
-      // capture an empty <app-root> shell or a "Just a moment..." page.
-      await page
-        .waitForFunction(
-          (minLen) => {
-            const t = (document.body && document.body.innerText
-              ? document.body.innerText
-              : ''
-            ).replace(/\s+/g, ' ').trim();
-            if (/just a moment|checking your browser|verifying you are human/i.test(t))
-              return false;
-            return t.length >= minLen;
-          },
-          CHECKPOINT_SPA_SHELL_TEXT_THRESHOLD,
-          { timeout: 20_000 },
-        )
-        .catch(() => {});
-      // Content-stabilisation: client-rendered funnels (Angular/React) and
-      // Cloudflare-gated pages load progressively — capturing the moment we
-      // cross the minimum threshold yields a PARTIAL page. Poll the body
-      // text length until it stops growing (stable across 2 checks ~1.1s
-      // apart) or a hard cap is hit, so we serialise the fully-rendered DOM.
       const measure = async () =>
         page
           .evaluate(() =>
@@ -2716,25 +2688,74 @@ async function fetchCheckpointPageHtml(url) {
               .trim().length,
           )
           .catch(() => 0);
-      let textLen = await measure();
-      let stableHits = 0;
-      for (let i = 0; i < 12; i++) {
-        await page.waitForTimeout(1100);
-        const next = await measure();
-        if (next <= textLen + 20) {
-          stableHits++;
-          if (stableHits >= 2) break; // grown <20 chars twice → settled
-        } else {
-          stableHits = 0;
+      // Wait for REAL content, then let progressively-loaded funnels settle.
+      const waitForContent = async () => {
+        await page.waitForLoadState('networkidle', { timeout: 5_000 }).catch(() => {});
+        await page
+          .waitForFunction(
+            (minLen) => {
+              const t = (document.body && document.body.innerText
+                ? document.body.innerText
+                : ''
+              ).replace(/\s+/g, ' ').trim();
+              if (/just a moment|checking your browser|verifying you are human/i.test(t))
+                return false;
+              return t.length >= minLen;
+            },
+            CHECKPOINT_SPA_SHELL_TEXT_THRESHOLD,
+            { timeout: 20_000 },
+          )
+          .catch(() => {});
+        // Content-stabilisation: capture only once the body text stops
+        // growing (stable across 2 checks ~1.1s apart) or a hard cap hits.
+        let len = await measure();
+        let stableHits = 0;
+        for (let i = 0; i < 12; i++) {
+          await page.waitForTimeout(1100);
+          const next = await measure();
+          if (next <= len + 20) {
+            stableHits++;
+            if (stableHits >= 2) break;
+          } else {
+            stableHits = 0;
+          }
+          if (next > len) len = next;
         }
-        if (next > textLen) textLen = next;
+        await page.waitForTimeout(300);
+        return len;
+      };
+      // Up to 3 loads (initial + 2 reloads). Cloudflare's JS challenge and
+      // flaky bot walls often serve a thin/partial page on the first hit but
+      // render fully on a reload (the clearance cookie is now set). Keep the
+      // richest capture we see.
+      let bestHtml = '';
+      let bestLen = -1;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          if (attempt === 0) {
+            await page.goto(url, {
+              waitUntil: 'domcontentloaded',
+              timeout: CHECKPOINT_PLAYWRIGHT_TIMEOUT_MS,
+            });
+          } else {
+            await page.reload({
+              waitUntil: 'domcontentloaded',
+              timeout: CHECKPOINT_PLAYWRIGHT_TIMEOUT_MS,
+            });
+          }
+        } catch {
+          /* nav error — measure whatever we have, maybe reload helps */
+        }
+        const len = await waitForContent();
+        if (len > bestLen) {
+          bestLen = len;
+          bestHtml = await page.content().catch(() => bestHtml);
+        }
+        if (bestLen >= CHECKPOINT_RICH_TEXT_THRESHOLD) break; // good enough
       }
-      await page.waitForTimeout(300);
-      const html = await page.content();
-      textLen = await measure();
       await page.close().catch(() => {});
       await ctx.close().catch(() => {});
-      return { html, textLen };
+      return { html: bestHtml, textLen: bestLen < 0 ? 0 : bestLen };
     } finally {
       if (browser) await browser.close().catch(() => {});
     }
