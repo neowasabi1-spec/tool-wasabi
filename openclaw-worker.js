@@ -2593,8 +2593,11 @@ async function fetchCheckpointPageHtml(url) {
     const res = await fetch(url, {
       method: 'GET',
       headers: {
+        // NOTE: keep this ASCII-only. An em-dash (or any char > 0xFF) makes
+        // undici's fetch throw "Cannot convert argument to a ByteString",
+        // killing the plain-fetch path before it can even run.
         'User-Agent':
-          'Mozilla/5.0 (Wasabi Checkpoint Bot — local worker) AppleWebKit/537.36',
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml',
       },
       redirect: 'follow',
@@ -2628,39 +2631,110 @@ async function fetchCheckpointPageHtml(url) {
       durationMs: Date.now() - t0,
     };
   }
-  let browser = null;
+  // Render the page in a real browser. Returns { html, textLen } or throws.
+  // `headless=false` (headful) is the escape hatch for aggressive bot walls
+  // (e.g. Cloudflare on drmartypets) that serve an empty shell to headless
+  // Chromium but render fully for a real window.
+  async function renderOnce(headless) {
+    let browser = null;
+    try {
+      browser = await playwrightChromium.launch({
+        headless,
+        args: [
+          '--disable-dev-shm-usage',
+          '--disable-gpu',
+          // Reduce the chance Cloudflare / bot walls flag us as automation.
+          '--disable-blink-features=AutomationControlled',
+        ],
+      });
+      const ctx = await browser.newContext({
+        // A realistic desktop UA so Cloudflare / bot walls serve the real
+        // page instead of a "Just a moment..." challenge.
+        userAgent:
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        viewport: { width: 1280, height: 1800 },
+        locale: 'en-US',
+        extraHTTPHeaders: { 'Accept-Language': 'en-US,en;q=0.9' },
+      });
+      await ctx.addInitScript(() => {
+        try {
+          Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        } catch {
+          /* ignore */
+        }
+      });
+      // Block trackers so navigation doesn't sit on networkidle waiting for
+      // analytics beacons.
+      await ctx.route('**/*', (route) => {
+        const u = route.request().url();
+        if (CRAWL_BLOCKED_HOSTS.some((h) => u.includes(h))) return route.abort();
+        return route.continue();
+      });
+      const page = await ctx.newPage();
+      await page.goto(url, {
+        waitUntil: 'domcontentloaded',
+        timeout: CHECKPOINT_PLAYWRIGHT_TIMEOUT_MS,
+      });
+      await page.waitForLoadState('networkidle', { timeout: 5_000 }).catch(() => {});
+      // Wait until the page has REAL content (body text above the SPA-shell
+      // threshold and no challenge marker) before serialising, so we never
+      // capture an empty <app-root> shell or a "Just a moment..." page.
+      await page
+        .waitForFunction(
+          (minLen) => {
+            const t = (document.body && document.body.innerText
+              ? document.body.innerText
+              : ''
+            ).replace(/\s+/g, ' ').trim();
+            if (/just a moment|checking your browser|verifying you are human/i.test(t))
+              return false;
+            return t.length >= minLen;
+          },
+          CHECKPOINT_SPA_SHELL_TEXT_THRESHOLD,
+          { timeout: 20_000 },
+        )
+        .catch(() => {});
+      await page.waitForTimeout(800);
+      const html = await page.content();
+      const textLen = await page
+        .evaluate(() =>
+          (document.body && document.body.innerText ? document.body.innerText : '')
+            .replace(/\s+/g, ' ')
+            .trim().length,
+        )
+        .catch(() => 0);
+      await page.close().catch(() => {});
+      await ctx.close().catch(() => {});
+      return { html, textLen };
+    } finally {
+      if (browser) await browser.close().catch(() => {});
+    }
+  }
+
   try {
-    browser = await playwrightChromium.launch({
-      headless: true,
-      args: ['--disable-dev-shm-usage', '--disable-gpu'],
-    });
-    const ctx = await browser.newContext({
-      userAgent:
-        'Mozilla/5.0 (Wasabi Checkpoint Bot — local worker) AppleWebKit/537.36',
-      viewport: { width: 1280, height: 1800 },
-    });
-    // Block trackers (same list as the crawl path) so navigation
-    // doesn't sit on networkidle waiting for analytics beacons.
-    await ctx.route('**/*', (route) => {
-      const u = route.request().url();
-      if (CRAWL_BLOCKED_HOSTS.some((h) => u.includes(h))) return route.abort();
-      return route.continue();
-    });
-    const page = await ctx.newPage();
-    await page.goto(url, {
-      waitUntil: 'domcontentloaded',
-      timeout: CHECKPOINT_PLAYWRIGHT_TIMEOUT_MS,
-    });
-    // Give SPAs a beat to populate the DOM after DOMContentLoaded.
-    await page.waitForLoadState('networkidle', { timeout: 5_000 }).catch(() => {});
-    const renderedHtml = await page.content();
-    await page.close().catch(() => {});
-    await ctx.close().catch(() => {});
+    // Attempt 1: headless (fast, works for the vast majority of funnels).
+    let r = await renderOnce(true);
+    let source = plainHtml ? 'playwright-spa' : 'playwright-only';
+    // Attempt 2: if headless came back as a near-empty shell (typical of a
+    // Cloudflare/bot wall that detects headless), retry headful — a real
+    // window usually passes the challenge and renders the content.
+    if (r.textLen < CHECKPOINT_SPA_SHELL_TEXT_THRESHOLD) {
+      log(`    · headless render thin (${r.textLen} chars) — retrying headful (bot wall?)`);
+      try {
+        const r2 = await renderOnce(false);
+        if (r2.textLen > r.textLen) {
+          r = r2;
+          source = 'playwright-headful';
+        }
+      } catch (e2) {
+        err(`    · headful retry failed: ${e2 && e2.message ? e2.message : e2}`);
+      }
+    }
     return {
       ok: true,
-      html: renderedHtml,
+      html: r.html,
       error: null,
-      source: plainHtml ? 'playwright-spa' : 'playwright-only',
+      source,
       durationMs: Date.now() - t0,
     };
   } catch (e) {
@@ -2673,8 +2747,6 @@ async function fetchCheckpointPageHtml(url) {
       source: plainHtml ? 'fetch-thin' : null,
       durationMs: Date.now() - t0,
     };
-  } finally {
-    if (browser) await browser.close().catch(() => {});
   }
 }
 
