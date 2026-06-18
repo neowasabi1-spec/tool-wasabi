@@ -2521,6 +2521,13 @@ const CHECKPOINT_PLAYWRIGHT_TIMEOUT_MS = 30_000; // Playwright nav
 // chars after stripping tags, treat it as a "shell SPA" and fall
 // back to Playwright. Real content pages routinely clear this bar.
 const CHECKPOINT_SPA_SHELL_TEXT_THRESHOLD = 500;
+// Heuristic: a headless render with fewer than this many chars of body
+// text is "suspiciously thin" for a real landing/funnel/advertorial
+// (those are long-form). When a headless render comes back below this,
+// we retry HEADFUL — Cloudflare/bot walls often serve a partial page to
+// headless Chromium but render the full thing in a real window. We then
+// keep whichever render produced more text.
+const CHECKPOINT_RICH_TEXT_THRESHOLD = 4000;
 
 /**
  * Strip an HTML payload down to compact, audit-ready text. Mirrors
@@ -2696,15 +2703,35 @@ async function fetchCheckpointPageHtml(url) {
           { timeout: 20_000 },
         )
         .catch(() => {});
-      await page.waitForTimeout(800);
+      // Content-stabilisation: client-rendered funnels (Angular/React) and
+      // Cloudflare-gated pages load progressively — capturing the moment we
+      // cross the minimum threshold yields a PARTIAL page. Poll the body
+      // text length until it stops growing (stable across 2 checks ~1.1s
+      // apart) or a hard cap is hit, so we serialise the fully-rendered DOM.
+      const measure = async () =>
+        page
+          .evaluate(() =>
+            (document.body && document.body.innerText ? document.body.innerText : '')
+              .replace(/\s+/g, ' ')
+              .trim().length,
+          )
+          .catch(() => 0);
+      let textLen = await measure();
+      let stableHits = 0;
+      for (let i = 0; i < 12; i++) {
+        await page.waitForTimeout(1100);
+        const next = await measure();
+        if (next <= textLen + 20) {
+          stableHits++;
+          if (stableHits >= 2) break; // grown <20 chars twice → settled
+        } else {
+          stableHits = 0;
+        }
+        if (next > textLen) textLen = next;
+      }
+      await page.waitForTimeout(300);
       const html = await page.content();
-      const textLen = await page
-        .evaluate(() =>
-          (document.body && document.body.innerText ? document.body.innerText : '')
-            .replace(/\s+/g, ' ')
-            .trim().length,
-        )
-        .catch(() => 0);
+      textLen = await measure();
       await page.close().catch(() => {});
       await ctx.close().catch(() => {});
       return { html, textLen };
@@ -2717,11 +2744,12 @@ async function fetchCheckpointPageHtml(url) {
     // Attempt 1: headless (fast, works for the vast majority of funnels).
     let r = await renderOnce(true);
     let source = plainHtml ? 'playwright-spa' : 'playwright-only';
-    // Attempt 2: if headless came back as a near-empty shell (typical of a
-    // Cloudflare/bot wall that detects headless), retry headful — a real
-    // window usually passes the challenge and renders the content.
-    if (r.textLen < CHECKPOINT_SPA_SHELL_TEXT_THRESHOLD) {
-      log(`    · headless render thin (${r.textLen} chars) — retrying headful (bot wall?)`);
+    // Attempt 2: if headless came back THIN (empty shell or only a partial
+    // page — Cloudflare/bot walls often serve headless Chromium a degraded
+    // render), retry HEADFUL. A real window usually passes the challenge and
+    // renders the full long-form page. We keep whichever produced more text.
+    if (r.textLen < CHECKPOINT_RICH_TEXT_THRESHOLD) {
+      log(`    · headless render thin (${r.textLen} chars) — retrying headful (bot wall / partial render?)`);
       try {
         const r2 = await renderOnce(false);
         if (r2.textLen > r.textLen) {
