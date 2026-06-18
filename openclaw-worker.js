@@ -125,7 +125,9 @@ let OPENCLAW_MODEL = (process.env.OPENCLAW_MODEL || '').trim();
 // backend-agnostic and stays identical — Neo and Morfeo claim
 // distinct rows from the same queue and only differ in WHO actually
 // runs the inference under the hood.
-const OPENCLAW_BACKEND = (process.env.OPENCLAW_BACKEND || 'openai-compat')
+// `let` (not const): a startup health-check may flip 'openai-compat' to
+// 'anthropic' when the local LLM is unreachable but an Anthropic key exists.
+let OPENCLAW_BACKEND = (process.env.OPENCLAW_BACKEND || 'openai-compat')
   .toLowerCase();
 const ANTHROPIC_API_KEY =
   process.env.ANTHROPIC_API_KEY || process.env.OPENCLAW_API_KEY || '';
@@ -4578,6 +4580,67 @@ async function pollCrawlJobs() {
 }
 
 // ===== STARTUP ====================================================
+// ── Startup self-heal: auto-fallback to Anthropic ──────────────────
+// A worker started WITHOUT OPENCLAW_BACKEND=anthropic defaults to the
+// 'openai-compat' path, which forwards every rewrite to a LOCAL LLM at
+// OPENCLAW_HOST:OPENCLAW_PORT. If that local server isn't running the
+// worker still claims jobs and fails ALL of them with
+// "OpenClaw HTTP 404: Not Found" — silently breaking neo/morfeo.
+//
+// To make a mis-configured machine self-heal: when the backend is
+// openai-compat AND an ANTHROPIC_API_KEY is available, ping the local
+// endpoint once. If it's unreachable, transparently switch this worker to
+// the Anthropic backend instead of 404-ing on every job.
+async function maybeFallbackBackend() {
+  if (OPENCLAW_BACKEND === 'anthropic') return; // already correct
+  if (!ANTHROPIC_API_KEY) return; // no key → can't fall back, leave as-is
+  const reachable = await new Promise((resolve) => {
+    let settled = false;
+    const done = (v) => {
+      if (!settled) {
+        settled = true;
+        resolve(v);
+      }
+    };
+    try {
+      const req = http.request(
+        {
+          hostname: OPENCLAW_HOST,
+          port: OPENCLAW_PORT,
+          path: '/v1/models',
+          method: 'GET',
+          timeout: 2500,
+        },
+        (res) => {
+          res.resume();
+          done(res.statusCode > 0 && res.statusCode < 500);
+        },
+      );
+      req.on('timeout', () => {
+        req.destroy();
+        done(false);
+      });
+      req.on('error', () => done(false));
+      req.end();
+    } catch {
+      done(false);
+    }
+  });
+  if (!reachable) {
+    err(
+      `Local LLM at ${OPENCLAW_HOST}:${OPENCLAW_PORT} is unreachable but ANTHROPIC_API_KEY is set ` +
+        `— auto-switching backend "${OPENCLAW_BACKEND}" → "anthropic" so jobs don't 404. ` +
+        `(Set OPENCLAW_BACKEND=anthropic explicitly to silence this.)`,
+    );
+    OPENCLAW_BACKEND = 'anthropic';
+    // The Anthropic Messages API needs a real Claude model id, not an
+    // openclaw/* alias — and respects a lower default token cap.
+    if (!OPENCLAW_MODEL || /^openclaw\//i.test(OPENCLAW_MODEL)) {
+      OPENCLAW_MODEL = (process.env.ANTHROPIC_MODEL || 'claude-opus-4-8').trim();
+    }
+  }
+}
+
 function printBanner() {
   console.log('╔════════════════════════════════════════════╗');
   console.log('║           OpenClaw Worker v2               ║');
@@ -4668,12 +4731,15 @@ process.on('SIGTERM', () => {
   process.exit(0);
 });
 
-printBanner();
-setInterval(poll, POLL_INTERVAL_MS);
-setInterval(cleanup, CLEANUP_INTERVAL_MS);
-poll();
+(async () => {
+  await maybeFallbackBackend();
+  printBanner();
+  setInterval(poll, POLL_INTERVAL_MS);
+  setInterval(cleanup, CLEANUP_INTERVAL_MS);
+  poll();
 
-if (playwrightChromium) {
-  setInterval(pollCrawlJobs, CRAWL_POLL_INTERVAL_MS);
-  pollCrawlJobs();
-}
+  if (playwrightChromium) {
+    setInterval(pollCrawlJobs, CRAWL_POLL_INTERVAL_MS);
+    pollCrawlJobs();
+  }
+})();
