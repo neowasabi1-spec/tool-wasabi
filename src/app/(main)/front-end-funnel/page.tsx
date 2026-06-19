@@ -72,6 +72,27 @@ import {
   type ExtractedText,
 } from '@/lib/translate-html-client';
 
+// Returns 'swipedData' or 'clonedData' — whichever blob was produced/edited
+// MOST RECENTLY. Swipe All / Rewrite can write the new HTML into clonedData
+// while a STALE swipedData from an earlier run still lingers; selecting
+// swiped purely by existence then surfaced the OLD (often original-brand)
+// version in preview / edit / download / deploy. Compare timestamps so every
+// consumer always operates on the latest version the user produced.
+function freshestHtmlTarget(
+  page: { swipedData?: unknown; clonedData?: unknown } | null | undefined,
+): 'swipedData' | 'clonedData' {
+  if (!page) return 'clonedData';
+  const toMs = (v: unknown) => (v ? (new Date(v as string).getTime() || 0) : 0);
+  const ts = (b: unknown) => {
+    const o = (b || {}) as { editedAt?: unknown; swipedAt?: unknown; cloned_at?: unknown; clonedAt?: unknown };
+    return Math.max(toMs(o.editedAt), toMs(o.swipedAt), toMs(o.cloned_at), toMs(o.clonedAt));
+  };
+  if (page.swipedData && !page.clonedData) return 'swipedData';
+  if (page.clonedData && !page.swipedData) return 'clonedData';
+  if (!page.swipedData && !page.clonedData) return 'clonedData';
+  return ts(page.swipedData) >= ts(page.clonedData) ? 'swipedData' : 'clonedData';
+}
+
 // Helper: sanitize cloned HTML and rewrite ALL relative URLs to absolute using the original domain
 // Strips scripts (unless keepScripts=true for quiz pages), rewrites src/href/url() so CSS, images, fonts load correctly in preview
 const SAVED_SECTIONS_KEY = 'funnel-swiper-saved-sections';
@@ -1234,10 +1255,15 @@ export default function FrontEndFunnel() {
           : p.swipeStatus === 'in_progress'
             ? 'in_progress'
             : 'pending';
-      let resultHtml = p.swipedData?.html || p.clonedData?.html || '';
+      const ftExp = freshestHtmlTarget(p);
+      let resultHtml =
+        (ftExp === 'swipedData' ? p.swipedData?.html : p.clonedData?.html) ||
+        p.swipedData?.html ||
+        p.clonedData?.html ||
+        '';
       if (!resultHtml) {
         try {
-          const target: 'swipedData' | 'clonedData' = p.swipedData ? 'swipedData' : 'clonedData';
+          const target: 'swipedData' | 'clonedData' = ftExp;
           const blob = await loadHtmlBlob(p.id, target);
           resultHtml = blob?.html || '';
           if (!resultHtml) {
@@ -2056,19 +2082,25 @@ export default function FrontEndFunnel() {
         const nextUrl = getNextStepUrl(page.id);
         if (!nextUrl) continue;
 
-        const html = page.swipedData?.html || page.clonedData?.html;
+        const ftLink = freshestHtmlTarget(page);
+        const srcBlob = ftLink === 'swipedData' ? page.swipedData : page.clonedData;
+        const html = srcBlob?.html || page.swipedData?.html || page.clonedData?.html;
         if (!html) continue;
 
         const linkedHtml = injectCtaLinks(html, nextUrl);
         if (linkedHtml === html) continue;
 
-        if (page.swipedData?.html) {
+        if (ftLink === 'swipedData' && page.swipedData) {
           await updateFunnelPage(page.id, {
             swipedData: { ...page.swipedData, html: linkedHtml },
           });
-        } else if (page.clonedData?.html) {
+        } else if (page.clonedData) {
           await updateFunnelPage(page.id, {
             clonedData: { ...page.clonedData, html: linkedHtml },
+          });
+        } else if (page.swipedData) {
+          await updateFunnelPage(page.id, {
+            swipedData: { ...page.swipedData, html: linkedHtml },
           });
         }
         updated++;
@@ -2084,7 +2116,11 @@ export default function FrontEndFunnel() {
   const handlePublish = useCallback(async (pageId: string, platform: 'repli' | 'checkoutchamp') => {
     const page = funnelPages.find(p => p.id === pageId);
     if (!page) return;
-    const html = page.swipedData?.html || page.clonedData?.html;
+    const ftPub = freshestHtmlTarget(page);
+    const html =
+      (ftPub === 'swipedData' ? page.swipedData?.html : page.clonedData?.html) ||
+      page.swipedData?.html ||
+      page.clonedData?.html;
     if (!html) {
       alert('No HTML available. Clone or swipe the page first.');
       return;
@@ -6276,7 +6312,12 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                   return null;
                                 };
 
-                                if (page.swipedData) {
+                                // Preview the FRESHEST blob (swiped vs cloned), not
+                                // just "swiped if it exists" — otherwise a stale
+                                // swipedData shadows a newer clonedData rewrite and
+                                // the preview shows the OLD/original version.
+                                const useSwiped = freshestHtmlTarget(page) === 'swipedData' && !!page.swipedData;
+                                if (useSwiped && page.swipedData) {
                                   const got = await fetchHtmlIfNeeded(page.swipedData, 'swipedData');
                                   if (!got) return;
                                   setPreviewTab('preview');
@@ -6455,9 +6496,9 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                           {(page.swipedData || page.clonedData) && (
                             <button
                               onClick={async () => {
-                                const target: 'swipedData' | 'clonedData' = page.swipedData ? 'swipedData' : 'clonedData';
+                                const target = freshestHtmlTarget(page);
                                 const kind = target === 'swipedData' ? 'swiped' : 'cloned';
-                                const blob = (page.swipedData || page.clonedData) as { html?: string; htmlUrl?: string } | undefined;
+                                const blob = (target === 'swipedData' ? page.swipedData : page.clonedData) as { html?: string; htmlUrl?: string } | undefined;
                                 let html = '';
                                 try {
                                   const { fetchHtmlFromStorage } = await import('@/lib/funnel-html-storage');
