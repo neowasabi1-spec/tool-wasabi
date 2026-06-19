@@ -125,12 +125,44 @@ let OPENCLAW_MODEL = (process.env.OPENCLAW_MODEL || '').trim();
 // backend-agnostic and stays identical — Neo and Morfeo claim
 // distinct rows from the same queue and only differ in WHO actually
 // runs the inference under the hood.
+// Resolve the Anthropic API key. Prefer env, but on Windows fall back to
+// the persistent User-scope registry value (HKCU\Environment). Elevated
+// scheduled-task workers (the watchdog runs RunLevel=Highest) do NOT always
+// inherit the interactive shell's environment — a worker that starts WITHOUT
+// the key silently defaults to the local-LLM backend and 404s every job.
+// Reading the registry directly guarantees the worker can find the key no
+// matter how it was launched.
+function resolveAnthropicKey() {
+  const fromEnv = process.env.ANTHROPIC_API_KEY || process.env.OPENCLAW_API_KEY || '';
+  if (fromEnv) return fromEnv;
+  if (process.platform === 'win32') {
+    try {
+      const { execSync } = require('child_process');
+      const out = execSync(
+        'reg query "HKCU\\Environment" /v ANTHROPIC_API_KEY',
+        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 4000 },
+      );
+      const m = out.match(/ANTHROPIC_API_KEY\s+REG_(?:SZ|EXPAND_SZ)\s+(.+)/i);
+      if (m && m[1]) return m[1].trim();
+    } catch (_e) { /* best-effort: registry not readable → leave empty */ }
+  }
+  return '';
+}
+const ANTHROPIC_API_KEY = resolveAnthropicKey();
 // `let` (not const): a startup health-check may flip 'openai-compat' to
 // 'anthropic' when the local LLM is unreachable but an Anthropic key exists.
-let OPENCLAW_BACKEND = (process.env.OPENCLAW_BACKEND || 'openai-compat')
-  .toLowerCase();
-const ANTHROPIC_API_KEY =
-  process.env.ANTHROPIC_API_KEY || process.env.OPENCLAW_API_KEY || '';
+//
+// Default backend selection: if OPENCLAW_BACKEND is NOT set explicitly,
+// prefer Anthropic whenever an API key is available. This makes EVERY
+// launch path (watchdog, scheduled task, a bare `node openclaw-worker.js`,
+// or an elevated relaunch) land on the cloud backend instead of silently
+// defaulting to a local LLM that may not be running — which otherwise
+// fails every job with "OpenClaw HTTP 404: Not Found". To deliberately
+// use a local LLM, set OPENCLAW_BACKEND=openai-compat explicitly.
+let OPENCLAW_BACKEND = (
+  process.env.OPENCLAW_BACKEND
+  || (ANTHROPIC_API_KEY ? 'anthropic' : 'openai-compat')
+).toLowerCase();
 const ANTHROPIC_VERSION = process.env.ANTHROPIC_VERSION || '2023-06-01';
 // Max output tokens. Anthropic Sonnet/Opus regge 8192; OpenClaw/Trinity
 // regge tipicamente fino a 16K (Trinity ha context window 32K, output
