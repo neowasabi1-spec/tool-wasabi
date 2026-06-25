@@ -1354,15 +1354,37 @@ function buildSinglePageQuiz(
     const m = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
     return m ? m[1] : html;
   }
-  function extractHead(html: string): string {
+  // Unisce gli asset di <head> (style CSSOM catturati + <link> CSS/font) di
+  // TUTTI gli step, deduplicati, cosi' anche gli step successivi al primo
+  // restano stilizzati (prima si teneva solo l'head dello step 0 → step 2+
+  // si vedevano "nudi").  Gli <script> non vengono mai inclusi.
+  const headAssets: string[] = [];
+  const seenAsset = new Set<string>();
+  function addHeadAssets(html: string) {
     const m = html.match(/<head[^>]*>([\s\S]*?)<\/head>/i);
-    if (!m) return '';
-    return m[1]
-      .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
-      .replace(/<script\b[^>]*\/>/gi, '');
+    const head = m ? m[1] : '';
+    const tagRe = /<style\b[\s\S]*?<\/style>|<link\b[^>]*>/gi;
+    let t: RegExpExecArray | null;
+    while ((t = tagRe.exec(head))) {
+      const tag = t[0];
+      // Salta i preload/modulepreload di JS (inutili senza i loro script).
+      if (
+        /<link\b/i.test(tag) &&
+        /rel=["']?(?:preload|modulepreload|prefetch)/i.test(tag) &&
+        /as=["']?script/i.test(tag)
+      ) {
+        continue;
+      }
+      const key = tag.replace(/\s+/g, ' ').trim();
+      if (!seenAsset.has(key)) {
+        seenAsset.add(key);
+        headAssets.push(tag);
+      }
+    }
   }
+  steps.forEach((s) => addHeadAssets(pick(s)));
+  const mergedHead = headAssets.join('\n');
 
-  const firstHead = extractHead(pick(steps[0]));
   const baseHref = (() => {
     try {
       const u = new URL(entryUrl);
@@ -1388,23 +1410,53 @@ function buildSinglePageQuiz(
 
   // navScript: detection runtime perche' i regex su HTML grezzo sono
   // fragili.  Cosi' lavoriamo sul DOM vero costruito dal browser.
+  //
+  // v2 — robustezza navigazione:
+  //  - Controlli fissi Avanti/Indietro SEMPRE visibili (rete di sicurezza:
+  //    l'avanzamento non si blocca mai, qualunque sia il markup).
+  //  - Marcatura "advance" LAZY: fatta quando lo step diventa visibile, cosi'
+  //    getBoundingClientRect e' valido (prima gli step nascosti davano area 0
+  //    e il fallback "bottone piu' grande" non trovava nulla → dead-end).
+  //  - Anche gli <a> con testo "Next/Continue/..." contano come advance, e
+  //    tutti gli altri <a> vengono neutralizzati (non escono dal bundle).
   const navScript = `
 <script>
 (function(){
-  var ADVANCE_TEXT_RE = /^\\s*(next|continue|avanti|continua|prossimo|submit|invia|inizia|start|begin|go|vai|proceed|finish|done|fatto|see\\s*(my|the)?\\s*result|get\\s*(my|your)?\\s*result|claim|ottieni|scopri|siguiente|weiter|suivant|continuer|próximo|next\\s*step|→)\\s*$/i;
-  var STOP_BUBBLE_TARGETS = 'a[href],button,[role=button],input[type=submit],label,[role=radio]';
+  var ADVANCE_TEXT_RE = /^\\s*(next|continue|avanti|continua|prossimo|submit|invia|inizia|start|begin|go|vai|proceed|finish|done|fatto|see\\s*(my|the)?\\s*result|get\\s*(my|your)?\\s*result|claim|ottieni|scopri|siguiente|weiter|suivant|continuer|próximo|next\\s*step|→|›|»)\\s*$/i;
   var steps = Array.prototype.slice.call(document.querySelectorAll('.quiz-step'));
   if (!steps.length) return;
   var idx = 0;
+  var marked = [];
 
   // Progress bar UI in alto
   var bar = document.createElement('div');
   bar.id = '__wq_bar';
-  bar.style.cssText = 'position:fixed;top:0;left:0;right:0;height:4px;background:rgba(0,0,0,0.08);z-index:2147483647;pointer-events:none';
+  bar.style.cssText = 'position:fixed;top:0;left:0;right:0;height:4px;background:rgba(0,0,0,0.08);z-index:2147483646;pointer-events:none';
   var fill = document.createElement('div');
   fill.style.cssText = 'height:100%;background:linear-gradient(90deg,#6366f1,#8b5cf6);width:0%;transition:width .25s ease';
   bar.appendChild(fill);
   document.body.appendChild(bar);
+
+  // Controlli fissi — GARANZIA che la navigazione funzioni sempre.
+  var ctr = document.createElement('div');
+  ctr.style.cssText = 'position:fixed;bottom:16px;left:50%;transform:translateX(-50%);display:flex;gap:8px;z-index:2147483647;font-family:system-ui,-apple-system,sans-serif';
+  var bPrev = document.createElement('button');
+  bPrev.type = 'button';
+  bPrev.textContent = '← Indietro';
+  bPrev.style.cssText = 'padding:10px 16px;border:0;border-radius:999px;background:#fff;color:#374151;box-shadow:0 2px 10px rgba(0,0,0,.18);cursor:pointer;font-size:14px;font-weight:600';
+  var bNext = document.createElement('button');
+  bNext.type = 'button';
+  bNext.textContent = 'Avanti →';
+  bNext.style.cssText = 'padding:10px 18px;border:0;border-radius:999px;background:linear-gradient(90deg,#6366f1,#8b5cf6);color:#fff;box-shadow:0 2px 10px rgba(99,102,241,.4);cursor:pointer;font-size:14px;font-weight:700';
+  bPrev.onclick = function(e){ e.preventDefault(); prev(); };
+  bNext.onclick = function(e){ e.preventDefault(); next(); };
+  ctr.appendChild(bPrev); ctr.appendChild(bNext);
+  document.body.appendChild(ctr);
+
+  function updateControls(){
+    bPrev.style.visibility = idx > 0 ? 'visible' : 'hidden';
+    bNext.textContent = idx >= steps.length - 1 ? 'Fine ✓' : 'Avanti →';
+  }
 
   function show(i){
     if (i < 0 || i >= steps.length) return;
@@ -1413,21 +1465,30 @@ function buildSinglePageQuiz(
       else { el.setAttribute('hidden', ''); el.style.display = 'none'; }
     });
     idx = i;
+    // Marca l'advance solo ORA che lo step e' visibile (rect valido).
+    if (!marked[i]) { markAdvanceInStep(steps[i]); marked[i] = true; }
     fill.style.width = ((i + 1) / steps.length * 100) + '%';
+    updateControls();
     window.scrollTo(0, 0);
   }
   function next(){ if (idx < steps.length - 1) show(idx + 1); }
   function prev(){ if (idx > 0) show(idx - 1); }
 
   function markAdvanceInStep(stepEl){
+    // 0) Neutralizza TUTTI gli <a>: non devono mai uscire dal bundle.
+    //    Quelli col testo "Next/Continue/..." diventano advance.
+    Array.prototype.forEach.call(stepEl.querySelectorAll('a'), function(a){
+      var txt = (a.innerText || '').trim();
+      if (txt && ADVANCE_TEXT_RE.test(txt)) a.setAttribute('data-wq-advance', 'btn');
+      a.setAttribute('data-wq-anchor', '1');
+    });
     // 1) Bottoni con testo che matcha "Next/Continue/Avanti/..."
-    var btns = stepEl.querySelectorAll('button,[role=button],input[type=submit],a.btn,a.button,a[class*=btn],a[class*=cta]');
+    var btns = stepEl.querySelectorAll('button,[role=button],input[type=submit],input[type=button]');
     var primary = null;
     var primaryArea = 0;
     Array.prototype.forEach.call(btns, function(b){
       var txt = (b.innerText || b.value || '').trim();
-      if (!txt) return;
-      if (ADVANCE_TEXT_RE.test(txt)) {
+      if (txt && ADVANCE_TEXT_RE.test(txt)) {
         b.setAttribute('data-wq-advance', 'btn');
         return;
       }
@@ -1455,7 +1516,6 @@ function buildSinglePageQuiz(
       o.setAttribute('data-wq-advance', 'option');
     });
   }
-  steps.forEach(markAdvanceInStep);
 
   // Highlight visivo quando clicco un'opzione, poi avanzo
   var pendingTimer = null;
@@ -1466,20 +1526,27 @@ function buildSinglePageQuiz(
     pendingTimer = setTimeout(function(){ pendingTimer = null; next(); }, 280);
   }
 
-  // Intercetta SOLO elementi marcati
+  // Intercetta gli elementi marcati
   document.addEventListener('click', function(e){
     var t = e.target;
     while (t && t !== document.body){
-      if (t.nodeType === 1 && t.hasAttribute && t.hasAttribute('data-wq-advance')){
-        var kind = t.getAttribute('data-wq-advance');
-        e.preventDefault();
-        e.stopPropagation();
-        if (kind === 'option') {
-          highlightAndAdvance(t);
-        } else {
-          next();
+      if (t.nodeType === 1 && t.hasAttribute){
+        if (t.hasAttribute('data-wq-advance')){
+          var kind = t.getAttribute('data-wq-advance');
+          e.preventDefault();
+          e.stopPropagation();
+          if (kind === 'option') {
+            highlightAndAdvance(t);
+          } else {
+            next();
+          }
+          return;
         }
-        return;
+        // <a> senza testo advance → blocca la navigazione, niente avanzamento.
+        if (t.hasAttribute('data-wq-anchor')){
+          e.preventDefault();
+          return;
+        }
       }
       t = t.parentElement;
     }
@@ -1503,9 +1570,12 @@ function buildSinglePageQuiz(
   return `<!DOCTYPE html>
 <html>
 <head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 ${baseHref}
-${firstHead}
+${mergedHead}
 <style>
+body { padding-bottom: 84px; }
 .quiz-step { width: 100%; min-height: 100vh; }
 .quiz-step[hidden] { display: none !important; }
 [data-wq-advance] { cursor: pointer; }
