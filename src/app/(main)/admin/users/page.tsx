@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import Header from '@/components/Header';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { authFetch } from '@/lib/auth/client-fetch';
-import { setImpersonation } from '@/lib/auth/impersonation-client';
+import { startImpersonation } from '@/lib/auth/impersonation-client';
 import {
   DASHBOARD_SECTIONS,
   ALL_SECTION_IDS,
@@ -449,7 +449,16 @@ function UserRow({
                 Delete user
               </button>
               <button
-                onClick={() => setImpersonation({ userId: user.user_id, email: user.email })}
+                onClick={async () => {
+                  setBusy(true);
+                  try {
+                    await startImpersonation(user.user_id);
+                    // startImpersonation reloads the page on success.
+                  } catch (e) {
+                    onError(e instanceof Error ? e.message : String(e));
+                    setBusy(false);
+                  }
+                }}
                 disabled={busy || isMe}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs text-amber-300 hover:text-white hover:bg-amber-500/20 rounded-lg disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                 title={isMe ? 'You cannot impersonate yourself' : `See the app exactly as ${user.email}`}
