@@ -27,5 +27,6 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     user: auth.user,
     permissions: auth.permissions,
+    impersonating: auth.impersonating ?? null,
   });
 }

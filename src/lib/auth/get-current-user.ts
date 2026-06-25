@@ -14,6 +14,7 @@
 
 import type { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { resolveEffectiveUserId } from './impersonation';
 
 function extractAccessToken(req: NextRequest): string | null {
   const auth = req.headers.get('authorization') || req.headers.get('Authorization');
@@ -32,7 +33,9 @@ function extractAccessToken(req: NextRequest): string | null {
  * Never throws. Logs (debug-level) on token-verification failures so
  * we can spot widespread auth issues without blowing up the route.
  */
-export async function getCurrentUserId(req: NextRequest): Promise<string | null> {
+/** Verifies the JWT and returns the REAL caller's user id (no impersonation
+ *  applied). Null when no/invalid token. Never throws. */
+async function verifyRealUserId(req: NextRequest): Promise<string | null> {
   const token = extractAccessToken(req);
   if (!token) return null;
   try {
@@ -48,6 +51,15 @@ export async function getCurrentUserId(req: NextRequest): Promise<string | null>
     }
     return null;
   }
+}
+
+export async function getCurrentUserId(req: NextRequest): Promise<string | null> {
+  const realUserId = await verifyRealUserId(req);
+  if (!realUserId) return null;
+  // Honor master-only impersonation: owner-tagging inserts then attribute
+  // rows to the impersonated user, exactly as if they had done it.
+  const { effectiveUserId } = await resolveEffectiveUserId(req, realUserId);
+  return effectiveUserId;
 }
 
 /**
@@ -71,19 +83,27 @@ export interface UserAccessContext {
 }
 
 export async function getUserAccessContext(req: NextRequest): Promise<UserAccessContext> {
-  const userId = await getCurrentUserId(req);
-  if (!userId) return { userId: null, isMaster: false };
+  const realUserId = await verifyRealUserId(req);
+  if (!realUserId) return { userId: null, isMaster: false };
+
+  const { effectiveUserId, impersonating } = await resolveEffectiveUserId(req, realUserId);
+
+  // While impersonating, the master deliberately drops to a plain-user view:
+  // they see ONLY the target's data and can never escalate via the target's
+  // role. So we force isMaster=false and skip the role lookup.
+  if (impersonating) return { userId: effectiveUserId, isMaster: false };
+
   try {
     const { data } = await supabaseAdmin
       .from('app_user_permissions')
       .select('role')
-      .eq('user_id', userId)
+      .eq('user_id', effectiveUserId)
       .maybeSingle();
-    return { userId, isMaster: data?.role === 'master' };
+    return { userId: effectiveUserId, isMaster: data?.role === 'master' };
   } catch {
     // Permissions table read failed — treat as plain user so the
     // route filters down to their own rows (fail-closed for safety
     // on the "master sees all" branch).
-    return { userId, isMaster: false };
+    return { userId: effectiveUserId, isMaster: false };
   }
 }

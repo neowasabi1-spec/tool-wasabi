@@ -24,11 +24,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import type { AppUserPermissions, AppRole } from './sections';
+import { resolveEffectiveUserId } from './impersonation';
 
 export interface AuthOk {
   ok: true;
   user: { id: string; email: string | null };
   permissions: AppUserPermissions;
+  /** Present only when a master is impersonating another user. Carries the
+   *  REAL master identity so the UI can show a banner and the server can
+   *  audit who is acting. */
+  impersonating?: { realUserId: string; realEmail: string | null };
 }
 
 export interface AuthFail {
@@ -77,8 +82,25 @@ export async function requireAuth(req: NextRequest): Promise<AuthResult> {
     };
   }
 
-  const userId = userData.user.id;
-  const email = userData.user.email ?? null;
+  const realUserId = userData.user.id;
+  const realEmail = userData.user.email ?? null;
+
+  // Master-only impersonation: if the real (verified) caller is a master and
+  // an impersonation header targets another user, act as that target user —
+  // returning THEIR permissions/email so the whole UI behaves as them.
+  const { effectiveUserId, impersonating } = await resolveEffectiveUserId(req, realUserId);
+
+  let userId = realUserId;
+  let email = realEmail;
+  if (impersonating) {
+    userId = effectiveUserId;
+    try {
+      const { data: target } = await supabaseAdmin.auth.admin.getUserById(effectiveUserId);
+      email = target?.user?.email ?? null;
+    } catch {
+      email = null;
+    }
+  }
 
   // Look up permissions. If the row is missing (trigger lagged, or older
   // data) we synthesize a 'user' with zero sections so downstream code
@@ -89,7 +111,7 @@ export async function requireAuth(req: NextRequest): Promise<AuthResult> {
     .eq('user_id', userId)
     .maybeSingle();
 
-  const permissions: AppUserPermissions = permRow ?? {
+  let permissions: AppUserPermissions = permRow ?? {
     user_id: userId,
     role: 'user' as AppRole,
     sections: [],
@@ -97,7 +119,18 @@ export async function requireAuth(req: NextRequest): Promise<AuthResult> {
     updated_at: new Date().toISOString(),
   };
 
-  return { ok: true, user: { id: userId, email }, permissions };
+  // Safety: a master must never gain master powers via impersonation, even
+  // if they target another master account. Force a plain-user role view.
+  if (impersonating && permissions.role === 'master') {
+    permissions = { ...permissions, role: 'user' as AppRole };
+  }
+
+  return {
+    ok: true,
+    user: { id: userId, email },
+    permissions,
+    ...(impersonating ? { impersonating: { realUserId, realEmail } } : {}),
+  };
 }
 
 /** Convenience guard: require auth AND the master role. Returns the same

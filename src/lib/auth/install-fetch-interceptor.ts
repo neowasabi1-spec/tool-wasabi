@@ -39,6 +39,8 @@
 
 'use client';
 
+import { IMPERSONATE_HEADER, getImpersonationUserId } from './impersonation-client';
+
 interface StoredSession {
   access_token?: string;
 }
@@ -94,32 +96,41 @@ export function installAuthFetchInterceptor(): void {
       return originalFetch(input, init);
     }
 
-    // Don't touch requests that already carry an explicit Authorization
-    // header (e.g. `authFetch`, admin tools, server-to-server forwards).
     const initHeaders = new Headers(init?.headers || {});
     const requestHasAuth =
       initHeaders.has('Authorization') ||
       (typeof Request !== 'undefined' &&
         input instanceof Request &&
         input.headers.has('Authorization'));
-    if (requestHasAuth) {
-      return originalFetch(input, init);
-    }
 
     const token = readAccessToken();
-    if (!token) {
+    const impersonateId = getImpersonationUserId();
+
+    // Nothing to add: no token to inject (request may already carry its own
+    // auth) AND no impersonation in effect → leave the request untouched.
+    if ((requestHasAuth || !token) && !impersonateId) {
       return originalFetch(input, init);
     }
 
     // Merge headers from both the Request (if any) and the init bag, then
-    // tack on the Authorization. The merged Headers object is what we hand
-    // back to the underlying fetch so neither source clobbers the other.
+    // add Authorization (only if missing) and the impersonation header. The
+    // merged Headers object is what we hand back so neither source clobbers
+    // the other.
     const merged = new Headers();
     if (typeof Request !== 'undefined' && input instanceof Request) {
       input.headers.forEach((value, key) => merged.set(key, value));
     }
     initHeaders.forEach((value, key) => merged.set(key, value));
-    merged.set('Authorization', `Bearer ${token}`);
+
+    // Inject the master/user bearer token unless the caller set its own.
+    if (token && !merged.has('Authorization')) {
+      merged.set('Authorization', `Bearer ${token}`);
+    }
+    // Master-only impersonation: the server ignores this header unless the
+    // real bearer token belongs to a master, so it can't escalate.
+    if (impersonateId) {
+      merged.set(IMPERSONATE_HEADER, impersonateId);
+    }
 
     return originalFetch(input, { ...(init || {}), headers: merged });
   };

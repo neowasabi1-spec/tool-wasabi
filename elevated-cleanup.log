@@ -1,0 +1,22 @@
+==== KILL WORKERS 2026-06-19 12:40:38 ====
+--- all node.exe ---
+PID 10508 | "C:\Program Files\nodejs\\node.exe"  "C:\Program Files\nodejs\\node_modules\npm\bin\npx-cli.js" "@playwright/mcp@latest"
+PID 3460 | "node"   "C:\Users\Neo\AppData\Local\npm-cache\_npx\9833c18b2d85bc59\node_modules\.bin\\..\@playwright\mcp\cli.js" 
+PID 34868 | c:\Users\Neo\AppData\Local\Programs\cursor\resources\app\resources\helpers\node.exe --max-old-space-size=16089 -e "process.title = process.env[\"VSCODE_PROCESS_TITLE\"]; require(process.argv[1])" c:\Users\Neo\AppData\Local\Programs\cursor\resources\app\extensions\node_modules\typescript\lib\tsserver.js --serverMode partialSemantic --useInferredProjectPerProjectRoot --disableAutomaticTypingAcquisition --cancellationPipeName C:\Users\Neo\AppData\Local\Temp\vscode-typescript\df13c6e9a98fb939c3b2\tscancellation-6e520b8b1e04d8c1a79a.tmp* --locale en --noGetErrOnBackgroundUpdate --canUseWatchEvents --validateDefaultNpmLocation
+PID 27176 | c:\Users\Neo\AppData\Local\Programs\cursor\resources\app\resources\helpers\node.exe --max-old-space-size=16089 -e "process.title = process.env[\"VSCODE_PROCESS_TITLE\"]; require(process.argv[1])" c:\Users\Neo\AppData\Local\Programs\cursor\resources\app\extensions\node_modules\typescript\lib\tsserver.js --useInferredProjectPerProjectRoot --enableTelemetry --cancellationPipeName C:\Users\Neo\AppData\Local\Temp\vscode-typescript\df13c6e9a98fb939c3b2\tscancellation-b91826c384ddd821b8e4.tmp* --locale en --noGetErrOnBackgroundUpdate --canUseWatchEvents --validateDefaultNpmLocation
+PID 27456 | c:\Users\Neo\AppData\Local\Programs\cursor\resources\app\resources\helpers\node.exe c:/Users/Neo/AppData/Local/Programs/cursor/resources/app/extensions/node_modules/typescript/lib/typingsInstaller.js --globalTypingsCacheLocation C:/Users/Neo/AppData/Local/Microsoft/TypeScript/5.9 --enableTelemetry --typesMapLocation c:/Users/Neo/AppData/Local/Programs/cursor/resources/app/extensions/node_modules/typescript/lib/typesMap.json --validateDefaultNpmLocation
+PID 31136 | "node"   "C:\Users\Neo\AppData\Roaming\npm\\node_modules\pnpm\bin\pnpm.cjs" openclaw gateway
+PID 66772 | node   "C:\Users\Neo\AppData\Local\pnpm\.tools\pnpm\10.32.1\bin\\..\node_modules\pnpm\bin\pnpm.cjs" "openclaw" "gateway"
+PID 34376 | node  scripts/run-node.mjs "gateway"
+PID 63432 | "C:\Program Files\nodejs\node.exe" openclaw.mjs gateway
+PID 32748 | "C:\Program Files\nodejs\node.exe" --disable-warning=ExperimentalWarning C:\Users\openclaw\openclaw.mjs gateway
+PID 70432 | "C:\Program Files\nodejs\node.exe" openclaw-worker.js 
+PID 63540 | "C:\Program Files\nodejs\\node.exe"  "C:\Program Files\nodejs\\node_modules\npm\bin\npx-cli.js" "@playwright/mcp@latest"
+PID 14632 | "C:\Program Files\nodejs\\node.exe"  "C:\Program Files\nodejs\\node_modules\npm\bin\npx-cli.js" "@playwright/mcp@latest"
+PID 54124 | "node"   "C:\Users\Neo\AppData\Local\npm-cache\_npx\9833c18b2d85bc59\node_modules\.bin\\..\@playwright\mcp\cli.js" 
+PID 68672 | "node"   "C:\Users\Neo\AppData\Local\npm-cache\_npx\9833c18b2d85bc59\node_modules\.bin\\..\@playwright\mcp\cli.js" 
+PID 53488 | "c:\Users\Neo\AppData\Local\Programs\cursor\resources\app\resources\helpers\node.exe" openclaw-worker.js
+--- killing 2 worker(s) ---
+KILLED 70432
+KILLED 53488
+==== DONE ====

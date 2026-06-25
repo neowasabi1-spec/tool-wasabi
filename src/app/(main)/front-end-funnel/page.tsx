@@ -3749,9 +3749,35 @@ export default function FrontEndFunnel() {
         // niente fetch — quell'URL non esiste. Usiamo direttamente l'HTML
         // gia' presente in clonedData.html. Tutto il resto del flusso resta
         // identico (sanitize, preview, save).
-        const uploadedHtml = url.startsWith('https://uploaded.local/')
-          ? (currentPage?.clonedData?.html || '')
-          : '';
+        const isUploaded = url.startsWith('https://uploaded.local/');
+        let uploadedHtml = isUploaded ? (currentPage?.clonedData?.html || '') : '';
+        if (isUploaded && !uploadedHtml) {
+          // After a reload the JSONB strips HTML > 50KB, so clonedData.html is
+          // empty in memory. Recover from IndexedDB, then from the page_html
+          // server, BEFORE giving up. We must NEVER network-fetch an
+          // uploaded.local URL — that host does not exist (chrome/googlebot/
+          // jina all "fetch failed").
+          try {
+            const { loadHtmlBlob } = await import('@/lib/html-blob-store');
+            const idb = await loadHtmlBlob(pageId, 'clonedData');
+            uploadedHtml = idb?.html || '';
+          } catch { /* ignore — try server next */ }
+          if (!uploadedHtml) {
+            try {
+              const { fetchHtmlFromStorage } = await import('@/lib/funnel-html-storage');
+              uploadedHtml =
+                (await fetchHtmlFromStorage(
+                  `/api/funnel-html?pageId=${encodeURIComponent(pageId)}&kind=cloned&variant=desktop`,
+                )) || '';
+            } catch { /* ignore */ }
+          }
+          if (!uploadedHtml) {
+            throw new Error(
+              'Uploaded HTML not found anymore (cleared cache or different device). ' +
+                'Re-upload the .html file for this step.',
+            );
+          }
+        }
         let data: {
           content?: string;
           mobileContent?: string | null;
@@ -3858,6 +3884,35 @@ export default function FrontEndFunnel() {
       } else if (mode === 'rewrite') {
         // All rewrites go through /api/quiz-rewrite (Anthropic Claude)
         let htmlToRewrite = currentPage?.clonedData?.html || currentPage?.swipedData?.html || '';
+        const isUploadedRow = url.startsWith('https://uploaded.local/');
+        if (!htmlToRewrite) {
+          // Memory can be empty after a reload (JSONB strips HTML > 50KB).
+          // Recover from IndexedDB, then the page_html server, BEFORE any
+          // network clone — and NEVER network-fetch an uploaded.local URL.
+          try {
+            const { loadHtmlBlob } = await import('@/lib/html-blob-store');
+            const idb =
+              (await loadHtmlBlob(pageId, 'clonedData')) ||
+              (await loadHtmlBlob(pageId, 'swipedData'));
+            htmlToRewrite = idb?.html || '';
+          } catch { /* ignore — try server next */ }
+          if (!htmlToRewrite) {
+            try {
+              const { fetchHtmlFromStorage } = await import('@/lib/funnel-html-storage');
+              const base = `/api/funnel-html?pageId=${encodeURIComponent(pageId)}`;
+              htmlToRewrite =
+                (await fetchHtmlFromStorage(`${base}&kind=cloned&variant=desktop`)) ||
+                (await fetchHtmlFromStorage(`${base}&kind=swiped&variant=desktop`)) ||
+                '';
+            } catch { /* ignore */ }
+          }
+          if (!htmlToRewrite && isUploadedRow) {
+            throw new Error(
+              'Uploaded HTML not found anymore (cleared cache or different device). ' +
+                'Re-upload the .html file for this step.',
+            );
+          }
+        }
         const chosenAuditorEarly = auditorRef.current;
 
         // No size threshold — if there's no cached HTML at all we clone first;

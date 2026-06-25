@@ -16,6 +16,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import type { User } from '@supabase/supabase-js';
 import type { AppUserPermissions, AppRole } from '@/lib/auth/sections';
+import { getImpersonation, type ImpersonationTarget } from '@/lib/auth/impersonation-client';
 
 export interface CurrentUser {
   user: User;
@@ -215,5 +216,11 @@ export function useCurrentUser() {
     };
   }, [fetchPermissions]);
 
-  return { ...(data ? data : { user: null, permissions: null }), loading };
+  // The active impersonation target (master only). Null when not impersonating.
+  // While set, `permissions`/`user` above already reflect the TARGET user,
+  // because whoami resolves the impersonation header server-side.
+  const impersonation: ImpersonationTarget | null =
+    typeof window !== 'undefined' ? getImpersonation() : null;
+
+  return { ...(data ? data : { user: null, permissions: null }), loading, impersonation };
 }

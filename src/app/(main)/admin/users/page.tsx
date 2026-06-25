@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import Header from '@/components/Header';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { authFetch } from '@/lib/auth/client-fetch';
+import { setImpersonation } from '@/lib/auth/impersonation-client';
 import {
   DASHBOARD_SECTIONS,
   ALL_SECTION_IDS,
@@ -13,7 +14,7 @@ import {
 } from '@/lib/auth/sections';
 import {
   Loader2, Plus, Trash2, Save, X, Shield, ShieldCheck,
-  UserPlus, KeyRound, ChevronDown, ChevronRight, AlertCircle, CheckCircle,
+  UserPlus, KeyRound, ChevronDown, ChevronRight, AlertCircle, CheckCircle, UserCog,
 } from 'lucide-react';
 
 export default function AdminUsersPage() {
@@ -437,15 +438,26 @@ function UserRow({
           </div>
 
           <div className="flex justify-between items-center pt-2 border-t border-gray-800">
-            <button
-              onClick={remove}
-              disabled={busy || isMe}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs text-red-300 hover:text-white hover:bg-red-500/20 rounded-lg disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-              title={isMe ? 'You cannot delete your own account' : 'Delete user'}
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-              Delete user
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={remove}
+                disabled={busy || isMe}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs text-red-300 hover:text-white hover:bg-red-500/20 rounded-lg disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                title={isMe ? 'You cannot delete your own account' : 'Delete user'}
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                Delete user
+              </button>
+              <button
+                onClick={() => setImpersonation({ userId: user.user_id, email: user.email })}
+                disabled={busy || isMe}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs text-amber-300 hover:text-white hover:bg-amber-500/20 rounded-lg disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                title={isMe ? 'You cannot impersonate yourself' : `See the app exactly as ${user.email}`}
+              >
+                <UserCog className="w-3.5 h-3.5" />
+                Impersonate
+              </button>
+            </div>
             <button
               onClick={save}
               disabled={busy || !dirty}
