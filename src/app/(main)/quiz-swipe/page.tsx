@@ -87,6 +87,19 @@ interface QuizWalkResult {
     reason?: string;
     atStep?: number;
     hint?: string;
+    url?: string;
+    title?: string;
+    label?: string;
+    consecutiveSame?: number;
+    inventory?: Array<{
+      tag?: string;
+      cls?: string;
+      w?: number;
+      h?: number;
+      text?: string;
+      disabled?: boolean;
+      href?: string | null;
+    }>;
   } | null;
 }
 
@@ -725,7 +738,34 @@ export default function QuizSwipePage() {
               {stopDiag?.reason && (
                 <div className="mt-1 text-emerald-800/90 text-xs">
                   Stop reason: <code className="bg-emerald-100 px-1 rounded">{stopDiag.reason}</code>
+                  {typeof stopDiag.atStep === 'number' && (
+                    <span className="ml-2">at step <b>{stopDiag.atStep}</b></span>
+                  )}
+                  {stopDiag.label && (
+                    <span className="block mt-0.5">page: <i>{stopDiag.label}</i></span>
+                  )}
                   {stopDiag.hint && <span className="block mt-1 italic">{stopDiag.hint}</span>}
+                  {(stopDiag.reason === 'stuck_fingerprint' || stopDiag.reason === 'no_advance_button') &&
+                    stopDiag.inventory && stopDiag.inventory.length > 0 && (
+                      <details className="mt-2">
+                        <summary className="cursor-pointer font-semibold text-emerald-900">
+                          Bottoni trovati sulla pagina dove si è fermato ({stopDiag.inventory.length}) — clicca per espandere
+                        </summary>
+                        <div className="mt-1 max-h-56 overflow-auto rounded border border-emerald-200 bg-white/70 p-2 font-mono text-[11px] leading-relaxed text-gray-700">
+                          {stopDiag.inventory.slice(0, 40).map((it, i) => (
+                            <div key={i} className="whitespace-nowrap">
+                              <span className="text-purple-700">[{it.tag}]</span>{' '}
+                              &quot;{it.text}&quot;{' '}
+                              <span className="text-gray-400">
+                                {it.w}×{it.h}
+                                {it.disabled ? ' (disabled)' : ''}
+                                {it.href ? ` href=${it.href}` : ''}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </details>
+                    )}
                 </div>
               )}
             </div>
@@ -1580,6 +1620,13 @@ body { padding-bottom: 84px; }
 .quiz-step[hidden] { display: none !important; }
 [data-wq-advance] { cursor: pointer; }
 [data-wq-advance='option']:hover { filter: brightness(0.97); }
+/* REVEAL FIX: molti quiz (framer-motion / AOS) lasciano gli elementi a
+   opacity:0 finche' il JS non li "rivela". Rimossi gli script originali,
+   resterebbero invisibili (header presente, resto vuoto). Li forziamo
+   visibili. NB: gli step nascosti usano l'attributo [hidden], non opacity,
+   quindi questa regola non li mostra. */
+[style*="opacity:0"], [style*="opacity: 0"], [class*="opacity-0"] { opacity: 1 !important; }
+[data-aos] { opacity: 1 !important; transform: none !important; }
 </style>
 </head>
 <body>

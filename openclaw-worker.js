@@ -4200,6 +4200,97 @@ async function captureFullCssom(page) {
 // Resolve once the page has a real, visible interactive/content element —
 // i.e. client-side hydration finished. Returns true if hydrated, false on
 // timeout (page is still the streaming shell or genuinely empty).
+// Aspetta che il contenuto della pagina smetta di crescere — per SPA lente
+// (tipo mounjfit) dove DOM/testo/immagini continuano ad arrivare DOPO che il
+// primo bottone e' comparso. Campiona una metrica leggera (numero elementi +
+// immagini + lunghezza testo) e si ferma quando resta stabile per `quietMs`,
+// con tetto massimo `maxMs`. Evita di catturare uno step a meta' rendering.
+async function waitForContentStable(page, maxMs = 8000, quietMs = 700) {
+  const start = Date.now();
+  let lastSig = -1;
+  let stableSince = 0;
+  while (Date.now() - start < maxMs) {
+    const sig = await page
+      .evaluate(() => {
+        const imgs = document.images ? document.images.length : 0;
+        const els = document.getElementsByTagName('*').length;
+        const txt =
+          document.body && document.body.innerText
+            ? document.body.innerText.length
+            : 0;
+        return imgs * 100000 + els * 1000 + txt;
+      })
+      .catch(() => lastSig);
+    if (sig === lastSig) {
+      if (stableSince === 0) stableSince = Date.now();
+      if (Date.now() - stableSince >= quietMs) return true;
+    } else {
+      lastSig = sig;
+      stableSince = 0;
+    }
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  return false;
+}
+
+// Rivela il contenuto nascosto da animazioni d'ingresso (framer-motion, GSAP,
+// AOS, ecc.) che lasciano gli elementi a opacity:0 finche' il JS non li mostra.
+// Senza questo, l'HTML catturato (con gli script poi rimossi nell'editor)
+// mostra solo l'header e il resto resta invisibile. Scrolla per innescare gli
+// IntersectionObserver, poi forza opacity:1 / transform:none sugli elementi
+// rimasti nascosti. Best-effort: solo per le catture quiz (captureHtml).
+async function revealAnimatedContent(page) {
+  try {
+    await page.evaluate(async () => {
+      const h = document.body ? document.body.scrollHeight : 0;
+      const step = Math.max(200, Math.floor(window.innerHeight * 0.8));
+      for (let y = 0; y <= h; y += step) {
+        window.scrollTo(0, y);
+        await new Promise((r) => setTimeout(r, 120));
+      }
+      window.scrollTo(0, 0);
+    });
+    await page.waitForTimeout(250);
+    await page.evaluate(() => {
+      const all = document.querySelectorAll('*');
+      all.forEach((el) => {
+        const st = el.style;
+        if (!st) return;
+        // Stato iniziale inline tipico di framer-motion/GSAP (opacity:0 + transform).
+        if (st.opacity === '0') {
+          st.setProperty('opacity', '1', 'important');
+          if (/translate|scale|matrix/i.test(st.transform || '')) {
+            st.setProperty('transform', 'none', 'important');
+          }
+        }
+        if (el.hasAttribute('data-aos') || el.hasAttribute('data-animate')) {
+          st.setProperty('opacity', '1', 'important');
+          st.setProperty('transform', 'none', 'important');
+        }
+        // Nascosto via classe/CSS ma con testo visibile → override inline.
+        try {
+          const cs = window.getComputedStyle(el);
+          if (
+            cs.opacity === '0' &&
+            cs.display !== 'none' &&
+            cs.visibility !== 'hidden' &&
+            (el.textContent || '').trim().length > 0
+          ) {
+            st.setProperty('opacity', '1', 'important');
+            if (/translate|scale|matrix/i.test(cs.transform || '')) {
+              st.setProperty('transform', 'none', 'important');
+            }
+          }
+        } catch {
+          /* getComputedStyle può fallire su nodi speciali — ignora */
+        }
+      });
+    });
+  } catch {
+    /* best-effort: se fallisce, catturiamo comunque */
+  }
+}
+
 async function waitForQuizHydration(page, timeoutMs) {
   return page
     .waitForFunction(
@@ -4236,6 +4327,12 @@ async function processCrawlJob(row) {
     Math.max(1, Number(params.quizMaxSteps || params.maxSteps || CRAWL_DEFAULT_MAX_STEPS)),
     60,
   );
+
+  // I quiz (captureHtml) sono SPA spesso lente/animate: diamo finestre di
+  // transizione piu' larghe cosi' una transizione lenta non viene scambiata
+  // per "pagina bloccata". I crawl normali (solo screenshot) restano veloci.
+  const stepWaitMs = params.captureHtml ? 4000 : CRAWL_STEP_WAIT_MS;
+  const transitionMs = params.captureHtml ? 2000 : CRAWL_TRANSITION_MS;
 
   log(`crawl #${jobId}: starting (entry=${entryUrl}, maxSteps=${maxSteps})`);
   await updateCrawlJob(jobId, { status: 'running', currentStep: 0, totalSteps: maxSteps });
@@ -4299,6 +4396,12 @@ async function processCrawlJob(row) {
     // and 'load' covers that on 99% of funnels. Cap at 4s so a slow
     // tracker that we forgot to block doesn't blow the budget.
     await page.waitForLoadState('load', { timeout: 4000 }).catch(() => {});
+    // Per i quiz (captureHtml) aspettiamo anche un networkidle breve sul
+    // primo load: questi funnel caricano spesso il bundle SPA + asset pesanti
+    // e senza questo il primo step viene catturato a guscio quasi vuoto.
+    if (params.captureHtml) {
+      await page.waitForLoadState('networkidle', { timeout: 6000 }).catch(() => {});
+    }
 
     let consecutiveSame = 0;
     // Normalised fingerprint of the last step we actually CAPTURED. Used to
@@ -4350,7 +4453,7 @@ async function processCrawlJob(row) {
       // step uses REAL Playwright clicks which keep the SPA on a soft
       // (client-side) navigation, so the next question renders in place and
       // this wait resolves quickly.
-      await waitForQuizHydration(page, 6000);
+      await waitForQuizHydration(page, params.captureHtml ? 9000 : 6000);
 
       const fp = await getQuizFingerprint(page).catch(() => '');
       const title = await page.title().catch(() => '');
@@ -4388,6 +4491,16 @@ async function processCrawlJob(row) {
               ),
           )
           .catch(() => {});
+
+        // SPA lente: aspetta che il DOM smetta di crescere prima di catturare,
+        // cosi' lo step non viene salvato a meta' rendering (pezzi mancanti).
+        if (params.captureHtml) {
+          await waitForContentStable(page, 8000, 700).catch(() => {});
+          // Rivela il contenuto nascosto da animazioni d'ingresso prima di
+          // catturare screenshot + HTML (altrimenti l'editor mostra solo
+          // l'header e il resto resta a opacity:0).
+          await revealAnimatedContent(page);
+        }
 
         const nextIndex = steps.length + 1;
         // Capture the screenshot BEFORE pushing the step so we can attach
@@ -4546,7 +4659,7 @@ async function processCrawlJob(row) {
       // as soon as it changes. Caps at CRAWL_STEP_WAIT_MS so a stuck
       // page doesn't block the loop forever. On fast SPAs this returns
       // in ~200-400ms instead of always sleeping 800ms.
-      const transitionDeadline = Date.now() + CRAWL_STEP_WAIT_MS;
+      const transitionDeadline = Date.now() + stepWaitMs;
       let newFp = fp;
       while (Date.now() < transitionDeadline) {
         await new Promise((r) => setTimeout(r, 100));
@@ -4557,13 +4670,20 @@ async function processCrawlJob(row) {
         // Sometimes the click triggers a slow transition (lazy-loaded
         // next slide). Give it one extra grace period before counting
         // it as a stuck page.
-        await new Promise((r) => setTimeout(r, CRAWL_TRANSITION_MS));
+        await new Promise((r) => setTimeout(r, transitionMs));
         newFp = await getQuizFingerprint(page).catch(() => fp);
       }
       if (newFp === fp) {
         consecutiveSame++;
         if (consecutiveSame >= CRAWL_SAME_FINGERPRINT_MAX) {
-          log(`  · stuck on same fingerprint ${consecutiveSame}× — stopping`);
+          const stuckInventory = await captureDomInventory(page);
+          log(`  · stuck on same fingerprint ${consecutiveSame}× — stopping. DOM inventory at this step:`);
+          for (const it of stuckInventory.slice(0, 20)) {
+            log(`      [${it.tag}] "${it.text}" — ${it.w}x${it.h} ${it.disabled ? '(disabled)' : ''}${it.href ? ' href=' + it.href : ''} class="${it.cls}"`);
+          }
+          if (stuckInventory.length > 20) {
+            log(`      ... +${stuckInventory.length - 20} more elements not shown`);
+          }
           stopDiagnostic = {
             reason: 'stuck_fingerprint',
             atStep: steps.length,
@@ -4572,7 +4692,7 @@ async function processCrawlJob(row) {
             label,
             maxSteps,
             consecutiveSame,
-            inventory: await captureDomInventory(page),
+            inventory: stuckInventory,
             hint:
               "We DID click an advance button, but the page's text fingerprint never changed. Either the click didn't actually trigger a transition (wrong button), or the next slide is a duplicate that the dedupe heuristic interpreted as 'no progress'.",
           };
