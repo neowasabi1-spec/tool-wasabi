@@ -218,31 +218,43 @@ const EDITOR_SCRIPT = `
      impongono object-fit:cover + height/aspect-ratio fissi (sull'elemento
      stesso o su un wrapper "solo-media"): qui li neutralizziamo cosi'
      l'altezza del blocco cresce/diminuisce per contenere tutto il media. */
+  /* relaxAncestors — risale dai wrapper "solo-media" (senza testo) e ne
+     libera l'altezza cosi' crescono NEL FLUSSO: quando il media si
+     ingrandisce il contenitore si allunga e spinge in basso il contenuto
+     successivo, invece di far sbordare l'immagine sopra i testi.
+     NB: niente overflow:visible (causava lo sbordamento). */
+  function relaxAncestors(el){
+    var p=el.parentElement,d=0;
+    while(p&&p.nodeType===1&&d<4){
+      if((p.textContent||'').replace(/\s+/g,'').length>0)break;
+      var ps=p.style;
+      ps.setProperty('height','auto','important');
+      ps.setProperty('max-height','none','important');
+      ps.setProperty('min-height','0','important');
+      ps.removeProperty('aspect-ratio');
+      p=p.parentElement;d++;
+    }
+  }
+  /* normalizeMedia — porta un singolo <img>/<video> a comportarsi da
+     elemento fluido: altezza automatica (ratio naturale), niente crop,
+     mai piu' largo del contenitore (max-width:100% → niente sbordo
+     laterale sopra il testo). */
+  function normalizeMedia(el){
+    if(!el||el.nodeType!==1)return;
+    el.style.setProperty('object-fit','contain','important');
+    el.style.setProperty('height','auto','important');
+    el.style.setProperty('max-height','none','important');
+    el.style.setProperty('min-height','0','important');
+    el.style.removeProperty('aspect-ratio');
+    if(!el.style.width)el.style.setProperty('max-width','100%','important');
+  }
   function fitMedia(el){
     if(!el||el.nodeType!==1)return;
     var tag=(el.tagName||'').toLowerCase();
     if(tag!=='img'&&tag!=='video')return;
     try{
-      el.style.setProperty('object-fit','contain','important');
-      el.style.setProperty('height','auto','important');
-      el.style.setProperty('max-height','none','important');
-      el.style.setProperty('min-height','0','important');
-      el.style.removeProperty('aspect-ratio');
-      if(!el.style.width)el.style.setProperty('max-width','100%','important');
-      /* Rilassa i wrapper che ritaglierebbero il media: risali finche'
-         restiamo dentro un contenitore "solo-media" (senza testo
-         significativo), max 4 livelli, per non toccare sezioni con copy. */
-      var p=el.parentElement,d=0;
-      while(p&&p.nodeType===1&&d<4){
-        if((p.textContent||'').replace(/\s+/g,'').length>0)break;
-        var ps=p.style;
-        ps.setProperty('height','auto','important');
-        ps.setProperty('max-height','none','important');
-        ps.setProperty('min-height','0','important');
-        ps.removeProperty('aspect-ratio');
-        ps.setProperty('overflow','visible','important');
-        p=p.parentElement;d++;
-      }
+      normalizeMedia(el);
+      relaxAncestors(el);
     }catch(e){}
   }
 
@@ -419,17 +431,22 @@ const EDITOR_SCRIPT = `
   document.body.appendChild(resizeBtn);
 
   var resizeTarget=null;
-  function mediaOf(el){
+  /* pickResizeTarget — decide COSA ridimensiona la maniglia:
+     - se l'elemento selezionato E' una foto/video → quella;
+     - se ne CONTIENE una sola → quella (l'immagine, non il wrapper);
+     - se ne contiene piu' d'una (collage/gallery) → il BLOCCO intero,
+       cosi' scala tutto insieme e resta nel flusso. */
+  function pickResizeTarget(el){
     if(!el||el.nodeType!==1)return null;
     var t=(el.tagName||'').toLowerCase();
     if(t==='img'||t==='video')return el;
     var ms=el.querySelectorAll?el.querySelectorAll('img,video'):[];
-    var best=null,ba=-1;
-    for(var i=0;i<ms.length;i++){var r=ms[i].getBoundingClientRect();var a=r.width*r.height;if(a>ba){ba=a;best=ms[i];}}
-    return best;
+    if(ms.length===1)return ms[0];
+    if(ms.length>1)return el;
+    return null;
   }
   function positionResize(el){
-    var m=mediaOf(el);
+    var m=pickResizeTarget(el);
     if(!m){resizeBtn.style.display='none';resizeTarget=null;return;}
     resizeTarget=m;
     var r=m.getBoundingClientRect();
@@ -439,17 +456,30 @@ const EDITOR_SCRIPT = `
   }
   function hideResize(){resizeBtn.style.display='none';resizeTarget=null;}
 
-  var resizing=false,rzStartLeft=0;
+  var resizing=false,rzStartLeft=0,rzMaxW=0;
   resizeBtn.addEventListener('pointerdown',function(e){
     if(!resizeTarget)return;
     e.preventDefault();e.stopPropagation();
     resizing=true;
     rzStartLeft=resizeTarget.getBoundingClientRect().left;
-    /* Rendiamo lo scaling proporzionale: la larghezza guida, l'altezza segue. */
-    resizeTarget.style.setProperty('height','auto','important');
-    resizeTarget.style.removeProperty('aspect-ratio');
-    resizeTarget.style.setProperty('object-fit','contain','important');
-    resizeTarget.style.setProperty('max-width','none','important');
+    var tag=(resizeTarget.tagName||'').toLowerCase();
+    if(tag==='img'||tag==='video'){
+      /* Media singolo: scaling proporzionale, altezza automatica. */
+      normalizeMedia(resizeTarget);
+    }else{
+      /* Blocco/collage: altezza automatica cosi' cresce nel flusso e
+         normalizza le immagini interne perche' scalino col blocco. */
+      resizeTarget.style.setProperty('height','auto','important');
+      resizeTarget.style.setProperty('max-height','none','important');
+      resizeTarget.style.removeProperty('aspect-ratio');
+      var _inner=resizeTarget.querySelectorAll('img,video');
+      for(var _im=0;_im<_inner.length;_im++)normalizeMedia(_inner[_im]);
+    }
+    /* Libera l'altezza dei contenitori: crescendo spingono giu' il resto. */
+    relaxAncestors(resizeTarget);
+    /* Mai piu' largo del contenitore: niente sbordo orizzontale sui testi. */
+    var _par=resizeTarget.parentElement;
+    rzMaxW=_par?(_par.clientWidth||_par.getBoundingClientRect().width):0;
     try{resizeBtn.setPointerCapture(e.pointerId);}catch(_e){}
   });
   resizeBtn.addEventListener('pointermove',function(e){
@@ -457,7 +487,9 @@ const EDITOR_SCRIPT = `
     e.preventDefault();
     var newW=e.clientX-rzStartLeft;
     if(newW<40)newW=40;
+    if(rzMaxW&&newW>rzMaxW)newW=rzMaxW;
     resizeTarget.style.setProperty('width',Math.round(newW)+'px','important');
+    resizeTarget.style.setProperty('max-width','100%','important');
     resizeTarget.style.setProperty('height','auto','important');
     positionResize(sel||resizeTarget);
     positionPlus();positionDel(sel||resizeTarget);
