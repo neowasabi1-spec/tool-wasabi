@@ -212,6 +212,40 @@ const EDITOR_SCRIPT = `
     return found;
   }
 
+  /* fitMedia — quando cambia la sorgente di un media (<img>/<video>) il
+     blocco deve ADATTARSI al nuovo file e mostrarlo INTERO alla sua
+     proporzione naturale, senza ritagli. Le pagine clonate spesso
+     impongono object-fit:cover + height/aspect-ratio fissi (sull'elemento
+     stesso o su un wrapper "solo-media"): qui li neutralizziamo cosi'
+     l'altezza del blocco cresce/diminuisce per contenere tutto il media. */
+  function fitMedia(el){
+    if(!el||el.nodeType!==1)return;
+    var tag=(el.tagName||'').toLowerCase();
+    if(tag!=='img'&&tag!=='video')return;
+    try{
+      el.style.setProperty('object-fit','contain','important');
+      el.style.setProperty('height','auto','important');
+      el.style.setProperty('max-height','none','important');
+      el.style.setProperty('min-height','0','important');
+      el.style.removeProperty('aspect-ratio');
+      if(!el.style.width)el.style.setProperty('max-width','100%','important');
+      /* Rilassa i wrapper che ritaglierebbero il media: risali finche'
+         restiamo dentro un contenitore "solo-media" (senza testo
+         significativo), max 4 livelli, per non toccare sezioni con copy. */
+      var p=el.parentElement,d=0;
+      while(p&&p.nodeType===1&&d<4){
+        if((p.textContent||'').replace(/\s+/g,'').length>0)break;
+        var ps=p.style;
+        ps.setProperty('height','auto','important');
+        ps.setProperty('max-height','none','important');
+        ps.setProperty('min-height','0','important');
+        ps.removeProperty('aspect-ratio');
+        ps.setProperty('overflow','visible','important');
+        p=p.parentElement;d++;
+      }
+    }catch(e){}
+  }
+
   function gi(el){
     if(!el)return null;
     var cs=getComputedStyle(el),r=el.getBoundingClientRect();
@@ -877,7 +911,7 @@ const EDITOR_SCRIPT = `
            lazy-load (data-src, data-original, srcset, data-srcset, ...).
            Altrimenti prepareEditorHtml alla RIAPERTURA ripromuove quei
            valori VECCHI dentro src e l'immagine torna a quella di prima. */
-        if(m.name==='src'){var _LZA=['srcset','data-src','data-original','data-original-src','data-orig-src','data-lazy-src','data-lazy','data-lazyload','data-lazy-load','data-url','data-image-src','data-image','data-thumb','data-cfsrc','data-cmplz-src','data-wf-src','data-echo','data-defer-src','data-hi-res-src','data-actual','data-srcfallback','data-srcset','data-lazy-srcset','data-cfsrcset','data-cmplz-srcset','data-wf-srcset'];for(var _zz=0;_zz<_LZA.length;_zz++){sel.removeAttribute(_LZA[_zz]);}}
+        if(m.name==='src'){var _LZA=['srcset','data-src','data-original','data-original-src','data-orig-src','data-lazy-src','data-lazy','data-lazyload','data-lazy-load','data-url','data-image-src','data-image','data-thumb','data-cfsrc','data-cmplz-src','data-wf-src','data-echo','data-defer-src','data-hi-res-src','data-actual','data-srcfallback','data-srcset','data-lazy-srcset','data-cfsrcset','data-cmplz-srcset','data-wf-srcset'];for(var _zz=0;_zz<_LZA.length;_zz++){sel.removeAttribute(_LZA[_zz]);}fitMedia(sel);}
         sendHtml();
         window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');}break;
       case 'cmd-set-shape':if(sel){
@@ -926,12 +960,12 @@ const EDITOR_SCRIPT = `
         if(_ci){_ci.setAttribute('src',m.value);
         /* Vedi cmd-set-attr: togliamo TUTTI gli attributi lazy così la
            promozione alla riapertura non ripristina l'immagine vecchia. */
-        var _LZB=['srcset','data-src','data-original','data-original-src','data-orig-src','data-lazy-src','data-lazy','data-lazyload','data-lazy-load','data-url','data-image-src','data-image','data-thumb','data-cfsrc','data-cmplz-src','data-wf-src','data-echo','data-defer-src','data-hi-res-src','data-actual','data-srcfallback','data-srcset','data-lazy-srcset','data-cfsrcset','data-cmplz-srcset','data-wf-srcset'];for(var _zb=0;_zb<_LZB.length;_zb++){_ci.removeAttribute(_LZB[_zb]);}
+        var _LZB=['srcset','data-src','data-original','data-original-src','data-orig-src','data-lazy-src','data-lazy','data-lazyload','data-lazy-load','data-url','data-image-src','data-image','data-thumb','data-cfsrc','data-cmplz-src','data-wf-src','data-echo','data-defer-src','data-hi-res-src','data-actual','data-srcfallback','data-srcset','data-lazy-srcset','data-cfsrcset','data-cmplz-srcset','data-wf-srcset'];for(var _zb=0;_zb<_LZB.length;_zb++){_ci.removeAttribute(_LZB[_zb]);}fitMedia(_ci);
         sendHtml();
         window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');}}break;
       case 'cmd-set-child-img-src-at':if(sel){var _scp=carScope(sel)||sel;var _ima=_scp.querySelectorAll('img');var _ti=_ima[m.index];
         if(_ti){_ti.setAttribute('src',m.value);
-        var _LZD=['srcset','data-src','data-original','data-original-src','data-orig-src','data-lazy-src','data-lazy','data-lazyload','data-lazy-load','data-url','data-image-src','data-image','data-thumb','data-cfsrc','data-cmplz-src','data-wf-src','data-echo','data-defer-src','data-hi-res-src','data-actual','data-srcfallback','data-srcset','data-lazy-srcset','data-cfsrcset','data-cmplz-srcset','data-wf-srcset'];for(var _zd=0;_zd<_LZD.length;_zd++){_ti.removeAttribute(_LZD[_zd]);}
+        var _LZD=['srcset','data-src','data-original','data-original-src','data-orig-src','data-lazy-src','data-lazy','data-lazyload','data-lazy-load','data-url','data-image-src','data-image','data-thumb','data-cfsrc','data-cmplz-src','data-wf-src','data-echo','data-defer-src','data-hi-res-src','data-actual','data-srcfallback','data-srcset','data-lazy-srcset','data-cfsrcset','data-cmplz-srcset','data-wf-srcset'];for(var _zd=0;_zd<_LZD.length;_zd++){_ti.removeAttribute(_LZD[_zd]);}fitMedia(_ti);
         sendHtml();
         window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');}}break;
       case 'cmd-set-child-bg-image':if(sel){
