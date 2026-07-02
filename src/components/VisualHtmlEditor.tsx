@@ -420,90 +420,129 @@ const EDITOR_SCRIPT = `
   }
   function hideDel(){delBtn.style.opacity='0';delTarget=null;}
 
-  /* ── Maniglia di ridimensionamento per i blocchi media ──
-     Quando l'elemento selezionato E' o CONTIENE una foto/video, mostriamo
-     una maniglia nell'angolo in basso a destra: trascinandola si ingrandisce
-     o rimpicciolisce il media (larghezza + altezza proporzionale). */
-  var resizeBtn=document.createElement('div');
-  resizeBtn.setAttribute('data-editor-ui','1');
-  resizeBtn.innerHTML='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v6h-6"/><path d="M3 9V3h6"/><path d="M21 21 3 3"/></svg>';
-  resizeBtn.style.cssText='position:absolute;z-index:999999;width:24px;height:24px;border-radius:6px;background:#3b82f6;display:none;align-items:center;justify-content:center;cursor:nwse-resize;box-shadow:0 2px 8px rgba(0,0,0,.3);pointer-events:auto;touch-action:none;user-select:none;border:2px solid #fff;';
-  document.body.appendChild(resizeBtn);
+  /* ── Maniglie di ridimensionamento ──
+     Tre maniglie su OGNI blocco/sezione selezionata:
+       • angolo in basso a destra (SE) → larghezza+altezza (proporzionale
+         se il target e' una foto/video);
+       • lato destro (E) → solo larghezza;
+       • lato inferiore (S) → solo altezza.
+     Trascinandole si ingrandisce/rimpicciolisce; i contenitori crescono
+     nel flusso spingendo giu' il contenuto (niente sovrapposizioni). */
+  function makeHandle(axis,cursor,icon){
+    var h=document.createElement('div');
+    h.setAttribute('data-editor-ui','1');
+    if(icon)h.innerHTML=icon;
+    h.style.cssText='position:absolute;z-index:999999;width:20px;height:20px;border-radius:6px;background:#3b82f6;display:none;align-items:center;justify-content:center;cursor:'+cursor+';box-shadow:0 2px 8px rgba(0,0,0,.3);pointer-events:auto;touch-action:none;user-select:none;border:2px solid #fff;';
+    document.body.appendChild(h);
+    h.addEventListener('pointerdown',function(e){startResize(e,axis,h);});
+    h.addEventListener('pointermove',moveResize);
+    h.addEventListener('pointerup',endResize);
+    h.addEventListener('pointercancel',endResize);
+    return h;
+  }
+  var rzSE=makeHandle('se','nwse-resize','<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v6h-6"/><path d="M3 9V3h6"/><path d="M21 21 3 3"/></svg>');
+  var rzE=makeHandle('e','ew-resize','');
+  var rzS=makeHandle('s','ns-resize','');
+  var rzHandles=[rzSE,rzE,rzS];
 
   var resizeTarget=null;
   /* pickResizeTarget — decide COSA ridimensiona la maniglia:
      - se l'elemento selezionato E' una foto/video → quella;
      - se ne CONTIENE una sola → quella (l'immagine, non il wrapper);
-     - se ne contiene piu' d'una (collage/gallery) → il BLOCCO intero,
-       cosi' scala tutto insieme e resta nel flusso. */
+     - altrimenti (collage, sezione, blocco di testo, ...) → il BLOCCO
+       selezionato stesso, cosi' le maniglie funzionano ovunque. */
   function pickResizeTarget(el){
     if(!el||el.nodeType!==1)return null;
+    if(sk(el))return null;
     var t=(el.tagName||'').toLowerCase();
     if(t==='img'||t==='video')return el;
     var ms=el.querySelectorAll?el.querySelectorAll('img,video'):[];
     if(ms.length===1)return ms[0];
-    if(ms.length>1)return el;
-    return null;
+    return el;
   }
   function positionResize(el){
     var m=pickResizeTarget(el);
-    if(!m){resizeBtn.style.display='none';resizeTarget=null;return;}
+    if(!m){hideResize();return;}
     resizeTarget=m;
     var r=m.getBoundingClientRect();
-    resizeBtn.style.left=(r.right-16+window.scrollX)+'px';
-    resizeBtn.style.top=(r.bottom-16+window.scrollY)+'px';
-    resizeBtn.style.display='flex';
+    var L=r.left+window.scrollX,T=r.top+window.scrollY;
+    /* SE = angolo basso-destra; E = meta' lato destro; S = meta' lato basso. */
+    rzSE.style.left=(L+r.width-14)+'px';rzSE.style.top=(T+r.height-14)+'px';
+    rzE.style.left=(L+r.width-12)+'px';rzE.style.top=(T+r.height/2-10)+'px';
+    rzS.style.left=(L+r.width/2-10)+'px';rzS.style.top=(T+r.height-12)+'px';
+    for(var i=0;i<rzHandles.length;i++)rzHandles[i].style.display='flex';
   }
-  function hideResize(){resizeBtn.style.display='none';resizeTarget=null;}
+  function hideResize(){for(var i=0;i<rzHandles.length;i++)rzHandles[i].style.display='none';resizeTarget=null;}
 
-  var resizing=false,rzStartLeft=0,rzMaxW=0;
-  resizeBtn.addEventListener('pointerdown',function(e){
-    if(!resizeTarget)return;
+  var resizing=false,rzAxis='',rzStartLeft=0,rzStartTop=0,rzMaxW=0,rzIsMedia=false;
+  function startResize(e,axis,h){
+    var el=pickResizeTarget(sel);
+    if(!el)return;
     e.preventDefault();e.stopPropagation();
-    resizing=true;
-    rzStartLeft=resizeTarget.getBoundingClientRect().left;
-    var tag=(resizeTarget.tagName||'').toLowerCase();
-    if(tag==='img'||tag==='video'){
-      /* Media singolo: scaling proporzionale, altezza automatica. */
-      normalizeMedia(resizeTarget);
+    resizing=true;rzAxis=axis;resizeTarget=el;
+    var r=el.getBoundingClientRect();
+    rzStartLeft=r.left;rzStartTop=r.top;
+    var tag=(el.tagName||'').toLowerCase();
+    rzIsMedia=(tag==='img'||tag==='video');
+    if(rzIsMedia){
+      if(axis==='se'){
+        /* Angolo su media = scala l'intera immagine (proporzionale). */
+        normalizeMedia(el);
+      }else{
+        /* Un solo asse su media = il media riempie il frame (object-fit
+           cover) e fissiamo l'asse NON trascinato alla dimensione attuale. */
+        el.style.setProperty('object-fit','cover','important');
+        el.style.removeProperty('aspect-ratio');
+        el.style.setProperty('max-height','none','important');
+        if(axis==='e')el.style.setProperty('height',Math.round(r.height)+'px','important');
+        if(axis==='s')el.style.setProperty('width',Math.round(r.width)+'px','important');
+      }
     }else{
-      /* Blocco/collage: altezza automatica cosi' cresce nel flusso e
-         normalizza le immagini interne perche' scalino col blocco. */
-      resizeTarget.style.setProperty('height','auto','important');
-      resizeTarget.style.setProperty('max-height','none','important');
-      resizeTarget.style.removeProperty('aspect-ratio');
-      var _inner=resizeTarget.querySelectorAll('img,video');
+      /* Blocco/collage/sezione: libera altezza e normalizza le immagini
+         interne cosi' scalano col blocco senza sbordare. */
+      el.style.setProperty('max-height','none','important');
+      el.style.removeProperty('aspect-ratio');
+      var _inner=el.querySelectorAll('img,video');
       for(var _im=0;_im<_inner.length;_im++)normalizeMedia(_inner[_im]);
     }
     /* Libera l'altezza dei contenitori: crescendo spingono giu' il resto. */
-    relaxAncestors(resizeTarget);
-    /* Mai piu' largo del contenitore: niente sbordo orizzontale sui testi. */
-    var _par=resizeTarget.parentElement;
+    relaxAncestors(el);
+    /* Larghezza max = quella del contenitore: niente sbordo laterale. */
+    var _par=el.parentElement;
     rzMaxW=_par?(_par.clientWidth||_par.getBoundingClientRect().width):0;
-    try{resizeBtn.setPointerCapture(e.pointerId);}catch(_e){}
-  });
-  resizeBtn.addEventListener('pointermove',function(e){
+    try{h.setPointerCapture(e.pointerId);}catch(_e){}
+  }
+  function moveResize(e){
     if(!resizing||!resizeTarget)return;
     e.preventDefault();
-    var newW=e.clientX-rzStartLeft;
-    if(newW<40)newW=40;
-    if(rzMaxW&&newW>rzMaxW)newW=rzMaxW;
-    resizeTarget.style.setProperty('width',Math.round(newW)+'px','important');
-    resizeTarget.style.setProperty('max-width','100%','important');
-    resizeTarget.style.setProperty('height','auto','important');
-    positionResize(sel||resizeTarget);
-    positionPlus();positionDel(sel||resizeTarget);
-  });
-  function rzEnd(e){
+    if(rzAxis==='e'||rzAxis==='se'){
+      var newW=e.clientX-rzStartLeft;
+      if(newW<40)newW=40;
+      if(rzMaxW&&newW>rzMaxW)newW=rzMaxW;
+      resizeTarget.style.setProperty('width',Math.round(newW)+'px','important');
+      resizeTarget.style.setProperty('max-width','100%','important');
+    }
+    if(rzAxis==='s'||rzAxis==='se'){
+      if(rzIsMedia&&rzAxis==='se'){
+        /* Angolo su media: altezza automatica → resta proporzionale. */
+        resizeTarget.style.setProperty('height','auto','important');
+      }else{
+        var newH=e.clientY-rzStartTop;
+        if(newH<20)newH=20;
+        resizeTarget.style.setProperty('height',Math.round(newH)+'px','important');
+      }
+    }
+    positionResize(sel);
+    positionPlus();positionDel(sel);
+  }
+  function endResize(e){
     if(!resizing)return;
     resizing=false;
-    try{resizeBtn.releasePointerCapture(e.pointerId);}catch(_e){}
+    try{e.target.releasePointerCapture(e.pointerId);}catch(_e){}
     sendHtml();
     if(sel)window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');
     positionResize(sel);
   }
-  resizeBtn.addEventListener('pointerup',rzEnd);
-  resizeBtn.addEventListener('pointercancel',rzEnd);
 
   function positionPlus(){
     if(!sel){plusBtn.style.display='none';return;}
@@ -533,9 +572,9 @@ const EDITOR_SCRIPT = `
     if(editEl){editEl.contentEditable='false';}
     plusBtn.style.display='none';var delVis=delBtn.style.opacity;delBtn.style.opacity='0';
     delBtn.style.display='none';plusBtn.style.display='none';
-    var rzVis=resizeBtn.style.display;resizeBtn.style.display='none';
+    var rzVis=[];for(var _rh=0;_rh<rzHandles.length;_rh++){rzVis.push(rzHandles[_rh].style.display);rzHandles[_rh].style.display='none';}
     var h='<!DOCTYPE html>'+document.documentElement.outerHTML;
-    delBtn.style.display='';plusBtn.style.display='';resizeBtn.style.display=rzVis;
+    delBtn.style.display='';plusBtn.style.display='';for(var _rh2=0;_rh2<rzHandles.length;_rh2++){rzHandles[_rh2].style.display=rzVis[_rh2];}
     if(sel){sel.style.outline=saved;sel.style.outlineOffset=so;positionPlus();positionResize(sel);}
     delBtn.style.opacity=delVis;
     if(editEl){editEl.contentEditable='true';}
@@ -593,7 +632,11 @@ const EDITOR_SCRIPT = `
   __imgObs.observe(document.body,{childList:true,subtree:true});
   window.addEventListener('unload',function(){ try{__imgObs.disconnect();}catch(_){} },{once:true});
 
-  function isUI(el){return el===plusBtn||el===delBtn||el===resizeBtn||plusBtn.contains(el)||delBtn.contains(el)||resizeBtn.contains(el);}
+  function isUI(el){
+    if(el===plusBtn||el===delBtn||plusBtn.contains(el)||delBtn.contains(el))return true;
+    for(var i=0;i<rzHandles.length;i++){if(el===rzHandles[i]||rzHandles[i].contains(el))return true;}
+    return false;
+  }
 
   /* ── FAQ/ACCORDION CLICK DELEGATE (editor) ─────────────────────────
    * Toggle reale apri/chiudi DENTRO l'editor anche per accordion senza
