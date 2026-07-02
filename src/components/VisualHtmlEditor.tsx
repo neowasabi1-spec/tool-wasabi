@@ -468,42 +468,48 @@ const EDITOR_SCRIPT = `
   }
   function hideResize(){for(var i=0;i<rzHandles.length;i++)rzHandles[i].style.display='none';resizeTarget=null;}
 
-  var resizing=false,rzAxis='',rzStartLeft=0,rzStartTop=0,rzMaxW=0,rzIsMedia=false;
+  var resizing=false,rzAxis='',rzStartLeft=0,rzStartTop=0,rzParentW=0,rzStartW=0,rzStartH=0,rzIsMedia=false;
   function startResize(e,axis,h){
     var el=pickResizeTarget(sel);
     if(!el)return;
     e.preventDefault();e.stopPropagation();
     resizing=true;rzAxis=axis;resizeTarget=el;
     var r=el.getBoundingClientRect();
-    rzStartLeft=r.left;rzStartTop=r.top;
+    rzStartLeft=r.left;rzStartTop=r.top;rzStartW=r.width;rzStartH=r.height;
+    /* Larghezza del contenitore: la larghezza viene salvata in % di questo,
+       cosi' la stessa modifica si adatta sia su desktop che su mobile. */
+    var _par=el.parentElement;
+    rzParentW=_par?(_par.clientWidth||_par.getBoundingClientRect().width):r.width;
+    if(!rzParentW)rzParentW=r.width||1;
     var tag=(el.tagName||'').toLowerCase();
     rzIsMedia=(tag==='img'||tag==='video');
     if(rzIsMedia){
+      el.style.setProperty('max-width','100%','important');
       if(axis==='se'){
-        /* Angolo su media = scala l'intera immagine (proporzionale). */
+        /* Angolo su media = scala l'intera immagine mantenendo il rapporto
+           naturale (larghezza in %, altezza automatica → responsive). */
         normalizeMedia(el);
       }else{
-        /* Un solo asse su media = il media riempie il frame (object-fit
-           cover) e fissiamo l'asse NON trascinato alla dimensione attuale. */
+        /* Un solo asse su media = frame con object-fit cover; la FORMA e'
+           gestita da aspect-ratio (relativo) invece che da px fissi, cosi'
+           resta responsive tra desktop e mobile. */
         el.style.setProperty('object-fit','cover','important');
-        el.style.removeProperty('aspect-ratio');
         el.style.setProperty('max-height','none','important');
-        if(axis==='e')el.style.setProperty('height',Math.round(r.height)+'px','important');
-        if(axis==='s')el.style.setProperty('width',Math.round(r.width)+'px','important');
+        el.style.setProperty('height','auto','important');
+        el.style.setProperty('width',(rzStartW/rzParentW*100).toFixed(2)+'%','important');
+        el.style.setProperty('aspect-ratio',Math.round(rzStartW)+' / '+Math.round(rzStartH),'important');
       }
     }else{
       /* Blocco/collage/sezione: libera altezza e normalizza le immagini
          interne cosi' scalano col blocco senza sbordare. */
       el.style.setProperty('max-height','none','important');
       el.style.removeProperty('aspect-ratio');
+      el.style.setProperty('max-width','100%','important');
       var _inner=el.querySelectorAll('img,video');
       for(var _im=0;_im<_inner.length;_im++)normalizeMedia(_inner[_im]);
     }
     /* Libera l'altezza dei contenitori: crescendo spingono giu' il resto. */
     relaxAncestors(el);
-    /* Larghezza max = quella del contenitore: niente sbordo laterale. */
-    var _par=el.parentElement;
-    rzMaxW=_par?(_par.clientWidth||_par.getBoundingClientRect().width):0;
     try{h.setPointerCapture(e.pointerId);}catch(_e){}
   }
   function moveResize(e){
@@ -512,15 +518,33 @@ const EDITOR_SCRIPT = `
     if(rzAxis==='e'||rzAxis==='se'){
       var newW=e.clientX-rzStartLeft;
       if(newW<40)newW=40;
-      if(rzMaxW&&newW>rzMaxW)newW=rzMaxW;
-      resizeTarget.style.setProperty('width',Math.round(newW)+'px','important');
+      if(newW>rzParentW)newW=rzParentW;
+      var pct=newW/rzParentW*100;if(pct>100)pct=100;
+      /* Larghezza in % → responsive su desktop e mobile. */
+      resizeTarget.style.setProperty('width',pct.toFixed(2)+'%','important');
       resizeTarget.style.setProperty('max-width','100%','important');
+      if(rzIsMedia&&rzAxis==='e'){
+        /* Solo larghezza su media: aggiorna la forma (aspect-ratio) mantenendo
+           l'altezza attuale, restando in unita' relative. */
+        resizeTarget.style.setProperty('aspect-ratio',Math.round(newW)+' / '+Math.round(rzStartH),'important');
+        resizeTarget.style.setProperty('height','auto','important');
+      }
     }
     if(rzAxis==='s'||rzAxis==='se'){
-      if(rzIsMedia&&rzAxis==='se'){
-        /* Angolo su media: altezza automatica → resta proporzionale. */
-        resizeTarget.style.setProperty('height','auto','important');
+      if(rzIsMedia){
+        if(rzAxis==='se'){
+          /* Angolo su media: rapporto naturale (nessun aspect-ratio forzato). */
+          resizeTarget.style.setProperty('height','auto','important');
+          resizeTarget.style.removeProperty('aspect-ratio');
+        }else{
+          /* Solo altezza su media: cambia la forma via aspect-ratio, la
+             larghezza (%) resta invariata → responsive. */
+          var newHm=e.clientY-rzStartTop;if(newHm<20)newHm=20;
+          resizeTarget.style.setProperty('aspect-ratio',Math.round(rzStartW)+' / '+Math.round(newHm),'important');
+          resizeTarget.style.setProperty('height','auto','important');
+        }
       }else{
+        /* Blocchi non-media: l'altezza resta in px (contenuto variabile). */
         var newH=e.clientY-rzStartTop;
         if(newH<20)newH=20;
         resizeTarget.style.setProperty('height',Math.round(newH)+'px','important');
