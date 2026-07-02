@@ -446,18 +446,12 @@ const EDITOR_SCRIPT = `
   var rzHandles=[rzSE,rzE,rzS];
 
   var resizeTarget=null;
-  /* pickResizeTarget — decide COSA ridimensiona la maniglia:
-     - se l'elemento selezionato E' una foto/video → quella;
-     - se ne CONTIENE una sola → quella (l'immagine, non il wrapper);
-     - altrimenti (collage, sezione, blocco di testo, ...) → il BLOCCO
-       selezionato stesso, cosi' le maniglie funzionano ovunque. */
+  /* pickResizeTarget — le maniglie agiscono SEMPRE sull'elemento
+     effettivamente selezionato: se selezioni l'immagine ridimensioni
+     l'immagine, se selezioni un blocco/contenitore esterno ridimensioni
+     quel blocco. Cosi' funzionano su qualsiasi livello (interno o esterno). */
   function pickResizeTarget(el){
-    if(!el||el.nodeType!==1)return null;
-    if(sk(el))return null;
-    var t=(el.tagName||'').toLowerCase();
-    if(t==='img'||t==='video')return el;
-    var ms=el.querySelectorAll?el.querySelectorAll('img,video'):[];
-    if(ms.length===1)return ms[0];
+    if(!el||el.nodeType!==1||sk(el))return null;
     return el;
   }
   function positionResize(el){
