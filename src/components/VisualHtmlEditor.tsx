@@ -369,6 +369,7 @@ const EDITOR_SCRIPT = `
   }
 
   var plusBtn=document.createElement('div');
+  plusBtn.setAttribute('data-editor-ui','1');
   plusBtn.innerHTML='+';
   plusBtn.style.cssText='position:absolute;z-index:999999;width:32px;height:32px;border-radius:50%;background:#3b82f6;color:#fff;font-size:20px;line-height:32px;text-align:center;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.25);display:none;pointer-events:auto;transition:transform .15s;user-select:none;';
   plusBtn.onmouseenter=function(){plusBtn.style.transform='scale(1.15)';};
@@ -379,6 +380,7 @@ const EDITOR_SCRIPT = `
   document.body.appendChild(plusBtn);
 
   var delBtn=document.createElement('div');
+  delBtn.setAttribute('data-editor-ui','1');
   delBtn.innerHTML='<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
   delBtn.style.cssText='position:absolute;z-index:999999;width:28px;height:28px;border-radius:6px;background:#ef4444;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.3);pointer-events:auto;transition:transform .15s,background .15s;user-select:none;opacity:0;transition:opacity .15s,transform .15s;';
   delBtn.onmouseenter=function(){delBtn.style.transform='scale(1.15)';delBtn.style.background='#dc2626';};
@@ -389,6 +391,7 @@ const EDITOR_SCRIPT = `
     if(toDelete){
       if(sel===toDelete){co(sel);sel=null;insertTarget=null;plusBtn.style.display='none';window.parent.postMessage({type:'element-deselected'},'*');}
       if(hover===toDelete)hover=null;
+      hideResize();
       toDelete.remove();delTarget=null;delBtn.style.opacity='0';
       sendHtml();
     }
@@ -405,6 +408,71 @@ const EDITOR_SCRIPT = `
   }
   function hideDel(){delBtn.style.opacity='0';delTarget=null;}
 
+  /* ── Maniglia di ridimensionamento per i blocchi media ──
+     Quando l'elemento selezionato E' o CONTIENE una foto/video, mostriamo
+     una maniglia nell'angolo in basso a destra: trascinandola si ingrandisce
+     o rimpicciolisce il media (larghezza + altezza proporzionale). */
+  var resizeBtn=document.createElement('div');
+  resizeBtn.setAttribute('data-editor-ui','1');
+  resizeBtn.innerHTML='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v6h-6"/><path d="M3 9V3h6"/><path d="M21 21 3 3"/></svg>';
+  resizeBtn.style.cssText='position:absolute;z-index:999999;width:24px;height:24px;border-radius:6px;background:#3b82f6;display:none;align-items:center;justify-content:center;cursor:nwse-resize;box-shadow:0 2px 8px rgba(0,0,0,.3);pointer-events:auto;touch-action:none;user-select:none;border:2px solid #fff;';
+  document.body.appendChild(resizeBtn);
+
+  var resizeTarget=null;
+  function mediaOf(el){
+    if(!el||el.nodeType!==1)return null;
+    var t=(el.tagName||'').toLowerCase();
+    if(t==='img'||t==='video')return el;
+    var ms=el.querySelectorAll?el.querySelectorAll('img,video'):[];
+    var best=null,ba=-1;
+    for(var i=0;i<ms.length;i++){var r=ms[i].getBoundingClientRect();var a=r.width*r.height;if(a>ba){ba=a;best=ms[i];}}
+    return best;
+  }
+  function positionResize(el){
+    var m=mediaOf(el);
+    if(!m){resizeBtn.style.display='none';resizeTarget=null;return;}
+    resizeTarget=m;
+    var r=m.getBoundingClientRect();
+    resizeBtn.style.left=(r.right-16+window.scrollX)+'px';
+    resizeBtn.style.top=(r.bottom-16+window.scrollY)+'px';
+    resizeBtn.style.display='flex';
+  }
+  function hideResize(){resizeBtn.style.display='none';resizeTarget=null;}
+
+  var resizing=false,rzStartLeft=0;
+  resizeBtn.addEventListener('pointerdown',function(e){
+    if(!resizeTarget)return;
+    e.preventDefault();e.stopPropagation();
+    resizing=true;
+    rzStartLeft=resizeTarget.getBoundingClientRect().left;
+    /* Rendiamo lo scaling proporzionale: la larghezza guida, l'altezza segue. */
+    resizeTarget.style.setProperty('height','auto','important');
+    resizeTarget.style.removeProperty('aspect-ratio');
+    resizeTarget.style.setProperty('object-fit','contain','important');
+    resizeTarget.style.setProperty('max-width','none','important');
+    try{resizeBtn.setPointerCapture(e.pointerId);}catch(_e){}
+  });
+  resizeBtn.addEventListener('pointermove',function(e){
+    if(!resizing||!resizeTarget)return;
+    e.preventDefault();
+    var newW=e.clientX-rzStartLeft;
+    if(newW<40)newW=40;
+    resizeTarget.style.setProperty('width',Math.round(newW)+'px','important');
+    resizeTarget.style.setProperty('height','auto','important');
+    positionResize(sel||resizeTarget);
+    positionPlus();positionDel(sel||resizeTarget);
+  });
+  function rzEnd(e){
+    if(!resizing)return;
+    resizing=false;
+    try{resizeBtn.releasePointerCapture(e.pointerId);}catch(_e){}
+    sendHtml();
+    if(sel)window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');
+    positionResize(sel);
+  }
+  resizeBtn.addEventListener('pointerup',rzEnd);
+  resizeBtn.addEventListener('pointercancel',rzEnd);
+
   function positionPlus(){
     if(!sel){plusBtn.style.display='none';return;}
     var r=sel.getBoundingClientRect();
@@ -418,7 +486,7 @@ const EDITOR_SCRIPT = `
     if(sel)co(sel);sel=el;insertTarget=el;
     el.style.outline=SS;el.style.outlineOffset='2px';
     window.parent.postMessage({type:'element-selected',data:gi(el)},'*');
-    positionPlus();positionDel(el);
+    positionPlus();positionDel(el);positionResize(el);
   }
 
   // sendHtml fa outerHTML del documento intero + structuredClone via
@@ -433,9 +501,10 @@ const EDITOR_SCRIPT = `
     if(editEl){editEl.contentEditable='false';}
     plusBtn.style.display='none';var delVis=delBtn.style.opacity;delBtn.style.opacity='0';
     delBtn.style.display='none';plusBtn.style.display='none';
+    var rzVis=resizeBtn.style.display;resizeBtn.style.display='none';
     var h='<!DOCTYPE html>'+document.documentElement.outerHTML;
-    delBtn.style.display='';plusBtn.style.display='';
-    if(sel){sel.style.outline=saved;sel.style.outlineOffset=so;positionPlus();}
+    delBtn.style.display='';plusBtn.style.display='';resizeBtn.style.display=rzVis;
+    if(sel){sel.style.outline=saved;sel.style.outlineOffset=so;positionPlus();positionResize(sel);}
     delBtn.style.opacity=delVis;
     if(editEl){editEl.contentEditable='true';}
     window.parent.postMessage({type:'html-updated',data:h},'*');
@@ -458,8 +527,8 @@ const EDITOR_SCRIPT = `
   }
 
   // Block native image/link drag so click events fire normally
-  window.addEventListener('scroll',function(){positionPlus();if(sel)positionDel(sel);else if(hover)positionDel(hover);},true);
-  window.addEventListener('resize',function(){positionPlus();if(sel)positionDel(sel);else if(hover)positionDel(hover);});
+  window.addEventListener('scroll',function(){positionPlus();if(sel){positionDel(sel);positionResize(sel);}else if(hover)positionDel(hover);},true);
+  window.addEventListener('resize',function(){positionPlus();if(sel){positionDel(sel);positionResize(sel);}else if(hover)positionDel(hover);});
 
   document.addEventListener('dragstart',function(e){e.preventDefault();},true);
 
@@ -492,7 +561,7 @@ const EDITOR_SCRIPT = `
   __imgObs.observe(document.body,{childList:true,subtree:true});
   window.addEventListener('unload',function(){ try{__imgObs.disconnect();}catch(_){} },{once:true});
 
-  function isUI(el){return el===plusBtn||el===delBtn||plusBtn.contains(el)||delBtn.contains(el);}
+  function isUI(el){return el===plusBtn||el===delBtn||el===resizeBtn||plusBtn.contains(el)||delBtn.contains(el)||resizeBtn.contains(el);}
 
   /* ── FAQ/ACCORDION CLICK DELEGATE (editor) ─────────────────────────
    * Toggle reale apri/chiudi DENTRO l'editor anche per accordion senza
@@ -993,6 +1062,7 @@ const EDITOR_SCRIPT = `
       case 'cmd-set-inner-html':if(sel){sel.innerHTML=m.value;sendHtml();
         window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');}break;
       case 'cmd-delete':if(sel){sel.remove();sel=null;sendHtml();
+        plusBtn.style.display='none';hideDel();hideResize();
         window.parent.postMessage({type:'element-deselected'},'*');}break;
       case 'cmd-duplicate':if(sel&&sel.parentElement){
         var cl=sel.cloneNode(true);sel.parentElement.insertBefore(cl,sel.nextSibling);
@@ -1013,7 +1083,7 @@ const EDITOR_SCRIPT = `
         // perdere le ultime mutazioni in coda.
         sendHtmlNow();break;
       case 'cmd-deselect':if(editing)finishEdit();if(sel)co(sel);sel=null;hover=null;
-        plusBtn.style.display='none';hideDel();
+        plusBtn.style.display='none';hideDel();hideResize();
         window.parent.postMessage({type:'element-deselected'},'*');break;
       case 'cmd-select-path':try{var found=document.querySelector(m.path);
         if(found){if(sel)co(sel);sel=found;found.style.outline=SS;found.style.outlineOffset='2px';
@@ -1687,6 +1757,9 @@ function prepareEditorHtml(html: string, sourceUrl?: string): string {
 function stripEditorScript(html: string): string {
   let result = html;
   result = result.replace(/<style data-editor-override>[\s\S]*?<\/style>/g, '');
+  // Overlay UI dell'editor (plus / cestino / maniglia resize): marcati con
+  // data-editor-ui, non devono finire nell'HTML salvato.
+  result = result.replace(/<div[^>]*\bdata-editor-ui\b[^>]*>[\s\S]*?<\/div>/gi, '');
   const idx = result.indexOf(EDITOR_SCRIPT.substring(0, 40));
   if (idx === -1) return result;
   const scriptStart = result.lastIndexOf('<script>', idx);
