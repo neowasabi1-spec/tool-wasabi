@@ -3,6 +3,23 @@ import { getCoreKnowledge } from '@/knowledge/copywriting';
 import { rescueViaJina, stabilizeClonedHtml, isSpaShell } from '@/lib/spa-rescue';
 import { inlineExternalAssets } from '@/lib/inline-assets';
 import { fetchHtmlSmart, looksLikeSpaShell } from '@/lib/fetch-html-smart';
+import { detectDynamicScripts } from '@/lib/detect-dynamic-scripts';
+
+// Decide whether a cloned page's scripts must be preserved. The Funnel
+// Builder default strips scripts (static frame for the visual editor),
+// but pages that BUILD visible content at runtime — live chat/comments,
+// viewer counters, countdowns — become empty shells when stripped. We
+// keep scripts when the caller explicitly asks (keepScripts) OR when the
+// heuristic detector finds content-generating inline JS.
+function shouldKeepScripts(html: string, explicitFlag: boolean): { keep: boolean; detected: boolean; signals: string[] } {
+  if (explicitFlag) return { keep: true, detected: false, signals: [] };
+  try {
+    const d = detectDynamicScripts(html);
+    return { keep: d.functional, detected: d.functional, signals: d.signals };
+  } catch {
+    return { keep: false, detected: false, signals: [] };
+  }
+}
 
 export const maxDuration = 300;
 export const dynamic = 'force-dynamic';
@@ -881,7 +898,8 @@ export async function POST(request: NextRequest) {
 
       // Se chrome ha funzionato E non e' un guscio SPA, usalo subito.
       if (chromeAttempt.ok && !isSpaShell(chromeAttempt.html)) {
-        const stabilizedHtml = stabilizeClonedHtml(chromeAttempt.html, cleanUrl);
+        const keepDecision = shouldKeepScripts(chromeAttempt.html, keepScriptsFlag);
+        const stabilizedHtml = stabilizeClonedHtml(chromeAttempt.html, cleanUrl, { keepScripts: keepDecision.keep });
         // BUG STORICO — Senza inlineExternalAssets l'HTML clonato
         // continua a puntare a `<link rel="stylesheet" href="https://
         // origine/assets/...">`: il browser, una volta che la pagina e'
@@ -910,6 +928,9 @@ export async function POST(request: NextRequest) {
           cssInlined: didInline,
           jsRendered: false,
           method: 'fetch-chrome',
+          scripts_kept: keepDecision.keep,
+          dynamic_content_detected: keepDecision.detected,
+          dynamic_signals: keepDecision.signals,
           timing: { chromeMs: chromeAttempt.ms, totalMs: dt },
           title: finalHtml.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || '',
         });
@@ -923,7 +944,8 @@ export async function POST(request: NextRequest) {
       console.log(`[clone-funnel] identical: googlebot ${botAttempt.ok ? 'OK' : 'KO'} status=${botAttempt.status} ${botAttempt.html.length}ch in ${botAttempt.ms}ms${botAttempt.error ? ` err=${botAttempt.error}` : ''}`);
 
       if (botAttempt.ok && !isSpaShell(botAttempt.html)) {
-        const stabilizedHtml = stabilizeClonedHtml(botAttempt.html, cleanUrl);
+        const keepDecision = shouldKeepScripts(botAttempt.html, keepScriptsFlag);
+        const stabilizedHtml = stabilizeClonedHtml(botAttempt.html, cleanUrl, { keepScripts: keepDecision.keep });
         // Stesso motivo del chrome path sopra: senza inline-css il
         // clone esposto dal nostro dominio Netlify non riesce a
         // caricare i fogli di stile cross-origin -> pagina senza
@@ -949,6 +971,9 @@ export async function POST(request: NextRequest) {
           cssInlined: didInline,
           jsRendered: false,
           method: 'fetch-googlebot',
+          scripts_kept: keepDecision.keep,
+          dynamic_content_detected: keepDecision.detected,
+          dynamic_signals: keepDecision.signals,
           timing: { chromeMs: chromeAttempt.ms, botMs: botAttempt.ms, totalMs: dt },
           title: finalHtml.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || '',
         });
@@ -988,7 +1013,8 @@ export async function POST(request: NextRequest) {
         // chiamavamo NEMMENO stabilizeClonedHtml su questo path,
         // quindi: niente <base href>, niente assolutizzazione URL,
         // niente accordion-rescue. Ora si.
-        const stabilizedHtml = stabilizeClonedHtml(jinaHtml, cleanUrl);
+        const keepDecision = shouldKeepScripts(jinaHtml, keepScriptsFlag);
+        const stabilizedHtml = stabilizeClonedHtml(jinaHtml, cleanUrl, { keepScripts: keepDecision.keep });
         let finalHtml = stabilizedHtml;
         let didInline = false;
         try {
@@ -1010,6 +1036,9 @@ export async function POST(request: NextRequest) {
           cssInlined: didInline,
           jsRendered: true,
           method: 'jina',
+          scripts_kept: keepDecision.keep,
+          dynamic_content_detected: keepDecision.detected,
+          dynamic_signals: keepDecision.signals,
           timing: { chromeMs: chromeAttempt.ms, botMs: botAttempt.ms, jinaMs, totalMs: dt },
           title: finalHtml.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || '',
         });
@@ -1020,7 +1049,8 @@ export async function POST(request: NextRequest) {
       // ── Step 4: Shell fallback se almeno un fetch ha dato qualcosa
       if (anyFetchOk && bestRaw.html.length > 200) {
         console.log(`[clone-funnel] identical: returning best fetch shell (${bestRaw.name}, ${bestRaw.html.length}ch) for ${cleanUrl}`);
-        const shellStabilized = stabilizeClonedHtml(bestRaw.html, cleanUrl);
+        const keepDecision = shouldKeepScripts(bestRaw.html, keepScriptsFlag);
+        const shellStabilized = stabilizeClonedHtml(bestRaw.html, cleanUrl, { keepScripts: keepDecision.keep });
         // Anche se e' solo lo shell SPA (no JS render), inlinare il CSS
         // mantiene il poco contenuto che c'e' (header, fonts, viewport)
         // visualmente coerente con l'originale.
@@ -1044,6 +1074,9 @@ export async function POST(request: NextRequest) {
           cssInlined: didInline,
           jsRendered: false,
           method: `fetch-shell-${bestRaw.name}`,
+          scripts_kept: keepDecision.keep,
+          dynamic_content_detected: keepDecision.detected,
+          dynamic_signals: keepDecision.signals,
           timing: { chromeMs: chromeAttempt.ms, botMs: botAttempt.ms, jinaMs, totalMs: dt },
           warning: 'Page looks like an SPA shell — JS content not rendered. Jina fallback timed out.',
           title: finalHtml.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || '',

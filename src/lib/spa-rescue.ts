@@ -12,6 +12,8 @@
 // Pure functions, no Next.js / Supabase deps — safe to import from any
 // route handler or library code.
 
+import { neutralizeRocketLoader } from './neutralize-rocket-loader';
+
 /**
  * Detect when an HTML payload is a JS-rendered SPA shell with essentially
  * no server-rendered text. Catches Vite/CRA/React-Router/Vue/Svelte/Nuxt
@@ -149,13 +151,17 @@ async function tryJinaBrowserHtml(url: string, apiKey: string): Promise<string |
  * detected, an existing <base> is replaced, neutralized anchors keep
  * their data-original-href).
  */
-export function stabilizeClonedHtml(html: string, originUrl: string): string {
+export function stabilizeClonedHtml(
+  html: string,
+  originUrl: string,
+  opts: { keepScripts?: boolean } = {},
+): string {
   let out = absolutizeUrlsInHtml(html, originUrl);
   out = injectBaseHref(out, originUrl);
   out = neutralizeAnchorHrefs(out);
   out = unlockPageScroll(out);
   out = resetAccordionState(out);
-  out = injectInteractivityRescue(out);
+  out = injectInteractivityRescue(out, opts);
   // Aggiunge `referrerpolicy="no-referrer"` a <img>/<video>/<source> e
   // `<meta name="referrer" content="no-referrer">` in <head>. Senza
   // questo, alcuni CDN (Cloudflare hotlink protection, Bunny, Replit
@@ -382,7 +388,10 @@ export function stripNonCarouselScripts(html: string): string {
   ).replace(/<script\b[^>]*\/>/gi, '');
 }
 
-export function injectInteractivityRescue(html: string): string {
+export function injectInteractivityRescue(
+  html: string,
+  opts: { keepScripts?: boolean } = {},
+): string {
   // 1) Strip SELETTIVO degli script: manteniamo le librerie carousel
   //    (Swiper, Slick, Flickity, Glide, Splide, Owl) + jQuery + i loro
   //    init inline. Cosi' i carousel della pagina funzionano REAL
@@ -391,7 +400,19 @@ export function injectInteractivityRescue(html: string): string {
   //    Tutto il resto (analytics, popup, FunnelKit FAQ JS, redirect,
   //    pixel) viene rimosso: lasciarli farebbe combattere i loro
   //    click-handler col nostro rescue FAQ in capture phase.
-  html = stripNonCarouselScripts(html);
+  //
+  //    ECCEZIONE keepScripts: pagine funzionali (live chat/commenti,
+  //    contatori, countdown) hanno bisogno del loro JS inline per
+  //    generare il contenuto a runtime. In quel caso NON strippiamo:
+  //    invece neutralizziamo Cloudflare Rocket Loader (che mangla i
+  //    `type` in `<token>-text/javascript` e carica un rocket-loader.min.js
+  //    a URL relativo che fa 404 sulla clone) cosi' quegli script
+  //    girano nativamente sull'origine clonata.
+  if (opts.keepScripts) {
+    html = neutralizeRocketLoader(html).html;
+  } else {
+    html = stripNonCarouselScripts(html);
+  }
 
   // 2) NEUTRALIZZA <details onclick="return false" open>. Pattern usato
   //    da FunnelKit (Rosabella, AICashClone, ecc.) per inibire il toggle
