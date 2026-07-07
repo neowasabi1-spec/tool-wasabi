@@ -6,6 +6,7 @@ import {
   absolutizeUrlsInHtml,
   injectNoReferrerAndEagerLoading,
 } from '@/lib/spa-rescue';
+import { neutralizeRocketLoader } from '@/lib/neutralize-rocket-loader';
 
 export const maxDuration = 300;
 
@@ -481,6 +482,9 @@ export async function POST(request: NextRequest) {
       originalHtml = await clonePageHtml(source_url!);
     }
     originalHtml = fixMediaLoading(originalHtml);
+    // Undo Cloudflare Rocket Loader so any kept inline scripts (live chat,
+    // counters, countdown) execute on the cloned origin. No-op otherwise.
+    originalHtml = neutralizeRocketLoader(originalHtml).html;
     if (originalHtml.length < 50) {
       return NextResponse.json({ error: 'HTML too short' }, { status: 400 });
     }

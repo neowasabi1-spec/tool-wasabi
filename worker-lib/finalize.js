@@ -8,6 +8,7 @@
 // Output: stessa shape che ritornava la route Netlify.
 
 const { detectDynamicScripts } = require('./detect-dynamic-scripts');
+const { neutralizeRocketLoader } = require('./neutralize-rocket-loader');
 
 function escRxLiteral(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -1153,6 +1154,13 @@ function finalizeSwipe({ html, sourceUrl, texts, rewrites, productName, applySpa
       preparedHtml = headInjection + preparedHtml;
     }
     preparedHtml = safeInjectBefore(preparedHtml, '</body>', FALLBACK_INIT_SCRIPT);
+  } else {
+    // Scripts kept (functional page: live chat/comments, counter, countdown).
+    // Undo Cloudflare Rocket Loader so those inline scripts run natively on the
+    // cloned origin instead of waiting for a rocket-loader.min.js that 404s.
+    // No-op on pages that don't use Rocket Loader.
+    const neutralized = neutralizeRocketLoader(preparedHtml);
+    preparedHtml = neutralized.html;
   }
 
   // Dedup swipe-replacer da run precedenti (idempotenza su re-finalize).

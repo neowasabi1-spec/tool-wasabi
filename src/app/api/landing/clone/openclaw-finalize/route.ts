@@ -5,6 +5,7 @@ import {
   injectNoReferrerAndEagerLoading,
 } from '@/lib/spa-rescue';
 import { detectDynamicScripts } from '@/lib/detect-dynamic-scripts';
+import { neutralizeRocketLoader } from '@/lib/neutralize-rocket-loader';
 
 type ScriptsMode = 'auto' | 'keep' | 'strip';
 
@@ -121,8 +122,18 @@ export async function POST(req: NextRequest) {
     dynamicDetected = det.functional;
     dynamicSignals = det.signals;
   }
+  let rocketRestored = 0;
+  let rocketLoaderRemoved = false;
   if (!scriptsKept) {
     html = html.replace(/<script[\s\S]*?<\/script>/gi, '');
+  } else {
+    // Undo Cloudflare Rocket Loader so kept inline scripts (live chat/comments
+    // engine, counters, countdown) execute on the cloned origin instead of
+    // waiting for a rocket-loader.min.js that 404s. Same fix as /clone.
+    const neutralized = neutralizeRocketLoader(html);
+    html = neutralized.html;
+    rocketRestored = neutralized.restored;
+    rocketLoaderRemoved = neutralized.loaderRemoved;
   }
 
   const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
@@ -162,6 +173,8 @@ export async function POST(req: NextRequest) {
     scripts_kept: scriptsKept,
     dynamic_content_detected: dynamicDetected,
     dynamic_signals: dynamicSignals,
+    rocket_loader_neutralized: rocketLoaderRemoved || rocketRestored > 0,
+    rocket_scripts_restored: rocketRestored,
     content_length: selfContainedHtml.length,
     title,
     duration_seconds:

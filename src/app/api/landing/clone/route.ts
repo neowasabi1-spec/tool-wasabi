@@ -6,6 +6,7 @@ import {
   injectNoReferrerAndEagerLoading,
 } from '@/lib/spa-rescue';
 import { detectDynamicScripts } from '@/lib/detect-dynamic-scripts';
+import { neutralizeRocketLoader } from '@/lib/neutralize-rocket-loader';
 
 type ScriptsMode = 'auto' | 'keep' | 'strip';
 
@@ -132,8 +133,19 @@ export async function POST(request: NextRequest) {
     // countdown, …) so pages like live-stream VSLs clone faithfully while
     // ordinary pages stay script-free. See resolveScriptsDecision above.
     const scriptsDecision = resolveScriptsDecision(html, scripts_mode, remove_scripts);
+    let rocketRestored = 0;
+    let rocketLoaderRemoved = false;
     if (!scriptsDecision.keep) {
       html = html.replace(/<script[\s\S]*?<\/script>/gi, '');
+    } else {
+      // When we keep scripts, undo Cloudflare Rocket Loader so the page's
+      // inline scripts (live chat/comments engine, counters, countdown)
+      // actually execute on the cloned origin. Otherwise the loader 404s and
+      // nothing runs — the classic "comments section never populates" bug.
+      const neutralized = neutralizeRocketLoader(html);
+      html = neutralized.html;
+      rocketRestored = neutralized.restored;
+      rocketLoaderRemoved = neutralized.loaderRemoved;
     }
 
     const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
@@ -164,6 +176,8 @@ export async function POST(request: NextRequest) {
       scripts_kept: scriptsDecision.keep,
       dynamic_content_detected: scriptsDecision.detected,
       dynamic_signals: scriptsDecision.signals,
+      rocket_loader_neutralized: rocketLoaderRemoved || rocketRestored > 0,
+      rocket_scripts_restored: rocketRestored,
       content_length: selfContainedHtml.length,
       title,
       duration_seconds: duration,
