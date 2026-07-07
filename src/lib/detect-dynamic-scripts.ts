@@ -63,6 +63,61 @@ export function extractInlineScriptText(html: string): string {
   return parts.join('\n');
 }
 
+// Inline scripts that are ONLY tracking/analytics — we don't want to
+// re-attach these after an editor round-trip (they add nothing visible and
+// can spam the console). If the same block also mutates the DOM we keep it.
+const TRACKING_ONLY =
+  /googletagmanager|gtag\s*\(|fbq\s*\(|fbevents|connect\.facebook|hotjar|clarity\.ms|mixpanel|segment\.(io|com)|google-analytics|_gaq|snaptr|ttq\.|pintrk|dataLayer\.push/i;
+
+/**
+ * Extract the full <script>…</script> blocks that are safe to re-inject after
+ * the visual editor stripped them. We keep INLINE (no src) scripts that carry
+ * real page logic (comment engine, countdown, counters) and drop pure
+ * analytics/pixel blocks and our own editor/fallback helpers.
+ */
+export function extractReinjectableScripts(html: string): string[] {
+  if (!html || typeof html !== 'string') return [];
+  const out: string[] = [];
+  const re = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html)) !== null) {
+    const attrs = m[1] || '';
+    if (/\bsrc\s*=/.test(attrs)) continue; // inline only
+    const body = m[2] || '';
+    if (!body.trim()) continue;
+    if (/data-fallback|data-swipe-replacer|data-editor/i.test(attrs)) continue;
+    if (TRACKING_ONLY.test(body) && !DOM_MUTATION.test(body)) continue;
+    out.push(m[0]);
+  }
+  return out;
+}
+
+const REINJECT_OPEN = '<!--cloned-dynamic-scripts-->';
+const REINJECT_CLOSE = '<!--/cloned-dynamic-scripts-->';
+
+/**
+ * Re-attach the functional inline scripts from a pristine clone into an edited
+ * copy that had its scripts stripped (e.g. after the visual editor). Idempotent
+ * — a previously re-injected block is removed before adding a fresh one.
+ * No-op when the pristine page has no content-generating scripts.
+ */
+export function reattachDynamicScripts(pristine: string, edited: string): string {
+  if (!edited) return edited;
+  if (!detectDynamicScripts(pristine).functional) return edited;
+  const blocks = extractReinjectableScripts(pristine);
+  if (blocks.length === 0) return edited;
+
+  let out = edited.replace(
+    new RegExp(`${REINJECT_OPEN}[\\s\\S]*?${REINJECT_CLOSE}`, 'g'),
+    '',
+  );
+  const payload = `${REINJECT_OPEN}\n${blocks.join('\n')}\n${REINJECT_CLOSE}`;
+  out = out.includes('</body>')
+    ? out.replace('</body>', `${payload}</body>`)
+    : out + payload;
+  return out;
+}
+
 export function detectDynamicScripts(html: string): DynamicScriptsResult {
   const signals: string[] = [];
   const inlineJs = extractInlineScriptText(html);

@@ -57,6 +57,56 @@ function extractInlineScriptText(html) {
   return parts.join('\n');
 }
 
+// Inline scripts that are ONLY tracking/analytics — not worth re-attaching
+// after an editor round-trip. If the block also mutates the DOM we keep it.
+const TRACKING_ONLY =
+  /googletagmanager|gtag\s*\(|fbq\s*\(|fbevents|connect\.facebook|hotjar|clarity\.ms|mixpanel|segment\.(io|com)|google-analytics|_gaq|snaptr|ttq\.|pintrk|dataLayer\.push/i;
+
+const REINJECT_OPEN = '<!--cloned-dynamic-scripts-->';
+const REINJECT_CLOSE = '<!--/cloned-dynamic-scripts-->';
+
+/**
+ * Extract the full <script>…</script> blocks safe to re-inject after the
+ * visual editor stripped them (inline page logic, not analytics/pixels).
+ */
+function extractReinjectableScripts(html) {
+  if (!html || typeof html !== 'string') return [];
+  const out = [];
+  const re = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
+  let m;
+  while ((m = re.exec(html)) !== null) {
+    const attrs = m[1] || '';
+    if (/\bsrc\s*=/.test(attrs)) continue;
+    const body = m[2] || '';
+    if (!body.trim()) continue;
+    if (/data-fallback|data-swipe-replacer|data-editor/i.test(attrs)) continue;
+    if (TRACKING_ONLY.test(body) && !DOM_MUTATION.test(body)) continue;
+    out.push(m[0]);
+  }
+  return out;
+}
+
+/**
+ * Re-attach functional inline scripts from a pristine clone into an edited
+ * copy that had its scripts stripped. Idempotent; no-op when the pristine
+ * page has no content-generating scripts.
+ */
+function reattachDynamicScripts(pristine, edited) {
+  if (!edited) return edited;
+  if (!detectDynamicScripts(pristine).functional) return edited;
+  const blocks = extractReinjectableScripts(pristine);
+  if (blocks.length === 0) return edited;
+  let out = edited.replace(
+    new RegExp(`${REINJECT_OPEN}[\\s\\S]*?${REINJECT_CLOSE}`, 'g'),
+    '',
+  );
+  const payload = `${REINJECT_OPEN}\n${blocks.join('\n')}\n${REINJECT_CLOSE}`;
+  out = out.includes('</body>')
+    ? out.replace('</body>', `${payload}</body>`)
+    : out + payload;
+  return out;
+}
+
 /**
  * @param {string} html
  * @returns {{ functional: boolean, signals: string[], inlineScriptCount: number }}
@@ -88,4 +138,9 @@ function detectDynamicScripts(html) {
   return { functional, signals: Array.from(new Set(signals)), inlineScriptCount };
 }
 
-module.exports = { detectDynamicScripts, extractInlineScriptText };
+module.exports = {
+  detectDynamicScripts,
+  extractInlineScriptText,
+  extractReinjectableScripts,
+  reattachDynamicScripts,
+};

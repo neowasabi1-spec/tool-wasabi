@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import VisualHtmlEditor from '@/components/VisualHtmlEditor';
 import { parseJsonResponse } from '@/lib/safe-fetch';
+import { reattachDynamicScripts } from '@/lib/detect-dynamic-scripts';
 
 interface ProductInfo {
   name: string;
@@ -111,6 +112,11 @@ export default function CloneLandingPage() {
     detected?: boolean;
     signals?: string[];
   } | null>(null);
+  // Pristine clone HTML (WITH scripts). The visual editor strips scripts from
+  // its editing surface, so on save we re-attach the functional scripts from
+  // this pristine copy — otherwise the exported page loses the live chat /
+  // comments / countdown engine.
+  const [pristineHtml, setPristineHtml] = useState<string | null>(null);
 
   // ── Project picker ─────────────────────────────────────────────────
   // Permette all'utente di legare lo swipe a un progetto esistente
@@ -313,6 +319,7 @@ export default function CloneLandingPage() {
           isSwipedVersion: false,
         });
         setScriptsInfo(cloned.scriptsInfo ?? null);
+        setPristineHtml(cloned.html);
         setShowSwipeForm(true);
         return;
       }
@@ -352,6 +359,7 @@ export default function CloneLandingPage() {
           detected: data.dynamic_content_detected,
           signals: data.dynamic_signals,
         });
+        setPristineHtml(data.html);
         setShowSwipeForm(true);
       } else if (data.data) {
         setResult({
@@ -1447,7 +1455,11 @@ export default function CloneLandingPage() {
           initialHtml={result.html}
           pageTitle={result.isSwipedVersion ? `Swiped Landing - ${product.brand_name || 'Custom'}` : 'Cloned Landing'}
           onSave={(html) => {
-            setResult({ ...result, html });
+            // The editor strips scripts from its editing surface, so re-attach
+            // the pristine clone's functional scripts (live chat / comments,
+            // countdown, counters) so the saved/exported page still works.
+            const merged = pristineHtml ? reattachDynamicScripts(pristineHtml, html) : html;
+            setResult({ ...result, html: merged });
           }}
           onClose={() => setShowEditor(false)}
         />
