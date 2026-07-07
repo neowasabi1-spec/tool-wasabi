@@ -86,6 +86,22 @@ export default function CloneLandingPage() {
   const [language, setLanguage] = useState<'it' | 'en'>('it');
   const [showEditor, setShowEditor] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  // Preview via Blob URL instead of srcDoc: a blob: document is a real
+  // navigable document (same-origin as the app), so inline <script> tags —
+  // the fake live chat / counter / countdown engines we now keep — execute
+  // exactly like the downloaded .html file. srcDoc has subtle quirks
+  // (baseURI, timing) that could leave dynamic sections empty.
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (!result?.html) {
+      setPreviewUrl(null);
+      return;
+    }
+    const blob = new Blob([result.html], { type: 'text/html' });
+    const url = URL.createObjectURL(blob);
+    setPreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [result?.html]);
   // Auditor selection (Claude server-side vs Neo/Morfeo via OpenClaw queue).
   // Claude path = current synchronous behaviour (single POST, await response).
   // Neo/Morfeo path = enqueue swipe_job in openclaw_messages with a target_agent
@@ -1379,10 +1395,10 @@ export default function CloneLandingPage() {
               {viewMode === 'preview' ? (
                 <iframe
                   ref={iframeRef}
-                  srcDoc={result.html}
+                  src={previewUrl ?? undefined}
                   className="w-full h-full border-0"
                   title="Landing Page Preview"
-                  sandbox="allow-scripts allow-same-origin"
+                  sandbox="allow-scripts allow-same-origin allow-popups allow-forms"
                 />
               ) : (
                 <div className="h-full overflow-auto bg-gray-900 p-4">
