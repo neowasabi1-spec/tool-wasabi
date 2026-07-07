@@ -94,6 +94,23 @@ export default function CloneLandingPage() {
   // Live activity log shown while a Neo/Morfeo job is running, so the user
   // sees what's happening instead of staring at a generic spinner for ~30s.
   const [progress, setProgress] = useState<string[]>([]);
+  // How to handle the original <script> tags:
+  //   'auto'  → the tool inspects the page and KEEPS scripts only when they
+  //             build visible content client-side (fake live chat / comments,
+  //             viewer counter, countdown, dynamic offer reveal). Plain pages
+  //             whose only scripts are analytics/pixels are stripped. (default)
+  //   'keep'  → always keep scripts (faithful clone, dynamic sections work).
+  //   'strip' → always remove scripts (static frame, best for LLM swipe).
+  type ScriptsMode = 'auto' | 'keep' | 'strip';
+  const [scriptsMode, setScriptsMode] = useState<ScriptsMode>('auto');
+  // Populated from the clone response so we can tell the user what the
+  // auto-detector decided (kept scripts? which signals triggered it?).
+  const [scriptsInfo, setScriptsInfo] = useState<{
+    mode?: string;
+    kept?: boolean;
+    detected?: boolean;
+    signals?: string[];
+  } | null>(null);
 
   // ── Project picker ─────────────────────────────────────────────────
   // Permette all'utente di legare lo swipe a un progetto esistente
@@ -194,7 +211,7 @@ export default function CloneLandingPage() {
         message: JSON.stringify({
           action: 'clone_landing_local',
           url,
-          removeScripts: true,
+          scriptsMode,
         }),
         targetAgent,
       }),
@@ -230,7 +247,17 @@ export default function CloneLandingPage() {
       }
       if (polled.status === 'completed' && polled.content) {
         pushProgress(`Job completed`);
-        let parsed: { success?: boolean; html?: string; url?: string; method_used?: string; error?: string } = {};
+        let parsed: {
+          success?: boolean;
+          html?: string;
+          url?: string;
+          method_used?: string;
+          error?: string;
+          scripts_mode?: string;
+          scripts_kept?: boolean;
+          dynamic_content_detected?: boolean;
+          dynamic_signals?: string[];
+        } = {};
         try {
           parsed = JSON.parse(polled.content);
         } catch {
@@ -239,7 +266,17 @@ export default function CloneLandingPage() {
         if (parsed.success === false || !parsed.html) {
           throw new Error(parsed.error || 'Worker completed without HTML');
         }
-        return { html: parsed.html, url: parsed.url ?? url, methodUsed: parsed.method_used };
+        return {
+          html: parsed.html,
+          url: parsed.url ?? url,
+          methodUsed: parsed.method_used,
+          scriptsInfo: {
+            mode: parsed.scripts_mode,
+            kept: parsed.scripts_kept,
+            detected: parsed.dynamic_content_detected,
+            signals: parsed.dynamic_signals,
+          },
+        };
       }
       if (polled.status === 'error' || polled.status === 'failed') {
         throw new Error(polled.error || 'Worker failed the job');
@@ -264,6 +301,7 @@ export default function CloneLandingPage() {
     setError(null);
     setResult(null);
     setProgress([]);
+    setScriptsInfo(null);
 
     try {
       // ── OpenClaw path (Neo / Morfeo) ───────────────────────────
@@ -274,6 +312,7 @@ export default function CloneLandingPage() {
           url: cloned.url,
           isSwipedVersion: false,
         });
+        setScriptsInfo(cloned.scriptsInfo ?? null);
         setShowSwipeForm(true);
         return;
       }
@@ -282,7 +321,7 @@ export default function CloneLandingPage() {
       const response = await fetch('/api/landing/clone', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url }),
+        body: JSON.stringify({ url, scripts_mode: scriptsMode }),
       });
 
       const parsed = await parseJsonResponse<{
@@ -290,6 +329,10 @@ export default function CloneLandingPage() {
         data?: unknown;
         url?: string;
         error?: string;
+        scripts_mode?: string;
+        scripts_kept?: boolean;
+        dynamic_content_detected?: boolean;
+        dynamic_signals?: string[];
       }>(response);
 
       if (!parsed.ok) {
@@ -302,6 +345,12 @@ export default function CloneLandingPage() {
           html: data.html,
           url: data.url ?? url,
           isSwipedVersion: false,
+        });
+        setScriptsInfo({
+          mode: data.scripts_mode,
+          kept: data.scripts_kept,
+          detected: data.dynamic_content_detected,
+          signals: data.dynamic_signals,
         });
         setShowSwipeForm(true);
       } else if (data.data) {
@@ -409,6 +458,13 @@ export default function CloneLandingPage() {
       tone,
       language,
       knowledge,
+      // Scripts handling during finalize, mirroring the clone toggle:
+      //   keep  → never strip (applySpaPreviewMode:false)
+      //   strip → always strip (applySpaPreviewMode:true)
+      //   auto  → let the worker decide (strip SPAs, but keep pages whose
+      //           inline JS builds content like live chat / comments)
+      applySpaPreviewMode:
+        scriptsMode === 'keep' ? false : scriptsMode === 'strip' ? true : undefined,
     };
 
     const enqueueRes = await fetch('/api/openclaw/queue', {
@@ -721,6 +777,46 @@ export default function CloneLandingPage() {
                 clone + swipe on the worker PC (no Netlify timeout, local LLM)
               </span>
             )}
+          </div>
+
+          {/* Scripts handling — needed for pages whose content is built
+              client-side (fake live chat / comments, viewer counter,
+              countdown, dynamic offer reveal). Stripping scripts leaves the
+              containers empty. "Auto" lets the tool detect this on its own. */}
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <span className="text-sm font-medium text-gray-700">Scripts:</span>
+            {([
+              { id: 'auto', label: 'Auto (detect)' },
+              { id: 'keep', label: 'Keep' },
+              { id: 'strip', label: 'Strip' },
+            ] as const).map((opt) => {
+              const active = scriptsMode === opt.id;
+              return (
+                <button
+                  key={opt.id}
+                  type="button"
+                  disabled={isLoading || isSwiping}
+                  onClick={() => setScriptsMode(opt.id)}
+                  className={`text-sm px-3 py-1.5 rounded-lg border transition-colors disabled:opacity-50 ${
+                    active
+                      ? 'bg-gray-800 text-white border-gray-800'
+                      : 'bg-white text-gray-700 border-gray-300 hover:border-gray-400'
+                  }`}
+                  title={
+                    opt.id === 'auto'
+                      ? 'The tool inspects the page and keeps scripts only when they build content (live chat/comments, counters, countdown)'
+                      : opt.id === 'keep'
+                        ? 'Always keep scripts — faithful clone, dynamic sections work'
+                        : 'Always remove scripts — static frame, best for the LLM swipe'
+                  }
+                >
+                  {opt.label}
+                </button>
+              );
+            })}
+            <span className="text-xs text-gray-500 ml-1">
+              Auto keeps live chat / comments / countdown when the page needs JS to build them.
+            </span>
           </div>
 
           {/* Quick Examples */}
@@ -1137,6 +1233,46 @@ export default function CloneLandingPage() {
                   </div>
                 )}
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* Scripts detection banner — tells the user what Auto decided. */}
+        {result && !isLoading && !isSwiping && scriptsInfo && (
+          <div
+            className={`rounded-xl p-3 mb-6 flex items-start gap-3 border ${isFullscreen ? 'mx-4' : ''} ${
+              scriptsInfo.kept
+                ? 'bg-blue-50 border-blue-200'
+                : 'bg-gray-50 border-gray-200'
+            }`}
+          >
+            <Code className={`w-5 h-5 mt-0.5 flex-shrink-0 ${scriptsInfo.kept ? 'text-blue-600' : 'text-gray-500'}`} />
+            <div className="text-sm">
+              {scriptsInfo.kept ? (
+                <>
+                  <span className="font-medium text-blue-900">
+                    Scripts kept
+                    {scriptsInfo.mode === 'auto' ? ' — dynamic content detected' : ''}
+                  </span>
+                  <span className="text-blue-800">
+                    {' '}· the live chat / comments, counters and countdown will run in the clone.
+                  </span>
+                  {scriptsInfo.mode === 'auto' && scriptsInfo.signals && scriptsInfo.signals.length > 0 && (
+                    <ul className="mt-1 text-xs text-blue-700 list-disc list-inside">
+                      {scriptsInfo.signals.map((s, i) => (
+                        <li key={i}>{s}</li>
+                      ))}
+                    </ul>
+                  )}
+                </>
+              ) : (
+                <span className="text-gray-700">
+                  {scriptsInfo.mode === 'auto'
+                    ? 'No content-generating scripts detected — cloned as a static page.'
+                    : 'Scripts stripped — static clone.'}{' '}
+                  If a dynamic section is missing, re-clone with <b>Scripts: Keep</b>.
+                </span>
+              )}
             </div>
           </div>
         )}

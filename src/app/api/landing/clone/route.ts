@@ -5,6 +5,45 @@ import {
   absolutizeUrlsInHtml,
   injectNoReferrerAndEagerLoading,
 } from '@/lib/spa-rescue';
+import { detectDynamicScripts } from '@/lib/detect-dynamic-scripts';
+
+type ScriptsMode = 'auto' | 'keep' | 'strip';
+
+/**
+ * Resolve the effective scripts mode + whether scripts should be kept.
+ *
+ * Precedence:
+ *   1. explicit `scripts_mode` ('auto' | 'keep' | 'strip')
+ *   2. legacy boolean `remove_scripts` (true → strip, false → keep)
+ *   3. default → 'strip' (historic behaviour for callers that pass nothing)
+ *
+ * In 'auto' mode we KEEP scripts only when the page builds visible content
+ * client-side (fake live chat / comments, viewer counter, countdown, …),
+ * detected by detectDynamicScripts. Plain pages whose only scripts are
+ * analytics/pixels are stripped as before.
+ */
+function resolveScriptsDecision(
+  html: string,
+  scriptsMode: ScriptsMode | undefined,
+  removeScripts: boolean | undefined,
+): { mode: ScriptsMode; keep: boolean; detected: boolean; signals: string[] } {
+  let mode: ScriptsMode;
+  if (scriptsMode === 'auto' || scriptsMode === 'keep' || scriptsMode === 'strip') {
+    mode = scriptsMode;
+  } else if (removeScripts === false) {
+    mode = 'keep';
+  } else if (removeScripts === true) {
+    mode = 'strip';
+  } else {
+    mode = 'strip';
+  }
+
+  if (mode === 'keep') return { mode, keep: true, detected: false, signals: [] };
+  if (mode === 'strip') return { mode, keep: false, detected: false, signals: [] };
+
+  const det = detectDynamicScripts(html);
+  return { mode, keep: det.functional, detected: det.functional, signals: det.signals };
+}
 
 export const maxDuration = 60;
 
@@ -25,7 +64,11 @@ function fixClonedHtml(html: string, sourceUrl: string): string {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { url, remove_scripts } = body as { url?: string; remove_scripts?: boolean };
+    const { url, remove_scripts, scripts_mode } = body as {
+      url?: string;
+      remove_scripts?: boolean;
+      scripts_mode?: ScriptsMode;
+    };
 
     if (!url) {
       return NextResponse.json({ success: false, error: 'URL is required' }, { status: 400 });
@@ -84,7 +127,12 @@ export async function POST(request: NextRequest) {
     let html = fetched.html;
     const duration = (Date.now() - start) / 1000;
 
-    if (remove_scripts !== false) {
+    // Decide whether to keep the original <script> tags. In 'auto' mode we
+    // sniff the page for content-generating scripts (live chat, counters,
+    // countdown, …) so pages like live-stream VSLs clone faithfully while
+    // ordinary pages stay script-free. See resolveScriptsDecision above.
+    const scriptsDecision = resolveScriptsDecision(html, scripts_mode, remove_scripts);
+    if (!scriptsDecision.keep) {
       html = html.replace(/<script[\s\S]*?<\/script>/gi, '');
     }
 
@@ -111,6 +159,11 @@ export async function POST(request: NextRequest) {
       spa_jina_result: spaJinaAttempt,
       attempts: fetched.attempts,
       env,
+      // Scripts handling — lets the UI show WHY the chat/comments were kept.
+      scripts_mode: scriptsDecision.mode,
+      scripts_kept: scriptsDecision.keep,
+      dynamic_content_detected: scriptsDecision.detected,
+      dynamic_signals: scriptsDecision.signals,
       content_length: selfContainedHtml.length,
       title,
       duration_seconds: duration,

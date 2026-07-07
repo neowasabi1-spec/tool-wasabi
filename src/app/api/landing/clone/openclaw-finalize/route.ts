@@ -4,6 +4,9 @@ import {
   absolutizeUrlsInHtml,
   injectNoReferrerAndEagerLoading,
 } from '@/lib/spa-rescue';
+import { detectDynamicScripts } from '@/lib/detect-dynamic-scripts';
+
+type ScriptsMode = 'auto' | 'keep' | 'strip';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -61,6 +64,7 @@ export async function POST(req: NextRequest) {
     url?: string;
     html?: string;
     removeScripts?: boolean;
+    scriptsMode?: ScriptsMode;
     methodUsed?: string;
     wasSpa?: boolean;
     attempts?: string[];
@@ -98,7 +102,26 @@ export async function POST(req: NextRequest) {
   }
 
   let html = body.html;
-  if (body.removeScripts !== false) {
+  // Mirror the decision logic of /api/landing/clone: 'auto' keeps scripts only
+  // when the page builds visible content client-side (live chat, counters,
+  // countdown, …). 'keep'/'strip' are explicit. Legacy `removeScripts` still
+  // works (true → strip, false → keep) when scriptsMode isn't provided.
+  const mode: ScriptsMode =
+    body.scriptsMode === 'auto' || body.scriptsMode === 'keep' || body.scriptsMode === 'strip'
+      ? body.scriptsMode
+      : body.removeScripts === false
+        ? 'keep'
+        : 'strip';
+  let scriptsKept = mode === 'keep';
+  let dynamicDetected = false;
+  let dynamicSignals: string[] = [];
+  if (mode === 'auto') {
+    const det = detectDynamicScripts(html);
+    scriptsKept = det.functional;
+    dynamicDetected = det.functional;
+    dynamicSignals = det.signals;
+  }
+  if (!scriptsKept) {
     html = html.replace(/<script[\s\S]*?<\/script>/gi, '');
   }
 
@@ -135,6 +158,10 @@ export async function POST(req: NextRequest) {
     spa_jina_result: null,
     attempts: Array.isArray(body.attempts) ? body.attempts : [],
     env,
+    scripts_mode: mode,
+    scripts_kept: scriptsKept,
+    dynamic_content_detected: dynamicDetected,
+    dynamic_signals: dynamicSignals,
     content_length: selfContainedHtml.length,
     title,
     duration_seconds:

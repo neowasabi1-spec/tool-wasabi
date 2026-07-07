@@ -7,6 +7,8 @@
 //   { html, sourceUrl?, texts: [{id,original,tag}], rewrites: [{id,rewritten}] }
 // Output: stessa shape che ritornava la route Netlify.
 
+const { detectDynamicScripts } = require('./detect-dynamic-scripts');
+
 function escRxLiteral(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -1088,9 +1090,18 @@ function finalizeSwipe({ html, sourceUrl, texts, rewrites, productName, applySpa
   // Includiamo detectModernSpa nel trigger per fermare questo edge case.
   const modernSpaCheck = detectModernSpa(originalHtml, sourceUrl);
   const isModernSpa = modernSpaCheck.isModern;
+  // Auto-keep content-generating scripts: some funnel pages build whole
+  // sections in JS (fake live chat / comments, viewer counter, countdown,
+  // FOMO toasts). Stripping them leaves empty containers, so in AUTO mode
+  // (applySpaPreviewMode neither true nor false) we DON'T strip when such
+  // functional scripts are detected — even if the page also looks SPA-ish.
+  // Explicit applySpaPreviewMode===true (force strip) / ===false (force keep)
+  // still win.
+  const dynScriptCheck = detectDynamicScripts(originalHtml);
+  const hasFunctionalScripts = dynScriptCheck.functional;
   const previewModeRequested =
     applySpaPreviewMode === true ||
-    (applySpaPreviewMode !== false && (isSpa || isModernSpa));
+    (applySpaPreviewMode !== false && (isSpa || isModernSpa) && !hasFunctionalScripts);
   // Helper: inietta `content` prima di `closeTag` SENZA interpretare $&/$1
   // nel content (callback form di String.prototype.replace). Se `dedupRe`
   // viene passato, rimuove tutte le occorrenze precedenti dello stesso
@@ -1266,6 +1277,10 @@ function finalizeSwipe({ html, sourceUrl, texts, rewrites, productName, applySpa
     // sta arrivando dal wild.
     modern_spa_detected: isModernSpa,
     modern_spa_reason: modernSpaCheck.reason,
+    // Content-generating scripts kept because the page builds sections in JS
+    // (live chat/comments, counters, countdown). See previewModeRequested.
+    functional_scripts_detected: hasFunctionalScripts,
+    functional_script_signals: dynScriptCheck.signals,
     asset_urls_absolutized: Boolean(sourceUrl),
     unresolved_text_ids: unresolvedIds,
     coverage_ratio: texts.length ? totalReplacements / texts.length : 0,

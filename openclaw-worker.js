@@ -1716,6 +1716,10 @@ async function processMessage(msg) {
               url: job.url,
               html: cloneHtml,
               removeScripts: job.removeScripts,
+              // 'auto' | 'keep' | 'strip' — when 'auto' the finalize endpoint
+              // sniffs the page for content-generating scripts (live chat,
+              // counters, countdown) and keeps them only when present.
+              scriptsMode: job.scriptsMode,
               methodUsed: fetched.source ? `openclaw-local-${fetched.source}` : 'openclaw-local',
               wasSpa:
                 fetched.source === 'playwright-spa' ||
