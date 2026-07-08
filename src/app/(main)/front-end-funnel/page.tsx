@@ -66,6 +66,7 @@ import {
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import VisualHtmlEditor from '@/components/VisualHtmlEditor';
+import { bakeDynamicComments } from '@/lib/bake-dynamic-comments';
 import { saveHtmlBlob } from '@/lib/html-blob-store';
 import {
   buildTranslateContext,
@@ -1138,6 +1139,29 @@ export default function FrontEndFunnel() {
     // resta usato per Edit Visually / Copy / Download / Open in new tab.
     sourceUrl?: string;
   }>({ isOpen: false, title: '', html: '', mobileHtml: '', iframeSrc: '', metadata: null });
+
+  // Le pagine live-stream generano i "commenti" a runtime da un array JS: nel
+  // Visual Editor (che mostra il DOM statico) non compaiono. Prima di aprire
+  // l'editor li "cuociamo" come DOM statico ed editabile e azzeriamo l'array
+  // runtime (niente doppioni). No-op sulle pagine senza quel motore.
+  const editorInitialHtml = useMemo(() => {
+    const raw = htmlPreviewModal.html;
+    if (!raw) return raw;
+    try {
+      return bakeDynamicComments(raw).html;
+    } catch {
+      return raw;
+    }
+  }, [htmlPreviewModal.html]);
+  const editorInitialMobileHtml = useMemo(() => {
+    const raw = htmlPreviewModal.mobileHtml;
+    if (!raw) return raw;
+    try {
+      return bakeDynamicComments(raw).html;
+    } catch {
+      return raw;
+    }
+  }, [htmlPreviewModal.mobileHtml]);
 
   // Modalita' rendering della preview clonata:
   //   'live'     = <iframe src=URL_originale> → layout perfetto ma richiede
@@ -9018,8 +9042,8 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
           : null;
         return (
         <VisualHtmlEditor
-          initialHtml={htmlPreviewModal.html}
-          initialMobileHtml={htmlPreviewModal.mobileHtml || undefined}
+          initialHtml={editorInitialHtml || htmlPreviewModal.html}
+          initialMobileHtml={editorInitialMobileHtml || htmlPreviewModal.mobileHtml || undefined}
           pageTitle={htmlPreviewModal.title || 'Edit Landing'}
           sourceUrl={htmlPreviewModal.sourceUrl}
           productContext={editorProject ? {
