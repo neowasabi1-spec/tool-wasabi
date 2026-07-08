@@ -212,7 +212,11 @@ function ResultModal({ step, onClose }: { step: FunnelStep; onClose: () => void 
     (async () => {
       try {
         const { stabilizeClonedHtml } = await import("@/lib/spa-rescue");
-        const fixed = stabilizeClonedHtml(content, step.url || "");
+        const { detectDynamicScripts } = await import("@/lib/detect-dynamic-scripts");
+        // Pagine funzionali (live chat/commenti, contatori, countdown) hanno
+        // bisogno del loro JS inline per generare il contenuto: NON strippare.
+        const keepScripts = detectDynamicScripts(content).functional;
+        const fixed = stabilizeClonedHtml(content, step.url || "", { keepScripts });
         if (alive) setPreviewHtml(fixed);
       } catch {
         /* fallback: content raw già impostato */
@@ -222,6 +226,23 @@ function ResultModal({ step, onClose }: { step: FunnelStep; onClose: () => void 
       alive = false;
     };
   }, [content, step.url]);
+
+  // Anteprima via Blob URL (origin reale) invece di srcDoc (origin null):
+  // gli script funzionali che usano localStorage/timers girano come su una
+  // pagina vera. srcDoc con about:srcdoc rompe l'accesso a localStorage e
+  // molti motori di commenti/contatori restano vuoti.
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  useEffect(() => {
+    const html = previewHtml || content;
+    if (!html) {
+      setPreviewUrl(null);
+      return;
+    }
+    const blob = new Blob([html], { type: "text/html" });
+    const url = URL.createObjectURL(blob);
+    setPreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [previewHtml, content]);
 
   const openInNewTab = useCallback(() => {
     if (!content) return;
@@ -273,7 +294,7 @@ function ResultModal({ step, onClose }: { step: FunnelStep; onClose: () => void 
             <p className="text-muted-foreground italic text-sm">No content generated yet. Press SWIPE to generate.</p>
           ) : view === "preview" ? (
             <iframe
-              srcDoc={previewHtml || content}
+              src={previewUrl ?? undefined}
               title={`preview-${step.id}`}
               className="w-full h-[70vh] rounded-xl border border-border bg-white"
               sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
@@ -943,6 +964,22 @@ export function FunnelTab({ projectId }: { projectId: string }) {
   const [previewStep, setPreviewStep] = useState<FunnelStep | null>(null);
   const [previewHtml, setPreviewHtml] = useState<string>('');
   const [previewLoading, setPreviewLoading] = useState(false);
+
+  // Anteprima Desktop+Mobile via Blob URL (origin reale) invece di srcDoc
+  // (origin null): gli script funzionali che usano localStorage/timers
+  // (live chat/commenti, contatori, countdown) girano come su una pagina
+  // vera. Con srcDoc restavano vuoti.
+  const [previewBlobUrl, setPreviewBlobUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (!previewHtml) {
+      setPreviewBlobUrl(null);
+      return;
+    }
+    const blob = new Blob([previewHtml], { type: 'text/html' });
+    const url = URL.createObjectURL(blob);
+    setPreviewBlobUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [previewHtml]);
 
   const viewsModalSteps = useMemo(() => {
     if (!viewsModalFlow) return [] as FunnelStep[];
@@ -1715,10 +1752,10 @@ export function FunnelTab({ projectId }: { projectId: string }) {
                   </div>
                   <div className="flex-1 bg-white rounded-xl overflow-hidden shadow-2xl">
                     <iframe
-                      srcDoc={previewHtml}
+                      src={previewBlobUrl ?? undefined}
                       className="w-full h-full border-0"
                       title="Desktop Preview"
-                      sandbox="allow-same-origin allow-scripts"
+                      sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
                     />
                   </div>
                 </div>
@@ -1729,10 +1766,10 @@ export function FunnelTab({ projectId }: { projectId: string }) {
                   </div>
                   <div className="w-[375px] h-full bg-white rounded-[32px] overflow-hidden shadow-2xl border-[6px] border-gray-700">
                     <iframe
-                      srcDoc={previewHtml}
+                      src={previewBlobUrl ?? undefined}
                       className="w-full h-full border-0"
                       title="Mobile Preview"
-                      sandbox="allow-same-origin allow-scripts"
+                      sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
                     />
                   </div>
                 </div>
