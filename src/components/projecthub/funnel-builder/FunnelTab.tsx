@@ -11,6 +11,7 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import VisualHtmlEditor from "@/components/VisualHtmlEditor";
 import { stripCompetitorTracking } from "@/lib/strip-tracking";
+import { bakeDynamicComments } from "@/lib/bake-dynamic-comments";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -213,10 +214,16 @@ function ResultModal({ step, onClose }: { step: FunnelStep; onClose: () => void 
       try {
         const { stabilizeClonedHtml } = await import("@/lib/spa-rescue");
         const { detectDynamicScripts } = await import("@/lib/detect-dynamic-scripts");
+        const { bakeDynamicComments } = await import("@/lib/bake-dynamic-comments");
+        // I commenti "live" vengono generati dal motore JS in modo progressivo
+        // sul tempo del video: a t=0 l'anteprima ne mostra pochissimi e sembra
+        // vuota. Li "cuociamo" come DOM statico così compaiono subito tutti
+        // (no-op sulle pagine senza quel motore).
+        const baked = bakeDynamicComments(content).html;
         // Pagine funzionali (live chat/commenti, contatori, countdown) hanno
         // bisogno del loro JS inline per generare il contenuto: NON strippare.
-        const keepScripts = detectDynamicScripts(content).functional;
-        const fixed = stabilizeClonedHtml(content, step.url || "", { keepScripts });
+        const keepScripts = detectDynamicScripts(baked).functional;
+        const fixed = stabilizeClonedHtml(baked, step.url || "", { keepScripts });
         if (alive) setPreviewHtml(fixed);
       } catch {
         /* fallback: content raw già impostato */
@@ -798,6 +805,21 @@ export function FunnelTab({ projectId }: { projectId: string }) {
   const [sanitizeMsg, setSanitizeMsg] = useState<{ phase: "working" | "done"; text: string } | null>(null);
   const [chatStep, setChatStep] = useState<FunnelStep | null>(null);
   const [editStep, setEditStep] = useState<FunnelStep | null>(null);
+
+  // Le pagine live-stream generano i "commenti" a runtime da un array JS, quindi
+  // nell'editor (che mostra il DOM statico) non compaiono. Prima di aprire
+  // l'editor "cuociamo" quei commenti come DOM statico ed editabile e azzeriamo
+  // l'array runtime, così sono modificabili e non si duplicano. No-op sulle
+  // pagine che non usano questo motore.
+  const editStepHtml = useMemo(() => {
+    if (!editStep?.result_content) return "";
+    try {
+      return bakeDynamicComments(editStep.result_content).html;
+    } catch {
+      return editStep.result_content;
+    }
+  }, [editStep?.result_content]);
+
   const [domain, setDomain] = useState("");
   const [showImportDialog, setShowImportDialog] = useState(false);
   const [customTypeMode, setCustomTypeMode] = useState(false);
@@ -1020,7 +1042,14 @@ export function FunnelTab({ projectId }: { projectId: string }) {
     setPreviewHtml('');
     setPreviewLoading(true);
     const html = await loadStepHtml(step);
-    setPreviewHtml(html);
+    // Rendi statici (e quindi subito visibili) i commenti live che altrimenti
+    // il motore JS mostrerebbe solo poco a poco sul tempo del video. No-op se
+    // la pagina non usa quel motore.
+    let baked = html;
+    try {
+      baked = bakeDynamicComments(html).html;
+    } catch { /* fallback: html grezzo */ }
+    setPreviewHtml(baked);
     setPreviewLoading(false);
   }, [loadStepHtml]);
 
@@ -1562,7 +1591,7 @@ export function FunnelTab({ projectId }: { projectId: string }) {
       {editStep && editStep.result_content && (
         <div className="fixed inset-0 z-[60] bg-background">
           <VisualHtmlEditor
-            initialHtml={editStep.result_content}
+            initialHtml={editStepHtml || editStep.result_content}
             pageTitle={editStep.page_name || `Step ${editStep.step_number}`}
             sourceUrl={editStep.url || ""}
             onSave={(html) => { void saveEditedStep(editStep.id, html); }}
