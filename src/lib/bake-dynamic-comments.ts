@@ -159,6 +159,79 @@ function jsString(s: string): string {
   return JSON.stringify(String(s));
 }
 
+// Extract the live-chat comment texts (the `t` field of each TIMED entry) so
+// callers — e.g. the swipe rewriter — can feed them to the LLM. Those texts
+// live inside a <script> and are therefore invisible to DOM-based text
+// extraction, so without this the swiped page keeps the ORIGINAL comment copy
+// (which no longer matches the new product). Names (`n`) are people's names and
+// are intentionally left untouched. No-op when the engine isn't present.
+export function extractTimedCommentTexts(html: string): string[] {
+  if (!html || typeof html !== 'string') return [];
+  const match = html.match(TIMED_RE);
+  if (!match) return [];
+  const entries = parseTimed(match[1]);
+  if (!entries) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const c of entries) {
+    const t = (c && c.t ? String(c.t) : '').trim();
+    if (t.length < 2 || !/[a-zA-Z]/.test(t)) continue;
+    if (seen.has(t)) continue;
+    seen.add(t);
+    out.push(t);
+  }
+  return out;
+}
+
+// Rewrite the `t` field of each TIMED entry using a map original->rewritten,
+// rebuilding the array literal safely (JSON-quoted strings). Because the array
+// lives in a <script>, this MUST be done server-side — the client DOM replacer
+// skips <script> nodes. No-op when the engine isn't present or nothing matches.
+export function applyTimedCommentRewrites(
+  html: string,
+  rewrites: Map<string, string> | Record<string, string>,
+): { html: string; replaced: number } {
+  if (!html || typeof html !== 'string') return { html, replaced: 0 };
+  const match = html.match(TIMED_RE);
+  if (!match) return { html, replaced: 0 };
+  const entries = parseTimed(match[1]);
+  if (!entries || entries.length === 0) return { html, replaced: 0 };
+
+  const get = (k: string): string | undefined =>
+    rewrites instanceof Map ? rewrites.get(k) : rewrites[k];
+
+  let replaced = 0;
+  const rebuilt = entries.map((c) => {
+    const t = (c && c.t ? String(c.t) : '').trim();
+    const rw = t ? get(t) : undefined;
+    if (rw && rw.trim() && rw.trim() !== t) {
+      replaced++;
+      return { ...c, t: rw.trim() };
+    }
+    return c;
+  });
+  if (replaced === 0) return { html, replaced: 0 };
+
+  const literal =
+    'var TIMED = [\n' +
+    rebuilt
+      .map((e) => {
+        const parts: string[] = [];
+        if (e.d !== undefined) parts.push(`d:${e.d}`);
+        if (e.n !== undefined) parts.push(`n:${jsString(e.n)}`);
+        if (e.t !== undefined) parts.push(`t:${jsString(e.t)}`);
+        if (e.isHost) parts.push('isHost:true');
+        return '  {' + parts.join(', ') + '}';
+      })
+      .join(',\n') +
+    '\n];';
+
+  // Replacer function so `$` sequences in comment text (e.g. "$47") aren't
+  // interpreted as capture-group references.
+  const out = html.replace(match[0], () => literal);
+  return { html: out, replaced };
+}
+
 // Reverse of bakeDynamicComments: read the (edited) static .citem nodes back
 // into the runtime TIMED array so the live engine re-animates the comments with
 // the user's edited text, then remove the static nodes. Keeps original timing

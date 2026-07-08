@@ -9,6 +9,7 @@
 
 const { detectDynamicScripts } = require('./detect-dynamic-scripts');
 const { neutralizeRocketLoader } = require('./neutralize-rocket-loader');
+const { applyTimedCommentRewrites } = require('./timed-comments');
 
 function escRxLiteral(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -765,9 +766,15 @@ function finalizeSwipe({ html, sourceUrl, texts, rewrites, productName, applySpa
   const replacementPairs = [];
   const serverSideTitlePairs = [];
   const serverSideMetaPairs = [];
+  // Live-chat comment rewrites (tag 'comment') go into the TIMED array
+  // server-side — the DOM replacer skips <script>. Keyed by original text so
+  // any resolved id matching a comment updates the array.
+  const commentRewrites = new Map();
   for (const [id, rewritten] of idToRewrite) {
     const original = textById.get(id);
     if (!original || !rewritten || original.original === rewritten) continue;
+    commentRewrites.set(original.original, rewritten);
+    if (original.tag === 'comment') continue;
     if (original.tag === 'title') {
       serverSideTitlePairs.push({ from: original.original, to: rewritten });
       replacementPairs.push({ from: original.original, to: rewritten });
@@ -1250,15 +1257,27 @@ function finalizeSwipe({ html, sourceUrl, texts, rewrites, productName, applySpa
   if (preparedHtml.includes('</head>')) {
     preparedHtml = preparedHtml.replace('</head>', () => buildMarker + '</head>');
   }
-  const resultHtml = safeInjectBefore(
+  let resultHtml = safeInjectBefore(
     preparedHtml,
     '</body>',
     swipeScript,
   );
 
+  // Apply live-chat comment rewrites into the `var TIMED = [...]` array
+  // (server-side: they live in a <script>, invisible to the DOM replacer).
+  let commentReplacements = 0;
+  if (commentRewrites.size > 0) {
+    try {
+      const cr = applyTimedCommentRewrites(resultHtml, commentRewrites);
+      resultHtml = cr.html;
+      commentReplacements = cr.replaced;
+    } catch { /* no-op */ }
+  }
+
   const newTitle = serverSideTitlePairs[0]?.to
     || (texts.length > 0 ? replacementPairs.find((p) => !p.attr)?.to || '' : '');
-  const totalReplacements = replacementPairs.length + serverSideTitlePairs.length + serverSideMetaPairs.length;
+  const totalReplacements = replacementPairs.length + serverSideTitlePairs.length
+    + serverSideMetaPairs.length + commentReplacements;
 
   return {
     success: true,
@@ -1272,6 +1291,7 @@ function finalizeSwipe({ html, sourceUrl, texts, rewrites, productName, applySpa
     replacements_dom: replacementPairs.length,
     replacements_title: serverSideTitlePairs.length,
     replacements_meta: serverSideMetaPairs.length,
+    replacements_comments: commentReplacements,
     replacements_server_side_html: serverReplacementsCount,
     replacements_server_side_fuzzy: fuzzyReplacementsCount,
     is_spa_page: isSpa,

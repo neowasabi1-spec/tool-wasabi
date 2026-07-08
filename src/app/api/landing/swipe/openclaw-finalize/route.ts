@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { applyTimedCommentRewrites } from '@/lib/bake-dynamic-comments';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -110,9 +111,14 @@ export async function POST(req: NextRequest) {
   const replacementPairs: Array<{ from: string; to: string; attr?: string }> = [];
   const serverSideTitlePairs: Array<{ from: string; to: string }> = [];
   const serverSideMetaPairs: Array<{ from: string; to: string }> = [];
+  // Live-chat comment rewrites (tag 'comment') applied server-side into the
+  // TIMED array (the DOM replacer skips <script>).
+  const commentRewrites = new Map<string, string>();
   for (const [id, rewritten] of idToRewrite) {
     const original = textById.get(id);
     if (!original || !rewritten || original.original === rewritten) continue;
+    commentRewrites.set(original.original, rewritten);
+    if (original.tag === 'comment') continue;
     if (original.tag === 'title') {
       serverSideTitlePairs.push({ from: original.original, to: rewritten });
       replacementPairs.push({ from: original.original, to: rewritten });
@@ -402,6 +408,13 @@ export async function POST(req: NextRequest) {
   }
 
   let resultHtml = preparedHtml;
+  // Rewrite live-chat comments inside `var TIMED = [...]` (server-side).
+  let commentReplacements = 0;
+  if (commentRewrites.size > 0) {
+    const cr = applyTimedCommentRewrites(resultHtml, commentRewrites);
+    resultHtml = cr.html;
+    commentReplacements = cr.replaced;
+  }
   // Lo swipeScript resta come safety net per testi che il replace stringa
   // server-side non ha trovato (es. testi presenti solo dopo idratazione).
   //
@@ -470,7 +483,7 @@ export async function POST(req: NextRequest) {
     (texts.length > 0 ? replacementPairs.find((p) => !p.attr)?.to || '' : '');
 
   const totalReplacements =
-    replacementPairs.length + serverSideTitlePairs.length + serverSideMetaPairs.length;
+    replacementPairs.length + serverSideTitlePairs.length + serverSideMetaPairs.length + commentReplacements;
 
   return NextResponse.json({
     success: true,
@@ -485,6 +498,7 @@ export async function POST(req: NextRequest) {
     replacements_dom: replacementPairs.length,
     replacements_title: serverSideTitlePairs.length,
     replacements_meta: serverSideMetaPairs.length,
+    replacements_comments: commentReplacements,
     replacements_server_side_html: serverReplacementsCount,
     unresolved_text_ids: unresolvedIds,
     coverage_ratio: texts.length ? totalReplacements / texts.length : 0,
