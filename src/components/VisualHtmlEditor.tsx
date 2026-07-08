@@ -34,6 +34,39 @@ const ALLOWED_UPLOAD_TYPES: Record<string, string> = {
 };
 const UPLOAD_MAX_SIZE = 20 * 1024 * 1024; // 20MB
 
+/* ── Preview-only scroll fix ──
+ * Nelle pagine dinamiche (live-stream) teniamo gli script attivi in Preview
+ * così i commenti si ri-animano "a tempo". Il rovescio è che il player video
+ * (es. Vidalytics/YouTube/Vimeo) inietta un <iframe> che occupa gran parte del
+ * viewport: la rotella del mouse finisce nell'iframe del video e la pagina non
+ * scrolla, quindi non si arriva ai commenti sotto.
+ * Iniettiamo uno <style>+<script> (solo nello snapshot di anteprima, mai
+ * nell'HTML salvato) che: (1) forza lo scroll verticale su html/body,
+ * (2) rende gli iframe dei video "trasparenti" alla rotella con
+ * pointer-events:none (ri-applicato via MutationObserver perché il player
+ * inietta l'iframe in modo asincrono). */
+function injectPreviewScrollFix(html: string): string {
+  const marker = '__prev_scroll_fix';
+  if (html.indexOf(marker) !== -1) return html;
+  const snippet =
+    '<style id="' + marker + '">' +
+    'html,body{overflow-y:auto!important;height:auto!important;}' +
+    'iframe[src*="vidalytics"],iframe[src*="youtube"],iframe[src*="youtu.be"],' +
+    'iframe[src*="vimeo"],iframe[src*="wistia"],iframe[data-src*="vidalytics"],' +
+    '[id*="video"] iframe,[class*="video"] iframe,[class*="player"] iframe' +
+    '{pointer-events:none!important;}' +
+    '</style>' +
+    '<script>(function(){function fix(){try{var fs=document.querySelectorAll("iframe");' +
+    'for(var i=0;i<fs.length;i++){var f=fs[i];var s=((f.getAttribute("src")||"")+" "+' +
+    '(f.getAttribute("data-src")||""));var p=f.parentElement;var pc=p?((p.className||"")+" "+(p.id||"")):"";' +
+    'if(/vidalytics|youtube|youtu\\.be|vimeo|wistia/i.test(s)||/video|player/i.test(pc)){' +
+    'f.style.setProperty("pointer-events","none","important");}}}catch(e){}}' +
+    'fix();try{new MutationObserver(fix).observe(document.documentElement,{childList:true,subtree:true});}catch(e){}' +
+    'var n=0,iv=setInterval(function(){fix();if(++n>20)clearInterval(iv);},500);})();<\/script>';
+  if (html.indexOf('</body>') !== -1) return html.replace('</body>', snippet + '</body>');
+  return html + snippet;
+}
+
 async function directSupabaseUpload(file: File): Promise<string> {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
@@ -4535,7 +4568,14 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
         const unbaked = unbakeDynamicComments(withEngine).html;
         const keepScripts = detectDynamicScripts(unbaked).functional;
         if (!cancelled) {
-          setPreviewSnapshot(injectInteractivityRescue(unbaked, { keepScripts }));
+          const rescued = injectInteractivityRescue(unbaked, { keepScripts });
+          // Fix scroll in preview: quando teniamo gli script, il player video
+          // (es. Vidalytics) inietta un <iframe> che copre gran parte del
+          // viewport e "cattura" la rotella del mouse, impedendo di scorrere
+          // fino ai commenti sotto. Garantiamo lo scroll verticale e rendiamo
+          // gli iframe dei video trasparenti alla rotella (pointer-events:none).
+          // Solo per l'anteprima: non tocca l'HTML salvato/pubblicato.
+          setPreviewSnapshot(keepScripts ? injectPreviewScrollFix(rescued) : rescued);
         }
       } catch { /* fallback già impostato sopra */ }
     })();
