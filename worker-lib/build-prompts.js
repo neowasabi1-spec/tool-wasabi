@@ -11,7 +11,6 @@
 
 const { extractAllTextsUniversal } = require('./text-extractor');
 const { getCoreKnowledge, getKnowledgeForTask } = require('./knowledge-kb');
-const { extractTimedCommentTexts } = require('./timed-comments');
 
 const SAFE_TAG_CONTEXT = new Set(['title', 'meta:content', 'noscript', 'js-bundle']);
 const SAFE_TAG_PREFIXES = [
@@ -436,23 +435,6 @@ function buildPrompts({ html, sourceUrl, product, tone, language, knowledge, ext
   }
   let texts = extractTextsFromHtml(html, extraTexts);
   texts = prependDocumentTitle(texts, html);
-
-  // Live-chat comments live inside `var TIMED = [...]` in a <script>, invisible
-  // to DOM extraction. Append them (tag 'comment', AFTER the cap so they're
-  // never dropped) so the LLM rewrites them; finalize() applies the rewrites
-  // back into the TIMED array server-side.
-  try {
-    const commentTexts = extractTimedCommentTexts(html);
-    if (commentTexts.length > 0) {
-      const seenText = new Set(texts.map((t) => t.original));
-      let pos = texts.length ? Math.max(...texts.map((t) => t.position || 0)) : 0;
-      for (const ct of commentTexts) {
-        if (seenText.has(ct)) continue;
-        seenText.add(ct);
-        texts.push({ original: ct, tag: 'comment', position: ++pos });
-      }
-    }
-  } catch { /* no-op on pages without the engine */ }
 
   if (texts.length === 0) throw new Error('No text found in page');
 

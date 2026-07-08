@@ -6,9 +6,6 @@ import {
   absolutizeUrlsInHtml,
   injectNoReferrerAndEagerLoading,
 } from '@/lib/spa-rescue';
-import { neutralizeRocketLoader } from '@/lib/neutralize-rocket-loader';
-import { extractTimedCommentTexts, applyTimedCommentRewrites } from '@/lib/bake-dynamic-comments';
-import { detectDynamicScripts } from '@/lib/detect-dynamic-scripts';
 
 export const maxDuration = 300;
 
@@ -484,37 +481,12 @@ export async function POST(request: NextRequest) {
       originalHtml = await clonePageHtml(source_url!);
     }
     originalHtml = fixMediaLoading(originalHtml);
-    // Undo Cloudflare Rocket Loader ONLY when the page actually needs its inline
-    // scripts to build content (live chat/comments, counters, countdown).
-    // REGRESSION FIX (2026-07-08): doing this unconditionally re-enabled inert
-    // scripts on ordinary Cloudflare pages, letting them re-render and overwrite
-    // the rewritten copy so the swipe "didn't stick". Leaving Rocket Loader's
-    // mangling in place keeps those scripts inert and the rewrite sticks.
-    if (detectDynamicScripts(originalHtml).functional) {
-      originalHtml = neutralizeRocketLoader(originalHtml).html;
-    }
     if (originalHtml.length < 50) {
       return NextResponse.json({ error: 'HTML too short' }, { status: 400 });
     }
 
     let texts = extractTextsFromHtml(originalHtml);
     texts = prependDocumentTitle(texts, originalHtml);
-
-    // Live-chat comments live inside the `var TIMED = [...]` array in a
-    // <script>, so DOM text extraction never sees them and the swiped page
-    // keeps the original (off-product) chat copy. Append them to the AI pool
-    // as tag 'comment' (added AFTER the DOM cap so they're never dropped).
-    // Their rewrites are applied server-side into the TIMED array below.
-    const commentTexts = extractTimedCommentTexts(originalHtml);
-    if (commentTexts.length > 0) {
-      const seenText = new Set(texts.map((t) => t.original));
-      let pos = texts.length ? Math.max(...texts.map((t) => t.position)) : 0;
-      for (const ct of commentTexts) {
-        if (seenText.has(ct)) continue;
-        seenText.add(ct);
-        texts.push({ original: ct, tag: 'comment', position: ++pos });
-      }
-    }
 
     if (texts.length === 0) {
       return NextResponse.json({ error: 'No text found in page' }, { status: 400 });
@@ -578,16 +550,9 @@ CRITICAL RULES:
     const replacementPairs: Array<{ from: string; to: string; attr?: string }> = [];
     const serverSideTitlePairs: Array<{ from: string; to: string }> = [];
     const serverSideMetaPairs: Array<{ from: string; to: string }> = [];
-    // Comment rewrites (tag 'comment') are applied server-side into the TIMED
-    // array — not via the DOM replacer (which skips <script>). Collect them
-    // keyed by original text so every resolved id (even DOM texts that happen
-    // to equal a comment) can update the array.
-    const commentRewrites = new Map<string, string>();
     for (const [id, rewritten] of idToRewrite) {
       const original = texts[id];
       if (!original || !rewritten || original.original === rewritten) continue;
-      commentRewrites.set(original.original, rewritten);
-      if (original.tag === 'comment') continue;
       if (original.tag === 'title') {
         // Sostituiamo SIA server-side (per evitare il flash del titolo originale
         // nel tab del browser e per SEO/social preview) sia client-side via lo
@@ -772,14 +737,6 @@ CRITICAL RULES:
     }
 
     let resultHtml = preparedHtml;
-    // Rewrite the live-chat comment texts inside the `var TIMED = [...]` array
-    // (server-side: they live in a <script>, invisible to the DOM replacer).
-    let commentReplacements = 0;
-    if (commentRewrites.size > 0) {
-      const cr = applyTimedCommentRewrites(resultHtml, commentRewrites);
-      resultHtml = cr.html;
-      commentReplacements = cr.replaced;
-    }
     // BUG STORICO ($&): replace('</body>', swipeScript + '</body>') con
     // secondo argomento STRINGA fa interpretare `$&` (presente nel template
     // letterale del swipeScript come `'\\$&'`) come back-reference al
@@ -844,7 +801,7 @@ CRITICAL RULES:
       (texts.length > 0 ? (replacementPairs.find((p) => !p.attr)?.to || '') : '');
 
     const totalReplacements =
-      replacementPairs.length + serverSideTitlePairs.length + serverSideMetaPairs.length + commentReplacements;
+      replacementPairs.length + serverSideTitlePairs.length + serverSideMetaPairs.length;
 
     return NextResponse.json({
       success: true,
@@ -858,7 +815,6 @@ CRITICAL RULES:
       replacements_dom: replacementPairs.length,
       replacements_title: serverSideTitlePairs.length,
       replacements_meta: serverSideMetaPairs.length,
-      replacements_comments: commentReplacements,
       unresolved_text_ids: unresolvedIds,
       coverage_ratio: texts.length ? totalReplacements / texts.length : 0,
       provider: usedProvider,

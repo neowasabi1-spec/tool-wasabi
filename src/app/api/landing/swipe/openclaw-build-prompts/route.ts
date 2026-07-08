@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { extractAllTextsUniversal } from '@/lib/universal-text-extractor';
 import { getCoreKnowledge, getKnowledgeForTask } from '@/knowledge/copywriting';
-import { extractTimedCommentTexts } from '@/lib/bake-dynamic-comments';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -398,22 +397,6 @@ export async function POST(req: NextRequest) {
 
   let texts = extractTextsFromHtml(body.html);
   texts = prependDocumentTitle(texts, body.html);
-
-  // Live-chat comments live inside `var TIMED = [...]` in a <script>, invisible
-  // to DOM extraction. Append them (tag 'comment', after the cap) so the LLM
-  // rewrites them; openclaw-finalize applies the rewrites into the array.
-  try {
-    const commentTexts = extractTimedCommentTexts(body.html);
-    if (commentTexts.length > 0) {
-      const seenText = new Set(texts.map((t) => t.original));
-      let pos = texts.length ? Math.max(...texts.map((t) => t.position)) : 0;
-      for (const ct of commentTexts) {
-        if (seenText.has(ct)) continue;
-        seenText.add(ct);
-        texts.push({ original: ct, tag: 'comment', position: ++pos });
-      }
-    }
-  } catch { /* no-op on pages without the engine */ }
 
   if (texts.length === 0) {
     return NextResponse.json(

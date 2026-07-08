@@ -8,8 +8,6 @@
 // Output: stessa shape che ritornava la route Netlify.
 
 const { detectDynamicScripts } = require('./detect-dynamic-scripts');
-const { neutralizeRocketLoader } = require('./neutralize-rocket-loader');
-const { applyTimedCommentRewrites } = require('./timed-comments');
 
 function escRxLiteral(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -766,15 +764,9 @@ function finalizeSwipe({ html, sourceUrl, texts, rewrites, productName, applySpa
   const replacementPairs = [];
   const serverSideTitlePairs = [];
   const serverSideMetaPairs = [];
-  // Live-chat comment rewrites (tag 'comment') go into the TIMED array
-  // server-side — the DOM replacer skips <script>. Keyed by original text so
-  // any resolved id matching a comment updates the array.
-  const commentRewrites = new Map();
   for (const [id, rewritten] of idToRewrite) {
     const original = textById.get(id);
     if (!original || !rewritten || original.original === rewritten) continue;
-    commentRewrites.set(original.original, rewritten);
-    if (original.tag === 'comment') continue;
     if (original.tag === 'title') {
       serverSideTitlePairs.push({ from: original.original, to: rewritten });
       replacementPairs.push({ from: original.original, to: rewritten });
@@ -1166,20 +1158,6 @@ function finalizeSwipe({ html, sourceUrl, texts, rewrites, productName, applySpa
       preparedHtml = headInjection + preparedHtml;
     }
     preparedHtml = safeInjectBefore(preparedHtml, '</body>', FALLBACK_INIT_SCRIPT);
-  } else if (hasFunctionalScripts) {
-    // Scripts kept AND the page needs them to build content (live chat/comments,
-    // counter, countdown). Undo Cloudflare Rocket Loader so those inline scripts
-    // run natively on the cloned origin instead of waiting for a
-    // rocket-loader.min.js that 404s. No-op on pages that don't use Rocket Loader.
-    //
-    // REGRESSION FIX (2026-07-08): only do this for functional pages. On an
-    // ordinary Rocket-Loader page, Rocket Loader leaves inline scripts inert
-    // (type="<token>-text/javascript"), which is actually what we want for a
-    // swipe — the rewritten copy sticks because nothing re-renders. Neutralizing
-    // unconditionally re-enabled those scripts and let them overwrite the
-    // rewrite, so the page came back looking like the original.
-    const neutralized = neutralizeRocketLoader(preparedHtml);
-    preparedHtml = neutralized.html;
   }
 
   // Dedup swipe-replacer da run precedenti (idempotenza su re-finalize).
@@ -1275,21 +1253,10 @@ function finalizeSwipe({ html, sourceUrl, texts, rewrites, productName, applySpa
     swipeScript,
   );
 
-  // Apply live-chat comment rewrites into the `var TIMED = [...]` array
-  // (server-side: they live in a <script>, invisible to the DOM replacer).
-  let commentReplacements = 0;
-  if (commentRewrites.size > 0) {
-    try {
-      const cr = applyTimedCommentRewrites(resultHtml, commentRewrites);
-      resultHtml = cr.html;
-      commentReplacements = cr.replaced;
-    } catch { /* no-op */ }
-  }
-
   const newTitle = serverSideTitlePairs[0]?.to
     || (texts.length > 0 ? replacementPairs.find((p) => !p.attr)?.to || '' : '');
   const totalReplacements = replacementPairs.length + serverSideTitlePairs.length
-    + serverSideMetaPairs.length + commentReplacements;
+    + serverSideMetaPairs.length;
 
   return {
     success: true,
@@ -1303,7 +1270,6 @@ function finalizeSwipe({ html, sourceUrl, texts, rewrites, productName, applySpa
     replacements_dom: replacementPairs.length,
     replacements_title: serverSideTitlePairs.length,
     replacements_meta: serverSideMetaPairs.length,
-    replacements_comments: commentReplacements,
     replacements_server_side_html: serverReplacementsCount,
     replacements_server_side_fuzzy: fuzzyReplacementsCount,
     is_spa_page: isSpa,
