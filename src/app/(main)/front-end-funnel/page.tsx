@@ -1585,7 +1585,33 @@ export default function FrontEndFunnel() {
   // Persiste l'HTML editato nel Visual Editor sulla pagina corrente (memoria +
   // IndexedDB + auto-sync verso lo step di progetto collegato). Estratto da
   // onSave per poter essere riusato anche dal pulsante "Salva nel progetto".
-  const persistEditorHtmlToPage = async (html: string, mobileHtml?: string) => {
+  const persistEditorHtmlToPage = async (htmlIn: string, mobileHtmlIn?: string) => {
+    // I commenti live sono "cotti" come DOM statico per l'editing e l'iframe
+    // dell'editor serializza SENZA script. Al salvataggio:
+    //  1) ri-attacchiamo il motore dagli script del clone pristine,
+    //  2) ricostruiamo l'array TIMED dal DOM statico (col testo modificato)
+    //     rimuovendo i nodi statici.
+    // Così la pagina salvata/pubblicata/scaricata torna ad animare i commenti
+    // "a tempo" col testo modificato. No-op se non c'era nulla di cotto (o
+    // lato server, senza DOMParser).
+    const pristine = htmlPreviewModal.html;
+    const pristineMobile = htmlPreviewModal.mobileHtml;
+    let html = htmlIn;
+    let mobileHtml = mobileHtmlIn;
+    try {
+      const { unbakeDynamicComments } = await import('@/lib/bake-dynamic-comments');
+      const { reattachDynamicScripts } = await import('@/lib/detect-dynamic-scripts');
+      // Il clone usa Cloudflare Rocket Loader che mangla i `type` degli script
+      // (`<token>-text/javascript`): i motori ri-attaccati non partirebbero.
+      // Lo neutralizziamo così gli script girano nativamente sull'origine.
+      const { neutralizeRocketLoader } = await import('@/lib/neutralize-rocket-loader');
+      const finalize = (pristineHtml: string, editedHtml: string) =>
+        neutralizeRocketLoader(
+          unbakeDynamicComments(reattachDynamicScripts(pristineHtml, editedHtml)).html,
+        ).html;
+      html = finalize(pristine || htmlIn, htmlIn);
+      if (mobileHtmlIn) mobileHtml = finalize(pristineMobile || pristine || mobileHtmlIn, mobileHtmlIn);
+    } catch { /* fallback: HTML editato così com'è */ }
     setHtmlPreviewModal(prev => ({ ...prev, html, mobileHtml: mobileHtml || prev.mobileHtml }));
     if (!htmlPreviewModal.pageId) return;
     const pid = htmlPreviewModal.pageId;

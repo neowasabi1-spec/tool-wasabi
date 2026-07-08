@@ -4522,7 +4522,21 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     void (async () => {
       try {
         const { injectInteractivityRescue } = await import('@/lib/spa-rescue');
-        if (!cancelled) setPreviewSnapshot(injectInteractivityRescue(activeHtml));
+        const { unbakeDynamicComments } = await import('@/lib/bake-dynamic-comments');
+        const { detectDynamicScripts, reattachDynamicScripts } = await import('@/lib/detect-dynamic-scripts');
+        // I commenti live vengono "cotti" come DOM statico per l'editing e
+        // l'iframe di editing serializza SENZA script. Per l'anteprima:
+        //  1) ri-attacchiamo il motore dagli script originali (initialHtml),
+        //  2) ricostruiamo l'array TIMED dal DOM statico (col testo modificato)
+        //     rimuovendo i nodi statici,
+        //  3) teniamo gli script, così il motore ri-anima i commenti "a tempo".
+        // No-op sulle pagine senza quel motore.
+        const withEngine = reattachDynamicScripts(initialHtml, activeHtml);
+        const unbaked = unbakeDynamicComments(withEngine).html;
+        const keepScripts = detectDynamicScripts(unbaked).functional;
+        if (!cancelled) {
+          setPreviewSnapshot(injectInteractivityRescue(unbaked, { keepScripts }));
+        }
       } catch { /* fallback già impostato sopra */ }
     })();
     const t = setTimeout(() => setPreviewReady(true), 30);

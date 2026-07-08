@@ -78,8 +78,11 @@ function buildCommentRow(c: TimedComment, ts: number): string {
   const text = c.t || '';
   const isHost = !!c.isHost;
   const color = avColor(name);
+  // data-d / data-host carry the original timing + role so unbakeDynamicComments
+  // can rebuild the runtime TIMED array from the (edited) static DOM.
+  const dAttr = ' data-d="' + (c.d || 0) + '"' + (isHost ? ' data-host="1"' : '');
   return (
-    '<div class="citem no-anim" data-ts="' + ts + '">' +
+    '<div class="citem no-anim"' + dAttr + ' data-ts="' + ts + '">' +
     '<div class="cav" style="background:' + color + '">' + escHtml(initials(name)) + '</div>' +
     '<div class="cright">' +
     '<div class="cbubble' + (isHost ? ' host-bub' : '') + '">' +
@@ -149,4 +152,84 @@ export function bakeDynamicComments(html: string): { html: string; baked: number
   out = out.replace(match[0], 'var TIMED = [];');
 
   return { html: out, baked: sorted.length };
+}
+
+function jsString(s: string): string {
+  // Produce a safe single-line JS double-quoted string literal.
+  return JSON.stringify(String(s));
+}
+
+// Reverse of bakeDynamicComments: read the (edited) static .citem nodes back
+// into the runtime TIMED array so the live engine re-animates the comments with
+// the user's edited text, then remove the static nodes. Keeps original timing
+// (data-d) and host role (data-host). No-op when there's nothing baked or when
+// DOMParser is unavailable (server-side).
+// Matches a `var TIMED = [ ... ];` assignment, whether blanked (`[]`) or full.
+const TIMED_ASSIGN_RE = /var\s+TIMED\s*=\s*\[[\s\S]*?\]\s*;/;
+
+export function unbakeDynamicComments(html: string): { html: string; restored: number } {
+  if (!html || typeof html !== 'string') return { html, restored: 0 };
+  if (typeof DOMParser === 'undefined') return { html, restored: 0 };
+  // Fast bail-outs: needs baked rows + a TIMED assignment to restore into.
+  if (!/data-d=/.test(html) || !TIMED_ASSIGN_RE.test(html)) {
+    return { html, restored: 0 };
+  }
+
+  let doc: Document;
+  try {
+    doc = new DOMParser().parseFromString(html, 'text/html');
+  } catch {
+    return { html, restored: 0 };
+  }
+
+  const list = doc.getElementById('clist');
+  if (!list) return { html, restored: 0 };
+
+  const baked = Array.from(list.querySelectorAll('.citem[data-d]'));
+  if (baked.length === 0) return { html, restored: 0 };
+
+  const entries = baked
+    .map((el) => {
+      const d = parseInt(el.getAttribute('data-d') || '0', 10) || 0;
+      const isHost = el.getAttribute('data-host') === '1';
+      let name = '';
+      const nameEl = el.querySelector('.cname');
+      if (nameEl) {
+        const clone = nameEl.cloneNode(true) as HTMLElement;
+        clone.querySelectorAll('.badge').forEach((b) => b.remove());
+        name = (clone.textContent || '').trim();
+      }
+      const text = (el.querySelector('.ctext')?.textContent || '').trim();
+      return { d, n: name, t: text, isHost };
+    })
+    .filter((e) => e.n || e.t);
+
+  if (entries.length === 0) return { html, restored: 0 };
+
+  // Restore original firing order.
+  entries.sort((a, b) => a.d - b.d);
+
+  // Remove the static baked nodes — the engine will regenerate them.
+  baked.forEach((el) => el.remove());
+
+  const literal =
+    'var TIMED = [\n' +
+    entries
+      .map((e) => {
+        const parts = [`d:${e.d}`, `n:${jsString(e.n)}`, `t:${jsString(e.t)}`];
+        if (e.isHost) parts.push('isHost:true');
+        return '  {' + parts.join(', ') + '}';
+      })
+      .join(',\n') +
+    '\n];';
+
+  // Re-serialize. DOMParser preserves <script> bodies verbatim, so the TIMED
+  // assignment survives and we swap in the rebuilt array (works whether it was
+  // blanked to `[]` or re-attached in full from the pristine clone).
+  let out = '<!doctype html>\n' + doc.documentElement.outerHTML;
+  // Replacer function so `$` sequences in comment text (e.g. "$47") aren't
+  // interpreted as capture-group references.
+  out = out.replace(TIMED_ASSIGN_RE, () => literal);
+
+  return { html: out, restored: entries.length };
 }
