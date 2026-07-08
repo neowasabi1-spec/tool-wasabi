@@ -1098,18 +1098,23 @@ function finalizeSwipe({ html, sourceUrl, texts, rewrites, productName, applySpa
   // Includiamo detectModernSpa nel trigger per fermare questo edge case.
   const modernSpaCheck = detectModernSpa(originalHtml, sourceUrl);
   const isModernSpa = modernSpaCheck.isModern;
-  // Auto-keep content-generating scripts: some funnel pages build whole
-  // sections in JS (fake live chat / comments, viewer counter, countdown,
-  // FOMO toasts). Stripping them leaves empty containers, so in AUTO mode
-  // (applySpaPreviewMode neither true nor false) we DON'T strip when such
-  // functional scripts are detected — even if the page also looks SPA-ish.
-  // Explicit applySpaPreviewMode===true (force strip) / ===false (force keep)
-  // still win.
+  // Detect content-generating scripts (live chat/comments, counters,
+  // countdown, offer reveal). Kept for telemetry + the explicit "Keep" mode.
   const dynScriptCheck = detectDynamicScripts(originalHtml);
   const hasFunctionalScripts = dynScriptCheck.functional;
+  // REGRESSION FIX (2026-07-08): we used to add `&& !hasFunctionalScripts`
+  // here so a page with functional scripts would NOT be frozen even if it's a
+  // real SPA. That broke the swipe on ordinary SPAs: the detector fires on any
+  // page whose JS touches a review/feed/chat container, so the SPA was left
+  // un-frozen, the framework re-hydrated on load and OVERWROTE the rewritten
+  // copy — the page came back looking like the original ("non swipa").
+  // Real SPAs MUST be frozen in Auto mode for the rewrite to stick. Live-chat
+  // VSL pages (mobileincome-style) are plain HTML (isSpa=false), so they are
+  // never frozen here and keep their engine regardless. Users who really want
+  // a live SPA can still force-keep with applySpaPreviewMode===false.
   const previewModeRequested =
     applySpaPreviewMode === true ||
-    (applySpaPreviewMode !== false && (isSpa || isModernSpa) && !hasFunctionalScripts);
+    (applySpaPreviewMode !== false && (isSpa || isModernSpa));
   // Helper: inietta `content` prima di `closeTag` SENZA interpretare $&/$1
   // nel content (callback form di String.prototype.replace). Se `dedupRe`
   // viene passato, rimuove tutte le occorrenze precedenti dello stesso
@@ -1161,11 +1166,18 @@ function finalizeSwipe({ html, sourceUrl, texts, rewrites, productName, applySpa
       preparedHtml = headInjection + preparedHtml;
     }
     preparedHtml = safeInjectBefore(preparedHtml, '</body>', FALLBACK_INIT_SCRIPT);
-  } else {
-    // Scripts kept (functional page: live chat/comments, counter, countdown).
-    // Undo Cloudflare Rocket Loader so those inline scripts run natively on the
-    // cloned origin instead of waiting for a rocket-loader.min.js that 404s.
-    // No-op on pages that don't use Rocket Loader.
+  } else if (hasFunctionalScripts) {
+    // Scripts kept AND the page needs them to build content (live chat/comments,
+    // counter, countdown). Undo Cloudflare Rocket Loader so those inline scripts
+    // run natively on the cloned origin instead of waiting for a
+    // rocket-loader.min.js that 404s. No-op on pages that don't use Rocket Loader.
+    //
+    // REGRESSION FIX (2026-07-08): only do this for functional pages. On an
+    // ordinary Rocket-Loader page, Rocket Loader leaves inline scripts inert
+    // (type="<token>-text/javascript"), which is actually what we want for a
+    // swipe — the rewritten copy sticks because nothing re-renders. Neutralizing
+    // unconditionally re-enabled those scripts and let them overwrite the
+    // rewrite, so the page came back looking like the original.
     const neutralized = neutralizeRocketLoader(preparedHtml);
     preparedHtml = neutralized.html;
   }

@@ -8,6 +8,7 @@ import {
 } from '@/lib/spa-rescue';
 import { neutralizeRocketLoader } from '@/lib/neutralize-rocket-loader';
 import { extractTimedCommentTexts, applyTimedCommentRewrites } from '@/lib/bake-dynamic-comments';
+import { detectDynamicScripts } from '@/lib/detect-dynamic-scripts';
 
 export const maxDuration = 300;
 
@@ -483,9 +484,15 @@ export async function POST(request: NextRequest) {
       originalHtml = await clonePageHtml(source_url!);
     }
     originalHtml = fixMediaLoading(originalHtml);
-    // Undo Cloudflare Rocket Loader so any kept inline scripts (live chat,
-    // counters, countdown) execute on the cloned origin. No-op otherwise.
-    originalHtml = neutralizeRocketLoader(originalHtml).html;
+    // Undo Cloudflare Rocket Loader ONLY when the page actually needs its inline
+    // scripts to build content (live chat/comments, counters, countdown).
+    // REGRESSION FIX (2026-07-08): doing this unconditionally re-enabled inert
+    // scripts on ordinary Cloudflare pages, letting them re-render and overwrite
+    // the rewritten copy so the swipe "didn't stick". Leaving Rocket Loader's
+    // mangling in place keeps those scripts inert and the rewrite sticks.
+    if (detectDynamicScripts(originalHtml).functional) {
+      originalHtml = neutralizeRocketLoader(originalHtml).html;
+    }
     if (originalHtml.length < 50) {
       return NextResponse.json({ error: 'HTML too short' }, { status: 400 });
     }

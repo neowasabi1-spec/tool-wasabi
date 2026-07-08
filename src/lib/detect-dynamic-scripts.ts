@@ -131,14 +131,21 @@ export function detectDynamicScripts(html: string): DynamicScriptsResult {
     if (p.re.test(inlineJs)) signals.push(p.label);
   }
 
-  const hasContentKw = CONTENT_KEYWORDS.test(inlineJs);
-  const hasDomMutation = DOM_MUTATION.test(inlineJs);
-  const hasTiming = TIMING.test(inlineJs);
-
-  if (hasContentKw && hasDomMutation && hasTiming) {
-    signals.push('inline JS builds content over time (content keyword + DOM mutation + timer)');
-  }
-
+  // NOTE (regression fix 2026-07-08): a loose combo — content keyword + DOM
+  // mutation + timer — used to ALSO flag a page as functional. But
+  // innerHTML/appendChild/createElement + setTimeout + a generic word like
+  // "reviews"/"feed"/"notification"/"sold" appears in almost EVERY SPA/JS
+  // page. That false-positive made the swipe pipeline stop freezing SPAs
+  // (previewMode && !hasFunctionalScripts), so the framework re-hydrated and
+  // OVERWROTE the rewritten copy — the page came back looking like the
+  // original. We now require a SPECIFIC engine signature (STRONG_PATTERNS:
+  // comment engine, content-container selectors, viewer counter, offer
+  // reveal). The combo is reported for diagnostics only and never flips the
+  // decision on its own.
+  const combo = CONTENT_KEYWORDS.test(inlineJs) && DOM_MUTATION.test(inlineJs) && TIMING.test(inlineJs);
   const functional = signals.length > 0;
-  return { functional, signals: Array.from(new Set(signals)), inlineScriptCount };
+  const reported = functional && combo
+    ? [...signals, 'inline JS builds content over time (content keyword + DOM mutation + timer)']
+    : signals;
+  return { functional, signals: Array.from(new Set(reported)), inlineScriptCount };
 }
