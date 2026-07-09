@@ -359,35 +359,64 @@ Output shape: [{"id": number, "rewritten": "..."}, ...] — include EVERY id lis
   return rewrites;
 }
 
+// Batch concurrency: run several batches at once so a big page (many batches)
+// finishes within the AI budget instead of timing out. Anthropic tolerates a
+// handful of parallel requests; keep it modest to avoid 429s.
+const SWIPE_BATCH_CONCURRENCY = Math.max(
+  1,
+  Math.min(6, Number.parseInt(process.env.SWIPE_BATCH_CONCURRENCY || '3', 10) || 3),
+);
+
 async function collectAllRewrites(
   systemPrompt: string,
   textsForAi: Array<{ id: number; text: string; tag: string }>,
+  // Optional external sink so the caller can still apply whatever was collected
+  // if the overall AI budget times out mid-run (partial > nothing).
+  sink?: Map<number, string>,
 ): Promise<Map<number, string>> {
-  const effective = new Map<number, string>();
-
-  const totalBatches = Math.ceil(textsForAi.length / SWIPE_TEXT_BATCH_SIZE);
-  for (let i = 0; i < textsForAi.length; i += SWIPE_TEXT_BATCH_SIZE) {
-    const slice = textsForAi.slice(i, i + SWIPE_TEXT_BATCH_SIZE);
-    const batchIdx = Math.floor(i / SWIPE_TEXT_BATCH_SIZE) + 1;
-    try {
-      const rewrites = await anthropicRewriteBatch(
-        systemPrompt,
-        slice,
-        `Batch ${batchIdx} of ${totalBatches}`,
-      );
-      for (const rw of rewrites) {
-        if (typeof rw.id !== 'number' || rw.rewritten === undefined || rw.rewritten === null) continue;
-        const trimmed = String(rw.rewritten).trim();
-        if (!trimmed) continue;
-        const originalText = textsForAi.find((t) => t.id === rw.id)?.text;
-        if (originalText && trimmed === originalText) continue;
-        effective.set(rw.id, trimmed);
-      }
-    } catch (e) {
-      console.error(`[swipe] batch failed at offset ${i}:`, e instanceof Error ? e.message : e);
-      throw e;
+  const effective = sink ?? new Map<number, string>();
+  const byId = new Map(textsForAi.map((t) => [t.id, t.text]));
+  const applyRewrites = (rewrites: Array<{ id: number; rewritten: string }>) => {
+    for (const rw of rewrites) {
+      if (typeof rw.id !== 'number' || rw.rewritten === undefined || rw.rewritten === null) continue;
+      const trimmed = String(rw.rewritten).trim();
+      if (!trimmed) continue;
+      const originalText = byId.get(rw.id);
+      if (originalText && trimmed === originalText) continue;
+      effective.set(rw.id, trimmed);
     }
+  };
+
+  const batches: Array<Array<{ id: number; text: string; tag: string }>> = [];
+  for (let i = 0; i < textsForAi.length; i += SWIPE_TEXT_BATCH_SIZE) {
+    batches.push(textsForAi.slice(i, i + SWIPE_TEXT_BATCH_SIZE));
   }
+  const totalBatches = batches.length;
+
+  // First pass — concurrency-limited worker pool. A single batch failure is
+  // TOLERATED (logged, not rethrown): before, one malformed JSON / 429 aborted
+  // the entire swipe and returned nothing. The gap-fill sweeps below recover
+  // any ids missed by a failed batch.
+  let cursor = 0;
+  const runWorker = async () => {
+    for (;;) {
+      const idx = cursor++;
+      if (idx >= batches.length) return;
+      try {
+        const rewrites = await anthropicRewriteBatch(
+          systemPrompt,
+          batches[idx],
+          `Batch ${idx + 1} of ${totalBatches}`,
+        );
+        applyRewrites(rewrites);
+      } catch (e) {
+        console.error(`[swipe] batch ${idx + 1}/${totalBatches} failed:`, e instanceof Error ? e.message : e);
+      }
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(SWIPE_BATCH_CONCURRENCY, batches.length) }, runWorker),
+  );
 
   // Solo 2 sweep di gap-fill: i sweep extra costano un round-trip Anthropic
   // per ogni 28-40 testi e fanno saltare il limite Netlify (300s) su pagine
@@ -398,24 +427,31 @@ async function collectAllRewrites(
     if (missing.length === 0) break;
     console.log(`[swipe] fill sweep ${sweep + 1}: ${missing.length} texts still outstanding`);
 
+    const gapBatches: Array<Array<{ id: number; text: string; tag: string }>> = [];
     for (let j = 0; j < missing.length; j += SWIPE_TEXT_BATCH_SIZE) {
-      const slice = missing.slice(j, j + SWIPE_TEXT_BATCH_SIZE);
-      try {
-        const rewrites = await anthropicRewriteBatch(
-          systemPrompt,
-          slice,
-          `GAP-FILL — return ONLY ids [${slice.map((s) => s.id).join(', ')}]; every id mandatory`,
-        );
-        for (const rw of rewrites) {
-          if (typeof rw.id !== 'number' || rw.rewritten === undefined || rw.rewritten === null) continue;
-          const trimmed = String(rw.rewritten).trim();
-          if (!trimmed) continue;
-          effective.set(rw.id, trimmed);
-        }
-      } catch (e) {
-        console.error(`[swipe] gap-fill error:`, e instanceof Error ? e.message : e);
-      }
+      gapBatches.push(missing.slice(j, j + SWIPE_TEXT_BATCH_SIZE));
     }
+    let gapCursor = 0;
+    const runGapWorker = async () => {
+      for (;;) {
+        const idx = gapCursor++;
+        if (idx >= gapBatches.length) return;
+        const slice = gapBatches[idx];
+        try {
+          const rewrites = await anthropicRewriteBatch(
+            systemPrompt,
+            slice,
+            `GAP-FILL — return ONLY ids [${slice.map((s) => s.id).join(', ')}]; every id mandatory`,
+          );
+          applyRewrites(rewrites);
+        } catch (e) {
+          console.error(`[swipe] gap-fill error:`, e instanceof Error ? e.message : e);
+        }
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(SWIPE_BATCH_CONCURRENCY, gapBatches.length) }, runGapWorker),
+    );
   }
 
   return effective;
@@ -516,9 +552,12 @@ CRITICAL RULES:
 5. Every batch MUST return one {"id","rewritten"} object per supplied id — never omit ids.
 `;
 
-    let idToRewrite: Map<number, string>;
+    // Shared sink so a budget timeout still lets us apply what was collected so
+    // far. On a big page (many batches) a mid-run timeout used to discard
+    // EVERYTHING and return 502 ("non riscrive nulla"); now partial > nothing.
+    const idToRewrite = new Map<number, string>();
     try {
-      console.log(`[swipe] Anthropic batched swipe, texts=${texts.length}, batch=${SWIPE_TEXT_BATCH_SIZE}`);
+      console.log(`[swipe] Anthropic batched swipe, texts=${texts.length}, batch=${SWIPE_TEXT_BATCH_SIZE}, concurrency=${SWIPE_BATCH_CONCURRENCY}`);
       // Hard wall: 240s for the whole AI loop. Netlify functions die at 300s,
       // we leave 60s for response building, server-side meta/title rewrite, etc.
       const aiBudgetMs = Math.max(
@@ -528,18 +567,23 @@ CRITICAL RULES:
       const timeoutPromise = new Promise<never>((_, reject) => {
         setTimeout(() => reject(new Error(`AI budget exceeded (${aiBudgetMs}ms)`)), aiBudgetMs);
       });
-      idToRewrite = (await Promise.race([
-        collectAllRewrites(systemPrompt, textsForAi),
+      await Promise.race([
+        collectAllRewrites(systemPrompt, textsForAi, idToRewrite),
         timeoutPromise,
-      ])) as Map<number, string>;
+      ]);
     } catch (anthropicErr) {
       console.error(`[swipe] Anthropic failed: ${anthropicErr instanceof Error ? anthropicErr.message : 'Unknown'}`);
-      return NextResponse.json(
-        {
-          error: `Anthropic failed: ${anthropicErr instanceof Error ? anthropicErr.message : 'Unknown'}`,
-        },
-        { status: 502 },
-      );
+      // Only give up entirely when we have NOTHING. If some batches landed
+      // before the budget/error, apply them — a partly-swiped page beats a 502.
+      if (idToRewrite.size === 0) {
+        return NextResponse.json(
+          {
+            error: `Anthropic failed: ${anthropicErr instanceof Error ? anthropicErr.message : 'Unknown'}`,
+          },
+          { status: 502 },
+        );
+      }
+      console.warn(`[swipe] applying ${idToRewrite.size} partial rewrites after: ${anthropicErr instanceof Error ? anthropicErr.message : 'Unknown'}`);
     }
 
     const unresolvedIds = textsForAi.filter((t) => !idToRewrite.has(t.id)).map((t) => t.id);
