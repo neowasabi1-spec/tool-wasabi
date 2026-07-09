@@ -1358,7 +1358,7 @@ ${pageBlueprint}
   // env per disattivare il parallelismo se il setup locale non lo regge.
   const REWRITE_PARALLELISM = Math.max(
     1,
-    Math.min(8, Number.parseInt(process.env.REWRITE_PARALLELISM || '3', 10) || 3),
+    Math.min(8, Number.parseInt(process.env.REWRITE_PARALLELISM || '4', 10) || 4),
   );
   const allBatches = [];
   for (let i = 0; i < total; i += REWRITE_BATCH_SIZE) {

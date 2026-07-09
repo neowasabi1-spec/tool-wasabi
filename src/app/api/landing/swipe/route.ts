@@ -72,9 +72,12 @@ function isSafeContext(ctx: string): boolean {
 // Hard cap to keep Anthropic round-trip within Netlify's 300s function budget.
 // Big SaaS landings can produce 1000+ raw entries from the universal extractor;
 // after dedupe-by-text we usually stay around 200–400 unique strings.
+// Raised 350 → 550 so large sales pages (e.g. long VSL bundles ~350–500
+// texts) aren't silently truncated. Safe now that batches run concurrently
+// and a budget timeout applies partial results instead of returning nothing.
 const MAX_TEXTS_FOR_AI = Math.max(
   50,
-  Math.min(800, Number.parseInt(process.env.SWIPE_MAX_TEXTS_FOR_AI || '350', 10) || 350),
+  Math.min(800, Number.parseInt(process.env.SWIPE_MAX_TEXTS_FOR_AI || '550', 10) || 550),
 );
 
 // Priority for keeping the most user-visible copy when we hit the cap.
@@ -370,7 +373,7 @@ Output shape: [{"id": number, "rewritten": "..."}, ...] — include EVERY id lis
 // handful of parallel requests; keep it modest to avoid 429s.
 const SWIPE_BATCH_CONCURRENCY = Math.max(
   1,
-  Math.min(6, Number.parseInt(process.env.SWIPE_BATCH_CONCURRENCY || '3', 10) || 3),
+  Math.min(8, Number.parseInt(process.env.SWIPE_BATCH_CONCURRENCY || '4', 10) || 4),
 );
 
 async function collectAllRewrites(
