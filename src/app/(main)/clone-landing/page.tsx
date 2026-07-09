@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import Header from '@/components/Header';
+import { SWIPE_MODEL_OPTIONS, SWIPE_MODEL_DEFAULT, normalizeSwipeModel } from '@/lib/swipe-models';
 import {
   Copy,
   Loader2,
@@ -120,6 +121,21 @@ export default function CloneLandingPage() {
   //   'strip' → always remove scripts (static frame, best for LLM swipe).
   type ScriptsMode = 'auto' | 'keep' | 'strip';
   const [scriptsMode, setScriptsMode] = useState<ScriptsMode>('auto');
+  // Claude model used for the swipe (only the Claude auditor path). Persisted
+  // so the choice sticks across reloads. Default = Opus (previous behaviour).
+  const [claudeModel, setClaudeModelState] = useState<string>(SWIPE_MODEL_DEFAULT);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const v = window.localStorage.getItem('clone_landing_claude_model');
+    if (v) setClaudeModelState(normalizeSwipeModel(v));
+  }, []);
+  const setClaudeModel = useCallback((next: string) => {
+    const norm = normalizeSwipeModel(next);
+    setClaudeModelState(norm);
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem('clone_landing_claude_model', norm);
+    }
+  }, []);
   // Populated from the clone response so we can tell the user what the
   // auto-detector decided (kept scripts? which signals triggered it?).
   const [scriptsInfo, setScriptsInfo] = useState<{
@@ -642,6 +658,7 @@ export default function CloneLandingPage() {
           },
           tone,
           language,
+          model: claudeModel,
         }),
       });
 
@@ -802,6 +819,27 @@ export default function CloneLandingPage() {
               </span>
             )}
           </div>
+
+          {/* Claude model picker — only the Claude auditor path hits Anthropic
+              directly. Sonnet/Haiku are much faster (fewer budget timeouts on
+              big pages); Opus is highest quality but slow. */}
+          {auditor === 'claude' && (
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <span className="text-sm font-medium text-gray-700">Modello:</span>
+              <select
+                value={claudeModel}
+                onChange={(e) => setClaudeModel(e.target.value)}
+                disabled={isLoading || isSwiping}
+                className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-orange-500 focus:border-orange-500 disabled:opacity-50"
+              >
+                {SWIPE_MODEL_OPTIONS.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.label} — {m.hint}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
 
           {/* Scripts handling — needed for pages whose content is built
               client-side (fake live chat / comments, viewer counter,

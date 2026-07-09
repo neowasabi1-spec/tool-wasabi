@@ -6,6 +6,7 @@ import {
   absolutizeUrlsInHtml,
   injectNoReferrerAndEagerLoading,
 } from '@/lib/spa-rescue';
+import { normalizeSwipeModel, SWIPE_MODEL_DEFAULT } from '@/lib/swipe-models';
 
 export const maxDuration = 300;
 
@@ -258,7 +259,11 @@ const SWIPE_TEXT_BATCH_SIZE = Math.max(
   Math.min(40, Number.parseInt(process.env.SWIPE_TEXT_BATCH_SIZE || '28', 10) || 28),
 );
 
-async function callAnthropicFallback(systemPrompt: string, userPrompt: string): Promise<string> {
+async function callAnthropicFallback(
+  systemPrompt: string,
+  userPrompt: string,
+  model: string = SWIPE_MODEL_DEFAULT,
+): Promise<string> {
   const apiKey = requireAnthropicKey();
 
   const res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -269,7 +274,7 @@ async function callAnthropicFallback(systemPrompt: string, userPrompt: string): 
       'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify({
-      model: 'claude-opus-4-8',
+      model,
       max_tokens: 16000,
       system: systemPrompt,
       messages: [{ role: 'user', content: userPrompt }],
@@ -339,6 +344,7 @@ async function anthropicRewriteBatch(
   systemPrompt: string,
   batch: Array<{ id: number; text: string; tag: string }>,
   passLabel: string,
+  model: string = SWIPE_MODEL_DEFAULT,
 ): Promise<Array<{ id: number; rewritten: string }>> {
   if (batch.length === 0) return [];
   const userPrompt = `${passLabel}: You MUST return exactly one JSON object per input id (${batch.length} items). Never skip an id.
@@ -350,7 +356,7 @@ ${JSON.stringify(batch, null, 2)}
 
 Output shape: [{"id": number, "rewritten": "..."}, ...] — include EVERY id listed above (any order ok).`;
 
-  const aiText = await callAnthropicFallback(systemPrompt, userPrompt);
+  const aiText = await callAnthropicFallback(systemPrompt, userPrompt, model);
   if (!aiText.trim()) throw new Error('Empty batch response from Anthropic');
   const cleaned = cleanAiOutput(aiText);
   const parsed: unknown = JSON.parse(cleaned);
@@ -373,6 +379,7 @@ async function collectAllRewrites(
   // Optional external sink so the caller can still apply whatever was collected
   // if the overall AI budget times out mid-run (partial > nothing).
   sink?: Map<number, string>,
+  model: string = SWIPE_MODEL_DEFAULT,
 ): Promise<Map<number, string>> {
   const effective = sink ?? new Map<number, string>();
   const byId = new Map(textsForAi.map((t) => [t.id, t.text]));
@@ -407,6 +414,7 @@ async function collectAllRewrites(
           systemPrompt,
           batches[idx],
           `Batch ${idx + 1} of ${totalBatches}`,
+          model,
         );
         applyRewrites(rewrites);
       } catch (e) {
@@ -442,6 +450,7 @@ async function collectAllRewrites(
             systemPrompt,
             slice,
             `GAP-FILL — return ONLY ids [${slice.map((s) => s.id).join(', ')}]; every id mandatory`,
+            model,
           );
           applyRewrites(rewrites);
         } catch (e) {
@@ -495,13 +504,15 @@ const fixMediaLoading = injectNoReferrerAndEagerLoading;
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { source_url, html: providedHtml, product, tone, language } = body as {
+    const { source_url, html: providedHtml, product, tone, language, model: modelRaw } = body as {
       source_url?: string;
       html?: string;
       product: ProductInfo;
       tone?: string;
       language?: string;
+      model?: string;
     };
+    const swipeModel = normalizeSwipeModel(modelRaw);
 
     if (!source_url && !providedHtml) {
       return NextResponse.json({ error: 'source_url or html required' }, { status: 400 });
@@ -557,7 +568,7 @@ CRITICAL RULES:
     // EVERYTHING and return 502 ("non riscrive nulla"); now partial > nothing.
     const idToRewrite = new Map<number, string>();
     try {
-      console.log(`[swipe] Anthropic batched swipe, texts=${texts.length}, batch=${SWIPE_TEXT_BATCH_SIZE}, concurrency=${SWIPE_BATCH_CONCURRENCY}`);
+      console.log(`[swipe] Anthropic batched swipe, texts=${texts.length}, batch=${SWIPE_TEXT_BATCH_SIZE}, concurrency=${SWIPE_BATCH_CONCURRENCY}, model=${swipeModel}`);
       // Hard wall: 240s for the whole AI loop. Netlify functions die at 300s,
       // we leave 60s for response building, server-side meta/title rewrite, etc.
       const aiBudgetMs = Math.max(
@@ -568,7 +579,7 @@ CRITICAL RULES:
         setTimeout(() => reject(new Error(`AI budget exceeded (${aiBudgetMs}ms)`)), aiBudgetMs);
       });
       await Promise.race([
-        collectAllRewrites(systemPrompt, textsForAi, idToRewrite),
+        collectAllRewrites(systemPrompt, textsForAi, idToRewrite, swipeModel),
         timeoutPromise,
       ]);
     } catch (anthropicErr) {

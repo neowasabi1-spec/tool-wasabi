@@ -9,6 +9,7 @@ import { fetchAffiliateSavedFunnels } from '@/lib/supabase-operations';
 import { supabase } from '@/lib/supabase';
 import { extractSectionContent, type SectionData } from '@/lib/project-sections';
 import { injectInteractivityRescue } from '@/lib/spa-rescue';
+import { SWIPE_MODEL_OPTIONS, SWIPE_MODEL_DEFAULT, normalizeSwipeModel } from '@/lib/swipe-models';
 import SwipeDebugModal, {
   buildSwipeDebugInfo,
   type SwipeDebugInfo,
@@ -1804,6 +1805,25 @@ export default function FrontEndFunnel() {
   }, []);
   const auditorRef = useRef<Auditor>('claude');
   useEffect(() => { auditorRef.current = auditor; }, [auditor]);
+
+  // ── Claude model selector (only the Claude auditor path hits Anthropic) ──
+  // Sonnet/Haiku are much faster → fewer budget timeouts on big pages (e.g.
+  // step 5). Opus is highest quality but slow. Sticky in localStorage.
+  const [claudeModel, setClaudeModelState] = useState<string>(SWIPE_MODEL_DEFAULT);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const v = window.localStorage.getItem('frontend_funnel_claude_model');
+    if (v) setClaudeModelState(normalizeSwipeModel(v));
+  }, []);
+  const setClaudeModel = useCallback((next: string) => {
+    const norm = normalizeSwipeModel(next);
+    setClaudeModelState(norm);
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem('frontend_funnel_claude_model', norm);
+    }
+  }, []);
+  const claudeModelRef = useRef<string>(SWIPE_MODEL_DEFAULT);
+  useEffect(() => { claudeModelRef.current = claudeModel; }, [claudeModel]);
 
   // Jobs Monitor Panel
   const [showJobsPanel, setShowJobsPanel] = useState(false);
@@ -4352,6 +4372,7 @@ export default function FrontEndFunnel() {
               renderedHtml: htmlToRewrite,
               brief: cloneConfig.brief || undefined,
               market_research: cloneConfig.marketResearch || undefined,
+              model: claudeModelRef.current,
               ...cloneRoutingPayload,
             }),
           });
@@ -4403,6 +4424,7 @@ export default function FrontEndFunnel() {
                   // batches of the same job.
                   brief: cloneConfig.brief || undefined,
                   market_research: cloneConfig.marketResearch || undefined,
+                  model: claudeModelRef.current,
                   ...cloneRoutingPayload,
                 }),
               },
@@ -5324,6 +5346,31 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                   );
                 })}
               </div>
+
+              {/* Claude model picker — solo il path Claude chiama Anthropic.
+                 Sonnet/Haiku sono molto piu` veloci (meno timeout di budget
+                 su pagine grandi come lo step 5); Opus e` la max qualita` ma
+                 lento. Sticky in localStorage. */}
+              {auditor === 'claude' && (
+                <div
+                  className="flex items-center gap-1.5 px-2 py-1 rounded-lg border border-gray-200 bg-gray-50"
+                  title="Modello Anthropic usato per la riscrittura (solo path Claude)."
+                >
+                  <span className="text-xs font-medium text-gray-600 pr-1">Modello:</span>
+                  <select
+                    value={claudeModel}
+                    onChange={(e) => setClaudeModel(e.target.value)}
+                    disabled={swipeAllJob?.isRunning}
+                    className="text-xs px-2 py-1 rounded border border-gray-300 bg-white focus:ring-2 focus:ring-purple-400 focus:border-purple-400 disabled:opacity-50"
+                  >
+                    {SWIPE_MODEL_OPTIONS.map((m) => (
+                      <option key={m.id} value={m.id} title={m.hint}>
+                        {m.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
 
               {/* Clona All — clona in blocco (HTML identico) tutte le pagine
                  con URL valido, senza riscrittura. */}

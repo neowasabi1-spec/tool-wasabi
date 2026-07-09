@@ -502,6 +502,7 @@ async function generateClaudePageBlueprint(opts: {
   brief: string
   marketResearch: string
   timeoutMs: number
+  model?: string
 }): Promise<string> {
   try {
     const apiKey = String(opts.apiKey || '').trim()
@@ -568,7 +569,7 @@ async function generateClaudePageBlueprint(opts: {
           'anthropic-version': '2023-06-01',
         },
         body: JSON.stringify({
-          model: 'claude-opus-4-8',
+          model: opts.model || 'claude-opus-4-8',
           max_tokens: 1500,
           temperature: 0.5,
           system: sys,
@@ -653,7 +654,25 @@ serve(async (req) => {
       // 120s timeout (still well within Supabase Edge Functions' 150s wall).
       batchSize: batchSizeOverride,
       claudeTimeoutMs: claudeTimeoutMsOverride,
+      // Optional Claude model chosen from the UI (front-end-funnel dropdown).
+      // Validated against an allowlist below; falls back to Opus when absent
+      // or unknown so behaviour is unchanged for old clients.
+      model: modelOverride,
     } = await req.json()
+
+    // Allowlist of selectable models (mirror of src/lib/swipe-models.ts). Keep
+    // in sync when adding options. Unknown/absent → Opus (previous default).
+    const SWIPE_MODEL_DEFAULT = 'claude-opus-4-8'
+    const ALLOWED_SWIPE_MODELS = new Set([
+      'claude-opus-4-8',
+      'claude-sonnet-4-6',
+      'claude-haiku-4-5-20251001',
+    ])
+    const CLAUDE_MODEL_RUNTIME =
+      typeof modelOverride === 'string' && ALLOWED_SWIPE_MODELS.has(modelOverride)
+        ? modelOverride
+        : SWIPE_MODEL_DEFAULT
+    console.log(`🤖 Modello Claude: ${CLAUDE_MODEL_RUNTIME}${modelOverride && modelOverride !== CLAUDE_MODEL_RUNTIME ? ` (richiesto "${modelOverride}" non valido → default)` : ''}`)
 
     const BATCH_SIZE_DEFAULT = 12
     const CLAUDE_TIMEOUT_MS_DEFAULT = 120_000
@@ -670,7 +689,7 @@ serve(async (req) => {
     // which version of the function is actually serving requests. Critical
     // because GitHub pushes don't auto-deploy; if you don't see this exact
     // string in the logs you're still on the old build.
-    console.log(`🔖 funnel-swap build: v4.7-ctx-overflow-fix (2026-05-29)`)
+    console.log(`🔖 funnel-swap build: v4.8-model-selector (2026-07-09)`)
     console.log(`📋 Richiesta ricevuta: phase=${phase}, cloneMode=${cloneMode}, url=${url?.substring(0, 50)}...`)
     if (system_kb) {
       const kbChars = String(system_kb).length
@@ -1401,6 +1420,7 @@ html body [class*="line-clamp-"],html body [class*="truncate"]{-webkit-line-clam
           brief: typeof brief === 'string' ? brief : '',
           marketResearch: typeof market_research === 'string' ? market_research : '',
           timeoutMs: CLAUDE_TIMEOUT_MS_RUNTIME,
+          model: CLAUDE_MODEL_RUNTIME,
         })
         if (pageBlueprint) {
           console.log(`✓ Blueprint pagina pronto (${pageBlueprint.length} char) — north star per tutti i batch.`)
@@ -1672,7 +1692,7 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
             'anthropic-version': '2023-06-01'
           },
           body: JSON.stringify({
-            model: 'claude-opus-4-8',
+            model: CLAUDE_MODEL_RUNTIME,
             // 6000 was too tight: 12 texts × ~500 tok avg = 6000 tok, so any
             // single long body paragraph would cut the JSON mid-way and the
             // parser would fall back to the ORIGINAL text for the entire
