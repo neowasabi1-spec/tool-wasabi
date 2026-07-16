@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { toast } from 'sonner';
 import { HelpCircle, Eye, Tag, FileCode, Layers, Plus, ChevronRight, ChevronLeft, X, Monitor, Smartphone, Copy, ExternalLink, Download, Sparkles, Code } from 'lucide-react';
 import Image from 'next/image';
 
@@ -60,7 +61,7 @@ export default function QuizArchiveView({ searchTerm, onAddNew, onPreview }: any
   const downloadHTML = async (quiz: QuizArchiveItem) => {
     // Create a download link for HTML files
     const quizName = quiz.name.toLowerCase();
-    alert(`HTML files are located at:\n${quiz.local_path}\\html\\\n\nTotal files: ${quiz.html_files_count}`);
+    toast.info('HTML files ready', { description: `Located at: ${quiz.local_path}\\html\\ · Total files: ${quiz.html_files_count}` });
     
     // In a real implementation, you'd create a zip file server-side
     // For now, we'll create a simple instructions file

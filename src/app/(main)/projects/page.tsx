@@ -5,6 +5,8 @@ import Link from 'next/link';
 import Header from '@/components/Header';
 import { supabase } from '@/lib/supabase';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
+import { toast } from 'sonner';
+import { confirmDialog } from '@/components/ui/confirm';
 import {
   Plus, FolderOpen, ChevronRight, ChevronDown, Layers,
   Trash2, Search, Save, X, Upload, Loader2, FileText, Eye,
@@ -956,7 +958,7 @@ function ProjectPanel({
                   const rows = await parseFileToRows(file);
                   if (rows.length === 0) throw new Error('No rows found in file.');
                   if (frontEndRows.some(r => r.step || r.url || r.price || r.offerType)) {
-                    const replace = confirm('Replace existing rows?\n\nOK = Replace · Cancel = Append');
+                    const replace = await confirmDialog({ title: 'Righe esistenti', message: 'Vuoi sostituire le righe esistenti o aggiungerle in coda?', confirmText: 'Sostituisci', cancelText: 'Aggiungi' });
                     setFrontEndRows(replace ? rows : [...frontEndRows, ...rows]);
                   } else {
                     setFrontEndRows(rows);
@@ -978,7 +980,7 @@ function ProjectPanel({
                   const rows = await parseFileToRows(file);
                   if (rows.length === 0) throw new Error('No rows found in file.');
                   if (backEndRows.some(r => r.step || r.url || r.price || r.offerType)) {
-                    const replace = confirm('Replace existing rows?\n\nOK = Replace · Cancel = Append');
+                    const replace = await confirmDialog({ title: 'Righe esistenti', message: 'Vuoi sostituire le righe esistenti o aggiungerle in coda?', confirmText: 'Sostituisci', cancelText: 'Aggiungi' });
                     setBackEndRows(replace ? rows : [...backEndRows, ...rows]);
                   } else {
                     setBackEndRows(rows);
@@ -1219,7 +1221,7 @@ export default function ProjectsPage() {
     if (!res.ok) {
       const body = (await res.json().catch(() => null)) as { error?: string } | null;
       setAdding(false);
-      alert(`Create failed: ${body?.error || `HTTP ${res.status}`}`);
+      toast.error(`Create failed: ${body?.error || `HTTP ${res.status}`}`);
       return;
     }
 
@@ -1268,7 +1270,7 @@ export default function ProjectsPage() {
       }
     }
     if (error) {
-      alert(`Save failed: ${error.message}`);
+      toast.error(`Save failed: ${error.message}`);
       return;
     }
     setProjects(prev =>
@@ -1277,7 +1279,7 @@ export default function ProjectsPage() {
   }
 
   async function deleteProject(id: string) {
-    if (!confirm('Delete this project? This cannot be undone.')) return;
+    if (!(await confirmDialog({ title: 'Elimina progetto', message: 'Eliminare questo progetto? L\'operazione non è reversibile.', confirmText: 'Elimina', danger: true }))) return;
     await supabase.from('projects').delete().eq('id', id);
     setProjects(prev => prev.filter(p => p.id !== id));
     if (expandedId === id) setExpandedId(null);

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import Header from '@/components/Header';
+import { confirmDialog } from '@/components/ui/confirm';
 import {
   Key,
   Plus,
@@ -151,7 +152,7 @@ export default function ApiKeysPage() {
   };
 
   const handleDelete = async (id: string, name: string) => {
-    if (!confirm(`Delete API key "${name}"? This cannot be undone.`)) return;
+    if (!(await confirmDialog({ title: 'Elimina API key', message: `Eliminare la API key "${name}"? L'operazione non è reversibile.`, confirmText: 'Elimina', danger: true }))) return;
     await fetch('/api/api-keys', {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },

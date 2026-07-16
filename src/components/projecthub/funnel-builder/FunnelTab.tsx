@@ -17,6 +17,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
+import { confirmDialog } from "@/components/ui/confirm";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -1159,9 +1160,9 @@ export function FunnelTab({ projectId }: { projectId: string }) {
     setTimeout(() => setSanitizeMsg(null), 1800);
   }, [projectId, toast]);
 
-  const cleanAll = () => {
+  const cleanAll = async () => {
     if (!localSteps.length) return;
-    if (!confirm("Delete all steps?")) return;
+    if (!(await confirmDialog({ title: "Elimina tutti gli step", message: "Vuoi eliminare tutti gli step?", confirmText: "Elimina", danger: true }))) return;
     localSteps.forEach(s => deleteStep.mutate({ projectId, stepId: s.id }));
   };
 

@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import Header from '@/components/Header';
+import { toast } from 'sonner';
 import { useStore } from '@/store/useStore';
 import { POST_PURCHASE_TYPE_OPTIONS, STATUS_OPTIONS, PostPurchasePage } from '@/types';
 import {
@@ -365,7 +366,7 @@ export default function PostPurchaseFunnel() {
                 <button
                   onClick={() => {
                     navigator.clipboard.writeText(htmlPreviewModal.html);
-                    alert('HTML copied to clipboard!');
+                    toast.success('HTML copied to clipboard!');
                   }}
                   className="px-4 py-2 text-sm font-medium text-gray-500 hover:text-gray-700"
                 >

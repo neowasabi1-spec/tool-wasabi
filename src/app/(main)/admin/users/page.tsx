@@ -5,6 +5,7 @@ import Header from '@/components/Header';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { authFetch } from '@/lib/auth/client-fetch';
 import { startImpersonation } from '@/lib/auth/impersonation-client';
+import { confirmDialog } from '@/components/ui/confirm';
 import {
   DASHBOARD_SECTIONS,
   ALL_SECTION_IDS,
@@ -318,7 +319,7 @@ function UserRow({
   }
 
   async function remove() {
-    if (!confirm(`Delete user ${user.email}? This cannot be undone.`)) return;
+    if (!(await confirmDialog({ title: 'Elimina utente', message: `Eliminare ${user.email}? L'operazione non è reversibile.`, confirmText: 'Elimina', danger: true }))) return;
     setBusy(true);
     try {
       const r = await authFetch(`/api/admin/users/${user.user_id}`, { method: 'DELETE' });

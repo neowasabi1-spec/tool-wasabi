@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import Header from '@/components/Header';
+import { confirmDialog } from '@/components/ui/confirm';
 import type { SavedPrompt } from '@/types/database';
 import {
   Plus,
@@ -117,7 +118,7 @@ export default function PromptsPage() {
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm('Delete this prompt?')) return;
+    if (!(await confirmDialog({ title: 'Elimina prompt', message: 'Vuoi eliminare questo prompt?', confirmText: 'Elimina', danger: true }))) return;
     try {
       await fetch(`/api/prompts?id=${id}`, { method: 'DELETE' });
       setPrompts(prev => prev.filter(p => p.id !== id));

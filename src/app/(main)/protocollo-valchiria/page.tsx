@@ -3,6 +3,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import Header from '@/components/Header';
+import { toast } from 'sonner';
 import { useStore } from '@/store/useStore';
 import { ArchivedFunnel, PageType } from '@/types/database';
 import {
@@ -173,7 +174,7 @@ export default function ProtocolloValchiriaPage() {
       router.push('/front-end-funnel');
     } catch (error) {
       console.error('Error loading steps into Front End Funnel:', error);
-      alert('Error loading steps. Please try again.');
+      toast.error('Error loading steps. Please try again.');
     } finally {
       setIsSwipping(false);
     }

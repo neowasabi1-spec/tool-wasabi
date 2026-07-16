@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
+import { confirmDialog } from "@/components/ui/confirm";
 import {
   Plus, Trash2, RefreshCw, ExternalLink, Globe, TrendingUp,
   Zap, Eye, Play, Pause, Clock, Calendar, BarChart2,
@@ -479,7 +480,7 @@ function MonitorDetail({ monitor, projectId, onDelete }: { monitor: Monitor; pro
   };
 
   const deleteMonitor = async () => {
-    if (!confirm(`Delete the monitor for ${monitor.brand_name}?`)) return;
+    if (!(await confirmDialog({ title: "Elimina monitor", message: `Eliminare il monitor per ${monitor.brand_name}?`, confirmText: "Elimina", danger: true }))) return;
     await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/funnel-monitoring/${monitor.id}`, { method: "DELETE" });
     onDelete();
     toast({ title: "Monitor deleted" });

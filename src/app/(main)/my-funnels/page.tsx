@@ -3,6 +3,8 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import Header from '@/components/Header';
 import FunnelFlowView from '@/components/FunnelFlowView';
+import { toast } from 'sonner';
+import { confirmDialog } from '@/components/ui/confirm';
 import { fetchAffiliateSavedFunnels, deleteAffiliateSavedFunnel, createAffiliateSavedFunnel, createArchivedFunnel } from '@/lib/supabase-operations';
 import { useStore } from '@/store/useStore';
 import type { AffiliateSavedFunnel, Json } from '@/types/database';
@@ -362,7 +364,7 @@ export default function MyFunnelsPage() {
     });
 
   const handleDelete = async (funnel: AffiliateSavedFunnel) => {
-    if (!confirm(`Delete "${funnel.funnel_name}"?`)) return;
+    if (!(await confirmDialog({ title: 'Elimina funnel', message: `Vuoi eliminare "${funnel.funnel_name}"?`, confirmText: 'Elimina', danger: true }))) return;
     setDeletingId(funnel.id);
     try {
       await deleteAffiliateSavedFunnel(funnel.id);
@@ -409,7 +411,7 @@ export default function MyFunnelsPage() {
         archivedFunnels: [created, ...state.archivedFunnels],
         archivedFunnelsLoaded: true,
       }));
-      alert(`"${funnel.funnel_name}" imported to My Archive!`);
+      toast.success(`"${funnel.funnel_name}" imported to My Archive!`);
     } catch (err) {
       setError((err as Error)?.message ?? 'Error importing to archive');
     } finally {

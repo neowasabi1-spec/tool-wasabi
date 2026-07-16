@@ -4,6 +4,8 @@ import { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import { useSearchParams, useRouter } from 'next/navigation';
 import Header from '@/components/Header';
+import { toast } from 'sonner';
+import { confirmDialog } from '@/components/ui/confirm';
 import {
   ShieldCheck,
   ExternalLink,
@@ -683,7 +685,7 @@ export default function CheckpointPage() {
   };
 
   const handleDelete = async (id: string, name: string) => {
-    if (!confirm(`Delete "${name}" and all its checkpoint history?`)) {
+    if (!(await confirmDialog({ title: 'Elimina', message: `Eliminare "${name}" e tutta la sua cronologia checkpoint?`, confirmText: 'Elimina', danger: true }))) {
       return;
     }
     setDeletingId(id);
@@ -694,8 +696,9 @@ export default function CheckpointPage() {
         throw new Error(body?.error ?? `HTTP ${res.status}`);
       }
       setFunnels((prev) => prev.filter((f) => f.id !== id));
+      toast.success('Eliminato');
     } catch (err) {
-      alert(`Delete error: ${err instanceof Error ? err.message : String(err)}`);
+      toast.error(`Delete error: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setDeletingId(null);
     }

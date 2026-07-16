@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from 'react';
 import { AlertTriangle } from 'lucide-react';
-import { Button } from '@/components/ui/Button';
 
 /**
  * Promise-based confirm dialog to replace the native window.confirm().
@@ -101,12 +100,24 @@ export function ConfirmHost() {
           </div>
         </div>
         <div className="flex justify-end gap-2 mt-6">
-          <Button variant="secondary" onClick={() => settle(false)}>
+          <button
+            type="button"
+            onClick={() => settle(false)}
+            className="inline-flex items-center justify-center rounded-lg font-medium transition-colors h-10 px-4 text-sm bg-gray-100 text-gray-800 hover:bg-gray-200"
+          >
             {state.cancelText || 'Annulla'}
-          </Button>
-          <Button variant={state.danger ? 'danger' : 'primary'} onClick={() => settle(true)}>
+          </button>
+          <button
+            type="button"
+            onClick={() => settle(true)}
+            className={`inline-flex items-center justify-center rounded-lg font-medium transition-colors h-10 px-4 text-sm text-white shadow-sm ${
+              state.danger
+                ? 'bg-red-600 hover:bg-red-700'
+                : 'bg-indigo-600 hover:bg-indigo-700'
+            }`}
+          >
             {state.confirmText || 'Conferma'}
-          </Button>
+          </button>
         </div>
       </div>
     </div>

@@ -9,6 +9,7 @@ import {
   CheckCircle, Mail, ArrowRight, Trash2, BarChart2,
   Code, Settings, FileText, Eye,
 } from 'lucide-react';
+import { confirmDialog } from '@/components/ui/confirm';
 import { supabase } from '@/lib/supabase';
 
 /* ─── Types ─── */
@@ -193,7 +194,7 @@ function SidePanel({ step, onClose, onUpdate, onDelete }: {
               <ExternalLink className="w-4 h-4" />
             </a>
           )}
-          <button onClick={() => { if (confirm('Delete this step?')) onDelete(); }}
+          <button onClick={async () => { if (await confirmDialog({ title: 'Elimina step', message: 'Vuoi eliminare questo step?', confirmText: 'Elimina', danger: true })) onDelete(); }}
             className="p-1.5 text-gray-400 hover:text-red-400 transition-colors">
             <Trash2 className="w-4 h-4" />
           </button>

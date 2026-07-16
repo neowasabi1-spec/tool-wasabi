@@ -3,7 +3,7 @@ import ConditionalLayout from '@/components/ConditionalLayout';
 import { SupabaseProvider } from '@/components/SupabaseProvider';
 import FetchAuthBootstrap from '@/components/FetchAuthBootstrap';
 import ImpersonationBanner from '@/components/ImpersonationBanner';
-import { Toaster } from '@/components/ui/toast';
+import { Toaster } from '@/components/ui/sonner';
 import { ConfirmHost } from '@/components/ui/confirm';
 
 export default function MainAppLayout({ children }: { children: React.ReactNode }) {

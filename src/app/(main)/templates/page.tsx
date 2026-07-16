@@ -11,7 +11,7 @@ import CachedScreenshot from '@/components/CachedScreenshot';
 import QuizArchiveView from './QuizArchiveView';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { authFetch } from '@/lib/auth/client-fetch';
-import { toast } from '@/components/ui/toast';
+import { toast } from 'sonner';
 import { confirmDialog } from '@/components/ui/confirm';
 
 interface SelectedPage {
@@ -385,7 +385,7 @@ export default function TemplatesPage() {
       const msg = error instanceof Error
         ? error.message
         : (error as { message?: string })?.message || JSON.stringify(error);
-      alert(`Import error: ${msg}`);
+      toast.error(`Import error: ${msg}`);
     } finally {
       setIsImporting(false);
     }
@@ -439,7 +439,7 @@ export default function TemplatesPage() {
       const msg = error instanceof Error
         ? error.message
         : (error as { message?: string })?.message || JSON.stringify(error);
-      alert(`Import error: ${msg}`);
+      toast.error(`Import error: ${msg}`);
     } finally {
       setIsImporting(false);
     }
@@ -1131,7 +1131,7 @@ export default function TemplatesPage() {
                               try {
                                 await setArchivedFunnelValchiriaFlag(funnel.id, !inMine);
                               } catch (err) {
-                                alert(`Could not update Valchiria flag: ${err instanceof Error ? err.message : String(err)}`);
+                                toast.error(`Could not update Valchiria flag: ${err instanceof Error ? err.message : String(err)}`);
                               } finally {
                                 setValchiriaTogglingId(null);
                               }
@@ -1167,7 +1167,7 @@ export default function TemplatesPage() {
                             try {
                               await setArchivedFunnelShareFlag(funnel.id, !funnel.share_with_users);
                             } catch (err) {
-                              alert(`Could not update share flag: ${err instanceof Error ? err.message : String(err)}`);
+                              toast.error(`Could not update share flag: ${err instanceof Error ? err.message : String(err)}`);
                             } finally {
                               setShareTogglingId(null);
                             }
@@ -1191,9 +1191,12 @@ export default function TemplatesPage() {
                       )}
                       {!funnel.isShared && (
                         <button
-                          onClick={(e) => {
+                          onClick={async (e) => {
                             e.stopPropagation();
-                            if (confirm(`Delete funnel "${funnel.name}"?`)) deleteArchivedFunnel(funnel.id);
+                            const ok = await confirmDialog({ title: 'Elimina funnel', message: `Vuoi eliminare "${funnel.name}"?`, confirmText: 'Elimina', danger: true });
+                            if (!ok) return;
+                            try { await deleteArchivedFunnel(funnel.id); toast.success('Funnel eliminato'); }
+                            catch { toast.error('Eliminazione non riuscita'); }
                           }}
                           className="ml-2 p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
                         >

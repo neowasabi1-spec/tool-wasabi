@@ -7,6 +7,8 @@ import { useStore } from '@/store/useStore';
 import { BUILT_IN_PAGE_TYPE_OPTIONS, PageType, normalizeArchiveType } from '@/types';
 import type { ArchivedFunnel } from '@/types/database';
 import { Plus, Trash2, Edit2, Save, X, Package, Tag, Link, MousePointer, ChevronDown, ChevronRight, DollarSign, Image as ImageIcon, MessageCircle, Send, Loader2, Sparkles, ExternalLink, Globe, Layers, CheckSquare, Square, FileText, RefreshCw, Upload, FileSpreadsheet, Search, AlertCircle, CheckCircle, MapPin, BarChart3 } from 'lucide-react';
+import { toast } from 'sonner';
+import { confirmDialog } from '@/components/ui/confirm';
 
 interface NewProductForm {
   name: string;
@@ -391,7 +393,7 @@ export default function ProductsPage() {
       setCatalogImportDone(false);
     } catch (error) {
       setCatalogFileName('');
-      alert(error instanceof Error ? error.message : 'Failed to parse file');
+      toast.error(error instanceof Error ? error.message : 'Failed to parse file');
     } finally {
       setIsCatalogParsing(false);
     }
@@ -1262,7 +1264,12 @@ export default function ProductsPage() {
                         <Edit2 className="w-4 h-4" />
                       </button>
                       <button
-                        onClick={() => { if (confirm(`Delete "${product.name}"?`)) deleteProduct(product.id); }}
+                        onClick={async () => {
+                          const ok = await confirmDialog({ title: 'Elimina prodotto', message: `Vuoi eliminare "${product.name}"?`, confirmText: 'Elimina', danger: true });
+                          if (!ok) return;
+                          try { await deleteProduct(product.id); toast.success('Prodotto eliminato'); }
+                          catch { toast.error('Eliminazione non riuscita'); }
+                        }}
                         className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
                         title="Delete"
                       >

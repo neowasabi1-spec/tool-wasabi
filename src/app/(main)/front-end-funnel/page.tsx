@@ -3,6 +3,8 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { flushSync } from 'react-dom';
 import { useSearchParams, useRouter } from 'next/navigation';
+import { toast } from 'sonner';
+import { confirmDialog } from '@/components/ui/confirm';
 import Header from '@/components/Header';
 import { useStore } from '@/store/useStore';
 import { fetchAffiliateSavedFunnels } from '@/lib/supabase-operations';
@@ -1679,20 +1681,20 @@ export default function FrontEndFunnel() {
       // perdendo l'identificazione che l'utente ha richiesto.
       const flowLabel = saveFlowName.trim();
       if (!flowLabel) {
-        alert('Enter a name for the Flow (e.g. "Flow Plastilean", "Flow Calminity").');
+        toast.error('Enter a name for the Flow (e.g. "Flow Plastilean", "Flow Calminity").');
         return;
       }
       setIsSaving(true);
       saveCurrentFunnelToProject(saveProjectId, subset, flowLabel)
         .then(() => { setShowSaveModal(false); setIsSaving(false); setSaveFlowName(''); })
-        .catch((e) => { setIsSaving(false); alert('Error saving to project: ' + ((e as Error)?.message || '')); });
+        .catch((e) => { setIsSaving(false); toast.error('Error saving to project: ' + ((e as Error)?.message || '')); });
       return;
     }
     if (!saveFunnelName.trim()) return;
     setIsSaving(true);
     saveCurrentFunnelAsArchive(saveFunnelName.trim(), undefined, subset)
       .then(() => { setShowSaveModal(false); setIsSaving(false); })
-      .catch(() => { setIsSaving(false); alert('Error saving'); });
+      .catch(() => { setIsSaving(false); toast.error('Error saving'); });
   };
 
   /* ────────── Swipe All ──────────
@@ -2141,7 +2143,7 @@ export default function FrontEndFunnel() {
 
   const applyLinksToAllSteps = useCallback(async () => {
     if (!funnelDomain || Object.keys(stepSlugs).length === 0) {
-      alert('Set domain and generate step names first.');
+      toast.error('Set domain and generate step names first.');
       return;
     }
     setLinkingInProgress(true);
@@ -2175,9 +2177,9 @@ export default function FrontEndFunnel() {
         }
         updated++;
       }
-      alert(`CTA links updated in ${updated} step(s). Last step has no next link.`);
+      toast.success(`CTA links updated in ${updated} step(s). Last step has no next link.`);
     } catch (err) {
-      alert(`Error: ${err instanceof Error ? err.message : 'Failed'}`);
+      toast.error(`Error: ${err instanceof Error ? err.message : 'Failed'}`);
     } finally {
       setLinkingInProgress(false);
     }
@@ -2192,7 +2194,7 @@ export default function FrontEndFunnel() {
       page.swipedData?.html ||
       page.clonedData?.html;
     if (!html) {
-      alert('No HTML available. Clone or swipe the page first.');
+      toast.error('No HTML available. Clone or swipe the page first.');
       return;
     }
     const nextUrl = getNextStepUrl(pageId);
@@ -2234,7 +2236,7 @@ export default function FrontEndFunnel() {
         updateFunnelPage(pageId, { swipeResult: `CheckoutChamp → ${data.url || 'Deployed'}` });
       }
     } catch (err) {
-      alert(`Publish error: ${err instanceof Error ? err.message : 'Failed'}`);
+      toast.error(`Publish error: ${err instanceof Error ? err.message : 'Failed'}`);
     } finally {
       setPublishingIds(prev => {
         const next = { ...prev };
@@ -2256,7 +2258,7 @@ export default function FrontEndFunnel() {
       if (!page) return;
       const url = (page.urlToSwipe || '').trim();
       if (!url) {
-        alert('This row has no URL: add one before sending it to Checkpoint.');
+        toast.error('This row has no URL: add one before sending it to Checkpoint.');
         return;
       }
       setCheckpointingIds((prev) => [...prev, pageId]);
@@ -2284,7 +2286,7 @@ export default function FrontEndFunnel() {
         }
         throw new Error(skipped[0]?.reason ?? 'Import failed.');
       } catch (err) {
-        alert(`Checkpoint error: ${err instanceof Error ? err.message : String(err)}`);
+        toast.error(`Checkpoint error: ${err instanceof Error ? err.message : String(err)}`);
       } finally {
         setCheckpointingIds((prev) => prev.filter((id) => id !== pageId));
       }
@@ -2300,13 +2302,15 @@ export default function FrontEndFunnel() {
   const handleCheckpointAll = useCallback(async () => {
     const pages = (funnelPages || []).filter((p) => (p.urlToSwipe || '').trim());
     if (pages.length === 0) {
-      alert('No step with valid URL to import.');
+      toast.error('No step with valid URL to import.');
       return;
     }
     if (
-      !confirm(
-        `Import ${pages.length} page${pages.length === 1 ? '' : 's'} into Checkpoint?`,
-      )
+      !(await confirmDialog({
+        title: 'Import in Checkpoint',
+        message: `Importare ${pages.length} pagina${pages.length === 1 ? '' : 'e'} in Checkpoint?`,
+        confirmText: 'Importa',
+      }))
     ) {
       return;
     }
@@ -2350,7 +2354,7 @@ export default function FrontEndFunnel() {
       if (allSkipped > 0) params.set('skipped', String(allSkipped));
       router.push(`/checkpoint?${params.toString()}`);
     } catch (err) {
-      alert(`Bulk Checkpoint error: ${err instanceof Error ? err.message : String(err)}`);
+      toast.error(`Bulk Checkpoint error: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setBulkCheckpointing(false);
     }
@@ -2951,10 +2955,10 @@ export default function FrontEndFunnel() {
       const data = await file.arrayBuffer();
       const wb = XLSX.read(data, { type: 'array' });
       const ws = wb.Sheets[wb.SheetNames[0]];
-      if (!ws) { alert('Empty spreadsheet'); return; }
+      if (!ws) { toast.error('Empty spreadsheet'); return; }
 
       const rows: Record<string, string>[] = XLSX.utils.sheet_to_json(ws, { defval: '' });
-      if (rows.length === 0) { alert('No rows found'); return; }
+      if (rows.length === 0) { toast.error('No rows found'); return; }
 
       const normalize = (s: string) => s.toLowerCase().replace(/[^a-z]/g, '');
       const colMap: Record<string, string> = {};
@@ -3032,10 +3036,10 @@ export default function FrontEndFunnel() {
         imported++;
       }
 
-      alert(`Imported ${imported} steps successfully!`);
+      toast.success(`Imported ${imported} steps successfully!`);
     } catch (err) {
       console.error('Import error:', err);
-      alert('Error importing file. Make sure it is a valid .xlsx or .csv file.');
+      toast.error('Error importing file. Make sure it is a valid .xlsx or .csv file.');
     }
 
     if (fileInputRef.current) fileInputRef.current.value = '';
@@ -3078,7 +3082,7 @@ export default function FrontEndFunnel() {
     const reader = new FileReader();
     reader.onload = async () => {
       const html = String(reader.result || '');
-      if (!html.trim()) { alert('The HTML file is empty.'); return; }
+      if (!html.trim()) { toast.error('The HTML file is empty.'); return; }
       const safeName = (file.name || 'pagina.html').replace(/[^a-zA-Z0-9._-]/g, '_');
       // Copia locale immediata (sopravvive anche se Storage fallisce).
       void saveHtmlBlob(pageId, 'clonedData', html);
@@ -3094,7 +3098,7 @@ export default function FrontEndFunnel() {
         },
       });
     };
-    reader.onerror = () => alert('Error reading the HTML file.');
+    reader.onerror = () => toast.error('Error reading the HTML file.');
     reader.readAsText(file);
   };
 
@@ -3238,7 +3242,7 @@ export default function FrontEndFunnel() {
     const allPages = funnelPages || [];
     const eligible = allPages.filter((p) => p.urlToSwipe && p.productId);
     if (!eligible.length) {
-      alert('No eligible page (each row needs competitor URL + Project).');
+      toast.error('No eligible page (each row needs competitor URL + Project).');
       return;
     }
 
@@ -3600,16 +3604,18 @@ export default function FrontEndFunnel() {
       (p) => p.urlToSwipe && p.productId
     );
     if (!eligible.length) {
-      alert('No eligible page (each row needs competitor URL + Project).');
+      toast.error('No eligible page (each row needs competitor URL + Project).');
       return;
     }
-    const ok = window.confirm(
-      `Starting Swipe All on ${eligible.length} pages.\n\n` +
-        `They will be rewritten in sequence, maintaining narrative coherence ` +
-        `between one page and the next (Claude sees the summary of pages ` +
-        `already done). Estimated time: ${Math.max(1, Math.round(eligible.length * 1.2))}-` +
-        `${Math.max(2, Math.round(eligible.length * 2.5))} minutes.\n\nProceed?`
-    );
+    const ok = await confirmDialog({
+      title: `Swipe All — ${eligible.length} pagine`,
+      message:
+        `Verranno riscritte in sequenza, mantenendo la coerenza narrativa ` +
+        `tra una pagina e la successiva (Claude vede il riassunto delle pagine ` +
+        `già fatte). Tempo stimato: ${Math.max(1, Math.round(eligible.length * 1.2))}-` +
+        `${Math.max(2, Math.round(eligible.length * 2.5))} minuti.`,
+      confirmText: 'Avvia',
+    });
     if (!ok) return;
 
     swipeAllCancelRef.current = false;
@@ -3716,14 +3722,16 @@ export default function FrontEndFunnel() {
       return /^https?:\/\/.+\..+/.test(u) && !u.startsWith('https://uploaded.local/');
     });
     if (!eligible.length) {
-      alert('No page with valid URL to clone.');
+      toast.error('No page with valid URL to clone.');
       return;
     }
-    const ok = window.confirm(
-      `Clone ${eligible.length} pages in bulk?\n\n` +
-        `They will be downloaded in sequence as identical HTML (no rewrite). ` +
-        `Already-cloned pages will be skipped.\n\nProceed?`,
-    );
+    const ok = await confirmDialog({
+      title: `Clona ${eligible.length} pagine`,
+      message:
+        `Verranno scaricate in sequenza come HTML identico (nessuna riscrittura). ` +
+        `Le pagine già clonate verranno saltate.`,
+      confirmText: 'Clona',
+    });
     if (!ok) return;
 
     cloneAllCancelRef.current = false;
@@ -5406,9 +5414,9 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
               {/* Clona All — clona in blocco (HTML identico) tutte le pagine
                  con URL valido, senza riscrittura. */}
               <button
-                onClick={() => {
+                onClick={async () => {
                   if (cloneAllJob?.isRunning) {
-                    if (window.confirm('Cancel the clone in progress? The current page will finish anyway.')) {
+                    if (await confirmDialog({ title: 'Annulla clonazione', message: 'Annullare la clonazione in corso? La pagina corrente verrà comunque completata.', confirmText: 'Annulla clonazione' })) {
                       cancelCloneAll();
                     }
                     return;
@@ -5444,9 +5452,9 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                  mantenendo coerenza narrativa tra una pagina e l'altra
                  (Claude vede il riassunto delle pagine già fatte). */}
               <button
-                onClick={() => {
+                onClick={async () => {
                   if (swipeAllJob?.isRunning) {
-                    if (window.confirm('Cancel Swipe All in progress? The current page will finish anyway.')) {
+                    if (await confirmDialog({ title: 'Annulla Swipe All', message: 'Annullare lo Swipe All in corso? La pagina corrente verrà comunque completata.', confirmText: 'Annulla Swipe All' })) {
                       cancelSwipeAll();
                     }
                     return;
@@ -5484,7 +5492,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
               <button
                 onClick={() => {
                   if (!funnelPages || funnelPages.length === 0) {
-                    alert('No steps to save');
+                    toast.error('No steps to save');
                     return;
                   }
                   setSaveFunnelName('');
@@ -5512,14 +5520,16 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
               <button
                 onClick={async () => {
                   if (
-                    !confirm(
-                      'Stop ALL swipes in progress?\n\n' +
-                        '• Mark as error all pending/processing jobs in Supabase queue\n' +
-                        '• Reset to idle the in_progress pages\n' +
-                        '• Abort the local Swipe All if in progress\n\n' +
-                        'It does NOT kill Node processes on your PC — they stop on their own when they see the error status.\n\n' +
-                        'Proceed?',
-                    )
+                    !(await confirmDialog({
+                      title: 'Stop di TUTTi gli swipe in corso?',
+                      message:
+                        '• Segna come errore tutti i job pending/processing nella coda Supabase\n' +
+                        '• Riporta a idle le pagine in_progress\n' +
+                        '• Interrompe lo Swipe All locale se in corso\n\n' +
+                        'NON termina i processi Node sul tuo PC — si fermano da soli quando vedono lo stato di errore.',
+                      confirmText: 'Stop',
+                      danger: true,
+                    }))
                   ) {
                     return;
                   }
@@ -5534,20 +5544,21 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                     const data = await res.json();
                     if (!res.ok || !data.ok) {
                       const errs = (data.errors || []).join('\n') || 'Unknown error';
-                      alert(`Partial stop.\n\n${errs}`);
+                      toast.error(`Partial stop.\n\n${errs}`);
                       return;
                     }
-                    alert(
-                      `Stop completed (${data.durationMs}ms)\n\n` +
-                        `Jobs killed: ${data.totalKilled}\n` +
-                        `  • openclaw_messages: ${data.openclawMessagesKilled}\n` +
-                        `  • funnel_crawl_jobs: ${data.funnelCrawlJobsKilled}\n` +
-                        `  • funnel_pages reset: ${data.funnelPagesReset}\n\n` +
-                        'Local workers will stop thrashing as soon as they see the error status.\n' +
-                        'If you also want to kill the Node processes, do it from PowerShell.',
+                    toast.success(
+                      `Stop completed (${data.durationMs}ms)`,
+                      {
+                        description:
+                          `Jobs killed: ${data.totalKilled} · ` +
+                          `openclaw_messages: ${data.openclawMessagesKilled} · ` +
+                          `funnel_crawl_jobs: ${data.funnelCrawlJobsKilled} · ` +
+                          `funnel_pages reset: ${data.funnelPagesReset}`,
+                      },
                     );
                   } catch (err) {
-                    alert(
+                    toast.error(
                       `Request error: ${
                         err instanceof Error ? err.message : 'unknown'
                       }`,
@@ -5565,7 +5576,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
               <button
                 onClick={async () => {
                   if (!funnelPages || funnelPages.length === 0) return;
-                  if (!confirm(`Delete all ${funnelPages.length} steps?`)) return;
+                  if (!(await confirmDialog({ title: 'Elimina tutti gli step', message: `Eliminare tutti i ${funnelPages.length} step?`, confirmText: 'Elimina', danger: true }))) return;
                   for (const page of funnelPages) {
                     await deleteFunnelPage(page.id);
                   }
@@ -6372,7 +6383,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                             updateFunnelPage(page.id, { productId: newProjectId }).catch((err) => {
                               console.error('[project-select] Supabase update failed for page', page.id, '→ project', newProjectId, err);
                               const detail = err instanceof Error ? err.message : String(err);
-                              window.alert(`Error saving project: ${detail}\n\nThe value will revert to the previous one. Check the console for details.`);
+                              toast.error(`Error saving project: ${detail}`, { description: 'The value will revert to the previous one. Check the console for details.' });
                             });
                           }}
                           className="truncate"
@@ -6471,27 +6482,20 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                       if (!parsed.html) throw new Error('html missing in response');
                                       return { html: parsed.html, mobileHtml: parsed.mobileHtml };
                                     } catch (err) {
-                                      alert(
-                                        `Unable to retrieve HTML from job ${blob.jobId.slice(0, 8)}...:\n${err instanceof Error ? err.message : String(err)}\n\n` +
-                                        'The job may have been deleted or the response has expired. Re-run the Rewrite.'
+                                      toast.error(
+                                        `Unable to retrieve HTML from job ${blob.jobId.slice(0, 8)}...`,
+                                        { description: `${err instanceof Error ? err.message : String(err)}. The job may have been deleted or the response has expired. Re-run the Rewrite.` }
                                       );
                                       return null;
                                     }
                                   }
                                   // Nessuna fonte ha l'HTML.
                                   const wasSkipped = !!blob.htmlSkipped;
-                                  alert(
-                                    wasSkipped
-                                      ? 'HTML not available for this page.\n\n' +
-                                        'The HTML was > 50KB and Supabase stripped it to avoid timeouts. ' +
-                                        'The browser does not have a copy in IndexedDB (probably another device, ' +
-                                        'anonymous session, or cleared cache).\n\n' +
-                                        'Re-run Clone or Rewrite to regenerate it.'
-                                      : 'HTML not available for this page.\n\n' +
-                                        'This row does not yet have a cloned/rewritten HTML, ' +
-                                        'or it was generated on another machine.\n\n' +
-                                        'Run Clone (Identical / Rewrite) to generate the HTML.'
-                                  );
+                                  toast.error('HTML not available for this page.', {
+                                    description: wasSkipped
+                                      ? 'The HTML was > 50KB and Supabase stripped it to avoid timeouts. The browser does not have a copy in IndexedDB (probably another device, anonymous session, or cleared cache). Re-run Clone or Rewrite to regenerate it.'
+                                      : 'This row does not yet have a cloned/rewritten HTML, or it was generated on another machine. Run Clone (Identical / Rewrite) to generate the HTML.',
+                                  });
                                   return null;
                                 };
 
@@ -6703,7 +6707,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                   } catch { /* fall through */ }
                                 }
                                 if (!html) {
-                                  alert('HTML not available for this page.\n\nRun Clone or Rewrite to generate it.');
+                                  toast.error('HTML not available for this page.', { description: 'Run Clone or Rewrite to generate it.' });
                                   return;
                                 }
                                 // Sanamento: rimuove i tracker del competitor
@@ -7171,7 +7175,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                       const htmlToCopy = previewViewport === 'mobile' && htmlPreviewModal.mobileHtml
                         ? htmlPreviewModal.mobileHtml : htmlPreviewModal.html;
                       navigator.clipboard.writeText(htmlToCopy);
-                      alert('HTML copied to clipboard!');
+                      toast.success('HTML copied to clipboard!');
                     }}
                     className="px-4 py-2 text-sm font-medium text-gray-500 hover:text-gray-700"
                   >
@@ -7285,7 +7289,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                       <button
                         onClick={() => {
                           navigator.clipboard.writeText(editableHtml);
-                          alert('HTML copied!');
+                          toast.success('HTML copied!');
                         }}
                         className="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs"
                       >
