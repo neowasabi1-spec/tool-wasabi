@@ -36,19 +36,52 @@ interface MenuItem {
   masterOnly?: boolean;
 }
 
-const menuItems: MenuItem[] = [
-  { name: 'Dashboard', href: '/', icon: LayoutDashboard, sectionId: null },
-  { name: 'Strategist', href: '/strategist', icon: Brain, sectionId: null, masterOnly: true },
-  { name: 'Clone / Swipe', href: '/front-end-funnel', icon: Copy, sectionId: 'front-end-funnel' },
-  { name: 'Clone / Swipe Quiz', href: '/quiz-swipe', icon: HelpCircle, sectionId: 'quiz-swipe' },
-  { name: 'My Archive', href: '/templates', icon: FileCode, sectionId: 'templates' },
-  { name: 'Catalogue', href: '/products', icon: ShoppingBag, sectionId: 'products' },
-  { name: 'My Projects', href: '/projects', icon: FolderOpen, sectionId: 'projects' },
-  { name: 'Checkpoint', href: '/checkpoint', icon: ClipboardCheck, sectionId: 'checkpoint' },
-  { name: 'Protocollo Valchiria', href: '/protocollo-valchiria', icon: Swords, sectionId: 'protocollo-valchiria' },
-  { name: 'API Keys', href: '/api-keys', icon: KeyRound, sectionId: 'api-keys' },
-  { name: 'Spesa API', href: '/api-usage', icon: DollarSign, sectionId: 'api-usage' },
-  { name: 'Users', href: '/admin/users', icon: Users, sectionId: 'admin-users', masterOnly: true },
+interface MenuGroup {
+  /** Optional small heading shown above the group. */
+  label?: string;
+  items: MenuItem[];
+}
+
+// Grouped by workflow stage so the sidebar reads as a journey instead of a
+// flat list. Hrefs/sectionId/masterOnly are unchanged — grouping is purely
+// presentational.
+const menuGroups: MenuGroup[] = [
+  {
+    items: [
+      { name: 'Dashboard', href: '/', icon: LayoutDashboard, sectionId: null },
+      { name: 'Strategist', href: '/strategist', icon: Brain, sectionId: null, masterOnly: true },
+    ],
+  },
+  {
+    label: 'Crea',
+    items: [
+      { name: 'Clone / Swipe', href: '/front-end-funnel', icon: Copy, sectionId: 'front-end-funnel' },
+      { name: 'Clone / Swipe Quiz', href: '/quiz-swipe', icon: HelpCircle, sectionId: 'quiz-swipe' },
+    ],
+  },
+  {
+    label: 'Libreria',
+    items: [
+      { name: 'My Archive', href: '/templates', icon: FileCode, sectionId: 'templates' },
+      { name: 'Catalogue', href: '/products', icon: ShoppingBag, sectionId: 'products' },
+      { name: 'My Projects', href: '/projects', icon: FolderOpen, sectionId: 'projects' },
+    ],
+  },
+  {
+    label: 'Operazioni',
+    items: [
+      { name: 'Checkpoint', href: '/checkpoint', icon: ClipboardCheck, sectionId: 'checkpoint' },
+      { name: 'Protocollo Valchiria', href: '/protocollo-valchiria', icon: Swords, sectionId: 'protocollo-valchiria' },
+    ],
+  },
+  {
+    label: 'Impostazioni',
+    items: [
+      { name: 'API Keys', href: '/api-keys', icon: KeyRound, sectionId: 'api-keys' },
+      { name: 'Spesa API', href: '/api-usage', icon: DollarSign, sectionId: 'api-usage' },
+      { name: 'Users', href: '/admin/users', icon: Users, sectionId: 'admin-users', masterOnly: true },
+    ],
+  },
 ];
 
 export default function Sidebar() {
@@ -56,13 +89,17 @@ export default function Sidebar() {
   const router = useRouter();
   const { user, permissions, loading } = useCurrentUser();
 
-  const visibleItems = menuItems.filter(item => {
+  const isVisible = (item: MenuItem): boolean => {
     // masterOnly wins over everything else — even items without a sectionId
     // (e.g. Strategist) must be hidden to non-masters.
     if (item.masterOnly && permissions?.role !== 'master') return false;
     if (item.sectionId === null) return true; // dashboard etc. — always visible
     return canAccessSection(permissions, item.sectionId);
-  });
+  };
+
+  const visibleGroups = menuGroups
+    .map((g) => ({ ...g, items: g.items.filter(isVisible) }))
+    .filter((g) => g.items.length > 0);
 
   async function handleSignOut() {
     const supabase = getSupabaseBrowser();
@@ -109,37 +146,47 @@ export default function Sidebar() {
       {/* Logo */}
       <div className="p-4 border-b border-gray-800">
         <h1 className="text-base font-bold flex items-center gap-2">
-          <Layers className="w-5 h-5 text-blue-400" />
+          <Layers className="w-5 h-5 text-indigo-400" />
           Funnel Swiper
         </h1>
         <p className="text-gray-400 text-xs mt-0.5">Dashboard Operations</p>
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 p-3">
-        <ul className="space-y-1">
-          {visibleItems.map((item) => {
-            const isActive = pathname === item.href;
-            const Icon = item.icon;
-
-            return (
-              <li key={item.href}>
-                <Link
-                  href={item.href}
-                  className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors ${
-                    isActive
-                      ? 'bg-blue-600 text-white'
-                      : 'text-gray-300 hover:bg-gray-800 hover:text-white'
-                  }`}
-                >
-                  <Icon className="w-4 h-4 shrink-0" />
-                  <span className="flex-1 truncate">{item.name}</span>
-                  {isActive && <ChevronRight className="w-3 h-3 shrink-0" />}
-                </Link>
-              </li>
-            );
-          })}
-        </ul>
+      <nav className="flex-1 p-3 overflow-y-auto">
+        <div className="space-y-5">
+          {visibleGroups.map((group, gi) => (
+            <div key={group.label || `group-${gi}`}>
+              {group.label && (
+                <p className="px-3 mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-gray-500">
+                  {group.label}
+                </p>
+              )}
+              <ul className="space-y-1">
+                {group.items.map((item) => {
+                  const isActive = pathname === item.href;
+                  const Icon = item.icon;
+                  return (
+                    <li key={item.href}>
+                      <Link
+                        href={item.href}
+                        className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors ${
+                          isActive
+                            ? 'bg-indigo-600 text-white shadow-sm'
+                            : 'text-gray-300 hover:bg-gray-800 hover:text-white'
+                        }`}
+                      >
+                        <Icon className="w-4 h-4 shrink-0" />
+                        <span className="flex-1 truncate">{item.name}</span>
+                        {isActive && <ChevronRight className="w-3 h-3 shrink-0" />}
+                      </Link>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          ))}
+        </div>
       </nav>
 
       {/* Footer */}
