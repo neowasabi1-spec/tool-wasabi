@@ -11,6 +11,8 @@ import CachedScreenshot from '@/components/CachedScreenshot';
 import QuizArchiveView from './QuizArchiveView';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { authFetch } from '@/lib/auth/client-fetch';
+import { toast } from '@/components/ui/toast';
+import { confirmDialog } from '@/components/ui/confirm';
 
 interface SelectedPage {
   name: string;
@@ -1518,7 +1520,21 @@ export default function TemplatesPage() {
                                 </button>
                               )}
                               <button
-                                onClick={() => { if (confirm(`Eliminare "${p.name}"?`)) deleteArchivedFunnel(p.funnel_id); }}
+                                onClick={async () => {
+                                  const ok = await confirmDialog({
+                                    title: 'Elimina pagina',
+                                    message: `Vuoi eliminare "${p.name}"? L'operazione non è reversibile.`,
+                                    confirmText: 'Elimina',
+                                    danger: true,
+                                  });
+                                  if (!ok) return;
+                                  try {
+                                    await deleteArchivedFunnel(p.funnel_id);
+                                    toast.success('Pagina eliminata');
+                                  } catch {
+                                    toast.error('Eliminazione non riuscita');
+                                  }
+                                }}
                                 className="p-2 bg-white/90 rounded-lg text-gray-700 hover:text-red-600 shadow"
                                 title="Elimina"
                               >

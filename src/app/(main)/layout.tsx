@@ -3,6 +3,8 @@ import ConditionalLayout from '@/components/ConditionalLayout';
 import { SupabaseProvider } from '@/components/SupabaseProvider';
 import FetchAuthBootstrap from '@/components/FetchAuthBootstrap';
 import ImpersonationBanner from '@/components/ImpersonationBanner';
+import { Toaster } from '@/components/ui/toast';
+import { ConfirmHost } from '@/components/ui/confirm';
 
 export default function MainAppLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -17,6 +19,9 @@ export default function MainAppLayout({ children }: { children: React.ReactNode 
           <ConditionalLayout>{children}</ConditionalLayout>
         </SupabaseProvider>
       </AuthGate>
+      {/* Global, app-wide UI primitives (toasts + confirm dialog). */}
+      <Toaster />
+      <ConfirmHost />
     </>
   );
 }
