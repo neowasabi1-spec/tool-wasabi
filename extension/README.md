@@ -1,8 +1,10 @@
 # Wasabi Saver — estensione browser
 
 Salva qualsiasi landing dentro il tuo archivio Wasabi con un clic: cattura
-l'HTML della pagina + screenshot desktop e mobile, e la archivia nel **Tipo**
-che scegli (finisce in My Archive → "By Type") con i tag che vuoi.
+l'HTML della pagina + screenshot desktop e mobile, e la archivia nella
+**Categoria** (nicchia: Survival, Weight loss, …) e nel **Tipo** (Advertorial,
+VSL, Checkout, …) che scegli — finisce in My Archive → "By Type" — con i tag
+che vuoi.
 
 **Zero configurazione.** È già collegata al tuo tool: ti basta essere loggato.
 
@@ -23,8 +25,10 @@ Fatto. Fissa l'icona "Wasabi Saver" sulla barra se vuoi.
    l'estensione si collega da sola leggendo il tuo accesso).
 2. Vai su una qualsiasi landing page.
 3. Clicca l'icona **Wasabi Saver**.
-4. Scegli **Tipo** (Advertorial, VSL, Checkout, …) e **tag**, poi **Salva**.
-   La pagina compare in **My Archive → By Type** sotto quel tipo.
+4. Scegli **Categoria** (o scrivine una nuova nel campo accanto), **Tipo**
+   (Advertorial, VSL, Checkout, …) e **tag**, poi **Salva**.
+   La pagina compare in **My Archive → By Type**: seleziona la categoria in
+   alto e la ritrovi dentro la card del suo tipo.
 
 Dopo il salvataggio compaiono due link: **apri nell'editor** e **vedi HTML**.
 

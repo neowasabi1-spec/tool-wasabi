@@ -10,6 +10,7 @@ import { Plus, Trash2, Edit2, Save, X, FileCode, ExternalLink, Tag, Filter, Eye,
 import CachedScreenshot from '@/components/CachedScreenshot';
 import QuizArchiveView from './QuizArchiveView';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
+import { authFetch } from '@/lib/auth/client-fetch';
 
 interface SelectedPage {
   name: string;
@@ -453,13 +454,13 @@ export default function TemplatesPage() {
   }, [mainView, archivedFunnelsLoaded, loadArchivedFunnels]);
 
   const pagesByType = useMemo(() => {
-    const map: Record<string, { funnel_name: string; funnel_id: string; name: string; url_to_swipe: string; prompt: string; template_name: string; product_name: string; swipe_status: string }[]> = {};
+    const map: Record<string, { funnel_name: string; funnel_id: string; name: string; url_to_swipe: string; prompt: string; template_name: string; product_name: string; swipe_status: string; category: string }[]> = {};
     (archivedFunnels || []).forEach((f: ArchivedFunnel) => {
-      const steps = (f.steps as { step_index: number; name: string; page_type: string; url_to_swipe: string; prompt: string; template_name: string; product_name: string; swipe_status: string }[]) || [];
+      const steps = (f.steps as { step_index: number; name: string; page_type: string; url_to_swipe: string; prompt: string; template_name: string; product_name: string; swipe_status: string; category?: string; cloned_data?: { category?: string } }[]) || [];
       steps.forEach((s) => {
         const t = normalizeArchiveType(s.page_type);
         if (!map[t]) map[t] = [];
-        map[t].push({ funnel_name: f.name, funnel_id: f.id, name: s.name, url_to_swipe: s.url_to_swipe, prompt: s.prompt || '', template_name: s.template_name || '', product_name: s.product_name || '', swipe_status: s.swipe_status || '' });
+        map[t].push({ funnel_name: f.name, funnel_id: f.id, name: s.name, url_to_swipe: s.url_to_swipe, prompt: s.prompt || '', template_name: s.template_name || '', product_name: s.product_name || '', swipe_status: s.swipe_status || '', category: s.category || s.cloned_data?.category || '' });
       });
     });
     return map;
@@ -683,6 +684,56 @@ export default function TemplatesPage() {
 
   // Search
   const [archiveSearch, setArchiveSearch] = useState('');
+
+  // Archive categories (niches) — user-defined, orthogonal to page type.
+  const [archiveCategories, setArchiveCategories] = useState<string[]>([]);
+  const [selectedCategory, setSelectedCategory] = useState('');
+  const [addingCategory, setAddingCategory] = useState(false);
+  const [newCategory, setNewCategory] = useState('');
+
+  const loadCategories = useCallback(async () => {
+    try {
+      const res = await authFetch('/api/extension/categories');
+      if (res.ok) {
+        const d = await res.json();
+        setArchiveCategories(Array.isArray(d.categories) ? d.categories : []);
+      }
+    } catch { /* ignore */ }
+  }, []);
+
+  useEffect(() => {
+    if (mainView === 'byType') loadCategories();
+  }, [mainView, loadCategories]);
+
+  const addCategory = useCallback(async () => {
+    const name = newCategory.trim();
+    if (!name) return;
+    try {
+      const res = await authFetch('/api/extension/categories', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      if (res.ok) {
+        const d = await res.json();
+        setArchiveCategories(Array.isArray(d.categories) ? d.categories : []);
+        setSelectedCategory(name);
+      }
+    } catch { /* ignore */ }
+    setNewCategory('');
+    setAddingCategory(false);
+  }, [newCategory]);
+
+  const deleteCategory = useCallback(async (name: string) => {
+    try {
+      const res = await authFetch(`/api/extension/categories?name=${encodeURIComponent(name)}`, { method: 'DELETE' });
+      if (res.ok) {
+        const d = await res.json();
+        setArchiveCategories(Array.isArray(d.categories) ? d.categories : []);
+        if (selectedCategory === name) setSelectedCategory('');
+      }
+    } catch { /* ignore */ }
+  }, [selectedCategory]);
 
   const filteredArchivedFunnels = useMemo(() => {
     if (!archiveSearch.trim()) return archivedFunnels;
@@ -1336,175 +1387,120 @@ export default function TemplatesPage() {
 
         {/* ============ BY TYPE VIEW ============ */}
         {mainView === 'byType' && (
-          <div className="space-y-4">
-            {Object.keys(filteredPagesByType).length === 0 ? (
-              <div className="bg-white rounded-lg border border-gray-200 p-12 text-center">
-                <FolderOpen className="w-12 h-12 text-gray-300 mx-auto mb-3" />
-                <p className="text-gray-500 text-lg font-medium">{archiveSearch ? 'No results found' : 'No archived pages'}</p>
-                <p className="text-gray-400 text-sm mt-1">{archiveSearch ? 'Try a different search term' : 'Save funnels to see them organized by type'}</p>
+          <div className="space-y-5">
+            {/* Category bar (niche) */}
+            <div className="bg-white rounded-xl border border-gray-200 p-4 flex flex-wrap items-center gap-3">
+              <div className="flex items-center gap-2">
+                <Tag className="w-4 h-4 text-purple-500" />
+                <span className="text-sm font-semibold text-gray-700">Categoria</span>
               </div>
-            ) : (
-              Object.entries(filteredPagesByType)
-                .sort(([a], [b]) => getPageTypeLabel(a).localeCompare(getPageTypeLabel(b)))
-                .map(([typeValue, pages]) => {
-                  const isOpen = expandedTypes.includes(typeValue);
-                  const catInfo = PAGE_TYPE_CATEGORIES.find(c => {
-                    const opt = BUILT_IN_PAGE_TYPE_OPTIONS.find(o => o.value === typeValue);
-                    return opt && c.value === opt.category;
-                  });
-                  const colorClass = catInfo?.color || 'bg-gray-100 text-gray-700';
-                  return (
-                    <div key={typeValue} className="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
-                      <div
-                        className="flex items-center gap-3 px-5 py-4 cursor-pointer hover:bg-gray-50 transition-colors"
-                        onClick={() => setExpandedTypes(prev => prev.includes(typeValue) ? prev.filter(t => t !== typeValue) : [...prev, typeValue])}
-                      >
-                        {isOpen ? <ChevronDown className="w-5 h-5 text-gray-400" /> : <ChevronRight className="w-5 h-5 text-gray-400" />}
-                        <FolderOpen className="w-5 h-5 text-amber-500" />
-                        <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${colorClass}`}>{getPageTypeLabel(typeValue)}</span>
-                        <span className="text-sm text-gray-400 ml-auto">{pages.length} {pages.length === 1 ? 'page' : 'pages'}</span>
-                      </div>
-                      {isOpen && (
-                        <div className="border-t border-gray-100 p-5 space-y-5">
-                          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
-                            {pages.map((p, i) => {
-                              const sp: SelectedPage = { name: p.name, page_type: typeValue, url_to_swipe: p.url_to_swipe, prompt: p.prompt || '', funnel_name: p.funnel_name };
-                              const checked = isPageSelected(sp);
-                              return (
-                                <div
-                                  key={i}
-                                  onClick={() => p.url_to_swipe ? setPagePreview({ isOpen: true, url: p.url_to_swipe, name: p.name, pageType: typeValue }) : togglePage(sp)}
-                                  className={`group bg-white rounded-xl border overflow-hidden cursor-pointer transition-all ${
-                                    checked ? 'border-green-400 ring-2 ring-green-200 shadow-md' : 'border-gray-200 hover:shadow-lg hover:border-purple-300'
-                                  }`}
+              <select
+                value={selectedCategory}
+                onChange={(e) => setSelectedCategory(e.target.value)}
+                className="px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none min-w-[200px]"
+              >
+                <option value="">Tutte le categorie</option>
+                {archiveCategories.map((c) => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+
+              {addingCategory ? (
+                <div className="flex items-center gap-2">
+                  <input
+                    autoFocus
+                    type="text"
+                    value={newCategory}
+                    onChange={(e) => setNewCategory(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') { e.preventDefault(); addCategory(); }
+                      if (e.key === 'Escape') { setAddingCategory(false); setNewCategory(''); }
+                    }}
+                    placeholder="Es. Survival, Weight loss…"
+                    className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none"
+                  />
+                  <button onClick={addCategory} className="px-3 py-2 bg-purple-600 text-white rounded-lg text-sm font-medium hover:bg-purple-700 transition-colors">Aggiungi</button>
+                  <button onClick={() => { setAddingCategory(false); setNewCategory(''); }} className="p-2 text-gray-400 hover:text-gray-600"><X className="w-4 h-4" /></button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setAddingCategory(true)}
+                  className="flex items-center gap-1.5 px-3 py-2 border border-dashed border-gray-300 text-gray-600 rounded-lg text-sm hover:border-purple-400 hover:text-purple-600 transition-colors"
+                >
+                  <Plus className="w-4 h-4" /> Nuova categoria
+                </button>
+              )}
+
+              {selectedCategory && (
+                <button
+                  onClick={() => deleteCategory(selectedCategory)}
+                  className="ml-auto flex items-center gap-1 text-xs text-red-500 hover:text-red-700"
+                >
+                  <Trash2 className="w-3.5 h-3.5" /> Elimina &ldquo;{selectedCategory}&rdquo;
+                </button>
+              )}
+            </div>
+
+            {/* Type cards */}
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+              {BUILT_IN_PAGE_TYPE_OPTIONS.map((opt) => {
+                const typeValue = opt.value;
+                const allPages = filteredPagesByType[typeValue] || [];
+                const pages = selectedCategory
+                  ? allPages.filter((p) => (p.category || '') === selectedCategory)
+                  : allPages;
+                const catInfo = PAGE_TYPE_CATEGORIES.find((c) => c.value === opt.category);
+                const colorClass = catInfo?.color || 'bg-gray-100 text-gray-700';
+                return (
+                  <div key={typeValue} className="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm flex flex-col">
+                    <div className="flex items-center gap-2 px-4 py-3 border-b border-gray-100 bg-gray-50/60">
+                      <FolderOpen className="w-4 h-4 text-amber-500" />
+                      <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${colorClass}`}>{opt.label}</span>
+                      <span className="text-xs text-gray-400 ml-auto">{pages.length}</span>
+                    </div>
+                    <div className="p-3 space-y-2 min-h-[80px] max-h-[360px] overflow-y-auto">
+                      {pages.length === 0 ? (
+                        <p className="text-xs text-gray-300 text-center py-6">Nessuna pagina</p>
+                      ) : (
+                        pages.map((p, i) => (
+                          <div key={i} className="group flex items-center gap-3 p-2 rounded-lg border border-gray-100 hover:border-purple-200 hover:bg-purple-50/40 transition-colors">
+                            <div className="relative w-14 h-14 shrink-0 rounded-md overflow-hidden bg-gray-50">
+                              {p.url_to_swipe && /^https?:\/\/.+\..+/.test(p.url_to_swipe)
+                                ? <PageThumbnail url={p.url_to_swipe} alt={p.name} />
+                                : <div className="w-full h-full flex items-center justify-center text-gray-300"><FileCode className="w-5 h-5" /></div>
+                              }
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <p className="font-medium text-sm text-gray-900 truncate">{p.name}</p>
+                              {p.category && <p className="text-[10px] text-purple-500 truncate">{p.category}</p>}
+                              <p className="text-[10px] text-gray-400 truncate">from: {p.funnel_name}</p>
+                            </div>
+                            <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                              {p.url_to_swipe && (
+                                <button
+                                  onClick={() => setPagePreview({ isOpen: true, url: p.url_to_swipe, name: p.name, pageType: typeValue })}
+                                  className="p-1.5 text-gray-400 hover:text-purple-600"
+                                  title="Anteprima"
                                 >
-                                  <div className="relative w-full h-[180px] overflow-hidden bg-gray-50">
-                                    {p.url_to_swipe && /^https?:\/\/.+\..+/.test(p.url_to_swipe)
-                                      ? <PageThumbnail url={p.url_to_swipe} alt={p.name} />
-                                      : (() => { const hue = (i * 47 + 280) % 360; return (
-                                        <div className="w-full h-full flex flex-col items-center justify-center p-4 text-center" style={{ background: `linear-gradient(135deg, hsl(${hue}, 50%, 55%), hsl(${(hue + 40) % 360}, 55%, 45%))` }}>
-                                          <span className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center text-white font-bold text-lg mb-2">{i + 1}</span>
-                                          <span className="text-white/90 text-xs font-medium line-clamp-2 leading-relaxed">{p.name}</span>
-                                          <span className="mt-1 px-2 py-0.5 bg-white/20 rounded-full text-[9px] text-white/80 font-medium">{getPageTypeLabel(typeValue)}</span>
-                                        </div>); })()
-                                    }
-                                    <div className="absolute top-2 left-2" onClick={(e) => { e.stopPropagation(); togglePage(sp); }}>
-                                      {checked
-                                        ? <CheckSquare className="w-5 h-5 text-green-600 drop-shadow cursor-pointer" />
-                                        : <Square className="w-5 h-5 text-white/70 drop-shadow group-hover:text-white cursor-pointer" />
-                                      }
-                                    </div>
-                                    {p.url_to_swipe && /^https?:\/\//.test(p.url_to_swipe) && (
-                                      <a
-                                        href={p.url_to_swipe}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        onClick={(e) => e.stopPropagation()}
-                                        className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity bg-white/90 rounded-full p-1.5 shadow"
-                                      >
-                                        <ExternalLink className="w-3.5 h-3.5 text-gray-700" />
-                                      </a>
-                                    )}
-                                  </div>
-                                  <div className="p-3">
-                                    <p className="font-semibold text-sm text-gray-900 truncate">{p.name}</p>
-                                    <p className="text-[10px] text-gray-400 mt-0.5 truncate">from: {p.funnel_name}</p>
-                                    {p.product_name && (
-                                      <p className="text-[10px] text-gray-400 truncate">{p.product_name}</p>
-                                    )}
-                                  </div>
-                                </div>
-                              );
-                            })}
+                                  <Eye className="w-4 h-4" />
+                                </button>
+                              )}
+                              <button
+                                onClick={() => router.push(`/edit/${p.funnel_id}`)}
+                                className="p-1.5 text-gray-400 hover:text-purple-600"
+                                title="Apri nell'editor"
+                              >
+                                <Edit2 className="w-4 h-4" />
+                              </button>
+                            </div>
                           </div>
-
-                          {/* AI Analysis Section for Type */}
-                          <div className="border-t border-gray-200 pt-5 space-y-5">
-                            {analyzingTypeIds.has(typeValue) ? (
-                              <div className="bg-gradient-to-br from-purple-50 to-indigo-50 rounded-xl border border-purple-200 p-8 flex items-center justify-center gap-3">
-                                <Loader2 className="w-5 h-5 animate-spin text-purple-600" />
-                                <span className="text-purple-700 font-medium">AI Analysis in progress...</span>
-                              </div>
-                            ) : typeAnalysis[typeValue] ? (
-                              <>
-                                <div className="bg-gradient-to-br from-purple-50 to-indigo-50 rounded-xl border border-purple-200 p-6">
-                                  <div className="flex items-center gap-2 mb-4">
-                                    <Sparkles className="w-5 h-5 text-purple-600" />
-                                    <h4 className="font-bold text-gray-900 text-base">AI Brief — {getPageTypeLabel(typeValue)} ({pages.length} pages)</h4>
-                                    <button
-                                      onClick={() => runTypeAnalysis(typeValue, pages)}
-                                      className="ml-auto flex items-center gap-1 text-xs text-purple-600 hover:text-purple-800 bg-purple-100 hover:bg-purple-200 px-3 py-1.5 rounded-lg transition-colors"
-                                    >
-                                      <Sparkles className="w-3 h-3" />
-                                      Regenerate
-                                    </button>
-                                  </div>
-                                  <div className="prose prose-sm max-w-none text-gray-800 whitespace-pre-wrap leading-relaxed">
-                                    {typeAnalysis[typeValue]}
-                                  </div>
-                                </div>
-
-                                {/* Chat for Type */}
-                                <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-                                  <div className="px-5 py-3 bg-gray-50 border-b border-gray-200 flex items-center gap-2">
-                                    <MessageCircle className="w-4 h-4 text-indigo-600" />
-                                    <span className="font-semibold text-sm text-gray-900">Chat on {getPageTypeLabel(typeValue)}</span>
-                                    <span className="text-xs text-gray-400 ml-1">Discuss these page types with AI</span>
-                                  </div>
-
-                                  <div className="max-h-[400px] overflow-y-auto p-4 space-y-3">
-                                    {(!typeChatMessages[typeValue] || typeChatMessages[typeValue].length === 0) && (
-                                      <p className="text-sm text-gray-400 text-center py-6">Write a message to discuss pages of type {getPageTypeLabel(typeValue)}...</p>
-                                    )}
-                                    {(typeChatMessages[typeValue] || []).map((msg, mi) => (
-                                      <div key={mi} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                                        <div className={`max-w-[80%] rounded-2xl px-4 py-2.5 text-sm whitespace-pre-wrap ${
-                                          msg.role === 'user'
-                                            ? 'bg-indigo-600 text-white rounded-br-md'
-                                            : 'bg-gray-100 text-gray-800 rounded-bl-md'
-                                        }`}>
-                                          {msg.content}
-                                        </div>
-                                      </div>
-                                    ))}
-                                    {isTypeChatLoading && activeTypeChatId === typeValue && (
-                                      <div className="flex justify-start">
-                                        <div className="bg-gray-100 rounded-2xl rounded-bl-md px-4 py-3">
-                                          <Loader2 className="w-4 h-4 animate-spin text-gray-400" />
-                                        </div>
-                                      </div>
-                                    )}
-                                  </div>
-
-                                  <div className="border-t border-gray-200 p-3 flex gap-2">
-                                    <input
-                                      type="text"
-                                      value={activeTypeChatId === typeValue ? typeChatInput : ''}
-                                      onChange={(e) => { setActiveTypeChatId(typeValue); setTypeChatInput(e.target.value); }}
-                                      onFocus={() => setActiveTypeChatId(typeValue)}
-                                      onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleTypeChatSend(typeValue); } }}
-                                      placeholder={`Analyze ${getPageTypeLabel(typeValue)} pages...`}
-                                      className="flex-1 px-4 py-2.5 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
-                                      disabled={isTypeChatLoading}
-                                    />
-                                    <button
-                                      onClick={() => handleTypeChatSend(typeValue)}
-                                      disabled={isTypeChatLoading || !(activeTypeChatId === typeValue && typeChatInput.trim())}
-                                      className="px-4 py-2.5 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                                    >
-                                      <Send className="w-4 h-4" />
-                                    </button>
-                                  </div>
-                                </div>
-                              </>
-                            ) : null}
-                          </div>
-                        </div>
+                        ))
                       )}
                     </div>
-                  );
-                })
-            )}
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )}
 

@@ -1,0 +1,82 @@
+- generic [ref=f19e2]:
+  - generic [ref=f19e4]:
+    - text: ⚠️
+    - emphasis [ref=f19e5]: "WARNING:"
+    - text: This private training will be removed tonight — watch now before it's gone
+  - generic [ref=f19e7]:
+    - link "New Opportunity" [ref=f19e8] [cursor=pointer]:
+      - /url: "#"
+      - generic [ref=f19e11]: New Opportunity
+    - generic [ref=f19e13]:
+      - img [ref=f19e15]
+      - generic [ref=f19e17]: "324"
+      - generic [ref=f19e18]: watching
+  - generic [ref=f19e19]:
+    - generic [ref=f19e20]:
+      - generic [ref=f19e21]:
+        - generic [ref=f19e22]: 🔒 Private Event
+        - generic [ref=f19e23]: Jake's Exclusive Income Training — Members Only
+      - generic [ref=f19e30]:
+        - generic:
+          - button "Pause" [pressed]
+        - button "Live Stream in Progress Click to Join" [ref=f19e34] [cursor=pointer]:
+          - generic [ref=f19e35]:
+            - img [ref=f19e36]
+            - generic [ref=f19e42]:
+              - text: Live Stream in Progress
+              - text: Click to Join
+      - generic "Live stream progress" [ref=f19e43] [cursor=pointer]
+      - generic [ref=f19e47]: LIVE
+      - generic [ref=f19e49]:
+        - generic [ref=f19e50]: How I'm Making $600/Day From My Phone (Big Tech Hates This)
+        - generic [ref=f19e51]:
+          - generic [ref=f19e52]: Jake Dobbs
+          - generic [ref=f19e53]: ·
+          - generic [ref=f19e54]: Live now
+      - generic [ref=f19e55]:
+        - button "Like" [ref=f19e56] [cursor=pointer]:
+          - generic [ref=f19e57]: 👍
+          - generic [ref=f19e59]: "247"
+        - button "Share" [ref=f19e60] [cursor=pointer]:
+          - img [ref=f19e61]
+          - text: Share
+        - generic [ref=f19e63]:
+          - generic [ref=f19e64]: Room capacity
+          - generic [ref=f19e67]: 32%
+    - generic [ref=f19e68]:
+      - generic [ref=f19e69]:
+        - generic [ref=f19e71]: Live Chat
+        - generic [ref=f19e72]: · 2 comments
+      - generic [ref=f19e73]:
+        - generic [ref=f19e74]: "Your name:"
+        - textbox "Enter your name" [ref=f19e75]
+      - generic [ref=f19e76]:
+        - textbox "Write a comment…" [ref=f19e78]
+        - button "Send" [ref=f19e79] [cursor=pointer]:
+          - generic [ref=f19e80]: ➤
+      - generic [ref=f19e81]:
+        - generic [ref=f19e82]:
+          - generic [ref=f19e83]: MA
+          - generic [ref=f19e84]:
+            - generic [ref=f19e85]:
+              - generic [ref=f19e86]: Maria
+              - generic [ref=f19e87]: Anyone else in Denver? Third time trying to get on one of these calls!
+            - generic [ref=f19e88]:
+              - generic [ref=f19e89]: just now
+              - button "Like" [ref=f19e90] [cursor=pointer]
+        - generic [ref=f19e91]:
+          - generic [ref=f19e92]: JD
+          - generic [ref=f19e93]:
+            - generic [ref=f19e94]:
+              - generic [ref=f19e95]:
+                - text: Jake Dobbs
+                - generic [ref=f19e96]: HOST
+              - generic [ref=f19e97]: Welcome everyone! Really glad you're here. Drop your city in the comments 👇
+            - generic [ref=f19e98]:
+              - generic [ref=f19e99]: just now
+              - button "Like" [ref=f19e100] [cursor=pointer]
+    - text: · · ·
+  - generic:
+    - generic: 🔥
+    - generic: ❤️
+    - generic: 🙌

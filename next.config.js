@@ -32,6 +32,31 @@ const nextConfig = {
     return config;
   },
 
+  // Expose the OAuth discovery documents at the spec-mandated root
+  // `/.well-known/*` paths, backed by our API route handlers. Path-suffix
+  // variants are included because MCP clients may probe resource-scoped
+  // metadata (e.g. `/.well-known/oauth-authorization-server/api/mcp`).
+  async rewrites() {
+    return [
+      {
+        source: '/.well-known/oauth-protected-resource',
+        destination: '/api/mcp/meta/protected-resource',
+      },
+      {
+        source: '/.well-known/oauth-protected-resource/:path*',
+        destination: '/api/mcp/meta/protected-resource',
+      },
+      {
+        source: '/.well-known/oauth-authorization-server',
+        destination: '/api/mcp/meta/authorization-server',
+      },
+      {
+        source: '/.well-known/oauth-authorization-server/:path*',
+        destination: '/api/mcp/meta/authorization-server',
+      },
+    ];
+  },
+
   // Security headers applied at the server level (backup for middleware)
   async headers() {
     return [

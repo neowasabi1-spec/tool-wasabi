@@ -47,6 +47,9 @@ body {
 .field { display: flex; flex-direction: column; gap: 5px; }
 .field > span { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
 .field.row { flex-direction: row; gap: 14px; align-items: center; }
+.row-inline { display: flex; gap: 8px; }
+.row-inline > select { flex: 1 1 50%; min-width: 0; }
+.row-inline > input { flex: 1 1 50%; min-width: 0; }
 .chk { display: flex; align-items: center; gap: 6px; color: var(--text); font-size: 12px; text-transform: none; }
 
 input[type="text"], select {

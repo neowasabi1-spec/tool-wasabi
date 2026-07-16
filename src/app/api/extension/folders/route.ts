@@ -38,5 +38,38 @@ export async function GET(req: NextRequest) {
     /* ignore */
   }
 
-  return NextResponse.json({ success: true, folders, tags: Array.from(tagSet).sort() });
+  // Known categories (niches) — from the archive_categories table + any used
+  // on the user's saved pages.
+  const catSet = new Set<string>();
+  try {
+    const { data } = await supabaseAdmin
+      .from('archive_categories')
+      .select('name')
+      .eq('owner_user_id', userId);
+    for (const c of data || []) if (c.name) catSet.add(String(c.name));
+  } catch {
+    /* table may not exist yet */
+  }
+  try {
+    const { data } = await supabaseAdmin
+      .from('archived_funnels')
+      .select('steps')
+      .eq('owner_user_id', userId);
+    for (const f of data || []) {
+      const steps = Array.isArray(f.steps) ? (f.steps as Record<string, unknown>[]) : [];
+      for (const s of steps) {
+        const c = (s.category as string) || ((s.cloned_data as Record<string, unknown>)?.category as string);
+        if (c) catSet.add(String(c));
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+
+  return NextResponse.json({
+    success: true,
+    folders,
+    tags: Array.from(tagSet).sort(),
+    categories: Array.from(catSet).sort((a, b) => a.localeCompare(b)),
+  });
 }

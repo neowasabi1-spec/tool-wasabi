@@ -30,6 +30,7 @@ interface SaveBody {
   screenshots?: { desktop?: string; mobile?: string };
   pageType?: string;
   folderId?: string | null; // legacy — treated as pageType if pageType absent
+  category?: string;
   tags?: string[];
 }
 
@@ -105,6 +106,7 @@ export async function POST(req: NextRequest) {
 
   const requestedType = String(body.pageType || body.folderId || 'landing');
   const pageType = VALID_TYPES.has(requestedType) ? requestedType : 'landing';
+  const category = String(body.category || '').trim().slice(0, 60);
 
   // Absolutize relative URLs so the saved snapshot renders standalone.
   let html = body.html;
@@ -120,6 +122,7 @@ export async function POST(req: NextRequest) {
     source_url: url,
     method_used: 'extension',
     cloned_at: new Date().toISOString(),
+    category,
     tags,
   };
 
@@ -127,6 +130,7 @@ export async function POST(req: NextRequest) {
     step_index: 1,
     name,
     page_type: pageType,
+    category,
     template_name: '',
     product_name: '',
     url_to_swipe: url,
@@ -158,6 +162,18 @@ export async function POST(req: NextRequest) {
   }
 
   const pageId: string = created.id;
+
+  // Register the category so it appears in the picker next time (best-effort;
+  // ignored if the archive_categories table hasn't been migrated yet).
+  if (category) {
+    try {
+      await supabaseAdmin
+        .from('archive_categories')
+        .upsert({ name: category, owner_user_id: userId }, { onConflict: 'owner_user_id,name' });
+    } catch {
+      /* table may not exist yet */
+    }
+  }
 
   // 2) Upload screenshots (best-effort).
   const shots = body.screenshots || {};
@@ -196,6 +212,7 @@ export async function POST(req: NextRequest) {
     success: true,
     pageId,
     pageType,
+    category,
     name,
     tags,
     htmlUrl,

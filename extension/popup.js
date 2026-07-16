@@ -9,6 +9,8 @@ const els = {
   openTool: $('openTool'),
   form: $('form'),
   name: $('name'),
+  category: $('category'),
+  newCategory: $('newCategory'),
   folder: $('folder'),
   tags: $('tags'),
   tagSuggestions: $('tagSuggestions'),
@@ -135,6 +137,15 @@ async function loadFolders() {
       opt.value = t;
       els.tagSuggestions.appendChild(opt);
     }
+    if (els.category) {
+      els.category.innerHTML = '<option value="">— No category —</option>';
+      for (const c of data.categories || []) {
+        const opt = document.createElement('option');
+        opt.value = c;
+        opt.textContent = c;
+        els.category.appendChild(opt);
+      }
+    }
   } catch (e) {
     console.warn('loadFolders failed', e);
   }
@@ -177,6 +188,8 @@ async function onSave() {
 
     setStatus('<span class="spinner"></span>Saving to archive…');
     const tags = els.tags.value.split(',').map((t) => t.trim()).filter(Boolean);
+    // A freshly typed category wins over the dropdown selection.
+    const category = (els.newCategory.value.trim() || els.category.value || '').slice(0, 60);
     const body = {
       url: page.url,
       title: page.title,
@@ -184,6 +197,7 @@ async function onSave() {
       html: page.html,
       screenshots,
       pageType: els.folder.value || 'landing',
+      category,
       tags,
     };
 
