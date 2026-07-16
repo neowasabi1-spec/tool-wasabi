@@ -310,7 +310,7 @@ export default function TemplatesPage() {
   const isMaster = currentUserPermissions?.role === 'master';
   const router = useRouter();
   
-  const [mainView, setMainView] = useState<'templates' | 'funnels' | 'byType' | 'quiz'>('templates');
+  const [mainView, setMainView] = useState<'templates' | 'funnels' | 'byType' | 'quiz'>('byType');
   const [expandedFunnelIds, setExpandedFunnelIds] = useState<string[]>([]);
   const [expandedTypes, setExpandedTypes] = useState<string[]>([]);
 
@@ -983,46 +983,13 @@ export default function TemplatesPage() {
         <div className="flex items-center gap-4 mb-6 flex-wrap">
           <div className="flex gap-1 bg-gray-100 rounded-xl p-1.5">
             <button
-              onClick={() => setMainView('templates')}
-              className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-                mainView === 'templates' ? 'bg-white text-blue-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'
-              }`}
-            >
-              <FileCode className="w-4 h-4" />
-              Templates
-            </button>
-            <button
-              onClick={() => setMainView('funnels')}
-              className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-                mainView === 'funnels' ? 'bg-white text-green-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'
-              }`}
-            >
-              <Archive className="w-4 h-4" />
-              Saved Funnels
-              {archivedFunnels.length > 0 && (
-                <span className="ml-1 px-1.5 py-0.5 bg-green-100 text-green-700 rounded-full text-xs">{archivedFunnels.length}</span>
-              )}
-            </button>
-            <button
-              onClick={() => setMainView('quiz')}
-              className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-                mainView === 'quiz' ? 'bg-white text-orange-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'
-              }`}
-            >
-              <HelpCircle className="w-4 h-4" />
-              Quiz
-              {quizCount > 0 && (
-                <span className="ml-1 px-1.5 py-0.5 bg-orange-100 text-orange-700 rounded-full text-xs">{quizCount}</span>
-              )}
-            </button>
-            <button
               onClick={() => setMainView('byType')}
               className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium transition-colors ${
                 mainView === 'byType' ? 'bg-white text-purple-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'
               }`}
             >
               <FolderOpen className="w-4 h-4" />
-              By Type
+              Template
               {Object.keys(pagesByType).length > 0 && (
                 <span className="ml-1 px-1.5 py-0.5 bg-purple-100 text-purple-700 rounded-full text-xs">{Object.keys(pagesByType).length}</span>
               )}
