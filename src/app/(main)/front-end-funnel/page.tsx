@@ -48,7 +48,6 @@ import {
   ChevronUp,
   RefreshCw,
   MessageSquare,
-  FileStack,
   Target,
   Copy,
   Globe,
@@ -2593,15 +2592,6 @@ export default function FrontEndFunnel() {
     url.searchParams.delete('swipe_type');
     window.history.replaceState({}, '', url.toString());
   }, [searchParams, addFunnelPage]);
-
-  // Bulk Project selection for all rows. Field name kept for backward
-  // compatibility with `funnelPages.productId` (it now stores a project id).
-  const handleBulkProductChange = useCallback((productId: string) => {
-    if (!productId) return;
-    for (const page of funnelPages) {
-      updateFunnelPage(page.id, { productId });
-    }
-  }, [funnelPages, updateFunnelPage]);
 
   // Build a labelled context block from a Project so the rewriter (Claude)
   // can treat the brief as the source of truth, separate from description /
@@ -5251,59 +5241,6 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                   {bulkCheckpointing ? 'Importing...' : 'Checkpoint All'}
                 </button>
               )}
-              {/* Bulk Project Selector */}
-              {(funnelPages || []).length > 0 && (
-                <div className="flex items-center gap-2 px-3 py-1.5 bg-amber-50 border border-amber-200 rounded-lg">
-                  <Target className="w-4 h-4 text-amber-600" />
-                  <span className="text-sm font-medium text-amber-800 whitespace-nowrap">Project for all:</span>
-                  <select
-                    value=""
-                    onChange={(e) => handleBulkProductChange(e.target.value)}
-                    className="min-w-[160px] px-2 py-1 border border-amber-300 rounded-md text-sm bg-white focus:ring-2 focus:ring-amber-400 focus:border-amber-400"
-                  >
-                    <option value="">— Select —</option>
-                    {(projects || []).map((proj) => (
-                      <option key={proj.id} value={proj.id}>
-                        {proj.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
-              {/* Saved Funnels Dropdown (from affiliate_saved_funnels) */}
-              <div className="flex items-center gap-2">
-                <label htmlFor="saved-funnel-select" className="text-sm font-medium text-gray-700 flex items-center gap-1">
-                  <FileStack className="w-4 h-4 text-amber-500" />
-                  Saved Funnel
-                </label>
-                <select
-                  id="saved-funnel-select"
-                  value={selectedAffiliateFunnelId ?? ''}
-                  onChange={(e) => setSelectedAffiliateFunnelId(e.target.value || null)}
-                  className="min-w-[260px] px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 text-sm bg-white"
-                >
-                  <option value="">— Select a funnel —</option>
-                  {affiliateFunnelsLoading ? (
-                    <option disabled>Loading...</option>
-                  ) : (
-                    affiliateFunnels.map((af) => (
-                      <option key={af.id} value={af.id}>
-                        {af.funnel_name}{af.brand_name ? ` (${af.brand_name})` : ''} — {af.funnel_type.replace(/_/g, ' ')} — {af.total_steps} step
-                      </option>
-                    ))
-                  )}
-                </select>
-                {affiliateFunnels.length > 0 && (
-                  <button
-                    onClick={() => fetchAffiliateData()}
-                    disabled={affiliateFunnelsLoading}
-                    className="p-2 text-amber-600 hover:bg-amber-50 rounded-lg transition-colors"
-                    title="Refresh funnels"
-                  >
-                    <RefreshCw className={`w-4 h-4 ${affiliateFunnelsLoading ? 'animate-spin' : ''}`} />
-                  </button>
-                )}
-              </div>
             </div>
             
             <div className="flex items-center gap-3">
