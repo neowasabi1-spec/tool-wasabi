@@ -2559,6 +2559,37 @@ export default function FrontEndFunnel() {
     window.history.replaceState({}, '', url.toString());
   }, [searchParams, affiliateFunnels, affiliateFunnelsLoading, addFunnelPage]);
 
+  // Use a saved archive page as a swipe template via
+  // ?swipe_url=...&swipe_name=...&swipe_type=... (from My Archive → Template).
+  const swipeImportDoneRef = useRef(false);
+  useEffect(() => {
+    if (swipeImportDoneRef.current) return;
+    const swipeUrl = searchParams.get('swipe_url');
+    if (!swipeUrl) return;
+    swipeImportDoneRef.current = true;
+
+    const rawType = searchParams.get('swipe_type') || 'landing';
+    const validType = BUILT_IN_PAGE_TYPE_OPTIONS.some((o) => o.value === rawType);
+    const pageType = (validType ? rawType : 'landing') as PageType;
+    const name = (searchParams.get('swipe_name') || '').slice(0, 80) || 'Template';
+
+    addFunnelPage({
+      name,
+      pageType,
+      productId: '',
+      urlToSwipe: swipeUrl,
+      prompt: '',
+      swipeStatus: 'pending',
+      feedback: '',
+    });
+
+    const url = new URL(window.location.href);
+    url.searchParams.delete('swipe_url');
+    url.searchParams.delete('swipe_name');
+    url.searchParams.delete('swipe_type');
+    window.history.replaceState({}, '', url.toString());
+  }, [searchParams, addFunnelPage]);
+
   // Bulk Project selection for all rows. Field name kept for backward
   // compatibility with `funnelPages.productId` (it now stores a project id).
   const handleBulkProductChange = useCallback((productId: string) => {

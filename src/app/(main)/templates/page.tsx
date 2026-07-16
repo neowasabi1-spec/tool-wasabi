@@ -702,6 +702,8 @@ export default function TemplatesPage() {
   const [selectedCategory, setSelectedCategory] = useState('');
   const [addingCategory, setAddingCategory] = useState(false);
   const [newCategory, setNewCategory] = useState('');
+  // Which type "folder" is currently opened (null = show the folder grid).
+  const [openType, setOpenType] = useState<string | null>(null);
 
   const loadCategories = useCallback(async () => {
     try {
@@ -1432,70 +1434,103 @@ export default function TemplatesPage() {
               )}
             </div>
 
-            {/* Type cards */}
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-              {BUILT_IN_PAGE_TYPE_OPTIONS.map((opt) => {
-                const typeValue = opt.value;
-                const allPages = filteredPagesByType[typeValue] || [];
-                const pages = selectedCategory
-                  ? allPages.filter((p) => (p.category || '') === selectedCategory)
-                  : allPages;
-                const catInfo = PAGE_TYPE_CATEGORIES.find((c) => c.value === opt.category);
-                const colorClass = catInfo?.color || 'bg-gray-100 text-gray-700';
-                return (
-                  <div key={typeValue} className="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm flex flex-col">
-                    <div className="flex items-center gap-2 px-4 py-3 border-b border-gray-100 bg-gray-50/60">
-                      <FolderOpen className="w-4 h-4 text-amber-500" />
+            {/* Folder grid, or the opened folder's pages */}
+            {openType === null ? (
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+                {BUILT_IN_PAGE_TYPE_OPTIONS.map((opt) => {
+                  const typeValue = opt.value;
+                  const allPages = filteredPagesByType[typeValue] || [];
+                  const count = selectedCategory
+                    ? allPages.filter((p) => (p.category || '') === selectedCategory).length
+                    : allPages.length;
+                  const catInfo = PAGE_TYPE_CATEGORIES.find((c) => c.value === opt.category);
+                  const colorClass = catInfo?.color || 'bg-gray-100 text-gray-700';
+                  return (
+                    <button
+                      key={typeValue}
+                      onClick={() => setOpenType(typeValue)}
+                      className="group bg-white rounded-xl border border-gray-200 shadow-sm p-5 flex flex-col items-start gap-3 hover:border-purple-300 hover:shadow-md transition-all text-left"
+                    >
+                      <div className="flex items-center justify-between w-full">
+                        <FolderOpen className="w-8 h-8 text-amber-400 group-hover:text-amber-500" />
+                        <span className="text-2xl font-bold text-gray-800">{count}</span>
+                      </div>
                       <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${colorClass}`}>{opt.label}</span>
-                      <span className="text-xs text-gray-400 ml-auto">{pages.length}</span>
+                      <span className="text-[11px] text-gray-400">{count === 1 ? '1 pagina' : `${count} pagine`}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (() => {
+              const opt = BUILT_IN_PAGE_TYPE_OPTIONS.find((o) => o.value === openType);
+              const allPages = filteredPagesByType[openType] || [];
+              const pages = selectedCategory
+                ? allPages.filter((p) => (p.category || '') === selectedCategory)
+                : allPages;
+              const catInfo = PAGE_TYPE_CATEGORIES.find((c) => c.value === opt?.category);
+              const colorClass = catInfo?.color || 'bg-gray-100 text-gray-700';
+              return (
+                <div className="space-y-4">
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <button onClick={() => setOpenType(null)} className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-800">
+                      <ChevronRight className="w-4 h-4 rotate-180" /> Cartelle
+                    </button>
+                    <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${colorClass}`}>{opt?.label || openType}</span>
+                    <span className="text-sm text-gray-400">{pages.length} {pages.length === 1 ? 'pagina' : 'pagine'}</span>
+                    {selectedCategory && <span className="text-xs text-purple-500">· {selectedCategory}</span>}
+                  </div>
+
+                  {pages.length === 0 ? (
+                    <div className="bg-white rounded-xl border border-gray-200 p-12 text-center">
+                      <FolderOpen className="w-10 h-10 text-gray-300 mx-auto mb-3" />
+                      <p className="text-gray-500">Nessuna pagina in questa cartella{selectedCategory ? ` per "${selectedCategory}"` : ''}.</p>
                     </div>
-                    <div className="p-3 space-y-2 min-h-[80px] max-h-[360px] overflow-y-auto">
-                      {pages.length === 0 ? (
-                        <p className="text-xs text-gray-300 text-center py-6">Nessuna pagina</p>
-                      ) : (
-                        pages.map((p, i) => (
-                          <div key={i} className="group flex items-center gap-3 p-2 rounded-lg border border-gray-100 hover:border-purple-200 hover:bg-purple-50/40 transition-colors">
-                            <div className="relative w-14 h-14 shrink-0 rounded-md overflow-hidden bg-gray-50">
-                              {p.screenshotUrl
-                                ? <img src={p.screenshotUrl} alt={p.name} className="w-full h-full object-cover object-top" />
-                                : p.savedHtml
-                                  ? <PageThumbnail url="" savedHtml={p.savedHtml} alt={p.name} height="56px" />
-                                  : p.url_to_swipe && /^https?:\/\/.+\..+/.test(p.url_to_swipe)
-                                    ? <PageThumbnail url={p.url_to_swipe} alt={p.name} height="56px" />
-                                    : <div className="w-full h-full flex items-center justify-center text-gray-300"><FileCode className="w-5 h-5" /></div>
-                              }
-                            </div>
-                            <div className="min-w-0 flex-1">
-                              <p className="font-medium text-sm text-gray-900 truncate">{p.name}</p>
-                              {p.category && <p className="text-[10px] text-purple-500 truncate">{p.category}</p>}
-                              <p className="text-[10px] text-gray-400 truncate">from: {p.funnel_name}</p>
-                            </div>
-                            <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                  ) : (
+                    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+                      {pages.map((p, i) => (
+                        <div key={i} className="group bg-white rounded-xl border border-gray-200 overflow-hidden hover:shadow-lg hover:border-purple-300 transition-all">
+                          <div className="relative w-full h-[170px] overflow-hidden bg-gray-50">
+                            {p.screenshotUrl
+                              ? <img src={p.screenshotUrl} alt={p.name} className="w-full h-full object-cover object-top" />
+                              : p.savedHtml
+                                ? <PageThumbnail url="" savedHtml={p.savedHtml} alt={p.name} height="170px" />
+                                : p.url_to_swipe && /^https?:\/\/.+\..+/.test(p.url_to_swipe)
+                                  ? <PageThumbnail url={p.url_to_swipe} alt={p.name} height="170px" />
+                                  : <div className="w-full h-full flex items-center justify-center text-gray-300"><FileCode className="w-8 h-8" /></div>
+                            }
+                            <div className="absolute inset-x-0 bottom-0 flex items-center justify-end gap-2 p-2 bg-gradient-to-t from-black/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity">
                               {(p.savedHtml || p.url_to_swipe) && (
                                 <button
-                                  onClick={() => setPagePreview({ isOpen: true, url: p.url_to_swipe, name: p.name, pageType: typeValue, savedHtml: p.savedHtml })}
-                                  className="p-1.5 text-gray-400 hover:text-purple-600"
+                                  onClick={() => setPagePreview({ isOpen: true, url: p.url_to_swipe, name: p.name, pageType: openType, savedHtml: p.savedHtml })}
+                                  className="p-2 bg-white/90 rounded-lg text-gray-700 hover:text-purple-600 shadow"
                                   title="Anteprima"
                                 >
                                   <Eye className="w-4 h-4" />
                                 </button>
                               )}
-                              <button
-                                onClick={() => router.push(`/edit/${p.funnel_id}`)}
-                                className="p-1.5 text-gray-400 hover:text-purple-600"
-                                title="Apri nell'editor"
-                              >
-                                <Edit2 className="w-4 h-4" />
-                              </button>
+                              {p.url_to_swipe && (
+                                <button
+                                  onClick={() => router.push(`/front-end-funnel?swipe_url=${encodeURIComponent(p.url_to_swipe)}&swipe_name=${encodeURIComponent(p.name)}&swipe_type=${encodeURIComponent(openType)}`)}
+                                  className="p-2 bg-purple-600 rounded-lg text-white hover:bg-purple-700 shadow"
+                                  title="Usa come template (Clona / Swipe)"
+                                >
+                                  <Swords className="w-4 h-4" />
+                                </button>
+                              )}
                             </div>
                           </div>
-                        ))
-                      )}
+                          <div className="p-3">
+                            <p className="font-semibold text-sm text-gray-900 truncate">{p.name}</p>
+                            {p.category && <p className="text-[10px] text-purple-500 truncate">{p.category}</p>}
+                            <p className="text-[10px] text-gray-400 truncate">from: {p.funnel_name}</p>
+                          </div>
+                        </div>
+                      ))}
                     </div>
-                  </div>
-                );
-              })}
-            </div>
+                  )}
+                </div>
+              );
+            })()}
           </div>
         )}
 
