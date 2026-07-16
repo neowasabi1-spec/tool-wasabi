@@ -43,7 +43,7 @@ async function getBlobStore(): Promise<NetlifyStore | null> {
   try {
     // Imported lazily so plain `next dev` (no Netlify runtime) doesn't crash
     // at module load if the package can't initialise.
-    const mod = await import('@netlify/blobs');
+    const mod = await import(/* webpackIgnore: true */ '@netlify/blobs');
     return mod.getStore(STORE_NAME) as unknown as NetlifyStore;
   } catch {
     return null;

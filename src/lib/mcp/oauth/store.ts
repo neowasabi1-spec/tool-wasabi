@@ -21,7 +21,7 @@ async function store(namespace: string): Promise<
   | { kind: 'mem'; s: Map<string, unknown> }
 > {
   try {
-    const mod = await import('@netlify/blobs');
+    const mod = await import(/* webpackIgnore: true */ '@netlify/blobs');
     return { kind: 'blob', s: mod.getStore(namespace) as unknown as NetlifyStore };
   } catch {
     if (!memory[namespace]) memory[namespace] = new Map();
