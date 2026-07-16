@@ -454,13 +454,25 @@ export default function TemplatesPage() {
   }, [mainView, archivedFunnelsLoaded, loadArchivedFunnels]);
 
   const pagesByType = useMemo(() => {
-    const map: Record<string, { funnel_name: string; funnel_id: string; name: string; url_to_swipe: string; prompt: string; template_name: string; product_name: string; swipe_status: string; category: string }[]> = {};
+    const map: Record<string, { funnel_name: string; funnel_id: string; name: string; url_to_swipe: string; prompt: string; template_name: string; product_name: string; swipe_status: string; category: string; savedHtml: string | null; screenshotUrl: string | null }[]> = {};
     (archivedFunnels || []).forEach((f: ArchivedFunnel) => {
-      const steps = (f.steps as { step_index: number; name: string; page_type: string; url_to_swipe: string; prompt: string; template_name: string; product_name: string; swipe_status: string; category?: string; cloned_data?: { category?: string } }[]) || [];
+      const steps = (f.steps as { step_index: number; name: string; page_type: string; url_to_swipe: string; prompt: string; template_name: string; product_name: string; swipe_status: string; category?: string; cloned_data?: { category?: string; html?: string; screenshotDesktopUrl?: string | null }; swiped_data?: { html?: string } }[]) || [];
       steps.forEach((s) => {
         const t = normalizeArchiveType(s.page_type);
         if (!map[t]) map[t] = [];
-        map[t].push({ funnel_name: f.name, funnel_id: f.id, name: s.name, url_to_swipe: s.url_to_swipe, prompt: s.prompt || '', template_name: s.template_name || '', product_name: s.product_name || '', swipe_status: s.swipe_status || '', category: s.category || s.cloned_data?.category || '' });
+        map[t].push({
+          funnel_name: f.name,
+          funnel_id: f.id,
+          name: s.name,
+          url_to_swipe: s.url_to_swipe,
+          prompt: s.prompt || '',
+          template_name: s.template_name || '',
+          product_name: s.product_name || '',
+          swipe_status: s.swipe_status || '',
+          category: s.category || s.cloned_data?.category || '',
+          savedHtml: s.swiped_data?.html || s.cloned_data?.html || null,
+          screenshotUrl: s.cloned_data?.screenshotDesktopUrl || null,
+        });
       });
     });
     return map;
@@ -826,8 +838,20 @@ export default function TemplatesPage() {
       body: JSON.stringify({ url: pagePreview.url }),
     })
       .then(r => r.json())
-      .then(data => {
-        if (!cancelled && data.html) setPreviewHtml(data.html);
+      .then(async data => {
+        if (cancelled || !data.html) return;
+        // Strip the site's original <script>s: in a srcdoc iframe they
+        // re-run against baseURI "about:srcdoc" and throw
+        // ("Failed to construct 'URL': Invalid base URL"), and the SPA
+        // bundle can also blank the DOM. The static markup is enough for a
+        // preview; inject only the rescue that reveals hidden content.
+        try {
+          const stripped = String(data.html).replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
+          const { injectInteractivityRescue } = await import('@/lib/spa-rescue');
+          if (!cancelled) setPreviewHtml(injectInteractivityRescue(stripped));
+        } catch {
+          if (!cancelled) setPreviewHtml(data.html);
+        }
       })
       .catch(() => {})
       .finally(() => { if (!cancelled) setPreviewLoading(false); });
@@ -1432,9 +1456,13 @@ export default function TemplatesPage() {
                         pages.map((p, i) => (
                           <div key={i} className="group flex items-center gap-3 p-2 rounded-lg border border-gray-100 hover:border-purple-200 hover:bg-purple-50/40 transition-colors">
                             <div className="relative w-14 h-14 shrink-0 rounded-md overflow-hidden bg-gray-50">
-                              {p.url_to_swipe && /^https?:\/\/.+\..+/.test(p.url_to_swipe)
-                                ? <PageThumbnail url={p.url_to_swipe} alt={p.name} />
-                                : <div className="w-full h-full flex items-center justify-center text-gray-300"><FileCode className="w-5 h-5" /></div>
+                              {p.screenshotUrl
+                                ? <img src={p.screenshotUrl} alt={p.name} className="w-full h-full object-cover object-top" />
+                                : p.savedHtml
+                                  ? <PageThumbnail url="" savedHtml={p.savedHtml} alt={p.name} height="56px" />
+                                  : p.url_to_swipe && /^https?:\/\/.+\..+/.test(p.url_to_swipe)
+                                    ? <PageThumbnail url={p.url_to_swipe} alt={p.name} height="56px" />
+                                    : <div className="w-full h-full flex items-center justify-center text-gray-300"><FileCode className="w-5 h-5" /></div>
                               }
                             </div>
                             <div className="min-w-0 flex-1">
@@ -1443,9 +1471,9 @@ export default function TemplatesPage() {
                               <p className="text-[10px] text-gray-400 truncate">from: {p.funnel_name}</p>
                             </div>
                             <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                              {p.url_to_swipe && (
+                              {(p.savedHtml || p.url_to_swipe) && (
                                 <button
-                                  onClick={() => setPagePreview({ isOpen: true, url: p.url_to_swipe, name: p.name, pageType: typeValue })}
+                                  onClick={() => setPagePreview({ isOpen: true, url: p.url_to_swipe, name: p.name, pageType: typeValue, savedHtml: p.savedHtml })}
                                   className="p-1.5 text-gray-400 hover:text-purple-600"
                                   title="Anteprima"
                                 >
