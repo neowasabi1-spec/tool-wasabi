@@ -5987,12 +5987,9 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                   <th className="min-w-[120px]">Template</th>
                   <th className="min-w-[180px]">URL</th>
                   <th className="min-w-[140px]" title="Marketing angle for this step (e.g. fear-of-loss, social proof, before/after)">Angle</th>
-                  <th className="min-w-[140px]">Prompt</th>
                   <th className="min-w-[100px]">Project</th>
                   <th className="w-20">Status</th>
                   <th className="min-w-[120px]">Result</th>
-                  <th className="min-w-[100px]">Feedback</th>
-                  <th className="w-16">AI</th>
                   <th className="w-32">Actions</th>
                   <th className="w-40">Publish</th>
                 </tr>
@@ -6000,7 +5997,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
               <tbody>
                 {(funnelPages || []).length === 0 ? (
                   <tr>
-                    <td colSpan={14} className="text-center py-8 text-gray-500">
+                    <td colSpan={11} className="text-center py-8 text-gray-500">
                       No steps. Click &quot;Add Step&quot; to start from Step 1.
                     </td>
                   </tr>
@@ -6208,63 +6205,6 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                         />
                       </td>
 
-                      {/* Prompt */}
-                      <td>
-                        <div className="flex items-center gap-1">
-                          <DebouncedInput
-                            type="text"
-                            value={page.prompt || ''}
-                            onChange={(v) =>
-                              updateFunnelPage(page.id, { prompt: v })
-                            }
-                            placeholder="Instructions..."
-                            className="truncate flex-1"
-                          />
-                          {savedPrompts.length > 0 && (
-                            <div className="relative">
-                              <button
-                                type="button"
-                                className="p-1 text-gray-400 hover:text-blue-600 rounded transition-colors shrink-0"
-                                title="Select saved prompt"
-                                onClick={() => {
-                                  const el = document.getElementById(`row-prompt-${page.id}`);
-                                  if (el) el.classList.toggle('hidden');
-                                }}
-                              >
-                                <BookOpen className="w-3.5 h-3.5" />
-                              </button>
-                              <div
-                                id={`row-prompt-${page.id}`}
-                                className="hidden absolute right-0 top-full mt-1 w-72 max-h-52 overflow-y-auto bg-white border border-gray-200 rounded-xl shadow-xl z-50"
-                              >
-                                {savedPrompts.map(sp => (
-                                  <button
-                                    key={sp.id}
-                                    type="button"
-                                    className="w-full text-left px-3 py-2 hover:bg-blue-50 transition-colors border-b border-gray-100 last:border-0"
-                                    onClick={() => {
-                                      updateFunnelPage(page.id, { prompt: sp.content });
-                                      fetch('/api/prompts', {
-                                        method: 'PUT',
-                                        headers: { 'Content-Type': 'application/json' },
-                                        body: JSON.stringify({ id: sp.id, action: 'increment_use' }),
-                                      }).catch(() => {});
-                                      document.getElementById(`row-prompt-${page.id}`)?.classList.add('hidden');
-                                    }}
-                                  >
-                                    <div className="flex items-center gap-1.5">
-                                      {sp.is_favorite && <Star className="w-3 h-3 text-amber-500 shrink-0" fill="currentColor" />}
-                                      <span className="text-xs font-medium text-gray-900 truncate">{sp.title}</span>
-                                    </div>
-                                    <p className="text-xs text-gray-400 mt-0.5 line-clamp-1">{sp.content}</p>
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      </td>
-
                       {/* Project */}
                       <td>
                         <select
@@ -6454,69 +6394,6 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                             </button>
                           )}
                         </div>
-                      </td>
-
-                      {/* Feedback */}
-                      <td>
-                        <div className="flex items-center gap-1">
-                          <DebouncedInput
-                            type="text"
-                            value={page.feedback || ''}
-                            onChange={(v) =>
-                              updateFunnelPage(page.id, { feedback: v })
-                            }
-                            placeholder="Feedback..."
-                            className="flex-1"
-                          />
-                          {page.feedback && (
-                            <MessageSquare className="w-3 h-3 text-green-500 flex-shrink-0" />
-                          )}
-                        </div>
-                      </td>
-
-                      {/* Analysis Status */}
-                      <td className="text-center">
-                        {page.analysisStatus ? (
-                          <button
-                            onClick={() => {
-                              if (page.analysisResult) {
-                                setAnalysisModal({
-                                  isOpen: true,
-                                  pageId: page.id,
-                                  result: page.analysisResult,
-                                  extractedData: page.extractedData || null
-                                });
-                              }
-                            }}
-                            className={`px-2 py-1 rounded-full text-xs font-medium cursor-pointer hover:opacity-80 ${
-                              page.analysisStatus === 'completed'
-                                ? 'bg-purple-100 text-purple-800'
-                                : page.analysisStatus === 'failed'
-                                ? 'bg-red-100 text-red-800'
-                                : page.analysisStatus === 'in_progress'
-                                ? 'bg-yellow-100 text-yellow-800'
-                                : 'bg-gray-100 text-gray-800'
-                            }`}
-                          >
-                            {page.analysisStatus === 'completed' ? (
-                              <span className="flex items-center gap-1">
-                                <FileText className="w-3 h-3" />
-                                View
-                              </span>
-                            ) : page.analysisStatus === 'in_progress' ? (
-                              <span className="flex items-center gap-1">
-                                <Loader2 className="w-3 h-3 animate-spin" />
-                                ...
-                              </span>
-                            ) : page.analysisStatus === 'failed' ? (
-                              'Error'
-                            ) : (
-                              '-'
-                            )}
-                          </button>
-                        ) : (
-                          <span className="text-gray-400">-</span>
-                        )}
                       </td>
 
                       {/* Actions */}
