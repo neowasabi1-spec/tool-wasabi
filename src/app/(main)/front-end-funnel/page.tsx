@@ -1782,7 +1782,7 @@ export default function FrontEndFunnel() {
   };
 
   // API Mode
-  const [apiMode, setApiMode] = useState<ApiMode>('localDev');
+  const [apiMode] = useState<ApiMode>('localDev');
   const api = API_ENDPOINTS[apiMode];
 
   // ── Global auditor selector ───────────────────────────────────────
@@ -5307,43 +5307,6 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
             </div>
             
             <div className="flex items-center gap-3">
-              {/* Jobs Monitor Toggle */}
-              <button
-                onClick={() => setShowJobsPanel(!showJobsPanel)}
-                className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                  showJobsPanel 
-                    ? 'bg-purple-100 text-purple-700' 
-                    : activeJobs.length > 0 
-                      ? 'bg-yellow-100 text-yellow-700 animate-pulse' 
-                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                }`}
-              >
-                <Loader2 className={`w-4 h-4 ${activeJobs.length > 0 ? 'animate-spin' : ''}`} />
-                Jobs {activeJobs.length > 0 && `(${activeJobs.length})`}
-              </button>
-
-              {/* API Mode Toggle */}
-              <div className="flex items-center bg-gray-100 rounded-lg p-1">
-                {(['localDev', 'local', 'server'] as ApiMode[]).map((mode) => (
-                  <button
-                    key={mode}
-                    onClick={() => setApiMode(mode)}
-                    className={`px-3 py-1.5 rounded text-sm font-medium transition-colors whitespace-nowrap ${
-                      apiMode === mode
-                        ? mode === 'localDev' 
-                          ? 'bg-white text-orange-600 shadow-sm'
-                          : mode === 'local'
-                            ? 'bg-white text-blue-600 shadow-sm'
-                            : 'bg-white text-green-600 shadow-sm'
-                        : 'text-gray-500 hover:text-gray-700'
-                    }`}
-                    title={mode === 'localDev' ? 'localhost:8081' : mode === 'local' ? 'Next.js Proxy' : 'fly.dev'}
-                  >
-                    {API_ENDPOINTS[mode].icon} {API_ENDPOINTS[mode].name}
-                  </button>
-                ))}
-              </div>
-
               {/* Global Auditor selector — vale per Swipe All, Clone &
                  Rewrite per riga, e gli enqueue OpenClaw da questo page.
                  La voce attiva e` sticky in localStorage.
@@ -5805,15 +5768,6 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                   );
                 })}
               </div>
-            </div>
-          )}
-
-          {/* Empty Jobs Panel */}
-          {showJobsPanel && activeJobs.length === 0 && (
-            <div className="mt-4 pt-4 border-t border-gray-200 text-center py-6 text-gray-500">
-              <Loader2 className="w-8 h-8 mx-auto mb-2 opacity-30" />
-              <p>No active jobs</p>
-              <p className="text-xs mt-1">Jobs will appear here when you launch a swipe</p>
             </div>
           )}
 
