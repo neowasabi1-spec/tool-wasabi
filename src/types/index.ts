@@ -274,49 +274,26 @@ export interface PageTypeOption {
   category: 'presell' | 'landing' | 'quiz' | 'sales' | 'postpurchase' | 'content' | 'compliance' | 'other' | 'custom';
 }
 
-// Built-in page type options organized by category
+// Built-in page type options — the canonical archive taxonomy ("By Type").
+// Keep this list tight and meaningful: it drives the extension's Type
+// dropdown, the app's type selectors, and the folder labels in My Archive.
 export const BUILT_IN_PAGE_TYPE_OPTIONS: PageTypeOption[] = [
-  // Pre-sell / Top of Funnel
-  { value: 'advertorial', label: 'Advertorial', category: 'presell' },
-  { value: 'listicle', label: 'Listicle', category: 'presell' },
-  { value: '5_reasons_listicle', label: '5 Reasons Why Listicle', category: 'presell' },
-  { value: 'native_ad', label: 'Native Ad', category: 'presell' },
-  { value: 'vsl', label: 'VSL (Video Sales Letter)', category: 'presell' },
-  { value: 'webinar', label: 'Webinar Page', category: 'presell' },
-  { value: 'bridge_page', label: 'Bridge Page', category: 'presell' },
-  // Landing & Opt-in
   { value: 'landing', label: 'Landing Page', category: 'landing' },
-  { value: 'opt_in', label: 'Opt-in Page', category: 'landing' },
-  { value: 'squeeze_page', label: 'Squeeze Page', category: 'landing' },
-  { value: 'lead_magnet', label: 'Lead Magnet Page', category: 'landing' },
-  // Quiz & Survey
-  { value: 'quiz_funnel', label: 'Quiz Funnel', category: 'quiz' },
-  { value: 'survey', label: 'Survey Page', category: 'quiz' },
-  { value: 'assessment', label: 'Assessment', category: 'quiz' },
-  // Sales Pages
-  { value: 'sales_letter', label: 'Sales Letter', category: 'sales' },
+  { value: 'bridge_page', label: 'Bridge Page', category: 'presell' },
+  { value: 'advertorial', label: 'Advertorial', category: 'presell' },
+  { value: 'lst', label: 'LST', category: 'sales' },
+  { value: 'vsl', label: 'VSL', category: 'sales' },
+  { value: 'tsl', label: 'TSL', category: 'sales' },
+  { value: 'quiz', label: 'Quiz', category: 'quiz' },
   { value: 'product_page', label: 'Product Page', category: 'sales' },
-  { value: 'offer_page', label: 'Offer Page', category: 'sales' },
   { value: 'checkout', label: 'Checkout', category: 'sales' },
-  // Post-Purchase
-  { value: 'thank_you', label: 'Thank You Page', category: 'postpurchase' },
-  { value: 'upsell', label: 'Upsell Page', category: 'postpurchase' },
-  { value: 'downsell', label: 'Downsell Page', category: 'postpurchase' },
-  { value: 'oto', label: 'OTO (One Time Offer)', category: 'postpurchase' },
-  { value: 'order_confirmation', label: 'Order Confirmation', category: 'postpurchase' },
-  { value: 'membership', label: 'Membership Page', category: 'postpurchase' },
-  // Content Pages
-  { value: 'blog', label: 'Blog Post', category: 'content' },
-  { value: 'article', label: 'Article', category: 'content' },
-  { value: 'content_page', label: 'Content Page', category: 'content' },
-  { value: 'review', label: 'Review Page', category: 'content' },
-  // Compliance & Safe
-  { value: 'safe_page', label: 'Safe Page', category: 'compliance' },
-  { value: 'privacy', label: 'Privacy Policy', category: 'compliance' },
-  { value: 'terms', label: 'Terms & Conditions', category: 'compliance' },
-  { value: 'disclaimer', label: 'Disclaimer', category: 'compliance' },
-  // Other
-  { value: 'other', label: 'Other', category: 'other' },
+  { value: 'thank_you', label: 'Thank Page', category: 'postpurchase' },
+  { value: 'upsell_1', label: 'Upsell 1', category: 'postpurchase' },
+  { value: 'upsell_2', label: 'Upsell 2', category: 'postpurchase' },
+  { value: 'upsell_3', label: 'Upsell 3', category: 'postpurchase' },
+  { value: 'downsell_1', label: 'Downsell 1', category: 'postpurchase' },
+  { value: 'downsell_2', label: 'Downsell 2', category: 'postpurchase' },
+  { value: 'downsell_3', label: 'Downsell 3', category: 'postpurchase' },
 ];
 
 // Category labels for grouping in UI
@@ -337,6 +314,45 @@ export const PAGE_TYPE_OPTIONS: { value: PageType; label: string }[] = BUILT_IN_
   value: opt.value,
   label: opt.label,
 }));
+
+// Maps any legacy / messy `page_type` string to one of the canonical codes
+// above, so the archive "By Type" collapses duplicate + nonsensical folders
+// (e.g. "Checkout", "Checkout Page", "checkout" → one "Checkout"). Anything
+// unrecognized falls into the residual "altro" bucket instead of spawning its
+// own folder. Pure display-time normalization — does not mutate stored data.
+const PAGE_TYPE_SYNONYMS: Record<string, string> = {
+  landing: 'landing', 'landing page': 'landing', landing_page: 'landing',
+  opt_in: 'landing', 'opt-in': 'landing', optin: 'landing',
+  squeeze: 'landing', squeeze_page: 'landing', lead_magnet: 'landing',
+  home: 'landing', homepage: 'landing', info_screen: 'landing',
+  bridge: 'bridge_page', bridge_page: 'bridge_page', 'bridge page': 'bridge_page',
+  advertorial: 'advertorial', 'advertorial / pre-sell': 'advertorial',
+  'advertorial pre-sell': 'advertorial', presell: 'advertorial', 'pre-sell': 'advertorial',
+  listicle: 'advertorial', '5_reasons_listicle': 'advertorial', native_ad: 'advertorial',
+  'native ad': 'advertorial', ads: 'advertorial', ad: 'advertorial',
+  review: 'advertorial', article: 'advertorial', blog: 'advertorial', content_page: 'advertorial',
+  lst: 'lst', long_sales_text: 'lst', 'long sales text': 'lst',
+  vsl: 'vsl', video_sales_letter: 'vsl', webinar: 'vsl',
+  tsl: 'tsl', text_sales_letter: 'tsl', sales_letter: 'tsl', 'sales letter': 'tsl',
+  quiz: 'quiz', quiz_funnel: 'quiz', survey: 'quiz', assessment: 'quiz',
+  product_page: 'product_page', 'product page': 'product_page', offer_page: 'product_page', offer: 'product_page',
+  checkout: 'checkout', 'checkout page': 'checkout', checkout_page: 'checkout', order: 'checkout',
+  thank_you: 'thank_you', 'thank you': 'thank_you', 'thank you page': 'thank_you',
+  thankpage: 'thank_you', 'thank page': 'thank_you', order_confirmation: 'thank_you', 'order confirmation': 'thank_you',
+  upsell: 'upsell_1', upsell_1: 'upsell_1', 'upsell 1': 'upsell_1', upsell1: 'upsell_1', oto: 'upsell_1', oto_1: 'upsell_1',
+  upsell_2: 'upsell_2', 'upsell 2': 'upsell_2', upsell2: 'upsell_2', oto_2: 'upsell_2',
+  upsell_3: 'upsell_3', 'upsell 3': 'upsell_3', upsell3: 'upsell_3', oto_3: 'upsell_3',
+  downsell: 'downsell_1', downsell_1: 'downsell_1', 'downsell 1': 'downsell_1',
+  downsell1: 'downsell_1', 'downsell page': 'downsell_1',
+  downsell_2: 'downsell_2', 'downsell 2': 'downsell_2', downsell2: 'downsell_2',
+  downsell_3: 'downsell_3', 'downsell 3': 'downsell_3', downsell3: 'downsell_3',
+};
+
+export function normalizeArchiveType(raw: string | null | undefined): string {
+  const key = String(raw || '').trim().toLowerCase();
+  if (!key) return 'altro';
+  return PAGE_TYPE_SYNONYMS[key] || 'altro';
+}
 
 export const POST_PURCHASE_TYPE_OPTIONS: { value: PostPurchasePage['type']; label: string }[] = [
   { value: 'thank_you', label: 'Thank You Page' },

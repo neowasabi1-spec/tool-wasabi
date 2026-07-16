@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="popup.css" />
+    <title>Wasabi Saver</title>
+  </head>
+  <body>
+    <header class="hdr">
+      <div class="brand">
+        <span class="dot"></span>
+        <span>Wasabi Saver</span>
+      </div>
+      <div id="authState" class="auth muted">checking…</div>
+    </header>
+
+    <div id="notConnected" class="banner hidden">
+      Not connected. Open your Wasabi tool, log in, then reopen this popup.
+      <button id="openTool" class="link">Open tool</button>
+    </div>
+
+    <main id="form" class="form">
+      <label class="field">
+        <span>Name</span>
+        <input id="name" type="text" placeholder="Page name" />
+      </label>
+
+      <label class="field">
+        <span>Type</span>
+        <select id="folder">
+          <option value="landing">Landing Page</option>
+        </select>
+      </label>
+
+      <label class="field">
+        <span>Tags <em class="muted">(comma separated)</em></span>
+        <input id="tags" type="text" placeholder="e.g. skincare, vsl, winner" list="tagSuggestions" />
+        <datalist id="tagSuggestions"></datalist>
+      </label>
+
+      <div class="field row">
+        <label class="chk"><input id="shotDesktop" type="checkbox" checked /> Desktop screenshot</label>
+        <label class="chk"><input id="shotMobile" type="checkbox" checked /> Mobile screenshot</label>
+      </div>
+
+      <p class="url muted" id="pageUrl"></p>
+
+      <button id="save" class="save" disabled>Save to Wasabi</button>
+      <div id="status" class="status"></div>
+    </main>
+
+    <script src="config.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>

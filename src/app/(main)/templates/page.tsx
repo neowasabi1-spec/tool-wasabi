@@ -4,7 +4,7 @@ import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import Header from '@/components/Header';
 import { useStore } from '@/store/useStore';
-import { BUILT_IN_PAGE_TYPE_OPTIONS, PAGE_TYPE_CATEGORIES, PageType, PageTypeOption, TemplateCategory, TEMPLATE_CATEGORY_OPTIONS, TemplateViewFormat, TEMPLATE_VIEW_FORMAT_OPTIONS, LIBRARY_TEMPLATES } from '@/types';
+import { BUILT_IN_PAGE_TYPE_OPTIONS, PAGE_TYPE_CATEGORIES, PageType, PageTypeOption, TemplateCategory, TEMPLATE_CATEGORY_OPTIONS, TemplateViewFormat, TEMPLATE_VIEW_FORMAT_OPTIONS, LIBRARY_TEMPLATES, normalizeArchiveType } from '@/types';
 import type { ArchivedFunnel } from '@/types/database';
 import { Plus, Trash2, Edit2, Save, X, FileCode, ExternalLink, Tag, Filter, Eye, EyeOff, Maximize2, Layers, HelpCircle, FolderPlus, Settings, Monitor, Smartphone, BookOpen, ChevronDown, ChevronRight, FolderOpen, Archive, CheckSquare, Square, Package, Sparkles, Send, Loader2, MessageCircle, Search, Download, Swords, Lock, Share2 } from 'lucide-react';
 import CachedScreenshot from '@/components/CachedScreenshot';
@@ -457,7 +457,7 @@ export default function TemplatesPage() {
     (archivedFunnels || []).forEach((f: ArchivedFunnel) => {
       const steps = (f.steps as { step_index: number; name: string; page_type: string; url_to_swipe: string; prompt: string; template_name: string; product_name: string; swipe_status: string }[]) || [];
       steps.forEach((s) => {
-        const t = s.page_type || 'other';
+        const t = normalizeArchiveType(s.page_type);
         if (!map[t]) map[t] = [];
         map[t].push({ funnel_name: f.name, funnel_id: f.id, name: s.name, url_to_swipe: s.url_to_swipe, prompt: s.prompt || '', template_name: s.template_name || '', product_name: s.product_name || '', swipe_status: s.swipe_status || '' });
       });
@@ -466,6 +466,7 @@ export default function TemplatesPage() {
   }, [archivedFunnels]);
 
   const getPageTypeLabel = (value: string): string => {
+    if (value === 'altro') return 'Altro';
     const opt = BUILT_IN_PAGE_TYPE_OPTIONS.find(o => o.value === value);
     return opt?.label || value;
   };

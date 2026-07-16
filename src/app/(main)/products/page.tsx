@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import Header from '@/components/Header';
 import { useStore } from '@/store/useStore';
-import { BUILT_IN_PAGE_TYPE_OPTIONS, PageType } from '@/types';
+import { BUILT_IN_PAGE_TYPE_OPTIONS, PageType, normalizeArchiveType } from '@/types';
 import type { ArchivedFunnel } from '@/types/database';
 import { Plus, Trash2, Edit2, Save, X, Package, Tag, Link, MousePointer, ChevronDown, ChevronRight, DollarSign, Image as ImageIcon, MessageCircle, Send, Loader2, Sparkles, ExternalLink, Globe, Layers, CheckSquare, Square, FileText, RefreshCw, Upload, FileSpreadsheet, Search, AlertCircle, CheckCircle, MapPin, BarChart3 } from 'lucide-react';
 
@@ -522,7 +522,7 @@ export default function ProductsPage() {
     (archivedFunnels || []).forEach((f: ArchivedFunnel) => {
       const steps = (f.steps as { name: string; page_type: string; url_to_swipe: string; prompt: string }[]) || [];
       steps.forEach((s) => {
-        const t = s.page_type || 'other';
+        const t = normalizeArchiveType(s.page_type);
         if (!map[t]) map[t] = [];
         map[t].push({ funnel_name: f.name, name: s.name, url_to_swipe: s.url_to_swipe, prompt: s.prompt || '', page_type: t });
       });

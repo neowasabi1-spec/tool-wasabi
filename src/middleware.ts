@@ -83,8 +83,14 @@ function handleCors(request: NextRequest, response: NextResponse): NextResponse 
     allowedOrigins.push('http://localhost:3000', 'http://localhost:3001');
   }
 
-  if (allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
+  // Browser extensions (Chrome/Edge/Firefox) send a chrome-extension:// or
+  // moz-extension:// origin. Always allow those — the extension still has to
+  // present a valid per-user Bearer token to do anything.
+  const isExtensionOrigin = origin.startsWith('chrome-extension://') || origin.startsWith('moz-extension://');
+
+  if (allowedOrigins.length === 0 || allowedOrigins.includes(origin) || isExtensionOrigin) {
     response.headers.set('Access-Control-Allow-Origin', origin || '*');
+    response.headers.set('Vary', 'Origin');
   }
 
   response.headers.set('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
