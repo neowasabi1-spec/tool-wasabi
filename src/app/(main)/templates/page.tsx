@@ -1517,6 +1517,13 @@ export default function TemplatesPage() {
                                   <Swords className="w-4 h-4" />
                                 </button>
                               )}
+                              <button
+                                onClick={() => { if (confirm(`Eliminare "${p.name}"?`)) deleteArchivedFunnel(p.funnel_id); }}
+                                className="p-2 bg-white/90 rounded-lg text-gray-700 hover:text-red-600 shadow"
+                                title="Elimina"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
                             </div>
                           </div>
                           <div className="p-3">
