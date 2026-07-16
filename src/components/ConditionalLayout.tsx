@@ -20,7 +20,7 @@ export default function ConditionalLayout({
   return (
     <div className="flex min-h-screen">
       <Sidebar />
-      <main className="flex-1 bg-gray-50">{children}</main>
+      <main className="flex-1 min-w-0 bg-gradient-to-br from-slate-50 via-gray-50 to-slate-100/60">{children}</main>
       <OpenClawChat />
     </div>
   );

@@ -142,23 +142,27 @@ export default function Sidebar() {
   }
 
   return (
-    <aside className="w-56 bg-gray-900 text-white min-h-screen flex flex-col">
+    <aside className="w-60 bg-gradient-to-b from-slate-900 to-slate-950 text-white min-h-screen flex flex-col border-r border-white/5">
       {/* Logo */}
-      <div className="p-4 border-b border-gray-800">
-        <h1 className="text-base font-bold flex items-center gap-2">
-          <Layers className="w-5 h-5 text-indigo-400" />
-          Funnel Swiper
+      <div className="px-4 py-5 border-b border-white/5">
+        <h1 className="text-base font-bold flex items-center gap-2.5">
+          <span className="inline-flex items-center justify-center w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 shadow-lg shadow-indigo-900/40">
+            <Layers className="w-4 h-4 text-white" />
+          </span>
+          <span className="flex flex-col leading-tight">
+            <span className="tracking-tight">Funnel Swiper</span>
+            <span className="text-[10px] font-medium text-slate-400 tracking-wide">Dashboard Operations</span>
+          </span>
         </h1>
-        <p className="text-gray-400 text-xs mt-0.5">Dashboard Operations</p>
       </div>
 
       {/* Navigation */}
       <nav className="flex-1 p-3 overflow-y-auto">
-        <div className="space-y-5">
+        <div className="space-y-6">
           {visibleGroups.map((group, gi) => (
             <div key={group.label || `group-${gi}`}>
               {group.label && (
-                <p className="px-3 mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-gray-500">
+                <p className="px-3 mb-2 text-[10px] font-semibold uppercase tracking-widest text-slate-500">
                   {group.label}
                 </p>
               )}
@@ -170,15 +174,18 @@ export default function Sidebar() {
                     <li key={item.href}>
                       <Link
                         href={item.href}
-                        className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors ${
+                        className={`group relative flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${
                           isActive
-                            ? 'bg-indigo-600 text-white shadow-sm'
-                            : 'text-gray-300 hover:bg-gray-800 hover:text-white'
+                            ? 'bg-gradient-to-r from-indigo-600 to-violet-600 text-white shadow-lg shadow-indigo-900/30'
+                            : 'text-slate-300 hover:bg-white/5 hover:text-white'
                         }`}
                       >
-                        <Icon className="w-4 h-4 shrink-0" />
+                        {isActive && (
+                          <span className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-1 rounded-r-full bg-white/80" />
+                        )}
+                        <Icon className={`w-[18px] h-[18px] shrink-0 transition-colors ${isActive ? 'text-white' : 'text-slate-400 group-hover:text-white'}`} />
                         <span className="flex-1 truncate">{item.name}</span>
-                        {isActive && <ChevronRight className="w-3 h-3 shrink-0" />}
+                        {isActive && <ChevronRight className="w-3.5 h-3.5 shrink-0 opacity-80" />}
                       </Link>
                     </li>
                   );
@@ -190,23 +197,26 @@ export default function Sidebar() {
       </nav>
 
       {/* Footer */}
-      <div className="p-3 border-t border-gray-800 space-y-2">
+      <div className="p-3 border-t border-white/5 space-y-2">
         {!loading && user && (
-          <div className="bg-gray-800 rounded-lg p-3 space-y-2">
-            <div className="flex items-center gap-2 min-w-0">
-              <Shield className={`w-3.5 h-3.5 shrink-0 ${permissions?.role === 'master' ? 'text-amber-400' : 'text-gray-400'}`} />
+          <div className="bg-white/5 ring-1 ring-white/5 rounded-xl p-3 space-y-2.5">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <span className={`inline-flex items-center justify-center w-8 h-8 rounded-full shrink-0 text-xs font-bold uppercase ${permissions?.role === 'master' ? 'bg-amber-500/15 text-amber-300' : 'bg-indigo-500/15 text-indigo-300'}`}>
+                {(user.email || '?').charAt(0)}
+              </span>
               <div className="min-w-0 flex-1">
                 <p className="text-xs text-white truncate" title={user.email || ''}>
                   {user.email}
                 </p>
-                <p className="text-[10px] text-gray-400 uppercase tracking-wider">
+                <p className="text-[10px] text-slate-400 uppercase tracking-wider flex items-center gap-1">
+                  <Shield className={`w-3 h-3 ${permissions?.role === 'master' ? 'text-amber-400' : 'text-slate-500'}`} />
                   {permissions?.role || 'user'}
                 </p>
               </div>
             </div>
             <button
               onClick={handleSignOut}
-              className="w-full flex items-center justify-center gap-1.5 text-[11px] text-gray-300 hover:text-white bg-gray-900 hover:bg-gray-700 rounded-md py-1.5 transition-colors"
+              className="w-full flex items-center justify-center gap-1.5 text-[11px] text-slate-300 hover:text-white bg-slate-950/60 hover:bg-slate-800 rounded-lg py-2 transition-colors"
             >
               <LogOut className="w-3 h-3" />
               Sign out
@@ -217,7 +227,7 @@ export default function Sidebar() {
           href="/api/health"
           target="_blank"
           rel="noopener noreferrer"
-          className="block text-xs text-gray-400 hover:text-amber-400 transition-colors"
+          className="block text-center text-[11px] text-slate-500 hover:text-indigo-300 transition-colors"
         >
           API Diagnostics
         </a>

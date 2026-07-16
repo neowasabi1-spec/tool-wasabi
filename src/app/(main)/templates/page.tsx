@@ -1012,14 +1012,14 @@ export default function TemplatesPage() {
           <div className="flex gap-1 bg-gray-100 rounded-xl p-1.5">
             <button
               onClick={() => setMainView('byType')}
-              className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-                mainView === 'byType' ? 'bg-white text-purple-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+              className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-semibold transition-colors ${
+                mainView === 'byType' ? 'bg-white text-indigo-700 shadow-sm ring-1 ring-black/5' : 'text-gray-500 hover:text-gray-700'
               }`}
             >
               <FolderOpen className="w-4 h-4" />
               Template
               {Object.keys(pagesByType).length > 0 && (
-                <span className="ml-1 px-1.5 py-0.5 bg-purple-100 text-purple-700 rounded-full text-xs">{Object.keys(pagesByType).length}</span>
+                <span className="ml-1 px-1.5 py-0.5 bg-indigo-100 text-indigo-700 rounded-full text-xs font-semibold">{Object.keys(pagesByType).length}</span>
               )}
             </button>
           </div>
@@ -1032,7 +1032,7 @@ export default function TemplatesPage() {
                 value={archiveSearch}
                 onChange={(e) => setArchiveSearch(e.target.value)}
                 placeholder="Search funnels, pages, types..."
-                className="w-full pl-10 pr-4 py-2.5 bg-white border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+                className="w-full pl-10 pr-4 py-2.5 bg-white border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
               />
               {archiveSearch && (
                 <button onClick={() => setArchiveSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
@@ -1387,15 +1387,15 @@ export default function TemplatesPage() {
         {mainView === 'byType' && (
           <div className="space-y-5">
             {/* Category bar (niche) */}
-            <div className="bg-white rounded-xl border border-gray-200 p-4 flex flex-wrap items-center gap-3">
+            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 flex flex-wrap items-center gap-3">
               <div className="flex items-center gap-2">
-                <Tag className="w-4 h-4 text-purple-500" />
+                <Tag className="w-4 h-4 text-indigo-500" />
                 <span className="text-sm font-semibold text-gray-700">Categoria</span>
               </div>
               <select
                 value={selectedCategory}
                 onChange={(e) => setSelectedCategory(e.target.value)}
-                className="px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none min-w-[200px]"
+                className="px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none min-w-[200px]"
               >
                 <option value="">Tutte le categorie</option>
                 {archiveCategories.map((c) => (
@@ -1415,15 +1415,15 @@ export default function TemplatesPage() {
                       if (e.key === 'Escape') { setAddingCategory(false); setNewCategory(''); }
                     }}
                     placeholder="Es. Survival, Weight loss…"
-                    className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none"
+                    className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
                   />
-                  <button onClick={addCategory} className="px-3 py-2 bg-purple-600 text-white rounded-lg text-sm font-medium hover:bg-purple-700 transition-colors">Aggiungi</button>
+                  <button onClick={addCategory} className="px-3 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors">Aggiungi</button>
                   <button onClick={() => { setAddingCategory(false); setNewCategory(''); }} className="p-2 text-gray-400 hover:text-gray-600"><X className="w-4 h-4" /></button>
                 </div>
               ) : (
                 <button
                   onClick={() => setAddingCategory(true)}
-                  className="flex items-center gap-1.5 px-3 py-2 border border-dashed border-gray-300 text-gray-600 rounded-lg text-sm hover:border-purple-400 hover:text-purple-600 transition-colors"
+                  className="flex items-center gap-1.5 px-3 py-2 border border-dashed border-gray-300 text-gray-600 rounded-lg text-sm hover:border-indigo-400 hover:text-indigo-600 transition-colors"
                 >
                   <Plus className="w-4 h-4" /> Nuova categoria
                 </button>
@@ -1454,11 +1454,13 @@ export default function TemplatesPage() {
                     <button
                       key={typeValue}
                       onClick={() => setOpenType(typeValue)}
-                      className="group bg-white rounded-xl border border-gray-200 shadow-sm p-5 flex flex-col items-start gap-3 hover:border-purple-300 hover:shadow-md transition-all text-left"
+                      className="group bg-white rounded-2xl border border-gray-200 shadow-sm p-5 flex flex-col items-start gap-3 hover:border-indigo-300 hover:shadow-lg hover:-translate-y-0.5 transition-all text-left"
                     >
                       <div className="flex items-center justify-between w-full">
-                        <FolderOpen className="w-8 h-8 text-amber-400 group-hover:text-amber-500" />
-                        <span className="text-2xl font-bold text-gray-800">{count}</span>
+                        <span className="inline-flex items-center justify-center w-11 h-11 rounded-xl bg-gradient-to-br from-amber-100 to-amber-200 text-amber-600 group-hover:from-indigo-100 group-hover:to-indigo-200 group-hover:text-indigo-600 transition-colors">
+                          <FolderOpen className="w-5 h-5" />
+                        </span>
+                        <span className="text-3xl font-bold text-gray-800 tabular-nums">{count}</span>
                       </div>
                       <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${colorClass}`}>{opt.label}</span>
                       <span className="text-[11px] text-gray-400">{count === 1 ? '1 pagina' : `${count} pagine`}</span>
@@ -1482,7 +1484,7 @@ export default function TemplatesPage() {
                     </button>
                     <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${colorClass}`}>{opt?.label || openType}</span>
                     <span className="text-sm text-gray-400">{pages.length} {pages.length === 1 ? 'pagina' : 'pagine'}</span>
-                    {selectedCategory && <span className="text-xs text-purple-500">· {selectedCategory}</span>}
+                    {selectedCategory && <span className="text-xs text-indigo-500">· {selectedCategory}</span>}
                   </div>
 
                   {pages.length === 0 ? (
@@ -1493,7 +1495,7 @@ export default function TemplatesPage() {
                   ) : (
                     <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
                       {pages.map((p, i) => (
-                        <div key={i} className="group bg-white rounded-xl border border-gray-200 overflow-hidden hover:shadow-lg hover:border-purple-300 transition-all">
+                        <div key={i} className="group bg-white rounded-2xl border border-gray-200 overflow-hidden hover:shadow-xl hover:border-indigo-300 hover:-translate-y-0.5 transition-all">
                           <div className="relative w-full h-[170px] overflow-hidden bg-gray-50">
                             {p.screenshotUrl
                               ? <img src={p.screenshotUrl} alt={p.name} className="w-full h-full object-cover object-top" />
@@ -1507,7 +1509,7 @@ export default function TemplatesPage() {
                               {(p.savedHtml || p.url_to_swipe) && (
                                 <button
                                   onClick={() => setPagePreview({ isOpen: true, url: p.url_to_swipe, name: p.name, pageType: openType, savedHtml: p.savedHtml })}
-                                  className="p-2 bg-white/90 rounded-lg text-gray-700 hover:text-purple-600 shadow"
+                                  className="p-2 bg-white/90 rounded-lg text-gray-700 hover:text-indigo-600 shadow"
                                   title="Anteprima"
                                 >
                                   <Eye className="w-4 h-4" />
@@ -1516,7 +1518,7 @@ export default function TemplatesPage() {
                               {p.url_to_swipe && (
                                 <button
                                   onClick={() => router.push(`/front-end-funnel?swipe_url=${encodeURIComponent(p.url_to_swipe)}&swipe_name=${encodeURIComponent(p.name)}&swipe_type=${encodeURIComponent(openType)}`)}
-                                  className="p-2 bg-purple-600 rounded-lg text-white hover:bg-purple-700 shadow"
+                                  className="p-2 bg-indigo-600 rounded-lg text-white hover:bg-indigo-700 shadow"
                                   title="Usa come template (Clona / Swipe)"
                                 >
                                   <Swords className="w-4 h-4" />
@@ -1547,7 +1549,7 @@ export default function TemplatesPage() {
                           </div>
                           <div className="p-3">
                             <p className="font-semibold text-sm text-gray-900 truncate">{p.name}</p>
-                            {p.category && <p className="text-[10px] text-purple-500 truncate">{p.category}</p>}
+                            {p.category && <p className="text-[10px] text-indigo-500 truncate">{p.category}</p>}
                             <p className="text-[10px] text-gray-400 truncate">from: {p.funnel_name}</p>
                           </div>
                         </div>

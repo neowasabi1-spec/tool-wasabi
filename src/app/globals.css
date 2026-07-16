@@ -163,12 +163,12 @@ body {
 }
 
 .excel-table tr:hover td {
-  @apply bg-blue-50;
+  @apply bg-indigo-50/60;
 }
 
 .excel-table input,
 .excel-table select {
-  @apply w-full bg-transparent border-0 focus:ring-1 focus:ring-blue-500 focus:outline-none rounded px-1 py-0.5 text-xs;
+  @apply w-full bg-transparent border-0 focus:ring-1 focus:ring-indigo-500 focus:outline-none rounded px-1 py-0.5 text-xs;
 }
 
 .excel-table input:focus,

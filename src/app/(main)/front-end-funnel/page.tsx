@@ -5196,12 +5196,12 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
 
       <div className="p-6">
         {/* Toolbar */}
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4 mb-6">
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-4 mb-6">
           <div className="flex items-center justify-between flex-wrap gap-4">
             <div className="flex items-center gap-4 flex-wrap">
               <button
                 onClick={handleAddPage}
-                className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors"
+                className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 shadow-sm transition-colors"
               >
                 <Plus className="w-4 h-4" />
                 Add Step
@@ -6059,7 +6059,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
         </div>
 
         {/* Excel-style Table */}
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
           <div className="overflow-x-auto">
             <table className="excel-table text-sm">
               <thead>
@@ -6071,7 +6071,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                     <input
                       type="checkbox"
                       aria-label="Select all steps"
-                      className="cursor-pointer accent-purple-600"
+                      className="cursor-pointer accent-indigo-600"
                       ref={(el) => {
                         if (!el) return;
                         const pages = funnelPages || [];
