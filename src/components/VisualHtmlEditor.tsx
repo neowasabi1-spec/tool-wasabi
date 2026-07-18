@@ -190,6 +190,18 @@ interface VisualHtmlEditorProps {
    *  Il parent lo assegna alla pagina (persistente) così lo swipe funziona
    *  anche dopo, su pagine solo clonate. */
   onProductChange?: (productId: string) => void;
+  /** Contesto quiz (opzionale): quando presente, nel pannello dell'elemento
+   *  selezionato compare un selettore "On click → go to step" che scrive
+   *  l'attributo `data-wq-goto` sull'elemento. Nel bundle single-page il
+   *  navScript legge quell'attributo e, al click, salta esattamente allo
+   *  step scelto (avanzamento deterministico, senza dover indovinare il CTA). */
+  quizNav?: {
+    /** Tutti gli step del quiz, in ordine. `index` = stepIndex (quello usato
+     *  come data-step nel bundle). `label` = etichetta leggibile. */
+    steps: Array<{ index: number; label: string }>;
+    /** stepIndex dello step attualmente in modifica (per evidenziarlo). */
+    currentIndex?: number;
+  };
 }
 
 /* ─────────── Brand Colors ─────────── */
@@ -2499,7 +2511,7 @@ function BgGradientEditor({
 
 /* ─────────── Component ─────────── */
 
-export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSave, onSaveToProject, onClose, pageTitle, productContext, sourceUrl, availableProducts, currentProductId, onProductChange }: VisualHtmlEditorProps) {
+export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSave, onSaveToProject, onClose, pageTitle, productContext, sourceUrl, availableProducts, currentProductId, onProductChange, quizNav }: VisualHtmlEditorProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [mode, setMode] = useState<EditorMode>('visual');
   const [selectedElement, setSelectedElement] = useState<ElementInfo | null>(null);
@@ -5278,6 +5290,37 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                     <input type="url" defaultValue={el.href} className="prop-input"
                       onBlur={(e) => setAttr('href', e.target.value)}
                       onKeyDown={(e) => { if (e.key === 'Enter') setAttr('href', (e.target as HTMLInputElement).value); }} />
+                  </div>
+                )}
+
+                {/* Quiz step navigation — solo in contesto quiz. Scrive
+                    data-wq-goto sull'elemento: nel bundle il click porta
+                    esattamente allo step scelto (avanzamento deterministico). */}
+                {quizNav && quizNav.steps.length > 0 && (
+                  <div className="p-3 border-t border-slate-100">
+                    <PropLabel icon={Link}>On click → go to step</PropLabel>
+                    <p className="text-[10px] text-slate-400 mb-1">
+                      Make this button/link jump to a specific quiz step in the preview & export.
+                    </p>
+                    <select
+                      key={`wqgoto-${el.path}`}
+                      className="prop-input"
+                      defaultValue={(el.outerHTML.match(/data-wq-goto=["']([^"']*)["']/i)?.[1]) || ''}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        if (!v) removeAttr('data-wq-goto');
+                        else setAttr('data-wq-goto', v);
+                      }}
+                    >
+                      <option value="">— No quiz navigation —</option>
+                      <option value="next">➜ Next step</option>
+                      <option value="prev">⟵ Previous step</option>
+                      {quizNav.steps.map((s, i) => (
+                        <option key={s.index} value={String(s.index)}>
+                          {`Step ${i + 1}${s.index === quizNav.currentIndex ? ' (current)' : ''}: ${s.label}`}
+                        </option>
+                      ))}
+                    </select>
                   </div>
                 )}
 

@@ -1373,6 +1373,13 @@ export default function QuizSwipePage() {
               name: targetProject.name,
               description: targetProject.description || targetProject.brief || '',
             } : undefined}
+            quizNav={{
+              steps: steps.map((s) => ({
+                index: s.stepIndex,
+                label: s.quizStepLabel || s.title || `Step ${s.stepIndex}`,
+              })),
+              currentIndex: editingStep.step.stepIndex,
+            }}
           />
         </div>
       )}
@@ -1541,6 +1548,18 @@ function buildSinglePageQuiz(
   }
   function next(){ if (idx < steps.length - 1) show(idx + 1); }
   function prev(){ if (idx > 0) show(idx - 1); }
+  // Salta ad uno step specifico impostato dall'editor via data-wq-goto.
+  // Valori: 'next' | 'prev' | <stepIndex> (match su data-step) | 1-based pos.
+  function gotoTarget(val){
+    if (val === 'next') return next();
+    if (val === 'prev') return prev();
+    var n = parseInt(val, 10);
+    if (isNaN(n)) return;
+    for (var k = 0; k < steps.length; k++){
+      if (steps[k].getAttribute('data-step') === String(n)){ show(k); return; }
+    }
+    if (n >= 1 && n <= steps.length) show(n - 1); // fallback: posizione 1-based
+  }
 
   // Trova, risalendo dal target fino al confine dello step, il primo elemento
   // "cliccabile-che-avanza". Ritorna {el, opt} oppure null.
@@ -1572,6 +1591,18 @@ function buildSinglePageQuiz(
 
   function onClick(e){
     if (!steps.length) collect();
+    // 1) PRIORITÀ: mapping esplicito impostato dall'editor (data-wq-goto).
+    var g = e.target;
+    while (g && g.nodeType && g !== document.body){
+      if (g.nodeType === 1 && g.hasAttribute && g.hasAttribute('data-wq-goto')){
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        gotoTarget(g.getAttribute('data-wq-goto'));
+        return;
+      }
+      g = g.parentElement;
+    }
+    // 2) FALLBACK: avanzamento automatico sul CTA/opzione esistente.
     var stepEl = steps[idx];
     if (!stepEl) return;
     var a = findAdvancer(e.target, stepEl);
