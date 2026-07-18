@@ -6118,7 +6118,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                 </span>
               </div>
 
-              <div className="h-[42vh] min-h-[240px] overflow-y-auto p-2.5 space-y-2">
+              <div className="max-h-[200px] overflow-y-auto p-2.5 space-y-2">
                 {elAiMessages.length === 0 && !elAiLoading && (
                   <div className="py-2">
                     <p className="text-[11px] text-slate-500 text-center mb-2.5 leading-relaxed">
