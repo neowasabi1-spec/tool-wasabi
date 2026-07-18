@@ -1267,15 +1267,29 @@ export default function QuizSwipePage() {
             </div>
             <iframe
               key={`${previewStep.step.stepIndex}-${previewStep.useSwiped ? 'swiped' : 'orig'}`}
-              srcDoc={
-                (
+              srcDoc={(() => {
+                const raw =
                   previewStep.useSwiped
                     ? swipeStates[previewStep.step.stepIndex]?.swipedHtml || ''
                     : editedOriginalHtml[previewStep.step.stepIndex] ||
                       previewStep.step.html ||
-                      '<html><body>HTML not available</body></html>'
-                ) + `<style>${REVEAL_VISIBILITY_CSS}</style>`
-              }
+                      '<html><body>HTML not available</body></html>';
+                // Inietta <base href> con l'origine sorgente così le URL
+                // root-relative (/assets/img.png) si risolvono contro il
+                // dominio del clone e non contro l'origine dell'editor (404
+                // → immagini rotte che collassano).
+                let base = '';
+                try {
+                  const u = previewStep.step.url || snapshot?.entryUrl || snapshot?.result?.entryUrl || '';
+                  if (u) base = `<base href="${new URL(u).origin}/">`;
+                } catch { /* url non valida */ }
+                let out = raw;
+                if (base && !/<base\b[^>]*\bhref\s*=/i.test(out)) {
+                  if (/<head[^>]*>/i.test(out)) out = out.replace(/<head[^>]*>/i, (m) => m + base);
+                  else out = base + out;
+                }
+                return out + `<style>${REVEAL_VISIBILITY_CSS}</style>`;
+              })()}
               sandbox="allow-same-origin"
               className="flex-1 w-full bg-white"
               title={`Step ${previewStep.step.stepIndex}`}
@@ -1328,7 +1342,13 @@ export default function QuizSwipePage() {
             onSave={handleEditorSave}
             onClose={() => setEditingStep(null)}
             pageTitle={editingStep.step.quizStepLabel || editingStep.step.title || `Step ${editingStep.step.stepIndex}`}
-            sourceUrl={editingStep.step.url}
+            /* sourceUrl serve a prepareEditorHtml per iniettare <base href> e
+             * assolutizzare le URL root-relative (/assets/img.png). Gli step
+             * di una SPA quiz spesso hanno step.url vuoto → senza fallback le
+             * immagini si risolvono contro l'origine dell'editor (404) e
+             * collassano (w-full h-auto → altezza 0). Ripieghiamo sull'entry
+             * URL del quiz, che punta al dominio sorgente. */
+            sourceUrl={editingStep.step.url || snapshot?.entryUrl || snapshot?.result?.entryUrl || ''}
             availableProducts={projects.map((p) => ({ id: p.id, name: p.name }))}
             currentProductId={productId || undefined}
             onProductChange={(id) => setProductId(id)}
