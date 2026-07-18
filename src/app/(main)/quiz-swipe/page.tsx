@@ -41,7 +41,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import Header from '@/components/Header';
 import { useStore } from '@/store/useStore';
-import VisualHtmlEditor from '@/components/VisualHtmlEditor';
+import VisualHtmlEditor, { REVEAL_VISIBILITY_CSS } from '@/components/VisualHtmlEditor';
 import {
   HelpCircle,
   Play,
@@ -1268,11 +1268,13 @@ export default function QuizSwipePage() {
             <iframe
               key={`${previewStep.step.stepIndex}-${previewStep.useSwiped ? 'swiped' : 'orig'}`}
               srcDoc={
-                previewStep.useSwiped
-                  ? swipeStates[previewStep.step.stepIndex]?.swipedHtml || ''
-                  : editedOriginalHtml[previewStep.step.stepIndex] ||
-                    previewStep.step.html ||
-                    '<html><body>HTML non disponibile</body></html>'
+                (
+                  previewStep.useSwiped
+                    ? swipeStates[previewStep.step.stepIndex]?.swipedHtml || ''
+                    : editedOriginalHtml[previewStep.step.stepIndex] ||
+                      previewStep.step.html ||
+                      '<html><body>HTML not available</body></html>'
+                ) + `<style>${REVEAL_VISIBILITY_CSS}</style>`
               }
               sandbox="allow-same-origin"
               className="flex-1 w-full bg-white"

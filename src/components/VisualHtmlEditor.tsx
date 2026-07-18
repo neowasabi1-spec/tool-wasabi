@@ -1427,6 +1427,31 @@ const EDITOR_SCRIPT = `
 
 /* ─────────── Helpers ─────────── */
 
+/* CSS che forza gli elementi con animazioni "reveal on scroll"
+ * (AOS/WOW/animate.css/Elementor/GSAP/custom fade) al loro stato finale
+ * visibile. Serve ovunque mostriamo l'HTML clonato SENZA eseguire gli
+ * script originali (editor + anteprime statiche): senza questo il JS che
+ * rende visibili le sezioni non gira e il contenuto (testo + media) resta
+ * a opacity:0 / visibility:hidden anche se presente nel DOM. */
+export const REVEAL_VISIBILITY_CSS = `
+    [data-aos], .aos-init, .aos-animate,
+    .wow, .animated, .animate__animated,
+    .elementor-invisible,
+    .reveal, .reveal-on-scroll, .scroll-reveal, .js-reveal, .sr-only-reveal,
+    .fade-in, .fade-up, .fade-down, .fade-left, .fade-right,
+    .fadeIn, .fadeInUp, .fadeInDown, .fadeInLeft, .fadeInRight,
+    .animate-on-scroll, .has-animation, .is-animating,
+    [data-animate], [data-scroll], [data-sr], [data-reveal], [data-motion],
+    [data-aos] *, .elementor-invisible * {
+      opacity: 1 !important;
+      visibility: visible !important;
+      transform: none !important;
+      animation: none !important;
+      transition: none !important;
+      filter: none !important;
+      clip-path: none !important;
+    }`;
+
 function prepareEditorHtml(html: string, sourceUrl?: string): string {
   let clean = html;
   clean = clean.replace(/<meta[^>]*content-security-policy[^>]*>/gi, '');
@@ -1872,6 +1897,17 @@ function prepareEditorHtml(html: string, sourceUrl?: string): string {
       min-width: 1em;
       min-height: 1em;
     }
+
+    /* ── SCROLL-REVEAL / ENTRANCE ANIMATIONS ─────────────────────────
+     * Le landing usano librerie di "reveal on scroll" (AOS, WOW.js,
+     * animate.css, Elementor, GSAP ScrollTrigger, custom fade/slide)
+     * che partono con opacity:0 / visibility:hidden / transform e
+     * vengono rese visibili da JS al momento dello scroll. Avendo
+     * strippato gli script, quel JS non gira mai e le sezioni restano
+     * INVISIBILI nell'editor (nel DOM ci sono — il pannello a destra le
+     * legge — ma non si vedono). Forziamo lo stato finale visibile.
+     * Vale sia per il testo che per i media. */
+    ${REVEAL_VISIBILITY_CSS}
   </style>`;
   const script = `<script>${EDITOR_SCRIPT}<\/script>`;
   const inject = editorCss + script;
