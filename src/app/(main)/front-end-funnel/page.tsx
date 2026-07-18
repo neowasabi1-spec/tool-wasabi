@@ -5411,7 +5411,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                   setSaveFunnelName('');
                   setShowSaveModal(true);
                 }}
-                className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-base font-semibold transition-colors ${
                   selectedStepIds.size > 0
                     ? 'bg-purple-100 text-purple-800 hover:bg-purple-200 ring-1 ring-purple-300'
                     : 'bg-green-50 text-green-700 hover:bg-green-100'
@@ -5420,7 +5420,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                   ? `Save ONLY the ${selectedStepIds.size} selected step${selectedStepIds.size === 1 ? '' : 's'}`
                   : 'Save all steps as funnel in archive'}
               >
-                <Download className="w-4 h-4" />
+                <Download className="w-5 h-5" />
                 {selectedStepIds.size > 0
                   ? `Save (${selectedStepIds.size})`
                   : 'Save'}
@@ -5478,27 +5478,44 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                     );
                   }
                 }}
-                className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-bold bg-red-600 text-white hover:bg-red-700 transition-colors"
+                className="flex items-center gap-2 px-4 py-2.5 rounded-lg text-base font-bold bg-red-600 text-white hover:bg-red-700 transition-colors"
                 title="STOP — Marks as error all swipe jobs pending/processing in the Supabase queue. The local worker detects the flipped status within 5s and aborts the job in progress without further calls to the model (no wasted tokens). Use when a rewrite has gone wrong or is thrashing."
               >
-                <Octagon className="w-4 h-4" />
+                <Octagon className="w-5 h-5" />
                 Stop
               </button>
 
-              {/* Clean All Steps */}
+              {/* Clean Steps — deletes ONLY the selected rows. If nothing is
+                 selected it falls back to clearing the whole table. */}
               <button
                 onClick={async () => {
                   if (!funnelPages || funnelPages.length === 0) return;
-                  if (!(await confirmDialog({ title: 'Elimina tutti gli step', message: `Eliminare tutti i ${funnelPages.length} step?`, confirmText: 'Elimina', danger: true }))) return;
-                  for (const page of funnelPages) {
+                  const hasSelection = selectedStepIds.size > 0;
+                  const targets = hasSelection
+                    ? funnelPages.filter((p) => selectedStepIds.has(p.id))
+                    : funnelPages;
+                  if (targets.length === 0) return;
+                  const ok = await confirmDialog({
+                    title: hasSelection ? 'Delete selected steps' : 'Delete all steps',
+                    message: hasSelection
+                      ? `Delete the ${targets.length} selected step${targets.length === 1 ? '' : 's'}?`
+                      : `Delete all ${targets.length} steps?`,
+                    confirmText: 'Delete',
+                    danger: true,
+                  });
+                  if (!ok) return;
+                  for (const page of targets) {
                     await deleteFunnelPage(page.id);
                   }
+                  if (hasSelection) setSelectedStepIds(new Set());
                 }}
-                className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium bg-red-50 text-red-600 hover:bg-red-100 transition-colors"
-                title="Delete all steps from the table"
+                className="flex items-center gap-2 px-4 py-2.5 rounded-lg text-base font-semibold bg-red-50 text-red-600 hover:bg-red-100 transition-colors"
+                title={selectedStepIds.size > 0
+                  ? `Delete the ${selectedStepIds.size} selected step${selectedStepIds.size === 1 ? '' : 's'}`
+                  : 'Delete all steps from the table'}
               >
-                <Trash2 className="w-4 h-4" />
-                Clean
+                <Trash2 className="w-5 h-5" />
+                {selectedStepIds.size > 0 ? `Clean (${selectedStepIds.size})` : 'Clean'}
               </button>
             </div>
           </div>
