@@ -2382,6 +2382,29 @@ export default function TemplatesPage() {
               </div>
             </div>
             <div className="flex items-center gap-3">
+              {previewHtml && (
+                <button
+                  onClick={() => {
+                    const blob = new Blob([previewHtml], { type: 'text/html;charset=utf-8' });
+                    const href = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = href;
+                    const safe = (pagePreview.name || 'page')
+                      .replace(/[^a-z0-9]+/gi, '_')
+                      .replace(/^_+|_+$/g, '')
+                      .slice(0, 80) || 'page';
+                    a.download = `${safe}.html`;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    setTimeout(() => URL.revokeObjectURL(href), 1000);
+                  }}
+                  className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 text-sm"
+                  title="Download the page HTML"
+                >
+                  <Download className="w-4 h-4" /> Download HTML
+                </button>
+              )}
               <a href={pagePreview.url} target="_blank" rel="noopener noreferrer"
                 className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm">
                 <ExternalLink className="w-4 h-4" /> Open in new tab
