@@ -1517,129 +1517,100 @@ function buildSinglePageQuiz(
   //  - Anche gli <a> con testo "Next/Continue/..." contano come advance, e
   //    tutti gli altri <a> vengono neutralizzati (non escono dal bundle).
   //  - Frecce tastiera restano come comodità (invisibili, nessun ingombro).
+  // navScript — messo in <head> così il suo listener di click in CATTURA su
+  // document viene registrato PRIMA di qualunque script originale mantenuto
+  // (i contatori). Al click su un pulsante/link/opzione ESISTENTE della
+  // pagina: blocchiamo l'handler originale (stopImmediatePropagation, che
+  // altrimenti proverebbe location.href=... uscendo dal bundle) e avanziamo
+  // allo step successivo. Nessun controllo fisso iniettato: l'avanzamento usa
+  // solo i bottoni della pagina, esattamente come nel sito reale.
   const navScript = `
 <script>
 (function(){
-  var ADVANCE_TEXT_RE = /^\\s*(next|continue|avanti|continua|prossimo|submit|invia|inizia|start|begin|go|vai|proceed|finish|done|fatto|see\\s*(my|the)?\\s*result|get\\s*(my|your)?\\s*result|claim|ottieni|scopri|siguiente|weiter|suivant|continuer|próximo|next\\s*step|→|›|»)\\s*$/i;
-  var steps = Array.prototype.slice.call(document.querySelectorAll('.quiz-step'));
-  if (!steps.length) return;
-  var idx = 0;
-  var marked = [];
-
-  // Progress bar UI in alto
-  var bar = document.createElement('div');
-  bar.id = '__wq_bar';
-  bar.style.cssText = 'position:fixed;top:0;left:0;right:0;height:4px;background:rgba(0,0,0,0.08);z-index:2147483646;pointer-events:none';
-  var fill = document.createElement('div');
-  fill.style.cssText = 'height:100%;background:linear-gradient(90deg,#6366f1,#8b5cf6);width:0%;transition:width .25s ease';
-  bar.appendChild(fill);
-  document.body.appendChild(bar);
-
+  var steps = [], idx = 0, fill = null, pending = false;
+  function collect(){ steps = Array.prototype.slice.call(document.querySelectorAll('.quiz-step')); }
   function show(i){
-    if (i < 0 || i >= steps.length) return;
-    steps.forEach(function(el, k){
-      if (k === i) { el.removeAttribute('hidden'); el.style.display = 'block'; }
-      else { el.setAttribute('hidden', ''); el.style.display = 'none'; }
-    });
+    if (!steps.length || i < 0 || i >= steps.length) return;
+    for (var k = 0; k < steps.length; k++){
+      if (k === i){ steps[k].removeAttribute('hidden'); steps[k].style.display = 'block'; }
+      else { steps[k].setAttribute('hidden',''); steps[k].style.display = 'none'; }
+    }
     idx = i;
-    // Marca l'advance solo ORA che lo step e' visibile (rect valido).
-    if (!marked[i]) { markAdvanceInStep(steps[i]); marked[i] = true; }
-    fill.style.width = ((i + 1) / steps.length * 100) + '%';
-    window.scrollTo(0, 0);
+    if (fill) fill.style.width = ((i + 1) / steps.length * 100) + '%';
+    try { window.scrollTo(0, 0); } catch(_){}
   }
   function next(){ if (idx < steps.length - 1) show(idx + 1); }
   function prev(){ if (idx > 0) show(idx - 1); }
 
-  function markAdvanceInStep(stepEl){
-    // 0) Neutralizza TUTTI gli <a>: non devono mai uscire dal bundle.
-    //    Quelli col testo "Next/Continue/..." diventano advance.
-    Array.prototype.forEach.call(stepEl.querySelectorAll('a'), function(a){
-      var txt = (a.innerText || '').trim();
-      if (txt && ADVANCE_TEXT_RE.test(txt)) a.setAttribute('data-wq-advance', 'btn');
-      a.setAttribute('data-wq-anchor', '1');
-    });
-    // 1) Bottoni con testo che matcha "Next/Continue/Avanti/..."
-    var btns = stepEl.querySelectorAll('button,[role=button],input[type=submit],input[type=button]');
-    var primary = null;
-    var primaryArea = 0;
-    Array.prototype.forEach.call(btns, function(b){
-      var txt = (b.innerText || b.value || '').trim();
-      if (txt && ADVANCE_TEXT_RE.test(txt)) {
-        b.setAttribute('data-wq-advance', 'btn');
-        return;
-      }
-      // Fallback: bottone piu' grande dello step (visivamente il primary CTA)
-      var r = b.getBoundingClientRect();
-      var area = r.width * r.height;
-      if (area > primaryArea) { primaryArea = area; primary = b; }
-    });
-    if (primary && !primary.hasAttribute('data-wq-advance')) {
-      primary.setAttribute('data-wq-advance', 'primary');
-    }
-    // 2) Radio / answer-cards / option / choice → tap to advance (Bioma-style)
-    var opts = stepEl.querySelectorAll(
-      'input[type=radio],label[for],[class*=option]:not(form),[class*=answer]:not(form),[class*=choice]:not(form),[role=radio]'
-    );
-    Array.prototype.forEach.call(opts, function(o){
-      // Evita di marcare label che contengono input non-radio
-      if (o.tagName === 'LABEL') {
-        var forId = o.getAttribute('for');
-        if (forId) {
-          var input = document.getElementById(forId);
-          if (input && input.type && input.type !== 'radio' && input.type !== 'checkbox') return;
+  // Trova, risalendo dal target fino al confine dello step, il primo elemento
+  // "cliccabile-che-avanza". Ritorna {el, opt} oppure null.
+  function findAdvancer(t, stepEl){
+    while (t && t !== stepEl && t !== document.body){
+      if (t.nodeType === 1){
+        var tag = (t.tagName || '').toLowerCase();
+        if (tag === 'input'){
+          var ty = (t.getAttribute('type') || 'text').toLowerCase();
+          if (ty === 'radio' || ty === 'checkbox') return { el: t, opt: true };
+          if (ty === 'submit' || ty === 'button' || ty === 'image') return { el: t, opt: false };
+          return null; // text/email/number/tel/... → lascia digitare
         }
-      }
-      o.setAttribute('data-wq-advance', 'option');
-    });
-  }
-
-  // Highlight visivo quando clicco un'opzione, poi avanzo
-  var pendingTimer = null;
-  function highlightAndAdvance(el){
-    if (pendingTimer) return; // debounce
-    el.style.outline = '3px solid #8b5cf6';
-    el.style.outlineOffset = '2px';
-    pendingTimer = setTimeout(function(){ pendingTimer = null; next(); }, 280);
-  }
-
-  // Intercetta gli elementi marcati
-  document.addEventListener('click', function(e){
-    var t = e.target;
-    while (t && t !== document.body){
-      if (t.nodeType === 1 && t.hasAttribute){
-        if (t.hasAttribute('data-wq-advance')){
-          var kind = t.getAttribute('data-wq-advance');
-          e.preventDefault();
-          e.stopPropagation();
-          if (kind === 'option') {
-            highlightAndAdvance(t);
-          } else {
-            next();
-          }
-          return;
-        }
-        // <a> senza testo advance → blocca la navigazione, niente avanzamento.
-        if (t.hasAttribute('data-wq-anchor')){
-          e.preventDefault();
-          return;
-        }
+        if (tag === 'select' || tag === 'textarea') return null;
+        if (tag === 'a' || tag === 'button') return { el: t, opt: false };
+        var role = (t.getAttribute && t.getAttribute('role')) || '';
+        if (role === 'button') return { el: t, opt: false };
+        if (role === 'radio' || role === 'option') return { el: t, opt: true };
+        if (tag === 'label') return { el: t, opt: true };
+        var cls = '';
+        try { cls = (typeof t.className === 'string') ? t.className : (t.getAttribute && t.getAttribute('class')) || ''; } catch(_){ cls = ''; }
+        if (/\\b(option|answer|choice|quiz-option|quiz-answer|selectable)\\b/i.test(cls)) return { el: t, opt: true };
+        if (t.hasAttribute && (t.hasAttribute('data-wq-advance') || t.hasAttribute('onclick'))) return { el: t, opt: false };
       }
       t = t.parentElement;
     }
-  }, true);
+    return null;
+  }
 
-  // Keyboard nav
+  function onClick(e){
+    if (!steps.length) collect();
+    var stepEl = steps[idx];
+    if (!stepEl) return;
+    var a = findAdvancer(e.target, stepEl);
+    if (!a) return;               // click "vuoto" → non facciamo nulla
+    e.preventDefault();
+    e.stopImmediatePropagation(); // blocca l'handler originale (redirect)
+    if (a.opt){
+      try { if (a.el.tagName === 'INPUT'){ a.el.checked = true; } } catch(_){}
+      try { a.el.style.outline = '3px solid #8b5cf6'; a.el.style.outlineOffset = '2px'; } catch(_){}
+      if (pending) return;
+      pending = true;
+      setTimeout(function(){ pending = false; next(); }, 240);
+    } else {
+      next();
+    }
+  }
+
+  // Listener registrati SUBITO (in <head>), in fase di cattura → precedono
+  // ogni handler degli script originali mantenuti.
+  document.addEventListener('click', onClick, true);
+  document.addEventListener('submit', function(e){ e.preventDefault(); e.stopImmediatePropagation(); next(); }, true);
   document.addEventListener('keydown', function(e){
-    if (e.key === 'ArrowRight' || e.key === 'Enter') { e.preventDefault(); next(); }
-    if (e.key === 'ArrowLeft' || e.key === 'Escape') { e.preventDefault(); prev(); }
+    if (e.key === 'ArrowRight'){ e.preventDefault(); next(); }
+    if (e.key === 'ArrowLeft'){ e.preventDefault(); prev(); }
   });
 
-  // Disarma i form (gia' fatto a build-time, ridondanza runtime se srcDoc-mangled)
-  Array.prototype.forEach.call(document.querySelectorAll('form'), function(f){
-    f.addEventListener('submit', function(e){ e.preventDefault(); next(); return false; });
-  });
-
-  show(0);
+  function init(){
+    collect();
+    if (!steps.length) return;
+    var bar = document.createElement('div');
+    bar.style.cssText = 'position:fixed;top:0;left:0;right:0;height:4px;background:rgba(0,0,0,0.08);z-index:2147483646;pointer-events:none';
+    fill = document.createElement('div');
+    fill.style.cssText = 'height:100%;background:linear-gradient(90deg,#6366f1,#8b5cf6);width:0%;transition:width .25s ease';
+    bar.appendChild(fill);
+    document.body.appendChild(bar);
+    show(0);
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+  else init();
 })();
 </script>`;
 
@@ -1649,25 +1620,23 @@ function buildSinglePageQuiz(
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 ${baseHref}
+${navScript}
 ${mergedHead}
 <style>
 body { padding-bottom: 84px; }
 .quiz-step { width: 100%; min-height: 100vh; }
 .quiz-step[hidden] { display: none !important; }
-[data-wq-advance] { cursor: pointer; }
-[data-wq-advance='option']:hover { filter: brightness(0.97); }
+a, button, [role=button], label, [class*=option], [class*=answer], [class*=choice] { cursor: pointer; }
 /* REVEAL FIX: molti quiz (framer-motion / AOS) lasciano gli elementi a
-   opacity:0 finche' il JS non li "rivela". Rimossi gli script originali,
-   resterebbero invisibili (header presente, resto vuoto). Li forziamo
-   visibili. NB: gli step nascosti usano l'attributo [hidden], non opacity,
-   quindi questa regola non li mostra. */
+   opacity:0 finche' il JS non li "rivela". Li forziamo visibili. NB: gli
+   step nascosti usano l'attributo [hidden], non opacity, quindi questa
+   regola non li mostra. */
 [style*="opacity:0"], [style*="opacity: 0"], [class*="opacity-0"] { opacity: 1 !important; }
 [data-aos] { opacity: 1 !important; transform: none !important; }
 </style>
 </head>
 <body>
 ${stepsHtml}
-${navScript}
 </body>
 </html>`;
 }
