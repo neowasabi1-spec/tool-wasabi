@@ -42,6 +42,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import Header from '@/components/Header';
 import { useStore } from '@/store/useStore';
 import VisualHtmlEditor, { REVEAL_VISIBILITY_CSS, absolutizeClonedUrls } from '@/components/VisualHtmlEditor';
+import { extractReinjectableScripts } from '@/lib/detect-dynamic-scripts';
 import {
   HelpCircle,
   Play,
@@ -1274,16 +1275,39 @@ export default function QuizSwipePage() {
                     : editedOriginalHtml[previewStep.step.stepIndex] ||
                       previewStep.step.html ||
                       '<html><body>HTML not available</body></html>';
+                const original = previewStep.step.html || '';
+                // ── Mantieni gli script FUNZIONALI (contatori "live",
+                // countdown/timer, engine commenti/recensioni) così il preview
+                // è "vivo" come l'originale. Estraiamo dai pristine (step.html)
+                // gli inline riutilizzabili, poi rimuoviamo TUTTI gli script +
+                // meta-refresh dal markup e ri-aggiungiamo solo i funzionali.
+                const keepScripts = extractReinjectableScripts(original);
+                let out = raw
+                  .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
+                  .replace(/<meta[^>]*http-equiv=["']?refresh[^>]*>/gi, '');
+                // Guard: blocca la navigazione (link/form/window.open) così i
+                // contatori girano ma il preview non "scappa" via ad un'altra
+                // URL (single step: non c'è uno step successivo dove andare).
+                const navGuard = `<script>(function(){try{
+                  document.addEventListener('click',function(e){var t=e.target;while(t&&t!==document.body){if(t.tagName==='A'){e.preventDefault();return;}t=t.parentElement;}},true);
+                  document.addEventListener('submit',function(e){e.preventDefault();},true);
+                  window.open=function(){return null;};
+                }catch(_){}})();</script>`;
+                if (out.includes('</body>')) {
+                  out = out.replace('</body>', `${navGuard}${keepScripts.join('\n')}</body>`);
+                } else {
+                  out = out + navGuard + keepScripts.join('\n');
+                }
                 // Inietta <base href> E assolutizza le URL root-relative
                 // (/assets/img.png) contro l'origin sorgente: senza questo in
                 // srcdoc si risolvono contro l'origine dell'editor → 404 →
                 // immagini rotte che collassano. absolutizeClonedUrls fa
                 // entrambe le cose in modo deterministico (base + rewrite).
                 const srcUrl = previewStep.step.url || snapshot?.entryUrl || snapshot?.result?.entryUrl || '';
-                const out = absolutizeClonedUrls(raw, srcUrl);
+                out = absolutizeClonedUrls(out, srcUrl);
                 return out + `<style>${REVEAL_VISIBILITY_CSS}</style>`;
               })()}
-              sandbox="allow-same-origin"
+              sandbox="allow-same-origin allow-scripts"
               className="flex-1 w-full bg-white"
               title={`Step ${previewStep.step.stepIndex}`}
             />
@@ -1451,15 +1475,29 @@ function buildSinglePageQuiz(
 
   const stepsHtml = steps
     .map((s, i) => {
-      const body = extractBody(pick(s))
-        // Via tutti gli script originali: rifarebbero fetch a backend
-        // che non risponde (CORS / 404) e potrebbero anche fare redirect
-        // fuori dal nostro bundle.
+      const pickedHtml = pick(s);
+      // KEEP degli script funzionali (contatori "live", countdown/timer,
+      // engine che iniettano commenti/recensioni). extractReinjectableScripts
+      // tiene gli inline con logica reale e scarta analytics/pixel/editor.
+      // Gli script ESTERNI (<script src>) restano rimossi: farebbero fetch a
+      // backend morti / redirect fuori dal bundle.
+      const keepScripts = extractReinjectableScripts(pickedHtml);
+      const body = extractBody(pickedHtml)
+        // Via TUTTI gli script dal markup dello step (esterni + inline): i
+        // funzionali li ri-aggiungiamo sotto in modo controllato.
         .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
+        // Via i meta-refresh: farebbero un redirect al load, uscendo dal bundle.
+        .replace(/<meta[^>]*http-equiv=["']?refresh[^>]*>/gi, '')
         // Disarma i form: un submit su un form esterno porta via dal bundle.
         // Preferiamo che il navScript li gestisca come advance.
         .replace(/<form\b/gi, '<form data-wq-form action="#" onsubmit="return false;"');
-      return `<section class="quiz-step" data-step="${s.stepIndex}" data-step-index="${i}"${i === 0 ? '' : ' hidden'}>${body}</section>`;
+      // Ri-attacchiamo gli script funzionali IN CODA alla section: girano al
+      // parse (i contatori partono subito, anche per gli step nascosti che
+      // esistono già nel DOM). I redirect al click sul CTA sono neutralizzati
+      // dal navScript (listener in cattura su document → precede l'onclick
+      // originale del bottone).
+      const keep = keepScripts.length ? '\n' + keepScripts.join('\n') : '';
+      return `<section class="quiz-step" data-step="${s.stepIndex}" data-step-index="${i}"${i === 0 ? '' : ' hidden'}>${body}${keep}</section>`;
     })
     .join('\n');
 
