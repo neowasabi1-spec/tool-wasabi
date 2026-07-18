@@ -1475,7 +1475,11 @@ function buildSinglePageQuiz(
 
   const stepsHtml = steps
     .map((s, i) => {
-      const pickedHtml = pick(s);
+      // Assolutizza le URL (base href + rewrite root-relative/lazy) contro
+      // l'origine sorgente: senza questo le immagini (/assets/img.png,
+      // data-src, srcset) si risolvono contro il dominio dell'editor → 404 →
+      // immagini rotte (es. "Transformation 1-4", avatar recensioni).
+      const pickedHtml = absolutizeClonedUrls(pick(s), entryUrl);
       // KEEP degli script funzionali (contatori "live", countdown/timer,
       // engine che iniettano commenti/recensioni). extractReinjectableScripts
       // tiene gli inline con logica reale e scarta analytics/pixel/editor.
@@ -1504,14 +1508,15 @@ function buildSinglePageQuiz(
   // navScript: detection runtime perche' i regex su HTML grezzo sono
   // fragili.  Cosi' lavoriamo sul DOM vero costruito dal browser.
   //
-  // v2 — robustezza navigazione:
-  //  - Controlli fissi Avanti/Indietro SEMPRE visibili (rete di sicurezza:
-  //    l'avanzamento non si blocca mai, qualunque sia il markup).
+  // v3 — l'avanzamento usa SOLO i pulsanti esistenti della pagina:
+  //  - NIENTE controlli fissi Avanti/Indietro iniettati (l'utente naviga
+  //    cliccando i CTA / option / form originali, come nel sito reale).
   //  - Marcatura "advance" LAZY: fatta quando lo step diventa visibile, cosi'
   //    getBoundingClientRect e' valido (prima gli step nascosti davano area 0
   //    e il fallback "bottone piu' grande" non trovava nulla → dead-end).
   //  - Anche gli <a> con testo "Next/Continue/..." contano come advance, e
   //    tutti gli altri <a> vengono neutralizzati (non escono dal bundle).
+  //  - Frecce tastiera restano come comodità (invisibili, nessun ingombro).
   const navScript = `
 <script>
 (function(){
@@ -1530,27 +1535,6 @@ function buildSinglePageQuiz(
   bar.appendChild(fill);
   document.body.appendChild(bar);
 
-  // Controlli fissi — GARANZIA che la navigazione funzioni sempre.
-  var ctr = document.createElement('div');
-  ctr.style.cssText = 'position:fixed;bottom:16px;left:50%;transform:translateX(-50%);display:flex;gap:8px;z-index:2147483647;font-family:system-ui,-apple-system,sans-serif';
-  var bPrev = document.createElement('button');
-  bPrev.type = 'button';
-  bPrev.textContent = '← Indietro';
-  bPrev.style.cssText = 'padding:10px 16px;border:0;border-radius:999px;background:#fff;color:#374151;box-shadow:0 2px 10px rgba(0,0,0,.18);cursor:pointer;font-size:14px;font-weight:600';
-  var bNext = document.createElement('button');
-  bNext.type = 'button';
-  bNext.textContent = 'Avanti →';
-  bNext.style.cssText = 'padding:10px 18px;border:0;border-radius:999px;background:linear-gradient(90deg,#6366f1,#8b5cf6);color:#fff;box-shadow:0 2px 10px rgba(99,102,241,.4);cursor:pointer;font-size:14px;font-weight:700';
-  bPrev.onclick = function(e){ e.preventDefault(); prev(); };
-  bNext.onclick = function(e){ e.preventDefault(); next(); };
-  ctr.appendChild(bPrev); ctr.appendChild(bNext);
-  document.body.appendChild(ctr);
-
-  function updateControls(){
-    bPrev.style.visibility = idx > 0 ? 'visible' : 'hidden';
-    bNext.textContent = idx >= steps.length - 1 ? 'Fine ✓' : 'Avanti →';
-  }
-
   function show(i){
     if (i < 0 || i >= steps.length) return;
     steps.forEach(function(el, k){
@@ -1561,7 +1545,6 @@ function buildSinglePageQuiz(
     // Marca l'advance solo ORA che lo step e' visibile (rect valido).
     if (!marked[i]) { markAdvanceInStep(steps[i]); marked[i] = true; }
     fill.style.width = ((i + 1) / steps.length * 100) + '%';
-    updateControls();
     window.scrollTo(0, 0);
   }
   function next(){ if (idx < steps.length - 1) show(idx + 1); }
