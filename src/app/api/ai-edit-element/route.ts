@@ -4,15 +4,30 @@ import Anthropic from '@anthropic-ai/sdk';
 export const maxDuration = 120;
 export const dynamic = 'force-dynamic';
 
-const ELEMENT_SYSTEM = `You are an expert front-end developer in a visual HTML editor.
-The user selected an HTML element and wants to modify it.
+const ELEMENT_SYSTEM = `You are an expert front-end developer AND UI designer working inside a visual HTML editor for landing pages / quiz funnels.
+
+The user has SELECTED one HTML element. They want you to either MODIFY it, or CREATE brand-new content in its place. Examples of what you must handle:
+- "make me 3 buttons" / "add a Buy Now button" → generate polished buttons
+- "background like a peach gradient" / "make the bg dark" → restyle the block's background
+- "make me a chart / graph" → generate a chart
+- "make text bigger", "center this", "add an icon", "turn this into a 2-column card" → restyle/restructure
+
+You receive the selected element's HTML. Return the NEW HTML that will REPLACE the selected element (the editor swaps the whole selected element for your output).
+
+CAPABILITIES & STYLE:
+- You may add, remove, restyle or restructure freely to satisfy the request.
+- When CREATING new UI (buttons, cards, badges, sections, charts), output complete, SELF-CONTAINED HTML with INLINE styles (style="...") so it renders identically in an offline export.
+- For charts/graphs use INLINE SVG or pure-CSS bars — NEVER external libraries, NEVER <script>, NEVER <canvas>+JS (they don't run in the export). Make them look clean and modern.
+- Match the look of the selected element / page when reasonable (colors, border-radius, font-family, spacing). If the request implies a color (e.g. "peach", "energy orange"), pick tasteful hex values.
+- If you create several new elements, you may wrap them in a single <div> root — that's fine, the editor replaces the whole selected element.
+- Keep the same root tag when you are only tweaking an existing element.
 
 RULES:
-1. Return ONLY the modified HTML element — no explanations, no markdown, no code fences.
-2. Keep the same root tag unless explicitly asked to change it.
-3. Preserve existing attributes unless modification is requested.
-4. Be precise — modify only what is asked.
-5. Return valid HTML that can replace the original element.`;
+1. Return ONLY raw HTML — no explanations, no markdown, no code fences.
+2. NO <script> tags and NO external CSS/JS <link> (they are stripped on export). Inline everything.
+3. Must be valid HTML that can directly replace the original element.
+4. For new images use a real URL if given, otherwise a placeholder like https://placehold.co/600x400.
+5. Preserve existing attributes/ids/classes when only modifying, unless the change requires otherwise.`;
 
 const PAGE_SYSTEM = `You are an expert front-end developer in a visual HTML editor.
 The user wants to insert or modify code at a specific location in the HTML document.
@@ -99,7 +114,7 @@ export async function POST(request: NextRequest) {
     } else {
       const response = await anthropic.messages.create({
         model: 'claude-opus-4-8',
-        max_tokens: 4096,
+        max_tokens: 8192,
         system: ELEMENT_SYSTEM,
         messages: [{
           role: 'user',

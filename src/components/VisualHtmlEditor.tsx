@@ -6104,27 +6104,48 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
               </div>
             )}
 
-            {/* AI Chat — always visible at bottom of sidebar */}
-            <div className="border-t border-slate-200 mt-auto">
+            {/* AI Chat — always visible at bottom of sidebar. Può CREARE
+                (pulsanti, sfondi, grafici) o MODIFICARE il blocco selezionato. */}
+            <div className="border-t border-slate-200 mt-auto flex flex-col">
               <div className="px-3 py-2 bg-gradient-to-r from-violet-50 to-purple-50 border-b border-violet-100 flex items-center gap-2">
                 <div className="flex items-center justify-center w-5 h-5 rounded-md bg-violet-500/10">
                   <Sparkles className="h-3 w-3 text-violet-600" />
                 </div>
                 <span className="text-xs font-bold text-violet-700">AI Edit</span>
-                <span className="text-[10px] text-violet-400 ml-auto">
+                <span className="text-[10px] text-violet-500/80 font-medium">create or modify</span>
+                <span className="text-[10px] text-violet-400 ml-auto font-mono">
                   {el ? `<${el.tagName}>` : 'page'}
                 </span>
               </div>
 
-              <div className="max-h-[200px] overflow-y-auto p-2 space-y-1.5">
+              <div className="h-[42vh] min-h-[240px] overflow-y-auto p-2.5 space-y-2">
                 {elAiMessages.length === 0 && !elAiLoading && (
-                  <p className="text-[10px] text-slate-400 text-center py-2">
-                    {el ? 'Describe what to change on this element...' : 'Insert scripts, styles, or modify the page...'}
-                  </p>
+                  <div className="py-2">
+                    <p className="text-[11px] text-slate-500 text-center mb-2.5 leading-relaxed">
+                      {el
+                        ? 'Select a block, then ask me to create or change it — e.g. make 3 buttons, a peach gradient background, or a bar chart.'
+                        : 'Insert scripts/styles, or ask me to build a new section for the page.'}
+                    </p>
+                    <div className="flex flex-wrap gap-1.5 justify-center">
+                      {(el
+                        ? ['Make 3 buttons', 'Peach gradient background', 'Turn into a bar chart', 'Make text bigger', 'Add a guarantee badge', 'Center everything']
+                        : ['Add a testimonials section', 'Add a countdown banner', 'Add an FAQ block']
+                      ).map((s) => (
+                        <button
+                          key={s}
+                          onClick={() => setElAiInput(s)}
+                          disabled={elAiLoading}
+                          className="px-2.5 py-1 rounded-full border border-violet-200 bg-violet-50 text-violet-700 text-[10.5px] font-medium hover:bg-violet-100 hover:border-violet-300 transition-colors disabled:opacity-40"
+                        >
+                          {s}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                 )}
                 {elAiMessages.map((msg, i) => (
                   <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                    <div className={`max-w-[90%] rounded-lg px-2.5 py-1.5 text-[11px] leading-relaxed ${
+                    <div className={`max-w-[92%] rounded-lg px-3 py-2 text-[12.5px] leading-relaxed whitespace-pre-wrap ${
                       msg.role === 'user'
                         ? 'bg-violet-600 text-white rounded-br-sm'
                         : 'bg-slate-100 text-slate-700 rounded-bl-sm'
@@ -6135,41 +6156,42 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                 ))}
                 {elAiLoading && (
                   <div className="flex justify-start">
-                    <div className="bg-slate-100 rounded-lg rounded-bl-sm px-2.5 py-2">
-                      <Loader2 className="w-3.5 h-3.5 animate-spin text-violet-500" />
+                    <div className="bg-slate-100 rounded-lg rounded-bl-sm px-3 py-2.5 flex items-center gap-2">
+                      <Loader2 className="w-4 h-4 animate-spin text-violet-500" />
+                      <span className="text-[11px] text-slate-500">Working on it…</span>
                     </div>
                   </div>
                 )}
                 <div ref={elAiChatEndRef} />
               </div>
 
-              <div className="p-2 border-t border-slate-100 flex gap-1 items-end">
+              <div className="p-2 border-t border-slate-100 flex gap-1.5 items-end">
                 <input ref={elAiFileRef} type="file" accept="image/*,.gif,.webp,.avif,video/*" className="hidden"
                   onChange={(e) => { const f = e.target.files?.[0]; if (f) handleElAiImageUpload(f); e.target.value = ''; }} />
                 <button
                   onClick={() => elAiFileRef.current?.click()}
                   disabled={elAiUploading || elAiLoading}
-                  className="p-1.5 text-slate-400 hover:text-violet-600 hover:bg-violet-50 rounded-lg transition-colors shrink-0 disabled:opacity-40"
+                  className="p-2 text-slate-400 hover:text-violet-600 hover:bg-violet-50 rounded-lg transition-colors shrink-0 disabled:opacity-40"
                   title="Upload image or video"
                 >
-                  {elAiUploading ? <Loader2 className="w-3.5 h-3.5 animate-spin text-violet-500" /> : <Paperclip className="w-3.5 h-3.5" />}
+                  {elAiUploading ? <Loader2 className="w-4 h-4 animate-spin text-violet-500" /> : <Paperclip className="w-4 h-4" />}
                 </button>
-                <input
-                  type="text"
+                <textarea
+                  rows={2}
                   value={elAiInput}
                   onChange={(e) => setElAiInput(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleElAiSend(); } }}
                   onPaste={handleElAiPaste}
-                  placeholder={el ? 'E.g.: Make text bigger...' : 'E.g.: Add tracking script before </head>...'}
-                  className="flex-1 px-2.5 py-2.5 border border-slate-200 rounded-lg text-[12px] text-slate-900 bg-white placeholder:text-slate-400 focus:ring-1 focus:ring-violet-500 focus:border-violet-500 outline-none"
+                  placeholder={el ? 'Describe what to create or change… (Enter to send, Shift+Enter = new line)' : 'E.g.: Add tracking script before </head>…'}
+                  className="flex-1 px-3 py-2 border border-slate-200 rounded-lg text-[13px] text-slate-900 bg-white placeholder:text-slate-400 focus:ring-1 focus:ring-violet-500 focus:border-violet-500 outline-none resize-none leading-snug"
                   disabled={elAiLoading}
                 />
                 <button
                   onClick={handleElAiSend}
                   disabled={elAiLoading || !elAiInput.trim()}
-                  className="px-2 py-1.5 bg-violet-600 text-white rounded-lg hover:bg-violet-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0"
+                  className="p-2.5 bg-violet-600 text-white rounded-lg hover:bg-violet-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0"
                 >
-                  {elAiLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+                  {elAiLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
                 </button>
               </div>
             </div>
