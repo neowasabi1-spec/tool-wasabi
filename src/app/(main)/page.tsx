@@ -30,28 +30,28 @@ export default function Dashboard() {
 
   const stats = [
     {
-      name: 'Prodotti',
+      name: 'Products',
       value: products.length,
       icon: ShoppingBag,
       tint: 'bg-indigo-50 text-indigo-600',
       href: '/products',
     },
     {
-      name: 'Pagine Funnel',
+      name: 'Funnel Pages',
       value: funnelPages.length,
       icon: Layers,
       tint: 'bg-violet-50 text-violet-600',
       href: '/front-end-funnel',
     },
     {
-      name: 'Swipe completati',
+      name: 'Completed Swipes',
       value: completed,
       icon: CheckCircle,
       tint: 'bg-emerald-50 text-emerald-600',
       href: '/front-end-funnel',
     },
     {
-      name: 'In attesa',
+      name: 'Pending',
       value: pending,
       icon: Clock,
       tint: 'bg-amber-50 text-amber-600',
@@ -62,42 +62,42 @@ export default function Dashboard() {
   const shortcuts = [
     {
       name: 'Clone / Swipe',
-      desc: 'Clona una pagina e riscrivila col tuo prodotto',
+      desc: 'Clone a page and rewrite it with your product',
       icon: Copy,
       href: '/front-end-funnel',
       tint: 'from-indigo-500 to-violet-600',
     },
     {
       name: 'My Archive',
-      desc: 'Le tue pagine salvate, organizzate per tipo',
+      desc: 'Your saved pages, organized by type',
       icon: FileCode,
       href: '/templates',
       tint: 'from-sky-500 to-indigo-600',
     },
     {
       name: 'Catalogue',
-      desc: 'Gestisci i prodotti e le offerte',
+      desc: 'Manage your products and offers',
       icon: ShoppingBag,
       href: '/products',
       tint: 'from-fuchsia-500 to-purple-600',
     },
     {
       name: 'Checkpoint',
-      desc: 'Monitora e verifica i funnel dei competitor',
+      desc: 'Monitor and verify competitor funnels',
       icon: ClipboardCheck,
       href: '/checkpoint',
       tint: 'from-emerald-500 to-teal-600',
     },
     {
       name: 'Protocollo Valchiria',
-      desc: 'La tua libreria di funnel migliori',
+      desc: 'Your library of best funnels',
       icon: Swords,
       href: '/protocollo-valchiria',
       tint: 'from-amber-500 to-orange-600',
     },
     {
       name: 'Post Purchase',
-      desc: 'Upsell, downsell e thank you page',
+      desc: 'Upsell, downsell and thank you pages',
       icon: TrendingUp,
       href: '/post-purchase',
       tint: 'from-rose-500 to-pink-600',
@@ -106,7 +106,7 @@ export default function Dashboard() {
 
   return (
     <div className="min-h-screen">
-      <Header title="Dashboard" subtitle="Panoramica delle attività di swipe" />
+      <Header title="Dashboard" subtitle="Overview of your swipe activity" />
 
       <div className="p-6 space-y-8">
         {/* Hero */}
@@ -119,10 +119,10 @@ export default function Dashboard() {
                 <Sparkles className="h-3.5 w-3.5" />
                 Funnel Swiper
               </div>
-              <h2 className="mt-3 text-3xl font-bold tracking-tight">Bentornato 👋</h2>
+              <h2 className="mt-3 text-3xl font-bold tracking-tight">Welcome back 👋</h2>
               <p className="mt-2 text-indigo-100">
-                Clona una landing, riscrivila con il tuo prodotto e costruisci il
-                funnel completo — tutto da un unico posto.
+                Clone a landing, rewrite it with your product and build the
+                complete funnel — all from one place.
               </p>
             </div>
             <div className="flex flex-wrap gap-3">
@@ -131,14 +131,14 @@ export default function Dashboard() {
                 className="inline-flex items-center gap-2 rounded-xl bg-white px-5 py-3 text-sm font-semibold text-indigo-700 shadow-sm transition-transform hover:-translate-y-0.5"
               >
                 <Copy className="h-4 w-4" />
-                Nuovo Clone / Swipe
+                New Clone / Swipe
               </Link>
               <Link
                 href="/templates"
                 className="inline-flex items-center gap-2 rounded-xl bg-white/15 px-5 py-3 text-sm font-semibold text-white ring-1 ring-white/30 transition-colors hover:bg-white/25"
               >
                 <FileCode className="h-4 w-4" />
-                Apri l&apos;archivio
+                Open Archive
               </Link>
             </div>
           </div>
@@ -170,7 +170,7 @@ export default function Dashboard() {
         {/* Shortcuts */}
         <div>
           <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-gray-500">
-            Accesso rapido
+            Quick Access
           </h3>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {shortcuts.map((s) => {

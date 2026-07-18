@@ -12,7 +12,6 @@ import {
   Copy,
   KeyRound,
   Swords,
-  Brain,
   FolderOpen,
   ClipboardCheck,
   DollarSign,
@@ -49,7 +48,6 @@ const menuGroups: MenuGroup[] = [
   {
     items: [
       { name: 'Dashboard', href: '/', icon: LayoutDashboard, sectionId: null },
-      { name: 'Strategist', href: '/strategist', icon: Brain, sectionId: null, masterOnly: true },
     ],
   },
   {
