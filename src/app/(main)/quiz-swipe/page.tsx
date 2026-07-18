@@ -41,7 +41,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import Header from '@/components/Header';
 import { useStore } from '@/store/useStore';
-import VisualHtmlEditor, { REVEAL_VISIBILITY_CSS } from '@/components/VisualHtmlEditor';
+import VisualHtmlEditor, { REVEAL_VISIBILITY_CSS, absolutizeClonedUrls } from '@/components/VisualHtmlEditor';
 import {
   HelpCircle,
   Play,
@@ -1274,20 +1274,13 @@ export default function QuizSwipePage() {
                     : editedOriginalHtml[previewStep.step.stepIndex] ||
                       previewStep.step.html ||
                       '<html><body>HTML not available</body></html>';
-                // Inietta <base href> con l'origine sorgente così le URL
-                // root-relative (/assets/img.png) si risolvono contro il
-                // dominio del clone e non contro l'origine dell'editor (404
-                // → immagini rotte che collassano).
-                let base = '';
-                try {
-                  const u = previewStep.step.url || snapshot?.entryUrl || snapshot?.result?.entryUrl || '';
-                  if (u) base = `<base href="${new URL(u).origin}/">`;
-                } catch { /* url non valida */ }
-                let out = raw;
-                if (base && !/<base\b[^>]*\bhref\s*=/i.test(out)) {
-                  if (/<head[^>]*>/i.test(out)) out = out.replace(/<head[^>]*>/i, (m) => m + base);
-                  else out = base + out;
-                }
+                // Inietta <base href> E assolutizza le URL root-relative
+                // (/assets/img.png) contro l'origin sorgente: senza questo in
+                // srcdoc si risolvono contro l'origine dell'editor → 404 →
+                // immagini rotte che collassano. absolutizeClonedUrls fa
+                // entrambe le cose in modo deterministico (base + rewrite).
+                const srcUrl = previewStep.step.url || snapshot?.entryUrl || snapshot?.result?.entryUrl || '';
+                const out = absolutizeClonedUrls(raw, srcUrl);
                 return out + `<style>${REVEAL_VISIBILITY_CSS}</style>`;
               })()}
               sandbox="allow-same-origin"
