@@ -2307,8 +2307,8 @@ export default function FrontEndFunnel() {
     if (
       !(await confirmDialog({
         title: 'Import in Checkpoint',
-        message: `Importare ${pages.length} pagina${pages.length === 1 ? '' : 'e'} in Checkpoint?`,
-        confirmText: 'Importa',
+        message: `Import ${pages.length} page${pages.length === 1 ? '' : 's'} into Checkpoint?`,
+        confirmText: 'Import',
       }))
     ) {
       return;
@@ -3598,13 +3598,13 @@ export default function FrontEndFunnel() {
       return;
     }
     const ok = await confirmDialog({
-      title: `Swipe All — ${eligible.length} pagine`,
+      title: `Swipe All — ${eligible.length} pages`,
       message:
-        `Verranno riscritte in sequenza, mantenendo la coerenza narrativa ` +
-        `tra una pagina e la successiva (Claude vede il riassunto delle pagine ` +
-        `già fatte). Tempo stimato: ${Math.max(1, Math.round(eligible.length * 1.2))}-` +
-        `${Math.max(2, Math.round(eligible.length * 2.5))} minuti.`,
-      confirmText: 'Avvia',
+        `They will be rewritten in sequence, keeping narrative coherence ` +
+        `from one page to the next (Claude sees the summary of the pages ` +
+        `already done). Estimated time: ${Math.max(1, Math.round(eligible.length * 1.2))}-` +
+        `${Math.max(2, Math.round(eligible.length * 2.5))} minutes.`,
+      confirmText: 'Start',
     });
     if (!ok) return;
 
@@ -3716,18 +3716,18 @@ export default function FrontEndFunnel() {
       return;
     }
     const ok = await confirmDialog({
-      title: `Clona ${eligible.length} pagine`,
+      title: `Clone ${eligible.length} pages`,
       message:
-        `Verranno scaricate in sequenza come HTML identico (nessuna riscrittura). ` +
-        `Le pagine già clonate verranno saltate.`,
-      confirmText: 'Clona',
+        `They will be downloaded in sequence as identical HTML (no rewrite). ` +
+        `Pages already cloned will be skipped.`,
+      confirmText: 'Clone',
     });
     if (!ok) return;
 
     cloneAllCancelRef.current = false;
     resetSwipeLog();
     setCloneAllJob({ isRunning: true, currentIndex: 0, totalCount: eligible.length, completed: 0, errors: 0 });
-    pushSwipeLog('info', `Clona All start \u2014 ${eligible.length} pages`);
+    pushSwipeLog('info', `Clone All start \u2014 ${eligible.length} pages`);
 
     for (let i = 0; i < eligible.length; i++) {
       if (cloneAllCancelRef.current) break;
@@ -3745,7 +3745,7 @@ export default function FrontEndFunnel() {
 
       updateFunnelPage(page.id, {
         swipeStatus: 'in_progress',
-        swipeResult: `Clona All ${i + 1}/${eligible.length} — Cloning...`,
+        swipeResult: `Clone All ${i + 1}/${eligible.length} — Cloning...`,
       });
       pushSwipeLog('info', `\u25b6 Cloning ${i + 1}/${eligible.length}`, pageName);
 
@@ -3794,14 +3794,14 @@ export default function FrontEndFunnel() {
         pushSwipeLog('success', `\u2713 Cloned (${(clonedHtml.length / 1024).toFixed(1)} KB)`, pageName);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        updateFunnelPage(page.id, { swipeStatus: 'failed', swipeResult: `Clona All: ${msg}` });
+        updateFunnelPage(page.id, { swipeStatus: 'failed', swipeResult: `Clone All: ${msg}` });
         setCloneAllJob((s) => (s ? { ...s, errors: s.errors + 1 } : s));
         pushSwipeLog('error', `\u2717 ${msg}`, pageName);
       }
     }
 
     setCloneAllJob((s) => (s ? { ...s, isRunning: false } : s));
-    pushSwipeLog('info', '\u25fc Clona All finished');
+    pushSwipeLog('info', '\u25fc Clone All finished');
   }, [funnelPages, cloneMobile, resetSwipeLog, pushSwipeLog, updateFunnelPage]);
 
   const handleClone = async (opts?: { silent?: boolean }) => {
@@ -5166,12 +5166,25 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
 
   const getStatusBadge = (status: string) => {
     const statusOption = STATUS_OPTIONS.find((s) => s.value === status);
+    const dot =
+      status === 'completed'
+        ? 'bg-green-500'
+        : status === 'failed'
+          ? 'bg-red-500'
+          : status === 'in_progress'
+            ? 'bg-amber-500'
+            : 'bg-gray-400';
     return (
       <span
-        className={`px-2 py-1 rounded-full text-xs font-medium ${
-          statusOption?.color || 'bg-gray-200'
+        className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold ${
+          statusOption?.color || 'bg-gray-200 text-gray-700'
         }`}
       >
+        {status === 'in_progress' ? (
+          <Loader2 className="w-2.5 h-2.5 animate-spin" />
+        ) : (
+          <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />
+        )}
         {statusOption?.label || status}
       </span>
     );
@@ -5295,7 +5308,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                   className="flex items-center gap-1.5 px-2 py-1 rounded-lg border border-gray-200 bg-gray-50"
                   title="Modello Anthropic usato per la riscrittura (solo path Claude)."
                 >
-                  <span className="text-xs font-medium text-gray-600 pr-1">Modello:</span>
+                  <span className="text-xs font-medium text-gray-600 pr-1">Model:</span>
                   <select
                     value={claudeModel}
                     onChange={(e) => setClaudeModel(e.target.value)}
@@ -5316,7 +5329,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
               <button
                 onClick={async () => {
                   if (cloneAllJob?.isRunning) {
-                    if (await confirmDialog({ title: 'Annulla clonazione', message: 'Annullare la clonazione in corso? La pagina corrente verrà comunque completata.', confirmText: 'Annulla clonazione' })) {
+                    if (await confirmDialog({ title: 'Cancel cloning', message: 'Cancel the cloning in progress? The current page will still be completed.', confirmText: 'Cancel cloning' })) {
                       cancelCloneAll();
                     }
                     return;
@@ -5343,7 +5356,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                 ) : (
                   <>
                     <Copy className="w-4 h-4" />
-                    Clona All
+                    Clone All
                   </>
                 )}
               </button>
@@ -5354,7 +5367,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
               <button
                 onClick={async () => {
                   if (swipeAllJob?.isRunning) {
-                    if (await confirmDialog({ title: 'Annulla Swipe All', message: 'Annullare lo Swipe All in corso? La pagina corrente verrà comunque completata.', confirmText: 'Annulla Swipe All' })) {
+                    if (await confirmDialog({ title: 'Cancel Swipe All', message: 'Cancel the Swipe All in progress? The current page will still be completed.', confirmText: 'Cancel Swipe All' })) {
                       cancelSwipeAll();
                     }
                     return;
@@ -5421,12 +5434,12 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                 onClick={async () => {
                   if (
                     !(await confirmDialog({
-                      title: 'Stop di TUTTi gli swipe in corso?',
+                      title: 'Stop ALL swipes in progress?',
                       message:
-                        '• Segna come errore tutti i job pending/processing nella coda Supabase\n' +
-                        '• Riporta a idle le pagine in_progress\n' +
-                        '• Interrompe lo Swipe All locale se in corso\n\n' +
-                        'NON termina i processi Node sul tuo PC — si fermano da soli quando vedono lo stato di errore.',
+                        '• Marks all pending/processing jobs in the Supabase queue as errored\n' +
+                        '• Resets in_progress pages back to idle\n' +
+                        '• Stops the local Swipe All if running\n\n' +
+                        'It does NOT kill the Node processes on your PC — they stop on their own when they see the error state.',
                       confirmText: 'Stop',
                       danger: true,
                     }))
