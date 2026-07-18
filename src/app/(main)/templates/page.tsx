@@ -1193,10 +1193,10 @@ export default function TemplatesPage() {
                         <button
                           onClick={async (e) => {
                             e.stopPropagation();
-                            const ok = await confirmDialog({ title: 'Elimina funnel', message: `Vuoi eliminare "${funnel.name}"?`, confirmText: 'Elimina', danger: true });
+                            const ok = await confirmDialog({ title: 'Delete funnel', message: `Do you want to delete "${funnel.name}"?`, confirmText: 'Delete', danger: true });
                             if (!ok) return;
-                            try { await deleteArchivedFunnel(funnel.id); toast.success('Funnel eliminato'); }
-                            catch { toast.error('Eliminazione non riuscita'); }
+                            try { await deleteArchivedFunnel(funnel.id); toast.success('Funnel deleted'); }
+                            catch { toast.error('Delete failed'); }
                           }}
                           className="ml-2 p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
                         >
@@ -1281,9 +1281,9 @@ export default function TemplatesPage() {
                                         setTimeout(() => URL.revokeObjectURL(href), 1000);
                                       }}
                                       className="mt-2 w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg text-[11px] font-medium bg-gray-100 text-gray-700 hover:bg-blue-50 hover:text-blue-700 transition-colors"
-                                      title="Scarica l'HTML di questo step"
+                                      title="Download this step's HTML"
                                     >
-                                      <Download className="w-3.5 h-3.5" /> Scarica HTML
+                                      <Download className="w-3.5 h-3.5" /> Download HTML
                                     </button>
                                   )}
                                 </div>
@@ -1390,14 +1390,14 @@ export default function TemplatesPage() {
             <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 flex flex-wrap items-center gap-3">
               <div className="flex items-center gap-2">
                 <Tag className="w-4 h-4 text-indigo-500" />
-                <span className="text-sm font-semibold text-gray-700">Categoria</span>
+                <span className="text-sm font-semibold text-gray-700">Category</span>
               </div>
               <select
                 value={selectedCategory}
                 onChange={(e) => setSelectedCategory(e.target.value)}
                 className="px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none min-w-[200px]"
               >
-                <option value="">Tutte le categorie</option>
+                <option value="">All categories</option>
                 {archiveCategories.map((c) => (
                   <option key={c} value={c}>{c}</option>
                 ))}
@@ -1414,10 +1414,10 @@ export default function TemplatesPage() {
                       if (e.key === 'Enter') { e.preventDefault(); addCategory(); }
                       if (e.key === 'Escape') { setAddingCategory(false); setNewCategory(''); }
                     }}
-                    placeholder="Es. Survival, Weight loss…"
+                    placeholder="E.g. Survival, Weight loss…"
                     className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
                   />
-                  <button onClick={addCategory} className="px-3 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors">Aggiungi</button>
+                  <button onClick={addCategory} className="px-3 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors">Add</button>
                   <button onClick={() => { setAddingCategory(false); setNewCategory(''); }} className="p-2 text-gray-400 hover:text-gray-600"><X className="w-4 h-4" /></button>
                 </div>
               ) : (
@@ -1425,7 +1425,7 @@ export default function TemplatesPage() {
                   onClick={() => setAddingCategory(true)}
                   className="flex items-center gap-1.5 px-3 py-2 border border-dashed border-gray-300 text-gray-600 rounded-lg text-sm hover:border-indigo-400 hover:text-indigo-600 transition-colors"
                 >
-                  <Plus className="w-4 h-4" /> Nuova categoria
+                  <Plus className="w-4 h-4" /> New category
                 </button>
               )}
 
@@ -1434,7 +1434,7 @@ export default function TemplatesPage() {
                   onClick={() => deleteCategory(selectedCategory)}
                   className="ml-auto flex items-center gap-1 text-xs text-red-500 hover:text-red-700"
                 >
-                  <Trash2 className="w-3.5 h-3.5" /> Elimina &ldquo;{selectedCategory}&rdquo;
+                  <Trash2 className="w-3.5 h-3.5" /> Delete &ldquo;{selectedCategory}&rdquo;
                 </button>
               )}
             </div>
@@ -1463,7 +1463,7 @@ export default function TemplatesPage() {
                         <span className="text-3xl font-bold text-gray-800 tabular-nums">{count}</span>
                       </div>
                       <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${colorClass}`}>{opt.label}</span>
-                      <span className="text-[11px] text-gray-400">{count === 1 ? '1 pagina' : `${count} pagine`}</span>
+                      <span className="text-[11px] text-gray-400">{count === 1 ? '1 page' : `${count} pages`}</span>
                     </button>
                   );
                 })}
@@ -1480,17 +1480,17 @@ export default function TemplatesPage() {
                 <div className="space-y-4">
                   <div className="flex items-center gap-3 flex-wrap">
                     <button onClick={() => setOpenType(null)} className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-800">
-                      <ChevronRight className="w-4 h-4 rotate-180" /> Cartelle
+                      <ChevronRight className="w-4 h-4 rotate-180" /> Folders
                     </button>
                     <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${colorClass}`}>{opt?.label || openType}</span>
-                    <span className="text-sm text-gray-400">{pages.length} {pages.length === 1 ? 'pagina' : 'pagine'}</span>
+                    <span className="text-sm text-gray-400">{pages.length} {pages.length === 1 ? 'page' : 'pages'}</span>
                     {selectedCategory && <span className="text-xs text-indigo-500">· {selectedCategory}</span>}
                   </div>
 
                   {pages.length === 0 ? (
                     <div className="bg-white rounded-xl border border-gray-200 p-12 text-center">
                       <FolderOpen className="w-10 h-10 text-gray-300 mx-auto mb-3" />
-                      <p className="text-gray-500">Nessuna pagina in questa cartella{selectedCategory ? ` per "${selectedCategory}"` : ''}.</p>
+                      <p className="text-gray-500">No pages in this folder{selectedCategory ? ` for "${selectedCategory}"` : ''}.</p>
                     </div>
                   ) : (
                     <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
@@ -1510,7 +1510,7 @@ export default function TemplatesPage() {
                                 <button
                                   onClick={() => setPagePreview({ isOpen: true, url: p.url_to_swipe, name: p.name, pageType: openType, savedHtml: p.savedHtml })}
                                   className="p-2 bg-white/90 rounded-lg text-gray-700 hover:text-indigo-600 shadow"
-                                  title="Anteprima"
+                                  title="Preview"
                                 >
                                   <Eye className="w-4 h-4" />
                                 </button>
@@ -1519,7 +1519,7 @@ export default function TemplatesPage() {
                                 <button
                                   onClick={() => router.push(`/front-end-funnel?swipe_url=${encodeURIComponent(p.url_to_swipe)}&swipe_name=${encodeURIComponent(p.name)}&swipe_type=${encodeURIComponent(openType)}`)}
                                   className="p-2 bg-indigo-600 rounded-lg text-white hover:bg-indigo-700 shadow"
-                                  title="Usa come template (Clona / Swipe)"
+                                  title="Use as template (Clone / Swipe)"
                                 >
                                   <Swords className="w-4 h-4" />
                                 </button>
@@ -1527,21 +1527,21 @@ export default function TemplatesPage() {
                               <button
                                 onClick={async () => {
                                   const ok = await confirmDialog({
-                                    title: 'Elimina pagina',
-                                    message: `Vuoi eliminare "${p.name}"? L'operazione non è reversibile.`,
-                                    confirmText: 'Elimina',
+                                    title: 'Delete page',
+                                    message: `Do you want to delete "${p.name}"? This action cannot be undone.`,
+                                    confirmText: 'Delete',
                                     danger: true,
                                   });
                                   if (!ok) return;
                                   try {
                                     await deleteArchivedFunnel(p.funnel_id);
-                                    toast.success('Pagina eliminata');
+                                    toast.success('Page deleted');
                                   } catch {
-                                    toast.error('Eliminazione non riuscita');
+                                    toast.error('Delete failed');
                                   }
                                 }}
                                 className="p-2 bg-white/90 rounded-lg text-gray-700 hover:text-red-600 shadow"
-                                title="Elimina"
+                                title="Delete"
                               >
                                 <Trash2 className="w-4 h-4" />
                               </button>
