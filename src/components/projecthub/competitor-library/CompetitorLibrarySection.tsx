@@ -6,6 +6,7 @@ import {
   Plus, Trash2, Upload, Play, Search, ArrowLeft, ExternalLink,
   BarChart2, Calendar, Globe, X, RefreshCw, Image as ImageIcon,
   Video, Bookmark, CheckSquare, Square, TrendingUp, Download, Copy, Check,
+  Settings, Zap,
 } from "lucide-react";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
@@ -433,6 +434,15 @@ function CompetitorDetail({ projectId, competitor, onBack }: { projectId: string
   const [adForm, setAdForm] = useState({ name: "", headline: "", hook: "", body_text: "" });
   const [fileLabel, setFileLabel] = useState("");
   const [detailAd, setDetailAd] = useState<CompetitorAd | null>(null);
+  const [scraping, setScraping] = useState(false);
+  const [cfgOpen, setCfgOpen] = useState(false);
+  const [savingCfg, setSavingCfg] = useState(false);
+  const [libUrl, setLibUrl] = useState(competitor.ads_library_url || "");
+  const [cfg, setCfg] = useState({
+    ads_library_url: competitor.ads_library_url || "",
+    frequency: competitor.frequency || "every_7_days",
+    is_active: competitor.is_active !== "false",
+  });
 
   const load = async () => {
     setLoading(true);
@@ -440,6 +450,43 @@ function CompetitorDetail({ projectId, competitor, onBack }: { projectId: string
       const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library/${competitor.id}/ads`);
       if (r.ok) setAds(await r.json());
     } finally { setLoading(false); }
+  };
+
+  const scrapeNow = async () => {
+    if (!libUrl) { setCfgOpen(true); toast({ title: "Add the Ad Library URL first" }); return; }
+    setScraping(true);
+    try {
+      const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library/${competitor.id}/scrape`, { method: "POST" });
+      const j = await r.json().catch(() => ({}));
+      if (r.ok) {
+        toast({ title: "Scraping started", description: "New creatives will appear here in ~1 min." });
+        setTimeout(load, 60000);
+      } else {
+        toast({ title: j.error || "Could not start scraping", variant: "destructive" });
+      }
+    } finally { setScraping(false); }
+  };
+
+  const saveCfg = async () => {
+    setSavingCfg(true);
+    try {
+      const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library/${competitor.id}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ads_library_url: cfg.ads_library_url,
+          frequency: cfg.frequency,
+          is_active: cfg.is_active ? "true" : "false",
+        }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (r.ok) {
+        setLibUrl(cfg.ads_library_url);
+        setCfgOpen(false);
+        toast({ title: "Settings saved" });
+      } else {
+        toast({ title: j.error || "Save failed", variant: "destructive" });
+      }
+    } finally { setSavingCfg(false); }
   };
 
   useEffect(() => { load(); }, [competitor.id]);
@@ -510,15 +557,23 @@ function CompetitorDetail({ projectId, competitor, onBack }: { projectId: string
           </button>
           <span className="text-muted-foreground">/</span>
           <span className="text-sm font-semibold text-foreground">{competitor.name}</span>
-          {competitor.ads_library_url && (
-            <a href={competitor.ads_library_url} target="_blank" rel="noopener noreferrer" className="text-muted-foreground hover:text-primary transition-colors">
+          {libUrl && (
+            <a href={libUrl} target="_blank" rel="noopener noreferrer" className="text-muted-foreground hover:text-primary transition-colors">
               <ExternalLink className="w-3.5 h-3.5" />
             </a>
           )}
         </div>
-        <Button onClick={() => setUploadOpen(true)} className="bg-primary text-white gap-1.5 text-sm">
-          <Upload className="w-4 h-4" /> Add Ad
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={() => setCfgOpen(true)} className="gap-1.5 text-sm" title="Auto-scrape settings">
+            <Settings className="w-4 h-4" /> Auto-scrape
+          </Button>
+          <Button variant="outline" onClick={scrapeNow} disabled={scraping} className="gap-1.5 text-sm">
+            {scraping ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />} Scrape now
+          </Button>
+          <Button onClick={() => setUploadOpen(true)} className="bg-primary text-white gap-1.5 text-sm">
+            <Upload className="w-4 h-4" /> Add Ad
+          </Button>
+        </div>
       </div>
 
       {/* Stats bar */}
@@ -751,6 +806,40 @@ function CompetitorDetail({ projectId, competitor, onBack }: { projectId: string
               </Button>
             </div>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Auto-scrape settings */}
+      <Dialog open={cfgOpen} onOpenChange={setCfgOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>Auto-scrape — {competitor.name}</DialogTitle></DialogHeader>
+          <div className="space-y-3 mt-2">
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-foreground">Meta Ad Library URL</label>
+              <Input value={cfg.ads_library_url} onChange={e => setCfg(p => ({ ...p, ads_library_url: e.target.value }))}
+                placeholder="https://www.facebook.com/ads/library/?...view_all_page_id=..." className="text-sm" />
+              <p className="text-[11px] text-muted-foreground">Open the Meta Ad Library, filter to this advertiser, and paste the page URL.</p>
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-foreground">Check frequency</label>
+              <select value={cfg.frequency} onChange={e => setCfg(p => ({ ...p, frequency: e.target.value }))}
+                className="w-full text-sm border border-border rounded-md px-3 py-2 bg-background focus:outline-none focus:ring-1 focus:ring-primary">
+                {[["once", "Manual only"], ["daily", "Daily"], ["every_3_days", "Every 3 days"], ["every_7_days", "Every 7 days"], ["every_14_days", "Every 14 days"]].map(([v, l]) => (
+                  <option key={v} value={v}>{l}</option>
+                ))}
+              </select>
+            </div>
+            <label className="flex items-center gap-2 text-sm text-foreground cursor-pointer">
+              <input type="checkbox" checked={cfg.is_active} onChange={e => setCfg(p => ({ ...p, is_active: e.target.checked }))} />
+              Enable automatic daily monitoring
+            </label>
+            <div className="flex justify-end gap-2 pt-2">
+              <Button type="button" variant="outline" onClick={() => setCfgOpen(false)}>Cancel</Button>
+              <Button onClick={saveCfg} disabled={savingCfg} className="bg-primary text-white gap-1.5">
+                {savingCfg ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Saving...</> : <>Save</>}
+              </Button>
+            </div>
+          </div>
         </DialogContent>
       </Dialog>
     </div>

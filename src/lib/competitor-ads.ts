@@ -83,6 +83,21 @@ export interface CreativeMeta {
   body_text?: string;
 }
 
+/** True if this brand already has a creative with the given external id. */
+export async function adExistsByExternalId(
+  brandId: number,
+  externalId: string,
+): Promise<boolean> {
+  if (!externalId) return false;
+  const { data } = await supabaseAdmin
+    .from('competitor_ads')
+    .select('id')
+    .eq('brand_id', brandId)
+    .eq('external_id', externalId)
+    .maybeSingle();
+  return !!data?.id;
+}
+
 /**
  * Upload creative bytes to storage and insert a competitor_ads row.
  * When `buffer` is null we store `remoteUrl` directly as the file_path so the
@@ -97,9 +112,15 @@ export async function insertCompetitorAd(opts: {
   originalName?: string;
   remoteUrl?: string;
   meta?: CreativeMeta;
+  externalId?: string;
+  source?: string;
 }): Promise<{ ok: true; ad: Record<string, unknown> } | { ok: false; error: string }> {
   const { projectId, brandId, buffer, contentType, remoteUrl, meta = {} } = opts;
   const mediaType = mediaTypeForContentType(contentType);
+  // Only reference external_id/source when a caller opts in (the scraper). This
+  // keeps existing callers (extension / manual upload) working even before the
+  // competitor-scrape migration has been applied.
+  const usesScrapeCols = opts.externalId !== undefined || opts.source !== undefined;
 
   let filePath = '';
   if (buffer && buffer.length > 0) {
@@ -121,18 +142,24 @@ export async function insertCompetitorAd(opts: {
     return { ok: false, error: 'No media bytes and no remote URL to store' };
   }
 
+  const insertRow: Record<string, unknown> = {
+    project_id: projectId,
+    brand_id: brandId,
+    file_path: filePath,
+    media_type: mediaType,
+    name: (meta.name || '').slice(0, 300),
+    headline: (meta.headline || '').slice(0, 500),
+    hook: (meta.hook || '').slice(0, 500),
+    body_text: (meta.body_text || '').slice(0, 4000),
+  };
+  if (usesScrapeCols) {
+    insertRow.external_id = (opts.externalId || '').slice(0, 200);
+    insertRow.source = opts.source || 'manual';
+  }
+
   const { data, error } = await supabaseAdmin
     .from('competitor_ads')
-    .insert({
-      project_id: projectId,
-      brand_id: brandId,
-      file_path: filePath,
-      media_type: mediaType,
-      name: (meta.name || '').slice(0, 300),
-      headline: (meta.headline || '').slice(0, 500),
-      hook: (meta.hook || '').slice(0, 500),
-      body_text: (meta.body_text || '').slice(0, 4000),
-    })
+    .insert(insertRow)
     .select()
     .single();
 
