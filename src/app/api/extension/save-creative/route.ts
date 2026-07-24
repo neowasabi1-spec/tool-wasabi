@@ -83,6 +83,7 @@ async function fetchMedia(
 }
 
 export async function POST(req: NextRequest) {
+ try {
   let body: SaveCreativeBody;
   try {
     body = (await req.json()) as SaveCreativeBody;
@@ -197,10 +198,32 @@ export async function POST(req: NextRequest) {
       .eq('project_id', projectId);
   }
 
+  // Facebook (and similar) serve videos as blob: URLs the browser can't hand
+  // over and the server can't fetch. If we have neither bytes nor a fetchable
+  // URL, don't 500: if auto-scraping was configured, that path will capture it.
+  const hasHttpUrl = /^https?:\/\//i.test(mediaUrl);
+  if (!buffer && !hasHttpUrl) {
+    if (Object.keys(brandPatch).length > 0) {
+      return NextResponse.json({
+        success: true,
+        savedConfig: true,
+        captured: false,
+        message: 'Auto-scraping enabled — this video will be captured by the scheduled scrape.',
+      });
+    }
+    return NextResponse.json(
+      {
+        error:
+          'This video can’t be saved directly (Facebook streams it). Enable auto-scraping with the Ad Library URL instead.',
+      },
+      { status: 422 },
+    );
+  }
+
   // Auto-transcribe videos so the saved creative carries its script/copy.
   const mediaType = mediaTypeForContentType(contentType);
   let transcript = '';
-  if (mediaType === 'video') {
+  if (mediaType === 'video' && buffer) {
     transcript = await transcribeVideo(buffer, contentType);
   }
   const bodyText = [body.body_text, transcript].filter(Boolean).join('\n\n').trim();
@@ -230,4 +253,11 @@ export async function POST(req: NextRequest) {
     transcribed: !!transcript,
     ad: result.ad,
   });
+ } catch (e) {
+    console.error('[save-creative] failed:', e);
+    return NextResponse.json(
+      { error: e instanceof Error ? e.message : 'Unexpected server error while saving creative' },
+      { status: 500 },
+    );
+ }
 }

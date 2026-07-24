@@ -530,8 +530,8 @@
     saveBtn.disabled = false;
     if (res && res.ok) {
       await chrome.storage.local.set({ wasabi_last_project: projectId }).catch(() => {});
-      setStatus('Saved to Competitor Library ✓', 'ok');
-      setTimeout(closePopover, 1100);
+      setStatus(res.message || 'Saved to Competitor Library ✓', 'ok');
+      setTimeout(closePopover, res.message ? 2600 : 1100);
     } else {
       setStatus((res && res.error) || 'Save failed.', 'err');
     }
