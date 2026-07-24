@@ -7,7 +7,6 @@ import {
   insertCompetitorAd,
   mediaTypeForContentType,
 } from '@/lib/competitor-ads';
-import { transcribeVideo } from '@/lib/transcribe';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 
 export const runtime = 'nodejs';
@@ -61,7 +60,10 @@ function decodeBase64(input: string): { buffer: Buffer; contentType: string } | 
 async function fetchMedia(
   url: string,
   referer: string,
+  timeoutMs = 12000,
 ): Promise<{ buffer: Buffer; contentType: string } | null> {
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(url, {
       headers: {
@@ -71,6 +73,7 @@ async function fetchMedia(
         Accept: '*/*',
       },
       redirect: 'follow',
+      signal: controller.signal,
     });
     if (!res.ok) return null;
     const contentType = res.headers.get('content-type') || 'application/octet-stream';
@@ -79,6 +82,8 @@ async function fetchMedia(
     return buffer.length > 0 ? { buffer, contentType } : null;
   } catch {
     return null;
+  } finally {
+    clearTimeout(t);
   }
 }
 
@@ -220,13 +225,11 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Auto-transcribe videos so the saved creative carries its script/copy.
+  // Store the creative fast. Video transcription is slow (Whisper/Gemini) and
+  // is done on demand via the "Extract text" button, so we never block — and
+  // time out (504) — the save on it here.
   const mediaType = mediaTypeForContentType(contentType);
-  let transcript = '';
-  if (mediaType === 'video' && buffer) {
-    transcript = await transcribeVideo(buffer, contentType);
-  }
-  const bodyText = [body.body_text, transcript].filter(Boolean).join('\n\n').trim();
+  const bodyText = String(body.body_text || '').trim();
 
   const result = await insertCompetitorAd({
     projectId,
@@ -250,7 +253,7 @@ export async function POST(req: NextRequest) {
     brandId,
     brandName,
     mediaType,
-    transcribed: !!transcript,
+    transcribed: false,
     ad: result.ad,
   });
  } catch (e) {
