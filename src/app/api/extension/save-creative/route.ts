@@ -7,7 +7,14 @@ import {
   insertCompetitorAd,
   mediaTypeForContentType,
 } from '@/lib/competitor-ads';
+import { transcribeVideo } from '@/lib/transcribe';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+
+// Auto-transcribe only short clips inline. Longer videos are stored as-is and
+// transcribed on demand via the "Extract text" button, so a slow transcription
+// never blocks (and times out → 504) the save. ~20 MB ≈ a short ad clip and
+// stays within Whisper's inline limit.
+const SHORT_VIDEO_MAX_BYTES = 20 * 1024 * 1024;
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -225,11 +232,13 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Store the creative fast. Video transcription is slow (Whisper/Gemini) and
-  // is done on demand via the "Extract text" button, so we never block — and
-  // time out (504) — the save on it here.
+  // Short videos → transcribe inline; long videos → skip (manual on-demand).
   const mediaType = mediaTypeForContentType(contentType);
-  const bodyText = String(body.body_text || '').trim();
+  let transcript = '';
+  if (mediaType === 'video' && buffer && buffer.length <= SHORT_VIDEO_MAX_BYTES) {
+    transcript = await transcribeVideo(buffer, contentType, 120000);
+  }
+  const bodyText = [body.body_text, transcript].filter(Boolean).join('\n\n').trim();
 
   const result = await insertCompetitorAd({
     projectId,
@@ -253,7 +262,7 @@ export async function POST(req: NextRequest) {
     brandId,
     brandName,
     mediaType,
-    transcribed: false,
+    transcribed: !!transcript,
     ad: result.ad,
   });
  } catch (e) {
