@@ -8,6 +8,9 @@ const els = {
   notConnected: $('notConnected'),
   openTool: $('openTool'),
   form: $('form'),
+  destination: $('destination'),
+  projectField: $('projectField'),
+  project: $('project'),
   name: $('name'),
   category: $('category'),
   newCategory: $('newCategory'),
@@ -76,6 +79,47 @@ async function init() {
   }
 
   loadFolders();
+
+  // Destination selector: Template archive (default) vs a Project's
+  // Competitor Landings. Projects are loaded lazily on first switch.
+  let projectsLoaded = false;
+  const syncDestination = async () => {
+    const toProject = els.destination.value === 'project';
+    els.projectField.classList.toggle('hidden', !toProject);
+    els.save.textContent = toProject ? 'Save to Competitor Landings' : 'Save to Wasabi';
+    if (toProject && !projectsLoaded) {
+      projectsLoaded = true;
+      await loadProjects();
+    }
+  };
+  els.destination.addEventListener('change', syncDestination);
+  syncDestination();
+}
+
+async function loadProjects() {
+  try {
+    const res = await sendMessage({ type: 'GET_PROJECTS' });
+    const projects = (res && res.ok && Array.isArray(res.projects)) ? res.projects : [];
+    els.project.innerHTML = '';
+    if (!projects.length) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = 'No projects found';
+      els.project.appendChild(opt);
+      return;
+    }
+    const last = (await chrome.storage.local.get('wasabi_last_project'))?.wasabi_last_project;
+    for (const p of projects) {
+      const opt = document.createElement('option');
+      opt.value = String(p.id);
+      opt.textContent = p.name || 'Untitled';
+      if (last && String(p.id) === String(last)) opt.selected = true;
+      els.project.appendChild(opt);
+    }
+  } catch (e) {
+    console.warn('loadProjects failed', e);
+    els.project.innerHTML = '<option value="">Could not load projects</option>';
+  }
 }
 
 // Reads `wasabi_session` from an open tab on the tool origin and hands it to
@@ -186,7 +230,13 @@ async function onSave() {
       }
     }
 
-    setStatus('<span class="spinner"></span>Saving to archive…');
+    const toProject = els.destination.value === 'project';
+    const projectId = toProject ? (els.project.value || '') : '';
+    if (toProject && !projectId) {
+      setStatus('Select a project first.', 'err');
+      return;
+    }
+    setStatus(`<span class="spinner"></span>Saving to ${toProject ? 'project' : 'archive'}…`);
     const tags = els.tags.value.split(',').map((t) => t.trim()).filter(Boolean);
     // A freshly typed category wins over the dropdown selection.
     const category = (els.newCategory.value.trim() || els.category.value || '').slice(0, 60);
@@ -199,6 +249,7 @@ async function onSave() {
       pageType: els.folder.value || 'landing',
       category,
       tags,
+      projectId: projectId || null,
     };
 
     const res = await fetch(`${TOOL}/api/extension/save-page`, {
@@ -211,10 +262,14 @@ async function onSave() {
       throw new Error(data.message || data.error || `Save failed (${res.status})`);
     }
 
+    if (data.projectId) {
+      await chrome.storage.local.set({ wasabi_last_project: data.projectId }).catch(() => {});
+    }
     const previewUrl = TOOL + data.htmlUrl;
     const editorUrl = TOOL + (data.editorUrl || `/edit/${data.pageId}`);
+    const savedWhere = data.projectId ? 'Saved to Competitor Landings ✓' : 'Saved ✓';
     setStatus(
-      `Saved ✓ &nbsp;<a href="${editorUrl}" target="_blank">open in editor</a> · ` +
+      `${savedWhere} &nbsp;<a href="${editorUrl}" target="_blank">open in editor</a> · ` +
         `<a href="${previewUrl}" target="_blank">view HTML</a>`,
       'ok',
     );

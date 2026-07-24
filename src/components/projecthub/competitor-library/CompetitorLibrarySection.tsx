@@ -6,7 +6,7 @@ import {
   Plus, Trash2, Upload, Play, Search, ArrowLeft, ExternalLink,
   BarChart2, Calendar, Globe, X, RefreshCw, Image as ImageIcon,
   Video, Bookmark, CheckSquare, Square, TrendingUp, Download, Copy, Check,
-  Settings, Zap, FileText,
+  Settings, Zap, FileText, Pencil, Eye, LayoutTemplate,
 } from "lucide-react";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
@@ -1005,8 +1005,138 @@ function AllCreativesView({ projectId }: { projectId: string }) {
   );
 }
 
+// ── COMPETITOR LANDINGS VIEW ──
+type Landing = {
+  id: string;
+  name: string;
+  url: string;
+  page_type: string;
+  category: string;
+  tags: string[];
+  screenshot: string;
+  html_url: string;
+  editor_url: string;
+  created_at: string;
+};
+
+function hostOf(url: string) {
+  try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return url; }
+}
+
+function CompetitorLandingsView({ projectId }: { projectId: string }) {
+  const { toast } = useToast();
+  const [landings, setLandings] = useState<Landing[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/landings`);
+      if (r.ok) setLandings(await r.json());
+    } finally { setLoading(false); }
+  };
+  useEffect(() => { load(); }, [projectId]);
+
+  const del = async (l: Landing) => {
+    setLandings(p => p.filter(x => x.id !== l.id));
+    await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/landings/${l.id}`, { method: "DELETE" });
+    toast({ title: "Landing removed" });
+  };
+
+  const filtered = landings.filter(l =>
+    !search || `${l.name} ${l.url} ${l.category} ${(l.tags || []).join(" ")}`.toLowerCase().includes(search.toLowerCase()));
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <h3 className="text-lg font-bold text-foreground">Competitor Landings</h3>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            Landing &amp; funnel pages saved from the browser extension. Monitor them or reuse as templates.
+          </p>
+        </div>
+        <div className="relative min-w-56">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+          <Input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search landings..." className="pl-8 h-9 text-sm" />
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="py-16 text-center text-sm text-muted-foreground">Loading...</div>
+      ) : filtered.length === 0 ? (
+        <div className="py-20 text-center border-2 border-dashed border-border rounded-2xl">
+          <LayoutTemplate className="w-12 h-12 text-muted-foreground/30 mx-auto mb-3" />
+          <p className="text-sm font-semibold text-foreground mb-1">No competitor landings yet</p>
+          <p className="text-xs text-muted-foreground max-w-md mx-auto">
+            Open a competitor page, click the <b>Wasabi Saver</b> extension, choose
+            “Project · Competitor Landings” and pick this project.
+          </p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {filtered.map(l => (
+            <div key={l.id}
+              className="group relative bg-card border border-border rounded-2xl overflow-hidden hover:border-primary/40 hover:shadow-lg transition-all">
+              {/* Preview */}
+              <a href={l.editor_url} className="block aspect-[16/10] relative overflow-hidden bg-slate-100">
+                {l.screenshot ? (
+                  <img src={l.screenshot} alt={l.name} className="w-full h-full object-cover object-top group-hover:scale-[1.02] transition-transform" />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-slate-800 to-slate-900">
+                    <Globe className="w-8 h-8 text-white/20" />
+                  </div>
+                )}
+                <span className="absolute top-2 left-2 text-[9px] font-bold px-2 py-0.5 rounded-full bg-black/55 backdrop-blur-sm text-white uppercase tracking-wide">
+                  {l.page_type || "landing"}
+                </span>
+              </a>
+              {/* Delete (hover) */}
+              <button onClick={() => del(l)}
+                className="absolute top-2 right-2 p-1.5 rounded-lg bg-black/45 backdrop-blur-sm text-white/90 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all"
+                title="Remove landing">
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+              {/* Footer */}
+              <div className="p-3">
+                <p className="text-sm font-semibold text-foreground truncate">{l.name}</p>
+                <p className="text-[11px] text-muted-foreground truncate mb-2 flex items-center gap-1">
+                  <Globe className="w-3 h-3" /> {hostOf(l.url)}
+                </p>
+                <div className="flex items-center gap-1.5">
+                  <a href={l.editor_url}
+                    className="flex-1 flex items-center justify-center gap-1 bg-primary text-white text-[11px] font-semibold py-1.5 rounded-lg hover:opacity-90 transition-opacity">
+                    <Pencil className="w-3 h-3" /> Edit
+                  </a>
+                  <a href={l.html_url} target="_blank" rel="noopener noreferrer"
+                    className="flex items-center justify-center gap-1 border border-border text-foreground text-[11px] font-semibold py-1.5 px-2.5 rounded-lg hover:bg-muted transition-colors">
+                    <Eye className="w-3 h-3" /> View
+                  </a>
+                  {l.url && (
+                    <a href={l.url} target="_blank" rel="noopener noreferrer"
+                      className="flex items-center justify-center border border-border text-muted-foreground py-1.5 px-2 rounded-lg hover:bg-muted transition-colors"
+                      title="Open original">
+                      <ExternalLink className="w-3 h-3" />
+                    </a>
+                  )}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── MAIN EXPORT ──
-type Tab = "ads" | "funnel";
+type Tab = "ads" | "landings" | "funnel";
+
+const LIBRARY_TABS = [
+  { id: "ads" as Tab, label: "Ads Library", icon: BarChart2 },
+  { id: "landings" as Tab, label: "Landings", icon: LayoutTemplate },
+  { id: "funnel" as Tab, label: "Funnel Monitoring", icon: TrendingUp },
+] as const;
 
 export function CompetitorLibrarySection({ projectId }: { projectId: string }) {
   const [tab, setTab] = useState<Tab>("ads");
@@ -1019,10 +1149,7 @@ export function CompetitorLibrarySection({ projectId }: { projectId: string }) {
       <div className="space-y-4">
         {/* Tab bar */}
         <div className="flex items-center gap-1 border-b border-border pb-0">
-          {([
-            { id: "ads" as Tab, label: "Ads Library", icon: BarChart2 },
-            { id: "funnel" as Tab, label: "Funnel Monitoring", icon: TrendingUp },
-          ] as const).map(({ id, label, icon: Icon }) => (
+          {LIBRARY_TABS.map(({ id, label, icon: Icon }) => (
             <button key={id} onClick={() => { setTab(id); setSelected(null); }}
               className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px
                 ${tab === id || id === "ads"
@@ -1041,10 +1168,7 @@ export function CompetitorLibrarySection({ projectId }: { projectId: string }) {
     <div className="space-y-4">
       {/* Tab bar */}
       <div className="flex items-center gap-1 border-b border-border pb-0">
-        {([
-          { id: "ads" as Tab, label: "Ads Library", icon: BarChart2 },
-          { id: "funnel" as Tab, label: "Funnel Monitoring", icon: TrendingUp },
-        ] as const).map(({ id, label, icon: Icon }) => (
+        {LIBRARY_TABS.map(({ id, label, icon: Icon }) => (
           <button key={id} onClick={() => setTab(id)}
             className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px
               ${tab === id
@@ -1054,6 +1178,8 @@ export function CompetitorLibrarySection({ projectId }: { projectId: string }) {
           </button>
         ))}
       </div>
+
+      {tab === "landings" && <CompetitorLandingsView projectId={projectId} />}
 
       {tab === "ads" && (
         <div className="space-y-4">

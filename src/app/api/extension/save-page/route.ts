@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getCurrentUserId } from '@/lib/auth/get-current-user';
+import { canAccessProject } from '@/lib/auth/project-access';
 import { absolutizeUrlsInHtml } from '@/lib/spa-rescue';
 import { PAGE_TYPE_OPTIONS } from '@/types';
 
@@ -32,6 +33,7 @@ interface SaveBody {
   folderId?: string | null; // legacy — treated as pageType if pageType absent
   category?: string;
   tags?: string[];
+  projectId?: string | null; // when set, link the page to a project's Competitor Landings
 }
 
 const VALID_TYPES = new Set(PAGE_TYPE_OPTIONS.map((o) => o.value as string));
@@ -108,6 +110,15 @@ export async function POST(req: NextRequest) {
   const pageType = VALID_TYPES.has(requestedType) ? requestedType : 'landing';
   const category = String(body.category || '').trim().slice(0, 60);
 
+  // Optionally link the saved page to a project (Competitor Landings). Only
+  // honored when the user actually has access to that project.
+  let projectId: string | null = null;
+  const requestedProjectId = String(body.projectId || '').trim();
+  if (requestedProjectId) {
+    const { allowed } = await canAccessProject(req, requestedProjectId);
+    if (allowed) projectId = requestedProjectId;
+  }
+
   // Absolutize relative URLs so the saved snapshot renders standalone.
   let html = body.html;
   try {
@@ -150,6 +161,7 @@ export async function POST(req: NextRequest) {
       total_steps: 1,
       steps: [buildStep()],
       owner_user_id: userId,
+      ...(projectId ? { project_id: projectId } : {}),
     })
     .select('id')
     .single();
@@ -215,6 +227,7 @@ export async function POST(req: NextRequest) {
     category,
     name,
     tags,
+    projectId,
     htmlUrl,
     editorUrl,
     screenshotDesktopUrl: desktopUrl,

@@ -22,6 +22,21 @@
 
     <main id="form" class="form">
       <label class="field">
+        <span>Save to</span>
+        <select id="destination">
+          <option value="template">Template archive</option>
+          <option value="project">Project · Competitor Landings</option>
+        </select>
+      </label>
+
+      <label class="field hidden" id="projectField">
+        <span>Project</span>
+        <select id="project">
+          <option value="">Loading projects…</option>
+        </select>
+      </label>
+
+      <label class="field">
         <span>Name</span>
         <input id="name" type="text" placeholder="Page name" />
       </label>
