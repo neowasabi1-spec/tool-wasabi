@@ -153,11 +153,34 @@
     }, 350);
   }
 
+  // Videos are frequently covered by overlay divs (player controls,
+  // click-catchers), so a direct `closest('video')` on the hovered element
+  // misses them. Fall back to scanning the element stack under the cursor —
+  // elementsFromPoint returns covered elements too, including the <video>.
+  function findMediaAtPoint(x, y) {
+    let stack;
+    try {
+      stack = document.elementsFromPoint(x, y) || [];
+    } catch {
+      return null;
+    }
+    for (const node of stack) {
+      if (!node || node === host) continue;
+      if ((node.tagName === 'VIDEO' || node.tagName === 'IMG') && isEligible(node)) {
+        return node;
+      }
+    }
+    return null;
+  }
+
   document.addEventListener(
     'mouseover',
     (e) => {
       const t = e.target;
-      const el = t && t.closest ? t.closest('img, video') : null;
+      let el = t && t.closest ? t.closest('img, video') : null;
+      if ((!el || !isEligible(el)) && typeof e.clientX === 'number') {
+        el = findMediaAtPoint(e.clientX, e.clientY);
+      }
       if (el && isEligible(el)) {
         clearTimeout(hideTimer);
         currentMedia = el;
@@ -167,11 +190,24 @@
     true,
   );
 
+  // Keep the button anchored while moving across a video's overlay controls.
+  document.addEventListener(
+    'mousemove',
+    (e) => {
+      if (pop.style.display === 'block') return;
+      if (!currentMedia) return;
+      const r = currentMedia.getBoundingClientRect();
+      const inside =
+        e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+      if (inside) clearTimeout(hideTimer);
+    },
+    true,
+  );
+
   document.addEventListener(
     'mouseout',
-    (e) => {
-      const el = e.target && e.target.closest ? e.target.closest('img, video') : null;
-      if (el && el === currentMedia) scheduleHide();
+    () => {
+      if (pop.style.display !== 'block') scheduleHide();
     },
     true,
   );

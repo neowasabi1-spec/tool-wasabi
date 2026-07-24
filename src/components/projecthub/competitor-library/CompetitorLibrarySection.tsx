@@ -5,7 +5,7 @@ import { useToast } from "@/hooks/use-toast";
 import {
   Plus, Trash2, Upload, Play, Search, ArrowLeft, ExternalLink,
   BarChart2, Calendar, Globe, X, RefreshCw, Image as ImageIcon,
-  Video, Bookmark, CheckSquare, Square, TrendingUp,
+  Video, Bookmark, CheckSquare, Square, TrendingUp, Download,
 } from "lucide-react";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
@@ -34,6 +34,8 @@ type CompetitorWithStats = {
   headlines: string[];
   monitoring_status: "attivo" | "in_analisi";
   last_check: string | null;
+  preview_path?: string;
+  preview_type?: string;
 };
 
 type CompetitorAd = {
@@ -53,6 +55,23 @@ type CompetitorAd = {
 function formatDate(d: string | null) {
   if (!d) return "—";
   return new Date(d).toLocaleDateString("it-IT", { day: "2-digit", month: "short", year: "numeric" });
+}
+
+// Force a download of a creative. Local (storage) files go through the
+// file-proxy with `download=1` (Content-Disposition: attachment); remote URLs
+// are opened directly (best effort — cross-origin can't always be forced).
+function downloadCreative(ad: { file_path: string; name?: string; media_type?: string }) {
+  if (!ad.file_path) return;
+  const isRemote = /^https?:\/\//i.test(ad.file_path);
+  const base = getUploadUrl(ad.file_path);
+  const href = isRemote ? base : `${base}${base.includes("?") ? "&" : "?"}download=1`;
+  const a = document.createElement("a");
+  a.href = href;
+  a.download = (ad.name || "creative").replace(/[^a-zA-Z0-9._-]/g, "_");
+  if (isRemote) a.target = "_blank";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
 }
 
 // Colori per i placeholder delle ads (senza immagine)
@@ -162,65 +181,70 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
           </Button>
         </div>
       ) : (
-        <div className="space-y-2">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
           {competitors.map(c => (
             <div key={c.id}
               onClick={() => onSelect(c)}
-              className="group flex items-center gap-4 bg-card border border-border rounded-xl px-5 py-4 hover:border-primary/40 hover:shadow-md transition-all cursor-pointer">
+              className="group relative bg-card border border-border rounded-2xl overflow-hidden hover:border-primary/40 hover:shadow-lg transition-all cursor-pointer">
 
-              <div className="w-10 h-10 rounded-full bg-gradient-to-br from-orange-400 to-orange-600 flex items-center justify-center flex-shrink-0 shadow-sm">
-                <span className="text-white font-bold text-sm uppercase">{c.name.charAt(0)}</span>
-              </div>
-
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-semibold text-foreground truncate">{c.name}</p>
-                <p className="text-[11px] text-muted-foreground truncate uppercase tracking-wide">{c.name}</p>
-              </div>
-
-              <div className="flex items-center gap-8 flex-shrink-0">
-                <div className="flex items-center gap-2">
-                  <BarChart2 className="w-4 h-4 text-muted-foreground/60" />
-                  <div>
-                    <p className="text-[9px] text-muted-foreground uppercase tracking-wider font-semibold">Creatives</p>
-                    <p className="text-sm font-bold text-foreground">{c.ads_count}</p>
+              {/* Preview */}
+              <div className="aspect-[4/3] relative overflow-hidden bg-gradient-to-br from-slate-800 to-slate-900">
+                {c.preview_path ? (
+                  c.preview_type === "video" ? (
+                    <video src={getUploadUrl(c.preview_path)} muted playsInline preload="metadata"
+                      className="w-full h-full object-cover" />
+                  ) : (
+                    <img src={getUploadUrl(c.preview_path)} alt={c.name}
+                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
+                  )
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center">
+                    <Globe className="w-10 h-10 text-white/20" />
                   </div>
+                )}
+                {c.preview_type === "video" && (
+                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                    <div className="w-11 h-11 rounded-full bg-black/50 flex items-center justify-center">
+                      <Play className="w-5 h-5 text-white" />
+                    </div>
+                  </div>
+                )}
+                {/* Monitoring dot */}
+                <div className="absolute top-2.5 left-2.5 flex items-center gap-1.5 bg-black/45 backdrop-blur-sm rounded-full px-2 py-0.5">
+                  <span className={`w-1.5 h-1.5 rounded-full ${c.monitoring_status === "attivo" ? "bg-green-400" : "bg-amber-400"}`} />
+                  <span className="text-[9px] font-bold text-white uppercase tracking-wide">
+                    {c.monitoring_status === "attivo" ? "Active" : "Analyzing"}
+                  </span>
                 </div>
+                {/* Actions */}
+                <div className="absolute top-2 right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                  {c.ads_library_url && (
+                    <a href={c.ads_library_url} target="_blank" rel="noopener noreferrer"
+                      onClick={e => e.stopPropagation()}
+                      className="p-1.5 rounded-lg bg-black/45 backdrop-blur-sm text-white/90 hover:text-white transition-colors">
+                      <ExternalLink className="w-3.5 h-3.5" />
+                    </a>
+                  )}
+                  <button onClick={e => del(e, c.id)}
+                    className="p-1.5 rounded-lg bg-black/45 backdrop-blur-sm text-white/90 hover:text-red-400 transition-colors">
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
 
-                <div className="flex items-center gap-3 text-xs text-muted-foreground">
+              {/* Footer */}
+              <div className="p-3">
+                <div className="flex items-center gap-2 mb-1.5">
+                  <div className="w-6 h-6 rounded-full bg-gradient-to-br from-orange-400 to-orange-600 flex items-center justify-center flex-shrink-0">
+                    <span className="text-white font-bold text-[10px] uppercase">{c.name.charAt(0)}</span>
+                  </div>
+                  <p className="text-sm font-semibold text-foreground truncate">{c.name}</p>
+                </div>
+                <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
+                  <span className="flex items-center gap-1"><BarChart2 className="w-3.5 h-3.5" /> {c.ads_count}</span>
                   <span className="flex items-center gap-1"><ImageIcon className="w-3.5 h-3.5" /> {c.image_count}</span>
                   <span className="flex items-center gap-1"><Video className="w-3.5 h-3.5" /> {c.video_count}</span>
                 </div>
-
-                <div className="flex items-center gap-2">
-                  <div className={`w-2 h-2 rounded-full flex-shrink-0 ${c.monitoring_status === "attivo" ? "bg-green-500 shadow-[0_0_6px_rgba(34,197,94,0.6)]" : "bg-amber-400"}`} />
-                  <div>
-                    <p className="text-[9px] text-muted-foreground uppercase tracking-wider font-semibold">Monitoring</p>
-                    <p className={`text-xs font-bold ${c.monitoring_status === "attivo" ? "text-green-600" : "text-amber-600"}`}>
-                      {c.monitoring_status === "attivo" ? "ACTIVE" : "ANALYZING"}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <Calendar className="w-4 h-4 text-muted-foreground/60" />
-                  <div>
-                    <p className="text-[9px] text-muted-foreground uppercase tracking-wider font-semibold">Last Check</p>
-                    <p className="text-xs text-foreground">{formatDate(c.last_check)}</p>
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                {c.ads_library_url && (
-                  <a href={c.ads_library_url} target="_blank" rel="noopener noreferrer"
-                    onClick={e => e.stopPropagation()}
-                    className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground hover:text-foreground transition-colors">
-                    <ExternalLink className="w-3.5 h-3.5" />
-                  </a>
-                )}
-                <button onClick={e => del(e, c.id)} className="p-1.5 rounded-lg hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors">
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
               </div>
             </div>
           ))}
@@ -486,8 +510,14 @@ function CompetitorDetail({ projectId, competitor, onBack }: { projectId: string
                 <div className="aspect-[4/5] relative overflow-hidden rounded-xl">
                   {hasFile ? (
                     ad.media_type === "video" ? (
-                      <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-slate-700 to-slate-900">
-                        <Play className="w-10 h-10 text-white/70" />
+                      <div className="w-full h-full relative bg-gradient-to-br from-slate-700 to-slate-900">
+                        <video src={getUploadUrl(ad.file_path)} muted playsInline preload="metadata"
+                          className="w-full h-full object-cover" />
+                        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                          <div className="w-11 h-11 rounded-full bg-black/50 flex items-center justify-center">
+                            <Play className="w-5 h-5 text-white" />
+                          </div>
+                        </div>
                       </div>
                     ) : (
                       <img src={getUploadUrl(ad.file_path)} alt={ad.name}
@@ -552,18 +582,25 @@ function CompetitorDetail({ projectId, competitor, onBack }: { projectId: string
               <span className="text-sm font-semibold text-foreground">Ad Detail</span>
               <button onClick={() => setDetailAd(null)} className="text-muted-foreground hover:text-foreground"><X className="w-4 h-4" /></button>
             </div>
-            <div className="p-4 border-b border-border">
+            <div className="p-4 border-b border-border space-y-2">
               <Button onClick={() => { saveToTemplates([detailAd.id]); setDetailAd(null); }}
                 className="w-full bg-sky-500 hover:bg-sky-600 text-white gap-2">
                 <Bookmark className="w-4 h-4" /> Add to my templates
               </Button>
+              {detailAd.file_path && (
+                <Button variant="outline" onClick={() => downloadCreative(detailAd)}
+                  className="w-full gap-2">
+                  <Download className="w-4 h-4" /> Download {detailAd.media_type === "video" ? "video" : "image"}
+                </Button>
+              )}
             </div>
             {/* Preview */}
             <div className="p-4 border-b border-border">
               {detailAd.file_path ? (
-                detailAd.media_type === "image"
-                  ? <img src={getUploadUrl(detailAd.file_path)} alt={detailAd.name} className="w-full rounded-xl object-contain max-h-48" />
-                  : <div className="w-full h-32 bg-slate-800 rounded-xl flex items-center justify-center"><Play className="w-8 h-8 text-white/60" /></div>
+                detailAd.media_type === "video"
+                  ? <video src={getUploadUrl(detailAd.file_path)} controls playsInline preload="metadata"
+                      className="w-full rounded-xl bg-black max-h-72" />
+                  : <img src={getUploadUrl(detailAd.file_path)} alt={detailAd.name} className="w-full rounded-xl object-contain max-h-72" />
               ) : (
                 <div className="aspect-[4/5] rounded-xl overflow-hidden max-h-48">
                   <AdPlaceholder ad={detailAd} index={ads.indexOf(detailAd)} />
@@ -587,8 +624,10 @@ function CompetitorDetail({ projectId, competitor, onBack }: { projectId: string
               )}
               {detailAd.body_text && (
                 <div>
-                  <p className="text-[9px] text-muted-foreground uppercase tracking-wider mb-1">Body Text</p>
-                  <p className="text-xs text-muted-foreground leading-relaxed">{detailAd.body_text}</p>
+                  <p className="text-[9px] text-muted-foreground uppercase tracking-wider mb-1">
+                    {detailAd.media_type === "video" ? "Transcript" : "Body Text"}
+                  </p>
+                  <p className="text-xs text-muted-foreground leading-relaxed whitespace-pre-wrap max-h-48 overflow-y-auto pr-1">{detailAd.body_text}</p>
                 </div>
               )}
               <div className="pt-2 border-t border-border space-y-2">

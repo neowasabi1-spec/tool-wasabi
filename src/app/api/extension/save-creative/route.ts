@@ -7,6 +7,7 @@ import {
   insertCompetitorAd,
   mediaTypeForContentType,
 } from '@/lib/competitor-ads';
+import { transcribeVideo } from '@/lib/transcribe';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -152,6 +153,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Could not create competitor brand' }, { status: 500 });
   }
 
+  // Auto-transcribe videos so the saved creative carries its script/copy.
+  const mediaType = mediaTypeForContentType(contentType);
+  let transcript = '';
+  if (mediaType === 'video') {
+    transcript = await transcribeVideo(buffer, contentType);
+  }
+  const bodyText = [body.body_text, transcript].filter(Boolean).join('\n\n').trim();
+
   const result = await insertCompetitorAd({
     projectId,
     brandId,
@@ -162,7 +171,7 @@ export async function POST(req: NextRequest) {
       name: body.name || body.pageTitle || brandName,
       headline: body.headline,
       hook: body.hook,
-      body_text: body.body_text,
+      body_text: bodyText,
     },
   });
 
@@ -173,7 +182,8 @@ export async function POST(req: NextRequest) {
     projectId,
     brandId,
     brandName,
-    mediaType: mediaTypeForContentType(contentType),
+    mediaType,
+    transcribed: !!transcript,
     ad: result.ad,
   });
 }

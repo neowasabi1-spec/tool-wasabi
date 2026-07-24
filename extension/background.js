@@ -24,16 +24,76 @@ async function getToken() {
   return (s && s.access_token) || null;
 }
 
-// Tool origin for authenticated API calls (config.js is imported below).
-const TOOL_ORIGIN = ((globalThis.WASABI_CONFIG || {}).TOOL_ORIGIN || '').replace(/\/$/, '');
+// Config (config.js is imported at the top of this worker).
+const CFG = globalThis.WASABI_CONFIG || {};
+const TOOL_ORIGIN = (CFG.TOOL_ORIGIN || '').replace(/\/$/, '');
+const SUPABASE_URL = (CFG.SUPABASE_URL || '').replace(/\/$/, '');
+const SUPABASE_ANON_KEY = CFG.SUPABASE_ANON_KEY || '';
+
+function nowSec() {
+  return Math.floor(Date.now() / 1000);
+}
+
+// Supabase access tokens expire (~1h). Exchange the stored refresh_token for a
+// fresh access token via the public refresh_token grant. Returns the new
+// access token, or null when we can't refresh (no refresh_token / revoked).
+async function refreshSession() {
+  const s = await getSession();
+  if (!s || !s.refresh_token || !SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
+  try {
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: SUPABASE_ANON_KEY },
+      body: JSON.stringify({ refresh_token: s.refresh_token }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json().catch(() => null);
+    if (!data || !data.access_token) return null;
+    const fresh = {
+      access_token: data.access_token,
+      refresh_token: data.refresh_token || s.refresh_token,
+      user_id: (data.user && data.user.id) || s.user_id || null,
+      email: (data.user && data.user.email) || s.email || null,
+      expires_at: data.expires_at || (data.expires_in ? nowSec() + data.expires_in : null),
+    };
+    await setSession(fresh);
+    return fresh.access_token;
+  } catch {
+    return null;
+  }
+}
+
+// Return a valid (non-expired) access token, refreshing proactively when the
+// cached one is within 60s of expiry.
+async function getValidToken() {
+  const s = await getSession();
+  if (!s || !s.access_token) return null;
+  let exp = Number(s.expires_at || 0);
+  if (exp > 1e12) exp = Math.floor(exp / 1000); // tolerate ms timestamps
+  if (exp && exp - 60 <= nowSec()) {
+    const refreshed = await refreshSession();
+    return refreshed || s.access_token;
+  }
+  return s.access_token;
+}
 
 async function toolFetch(path, init = {}) {
-  const token = await getToken();
+  let token = await getValidToken();
   if (!token) return { ok: false, status: 401, data: { error: 'not connected' } };
-  const headers = Object.assign({}, init.headers, { Authorization: `Bearer ${token}` });
-  try {
+  const doFetch = async (tok) => {
+    const headers = Object.assign({}, init.headers, { Authorization: `Bearer ${tok}` });
     const res = await fetch(TOOL_ORIGIN + path, { ...init, headers });
     const data = await res.json().catch(() => ({}));
+    return { res, data };
+  };
+  try {
+    let { res, data } = await doFetch(token);
+    // Reactive refresh: a 401 despite a cached token means it went stale
+    // between the expiry check and the call (or expires_at was missing).
+    if (res.status === 401) {
+      const refreshed = await refreshSession();
+      if (refreshed) ({ res, data } = await doFetch(refreshed));
+    }
     return { ok: res.ok, status: res.status, data };
   } catch (e) {
     return { ok: false, status: 0, data: { error: String((e && e.message) || e) } };
@@ -167,7 +227,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
 
   if (msg.type === 'GET_TOKEN') {
-    getToken().then((token) => sendResponse({ token }));
+    getValidToken().then((token) => sendResponse({ token }));
     return true;
   }
 

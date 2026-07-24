@@ -23,6 +23,8 @@ interface AdRow {
   media_type: string;
   hook: string;
   headline: string;
+  file_path: string;
+  created_at: string;
 }
 
 interface BrandRow {
@@ -56,8 +58,9 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
 
   const { data: ads } = await supabaseAdmin
     .from('competitor_ads')
-    .select('brand_id, media_type, hook, headline')
-    .eq('project_id', id);
+    .select('brand_id, media_type, hook, headline, file_path, created_at')
+    .eq('project_id', id)
+    .order('created_at', { ascending: false });
 
   const adsByBrand = new Map<number, AdRow[]>();
   for (const a of (ads || []) as AdRow[]) {
@@ -72,6 +75,9 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     const imageCount = list.filter((a) => a.media_type !== 'video').length;
     const hooks = [...new Set(list.map((a) => a.hook).filter(Boolean))];
     const headlines = [...new Set(list.map((a) => a.headline).filter(Boolean))];
+    // Card preview: newest image with a file, else newest ad with any file.
+    const withFile = list.filter((a) => a.file_path);
+    const preview = withFile.find((a) => a.media_type !== 'video') || withFile[0] || null;
     return {
       ...b,
       ads_count: list.length,
@@ -81,6 +87,8 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
       headlines,
       monitoring_status: b.is_active === 'true' ? 'attivo' : 'in_analisi',
       last_check: b.last_scraped,
+      preview_path: preview ? preview.file_path : '',
+      preview_type: preview ? preview.media_type : '',
     };
   });
 
