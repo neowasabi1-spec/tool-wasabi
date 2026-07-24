@@ -5,7 +5,6 @@ import { useRouter } from 'next/navigation';
 import { FunnelTab } from '@/components/projecthub/funnel-builder/FunnelTab';
 import { GeneralBriefSection } from '@/components/projecthub/general-brief/GeneralBriefSection';
 import { CreativeSection } from '@/components/projecthub/creative/CreativeSection';
-import { ChiefSection } from '@/components/projecthub/chief/ChiefSection';
 import { AnalyticsSection } from '@/components/projecthub/analytics/AnalyticsSection';
 import { CompetitorLibrarySection } from '@/components/projecthub/competitor-library/CompetitorLibrarySection';
 import {
@@ -16,7 +15,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import { getUploadUrl } from '@/lib/projecthub-storage';
 import {
-  ArrowLeft, FileText, Layers, Palette, Brain, BarChart2,
+  ArrowLeft, FileText, Layers, Palette, BarChart2,
   ChevronLeft, ChevronRight, Globe2,
 } from 'lucide-react';
 
@@ -35,7 +34,6 @@ const SECTIONS = [
   { id: 'funnel' as Section, label: 'Funnel', icon: Layers },
   { id: 'competitor-library' as Section, label: 'Competitor Library', icon: Globe2 },
   { id: 'creative' as Section, label: 'Creative', icon: Palette },
-  { id: 'chief' as Section, label: 'Chief', icon: Brain },
   { id: 'analytics' as Section, label: 'Analytics', icon: BarChart2 },
 ];
 
@@ -181,9 +179,6 @@ export function ProjectDetailContent({ projectId }: { projectId: string }) {
             )}
             {activeSection === 'creative' && (
               <CreativeSection projectId={projectId} />
-            )}
-            {activeSection === 'chief' && (
-              <ChiefSection projectId={projectId} />
             )}
             {activeSection === 'analytics' && (
               <AnalyticsSection projectId={projectId} />
