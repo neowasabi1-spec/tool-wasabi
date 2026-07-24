@@ -24,6 +24,22 @@ async function getToken() {
   return (s && s.access_token) || null;
 }
 
+// Tool origin for authenticated API calls (config.js is imported below).
+const TOOL_ORIGIN = ((globalThis.WASABI_CONFIG || {}).TOOL_ORIGIN || '').replace(/\/$/, '');
+
+async function toolFetch(path, init = {}) {
+  const token = await getToken();
+  if (!token) return { ok: false, status: 401, data: { error: 'not connected' } };
+  const headers = Object.assign({}, init.headers, { Authorization: `Bearer ${token}` });
+  try {
+    const res = await fetch(TOOL_ORIGIN + path, { ...init, headers });
+    const data = await res.json().catch(() => ({}));
+    return { ok: res.ok, status: res.status, data };
+  } catch (e) {
+    return { ok: false, status: 0, data: { error: String((e && e.message) || e) } };
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Screenshots via chrome.debugger (CDP)
 // ---------------------------------------------------------------------------
@@ -45,6 +61,31 @@ function dbgSend(tabId, method, params) {
   );
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const MAX_INLINE_BYTES = 25 * 1024 * 1024;
+
+// Download media bytes with the extension's host permissions (bypasses CORS
+// and reuses the browser's cookies for hotlink-protected CDNs). Returns a
+// data URL, or null on failure / oversize so the server can try its own fetch.
+async function fetchMediaAsDataUrl(url) {
+  try {
+    const res = await fetch(url, { credentials: 'include' });
+    if (!res.ok) return null;
+    const blob = await res.blob();
+    if (!blob.size || blob.size > MAX_INLINE_BYTES) return null;
+    const buf = await blob.arrayBuffer();
+    let binary = '';
+    const bytes = new Uint8Array(buf);
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+    }
+    const type = blob.type || 'application/octet-stream';
+    return { dataUrl: `data:${type};base64,${btoa(binary)}`, type };
+  } catch {
+    return null;
+  }
+}
 
 const MAX_SHOT_HEIGHT = 18000; // cap absurdly tall pages
 
@@ -134,6 +175,60 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     captureScreenshots(msg.tabId)
       .then((shots) => sendResponse({ ok: true, ...shots }))
       .catch((e) => sendResponse({ ok: false, error: e.message }));
+    return true;
+  }
+
+  // Project list for the in-page creative picker.
+  if (msg.type === 'GET_PROJECTS') {
+    toolFetch('/api/projecthub/projects').then((r) => {
+      if (!r.ok) {
+        sendResponse({ ok: false, error: r.data && r.data.error ? r.data.error : 'not connected' });
+        return;
+      }
+      const projects = (Array.isArray(r.data) ? r.data : []).map((p) => ({
+        id: p.id,
+        name: p.name || 'Untitled',
+      }));
+      sendResponse({ ok: true, projects });
+    });
+    return true;
+  }
+
+  // Save a single creative into a project's Competitor Library.
+  if (msg.type === 'SAVE_CREATIVE') {
+    (async () => {
+      const body = {
+        projectId: msg.projectId,
+        pageUrl: msg.pageUrl,
+        pageTitle: msg.pageTitle,
+        mediaUrl: msg.mediaUrl,
+        mediaType: msg.mediaType,
+        name: msg.name,
+      };
+      if (msg.mediaBase64) {
+        body.mediaBase64 = msg.mediaBase64;
+        if (msg.contentType) body.contentType = msg.contentType;
+      } else if (msg.mediaUrl && /^https?:\/\//i.test(msg.mediaUrl)) {
+        // Try to grab the bytes ourselves first (works for hotlink-protected
+        // CDNs); on failure the server falls back to its own fetch / URL ref.
+        const inline = await fetchMediaAsDataUrl(msg.mediaUrl);
+        if (inline) {
+          body.mediaBase64 = inline.dataUrl;
+          body.contentType = inline.type;
+        }
+      }
+      const r = await toolFetch('/api/extension/save-creative', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (r.ok) sendResponse({ ok: true, ...r.data });
+      else
+        sendResponse({
+          ok: false,
+          error: (r.data && (r.data.message || r.data.error)) || `Save failed (${r.status})`,
+        });
+    })();
     return true;
   }
 
