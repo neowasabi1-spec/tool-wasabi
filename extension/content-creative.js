@@ -78,6 +78,9 @@
       <p class="sub" id="popHost"></p>
       <label>Project</label>
       <select id="proj"></select>
+      <label>Competitor</label>
+      <select id="comp"></select>
+      <input id="newcomp" type="text" placeholder="New competitor name" style="display:none;margin-top:6px;" />
       <label>Name</label>
       <input id="cname" type="text" placeholder="Creative name" />
       <div class="row">
@@ -92,6 +95,8 @@
   const btn = root.getElementById('btn');
   const pop = root.getElementById('pop');
   const projSel = root.getElementById('proj');
+  const compSel = root.getElementById('comp');
+  const newCompInput = root.getElementById('newcomp');
   const nameInput = root.getElementById('cname');
   const statusEl = root.getElementById('status');
   const popBadge = root.getElementById('popBadge');
@@ -101,6 +106,7 @@
   let currentMedia = null; // element the button currently points at
   let hideTimer = null;
   let projectsCache = null;
+  const competitorsCache = {}; // projectId -> [{id,name}]
 
   function sendMessage(msg) {
     return new Promise((resolve) => {
@@ -246,6 +252,54 @@
     return projectsCache;
   }
 
+  async function loadCompetitors(projectId) {
+    if (!projectId) return [];
+    if (competitorsCache[projectId]) return competitorsCache[projectId];
+    const res = await sendMessage({ type: 'GET_COMPETITORS', projectId });
+    const list = res && res.ok ? res.competitors || [] : [];
+    competitorsCache[projectId] = list;
+    return list;
+  }
+
+  function domainName() {
+    try {
+      return new URL(location.href).hostname.replace(/^www\./, '');
+    } catch {
+      return 'site';
+    }
+  }
+
+  async function populateCompetitors(projectId) {
+    compSel.innerHTML = '<option value="">Auto (from site domain)</option>';
+    const list = await loadCompetitors(projectId);
+    for (const c of list) {
+      const opt = document.createElement('option');
+      opt.value = String(c.id);
+      opt.textContent = c.name;
+      compSel.appendChild(opt);
+    }
+    const nw = document.createElement('option');
+    nw.value = '__new__';
+    nw.textContent = '+ New competitor…';
+    compSel.appendChild(nw);
+    newCompInput.style.display = 'none';
+    newCompInput.value = '';
+  }
+
+  compSel.addEventListener('change', () => {
+    if (compSel.value === '__new__') {
+      newCompInput.style.display = 'block';
+      newCompInput.placeholder = 'New competitor name (default: ' + domainName() + ')';
+      newCompInput.focus();
+    } else {
+      newCompInput.style.display = 'none';
+    }
+  });
+
+  projSel.addEventListener('change', () => {
+    populateCompetitors(projSel.value);
+  });
+
   async function openPopover() {
     if (!currentMedia) return;
     const media = currentMedia;
@@ -315,6 +369,7 @@
     if (wasabi_last_project && projects.some((p) => p.id === wasabi_last_project)) {
       projSel.value = wasabi_last_project;
     }
+    await populateCompetitors(projSel.value);
     setStatus('', 'muted');
 
     // Stash the media + src for the save handler.
@@ -389,6 +444,13 @@
       mediaType: isVideo ? 'video' : 'image',
       name: nameInput.value.trim(),
     };
+
+    // Destination competitor: explicit id, a new named brand, or auto-by-domain.
+    if (compSel.value === '__new__') {
+      payload.brandName = newCompInput.value.trim() || domainName();
+    } else if (compSel.value) {
+      payload.brandId = Number(compSel.value);
+    }
 
     // For blob:/data: sources we must ship the bytes ourselves.
     if (!payload.mediaUrl && src) {

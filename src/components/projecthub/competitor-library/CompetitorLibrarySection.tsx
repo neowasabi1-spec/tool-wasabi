@@ -36,6 +36,7 @@ type CompetitorWithStats = {
   last_check: string | null;
   preview_path?: string;
   preview_type?: string;
+  previews?: { file_path: string; media_type: string }[];
 };
 
 type CompetitorAd = {
@@ -108,6 +109,149 @@ function AdPlaceholder({ ad, index }: { ad: CompetitorAd; index: number }) {
           <p className="text-[10px] opacity-70 leading-tight line-clamp-2">{ad.hook}</p>
         )}
         <p className="text-sm font-black leading-tight line-clamp-3">{ad.headline || ad.name}</p>
+      </div>
+    </div>
+  );
+}
+
+// Small media thumbnail: image, or video first-frame with a play badge.
+function MediaThumb({ path, type, className = "" }: { path: string; type: string; className?: string }) {
+  if (!path) {
+    return <div className={`bg-slate-800 flex items-center justify-center ${className}`}><Globe className="w-6 h-6 text-white/20" /></div>;
+  }
+  if (type === "video") {
+    return (
+      <div className={`relative bg-slate-900 ${className}`}>
+        <video src={getUploadUrl(path)} muted playsInline preload="metadata" className="w-full h-full object-cover" />
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+          <div className="w-8 h-8 rounded-full bg-black/50 flex items-center justify-center"><Play className="w-3.5 h-3.5 text-white" /></div>
+        </div>
+      </div>
+    );
+  }
+  return <img src={getUploadUrl(path)} alt="" className={`object-cover ${className}`} />;
+}
+
+// Up to 4 creatives shown as a 1/2/4-up mosaic for the competitor card.
+function Mosaic({ items }: { items: { file_path: string; media_type: string }[] }) {
+  const list = items.slice(0, 4);
+  if (list.length <= 1) {
+    const it = list[0];
+    return <MediaThumb path={it?.file_path || ""} type={it?.media_type || ""} className="w-full h-full" />;
+  }
+  return (
+    <div className={`grid w-full h-full gap-0.5 ${list.length === 2 ? "grid-cols-2" : "grid-cols-2 grid-rows-2"}`}>
+      {list.map((it, i) => (
+        <MediaThumb key={i} path={it.file_path} type={it.media_type} className="w-full h-full" />
+      ))}
+    </div>
+  );
+}
+
+// Shared right-side detail panel for a single creative (image or video),
+// with player, download, transcript + copy, and delete. Reused by the
+// per-competitor view and the flat "All creatives" view.
+function CreativeDetailPanel({
+  ad, placeholderIndex, brandName, onClose, onSaveTemplate, onDelete,
+}: {
+  ad: CompetitorAd;
+  placeholderIndex: number;
+  brandName?: string;
+  onClose: () => void;
+  onSaveTemplate: (id: number) => void;
+  onDelete: (id: number) => void;
+}) {
+  const { toast } = useToast();
+  const [copied, setCopied] = useState(false);
+  const copyTranscript = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch { toast({ title: "Copy failed", variant: "destructive" }); }
+  };
+  return (
+    <div className="fixed inset-0 z-50 flex">
+      <div className="flex-1 bg-black/40" onClick={onClose} />
+      <div className="w-80 bg-card border-l border-border h-full overflow-y-auto shadow-2xl flex flex-col">
+        <div className="p-4 border-b border-border flex items-center justify-between">
+          <div className="min-w-0">
+            <span className="text-sm font-semibold text-foreground">Creative Detail</span>
+            {brandName && <p className="text-[11px] text-muted-foreground truncate">{brandName}</p>}
+          </div>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-4 h-4" /></button>
+        </div>
+        <div className="p-4 border-b border-border space-y-2">
+          <Button onClick={() => onSaveTemplate(ad.id)} className="w-full bg-sky-500 hover:bg-sky-600 text-white gap-2">
+            <Bookmark className="w-4 h-4" /> Add to my templates
+          </Button>
+          {ad.file_path && (
+            <Button variant="outline" onClick={() => downloadCreative(ad)} className="w-full gap-2">
+              <Download className="w-4 h-4" /> Download {ad.media_type === "video" ? "video" : "image"}
+            </Button>
+          )}
+        </div>
+        <div className="p-4 border-b border-border">
+          {ad.file_path ? (
+            ad.media_type === "video"
+              ? <video src={getUploadUrl(ad.file_path)} controls playsInline preload="metadata" className="w-full rounded-xl bg-black max-h-72" />
+              : <img src={getUploadUrl(ad.file_path)} alt={ad.name} className="w-full rounded-xl object-contain max-h-72" />
+          ) : (
+            <div className="aspect-[4/5] rounded-xl overflow-hidden max-h-48">
+              <AdPlaceholder ad={ad} index={placeholderIndex} />
+            </div>
+          )}
+        </div>
+        <div className="p-4 space-y-4 flex-1">
+          <p className="text-[9px] text-muted-foreground uppercase tracking-widest font-semibold">Creative Content</p>
+          {ad.headline && (
+            <div>
+              <p className="text-[9px] text-muted-foreground uppercase tracking-wider mb-1">Headline</p>
+              <p className="text-sm font-semibold text-foreground">{ad.headline}</p>
+            </div>
+          )}
+          {ad.hook && (
+            <div>
+              <p className="text-[9px] text-muted-foreground uppercase tracking-wider mb-1">Hook</p>
+              <p className="text-sm text-foreground">{ad.hook}</p>
+            </div>
+          )}
+          {ad.body_text && (
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <p className="text-[9px] text-muted-foreground uppercase tracking-wider">
+                  {ad.media_type === "video" ? "Transcript" : "Body Text"}
+                </p>
+                <button onClick={() => copyTranscript(ad.body_text)}
+                  className="flex items-center gap-1 text-[10px] font-semibold text-muted-foreground hover:text-primary transition-colors">
+                  {copied ? <><Check className="w-3 h-3 text-green-600" /> Copied</> : <><Copy className="w-3 h-3" /> Copy</>}
+                </button>
+              </div>
+              <p className="text-xs text-muted-foreground leading-relaxed whitespace-pre-wrap max-h-48 overflow-y-auto pr-1">{ad.body_text}</p>
+            </div>
+          )}
+          <div className="pt-2 border-t border-border space-y-2">
+            <p className="text-[9px] text-muted-foreground uppercase tracking-widest font-semibold">Specs</p>
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <div>
+                <p className="text-[9px] text-muted-foreground uppercase tracking-wider">Format</p>
+                <p className="font-medium text-foreground capitalize">{ad.media_type}</p>
+              </div>
+              <div>
+                <p className="text-[9px] text-muted-foreground uppercase tracking-wider">Status</p>
+                <p className={`font-medium ${ad.is_active === "true" ? "text-green-600" : "text-muted-foreground"}`}>
+                  {ad.is_active === "true" ? "Active" : "Inactive"}
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="p-4 border-t border-border">
+          <button onClick={() => onDelete(ad.id)}
+            className="w-full text-xs text-destructive hover:bg-destructive/5 py-2 rounded-lg transition-colors flex items-center justify-center gap-1.5">
+            <Trash2 className="w-3.5 h-3.5" /> Remove creative
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -187,28 +331,9 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
               onClick={() => onSelect(c)}
               className="group relative bg-card border border-border rounded-2xl overflow-hidden hover:border-primary/40 hover:shadow-lg transition-all cursor-pointer">
 
-              {/* Preview */}
+              {/* Preview mosaic */}
               <div className="aspect-[4/3] relative overflow-hidden bg-gradient-to-br from-slate-800 to-slate-900">
-                {c.preview_path ? (
-                  c.preview_type === "video" ? (
-                    <video src={getUploadUrl(c.preview_path)} muted playsInline preload="metadata"
-                      className="w-full h-full object-cover" />
-                  ) : (
-                    <img src={getUploadUrl(c.preview_path)} alt={c.name}
-                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
-                  )
-                ) : (
-                  <div className="w-full h-full flex items-center justify-center">
-                    <Globe className="w-10 h-10 text-white/20" />
-                  </div>
-                )}
-                {c.preview_type === "video" && (
-                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                    <div className="w-11 h-11 rounded-full bg-black/50 flex items-center justify-center">
-                      <Play className="w-5 h-5 text-white" />
-                    </div>
-                  </div>
-                )}
+                <Mosaic items={c.previews && c.previews.length ? c.previews : (c.preview_path ? [{ file_path: c.preview_path, media_type: c.preview_type || "" }] : [])} />
                 {/* Monitoring dot */}
                 <div className="absolute top-2.5 left-2.5 flex items-center gap-1.5 bg-black/45 backdrop-blur-sm rounded-full px-2 py-0.5">
                   <span className={`w-1.5 h-1.5 rounded-full ${c.monitoring_status === "attivo" ? "bg-green-400" : "bg-amber-400"}`} />
@@ -308,17 +433,6 @@ function CompetitorDetail({ projectId, competitor, onBack }: { projectId: string
   const [adForm, setAdForm] = useState({ name: "", headline: "", hook: "", body_text: "" });
   const [fileLabel, setFileLabel] = useState("");
   const [detailAd, setDetailAd] = useState<CompetitorAd | null>(null);
-  const [copied, setCopied] = useState(false);
-
-  const copyTranscript = async (text: string) => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      toast({ title: "Copy failed", variant: "destructive" });
-    }
-  };
 
   const load = async () => {
     setLoading(true);
@@ -594,94 +708,14 @@ function CompetitorDetail({ projectId, competitor, onBack }: { projectId: string
 
       {/* Ad detail side panel */}
       {detailAd && (
-        <div className="fixed inset-0 z-50 flex">
-          <div className="flex-1 bg-black/40" onClick={() => setDetailAd(null)} />
-          <div className="w-80 bg-card border-l border-border h-full overflow-y-auto shadow-2xl flex flex-col">
-            <div className="p-4 border-b border-border flex items-center justify-between">
-              <span className="text-sm font-semibold text-foreground">Ad Detail</span>
-              <button onClick={() => setDetailAd(null)} className="text-muted-foreground hover:text-foreground"><X className="w-4 h-4" /></button>
-            </div>
-            <div className="p-4 border-b border-border space-y-2">
-              <Button onClick={() => { saveToTemplates([detailAd.id]); setDetailAd(null); }}
-                className="w-full bg-sky-500 hover:bg-sky-600 text-white gap-2">
-                <Bookmark className="w-4 h-4" /> Add to my templates
-              </Button>
-              {detailAd.file_path && (
-                <Button variant="outline" onClick={() => downloadCreative(detailAd)}
-                  className="w-full gap-2">
-                  <Download className="w-4 h-4" /> Download {detailAd.media_type === "video" ? "video" : "image"}
-                </Button>
-              )}
-            </div>
-            {/* Preview */}
-            <div className="p-4 border-b border-border">
-              {detailAd.file_path ? (
-                detailAd.media_type === "video"
-                  ? <video src={getUploadUrl(detailAd.file_path)} controls playsInline preload="metadata"
-                      className="w-full rounded-xl bg-black max-h-72" />
-                  : <img src={getUploadUrl(detailAd.file_path)} alt={detailAd.name} className="w-full rounded-xl object-contain max-h-72" />
-              ) : (
-                <div className="aspect-[4/5] rounded-xl overflow-hidden max-h-48">
-                  <AdPlaceholder ad={detailAd} index={ads.indexOf(detailAd)} />
-                </div>
-              )}
-            </div>
-            {/* Details */}
-            <div className="p-4 space-y-4 flex-1">
-              <p className="text-[9px] text-muted-foreground uppercase tracking-widest font-semibold">Creative Content</p>
-              {detailAd.headline && (
-                <div>
-                  <p className="text-[9px] text-muted-foreground uppercase tracking-wider mb-1">Headline</p>
-                  <p className="text-sm font-semibold text-foreground">{detailAd.headline}</p>
-                </div>
-              )}
-              {detailAd.hook && (
-                <div>
-                  <p className="text-[9px] text-muted-foreground uppercase tracking-wider mb-1">Hook</p>
-                  <p className="text-sm text-foreground">{detailAd.hook}</p>
-                </div>
-              )}
-              {detailAd.body_text && (
-                <div>
-                  <div className="flex items-center justify-between mb-1">
-                    <p className="text-[9px] text-muted-foreground uppercase tracking-wider">
-                      {detailAd.media_type === "video" ? "Transcript" : "Body Text"}
-                    </p>
-                    <button
-                      onClick={() => copyTranscript(detailAd.body_text)}
-                      className="flex items-center gap-1 text-[10px] font-semibold text-muted-foreground hover:text-primary transition-colors">
-                      {copied
-                        ? <><Check className="w-3 h-3 text-green-600" /> Copied</>
-                        : <><Copy className="w-3 h-3" /> Copy</>}
-                    </button>
-                  </div>
-                  <p className="text-xs text-muted-foreground leading-relaxed whitespace-pre-wrap max-h-48 overflow-y-auto pr-1">{detailAd.body_text}</p>
-                </div>
-              )}
-              <div className="pt-2 border-t border-border space-y-2">
-                <p className="text-[9px] text-muted-foreground uppercase tracking-widest font-semibold">Specs</p>
-                <div className="grid grid-cols-2 gap-2 text-xs">
-                  <div>
-                    <p className="text-[9px] text-muted-foreground uppercase tracking-wider">Format</p>
-                    <p className="font-medium text-foreground capitalize">{detailAd.media_type}</p>
-                  </div>
-                  <div>
-                    <p className="text-[9px] text-muted-foreground uppercase tracking-wider">Status</p>
-                    <p className={`font-medium ${detailAd.is_active === "true" ? "text-green-600" : "text-muted-foreground"}`}>
-                      {detailAd.is_active === "true" ? "Active" : "Inactive"}
-                    </p>
-                  </div>
-                </div>
-              </div>
-            </div>
-            <div className="p-4 border-t border-border">
-              <button onClick={() => { delAd(detailAd.id); setDetailAd(null); }}
-                className="w-full text-xs text-destructive hover:bg-destructive/5 py-2 rounded-lg transition-colors flex items-center justify-center gap-1.5">
-                <Trash2 className="w-3.5 h-3.5" /> Remove ad
-              </button>
-            </div>
-          </div>
-        </div>
+        <CreativeDetailPanel
+          ad={detailAd}
+          placeholderIndex={ads.indexOf(detailAd)}
+          brandName={competitor.name}
+          onClose={() => setDetailAd(null)}
+          onSaveTemplate={(id) => { saveToTemplates([id]); setDetailAd(null); }}
+          onDelete={(id) => { delAd(id); setDetailAd(null); }}
+        />
       )}
 
       {/* Upload dialog */}
@@ -723,12 +757,128 @@ function CompetitorDetail({ projectId, competitor, onBack }: { projectId: string
   );
 }
 
+// ── ALL CREATIVES (flat) VIEW ──
+type CreativeWithBrand = CompetitorAd & { brand_name: string };
+
+function AllCreativesView({ projectId }: { projectId: string }) {
+  const { toast } = useToast();
+  const [creatives, setCreatives] = useState<CreativeWithBrand[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [media, setMedia] = useState<"all" | "image" | "video">("all");
+  const [brand, setBrand] = useState<string>("all");
+  const [detailAd, setDetailAd] = useState<CreativeWithBrand | null>(null);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library/creatives`);
+      if (r.ok) setCreatives(await r.json());
+    } finally { setLoading(false); }
+  };
+  useEffect(() => { load(); }, [projectId]);
+
+  const del = async (ad: CreativeWithBrand) => {
+    setCreatives(p => p.filter(a => a.id !== ad.id));
+    await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/${ad.id}`, { method: "DELETE" });
+    toast({ title: "Creative removed" });
+  };
+  const saveTpl = async (ad: CreativeWithBrand) => {
+    const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/save-to-templates`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ad_ids: [ad.id] }),
+    });
+    if (r.ok) toast({ title: "Saved to templates!" });
+  };
+
+  const brands = [...new Set(creatives.map(c => c.brand_name).filter(Boolean))];
+  const filtered = creatives
+    .filter(c => media === "all" || c.media_type === media)
+    .filter(c => brand === "all" || c.brand_name === brand)
+    .filter(c => !search || `${c.name} ${c.headline} ${c.hook} ${c.brand_name}`.toLowerCase().includes(search.toLowerCase()));
+
+  return (
+    <div className="space-y-4">
+      {/* Toolbar */}
+      <div className="flex items-center gap-2 flex-wrap">
+        <div className="relative flex-1 min-w-48">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+          <Input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search creatives..." className="pl-8 h-8 text-sm" />
+        </div>
+        <select value={brand} onChange={e => setBrand(e.target.value)}
+          className="h-8 text-sm border border-border rounded-lg px-2 bg-background focus:outline-none focus:ring-1 focus:ring-primary">
+          <option value="all">All competitors</option>
+          {brands.map(b => <option key={b} value={b}>{b}</option>)}
+        </select>
+        <div className="flex items-center gap-1 border border-border rounded-lg p-0.5 bg-muted/30">
+          {(["all", "image", "video"] as const).map(f => (
+            <button key={f} onClick={() => setMedia(f)}
+              className={`px-3 py-1 text-xs rounded-md font-medium transition-colors ${f === media ? "bg-white shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"}`}>
+              {f === "all" ? "All" : f === "image" ? "Images" : "Video"}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="py-16 text-center text-sm text-muted-foreground">Loading...</div>
+      ) : filtered.length === 0 ? (
+        <div className="py-20 text-center border-2 border-dashed border-border rounded-2xl">
+          <BarChart2 className="w-12 h-12 text-muted-foreground/30 mx-auto mb-3" />
+          <p className="text-sm font-semibold text-foreground mb-1">No creatives yet</p>
+          <p className="text-xs text-muted-foreground">Save images/videos with the extension, or add competitors.</p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-3">
+          {filtered.map((ad, idx) => (
+            <div key={ad.id} onClick={() => setDetailAd(ad)}
+              className="group relative rounded-2xl overflow-hidden bg-card border-2 border-transparent hover:border-border hover:shadow-lg transition-all cursor-pointer">
+              <div className="aspect-[4/5] relative overflow-hidden rounded-xl">
+                {ad.file_path
+                  ? <MediaThumb path={ad.file_path} type={ad.media_type} className="w-full h-full" />
+                  : <AdPlaceholder ad={ad} index={idx} />}
+                <div className="absolute inset-x-0 bottom-0 opacity-0 group-hover:opacity-100 transition-opacity p-2">
+                  <button onClick={e => { e.stopPropagation(); saveTpl(ad); }}
+                    className="w-full flex items-center justify-center gap-1.5 bg-sky-500 text-white text-[10px] font-bold py-2 rounded-lg hover:bg-sky-600 transition-colors shadow-lg">
+                    <Bookmark className="w-3 h-3" /> Save template
+                  </button>
+                </div>
+              </div>
+              <div className="px-2 py-2 flex items-start justify-between gap-1">
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold text-foreground truncate leading-tight">{ad.headline || ad.name || "Creative"}</p>
+                  <p className="text-[10px] text-muted-foreground truncate">{ad.brand_name}</p>
+                </div>
+                <button title="Delete creative" onClick={e => { e.stopPropagation(); del(ad); }}
+                  className="flex-shrink-0 p-1 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors">
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {detailAd && (
+        <CreativeDetailPanel
+          ad={detailAd}
+          placeholderIndex={filtered.indexOf(detailAd)}
+          brandName={detailAd.brand_name}
+          onClose={() => setDetailAd(null)}
+          onSaveTemplate={() => { saveTpl(detailAd); setDetailAd(null); }}
+          onDelete={() => { del(detailAd); setDetailAd(null); }}
+        />
+      )}
+    </div>
+  );
+}
+
 // ── MAIN EXPORT ──
 type Tab = "ads" | "funnel";
 
 export function CompetitorLibrarySection({ projectId }: { projectId: string }) {
   const [tab, setTab] = useState<Tab>("ads");
   const [selected, setSelected] = useState<CompetitorWithStats | null>(null);
+  const [adsView, setAdsView] = useState<"by" | "all">("by");
 
   // If viewing a competitor detail, stay in ads view regardless
   if (selected) {
@@ -772,7 +922,21 @@ export function CompetitorLibrarySection({ projectId }: { projectId: string }) {
         ))}
       </div>
 
-      {tab === "ads" && <CompetitorList projectId={projectId} onSelect={setSelected} />}
+      {tab === "ads" && (
+        <div className="space-y-4">
+          <div className="flex items-center gap-1 border border-border rounded-lg p-0.5 bg-muted/30 w-fit">
+            {([["by", "By competitor"], ["all", "All creatives"]] as const).map(([v, l]) => (
+              <button key={v} onClick={() => setAdsView(v)}
+                className={`px-3 py-1 text-xs rounded-md font-medium transition-colors ${adsView === v ? "bg-white shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"}`}>
+                {l}
+              </button>
+            ))}
+          </div>
+          {adsView === "by"
+            ? <CompetitorList projectId={projectId} onSelect={setSelected} />
+            : <AllCreativesView projectId={projectId} />}
+        </div>
+      )}
       {tab === "funnel" && <FunnelMonitoringSection projectId={projectId} />}
     </div>
   );

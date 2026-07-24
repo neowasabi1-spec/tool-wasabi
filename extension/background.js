@@ -254,6 +254,22 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
 
+  // List competitors (brands) already saved in a project.
+  if (msg.type === 'GET_COMPETITORS') {
+    toolFetch(`/api/projecthub/projects/${msg.projectId}/competitor-library`).then((r) => {
+      if (!r.ok) {
+        sendResponse({ ok: false, error: r.data && r.data.error ? r.data.error : 'not connected' });
+        return;
+      }
+      const competitors = (Array.isArray(r.data) ? r.data : []).map((c) => ({
+        id: c.id,
+        name: c.name || 'Competitor',
+      }));
+      sendResponse({ ok: true, competitors });
+    });
+    return true;
+  }
+
   // Save a single creative into a project's Competitor Library.
   if (msg.type === 'SAVE_CREATIVE') {
     (async () => {
@@ -265,6 +281,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         mediaType: msg.mediaType,
         name: msg.name,
       };
+      if (msg.brandId) body.brandId = msg.brandId;
+      if (msg.brandName) body.brandName = msg.brandName;
       if (msg.mediaBase64) {
         body.mediaBase64 = msg.mediaBase64;
         if (msg.contentType) body.contentType = msg.contentType;

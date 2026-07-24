@@ -75,8 +75,11 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     const imageCount = list.filter((a) => a.media_type !== 'video').length;
     const hooks = [...new Set(list.map((a) => a.hook).filter(Boolean))];
     const headlines = [...new Set(list.map((a) => a.headline).filter(Boolean))];
-    // Card preview: newest image with a file, else newest ad with any file.
+    // Card previews: up to 4 newest creatives that have a file (mosaic).
     const withFile = list.filter((a) => a.file_path);
+    const previews = withFile
+      .slice(0, 4)
+      .map((a) => ({ file_path: a.file_path, media_type: a.media_type }));
     const preview = withFile.find((a) => a.media_type !== 'video') || withFile[0] || null;
     return {
       ...b,
@@ -89,6 +92,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
       last_check: b.last_scraped,
       preview_path: preview ? preview.file_path : '',
       preview_type: preview ? preview.media_type : '',
+      previews,
     };
   });
 
