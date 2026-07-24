@@ -51,6 +51,10 @@
         background: #0f172a; margin-bottom: 4px; }
       .thumb.vid { display: flex; align-items: center; justify-content: center; }
       .thumb.vid svg { width: 30px; height: 30px; color: rgba(255,255,255,.7); }
+      .pop .chk { display: flex; align-items: center; gap: 7px; margin: 12px 0 0;
+        font-size: 12px; font-weight: 600; color: #0f172a; text-transform: none; letter-spacing: 0; cursor: pointer; }
+      .pop .chk input { width: auto; }
+      .scrapeBox { border: 1px solid #e2e8f0; border-radius: 10px; padding: 8px 10px 10px; margin-top: 8px; background: #f8fafc; }
       .row { display: flex; gap: 8px; margin-top: 12px; }
       .row button { flex: 1; font-size: 12px; font-weight: 700; padding: 9px; border-radius: 8px; cursor: pointer; border: none; }
       .save { background: #4f46e5; color: #fff; }
@@ -81,6 +85,18 @@
       <label>Competitor</label>
       <select id="comp"></select>
       <input id="newcomp" type="text" placeholder="New competitor name" style="display:none;margin-top:6px;" />
+      <label class="chk"><input id="autoScrape" type="checkbox" /> Enable daily auto-scraping</label>
+      <div class="scrapeBox" id="scrapeOpts" style="display:none;">
+        <label>Frequency</label>
+        <select id="freq">
+          <option value="daily">Daily</option>
+          <option value="every_3_days">Every 3 days</option>
+          <option value="every_7_days" selected>Every 7 days</option>
+          <option value="every_14_days">Every 14 days</option>
+        </select>
+        <label>Ad Library URL</label>
+        <input id="adsUrl" type="text" placeholder="https://www.facebook.com/ads/library/?..." />
+      </div>
       <label>Name</label>
       <input id="cname" type="text" placeholder="Creative name" />
       <div class="row">
@@ -97,6 +113,10 @@
   const projSel = root.getElementById('proj');
   const compSel = root.getElementById('comp');
   const newCompInput = root.getElementById('newcomp');
+  const autoScrape = root.getElementById('autoScrape');
+  const scrapeOpts = root.getElementById('scrapeOpts');
+  const freqSel = root.getElementById('freq');
+  const adsUrlInput = root.getElementById('adsUrl');
   const nameInput = root.getElementById('cname');
   const statusEl = root.getElementById('status');
   const popBadge = root.getElementById('popBadge');
@@ -296,6 +316,11 @@
     }
   });
 
+  autoScrape.addEventListener('change', () => {
+    scrapeOpts.style.display = autoScrape.checked ? 'block' : 'none';
+    if (autoScrape.checked && !adsUrlInput.value) adsUrlInput.value = location.href;
+  });
+
   projSel.addEventListener('change', () => {
     populateCompetitors(projSel.value);
   });
@@ -340,6 +365,11 @@
     // Default name
     let guess = (media.getAttribute('alt') || document.title || 'Creative').trim();
     nameInput.value = guess.slice(0, 120);
+
+    // Reset auto-scrape controls; prefill the Ad Library URL with this page.
+    autoScrape.checked = false;
+    scrapeOpts.style.display = 'none';
+    adsUrlInput.value = location.href;
 
     pop.style.display = 'block';
     btn.style.display = 'none';
@@ -450,6 +480,13 @@
       payload.brandName = newCompInput.value.trim() || domainName();
     } else if (compSel.value) {
       payload.brandId = Number(compSel.value);
+    }
+
+    // Optional auto-scraping config applied to the destination competitor.
+    if (autoScrape.checked) {
+      payload.autoScrape = true;
+      payload.frequency = freqSel.value;
+      payload.adsLibraryUrl = adsUrlInput.value.trim() || location.href;
     }
 
     // For blob:/data: sources we must ship the bytes ourselves.

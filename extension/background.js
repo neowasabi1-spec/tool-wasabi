@@ -283,6 +283,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       };
       if (msg.brandId) body.brandId = msg.brandId;
       if (msg.brandName) body.brandName = msg.brandName;
+      if (msg.autoScrape) {
+        body.autoScrape = true;
+        body.frequency = msg.frequency;
+        body.adsLibraryUrl = msg.adsLibraryUrl;
+      }
       if (msg.mediaBase64) {
         body.mediaBase64 = msg.mediaBase64;
         if (msg.contentType) body.contentType = msg.contentType;

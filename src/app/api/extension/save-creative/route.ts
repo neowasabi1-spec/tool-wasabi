@@ -41,6 +41,9 @@ interface SaveCreativeBody {
   body_text?: string;
   brandId?: number | string; // save into an existing competitor
   brandName?: string; // create/reuse a competitor by name (overrides domain)
+  autoScrape?: boolean; // enable daily monitoring on the destination competitor
+  frequency?: string; // scrape cadence when autoScrape is on
+  adsLibraryUrl?: string; // Meta Ad Library URL to monitor
 }
 
 function decodeBase64(input: string): { buffer: Buffer; contentType: string } | null {
@@ -175,6 +178,23 @@ export async function POST(req: NextRequest) {
   }
   if (!brandId) {
     return NextResponse.json({ error: 'Could not create competitor brand' }, { status: 500 });
+  }
+
+  // Apply auto-scraping config (from the extension) to the destination brand.
+  const brandPatch: Record<string, unknown> = {};
+  if (typeof body.adsLibraryUrl === 'string' && body.adsLibraryUrl.trim()) {
+    brandPatch.ads_library_url = body.adsLibraryUrl.trim();
+  }
+  if (body.autoScrape) {
+    brandPatch.frequency = (body.frequency || 'every_7_days').trim();
+    brandPatch.is_active = 'true';
+  }
+  if (Object.keys(brandPatch).length > 0) {
+    await supabaseAdmin
+      .from('competitor_brands')
+      .update(brandPatch)
+      .eq('id', brandId)
+      .eq('project_id', projectId);
   }
 
   // Auto-transcribe videos so the saved creative carries its script/copy.
