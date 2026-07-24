@@ -122,7 +122,10 @@ function dbgSend(tabId, method, params) {
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const MAX_INLINE_BYTES = 25 * 1024 * 1024;
+// Kept well under Netlify's ~6MB function request-body limit: base64 inflates
+// bytes by ~33%, so 4MB of media -> ~5.3MB body. Larger media is fetched
+// server-side from its URL instead of being shipped inline.
+const MAX_INLINE_BYTES = 4 * 1024 * 1024;
 
 // Download media bytes with the extension's host permissions (bypasses CORS
 // and reuses the browser's cookies for hotlink-protected CDNs). Returns a
@@ -292,14 +295,32 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         body.mediaBase64 = msg.mediaBase64;
         if (msg.contentType) body.contentType = msg.contentType;
       } else if (msg.mediaUrl && /^https?:\/\//i.test(msg.mediaUrl)) {
-        // Try to grab the bytes ourselves first (works for hotlink-protected
-        // CDNs); on failure the server falls back to its own fetch / URL ref.
+        // Prefer letting the server fetch http(s) media (no request-body limit).
+        // Only inline small files client-side (helps hotlink-protected CDNs).
         const inline = await fetchMediaAsDataUrl(msg.mediaUrl);
         if (inline) {
           body.mediaBase64 = inline.dataUrl;
           body.contentType = inline.type;
         }
       }
+
+      // Guard Netlify's ~6MB request-body limit. If inline media is too big,
+      // drop it and let the server fetch the URL; if there's no fetchable URL
+      // (e.g. a blob: video), tell the user to use auto-scraping instead.
+      if (body.mediaBase64 && body.mediaBase64.length > 5_200_000) {
+        if (body.mediaUrl && /^https?:\/\//i.test(body.mediaUrl)) {
+          delete body.mediaBase64;
+          delete body.contentType;
+        } else {
+          sendResponse({
+            ok: false,
+            error:
+              'This video is too large to save directly. Enable auto-scraping with the Ad Library URL — the server will capture it.',
+          });
+          return;
+        }
+      }
+
       const r = await toolFetch('/api/extension/save-creative', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

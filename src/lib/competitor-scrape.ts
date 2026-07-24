@@ -14,8 +14,11 @@ import {
 import { adExistsByExternalId, insertCompetitorAd } from '@/lib/competitor-ads';
 import { transcribeVideo } from '@/lib/transcribe';
 
-const MAX_MEDIA_BYTES = 45 * 1024 * 1024;
-const TRANSCRIBE_BUDGET_MS = 45_000; // best-effort within the function timeout
+// Download cap for a single creative. Generous so even long VSL-style videos
+// get stored permanently (the Supabase bucket file-size limit must allow it).
+const MAX_MEDIA_BYTES = 300 * 1024 * 1024;
+// Overall transcription budget for the whole run (webhook can run up to 300s).
+const TRANSCRIBE_BUDGET_MS = 180_000;
 
 export interface Brand {
   id: number;
@@ -126,6 +129,9 @@ export async function ingestDataset(opts: {
   const { projectId, brandId, datasetId } = opts;
   const items = await getDatasetItems(datasetId);
   const startedAt = Date.now();
+  // Leave headroom before the 300s ceiling; past this, stop downloading and
+  // just record remaining creatives as remote URLs (fast) so nothing is lost.
+  const DOWNLOAD_BUDGET_MS = 240_000;
   let added = 0, skipped = 0, failed = 0;
 
   for (const raw of items) {
@@ -137,14 +143,19 @@ export async function ingestDataset(opts: {
       continue;
     }
 
-    const dl = await downloadMedia(mapped.mediaUrl);
+    const withinBudget = Date.now() - startedAt < DOWNLOAD_BUDGET_MS;
+    const dl = withinBudget ? await downloadMedia(mapped.mediaUrl) : null;
     const contentType =
       dl?.contentType || (mapped.mediaType === 'video' ? 'video/mp4' : 'image/jpeg');
 
     let bodyText = mapped.bodyText;
+    // Auto-transcribe only SHORT clips (inline-capable). Long videos are still
+    // downloaded/stored and can be transcribed later on demand via the button.
+    const AUTO_TRANSCRIBE_MAX = 18 * 1024 * 1024;
     if (
       mapped.mediaType === 'video' &&
       dl?.buffer &&
+      dl.buffer.length <= AUTO_TRANSCRIBE_MAX &&
       Date.now() - startedAt < TRANSCRIBE_BUDGET_MS
     ) {
       const remaining = TRANSCRIBE_BUDGET_MS - (Date.now() - startedAt);

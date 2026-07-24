@@ -6,7 +6,7 @@ import {
   Plus, Trash2, Upload, Play, Search, ArrowLeft, ExternalLink,
   BarChart2, Calendar, Globe, X, RefreshCw, Image as ImageIcon,
   Video, Bookmark, CheckSquare, Square, TrendingUp, Download, Copy, Check,
-  Settings, Zap,
+  Settings, Zap, FileText,
 } from "lucide-react";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
@@ -153,23 +153,42 @@ function Mosaic({ items }: { items: { file_path: string; media_type: string }[] 
 // with player, download, transcript + copy, and delete. Reused by the
 // per-competitor view and the flat "All creatives" view.
 function CreativeDetailPanel({
-  ad, placeholderIndex, brandName, onClose, onSaveTemplate, onDelete,
+  ad, placeholderIndex, brandName, projectId, onClose, onSaveTemplate, onDelete, onTranscribed,
 }: {
   ad: CompetitorAd;
   placeholderIndex: number;
   brandName?: string;
+  projectId: string;
   onClose: () => void;
   onSaveTemplate: (id: number) => void;
   onDelete: (id: number) => void;
+  onTranscribed?: (adId: number, text: string) => void;
 }) {
   const { toast } = useToast();
   const [copied, setCopied] = useState(false);
-  const copyTranscript = async (text: string) => {
+  const [text, setText] = useState(ad.body_text || "");
+  const [transcribing, setTranscribing] = useState(false);
+  const copyTranscript = async (t: string) => {
     try {
-      await navigator.clipboard.writeText(text);
+      await navigator.clipboard.writeText(t);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch { toast({ title: "Copy failed", variant: "destructive" }); }
+  };
+  const transcribe = async () => {
+    setTranscribing(true);
+    try {
+      const r = await fetch(`/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/${ad.id}/transcribe`, { method: "POST" });
+      const j = await r.json().catch(() => ({}));
+      if (r.ok && j.body_text) {
+        setText(j.body_text);
+        onTranscribed?.(ad.id, j.body_text);
+        toast({ title: "Transcript ready" });
+      } else {
+        toast({ title: j.error || "Transcription failed", variant: "destructive" });
+      }
+    } catch { toast({ title: "Transcription failed", variant: "destructive" }); }
+    finally { setTranscribing(false); }
   };
   return (
     <div className="fixed inset-0 z-50 flex">
@@ -217,20 +236,41 @@ function CreativeDetailPanel({
               <p className="text-sm text-foreground">{ad.hook}</p>
             </div>
           )}
-          {ad.body_text && (
+          {ad.media_type === "video" ? (
             <div>
               <div className="flex items-center justify-between mb-1">
-                <p className="text-[9px] text-muted-foreground uppercase tracking-wider">
-                  {ad.media_type === "video" ? "Transcript" : "Body Text"}
-                </p>
-                <button onClick={() => copyTranscript(ad.body_text)}
+                <p className="text-[9px] text-muted-foreground uppercase tracking-wider">Transcript</p>
+                <div className="flex items-center gap-2">
+                  {text && (
+                    <button onClick={() => copyTranscript(text)}
+                      className="flex items-center gap-1 text-[10px] font-semibold text-muted-foreground hover:text-primary transition-colors">
+                      {copied ? <><Check className="w-3 h-3 text-green-600" /> Copied</> : <><Copy className="w-3 h-3" /> Copy</>}
+                    </button>
+                  )}
+                  <button onClick={transcribe} disabled={transcribing}
+                    className="flex items-center gap-1 text-[10px] font-semibold text-primary hover:underline disabled:opacity-60">
+                    {transcribing
+                      ? <><RefreshCw className="w-3 h-3 animate-spin" /> Extracting…</>
+                      : <><FileText className="w-3 h-3" /> {text ? "Re-transcribe" : "Extract text"}</>}
+                  </button>
+                </div>
+              </div>
+              {text
+                ? <p className="text-xs text-muted-foreground leading-relaxed whitespace-pre-wrap max-h-48 overflow-y-auto pr-1">{text}</p>
+                : <p className="text-[11px] text-muted-foreground">No transcript yet. Click “Extract text” to transcribe (works for long videos too).</p>}
+            </div>
+          ) : text ? (
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <p className="text-[9px] text-muted-foreground uppercase tracking-wider">Body Text</p>
+                <button onClick={() => copyTranscript(text)}
                   className="flex items-center gap-1 text-[10px] font-semibold text-muted-foreground hover:text-primary transition-colors">
                   {copied ? <><Check className="w-3 h-3 text-green-600" /> Copied</> : <><Copy className="w-3 h-3" /> Copy</>}
                 </button>
               </div>
-              <p className="text-xs text-muted-foreground leading-relaxed whitespace-pre-wrap max-h-48 overflow-y-auto pr-1">{ad.body_text}</p>
+              <p className="text-xs text-muted-foreground leading-relaxed whitespace-pre-wrap max-h-48 overflow-y-auto pr-1">{text}</p>
             </div>
-          )}
+          ) : null}
           <div className="pt-2 border-t border-border space-y-2">
             <p className="text-[9px] text-muted-foreground uppercase tracking-widest font-semibold">Specs</p>
             <div className="grid grid-cols-2 gap-2 text-xs">
@@ -767,9 +807,11 @@ function CompetitorDetail({ projectId, competitor, onBack }: { projectId: string
           ad={detailAd}
           placeholderIndex={ads.indexOf(detailAd)}
           brandName={competitor.name}
+          projectId={projectId}
           onClose={() => setDetailAd(null)}
           onSaveTemplate={(id) => { saveToTemplates([id]); setDetailAd(null); }}
           onDelete={(id) => { delAd(id); setDetailAd(null); }}
+          onTranscribed={(adId, t) => setAds(p => p.map(a => a.id === adId ? { ...a, body_text: t } : a))}
         />
       )}
 
@@ -952,9 +994,11 @@ function AllCreativesView({ projectId }: { projectId: string }) {
           ad={detailAd}
           placeholderIndex={filtered.indexOf(detailAd)}
           brandName={detailAd.brand_name}
+          projectId={projectId}
           onClose={() => setDetailAd(null)}
           onSaveTemplate={() => { saveTpl(detailAd); setDetailAd(null); }}
           onDelete={() => { del(detailAd); setDetailAd(null); }}
+          onTranscribed={(adId, t) => setCreatives(p => p.map(a => a.id === adId ? { ...a, body_text: t } : a))}
         />
       )}
     </div>

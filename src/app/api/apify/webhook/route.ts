@@ -3,7 +3,9 @@ import { ingestDataset, webhookSecret } from '@/lib/competitor-scrape';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-export const maxDuration = 60;
+// The netlify.toml raises the Next handler ceiling to 300s (Pro), so we can
+// afford to download + upload longer video creatives here.
+export const maxDuration = 300;
 
 /**
  * Apify run webhook. Called when a competitor Ad Library run finishes.

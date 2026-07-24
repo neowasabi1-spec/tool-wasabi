@@ -14,3 +14,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_competitor_ads_brand_external
 -- Track the last Apify run per brand (optional, for UI/debug).
 ALTER TABLE competitor_brands
   ADD COLUMN IF NOT EXISTS last_run_id TEXT NOT NULL DEFAULT '';
+
+-- Allow large video creatives (VSL-style) to be stored permanently.
+-- Raise the project-files bucket per-file limit to 500MB and allow all types.
+UPDATE storage.buckets
+  SET file_size_limit = 524288000, allowed_mime_types = NULL
+  WHERE id = 'project-files';

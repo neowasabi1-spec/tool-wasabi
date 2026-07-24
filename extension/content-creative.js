@@ -12,7 +12,10 @@
   window.__wasabiCreativeSaver = true;
 
   const MIN_SIZE = 100; // ignore tiny icons / tracking pixels
-  const MAX_INLINE_BYTES = 25 * 1024 * 1024; // blob/data media size cap
+  // Blob/data media is shipped inline (base64) in the save request, which must
+  // stay under Netlify's ~6MB body limit. Bigger blob media can't be saved
+  // directly — the user is steered to auto-scraping instead.
+  const MAX_INLINE_BYTES = 4 * 1024 * 1024;
 
   // ── Shadow host ──────────────────────────────────────────────────────────
   const host = document.createElement('div');
@@ -37,6 +40,7 @@
         position: fixed; display: none; width: 280px; background: #fff; color: #0f172a;
         border: 1px solid #e2e8f0; border-radius: 14px; padding: 14px;
         box-shadow: 0 18px 50px rgba(0,0,0,.35); z-index: 2147483647;
+        max-height: calc(100vh - 24px); overflow-y: auto; overscroll-behavior: contain;
       }
       .pop h4 { margin: 0 0 2px; font-size: 13px; font-weight: 800; }
       .pop .sub { margin: 0 0 10px; font-size: 11px; color: #64748b; }
@@ -242,7 +246,10 @@
   btn.addEventListener('mouseleave', scheduleHide);
 
   window.addEventListener('scroll', () => positionButton(), true);
-  window.addEventListener('resize', () => positionButton());
+  window.addEventListener('resize', () => {
+    if (pop.style.display === 'block') positionPopover();
+    else positionButton();
+  });
 
   // ── Popover ────────────────────────────────────────────────────────────
   function currentSrc(el) {
@@ -319,26 +326,38 @@
   autoScrape.addEventListener('change', () => {
     scrapeOpts.style.display = autoScrape.checked ? 'block' : 'none';
     if (autoScrape.checked && !adsUrlInput.value) adsUrlInput.value = location.href;
+    positionPopover();
   });
 
   projSel.addEventListener('change', () => {
     populateCompetitors(projSel.value);
   });
 
+  // Place the popover next to the Save button, clamped so the whole box stays
+  // on-screen. Height is measured live (content grows when auto-scrape opens),
+  // and the box scrolls internally if it can't fit.
+  function positionPopover() {
+    const margin = 8;
+    const br = btn.getBoundingClientRect();
+    const pw = pop.offsetWidth || 280;
+    const ph = pop.offsetHeight || 300;
+
+    let left = Math.min(br.left, innerWidth - pw - margin);
+    if (left < margin) left = margin;
+
+    let top = br.bottom + 6;
+    if (top + ph > innerHeight - margin) top = innerHeight - margin - ph;
+    if (top < margin) top = margin;
+
+    pop.style.left = left + 'px';
+    pop.style.top = top + 'px';
+  }
+
   async function openPopover() {
     if (!currentMedia) return;
     const media = currentMedia;
     const isVideo = media.tagName === 'VIDEO';
     const src = currentSrc(media);
-
-    // Anchor popover near the button, keep it on-screen.
-    const br = btn.getBoundingClientRect();
-    let left = Math.min(br.left, innerWidth - 296);
-    let top = br.bottom + 6;
-    if (top + 260 > innerHeight) top = Math.max(6, br.top - 266);
-    if (left < 6) left = 6;
-    pop.style.left = left + 'px';
-    pop.style.top = top + 'px';
 
     popBadge.textContent = isVideo ? 'Video' : 'Image';
     try {
@@ -373,6 +392,7 @@
 
     pop.style.display = 'block';
     btn.style.display = 'none';
+    positionPopover();
 
     setStatus('<span class="spin"></span>Loading projects…', 'muted');
     const projects = await loadProjects();
@@ -495,6 +515,10 @@
       if (inline) {
         payload.mediaBase64 = inline.base64;
         payload.contentType = inline.type;
+      } else if (isVideo) {
+        setStatus('Video too large to save directly — enable auto-scraping with the Ad Library URL instead.', 'err');
+        saveBtn.disabled = false;
+        return;
       } else {
         setStatus('Could not read this media (too large or protected).', 'err');
         saveBtn.disabled = false;
