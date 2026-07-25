@@ -41,7 +41,7 @@ body {
   line-height: 1.4;
 }
 .link { background: none; border: none; color: var(--accent); cursor: pointer; padding: 0; text-decoration: underline; font-size: 12px; }
-.hidden { display: none; }
+.hidden { display: none !important; }
 
 .form { padding: 12px 14px 16px; display: flex; flex-direction: column; gap: 12px; }
 .field { display: flex; flex-direction: column; gap: 5px; }
