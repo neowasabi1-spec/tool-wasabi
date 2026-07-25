@@ -7,9 +7,36 @@
  * Everything lives inside a Shadow DOM host so the host page's CSS can never
  * bleed in (and ours never bleeds out).
  */
+// True when the current page is the Wasabi tool (prod origin, a Netlify deploy
+// preview of the same site, or a local dev server). config.js runs first in
+// the same content-script context, so WASABI_CONFIG is available here.
+function isWasabiTool() {
+  try {
+    const cfg = (globalThis.WASABI_CONFIG && globalThis.WASABI_CONFIG.TOOL_ORIGIN) || '';
+    const here = location.hostname;
+    let toolHost = '';
+    try { toolHost = new URL(cfg).hostname; } catch { /* ignore */ }
+
+    if (toolHost && here === toolHost) return true;
+    // Same Netlify site slug across deploy previews (e.g. deploy-preview-3--slug).
+    const slug = toolHost.split('.')[0];
+    if (slug && here.includes(slug)) return true;
+    // Local dev server for the tool.
+    if (here === 'localhost' || here === '127.0.0.1') return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 (function () {
   if (window.__wasabiCreativeSaver) return;
   window.__wasabiCreativeSaver = true;
+
+  // Never run inside the Wasabi tool itself — the floating "Save" button would
+  // overlap the app's own card actions (Save / Save template). We only want it
+  // on external competitor pages.
+  if (isWasabiTool()) return;
 
   const MIN_SIZE = 100; // ignore tiny icons / tracking pixels
   // Blob/data media is shipped inline (base64) in the save request, which must
