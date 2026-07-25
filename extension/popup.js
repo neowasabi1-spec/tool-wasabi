@@ -12,9 +12,12 @@ const els = {
   projectField: $('projectField'),
   project: $('project'),
   name: $('name'),
+  categoryField: $('categoryField'),
   category: $('category'),
   newCategory: $('newCategory'),
+  typeField: $('typeField'),
   folder: $('folder'),
+  tagsField: $('tagsField'),
   tags: $('tags'),
   tagSuggestions: $('tagSuggestions'),
   shotDesktop: $('shotDesktop'),
@@ -85,7 +88,11 @@ async function init() {
   let projectsLoaded = false;
   const syncDestination = async () => {
     const toProject = els.destination.value === 'project';
+    // Project → only the project picker. Template → only template settings.
     els.projectField.classList.toggle('hidden', !toProject);
+    [els.categoryField, els.typeField, els.tagsField].forEach(
+      (f) => f && f.classList.toggle('hidden', toProject),
+    );
     els.save.textContent = toProject ? 'Save to Competitor Landings' : 'Save to Wasabi';
     if (toProject && !projectsLoaded) {
       projectsLoaded = true;
