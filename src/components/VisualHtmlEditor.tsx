@@ -1477,8 +1477,8 @@ export function absolutizeClonedUrls(html: string, sourceUrl?: string): string {
   try {
     const sourceOrigin = new URL(sourceUrl).origin;
     const baseHrefVal = sourceOrigin + '/';
-    const hasBase = /<base\b[^>]*\bhref\s*=/i.test(clean);
-    if (!hasBase) {
+    const baseMatch = clean.match(/<base\b[^>]*?\bhref\s*=\s*(["'])([^"']*)\1/i);
+    if (!baseMatch) {
       const baseTag = `<base href="${baseHrefVal}">`;
       if (/<head\b[^>]*>/i.test(clean)) {
         clean = clean.replace(/<head\b([^>]*)>/i, `<head$1>${baseTag}`);
@@ -1487,6 +1487,18 @@ export function absolutizeClonedUrls(html: string, sourceUrl?: string): string {
       } else {
         clean = `<head>${baseTag}</head>${clean}`;
       }
+    } else if (!/^https?:\/\//i.test(baseMatch[2])) {
+      // The doc declares a RELATIVE <base href> (e.g. "/lander/xyz/index.html").
+      // In a srcdoc iframe (origin null) that can't resolve, and document-
+      // relative assets (css/style.css) 404 → unstyled page. Make it absolute
+      // against the source URL so the browser resolves relative assets right.
+      try {
+        const absBase = new URL(baseMatch[2], sourceUrl).toString();
+        clean = clean.replace(
+          /(<base\b[^>]*?\bhref\s*=\s*)(["'])[^"']*\2/i,
+          `$1$2${absBase}$2`,
+        );
+      } catch { /* keep as-is */ }
     }
 
     // RIPARA URL ASSOLUTE puntate per errore al dominio del nostro editor

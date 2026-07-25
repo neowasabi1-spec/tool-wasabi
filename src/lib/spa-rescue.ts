@@ -1043,6 +1043,17 @@ export function absolutizeUrlsInHtml(html: string, originUrl: string): string {
   let base: URL;
   try { base = new URL(originUrl); } catch { return html; }
 
+  // Honor a document-declared <base href>. Some page builders (e.g. Astro
+  // landers served from a rewrite) point <base> at a DIFFERENT path than the
+  // request URL — e.g. request /ccw but <base href="/lander/xyz/index.html">.
+  // Relative assets (css/dp/style.css, images/logo.webp) must resolve against
+  // that base, NOT the request URL, otherwise every stylesheet/image 404s and
+  // the clone renders as plain text on a white background.
+  const baseHrefMatch = html.match(/<base\b[^>]*?\bhref\s*=\s*(["'])([^"']+)\1/i);
+  if (baseHrefMatch) {
+    try { base = new URL(baseHrefMatch[2], base); } catch { /* keep origin base */ }
+  }
+
   const out = html
     // src= on common asset-bearing tags
     .replace(
