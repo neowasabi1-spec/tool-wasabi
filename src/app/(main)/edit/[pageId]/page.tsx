@@ -71,10 +71,17 @@ function EditSavedPageInner() {
     [pageId],
   );
 
+  // Return to wherever the user came from. Falls back to the archive when the
+  // editor was opened in a fresh tab (no history to go back to).
+  const goBack = () => {
+    if (typeof window !== 'undefined' && window.history.length > 1) router.back();
+    else router.push('/templates');
+  };
+
   if (error) {
     return (
       <div className="p-8">
-        <button onClick={() => router.push('/my-funnels')} className="text-sm text-gray-500 hover:text-gray-800 mb-4">
+        <button onClick={goBack} className="text-sm text-gray-500 hover:text-gray-800 mb-4">
           ← Back
         </button>
         <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg p-4 max-w-lg">{error}</div>
@@ -96,7 +103,7 @@ function EditSavedPageInner() {
       pageTitle={savedAt ? `${title} (saved ✓)` : title}
       sourceUrl={sourceUrl}
       onSave={handleSave}
-      onClose={() => router.push('/my-funnels')}
+      onClose={goBack}
     />
   );
 }
