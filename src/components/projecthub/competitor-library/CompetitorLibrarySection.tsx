@@ -2,11 +2,12 @@ import { useState, useRef, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
+import { useRouter } from "next/navigation";
 import {
   Plus, Trash2, Upload, Play, Search, ArrowLeft, ExternalLink,
   BarChart2, Calendar, Globe, X, RefreshCw, Image as ImageIcon,
   Video, Bookmark, CheckSquare, Square, TrendingUp, Download, Copy, Check,
-  Settings, Zap, FileText, Pencil, Eye, LayoutTemplate,
+  Settings, Zap, FileText, Eye, LayoutTemplate, Repeat,
 } from "lucide-react";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
@@ -1025,9 +1026,21 @@ function hostOf(url: string) {
 
 function CompetitorLandingsView({ projectId }: { projectId: string }) {
   const { toast } = useToast();
+  const router = useRouter();
   const [landings, setLandings] = useState<Landing[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
+
+  // Add this landing as a swipe step in Clone/Swipe (front-end-funnel), then go there.
+  const cloneSwipe = (l: Landing) => {
+    if (!l.url) { toast({ title: "This landing has no source URL to swipe", variant: "destructive" }); return; }
+    const q = new URLSearchParams({
+      swipe_url: l.url,
+      swipe_name: l.name || "Template",
+      swipe_type: l.page_type || "landing",
+    });
+    router.push(`/front-end-funnel?${q.toString()}`);
+  };
 
   const load = async () => {
     setLoading(true);
@@ -1078,8 +1091,8 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
           {filtered.map(l => (
             <div key={l.id}
               className="group relative bg-card border border-border rounded-2xl overflow-hidden hover:border-primary/40 hover:shadow-lg transition-all">
-              {/* Preview */}
-              <a href={l.editor_url} className="block aspect-[16/10] relative overflow-hidden bg-slate-100">
+              {/* Preview (click = Clone/Swipe) */}
+              <button onClick={() => cloneSwipe(l)} className="block w-full text-left aspect-[16/10] relative overflow-hidden bg-slate-100 cursor-pointer">
                 {l.screenshot ? (
                   <img src={l.screenshot} alt={l.name} className="w-full h-full object-cover object-top group-hover:scale-[1.02] transition-transform" />
                 ) : (
@@ -1090,7 +1103,7 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
                 <span className="absolute top-2 left-2 text-[9px] font-bold px-2 py-0.5 rounded-full bg-black/55 backdrop-blur-sm text-white uppercase tracking-wide">
                   {l.page_type || "landing"}
                 </span>
-              </a>
+              </button>
               {/* Delete (hover) */}
               <button onClick={() => del(l)}
                 className="absolute top-2 right-2 p-1.5 rounded-lg bg-black/45 backdrop-blur-sm text-white/90 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all"
@@ -1104,10 +1117,10 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
                   <Globe className="w-3 h-3" /> {hostOf(l.url)}
                 </p>
                 <div className="flex items-center gap-1.5">
-                  <a href={l.editor_url}
+                  <button onClick={() => cloneSwipe(l)}
                     className="flex-1 flex items-center justify-center gap-1 bg-primary text-white text-[11px] font-semibold py-1.5 rounded-lg hover:opacity-90 transition-opacity">
-                    <Pencil className="w-3 h-3" /> Edit
-                  </a>
+                    <Repeat className="w-3 h-3" /> Clone / Swipe
+                  </button>
                   <a href={l.html_url} target="_blank" rel="noopener noreferrer"
                     className="flex items-center justify-center gap-1 border border-border text-foreground text-[11px] font-semibold py-1.5 px-2.5 rounded-lg hover:bg-muted transition-colors">
                     <Eye className="w-3 h-3" /> View
