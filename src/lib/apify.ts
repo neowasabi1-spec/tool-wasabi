@@ -120,6 +120,35 @@ function firstStr(...vals: unknown[]): string {
   return '';
 }
 
+/** First finite number from the candidates (0 allowed only via explicit check). */
+function firstNum(...vals: unknown[]): number | null {
+  for (const v of vals) {
+    if (typeof v === 'number' && Number.isFinite(v)) return v;
+    if (typeof v === 'string' && v.trim() && Number.isFinite(Number(v))) return Number(v);
+  }
+  return null;
+}
+
+/**
+ * Normalize a Meta Ad Library "start" value (unix seconds, unix ms, or an
+ * ISO/date string) into an ISO timestamp string, or '' when unusable.
+ */
+function toIsoDate(...vals: unknown[]): string {
+  // Numeric epoch first (FB usually returns seconds).
+  const n = firstNum(...vals);
+  if (n !== null && n > 0) {
+    const ms = n < 1e12 ? n * 1000 : n; // seconds → ms heuristic
+    const d = new Date(ms);
+    if (!isNaN(d.getTime())) return d.toISOString();
+  }
+  const s = firstStr(...vals);
+  if (s) {
+    const d = new Date(s);
+    if (!isNaN(d.getTime())) return d.toISOString();
+  }
+  return '';
+}
+
 export interface MappedAd {
   externalId: string;
   mediaType: 'image' | 'video';
@@ -128,6 +157,10 @@ export interface MappedAd {
   headline: string;
   hook: string;
   bodyText: string;
+  /** Winner signals from the Ad Library. */
+  adStartedAt: string; // ISO, '' when unknown
+  adActive: string; // 'true' | 'false' | ''
+  adVariants: number; // how many ads are collated under this creative
 }
 
 /**
@@ -182,6 +215,33 @@ export function mapApifyAdItem(raw: unknown): MappedAd | null {
     snap.link_description, r.caption,
   );
 
+  // ── Winner signals ──────────────────────────────────────────────────────
+  // How long the ad has been running + whether it's still live are the
+  // strongest cheap proxies for "this creative works" (advertisers kill
+  // losers fast). Field names vary across actors, so probe several.
+  const adStartedAt = toIsoDate(
+    r.startDate, r.start_date, r.startDateUnixTime, r.ad_delivery_start_time,
+    r.startDateFormatted, snap.start_date, snap.startDate,
+  );
+
+  const activeRaw =
+    r.isActive ?? r.is_active ?? r.active ?? r.adStatus ?? r.status ?? snap.is_active;
+  let adActive = '';
+  if (typeof activeRaw === 'boolean') adActive = activeRaw ? 'true' : 'false';
+  else {
+    const s = str(activeRaw).trim().toLowerCase();
+    if (s === 'true' || s === 'active') adActive = 'true';
+    else if (s === 'false' || s === 'inactive') adActive = 'false';
+  }
+  // If no explicit status but there's a start and no end date, treat as active.
+  if (!adActive && adStartedAt) {
+    const hasEnd = toIsoDate(r.endDate, r.end_date, r.ad_delivery_stop_time, snap.end_date);
+    adActive = hasEnd ? 'false' : 'true';
+  }
+
+  const adVariants =
+    firstNum(r.collationCount, r.collation_count, r.total, r.totalCount, snap.collation_count) ?? 0;
+
   return {
     externalId,
     mediaType,
@@ -190,5 +250,8 @@ export function mapApifyAdItem(raw: unknown): MappedAd | null {
     headline: headline.slice(0, 500),
     hook: hook.slice(0, 500),
     bodyText: bodyText.slice(0, 4000),
+    adStartedAt,
+    adActive,
+    adVariants: Math.max(0, Math.round(adVariants)),
   };
 }

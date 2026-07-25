@@ -114,6 +114,10 @@ export async function insertCompetitorAd(opts: {
   meta?: CreativeMeta;
   externalId?: string;
   source?: string;
+  /** Meta Ad Library winner signals (scraper only). */
+  adStartedAt?: string;
+  adActive?: string;
+  adVariants?: number;
 }): Promise<{ ok: true; ad: Record<string, unknown> } | { ok: false; error: string }> {
   const { projectId, brandId, buffer, contentType, remoteUrl, meta = {} } = opts;
   const mediaType = mediaTypeForContentType(contentType);
@@ -157,11 +161,29 @@ export async function insertCompetitorAd(opts: {
     insertRow.source = opts.source || 'manual';
   }
 
-  const { data, error } = await supabaseAdmin
+  // Winner-detection signals (Phase 1). These live behind a newer migration,
+  // so track which keys we added and retry without them if the columns don't
+  // exist yet — never fail a save because the DB hasn't been migrated.
+  const winnerKeys: string[] = [];
+  if (opts.adStartedAt) { insertRow.ad_started_at = opts.adStartedAt; winnerKeys.push('ad_started_at'); }
+  if (opts.adActive !== undefined) { insertRow.ad_active = opts.adActive || ''; winnerKeys.push('ad_active'); }
+  if (opts.adVariants !== undefined) { insertRow.ad_variants = opts.adVariants || 0; winnerKeys.push('ad_variants'); }
+
+  let { data, error } = await supabaseAdmin
     .from('competitor_ads')
     .insert(insertRow)
     .select()
     .single();
+
+  // Missing-column fallback (PostgREST error code 42703 / PGRST204).
+  if (error && winnerKeys.length > 0 && /column|schema cache|42703|PGRST204/i.test(error.message)) {
+    for (const k of winnerKeys) delete insertRow[k];
+    ({ data, error } = await supabaseAdmin
+      .from('competitor_ads')
+      .insert(insertRow)
+      .select()
+      .single());
+  }
 
   if (error || !data) return { ok: false, error: error?.message || 'Insert failed' };
   return { ok: true, ad: data };

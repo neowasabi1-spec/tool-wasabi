@@ -171,6 +171,9 @@ export async function ingestDataset(opts: {
       remoteUrl: mapped.mediaUrl,
       externalId: mapped.externalId,
       source: 'apify',
+      adStartedAt: mapped.adStartedAt || undefined,
+      adActive: mapped.adActive,
+      adVariants: mapped.adVariants,
       meta: {
         name: mapped.headline || mapped.pageName,
         headline: mapped.headline,

@@ -7,7 +7,7 @@ import {
   Plus, Trash2, Upload, Play, Search, ArrowLeft, ExternalLink,
   BarChart2, Calendar, Globe, X, RefreshCw, Image as ImageIcon,
   Video, Bookmark, CheckSquare, Square, TrendingUp, Download, Copy, Check,
-  Settings, Zap, FileText, Eye, LayoutTemplate, Repeat,
+  Settings, Zap, FileText, Eye, LayoutTemplate, Repeat, Star, Flame,
 } from "lucide-react";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
@@ -53,11 +53,73 @@ type CompetitorAd = {
   body_text: string;
   is_active: string;
   created_at: string;
+  // Phase 1 winner signals (from Meta Ad Library via Apify) + manual override.
+  ad_started_at?: string | null;
+  ad_active?: string;
+  ad_variants?: number;
+  is_winner?: boolean;
+  // Phase 1: Claude-rewritten script adapted to the user's product.
+  rewritten_script?: string | null;
 };
 
 function formatDate(d: string | null) {
   if (!d) return "—";
   return new Date(d).toLocaleDateString("it-IT", { day: "2-digit", month: "short", year: "numeric" });
+}
+
+// ── Winner detection (Phase 1) ──────────────────────────────────────────────
+// A creative is a likely "winner" when it has been running for a long time and
+// is still live — advertisers cut losers fast, so longevity is the cheapest
+// proxy for performance. A manual flag always wins.
+const WINNER_DAYS = 21;
+const PROMISING_DAYS = 10;
+
+function daysRunning(ad: CompetitorAd): number | null {
+  if (!ad.ad_started_at) return null;
+  const t = new Date(ad.ad_started_at).getTime();
+  if (isNaN(t)) return null;
+  return Math.max(0, Math.floor((Date.now() - t) / 86_400_000));
+}
+
+type WinnerTier = "winner" | "promising" | null;
+
+function winnerTier(ad: CompetitorAd): WinnerTier {
+  if (ad.is_winner) return "winner";
+  const active = ad.ad_active === "true" || ad.is_active === "true";
+  const d = daysRunning(ad);
+  if (d !== null && active) {
+    if (d >= WINNER_DAYS) return "winner";
+    if (d >= PROMISING_DAYS) return "promising";
+  }
+  return null;
+}
+
+function WinnerBadge({ ad, className = "" }: { ad: CompetitorAd; className?: string }) {
+  const tier = winnerTier(ad);
+  if (!tier) return null;
+  const d = daysRunning(ad);
+  const label = tier === "winner" ? "WINNER" : "PROMISING";
+  const cls = tier === "winner"
+    ? "bg-amber-400 text-amber-950"
+    : "bg-sky-400 text-sky-950";
+  return (
+    <span
+      title={d !== null ? `Running ${d} day${d === 1 ? "" : "s"}${ad.is_winner ? " · marked as winner" : ""}` : "Marked as winner"}
+      className={`inline-flex items-center gap-0.5 text-[9px] font-black px-1.5 py-0.5 rounded-full shadow-sm ${cls} ${className}`}>
+      {tier === "winner" ? "🔥" : "⭐"} {label}
+    </span>
+  );
+}
+
+// PATCH a creative's manual winner flag. Returns the updated flag or null.
+async function setWinnerFlag(projectId: string, brandId: number, adId: number, next: boolean): Promise<boolean | null> {
+  try {
+    const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library/${brandId}/ads/${adId}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ is_winner: next }),
+    });
+    if (!r.ok) return null;
+    return next;
+  } catch { return null; }
 }
 
 // Force a download of a creative. Local (storage) files go through the
@@ -154,7 +216,7 @@ function Mosaic({ items }: { items: { file_path: string; media_type: string }[] 
 // with player, download, transcript + copy, and delete. Reused by the
 // per-competitor view and the flat "All creatives" view.
 function CreativeDetailPanel({
-  ad, placeholderIndex, brandName, projectId, onClose, onSaveTemplate, onDelete, onTranscribed,
+  ad, placeholderIndex, brandName, projectId, onClose, onSaveTemplate, onDelete, onTranscribed, onWinnerChange,
 }: {
   ad: CompetitorAd;
   placeholderIndex: number;
@@ -164,11 +226,61 @@ function CreativeDetailPanel({
   onSaveTemplate: (id: number) => void;
   onDelete: (id: number) => void;
   onTranscribed?: (adId: number, text: string) => void;
+  onWinnerChange?: (adId: number, isWinner: boolean) => void;
 }) {
   const { toast } = useToast();
   const [copied, setCopied] = useState(false);
   const [text, setText] = useState(ad.body_text || "");
   const [transcribing, setTranscribing] = useState(false);
+  const [winner, setWinner] = useState(!!ad.is_winner);
+  const [markingWinner, setMarkingWinner] = useState(false);
+  // Phase 1 — "same script, new video": rewrite the winning transcript for the
+  // user's own product.
+  const [product, setProduct] = useState("");
+  const [angle, setAngle] = useState("");
+  const [generating, setGenerating] = useState(false);
+  const [script, setScript] = useState(ad.rewritten_script || "");
+  const [scriptCopied, setScriptCopied] = useState(false);
+  const generateScript = async () => {
+    setGenerating(true);
+    try {
+      const r = await fetch(
+        `/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/${ad.id}/rewrite-script`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ product, angle }),
+        },
+      );
+      const j = await r.json().catch(() => ({}));
+      if (r.ok && j.script) {
+        setScript(j.script);
+        toast({ title: "Script generated ✓" });
+      } else {
+        toast({ title: j.error || "Generation failed", variant: "destructive" });
+      }
+    } catch { toast({ title: "Generation failed", variant: "destructive" }); }
+    finally { setGenerating(false); }
+  };
+  const copyScript = async () => {
+    try {
+      await navigator.clipboard.writeText(script);
+      setScriptCopied(true);
+      setTimeout(() => setScriptCopied(false), 1500);
+    } catch { toast({ title: "Copy failed", variant: "destructive" }); }
+  };
+  const days = daysRunning(ad);
+  const tier = winnerTier({ ...ad, is_winner: winner });
+  const toggleWinner = async () => {
+    const next = !winner;
+    setMarkingWinner(true);
+    const res = await setWinnerFlag(projectId, ad.brand_id, ad.id, next);
+    setMarkingWinner(false);
+    if (res === null) { toast({ title: "Could not update", variant: "destructive" }); return; }
+    setWinner(next);
+    onWinnerChange?.(ad.id, next);
+    toast({ title: next ? "Marked as winner 🔥" : "Winner mark removed" });
+  };
   const copyTranscript = async (t: string) => {
     try {
       await navigator.clipboard.writeText(t);
@@ -211,6 +323,14 @@ function CreativeDetailPanel({
               <Download className="w-4 h-4" /> Download {ad.media_type === "video" ? "video" : "image"}
             </Button>
           )}
+          <Button
+            variant="outline"
+            onClick={toggleWinner}
+            disabled={markingWinner}
+            className={`w-full gap-2 ${winner ? "border-amber-400 bg-amber-50 text-amber-800 hover:bg-amber-100" : ""}`}>
+            <Star className={`w-4 h-4 ${winner ? "fill-amber-400 text-amber-500" : ""}`} />
+            {winner ? "Winner ✓ — click to unmark" : "Mark as winner"}
+          </Button>
         </div>
         <div className="p-4 border-b border-border">
           {ad.file_path ? (
@@ -272,8 +392,48 @@ function CreativeDetailPanel({
               <p className="text-xs text-muted-foreground leading-relaxed whitespace-pre-wrap max-h-48 overflow-y-auto pr-1">{text}</p>
             </div>
           ) : null}
+          {text && (
+            <div className="pt-2 border-t border-border space-y-2">
+              <div className="flex items-center gap-1.5">
+                <Repeat className="w-3.5 h-3.5 text-primary" />
+                <p className="text-[9px] text-muted-foreground uppercase tracking-widest font-semibold">Rewrite for my product</p>
+              </div>
+              <p className="text-[10px] text-muted-foreground leading-snug">
+                Reuse this winner’s proven structure and hook, rewritten in fresh words for your offer.
+              </p>
+              <Input
+                value={product}
+                onChange={(e) => setProduct(e.target.value)}
+                placeholder="Your product / offer (e.g. GreenGut probiotic)"
+                className="h-8 text-xs"
+              />
+              <Input
+                value={angle}
+                onChange={(e) => setAngle(e.target.value)}
+                placeholder="Angle (optional, e.g. bloating relief)"
+                className="h-8 text-xs"
+              />
+              <Button onClick={generateScript} disabled={generating} className="w-full gap-2 h-8">
+                {generating
+                  ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Generating…</>
+                  : <><Zap className="w-3.5 h-3.5" /> {script ? "Regenerate script" : "Generate my script"}</>}
+              </Button>
+              {script && (
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <p className="text-[9px] text-muted-foreground uppercase tracking-wider">My script</p>
+                    <button onClick={copyScript}
+                      className="flex items-center gap-1 text-[10px] font-semibold text-muted-foreground hover:text-primary transition-colors">
+                      {scriptCopied ? <><Check className="w-3 h-3 text-green-600" /> Copied</> : <><Copy className="w-3 h-3" /> Copy</>}
+                    </button>
+                  </div>
+                  <p className="text-xs text-foreground leading-relaxed whitespace-pre-wrap max-h-60 overflow-y-auto pr-1 bg-muted/40 rounded-lg p-2">{script}</p>
+                </div>
+              )}
+            </div>
+          )}
           <div className="pt-2 border-t border-border space-y-2">
-            <p className="text-[9px] text-muted-foreground uppercase tracking-widest font-semibold">Specs</p>
+            <p className="text-[9px] text-muted-foreground uppercase tracking-widest font-semibold">Performance signals</p>
             <div className="grid grid-cols-2 gap-2 text-xs">
               <div>
                 <p className="text-[9px] text-muted-foreground uppercase tracking-wider">Format</p>
@@ -281,10 +441,30 @@ function CreativeDetailPanel({
               </div>
               <div>
                 <p className="text-[9px] text-muted-foreground uppercase tracking-wider">Status</p>
-                <p className={`font-medium ${ad.is_active === "true" ? "text-green-600" : "text-muted-foreground"}`}>
-                  {ad.is_active === "true" ? "Active" : "Inactive"}
+                <p className={`font-medium ${(ad.ad_active === "true" || ad.is_active === "true") ? "text-green-600" : "text-muted-foreground"}`}>
+                  {(ad.ad_active === "true" || ad.is_active === "true") ? "Active" : "Inactive"}
                 </p>
               </div>
+              <div>
+                <p className="text-[9px] text-muted-foreground uppercase tracking-wider">Running for</p>
+                <p className="font-medium text-foreground">{days !== null ? `${days} day${days === 1 ? "" : "s"}` : "—"}</p>
+              </div>
+              <div>
+                <p className="text-[9px] text-muted-foreground uppercase tracking-wider">Verdict</p>
+                <p className="font-medium">
+                  {tier === "winner"
+                    ? <span className="text-amber-600 inline-flex items-center gap-1"><Flame className="w-3 h-3" /> Winner</span>
+                    : tier === "promising"
+                      ? <span className="text-sky-600 inline-flex items-center gap-1"><Star className="w-3 h-3" /> Promising</span>
+                      : <span className="text-muted-foreground">—</span>}
+                </p>
+              </div>
+              {typeof ad.ad_variants === "number" && ad.ad_variants > 1 && (
+                <div>
+                  <p className="text-[9px] text-muted-foreground uppercase tracking-wider">Variants</p>
+                  <p className="font-medium text-foreground">{ad.ad_variants}</p>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -467,6 +647,7 @@ function CompetitorDetail({ projectId, competitor, onBack }: { projectId: string
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<"all" | "image" | "video">("all");
+  const [winnersOnly, setWinnersOnly] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [saving, setSaving] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
@@ -576,10 +757,14 @@ function CompetitorDetail({ projectId, competitor, onBack }: { projectId: string
     setSelected(p => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; });
   };
 
+  const tierRank = (a: CompetitorAd) => { const t = winnerTier(a); return t === "winner" ? 0 : t === "promising" ? 1 : 2; };
   const filtered = ads
     .filter(a => filter === "all" || a.media_type === filter)
-    .filter(a => !search || a.name.toLowerCase().includes(search.toLowerCase()) || a.headline.toLowerCase().includes(search.toLowerCase()) || a.hook.toLowerCase().includes(search.toLowerCase()));
+    .filter(a => !winnersOnly || winnerTier(a) !== null)
+    .filter(a => !search || a.name.toLowerCase().includes(search.toLowerCase()) || a.headline.toLowerCase().includes(search.toLowerCase()) || a.hook.toLowerCase().includes(search.toLowerCase()))
+    .sort((a, b) => tierRank(a) - tierRank(b));
 
+  const winnerCount = ads.filter(a => winnerTier(a) !== null).length;
   const allSelected = filtered.length > 0 && filtered.every(a => selected.has(a.id));
   const toggleAll = () => allSelected ? setSelected(new Set()) : setSelected(new Set(filtered.map(a => a.id)));
 
@@ -675,6 +860,10 @@ function CompetitorDetail({ projectId, competitor, onBack }: { projectId: string
             </button>
           ))}
         </div>
+        <button onClick={() => setWinnersOnly(v => !v)}
+          className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg font-semibold border transition-colors ${winnersOnly ? "bg-amber-400 border-amber-400 text-amber-950" : "border-border text-muted-foreground hover:text-foreground hover:border-amber-300"}`}>
+          <Flame className="w-3.5 h-3.5" /> Winners{winnerCount > 0 ? ` (${winnerCount})` : ""}
+        </button>
       </div>
 
       {/* ── SELECTION BAR (always visible when ads exist) ── */}
@@ -762,12 +951,13 @@ function CompetitorDetail({ projectId, competitor, onBack }: { projectId: string
                     )}
                   </button>
 
-                  {/* Active badge */}
-                  {ad.is_active === "true" && (
-                    <div className="absolute top-2 left-2">
+                  {/* Winner + Active badges (stacked) */}
+                  <div className="absolute top-2 left-2 flex flex-col items-start gap-1">
+                    <WinnerBadge ad={ad} />
+                    {(ad.ad_active === "true" || ad.is_active === "true") && (
                       <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-green-500 text-white shadow-sm">ACTIVE</span>
-                    </div>
-                  )}
+                    )}
+                  </div>
 
                   {/* Hover overlay — "Save template" */}
                   <div className="absolute inset-x-0 bottom-0 opacity-0 group-hover:opacity-100 transition-opacity p-2">
@@ -813,6 +1003,7 @@ function CompetitorDetail({ projectId, competitor, onBack }: { projectId: string
           onSaveTemplate={(id) => { saveToTemplates([id]); setDetailAd(null); }}
           onDelete={(id) => { delAd(id); setDetailAd(null); }}
           onTranscribed={(adId, t) => setAds(p => p.map(a => a.id === adId ? { ...a, body_text: t } : a))}
+          onWinnerChange={(adId, w) => setAds(p => p.map(a => a.id === adId ? { ...a, is_winner: w } : a))}
         />
       )}
 
@@ -899,6 +1090,7 @@ function AllCreativesView({ projectId }: { projectId: string }) {
   const [search, setSearch] = useState("");
   const [media, setMedia] = useState<"all" | "image" | "video">("all");
   const [brand, setBrand] = useState<string>("all");
+  const [winnersOnly, setWinnersOnly] = useState(false);
   const [detailAd, setDetailAd] = useState<CreativeWithBrand | null>(null);
 
   const load = async () => {
@@ -923,10 +1115,14 @@ function AllCreativesView({ projectId }: { projectId: string }) {
   };
 
   const brands = [...new Set(creatives.map(c => c.brand_name).filter(Boolean))];
+  const tierRank = (a: CompetitorAd) => { const t = winnerTier(a); return t === "winner" ? 0 : t === "promising" ? 1 : 2; };
+  const winnerCount = creatives.filter(c => winnerTier(c) !== null).length;
   const filtered = creatives
     .filter(c => media === "all" || c.media_type === media)
     .filter(c => brand === "all" || c.brand_name === brand)
-    .filter(c => !search || `${c.name} ${c.headline} ${c.hook} ${c.brand_name}`.toLowerCase().includes(search.toLowerCase()));
+    .filter(c => !winnersOnly || winnerTier(c) !== null)
+    .filter(c => !search || `${c.name} ${c.headline} ${c.hook} ${c.brand_name}`.toLowerCase().includes(search.toLowerCase()))
+    .sort((a, b) => tierRank(a) - tierRank(b));
 
   return (
     <div className="space-y-4">
@@ -949,6 +1145,10 @@ function AllCreativesView({ projectId }: { projectId: string }) {
             </button>
           ))}
         </div>
+        <button onClick={() => setWinnersOnly(v => !v)}
+          className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg font-semibold border transition-colors ${winnersOnly ? "bg-amber-400 border-amber-400 text-amber-950" : "border-border text-muted-foreground hover:text-foreground hover:border-amber-300"}`}>
+          <Flame className="w-3.5 h-3.5" /> Winners{winnerCount > 0 ? ` (${winnerCount})` : ""}
+        </button>
       </div>
 
       {loading ? (
@@ -968,6 +1168,9 @@ function AllCreativesView({ projectId }: { projectId: string }) {
                 {ad.file_path
                   ? <MediaThumb path={ad.file_path} type={ad.media_type} className="w-full h-full" />
                   : <AdPlaceholder ad={ad} index={idx} />}
+                <div className="absolute top-2 left-2 flex flex-col items-start gap-1">
+                  <WinnerBadge ad={ad} />
+                </div>
                 <div className="absolute inset-x-0 bottom-0 opacity-0 group-hover:opacity-100 transition-opacity p-2">
                   <button onClick={e => { e.stopPropagation(); saveTpl(ad); }}
                     className="w-full flex items-center justify-center gap-1.5 bg-sky-500 text-white text-[10px] font-bold py-2 rounded-lg hover:bg-sky-600 transition-colors shadow-lg">
@@ -1000,6 +1203,7 @@ function AllCreativesView({ projectId }: { projectId: string }) {
           onSaveTemplate={() => { saveTpl(detailAd); setDetailAd(null); }}
           onDelete={() => { del(detailAd); setDetailAd(null); }}
           onTranscribed={(adId, t) => setCreatives(p => p.map(a => a.id === adId ? { ...a, body_text: t } : a))}
+          onWinnerChange={(adId, w) => setCreatives(p => p.map(a => a.id === adId ? { ...a, is_winner: w } : a))}
         />
       )}
     </div>
