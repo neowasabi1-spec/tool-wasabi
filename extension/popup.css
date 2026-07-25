@@ -43,6 +43,11 @@ body {
 .link { background: none; border: none; color: var(--accent); cursor: pointer; padding: 0; text-decoration: underline; font-size: 12px; }
 .hidden { display: none !important; }
 
+/* Avoid a first-open flash: keep the form invisible until JS has set the
+   correct destination view, then reveal it. */
+.form { visibility: hidden; }
+.form.ready { visibility: visible; }
+
 .form { padding: 12px 14px 16px; display: flex; flex-direction: column; gap: 12px; }
 .field { display: flex; flex-direction: column; gap: 5px; }
 .field > span { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }

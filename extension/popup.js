@@ -42,11 +42,16 @@ function isCapturableUrl(url) {
   return /^https?:\/\//i.test(url || '');
 }
 
+function revealForm() {
+  els.form && els.form.classList.add('ready');
+}
+
 async function init() {
   if (!TOOL || TOOL.includes('YOUR-TOOL')) {
     els.authState.textContent = 'not configured';
     els.authState.className = 'auth bad';
     setStatus('Edit <code>config.js</code> with your tool + Supabase values, then reload the extension.', 'err');
+    revealForm();
     return;
   }
 
@@ -68,6 +73,7 @@ async function init() {
     els.authState.className = 'auth bad';
     els.notConnected.classList.remove('hidden');
     els.save.disabled = true;
+    revealForm();
     return;
   }
 
@@ -101,6 +107,7 @@ async function init() {
   };
   els.destination.addEventListener('change', syncDestination);
   syncDestination();
+  revealForm();
 }
 
 async function loadProjects() {
