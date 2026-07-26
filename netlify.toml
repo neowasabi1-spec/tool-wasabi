@@ -17,20 +17,15 @@
 #   restano fuori dal bundle (richiesto perché serverComponentsExternalPackages
 #   in next.config.js li tratta come "external" lato Next, ma Netlify
 #   ha la sua propria fase di bundling con esbuild che li toglie).
-#   ffmpeg-static / ffprobe-static: idem per le background function video —
-#   restano esterne così la loro risoluzione del path binario (__dirname)
-#   continua a funzionare dopo il bundling.
 # - included_files: forza l'inclusione del codice JS di chromium-min nel
 #   working directory della function (il binario Chromium NON viene
-#   bundleato, viene scaricato a runtime dal remote tar URL). Aggiunti anche
-#   i binari ffmpeg (scaricato in build da ffmpeg-static) e ffprobe (nel pacchetto).
+#   bundleato, viene scaricato a runtime dal remote tar URL).
+# NB: ffmpeg va SOLO nelle due function video qui sotto — se messo qui nel
+# blocco globale "*" finisce anche nel server handler (già enorme con
+# chromium) e sfora il limite di 250 MB.
 [functions]
-  external_node_modules = ["@sparticuz/chromium-min", "playwright-core", "ffmpeg-static", "ffprobe-static"]
-  included_files = [
-    "node_modules/@sparticuz/chromium-min/**",
-    "node_modules/ffmpeg-static/ffmpeg",
-    "node_modules/ffprobe-static/bin/**",
-  ]
+  external_node_modules = ["@sparticuz/chromium-min", "playwright-core"]
+  included_files = ["node_modules/@sparticuz/chromium-min/**"]
 
 # Override timeout solo per la function unica del Next adapter, così le
 # route con maxDuration alto (clone/swipe/checkpoint/diagnose-fetch) hanno
@@ -41,6 +36,17 @@
 # del classico "Unexpected token '<'" nel parser JSON del frontend).
 [functions."___netlify-server-handler"]
   timeout = 300
+
+# ffmpeg SOLO per le background function video (~79 MB, un solo binario).
+# NB: niente ffprobe-static — spedisce i binari di TUTTI gli OS (~335 MB) e
+# sforerebbe i 250 MB. Durata/dimensioni si leggono parsando `ffmpeg -i`.
+[functions."segment-video-background"]
+  external_node_modules = ["ffmpeg-static"]
+  included_files = ["node_modules/ffmpeg-static/ffmpeg"]
+
+[functions."build-video-background"]
+  external_node_modules = ["ffmpeg-static"]
+  included_files = ["node_modules/ffmpeg-static/ffmpeg"]
 
 [[plugins]]
   package = "@netlify/plugin-nextjs"

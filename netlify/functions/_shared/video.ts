@@ -4,19 +4,20 @@
  * Ported from the standalone `video-segment-worker.js` (which was built for an
  * always-on Node worker). On Netlify there is no persistent worker, so the
  * segmentation/build logic runs inside `-background` functions (15-min budget)
- * using the bundled ffmpeg-static / ffprobe-static binaries.
+ * using the bundled ffmpeg-static binary.
  */
 import { spawn } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-// CJS packages — default import resolves to module.exports.
+// CJS package — default import resolves to module.exports (the binary path).
+// We deliberately do NOT use ffprobe-static: it ships binaries for every OS
+// (~335 MB) which blows past Netlify's 250 MB function limit. Instead we parse
+// duration/size from `ffmpeg -i` stderr, so only the single ffmpeg binary ships.
 import ffmpegPathImport from 'ffmpeg-static';
-import ffprobeStatic from 'ffprobe-static';
 
 export const FFMPEG = (ffmpegPathImport as unknown as string) || 'ffmpeg';
-export const FFPROBE = (ffprobeStatic as unknown as { path: string }).path || 'ffprobe';
 
 export const BUCKET = 'project-files';
 export const MIN_SEC = parseFloat(process.env.SEGMENT_MIN_SEC || '1.2');
@@ -62,18 +63,35 @@ export function run(
   });
 }
 
+// Probe duration + video dimensions by parsing `ffmpeg -i` stderr (avoids a
+// separate ffprobe binary). ffmpeg exits non-zero when given no output, so we
+// read stderr from the thrown error too.
+function parseFfmpegInfo(stderr: string) {
+  let duration = 0;
+  const dm = stderr.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
+  if (dm) duration = (+dm[1]) * 3600 + (+dm[2]) * 60 + parseFloat(dm[3]);
+  let width: number | null = null;
+  let height: number | null = null;
+  const vm = stderr.match(/Video:.*?[,\s](\d{2,5})x(\d{2,5})/);
+  if (vm) { width = parseInt(vm[1], 10); height = parseInt(vm[2], 10); }
+  return { duration, width, height };
+}
+
+// `ffmpeg -i` with no output exits non-zero AND prints the "Duration:" line
+// near the top, so we can't use run()'s truncated error message — capture the
+// full stderr directly regardless of exit code.
+function ffmpegStderrForInput(file: string): Promise<string> {
+  return new Promise((resolve) => {
+    const p = spawn(FFMPEG, ['-hide_banner', '-i', file]);
+    let err = '';
+    p.stderr.on('data', (d) => (err += d.toString()));
+    p.on('error', () => resolve(err));
+    p.on('close', () => resolve(err));
+  });
+}
+
 export async function ffprobeInfo(file: string) {
-  const out = await run(
-    FFPROBE,
-    ['-v', 'error', '-select_streams', 'v:0',
-      '-show_entries', 'format=duration:stream=width,height',
-      '-of', 'json', file],
-    { capture: 'stdout' },
-  );
-  const j = JSON.parse(out || '{}');
-  const duration = parseFloat(j?.format?.duration || '0') || 0;
-  const st = (j.streams && j.streams[0]) || {};
-  return { duration, width: st.width || null, height: st.height || null };
+  return parseFfmpegInfo(await ffmpegStderrForInput(file));
 }
 
 export async function detectScenes(file: string): Promise<number[]> {
@@ -210,13 +228,7 @@ export const TARGET_W = 1080;
 export const TARGET_H = 1920;
 
 export async function probeDuration(file: string): Promise<number> {
-  const out = await run(
-    FFPROBE,
-    ['-v', 'error', '-show_entries', 'format=duration', '-of', 'json', file],
-    { capture: 'stdout' },
-  );
-  const j = JSON.parse(out || '{}');
-  return parseFloat(j?.format?.duration || '0') || 0;
+  return parseFfmpegInfo(await ffmpegStderrForInput(file)).duration;
 }
 
 export async function ttsScene(text: string, voice: string, outMp3: string) {
