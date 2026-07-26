@@ -425,6 +425,30 @@ function CreativeDetailPanel({
   const [buildStatus, setBuildStatus] = useState<string>("");
   const [buildVideos, setBuildVideos] = useState<{ id: number; file_path: string; thumb_path?: string | null; duration_sec: number }[]>([]);
   const [voice, setVoice] = useState("alloy");
+  const [previewVoiceLoading, setPreviewVoiceLoading] = useState(false);
+  const previewAudio = useRef<HTMLAudioElement | null>(null);
+  const previewVoice = async (v: string) => {
+    try {
+      if (previewAudio.current) { previewAudio.current.pause(); previewAudio.current = null; }
+      setPreviewVoiceLoading(true);
+      const r = await fetch(`/api/tts-sample?voice=${encodeURIComponent(v)}`);
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        toast({ title: j.error || "Voice preview failed", variant: "destructive" });
+        return;
+      }
+      const blob = await r.blob();
+      const audio = new Audio(URL.createObjectURL(blob));
+      previewAudio.current = audio;
+      audio.onended = () => { if (previewAudio.current === audio) previewAudio.current = null; };
+      await audio.play();
+    } catch {
+      toast({ title: "Voice preview failed", variant: "destructive" });
+    } finally {
+      setPreviewVoiceLoading(false);
+    }
+  };
+  useEffect(() => () => { if (previewAudio.current) previewAudio.current.pause(); }, []);
   const buildPoll = useRef<ReturnType<typeof setInterval> | null>(null);
   const loadBuildStatus = async () => {
     try {
@@ -664,12 +688,22 @@ function CreativeDetailPanel({
               <div className="flex items-center gap-2">
                 <select
                   value={voice}
-                  onChange={(e) => setVoice(e.target.value)}
+                  onChange={(e) => { setVoice(e.target.value); previewVoice(e.target.value); }}
                   className="h-8 text-xs rounded-md border border-border bg-background px-2 flex-1">
                   {["alloy", "echo", "fable", "onyx", "nova", "shimmer"].map((v) => (
                     <option key={v} value={v}>{`Voice: ${v}`}</option>
                   ))}
                 </select>
+                <button
+                  type="button"
+                  onClick={() => previewVoice(voice)}
+                  disabled={previewVoiceLoading}
+                  title="Preview this voice"
+                  className="h-8 w-8 shrink-0 grid place-items-center rounded-md border border-border bg-background hover:bg-muted disabled:opacity-50">
+                  {previewVoiceLoading
+                    ? <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    : <Play className="w-3.5 h-3.5" />}
+                </button>
                 <Button
                   onClick={buildVideo}
                   disabled={buildStatus === "pending" || buildStatus === "processing"}
