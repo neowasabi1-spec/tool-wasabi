@@ -72,6 +72,10 @@ openclaw-worker.log
 openclaw-worker.err.log
 worker-startup.log
 watchdog.log
+.tmp-segment-worker.log
+
+# Local worker secret (Supabase service_role key) — NEVER commit
+worker-key.txt
 
 # Supabase CLI local cache
 supabase/.temp/

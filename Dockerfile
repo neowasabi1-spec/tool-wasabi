@@ -25,8 +25,12 @@ RUN npx playwright install --with-deps chromium
 
 # ---- Runner ----
 FROM base AS runner
-# Dipendenze di sistema per Chromium (usa lo stesso script Playwright)
-RUN npx -y playwright@1.58.2 install-deps chromium
+# Dipendenze di sistema per Chromium (usa lo stesso script Playwright) +
+# ffmpeg/ffprobe per il video worker (segmentazione shot + assemblaggio video).
+RUN npx -y playwright@1.58.2 install-deps chromium \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends ffmpeg \
+ && rm -rf /var/lib/apt/lists/*
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN addgroup --system --gid 1001 nodejs
@@ -40,8 +44,15 @@ COPY --from=build /root/.cache/ms-playwright /home/nextjs/.cache/ms-playwright
 RUN chown -R nextjs:nodejs /home/nextjs/.cache
 ENV PLAYWRIGHT_BROWSERS_PATH=/home/nextjs/.cache/ms-playwright
 
+# Standalone Next output doesn't trace the standalone worker script, so copy it
+# in explicitly. @supabase/supabase-js is already in the traced node_modules.
+COPY --from=build --chown=nextjs:nodejs /app/video-segment-worker.js ./video-segment-worker.js
+COPY --from=build --chown=nextjs:nodejs /app/start.sh ./start.sh
+RUN chmod +x ./start.sh
+
 USER nextjs
 EXPOSE 3000
 ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
-CMD ["node", "server.js"]
+# Runs the web server (foreground) + video worker (background). See start.sh.
+CMD ["sh", "./start.sh"]
