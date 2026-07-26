@@ -101,6 +101,24 @@ function isWasabiTool() {
       .spin { display:inline-block; width:11px; height:11px; border:2px solid currentColor;
         border-right-color:transparent; border-radius:50%; animation:sp .7s linear infinite; vertical-align:-1px; margin-right:5px; }
       @keyframes sp { to { transform: rotate(360deg); } }
+      /* Bulk-select launcher + action bar */
+      .launch { position: fixed; bottom: 16px; left: 16px; display: flex; align-items: center; gap: 6px;
+        background: #0f172a; color: #fff; border: none; border-radius: 999px; padding: 9px 14px;
+        font-size: 12px; font-weight: 800; cursor: pointer; box-shadow: 0 6px 20px rgba(0,0,0,.35);
+        z-index: 2147483647; }
+      .launch:hover { background: #1e293b; }
+      .launch.on { background: #4f46e5; }
+      .launch svg { width: 14px; height: 14px; }
+      .bar { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); display: none;
+        align-items: center; gap: 10px; background: #0f172a; color: #fff; border-radius: 14px;
+        padding: 10px 12px 10px 16px; font-size: 12px; font-weight: 700;
+        box-shadow: 0 12px 34px rgba(0,0,0,.45); z-index: 2147483647; }
+      .bar b { color: #a5b4fc; }
+      .bar button { font-size: 12px; font-weight: 800; border: none; border-radius: 8px; padding: 8px 12px; cursor: pointer; }
+      .bar .imp { background: #4f46e5; color: #fff; } .bar .imp:hover { background: #4338ca; }
+      .bar .imp:disabled { opacity: .5; cursor: default; }
+      .bar .clr { background: #334155; color: #e2e8f0; } .bar .clr:hover { background: #475569; }
+      .bar .done { background: transparent; color: #94a3b8; padding: 8px 6px; } .bar .done:hover { color: #e2e8f0; }
     </style>
     <button class="btn" id="btn" type="button">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>
@@ -128,13 +146,25 @@ function isWasabiTool() {
         <label>Ad Library URL</label>
         <input id="adsUrl" type="text" placeholder="https://www.facebook.com/ads/library/?..." />
       </div>
-      <label>Name</label>
-      <input id="cname" type="text" placeholder="Creative name" />
+      <div id="nameRow">
+        <label>Name</label>
+        <input id="cname" type="text" placeholder="Creative name" />
+      </div>
       <div class="row">
         <button class="cancel" id="cancel" type="button">Cancel</button>
         <button class="save" id="doSave" type="button">Save</button>
       </div>
       <div class="status muted" id="status"></div>
+    </div>
+    <button class="launch" id="launch" type="button">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+      <span id="launchLabel">Select creatives</span>
+    </button>
+    <div class="bar" id="bar">
+      <span><b id="selCount">0</b> selected</span>
+      <button class="imp" id="importSel" type="button" disabled>Import selected</button>
+      <button class="clr" id="clearSel" type="button">Clear</button>
+      <button class="done" id="exitSel" type="button">Done</button>
     </div>
   `;
   (document.documentElement || document.body).appendChild(host);
@@ -153,11 +183,107 @@ function isWasabiTool() {
   const popBadge = root.getElementById('popBadge');
   const popHost = root.getElementById('popHost');
   const thumbWrap = root.getElementById('thumbWrap');
+  const nameRow = root.getElementById('nameRow');
+  const launchBtn = root.getElementById('launch');
+  const launchLabel = root.getElementById('launchLabel');
+  const bar = root.getElementById('bar');
+  const selCountEl = root.getElementById('selCount');
+  const importSelBtn = root.getElementById('importSel');
 
   let currentMedia = null; // element the button currently points at
   let hideTimer = null;
   let projectsCache = null;
   const competitorsCache = {}; // projectId -> [{id,name}]
+
+  // ── Bulk selection ─────────────────────────────────────────────────────────
+  let selectMode = false;
+  // element -> { src, isVideo, name }. We snapshot the src at selection time
+  // because ad-library pages virtualize/recycle nodes as you scroll.
+  const selected = new Map();
+  const prevOutline = new WeakMap();
+
+  function renderBtn() {
+    const isSel = currentMedia && selected.has(currentMedia);
+    if (selectMode) {
+      btn.innerHTML = isSel
+        ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg> Selected'
+        : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg> Select';
+      btn.style.background = isSel ? '#16a34a' : '#4f46e5';
+    } else {
+      btn.innerHTML =
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg> Save';
+      btn.style.background = '';
+    }
+  }
+
+  function applyOutline(el) {
+    if (!prevOutline.has(el)) {
+      prevOutline.set(el, { outline: el.style.outline, offset: el.style.outlineOffset });
+    }
+    el.style.outline = '3px solid #4f46e5';
+    el.style.outlineOffset = '2px';
+  }
+
+  function restoreOutline(el) {
+    const prev = prevOutline.get(el);
+    if (prev) {
+      el.style.outline = prev.outline;
+      el.style.outlineOffset = prev.offset;
+      prevOutline.delete(el);
+    } else {
+      el.style.outline = '';
+      el.style.outlineOffset = '';
+    }
+  }
+
+  function guessName(el) {
+    const g = (el.getAttribute('alt') || document.title || 'Creative').trim();
+    return g.slice(0, 120);
+  }
+
+  function toggleSelect(el) {
+    if (!el) return;
+    if (selected.has(el)) {
+      selected.delete(el);
+      restoreOutline(el);
+    } else {
+      selected.set(el, {
+        src: currentSrc(el),
+        isVideo: el.tagName === 'VIDEO',
+        name: guessName(el),
+      });
+      applyOutline(el);
+    }
+    updateBar();
+    renderBtn();
+  }
+
+  function updateBar() {
+    selCountEl.textContent = String(selected.size);
+    importSelBtn.disabled = selected.size === 0;
+  }
+
+  function setSelectMode(on) {
+    selectMode = on;
+    launchBtn.classList.toggle('on', on);
+    launchLabel.textContent = on ? 'Selecting…' : 'Select creatives';
+    bar.style.display = on ? 'flex' : 'none';
+    if (!on) clearSelection();
+    hideButton();
+  }
+
+  function clearSelection() {
+    for (const el of selected.keys()) restoreOutline(el);
+    selected.clear();
+    updateBar();
+  }
+
+  launchBtn.addEventListener('click', () => setSelectMode(!selectMode));
+  root.getElementById('clearSel').addEventListener('click', clearSelection);
+  root.getElementById('exitSel').addEventListener('click', () => setSelectMode(false));
+  importSelBtn.addEventListener('click', () => {
+    if (selected.size > 0) openPopover(true);
+  });
 
   function sendMessage(msg) {
     return new Promise((resolve) => {
@@ -187,6 +313,7 @@ function isWasabiTool() {
       hideButton();
       return;
     }
+    renderBtn();
     btn.style.display = 'flex';
     // measure after display
     const bw = btn.offsetWidth || 78;
@@ -365,10 +492,21 @@ function isWasabiTool() {
   // and the box scrolls internally if it can't fit.
   function positionPopover() {
     const margin = 8;
-    const br = btn.getBoundingClientRect();
     const pw = pop.offsetWidth || 280;
     const ph = pop.offsetHeight || 300;
 
+    // Batch mode has no anchor button — center the popover.
+    if (pop.__batch) {
+      let left = (innerWidth - pw) / 2;
+      if (left < margin) left = margin;
+      let top = (innerHeight - ph) / 2;
+      if (top < margin) top = margin;
+      pop.style.left = left + 'px';
+      pop.style.top = top + 'px';
+      return;
+    }
+
+    const br = btn.getBoundingClientRect();
     let left = Math.min(br.left, innerWidth - pw - margin);
     if (left < margin) left = margin;
 
@@ -380,22 +518,39 @@ function isWasabiTool() {
     pop.style.top = top + 'px';
   }
 
-  async function openPopover() {
-    if (!currentMedia) return;
-    const media = currentMedia;
-    const isVideo = media.tagName === 'VIDEO';
-    const src = currentSrc(media);
+  async function openPopover(batch) {
+    const isBatch = batch === true;
+    pop.__batch = isBatch;
+    if (!isBatch && !currentMedia) return;
+    if (isBatch && selected.size === 0) return;
 
-    popBadge.textContent = isVideo ? 'Video' : 'Image';
+    const media = isBatch ? null : currentMedia;
+    const isVideo = media ? media.tagName === 'VIDEO' : false;
+    const src = media ? currentSrc(media) : '';
+
+    // Batch: single name-per-item makes no sense; hide it and title with count.
+    nameRow.style.display = isBatch ? 'none' : 'block';
+    const h4 = pop.querySelector('h4');
+    if (h4) h4.textContent = isBatch
+      ? `Import ${selected.size} creative${selected.size === 1 ? '' : 's'}`
+      : 'Save to Competitor Library';
+
+    popBadge.textContent = isBatch ? `${selected.size} selected` : (isVideo ? 'Video' : 'Image');
     try {
       popHost.textContent = new URL(location.href).hostname.replace(/^www\./, '');
     } catch {
       popHost.textContent = '';
     }
 
-    // Thumbnail
+    // Thumbnail (single only)
     thumbWrap.innerHTML = '';
-    if (isVideo) {
+    if (isBatch) {
+      const d = document.createElement('div');
+      d.className = 'thumb vid';
+      d.innerHTML =
+        '<svg viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,.75)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>';
+      thumbWrap.appendChild(d);
+    } else if (isVideo) {
       const d = document.createElement('div');
       d.className = 'thumb vid';
       d.innerHTML =
@@ -408,9 +563,8 @@ function isWasabiTool() {
       thumbWrap.appendChild(img);
     }
 
-    // Default name
-    let guess = (media.getAttribute('alt') || document.title || 'Creative').trim();
-    nameInput.value = guess.slice(0, 120);
+    // Default name (single only)
+    if (!isBatch) nameInput.value = guessName(media);
 
     // Reset auto-scrape controls; prefill the Ad Library URL with this page.
     autoScrape.checked = false;
@@ -458,6 +612,8 @@ function isWasabiTool() {
   function closePopover() {
     pop.style.display = 'none';
     pop.__media = null;
+    pop.__batch = false;
+    nameRow.style.display = 'block';
     setStatus('', 'muted');
     hideButton();
   }
@@ -465,7 +621,11 @@ function isWasabiTool() {
   btn.addEventListener('click', (e) => {
     e.preventDefault();
     e.stopPropagation();
-    openPopover();
+    if (selectMode) {
+      toggleSelect(currentMedia);
+    } else {
+      openPopover();
+    }
   });
   root.getElementById('cancel').addEventListener('click', closePopover);
 
@@ -497,21 +657,22 @@ function isWasabiTool() {
     }
   }
 
-  root.getElementById('doSave').addEventListener('click', async () => {
-    const media = pop.__media;
-    const src = pop.__src;
-    const isVideo = pop.__isVideo;
-    if (!media) return;
-    const projectId = projSel.value;
-    if (!projectId) {
-      setStatus('Pick a project first.', 'err');
-      return;
+  // Apply the shared destination controls (competitor + auto-scrape) onto a payload.
+  function applyDestination(payload) {
+    if (compSel.value === '__new__') {
+      payload.brandName = newCompInput.value.trim() || domainName();
+    } else if (compSel.value) {
+      payload.brandId = Number(compSel.value);
     }
+    if (autoScrape.checked) {
+      payload.autoScrape = true;
+      payload.frequency = freqSel.value;
+      payload.adsLibraryUrl = adsUrlInput.value.trim() || location.href;
+    }
+  }
 
-    const saveBtn = root.getElementById('doSave');
-    saveBtn.disabled = true;
-    setStatus('<span class="spin"></span>Saving…', 'muted');
-
+  // Build a SAVE_CREATIVE payload for one media. Returns { payload } or { error }.
+  async function buildCreativePayload(projectId, src, isVideo, name) {
     const payload = {
       type: 'SAVE_CREATIVE',
       projectId,
@@ -519,22 +680,9 @@ function isWasabiTool() {
       pageTitle: document.title || '',
       mediaUrl: /^https?:\/\//i.test(src) ? src : '',
       mediaType: isVideo ? 'video' : 'image',
-      name: nameInput.value.trim(),
+      name: (name || '').trim(),
     };
-
-    // Destination competitor: explicit id, a new named brand, or auto-by-domain.
-    if (compSel.value === '__new__') {
-      payload.brandName = newCompInput.value.trim() || domainName();
-    } else if (compSel.value) {
-      payload.brandId = Number(compSel.value);
-    }
-
-    // Optional auto-scraping config applied to the destination competitor.
-    if (autoScrape.checked) {
-      payload.autoScrape = true;
-      payload.frequency = freqSel.value;
-      payload.adsLibraryUrl = adsUrlInput.value.trim() || location.href;
-    }
+    applyDestination(payload);
 
     // For blob:/data: sources we must ship the bytes ourselves.
     if (!payload.mediaUrl && src) {
@@ -543,17 +691,73 @@ function isWasabiTool() {
         payload.mediaBase64 = inline.base64;
         payload.contentType = inline.type;
       } else if (isVideo) {
-        setStatus('Video too large to save directly — enable auto-scraping with the Ad Library URL instead.', 'err');
-        saveBtn.disabled = false;
-        return;
+        return { error: 'video too large / streamed' };
       } else {
-        setStatus('Could not read this media (too large or protected).', 'err');
-        saveBtn.disabled = false;
-        return;
+        return { error: 'could not read media' };
       }
     }
+    return { payload };
+  }
 
-    const res = await sendMessage(payload);
+  async function importSelected(projectId, saveBtn) {
+    const items = [...selected.values()];
+    let ok = 0;
+    let fail = 0;
+    for (let i = 0; i < items.length; i++) {
+      setStatus(`<span class="spin"></span>Importing ${i + 1}/${items.length}…`, 'muted');
+      const it = items[i];
+      const built = await buildCreativePayload(projectId, it.src, it.isVideo, it.name);
+      if (built.error) { fail++; continue; }
+      const res = await sendMessage(built.payload);
+      if (res && res.ok) ok++;
+      else fail++;
+    }
+    await chrome.storage.local.set({ wasabi_last_project: projectId }).catch(() => {});
+    saveBtn.disabled = false;
+    setStatus(
+      `Imported ${ok}/${items.length}${fail ? ` · ${fail} skipped (large/streamed videos)` : ''}`,
+      fail && !ok ? 'err' : 'ok',
+    );
+    if (ok > 0) {
+      clearSelection();
+      setTimeout(() => { closePopover(); setSelectMode(false); }, 2200);
+    }
+  }
+
+  root.getElementById('doSave').addEventListener('click', async () => {
+    const projectId = projSel.value;
+    if (!projectId) {
+      setStatus('Pick a project first.', 'err');
+      return;
+    }
+    const saveBtn = root.getElementById('doSave');
+    saveBtn.disabled = true;
+
+    // Batch import path.
+    if (pop.__batch) {
+      await importSelected(projectId, saveBtn);
+      return;
+    }
+
+    // Single save path.
+    const src = pop.__src;
+    const isVideo = pop.__isVideo;
+    if (!pop.__media) { saveBtn.disabled = false; return; }
+    setStatus('<span class="spin"></span>Saving…', 'muted');
+
+    const built = await buildCreativePayload(projectId, src, isVideo, nameInput.value);
+    if (built.error) {
+      setStatus(
+        isVideo
+          ? 'Video too large to save directly — enable auto-scraping with the Ad Library URL instead.'
+          : 'Could not read this media (too large or protected).',
+        'err',
+      );
+      saveBtn.disabled = false;
+      return;
+    }
+
+    const res = await sendMessage(built.payload);
     saveBtn.disabled = false;
     if (res && res.ok) {
       await chrome.storage.local.set({ wasabi_last_project: projectId }).catch(() => {});
