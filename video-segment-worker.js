@@ -582,9 +582,22 @@ async function processBuildJob(job) {
   }
 }
 
+// Heartbeat so /api/worker-health (same container on Fly) can confirm the
+// worker is actually alive, independent of whether jobs exist.
+const HEARTBEAT_FILE = path.join(os.tmpdir(), 'wasabi-video-worker.json');
+function heartbeat() {
+  try {
+    fs.writeFileSync(
+      HEARTBEAT_FILE,
+      JSON.stringify({ ts: Date.now(), pid: process.pid, ocr: !!OPENAI_API_KEY }),
+    );
+  } catch { /* ignore */ }
+}
+
 async function loop() {
   // eslint-disable-next-line no-constant-condition
   while (true) {
+    heartbeat();
     // 0) Recover jobs orphaned on 'processing' by a previous crash/deploy.
     await reclaimStale();
 
