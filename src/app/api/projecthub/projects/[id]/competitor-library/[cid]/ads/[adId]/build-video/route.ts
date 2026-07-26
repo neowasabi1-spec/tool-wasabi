@@ -9,6 +9,22 @@ export const maxDuration = 120;
 
 const OPENAI_VOICES = ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'];
 
+/** Fire the build background function (fire-and-forget; it responds 202). */
+async function triggerBuildBackground(
+  origin: string,
+  payload: { jobId: number; projectId: string; brandId: number; adId: number },
+) {
+  try {
+    await fetch(`${origin}/.netlify/functions/build-video-background`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  } catch (e) {
+    console.warn('[build-video] background trigger failed:', (e as Error).message);
+  }
+}
+
 const SPLIT_SYSTEM = `You split a short direct-response video ad script into an ordered list of spoken VOICEOVER lines for a vertical short-form video.
 
 Rules:
@@ -84,6 +100,11 @@ export async function POST(
     .in('status', ['pending', 'processing'])
     .maybeSingle();
   if (active?.id) {
+    if (active.status === 'pending') {
+      await triggerBuildBackground(new URL(req.url).origin, {
+        jobId: active.id, projectId: id, brandId: brandIdNum, adId: adIdNum,
+      });
+    }
     return NextResponse.json({ jobId: active.id, status: active.status, queued: false });
   }
 
@@ -134,15 +155,9 @@ export async function POST(
   }
 
   // Fire the Netlify background function that does the ffmpeg+TTS assembly.
-  try {
-    await fetch(`${new URL(req.url).origin}/.netlify/functions/build-video-background`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ jobId: job.id, projectId: id, brandId: brandIdNum, adId: adIdNum }),
-    });
-  } catch (e) {
-    console.warn('[build-video] background trigger failed:', (e as Error).message);
-  }
+  await triggerBuildBackground(new URL(req.url).origin, {
+    jobId: job.id, projectId: id, brandId: brandIdNum, adId: adIdNum,
+  });
 
   return NextResponse.json({ jobId: job.id, status: job.status, scenes: scenes.length, queued: true });
 }

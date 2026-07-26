@@ -63,6 +63,13 @@ export async function POST(
     .in('status', ['pending', 'processing'])
     .maybeSingle();
   if (active?.id) {
+    // Re-fire the background function for a still-pending job in case the
+    // original trigger was lost (e.g. queued before this mechanism existed).
+    if (active.status === 'pending') {
+      await triggerBackground(new URL(req.url).origin, {
+        jobId: active.id, projectId: id, brandId: brandIdNum, adId: adIdNum,
+      });
+    }
     return NextResponse.json({ jobId: active.id, status: active.status, queued: false });
   }
 
