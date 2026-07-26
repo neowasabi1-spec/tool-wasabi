@@ -8,9 +8,27 @@ export const runtime = 'nodejs';
 /**
  * Phase 2 — enqueue "split this competitor video into shots".
  *
- * POST → queue a video_segment_jobs row for the local ffmpeg worker.
+ * POST → create a video_segment_jobs row, then fire the Netlify background
+ *        function (segment-video-background) that does the ffmpeg work online.
  * GET  → latest job status + how many shots exist for this creative.
  */
+
+/** Fire the background function without blocking on the (15-min) work. It
+ *  responds 202 immediately; Netlify keeps running it after we return. */
+async function triggerBackground(
+  origin: string,
+  payload: { jobId: number; projectId: string; brandId: number; adId: number },
+) {
+  try {
+    await fetch(`${origin}/.netlify/functions/segment-video-background`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  } catch (e) {
+    console.warn('[segment] background trigger failed:', (e as Error).message);
+  }
+}
 export async function POST(
   req: NextRequest,
   { params }: { params: { id: string; cid: string; adId: string } },
@@ -56,6 +74,13 @@ export async function POST(
   if (error || !job) {
     return NextResponse.json({ error: error?.message || 'Failed to queue job' }, { status: 500 });
   }
+
+  await triggerBackground(new URL(req.url).origin, {
+    jobId: job.id,
+    projectId: id,
+    brandId: brandIdNum,
+    adId: adIdNum,
+  });
 
   return NextResponse.json({ jobId: job.id, status: job.status, queued: true });
 }

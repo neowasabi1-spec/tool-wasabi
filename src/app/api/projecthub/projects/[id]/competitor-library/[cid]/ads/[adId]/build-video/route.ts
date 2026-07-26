@@ -133,6 +133,17 @@ export async function POST(
     return NextResponse.json({ error: error?.message || 'Failed to queue build' }, { status: 500 });
   }
 
+  // Fire the Netlify background function that does the ffmpeg+TTS assembly.
+  try {
+    await fetch(`${new URL(req.url).origin}/.netlify/functions/build-video-background`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jobId: job.id, projectId: id, brandId: brandIdNum, adId: adIdNum }),
+    });
+  } catch (e) {
+    console.warn('[build-video] background trigger failed:', (e as Error).message);
+  }
+
   return NextResponse.json({ jobId: job.id, status: job.status, scenes: scenes.length, queued: true });
 }
 

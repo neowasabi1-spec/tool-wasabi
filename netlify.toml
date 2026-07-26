@@ -17,12 +17,20 @@
 #   restano fuori dal bundle (richiesto perché serverComponentsExternalPackages
 #   in next.config.js li tratta come "external" lato Next, ma Netlify
 #   ha la sua propria fase di bundling con esbuild che li toglie).
+#   ffmpeg-static / ffprobe-static: idem per le background function video —
+#   restano esterne così la loro risoluzione del path binario (__dirname)
+#   continua a funzionare dopo il bundling.
 # - included_files: forza l'inclusione del codice JS di chromium-min nel
 #   working directory della function (il binario Chromium NON viene
-#   bundleato, viene scaricato a runtime dal remote tar URL).
+#   bundleato, viene scaricato a runtime dal remote tar URL). Aggiunti anche
+#   i binari ffmpeg (scaricato in build da ffmpeg-static) e ffprobe (nel pacchetto).
 [functions]
-  external_node_modules = ["@sparticuz/chromium-min", "playwright-core"]
-  included_files = ["node_modules/@sparticuz/chromium-min/**"]
+  external_node_modules = ["@sparticuz/chromium-min", "playwright-core", "ffmpeg-static", "ffprobe-static"]
+  included_files = [
+    "node_modules/@sparticuz/chromium-min/**",
+    "node_modules/ffmpeg-static/ffmpeg",
+    "node_modules/ffprobe-static/bin/**",
+  ]
 
 # Override timeout solo per la function unica del Next adapter, così le
 # route con maxDuration alto (clone/swipe/checkpoint/diagnose-fetch) hanno
