@@ -244,6 +244,27 @@ async function uploadFile(objectKey, localFile, contentType) {
 }
 
 // ── Job processing ──────────────────────────────────────────────────────────
+// Deploys (Fly restarts the machine) can kill a worker mid-job, leaving the row
+// stuck on 'processing' forever. Reset any 'processing' job whose started_at is
+// older than STALE_MS back to 'pending' so it gets retried. The worker is
+// single-threaded and only runs this between jobs, so it can't reclaim its own
+// in-flight job. STALE_MS is generous to avoid stealing a genuinely-long build.
+const STALE_MS = parseInt(process.env.SEGMENT_STALE_MS || '900000', 10); // 15 min
+async function reclaimStale() {
+  const cutoff = new Date(Date.now() - STALE_MS).toISOString();
+  for (const table of ['video_segment_jobs', 'video_build_jobs']) {
+    try {
+      const { data } = await supabase
+        .from(table)
+        .update({ status: 'pending', started_at: null })
+        .eq('status', 'processing')
+        .lt('started_at', cutoff)
+        .select('id');
+      if (data && data.length) log(`reclaimed ${data.length} stale job(s) in ${table}`);
+    } catch { /* ignore */ }
+  }
+}
+
 async function claimJob() {
   const { data: pending } = await supabase
     .from('video_segment_jobs')
@@ -564,6 +585,9 @@ async function processBuildJob(job) {
 async function loop() {
   // eslint-disable-next-line no-constant-condition
   while (true) {
+    // 0) Recover jobs orphaned on 'processing' by a previous crash/deploy.
+    await reclaimStale();
+
     // 1) Segmentation jobs.
     let segJob = null;
     try { segJob = await claimJob(); } catch (e) { errlog('seg claim failed:', e.message); }

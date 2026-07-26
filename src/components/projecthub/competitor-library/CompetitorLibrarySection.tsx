@@ -653,7 +653,7 @@ function CreativeDetailPanel({
                 <p className="text-[9px] text-muted-foreground uppercase tracking-widest font-semibold">Real footage shots</p>
               </div>
               <p className="text-[10px] text-muted-foreground leading-snug">
-                Split this video into individual shots (audio removed) to reuse as real B-roll. Needs the local ffmpeg worker running.
+                Split this video into individual shots (audio removed) to reuse as real B-roll. Runs on the server — may take a minute or two.
               </p>
               <div className="flex items-center gap-2">
                 <Button
@@ -683,7 +683,7 @@ function CreativeDetailPanel({
                 <p className="text-[9px] text-muted-foreground uppercase tracking-widest font-semibold">Recreate video (real footage)</p>
               </div>
               <p className="text-[10px] text-muted-foreground leading-snug">
-                Assembles a new video from your CLEAN shots + a voiceover of your script + your subtitles. Uses the rewritten script if present. Needs the worker + OpenAI key.
+                Assembles a new video from your CLEAN shots + a voiceover of your script + your subtitles. Uses the rewritten script if present. Runs on the server (needs an OpenAI key for the voice).
               </p>
               <div className="flex items-center gap-2">
                 <select
