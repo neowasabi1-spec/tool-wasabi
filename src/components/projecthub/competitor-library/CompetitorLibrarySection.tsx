@@ -8,7 +8,7 @@ import {
   BarChart2, Calendar, Globe, X, RefreshCw, Image as ImageIcon,
   Video, Bookmark, CheckSquare, Square, TrendingUp, Download, Copy, Check,
   Settings, Zap, FileText, Eye, LayoutTemplate, Repeat, Star, Flame,
-  Scissors, Film,
+  Scissors, Film, Sparkles,
 } from "lucide-react";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
@@ -424,6 +424,9 @@ function CreativeDetailPanel({
   // Phase 2 step 2 — recreate a new video from clean shots + our voice.
   const [buildStatus, setBuildStatus] = useState<string>("");
   const [buildVideos, setBuildVideos] = useState<{ id: number; file_path: string; thumb_path?: string | null; duration_sec: number }[]>([]);
+  // Show the finished video inline only right after a build done in THIS session;
+  // otherwise it lives permanently in the "New Creatives" tab, not pinned here.
+  const [showInline, setShowInline] = useState(false);
   const [voice, setVoice] = useState("alloy");
   const [previewVoiceLoading, setPreviewVoiceLoading] = useState(false);
   const previewAudio = useRef<HTMLAudioElement | null>(null);
@@ -468,6 +471,7 @@ function CreativeDetailPanel({
   }, [ad.id]);
   const buildVideo = async () => {
     setBuildStatus("pending");
+    setShowInline(true);
     try {
       const r = await fetch(`/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/${ad.id}/build-video`, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ voice }),
@@ -716,20 +720,21 @@ function CreativeDetailPanel({
               {buildStatus === "error" && (
                 <p className="text-[10px] text-destructive">Build failed — check the worker logs.</p>
               )}
-              {buildVideos.length > 0 && (
-                <div className="space-y-2 pt-1">
-                  {buildVideos.map((v) => (
-                    <div key={v.id} className="rounded-lg overflow-hidden border border-border bg-black/5">
-                      <video src={getUploadUrl(v.file_path)} controls playsInline preload="metadata" className="w-full bg-black max-h-64" />
-                      <div className="flex items-center justify-between px-2 py-1.5">
-                        <span className="text-[10px] text-muted-foreground">{v.duration_sec}s · real footage</span>
-                        <button onClick={() => downloadCreative({ file_path: v.file_path, name: "recreated", media_type: "video" })}
-                          className="flex items-center gap-1 text-[10px] font-semibold text-primary hover:underline">
-                          <Download className="w-3 h-3" /> Download
-                        </button>
-                      </div>
+              {showInline && buildStatus !== "pending" && buildStatus !== "processing" && buildVideos[0] && (
+                <div className="space-y-1.5 pt-1">
+                  <div className="rounded-lg overflow-hidden border border-border bg-black/5">
+                    <video src={getUploadUrl(buildVideos[0].file_path)} controls playsInline preload="metadata" className="w-full bg-black max-h-64" />
+                    <div className="flex items-center justify-between px-2 py-1.5">
+                      <span className="text-[10px] text-muted-foreground">{Math.round(buildVideos[0].duration_sec)}s · new creative</span>
+                      <button onClick={() => downloadCreative({ file_path: buildVideos[0].file_path, name: "recreated", media_type: "video" })}
+                        className="flex items-center gap-1 text-[10px] font-semibold text-primary hover:underline">
+                        <Download className="w-3 h-3" /> Download
+                      </button>
                     </div>
-                  ))}
+                  </div>
+                  <p className="text-[10px] text-muted-foreground flex items-center gap-1">
+                    <Sparkles className="w-3 h-3 text-primary" /> Saved to the <b>New Creatives</b> tab.
+                  </p>
                 </div>
               )}
             </div>
@@ -1769,13 +1774,138 @@ function ShotsLibraryView({ projectId }: { projectId: string }) {
   );
 }
 
+type GeneratedVideo = {
+  id: number;
+  project_id: string;
+  brand_id: number;
+  ad_id: number;
+  file_path: string;
+  thumb_path?: string | null;
+  duration_sec: number;
+  script?: string | null;
+  voice?: string | null;
+  created_at: string;
+};
+
+function GeneratedVideosView({ projectId }: { projectId: string }) {
+  const { toast } = useToast();
+  const [videos, setVideos] = useState<GeneratedVideo[]>([]);
+  const [brandNames, setBrandNames] = useState<Record<number, string>>({});
+  const [loading, setLoading] = useState(true);
+  const [playing, setPlaying] = useState<GeneratedVideo | null>(null);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const [vr, br] = await Promise.all([
+        fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/generated-videos`),
+        fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library`),
+      ]);
+      const vj = await vr.json().catch(() => []);
+      setVideos(Array.isArray(vj) ? vj : []);
+      const bj = await br.json().catch(() => []);
+      const map: Record<number, string> = {};
+      for (const b of Array.isArray(bj) ? bj : []) map[b.id] = b.name;
+      setBrandNames(map);
+    } catch { setVideos([]); }
+    finally { setLoading(false); }
+  };
+  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [projectId]);
+
+  const remove = async (v: GeneratedVideo) => {
+    setVideos((p) => p.filter((x) => x.id !== v.id));
+    try { await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/generated-videos/${v.id}`, { method: "DELETE" }); }
+    catch { toast({ title: "Delete failed", variant: "destructive" }); }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <h3 className="text-lg font-bold text-foreground">New creatives</h3>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            Videos you recreated from real footage + AI b-roll. Open a competitor video and use <b>Recreate video</b> to make more.
+          </p>
+        </div>
+        <Button variant="outline" size="sm" onClick={load} className="gap-1.5 h-8">
+          <RefreshCw className="w-3.5 h-3.5" /> Refresh
+        </Button>
+      </div>
+
+      {loading ? (
+        <div className="py-16 text-center text-sm text-muted-foreground">Loading…</div>
+      ) : videos.length === 0 ? (
+        <div className="py-20 text-center border-2 border-dashed border-border rounded-2xl">
+          <Sparkles className="w-12 h-12 text-muted-foreground/30 mx-auto mb-3" />
+          <p className="text-sm font-semibold text-foreground mb-1">No recreated videos yet</p>
+          <p className="text-xs text-muted-foreground max-w-md mx-auto">
+            Open a competitor video, generate your script, then click <b>Build video</b>. Finished videos land here.
+          </p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+          {videos.map((v) => (
+            <div key={v.id} className="group relative rounded-xl overflow-hidden border border-border bg-black/5">
+              <button onClick={() => setPlaying(v)} className="block w-full aspect-[9/16] bg-black">
+                {v.thumb_path
+                  ? <img src={getUploadUrl(v.thumb_path)} alt="" className="w-full h-full object-cover" />
+                  : <div className="w-full h-full flex items-center justify-center text-white/40"><Play className="w-7 h-7" /></div>}
+              </button>
+              <span className="absolute top-1.5 left-1.5 text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-black/70 text-white">
+                {Math.round(v.duration_sec)}s
+              </span>
+              <span className="absolute top-1.5 right-1.5 text-[9px] font-black px-1.5 py-0.5 rounded-full bg-primary text-primary-foreground">
+                NEW
+              </span>
+              {brandNames[v.brand_id] && (
+                <span className="absolute bottom-9 left-1.5 max-w-[80%] truncate text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-black/70 text-white">
+                  {brandNames[v.brand_id]}
+                </span>
+              )}
+              <div className="flex items-center justify-between px-2 py-1.5 bg-background">
+                <button
+                  onClick={() => downloadCreative({ file_path: v.file_path, name: `creative-${v.id}`, media_type: "video" })}
+                  className="flex items-center gap-1 text-[10px] font-semibold text-primary hover:underline">
+                  <Download className="w-3 h-3" /> Download
+                </button>
+                <button onClick={() => remove(v)} className="text-muted-foreground hover:text-destructive" title="Delete">
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {playing && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-6" onClick={() => setPlaying(null)}>
+          <div className="absolute inset-0 bg-black/80" />
+          <div className="relative flex flex-col items-center gap-3" onClick={(e) => e.stopPropagation()}>
+            <video
+              src={getUploadUrl(playing.file_path)}
+              controls autoPlay loop playsInline
+              className="max-h-[78vh] max-w-full rounded-xl bg-black"
+            />
+            <button
+              onClick={() => downloadCreative({ file_path: playing.file_path, name: `creative-${playing.id}`, media_type: "video" })}
+              className="flex items-center gap-1.5 text-sm font-semibold text-white bg-primary px-4 py-2 rounded-lg hover:opacity-90">
+              <Download className="w-4 h-4" /> Download
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── MAIN EXPORT ──
-type Tab = "ads" | "landings" | "shots" | "funnel";
+type Tab = "ads" | "landings" | "shots" | "generated" | "funnel";
 
 const LIBRARY_TABS = [
   { id: "ads" as Tab, label: "Ads Library", icon: BarChart2 },
   { id: "landings" as Tab, label: "Landings", icon: LayoutTemplate },
   { id: "shots" as Tab, label: "Shots", icon: Film },
+  { id: "generated" as Tab, label: "New Creatives", icon: Sparkles },
   { id: "funnel" as Tab, label: "Funnel Monitoring", icon: TrendingUp },
 ] as const;
 
@@ -1823,6 +1953,8 @@ export function CompetitorLibrarySection({ projectId }: { projectId: string }) {
       {tab === "landings" && <CompetitorLandingsView projectId={projectId} />}
 
       {tab === "shots" && <ShotsLibraryView projectId={projectId} />}
+
+      {tab === "generated" && <GeneratedVideosView projectId={projectId} />}
 
       {tab === "ads" && (
         <div className="space-y-4">

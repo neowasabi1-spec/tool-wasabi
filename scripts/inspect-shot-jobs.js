@@ -1,7 +1,6 @@
 /* Quick diagnostic for the video shot pipeline.
- * Prints the latest video_segment_jobs + shot counts so we can tell whether
- * the local worker is picking jobs up.
- *
+ * Prints the latest video_segment_jobs (with ids needed to trigger the
+ * background function) + shot counts.
  *   node scripts/inspect-shot-jobs.js
  */
 const { createClient } = require('@supabase/supabase-js');
@@ -23,15 +22,13 @@ const KEY =
 
   if (error) {
     console.log('ERROR reading video_segment_jobs:', error.message);
-    console.log('→ Table missing? Run supabase-migration-video-shots.sql');
     process.exit(0);
   }
 
   console.log(`\nvideo_segment_jobs (latest ${jobs.length}):`);
   for (const j of jobs) {
     console.log(
-      `  #${j.id} status=${j.status} ad=${j.ad_id} shots=${j.shots_count} ` +
-        `created=${j.created_at} started=${j.started_at || '-'} finished=${j.finished_at || '-'}` +
+      `  #${j.id} status=${j.status} project=${j.project_id} brand=${j.brand_id} ad=${j.ad_id} shots=${j.shots_count}` +
         (j.error ? `\n     error: ${j.error}` : ''),
     );
   }
@@ -40,12 +37,4 @@ const KEY =
     .from('competitor_shots')
     .select('id', { count: 'exact', head: true });
   console.log(`\ncompetitor_shots total: ${count ?? 'n/a'}`);
-
-  const pending = jobs.filter((j) => j.status === 'pending').length;
-  const processing = jobs.filter((j) => j.status === 'processing').length;
-  console.log(`\nSummary: pending=${pending} processing=${processing}`);
-  if (pending > 0 && processing === 0) {
-    console.log('→ Jobs are PENDING but none PROCESSING: the worker is NOT running.');
-    console.log('  Start it:  node video-segment-worker.js  (with SUPABASE_SERVICE_KEY set)');
-  }
 })();
