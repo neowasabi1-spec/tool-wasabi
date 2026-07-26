@@ -8,6 +8,7 @@ import {
   BarChart2, Calendar, Globe, X, RefreshCw, Image as ImageIcon,
   Video, Bookmark, CheckSquare, Square, TrendingUp, Download, Copy, Check,
   Settings, Zap, FileText, Eye, LayoutTemplate, Repeat, Star, Flame,
+  Scissors, Film,
 } from "lucide-react";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
@@ -212,6 +213,120 @@ function Mosaic({ items }: { items: { file_path: string; media_type: string }[] 
   );
 }
 
+// A real-footage "shot" cut from a competitor video by the local ffmpeg worker.
+type Shot = {
+  id: number;
+  ad_id: number;
+  brand_id: number;
+  file_path: string;
+  thumb_path?: string | null;
+  start_sec: number;
+  end_sec: number;
+  duration_sec: number;
+  width?: number | null;
+  height?: number | null;
+  has_text?: boolean | null;
+  text_region?: string | null;
+};
+
+// Grid of shots extracted from one creative. Click a card to preview the clip;
+// badges flag whether the shot carries the competitor's burned-in subtitles.
+function ShotsGrid({
+  projectId, ad, onClose,
+}: {
+  projectId: string;
+  ad: CompetitorAd;
+  onClose: () => void;
+}) {
+  const { toast } = useToast();
+  const [shots, setShots] = useState<Shot[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [playing, setPlaying] = useState<Shot | null>(null);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const r = await fetch(`/api/projecthub/projects/${projectId}/shots?adId=${ad.id}`);
+      const j = await r.json().catch(() => []);
+      setShots(Array.isArray(j) ? j : []);
+    } catch { setShots([]); }
+    finally { setLoading(false); }
+  };
+  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [ad.id]);
+
+  const remove = async (s: Shot) => {
+    setShots((p) => p.filter((x) => x.id !== s.id));
+    try {
+      await fetch(`/api/projecthub/projects/${projectId}/shots/${s.id}`, { method: "DELETE" });
+    } catch { toast({ title: "Delete failed", variant: "destructive" }); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
+      <div className="relative w-full max-w-4xl max-h-[85vh] bg-card border border-border rounded-2xl shadow-2xl flex flex-col overflow-hidden">
+        <div className="p-4 border-b border-border flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Film className="w-4 h-4 text-primary" />
+            <span className="text-sm font-semibold text-foreground">Real footage shots</span>
+            <span className="text-xs text-muted-foreground">({shots.length})</span>
+          </div>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-4 h-4" /></button>
+        </div>
+        <div className="p-4 overflow-y-auto">
+          {loading ? (
+            <p className="text-sm text-muted-foreground py-10 text-center">Loading shots…</p>
+          ) : shots.length === 0 ? (
+            <p className="text-sm text-muted-foreground py-10 text-center">
+              No shots yet. Use “Split into shots” — the local ffmpeg worker must be running.
+            </p>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+              {shots.map((s) => {
+                const hasText = s.has_text === true;
+                return (
+                  <div key={s.id} className="group relative rounded-xl overflow-hidden border border-border bg-black/5">
+                    <button onClick={() => setPlaying(s)} className="block w-full aspect-[9/16] bg-black">
+                      {s.thumb_path
+                        ? <img src={getUploadUrl(s.thumb_path)} alt="" className="w-full h-full object-cover" />
+                        : <div className="w-full h-full flex items-center justify-center text-white/40"><Play className="w-6 h-6" /></div>}
+                    </button>
+                    <span className="absolute top-1.5 left-1.5 text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-black/70 text-white">
+                      {s.duration_sec}s
+                    </span>
+                    <span
+                      title={hasText ? "Has burned-in subtitles" : "Clean (no subtitles detected)"}
+                      className={`absolute top-1.5 right-1.5 text-[9px] font-black px-1.5 py-0.5 rounded-full ${hasText ? "bg-rose-500 text-white" : "bg-emerald-500 text-white"}`}>
+                      {hasText ? "SUBS" : "CLEAN"}
+                    </span>
+                    <button
+                      onClick={() => remove(s)}
+                      className="absolute bottom-1.5 right-1.5 opacity-0 group-hover:opacity-100 transition-opacity bg-black/70 text-white rounded-md p-1"
+                      title="Delete shot">
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+      {playing && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-6" onClick={() => setPlaying(null)}>
+          <div className="absolute inset-0 bg-black/80" />
+          <video
+            src={getUploadUrl(playing.file_path)}
+            controls autoPlay loop playsInline
+            className="relative max-h-[80vh] max-w-full rounded-xl bg-black"
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Shared right-side detail panel for a single creative (image or video),
 // with player, download, transcript + copy, and delete. Reused by the
 // per-competitor view and the flat "All creatives" view.
@@ -269,6 +384,43 @@ function CreativeDetailPanel({
       setTimeout(() => setScriptCopied(false), 1500);
     } catch { toast({ title: "Copy failed", variant: "destructive" }); }
   };
+  // Phase 2 — split competitor video into real-footage shots.
+  const [segStatus, setSegStatus] = useState<string>("");
+  const [shotCount, setShotCount] = useState(0);
+  const [showShots, setShowShots] = useState(false);
+  const segPoll = useRef<ReturnType<typeof setInterval> | null>(null);
+  const loadSegStatus = async () => {
+    try {
+      const r = await fetch(`/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/${ad.id}/segment`);
+      const j = await r.json().catch(() => ({}));
+      setSegStatus(j?.job?.status || "");
+      setShotCount(j?.shots || 0);
+      if (j?.job?.status === "pending" || j?.job?.status === "processing") {
+        if (!segPoll.current) segPoll.current = setInterval(loadSegStatus, 4000);
+      } else if (segPoll.current) {
+        clearInterval(segPoll.current); segPoll.current = null;
+      }
+    } catch { /* ignore */ }
+  };
+  useEffect(() => {
+    if (ad.media_type === "video") loadSegStatus();
+    return () => { if (segPoll.current) { clearInterval(segPoll.current); segPoll.current = null; } };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ad.id]);
+  const splitIntoShots = async () => {
+    setSegStatus("pending");
+    try {
+      const r = await fetch(`/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/${ad.id}/segment`, { method: "POST" });
+      const j = await r.json().catch(() => ({}));
+      if (r.ok) {
+        toast({ title: j.queued === false ? "Already queued" : "Queued for splitting", description: "The local ffmpeg worker will process it." });
+        if (!segPoll.current) segPoll.current = setInterval(loadSegStatus, 4000);
+      } else {
+        setSegStatus("");
+        toast({ title: j.error || "Could not queue", variant: "destructive" });
+      }
+    } catch { setSegStatus(""); toast({ title: "Could not queue", variant: "destructive" }); }
+  };
   const days = daysRunning(ad);
   const tier = winnerTier({ ...ad, is_winner: winner });
   const toggleWinner = async () => {
@@ -304,6 +456,7 @@ function CreativeDetailPanel({
     finally { setTranscribing(false); }
   };
   return (
+    <>
     <div className="fixed inset-0 z-50 flex">
       <div className="flex-1 bg-black/40" onClick={onClose} />
       <div className="w-80 bg-card border-l border-border h-full overflow-y-auto shadow-2xl flex flex-col">
@@ -432,6 +585,36 @@ function CreativeDetailPanel({
               )}
             </div>
           )}
+          {ad.media_type === "video" && (
+            <div className="pt-2 border-t border-border space-y-2">
+              <div className="flex items-center gap-1.5">
+                <Scissors className="w-3.5 h-3.5 text-primary" />
+                <p className="text-[9px] text-muted-foreground uppercase tracking-widest font-semibold">Real footage shots</p>
+              </div>
+              <p className="text-[10px] text-muted-foreground leading-snug">
+                Split this video into individual shots (audio removed) to reuse as real B-roll. Needs the local ffmpeg worker running.
+              </p>
+              <div className="flex items-center gap-2">
+                <Button
+                  onClick={splitIntoShots}
+                  disabled={segStatus === "pending" || segStatus === "processing"}
+                  variant="outline"
+                  className="flex-1 gap-2 h-8">
+                  {segStatus === "pending" || segStatus === "processing"
+                    ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> {segStatus === "pending" ? "Queued…" : "Splitting…"}</>
+                    : <><Scissors className="w-3.5 h-3.5" /> {shotCount > 0 ? "Re-split" : "Split into shots"}</>}
+                </Button>
+                {shotCount > 0 && (
+                  <Button onClick={() => setShowShots(true)} className="gap-2 h-8">
+                    <Film className="w-3.5 h-3.5" /> {shotCount} shots
+                  </Button>
+                )}
+              </div>
+              {segStatus === "error" && (
+                <p className="text-[10px] text-destructive">Splitting failed — check the worker logs.</p>
+              )}
+            </div>
+          )}
           <div className="pt-2 border-t border-border space-y-2">
             <p className="text-[9px] text-muted-foreground uppercase tracking-widest font-semibold">Performance signals</p>
             <div className="grid grid-cols-2 gap-2 text-xs">
@@ -476,6 +659,8 @@ function CreativeDetailPanel({
         </div>
       </div>
     </div>
+    {showShots && <ShotsGrid projectId={projectId} ad={ad} onClose={() => setShowShots(false)} />}
+    </>
   );
 }
 
