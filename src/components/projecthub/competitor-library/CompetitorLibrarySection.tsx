@@ -1531,12 +1531,132 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
   );
 }
 
+// Project-wide library of real-footage shots cut from every competitor video.
+// The mixing pool for recreating videos — filter to CLEAN shots (no burned-in
+// subtitles) and reuse them under a new script/voice.
+function ShotsLibraryView({ projectId }: { projectId: string }) {
+  const { toast } = useToast();
+  const [shots, setShots] = useState<Shot[]>([]);
+  const [brandNames, setBrandNames] = useState<Record<number, string>>({});
+  const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState<"all" | "clean" | "subs">("all");
+  const [playing, setPlaying] = useState<Shot | null>(null);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const [sr, br] = await Promise.all([
+        fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/shots`),
+        fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library`),
+      ]);
+      const sj = await sr.json().catch(() => []);
+      setShots(Array.isArray(sj) ? sj : []);
+      const bj = await br.json().catch(() => []);
+      const map: Record<number, string> = {};
+      for (const b of Array.isArray(bj) ? bj : []) map[b.id] = b.name;
+      setBrandNames(map);
+    } catch { setShots([]); }
+    finally { setLoading(false); }
+  };
+  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [projectId]);
+
+  const remove = async (s: Shot) => {
+    setShots((p) => p.filter((x) => x.id !== s.id));
+    try { await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/shots/${s.id}`, { method: "DELETE" }); }
+    catch { toast({ title: "Delete failed", variant: "destructive" }); }
+  };
+
+  const cleanCount = shots.filter((s) => s.has_text !== true).length;
+  const filtered = shots.filter((s) =>
+    filter === "all" ? true : filter === "clean" ? s.has_text !== true : s.has_text === true);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <h3 className="text-lg font-bold text-foreground">Real footage shots</h3>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            Pieces cut from competitor videos (audio removed). Use the <b>CLEAN</b> ones as B-roll to recreate videos.
+          </p>
+        </div>
+        <div className="flex items-center gap-1 border border-border rounded-lg p-0.5 bg-muted/30 w-fit">
+          {([["all", `All (${shots.length})`], ["clean", `Clean (${cleanCount})`], ["subs", "With subs"]] as const).map(([v, l]) => (
+            <button key={v} onClick={() => setFilter(v)}
+              className={`px-3 py-1 text-xs rounded-md font-medium transition-colors ${filter === v ? "bg-white shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"}`}>
+              {l}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="py-16 text-center text-sm text-muted-foreground">Loading shots…</div>
+      ) : filtered.length === 0 ? (
+        <div className="py-20 text-center border-2 border-dashed border-border rounded-2xl">
+          <Film className="w-12 h-12 text-muted-foreground/30 mx-auto mb-3" />
+          <p className="text-sm font-semibold text-foreground mb-1">No shots yet</p>
+          <p className="text-xs text-muted-foreground max-w-md mx-auto">
+            Open a competitor video and click <b>Split into shots</b>. The local ffmpeg worker cuts it into reusable pieces.
+          </p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-3">
+          {filtered.map((s) => {
+            const hasText = s.has_text === true;
+            return (
+              <div key={s.id} className="group relative rounded-xl overflow-hidden border border-border bg-black/5">
+                <button onClick={() => setPlaying(s)} className="block w-full aspect-[9/16] bg-black">
+                  {s.thumb_path
+                    ? <img src={getUploadUrl(s.thumb_path)} alt="" className="w-full h-full object-cover" />
+                    : <div className="w-full h-full flex items-center justify-center text-white/40"><Play className="w-6 h-6" /></div>}
+                </button>
+                <span className="absolute top-1.5 left-1.5 text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-black/70 text-white">
+                  {s.duration_sec}s
+                </span>
+                <span
+                  title={hasText ? "Has burned-in subtitles" : "Clean (no subtitles detected)"}
+                  className={`absolute top-1.5 right-1.5 text-[9px] font-black px-1.5 py-0.5 rounded-full ${hasText ? "bg-rose-500 text-white" : "bg-emerald-500 text-white"}`}>
+                  {hasText ? "SUBS" : "CLEAN"}
+                </span>
+                {brandNames[s.brand_id] && (
+                  <span className="absolute bottom-1.5 left-1.5 max-w-[80%] truncate text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-black/70 text-white">
+                    {brandNames[s.brand_id]}
+                  </span>
+                )}
+                <button
+                  onClick={() => remove(s)}
+                  className="absolute bottom-1.5 right-1.5 opacity-0 group-hover:opacity-100 transition-opacity bg-black/70 text-white rounded-md p-1"
+                  title="Delete shot">
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {playing && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-6" onClick={() => setPlaying(null)}>
+          <div className="absolute inset-0 bg-black/80" />
+          <video
+            src={getUploadUrl(playing.file_path)}
+            controls autoPlay loop playsInline
+            className="relative max-h-[80vh] max-w-full rounded-xl bg-black"
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── MAIN EXPORT ──
-type Tab = "ads" | "landings" | "funnel";
+type Tab = "ads" | "landings" | "shots" | "funnel";
 
 const LIBRARY_TABS = [
   { id: "ads" as Tab, label: "Ads Library", icon: BarChart2 },
   { id: "landings" as Tab, label: "Landings", icon: LayoutTemplate },
+  { id: "shots" as Tab, label: "Shots", icon: Film },
   { id: "funnel" as Tab, label: "Funnel Monitoring", icon: TrendingUp },
 ] as const;
 
@@ -1582,6 +1702,8 @@ export function CompetitorLibrarySection({ projectId }: { projectId: string }) {
       </div>
 
       {tab === "landings" && <CompetitorLandingsView projectId={projectId} />}
+
+      {tab === "shots" && <ShotsLibraryView projectId={projectId} />}
 
       {tab === "ads" && (
         <div className="space-y-4">
