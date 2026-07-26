@@ -261,25 +261,111 @@ export function srtTime(sec: number): string {
   return `${p(h)}:${p(m)}:${p(s)},${p(mm, 3)}`;
 }
 
+// Generate a single AI still image (portrait) related to the scene text.
+// Used only as a fallback when the real-footage pool is exhausted.
+export async function genAiImage(prompt: string, outPng: string): Promise<void> {
+  if (!OPENAI_API_KEY) throw new Error('OPENAI_API_KEY required for AI b-roll fallback');
+  const clean = (prompt || 'lifestyle b-roll').replace(/\s+/g, ' ').trim().slice(0, 700);
+  const fullPrompt =
+    'Photorealistic cinematic vertical b-roll photograph, natural lighting, ' +
+    `shallow depth of field, no text, no captions, no watermark. Scene: ${clean}`;
+
+  // Try gpt-image-1 first (returns b64), then fall back to dall-e-3 (URL) so a
+  // single unavailable model doesn't fail the whole build.
+  const attempts: Array<{ model: string; size: string; wantsFormat: boolean }> = [
+    { model: 'gpt-image-1', size: '1024x1536', wantsFormat: false },
+    { model: 'dall-e-3', size: '1024x1792', wantsFormat: true },
+  ];
+  let lastErr = 'unknown';
+  for (const a of attempts) {
+    try {
+      const payload: Record<string, unknown> = { model: a.model, prompt: fullPrompt, size: a.size, n: 1 };
+      if (a.wantsFormat) payload.response_format = 'b64_json';
+      const resp = await fetch('https://api.openai.com/v1/images/generations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${OPENAI_API_KEY}` },
+        body: JSON.stringify(payload),
+      });
+      if (!resp.ok) { lastErr = `${a.model} ${resp.status}: ${(await resp.text()).slice(0, 160)}`; continue; }
+      const j = await resp.json();
+      const item = j?.data?.[0];
+      if (item?.b64_json) {
+        fs.writeFileSync(outPng, Buffer.from(item.b64_json, 'base64'));
+        return;
+      }
+      if (item?.url) {
+        const img = await fetch(item.url);
+        if (img.ok) { fs.writeFileSync(outPng, Buffer.from(await img.arrayBuffer())); return; }
+      }
+      lastErr = `${a.model}: no image data`;
+    } catch (e) {
+      lastErr = `${a.model}: ${(e as Error).message}`;
+    }
+  }
+  throw new Error(`image gen failed — ${lastErr}`);
+}
+
+// Turn an AI image into a normalized clip (same codec/params as real shots) with
+// a subtle slow zoom so it isn't a dead still. Returns { file, dur }.
+export async function aiClip(
+  prompt: string,
+  dur: number,
+  workDir: string,
+  tag: string,
+): Promise<{ file: string; dur: number }> {
+  const png = path.join(workDir, `${tag}.png`);
+  await genAiImage(prompt, png);
+  const d = Math.max(0.6, dur);
+  const frames = Math.max(1, Math.round(d * 30));
+  const raw = path.join(workDir, `${tag}_raw.mp4`);
+  // Ken-Burns style slow zoom on the still, output at TARGET size / 30fps.
+  await run(FFMPEG, [
+    '-y', '-loop', '1', '-i', png, '-t', String(d),
+    '-vf',
+    `scale=${TARGET_W}:${TARGET_H}:force_original_aspect_ratio=increase,` +
+      `crop=${TARGET_W}:${TARGET_H},` +
+      `zoompan=z='min(zoom+0.0007,1.12)':d=${frames}:s=${TARGET_W}x${TARGET_H}:fps=30,` +
+      `format=yuv420p`,
+    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p', '-r', '30', '-an',
+    raw,
+  ]);
+  // Run through normalizeShot so params are byte-identical to real clips
+  // (required for the concat -c copy step to succeed).
+  const nrm = path.join(workDir, `${tag}.mp4`);
+  await normalizeShot(raw, nrm);
+  return { file: nrm, dur: d };
+}
+
+// Build the visual track for one scene. Consumes UNIQUE clips from the shared
+// pool via `cursorRef` (never wraps → no shot is reused across the video). When
+// the real-footage pool runs out, the remaining duration is filled with an AI
+// clip generated from the scene text.
 export async function buildSceneVisual(
-  normClips: { file: string; dur: number }[],
+  pool: { file: string; dur: number }[],
   targetDur: number,
   workDir: string,
   idx: number,
   cursorRef: { i: number },
+  aiPrompt = '',
 ): Promise<string> {
-  const listFile = path.join(workDir, `scene_${idx}_list.txt`);
+  const parts: string[] = [];
   let acc = 0;
-  const lines: string[] = [];
-  let guard = 0;
-  while (acc < targetDur && guard < 200) {
-    const clip = normClips[cursorRef.i % normClips.length];
+  while (acc < targetDur - 0.05 && cursorRef.i < pool.length) {
+    const clip = pool[cursorRef.i];
     cursorRef.i++;
-    guard++;
-    lines.push(`file '${clip.file.replace(/\\/g, '/')}'`);
+    parts.push(clip.file);
     acc += clip.dur;
   }
-  fs.writeFileSync(listFile, lines.join('\n'));
+  // Out of real footage for this scene → generate AI b-roll for the rest.
+  if (acc < targetDur - 0.05) {
+    const need = targetDur - acc;
+    const ai = await aiClip(aiPrompt, need, workDir, `ai_${idx}`);
+    parts.push(ai.file);
+    acc += ai.dur;
+  }
+
+  const listFile = path.join(workDir, `scene_${idx}_list.txt`);
+  fs.writeFileSync(listFile, parts.map((f) => `file '${f.replace(/\\/g, '/')}'`).join('\n'));
   const concatFile = path.join(workDir, `scene_${idx}_cat.mp4`);
   await run(FFMPEG, ['-y', '-f', 'concat', '-safe', '0', '-i', listFile, '-c', 'copy', concatFile]);
   const sceneFile = path.join(workDir, `scene_${idx}_v.mp4`);

@@ -39,8 +39,10 @@ export default async (req: Request) => {
   const workDir = makeWorkDir('wbuild-');
   try {
     if (scenes.length === 0) throw new Error('no scenes in job');
+    // Real-footage pool. Each clip is used at most ONCE (cursor never wraps);
+    // when the pool runs out, buildSceneVisual fills the rest with AI b-roll.
     const normClips = await loadCleanShots(supabase, projectId, workDir);
-    if (normClips.length === 0) throw new Error('no usable clean shots');
+    log(`clean shots available: ${normClips.length}`);
 
     const cursor = { i: 0 };
     const sceneVisuals: string[] = [];
@@ -51,7 +53,7 @@ export default async (req: Request) => {
       const mp3 = path.join(workDir, `vo_${i}.mp3`);
       await ttsScene(scenes[i], voice, mp3);
       const d = Math.max(0.8, await probeDuration(mp3));
-      const vis = await buildSceneVisual(normClips, d, workDir, i, cursor);
+      const vis = await buildSceneVisual(normClips, d, workDir, i, cursor, scenes[i]);
       sceneVisuals.push(vis);
       sceneAudios.push(mp3);
       srt.push(`${i + 1}\n${srtTime(t)} --> ${srtTime(t + d)}\n${scenes[i]}\n`);
