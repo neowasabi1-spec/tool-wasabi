@@ -421,6 +421,43 @@ function CreativeDetailPanel({
       }
     } catch { setSegStatus(""); toast({ title: "Could not queue", variant: "destructive" }); }
   };
+  // Phase 2 step 2 — recreate a new video from clean shots + our voice.
+  const [buildStatus, setBuildStatus] = useState<string>("");
+  const [buildVideos, setBuildVideos] = useState<{ id: number; file_path: string; thumb_path?: string | null; duration_sec: number }[]>([]);
+  const [voice, setVoice] = useState("alloy");
+  const buildPoll = useRef<ReturnType<typeof setInterval> | null>(null);
+  const loadBuildStatus = async () => {
+    try {
+      const r = await fetch(`/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/${ad.id}/build-video`);
+      const j = await r.json().catch(() => ({}));
+      setBuildStatus(j?.job?.status || "");
+      setBuildVideos(Array.isArray(j?.videos) ? j.videos : []);
+      if (j?.job?.status === "pending" || j?.job?.status === "processing") {
+        if (!buildPoll.current) buildPoll.current = setInterval(loadBuildStatus, 5000);
+      } else if (buildPoll.current) { clearInterval(buildPoll.current); buildPoll.current = null; }
+    } catch { /* ignore */ }
+  };
+  useEffect(() => {
+    if (ad.media_type === "video") loadBuildStatus();
+    return () => { if (buildPoll.current) { clearInterval(buildPoll.current); buildPoll.current = null; } };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ad.id]);
+  const buildVideo = async () => {
+    setBuildStatus("pending");
+    try {
+      const r = await fetch(`/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/${ad.id}/build-video`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ voice }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (r.ok) {
+        toast({ title: j.queued === false ? "Already building" : "Queued for build", description: `${j.scenes || ""} scenes — the worker will assemble it.` });
+        if (!buildPoll.current) buildPoll.current = setInterval(loadBuildStatus, 5000);
+      } else {
+        setBuildStatus("");
+        toast({ title: j.error || "Could not start build", variant: "destructive" });
+      }
+    } catch { setBuildStatus(""); toast({ title: "Could not start build", variant: "destructive" }); }
+  };
   const days = daysRunning(ad);
   const tier = winnerTier({ ...ad, is_winner: winner });
   const toggleWinner = async () => {
@@ -612,6 +649,54 @@ function CreativeDetailPanel({
               </div>
               {segStatus === "error" && (
                 <p className="text-[10px] text-destructive">Splitting failed — check the worker logs.</p>
+              )}
+            </div>
+          )}
+          {ad.media_type === "video" && (
+            <div className="pt-2 border-t border-border space-y-2">
+              <div className="flex items-center gap-1.5">
+                <Film className="w-3.5 h-3.5 text-primary" />
+                <p className="text-[9px] text-muted-foreground uppercase tracking-widest font-semibold">Recreate video (real footage)</p>
+              </div>
+              <p className="text-[10px] text-muted-foreground leading-snug">
+                Assembles a new video from your CLEAN shots + a voiceover of your script + your subtitles. Uses the rewritten script if present. Needs the worker + OpenAI key.
+              </p>
+              <div className="flex items-center gap-2">
+                <select
+                  value={voice}
+                  onChange={(e) => setVoice(e.target.value)}
+                  className="h-8 text-xs rounded-md border border-border bg-background px-2 flex-1">
+                  {["alloy", "echo", "fable", "onyx", "nova", "shimmer"].map((v) => (
+                    <option key={v} value={v}>{`Voice: ${v}`}</option>
+                  ))}
+                </select>
+                <Button
+                  onClick={buildVideo}
+                  disabled={buildStatus === "pending" || buildStatus === "processing"}
+                  className="gap-2 h-8">
+                  {buildStatus === "pending" || buildStatus === "processing"
+                    ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> {buildStatus === "pending" ? "Queued…" : "Building…"}</>
+                    : <><Zap className="w-3.5 h-3.5" /> Build video</>}
+                </Button>
+              </div>
+              {buildStatus === "error" && (
+                <p className="text-[10px] text-destructive">Build failed — check the worker logs.</p>
+              )}
+              {buildVideos.length > 0 && (
+                <div className="space-y-2 pt-1">
+                  {buildVideos.map((v) => (
+                    <div key={v.id} className="rounded-lg overflow-hidden border border-border bg-black/5">
+                      <video src={getUploadUrl(v.file_path)} controls playsInline preload="metadata" className="w-full bg-black max-h-64" />
+                      <div className="flex items-center justify-between px-2 py-1.5">
+                        <span className="text-[10px] text-muted-foreground">{v.duration_sec}s · real footage</span>
+                        <button onClick={() => downloadCreative({ file_path: v.file_path, name: "recreated", media_type: "video" })}
+                          className="flex items-center gap-1 text-[10px] font-semibold text-primary hover:underline">
+                          <Download className="w-3 h-3" /> Download
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               )}
             </div>
           )}

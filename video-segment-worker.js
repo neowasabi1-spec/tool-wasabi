@@ -64,9 +64,9 @@ const log = (...a) => console.log(new Date().toISOString(), '[segment]', ...a);
 const errlog = (...a) => console.error(new Date().toISOString(), '[segment]', ...a);
 
 // ── ffmpeg helpers ──────────────────────────────────────────────────────────
-function run(cmd, args, { capture = 'stderr' } = {}) {
+function run(cmd, args, { capture = 'stderr', cwd } = {}) {
   return new Promise((resolve, reject) => {
-    const p = spawn(cmd, args, { windowsHide: true });
+    const p = spawn(cmd, args, { windowsHide: true, cwd });
     let out = '';
     let err = '';
     p.stdout.on('data', (d) => (out += d.toString()));
@@ -343,29 +343,262 @@ async function processJob(job) {
   log(`job #${job.id} done — ${shotsCount} shots`);
 }
 
+// ── Build jobs: assemble a NEW video from CLEAN shots + our voice/subs ──────
+const TARGET_W = 1080;
+const TARGET_H = 1920;
+
+async function probeDuration(file) {
+  const out = await run(
+    'ffprobe',
+    ['-v', 'error', '-show_entries', 'format=duration', '-of', 'json', file],
+    { capture: 'stdout' },
+  );
+  const j = JSON.parse(out || '{}');
+  return parseFloat(j?.format?.duration || '0') || 0;
+}
+
+// OpenAI text-to-speech → mp3 file.
+async function ttsScene(text, voice, outMp3) {
+  if (!OPENAI_API_KEY) throw new Error('OPENAI_API_KEY required for voiceover');
+  const resp = await fetch('https://api.openai.com/v1/audio/speech', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${OPENAI_API_KEY}` },
+    body: JSON.stringify({ model: 'tts-1', voice, input: text.slice(0, 900), response_format: 'mp3' }),
+  });
+  if (!resp.ok) throw new Error(`TTS failed ${resp.status}: ${(await resp.text()).slice(0, 200)}`);
+  fs.writeFileSync(outMp3, Buffer.from(await resp.arrayBuffer()));
+}
+
+// Normalize a shot to the target canvas (cover+crop), 30fps, silent.
+async function normalizeShot(src, out) {
+  await run('ffmpeg', [
+    '-y', '-i', src,
+    '-an',
+    '-vf', `scale=${TARGET_W}:${TARGET_H}:force_original_aspect_ratio=increase,crop=${TARGET_W}:${TARGET_H},fps=30`,
+    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p',
+    out,
+  ]);
+}
+
+function srtTime(sec) {
+  const ms = Math.max(0, Math.round(sec * 1000));
+  const h = Math.floor(ms / 3600000);
+  const m = Math.floor((ms % 3600000) / 60000);
+  const s = Math.floor((ms % 60000) / 1000);
+  const mm = ms % 1000;
+  const p = (n, l = 2) => String(n).padStart(l, '0');
+  return `${p(h)}:${p(m)}:${p(s)},${p(mm, 3)}`;
+}
+
+// Fill `targetDur` seconds by concatenating normalized clips (looping the pool),
+// then re-encode to exactly targetDur. Returns the scene visual path.
+async function buildSceneVisual(normClips, targetDur, workDir, idx, cursorRef) {
+  const listFile = path.join(workDir, `scene_${idx}_list.txt`);
+  let acc = 0;
+  const lines = [];
+  let guard = 0;
+  while (acc < targetDur && guard < 200) {
+    const clip = normClips[cursorRef.i % normClips.length];
+    cursorRef.i++;
+    guard++;
+    lines.push(`file '${clip.file.replace(/\\/g, '/')}'`);
+    acc += clip.dur;
+  }
+  fs.writeFileSync(listFile, lines.join('\n'));
+  const concatFile = path.join(workDir, `scene_${idx}_cat.mp4`);
+  await run('ffmpeg', ['-y', '-f', 'concat', '-safe', '0', '-i', listFile, '-c', 'copy', concatFile]);
+  const sceneFile = path.join(workDir, `scene_${idx}_v.mp4`);
+  await run('ffmpeg', [
+    '-y', '-i', concatFile, '-t', String(targetDur),
+    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p', '-r', '30', '-an',
+    sceneFile,
+  ]);
+  return sceneFile;
+}
+
+async function loadCleanShots(projectId, workDir) {
+  const { data } = await supabase
+    .from('competitor_shots')
+    .select('id, file_path, has_text')
+    .eq('project_id', projectId)
+    .not('has_text', 'is', true)
+    .limit(60);
+  const shots = data || [];
+  const norm = [];
+  for (let i = 0; i < shots.length; i++) {
+    const raw = path.join(workDir, `raw_${i}.mp4`);
+    const nrm = path.join(workDir, `norm_${i}.mp4`);
+    try {
+      await downloadSource(shots[i].file_path, raw);
+      await normalizeShot(raw, nrm);
+      const dur = await probeDuration(nrm);
+      if (dur > 0.2) norm.push({ file: nrm, dur });
+    } catch (e) {
+      errlog(`shot ${shots[i].id} prep failed: ${e.message}`);
+    }
+  }
+  return norm;
+}
+
+async function claimBuildJob() {
+  const { data: pending } = await supabase
+    .from('video_build_jobs')
+    .select('*')
+    .eq('status', 'pending')
+    .order('created_at', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  if (!pending) return null;
+  const { data: claimed } = await supabase
+    .from('video_build_jobs')
+    .update({ status: 'processing', started_at: new Date().toISOString() })
+    .eq('id', pending.id)
+    .eq('status', 'pending')
+    .select()
+    .maybeSingle();
+  return claimed || null;
+}
+
+async function processBuildJob(job) {
+  log(`build #${job.id} — ad ${job.ad_id} (project ${job.project_id})`);
+  const scenes = (Array.isArray(job.scenes) ? job.scenes : [])
+    .map((s) => (s && typeof s.text === 'string' ? s.text.trim() : ''))
+    .filter(Boolean);
+  if (scenes.length === 0) throw new Error('no scenes in job');
+
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wbuild-'));
+  try {
+    const normClips = await loadCleanShots(job.project_id, workDir);
+    if (normClips.length === 0) throw new Error('no usable clean shots');
+
+    const cursor = { i: 0 };
+    const sceneVisuals = [];
+    const sceneAudios = [];
+    const srt = [];
+    let t = 0;
+    for (let i = 0; i < scenes.length; i++) {
+      const mp3 = path.join(workDir, `vo_${i}.mp3`);
+      await ttsScene(scenes[i], job.voice || 'alloy', mp3);
+      const d = Math.max(0.8, await probeDuration(mp3));
+      const vis = await buildSceneVisual(normClips, d, workDir, i, cursor);
+      sceneVisuals.push(vis);
+      sceneAudios.push(mp3);
+      srt.push(`${i + 1}\n${srtTime(t)} --> ${srtTime(t + d)}\n${scenes[i]}\n`);
+      t += d;
+    }
+
+    // Concat visuals (identical params → stream copy).
+    const vList = path.join(workDir, 'v_list.txt');
+    fs.writeFileSync(vList, sceneVisuals.map((f) => `file '${f.replace(/\\/g, '/')}'`).join('\n'));
+    const visual = path.join(workDir, 'visual.mp4');
+    await run('ffmpeg', ['-y', '-f', 'concat', '-safe', '0', '-i', vList, '-c', 'copy', visual]);
+
+    // Concat voice mp3s.
+    const aList = path.join(workDir, 'a_list.txt');
+    fs.writeFileSync(aList, sceneAudios.map((f) => `file '${f.replace(/\\/g, '/')}'`).join('\n'));
+    const voice = path.join(workDir, 'voice.mp3');
+    await run('ffmpeg', ['-y', '-f', 'concat', '-safe', '0', '-i', aList, '-c', 'copy', voice]);
+
+    // Mux visual + voice.
+    const base = path.join(workDir, 'base.mp4');
+    await run('ffmpeg', [
+      '-y', '-i', visual, '-i', voice,
+      '-c:v', 'copy', '-c:a', 'aac', '-b:a', '160k', '-shortest', base,
+    ]);
+
+    // Burn OUR subtitles (bottom band also masks any residual competitor subs).
+    fs.writeFileSync(path.join(workDir, 'subs.srt'), srt.join('\n'));
+    const finalFile = path.join(workDir, 'final.mp4');
+    const style =
+      "FontSize=16,Bold=1,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000," +
+      'BorderStyle=3,Outline=6,Shadow=0,Alignment=2,MarginV=90';
+    try {
+      await run(
+        'ffmpeg',
+        ['-y', '-i', base, '-vf', `subtitles=subs.srt:force_style='${style}'`,
+          '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', '-c:a', 'copy', finalFile],
+        { cwd: workDir },
+      );
+    } catch (e) {
+      // libass missing? fall back to the un-subtitled cut rather than failing.
+      errlog(`subtitle burn failed, using base: ${e.message}`);
+      fs.copyFileSync(base, finalFile);
+    }
+
+    const thumb = path.join(workDir, 'thumb.jpg');
+    try { await grabThumb(finalFile, 1, thumb); } catch { /* ignore */ }
+
+    const stamp = Date.now();
+    const clipKey = `${job.project_id}/generated/${job.ad_id}_${stamp}.mp4`;
+    const thumbKey = `${job.project_id}/generated/${job.ad_id}_${stamp}.jpg`;
+    await uploadFile(clipKey, finalFile, 'video/mp4');
+    let storedThumb = '';
+    try { storedThumb = await uploadFile(thumbKey, thumb, 'image/jpeg'); } catch { /* ignore */ }
+    const totalDur = await probeDuration(finalFile);
+
+    const { data: gv } = await supabase
+      .from('generated_videos')
+      .insert({
+        project_id: job.project_id,
+        brand_id: job.brand_id,
+        ad_id: job.ad_id,
+        file_path: clipKey,
+        thumb_path: storedThumb || null,
+        duration_sec: +totalDur.toFixed(2),
+        script: scenes.join('\n'),
+        voice: job.voice || 'alloy',
+      })
+      .select('id')
+      .maybeSingle();
+
+    await supabase
+      .from('video_build_jobs')
+      .update({ status: 'done', result_id: gv?.id || null, finished_at: new Date().toISOString() })
+      .eq('id', job.id);
+    log(`build #${job.id} done — ${totalDur.toFixed(1)}s`);
+  } finally {
+    try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+}
+
 async function loop() {
   // eslint-disable-next-line no-constant-condition
   while (true) {
-    let job = null;
-    try {
-      job = await claimJob();
-    } catch (e) {
-      errlog('claim failed:', e.message);
-    }
-    if (!job) {
-      await new Promise((r) => setTimeout(r, POLL_MS));
+    // 1) Segmentation jobs.
+    let segJob = null;
+    try { segJob = await claimJob(); } catch (e) { errlog('seg claim failed:', e.message); }
+    if (segJob) {
+      try {
+        await processJob(segJob);
+      } catch (e) {
+        errlog(`seg #${segJob.id} error:`, e.message);
+        await supabase
+          .from('video_segment_jobs')
+          .update({ status: 'error', error: String(e.message).slice(0, 1000), finished_at: new Date().toISOString() })
+          .eq('id', segJob.id)
+          .then(() => {}, () => {});
+      }
       continue;
     }
-    try {
-      await processJob(job);
-    } catch (e) {
-      errlog(`job #${job.id} error:`, e.message);
-      await supabase
-        .from('video_segment_jobs')
-        .update({ status: 'error', error: String(e.message).slice(0, 1000), finished_at: new Date().toISOString() })
-        .eq('id', job.id)
-        .then(() => {}, () => {});
+
+    // 2) Build jobs.
+    let buildJob = null;
+    try { buildJob = await claimBuildJob(); } catch (e) { errlog('build claim failed:', e.message); }
+    if (buildJob) {
+      try {
+        await processBuildJob(buildJob);
+      } catch (e) {
+        errlog(`build #${buildJob.id} error:`, e.message);
+        await supabase
+          .from('video_build_jobs')
+          .update({ status: 'error', error: String(e.message).slice(0, 1000), finished_at: new Date().toISOString() })
+          .eq('id', buildJob.id)
+          .then(() => {}, () => {});
+      }
+      continue;
     }
+
+    await new Promise((r) => setTimeout(r, POLL_MS));
   }
 }
 
