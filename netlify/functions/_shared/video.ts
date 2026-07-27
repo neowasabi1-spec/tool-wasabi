@@ -430,25 +430,29 @@ export async function loadCleanShots(
   workDir: string,
 ): Promise<ShotClip[]> {
   // CLEAN footage only. No crop/zoom/delogo tricks: every ffmpeg-level attempt
-  // at hiding burned-in subtitles produced ugly artifacts. Removing them for
-  // real requires AI video inpainting (external GPU service) — until then,
-  // subtitled shots are simply excluded from the pool.
+  // at hiding burned-in subtitles produced ugly artifacts. Subtitled shots are
+  // usable ONLY once AI inpainting produced a cleaned copy (clean_path) via
+  // the inpaint-shot-background function.
   const { data } = await supabase
     .from('competitor_shots')
     .select('*')
     .eq('project_id', projectId)
-    .not('has_text', 'is', true)
-    .limit(90);
+    .limit(120);
   const shots = (data || []) as Array<{
-    file_path: string; tags?: string[]; caption?: string;
+    file_path: string; clean_path?: string | null; has_text?: boolean | null;
+    tags?: string[]; caption?: string;
   }>;
   const pool: ShotClip[] = [];
   for (let i = 0; i < shots.length; i++) {
     const s = shots[i];
+    // Prefer the AI-cleaned copy; fall back to the original only if it never
+    // had subtitles. Subtitled shots without a cleaned copy are excluded.
+    const src = s.clean_path || (s.has_text !== true ? s.file_path : null);
+    if (!src) continue;
     const raw = path.join(workDir, `raw_${i}.mp4`);
     const nrm = path.join(workDir, `norm_${i}.mp4`);
     try {
-      await downloadSource(supabase, s.file_path, raw);
+      await downloadSource(supabase, src, raw);
       await normalizeShot(raw, nrm);
       const dur = await probeDuration(nrm);
       if (dur > 0.2) {

@@ -232,6 +232,9 @@ type Shot = {
   caption?: string | null;
   tags?: string[] | null;
   section?: string | null;
+  clean_path?: string | null;
+  inpaint_status?: string | null;
+  inpaint_error?: string | null;
 };
 
 // Grid of shots extracted from one creative. Click a card to preview the clip;
@@ -1677,8 +1680,8 @@ function ShotsLibraryView({ projectId }: { projectId: string }) {
   const [query, setQuery] = useState("");
   const [playing, setPlaying] = useState<Shot | null>(null);
 
-  const load = async () => {
-    setLoading(true);
+  const load = async (quiet = false) => {
+    if (!quiet) setLoading(true);
     try {
       const [sr, br] = await Promise.all([
         fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/shots`),
@@ -1690,10 +1693,21 @@ function ShotsLibraryView({ projectId }: { projectId: string }) {
       const map: Record<number, string> = {};
       for (const b of Array.isArray(bj) ? bj : []) map[b.id] = b.name;
       setBrandNames(map);
-    } catch { setShots([]); }
-    finally { setLoading(false); }
+    } catch { if (!quiet) setShots([]); }
+    finally { if (!quiet) setLoading(false); }
   };
   useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [projectId]);
+
+  // While AI subtitle removal is running, refresh quietly until it settles.
+  const cleaningCount = shots.filter(
+    (s) => s.inpaint_status === "pending" || s.inpaint_status === "processing",
+  ).length;
+  useEffect(() => {
+    if (cleaningCount === 0) return;
+    const t = setTimeout(() => load(true), 8000);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shots]);
 
   const remove = async (s: Shot) => {
     setShots((p) => p.filter((x) => x.id !== s.id));
@@ -1701,10 +1715,39 @@ function ShotsLibraryView({ projectId }: { projectId: string }) {
     catch { toast({ title: "Delete failed", variant: "destructive" }); }
   };
 
-  const cleanCount = shots.filter((s) => s.has_text !== true).length;
+  // Kick AI inpainting for one shot or all subtitled shots.
+  const inpaint = async (shotId?: number) => {
+    try {
+      const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/shots/inpaint`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(shotId ? { shotId } : { all: true }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        toast({ title: "Could not start", description: j.error || "Unknown error", variant: "destructive" });
+        return;
+      }
+      if (!j.queued) {
+        toast({ title: "Nothing to clean", description: j.message || "" });
+        return;
+      }
+      toast({
+        title: `Removing subtitles from ${j.queued} shot${j.queued > 1 ? "s" : ""}`,
+        description: "AI is reconstructing the frames — this takes a few minutes per shot.",
+      });
+      load(true);
+    } catch {
+      toast({ title: "Could not start", variant: "destructive" });
+    }
+  };
+
+  const isUsable = (s: Shot) => s.has_text !== true || !!s.clean_path;
+  const cleanCount = shots.filter(isUsable).length;
+  const toCleanCount = shots.filter((s) => s.has_text === true && !s.clean_path).length;
   const q = query.trim().toLowerCase();
   const filtered = shots
-    .filter((s) => (filter === "all" ? true : filter === "clean" ? s.has_text !== true : s.has_text === true))
+    .filter((s) => (filter === "all" ? true : filter === "clean" ? isUsable(s) : !isUsable(s)))
     .filter((s) => {
       if (!q) return true;
       const hay = [s.label || "", s.caption || "", ...(s.tags || [])].join(" ").toLowerCase();
@@ -1728,6 +1771,9 @@ function ShotsLibraryView({ projectId }: { projectId: string }) {
 
   const renderCard = (s: Shot) => {
     const hasText = s.has_text === true;
+    const cleaned = hasText && !!s.clean_path;
+    const cleaning = hasText && !s.clean_path && (s.inpaint_status === "pending" || s.inpaint_status === "processing");
+    const failed = hasText && !s.clean_path && s.inpaint_status === "error";
     return (
       <div key={s.id} className="group rounded-xl overflow-hidden border border-border bg-black/5">
         <div className="relative">
@@ -1740,16 +1786,32 @@ function ShotsLibraryView({ projectId }: { projectId: string }) {
             {s.duration_sec}s
           </span>
           <span
-            title={hasText
-              ? "Has burned-in subtitles — excluded from builds (needs AI inpainting to remove)"
-              : "Clean (no subtitles detected)"}
-            className={`absolute top-1.5 right-1.5 text-[9px] font-black px-1.5 py-0.5 rounded-full ${hasText ? "bg-rose-500 text-white" : "bg-emerald-500 text-white"}`}>
-            {hasText ? "SUBS" : "CLEAN"}
+            title={cleaned
+              ? "Subtitles removed with AI inpainting — usable in builds"
+              : cleaning
+                ? "AI is removing the subtitles…"
+                : hasText
+                  ? (failed ? `AI cleanup failed: ${s.inpaint_error || "unknown error"} — click Remove subs to retry` : "Has burned-in subtitles — excluded from builds until cleaned")
+                  : "Clean (no subtitles detected)"}
+            className={`absolute top-1.5 right-1.5 text-[9px] font-black px-1.5 py-0.5 rounded-full ${
+              cleaned ? "bg-emerald-500 text-white"
+              : cleaning ? "bg-amber-500 text-white"
+              : hasText ? "bg-rose-500 text-white"
+              : "bg-emerald-500 text-white"}`}>
+            {cleaned ? "CLEANED" : cleaning ? "CLEANING…" : hasText ? "SUBS" : "CLEAN"}
           </span>
           {brandNames[s.brand_id] && (
             <span className="absolute bottom-1.5 left-1.5 max-w-[80%] truncate text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-black/70 text-white">
               {brandNames[s.brand_id]}
             </span>
+          )}
+          {hasText && !cleaned && !cleaning && (
+            <button
+              onClick={() => inpaint(s.id)}
+              className="absolute inset-x-1.5 bottom-8 opacity-0 group-hover:opacity-100 transition-opacity bg-indigo-600 hover:bg-indigo-500 text-white rounded-md px-1.5 py-1 text-[10px] font-bold flex items-center justify-center gap-1"
+              title="Reconstruct the frames behind the subtitles with AI">
+              <Sparkles className="w-3 h-3" /> Remove subs
+            </button>
           )}
           <button
             onClick={() => remove(s)}
@@ -1796,13 +1858,25 @@ function ShotsLibraryView({ projectId }: { projectId: string }) {
             />
           </div>
           <div className="flex items-center gap-1 border border-border rounded-lg p-0.5 bg-muted/30 w-fit">
-            {([["all", `All (${shots.length})`], ["clean", `Clean (${cleanCount})`], ["subs", "With subs"]] as const).map(([v, l]) => (
+            {([["all", `All (${shots.length})`], ["clean", `Usable (${cleanCount})`], ["subs", "With subs"]] as const).map(([v, l]) => (
               <button key={v} onClick={() => setFilter(v)}
                 className={`px-3 py-1 text-xs rounded-md font-medium transition-colors ${filter === v ? "bg-white shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"}`}>
                 {l}
               </button>
             ))}
           </div>
+          {cleaningCount > 0 ? (
+            <span className="h-8 inline-flex items-center gap-1.5 text-xs font-semibold px-3 rounded-lg bg-amber-100 text-amber-700">
+              <RefreshCw className="w-3.5 h-3.5 animate-spin" /> Cleaning {cleaningCount}…
+            </span>
+          ) : toCleanCount > 0 ? (
+            <button
+              onClick={() => inpaint()}
+              className="h-8 inline-flex items-center gap-1.5 text-xs font-bold px-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white"
+              title="Reconstruct the frames behind the subtitles with AI (Replicate) for every subtitled shot">
+              <Sparkles className="w-3.5 h-3.5" /> Remove subs with AI ({toCleanCount})
+            </button>
+          ) : null}
         </div>
       </div>
 
@@ -1838,7 +1912,7 @@ function ShotsLibraryView({ projectId }: { projectId: string }) {
         <div className="fixed inset-0 z-[70] flex items-center justify-center p-6" onClick={() => setPlaying(null)}>
           <div className="absolute inset-0 bg-black/80" />
           <video
-            src={getUploadUrl(playing.file_path)}
+            src={getUploadUrl(playing.clean_path || playing.file_path)}
             controls autoPlay loop playsInline
             className="relative max-h-[80vh] max-w-full rounded-xl bg-black"
             onClick={(e) => e.stopPropagation()}

@@ -79,17 +79,31 @@ export async function POST(
     );
   }
 
-  // CLEAN shots only — no crop/zoom/delogo retouching (all produced ugly
-  // artifacts) and no AI filler. Block with a clear message when the pool
-  // would be empty.
-  const { count: usableCount } = await supabaseAdmin
-    .from('competitor_shots')
-    .select('id', { count: 'exact', head: true })
-    .eq('project_id', id)
-    .not('has_text', 'is', true);
+  // Usable pool = shots that never had subtitles + shots cleaned with AI
+  // inpainting (clean_path). No crop/zoom/delogo retouching and no AI filler.
+  // Block with a clear message when the pool would be empty.
+  let usableCount = 0;
+  {
+    const r = await supabaseAdmin
+      .from('competitor_shots')
+      .select('id', { count: 'exact', head: true })
+      .eq('project_id', id)
+      .or('has_text.is.null,has_text.eq.false,clean_path.not.is.null');
+    if (r.error) {
+      // clean_path column not migrated yet — fall back to truly-clean only.
+      const r2 = await supabaseAdmin
+        .from('competitor_shots')
+        .select('id', { count: 'exact', head: true })
+        .eq('project_id', id)
+        .not('has_text', 'is', true);
+      usableCount = r2.count || 0;
+    } else {
+      usableCount = r.count || 0;
+    }
+  }
   if (!usableCount || usableCount === 0) {
     return NextResponse.json(
-      { error: 'No clean shots: every shot in this project has burned-in subtitles. Upload subtitle-free clips in My Footage or split a clean video first.' },
+      { error: 'No usable shots: every shot has burned-in subtitles. Use “Remove subs (AI)” in the Shots tab, upload clean clips in My Footage, or split a subtitle-free video.' },
       { status: 400 },
     );
   }
