@@ -63,6 +63,15 @@ export default async (req: Request) => {
     const segments = buildSegments(cuts, info.duration);
     log(`scene cuts: ${cuts.length}, shots: ${segments.length}`);
 
+    // Narrative section from position in the source video.
+    const total = info.duration;
+    const sectionFor = (start: number, end: number): string => {
+      const mid = (start + end) / 2;
+      if (mid <= Math.min(5, total * 0.18)) return 'hook';
+      if (mid >= total * 0.82) return 'cta';
+      return 'body';
+    };
+
     for (let i = 0; i < segments.length; i++) {
       const [start, end] = segments[i];
       const clipFile = path.join(workDir, `shot_${i}.mp4`);
@@ -106,12 +115,13 @@ export default async (req: Request) => {
         label: meta.label || null,
         caption: meta.caption || null,
         tags: meta.tags,
+        section: sectionFor(start, end),
       };
       let { error: insErr } = await supabase.from('competitor_shots').insert(row);
-      // If the tag columns aren't migrated yet, retry without them so we still
+      // If the new columns aren't migrated yet, retry without them so we still
       // capture the shot (older schema compatibility).
-      if (insErr && /label|caption|tags/i.test(insErr.message)) {
-        delete row.label; delete row.caption; delete row.tags;
+      if (insErr && /label|caption|tags|section/i.test(insErr.message)) {
+        delete row.label; delete row.caption; delete row.tags; delete row.section;
         ({ error: insErr } = await supabase.from('competitor_shots').insert(row));
       }
       if (insErr) log(`shot ${i} insert failed: ${insErr.message}`);

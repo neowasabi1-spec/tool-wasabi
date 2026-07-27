@@ -230,6 +230,7 @@ type Shot = {
   label?: string | null;
   caption?: string | null;
   tags?: string[] | null;
+  section?: string | null;
 };
 
 // Grid of shots extracted from one creative. Click a card to preview the clip;
@@ -1704,6 +1705,69 @@ function ShotsLibraryView({ projectId }: { projectId: string }) {
       return hay.includes(q);
     });
 
+  // Group into narrative folders (hook / body / cta), keeping anything else last.
+  const SECTIONS: { key: string; label: string }[] = [
+    { key: "hook", label: "Hook" },
+    { key: "body", label: "Body" },
+    { key: "cta", label: "CTA / Close" },
+    { key: "other", label: "Uncategorized" },
+  ];
+  const normSection = (s: Shot) => {
+    const v = (s.section || "").toLowerCase();
+    return v === "hook" || v === "body" || v === "cta" ? v : "other";
+  };
+  const groups = SECTIONS
+    .map((g) => ({ ...g, items: filtered.filter((s) => normSection(s) === g.key) }))
+    .filter((g) => g.items.length > 0);
+
+  const renderCard = (s: Shot) => {
+    const hasText = s.has_text === true;
+    return (
+      <div key={s.id} className="group rounded-xl overflow-hidden border border-border bg-black/5">
+        <div className="relative">
+          <button onClick={() => setPlaying(s)} className="block w-full aspect-[9/16] bg-black">
+            {s.thumb_path
+              ? <img src={getUploadUrl(s.thumb_path)} alt="" className="w-full h-full object-cover" />
+              : <div className="w-full h-full flex items-center justify-center text-white/40"><Play className="w-6 h-6" /></div>}
+          </button>
+          <span className="absolute top-1.5 left-1.5 text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-black/70 text-white">
+            {s.duration_sec}s
+          </span>
+          <span
+            title={hasText ? "Has burned-in subtitles" : "Clean (no subtitles detected)"}
+            className={`absolute top-1.5 right-1.5 text-[9px] font-black px-1.5 py-0.5 rounded-full ${hasText ? "bg-rose-500 text-white" : "bg-emerald-500 text-white"}`}>
+            {hasText ? "SUBS" : "CLEAN"}
+          </span>
+          {brandNames[s.brand_id] && (
+            <span className="absolute bottom-1.5 left-1.5 max-w-[80%] truncate text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-black/70 text-white">
+              {brandNames[s.brand_id]}
+            </span>
+          )}
+          <button
+            onClick={() => remove(s)}
+            className="absolute bottom-1.5 right-1.5 opacity-0 group-hover:opacity-100 transition-opacity bg-black/70 text-white rounded-md p-1"
+            title="Delete shot">
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+        </div>
+        {(s.label || (s.tags && s.tags.length > 0)) && (
+          <div className="px-1.5 py-1 bg-background">
+            {s.label && (
+              <p className="text-[10px] font-semibold text-foreground truncate" title={s.caption || s.label}>{s.label}</p>
+            )}
+            {s.tags && s.tags.length > 0 && (
+              <div className="flex flex-wrap gap-0.5 mt-0.5">
+                {s.tags.slice(0, 3).map((t) => (
+                  <span key={t} className="text-[8px] px-1 py-0.5 rounded bg-muted text-muted-foreground truncate max-w-full">{t}</span>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex items-start justify-between gap-3 flex-wrap">
@@ -1745,54 +1809,20 @@ function ShotsLibraryView({ projectId }: { projectId: string }) {
           </p>
         </div>
       ) : (
-        <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-3">
-          {filtered.map((s) => {
-            const hasText = s.has_text === true;
-            return (
-              <div key={s.id} className="group rounded-xl overflow-hidden border border-border bg-black/5">
-                <div className="relative">
-                  <button onClick={() => setPlaying(s)} className="block w-full aspect-[9/16] bg-black">
-                    {s.thumb_path
-                      ? <img src={getUploadUrl(s.thumb_path)} alt="" className="w-full h-full object-cover" />
-                      : <div className="w-full h-full flex items-center justify-center text-white/40"><Play className="w-6 h-6" /></div>}
-                  </button>
-                  <span className="absolute top-1.5 left-1.5 text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-black/70 text-white">
-                    {s.duration_sec}s
-                  </span>
-                  <span
-                    title={hasText ? "Has burned-in subtitles" : "Clean (no subtitles detected)"}
-                    className={`absolute top-1.5 right-1.5 text-[9px] font-black px-1.5 py-0.5 rounded-full ${hasText ? "bg-rose-500 text-white" : "bg-emerald-500 text-white"}`}>
-                    {hasText ? "SUBS" : "CLEAN"}
-                  </span>
-                  {brandNames[s.brand_id] && (
-                    <span className="absolute bottom-1.5 left-1.5 max-w-[80%] truncate text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-black/70 text-white">
-                      {brandNames[s.brand_id]}
-                    </span>
-                  )}
-                  <button
-                    onClick={() => remove(s)}
-                    className="absolute bottom-1.5 right-1.5 opacity-0 group-hover:opacity-100 transition-opacity bg-black/70 text-white rounded-md p-1"
-                    title="Delete shot">
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-                {(s.label || (s.tags && s.tags.length > 0)) && (
-                  <div className="px-1.5 py-1 bg-background">
-                    {s.label && (
-                      <p className="text-[10px] font-semibold text-foreground truncate" title={s.caption || s.label}>{s.label}</p>
-                    )}
-                    {s.tags && s.tags.length > 0 && (
-                      <div className="flex flex-wrap gap-0.5 mt-0.5">
-                        {s.tags.slice(0, 3).map((t) => (
-                          <span key={t} className="text-[8px] px-1 py-0.5 rounded bg-muted text-muted-foreground truncate max-w-full">{t}</span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
+        <div className="space-y-6">
+          {groups.map((g) => (
+            <div key={g.key}>
+              <div className="flex items-center gap-2 mb-2">
+                <h4 className="text-sm font-bold text-foreground">{g.label}</h4>
+                <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground">
+                  {g.items.length}
+                </span>
               </div>
-            );
-          })}
+              <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-3">
+                {g.items.map(renderCard)}
+              </div>
+            </div>
+          ))}
         </div>
       )}
 
