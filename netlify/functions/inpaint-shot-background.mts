@@ -1,30 +1,20 @@
 import fs from 'fs';
 import path from 'path';
-import {
-  getSupabase, uploadFile, makeWorkDir, downloadSource, run, FFMPEG,
-  ffprobeInfo, countFrames,
-} from './_shared/video';
+import { getSupabase, uploadFile, makeWorkDir } from './_shared/video';
 
 /**
- * Background function that removes burned-in subtitles from a shot with a
- * TWO-STAGE AI pipeline on Replicate:
+ * Background function that removes burned-in subtitles from a shot with REAL
+ * AI video inpainting (Replicate: hjunior29/video-text-remover — YOLO text
+ * detection + context-aware inpainting). The cleaned clip is stored next to
+ * the original and referenced via competitor_shots.clean_path, which makes the
+ * shot usable in video builds.
  *
- *  1. hjunior29/video-text-remover with method=black — its YOLO detector finds
- *     the exact text boxes frame by frame and fills them with black. We don't
- *     keep that video; we only use it to derive a per-frame MASK (the diff
- *     between original and blacked frames, computed with ffmpeg).
- *  2. jd7h/propainter — neural temporal inpainting fills ONLY those masked
- *     boxes, reconstructing the background from neighboring frames.
- *
- * Precise detection + neural fill = no smeared bands, no giant hallucinated
- * regions. The cleaned clip is stored and referenced via clean_path.
- *
- * Requires REPLICATE_API_TOKEN. Body: { shotId, projectId }
+ * Requires the REPLICATE_API_TOKEN env var on Netlify.
+ * Body: { shotId, projectId }
  */
 
 const BUCKET = 'project-files';
-const DETECT_MODEL = 'hjunior29/video-text-remover';
-const INPAINT_MODEL = 'jd7h/propainter';
+const REPLICATE_MODEL = 'hjunior29/video-text-remover';
 const POLL_MS = 5000;
 const MAX_WAIT_MS = 12 * 60 * 1000; // background functions cap at 15 min
 
@@ -45,82 +35,7 @@ function extractOutputUrl(output: unknown): string | null {
   return null;
 }
 
-async function resolveVersion(token: string, model: string): Promise<string> {
-  const resp = await fetch(`https://api.replicate.com/v1/models/${model}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (!resp.ok) throw new Error(`could not resolve ${model} version (${resp.status})`);
-  const j = await resp.json();
-  const v = j?.latest_version?.id;
-  if (!v) throw new Error(`${model} has no latest version`);
-  return v;
-}
-
-/** Create a prediction, retrying patiently on 429 (low-credit throttling). */
-async function createPrediction(
-  token: string,
-  version: string,
-  input: Record<string, unknown>,
-  log: (...a: unknown[]) => void,
-): Promise<string> {
-  const body = JSON.stringify({ version, input });
-  for (let attempt = 0; attempt < 40; attempt++) {
-    const resp = await fetch('https://api.replicate.com/v1/predictions', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body,
-    });
-    if (resp.status === 429) {
-      const txt = await resp.text();
-      let ra = 12;
-      try { ra = Number(JSON.parse(txt)?.retry_after) || 12; } catch { /* default */ }
-      const wait = ra + 2 + Math.random() * 8;
-      log(`rate limited, retrying in ${wait.toFixed(0)}s (attempt ${attempt + 1})`);
-      await sleep(wait * 1000);
-      continue;
-    }
-    if (!resp.ok) throw new Error(`Replicate create failed ${resp.status}: ${(await resp.text()).slice(0, 300)}`);
-    const j = await resp.json();
-    if (j?.id) return j.id as string;
-    throw new Error('Replicate returned no prediction id');
-  }
-  throw new Error('Replicate kept rate-limiting — add credit at replicate.com/account/billing and retry');
-}
-
-/** Poll a prediction until it settles; returns the output file URL. */
-async function waitPrediction(token: string, predId: string): Promise<string> {
-  const started = Date.now();
-  for (;;) {
-    if (Date.now() - started > MAX_WAIT_MS) throw new Error('Replicate prediction timed out');
-    await sleep(POLL_MS);
-    const resp = await fetch(`https://api.replicate.com/v1/predictions/${predId}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (!resp.ok) continue;
-    const pred = await resp.json();
-    if (pred.status === 'succeeded') {
-      const url = extractOutputUrl(pred.output);
-      if (!url) throw new Error('prediction succeeded but returned no video URL');
-      return url;
-    }
-    if (pred.status === 'failed' || pred.status === 'canceled') {
-      throw new Error(`Replicate prediction ${pred.status}: ${String(pred.error || '').slice(0, 300)}`);
-    }
-  }
-}
-
-async function download(url: string, toFile: string) {
-  const resp = await fetch(url);
-  if (!resp.ok) throw new Error(`download failed (${resp.status})`);
-  fs.writeFileSync(toFile, Buffer.from(await resp.arrayBuffer()));
-}
-
-// Bumped on behavior changes so deploy liveness can be verified with a GET
-// before re-queueing shots (background POSTs always return 202 immediately).
-const VERSION = 'v3-twostage-noscale2ref';
-
 export default async (req: Request) => {
-  if (req.method === 'GET') return new Response(VERSION, { status: 200 });
   let body: { shotId?: number; projectId?: string };
   try {
     body = await req.json();
@@ -166,103 +81,88 @@ export default async (req: Request) => {
 
   const workDir = makeWorkDir('winpaint-');
   try {
-    // Spread simultaneous shots apart a little.
-    await sleep(Math.random() * 10000);
-
+    // Public-ish URL Replicate can download the source clip from.
     const { data: signed, error: signErr } = await supabase.storage
       .from(BUCKET)
       .createSignedUrl(claimed.file_path as string, 3600);
     if (signErr || !signed?.signedUrl) return fail(`could not sign source URL: ${signErr?.message || 'no url'}`);
 
-    // ── Stage 1: exact per-frame text boxes (filled with black) ─────────────
-    let blackedUrl: string;
-    try {
-      const detectVersion = await resolveVersion(token, DETECT_MODEL);
-      const detectId = await createPrediction(token, detectVersion, {
+    // The model-latest predictions endpoint 404s for this model, so resolve the
+    // latest version id explicitly and use the generic predictions endpoint.
+    const modelResp = await fetch(`https://api.replicate.com/v1/models/${REPLICATE_MODEL}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!modelResp.ok) {
+      return fail(`could not resolve model version ${modelResp.status}: ${(await modelResp.text()).slice(0, 200)}`);
+    }
+    const model = await modelResp.json();
+    const version = model?.latest_version?.id;
+    if (!version) return fail('model has no latest version on Replicate');
+
+    // Create the prediction. Accounts with <$5 credit are throttled to ~1
+    // request every 10s, so retry patiently on 429 instead of failing — the
+    // per-shot background functions then serialize themselves naturally.
+    let predId: string | null = null;
+    const createBody = JSON.stringify({
+      version,
+      input: {
         video: signed.signedUrl,
-        method: 'black',           // just mark the boxes; we derive the mask from the diff
+        method: 'hybrid',          // context-aware inpainting (best for complex backgrounds)
         resolution: 'original',
-        margin: 12,                // generous box: ProPainter fills it cleanly anyway
-        conf_threshold: 0.15,      // catch big stylized caption words, not just subs
-      }, log);
-      log(`detect prediction ${detectId}`);
-      blackedUrl = await waitPrediction(token, detectId);
-    } catch (e) {
-      return fail(`detect stage: ${(e as Error).message}`);
+      },
+    });
+    // Spread simultaneous shots apart before the first attempt.
+    await sleep(Math.random() * 15000);
+    for (let attempt = 0; attempt < 40 && !predId; attempt++) {
+      const createResp = await fetch('https://api.replicate.com/v1/predictions', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: createBody,
+      });
+      if (createResp.status === 429) {
+        const txt = await createResp.text();
+        let ra = 12;
+        try { ra = Number(JSON.parse(txt)?.retry_after) || 12; } catch { /* default */ }
+        const wait = ra + 2 + Math.random() * 8;
+        log(`rate limited, retrying in ${wait.toFixed(0)}s (attempt ${attempt + 1})`);
+        await sleep(wait * 1000);
+        continue;
+      }
+      if (!createResp.ok) {
+        return fail(`Replicate create failed ${createResp.status}: ${(await createResp.text()).slice(0, 300)}`);
+      }
+      const created = await createResp.json();
+      predId = created?.id || null;
+    }
+    if (!predId) return fail('Replicate kept rate-limiting the request — add credit at replicate.com/account/billing and retry');
+    log(`prediction ${predId} created (version ${String(version).slice(0, 8)})`);
+
+    // Poll until done.
+    const started = Date.now();
+    let outputUrl: string | null = null;
+    for (;;) {
+      if (Date.now() - started > MAX_WAIT_MS) return fail('Replicate prediction timed out');
+      await sleep(POLL_MS);
+      const pollResp = await fetch(`https://api.replicate.com/v1/predictions/${predId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!pollResp.ok) continue;
+      const pred = await pollResp.json();
+      if (pred.status === 'succeeded') {
+        outputUrl = extractOutputUrl(pred.output);
+        if (!outputUrl) return fail('prediction succeeded but returned no video URL');
+        break;
+      }
+      if (pred.status === 'failed' || pred.status === 'canceled') {
+        return fail(`Replicate prediction ${pred.status}: ${String(pred.error || '').slice(0, 300)}`);
+      }
     }
 
-    const srcFile = path.join(workDir, 'src.mp4');
-    const blackedFile = path.join(workDir, 'blacked.mp4');
-    await downloadSource(supabase, claimed.file_path as string, srcFile);
-    await download(blackedUrl, blackedFile);
-
-    // ── Mask video: white where original and blacked differ (the text boxes),
-    // dilated a few pixels for safety. ProPainter indexes mask frames 1:1 with
-    // video frames, so the mask MUST have the exact same frame count. ────────
-    // NB: no scale2ref (deprecated, aborts with an assertion on the Linux
-    // ffmpeg-static build) — we scale to the probed source dimensions instead,
-    // and the frame-count fixup runs as a separate single-input pass so no
-    // multi-input framesync filter is involved in it.
-    const srcInfo = await ffprobeInfo(srcFile);
-    const fps = srcInfo.fps && srcInfo.fps > 0 ? srcInfo.fps : 30;
-    const nFrames = await countFrames(srcFile);
-    if (!nFrames) return fail('could not count source frames');
-    if (!srcInfo.width || !srcInfo.height) return fail('could not probe source dimensions');
-    log(`source: ${nFrames} frames @ ${fps}fps, ${srcInfo.width}x${srcInfo.height}`);
-
-    const maskRawFile = path.join(workDir, 'mask_raw.mp4');
-    await run(FFMPEG, [
-      '-y', '-i', srcFile, '-i', blackedFile,
-      '-filter_complex',
-      // lutyuv (256-entry lookup table) instead of geq: geq evaluates the
-      // expression per pixel and crawled at 0.01x, getting the process killed.
-      `[1:v]fps=${fps},scale=${srcInfo.width}:${srcInfo.height}[b];[0:v]fps=${fps}[a];` +
-        "[a][b]blend=all_mode=difference,format=gray," +
-        "lutyuv=y='if(gt(val,18),255,0)',dilation,dilation,dilation,dilation,format=yuv420p",
-      '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18', '-an',
-      maskRawFile,
-    ]);
-
-    // Second pass: pad by cloning the last frame, trim to the exact source
-    // frame count.
-    const maskFile = path.join(workDir, 'mask.mp4');
-    await run(FFMPEG, [
-      '-y', '-i', maskRawFile,
-      '-vf', `tpad=stop_mode=clone:stop=-1,trim=end_frame=${nFrames}`,
-      '-r', String(fps),
-      '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18', '-an',
-      maskFile,
-    ]);
-    const maskFrames = await countFrames(maskFile);
-    log(`mask: ${maskFrames} frames (target ${nFrames})`);
-    const maskKey = `${projectId}/shots-clean/mask_${shotId}.mp4`;
-    await uploadFile(supabase, maskKey, maskFile, 'video/mp4');
-    const { data: maskSigned, error: maskSignErr } = await supabase.storage
-      .from(BUCKET)
-      .createSignedUrl(maskKey, 3600);
-    if (maskSignErr || !maskSigned?.signedUrl) {
-      return fail(`could not sign mask URL: ${maskSignErr?.message || 'no url'}`);
-    }
-
-    // ── Stage 2: neural temporal inpainting of ONLY the text boxes ──────────
-    let cleanedUrl: string;
-    try {
-      const inpaintVersion = await resolveVersion(token, INPAINT_MODEL);
-      const inpaintId = await createPrediction(token, inpaintVersion, {
-        video: signed.signedUrl,
-        mask: maskSigned.signedUrl,
-        mode: 'video_inpainting',
-        mask_dilation: 6,
-        fp16: true,
-      }, log);
-      log(`inpaint prediction ${inpaintId}`);
-      cleanedUrl = await waitPrediction(token, inpaintId);
-    } catch (e) {
-      return fail(`inpaint stage: ${(e as Error).message}`);
-    }
-
+    // Download the cleaned clip and store it next to the original.
     const outFile = path.join(workDir, 'clean.mp4');
-    await download(cleanedUrl, outFile);
+    const dl = await fetch(outputUrl);
+    if (!dl.ok) return fail(`could not download cleaned video (${dl.status})`);
+    fs.writeFileSync(outFile, Buffer.from(await dl.arrayBuffer()));
 
     const cleanKey = `${projectId}/shots-clean/${shotId}_${Date.now()}.mp4`;
     await uploadFile(supabase, cleanKey, outFile, 'video/mp4');

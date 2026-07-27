@@ -48,11 +48,5 @@
   external_node_modules = ["ffmpeg-static"]
   included_files = ["node_modules/ffmpeg-static/ffmpeg"]
 
-# ffmpeg serve anche qui: costruisce la maschera video (diff tra originale e
-# video con i box di testo anneriti) per l'inpainting ProPainter.
-[functions."inpaint-shot-background"]
-  external_node_modules = ["ffmpeg-static"]
-  included_files = ["node_modules/ffmpeg-static/ffmpeg"]
-
 [[plugins]]
   package = "@netlify/plugin-nextjs"
