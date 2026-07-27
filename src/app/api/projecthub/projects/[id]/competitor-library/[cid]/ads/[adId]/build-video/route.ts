@@ -79,18 +79,16 @@ export async function POST(
     );
   }
 
-  // Need CLEAN shots in the pool to build from.
+  // We prefer CLEAN shots (no burned-in subtitles) as B-roll. If the pool has
+  // none — e.g. every competitor video is fully subtitled — we DON'T block:
+  // the builder fills those scenes with AI b-roll instead. Upload clean clips
+  // in "My Footage" (or split a subtitle-free video) to use real footage.
   const { count: cleanCount } = await supabaseAdmin
     .from('competitor_shots')
     .select('id', { count: 'exact', head: true })
     .eq('project_id', id)
     .not('has_text', 'is', true);
-  if (!cleanCount || cleanCount === 0) {
-    return NextResponse.json(
-      { error: 'No clean shots available. Split some competitor videos into shots first.' },
-      { status: 400 },
-    );
-  }
+  const usingAiFallback = !cleanCount || cleanCount === 0;
 
   // Don't double-queue.
   const { data: active } = await supabaseAdmin
@@ -159,7 +157,13 @@ export async function POST(
     jobId: job.id, projectId: id, brandId: brandIdNum, adId: adIdNum,
   });
 
-  return NextResponse.json({ jobId: job.id, status: job.status, scenes: scenes.length, queued: true });
+  return NextResponse.json({
+    jobId: job.id,
+    status: job.status,
+    scenes: scenes.length,
+    queued: true,
+    usingAiFallback,
+  });
 }
 
 export async function GET(

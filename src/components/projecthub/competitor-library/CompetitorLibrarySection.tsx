@@ -483,7 +483,12 @@ function CreativeDetailPanel({
       });
       const j = await r.json().catch(() => ({}));
       if (r.ok) {
-        toast({ title: j.queued === false ? "Already building" : "Queued for build", description: `${j.scenes || ""} scenes — the worker will assemble it.` });
+        toast({
+          title: j.queued === false ? "Already building" : "Queued for build",
+          description: j.usingAiFallback
+            ? `${j.scenes || ""} scenes — no clean shots yet, using AI b-roll. Add clips in My Footage for real footage.`
+            : `${j.scenes || ""} scenes — the worker will assemble it.`,
+        });
         if (!buildPoll.current) buildPoll.current = setInterval(loadBuildStatus, 5000);
       } else {
         setBuildStatus("");
