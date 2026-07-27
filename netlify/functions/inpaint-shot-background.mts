@@ -87,25 +87,55 @@ export default async (req: Request) => {
       .createSignedUrl(claimed.file_path as string, 3600);
     if (signErr || !signed?.signedUrl) return fail(`could not sign source URL: ${signErr?.message || 'no url'}`);
 
-    // Create the prediction (model-latest endpoint, no version pinning).
-    const createResp = await fetch(`https://api.replicate.com/v1/models/${REPLICATE_MODEL}/predictions`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        input: {
-          video: signed.signedUrl,
-          method: 'hybrid',          // context-aware inpainting (best for complex backgrounds)
-          resolution: 'original',
-        },
-      }),
+    // The model-latest predictions endpoint 404s for this model, so resolve the
+    // latest version id explicitly and use the generic predictions endpoint.
+    const modelResp = await fetch(`https://api.replicate.com/v1/models/${REPLICATE_MODEL}`, {
+      headers: { Authorization: `Bearer ${token}` },
     });
-    if (!createResp.ok) {
-      return fail(`Replicate create failed ${createResp.status}: ${(await createResp.text()).slice(0, 300)}`);
+    if (!modelResp.ok) {
+      return fail(`could not resolve model version ${modelResp.status}: ${(await modelResp.text()).slice(0, 200)}`);
     }
-    const created = await createResp.json();
-    const predId = created?.id;
-    if (!predId) return fail('Replicate returned no prediction id');
-    log(`prediction ${predId} created`);
+    const model = await modelResp.json();
+    const version = model?.latest_version?.id;
+    if (!version) return fail('model has no latest version on Replicate');
+
+    // Create the prediction. Accounts with <$5 credit are throttled to ~1
+    // request every 10s, so retry patiently on 429 instead of failing — the
+    // per-shot background functions then serialize themselves naturally.
+    let predId: string | null = null;
+    const createBody = JSON.stringify({
+      version,
+      input: {
+        video: signed.signedUrl,
+        method: 'hybrid',          // context-aware inpainting (best for complex backgrounds)
+        resolution: 'original',
+      },
+    });
+    // Spread simultaneous shots apart before the first attempt.
+    await sleep(Math.random() * 15000);
+    for (let attempt = 0; attempt < 40 && !predId; attempt++) {
+      const createResp = await fetch('https://api.replicate.com/v1/predictions', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: createBody,
+      });
+      if (createResp.status === 429) {
+        const txt = await createResp.text();
+        let ra = 12;
+        try { ra = Number(JSON.parse(txt)?.retry_after) || 12; } catch { /* default */ }
+        const wait = ra + 2 + Math.random() * 8;
+        log(`rate limited, retrying in ${wait.toFixed(0)}s (attempt ${attempt + 1})`);
+        await sleep(wait * 1000);
+        continue;
+      }
+      if (!createResp.ok) {
+        return fail(`Replicate create failed ${createResp.status}: ${(await createResp.text()).slice(0, 300)}`);
+      }
+      const created = await createResp.json();
+      predId = created?.id || null;
+    }
+    if (!predId) return fail('Replicate kept rate-limiting the request — add credit at replicate.com/account/billing and retry');
+    log(`prediction ${predId} created (version ${String(version).slice(0, 8)})`);
 
     // Poll until done.
     const started = Date.now();
