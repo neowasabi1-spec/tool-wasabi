@@ -112,7 +112,12 @@ async function download(url: string, toFile: string) {
   fs.writeFileSync(toFile, Buffer.from(await resp.arrayBuffer()));
 }
 
+// Bumped on behavior changes so deploy liveness can be verified with a GET
+// before re-queueing shots (background POSTs always return 202 immediately).
+const VERSION = 'v3-twostage-noscale2ref';
+
 export default async (req: Request) => {
+  if (req.method === 'GET') return new Response(VERSION, { status: 200 });
   let body: { shotId?: number; projectId?: string };
   try {
     body = await req.json();
@@ -189,25 +194,37 @@ export default async (req: Request) => {
 
     // ── Mask video: white where original and blacked differ (the text boxes),
     // dilated a few pixels for safety. ProPainter indexes mask frames 1:1 with
-    // video frames, so the mask MUST have the exact same frame count: we force
-    // both inputs to the source fps, clone the last mask frame indefinitely
-    // and trim to precisely the source frame count. ──────────────────────────
+    // video frames, so the mask MUST have the exact same frame count. ────────
+    // NB: no scale2ref (deprecated, aborts with an assertion on the Linux
+    // ffmpeg-static build) — we scale to the probed source dimensions instead,
+    // and the frame-count fixup runs as a separate single-input pass so no
+    // multi-input framesync filter is involved in it.
     const srcInfo = await ffprobeInfo(srcFile);
     const fps = srcInfo.fps && srcInfo.fps > 0 ? srcInfo.fps : 30;
     const nFrames = await countFrames(srcFile);
     if (!nFrames) return fail('could not count source frames');
-    log(`source: ${nFrames} frames @ ${fps}fps`);
+    if (!srcInfo.width || !srcInfo.height) return fail('could not probe source dimensions');
+    log(`source: ${nFrames} frames @ ${fps}fps, ${srcInfo.width}x${srcInfo.height}`);
 
-    const maskFile = path.join(workDir, 'mask.mp4');
+    const maskRawFile = path.join(workDir, 'mask_raw.mp4');
     await run(FFMPEG, [
       '-y', '-i', srcFile, '-i', blackedFile,
       '-filter_complex',
       // lutyuv (256-entry lookup table) instead of geq: geq evaluates the
       // expression per pixel and crawled at 0.01x, getting the process killed.
-      `[0:v]fps=${fps}[a0];[1:v]fps=${fps}[b0];[b0][a0]scale2ref=iw:ih[b][a];` +
+      `[1:v]fps=${fps},scale=${srcInfo.width}:${srcInfo.height}[b];[0:v]fps=${fps}[a];` +
         "[a][b]blend=all_mode=difference,format=gray," +
-        "lutyuv=y='if(gt(val,18),255,0)',dilation,dilation,dilation,dilation," +
-        `tpad=stop_mode=clone:stop=-1,trim=end_frame=${nFrames},format=yuv420p`,
+        "lutyuv=y='if(gt(val,18),255,0)',dilation,dilation,dilation,dilation,format=yuv420p",
+      '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18', '-an',
+      maskRawFile,
+    ]);
+
+    // Second pass: pad by cloning the last frame, trim to the exact source
+    // frame count.
+    const maskFile = path.join(workDir, 'mask.mp4');
+    await run(FFMPEG, [
+      '-y', '-i', maskRawFile,
+      '-vf', `tpad=stop_mode=clone:stop=-1,trim=end_frame=${nFrames}`,
       '-r', String(fps),
       '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18', '-an',
       maskFile,

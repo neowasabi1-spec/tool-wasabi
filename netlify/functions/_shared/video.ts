@@ -58,7 +58,15 @@ export function run(
     p.on('error', reject);
     p.on('close', (code) => {
       if (code === 0) resolve(capture === 'stdout' ? out : err);
-      else reject(new Error(`${cmd} exited ${code}: ${(err || out).slice(-500)}`));
+      else {
+        // Drop \r-progress spam (frame=/size= lines) so the real error —
+        // usually the very last lines — survives the length cap.
+        const clean = (err || out)
+          .split(/\r|\n/)
+          .filter((l) => l.trim() && !/^(frame=|size=|\[out#)/.test(l.trim()))
+          .join('\n');
+        reject(new Error(`${cmd} exited ${code}: ${clean.slice(-600)}`));
+      }
     });
   });
 }
