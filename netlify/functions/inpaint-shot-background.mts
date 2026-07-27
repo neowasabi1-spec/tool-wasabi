@@ -202,9 +202,11 @@ export default async (req: Request) => {
     await run(FFMPEG, [
       '-y', '-i', srcFile, '-i', blackedFile,
       '-filter_complex',
+      // lutyuv (256-entry lookup table) instead of geq: geq evaluates the
+      // expression per pixel and crawled at 0.01x, getting the process killed.
       `[0:v]fps=${fps}[a0];[1:v]fps=${fps}[b0];[b0][a0]scale2ref=iw:ih[b][a];` +
         "[a][b]blend=all_mode=difference,format=gray," +
-        "geq=lum='if(gt(lum(X,Y),18),255,0)',dilation,dilation,dilation,dilation," +
+        "lutyuv=y='if(gt(val,18),255,0)',dilation,dilation,dilation,dilation," +
         `tpad=stop_mode=clone:stop=-1,trim=end_frame=${nFrames},format=yuv420p`,
       '-r', String(fps),
       '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18', '-an',
