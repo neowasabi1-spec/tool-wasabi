@@ -188,6 +188,63 @@ export async function detectBurnedText(thumbPath: string) {
   }
 }
 
+// Single Vision call per shot: detects burned-in subtitles AND produces a short
+// name, a caption and content tags (people/objects/setting/action) so the video
+// builder can match footage to the scene text. Falls back gracefully.
+export async function analyzeShot(thumbPath: string): Promise<{
+  hasText: boolean | null;
+  score: number | null;
+  region: string;
+  label: string;
+  caption: string;
+  tags: string[];
+}> {
+  const empty = { hasText: null as boolean | null, score: null as number | null, region: '', label: '', caption: '', tags: [] as string[] };
+  if (!OPENAI_API_KEY) return empty;
+  try {
+    const b64 = fs.readFileSync(thumbPath).toString('base64');
+    const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${OPENAI_API_KEY}` },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        max_tokens: 220,
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'text', text:
+              'Analyze this single video frame. Reply ONLY compact minified JSON with keys: ' +
+              '"text" (true if large readable burned-in subtitle/caption words are overlaid, ignore small logos/watermarks), ' +
+              '"conf" (0..1), "region" ("top"|"center"|"bottom"|""), ' +
+              '"label" (2-4 word title of the shot), ' +
+              '"caption" (one short sentence describing what is shown), ' +
+              '"tags" (array of 3-8 lowercase keywords: named people if recognizable e.g. "trump", plus objects, setting, action, emotion). ' +
+              'Example: {"text":false,"conf":0.1,"region":"","label":"Man holding phone","caption":"A bearded man talks to camera holding a smartphone","tags":["man","phone","talking head","indoor"]}' },
+            { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${b64}` } },
+          ],
+        }],
+      }),
+    });
+    const j = await resp.json();
+    const raw = j?.choices?.[0]?.message?.content || '';
+    const clean = raw.replace(/```json?/gi, '').replace(/```/g, '').trim();
+    const p = JSON.parse(clean);
+    const tags = Array.isArray(p.tags)
+      ? p.tags.map((t: unknown) => String(t).toLowerCase().trim()).filter(Boolean).slice(0, 8)
+      : [];
+    return {
+      hasText: !!p.text,
+      score: typeof p.conf === 'number' ? p.conf : p.text ? 0.8 : 0.1,
+      region: typeof p.region === 'string' ? p.region : '',
+      label: typeof p.label === 'string' ? p.label.slice(0, 80) : '',
+      caption: typeof p.caption === 'string' ? p.caption.slice(0, 300) : '',
+      tags,
+    };
+  } catch {
+    return empty;
+  }
+}
+
 export async function downloadSource(
   supabase: SupabaseClient,
   filePath: string,
@@ -336,32 +393,75 @@ export async function aiClip(
   return { file: nrm, dur: d };
 }
 
-// Build the visual track for one scene. Consumes UNIQUE clips from the shared
-// pool via `cursorRef` (never wraps → no shot is reused across the video). When
-// the real-footage pool runs out, the remaining duration is filled with an AI
-// clip generated from the scene text.
+export type ShotClip = { file: string; dur: number; tags: string[]; caption: string };
+
+function tokenize(text: string): Set<string> {
+  return new Set(
+    (text || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .filter((w) => w.length > 2),
+  );
+}
+
+// Choose UNIQUE shots for one scene, preferring those whose tags/caption match
+// the scene text (so a "trump" scene pulls trump footage). Marks chosen shots in
+// `used` so no shot repeats across the video, and takes at most ONE shot per
+// matched tag within a scene (avoids stacking 3-4 near-identical clips).
+export function pickShotsForScene(
+  pool: ShotClip[],
+  used: Set<number>,
+  sceneText: string,
+  targetDur: number,
+): { files: string[]; dur: number } {
+  const words = tokenize(sceneText);
+  const scored = pool
+    .map((s, idx) => {
+      const matched = (s.tags || []).filter((t) => words.has(t.toLowerCase()));
+      const capHits = [...tokenize(s.caption)].filter((w) => words.has(w));
+      return { idx, s, score: matched.length * 3 + capHits.length, primary: matched[0]?.toLowerCase() || '' };
+    })
+    .filter((c) => !used.has(c.idx))
+    // relevant first; stable order otherwise so generic scenes stay sequential
+    .sort((a, b) => b.score - a.score);
+
+  const files: string[] = [];
+  let acc = 0;
+  const usedTags = new Set<string>();
+  for (const c of scored) {
+    if (acc >= targetDur - 0.05) break;
+    // Don't stack multiple shots that matched the same tag in one scene.
+    if (c.primary && usedTags.has(c.primary) && files.length > 0) continue;
+    used.add(c.idx);
+    files.push(c.s.file);
+    acc += c.s.dur;
+    if (c.primary) usedTags.add(c.primary);
+  }
+  return { files, dur: acc };
+}
+
+// Assemble one scene's visual track from a pre-chosen list of clip files. If the
+// chosen real footage doesn't cover the scene duration, fill the rest with AI
+// b-roll generated from the scene text.
 export async function buildSceneVisual(
-  pool: { file: string; dur: number }[],
+  chosenFiles: string[],
+  chosenDur: number,
   targetDur: number,
   workDir: string,
   idx: number,
-  cursorRef: { i: number },
   aiPrompt = '',
 ): Promise<string> {
-  const parts: string[] = [];
-  let acc = 0;
-  while (acc < targetDur - 0.05 && cursorRef.i < pool.length) {
-    const clip = pool[cursorRef.i];
-    cursorRef.i++;
-    parts.push(clip.file);
-    acc += clip.dur;
-  }
-  // Out of real footage for this scene → generate AI b-roll for the rest.
+  const parts = [...chosenFiles];
+  let acc = chosenDur;
   if (acc < targetDur - 0.05) {
-    const need = targetDur - acc;
-    const ai = await aiClip(aiPrompt, need, workDir, `ai_${idx}`);
+    const ai = await aiClip(aiPrompt, targetDur - acc, workDir, `ai_${idx}`);
     parts.push(ai.file);
     acc += ai.dur;
+  }
+  if (parts.length === 0) {
+    const ai = await aiClip(aiPrompt, targetDur, workDir, `ai_${idx}`);
+    parts.push(ai.file);
   }
 
   const listFile = path.join(workDir, `scene_${idx}_list.txt`);
@@ -381,15 +481,16 @@ export async function loadCleanShots(
   supabase: SupabaseClient,
   projectId: string,
   workDir: string,
-): Promise<{ file: string; dur: number }[]> {
+): Promise<ShotClip[]> {
+  // select '*' so we work whether or not the tag columns are migrated yet.
   const { data } = await supabase
     .from('competitor_shots')
-    .select('id, file_path, has_text')
+    .select('*')
     .eq('project_id', projectId)
     .not('has_text', 'is', true)
     .limit(60);
-  const shots = data || [];
-  const norm: { file: string; dur: number }[] = [];
+  const shots = (data || []) as Array<{ file_path: string; tags?: string[]; caption?: string }>;
+  const norm: ShotClip[] = [];
   for (let i = 0; i < shots.length; i++) {
     const raw = path.join(workDir, `raw_${i}.mp4`);
     const nrm = path.join(workDir, `norm_${i}.mp4`);
@@ -397,7 +498,14 @@ export async function loadCleanShots(
       await downloadSource(supabase, shots[i].file_path, raw);
       await normalizeShot(raw, nrm);
       const dur = await probeDuration(nrm);
-      if (dur > 0.2) norm.push({ file: nrm, dur });
+      if (dur > 0.2) {
+        norm.push({
+          file: nrm,
+          dur,
+          tags: Array.isArray(shots[i].tags) ? (shots[i].tags as string[]) : [],
+          caption: typeof shots[i].caption === 'string' ? (shots[i].caption as string) : '',
+        });
+      }
     } catch { /* skip bad shot */ }
   }
   return norm;

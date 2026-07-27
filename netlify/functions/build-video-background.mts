@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import {
   getSupabase, run, FFMPEG, makeWorkDir, probeDuration, ttsScene,
-  buildSceneVisual, loadCleanShots, srtTime, grabThumb, uploadFile,
+  buildSceneVisual, pickShotsForScene, loadCleanShots, srtTime, grabThumb, uploadFile,
 } from './_shared/video';
 
 /**
@@ -41,10 +41,10 @@ export default async (req: Request) => {
     if (scenes.length === 0) throw new Error('no scenes in job');
     // Real-footage pool. Each clip is used at most ONCE (cursor never wraps);
     // when the pool runs out, buildSceneVisual fills the rest with AI b-roll.
-    const normClips = await loadCleanShots(supabase, projectId, workDir);
-    log(`clean shots available: ${normClips.length}`);
+    const pool = await loadCleanShots(supabase, projectId, workDir);
+    log(`clean shots available: ${pool.length}`);
 
-    const cursor = { i: 0 };
+    const used = new Set<number>();
     const sceneVisuals: string[] = [];
     const sceneAudios: string[] = [];
     const srt: string[] = [];
@@ -53,7 +53,9 @@ export default async (req: Request) => {
       const mp3 = path.join(workDir, `vo_${i}.mp3`);
       await ttsScene(scenes[i], voice, mp3);
       const d = Math.max(0.8, await probeDuration(mp3));
-      const vis = await buildSceneVisual(normClips, d, workDir, i, cursor, scenes[i]);
+      // Pick footage matching this scene's text (tags/caption), no reuse.
+      const picked = pickShotsForScene(pool, used, scenes[i], d);
+      const vis = await buildSceneVisual(picked.files, picked.dur, d, workDir, i, scenes[i]);
       sceneVisuals.push(vis);
       sceneAudios.push(mp3);
       srt.push(`${i + 1}\n${srtTime(t)} --> ${srtTime(t + d)}\n${scenes[i]}\n`);

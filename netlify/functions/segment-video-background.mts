@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import {
   getSupabase, ffprobeInfo, detectScenes, buildSegments, cutClip, grabThumb,
-  detectBurnedText, downloadSource, uploadFile, makeWorkDir,
+  analyzeShot, downloadSource, uploadFile, makeWorkDir,
 } from './_shared/video';
 
 /**
@@ -86,9 +86,10 @@ export default async (req: Request) => {
         log(`thumb upload failed: ${(e as Error).message}`);
       }
 
-      const ocr = await detectBurnedText(thumbFile);
+      const meta = await analyzeShot(thumbFile);
+      log(`shot ${i}: ${meta.label || '(no label)'} [${meta.tags.join(', ')}]${meta.hasText ? ' SUBS' : ''}`);
 
-      const { error: insErr } = await supabase.from('competitor_shots').insert({
+      const row: Record<string, unknown> = {
         project_id: projectId,
         brand_id: brandId,
         ad_id: adId,
@@ -99,10 +100,20 @@ export default async (req: Request) => {
         duration_sec: +(end - start).toFixed(2),
         width: info.width,
         height: info.height,
-        has_text: ocr.hasText,
-        text_score: ocr.score,
-        text_region: ocr.region,
-      });
+        has_text: meta.hasText,
+        text_score: meta.score,
+        text_region: meta.region,
+        label: meta.label || null,
+        caption: meta.caption || null,
+        tags: meta.tags,
+      };
+      let { error: insErr } = await supabase.from('competitor_shots').insert(row);
+      // If the tag columns aren't migrated yet, retry without them so we still
+      // capture the shot (older schema compatibility).
+      if (insErr && /label|caption|tags/i.test(insErr.message)) {
+        delete row.label; delete row.caption; delete row.tags;
+        ({ error: insErr } = await supabase.from('competitor_shots').insert(row));
+      }
       if (insErr) log(`shot ${i} insert failed: ${insErr.message}`);
       else shotsCount++;
     }

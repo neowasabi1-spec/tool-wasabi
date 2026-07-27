@@ -227,6 +227,9 @@ type Shot = {
   height?: number | null;
   has_text?: boolean | null;
   text_region?: string | null;
+  label?: string | null;
+  caption?: string | null;
+  tags?: string[] | null;
 };
 
 // Grid of shots extracted from one creative. Click a card to preview the clip;
@@ -1664,6 +1667,7 @@ function ShotsLibraryView({ projectId }: { projectId: string }) {
   const [brandNames, setBrandNames] = useState<Record<number, string>>({});
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<"all" | "clean" | "subs">("all");
+  const [query, setQuery] = useState("");
   const [playing, setPlaying] = useState<Shot | null>(null);
 
   const load = async () => {
@@ -1691,8 +1695,14 @@ function ShotsLibraryView({ projectId }: { projectId: string }) {
   };
 
   const cleanCount = shots.filter((s) => s.has_text !== true).length;
-  const filtered = shots.filter((s) =>
-    filter === "all" ? true : filter === "clean" ? s.has_text !== true : s.has_text === true);
+  const q = query.trim().toLowerCase();
+  const filtered = shots
+    .filter((s) => (filter === "all" ? true : filter === "clean" ? s.has_text !== true : s.has_text === true))
+    .filter((s) => {
+      if (!q) return true;
+      const hay = [s.label || "", s.caption || "", ...(s.tags || [])].join(" ").toLowerCase();
+      return hay.includes(q);
+    });
 
   return (
     <div className="space-y-4">
@@ -1703,13 +1713,24 @@ function ShotsLibraryView({ projectId }: { projectId: string }) {
             Pieces cut from competitor videos (audio removed). Use the <b>CLEAN</b> ones as B-roll to recreate videos.
           </p>
         </div>
-        <div className="flex items-center gap-1 border border-border rounded-lg p-0.5 bg-muted/30 w-fit">
-          {([["all", `All (${shots.length})`], ["clean", `Clean (${cleanCount})`], ["subs", "With subs"]] as const).map(([v, l]) => (
-            <button key={v} onClick={() => setFilter(v)}
-              className={`px-3 py-1 text-xs rounded-md font-medium transition-colors ${filter === v ? "bg-white shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"}`}>
-              {l}
-            </button>
-          ))}
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="relative">
+            <Search className="w-3.5 h-3.5 text-muted-foreground absolute left-2.5 top-1/2 -translate-y-1/2" />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search tags (e.g. trump, phone)…"
+              className="h-8 w-52 text-xs rounded-lg border border-border bg-background pl-8 pr-2"
+            />
+          </div>
+          <div className="flex items-center gap-1 border border-border rounded-lg p-0.5 bg-muted/30 w-fit">
+            {([["all", `All (${shots.length})`], ["clean", `Clean (${cleanCount})`], ["subs", "With subs"]] as const).map(([v, l]) => (
+              <button key={v} onClick={() => setFilter(v)}
+                className={`px-3 py-1 text-xs rounded-md font-medium transition-colors ${filter === v ? "bg-white shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"}`}>
+                {l}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -1720,7 +1741,7 @@ function ShotsLibraryView({ projectId }: { projectId: string }) {
           <Film className="w-12 h-12 text-muted-foreground/30 mx-auto mb-3" />
           <p className="text-sm font-semibold text-foreground mb-1">No shots yet</p>
           <p className="text-xs text-muted-foreground max-w-md mx-auto">
-            Open a competitor video and click <b>Split into shots</b>. The local ffmpeg worker cuts it into reusable pieces.
+            Open a competitor video and click <b>Split into shots</b>. It's cut into reusable pieces on the server, then named and tagged automatically.
           </p>
         </div>
       ) : (
@@ -1728,31 +1749,47 @@ function ShotsLibraryView({ projectId }: { projectId: string }) {
           {filtered.map((s) => {
             const hasText = s.has_text === true;
             return (
-              <div key={s.id} className="group relative rounded-xl overflow-hidden border border-border bg-black/5">
-                <button onClick={() => setPlaying(s)} className="block w-full aspect-[9/16] bg-black">
-                  {s.thumb_path
-                    ? <img src={getUploadUrl(s.thumb_path)} alt="" className="w-full h-full object-cover" />
-                    : <div className="w-full h-full flex items-center justify-center text-white/40"><Play className="w-6 h-6" /></div>}
-                </button>
-                <span className="absolute top-1.5 left-1.5 text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-black/70 text-white">
-                  {s.duration_sec}s
-                </span>
-                <span
-                  title={hasText ? "Has burned-in subtitles" : "Clean (no subtitles detected)"}
-                  className={`absolute top-1.5 right-1.5 text-[9px] font-black px-1.5 py-0.5 rounded-full ${hasText ? "bg-rose-500 text-white" : "bg-emerald-500 text-white"}`}>
-                  {hasText ? "SUBS" : "CLEAN"}
-                </span>
-                {brandNames[s.brand_id] && (
-                  <span className="absolute bottom-1.5 left-1.5 max-w-[80%] truncate text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-black/70 text-white">
-                    {brandNames[s.brand_id]}
+              <div key={s.id} className="group rounded-xl overflow-hidden border border-border bg-black/5">
+                <div className="relative">
+                  <button onClick={() => setPlaying(s)} className="block w-full aspect-[9/16] bg-black">
+                    {s.thumb_path
+                      ? <img src={getUploadUrl(s.thumb_path)} alt="" className="w-full h-full object-cover" />
+                      : <div className="w-full h-full flex items-center justify-center text-white/40"><Play className="w-6 h-6" /></div>}
+                  </button>
+                  <span className="absolute top-1.5 left-1.5 text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-black/70 text-white">
+                    {s.duration_sec}s
                   </span>
+                  <span
+                    title={hasText ? "Has burned-in subtitles" : "Clean (no subtitles detected)"}
+                    className={`absolute top-1.5 right-1.5 text-[9px] font-black px-1.5 py-0.5 rounded-full ${hasText ? "bg-rose-500 text-white" : "bg-emerald-500 text-white"}`}>
+                    {hasText ? "SUBS" : "CLEAN"}
+                  </span>
+                  {brandNames[s.brand_id] && (
+                    <span className="absolute bottom-1.5 left-1.5 max-w-[80%] truncate text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-black/70 text-white">
+                      {brandNames[s.brand_id]}
+                    </span>
+                  )}
+                  <button
+                    onClick={() => remove(s)}
+                    className="absolute bottom-1.5 right-1.5 opacity-0 group-hover:opacity-100 transition-opacity bg-black/70 text-white rounded-md p-1"
+                    title="Delete shot">
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                {(s.label || (s.tags && s.tags.length > 0)) && (
+                  <div className="px-1.5 py-1 bg-background">
+                    {s.label && (
+                      <p className="text-[10px] font-semibold text-foreground truncate" title={s.caption || s.label}>{s.label}</p>
+                    )}
+                    {s.tags && s.tags.length > 0 && (
+                      <div className="flex flex-wrap gap-0.5 mt-0.5">
+                        {s.tags.slice(0, 3).map((t) => (
+                          <span key={t} className="text-[8px] px-1 py-0.5 rounded bg-muted text-muted-foreground truncate max-w-full">{t}</span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 )}
-                <button
-                  onClick={() => remove(s)}
-                  className="absolute bottom-1.5 right-1.5 opacity-0 group-hover:opacity-100 transition-opacity bg-black/70 text-white rounded-md p-1"
-                  title="Delete shot">
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
               </div>
             );
           })}
