@@ -2056,7 +2056,7 @@ function MyFootageView({ projectId }: { projectId: string }) {
     }
     setUploading(false);
     setProgress("");
-    if (ok > 0) toast({ title: `Uploaded ${ok} video${ok === 1 ? "" : "s"}` });
+    if (ok > 0) toast({ title: `Uploaded ${ok} video${ok === 1 ? "" : "s"}`, description: "Splitting into shots automatically…" });
     load();
   };
 
@@ -2088,7 +2088,7 @@ function MyFootageView({ projectId }: { projectId: string }) {
         <div>
           <h3 className="text-lg font-bold text-foreground">My footage</h3>
           <p className="text-sm text-muted-foreground mt-0.5">
-            Upload your own videos and split them into shots. Those shots join the pool used to <b>recreate videos</b>.
+            Upload your own videos — they're <b>split into shots automatically</b> and join the pool used to <b>recreate videos</b>.
           </p>
         </div>
         <Button onClick={onPick} disabled={uploading} className="gap-2 h-9">

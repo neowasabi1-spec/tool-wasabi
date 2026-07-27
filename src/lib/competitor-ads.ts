@@ -6,6 +6,7 @@
  */
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { autoSplitIfVideo } from '@/lib/segment-enqueue';
 
 const BUCKET = 'project-files';
 
@@ -186,5 +187,15 @@ export async function insertCompetitorAd(opts: {
   }
 
   if (error || !data) return { ok: false, error: error?.message || 'Insert failed' };
+
+  // Auto-split new videos into shots the moment they land (scrape / extension /
+  // manual upload) so the shot pool stays fresh without a manual click.
+  if (mediaType === 'video' && filePath) {
+    const adId = Number((data as { id?: number }).id);
+    if (Number.isFinite(adId)) {
+      await autoSplitIfVideo({ projectId, brandId, adId, mediaType, filePath });
+    }
+  }
+
   return { ok: true, ad: data };
 }

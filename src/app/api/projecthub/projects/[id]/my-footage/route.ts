@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { canAccessProject } from '@/lib/auth/project-access';
 import { ensureBrand } from '@/lib/competitor-ads';
+import { autoSplitIfVideo } from '@/lib/segment-enqueue';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -76,5 +77,15 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     return NextResponse.json({ error: error?.message || 'Insert failed' }, { status: 500 });
   }
 
-  return NextResponse.json({ video: data, brandId });
+  // Auto-split the uploaded video into shots immediately.
+  await autoSplitIfVideo({
+    projectId: id,
+    brandId,
+    adId: Number((data as { id: number }).id),
+    mediaType: 'video',
+    filePath,
+    origin: new URL(req.url).origin,
+  });
+
+  return NextResponse.json({ video: data, brandId, autoSplit: true });
 }
