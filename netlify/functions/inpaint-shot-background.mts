@@ -1,6 +1,9 @@
 import fs from 'fs';
 import path from 'path';
-import { getSupabase, uploadFile, makeWorkDir, downloadSource, run, FFMPEG, ffprobeInfo, countFrames } from './_shared/video';
+import {
+  getSupabase, uploadFile, makeWorkDir, downloadSource, run, FFMPEG,
+  ffprobeInfo, countFrames, probeDuration, grabThumb, detectBurnedText,
+} from './_shared/video';
 
 /**
  * Background function that removes burned-in subtitles from a shot with a
@@ -179,7 +182,8 @@ export default async (req: Request) => {
         video: signed.signedUrl,
         method: 'black',           // just mark the boxes; we derive the mask from the diff
         resolution: 'original',
-        margin: 10,                // generous box: ProPainter fills it cleanly anyway
+        margin: 12,                // generous box: ProPainter fills it cleanly anyway
+        conf_threshold: 0.15,      // catch big stylized caption words, not just subs
       }, log);
       log(`detect prediction ${detectId}`);
       blackedUrl = await waitPrediction(token, detectId);
@@ -259,6 +263,25 @@ export default async (req: Request) => {
 
     const outFile = path.join(workDir, 'clean.mp4');
     await download(cleanedUrl, outFile);
+
+    // ── Quality gate: re-inspect the cleaned clip. If readable caption text is
+    // still visible (huge stylized wordart the detector can't fully catch, or
+    // an inpaint that couldn't reconstruct the area), reject the result so the
+    // shot stays EXCLUDED from builds instead of entering them half-cleaned. ──
+    try {
+      const dur = await probeDuration(outFile);
+      const thumbFile = path.join(workDir, 'clean_check.jpg');
+      await grabThumb(outFile, Math.max(0.1, dur / 2), thumbFile);
+      const check = await detectBurnedText(thumbFile);
+      if (check.hasText === true && (check.score ?? 0) >= 0.5) {
+        // Also drop any previously stored clean_path so the shot cannot slip
+        // into builds with half-erased text.
+        await supabase.from('competitor_shots').update({ clean_path: null }).eq('id', shotId);
+        return fail('cleanup rejected: text still visible after inpainting (giant stylized captions cannot be reconstructed reliably)');
+      }
+    } catch (e) {
+      log('quality gate skipped:', (e as Error).message);
+    }
 
     const cleanKey = `${projectId}/shots-clean/${shotId}_${Date.now()}.mp4`;
     await uploadFile(supabase, cleanKey, outFile, 'video/mp4');
