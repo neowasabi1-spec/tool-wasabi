@@ -42,7 +42,7 @@ export default async (req: Request) => {
     // Real-footage pool. Each clip is used at most ONCE (cursor never wraps);
     // when the pool runs out, buildSceneVisual fills the rest with AI b-roll.
     const pool = await loadCleanShots(supabase, projectId, workDir);
-    log(`clean shots available: ${pool.length}`);
+    log(`usable shots (clean + de-subbed): ${pool.length}`);
 
     const used = new Set<number>();
     const sceneVisuals: string[] = [];

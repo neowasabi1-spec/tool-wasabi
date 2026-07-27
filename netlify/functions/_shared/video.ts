@@ -216,10 +216,11 @@ export async function analyzeShot(thumbPath: string): Promise<{
               'Analyze this single video frame. Reply ONLY compact minified JSON with keys: ' +
               '"text" (true if large readable burned-in subtitle/caption words are overlaid, ignore small logos/watermarks), ' +
               '"conf" (0..1), "region" ("top"|"center"|"bottom"|""), ' +
+              '"band" (if text=true: [y0,y1] vertical extent of ALL overlay text as fractions of frame height, 0=top 1=bottom; else []), ' +
               '"label" (2-4 word title of the shot), ' +
               '"caption" (one short sentence describing what is shown), ' +
               '"tags" (array of 3-8 lowercase keywords: named people if recognizable e.g. "trump", plus objects, setting, action, emotion). ' +
-              'Example: {"text":false,"conf":0.1,"region":"","label":"Man holding phone","caption":"A bearded man talks to camera holding a smartphone","tags":["man","phone","talking head","indoor"]}' },
+              'Example: {"text":true,"conf":0.9,"region":"bottom","band":[0.72,0.94],"label":"Man holding phone","caption":"A bearded man talks to camera holding a smartphone","tags":["man","phone","talking head","indoor"]}' },
             { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${b64}` } },
           ],
         }],
@@ -232,10 +233,20 @@ export async function analyzeShot(thumbPath: string): Promise<{
     const tags = Array.isArray(p.tags)
       ? p.tags.map((t: unknown) => String(t).toLowerCase().trim()).filter(Boolean).slice(0, 8)
       : [];
+    // Encode the text band inside the region string ("bottom 0.72-0.94") so the
+    // builder can crop the exact strip away without a schema change.
+    let region = typeof p.region === 'string' ? p.region : '';
+    if (p.text && Array.isArray(p.band) && p.band.length === 2) {
+      const y0 = Number(p.band[0]);
+      const y1 = Number(p.band[1]);
+      if (Number.isFinite(y0) && Number.isFinite(y1) && y0 >= 0 && y1 <= 1 && y1 > y0) {
+        region = `${region || (y0 > 0.5 ? 'bottom' : y1 < 0.5 ? 'top' : 'center')} ${y0.toFixed(2)}-${y1.toFixed(2)}`;
+      }
+    }
     return {
       hasText: !!p.text,
       score: typeof p.conf === 'number' ? p.conf : p.text ? 0.8 : 0.1,
-      region: typeof p.region === 'string' ? p.region : '',
+      region,
       label: typeof p.label === 'string' ? p.label.slice(0, 80) : '',
       caption: typeof p.caption === 'string' ? p.caption.slice(0, 300) : '',
       tags,
@@ -299,13 +310,51 @@ export async function ttsScene(text: string, voice: string, outMp3: string) {
   fs.writeFileSync(outMp3, Buffer.from(await resp.arrayBuffer()));
 }
 
-export async function normalizeShot(src: string, out: string) {
+export async function normalizeShot(src: string, out: string, preFilter?: string) {
+  const chain =
+    `${preFilter ? preFilter + ',' : ''}` +
+    `scale=${TARGET_W}:${TARGET_H}:force_original_aspect_ratio=increase,crop=${TARGET_W}:${TARGET_H},fps=30`;
   await run(FFMPEG, [
     '-y', '-i', src, '-an',
-    '-vf', `scale=${TARGET_W}:${TARGET_H}:force_original_aspect_ratio=increase,crop=${TARGET_W}:${TARGET_H},fps=30`,
+    '-vf', chain,
     '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p',
     out,
   ]);
+}
+
+/**
+ * Build an ffmpeg crop that removes a burned-in subtitle band from the TOP or
+ * BOTTOM of the frame (the remaining picture is then re-zoomed to 9:16 by
+ * normalizeShot). Returns null when the text can't be cropped away cleanly
+ * (center text, or a band that would eat too much of the frame).
+ *
+ * Accepts the region string stored on competitor_shots — either a plain label
+ * ("bottom") or label + measured band ("bottom 0.72-0.94").
+ */
+export function desubPreFilter(textRegion: string | null | undefined): string | null {
+  const raw = (textRegion || '').trim().toLowerCase();
+  if (!raw) return null;
+  const m = raw.match(/^(top|bottom|center)(?:\s+([01]?\.\d+)-([01]?\.\d+))?/);
+  if (!m) return null;
+  const region = m[1];
+  const y0 = m[2] !== undefined ? parseFloat(m[2]) : NaN;
+  const y1 = m[3] !== undefined ? parseFloat(m[3]) : NaN;
+
+  if (region === 'bottom') {
+    // Keep everything above the band. Default cut at 68% when unmeasured.
+    let keep = Number.isFinite(y0) ? y0 - 0.02 : 0.68;
+    keep = Math.min(keep, 0.95);
+    if (keep < 0.55) return null; // band reaches too high — crop would ruin the shot
+    return `crop=iw:floor(ih*${keep.toFixed(2)}/2)*2:0:0`;
+  }
+  if (region === 'top') {
+    // Keep everything below the band. Default cut at 25% when unmeasured.
+    let cut = Number.isFinite(y1) ? y1 + 0.02 : 0.25;
+    cut = Math.max(cut, 0.05);
+    if (cut > 0.4) return null;
+    return `crop=iw:floor(ih*${(1 - cut).toFixed(2)}/2)*2:0:floor(ih*${cut.toFixed(2)}/2)*2`;
+  }
+  return null; // center text: no clean crop possible
 }
 
 export function srtTime(sec: number): string {
@@ -482,31 +531,45 @@ export async function loadCleanShots(
   projectId: string,
   workDir: string,
 ): Promise<ShotClip[]> {
-  // select '*' so we work whether or not the tag columns are migrated yet.
+  // Fetch ALL shots: clean ones are used as-is; subtitled ones with the text at
+  // the top/bottom get the band cropped away (de-sub) and re-zoomed to 9:16.
+  // Center-text shots are skipped (no clean crop possible).
   const { data } = await supabase
     .from('competitor_shots')
     .select('*')
     .eq('project_id', projectId)
-    .not('has_text', 'is', true)
-    .limit(60);
-  const shots = (data || []) as Array<{ file_path: string; tags?: string[]; caption?: string }>;
-  const norm: ShotClip[] = [];
+    .limit(90);
+  const shots = (data || []) as Array<{
+    file_path: string; has_text?: boolean | null; text_region?: string | null;
+    tags?: string[]; caption?: string;
+  }>;
+  const cleanPool: ShotClip[] = [];
+  const desubbedPool: ShotClip[] = [];
   for (let i = 0; i < shots.length; i++) {
+    const s = shots[i];
+    const subbed = s.has_text === true;
+    let pre: string | undefined;
+    if (subbed) {
+      const filter = desubPreFilter(s.text_region);
+      if (!filter) continue; // center text or band too big — unusable
+      pre = filter;
+    }
     const raw = path.join(workDir, `raw_${i}.mp4`);
     const nrm = path.join(workDir, `norm_${i}.mp4`);
     try {
-      await downloadSource(supabase, shots[i].file_path, raw);
-      await normalizeShot(raw, nrm);
+      await downloadSource(supabase, s.file_path, raw);
+      await normalizeShot(raw, nrm, pre);
       const dur = await probeDuration(nrm);
       if (dur > 0.2) {
-        norm.push({
+        (subbed ? desubbedPool : cleanPool).push({
           file: nrm,
           dur,
-          tags: Array.isArray(shots[i].tags) ? (shots[i].tags as string[]) : [],
-          caption: typeof shots[i].caption === 'string' ? (shots[i].caption as string) : '',
+          tags: Array.isArray(s.tags) ? (s.tags as string[]) : [],
+          caption: typeof s.caption === 'string' ? (s.caption as string) : '',
         });
       }
     } catch { /* skip bad shot */ }
   }
-  return norm;
+  // Truly clean footage first; de-subbed (zoomed) shots as backup.
+  return [...cleanPool, ...desubbedPool];
 }

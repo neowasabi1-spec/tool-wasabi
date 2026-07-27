@@ -79,16 +79,16 @@ export async function POST(
     );
   }
 
-  // We prefer CLEAN shots (no burned-in subtitles) as B-roll. If the pool has
-  // none — e.g. every competitor video is fully subtitled — we DON'T block:
-  // the builder fills those scenes with AI b-roll instead. Upload clean clips
-  // in "My Footage" (or split a subtitle-free video) to use real footage.
-  const { count: cleanCount } = await supabaseAdmin
+  // Usable footage = clean shots (no burned-in subtitles) + subtitled shots
+  // whose text band sits at the top/bottom (the builder crops it away). If
+  // there's nothing usable we DON'T block: scenes are filled with AI b-roll.
+  // Upload clean clips in "My Footage" for real footage.
+  const { count: usableCount } = await supabaseAdmin
     .from('competitor_shots')
     .select('id', { count: 'exact', head: true })
     .eq('project_id', id)
-    .not('has_text', 'is', true);
-  const usingAiFallback = !cleanCount || cleanCount === 0;
+    .or('has_text.is.null,has_text.eq.false,text_region.ilike.top%,text_region.ilike.bottom%');
+  const usingAiFallback = !usableCount || usableCount === 0;
 
   // Don't double-queue.
   const { data: active } = await supabaseAdmin
