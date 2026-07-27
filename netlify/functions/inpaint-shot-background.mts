@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { getSupabase, uploadFile, makeWorkDir, downloadSource, run, FFMPEG } from './_shared/video';
+import { getSupabase, uploadFile, makeWorkDir, downloadSource, run, FFMPEG, ffprobeInfo, countFrames } from './_shared/video';
 
 /**
  * Background function that removes burned-in subtitles from a shot with a
@@ -167,17 +167,20 @@ export default async (req: Request) => {
     if (signErr || !signed?.signedUrl) return fail(`could not sign source URL: ${signErr?.message || 'no url'}`);
 
     // ── Stage 1: exact per-frame text boxes (filled with black) ─────────────
-    const detectVersion = await resolveVersion(token, DETECT_MODEL);
-    const detectId = await createPrediction(token, detectVersion, {
-      video: signed.signedUrl,
-      method: 'black',           // just mark the boxes; we derive the mask from the diff
-      resolution: 'original',
-      conf_threshold: 0.2,
-      margin: 10,                // generous box: ProPainter fills it cleanly anyway
-      detection_interval: 1,     // per-frame detection — clips are short, accuracy wins
-    }, log);
-    log(`detect prediction ${detectId}`);
-    const blackedUrl = await waitPrediction(token, detectId);
+    let blackedUrl: string;
+    try {
+      const detectVersion = await resolveVersion(token, DETECT_MODEL);
+      const detectId = await createPrediction(token, detectVersion, {
+        video: signed.signedUrl,
+        method: 'black',           // just mark the boxes; we derive the mask from the diff
+        resolution: 'original',
+        margin: 10,                // generous box: ProPainter fills it cleanly anyway
+      }, log);
+      log(`detect prediction ${detectId}`);
+      blackedUrl = await waitPrediction(token, detectId);
+    } catch (e) {
+      return fail(`detect stage: ${(e as Error).message}`);
+    }
 
     const srcFile = path.join(workDir, 'src.mp4');
     const blackedFile = path.join(workDir, 'blacked.mp4');
@@ -185,16 +188,30 @@ export default async (req: Request) => {
     await download(blackedUrl, blackedFile);
 
     // ── Mask video: white where original and blacked differ (the text boxes),
-    // dilated a few pixels for safety. scale2ref guards against size drift. ──
+    // dilated a few pixels for safety. ProPainter indexes mask frames 1:1 with
+    // video frames, so the mask MUST have the exact same frame count: we force
+    // both inputs to the source fps, clone the last mask frame indefinitely
+    // and trim to precisely the source frame count. ──────────────────────────
+    const srcInfo = await ffprobeInfo(srcFile);
+    const fps = srcInfo.fps && srcInfo.fps > 0 ? srcInfo.fps : 30;
+    const nFrames = await countFrames(srcFile);
+    if (!nFrames) return fail('could not count source frames');
+    log(`source: ${nFrames} frames @ ${fps}fps`);
+
     const maskFile = path.join(workDir, 'mask.mp4');
     await run(FFMPEG, [
       '-y', '-i', srcFile, '-i', blackedFile,
       '-filter_complex',
-      "[1:v][0:v]scale2ref=iw:ih[b][a];[a][b]blend=all_mode=difference,format=gray," +
-        "geq=lum='if(gt(lum(X,Y),18),255,0)',dilation,dilation,dilation,dilation,format=yuv420p",
+      `[0:v]fps=${fps}[a0];[1:v]fps=${fps}[b0];[b0][a0]scale2ref=iw:ih[b][a];` +
+        "[a][b]blend=all_mode=difference,format=gray," +
+        "geq=lum='if(gt(lum(X,Y),18),255,0)',dilation,dilation,dilation,dilation," +
+        `tpad=stop_mode=clone:stop=-1,trim=end_frame=${nFrames},format=yuv420p`,
+      '-r', String(fps),
       '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18', '-an',
       maskFile,
     ]);
+    const maskFrames = await countFrames(maskFile);
+    log(`mask: ${maskFrames} frames (target ${nFrames})`);
     const maskKey = `${projectId}/shots-clean/mask_${shotId}.mp4`;
     await uploadFile(supabase, maskKey, maskFile, 'video/mp4');
     const { data: maskSigned, error: maskSignErr } = await supabase.storage
@@ -205,16 +222,21 @@ export default async (req: Request) => {
     }
 
     // ── Stage 2: neural temporal inpainting of ONLY the text boxes ──────────
-    const inpaintVersion = await resolveVersion(token, INPAINT_MODEL);
-    const inpaintId = await createPrediction(token, inpaintVersion, {
-      video: signed.signedUrl,
-      mask: maskSigned.signedUrl,
-      mode: 'video_inpainting',
-      mask_dilation: 6,
-      fp16: true,
-    }, log);
-    log(`inpaint prediction ${inpaintId}`);
-    const cleanedUrl = await waitPrediction(token, inpaintId);
+    let cleanedUrl: string;
+    try {
+      const inpaintVersion = await resolveVersion(token, INPAINT_MODEL);
+      const inpaintId = await createPrediction(token, inpaintVersion, {
+        video: signed.signedUrl,
+        mask: maskSigned.signedUrl,
+        mode: 'video_inpainting',
+        mask_dilation: 6,
+        fp16: true,
+      }, log);
+      log(`inpaint prediction ${inpaintId}`);
+      cleanedUrl = await waitPrediction(token, inpaintId);
+    } catch (e) {
+      return fail(`inpaint stage: ${(e as Error).message}`);
+    }
 
     const outFile = path.join(workDir, 'clean.mp4');
     await download(cleanedUrl, outFile);

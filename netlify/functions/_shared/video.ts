@@ -74,7 +74,10 @@ function parseFfmpegInfo(stderr: string) {
   let height: number | null = null;
   const vm = stderr.match(/Video:.*?[,\s](\d{2,5})x(\d{2,5})/);
   if (vm) { width = parseInt(vm[1], 10); height = parseInt(vm[2], 10); }
-  return { duration, width, height };
+  let fps: number | null = null;
+  const fm = stderr.match(/(\d+(?:\.\d+)?)\s+fps/);
+  if (fm) fps = parseFloat(fm[1]);
+  return { duration, width, height, fps };
 }
 
 // `ffmpeg -i` with no output exits non-zero AND prints the "Duration:" line
@@ -92,6 +95,19 @@ function ffmpegStderrForInput(file: string): Promise<string> {
 
 export async function ffprobeInfo(file: string) {
   return parseFfmpegInfo(await ffmpegStderrForInput(file));
+}
+
+// Exact video frame count: decode pass to /dev/null and read the final
+// "frame= N" progress line (stream-copy wouldn't print frame counters).
+export async function countFrames(file: string): Promise<number> {
+  let stderr = '';
+  try {
+    stderr = await run(FFMPEG, ['-i', file, '-map', '0:v', '-f', 'null', '-']);
+  } catch (e) {
+    stderr = String((e as Error).message || '');
+  }
+  const matches = [...stderr.matchAll(/frame=\s*(\d+)/g)];
+  return matches.length ? parseInt(matches[matches.length - 1][1], 10) : 0;
 }
 
 export async function detectScenes(file: string): Promise<number[]> {
