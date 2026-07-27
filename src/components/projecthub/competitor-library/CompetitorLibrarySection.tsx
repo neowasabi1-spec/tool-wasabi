@@ -1715,13 +1715,14 @@ function ShotsLibraryView({ projectId }: { projectId: string }) {
     catch { toast({ title: "Delete failed", variant: "destructive" }); }
   };
 
-  // Kick AI inpainting for one shot or all subtitled shots.
-  const inpaint = async (shotId?: number) => {
+  // Kick AI inpainting for one shot or all subtitled shots. `force` re-cleans
+  // shots that already have a cleaned copy (e.g. to retry with a better model).
+  const inpaint = async (shotId?: number, force = false) => {
     try {
       const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/shots/inpaint`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(shotId ? { shotId } : { all: true }),
+        body: JSON.stringify(shotId ? { shotId, force } : { all: true, force }),
       });
       const j = await r.json().catch(() => ({}));
       if (!r.ok) {
@@ -1813,6 +1814,14 @@ function ShotsLibraryView({ projectId }: { projectId: string }) {
               <Sparkles className="w-3 h-3" /> Remove subs
             </button>
           )}
+          {cleaned && (
+            <button
+              onClick={() => inpaint(s.id, true)}
+              className="absolute inset-x-1.5 bottom-8 opacity-0 group-hover:opacity-100 transition-opacity bg-black/70 hover:bg-black/80 text-white rounded-md px-1.5 py-1 text-[10px] font-bold flex items-center justify-center gap-1"
+              title="Run the AI cleanup again on this shot">
+              <RefreshCw className="w-3 h-3" /> Redo cleanup
+            </button>
+          )}
           <button
             onClick={() => remove(s)}
             className="absolute bottom-1.5 right-1.5 opacity-0 group-hover:opacity-100 transition-opacity bg-black/70 text-white rounded-md p-1"
@@ -1875,6 +1884,13 @@ function ShotsLibraryView({ projectId }: { projectId: string }) {
               className="h-8 inline-flex items-center gap-1.5 text-xs font-bold px-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white"
               title="Reconstruct the frames behind the subtitles with AI (Replicate) for every subtitled shot">
               <Sparkles className="w-3.5 h-3.5" /> Remove subs with AI ({toCleanCount})
+            </button>
+          ) : shots.some((s) => s.has_text === true && s.clean_path) ? (
+            <button
+              onClick={() => inpaint(undefined, true)}
+              className="h-8 inline-flex items-center gap-1.5 text-xs font-semibold px-3 rounded-lg border border-indigo-300 text-indigo-600 hover:bg-indigo-50"
+              title="Run the AI cleanup again on every subtitled shot (useful after the engine improves)">
+              <RefreshCw className="w-3.5 h-3.5" /> Re-clean all
             </button>
           ) : null}
         </div>

@@ -10,8 +10,9 @@ export const runtime = 'nodejs';
  * POST /api/projecthub/projects/:id/shots/inpaint
  * Remove burned-in subtitles from shots with AI video inpainting (Replicate).
  * Body: { shotId } for a single shot, or { all: true } for every subtitled
- * shot that hasn't been cleaned yet. Marks rows pending and fires one
- * background function per shot.
+ * shot that hasn't been cleaned yet. Pass { force: true } to re-clean shots
+ * that already have a cleaned copy (e.g. after switching to a better model).
+ * Marks rows pending and fires one background function per shot.
  */
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
   const { id } = params;
@@ -28,6 +29,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   const body = await req.json().catch(() => ({}));
   const shotId = Number(body.shotId);
   const all = body.all === true;
+  const force = body.force === true;
   if (!all && !Number.isFinite(shotId)) {
     return NextResponse.json({ error: 'shotId or all:true required' }, { status: 400 });
   }
@@ -48,9 +50,10 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  // Skip already-cleaned and currently-processing shots; re-queue errors.
+  // Skip currently-processing shots; skip already-cleaned ones unless forced;
+  // errors are always re-queued.
   const targets = (data || []).filter(
-    (s) => !s.clean_path && s.inpaint_status !== 'processing',
+    (s) => (force || !s.clean_path) && s.inpaint_status !== 'processing',
   );
   if (targets.length === 0) {
     return NextResponse.json({ queued: 0, message: 'Nothing to clean' });
