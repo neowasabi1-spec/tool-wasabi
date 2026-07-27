@@ -302,12 +302,12 @@ function ShotsGrid({
                     </span>
                     <span
                       title={croppable
-                        ? "Subtitles at edge — auto-cropped away when building videos"
+                        ? "Subtitles at edge — erased automatically when building videos"
                         : hasText
-                          ? "Subtitles in center — can't be removed, excluded from builds"
+                          ? "Subtitles in center — erased automatically (may leave a soft blur)"
                           : "Clean (no subtitles detected)"}
                       className={`absolute top-1.5 right-1.5 text-[9px] font-black px-1.5 py-0.5 rounded-full ${croppable ? "bg-amber-500 text-white" : hasText ? "bg-rose-500 text-white" : "bg-emerald-500 text-white"}`}>
-                      {croppable ? "SUBS ✂" : hasText ? "SUBS" : "CLEAN"}
+                      {croppable ? "SUBS ✂" : hasText ? "SUBS ✂" : "CLEAN"}
                     </span>
                     <button
                       onClick={() => remove(s)}
@@ -490,9 +490,7 @@ function CreativeDetailPanel({
       if (r.ok) {
         toast({
           title: j.queued === false ? "Already building" : "Queued for build",
-          description: j.usingAiFallback
-            ? `${j.scenes || ""} scenes — no clean shots yet, using AI b-roll. Add clips in My Footage for real footage.`
-            : `${j.scenes || ""} scenes — the worker will assemble it.`,
+          description: `${j.scenes || ""} scenes — real footage only, subtitles erased automatically.`,
         });
         if (!buildPoll.current) buildPoll.current = setInterval(loadBuildStatus, 5000);
       } else {
@@ -1747,12 +1745,12 @@ function ShotsLibraryView({ projectId }: { projectId: string }) {
           </span>
           <span
             title={croppable
-              ? "Subtitles at edge — auto-cropped away when building videos"
+              ? "Subtitles at edge — erased automatically when building videos"
               : hasText
-                ? "Subtitles in center — can't be removed, excluded from builds"
+                ? "Subtitles in center — erased automatically (may leave a soft blur)"
                 : "Clean (no subtitles detected)"}
             className={`absolute top-1.5 right-1.5 text-[9px] font-black px-1.5 py-0.5 rounded-full ${croppable ? "bg-amber-500 text-white" : hasText ? "bg-rose-500 text-white" : "bg-emerald-500 text-white"}`}>
-            {croppable ? "SUBS ✂" : hasText ? "SUBS" : "CLEAN"}
+            {croppable ? "SUBS ✂" : hasText ? "SUBS ✂" : "CLEAN"}
           </span>
           {brandNames[s.brand_id] && (
             <span className="absolute bottom-1.5 left-1.5 max-w-[80%] truncate text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-black/70 text-white">

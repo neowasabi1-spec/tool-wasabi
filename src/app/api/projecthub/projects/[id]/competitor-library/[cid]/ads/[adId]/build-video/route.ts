@@ -79,16 +79,19 @@ export async function POST(
     );
   }
 
-  // Usable footage = clean shots (no burned-in subtitles) + subtitled shots
-  // whose text band sits at the top/bottom (the builder crops it away). If
-  // there's nothing usable we DON'T block: scenes are filled with AI b-roll.
-  // Upload clean clips in "My Footage" for real footage.
-  const { count: usableCount } = await supabaseAdmin
+  // Every shot is usable: clean ones as-is, subtitled ones get the text band
+  // erased (delogo) at build time. No AI-generated filler — so we DO block
+  // when the project has zero shots at all.
+  const { count: shotCount } = await supabaseAdmin
     .from('competitor_shots')
     .select('id', { count: 'exact', head: true })
-    .eq('project_id', id)
-    .or('has_text.is.null,has_text.eq.false,text_region.ilike.top%,text_region.ilike.bottom%');
-  const usingAiFallback = !usableCount || usableCount === 0;
+    .eq('project_id', id);
+  if (!shotCount || shotCount === 0) {
+    return NextResponse.json(
+      { error: 'No shots in this project yet. Split a video into shots or upload clips in My Footage first.' },
+      { status: 400 },
+    );
+  }
 
   // Don't double-queue.
   const { data: active } = await supabaseAdmin
@@ -162,7 +165,6 @@ export async function POST(
     status: job.status,
     scenes: scenes.length,
     queued: true,
-    usingAiFallback,
   });
 }
 

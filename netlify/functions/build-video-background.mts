@@ -39,10 +39,14 @@ export default async (req: Request) => {
   const workDir = makeWorkDir('wbuild-');
   try {
     if (scenes.length === 0) throw new Error('no scenes in job');
-    // Real-footage pool. Each clip is used at most ONCE (cursor never wraps);
-    // when the pool runs out, buildSceneVisual fills the rest with AI b-roll.
+    // Real-footage pool (subtitles erased via delogo). Each clip is used at
+    // most once; duration gaps are covered by freezing the last frame, and a
+    // shot is only reused as a last resort when the pool is exhausted.
     const pool = await loadCleanShots(supabase, projectId, workDir);
     log(`usable shots (clean + de-subbed): ${pool.length}`);
+    if (pool.length === 0) {
+      throw new Error('no shots in the pool — split videos into shots or upload clips in My Footage first');
+    }
 
     const used = new Set<number>();
     const sceneVisuals: string[] = [];
@@ -55,7 +59,7 @@ export default async (req: Request) => {
       const d = Math.max(0.8, await probeDuration(mp3));
       // Pick footage matching this scene's text (tags/caption), no reuse.
       const picked = pickShotsForScene(pool, used, scenes[i], d);
-      const vis = await buildSceneVisual(picked.files, picked.dur, d, workDir, i, scenes[i]);
+      const vis = await buildSceneVisual(picked.files, picked.dur, d, workDir, i);
       sceneVisuals.push(vis);
       sceneAudios.push(mp3);
       srt.push(`${i + 1}\n${srtTime(t)} --> ${srtTime(t + d)}\n${scenes[i]}\n`);

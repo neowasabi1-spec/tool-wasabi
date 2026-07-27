@@ -310,10 +310,10 @@ export async function ttsScene(text: string, voice: string, outMp3: string) {
   fs.writeFileSync(outMp3, Buffer.from(await resp.arrayBuffer()));
 }
 
-export async function normalizeShot(src: string, out: string, preFilter?: string) {
+export async function normalizeShot(src: string, out: string, postFilter?: string) {
   const chain =
-    `${preFilter ? preFilter + ',' : ''}` +
-    `scale=${TARGET_W}:${TARGET_H}:force_original_aspect_ratio=increase,crop=${TARGET_W}:${TARGET_H},fps=30`;
+    `scale=${TARGET_W}:${TARGET_H}:force_original_aspect_ratio=increase,crop=${TARGET_W}:${TARGET_H},fps=30` +
+    `${postFilter ? ',' + postFilter : ''}`;
   await run(FFMPEG, [
     '-y', '-i', src, '-an',
     '-vf', chain,
@@ -323,38 +323,33 @@ export async function normalizeShot(src: string, out: string, preFilter?: string
 }
 
 /**
- * Build an ffmpeg crop that removes a burned-in subtitle band from the TOP or
- * BOTTOM of the frame (the remaining picture is then re-zoomed to 9:16 by
- * normalizeShot). Returns null when the text can't be cropped away cleanly
- * (center text, or a band that would eat too much of the frame).
+ * ffmpeg `delogo` filter that ERASES a burned-in subtitle band by interpolating
+ * it from the surrounding pixels — no crop, no zoom, the framing stays intact.
+ * Applied AFTER the shot is normalized to 1080x1920, so pixel coordinates are
+ * computed against the fixed target frame.
  *
  * Accepts the region string stored on competitor_shots — either a plain label
  * ("bottom") or label + measured band ("bottom 0.72-0.94").
  */
-export function desubPreFilter(textRegion: string | null | undefined): string | null {
+export function desubPostFilter(textRegion: string | null | undefined): string | null {
   const raw = (textRegion || '').trim().toLowerCase();
   if (!raw) return null;
   const m = raw.match(/^(top|bottom|center)(?:\s+([01]?\.\d+)-([01]?\.\d+))?/);
   if (!m) return null;
   const region = m[1];
-  const y0 = m[2] !== undefined ? parseFloat(m[2]) : NaN;
-  const y1 = m[3] !== undefined ? parseFloat(m[3]) : NaN;
-
-  if (region === 'bottom') {
-    // Keep everything above the band. Default cut at 68% when unmeasured.
-    let keep = Number.isFinite(y0) ? y0 - 0.02 : 0.68;
-    keep = Math.min(keep, 0.95);
-    if (keep < 0.55) return null; // band reaches too high — crop would ruin the shot
-    return `crop=iw:floor(ih*${keep.toFixed(2)}/2)*2:0:0`;
+  let y0 = m[2] !== undefined ? parseFloat(m[2]) : NaN;
+  let y1 = m[3] !== undefined ? parseFloat(m[3]) : NaN;
+  // Sensible defaults when the band was never measured.
+  if (!Number.isFinite(y0) || !Number.isFinite(y1) || y1 <= y0) {
+    if (region === 'bottom') { y0 = 0.70; y1 = 0.95; }
+    else if (region === 'top') { y0 = 0.05; y1 = 0.25; }
+    else { y0 = 0.40; y1 = 0.60; }
   }
-  if (region === 'top') {
-    // Keep everything below the band. Default cut at 25% when unmeasured.
-    let cut = Number.isFinite(y1) ? y1 + 0.02 : 0.25;
-    cut = Math.max(cut, 0.05);
-    if (cut > 0.4) return null;
-    return `crop=iw:floor(ih*${(1 - cut).toFixed(2)}/2)*2:0:floor(ih*${cut.toFixed(2)}/2)*2`;
-  }
-  return null; // center text: no clean crop possible
+  // delogo needs integer pixel coords strictly inside the frame.
+  const yPx = Math.max(2, Math.round(TARGET_H * y0) - 8);
+  const hPx = Math.min(TARGET_H - 2 - yPx, Math.round(TARGET_H * (y1 - y0)) + 16);
+  if (hPx < 8) return null;
+  return `delogo=x=2:y=${yPx}:w=${TARGET_W - 4}:h=${hPx}`;
 }
 
 export function srtTime(sec: number): string {
@@ -365,81 +360,6 @@ export function srtTime(sec: number): string {
   const mm = ms % 1000;
   const p = (n: number, l = 2) => String(n).padStart(l, '0');
   return `${p(h)}:${p(m)}:${p(s)},${p(mm, 3)}`;
-}
-
-// Generate a single AI still image (portrait) related to the scene text.
-// Used only as a fallback when the real-footage pool is exhausted.
-export async function genAiImage(prompt: string, outPng: string): Promise<void> {
-  if (!OPENAI_API_KEY) throw new Error('OPENAI_API_KEY required for AI b-roll fallback');
-  const clean = (prompt || 'lifestyle b-roll').replace(/\s+/g, ' ').trim().slice(0, 700);
-  const fullPrompt =
-    'Photorealistic cinematic vertical b-roll photograph, natural lighting, ' +
-    `shallow depth of field, no text, no captions, no watermark. Scene: ${clean}`;
-
-  // Try gpt-image-1 first (returns b64), then fall back to dall-e-3 (URL) so a
-  // single unavailable model doesn't fail the whole build.
-  const attempts: Array<{ model: string; size: string; wantsFormat: boolean }> = [
-    { model: 'gpt-image-1', size: '1024x1536', wantsFormat: false },
-    { model: 'dall-e-3', size: '1024x1792', wantsFormat: true },
-  ];
-  let lastErr = 'unknown';
-  for (const a of attempts) {
-    try {
-      const payload: Record<string, unknown> = { model: a.model, prompt: fullPrompt, size: a.size, n: 1 };
-      if (a.wantsFormat) payload.response_format = 'b64_json';
-      const resp = await fetch('https://api.openai.com/v1/images/generations', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${OPENAI_API_KEY}` },
-        body: JSON.stringify(payload),
-      });
-      if (!resp.ok) { lastErr = `${a.model} ${resp.status}: ${(await resp.text()).slice(0, 160)}`; continue; }
-      const j = await resp.json();
-      const item = j?.data?.[0];
-      if (item?.b64_json) {
-        fs.writeFileSync(outPng, Buffer.from(item.b64_json, 'base64'));
-        return;
-      }
-      if (item?.url) {
-        const img = await fetch(item.url);
-        if (img.ok) { fs.writeFileSync(outPng, Buffer.from(await img.arrayBuffer())); return; }
-      }
-      lastErr = `${a.model}: no image data`;
-    } catch (e) {
-      lastErr = `${a.model}: ${(e as Error).message}`;
-    }
-  }
-  throw new Error(`image gen failed — ${lastErr}`);
-}
-
-// Turn an AI image into a normalized clip (same codec/params as real shots) with
-// a subtle slow zoom so it isn't a dead still. Returns { file, dur }.
-export async function aiClip(
-  prompt: string,
-  dur: number,
-  workDir: string,
-  tag: string,
-): Promise<{ file: string; dur: number }> {
-  const png = path.join(workDir, `${tag}.png`);
-  await genAiImage(prompt, png);
-  const d = Math.max(0.6, dur);
-  const frames = Math.max(1, Math.round(d * 30));
-  const raw = path.join(workDir, `${tag}_raw.mp4`);
-  // Ken-Burns style slow zoom on the still, output at TARGET size / 30fps.
-  await run(FFMPEG, [
-    '-y', '-loop', '1', '-i', png, '-t', String(d),
-    '-vf',
-    `scale=${TARGET_W}:${TARGET_H}:force_original_aspect_ratio=increase,` +
-      `crop=${TARGET_W}:${TARGET_H},` +
-      `zoompan=z='min(zoom+0.0007,1.12)':d=${frames}:s=${TARGET_W}x${TARGET_H}:fps=30,` +
-      `format=yuv420p`,
-    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p', '-r', '30', '-an',
-    raw,
-  ]);
-  // Run through normalizeShot so params are byte-identical to real clips
-  // (required for the concat -c copy step to succeed).
-  const nrm = path.join(workDir, `${tag}.mp4`);
-  await normalizeShot(raw, nrm);
-  return { file: nrm, dur: d };
 }
 
 export type ShotClip = { file: string; dur: number; tags: string[]; caption: string };
@@ -487,39 +407,47 @@ export function pickShotsForScene(
     acc += c.s.dur;
     if (c.primary) usedTags.add(c.primary);
   }
+
+  // Pool exhausted for this scene: reuse the most relevant shot as an emergency
+  // (better than failing the whole build — there is no AI fallback anymore).
+  if (files.length === 0 && pool.length > 0) {
+    const best = pool
+      .map((s, idx) => {
+        const matched = (s.tags || []).filter((t) => words.has(t.toLowerCase()));
+        return { s, score: matched.length };
+      })
+      .sort((a, b) => b.score - a.score)[0];
+    files.push(best.s.file);
+    acc = best.s.dur;
+  }
   return { files, dur: acc };
 }
 
-// Assemble one scene's visual track from a pre-chosen list of clip files. If the
-// chosen real footage doesn't cover the scene duration, fill the rest with AI
-// b-roll generated from the scene text.
+// Assemble one scene's visual track from a pre-chosen list of clip files. Real
+// footage only: if the clips don't cover the whole voiceover, the last frame is
+// held (freeze) for the remaining time — no AI-generated filler.
 export async function buildSceneVisual(
   chosenFiles: string[],
   chosenDur: number,
   targetDur: number,
   workDir: string,
   idx: number,
-  aiPrompt = '',
 ): Promise<string> {
-  const parts = [...chosenFiles];
-  let acc = chosenDur;
-  if (acc < targetDur - 0.05) {
-    const ai = await aiClip(aiPrompt, targetDur - acc, workDir, `ai_${idx}`);
-    parts.push(ai.file);
-    acc += ai.dur;
+  if (chosenFiles.length === 0) {
+    throw new Error('no shots available for scene — split more videos or upload clips in My Footage');
   }
-  if (parts.length === 0) {
-    const ai = await aiClip(aiPrompt, targetDur, workDir, `ai_${idx}`);
-    parts.push(ai.file);
-  }
-
   const listFile = path.join(workDir, `scene_${idx}_list.txt`);
-  fs.writeFileSync(listFile, parts.map((f) => `file '${f.replace(/\\/g, '/')}'`).join('\n'));
+  fs.writeFileSync(listFile, chosenFiles.map((f) => `file '${f.replace(/\\/g, '/')}'`).join('\n'));
   const concatFile = path.join(workDir, `scene_${idx}_cat.mp4`);
   await run(FFMPEG, ['-y', '-f', 'concat', '-safe', '0', '-i', listFile, '-c', 'copy', concatFile]);
+
+  // Freeze-extend the tail so the visual always covers the voiceover, then trim.
+  const pad = Math.max(0, targetDur - chosenDur) + 0.5;
   const sceneFile = path.join(workDir, `scene_${idx}_v.mp4`);
   await run(FFMPEG, [
-    '-y', '-i', concatFile, '-t', String(targetDur),
+    '-y', '-i', concatFile,
+    '-vf', `tpad=stop_mode=clone:stop_duration=${pad.toFixed(2)}`,
+    '-t', String(targetDur),
     '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p', '-r', '30', '-an',
     sceneFile,
   ]);
@@ -531,9 +459,8 @@ export async function loadCleanShots(
   projectId: string,
   workDir: string,
 ): Promise<ShotClip[]> {
-  // Fetch ALL shots: clean ones are used as-is; subtitled ones with the text at
-  // the top/bottom get the band cropped away (de-sub) and re-zoomed to 9:16.
-  // Center-text shots are skipped (no clean crop possible).
+  // Fetch ALL shots: clean ones are used as-is; subtitled ones get the text
+  // band ERASED with delogo (pixel interpolation — no crop, no zoom).
   const { data } = await supabase
     .from('competitor_shots')
     .select('*')
@@ -548,17 +475,12 @@ export async function loadCleanShots(
   for (let i = 0; i < shots.length; i++) {
     const s = shots[i];
     const subbed = s.has_text === true;
-    let pre: string | undefined;
-    if (subbed) {
-      const filter = desubPreFilter(s.text_region);
-      if (!filter) continue; // center text or band too big — unusable
-      pre = filter;
-    }
+    const post = subbed ? desubPostFilter(s.text_region) || desubPostFilter('center') : null;
     const raw = path.join(workDir, `raw_${i}.mp4`);
     const nrm = path.join(workDir, `norm_${i}.mp4`);
     try {
       await downloadSource(supabase, s.file_path, raw);
-      await normalizeShot(raw, nrm, pre);
+      await normalizeShot(raw, nrm, post || undefined);
       const dur = await probeDuration(nrm);
       if (dur > 0.2) {
         (subbed ? desubbedPool : cleanPool).push({
@@ -570,6 +492,6 @@ export async function loadCleanShots(
       }
     } catch { /* skip bad shot */ }
   }
-  // Truly clean footage first; de-subbed (zoomed) shots as backup.
+  // Truly clean footage first; de-subbed shots as backup.
   return [...cleanPool, ...desubbedPool];
 }
