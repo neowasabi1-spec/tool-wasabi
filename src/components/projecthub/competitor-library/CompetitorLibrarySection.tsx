@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/dialog";
 import { FunnelMonitoringSection } from "./FunnelMonitoringSection";
 import { getUploadUrl } from "@/lib/projecthub-storage";
+import { getSupabaseBrowser } from "@/lib/supabase-browser";
 
 const BASE_URL = "";
 
@@ -1965,13 +1966,207 @@ function GeneratedVideosView({ projectId }: { projectId: string }) {
   );
 }
 
+type FootageVideo = {
+  id: number;
+  brand_id: number;
+  file_path: string;
+  media_type: string;
+  name: string;
+  created_at: string;
+};
+
+// Upload YOUR OWN videos and split them into shots (same pipeline as competitor
+// videos). The resulting shots join the project's shot pool used to recreate
+// videos. Large files upload straight to storage via a signed URL.
+function MyFootageView({ projectId }: { projectId: string }) {
+  const { toast } = useToast();
+  const [videos, setVideos] = useState<FootageVideo[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [uploading, setUploading] = useState(false);
+  const [progress, setProgress] = useState("");
+  const [seg, setSeg] = useState<Record<number, { status: string; shots: number }>>({});
+  const [playing, setPlaying] = useState<FootageVideo | null>(null);
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const poll = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/my-footage`);
+      const j = await r.json().catch(() => ({}));
+      const vids: FootageVideo[] = Array.isArray(j?.videos) ? j.videos : [];
+      setVideos(vids);
+      refreshSeg(vids);
+    } catch { setVideos([]); }
+    finally { setLoading(false); }
+  };
+  useEffect(() => { load(); return () => { if (poll.current) clearInterval(poll.current); }; /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [projectId]);
+
+  const refreshSeg = async (vids: FootageVideo[]) => {
+    const entries = await Promise.all(vids.map(async (v) => {
+      try {
+        const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library/${v.brand_id}/ads/${v.id}/segment`);
+        const j = await r.json().catch(() => ({}));
+        return [v.id, { status: j?.job?.status || "", shots: j?.shots || 0 }] as const;
+      } catch { return [v.id, { status: "", shots: 0 }] as const; }
+    }));
+    const map: Record<number, { status: string; shots: number }> = {};
+    for (const [k, val] of entries) map[k] = val;
+    setSeg(map);
+    const anyActive = entries.some(([, val]) => val.status === "pending" || val.status === "processing");
+    if (anyActive && !poll.current) {
+      poll.current = setInterval(() => refreshSeg(vids), 5000);
+    } else if (!anyActive && poll.current) {
+      clearInterval(poll.current); poll.current = null;
+    }
+  };
+
+  const onPick = () => fileRef.current?.click();
+
+  const onFiles = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = "";
+    if (files.length === 0) return;
+    const sb = getSupabaseBrowser();
+    if (!sb) { toast({ title: "Upload not available", description: "Supabase not configured.", variant: "destructive" }); return; }
+    setUploading(true);
+    let ok = 0;
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      if (!/^video\//i.test(file.type)) { toast({ title: `Skipped ${file.name}`, description: "Not a video." }); continue; }
+      setProgress(`Uploading ${i + 1}/${files.length}: ${file.name}`);
+      try {
+        const sr = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/my-footage/sign-upload`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ filename: file.name, contentType: file.type || "video/mp4" }),
+        });
+        const sj = await sr.json().catch(() => ({}));
+        if (!sr.ok || !sj.path || !sj.token) throw new Error(sj.error || "sign failed");
+        const up = await sb.storage.from("project-files").uploadToSignedUrl(sj.path, sj.token, file);
+        if (up.error) throw new Error(up.error.message);
+        const rr = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/my-footage`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ file_path: sj.path, name: file.name.replace(/\.[^.]+$/, "") }),
+        });
+        if (!rr.ok) throw new Error("register failed");
+        ok++;
+      } catch (err) {
+        toast({ title: `Upload failed: ${file.name}`, description: (err as Error).message, variant: "destructive" });
+      }
+    }
+    setUploading(false);
+    setProgress("");
+    if (ok > 0) toast({ title: `Uploaded ${ok} video${ok === 1 ? "" : "s"}` });
+    load();
+  };
+
+  const split = async (v: FootageVideo) => {
+    setSeg((p) => ({ ...p, [v.id]: { status: "pending", shots: p[v.id]?.shots || 0 } }));
+    try {
+      const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library/${v.brand_id}/ads/${v.id}/segment`, { method: "POST" });
+      const j = await r.json().catch(() => ({}));
+      if (r.ok) {
+        toast({ title: j.queued === false ? "Already processing" : "Queued for splitting", description: "Shots will appear in the Shots tab." });
+        if (!poll.current) poll.current = setInterval(() => refreshSeg(videos), 5000);
+      } else {
+        setSeg((p) => ({ ...p, [v.id]: { status: "", shots: p[v.id]?.shots || 0 } }));
+        toast({ title: j.error || "Could not start", variant: "destructive" });
+      }
+    } catch { setSeg((p) => ({ ...p, [v.id]: { status: "", shots: p[v.id]?.shots || 0 } })); }
+  };
+
+  const remove = async (v: FootageVideo) => {
+    setVideos((p) => p.filter((x) => x.id !== v.id));
+    try { await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library/${v.brand_id}/ads/${v.id}`, { method: "DELETE" }); }
+    catch { toast({ title: "Delete failed", variant: "destructive" }); }
+  };
+
+  return (
+    <div className="space-y-4">
+      <input ref={fileRef} type="file" accept="video/*" multiple hidden onChange={onFiles} />
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <h3 className="text-lg font-bold text-foreground">My footage</h3>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            Upload your own videos and split them into shots. Those shots join the pool used to <b>recreate videos</b>.
+          </p>
+        </div>
+        <Button onClick={onPick} disabled={uploading} className="gap-2 h-9">
+          {uploading ? <><RefreshCw className="w-4 h-4 animate-spin" /> Uploading…</> : <><Upload className="w-4 h-4" /> Upload videos</>}
+        </Button>
+      </div>
+      {progress && <p className="text-xs text-muted-foreground">{progress}</p>}
+
+      {loading ? (
+        <div className="py-16 text-center text-sm text-muted-foreground">Loading…</div>
+      ) : videos.length === 0 ? (
+        <div className="py-20 text-center border-2 border-dashed border-border rounded-2xl">
+          <Upload className="w-12 h-12 text-muted-foreground/30 mx-auto mb-3" />
+          <p className="text-sm font-semibold text-foreground mb-1">No footage yet</p>
+          <p className="text-xs text-muted-foreground max-w-md mx-auto">
+            Click <b>Upload videos</b> to add your own clips. Then <b>Split into shots</b> to make reusable B-roll.
+          </p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+          {videos.map((v) => {
+            const st = seg[v.id] || { status: "", shots: 0 };
+            const busy = st.status === "pending" || st.status === "processing";
+            return (
+              <div key={v.id} className="group rounded-xl overflow-hidden border border-border bg-black/5">
+                <button onClick={() => setPlaying(v)} className="relative block w-full aspect-video bg-black">
+                  <video src={getUploadUrl(v.file_path)} preload="metadata" className="w-full h-full object-cover" muted />
+                  <span className="absolute inset-0 flex items-center justify-center">
+                    <span className="bg-black/50 rounded-full p-2"><Play className="w-5 h-5 text-white" /></span>
+                  </span>
+                  {st.shots > 0 && (
+                    <span className="absolute top-1.5 right-1.5 text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-emerald-500 text-white">
+                      {st.shots} shots
+                    </span>
+                  )}
+                </button>
+                <div className="p-2 space-y-1.5">
+                  <p className="text-xs font-semibold text-foreground truncate" title={v.name}>{v.name}</p>
+                  <div className="flex items-center gap-1.5">
+                    <Button onClick={() => split(v)} disabled={busy} variant="outline" className="flex-1 gap-1.5 h-7 text-xs">
+                      {busy
+                        ? <><RefreshCw className="w-3 h-3 animate-spin" /> {st.status === "pending" ? "Queued…" : "Splitting…"}</>
+                        : <><Scissors className="w-3 h-3" /> {st.shots > 0 ? "Re-split" : "Split"}</>}
+                    </Button>
+                    <button onClick={() => remove(v)} className="h-7 w-7 grid place-items-center rounded-md border border-border text-muted-foreground hover:text-destructive" title="Delete">
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {playing && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-6" onClick={() => setPlaying(null)}>
+          <div className="absolute inset-0 bg-black/80" />
+          <video
+            src={getUploadUrl(playing.file_path)}
+            controls autoPlay playsInline
+            className="relative max-h-[80vh] max-w-full rounded-xl bg-black"
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── MAIN EXPORT ──
-type Tab = "ads" | "landings" | "shots" | "generated" | "funnel";
+type Tab = "ads" | "landings" | "shots" | "footage" | "generated" | "funnel";
 
 const LIBRARY_TABS = [
   { id: "ads" as Tab, label: "Ads Library", icon: BarChart2 },
   { id: "landings" as Tab, label: "Landings", icon: LayoutTemplate },
   { id: "shots" as Tab, label: "Shots", icon: Film },
+  { id: "footage" as Tab, label: "My Footage", icon: Upload },
   { id: "generated" as Tab, label: "New Creatives", icon: Sparkles },
   { id: "funnel" as Tab, label: "Funnel Monitoring", icon: TrendingUp },
 ] as const;
@@ -2020,6 +2215,8 @@ export function CompetitorLibrarySection({ projectId }: { projectId: string }) {
       {tab === "landings" && <CompetitorLandingsView projectId={projectId} />}
 
       {tab === "shots" && <ShotsLibraryView projectId={projectId} />}
+
+      {tab === "footage" && <MyFootageView projectId={projectId} />}
 
       {tab === "generated" && <GeneratedVideosView projectId={projectId} />}
 
