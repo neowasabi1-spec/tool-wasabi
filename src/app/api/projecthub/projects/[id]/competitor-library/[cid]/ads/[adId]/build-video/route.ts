@@ -79,16 +79,17 @@ export async function POST(
     );
   }
 
-  // Every shot is usable: clean ones as-is, subtitled ones get the text band
-  // erased (delogo) at build time. No AI-generated filler — so we DO block
-  // when the project has zero shots at all.
-  const { count: shotCount } = await supabaseAdmin
+  // CLEAN shots only — no crop/zoom/delogo retouching (all produced ugly
+  // artifacts) and no AI filler. Block with a clear message when the pool
+  // would be empty.
+  const { count: usableCount } = await supabaseAdmin
     .from('competitor_shots')
     .select('id', { count: 'exact', head: true })
-    .eq('project_id', id);
-  if (!shotCount || shotCount === 0) {
+    .eq('project_id', id)
+    .not('has_text', 'is', true);
+  if (!usableCount || usableCount === 0) {
     return NextResponse.json(
-      { error: 'No shots in this project yet. Split a video into shots or upload clips in My Footage first.' },
+      { error: 'No clean shots: every shot in this project has burned-in subtitles. Upload subtitle-free clips in My Footage or split a clean video first.' },
       { status: 400 },
     );
   }

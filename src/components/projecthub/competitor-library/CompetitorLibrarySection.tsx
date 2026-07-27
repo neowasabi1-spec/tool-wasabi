@@ -289,7 +289,6 @@ function ShotsGrid({
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
               {shots.map((s) => {
                 const hasText = s.has_text === true;
-                const croppable = hasText && /^(top|bottom)/i.test(s.text_region || "");
                 return (
                   <div key={s.id} className="group relative rounded-xl overflow-hidden border border-border bg-black/5">
                     <button onClick={() => setPlaying(s)} className="block w-full aspect-[9/16] bg-black">
@@ -301,13 +300,11 @@ function ShotsGrid({
                       {s.duration_sec}s
                     </span>
                     <span
-                      title={croppable
-                        ? "Subtitles at edge — erased automatically when building videos"
-                        : hasText
-                          ? "Subtitles in center — erased automatically (may leave a soft blur)"
-                          : "Clean (no subtitles detected)"}
-                      className={`absolute top-1.5 right-1.5 text-[9px] font-black px-1.5 py-0.5 rounded-full ${croppable ? "bg-amber-500 text-white" : hasText ? "bg-rose-500 text-white" : "bg-emerald-500 text-white"}`}>
-                      {croppable ? "SUBS ✂" : hasText ? "SUBS ✂" : "CLEAN"}
+                      title={hasText
+                        ? "Has burned-in subtitles — excluded from builds (needs AI inpainting to remove)"
+                        : "Clean (no subtitles detected)"}
+                      className={`absolute top-1.5 right-1.5 text-[9px] font-black px-1.5 py-0.5 rounded-full ${hasText ? "bg-rose-500 text-white" : "bg-emerald-500 text-white"}`}>
+                      {hasText ? "SUBS" : "CLEAN"}
                     </span>
                     <button
                       onClick={() => remove(s)}
@@ -490,7 +487,7 @@ function CreativeDetailPanel({
       if (r.ok) {
         toast({
           title: j.queued === false ? "Already building" : "Queued for build",
-          description: `${j.scenes || ""} scenes — real footage only, subtitles erased automatically.`,
+          description: `${j.scenes || ""} scenes — real clean footage only.`,
         });
         if (!buildPoll.current) buildPoll.current = setInterval(loadBuildStatus, 5000);
       } else {
@@ -1731,7 +1728,6 @@ function ShotsLibraryView({ projectId }: { projectId: string }) {
 
   const renderCard = (s: Shot) => {
     const hasText = s.has_text === true;
-    const croppable = hasText && /^(top|bottom)/i.test(s.text_region || "");
     return (
       <div key={s.id} className="group rounded-xl overflow-hidden border border-border bg-black/5">
         <div className="relative">
@@ -1744,13 +1740,11 @@ function ShotsLibraryView({ projectId }: { projectId: string }) {
             {s.duration_sec}s
           </span>
           <span
-            title={croppable
-              ? "Subtitles at edge — erased automatically when building videos"
-              : hasText
-                ? "Subtitles in center — erased automatically (may leave a soft blur)"
-                : "Clean (no subtitles detected)"}
-            className={`absolute top-1.5 right-1.5 text-[9px] font-black px-1.5 py-0.5 rounded-full ${croppable ? "bg-amber-500 text-white" : hasText ? "bg-rose-500 text-white" : "bg-emerald-500 text-white"}`}>
-            {croppable ? "SUBS ✂" : hasText ? "SUBS ✂" : "CLEAN"}
+            title={hasText
+              ? "Has burned-in subtitles — excluded from builds (needs AI inpainting to remove)"
+              : "Clean (no subtitles detected)"}
+            className={`absolute top-1.5 right-1.5 text-[9px] font-black px-1.5 py-0.5 rounded-full ${hasText ? "bg-rose-500 text-white" : "bg-emerald-500 text-white"}`}>
+            {hasText ? "SUBS" : "CLEAN"}
           </span>
           {brandNames[s.brand_id] && (
             <span className="absolute bottom-1.5 left-1.5 max-w-[80%] truncate text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-black/70 text-white">
