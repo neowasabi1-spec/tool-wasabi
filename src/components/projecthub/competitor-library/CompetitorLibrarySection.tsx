@@ -38,6 +38,8 @@ type CompetitorWithStats = {
   headlines: string[];
   monitoring_status: "attivo" | "in_analisi";
   last_check: string | null;
+  /** Creatives the daily scrape added since this competitor was last opened. */
+  new_count?: number;
   preview_path?: string;
   preview_type?: string;
   previews?: { file_path: string; media_type: string }[];
@@ -55,6 +57,8 @@ type CompetitorAd = {
   body_text: string;
   is_active: string;
   created_at: string;
+  /** Added by the daily scrape since this competitor was last opened. */
+  is_new?: boolean;
   // Phase 1 winner signals (from Meta Ad Library via Apify) + manual override.
   ad_started_at?: string | null;
   ad_active?: string;
@@ -109,6 +113,19 @@ function WinnerBadge({ ad, className = "" }: { ad: CompetitorAd; className?: str
       title={d !== null ? `Running ${d} day${d === 1 ? "" : "s"}${ad.is_winner ? " · marked as winner" : ""}` : "Marked as winner"}
       className={`inline-flex items-center gap-0.5 text-[9px] font-black px-1.5 py-0.5 rounded-full shadow-sm ${cls} ${className}`}>
       {tier === "winner" ? "🔥" : "⭐"} {label}
+    </span>
+  );
+}
+
+// Creatives arriving from the daily scrape are flagged until the competitor is
+// opened, so a new batch is noticeable without reading dates.
+function NewBadge({ count, className = "" }: { count?: number; className?: string }) {
+  const label = count && count > 1 ? `${count} NEW` : "NEW";
+  return (
+    <span
+      title={count && count > 1 ? `${count} creatives added since your last visit` : "Added since your last visit"}
+      className={`inline-flex items-center gap-1 text-[9px] font-black px-1.5 py-0.5 rounded-full shadow-sm bg-emerald-500 text-white ${className}`}>
+      <Sparkles className="w-2.5 h-2.5" /> {label}
     </span>
   );
 }
@@ -873,11 +890,15 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
           {competitors.map(c => (
             <div key={c.id}
               onClick={() => onSelect(c)}
-              className="group relative bg-card border border-border rounded-2xl overflow-hidden hover:border-primary/40 hover:shadow-lg transition-all cursor-pointer">
+              className={`group relative bg-card border rounded-2xl overflow-hidden hover:shadow-lg transition-all cursor-pointer
+                ${c.new_count ? "border-emerald-500/60 hover:border-emerald-500" : "border-border hover:border-primary/40"}`}>
 
               {/* Preview mosaic */}
               <div className="aspect-[4/3] relative overflow-hidden bg-gradient-to-br from-slate-800 to-slate-900">
                 <Mosaic items={c.previews && c.previews.length ? c.previews : (c.preview_path ? [{ file_path: c.preview_path, media_type: c.preview_type || "" }] : [])} />
+                {/* New creatives from the daily scrape — bottom row keeps clear of
+                    the monitoring dot and the hover actions above. */}
+                {!!c.new_count && <NewBadge count={c.new_count} className="absolute bottom-2 left-2.5" />}
                 {/* Monitoring dot */}
                 <div className="absolute top-2.5 left-2.5 flex items-center gap-1.5 bg-black/45 backdrop-blur-sm rounded-full px-2 py-0.5">
                   <span className={`w-1.5 h-1.5 rounded-full ${c.monitoring_status === "attivo" ? "bg-green-400" : "bg-amber-400"}`} />
@@ -970,6 +991,10 @@ function CompetitorDetail({ projectId, competitor, onBack }: { projectId: string
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<"all" | "image" | "video">("all");
   const [winnersOnly, setWinnersOnly] = useState(false);
+  const [newOnly, setNewOnly] = useState(false);
+  // Kept across reloads so the badges stay put for the whole visit, even though
+  // the brand is stamped as seen as soon as they are shown.
+  const [newIds, setNewIds] = useState<Set<number>>(new Set());
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [saving, setSaving] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
@@ -992,7 +1017,16 @@ function CompetitorDetail({ projectId, competitor, onBack }: { projectId: string
     setLoading(true);
     try {
       const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library/${competitor.id}/ads`);
-      if (r.ok) setAds(await r.json());
+      if (!r.ok) return;
+      const list: CompetitorAd[] = await r.json();
+      setAds(list);
+      const arrived = list.filter(a => a.is_new).map(a => a.id);
+      if (arrived.length) {
+        setNewIds(p => new Set([...p, ...arrived]));
+        // Seen from now on, so the next visit starts clean.
+        fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library/${competitor.id}/seen`, { method: "POST" })
+          .catch(() => {});
+      }
     } finally { setLoading(false); }
   };
 
@@ -1079,14 +1113,18 @@ function CompetitorDetail({ projectId, competitor, onBack }: { projectId: string
     setSelected(p => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; });
   };
 
+  const isNew = (a: CompetitorAd) => newIds.has(a.id);
   const tierRank = (a: CompetitorAd) => { const t = winnerTier(a); return t === "winner" ? 0 : t === "promising" ? 1 : 2; };
   const filtered = ads
     .filter(a => filter === "all" || a.media_type === filter)
     .filter(a => !winnersOnly || winnerTier(a) !== null)
+    .filter(a => !newOnly || isNew(a))
     .filter(a => !search || a.name.toLowerCase().includes(search.toLowerCase()) || a.headline.toLowerCase().includes(search.toLowerCase()) || a.hook.toLowerCase().includes(search.toLowerCase()))
-    .sort((a, b) => tierRank(a) - tierRank(b));
+    // Fresh creatives first, then by winner tier.
+    .sort((a, b) => (isNew(b) ? 1 : 0) - (isNew(a) ? 1 : 0) || tierRank(a) - tierRank(b));
 
   const winnerCount = ads.filter(a => winnerTier(a) !== null).length;
+  const newCount = ads.filter(isNew).length;
   const allSelected = filtered.length > 0 && filtered.every(a => selected.has(a.id));
   const toggleAll = () => allSelected ? setSelected(new Set()) : setSelected(new Set(filtered.map(a => a.id)));
 
@@ -1186,6 +1224,13 @@ function CompetitorDetail({ projectId, competitor, onBack }: { projectId: string
           className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg font-semibold border transition-colors ${winnersOnly ? "bg-amber-400 border-amber-400 text-amber-950" : "border-border text-muted-foreground hover:text-foreground hover:border-amber-300"}`}>
           <Flame className="w-3.5 h-3.5" /> Winners{winnerCount > 0 ? ` (${winnerCount})` : ""}
         </button>
+        {newCount > 0 && (
+          <button onClick={() => setNewOnly(v => !v)}
+            title="Creatives added since your last visit"
+            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg font-semibold border transition-colors ${newOnly ? "bg-emerald-500 border-emerald-500 text-white" : "border-emerald-400/60 text-emerald-600 hover:bg-emerald-50"}`}>
+            <Sparkles className="w-3.5 h-3.5" /> New ({newCount})
+          </button>
+        )}
       </div>
 
       {/* ── SELECTION BAR (always visible when ads exist) ── */}
@@ -1235,7 +1280,11 @@ function CompetitorDetail({ projectId, competitor, onBack }: { projectId: string
             return (
               <div key={ad.id}
                 className={`group relative rounded-2xl overflow-hidden bg-card border-2 transition-all duration-200 cursor-pointer
-                  ${isSelected ? "border-primary shadow-[0_0_0_3px_rgba(34,197,94,0.2)]" : "border-transparent hover:border-border hover:shadow-lg"}`}
+                  ${isSelected
+                    ? "border-primary shadow-[0_0_0_3px_rgba(34,197,94,0.2)]"
+                    : isNew(ad)
+                      ? "border-emerald-500/70 hover:shadow-lg"
+                      : "border-transparent hover:border-border hover:shadow-lg"}`}
                 onClick={() => setDetailAd(ad)}>
 
                 {/* Thumbnail / Placeholder */}
@@ -1273,8 +1322,9 @@ function CompetitorDetail({ projectId, competitor, onBack }: { projectId: string
                     )}
                   </button>
 
-                  {/* Winner + Active badges (stacked) */}
+                  {/* New + Winner + Active badges (stacked) */}
                   <div className="absolute top-2 left-2 flex flex-col items-start gap-1">
+                    {isNew(ad) && <NewBadge />}
                     <WinnerBadge ad={ad} />
                     {(ad.ad_active === "true" || ad.is_active === "true") && (
                       <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-green-500 text-white shadow-sm">ACTIVE</span>
@@ -1413,6 +1463,7 @@ function AllCreativesView({ projectId }: { projectId: string }) {
   const [media, setMedia] = useState<"all" | "image" | "video">("all");
   const [brand, setBrand] = useState<string>("all");
   const [winnersOnly, setWinnersOnly] = useState(false);
+  const [newOnly, setNewOnly] = useState(false);
   const [detailAd, setDetailAd] = useState<CreativeWithBrand | null>(null);
 
   const load = async () => {
@@ -1439,12 +1490,15 @@ function AllCreativesView({ projectId }: { projectId: string }) {
   const brands = [...new Set(creatives.map(c => c.brand_name).filter(Boolean))];
   const tierRank = (a: CompetitorAd) => { const t = winnerTier(a); return t === "winner" ? 0 : t === "promising" ? 1 : 2; };
   const winnerCount = creatives.filter(c => winnerTier(c) !== null).length;
+  const newCount = creatives.filter(c => c.is_new).length;
   const filtered = creatives
     .filter(c => media === "all" || c.media_type === media)
     .filter(c => brand === "all" || c.brand_name === brand)
     .filter(c => !winnersOnly || winnerTier(c) !== null)
+    .filter(c => !newOnly || c.is_new)
     .filter(c => !search || `${c.name} ${c.headline} ${c.hook} ${c.brand_name}`.toLowerCase().includes(search.toLowerCase()))
-    .sort((a, b) => tierRank(a) - tierRank(b));
+    // Fresh creatives first, then by winner tier.
+    .sort((a, b) => (b.is_new ? 1 : 0) - (a.is_new ? 1 : 0) || tierRank(a) - tierRank(b));
 
   return (
     <div className="space-y-4">
@@ -1471,6 +1525,13 @@ function AllCreativesView({ projectId }: { projectId: string }) {
           className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg font-semibold border transition-colors ${winnersOnly ? "bg-amber-400 border-amber-400 text-amber-950" : "border-border text-muted-foreground hover:text-foreground hover:border-amber-300"}`}>
           <Flame className="w-3.5 h-3.5" /> Winners{winnerCount > 0 ? ` (${winnerCount})` : ""}
         </button>
+        {newCount > 0 && (
+          <button onClick={() => setNewOnly(v => !v)}
+            title="Creatives added since your last visit"
+            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg font-semibold border transition-colors ${newOnly ? "bg-emerald-500 border-emerald-500 text-white" : "border-emerald-400/60 text-emerald-600 hover:bg-emerald-50"}`}>
+            <Sparkles className="w-3.5 h-3.5" /> New ({newCount})
+          </button>
+        )}
       </div>
 
       {loading ? (
@@ -1485,12 +1546,14 @@ function AllCreativesView({ projectId }: { projectId: string }) {
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-3">
           {filtered.map((ad, idx) => (
             <div key={ad.id} onClick={() => setDetailAd(ad)}
-              className="group relative rounded-2xl overflow-hidden bg-card border-2 border-transparent hover:border-border hover:shadow-lg transition-all cursor-pointer">
+              className={`group relative rounded-2xl overflow-hidden bg-card border-2 hover:shadow-lg transition-all cursor-pointer
+                ${ad.is_new ? "border-emerald-500/70" : "border-transparent hover:border-border"}`}>
               <div className="aspect-[4/5] relative overflow-hidden rounded-xl">
                 {ad.file_path
                   ? <MediaThumb path={ad.file_path} type={ad.media_type} className="w-full h-full" />
                   : <AdPlaceholder ad={ad} index={idx} />}
                 <div className="absolute top-2 left-2 flex flex-col items-start gap-1">
+                  {ad.is_new && <NewBadge />}
                   <WinnerBadge ad={ad} />
                 </div>
                 <div className="absolute inset-x-0 bottom-0 opacity-0 group-hover:opacity-100 transition-opacity p-2">

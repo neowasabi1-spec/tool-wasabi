@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { canAccessProject } from '@/lib/auth/project-access';
+import { isNewAd, loadSeenAt } from '@/lib/competitor-seen';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -56,11 +57,14 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-  const { data: ads } = await supabaseAdmin
-    .from('competitor_ads')
-    .select('brand_id, media_type, hook, headline, file_path, created_at')
-    .eq('project_id', id)
-    .order('created_at', { ascending: false });
+  const [{ data: ads }, seenAt] = await Promise.all([
+    supabaseAdmin
+      .from('competitor_ads')
+      .select('brand_id, media_type, hook, headline, file_path, created_at')
+      .eq('project_id', id)
+      .order('created_at', { ascending: false }),
+    loadSeenAt(id),
+  ]);
 
   const adsByBrand = new Map<number, AdRow[]>();
   for (const a of (ads || []) as AdRow[]) {
@@ -81,9 +85,12 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
       .slice(0, 4)
       .map((a) => ({ file_path: a.file_path, media_type: a.media_type }));
     const preview = withFile.find((a) => a.media_type !== 'video') || withFile[0] || null;
+    // Creatives the daily scrape brought in since this competitor was opened.
+    const newCount = list.filter((a) => isNewAd(seenAt, b.id, a.created_at)).length;
     return {
       ...b,
       ads_count: list.length,
+      new_count: newCount,
       video_count: videoCount,
       image_count: imageCount,
       hooks,

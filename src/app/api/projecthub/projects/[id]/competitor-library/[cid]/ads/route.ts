@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { canAccessProject } from '@/lib/auth/project-access';
 import { insertCompetitorAd, mediaTypeForContentType } from '@/lib/competitor-ads';
+import { loadSeenAt, tagNewAds } from '@/lib/competitor-seen';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -27,15 +28,20 @@ export async function GET(
     return NextResponse.json({ error: 'Invalid id' }, { status: 400 });
   }
 
-  const { data, error } = await supabaseAdmin
-    .from('competitor_ads')
-    .select('*')
-    .eq('project_id', id)
-    .eq('brand_id', brandId)
-    .order('created_at', { ascending: false });
+  const [{ data, error }, seenAt] = await Promise.all([
+    supabaseAdmin
+      .from('competitor_ads')
+      .select('*')
+      .eq('project_id', id)
+      .eq('brand_id', brandId)
+      .order('created_at', { ascending: false }),
+    loadSeenAt(id),
+  ]);
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json(data || []);
+  // is_new lets the grid badge whatever the daily scrape added since the last
+  // visit; the client stamps the brand as seen once it has rendered them.
+  return NextResponse.json(tagNewAds((data || []) as { brand_id: number; created_at?: string }[], seenAt));
 }
 
 export async function POST(
