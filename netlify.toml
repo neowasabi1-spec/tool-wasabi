@@ -48,5 +48,11 @@
   external_node_modules = ["ffmpeg-static"]
   included_files = ["node_modules/ffmpeg-static/ffmpeg"]
 
+# ffmpeg serve per estrarre i frame di controllo tra un passaggio di pulizia
+# e l'altro (verifica se è rimasto del testo).
+[functions."inpaint-shot-background"]
+  external_node_modules = ["ffmpeg-static"]
+  included_files = ["node_modules/ffmpeg-static/ffmpeg"]
+
 [[plugins]]
   package = "@netlify/plugin-nextjs"
