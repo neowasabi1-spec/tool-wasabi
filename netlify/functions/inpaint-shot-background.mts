@@ -109,6 +109,9 @@ export default async (req: Request) => {
         video: signed.signedUrl,
         method: 'hybrid',          // context-aware inpainting (best for complex backgrounds)
         resolution: 'original',
+        conf_threshold: 0.15,      // default 0.25 misses line-end words (left "OUR"/"NUTES)" behind)
+        margin: 15,                // wider box so whole caption lines get erased
+        detection_interval: 1,     // detect on every frame — clips are short
       },
     });
     // Spread simultaneous shots apart before the first attempt.
