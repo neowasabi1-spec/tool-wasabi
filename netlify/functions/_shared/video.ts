@@ -356,7 +356,11 @@ export function srtTime(sec: number): string {
   return `${p(h)}:${p(m)}:${p(s)},${p(mm, 3)}`;
 }
 
-export type ShotClip = { file: string; dur: number; tags: string[]; caption: string };
+export type ShotClip = {
+  file: string; dur: number; tags: string[]; caption: string;
+  /** Where the shot sat in its source video: 'hook' | 'body' | 'cta'. */
+  section: string;
+};
 
 function tokenize(text: string): Set<string> {
   return new Set(
@@ -368,28 +372,60 @@ function tokenize(text: string): Set<string> {
   );
 }
 
-// Choose UNIQUE shots for one scene, preferring those whose tags/caption match
-// the scene text (so a "trump" scene pulls trump footage). Marks chosen shots in
-// `used` so no shot repeats across the video, and takes at most ONE shot per
-// matched tag within a scene (avoids stacking 3-4 near-identical clips).
+// Which part of the story a scene belongs to, from its position in the script:
+// the opening scenes are the hook, the closing ones the call to action, and
+// everything between is body. Footage is then drawn from the matching part of
+// the competitor videos, so hooks open the video and CTAs close it.
+export function sectionForScene(idx: number, total: number): 'hook' | 'body' | 'cta' {
+  if (total <= 1) return 'hook';
+  if (total === 2) return idx === 0 ? 'hook' : 'cta';
+  const edge = Math.max(1, Math.round(total * 0.15));
+  if (idx < edge) return 'hook';
+  if (idx >= total - edge) return 'cta';
+  return 'body';
+}
+
+// Shots from the wanted section come first; body footage is neutral enough to
+// stand in anywhere, so it is the first fallback, and only then the rest —
+// running out of hook clips must not fail the scene.
+function sectionRank(shotSection: string, want: string): number {
+  const sec = shotSection || 'body';
+  if (sec === want) return 0;
+  if (sec === 'body') return 1;
+  return 2;
+}
+
+// Choose UNIQUE shots for one scene: first from the scene's narrative section
+// (hook / body / cta), then by how well tags/caption match the scene text (so a
+// "trump" scene pulls trump footage). Marks chosen shots in `used` so no shot
+// repeats across the video, and takes at most ONE shot per matched tag within a
+// scene (avoids stacking 3-4 near-identical clips).
 export function pickShotsForScene(
   pool: ShotClip[],
   used: Set<number>,
   sceneText: string,
   targetDur: number,
-): { files: string[]; dur: number } {
+  wantSection: 'hook' | 'body' | 'cta' = 'body',
+): { files: string[]; dur: number; sections: string[] } {
   const words = tokenize(sceneText);
   const scored = pool
     .map((s, idx) => {
       const matched = (s.tags || []).filter((t) => words.has(t.toLowerCase()));
       const capHits = [...tokenize(s.caption)].filter((w) => words.has(w));
-      return { idx, s, score: matched.length * 3 + capHits.length, primary: matched[0]?.toLowerCase() || '' };
+      return {
+        idx, s,
+        score: matched.length * 3 + capHits.length,
+        rank: sectionRank(s.section, wantSection),
+        primary: matched[0]?.toLowerCase() || '',
+      };
     })
     .filter((c) => !used.has(c.idx))
-    // relevant first; stable order otherwise so generic scenes stay sequential
-    .sort((a, b) => b.score - a.score);
+    // Right section first, then relevance; stable order otherwise so generic
+    // scenes stay in the order the shots appeared in the source.
+    .sort((a, b) => a.rank - b.rank || b.score - a.score);
 
   const files: string[] = [];
+  const sections: string[] = [];
   let acc = 0;
   const usedTags = new Set<string>();
   for (const c of scored) {
@@ -398,23 +434,25 @@ export function pickShotsForScene(
     if (c.primary && usedTags.has(c.primary) && files.length > 0) continue;
     used.add(c.idx);
     files.push(c.s.file);
+    sections.push(c.s.section || 'body');
     acc += c.s.dur;
     if (c.primary) usedTags.add(c.primary);
   }
 
-  // Pool exhausted for this scene: reuse the most relevant shot as an emergency
-  // (better than failing the whole build — there is no AI fallback anymore).
+  // Pool exhausted for this scene: reuse the best shot of the wanted section as
+  // an emergency (better than failing the whole build — there is no AI filler).
   if (files.length === 0 && pool.length > 0) {
     const best = pool
-      .map((s, idx) => {
+      .map((s) => {
         const matched = (s.tags || []).filter((t) => words.has(t.toLowerCase()));
-        return { s, score: matched.length };
+        return { s, score: matched.length, rank: sectionRank(s.section, wantSection) };
       })
-      .sort((a, b) => b.score - a.score)[0];
+      .sort((a, b) => a.rank - b.rank || b.score - a.score)[0];
     files.push(best.s.file);
+    sections.push(best.s.section || 'body');
     acc = best.s.dur;
   }
-  return { files, dur: acc };
+  return { files, dur: acc, sections };
 }
 
 // Assemble one scene's visual track from a pre-chosen list of clip files. Real
@@ -464,7 +502,7 @@ export async function loadCleanShots(
     .limit(120);
   const shots = (data || []) as Array<{
     file_path: string; clean_path?: string | null; has_text?: boolean | null;
-    tags?: string[]; caption?: string;
+    tags?: string[]; caption?: string; section?: string | null;
   }>;
   const pool: ShotClip[] = [];
   for (let i = 0; i < shots.length; i++) {
@@ -485,6 +523,8 @@ export async function loadCleanShots(
           dur,
           tags: Array.isArray(s.tags) ? (s.tags as string[]) : [],
           caption: typeof s.caption === 'string' ? (s.caption as string) : '',
+          // Rows from before sections existed can stand in anywhere.
+          section: typeof s.section === 'string' && s.section ? s.section : 'body',
         });
       }
     } catch { /* skip bad shot */ }

@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import {
   getSupabase, run, FFMPEG, makeWorkDir, probeDuration, ttsScene,
-  buildSceneVisual, pickShotsForScene, loadCleanShots, srtTime, grabThumb, uploadFile,
+  buildSceneVisual, pickShotsForScene, sectionForScene, loadCleanShots, srtTime, grabThumb, uploadFile,
 } from './_shared/video';
 
 /**
@@ -39,11 +39,17 @@ export default async (req: Request) => {
   const workDir = makeWorkDir('wbuild-');
   try {
     if (scenes.length === 0) throw new Error('no scenes in job');
-    // Real-footage pool (subtitles erased via delogo). Each clip is used at
-    // most once; duration gaps are covered by freezing the last frame, and a
-    // shot is only reused as a last resort when the pool is exhausted.
+    // Real-footage pool: shots that never had subtitles plus the AI-cleaned
+    // copies. Each clip is used at most once; duration gaps are covered by
+    // freezing the last frame, and a shot is only reused as a last resort when
+    // the pool is exhausted.
     const pool = await loadCleanShots(supabase, projectId, workDir);
-    log(`usable shots (clean + de-subbed): ${pool.length}`);
+    const bySection = pool.reduce<Record<string, number>>((acc, s) => {
+      acc[s.section] = (acc[s.section] || 0) + 1;
+      return acc;
+    }, {});
+    log(`usable shots (clean + de-subbed): ${pool.length} — ` +
+      `hook ${bySection.hook || 0}, body ${bySection.body || 0}, cta ${bySection.cta || 0}`);
     if (pool.length === 0) {
       throw new Error('no shots in the pool — split videos into shots or upload clips in My Footage first');
     }
@@ -57,8 +63,12 @@ export default async (req: Request) => {
       const mp3 = path.join(workDir, `vo_${i}.mp3`);
       await ttsScene(scenes[i], voice, mp3);
       const d = Math.max(0.8, await probeDuration(mp3));
-      // Pick footage matching this scene's text (tags/caption), no reuse.
-      const picked = pickShotsForScene(pool, used, scenes[i], d);
+      // Hook footage opens the video, CTA footage closes it, body in between —
+      // within that, pick the clips matching this scene's text. No reuse.
+      const want = sectionForScene(i, scenes.length);
+      const picked = pickShotsForScene(pool, used, scenes[i], d, want);
+      log(`scene ${i + 1}/${scenes.length} wants ${want}, got ${picked.sections.join('+') || 'none'} ` +
+        `(${picked.dur.toFixed(1)}s of ${d.toFixed(1)}s)`);
       const vis = await buildSceneVisual(picked.files, picked.dur, d, workDir, i);
       sceneVisuals.push(vis);
       sceneAudios.push(mp3);
