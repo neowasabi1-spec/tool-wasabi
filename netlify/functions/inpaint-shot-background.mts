@@ -1,7 +1,8 @@
 import fs from 'fs';
 import path from 'path';
 import {
-  getSupabase, uploadFile, makeWorkDir, downloadSource, run, FFMPEG, ffprobeInfo,
+  getSupabase, uploadFile, makeWorkDir, downloadSource, probeDuration,
+  run, FFMPEG, ffprobeInfo,
 } from './_shared/video';
 
 /**
@@ -128,80 +129,161 @@ async function resolveVersion(token: string, model: string): Promise<string> {
 type Detection = { b: Box; t: number };
 type Cluster = { b: Box; t0: number; t1: number };
 
-const MW = 96;   // diff analysis resolution — enough to locate a caption band
-const MH = 168;
+const RGB_W = 400;        // analysis width; height follows the aspect ratio
+const RGB_MAX_PIXELS = 24e6;  // analysed pixels per clip; two clips are held at once
+const COLOR_MIN = 30;     // caption-coloured pixels left -> text still on screen
+const MAX_DROP = 0.25;    // beyond this, freezing frames would be noticeable
+
+type Leftover = {
+  bad: number[];          // frames still showing text
+  counts: number[];       // caption-coloured pixels surviving, per frame
+  frames: number;
+  maskPx: number;         // pixels the remover repainted anywhere in the clip
+  colour: [number, number, number] | null;
+  box: Box | null;        // bounding box of the repainted pixels
+};
 
 /**
- * Locate the caption area and the frames the remover skipped, by diffing the
- * original against the cleaned clip: repainted pixels differ, so their union is
- * the caption area, and a frame with (almost) no difference inside that area is
- * a frame where the text is still on screen. Deterministic and exact — sampling
- * a few frames with Vision misses text that flashes for 3-4 frames.
+ * Frames that still show text, found by colour rather than by brightness.
+ *
+ * The pixels the remover repainted somewhere in the clip bound where captions
+ * can be; within those, the caption's own colour (saturated yellow, plain white)
+ * is learned from the original, and a frame is flagged when pixels of that
+ * colour survive into the output. Brightness alone cannot do this — a leftover
+ * yellow letter scores like a white highlight — whereas by colour the signal is
+ * unambiguous: hundreds of pixels on frames that show text, zero on the rest.
  */
-export function analyzeResidual(diff: Buffer): { area: Box | null; badFrames: number[]; frames: number } {
-  const fsz = MW * MH;
-  const frames = Math.floor(diff.length / fsz);
-  if (!frames) return { area: null, badFrames: [], frames: 0 };
+export function analyzeLeftoverText(orig: Buffer, clean: Buffer, w: number, h: number): Leftover {
+  const px = w * h;
+  const fsz = px * 3;
+  const frames = Math.min(Math.floor(orig.length / fsz), Math.floor(clean.length / fsz));
+  const empty: Leftover = { bad: [], counts: [], frames, maskPx: 0, colour: null, box: null };
+  if (!frames) return empty;
 
-  let x0 = MW, x1 = -1, y0 = MH, y1 = -1, hot = 0;
+  const mask = new Uint8Array(px);
+  let maskPx = 0;
+  let x0 = w, x1 = -1, y0 = h, y1 = -1;
   for (let f = 0; f < frames; f++) {
-    for (let y = 0; y < MH; y++) {
-      for (let x = 0; x < MW; x++) {
-        if (diff[f * fsz + y * MW + x] > 40) {
-          hot++;
-          if (x < x0) x0 = x; if (x > x1) x1 = x;
-          if (y < y0) y0 = y; if (y > y1) y1 = y;
-        }
-      }
+    for (let p = 0; p < px; p++) {
+      if (mask[p]) continue;
+      const i = f * fsz + p * 3;
+      const d = Math.abs(orig[i] - clean[i]) + Math.abs(orig[i + 1] - clean[i + 1]) +
+        Math.abs(orig[i + 2] - clean[i + 2]);
+      if (d <= 90) continue;
+      mask[p] = 1;
+      maskPx++;
+      const x = p % w;
+      const y = (p - x) / w;
+      if (x < x0) x0 = x;
+      if (x > x1) x1 = x;
+      if (y < y0) y0 = y;
+      if (y > y1) y1 = y;
     }
   }
-  if (!hot) return { area: null, badFrames: [], frames };  // nothing was repainted at all
+  if (!maskPx) return empty;
 
-  const energy: number[] = [];
-  const cells = (y1 - y0 + 1) * (x1 - x0 + 1);
-  for (let f = 0; f < frames; f++) {
-    let sum = 0;
-    for (let y = y0; y <= y1; y++) {
-      for (let x = x0; x <= x1; x++) sum += diff[f * fsz + y * MW + x];
+  // Learn the caption colour. The repaint mask covers a box around each word, so
+  // most masked pixels are background: look for a saturated population first,
+  // then for plain white.
+  const sat: number[][] = [];
+  const white: number[][] = [];
+  for (let f = 0; f < frames; f += 2) {
+    for (let p = 0; p < px; p++) {
+      if (!mask[p]) continue;
+      const i = f * fsz + p * 3;
+      const r = orig[i];
+      const g = orig[i + 1];
+      const b = orig[i + 2];
+      if (Math.max(r, g, b) < 190) continue;
+      if (Math.max(r, g, b) - Math.min(r, g, b) > 100) sat.push([r, g, b]);
+      else if (Math.min(r, g, b) > 200) white.push([r, g, b]);
     }
-    energy.push(sum / cells);
   }
-  const median = [...energy].sort((a, b) => a - b)[Math.floor(frames / 2)];
-  const thr = Math.max(2, median * 0.25);
-  const badFrames = energy.map((e, i) => ({ e, i })).filter((r) => r.e < thr).map((r) => r.i);
+  const pool = sat.length >= 200 ? sat : white;
+  if (pool.length < 60) return { ...empty, maskPx };
+  const med = (k: number) => {
+    const v = pool.map((c) => c[k]).sort((m, n) => m - n);
+    return v[Math.floor(v.length / 2)];
+  };
+  const colour: [number, number, number] = [med(0), med(1), med(2)];
+  const isWhite = Math.max(...colour) - Math.min(...colour) <= 100;
+  const near = (buf: Buffer, i: number) =>
+    Math.abs(buf[i] - colour[0]) + Math.abs(buf[i + 1] - colour[1]) +
+    Math.abs(buf[i + 2] - colour[2]) <= 110;
+  // White lettering needs its hard edge too, or bright scenery reads as text.
+  const sharp = (buf: Buffer, p: number, f: number) => {
+    const x = p % w;
+    const y = (p - x) / w;
+    if (x < 2 || x >= w - 2 || y < 1 || y >= h - 1) return false;
+    const i = f * fsz + p * 3;
+    const lum = (o: number) => buf[i + o] + buf[i + o + 1] + buf[i + o + 2];
+    return Math.max(Math.abs(lum(6) - lum(-6)), Math.abs(lum(w * 3) - lum(-w * 3))) > 165;
+  };
+
+  const counts: number[] = [];
+  const bad: number[] = [];
+  for (let f = 0; f < frames; f++) {
+    let hit = 0;
+    for (let p = 0; p < px; p++) {
+      if (!mask[p]) continue;
+      const i = f * fsz + p * 3;
+      if (!near(orig, i)) continue;   // no caption colour here to begin with
+      if (!near(clean, i)) continue;  // repainted away
+      if (isWhite && !sharp(clean, p, f)) continue;
+      hit++;
+    }
+    counts.push(hit);
+    if (hit >= COLOR_MIN) bad.push(f);
+  }
 
   return {
-    area: { x0: x0 / MW, x1: (x1 + 1) / MW, y0: y0 / MH, y1: (y1 + 1) / MH },
-    badFrames,
+    bad,
+    counts,
     frames,
+    maskPx,
+    colour,
+    box: { x0: x0 / w, x1: (x1 + 1) / w, y0: y0 / h, y1: (y1 + 1) / h },
   };
 }
 
-/** Grayscale per-frame difference between two clips, as raw MW×MH bytes. */
-async function diffFrames(a: string, b: string, workDir: string): Promise<Buffer> {
-  const raw = path.join(workDir, `diff_${Date.now()}.raw`);
+/** Raw RGB frames of a clip, downscaled so the whole clip fits in memory. */
+async function rgbFrames(
+  file: string, W: number, H: number, dur: number, fps: number, workDir: string,
+): Promise<{ buf: Buffer; w: number; h: number }> {
+  const est = Math.max(1, Math.round(dur * fps));
+  let w = RGB_W;
+  let h = Math.round((H / W) * w / 2) * 2;
+  while (w > 160 && w * h * est > RGB_MAX_PIXELS) {
+    w -= 40;
+    h = Math.round((H / W) * w / 2) * 2;
+  }
+  const raw = path.join(workDir, `rgb_${path.basename(file)}_${Date.now()}.raw`);
   await run(FFMPEG, [
-    '-y', '-i', a, '-i', b,
-    '-filter_complex',
-    `[1:v]scale=${MW}:${MH}[y];[0:v]scale=${MW}:${MH}[x];[x][y]blend=all_mode=difference,format=gray`,
-    '-f', 'rawvideo', '-pix_fmt', 'gray', raw,
+    '-y', '-i', file, '-vf', `scale=${w}:${h}`,
+    '-f', 'rawvideo', '-pix_fmt', 'rgb24', raw,
   ]);
   const buf = fs.readFileSync(raw);
   try { fs.rmSync(raw, { force: true }); } catch { /* ignore */ }
-  return buf;
+  return { buf, w, h };
 }
 
-/** Group consecutive skipped frames into time windows, padded by one frame. */
-export function framesToWindows(badFrames: number[], fps: number): { t0: number; t1: number }[] {
-  const windows: { t0: number; t1: number }[] = [];
-  for (const f of badFrames) {
-    const t0 = Math.max(0, (f - 1) / fps);
-    const t1 = (f + 2) / fps;
-    const last = windows[windows.length - 1];
-    if (last && t0 <= last.t1 + 1 / fps) last.t1 = Math.max(last.t1, t1);
-    else windows.push({ t0, t1 });
-  }
-  return windows;
+/**
+ * Drop the offending frames and hold the previous good one in their place: fps
+ * re-times the gaps by repeating the last frame, and tpad restores the duration
+ * lost when leading frames go. Freezing ~33ms is invisible, whereas erasing the
+ * band only on those frames makes the patch blink on and off.
+ */
+export function buildDropGraph(bad: number[], fps: number): string {
+  const expr = bad.map((f) => `eq(n\\,${f})`).join('+');
+  let lead = 0;
+  while (bad.includes(lead)) lead++;
+  const graph = [
+    `select='not(${expr})'`,
+    'setpts=PTS-STARTPTS',
+    `fps=${fps}`,
+  ];
+  if (lead > 0) graph.push(`tpad=stop_mode=clone:stop_duration=${(lead / fps).toFixed(3)}`);
+  return graph.join(',');
 }
 
 /**
@@ -352,7 +434,13 @@ export default async (req: Request) => {
     const outFile = path.join(workDir, 'clean.mp4');
     const srcFile = path.join(workDir, 'src.mp4');
     await downloadSource(supabase, claimed.file_path as string, srcFile);
-    let residual: { area: Box | null; badFrames: number[]; frames: number } | null = null;
+    const srcInfo = await ffprobeInfo(srcFile);
+    const W = srcInfo.width || 0;
+    const H = srcInfo.height || 0;
+    const fps = srcInfo.fps && srcInfo.fps > 0 ? srcInfo.fps : 30;
+    const dur = await probeDuration(srcFile);
+    let srcRgb: { buf: Buffer; w: number; h: number } | null = null;
+    let leftover: Leftover | null = null;
 
     for (let pass = 1; pass <= MAX_PASSES; pass++) {
       // Create the prediction. Accounts with <$5 credit are throttled to ~1
@@ -424,19 +512,23 @@ export default async (req: Request) => {
       fs.writeFileSync(outFile, Buffer.from(await dl.arrayBuffer()));
       inputUrl = outputUrl;
 
-      // Which frames still carry text? Checked on EVERY frame, not sampled:
+      // Which frames still show text? Checked on EVERY frame, not sampled:
       // leftovers often survive on 3-4 frames only (a ~100ms flash).
       try {
-        residual = analyzeResidual(await diffFrames(srcFile, outFile, workDir));
-        log(`pass ${pass}: ${residual.badFrames.length}/${residual.frames} frames not repainted`);
+        if (!W || !H) throw new Error('could not probe source dimensions');
+        if (!srcRgb) srcRgb = await rgbFrames(srcFile, W, H, dur, fps, workDir);
+        const outRgb = await rgbFrames(outFile, W, H, dur, fps, workDir);
+        leftover = analyzeLeftoverText(srcRgb.buf, outRgb.buf, srcRgb.w, srcRgb.h);
+        log(`pass ${pass}: ${leftover.bad.length}/${leftover.frames} frames still show text` +
+          (leftover.colour ? ` (caption rgb ${leftover.colour.join(',')})` : ' (caption colour unknown)'));
       } catch (e) {
-        log(`pass ${pass}: residual check skipped (${(e as Error).message})`);
+        log(`pass ${pass}: leftover check skipped (${(e as Error).message})`);
         break;                       // can't verify → don't burn more passes
       }
       // Nothing repainted anywhere means the detector never saw the text; more
-      // passes won't change that, stage 2 has to handle it.
-      if (!residual.area) break;
-      if (!residual.badFrames.length) break;
+      // passes won't change that, stage 2b has to handle it.
+      if (!leftover.maskPx) break;
+      if (!leftover.bad.length) break;
       if (pass === MAX_PASSES || Date.now() > deadline) break;
     }
 
@@ -444,30 +536,37 @@ export default async (req: Request) => {
 
     let note: string | null = null;
 
-    // ── Stage 2a: frames the remover skipped. Their caption area is already
-    // known from the diff, so erase it just on those frames' time windows —
-    // a few hundredths of a second, so the patch is imperceptible. ───────────
-    if (residual?.area && residual.badFrames.length) {
+    // ── Stage 2a: frames that still show text after every pass. Drop them and
+    // hold the previous good frame: erasing the caption area on single frames
+    // makes the patch blink on and off, which reads worse than a 33ms freeze. ──
+    if (leftover?.bad.length && leftover.box) {
       try {
-        const info = await ffprobeInfo(outFile);
-        const W = info.width || 0;
-        const H = info.height || 0;
-        const fps = info.fps && info.fps > 0 ? info.fps : 30;
-        if (!W || !H) throw new Error('could not probe dimensions');
-        const rects = framesToWindows(residual.badFrames, fps)
-          .map((w) => toRect({ b: residual!.area as Box, t0: w.t0, t1: w.t1 }, W, H))
-          .filter((r): r is Rect => !!r);
-        if (rects.length) {
+        const maxDrop = Math.max(2, Math.floor(leftover.frames * MAX_DROP));
+        if (leftover.bad.length <= maxDrop) {
           const patched = path.join(workDir, 'clean2a.mp4');
           await run(FFMPEG, [
-            '-y', '-i', outFile, '-filter_complex', buildEraseGraph(rects),
+            '-y', '-i', outFile, '-vf', buildDropGraph(leftover.bad, fps),
             '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-an', patched,
           ]);
           fs.copyFileSync(patched, outFile);
-          log(`stage 2a: patched ${residual.badFrames.length} skipped frame(s) in ${rects.length} window(s)`);
+          log(`stage 2a: dropped ${leftover.bad.length}/${leftover.frames} frame(s) still showing text`);
+        } else {
+          // Too many to freeze over — erase the caption area for the whole clip
+          // instead, constantly, so nothing flickers.
+          const rect = toRect({ b: leftover.box, t0: 0, t1: dur + 1 }, W, H);
+          if (rect) {
+            const patched = path.join(workDir, 'clean2a.mp4');
+            await run(FFMPEG, [
+              '-y', '-i', outFile, '-filter_complex', buildEraseGraph([rect]),
+              '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-an', patched,
+            ]);
+            fs.copyFileSync(patched, outFile);
+            note = `text on ${leftover.bad.length}/${leftover.frames} frames — area erased for the whole clip`;
+            log(`stage 2a: ${note}`);
+          }
         }
       } catch (e) {
-        note = `frame patch skipped: ${(e as Error).message}`;
+        note = `frame cleanup skipped: ${(e as Error).message}`;
         log(note);
       }
     }
@@ -475,7 +574,7 @@ export default async (req: Request) => {
     // ── Stage 2b: text the YOLO detector never sees at all (stylized CTA
     // graphics — nothing was repainted anywhere). Locate it with OCR and erase
     // those boxes. Never fatal: a failure keeps the stage-1 result. ──────────
-    if (residual && !residual.area) {
+    if (leftover && !leftover.maskPx) {
       try {
         const info = await ffprobeInfo(outFile);
         const W = info.width || 0;

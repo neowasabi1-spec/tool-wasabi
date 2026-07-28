@@ -1,7 +1,7 @@
-/* End-to-end local check of the stage-2a residual patch, using the very
- * functions the Netlify function uses: diff original vs cleaned, find frames the
- * remover skipped, erase the caption area only on those frames' windows, then
- * re-diff to prove no skipped frames are left.
+/* End-to-end local check of stage 2a, using the very functions the Netlify
+ * function uses: learn the caption colour, flag every frame where that colour
+ * survives, drop those frames holding the previous good one, then re-check the
+ * output frame by frame and confirm duration and frame count survived.
  *
  *   node scripts/test-residual-patch.js <orig.mp4> <clean.mp4> [out.mp4]
  */
@@ -22,18 +22,19 @@ const src = fs.readFileSync(
   path.join(__dirname, '..', 'netlify', 'functions', 'inpaint-shot-background.mts'),
   'utf8',
 );
-const start = src.indexOf('const MW = 96;');
-const end = src.indexOf('export default async');
 const snippet = `type Box = { x0: number; y0: number; x1: number; y1: number };
-${src.slice(start, end).replace(/async function diffFrames[\s\S]*?\n}\n/, '')}
-module.exports = { analyzeResidual, framesToWindows, toRect, buildEraseGraph };`;
-const js = ts.transpileModule(snippet, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText;
+${src.slice(src.indexOf('const RGB_W = 400;'), src.indexOf('export default async'))
+    .replace(/async function [\s\S]*?\n}\n/g, '')}
+module.exports = { analyzeLeftoverText, buildDropGraph, toRect, buildEraseGraph };`;
+// ES2020 target matters: downlevelled spread of a Set yields an empty array.
+const js = ts.transpileModule(snippet, {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
+}).outputText;
 const mod = { exports: {} };
 new Function('module', 'exports', js)(mod, mod.exports);
-const { analyzeResidual, framesToWindows, toRect, buildEraseGraph } = mod.exports;
+const { analyzeLeftoverText, buildDropGraph } = mod.exports;
 
-const MW = 96;
-const MH = 168;
+const RGB_W = 400;
 
 function ff(args) {
   return new Promise((resolve) => {
@@ -44,54 +45,75 @@ function ff(args) {
   });
 }
 
-async function diff(a, b, raw) {
-  const { code, err } = await ff([
-    '-y', '-i', a, '-i', b, '-filter_complex',
-    `[1:v]scale=${MW}:${MH}[y];[0:v]scale=${MW}:${MH}[x];[x][y]blend=all_mode=difference,format=gray`,
-    '-f', 'rawvideo', '-pix_fmt', 'gray', raw,
-  ]);
-  if (code !== 0) throw new Error(err.split(/\r?\n/).slice(-3).join(' | '));
-  return fs.readFileSync(raw);
+async function must(args, what) {
+  const { code, err } = await ff(args);
+  if (code !== 0) throw new Error(`${what}: ${err.split(/\r?\n/).filter((l) => l.trim()).slice(-3).join(' | ')}`);
+  return err;
 }
 
 async function probe(file) {
   const { err } = await ff(['-hide_banner', '-i', file]);
   const dim = err.match(/Video:.*?[,\s](\d{2,5})x(\d{2,5})/);
   const fps = err.match(/(\d+(?:\.\d+)?)\s+fps/);
-  return { W: dim ? +dim[1] : 0, H: dim ? +dim[2] : 0, fps: fps ? parseFloat(fps[1]) : 30 };
+  const d = err.match(/Duration:\s*(\d+):(\d+):(\d+\.\d+)/);
+  return {
+    W: dim ? +dim[1] : 0,
+    H: dim ? +dim[2] : 0,
+    fps: fps ? parseFloat(fps[1]) : 30,
+    dur: d ? +d[1] * 3600 + +d[2] * 60 + +d[3] : 0,
+  };
+}
+
+async function rgb(file, W, H, raw) {
+  const w = RGB_W;
+  const h = Math.round((H / W) * w / 2) * 2;
+  await must(['-y', '-i', file, '-vf', `scale=${w}:${h}`, '-f', 'rawvideo', '-pix_fmt', 'rgb24', raw], 'rgb');
+  return { buf: fs.readFileSync(raw), w, h };
 }
 
 (async () => {
-  const { W, H, fps } = await probe(clean);
-  const before = analyzeResidual(await diff(orig, clean, 'C:/Users/Neo/tmp-d1.raw'));
-  console.log(`source ${W}x${H} @ ${fps}fps`);
-  if (!before.area) {
-    console.log('nothing was repainted -> stage 2b (OCR) territory, not 2a');
-    process.exit(0);
+  const { W, H, fps, dur } = await probe(clean);
+  const a = await rgb(orig, W, H, 'C:/Users/Neo/tmp-rgb0.raw');
+  const b = await rgb(clean, W, H, 'C:/Users/Neo/tmp-rgb1.raw');
+  const res = analyzeLeftoverText(a.buf, b.buf, a.w, a.h);
+  console.log(`source ${W}x${H} @ ${fps}fps, ${dur.toFixed(2)}s, analysis ${a.w}x${a.h}`);
+  console.log(`repainted mask ${res.maskPx} px, caption colour ${res.colour ? `rgb(${res.colour.join(',')})` : 'unknown'}`);
+  if (!res.maskPx) { console.log('nothing repainted -> stage 2b (OCR) territory'); process.exit(0); }
+  console.log(`showing text BEFORE: ${res.bad.length}/${res.frames} ` +
+    `[${res.bad.map((f) => `${f}(${res.counts[f]})`).join(' ')}]`);
+  if (!res.bad.length) { console.log('OK — already clean on every frame'); process.exit(0); }
+
+  const graph = buildDropGraph(res.bad, fps);
+  console.log(`graph: ${graph}`);
+  await must(['-y', '-i', clean, '-vf', graph,
+    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-an', out], 'render');
+
+  const after = await probe(out);
+  const c = await rgb(out, after.W, after.H, 'C:/Users/Neo/tmp-rgb2.raw');
+
+  // Dropping shifts frames, so compare each output frame with the source frame
+  // that now occupies its slot: survivors shift left by the leading drop count,
+  // and gaps hold the previous survivor.
+  let lead = 0;
+  while (res.bad.includes(lead)) lead++;
+  const survivors = [...Array(res.frames).keys()].filter((f) => !res.bad.includes(f));
+  const fsz = a.w * a.h * 3;
+  const outFrames = Math.floor(c.buf.length / fsz);
+  const remap = Buffer.alloc(outFrames * fsz);
+  for (let i = 0; i < outFrames; i++) {
+    const want = i + lead;
+    let s = survivors[0];
+    for (const f of survivors) if (f <= want) s = f;
+    a.buf.copy(remap, i * fsz, s * fsz, (s + 1) * fsz);
   }
-  console.log(`caption area x ${before.area.x0.toFixed(2)}-${before.area.x1.toFixed(2)} ` +
-    `y ${before.area.y0.toFixed(2)}-${before.area.y1.toFixed(2)}`);
-  console.log(`skipped frames BEFORE: ${before.badFrames.length}/${before.frames} [${before.badFrames.join(',')}]`);
-  if (!before.badFrames.length) { console.log('already clean on every frame'); process.exit(0); }
+  const res2 = analyzeLeftoverText(remap, c.buf, c.w, c.h);
+  console.log(`showing text AFTER:  ${res2.bad.length}/${res2.frames} ` +
+    `[${res2.bad.map((f) => `${f}(${res2.counts[f]})`).join(' ')}] worst frame ${Math.max(0, ...res2.counts)}`);
+  console.log(`duration ${dur.toFixed(2)}s -> ${after.dur.toFixed(2)}s, frames ${res.frames} -> ${outFrames}`);
 
-  const windows = framesToWindows(before.badFrames, fps);
-  const rects = windows.map((w) => toRect({ b: before.area, t0: w.t0, t1: w.t1 }, W, H)).filter(Boolean);
-  console.log(`windows: ${windows.map((w) => `${w.t0.toFixed(2)}-${w.t1.toFixed(2)}s`).join(' ')}`);
-
-  const graph = buildEraseGraph(rects);
-  const { code, err } = await ff([
-    '-y', '-i', clean, '-filter_complex', graph,
-    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-an', out,
-  ]);
-  if (code !== 0) {
-    console.log('render FAILED:', err.split(/\r?\n/).slice(-5).join(' | '));
-    process.exit(1);
-  }
-
-  const after = analyzeResidual(await diff(orig, out, 'C:/Users/Neo/tmp-d2.raw'));
-  console.log(`skipped frames AFTER:  ${after.badFrames.length}/${after.frames} [${after.badFrames.join(',')}]`);
-  const ok = after.badFrames.length === 0;
-  console.log(ok ? 'OK — no frame left untouched' : 'STILL SKIPPED FRAMES');
+  const kept = Math.abs(after.dur - dur) < 0.09 && Math.abs(outFrames - res.frames) <= 2;
+  const ok = res2.bad.length === 0 && kept;
+  console.log(ok ? 'OK — no text left, timing preserved' : (res2.bad.length ? 'STILL SHOWING TEXT' : 'TIMING CHANGED'));
   console.log('output:', out);
   process.exit(ok ? 0 : 1);
-})();
+})().catch((e) => { console.log('FAILED:', e.message); process.exit(1); });
