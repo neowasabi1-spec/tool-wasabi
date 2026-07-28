@@ -1,8 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import {
-  getSupabase, uploadFile, makeWorkDir, probeDuration, grabThumb, detectBurnedText,
-  run, FFMPEG, ffprobeInfo,
+  getSupabase, uploadFile, makeWorkDir, downloadSource, run, FFMPEG, ffprobeInfo,
 } from './_shared/video';
 
 /**
@@ -128,6 +127,82 @@ async function resolveVersion(token: string, model: string): Promise<string> {
 
 type Detection = { b: Box; t: number };
 type Cluster = { b: Box; t0: number; t1: number };
+
+const MW = 96;   // diff analysis resolution — enough to locate a caption band
+const MH = 168;
+
+/**
+ * Locate the caption area and the frames the remover skipped, by diffing the
+ * original against the cleaned clip: repainted pixels differ, so their union is
+ * the caption area, and a frame with (almost) no difference inside that area is
+ * a frame where the text is still on screen. Deterministic and exact — sampling
+ * a few frames with Vision misses text that flashes for 3-4 frames.
+ */
+export function analyzeResidual(diff: Buffer): { area: Box | null; badFrames: number[]; frames: number } {
+  const fsz = MW * MH;
+  const frames = Math.floor(diff.length / fsz);
+  if (!frames) return { area: null, badFrames: [], frames: 0 };
+
+  let x0 = MW, x1 = -1, y0 = MH, y1 = -1, hot = 0;
+  for (let f = 0; f < frames; f++) {
+    for (let y = 0; y < MH; y++) {
+      for (let x = 0; x < MW; x++) {
+        if (diff[f * fsz + y * MW + x] > 40) {
+          hot++;
+          if (x < x0) x0 = x; if (x > x1) x1 = x;
+          if (y < y0) y0 = y; if (y > y1) y1 = y;
+        }
+      }
+    }
+  }
+  if (!hot) return { area: null, badFrames: [], frames };  // nothing was repainted at all
+
+  const energy: number[] = [];
+  const cells = (y1 - y0 + 1) * (x1 - x0 + 1);
+  for (let f = 0; f < frames; f++) {
+    let sum = 0;
+    for (let y = y0; y <= y1; y++) {
+      for (let x = x0; x <= x1; x++) sum += diff[f * fsz + y * MW + x];
+    }
+    energy.push(sum / cells);
+  }
+  const median = [...energy].sort((a, b) => a - b)[Math.floor(frames / 2)];
+  const thr = Math.max(2, median * 0.25);
+  const badFrames = energy.map((e, i) => ({ e, i })).filter((r) => r.e < thr).map((r) => r.i);
+
+  return {
+    area: { x0: x0 / MW, x1: (x1 + 1) / MW, y0: y0 / MH, y1: (y1 + 1) / MH },
+    badFrames,
+    frames,
+  };
+}
+
+/** Grayscale per-frame difference between two clips, as raw MW×MH bytes. */
+async function diffFrames(a: string, b: string, workDir: string): Promise<Buffer> {
+  const raw = path.join(workDir, `diff_${Date.now()}.raw`);
+  await run(FFMPEG, [
+    '-y', '-i', a, '-i', b,
+    '-filter_complex',
+    `[1:v]scale=${MW}:${MH}[y];[0:v]scale=${MW}:${MH}[x];[x][y]blend=all_mode=difference,format=gray`,
+    '-f', 'rawvideo', '-pix_fmt', 'gray', raw,
+  ]);
+  const buf = fs.readFileSync(raw);
+  try { fs.rmSync(raw, { force: true }); } catch { /* ignore */ }
+  return buf;
+}
+
+/** Group consecutive skipped frames into time windows, padded by one frame. */
+export function framesToWindows(badFrames: number[], fps: number): { t0: number; t1: number }[] {
+  const windows: { t0: number; t1: number }[] = [];
+  for (const f of badFrames) {
+    const t0 = Math.max(0, (f - 1) / fps);
+    const t1 = (f + 2) / fps;
+    const last = windows[windows.length - 1];
+    if (last && t0 <= last.t1 + 1 / fps) last.t1 = Math.max(last.t1, t1);
+    else windows.push({ t0, t1 });
+  }
+  return windows;
+}
 
 /**
  * Text detected on consecutive frames is the same caption moving/flickering, so
@@ -275,7 +350,9 @@ export default async (req: Request) => {
     const deadline = Date.now() + MAX_WAIT_MS;
     let inputUrl = signed.signedUrl;
     const outFile = path.join(workDir, 'clean.mp4');
-    let stillHasText = false;
+    const srcFile = path.join(workDir, 'src.mp4');
+    await downloadSource(supabase, claimed.file_path as string, srcFile);
+    let residual: { area: Box | null; badFrames: number[]; frames: number } | null = null;
 
     for (let pass = 1; pass <= MAX_PASSES; pass++) {
       // Create the prediction. Accounts with <$5 credit are throttled to ~1
@@ -347,34 +424,58 @@ export default async (req: Request) => {
       fs.writeFileSync(outFile, Buffer.from(await dl.arrayBuffer()));
       inputUrl = outputUrl;
 
-      // Is any text left? Sample a few frames across the whole clip: leftovers
-      // only survive on a handful of frames, so checking just the middle one
-      // would miss them.
+      // Which frames still carry text? Checked on EVERY frame, not sampled:
+      // leftovers often survive on 3-4 frames only (a ~100ms flash).
       try {
-        const dur = await probeDuration(outFile);
-        stillHasText = false;
-        for (const frac of [0.2, 0.45, 0.7, 0.9]) {
-          const thumb = path.join(workDir, `chk_${pass}_${frac}.jpg`);
-          await grabThumb(outFile, Math.max(0.05, dur * frac), thumb);
-          const check = await detectBurnedText(thumb);
-          if (check.hasText === true && (check.score ?? 0) >= 0.5) { stillHasText = true; break; }
-        }
+        residual = analyzeResidual(await diffFrames(srcFile, outFile, workDir));
+        log(`pass ${pass}: ${residual.badFrames.length}/${residual.frames} frames not repainted`);
       } catch (e) {
-        log(`pass ${pass}: leftover check skipped (${(e as Error).message})`);
+        log(`pass ${pass}: residual check skipped (${(e as Error).message})`);
         break;                       // can't verify → don't burn more passes
       }
-      if (!stillHasText) { log(`pass ${pass}: no text left`); break; }
-      log(`pass ${pass}: text still visible`);
+      // Nothing repainted anywhere means the detector never saw the text; more
+      // passes won't change that, stage 2 has to handle it.
+      if (!residual.area) break;
+      if (!residual.badFrames.length) break;
       if (pass === MAX_PASSES || Date.now() > deadline) break;
     }
 
     if (!fs.existsSync(outFile)) return fail('no cleaned video produced');
 
-    // ── Stage 2: text the YOLO detector never sees (stylized CTA graphics).
-    // Locate it with OCR and erase those exact boxes around the times where it
-    // was seen. Never fatal: a failure here still keeps the stage-1 result. ──
     let note: string | null = null;
-    if (stillHasText) {
+
+    // ── Stage 2a: frames the remover skipped. Their caption area is already
+    // known from the diff, so erase it just on those frames' time windows —
+    // a few hundredths of a second, so the patch is imperceptible. ───────────
+    if (residual?.area && residual.badFrames.length) {
+      try {
+        const info = await ffprobeInfo(outFile);
+        const W = info.width || 0;
+        const H = info.height || 0;
+        const fps = info.fps && info.fps > 0 ? info.fps : 30;
+        if (!W || !H) throw new Error('could not probe dimensions');
+        const rects = framesToWindows(residual.badFrames, fps)
+          .map((w) => toRect({ b: residual!.area as Box, t0: w.t0, t1: w.t1 }, W, H))
+          .filter((r): r is Rect => !!r);
+        if (rects.length) {
+          const patched = path.join(workDir, 'clean2a.mp4');
+          await run(FFMPEG, [
+            '-y', '-i', outFile, '-filter_complex', buildEraseGraph(rects),
+            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-an', patched,
+          ]);
+          fs.copyFileSync(patched, outFile);
+          log(`stage 2a: patched ${residual.badFrames.length} skipped frame(s) in ${rects.length} window(s)`);
+        }
+      } catch (e) {
+        note = `frame patch skipped: ${(e as Error).message}`;
+        log(note);
+      }
+    }
+
+    // ── Stage 2b: text the YOLO detector never sees at all (stylized CTA
+    // graphics — nothing was repainted anywhere). Locate it with OCR and erase
+    // those boxes. Never fatal: a failure keeps the stage-1 result. ──────────
+    if (residual && !residual.area) {
       try {
         const info = await ffprobeInfo(outFile);
         const W = info.width || 0;
@@ -389,7 +490,7 @@ export default async (req: Request) => {
           path.join(framesDir, 'f%03d.jpg'),
         ]);
         const frames = fs.readdirSync(framesDir).filter((f) => f.endsWith('.jpg')).sort();
-        log(`stage 2: OCR on ${frames.length} frames`);
+        log(`stage 2b: OCR on ${frames.length} frames`);
 
         const ocrVersion = await resolveVersion(token, OCR_MODEL);
         // The wrapper's task name isn't documented; try the known spellings and
@@ -399,7 +500,7 @@ export default async (req: Request) => {
         const dets: Detection[] = [];
 
         for (let i = 0; i < frames.length; i++) {
-          if (Date.now() > deadline) { log('stage 2: out of time'); break; }
+          if (Date.now() > deadline) { log('stage 2b: out of time'); break; }
           const t = i / OCR_FPS;
           const b64 = fs.readFileSync(path.join(framesDir, frames[i])).toString('base64');
           const image = `data:image/jpeg;base64,${b64}`;
@@ -413,7 +514,7 @@ export default async (req: Request) => {
                 const parsed = parseOcrBoxes(out, W, H);
                 if (parsed.length) { task = cand; boxes = parsed; break; }
               } catch (e) {
-                log(`stage 2: task "${cand}" failed (${(e as Error).message})`);
+                log(`stage 2b: task "${cand}" failed (${(e as Error).message})`);
               }
             }
             if (!task) { note = 'OCR located no text boxes'; break; }
@@ -432,7 +533,7 @@ export default async (req: Request) => {
             '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-an', finalFile,
           ]);
           fs.copyFileSync(finalFile, outFile);
-          log(`stage 2: erased ${rects.length} text region(s)`);
+          log(`stage 2b: erased ${rects.length} text region(s)`);
         } else if (!note) {
           note = 'no leftover text boxes located by OCR';
         }
