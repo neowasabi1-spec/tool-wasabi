@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import {
   getSupabase, ffprobeInfo, detectScenes, buildSegments, cutClip, grabThumb,
-  analyzeShot, downloadSource, uploadFile, makeWorkDir,
+  analyzeShot, downloadSource, uploadFile, makeWorkDir, autoCleanShots, selfOrigin,
 } from './_shared/video';
 
 /**
@@ -44,6 +44,7 @@ export default async (req: Request) => {
   const workDir = makeWorkDir('wshots-');
   const srcFile = path.join(workDir, 'src.mp4');
   let shotsCount = 0;
+  const subtitled: number[] = [];
   try {
     const { data: ad } = await supabase
       .from('competitor_ads')
@@ -117,15 +118,30 @@ export default async (req: Request) => {
         tags: meta.tags,
         section: sectionFor(start, end),
       };
-      let { error: insErr } = await supabase.from('competitor_shots').insert(row);
+      let { data: ins, error: insErr } = await supabase
+        .from('competitor_shots').insert(row).select('id').maybeSingle();
       // If the new columns aren't migrated yet, retry without them so we still
       // capture the shot (older schema compatibility).
       if (insErr && /label|caption|tags|section/i.test(insErr.message)) {
         delete row.label; delete row.caption; delete row.tags; delete row.section;
-        ({ error: insErr } = await supabase.from('competitor_shots').insert(row));
+        ({ data: ins, error: insErr } = await supabase
+          .from('competitor_shots').insert(row).select('id').maybeSingle());
       }
       if (insErr) log(`shot ${i} insert failed: ${insErr.message}`);
-      else shotsCount++;
+      else {
+        shotsCount++;
+        if (meta.hasText && ins?.id) subtitled.push(ins.id as number);
+      }
+    }
+
+    // Burned-in subtitles lock a shot out of builds, so clean them right away
+    // instead of waiting for someone to press "Remove subs".
+    if (subtitled.length) {
+      const queued = await autoCleanShots(supabase, selfOrigin(req.url), projectId, subtitled);
+      log(queued
+        ? `queued AI subtitle removal for ${queued}/${subtitled.length} subtitled shots`
+        : `${subtitled.length} subtitled shots left for manual cleanup ` +
+          '(REPLICATE_API_TOKEN missing or inpaint migration not applied)');
     }
 
     await supabase

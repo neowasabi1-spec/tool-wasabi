@@ -486,6 +486,53 @@ export async function buildSceneVisual(
   return sceneFile;
 }
 
+/** Base URL to reach our own background functions from inside a function. */
+export function selfOrigin(reqUrl?: string): string {
+  let fromReq = '';
+  try { fromReq = reqUrl ? new URL(reqUrl).origin : ''; } catch { /* not a URL */ }
+  const raw =
+    fromReq ||
+    process.env.URL ||
+    process.env.DEPLOY_URL ||
+    process.env.DEPLOY_PRIME_URL ||
+    'http://localhost:8888';
+  return raw.replace(/\/$/, '');
+}
+
+/**
+ * Queue AI subtitle removal for shots that came out with burned-in text, so a
+ * video is usable in builds without anyone pressing a button. Fire-and-forget:
+ * one background function per shot, exactly what the manual button does.
+ * Returns how many were queued (0 when Replicate isn't configured or the
+ * inpaint columns aren't migrated yet — the shots simply stay flagged).
+ */
+export async function autoCleanShots(
+  supabase: SupabaseClient,
+  origin: string,
+  projectId: string,
+  shotIds: number[],
+): Promise<number> {
+  if (shotIds.length === 0) return 0;
+  if (!process.env.REPLICATE_API_TOKEN) return 0;
+
+  const { error } = await supabase
+    .from('competitor_shots')
+    .update({ inpaint_status: 'pending', inpaint_error: null })
+    .in('id', shotIds);
+  if (error) return 0;
+
+  await Promise.allSettled(
+    shotIds.map((shotId) =>
+      fetch(`${origin}/.netlify/functions/inpaint-shot-background`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shotId, projectId }),
+      }),
+    ),
+  );
+  return shotIds.length;
+}
+
 export async function loadCleanShots(
   supabase: SupabaseClient,
   projectId: string,
