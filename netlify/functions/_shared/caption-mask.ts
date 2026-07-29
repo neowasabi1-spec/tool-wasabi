@@ -54,14 +54,19 @@ export function maskIsTrustworthy(cm: CaptionMasks, w: number, h: number): { ok:
   return { ok: true, why: `${what}, ${pct}% of the frame, ${conc}% block fill` };
 }
 
-/** Rows the caption lives in, from competitor_shots.text_region ("center 0.40-0.60"). */
-export function bandRows(region: string | null | undefined, h: number): [number, number] {
+/**
+ * Row the caption is expected around, from competitor_shots.text_region
+ * ("center 0.40-0.60").
+ *
+ * The stored band is only a hint: on some shots it frames a single line of a
+ * two-line caption, on others it landed on a patterned shirt instead of the text
+ * below it. So the frame is searched in full and this row only says which of the
+ * candidate lines is most likely the caption.
+ */
+export function bandCentre(region: string | null | undefined, h: number): number {
   const m = String(region || '').match(/(\d*\.?\d+)\s*-\s*(\d*\.?\d+)/);
-  const y0 = m ? Math.floor(parseFloat(m[1]) * h) : Math.floor(h * 0.3);
-  const y1 = m ? Math.ceil(parseFloat(m[2]) * h) : Math.ceil(h * 0.95);
-  // Captions overflow the measured band a little; give it room both ways.
-  const pad = Math.round(h * 0.06);
-  return [Math.max(0, y0 - pad), Math.min(h, y1 + pad)];
+  if (!m) return Math.round(h * 0.7);
+  return Math.round(((parseFloat(m[1]) + parseFloat(m[2])) / 2) * h);
 }
 
 /**
@@ -135,7 +140,7 @@ function learnColour(
  * kept blobs are, and how many pixels survived.
  */
 function keepTextBlobs(
-  mask: Uint8Array, w: number, y0: number, y1: number,
+  mask: Uint8Array, w: number, y0: number, y1: number, centre: number,
 ): { fill: number; px: number } {
   const label = new Int32Array(mask.length);
   const blobs: { size: number; x0: number; x1: number; y0: number; y1: number }[] = [
@@ -170,16 +175,37 @@ function keepTextBlobs(
   }
   const biggest = blobs.reduce((m, b) => Math.max(m, b.size), 0);
   if (!biggest) return { fill: 0, px: 0 };
-  const keep = new Set<number>();
-  let px = 0, fillSum = 0;
+  const shaped: number[] = [];
   for (let id = 1; id < blobs.length; id++) {
     const b = blobs[id];
     const bw = b.x1 - b.x0 + 1, bh = b.y1 - b.y0 + 1;
-    const fill = b.size / (bw * bh);
-    if (b.size < biggest * 0.2 || fill < 0.5 || bw < bh) continue;
-    keep.add(id);
-    px += b.size;
-    fillSum += fill * b.size;
+    if (b.size < biggest * 0.2 || b.size / (bw * bh) < 0.5 || bw < bh) continue;
+    shaped.push(id);
+  }
+  // Captions are one to three stacked lines anywhere in the frame, so the main
+  // line is the biggest blob, preferring the ones near where the caption was
+  // measured, and the rest are kept only if they sit within about a line height
+  // of it: a second line does, a sign across the shot does not.
+  const score = (id: number) => {
+    const b = blobs[id];
+    const dist = Math.abs((b.y0 + b.y1) / 2 - centre);
+    return b.size / (1 + (2 * dist) / Math.max(1, y1 - y0));
+  };
+  const main = shaped.reduce((m, id) => (score(id) > score(m) ? id : m), shaped[0]);
+  const keep = new Set<number>();
+  let px = 0, fillSum = 0;
+  if (main) {
+    const mb = blobs[main];
+    const reach = (mb.y1 - mb.y0 + 1) * 2;
+    for (const id of shaped) {
+      const b = blobs[id];
+      const gap = Math.max(0, Math.max(mb.y0 - b.y1, b.y0 - mb.y1));
+      if (gap > reach) continue;
+      const bw = b.x1 - b.x0 + 1, bh = b.y1 - b.y0 + 1;
+      keep.add(id);
+      px += b.size;
+      fillSum += (b.size / (bw * bh)) * b.size;
+    }
   }
   for (let p = 0; p < mask.length; p++) if (mask[p] && !keep.has(label[p])) mask[p] = 0;
   return { fill: px ? fillSum / px : 0, px };
@@ -195,12 +221,76 @@ function keepTextBlobs(
 export function captionMasks(
   buf: Buffer, frames: number, w: number, h: number, region: string | null | undefined,
 ): CaptionMasks | null {
-  const [y0, y1] = bandRows(region, h);
+  const centre = bandCentre(region, h);
+  const y0 = 0, y1 = h;
   const learned = learnColour(buf, frames, w, h, y0, y1);
   if (!learned) return null;
+
+  // Each colour family is masked and judged on its own. A red plaid shirt has
+  // bright squares with dark borders, so it passes the per-pixel tests and used
+  // to hijack the mask while the real white caption below went untouched. Only
+  // families that come out as text lines are kept, and if none does there is no
+  // caption here worth handing to a remover.
+  const judged = learned.colours
+    .map((colour) => ({ colour, ...familyMask(buf, frames, w, h, centre, colour) }));
+  if (process.env.CAPTION_MASK_DEBUG) {
+    for (const f of judged) {
+      console.log(`  family rgb(${f.colour.join(',')}): fill ${f.blockFill.toFixed(2)}, ` +
+        `on ${Math.round(f.textFrames * 100)}% of frames`);
+    }
+  }
+  // Grown glyphs merge into a nearly solid bar. Measured across shots, patterned
+  // clothing and stray highlights land around 0.5 to 0.67 while caption lines run
+  // 0.7 to 0.99, so the bar sits just under seven tenths.
+  const good = judged.filter((f) => f.textFrames >= 0.15 && f.blockFill >= 0.68);
+  if (!good.length) return null;
+
+  // Group once, over every kept colour together. Grouping per family let a gold
+  // badge through on frames where the yellow caption was absent, because with no
+  // caption in that family the badge became its own main line.
+  const masks: Uint8Array[] = [];
+  let total = 0, fillSum = 0, withText = 0;
+  for (let f = 0; f < frames; f++) {
+    const union = new Uint8Array(w * h);
+    for (const fam of good) {
+      const m = fam.masks[f];
+      for (let p = 0; p < union.length; p++) if (m[p]) union[p] = 1;
+    }
+    const kept = keepTextBlobs(union, w, 0, h, centre);
+    if (kept.px) { fillSum += kept.fill; withText++; }
+    total += kept.px;
+    masks.push(union);
+  }
+
+  return {
+    colours: good.map((f) => f.colour),
+    kind: good.length > 1 ? 'both' : learned.kind === 'both'
+      ? (Math.max(...good[0].colour) - Math.min(...good[0].colour) > 100 ? 'saturated' : 'white')
+      : learned.kind,
+    samples: learned.samples,
+    masks,
+    pxPerFrame: withText ? Math.round(total / withText) : 0,
+    blockFill: withText ? fillSum / withText : 0,
+    textFrames: withText / frames,
+  };
+}
+
+/**
+ * Mask, per frame, for one caption colour.
+ *
+ * The masks come back ungrouped, so the caller can group every kept colour
+ * together, while the returned scores are measured on grouped copies — that is
+ * what says whether this colour behaves like caption text at all.
+ */
+function familyMask(
+  buf: Buffer, frames: number, w: number, h: number, centre: number,
+  colour: [number, number, number],
+): { masks: Uint8Array[]; perFrame: number[]; blockFill: number; textFrames: number } {
+  const [cr, cg, cb] = colour;
+  const y0 = 0, y1 = h;
   const fsz = w * h * 3;
   const masks: Uint8Array[] = [];
-  let total = 0;
+  const perFrame: number[] = [];
   let rowConc = 0;
   let withText = 0;
 
@@ -211,11 +301,7 @@ export function captionMasks(
         const p = y * w + x;
         const i = f * fsz + p * 3;
         const r = buf[i], g = buf[i + 1], b = buf[i + 2];
-        let near = false;
-        for (const [cr, cg, cb] of learned.colours) {
-          if (Math.abs(r - cr) + Math.abs(g - cg) + Math.abs(b - cb) <= COLOR_TOL) { near = true; break; }
-        }
-        if (!near) continue;
+        if (Math.abs(r - cr) + Math.abs(g - cg) + Math.abs(b - cb) > COLOR_TOL) continue;
         const mx = Math.max(r, g, b);
         let outlined = false;
         for (let dy = -2; dy <= 2 && !outlined; dy++) {
@@ -245,18 +331,17 @@ export function captionMasks(
         }
       }
     }
-    const kept = keepTextBlobs(grown, w, y0, y1);
+    const kept = keepTextBlobs(Uint8Array.from(grown), w, y0, y1, centre);
     // Captions often cover only part of a clip. Empty frames are fine — the mask
     // is simply blank there — so they must not drag the shape score down.
     if (kept.px) { rowConc += kept.fill; withText++; }
-    total += kept.px;
+    perFrame.push(kept.px);
     masks.push(grown);
   }
 
   return {
-    ...learned,
     masks,
-    pxPerFrame: withText ? Math.round(total / withText) : 0,
+    perFrame,
     blockFill: withText ? rowConc / withText : 0,
     textFrames: withText / frames,
   };

@@ -101,19 +101,27 @@ function ff(args, wantStdout) {
       `-> ${trust.ok ? 'USE MASK' : 'fallback'} (${trust.why})`,
     );
 
-    // Paint the mask over a middle frame so the selection can be eyeballed.
-    const f = Math.floor(frames / 2);
-    const px = Buffer.from(raw.subarray(f * W * h * 3, (f + 1) * W * h * 3));
-    const mask = cm.masks[f];
-    for (let p = 0; p < W * h; p++) {
-      if (!mask[p]) continue;
-      px[p * 3] = 255; px[p * 3 + 1] = 0; px[p * 3 + 2] = 255;
+    // Paint the mask over a few moments so the selection can be eyeballed: a
+    // caption that moves between lines is only visible at some of them.
+    const shown = [];
+    for (const frac of [0.3, 0.55, 0.8]) {
+      const f = Math.min(frames - 1, Math.floor(frames * frac));
+      const px = Buffer.from(raw.subarray(f * W * h * 3, (f + 1) * W * h * 3));
+      const mask = cm.masks[f];
+      for (let p = 0; p < W * h; p++) {
+        if (!mask[p]) continue;
+        px[p * 3] = 255; px[p * 3 + 1] = 0; px[p * 3 + 2] = 255;
+      }
+      const cell = path.join(OUT, `mask_${id}_${Math.round(frac * 100)}.png`);
+      const rawFile = path.join(OUT, `mask_${id}_${Math.round(frac * 100)}.raw`);
+      fs.writeFileSync(rawFile, px);
+      await ff(['-y', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-s', `${W}x${h}`, '-i', rawFile, cell]);
+      fs.rmSync(rawFile, { force: true });
+      shown.push(cell);
     }
     const png = path.join(OUT, `mask_${id}.png`);
-    const rawFile = path.join(OUT, `mask_${id}.raw`);
-    fs.writeFileSync(rawFile, px);
-    await ff(['-y', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-s', `${W}x${h}`, '-i', rawFile, png]);
-    fs.rmSync(rawFile, { force: true });
+    await ff(['-y', ...shown.flatMap((c) => ['-i', c]),
+      '-filter_complex', `hstack=inputs=${shown.length}`, png]);
     console.log(`  preview: ${png}`);
   }
 })();
