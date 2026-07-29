@@ -27,6 +27,28 @@ export type CaptionMasks = {
   pxPerFrame: number;
 };
 
+/**
+ * Is this mask safe to hand to a video remover?
+ *
+ * Measured on real shots: a yellow caption gave 13k colour samples over 2.4% of
+ * the frame and the removal was clean, while a white caption gave 694 samples
+ * spread over 13% — light grey clothing matched the caption colour, and the
+ * remover dutifully erased a drawstring and the folds around it. Bright white
+ * is simply too common in footage to trust on thin evidence, so it needs both
+ * far more samples and a much smaller area before the mask is believed.
+ */
+export function maskIsTrustworthy(cm: CaptionMasks, w: number, h: number): { ok: boolean; why: string } {
+  const coverage = cm.pxPerFrame / (w * h);
+  const pct = (coverage * 100).toFixed(1);
+  if (cm.kind === 'saturated') {
+    if (coverage > 0.06) return { ok: false, why: `saturated match covers ${pct}% of the frame` };
+    return { ok: true, why: `saturated caption, ${pct}% of the frame` };
+  }
+  if (cm.samples < 2000) return { ok: false, why: `only ${cm.samples} white samples` };
+  if (coverage > 0.03) return { ok: false, why: `white match covers ${pct}% of the frame` };
+  return { ok: true, why: `white caption, ${pct}% of the frame` };
+}
+
 /** Rows the caption lives in, from competitor_shots.text_region ("center 0.40-0.60"). */
 export function bandRows(region: string | null | undefined, h: number): [number, number] {
   const m = String(region || '').match(/(\d*\.?\d+)\s*-\s*(\d*\.?\d+)/);

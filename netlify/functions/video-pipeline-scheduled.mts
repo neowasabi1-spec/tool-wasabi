@@ -111,12 +111,13 @@ export default async () => {
     log(`requeued ${requeue.length} rate-limited cleanup(s)`);
   }
 
-  // 4. Fire a small batch of the cleanups waiting in line.
+  // 4. Fire a small batch of the cleanups waiting in line. Shots that already
+  // have a cleaned copy count too: marking one pending is how a shot gets
+  // redone with a better method.
   const { data: pending } = await supabase
     .from('competitor_shots')
     .select('id, project_id')
     .eq('inpaint_status', 'pending')
-    .is('clean_path', null)
     .order('id')
     .limit(CLEAN_PER_TICK);
   for (const s of pending || []) {

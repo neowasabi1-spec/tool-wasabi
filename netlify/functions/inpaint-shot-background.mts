@@ -4,7 +4,7 @@ import {
   getSupabase, uploadFile, makeWorkDir, downloadSource, probeDuration,
   run, FFMPEG, ffprobeInfo,
 } from './_shared/video';
-import { captionMasks, writeMaskVideo } from './_shared/caption-mask';
+import { captionMasks, writeMaskVideo, maskIsTrustworthy } from './_shared/caption-mask';
 
 /**
  * Background function that removes burned-in subtitles from a shot with REAL
@@ -26,6 +26,9 @@ import { captionMasks, writeMaskVideo } from './_shared/caption-mask';
  */
 
 const BUCKET = 'project-files';
+// Primary: rebuilds the masked area with temporal context (no smeared patch).
+const MASK_MODEL = 'ayushunleashed/minimax-remover';
+// Fallback when the caption's colour doesn't give a mask worth trusting.
 const REPLICATE_MODEL = 'hjunior29/video-text-remover';
 const OCR_MODEL = 'lucataco/florence-2-large';
 const POLL_MS = 5000;
@@ -375,6 +378,127 @@ function extractOutputUrl(output: unknown): string | null {
  * diagnostics sidecar land in <project>/shots-compare/ so the two approaches can
  * be looked at side by side before either becomes the default.
  */
+type RgbFrames = { buf: Buffer; w: number; h: number };
+
+/**
+ * Remove a caption by handing a video remover an exact mask of it.
+ *
+ * The removers built for this (MiniMax-Remover) rebuild a masked region with
+ * temporal context instead of smearing its edges inward, which is why the text
+ * area no longer shows a blurred patch. What they need is the mask, and that
+ * comes from the caption's own colour measured on this clip — the piece that was
+ * missing when these models were first tried.
+ *
+ * Returns null when the mask can't be trusted or the model won't cooperate, so
+ * the caller falls back to detector-based removal rather than shipping a clip
+ * with legitimate content erased.
+ */
+async function maskDrivenClean(opts: {
+  supabase: ReturnType<typeof getSupabase>;
+  token: string;
+  srcKey: string;
+  srcFile: string;
+  textRegion: string | null;
+  maskKey: string;
+  W: number;
+  H: number;
+  fps: number;
+  dur: number;
+  workDir: string;
+  deadline: number;
+  log: (...a: unknown[]) => void;
+  report?: Record<string, unknown>;
+}): Promise<{ file: string; srcRgb: RgbFrames; frames: number } | null> {
+  const {
+    supabase, token, srcKey, srcFile, textRegion, maskKey,
+    W, H, fps, dur, workDir, deadline, log, report,
+  } = opts;
+  const note = (msg: string) => {
+    log(msg);
+    if (report) report.maskPath = msg;
+  };
+
+  const srcRgb = await rgbFrames(srcFile, W, H, dur, fps, workDir);
+  const frames = Math.floor(srcRgb.buf.length / (srcRgb.w * srcRgb.h * 3));
+  const cm = captionMasks(srcRgb.buf, frames, srcRgb.w, srcRgb.h, textRegion);
+  if (!cm) { note('no caption colour found on the original'); return null; }
+
+  const trust = maskIsTrustworthy(cm, srcRgb.w, srcRgb.h);
+  if (report) {
+    report.mask = {
+      colour: cm.colour, kind: cm.kind, samples: cm.samples,
+      pxPerFrame: cm.pxPerFrame, coverage: +(cm.pxPerFrame / (srcRgb.w * srcRgb.h)).toFixed(4),
+      frames, analysedAt: `${srcRgb.w}x${srcRgb.h}`, trusted: trust.ok, verdict: trust.why,
+    };
+  }
+  log(`mask: rgb(${cm.colour.join(',')}) ${trust.why}`);
+  if (!trust.ok) { note(`mask rejected — ${trust.why}`); return null; }
+
+  const maskFile = await writeMaskVideo(cm.masks, srcRgb.w, srcRgb.h, fps, W, H, workDir);
+  await uploadFile(supabase, maskKey, maskFile, 'video/mp4');
+  const sign = async (key: string) => {
+    const { data } = await supabase.storage.from(BUCKET).createSignedUrl(key, 3600);
+    return data?.signedUrl || null;
+  };
+  const videoUrl = await sign(srcKey);
+  const maskUrl = await sign(maskKey);
+  if (!videoUrl || !maskUrl) { note('could not sign the model inputs'); return null; }
+
+  // The wrapper's field names aren't documented, so read them off the schema.
+  const modelResp = await fetch(`https://api.replicate.com/v1/models/${MASK_MODEL}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!modelResp.ok) { note(`model lookup ${modelResp.status}`); return null; }
+  const meta = await modelResp.json();
+  const version = meta?.latest_version?.id;
+  const props = meta?.latest_version?.openapi_schema?.components?.schemas?.Input?.properties || {};
+  const keys = Object.keys(props);
+  const maskField = keys.find((k) => /mask/i.test(k) && !/dilation|iteration/i.test(k));
+  const videoField = keys.find((k) => /^(video|input_video|source_video)$/i.test(k)) ||
+    keys.find((k) => /video/i.test(k) && !/mask/i.test(k));
+  if (report) report.inputs = keys;
+  if (!version || !videoField || !maskField) { note('could not map the model inputs'); return null; }
+
+  const input: Record<string, unknown> = { [videoField]: videoUrl, [maskField]: maskUrl };
+  // These removers work on a block of frames, so a clip longer than the default
+  // comes back truncated. Ask for this clip's real length and size.
+  const wanted: Record<string, number> = { fps: Math.round(fps), num_frames: frames, width: W, height: H };
+  for (const [name, value] of Object.entries(wanted)) {
+    const spec = props[name];
+    if (!spec) continue;
+    const max = typeof spec.maximum === 'number' ? spec.maximum : Infinity;
+    const min = typeof spec.minimum === 'number' ? spec.minimum : 0;
+    input[name] = Math.max(min, Math.min(max, value));
+  }
+  if (report) report.sent = { video: videoField, mask: maskField, ...wanted };
+  log(`running ${MASK_MODEL}: ${frames} frames @ ${Math.round(fps)}fps`);
+
+  const started = Date.now();
+  let url: string | null = null;
+  try {
+    url = extractOutputUrl(await replicateRun(token, version, input, deadline, log));
+  } catch (e) {
+    note(`model failed: ${(e as Error).message}`);
+    return null;
+  }
+  if (report) report.seconds = Math.round((Date.now() - started) / 1000);
+  if (!url) { note('prediction returned no video'); return null; }
+
+  const dl = await fetch(url);
+  if (!dl.ok) { note(`could not download the result (${dl.status})`); return null; }
+  const file = path.join(workDir, 'mask-clean.mp4');
+  fs.writeFileSync(file, Buffer.from(await dl.arrayBuffer()));
+
+  // A shorter result means frames were dropped somewhere; that is worse than a
+  // visible caption, so it goes back to the fallback.
+  const outDur = await probeDuration(file);
+  if (outDur < dur - 0.2) {
+    note(`result is ${outDur.toFixed(2)}s of ${dur.toFixed(2)}s — kept the fallback instead`);
+    return null;
+  }
+  return { file, srcRgb, frames };
+}
+
 async function compareRemover(
   supabase: ReturnType<typeof getSupabase>,
   token: string,
@@ -409,88 +533,23 @@ async function compareRemover(
     const dur = await probeDuration(srcFile);
     if (!W || !H) { report.error = 'could not probe dimensions'; await save(); return new Response('no dims', { status: 200 }); }
 
-    const rgb = await rgbFrames(srcFile, W, H, dur, fps, workDir);
-    const frames = Math.floor(rgb.buf.length / (rgb.w * rgb.h * 3));
-    const cm = captionMasks(rgb.buf, frames, rgb.w, rgb.h, shot.text_region as string | null);
-    if (!cm) { report.error = 'no caption colour found on the original'; await save(); return new Response('no mask', { status: 200 }); }
-    report.mask = {
-      colour: cm.colour, kind: cm.kind, samples: cm.samples,
-      pxPerFrame: cm.pxPerFrame, coverage: +(cm.pxPerFrame / (rgb.w * rgb.h)).toFixed(4),
-      frames, analysedAt: `${rgb.w}x${rgb.h}`,
-    };
-    log(`mask: rgb(${cm.colour.join(',')}) ${cm.kind}, ${cm.pxPerFrame}px/frame over ${frames} frames`);
-
-    const maskFile = await writeMaskVideo(cm.masks, rgb.w, rgb.h, fps, W, H, workDir);
-    const maskKey = `${base}_mask.mp4`;
-    await uploadFile(supabase, maskKey, maskFile, 'video/mp4');
-
-    const sign = async (key: string) => {
-      const { data } = await supabase.storage.from(BUCKET).createSignedUrl(key, 3600);
-      return data?.signedUrl || null;
-    };
-    const videoUrl = await sign(shot.file_path as string);
-    const maskUrl = await sign(maskKey);
-    if (!videoUrl || !maskUrl) { report.error = 'could not sign input urls'; await save(); return new Response('no urls', { status: 200 }); }
-
-    // The wrapper's field names aren't documented, so read them off the schema.
-    const modelResp = await fetch(`https://api.replicate.com/v1/models/${model}`, {
-      headers: { Authorization: `Bearer ${token}` },
+    // Same code path the real cleanup uses, so what is judged here is what ships.
+    const cleaned = await maskDrivenClean({
+      supabase, token,
+      srcKey: shot.file_path as string,
+      srcFile,
+      textRegion: shot.text_region as string | null,
+      maskKey: `${base}_mask.mp4`,
+      W, H, fps, dur, workDir,
+      deadline: Date.now() + MAX_WAIT_MS,
+      log, report,
     });
-    if (!modelResp.ok) {
-      report.error = `model lookup ${modelResp.status}: ${(await modelResp.text()).slice(0, 200)}`;
+    if (!cleaned) {
+      report.error = report.maskPath || 'mask path produced nothing';
       await save();
-      return new Response('model error', { status: 200 });
+      return new Response('no output', { status: 200 });
     }
-    const meta = await modelResp.json();
-    const version = meta?.latest_version?.id;
-    const props = meta?.latest_version?.openapi_schema?.components?.schemas?.Input?.properties || {};
-    const keys = Object.keys(props);
-    const maskKeyName = keys.find((k) => /mask/i.test(k));
-    const videoKeyName = keys.find((k) => /^(video|input_video|source_video)$/i.test(k)) ||
-      keys.find((k) => /video/i.test(k) && !/mask/i.test(k));
-    report.inputs = keys;
-    if (!version || !videoKeyName || !maskKeyName) {
-      report.error = `could not map inputs (video=${videoKeyName}, mask=${maskKeyName})`;
-      await save();
-      return new Response('schema error', { status: 200 });
-    }
-
-    const input: Record<string, unknown> = { [videoKeyName]: videoUrl, [maskKeyName]: maskUrl };
-    // These removers work on a fixed-length block of frames, so a clip longer
-    // than the default comes back truncated. Ask for the clip's real length and
-    // size when the wrapper exposes those inputs, and record the schema limits
-    // so a cap can be worked around by processing the clip in parts.
-    const limits: Record<string, unknown> = {};
-    const wanted: Record<string, number> = {
-      fps: Math.round(fps),
-      num_frames: frames,
-      width: W,
-      height: H,
-    };
-    for (const [name, value] of Object.entries(wanted)) {
-      const spec = props[name];
-      if (!spec) continue;
-      limits[name] = { default: spec.default, min: spec.minimum, max: spec.maximum };
-      const max = typeof spec.maximum === 'number' ? spec.maximum : Infinity;
-      const min = typeof spec.minimum === 'number' ? spec.minimum : 0;
-      input[name] = Math.max(min, Math.min(max, value));
-    }
-    report.limits = limits;
-    report.sent = { video: videoKeyName, mask: maskKeyName, ...Object.fromEntries(
-      Object.keys(wanted).filter((k) => k in input).map((k) => [k, input[k]]),
-    ) };
-    log(`running ${model} (${videoKeyName} + ${maskKeyName}, ${frames} frames @ ${Math.round(fps)}fps)`);
-
-    const started = Date.now();
-    const output = await replicateRun(token, version, input, Date.now() + MAX_WAIT_MS, log);
-    const url = extractOutputUrl(output);
-    report.seconds = Math.round((Date.now() - started) / 1000);
-    if (!url) { report.error = 'prediction returned no video'; await save(); return new Response('no output', { status: 200 }); }
-
-    const dl = await fetch(url);
-    if (!dl.ok) { report.error = `download failed ${dl.status}`; await save(); return new Response('dl error', { status: 200 }); }
-    const outFile = path.join(workDir, 'out.mp4');
-    fs.writeFileSync(outFile, Buffer.from(await dl.arrayBuffer()));
+    const outFile = cleaned.file;
     await uploadFile(supabase, `${base}.mp4`, outFile, 'video/mp4');
 
     const outInfo = await ffprobeInfo(outFile);
@@ -560,7 +619,7 @@ export default async (req: Request) => {
     .eq('id', shotId)
     .eq('project_id', projectId)
     .eq('inpaint_status', 'pending')
-    .select('id, file_path')
+    .select('id, file_path, text_region')
     .maybeSingle();
   if (claimErr && /inpaint|clean_path/i.test(claimErr.message)) {
     log('MISSING MIGRATION: run supabase-migration-shot-inpaint.sql');
@@ -607,7 +666,39 @@ export default async (req: Request) => {
     let srcRgb: { buf: Buffer; w: number; h: number } | null = null;
     let leftover: Leftover | null = null;
 
-    for (let pass = 1; pass <= MAX_PASSES; pass++) {
+    // ── Stage 1: mask-driven neural removal. Preferred, because it rebuilds the
+    // caption area from surrounding motion instead of leaving the blurred patch
+    // the detector-based remover leaves behind. Skipped when the caption colour
+    // is too common in the footage to mask safely. ───────────────────────────
+    let usedMaskPath = false;
+    if (W && H) {
+      try {
+        const masked = await maskDrivenClean({
+          supabase, token,
+          srcKey: claimed.file_path as string,
+          srcFile,
+          textRegion: (claimed as { text_region?: string | null }).text_region ?? null,
+          maskKey: `${projectId}/shots-mask/${shotId}_${Date.now()}.mp4`,
+          W, H, fps, dur, workDir, deadline, log,
+        });
+        if (masked) {
+          fs.copyFileSync(masked.file, outFile);
+          srcRgb = masked.srcRgb;
+          usedMaskPath = true;
+          try {
+            const outRgb = await rgbFrames(outFile, W, H, dur, fps, workDir);
+            leftover = analyzeLeftoverText(srcRgb.buf, outRgb.buf, srcRgb.w, srcRgb.h);
+            log(`mask pass: ${leftover.bad.length}/${leftover.frames} frames still show text`);
+          } catch (e) {
+            log(`mask pass: leftover check skipped (${(e as Error).message})`);
+          }
+        }
+      } catch (e) {
+        log(`mask pass skipped: ${(e as Error).message}`);
+      }
+    }
+
+    for (let pass = 1; !usedMaskPath && pass <= MAX_PASSES; pass++) {
       // Create the prediction. Accounts with <$5 credit are throttled to ~1
       // request every 10s, so retry patiently on 429 instead of failing — the
       // per-shot background functions then serialize themselves naturally.
