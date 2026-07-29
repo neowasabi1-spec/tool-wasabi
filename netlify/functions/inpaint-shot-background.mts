@@ -137,6 +137,7 @@ const RGB_W = 400;        // analysis width; height follows the aspect ratio
 const RGB_MAX_PIXELS = 24e6;  // analysed pixels per clip; two clips are held at once
 const COLOR_MIN = 30;     // caption-coloured pixels left -> text still on screen
 const MAX_DROP = 0.25;    // beyond this, freezing frames would be noticeable
+const MASK_PASSES = 3;    // mask passes; each run only removes what its mask covered
 
 type Leftover = {
   bad: number[];          // frames still showing text
@@ -674,24 +675,42 @@ export default async (req: Request) => {
     let usedMaskPath = false;
     if (W && H) {
       try {
-        const masked = await maskDrivenClean({
-          supabase, token,
-          srcKey: claimed.file_path as string,
-          srcFile,
-          textRegion: (claimed as { text_region?: string | null }).text_region ?? null,
-          maskKey: `${projectId}/shots-mask/${shotId}_${Date.now()}.mp4`,
-          W, H, fps, dur, workDir, deadline, log,
-        });
-        if (masked) {
+        // Repeat on the previous output while a caption is still detectable. One
+        // run only removes what its own mask covered, so a caption whose lines
+        // differ in colour or position can survive the first pass; feeding the
+        // result back finds what is left. The loop ends by itself, because the
+        // pass returns nothing once no caption is found.
+        let curKey = claimed.file_path as string;
+        let curFile = srcFile;
+        for (let pass = 1; pass <= MASK_PASSES; pass++) {
+          const masked = await maskDrivenClean({
+            supabase, token,
+            srcKey: curKey,
+            srcFile: curFile,
+            textRegion: (claimed as { text_region?: string | null }).text_region ?? null,
+            maskKey: `${projectId}/shots-mask/${shotId}_p${pass}_${Date.now()}.mp4`,
+            W, H, fps, dur, workDir, deadline, log,
+          });
+          if (!masked) {
+            if (usedMaskPath) log(`mask pass ${pass}: no caption left to remove`);
+            break;
+          }
           fs.copyFileSync(masked.file, outFile);
-          srcRgb = masked.srcRgb;
+          if (pass === 1) srcRgb = masked.srcRgb;
           usedMaskPath = true;
+          if (pass === MASK_PASSES || Date.now() > deadline) break;
+          curFile = path.join(workDir, `pass${pass}.mp4`);
+          fs.copyFileSync(outFile, curFile);
+          curKey = `${projectId}/shots-tmp/${shotId}_p${pass}_${Date.now()}.mp4`;
+          await uploadFile(supabase, curKey, curFile, 'video/mp4');
+        }
+        if (usedMaskPath && srcRgb) {
           try {
             const outRgb = await rgbFrames(outFile, W, H, dur, fps, workDir);
             leftover = analyzeLeftoverText(srcRgb.buf, outRgb.buf, srcRgb.w, srcRgb.h);
-            log(`mask pass: ${leftover.bad.length}/${leftover.frames} frames still show text`);
+            log(`mask path: ${leftover.bad.length}/${leftover.frames} frames still show text`);
           } catch (e) {
-            log(`mask pass: leftover check skipped (${(e as Error).message})`);
+            log(`mask path: leftover check skipped (${(e as Error).message})`);
           }
         }
       } catch (e) {

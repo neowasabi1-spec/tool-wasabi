@@ -59,18 +59,23 @@ function ff(args, wantStdout) {
 (async () => {
   fs.mkdirSync(OUT, { recursive: true });
   const ids = String(process.argv[2] || '').split(',').map(Number).filter(Boolean);
+  const which = process.argv[3] === 'clean' ? 'clean' : 'orig';
   const s = createClient(URL, KEY, { auth: { persistSession: false } });
   const { data: shots } = await s
     .from('competitor_shots')
-    .select('id, file_path, text_region, duration_sec')
+    .select('id, file_path, clean_path, text_region, duration_sec')
     .in('id', ids);
 
   for (const id of ids) {
     const shot = (shots || []).find((x) => x.id === id);
     if (!shot) { console.log(`shot ${id}: not found`); continue; }
-    const src = path.join(OUT, `m_${id}.mp4`);
+    // "clean" inspects the cleaned copy instead, which answers whether running
+    // the same pass again would catch what the first one left behind.
+    const key = which === 'clean' ? shot.clean_path : shot.file_path;
+    if (!key) { console.log(`shot ${id}: no ${which} copy`); continue; }
+    const src = path.join(OUT, `m_${id}_${which}.mp4`);
     if (!fs.existsSync(src)) {
-      const { data, error } = await s.storage.from(BUCKET).download(shot.file_path);
+      const { data, error } = await s.storage.from(BUCKET).download(key);
       if (error || !data) { console.log(`shot ${id}: download failed`); continue; }
       fs.writeFileSync(src, Buffer.from(await data.arrayBuffer()));
     }
@@ -112,14 +117,14 @@ function ff(args, wantStdout) {
         if (!mask[p]) continue;
         px[p * 3] = 255; px[p * 3 + 1] = 0; px[p * 3 + 2] = 255;
       }
-      const cell = path.join(OUT, `mask_${id}_${Math.round(frac * 100)}.png`);
-      const rawFile = path.join(OUT, `mask_${id}_${Math.round(frac * 100)}.raw`);
+      const cell = path.join(OUT, `mask_${id}_${which}_${Math.round(frac * 100)}.png`);
+      const rawFile = path.join(OUT, `mask_${id}_${which}_${Math.round(frac * 100)}.raw`);
       fs.writeFileSync(rawFile, px);
       await ff(['-y', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-s', `${W}x${h}`, '-i', rawFile, cell]);
       fs.rmSync(rawFile, { force: true });
       shown.push(cell);
     }
-    const png = path.join(OUT, `mask_${id}.png`);
+    const png = path.join(OUT, `mask_${id}_${which}.png`);
     await ff(['-y', ...shown.flatMap((c) => ['-i', c]),
       '-filter_complex', `hstack=inputs=${shown.length}`, png]);
     console.log(`  preview: ${png}`);

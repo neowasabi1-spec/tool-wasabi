@@ -60,10 +60,9 @@ async function get(s, key, file) {
       console.log(`shot ${id}: could not download`);
       continue;
     }
-    const m = String(shot.text_region || '').match(/(\d*\.?\d+)\s*-\s*(\d*\.?\d+)/);
-    const y0 = m ? Math.max(0, parseFloat(m[1]) - 0.05) : 0.35;
-    const y1 = m ? Math.min(1, parseFloat(m[2]) + 0.05) : 0.7;
-    const crop = `crop=iw:ih*${(y1 - y0).toFixed(3)}:0:ih*${y0.toFixed(3)},scale=250:-1`;
+    // Whole frames. Cropping to the stored text band hid the very captions that
+    // matter, because that band is the thing that turned out to be unreliable.
+    const crop = 'scale=170:-2';
     const dur = shot.duration_sec || 1.4;
 
     const cells = [];
@@ -80,7 +79,7 @@ async function get(s, key, file) {
     const r = await ff([
       '-y', ...cells.flatMap((c) => ['-i', c]),
       '-filter_complex',
-      cells.map((_, i) => `[${i}:v]scale=250:120,setsar=1[c${i}]`).join(';') +
+      cells.map((_, i) => `[${i}:v]scale=170:300,setsar=1[c${i}]`).join(';') +
         ';' + cells.map((_, i) => `[c${i}]`).join('') + `hstack=inputs=${cells.length}[o]`,
       '-map', '[o]', row,
     ]);
