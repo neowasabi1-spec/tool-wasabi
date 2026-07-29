@@ -2,7 +2,8 @@ import fs from 'fs';
 import path from 'path';
 import {
   getSupabase, run, FFMPEG, makeWorkDir, probeDuration, ttsScene,
-  buildSceneVisual, pickShotsForScene, sectionForScene, loadCleanShots, srtTime, grabThumb, uploadFile,
+  buildSceneVisual, pickShotsForScene, sectionForScene, loadShotPool, materializeShot,
+  srtTime, grabThumb, uploadFile,
 } from './_shared/video';
 
 /**
@@ -43,7 +44,7 @@ export default async (req: Request) => {
     // copies. Each clip is used at most once; duration gaps are covered by
     // freezing the last frame, and a shot is only reused as a last resort when
     // the pool is exhausted.
-    const pool = await loadCleanShots(supabase, projectId, workDir);
+    const pool = await loadShotPool(supabase, projectId);
     const bySection = pool.reduce<Record<string, number>>((acc, s) => {
       acc[s.section] = (acc[s.section] || 0) + 1;
       return acc;
@@ -59,6 +60,7 @@ export default async (req: Request) => {
     const sceneAudios: string[] = [];
     const srt: string[] = [];
     let t = 0;
+    let fetched = 0;
     for (let i = 0; i < scenes.length; i++) {
       const mp3 = path.join(workDir, `vo_${i}.mp3`);
       await ttsScene(scenes[i], voice, mp3);
@@ -66,10 +68,27 @@ export default async (req: Request) => {
       // Hook footage opens the video, CTA footage closes it, body in between —
       // within that, pick the clips matching this scene's text. No reuse.
       const want = sectionForScene(i, scenes.length);
-      const picked = pickShotsForScene(pool, used, scenes[i], d, want);
-      log(`scene ${i + 1}/${scenes.length} wants ${want}, got ${picked.sections.join('+') || 'none'} ` +
-        `(${picked.dur.toFixed(1)}s of ${d.toFixed(1)}s)`);
-      const vis = await buildSceneVisual(picked.files, picked.dur, d, workDir, i);
+      let files: string[] = [];
+      let have = 0;
+      let sections: string[] = [];
+      // Only the chosen clips are fetched. A clip that fails to download or
+      // normalize is dropped and the scene asks the pool for another one.
+      for (let attempt = 0; attempt < 2 && files.length === 0; attempt++) {
+        const picked = pickShotsForScene(pool, used, scenes[i], d, want);
+        if (picked.clips.length === 0) break;
+        sections = picked.sections;
+        for (const clip of picked.clips) {
+          try {
+            files.push(await materializeShot(supabase, clip, workDir, fetched++));
+            have += clip.dur;
+          } catch (e) {
+            log(`scene ${i + 1}: skipping ${clip.key} (${(e as Error).message})`);
+          }
+        }
+      }
+      log(`scene ${i + 1}/${scenes.length} wants ${want}, got ${sections.join('+') || 'none'} ` +
+        `(${have.toFixed(1)}s of ${d.toFixed(1)}s)`);
+      const vis = await buildSceneVisual(files, have, d, workDir, i);
       sceneVisuals.push(vis);
       sceneAudios.push(mp3);
       srt.push(`${i + 1}\n${srtTime(t)} --> ${srtTime(t + d)}\n${scenes[i]}\n`);

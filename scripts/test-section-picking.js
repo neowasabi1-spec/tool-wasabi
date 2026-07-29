@@ -52,7 +52,7 @@ const { pickShotsForScene, sectionForScene } = mod.exports;
   const pool = (rows || [])
     .filter((r) => r.clean_path || r.has_text !== true)
     .map((r) => ({
-      file: `shot${r.id}`,
+      key: `shot${r.id}`,
       dur: r.duration_sec || 1.5,
       tags: Array.isArray(r.tags) ? r.tags : [],
       caption: r.caption || '',
@@ -70,7 +70,7 @@ const { pickShotsForScene, sectionForScene } = mod.exports;
     const picked = pickShotsForScene(pool, used, scenes[i], dur, want);
     got.push({ want, sections: picked.sections });
     console.log(`  scene ${String(i + 1).padStart(2)} want ${want.padEnd(4)} got ${picked.sections.join('+') || 'NONE'}` +
-      `  ${picked.dur.toFixed(1)}s/${dur}s  [${picked.files.join(' ')}]  "${scenes[i].slice(0, 48)}"`);
+      `  ${picked.dur.toFixed(1)}s/${dur}s  [${picked.clips.map((c) => c.key).join(' ')}]  "${scenes[i].slice(0, 48)}"`);
   }
 
   // Hooks must open and CTAs must close whenever that footage exists.

@@ -450,6 +450,7 @@ function CreativeDetailPanel({
   };
   // Phase 2 step 2 — recreate a new video from clean shots + our voice.
   const [buildStatus, setBuildStatus] = useState<string>("");
+  const [buildError, setBuildError] = useState<string>("");
   const [buildVideos, setBuildVideos] = useState<{ id: number; file_path: string; thumb_path?: string | null; duration_sec: number }[]>([]);
   // Show the finished video inline only right after a build done in THIS session;
   // otherwise it lives permanently in the "New Creatives" tab, not pinned here.
@@ -485,6 +486,8 @@ function CreativeDetailPanel({
       const r = await fetch(`/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/${ad.id}/build-video`);
       const j = await r.json().catch(() => ({}));
       setBuildStatus(j?.job?.status || "");
+      // Show why it failed instead of pointing at logs nobody can read.
+      setBuildError(String(j?.job?.error || "").replace(/\s+/g, " ").slice(0, 180));
       setBuildVideos(Array.isArray(j?.videos) ? j.videos : []);
       if (j?.job?.status === "pending" || j?.job?.status === "processing") {
         if (!buildPoll.current) buildPoll.current = setInterval(loadBuildStatus, 5000);
@@ -498,6 +501,7 @@ function CreativeDetailPanel({
   }, [ad.id]);
   const buildVideo = async () => {
     setBuildStatus("pending");
+    setBuildError("");
     setShowInline(true);
     try {
       const r = await fetch(`/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/${ad.id}/build-video`, {
@@ -768,7 +772,9 @@ function CreativeDetailPanel({
                 )}
               </div>
               {buildStatus === "error" && (
-                <p className="text-[10px] text-destructive">Build failed — check the worker logs.</p>
+                <p className="text-[10px] text-destructive break-words">
+                  {buildError ? `Build failed: ${buildError}` : "Build failed."}
+                </p>
               )}
               {buildStatus === "canceled" && (
                 <p className="text-[10px] text-muted-foreground">Build stopped.</p>

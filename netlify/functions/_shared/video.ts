@@ -357,9 +357,15 @@ export function srtTime(sec: number): string {
 }
 
 export type ShotClip = {
-  file: string; dur: number; tags: string[]; caption: string;
+  /** Storage key of the clip to use: the cleaned copy when one exists. */
+  key: string;
+  /** Duration from the database, so choosing footage needs no download. */
+  dur: number;
+  tags: string[]; caption: string;
   /** Where the shot sat in its source video: 'hook' | 'body' | 'cta'. */
   section: string;
+  /** Local normalized copy, once this clip was actually chosen. */
+  file?: string;
 };
 
 function tokenize(text: string): Set<string> {
@@ -406,7 +412,7 @@ export function pickShotsForScene(
   sceneText: string,
   targetDur: number,
   wantSection: 'hook' | 'body' | 'cta' = 'body',
-): { files: string[]; dur: number; sections: string[] } {
+): { clips: ShotClip[]; dur: number; sections: string[] } {
   const words = tokenize(sceneText);
   const scored = pool
     .map((s, idx) => {
@@ -424,16 +430,16 @@ export function pickShotsForScene(
     // scenes stay in the order the shots appeared in the source.
     .sort((a, b) => a.rank - b.rank || b.score - a.score);
 
-  const files: string[] = [];
+  const clips: ShotClip[] = [];
   const sections: string[] = [];
   let acc = 0;
   const usedTags = new Set<string>();
   for (const c of scored) {
     if (acc >= targetDur - 0.05) break;
     // Don't stack multiple shots that matched the same tag in one scene.
-    if (c.primary && usedTags.has(c.primary) && files.length > 0) continue;
+    if (c.primary && usedTags.has(c.primary) && clips.length > 0) continue;
     used.add(c.idx);
-    files.push(c.s.file);
+    clips.push(c.s);
     sections.push(c.s.section || 'body');
     acc += c.s.dur;
     if (c.primary) usedTags.add(c.primary);
@@ -441,18 +447,18 @@ export function pickShotsForScene(
 
   // Pool exhausted for this scene: reuse the best shot of the wanted section as
   // an emergency (better than failing the whole build — there is no AI filler).
-  if (files.length === 0 && pool.length > 0) {
+  if (clips.length === 0 && pool.length > 0) {
     const best = pool
       .map((s) => {
         const matched = (s.tags || []).filter((t) => words.has(t.toLowerCase()));
         return { s, score: matched.length, rank: sectionRank(s.section, wantSection) };
       })
       .sort((a, b) => a.rank - b.rank || b.score - a.score)[0];
-    files.push(best.s.file);
+    clips.push(best.s);
     sections.push(best.s.section || 'body');
     acc = best.s.dur;
   }
-  return { files, dur: acc, sections };
+  return { clips, dur: acc, sections };
 }
 
 // Assemble one scene's visual track from a pre-chosen list of clip files. Real
@@ -540,48 +546,66 @@ export async function autoCleanShots(
   return shotIds.length;
 }
 
-export async function loadCleanShots(
+export async function loadShotPool(
   supabase: SupabaseClient,
   projectId: string,
-  workDir: string,
 ): Promise<ShotClip[]> {
   // CLEAN footage only. No crop/zoom/delogo tricks: every ffmpeg-level attempt
   // at hiding burned-in subtitles produced ugly artifacts. Subtitled shots are
   // usable ONLY once AI inpainting produced a cleaned copy (clean_path) via
   // the inpaint-shot-background function.
+  //
+  // Metadata only: tags, caption, section and the stored duration are enough to
+  // choose footage. Downloading and re-encoding the whole pool up front used to
+  // take longer than the whole build and pushed a growing library past the
+  // 15-minute function limit, which left builds stuck with nothing to show.
   const { data } = await supabase
     .from('competitor_shots')
-    .select('*')
+    .select('file_path, clean_path, has_text, tags, caption, section, duration_sec')
     .eq('project_id', projectId)
-    .limit(120);
+    .limit(300);
   const shots = (data || []) as Array<{
     file_path: string; clean_path?: string | null; has_text?: boolean | null;
-    tags?: string[]; caption?: string; section?: string | null;
+    tags?: string[]; caption?: string; section?: string | null; duration_sec?: number | null;
   }>;
   const pool: ShotClip[] = [];
-  for (let i = 0; i < shots.length; i++) {
-    const s = shots[i];
+  for (const s of shots) {
     // Prefer the AI-cleaned copy; fall back to the original only if it never
     // had subtitles. Subtitled shots without a cleaned copy are excluded.
-    const src = s.clean_path || (s.has_text !== true ? s.file_path : null);
-    if (!src) continue;
-    const raw = path.join(workDir, `raw_${i}.mp4`);
-    const nrm = path.join(workDir, `norm_${i}.mp4`);
-    try {
-      await downloadSource(supabase, src, raw);
-      await normalizeShot(raw, nrm);
-      const dur = await probeDuration(nrm);
-      if (dur > 0.2) {
-        pool.push({
-          file: nrm,
-          dur,
-          tags: Array.isArray(s.tags) ? (s.tags as string[]) : [],
-          caption: typeof s.caption === 'string' ? (s.caption as string) : '',
-          // Rows from before sections existed can stand in anywhere.
-          section: typeof s.section === 'string' && s.section ? s.section : 'body',
-        });
-      }
-    } catch { /* skip bad shot */ }
+    const key = s.clean_path || (s.has_text !== true ? s.file_path : null);
+    if (!key) continue;
+    const dur = Number(s.duration_sec);
+    pool.push({
+      key,
+      dur: Number.isFinite(dur) && dur > 0.2 ? dur : 1.5,
+      tags: Array.isArray(s.tags) ? (s.tags as string[]) : [],
+      caption: typeof s.caption === 'string' ? (s.caption as string) : '',
+      // Rows from before sections existed can stand in anywhere.
+      section: typeof s.section === 'string' && s.section ? s.section : 'body',
+    });
   }
   return pool;
+}
+
+/**
+ * Fetch and normalize one chosen clip, once. The stored duration is replaced by
+ * the real one so a scene's freeze padding is computed off the actual footage.
+ */
+export async function materializeShot(
+  supabase: SupabaseClient,
+  clip: ShotClip,
+  workDir: string,
+  idx: number,
+): Promise<string> {
+  if (clip.file) return clip.file;
+  const raw = path.join(workDir, `raw_${idx}.mp4`);
+  const nrm = path.join(workDir, `norm_${idx}.mp4`);
+  await downloadSource(supabase, clip.key, raw);
+  await normalizeShot(raw, nrm);
+  const dur = await probeDuration(nrm);
+  if (!(dur > 0.2)) throw new Error('clip is empty after normalizing');
+  clip.dur = dur;
+  clip.file = nrm;
+  try { fs.rmSync(raw, { force: true }); } catch { /* ignore */ }
+  return nrm;
 }

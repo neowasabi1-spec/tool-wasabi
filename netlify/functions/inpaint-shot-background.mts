@@ -511,9 +511,18 @@ export default async (req: Request) => {
   };
 
   const token = process.env.REPLICATE_API_TOKEN;
-  if (!token) return fail('REPLICATE_API_TOKEN is not set in Netlify env vars');
 
-  if (compareModel) return compareRemover(supabase, token, shotId, projectId, compareModel, log);
+  // A comparison run must leave the shot exactly as it was, including its status,
+  // so it reports into its own sidecar rather than through fail().
+  if (compareModel) {
+    if (!token) {
+      log('compare skipped: REPLICATE_API_TOKEN is not set in this deploy');
+      return new Response('no token', { status: 200 });
+    }
+    return compareRemover(supabase, token, shotId, projectId, compareModel, log);
+  }
+
+  if (!token) return fail('REPLICATE_API_TOKEN is not set in Netlify env vars');
 
   // Claim: pending -> processing (avoids double-run when triggered twice).
   const { data: claimed, error: claimErr } = await supabase
