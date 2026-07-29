@@ -11,7 +11,10 @@ const path = require('path');
 const { spawn } = require('child_process');
 const { createClient } = require('@supabase/supabase-js');
 
-const SITE = process.env.SITE_URL || 'https://tool-wasabi-neo.netlify.app';
+// The deploy that actually holds the provider keys — same origin the browser
+// extension talks to. A same-repo twin site exists without those keys, and
+// pointing here by accident makes every run exit before it does any work.
+const SITE = process.env.SITE_URL || 'https://cute-cupcake-74bad8.netlify.app';
 const URL = process.env.SUPABASE_URL || 'https://sktpbizpckxldhxzezws.supabase.co';
 const KEY =
   process.env.SUPABASE_SERVICE_KEY ||
