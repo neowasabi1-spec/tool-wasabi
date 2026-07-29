@@ -21,32 +21,37 @@ const DILATE = 8;       // px grown around matches (antialiasing, outline, shado
 
 export type CaptionMasks = {
   masks: Uint8Array[];
-  colour: [number, number, number];
-  kind: 'saturated' | 'white';
+  colours: [number, number, number][];
+  kind: 'saturated' | 'white' | 'both';
   samples: number;
   pxPerFrame: number;
+  /** How much of its own bounding box the mask fills: high for text, low for scatter. */
+  blockFill: number;
+  /** Share of frames where a caption was found. */
+  textFrames: number;
 };
 
 /**
  * Is this mask safe to hand to a video remover?
  *
- * Measured on real shots: a yellow caption gave 13k colour samples over 2.4% of
- * the frame and the removal was clean, while a white caption gave 694 samples
- * spread over 13% — light grey clothing matched the caption colour, and the
- * remover dutifully erased a drawstring and the folds around it. Bright white
- * is simply too common in footage to trust on thin evidence, so it needs both
- * far more samples and a much smaller area before the mask is believed.
+ * A caption, even a two-line one, is a small part of the frame. When the match
+ * grows past a few percent it is no longer tracking glyphs but something broad
+ * and bright in the shot, and handing that to a remover destroys real footage —
+ * a light hoodie once came back without its drawstring. Past that ceiling the
+ * caller falls back to the older detector instead.
  */
 export function maskIsTrustworthy(cm: CaptionMasks, w: number, h: number): { ok: boolean; why: string } {
   const coverage = cm.pxPerFrame / (w * h);
   const pct = (coverage * 100).toFixed(1);
-  if (cm.kind === 'saturated') {
-    if (coverage > 0.06) return { ok: false, why: `saturated match covers ${pct}% of the frame` };
-    return { ok: true, why: `saturated caption, ${pct}% of the frame` };
-  }
-  if (cm.samples < 2000) return { ok: false, why: `only ${cm.samples} white samples` };
-  if (coverage > 0.03) return { ok: false, why: `white match covers ${pct}% of the frame` };
-  return { ok: true, why: `white caption, ${pct}% of the frame` };
+  const what = cm.kind === 'both' ? 'white + highlight caption' : `${cm.kind} caption`;
+  const conc = Math.round(cm.blockFill * 100);
+  if (cm.samples < 400) return { ok: false, why: `only ${cm.samples} outlined samples` };
+  if (!cm.pxPerFrame) return { ok: false, why: 'nothing shaped like a caption line' };
+  if (cm.blockFill < 0.55) return { ok: false, why: `match is scattered, fills only ${conc}% of its own box` };
+  // Two lines of large caption legitimately reach a tenth of the frame, so the
+  // ceiling is generous; the row test is what rejects the wide false matches.
+  if (coverage > 0.16) return { ok: false, why: `${what} match covers ${pct}% of the frame` };
+  return { ok: true, why: `${what}, ${pct}% of the frame, ${conc}% block fill` };
 }
 
 /** Rows the caption lives in, from competitor_shots.text_region ("center 0.40-0.60"). */
@@ -59,10 +64,21 @@ export function bandRows(region: string | null | undefined, h: number): [number,
   return [Math.max(0, y0 - pad), Math.min(h, y1 + pad)];
 }
 
-/** Caption colour learned from outlined bright pixels; saturated beats white. */
+/**
+ * Caption colours learned from outlined bright pixels.
+ *
+ * Captions in these ads are usually white with one word highlighted in a
+ * saturated colour. Learning a single colour left the other half of the line on
+ * screen — the yellow word vanished and the white words stayed perfectly
+ * readable — so both families are kept and the mask matches either.
+ */
 function learnColour(
   buf: Buffer, frames: number, w: number, h: number, y0: number, y1: number,
-): { colour: [number, number, number]; kind: 'saturated' | 'white'; samples: number } | null {
+): {
+  colours: [number, number, number][];
+  kind: 'saturated' | 'white' | 'both';
+  samples: number;
+} | null {
   const sat: number[][] = [];
   const white: number[][] = [];
   const fsz = w * h * 3;
@@ -91,27 +107,102 @@ function learnColour(
     const v = arr.map((p) => p[k]).sort((a, b) => a - b);
     return v[Math.floor(v.length / 2)] || 0;
   };
-  const useSat = sat.length >= 200;
-  const pool = useSat ? sat : white;
-  if (pool.length < 100) return null;
+  const colours: [number, number, number][] = [];
+  const hasSat = sat.length >= 200;
+  // Caption white is printed white: near 255 on every channel and neutral. A
+  // washed-out [226,212,212] is a car highlight or a bright wall, and letting it
+  // in scattered the mask across half the shot.
+  const wMed: [number, number, number] = [med(white, 0), med(white, 1), med(white, 2)];
+  const hasWhite =
+    white.length >= 200 && Math.min(...wMed) >= 235 && Math.max(...wMed) - Math.min(...wMed) <= 14;
+  if (hasSat) colours.push([med(sat, 0), med(sat, 1), med(sat, 2)]);
+  if (hasWhite) colours.push(wMed);
+  if (!colours.length) return null;
   return {
-    colour: [med(pool, 0), med(pool, 1), med(pool, 2)],
-    kind: useSat ? 'saturated' : 'white',
-    samples: pool.length,
+    colours,
+    kind: hasSat && hasWhite ? 'both' : hasSat ? 'saturated' : 'white',
+    samples: (hasSat ? sat.length : 0) + (hasWhite ? white.length : 0),
   };
 }
 
-/** Per-frame caption mask: colour match inside the band, then grown. */
+/**
+ * Keep only blobs shaped like a line of text, in place.
+ *
+ * Judging the whole mask at once punished two-line captions, because the gap
+ * between the lines counts against them, and let a shirt in the caption's colour
+ * ride along with the real text. Each blob is judged instead: a caption line is
+ * wider than it is tall and, after growing, nearly solid. Returns how full the
+ * kept blobs are, and how many pixels survived.
+ */
+function keepTextBlobs(
+  mask: Uint8Array, w: number, y0: number, y1: number,
+): { fill: number; px: number } {
+  const label = new Int32Array(mask.length);
+  const blobs: { size: number; x0: number; x1: number; y0: number; y1: number }[] = [
+    { size: 0, x0: 0, x1: 0, y0: 0, y1: 0 },
+  ];
+  const stack: number[] = [];
+  for (let y = y0; y < y1; y++) {
+    for (let x = 0; x < w; x++) {
+      const start = y * w + x;
+      if (!mask[start] || label[start]) continue;
+      const id = blobs.length;
+      const b = { size: 0, x0: x, x1: x, y0: y, y1: y };
+      label[start] = id;
+      stack.push(start);
+      while (stack.length) {
+        const p = stack.pop() as number;
+        b.size++;
+        const py = Math.floor(p / w), px = p % w;
+        if (px < b.x0) b.x0 = px;
+        if (px > b.x1) b.x1 = px;
+        if (py < b.y0) b.y0 = py;
+        if (py > b.y1) b.y1 = py;
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = px + dx, ny = py + dy;
+          if (nx < 0 || nx >= w || ny < y0 || ny >= y1) continue;
+          const n = ny * w + nx;
+          if (mask[n] && !label[n]) { label[n] = id; stack.push(n); }
+        }
+      }
+      blobs.push(b);
+    }
+  }
+  const biggest = blobs.reduce((m, b) => Math.max(m, b.size), 0);
+  if (!biggest) return { fill: 0, px: 0 };
+  const keep = new Set<number>();
+  let px = 0, fillSum = 0;
+  for (let id = 1; id < blobs.length; id++) {
+    const b = blobs[id];
+    const bw = b.x1 - b.x0 + 1, bh = b.y1 - b.y0 + 1;
+    const fill = b.size / (bw * bh);
+    if (b.size < biggest * 0.2 || fill < 0.5 || bw < bh) continue;
+    keep.add(id);
+    px += b.size;
+    fillSum += fill * b.size;
+  }
+  for (let p = 0; p < mask.length; p++) if (mask[p] && !keep.has(label[p])) mask[p] = 0;
+  return { fill: px ? fillSum / px : 0, px };
+}
+
+/**
+ * Per-frame caption mask: a pixel counts when it matches one of the caption
+ * colours *and* has a much darker pixel within a couple of pixels, the outline
+ * or drop shadow every one of these captions carries. Colour alone let a light
+ * grey hoodie into the mask and the remover erased the drawstring; the outline
+ * test is what separates a glyph from flat bright cloth.
+ */
 export function captionMasks(
   buf: Buffer, frames: number, w: number, h: number, region: string | null | undefined,
 ): CaptionMasks | null {
   const [y0, y1] = bandRows(region, h);
   const learned = learnColour(buf, frames, w, h, y0, y1);
   if (!learned) return null;
-  const [cr, cg, cb] = learned.colour;
   const fsz = w * h * 3;
   const masks: Uint8Array[] = [];
   let total = 0;
+  let rowConc = 0;
+  let withText = 0;
 
   for (let f = 0; f < frames; f++) {
     const hit = new Uint8Array(w * h);
@@ -119,8 +210,25 @@ export function captionMasks(
       for (let x = 0; x < w; x++) {
         const p = y * w + x;
         const i = f * fsz + p * 3;
-        const d = Math.abs(buf[i] - cr) + Math.abs(buf[i + 1] - cg) + Math.abs(buf[i + 2] - cb);
-        if (d <= COLOR_TOL) hit[p] = 1;
+        const r = buf[i], g = buf[i + 1], b = buf[i + 2];
+        let near = false;
+        for (const [cr, cg, cb] of learned.colours) {
+          if (Math.abs(r - cr) + Math.abs(g - cg) + Math.abs(b - cb) <= COLOR_TOL) { near = true; break; }
+        }
+        if (!near) continue;
+        const mx = Math.max(r, g, b);
+        let outlined = false;
+        for (let dy = -2; dy <= 2 && !outlined; dy++) {
+          const yy = y + dy;
+          if (yy < 0 || yy >= h) continue;
+          for (let dx = -2; dx <= 2; dx++) {
+            const xx = x + dx;
+            if (xx < 0 || xx >= w) continue;
+            const j = f * fsz + (yy * w + xx) * 3;
+            if (Math.max(buf[j], buf[j + 1], buf[j + 2]) < mx - 70) { outlined = true; break; }
+          }
+        }
+        if (outlined) hit[p] = 1;
       }
     }
     const grown = new Uint8Array(w * h);
@@ -137,11 +245,21 @@ export function captionMasks(
         }
       }
     }
-    for (let p = 0; p < grown.length; p++) if (grown[p]) total++;
+    const kept = keepTextBlobs(grown, w, y0, y1);
+    // Captions often cover only part of a clip. Empty frames are fine — the mask
+    // is simply blank there — so they must not drag the shape score down.
+    if (kept.px) { rowConc += kept.fill; withText++; }
+    total += kept.px;
     masks.push(grown);
   }
 
-  return { ...learned, masks, pxPerFrame: Math.round(total / frames) };
+  return {
+    ...learned,
+    masks,
+    pxPerFrame: withText ? Math.round(total / withText) : 0,
+    blockFill: withText ? rowConc / withText : 0,
+    textFrames: withText / frames,
+  };
 }
 
 /**

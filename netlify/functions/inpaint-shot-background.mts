@@ -426,12 +426,13 @@ async function maskDrivenClean(opts: {
   const trust = maskIsTrustworthy(cm, srcRgb.w, srcRgb.h);
   if (report) {
     report.mask = {
-      colour: cm.colour, kind: cm.kind, samples: cm.samples,
+      colours: cm.colours, kind: cm.kind, samples: cm.samples,
       pxPerFrame: cm.pxPerFrame, coverage: +(cm.pxPerFrame / (srcRgb.w * srcRgb.h)).toFixed(4),
+      blockFill: +cm.blockFill.toFixed(2), textFrames: +cm.textFrames.toFixed(2),
       frames, analysedAt: `${srcRgb.w}x${srcRgb.h}`, trusted: trust.ok, verdict: trust.why,
     };
   }
-  log(`mask: rgb(${cm.colour.join(',')}) ${trust.why}`);
+  log(`mask: ${cm.colours.map((c) => `rgb(${c.join(',')})`).join(' + ')} ${trust.why}`);
   if (!trust.ok) { note(`mask rejected — ${trust.why}`); return null; }
 
   const maskFile = await writeMaskVideo(cm.masks, srcRgb.w, srcRgb.h, fps, W, H, workDir);
