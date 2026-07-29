@@ -4,7 +4,11 @@
  * sidecar in <project>/shots-compare/; this polls for those, then stacks
  * original / current cleanup / new attempt on the frame with the most caption.
  *
- *   node scripts/run-remover-compare.js <shotId> [model]
+ *   node scripts/run-remover-compare.js <shotId> [model] [tuning json]
+ *
+ * The tuning argument overrides model inputs for the run, which is how settings
+ * get tried without a deploy each time:
+ *   node scripts/run-remover-compare.js 148 - '{"mask_dilation_iterations":16}'
  */
 const fs = require('fs');
 const path = require('path');
@@ -45,8 +49,13 @@ async function get(s, key, file) {
 (async () => {
   fs.mkdirSync(OUT, { recursive: true });
   const shotId = Number(process.argv[2]);
-  const model = process.argv[3] || 'ayushunleashed/minimax-remover';
-  if (!shotId) return console.log('usage: node scripts/run-remover-compare.js <shotId> [model]');
+  const arg = process.argv[3];
+  const model = !arg || arg === '-' ? 'ayushunleashed/minimax-remover' : arg;
+  let tuning;
+  try { tuning = process.argv[4] ? JSON.parse(process.argv[4]) : undefined; } catch {
+    return console.log('the tuning argument is not valid JSON');
+  }
+  if (!shotId) return console.log('usage: node scripts/run-remover-compare.js <shotId> [model] [tuning json]');
 
   const s = createClient(URL, KEY, { auth: { persistSession: false } });
   const { data: shot } = await s
@@ -63,7 +72,7 @@ async function get(s, key, file) {
   const resp = await fetch(`${SITE}/.netlify/functions/inpaint-shot-background`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ shotId, projectId: shot.project_id, compareModel: model }),
+    body: JSON.stringify({ shotId, projectId: shot.project_id, compareModel: model, tuning }),
   });
   console.log(`triggered ${model} on shot #${shotId} (${resp.status})`);
 

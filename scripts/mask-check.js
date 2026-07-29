@@ -21,7 +21,9 @@ const KEY =
 const BUCKET = 'project-files';
 const FFMPEG = path.join(__dirname, '..', 'node_modules', 'ffmpeg-static', 'ffmpeg.exe');
 const OUT = 'C:/Users/Neo/tmp-compare';
-const W = 320; // analysis width, as the function uses
+// Same analysis width the cleanup function uses (RGB_W), so a verdict here is
+// the verdict there. At 320 the scores drifted enough to flip borderline shots.
+const W = 400;
 
 // caption-mask.ts only needs run() and FFMPEG from ./video, so stub that away
 // rather than dragging the whole Netlify helper into this script.

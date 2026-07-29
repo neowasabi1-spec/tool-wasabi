@@ -409,10 +409,12 @@ async function maskDrivenClean(opts: {
   deadline: number;
   log: (...a: unknown[]) => void;
   report?: Record<string, unknown>;
+  /** Model knobs to override, for trying settings from a diagnostics run. */
+  tuning?: Record<string, number>;
 }): Promise<{ file: string; srcRgb: RgbFrames; frames: number } | null> {
   const {
     supabase, token, srcKey, srcFile, textRegion, maskKey,
-    W, H, fps, dur, workDir, deadline, log, report,
+    W, H, fps, dur, workDir, deadline, log, report, tuning,
   } = opts;
   const note = (msg: string) => {
     log(msg);
@@ -464,7 +466,16 @@ async function maskDrivenClean(opts: {
   const input: Record<string, unknown> = { [videoField]: videoUrl, [maskField]: maskUrl };
   // These removers work on a block of frames, so a clip longer than the default
   // comes back truncated. Ask for this clip's real length and size.
-  const wanted: Record<string, number> = { fps: Math.round(fps), num_frames: frames, width: W, height: H };
+  // Dilation and steps matter more than they look: with the model's defaults the
+  // caption came back as a smear that still read as letters, because the repaint
+  // stopped right at the glyph edges and the fill had too few steps to invent
+  // plausible background. Growing the mask inside the model and giving it more
+  // steps is what turns the smear into clean footage.
+  const wanted: Record<string, number> = {
+    fps: Math.round(fps), num_frames: frames, width: W, height: H,
+    mask_dilation_iterations: 10, num_inference_steps: 12,
+    ...(tuning || {}),
+  };
   for (const [name, value] of Object.entries(wanted)) {
     const spec = props[name];
     if (!spec) continue;
@@ -508,6 +519,7 @@ async function compareRemover(
   projectId: string,
   model: string,
   log: (...a: unknown[]) => void,
+  tuning?: Record<string, number>,
 ): Promise<Response> {
   const workDir = makeWorkDir('wcompare-');
   const base = `${projectId}/shots-compare/${shotId}_${model.split('/')[1]}`;
@@ -544,7 +556,7 @@ async function compareRemover(
       maskKey: `${base}_mask.mp4`,
       W, H, fps, dur, workDir,
       deadline: Date.now() + MAX_WAIT_MS,
-      log, report,
+      log, report, tuning,
     });
     if (!cleaned) {
       report.error = report.maskPath || 'mask path produced nothing';
@@ -578,13 +590,16 @@ async function compareRemover(
 }
 
 export default async (req: Request) => {
-  let body: { shotId?: number; projectId?: string; compareModel?: string };
+  let body: {
+    shotId?: number; projectId?: string; compareModel?: string;
+    tuning?: Record<string, number>;
+  };
   try {
     body = await req.json();
   } catch {
     return new Response('bad json', { status: 400 });
   }
-  const { shotId, projectId, compareModel } = body;
+  const { shotId, projectId, compareModel, tuning } = body;
   if (!shotId || !projectId) return new Response('missing fields', { status: 400 });
 
   const supabase = getSupabase();
@@ -609,7 +624,7 @@ export default async (req: Request) => {
       log('compare skipped: REPLICATE_API_TOKEN is not set in this deploy');
       return new Response('no token', { status: 200 });
     }
-    return compareRemover(supabase, token, shotId, projectId, compareModel, log);
+    return compareRemover(supabase, token, shotId, projectId, compareModel, log, tuning);
   }
 
   if (!token) return fail('REPLICATE_API_TOKEN is not set in Netlify env vars');
