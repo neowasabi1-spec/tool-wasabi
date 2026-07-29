@@ -516,6 +516,17 @@ function CreativeDetailPanel({
       }
     } catch { setBuildStatus(""); toast({ title: "Could not start build", variant: "destructive" }); }
   };
+  // A background function that dies without writing an outcome leaves the row
+  // spinning forever, so there has to be a way out of it.
+  const cancelBuild = async () => {
+    try {
+      const r = await fetch(`/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/${ad.id}/build-video`, { method: "DELETE" });
+      if (!r.ok) throw new Error();
+      if (buildPoll.current) { clearInterval(buildPoll.current); buildPoll.current = null; }
+      setBuildStatus("");
+      toast({ title: "Build stopped" });
+    } catch { toast({ title: "Could not stop the build", variant: "destructive" }); }
+  };
   const days = daysRunning(ad);
   const tier = winnerTier({ ...ad, is_winner: winner });
   const toggleWinner = async () => {
@@ -746,9 +757,21 @@ function CreativeDetailPanel({
                     ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> {buildStatus === "pending" ? "Queued…" : "Building…"}</>
                     : <><Zap className="w-3.5 h-3.5" /> Build video</>}
                 </Button>
+                {(buildStatus === "pending" || buildStatus === "processing") && (
+                  <button
+                    type="button"
+                    onClick={cancelBuild}
+                    title="Stop this build"
+                    className="h-8 w-8 shrink-0 grid place-items-center rounded-md border border-border bg-background text-destructive hover:bg-destructive/10">
+                    <Square className="w-3.5 h-3.5" />
+                  </button>
+                )}
               </div>
               {buildStatus === "error" && (
                 <p className="text-[10px] text-destructive">Build failed — check the worker logs.</p>
+              )}
+              {buildStatus === "canceled" && (
+                <p className="text-[10px] text-muted-foreground">Build stopped.</p>
               )}
               {showInline && buildStatus !== "pending" && buildStatus !== "processing" && buildVideos[0] && (
                 <div className="space-y-1.5 pt-1">

@@ -15,6 +15,7 @@ import { createClient } from '@supabase/supabase-js';
 
 const SEGMENT_STALE_MIN = 10;   // a pending job older than this lost its trigger
 const SEGMENT_PER_TICK = 3;
+const BUILD_DEAD_MIN = 20;      // past the 15-min function cap: nothing is coming
 const REQUEUE_PER_TICK = 10;    // rate-limited cleanups put back in line
 const CLEAN_PER_TICK = 6;       // cleanups actually fired per tick
 
@@ -65,9 +66,34 @@ export default async () => {
   }
   if (jobs?.length) log(`re-fired ${jobs.length} stale segmentation job(s)`);
 
+  // 2. Video assembly jobs: same lost-trigger problem, plus a function that dies
+  // mid-assembly leaves a row spinning with nothing to show the user.
+  const { data: staleBuilds } = await supabase
+    .from('video_build_jobs')
+    .select('id, project_id, brand_id, ad_id')
+    .eq('status', 'pending')
+    .lt('created_at', staleBefore)
+    .order('id')
+    .limit(SEGMENT_PER_TICK);
+  for (const j of staleBuilds || []) {
+    await fire('build-video-background', {
+      jobId: j.id, projectId: j.project_id, brandId: j.brand_id, adId: j.ad_id,
+    });
+  }
+  if (staleBuilds?.length) log(`re-fired ${staleBuilds.length} stale build job(s)`);
+
+  const deadBefore = new Date(Date.now() - BUILD_DEAD_MIN * 60_000).toISOString();
+  const { data: dead } = await supabase
+    .from('video_build_jobs')
+    .update({ status: 'error', error: 'Build stopped responding', finished_at: new Date().toISOString() })
+    .eq('status', 'processing')
+    .lt('started_at', deadBefore)
+    .select('id');
+  if (dead?.length) log(`gave up on ${dead.length} build job(s) past the function limit`);
+
   if (!process.env.REPLICATE_API_TOKEN) return void log('no REPLICATE_API_TOKEN; cleanup queue left alone');
 
-  // 2. Cleanups that died on a rate limit go back in line.
+  // 3. Cleanups that died on a rate limit go back in line.
   const { data: failed } = await supabase
     .from('competitor_shots')
     .select('id, inpaint_error')
@@ -85,7 +111,7 @@ export default async () => {
     log(`requeued ${requeue.length} rate-limited cleanup(s)`);
   }
 
-  // 3. Fire a small batch of the cleanups waiting in line.
+  // 4. Fire a small batch of the cleanups waiting in line.
   const { data: pending } = await supabase
     .from('competitor_shots')
     .select('id, project_id')

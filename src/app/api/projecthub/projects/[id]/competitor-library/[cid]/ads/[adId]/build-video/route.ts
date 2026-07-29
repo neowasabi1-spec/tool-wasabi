@@ -183,6 +183,41 @@ export async function POST(
   });
 }
 
+/**
+ * Give up on a build that is stuck.
+ *
+ * The assembly runs in a background function, and if that function dies without
+ * writing an outcome the row stays 'processing' and the button spins forever with
+ * no way out. Marking it canceled releases the UI and lets a new build start; a
+ * function that is somehow still alive will just finish and save its video.
+ */
+export async function DELETE(
+  req: NextRequest,
+  { params }: { params: { id: string; adId: string } },
+) {
+  const { id, adId } = params;
+  const { allowed } = await canAccessProject(req, id);
+  if (!allowed) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+
+  const adIdNum = Number(adId);
+  if (!Number.isFinite(adIdNum)) return NextResponse.json({ error: 'Invalid id' }, { status: 400 });
+
+  const { data, error } = await supabaseAdmin
+    .from('video_build_jobs')
+    .update({
+      status: 'canceled',
+      error: 'Canceled',
+      finished_at: new Date().toISOString(),
+    })
+    .eq('project_id', id)
+    .eq('ad_id', adIdNum)
+    .in('status', ['pending', 'processing'])
+    .select('id');
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+  return NextResponse.json({ canceled: (data || []).length });
+}
+
 export async function GET(
   req: NextRequest,
   { params }: { params: { id: string; cid: string; adId: string } },
