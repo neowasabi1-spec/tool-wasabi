@@ -139,7 +139,8 @@ export default async (req: Request) => {
     if (subtitled.length) {
       const queued = await autoCleanShots(supabase, selfOrigin(req.url), projectId, subtitled);
       log(queued
-        ? `queued AI subtitle removal for ${queued}/${subtitled.length} subtitled shots`
+        ? `queued AI subtitle removal for ${queued} subtitled shots ` +
+          '(first few fired now, the rest drained by the scheduled pass)'
         : `${subtitled.length} subtitled shots left for manual cleanup ` +
           '(REPLICATE_API_TOKEN missing or inpaint migration not applied)');
     }

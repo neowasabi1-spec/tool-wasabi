@@ -500,9 +500,16 @@ export function selfOrigin(reqUrl?: string): string {
 }
 
 /**
+ * How many cleanups a single video may fire immediately. A long video yields
+ * dozens of subtitled shots and Replicate rate-limits a burst that size, so the
+ * rest stay queued and the scheduled drain picks them up a few at a time.
+ */
+const CLEAN_BURST = 4;
+
+/**
  * Queue AI subtitle removal for shots that came out with burned-in text, so a
- * video is usable in builds without anyone pressing a button. Fire-and-forget:
- * one background function per shot, exactly what the manual button does.
+ * video is usable in builds without anyone pressing a button. Every shot is
+ * marked pending; only the first few are fired now.
  * Returns how many were queued (0 when Replicate isn't configured or the
  * inpaint columns aren't migrated yet — the shots simply stay flagged).
  */
@@ -522,7 +529,7 @@ export async function autoCleanShots(
   if (error) return 0;
 
   await Promise.allSettled(
-    shotIds.map((shotId) =>
+    shotIds.slice(0, CLEAN_BURST).map((shotId) =>
       fetch(`${origin}/.netlify/functions/inpaint-shot-background`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
