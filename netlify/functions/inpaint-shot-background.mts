@@ -4,6 +4,7 @@ import {
   getSupabase, uploadFile, makeWorkDir, downloadSource, probeDuration,
   run, FFMPEG, ffprobeInfo,
 } from './_shared/video';
+import { captionMasks, writeMaskVideo } from './_shared/caption-mask';
 
 /**
  * Background function that removes burned-in subtitles from a shot with REAL
@@ -362,14 +363,138 @@ function extractOutputUrl(output: unknown): string | null {
   return null;
 }
 
+/**
+ * Try a mask-driven video remover on one shot without touching anything.
+ *
+ * The models built for this job (MiniMax-Remover, ProPainter) rebuild a masked
+ * region with temporal context instead of smearing the edges inward, but they
+ * need a mask, which is why they failed when first tried. The mask now comes
+ * from the caption's own colour, measured on the original clip.
+ *
+ * Nothing in the database changes and clean_path is left alone: the result and a
+ * diagnostics sidecar land in <project>/shots-compare/ so the two approaches can
+ * be looked at side by side before either becomes the default.
+ */
+async function compareRemover(
+  supabase: ReturnType<typeof getSupabase>,
+  token: string,
+  shotId: number,
+  projectId: string,
+  model: string,
+  log: (...a: unknown[]) => void,
+): Promise<Response> {
+  const workDir = makeWorkDir('wcompare-');
+  const base = `${projectId}/shots-compare/${shotId}_${model.split('/')[1]}`;
+  const report: Record<string, unknown> = { shotId, model, at: new Date().toISOString() };
+  const save = async () => {
+    const f = path.join(workDir, 'report.json');
+    fs.writeFileSync(f, JSON.stringify(report, null, 2));
+    try { await uploadFile(supabase, `${base}.json`, f, 'application/json'); } catch { /* ignore */ }
+  };
+
+  try {
+    const { data: shot } = await supabase
+      .from('competitor_shots')
+      .select('id, file_path, text_region, clean_path')
+      .eq('id', shotId)
+      .maybeSingle();
+    if (!shot?.file_path) { report.error = 'shot not found'; await save(); return new Response('no shot', { status: 200 }); }
+
+    const srcFile = path.join(workDir, 'src.mp4');
+    await downloadSource(supabase, shot.file_path as string, srcFile);
+    const info = await ffprobeInfo(srcFile);
+    const W = info.width || 0;
+    const H = info.height || 0;
+    const fps = info.fps && info.fps > 0 ? info.fps : 30;
+    const dur = await probeDuration(srcFile);
+    if (!W || !H) { report.error = 'could not probe dimensions'; await save(); return new Response('no dims', { status: 200 }); }
+
+    const rgb = await rgbFrames(srcFile, W, H, dur, fps, workDir);
+    const frames = Math.floor(rgb.buf.length / (rgb.w * rgb.h * 3));
+    const cm = captionMasks(rgb.buf, frames, rgb.w, rgb.h, shot.text_region as string | null);
+    if (!cm) { report.error = 'no caption colour found on the original'; await save(); return new Response('no mask', { status: 200 }); }
+    report.mask = {
+      colour: cm.colour, kind: cm.kind, samples: cm.samples,
+      pxPerFrame: cm.pxPerFrame, coverage: +(cm.pxPerFrame / (rgb.w * rgb.h)).toFixed(4),
+      frames, analysedAt: `${rgb.w}x${rgb.h}`,
+    };
+    log(`mask: rgb(${cm.colour.join(',')}) ${cm.kind}, ${cm.pxPerFrame}px/frame over ${frames} frames`);
+
+    const maskFile = await writeMaskVideo(cm.masks, rgb.w, rgb.h, fps, W, H, workDir);
+    const maskKey = `${base}_mask.mp4`;
+    await uploadFile(supabase, maskKey, maskFile, 'video/mp4');
+
+    const sign = async (key: string) => {
+      const { data } = await supabase.storage.from(BUCKET).createSignedUrl(key, 3600);
+      return data?.signedUrl || null;
+    };
+    const videoUrl = await sign(shot.file_path as string);
+    const maskUrl = await sign(maskKey);
+    if (!videoUrl || !maskUrl) { report.error = 'could not sign input urls'; await save(); return new Response('no urls', { status: 200 }); }
+
+    // The wrapper's field names aren't documented, so read them off the schema.
+    const modelResp = await fetch(`https://api.replicate.com/v1/models/${model}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!modelResp.ok) {
+      report.error = `model lookup ${modelResp.status}: ${(await modelResp.text()).slice(0, 200)}`;
+      await save();
+      return new Response('model error', { status: 200 });
+    }
+    const meta = await modelResp.json();
+    const version = meta?.latest_version?.id;
+    const props = meta?.latest_version?.openapi_schema?.components?.schemas?.Input?.properties || {};
+    const keys = Object.keys(props);
+    const maskKeyName = keys.find((k) => /mask/i.test(k));
+    const videoKeyName = keys.find((k) => /^(video|input_video|source_video)$/i.test(k)) ||
+      keys.find((k) => /video/i.test(k) && !/mask/i.test(k));
+    report.inputs = keys;
+    if (!version || !videoKeyName || !maskKeyName) {
+      report.error = `could not map inputs (video=${videoKeyName}, mask=${maskKeyName})`;
+      await save();
+      return new Response('schema error', { status: 200 });
+    }
+
+    const input: Record<string, unknown> = { [videoKeyName]: videoUrl, [maskKeyName]: maskUrl };
+    report.sent = { video: videoKeyName, mask: maskKeyName };
+    log(`running ${model} (${videoKeyName} + ${maskKeyName})`);
+
+    const started = Date.now();
+    const output = await replicateRun(token, version, input, Date.now() + MAX_WAIT_MS, log);
+    const url = extractOutputUrl(output);
+    report.seconds = Math.round((Date.now() - started) / 1000);
+    if (!url) { report.error = 'prediction returned no video'; await save(); return new Response('no output', { status: 200 }); }
+
+    const dl = await fetch(url);
+    if (!dl.ok) { report.error = `download failed ${dl.status}`; await save(); return new Response('dl error', { status: 200 }); }
+    const outFile = path.join(workDir, 'out.mp4');
+    fs.writeFileSync(outFile, Buffer.from(await dl.arrayBuffer()));
+    await uploadFile(supabase, `${base}.mp4`, outFile, 'video/mp4');
+
+    const outInfo = await ffprobeInfo(outFile);
+    report.output = { key: `${base}.mp4`, size: fs.statSync(outFile).size, w: outInfo.width, h: outInfo.height };
+    report.currentClean = shot.clean_path || null;
+    await save();
+    log(`compare done in ${report.seconds}s — ${base}.mp4`);
+    return new Response('done', { status: 200 });
+  } catch (e) {
+    report.error = (e as Error).message;
+    await save();
+    log('compare failed:', (e as Error).message);
+    return new Response('error', { status: 200 });
+  } finally {
+    try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+}
+
 export default async (req: Request) => {
-  let body: { shotId?: number; projectId?: string };
+  let body: { shotId?: number; projectId?: string; compareModel?: string };
   try {
     body = await req.json();
   } catch {
     return new Response('bad json', { status: 400 });
   }
-  const { shotId, projectId } = body;
+  const { shotId, projectId, compareModel } = body;
   if (!shotId || !projectId) return new Response('missing fields', { status: 400 });
 
   const supabase = getSupabase();
@@ -387,6 +512,8 @@ export default async (req: Request) => {
 
   const token = process.env.REPLICATE_API_TOKEN;
   if (!token) return fail('REPLICATE_API_TOKEN is not set in Netlify env vars');
+
+  if (compareModel) return compareRemover(supabase, token, shotId, projectId, compareModel, log);
 
   // Claim: pending -> processing (avoids double-run when triggered twice).
   const { data: claimed, error: claimErr } = await supabase
