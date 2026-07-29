@@ -456,8 +456,30 @@ async function compareRemover(
     }
 
     const input: Record<string, unknown> = { [videoKeyName]: videoUrl, [maskKeyName]: maskUrl };
-    report.sent = { video: videoKeyName, mask: maskKeyName };
-    log(`running ${model} (${videoKeyName} + ${maskKeyName})`);
+    // These removers work on a fixed-length block of frames, so a clip longer
+    // than the default comes back truncated. Ask for the clip's real length and
+    // size when the wrapper exposes those inputs, and record the schema limits
+    // so a cap can be worked around by processing the clip in parts.
+    const limits: Record<string, unknown> = {};
+    const wanted: Record<string, number> = {
+      fps: Math.round(fps),
+      num_frames: frames,
+      width: W,
+      height: H,
+    };
+    for (const [name, value] of Object.entries(wanted)) {
+      const spec = props[name];
+      if (!spec) continue;
+      limits[name] = { default: spec.default, min: spec.minimum, max: spec.maximum };
+      const max = typeof spec.maximum === 'number' ? spec.maximum : Infinity;
+      const min = typeof spec.minimum === 'number' ? spec.minimum : 0;
+      input[name] = Math.max(min, Math.min(max, value));
+    }
+    report.limits = limits;
+    report.sent = { video: videoKeyName, mask: maskKeyName, ...Object.fromEntries(
+      Object.keys(wanted).filter((k) => k in input).map((k) => [k, input[k]]),
+    ) };
+    log(`running ${model} (${videoKeyName} + ${maskKeyName}, ${frames} frames @ ${Math.round(fps)}fps)`);
 
     const started = Date.now();
     const output = await replicateRun(token, version, input, Date.now() + MAX_WAIT_MS, log);
@@ -472,7 +494,14 @@ async function compareRemover(
     await uploadFile(supabase, `${base}.mp4`, outFile, 'video/mp4');
 
     const outInfo = await ffprobeInfo(outFile);
-    report.output = { key: `${base}.mp4`, size: fs.statSync(outFile).size, w: outInfo.width, h: outInfo.height };
+    const outDur = await probeDuration(outFile);
+    report.output = {
+      key: `${base}.mp4`, size: fs.statSync(outFile).size,
+      w: outInfo.width, h: outInfo.height,
+      // Truncation is the thing that decides whether this can be the default.
+      seconds: +outDur.toFixed(2), sourceSeconds: +dur.toFixed(2),
+      keptAll: outDur >= dur - 0.15,
+    };
     report.currentClean = shot.clean_path || null;
     await save();
     log(`compare done in ${report.seconds}s — ${base}.mp4`);
