@@ -4,7 +4,7 @@ import { fileURLToPath } from 'url';
 import {
   getSupabase, run, FFMPEG, makeWorkDir, probeDuration, ttsScene,
   buildSceneVisual, pickShotsForScene, sectionForScene, loadShotPool, materializeShot,
-  srtTime, grabThumb, uploadFile,
+  grabThumb, uploadFile, TARGET_W, TARGET_H,
 } from './_shared/video';
 
 /**
@@ -16,13 +16,13 @@ import {
  * The scenes + voice are read from the video_build_jobs row.
  */
 
-// libass renders an SRT with no [Script Info] against a 384×288 canvas and then
-// scales it to the frame, so MarginV below is expressed in that 288-tall space.
-const SUB_PLAY_RES_Y = 288;
-
-// Family name inside caption.ttf (Anton). Passed to libass via force_style so it
-// matches the bundled font instead of a system font that doesn't exist on Lambda.
+// Family name inside caption.ttf (Anton), used as the ASS style Fontname so
+// libass matches the bundled font instead of a system font that doesn't exist
+// on Lambda.
 const CAPTION_FONT = 'Anton';
+
+// Median caption band used when a scene's own shots carry no measured position.
+const DEFAULT_BAND = 0.72;
 
 /**
  * Absolute path to the bundled caption font. Netlify lays included_files out at
@@ -43,37 +43,77 @@ function findCaptionFont(): string | null {
   return null;
 }
 
-/**
- * Where this project's captions sat, as a fraction of frame height (0 = top,
- * 1 = bottom). The subtitle removal recorded each shot's text band in
- * `text_region`; placing the new subtitles on the median of those bands puts
- * them back over the spot the originals were erased from. Defaults to a lower
- * third when nothing was measured.
- */
-async function captionBandFraction(
-  supabase: ReturnType<typeof getSupabase>, projectId: string,
-): Promise<number> {
-  const { data } = await supabase
-    .from('competitor_shots')
-    .select('text_region')
-    .eq('project_id', projectId)
-    .not('text_region', 'is', null)
-    .limit(400);
-  const fracs: number[] = [];
-  for (const row of (data || []) as { text_region?: string | null }[]) {
-    const s = (row.text_region || '').trim();
-    if (!s) continue;
-    const range = s.match(/(\d*\.?\d+)\s*-\s*(\d*\.?\d+)/);
-    if (range) { fracs.push((parseFloat(range[1]) + parseFloat(range[2])) / 2); continue; }
-    const kind = s.split(/\s+/)[0].toLowerCase();
-    if (kind === 'top') fracs.push(0.15);
-    else if (kind === 'center' || kind === 'centre' || kind === 'middle') fracs.push(0.5);
-    else if (kind === 'bottom') fracs.push(0.82);
-  }
-  if (!fracs.length) return 0.72;
-  fracs.sort((a, b) => a - b);
-  return fracs[Math.floor(fracs.length / 2)];
+/** Project-wide median caption band, used as the fallback for scenes whose own
+ * shots carry no measured position. */
+function medianBand(values: number[]): number {
+  const v = values.filter((n) => Number.isFinite(n)).sort((a, b) => a - b);
+  if (!v.length) return DEFAULT_BAND;
+  return v[Math.floor(v.length / 2)];
 }
+
+/** ASS timestamp: H:MM:SS.CS (centiseconds). */
+function assTime(sec: number): string {
+  const cs = Math.max(0, Math.round(sec * 100));
+  const h = Math.floor(cs / 360000);
+  const m = Math.floor((cs % 360000) / 6000);
+  const s = Math.floor((cs % 6000) / 100);
+  const c = cs % 100;
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${h}:${p(m)}:${p(s)}.${p(c)}`;
+}
+
+/** Wrap a caption into short lines joined by ASS line breaks (\N). */
+function wrapCaption(text: string, maxChars = 24): string {
+  const words = text.replace(/\s+/g, ' ').trim().split(' ');
+  const lines: string[] = [];
+  let line = '';
+  for (const w of words) {
+    if (line && (line.length + 1 + w.length) > maxChars) { lines.push(line); line = w; }
+    else line = line ? `${line} ${w}` : w;
+  }
+  if (line) lines.push(line);
+  return lines
+    .join('\\N')
+    // ASS treats { } as override blocks — neutralise any that appear in copy.
+    .replace(/\{/g, '(').replace(/\}/g, ')');
+}
+
+/**
+ * Build an ASS subtitle file. Each cue is anchored (\an5 = centre) at the
+ * vertical band its scene's footage originally carried its caption on, so the
+ * new subtitle lands exactly where the old one was erased. PlayRes matches the
+ * real output frame, so positions are in true pixels.
+ */
+function buildAss(cues: { start: number; end: number; text: string; band: number }[]): string {
+  const header = [
+    '[Script Info]',
+    'ScriptType: v4.00+',
+    `PlayResX: ${TARGET_W}`,
+    `PlayResY: ${TARGET_H}`,
+    'WrapStyle: 0',
+    'ScaledBorderAndShadow: yes',
+    '',
+    '[V4+ Styles]',
+    'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, ' +
+      'Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, ' +
+      'Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
+    // BorderStyle=3 = opaque box (OutlineColour is the box colour). White text,
+    // black box, centred anchor. Fontsize is in the 1920-tall PlayRes space.
+    `Style: Default,${CAPTION_FONT},80,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,` +
+      '1,0,0,0,100,100,0,0,3,16,0,5,40,40,40,1',
+    '',
+    '[Events]',
+    'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
+  ];
+  const events = cues.map((c) => {
+    const y = Math.min(TARGET_H - 120, Math.max(120, Math.round(c.band * TARGET_H)));
+    const x = Math.round(TARGET_W / 2);
+    return `Dialogue: 0,${assTime(c.start)},${assTime(c.end)},Default,,0,0,0,,` +
+      `{\\an5\\pos(${x},${y})}${wrapCaption(c.text)}`;
+  });
+  return [...header, ...events].join('\n') + '\n';
+}
+
 export default async (req: Request) => {
   let body: { jobId?: number; projectId?: string; brandId?: number; adId?: number };
   try { body = await req.json(); } catch { return new Response('bad json', { status: 400 }); }
@@ -115,10 +155,15 @@ export default async (req: Request) => {
       throw new Error('no shots in the pool — split videos into shots or upload clips in My Footage first');
     }
 
+    // Project-wide fallback band for scenes whose shots were never measured.
+    const projectBand = medianBand(
+      pool.map((s) => s.band).filter((b): b is number => typeof b === 'number'),
+    );
+
     const used = new Set<number>();
     const sceneVisuals: string[] = [];
     const sceneAudios: string[] = [];
-    const srt: string[] = [];
+    const cues: { start: number; end: number; text: string; band: number }[] = [];
     let t = 0;
     let fetched = 0;
     for (let i = 0; i < scenes.length; i++) {
@@ -131,6 +176,7 @@ export default async (req: Request) => {
       let files: string[] = [];
       let have = 0;
       let sections: string[] = [];
+      const sceneBands: number[] = [];
       // Only the chosen clips are fetched. A clip that fails to download or
       // normalize is dropped and the scene asks the pool for another one.
       for (let attempt = 0; attempt < 2 && files.length === 0; attempt++) {
@@ -141,6 +187,7 @@ export default async (req: Request) => {
           try {
             files.push(await materializeShot(supabase, clip, workDir, fetched++));
             have += clip.dur;
+            if (typeof clip.band === 'number') sceneBands.push(clip.band);
           } catch (e) {
             log(`scene ${i + 1}: skipping ${clip.key} (${(e as Error).message})`);
           }
@@ -151,7 +198,10 @@ export default async (req: Request) => {
       const vis = await buildSceneVisual(files, have, d, workDir, i);
       sceneVisuals.push(vis);
       sceneAudios.push(mp3);
-      srt.push(`${i + 1}\n${srtTime(t)} --> ${srtTime(t + d)}\n${scenes[i]}\n`);
+      // Put this cue on the band its own footage carried; otherwise fall back to
+      // the project median so it still lands where captions generally were.
+      const band = sceneBands.length ? medianBand(sceneBands) : projectBand;
+      cues.push({ start: t, end: t + d, text: scenes[i], band });
       t += d;
     }
 
@@ -171,35 +221,29 @@ export default async (req: Request) => {
       '-c:v', 'copy', '-c:a', 'aac', '-b:a', '160k', '-shortest', base,
     ]);
 
-    fs.writeFileSync(path.join(workDir, 'subs.srt'), srt.join('\n'));
+    // Each cue is positioned on the band its own scene's footage originally
+    // carried its caption on (see buildAss), so the new subtitle lands where the
+    // old one was erased. PlayRes = real frame, positions are in true pixels.
+    fs.writeFileSync(path.join(workDir, 'subs.ass'), buildAss(cues));
     const finalFile = path.join(workDir, 'final.mp4');
-    // Sit the subtitles on the band the originals were removed from. Alignment=2
-    // anchors at the bottom, so MarginV is the gap up from there: convert the
-    // target height fraction into that gap in the 288-tall subtitle canvas.
-    const bandFrac = await captionBandFraction(supabase, projectId);
-    const marginV = Math.min(250, Math.max(24, Math.round((1 - bandFrac) * SUB_PLAY_RES_Y)));
 
     // Ship the caption font into a local fonts dir and point libass at it. On
-    // Lambda there is no system font, so without this the SRT renders blank.
-    let fontStyle = '';
+    // Lambda there is no system font, so without this the ASS renders blank.
     let fontArg = '';
     const fontSrc = findCaptionFont();
     if (fontSrc) {
       const fontDir = path.join(workDir, 'fonts');
       fs.mkdirSync(fontDir, { recursive: true });
       fs.copyFileSync(fontSrc, path.join(fontDir, 'caption.ttf'));
-      fontStyle = `FontName=${CAPTION_FONT},`;
       fontArg = ':fontsdir=fonts';
     } else {
       log('WARNING: caption font not found in bundle — subtitles may not render');
     }
-    log(`subtitles on caption band ${bandFrac.toFixed(2)} (MarginV=${marginV}, font=${fontSrc ? CAPTION_FONT : 'system'})`);
-    const style =
-      `${fontStyle}FontSize=16,Bold=1,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,` +
-      `BorderStyle=3,Outline=6,Shadow=0,Alignment=2,MarginV=${marginV}`;
+    const bands = cues.map((c) => c.band.toFixed(2)).join(',');
+    log(`subtitles: ${cues.length} cues on bands [${bands}] (font=${fontSrc ? CAPTION_FONT : 'system'})`);
     try {
       await run(FFMPEG, [
-        '-y', '-i', base, '-vf', `subtitles=subs.srt${fontArg}:force_style='${style}'`,
+        '-y', '-i', base, '-vf', `ass=subs.ass${fontArg}`,
         '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', '-c:a', 'copy', finalFile,
       ], { cwd: workDir });
     } catch (e) {
