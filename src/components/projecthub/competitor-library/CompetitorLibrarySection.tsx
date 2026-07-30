@@ -106,54 +106,6 @@ function winnerTier(ad: CompetitorAd): WinnerTier {
   return null;
 }
 
-// ── Spend read-out ──────────────────────────────────────────────────────────
-// Meta only publishes an exact spend range for political / social-issue ads.
-// For everything else (the commercial ads this tool is aimed at) that field is
-// empty, so the honest signal is an estimate: an advertiser only keeps paying
-// to run an ad — and to run several versions of it — while it makes money, so
-// longevity × live variants is the cheapest proxy for how much is behind it.
-type SpendReadout = {
-  exact: boolean;
-  amount: string;
-  tier: "low" | "medium" | "high" | "unknown";
-  note: string;
-};
-
-function spendReadout(ad: CompetitorAd): SpendReadout {
-  const exact = (ad.spend || "").trim();
-  if (exact) {
-    return {
-      exact: true,
-      amount: exact,
-      tier: "high",
-      note: "Reported by Meta’s Ad Library.",
-    };
-  }
-  const days = daysRunning(ad);
-  const variants = Math.max(1, ad.ad_variants || 1);
-  const active = ad.ad_active === "true" || ad.is_active === "true";
-  if (days === null) {
-    return {
-      exact: false,
-      amount: "Not disclosed",
-      tier: "unknown",
-      note: "Meta doesn’t publish spend for this ad and there’s no run length to estimate from.",
-    };
-  }
-  // Each extra live variant is roughly another week of sustained budget.
-  const score = days + (variants - 1) * 7 + (active ? 3 : 0);
-  const tier: SpendReadout["tier"] = score >= 30 ? "high" : score >= 14 ? "medium" : "low";
-  const label = tier === "high" ? "High" : tier === "medium" ? "Medium" : "Low";
-  return {
-    exact: false,
-    amount: `${label} (est.)`,
-    tier,
-    note: `Estimated from ${days} day${days === 1 ? "" : "s"} live` +
-      `${variants > 1 ? ` × ${variants} variants` : ""}. ` +
-      "Meta only reports exact spend for political / social-issue ads.",
-  };
-}
-
 function WinnerBadge({ ad, className = "" }: { ad: CompetitorAd; className?: string }) {
   const tier = winnerTier(ad);
   if (!tier) return null;
@@ -853,42 +805,60 @@ function CreativeDetailPanel({
             </div>
           )}
           {(() => {
-            const s = spendReadout(ad);
-            const tone = s.exact || s.tier === "high"
-              ? "border-emerald-300 bg-emerald-50 text-emerald-800"
-              : s.tier === "medium"
-                ? "border-amber-300 bg-amber-50 text-amber-800"
-                : s.tier === "low"
-                  ? "border-slate-300 bg-slate-50 text-slate-700"
-                  : "border-slate-200 bg-slate-50 text-muted-foreground";
+            const days = daysRunning(ad);
+            const variants = Math.max(1, ad.ad_variants || 1);
+            const active = ad.ad_active === "true" || ad.is_active === "true";
+            const exactSpend = (ad.spend || "").trim();
             return (
               <div className="pt-2 border-t border-border space-y-2">
                 <div className="flex items-center gap-1.5">
-                  <DollarSign className="w-3.5 h-3.5 text-primary" />
-                  <p className="text-[9px] text-muted-foreground uppercase tracking-widest font-semibold">Ad spend</p>
+                  <TrendingUp className="w-3.5 h-3.5 text-primary" />
+                  <p className="text-[9px] text-muted-foreground uppercase tracking-widest font-semibold">Traction</p>
                 </div>
-                <div className={`flex items-center justify-between rounded-lg border px-3 py-2 ${tone}`}>
-                  <span className="text-sm font-bold">{s.amount}</span>
-                  <span className="text-[10px] font-semibold uppercase tracking-wider opacity-80">
-                    {s.exact ? "Meta" : "estimate"}
-                  </span>
-                </div>
-                <p className="text-[10px] text-muted-foreground leading-snug">{s.note}</p>
-                {(ad.impressions || ad.reach) && (
-                  <div className="grid grid-cols-2 gap-2 text-xs pt-1">
-                    {ad.impressions && (
-                      <div>
-                        <p className="text-[9px] text-muted-foreground uppercase tracking-wider">Impressions</p>
-                        <p className="font-medium text-foreground">{ad.impressions}</p>
+                {exactSpend && (
+                  <>
+                    <div className="flex items-center justify-between rounded-lg border border-emerald-300 bg-emerald-50 text-emerald-800 px-3 py-2">
+                      <span className="text-sm font-bold inline-flex items-center gap-1">
+                        <DollarSign className="w-3.5 h-3.5" />{exactSpend}
+                      </span>
+                      <span className="text-[10px] font-semibold uppercase tracking-wider opacity-80">Meta spend</span>
+                    </div>
+                    {(ad.impressions || ad.reach) && (
+                      <div className="grid grid-cols-2 gap-2 text-xs">
+                        {ad.impressions && (
+                          <div>
+                            <p className="text-[9px] text-muted-foreground uppercase tracking-wider">Impressions</p>
+                            <p className="font-medium text-foreground">{ad.impressions}</p>
+                          </div>
+                        )}
+                        {ad.reach ? (
+                          <div>
+                            <p className="text-[9px] text-muted-foreground uppercase tracking-wider">Reach (EU)</p>
+                            <p className="font-medium text-foreground">{ad.reach.toLocaleString()}</p>
+                          </div>
+                        ) : null}
                       </div>
                     )}
-                    {ad.reach ? (
-                      <div>
-                        <p className="text-[9px] text-muted-foreground uppercase tracking-wider">Reach (EU)</p>
-                        <p className="font-medium text-foreground">{ad.reach.toLocaleString()}</p>
-                      </div>
-                    ) : null}
+                  </>
+                )}
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="rounded-lg border border-border bg-muted/30 px-2 py-1.5 text-center">
+                    <p className="text-sm font-bold text-foreground">{days !== null ? days : "—"}</p>
+                    <p className="text-[9px] text-muted-foreground uppercase tracking-wider">days live</p>
                   </div>
+                  <div className="rounded-lg border border-border bg-muted/30 px-2 py-1.5 text-center">
+                    <p className={`text-sm font-bold ${active ? "text-green-600" : "text-muted-foreground"}`}>{active ? "Active" : "Inactive"}</p>
+                    <p className="text-[9px] text-muted-foreground uppercase tracking-wider">status</p>
+                  </div>
+                  <div className="rounded-lg border border-border bg-muted/30 px-2 py-1.5 text-center">
+                    <p className="text-sm font-bold text-foreground">{variants}</p>
+                    <p className="text-[9px] text-muted-foreground uppercase tracking-wider">variants</p>
+                  </div>
+                </div>
+                {!exactSpend && (
+                  <p className="text-[10px] text-muted-foreground leading-snug">
+                    Meta’s Ad Library only discloses spend for political / social-issue ads, so there’s no dollar figure for this one. These are the real signals it does give: how long the ad has run, whether it’s still live, and how many variants are active.
+                  </p>
                 )}
               </div>
             );
