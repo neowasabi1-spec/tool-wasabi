@@ -8,7 +8,7 @@ import {
   BarChart2, Calendar, Globe, X, RefreshCw, Image as ImageIcon,
   Video, Bookmark, CheckSquare, Square, TrendingUp, Download, Copy, Check,
   Settings, Zap, FileText, Eye, LayoutTemplate, Repeat, Star, Flame,
-  Scissors, Film, Sparkles,
+  Scissors, Film, Sparkles, DollarSign,
 } from "lucide-react";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
@@ -64,6 +64,12 @@ type CompetitorAd = {
   ad_active?: string;
   ad_variants?: number;
   is_winner?: boolean;
+  // Spend, as Meta publishes it (exact only for political / social-issue ads;
+  // empty for the commercial ads this tool targets, where we fall back to an
+  // estimate from longevity × live variants).
+  spend?: string | null;
+  impressions?: string | null;
+  reach?: number | null;
   // Phase 1: Claude-rewritten script adapted to the user's product.
   rewritten_script?: string | null;
 };
@@ -98,6 +104,54 @@ function winnerTier(ad: CompetitorAd): WinnerTier {
     if (d >= PROMISING_DAYS) return "promising";
   }
   return null;
+}
+
+// ── Spend read-out ──────────────────────────────────────────────────────────
+// Meta only publishes an exact spend range for political / social-issue ads.
+// For everything else (the commercial ads this tool is aimed at) that field is
+// empty, so the honest signal is an estimate: an advertiser only keeps paying
+// to run an ad — and to run several versions of it — while it makes money, so
+// longevity × live variants is the cheapest proxy for how much is behind it.
+type SpendReadout = {
+  exact: boolean;
+  amount: string;
+  tier: "low" | "medium" | "high" | "unknown";
+  note: string;
+};
+
+function spendReadout(ad: CompetitorAd): SpendReadout {
+  const exact = (ad.spend || "").trim();
+  if (exact) {
+    return {
+      exact: true,
+      amount: exact,
+      tier: "high",
+      note: "Reported by Meta’s Ad Library.",
+    };
+  }
+  const days = daysRunning(ad);
+  const variants = Math.max(1, ad.ad_variants || 1);
+  const active = ad.ad_active === "true" || ad.is_active === "true";
+  if (days === null) {
+    return {
+      exact: false,
+      amount: "Not disclosed",
+      tier: "unknown",
+      note: "Meta doesn’t publish spend for this ad and there’s no run length to estimate from.",
+    };
+  }
+  // Each extra live variant is roughly another week of sustained budget.
+  const score = days + (variants - 1) * 7 + (active ? 3 : 0);
+  const tier: SpendReadout["tier"] = score >= 30 ? "high" : score >= 14 ? "medium" : "low";
+  const label = tier === "high" ? "High" : tier === "medium" ? "Medium" : "Low";
+  return {
+    exact: false,
+    amount: `${label} (est.)`,
+    tier,
+    note: `Estimated from ${days} day${days === 1 ? "" : "s"} live` +
+      `${variants > 1 ? ` × ${variants} variants` : ""}. ` +
+      "Meta only reports exact spend for political / social-issue ads.",
+  };
 }
 
 function WinnerBadge({ ad, className = "" }: { ad: CompetitorAd; className?: string }) {
@@ -567,10 +621,10 @@ function CreativeDetailPanel({
   };
   return (
     <>
-    <div className="fixed inset-0 z-50 flex">
-      <div className="flex-1 bg-black/40" onClick={onClose} />
-      <div className="w-80 bg-card border-l border-border h-full overflow-y-auto shadow-2xl flex flex-col">
-        <div className="p-4 border-b border-border flex items-center justify-between">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/40" onClick={onClose} />
+      <div className="relative w-full max-w-lg bg-card border border-border rounded-2xl max-h-[90vh] overflow-y-auto shadow-2xl flex flex-col">
+        <div className="p-4 border-b border-border flex items-center justify-between sticky top-0 bg-card z-10">
           <div className="min-w-0">
             <span className="text-sm font-semibold text-foreground">Creative Detail</span>
             {brandName && <p className="text-[11px] text-muted-foreground truncate">{brandName}</p>}
@@ -798,6 +852,47 @@ function CreativeDetailPanel({
               )}
             </div>
           )}
+          {(() => {
+            const s = spendReadout(ad);
+            const tone = s.exact || s.tier === "high"
+              ? "border-emerald-300 bg-emerald-50 text-emerald-800"
+              : s.tier === "medium"
+                ? "border-amber-300 bg-amber-50 text-amber-800"
+                : s.tier === "low"
+                  ? "border-slate-300 bg-slate-50 text-slate-700"
+                  : "border-slate-200 bg-slate-50 text-muted-foreground";
+            return (
+              <div className="pt-2 border-t border-border space-y-2">
+                <div className="flex items-center gap-1.5">
+                  <DollarSign className="w-3.5 h-3.5 text-primary" />
+                  <p className="text-[9px] text-muted-foreground uppercase tracking-widest font-semibold">Ad spend</p>
+                </div>
+                <div className={`flex items-center justify-between rounded-lg border px-3 py-2 ${tone}`}>
+                  <span className="text-sm font-bold">{s.amount}</span>
+                  <span className="text-[10px] font-semibold uppercase tracking-wider opacity-80">
+                    {s.exact ? "Meta" : "estimate"}
+                  </span>
+                </div>
+                <p className="text-[10px] text-muted-foreground leading-snug">{s.note}</p>
+                {(ad.impressions || ad.reach) && (
+                  <div className="grid grid-cols-2 gap-2 text-xs pt-1">
+                    {ad.impressions && (
+                      <div>
+                        <p className="text-[9px] text-muted-foreground uppercase tracking-wider">Impressions</p>
+                        <p className="font-medium text-foreground">{ad.impressions}</p>
+                      </div>
+                    )}
+                    {ad.reach ? (
+                      <div>
+                        <p className="text-[9px] text-muted-foreground uppercase tracking-wider">Reach (EU)</p>
+                        <p className="font-medium text-foreground">{ad.reach.toLocaleString()}</p>
+                      </div>
+                    ) : null}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
           <div className="pt-2 border-t border-border space-y-2">
             <p className="text-[9px] text-muted-foreground uppercase tracking-widest font-semibold">Performance signals</p>
             <div className="grid grid-cols-2 gap-2 text-xs">

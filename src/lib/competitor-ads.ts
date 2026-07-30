@@ -119,6 +119,10 @@ export async function insertCompetitorAd(opts: {
   adStartedAt?: string;
   adActive?: string;
   adVariants?: number;
+  /** Meta spend disclosure (scraper only; present for political ads). */
+  spend?: string;
+  impressions?: string;
+  reach?: number | null;
 }): Promise<{ ok: true; ad: Record<string, unknown> } | { ok: false; error: string }> {
   const { projectId, brandId, buffer, contentType, remoteUrl, meta = {} } = opts;
   const mediaType = mediaTypeForContentType(contentType);
@@ -169,6 +173,9 @@ export async function insertCompetitorAd(opts: {
   if (opts.adStartedAt) { insertRow.ad_started_at = opts.adStartedAt; winnerKeys.push('ad_started_at'); }
   if (opts.adActive !== undefined) { insertRow.ad_active = opts.adActive || ''; winnerKeys.push('ad_active'); }
   if (opts.adVariants !== undefined) { insertRow.ad_variants = opts.adVariants || 0; winnerKeys.push('ad_variants'); }
+  if (opts.spend) { insertRow.spend = opts.spend; winnerKeys.push('spend'); }
+  if (opts.impressions) { insertRow.impressions = opts.impressions; winnerKeys.push('impressions'); }
+  if (opts.reach !== undefined && opts.reach !== null) { insertRow.reach = opts.reach; winnerKeys.push('reach'); }
 
   let { data, error } = await supabaseAdmin
     .from('competitor_ads')

@@ -161,6 +161,30 @@ export interface MappedAd {
   adStartedAt: string; // ISO, '' when unknown
   adActive: string; // 'true' | 'false' | ''
   adVariants: number; // how many ads are collated under this creative
+  /**
+   * Spend, as Meta discloses it. Only present for political / social-issue
+   * ads; '' for the commercial ads this tool targets. Impressions/reach come
+   * from the same disclosure.
+   */
+  spend: string;
+  impressions: string;
+  reach: number | null;
+}
+
+/** Format a Meta `{ lower_bound, upper_bound }` range (or a plain value). */
+function formatRange(v: unknown, currency = ''): string {
+  const cur = currency ? `${currency} ` : '';
+  const r = rec(v);
+  const lo = firstNum(r.lower_bound, r.lowerBound);
+  const hi = firstNum(r.upper_bound, r.upperBound);
+  if (lo !== null || hi !== null) {
+    const fmt = (n: number) => (n >= 1000 ? `${Math.round(n / 1000)}K` : `${n}`);
+    if (lo !== null && hi !== null) return `${cur}${fmt(lo)}–${fmt(hi)}`;
+    if (hi !== null) return `${cur}<${fmt(hi)}`;
+    return `${cur}>${fmt(lo as number)}`;
+  }
+  const s = firstStr(v);
+  return s ? `${cur}${s}` : '';
 }
 
 /**
@@ -242,6 +266,14 @@ export function mapApifyAdItem(raw: unknown): MappedAd | null {
   const adVariants =
     firstNum(r.collationCount, r.collation_count, r.total, r.totalCount, snap.collation_count) ?? 0;
 
+  // ── Spend / reach (disclosed only for political & social-issue ads) ───────
+  const currency = firstStr(r.currency, snap.currency);
+  const spend = formatRange(r.spend ?? snap.spend, currency).slice(0, 60);
+  const impressions = formatRange(r.impressions ?? snap.impressions).slice(0, 60);
+  const reach = firstNum(
+    r.eu_total_reach, r.euTotalReach, r.total_reach, r.totalReach, r.reach, snap.eu_total_reach,
+  );
+
   return {
     externalId,
     mediaType,
@@ -253,5 +285,8 @@ export function mapApifyAdItem(raw: unknown): MappedAd | null {
     adStartedAt,
     adActive,
     adVariants: Math.max(0, Math.round(adVariants)),
+    spend,
+    impressions,
+    reach: reach !== null && reach > 0 ? Math.round(reach) : null,
   };
 }

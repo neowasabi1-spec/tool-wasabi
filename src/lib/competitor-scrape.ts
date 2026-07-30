@@ -174,6 +174,9 @@ export async function ingestDataset(opts: {
       adStartedAt: mapped.adStartedAt || undefined,
       adActive: mapped.adActive,
       adVariants: mapped.adVariants,
+      spend: mapped.spend || undefined,
+      impressions: mapped.impressions || undefined,
+      reach: mapped.reach,
       meta: {
         name: mapped.headline || mapped.pageName,
         headline: mapped.headline,
