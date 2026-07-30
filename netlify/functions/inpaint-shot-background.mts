@@ -525,7 +525,9 @@ function detectRemaining(
   const frames = Math.floor(out.buf.length / (out.w * out.h * 3));
   const cm = captionMasks(out.buf, frames, out.w, out.h, textRegion);
   if (!cm) return null;
-  if (!maskIsTrustworthy(cm, out.w, out.h).ok) return null;
+  // No trust gate here. That gate asks whether a mask is safe to hand a remover,
+  // which is a different question: a match too broad to erase is still a solid
+  // answer to "is there text-shaped bright lettering left in this clip".
 
   const bad: number[] = [];
   const counts: number[] = [];
@@ -991,6 +993,45 @@ export default async (req: Request) => {
       } catch (e) {
         note = `OCR cleanup skipped: ${(e as Error).message}`;
         log(note);
+      }
+    }
+
+    // ── Final gate. Every stage above reports success on its own terms, and a
+    // clip still carrying its caption slipped through all of them: the mask had
+    // latched onto a badge, the model changed almost nothing, the orig-vs-output
+    // comparison therefore saw nothing to flag, and the result was filed as
+    // clean. So the finished clip is judged on its own, and anything that cannot
+    // be judged is refused — an unverifiable clip in the pool puts text back into
+    // finished videos, which is the one outcome worth avoiding. ───────────────
+    if (!unusable) {
+      try {
+        if (!W || !H) throw new Error('source dimensions unknown');
+        const finalRgb = await rgbFrames(outFile, W, H, dur, fps, workDir);
+        const left = detectRemaining(
+          finalRgb, (claimed as { text_region?: string | null }).text_region ?? null,
+        );
+        const maxDrop = Math.max(2, Math.floor((left?.frames || 0) * MAX_DROP));
+        if (!left) {
+          log('verified: no caption left in the result');
+        } else if (left.bad.length > maxDrop) {
+          unusable = true;
+          note = `caption still readable on ${left.bad.length}/${left.frames} frames — shot left out of the pool`;
+          log(`final gate: ${note}`);
+        } else {
+          // Few enough to freeze over: dropping them holds the previous good
+          // frame, which reads better than a patch blinking on and off.
+          const patched = path.join(workDir, 'clean3.mp4');
+          await run(FFMPEG, [
+            '-y', '-i', outFile, '-vf', buildDropGraph(left.bad, fps),
+            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-an', patched,
+          ]);
+          fs.copyFileSync(patched, outFile);
+          log(`final gate: dropped ${left.bad.length}/${left.frames} frame(s) still showing text`);
+        }
+      } catch (e) {
+        unusable = true;
+        note = `could not verify the result (${(e as Error).message}) — shot left out of the pool`;
+        log(`final gate: ${note}`);
       }
     }
 

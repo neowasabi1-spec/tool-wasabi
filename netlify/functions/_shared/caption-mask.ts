@@ -18,6 +18,21 @@ import { run, FFMPEG } from './video';
 
 const COLOR_TOL = 110;  // L1 distance from the caption colour that still counts
 const DILATE = 8;       // px grown around matches (antialiasing, outline, shadow)
+// Glyphs are judged after growing them sideways only. A caption is a horizontal
+// run of letters with whatever else is on screen sitting above or below it, so
+// growing wide joins the letters into one line while growing tall welds the line
+// onto its neighbours: at a symmetric DILATE an outlined badge fused with the
+// caption underneath it and the mask ended up on the badge, leaving the words
+// untouched. Growing evenly but less is not a way out either — the letters then
+// stay separate blobs and only one word of the line survives the shape test.
+const SHAPE_DILATE_X = 8;
+const SHAPE_DILATE_Y = 2;
+// Height ceilings for "this is a line of words", as a share of the frame: one
+// line on its own, and a whole caption block after the lines have been grown
+// together. Measured on these shots a single line runs about 7% and a two-line
+// block about 19%, while the badge that hijacked the mask was 39%.
+const LINE_TALLEST = 0.18;
+const BLOCK_TALLEST = 0.30;
 
 export type CaptionMasks = {
   masks: Uint8Array[];
@@ -130,6 +145,27 @@ function learnColour(
   };
 }
 
+/** Dilation by `rx` px sideways and `ry` px vertically, within the given rows. */
+function dilate(
+  src: Uint8Array, w: number, h: number, y0: number, y1: number, rx: number, ry: number,
+): Uint8Array {
+  const out = new Uint8Array(src.length);
+  for (let y = y0; y < y1; y++) {
+    for (let x = 0; x < w; x++) {
+      if (!src[y * w + x]) continue;
+      for (let dy = -ry; dy <= ry; dy++) {
+        const yy = y + dy;
+        if (yy < 0 || yy >= h) continue;
+        for (let dx = -rx; dx <= rx; dx++) {
+          const xx = x + dx;
+          if (xx >= 0 && xx < w) out[yy * w + xx] = 1;
+        }
+      }
+    }
+  }
+  return out;
+}
+
 /**
  * Keep only blobs shaped like a line of text, in place.
  *
@@ -141,6 +177,7 @@ function learnColour(
  */
 function keepTextBlobs(
   mask: Uint8Array, w: number, y0: number, y1: number, centre: number,
+  tallestRatio: number,
 ): { fill: number; px: number } {
   const label = new Int32Array(mask.length);
   const blobs: { size: number; x0: number; x1: number; y0: number; y1: number }[] = [
@@ -173,39 +210,37 @@ function keepTextBlobs(
       blobs.push(b);
     }
   }
-  const biggest = blobs.reduce((m, b) => Math.max(m, b.size), 0);
-  if (!biggest) return { fill: 0, px: 0 };
-  const shaped: number[] = [];
+  if (blobs.length < 2) return { fill: 0, px: 0 };
+  // A blob taller than this is a graphic rather than a line of words: an outlined
+  // badge sitting above the caption used to end up in the mask while the words
+  // underneath were never touched. The caller passes a tight ratio while lines
+  // are still separate and a loose one afterwards, because a two-line caption
+  // becomes a single blob once grown and would otherwise be thrown out with it.
+  const tallest = Math.max(8, Math.round((y1 - y0) * tallestRatio));
+  const lines: number[] = [];
   for (let id = 1; id < blobs.length; id++) {
     const b = blobs[id];
     const bw = b.x1 - b.x0 + 1, bh = b.y1 - b.y0 + 1;
-    if (b.size < biggest * 0.2 || b.size / (bw * bh) < 0.5 || bw < bh) continue;
-    shaped.push(id);
+    if (b.size / (bw * bh) < 0.5 || bw < bh || bh > tallest) continue;
+    lines.push(id);
   }
-  // Captions are one to three stacked lines anywhere in the frame, so the main
-  // line is the biggest blob, preferring the ones near where the caption was
-  // measured, and the rest are kept only if they sit within about a line height
-  // of it: a second line does, a sign across the shot does not.
-  const score = (id: number) => {
-    const b = blobs[id];
-    const dist = Math.abs((b.y0 + b.y1) / 2 - centre);
-    return b.size / (1 + (2 * dist) / Math.max(1, y1 - y0));
-  };
-  const main = shaped.reduce((m, id) => (score(id) > score(m) ? id : m), shaped[0]);
-  const keep = new Set<number>();
+  // Scale "big enough to be a word" to the line-shaped candidates rather than to
+  // every blob: a bright shape elsewhere in the frame would otherwise set the bar
+  // so high that the caption itself counts as noise.
+  const biggest = lines.reduce((m, id) => Math.max(m, blobs[id].size), 0);
+  const shaped = lines.filter((id) => blobs[id].size >= biggest * 0.2);
+  // Every line-shaped match is kept, wherever it sits. Grouping them around the
+  // biggest one looked safer but threw away real overlays: a shot with a caption
+  // mid-frame and a call-to-action button above it had the button masked and the
+  // words left on screen, because the two were too far apart to be treated as one
+  // caption. Both are burned in, and both have to go.
+  const keep = new Set<number>(shaped);
   let px = 0, fillSum = 0;
-  if (main) {
-    const mb = blobs[main];
-    const reach = (mb.y1 - mb.y0 + 1) * 2;
-    for (const id of shaped) {
-      const b = blobs[id];
-      const gap = Math.max(0, Math.max(mb.y0 - b.y1, b.y0 - mb.y1));
-      if (gap > reach) continue;
-      const bw = b.x1 - b.x0 + 1, bh = b.y1 - b.y0 + 1;
-      keep.add(id);
-      px += b.size;
-      fillSum += (b.size / (bw * bh)) * b.size;
-    }
+  for (const id of shaped) {
+    const b = blobs[id];
+    const bw = b.x1 - b.x0 + 1, bh = b.y1 - b.y0 + 1;
+    px += b.size;
+    fillSum += (b.size / (bw * bh)) * b.size;
   }
   for (let p = 0; p < mask.length; p++) if (mask[p] && !keep.has(label[p])) mask[p] = 0;
   return { fill: px ? fillSum / px : 0, px };
@@ -256,7 +291,7 @@ export function captionMasks(
       const m = fam.masks[f];
       for (let p = 0; p < union.length; p++) if (m[p]) union[p] = 1;
     }
-    const kept = keepTextBlobs(union, w, 0, h, centre);
+    const kept = keepTextBlobs(union, w, 0, h, centre, BLOCK_TALLEST);
     if (kept.px) { fillSum += kept.fill; withText++; }
     total += kept.px;
     masks.push(union);
@@ -317,21 +352,15 @@ function familyMask(
         if (outlined) hit[p] = 1;
       }
     }
-    const grown = new Uint8Array(w * h);
-    for (let y = y0; y < y1; y++) {
-      for (let x = 0; x < w; x++) {
-        if (!hit[y * w + x]) continue;
-        for (let dy = -DILATE; dy <= DILATE; dy++) {
-          const yy = y + dy;
-          if (yy < 0 || yy >= h) continue;
-          for (let dx = -DILATE; dx <= DILATE; dx++) {
-            const xx = x + dx;
-            if (xx >= 0 && xx < w) grown[yy * w + xx] = 1;
-          }
-        }
-      }
-    }
-    const kept = keepTextBlobs(Uint8Array.from(grown), w, y0, y1, centre);
+    // Judge the lightly grown glyphs, then grow only what was kept: the shape
+    // test sees separate text lines, and the mask handed to the remover still
+    // carries the margin it needs for outlines and antialiasing.
+    const shape = dilate(hit, w, h, y0, y1, SHAPE_DILATE_X, SHAPE_DILATE_Y);
+    keepTextBlobs(shape, w, y0, y1, centre, LINE_TALLEST);
+    // Only what the shape test kept is grown into the mask the remover gets, so
+    // the extra margin never reaches back to the graphics that were excluded.
+    const grown = dilate(shape, w, h, y0, y1, DILATE, DILATE);
+    const kept = keepTextBlobs(grown, w, y0, y1, centre, BLOCK_TALLEST);
     // Captions often cover only part of a clip. Empty frames are fine — the mask
     // is simply blank there — so they must not drag the shape score down.
     if (kept.px) { rowConc += kept.fill; withText++; }
