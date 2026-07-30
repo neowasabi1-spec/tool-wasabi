@@ -1622,29 +1622,29 @@ export function FunnelTab({ projectId }: { projectId: string }) {
           Click sul backdrop chiude. */}
       {viewsModalFlow !== null && (
         <div
-          className="fixed inset-0 z-[60] bg-black/80 flex flex-col"
+          className="fixed inset-0 z-[60] bg-white flex flex-col"
           onClick={() => setViewsModalFlow(null)}
         >
           <div
-            className="px-6 py-4 flex items-center justify-between bg-gray-900 flex-shrink-0 border-b border-gray-800"
+            className="px-6 py-4 flex items-center justify-between bg-white flex-shrink-0 border-b border-slate-200"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center gap-3">
               <LayoutGrid className="w-6 h-6 text-primary" />
               <div>
-                <h2 className="text-lg font-bold text-white">
+                <h2 className="text-lg font-bold text-slate-900">
                   {viewsModalFlow === '__no_flow__'
-                    ? <span className="italic text-gray-300">No Flow (legacy)</span>
+                    ? <span className="italic text-slate-500">No Flow (legacy)</span>
                     : <>Flow: <span className="text-primary">{viewsModalFlow}</span></>}
                 </h2>
-                <p className="text-gray-400 text-xs">
+                <p className="text-slate-500 text-xs">
                   {viewsModalSteps.length} step{viewsModalSteps.length === 1 ? '' : ''}
                 </p>
               </div>
             </div>
             <button
               onClick={() => setViewsModalFlow(null)}
-              className="text-white/80 hover:text-white text-3xl font-bold px-2"
+              className="text-slate-400 hover:text-slate-700 text-3xl font-bold px-2"
               title="Close"
             >×</button>
           </div>
@@ -1654,7 +1654,7 @@ export function FunnelTab({ projectId }: { projectId: string }) {
             onClick={(e) => e.stopPropagation()}
           >
             {viewsModalSteps.length === 0 ? (
-              <div className="text-center text-gray-400 py-20">
+              <div className="text-center text-slate-500 py-20">
                 No steps in this flow.
               </div>
             ) : (
@@ -1707,12 +1707,12 @@ export function FunnelTab({ projectId }: { projectId: string }) {
                       </div>
                       <div className="p-3">
                         <div className="flex items-center gap-2 mb-1.5">
-                          <span className="text-xs font-bold text-gray-400 bg-gray-100 rounded-full w-5 h-5 flex items-center justify-center">{s.step_number}</span>
+                          <span className="text-xs font-bold text-slate-600 bg-slate-100 rounded-full w-5 h-5 flex items-center justify-center">{s.step_number}</span>
                           <span className="font-semibold text-sm text-gray-900 truncate flex-1">{s.page_name || '(no name)'}</span>
                         </div>
                         <span className="inline-block px-2 py-0.5 rounded-full text-[10px] font-medium bg-blue-50 text-blue-700">{s.step_type}</span>
                         {!hasContent && (
-                          <p className="text-[10px] text-gray-400 mt-1 italic">No HTML</p>
+                          <p className="text-[10px] text-slate-500 mt-1 italic">No HTML</p>
                         )}
                       </div>
                     </div>
@@ -1729,18 +1729,18 @@ export function FunnelTab({ projectId }: { projectId: string }) {
           (fallback su html_file_path) e renderizza due iframe affiancate. */}
       {previewStep && (
         <div
-          className="fixed inset-0 z-[70] bg-black/90 flex flex-col"
+          className="fixed inset-0 z-[70] bg-slate-100 flex flex-col"
           onClick={closeStepPreview}
         >
           <div
-            className="px-6 py-4 flex items-center justify-between bg-gray-900 flex-shrink-0"
+            className="px-6 py-4 flex items-center justify-between bg-white flex-shrink-0 border-b border-slate-200"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center gap-3">
-              <Eye className="w-6 h-6 text-white" />
+              <Eye className="w-6 h-6 text-slate-700" />
               <div>
-                <h2 className="text-lg font-bold text-white">{previewStep.page_name || `Step ${previewStep.step_number}`}</h2>
-                <p className="text-gray-400 text-sm truncate max-w-xl">{previewStep.url || '(no URL)'}</p>
+                <h2 className="text-lg font-bold text-slate-900">{previewStep.page_name || `Step ${previewStep.step_number}`}</h2>
+                <p className="text-slate-500 text-sm truncate max-w-xl">{previewStep.url || '(no URL)'}</p>
               </div>
             </div>
             <div className="flex items-center gap-3">
@@ -1756,7 +1756,7 @@ export function FunnelTab({ projectId }: { projectId: string }) {
               )}
               <button
                 onClick={closeStepPreview}
-                className="text-white/80 hover:text-white text-3xl font-bold px-2"
+                className="text-slate-400 hover:text-slate-700 text-3xl font-bold px-2"
                 title="Close"
               >×</button>
             </div>
@@ -1770,15 +1770,15 @@ export function FunnelTab({ projectId }: { projectId: string }) {
               <div className="flex-1 flex items-center justify-center">
                 <div className="text-center">
                   <Loader2 className="w-12 h-12 text-primary animate-spin mx-auto mb-4" />
-                  <p className="text-white text-lg font-medium">Loading page…</p>
+                  <p className="text-slate-900 text-lg font-medium">Loading page…</p>
                 </div>
               </div>
             ) : previewHtml ? (
               <>
                 <div className="flex-1 flex flex-col min-w-0">
                   <div className="flex items-center gap-2 mb-3">
-                    <Monitor className="w-4 h-4 text-blue-400" />
-                    <span className="text-blue-400 text-sm font-semibold">Desktop</span>
+                    <Monitor className="w-4 h-4 text-blue-700" />
+                    <span className="text-blue-700 text-sm font-semibold">Desktop</span>
                   </div>
                   <div className="flex-1 bg-white rounded-xl overflow-hidden shadow-2xl">
                     <iframe
@@ -1791,10 +1791,10 @@ export function FunnelTab({ projectId }: { projectId: string }) {
                 </div>
                 <div className="flex flex-col items-center" style={{ width: '375px', flexShrink: 0 }}>
                   <div className="flex items-center gap-2 mb-3">
-                    <Smartphone className="w-4 h-4 text-green-400" />
-                    <span className="text-green-400 text-sm font-semibold">Mobile</span>
+                    <Smartphone className="w-4 h-4 text-green-700" />
+                    <span className="text-green-700 text-sm font-semibold">Mobile</span>
                   </div>
-                  <div className="w-[375px] h-full bg-white rounded-[32px] overflow-hidden shadow-2xl border-[6px] border-gray-700">
+                  <div className="w-[375px] h-full bg-white rounded-[32px] overflow-hidden shadow-2xl border-[6px] border-slate-300">
                     <iframe
                       src={previewBlobUrl ?? undefined}
                       className="w-full h-full border-0"
@@ -1807,8 +1807,8 @@ export function FunnelTab({ projectId }: { projectId: string }) {
             ) : (
               <div className="flex-1 flex items-center justify-center">
                 <div className="text-center">
-                  <p className="text-white text-lg font-medium">No HTML available</p>
-                  <p className="text-gray-400 text-sm mt-2">This step does not have a rewritten or uploaded page yet.</p>
+                  <p className="text-slate-900 text-lg font-medium">No HTML available</p>
+                  <p className="text-slate-500 text-sm mt-2">This step does not have a rewritten or uploaded page yet.</p>
                 </div>
               </div>
             )}

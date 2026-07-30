@@ -7,7 +7,7 @@
   --background-start-rgb: 249, 250, 251;
   --background-end-rgb: 255, 255, 255;
 
-  /* shadcn/ui tokens — LIGHT (used inside `.projecthub-theme` containers) */
+  /* shadcn/ui tokens — LIGHT. These are what `.projecthub-theme` resolves to. */
   --button-outline: rgba(0, 0, 0, 0.1);
   --badge-outline: rgba(0, 0, 0, 0.05);
   --opaque-button-border-intensity: -8;
@@ -70,9 +70,9 @@
   --sidebar-accent-border: hsl(0 0% 86%);
 }
 
-/* Apply DARK shadcn tokens to anything inside a `.dark` (or `.projecthub-theme`) wrapper */
-.dark,
-.projecthub-theme {
+/* Apply DARK shadcn tokens to anything inside a `.dark` wrapper. The project hub
+   used to sit in here too; it is a light surface now, so it inherits `:root`. */
+.dark {
   --button-outline: rgba(255, 255, 255, 0.1);
   --badge-outline: rgba(255, 255, 255, 0.05);
   --opaque-button-border-intensity: 9;
@@ -134,8 +134,12 @@
 }
 
 /* Scope projecthub container to use its own background/foreground without
-   overriding the rest of the app */
+   overriding the rest of the app. The body gradient shows through otherwise.
+   My Projects is a plain white surface, so `--background` is pure white here
+   rather than the app's off-white, and `bg-background` panels inside it end up
+   white too instead of a shade away from their own cards. */
 .projecthub-theme {
+  --background: 0 0% 100%;
   background-color: hsl(var(--background));
   color: hsl(var(--foreground));
 }

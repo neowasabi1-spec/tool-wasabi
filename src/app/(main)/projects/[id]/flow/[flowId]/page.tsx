@@ -81,12 +81,12 @@ function StepCard({ step, onClick, isSelected }: {
       className={`relative flex-shrink-0 w-44 rounded-xl border-2 cursor-pointer transition-all select-none
         ${isSelected
           ? 'border-blue-500 shadow-lg shadow-blue-500/20'
-          : 'border-[#2A2D3A] hover:border-[#4A4D5A]'
-        } bg-[#1A1D27]`}
+          : 'border-slate-200 hover:border-slate-300'
+        } bg-white`}
     >
       {/* Step number badge */}
-      <div className="absolute -top-2 -left-2 w-5 h-5 rounded-full bg-[#252836] border border-[#3A3D4A] flex items-center justify-center">
-        <span className="text-xs font-bold text-gray-400">{step.step_number}</span>
+      <div className="absolute -top-2 -left-2 w-5 h-5 rounded-full bg-slate-100 border border-slate-300 flex items-center justify-center">
+        <span className="text-xs font-bold text-slate-500">{step.step_number}</span>
       </div>
 
       <div className="p-4">
@@ -99,7 +99,7 @@ function StepCard({ step, onClick, isSelected }: {
         </div>
 
         {/* Name */}
-        <h4 className="text-sm font-semibold text-white truncate mb-2">{step.name}</h4>
+        <h4 className="text-sm font-semibold text-slate-900 truncate mb-2">{step.name}</h4>
 
         {/* Status badge */}
         <div className="flex items-center gap-1.5 mb-2">
@@ -111,13 +111,13 @@ function StepCard({ step, onClick, isSelected }: {
         <div className="space-y-1">
           {step.cvr > 0 && (
             <div className="flex items-center justify-between">
-              <span className="text-xs text-gray-500">CVR</span>
-              <span className="text-xs font-medium text-green-400">{step.cvr}%</span>
+              <span className="text-xs text-slate-500">CVR</span>
+              <span className="text-xs font-medium text-emerald-600">{step.cvr}%</span>
             </div>
           )}
           {step.price != null && step.price > 0 && (
             <div className="flex items-center justify-between">
-              <span className="text-xs text-gray-500">Price</span>
+              <span className="text-xs text-slate-500">Price</span>
               <span className="text-xs font-medium text-blue-400">${step.price}</span>
             </div>
           )}
@@ -132,8 +132,8 @@ function Arrow() {
   return (
     <div className="flex-shrink-0 flex items-center px-1">
       <div className="flex items-center gap-0.5">
-        <div className="w-8 h-px bg-[#3A3D4A]" />
-        <ChevronRight className="w-4 h-4 text-[#3A3D4A]" />
+        <div className="w-8 h-px bg-slate-300" />
+        <ChevronRight className="w-4 h-4 text-slate-300" />
       </div>
     </div>
   );
@@ -175,37 +175,37 @@ function SidePanel({ step, onClose, onUpdate, onDelete }: {
   const Icon = meta.icon;
 
   return (
-    <div className="flex flex-col h-full bg-[#13151E] border-l border-[#2A2D3A]">
+    <div className="flex flex-col h-full bg-white border-l border-slate-200">
       {/* Panel Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-[#2A2D3A]">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
         <div className="flex items-center gap-3">
           <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ backgroundColor: `${meta.color}22` }}>
             <Icon className="w-4 h-4" style={{ color: meta.color }} />
           </div>
           <div>
-            <h3 className="text-sm font-semibold text-white">{step.name}</h3>
-            <p className="text-xs text-gray-500 capitalize">{step.step_type} · Step {step.step_number}</p>
+            <h3 className="text-sm font-semibold text-slate-900">{step.name}</h3>
+            <p className="text-xs text-slate-500 capitalize">{step.step_type} · Step {step.step_number}</p>
           </div>
         </div>
         <div className="flex items-center gap-1">
           {step.live_url && (
             <a href={step.live_url} target="_blank" rel="noopener noreferrer"
-              className="p-1.5 text-gray-400 hover:text-blue-400 transition-colors" title="Open live URL">
+              className="p-1.5 text-slate-500 hover:text-blue-600 transition-colors" title="Open live URL">
               <ExternalLink className="w-4 h-4" />
             </a>
           )}
           <button onClick={async () => { if (await confirmDialog({ title: 'Elimina step', message: 'Vuoi eliminare questo step?', confirmText: 'Elimina', danger: true })) onDelete(); }}
-            className="p-1.5 text-gray-400 hover:text-red-400 transition-colors">
+            className="p-1.5 text-slate-500 hover:text-red-600 transition-colors">
             <Trash2 className="w-4 h-4" />
           </button>
-          <button onClick={onClose} className="p-1.5 text-gray-400 hover:text-white transition-colors">
+          <button onClick={onClose} className="p-1.5 text-slate-500 hover:text-slate-900 transition-colors">
             <X className="w-4 h-4" />
           </button>
         </div>
       </div>
 
       {/* Tabs */}
-      <div className="flex border-b border-[#2A2D3A]">
+      <div className="flex border-b border-slate-200">
         {tabs.map(t => {
           const TIcon = t.icon;
           return (
@@ -213,7 +213,7 @@ function SidePanel({ step, onClose, onUpdate, onDelete }: {
               key={t.id}
               onClick={() => setTab(t.id)}
               className={`flex items-center gap-1.5 px-3 py-2.5 text-xs font-medium transition-colors flex-1 justify-center
-                ${tab === t.id ? 'text-blue-400 border-b-2 border-blue-400' : 'text-gray-500 hover:text-gray-300'}`}
+                ${tab === t.id ? 'text-blue-600 border-b-2 border-blue-600' : 'text-slate-500 hover:text-slate-700'}`}
             >
               <TIcon className="w-3.5 h-3.5" />
               {t.label}
@@ -226,24 +226,24 @@ function SidePanel({ step, onClose, onUpdate, onDelete }: {
       <div className="flex-1 overflow-y-auto p-4">
         {tab === 'copy' && (
           <div className="h-full flex flex-col gap-3">
-            <label className="text-xs font-medium text-gray-400">Copy / VSL Script</label>
+            <label className="text-xs font-medium text-slate-500">Copy / VSL Script</label>
             <textarea
               value={localStep.copy_text || ''}
               onChange={e => updateLocal('copy_text', e.target.value)}
               placeholder="Paste your copy, VSL script, or page text here..."
-              className="flex-1 min-h-[300px] w-full px-3 py-2 bg-[#0F1117] border border-[#2A2D3A] rounded-lg text-sm text-gray-300 placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-blue-500 resize-none font-mono"
+              className="flex-1 min-h-[300px] w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm text-slate-700 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-blue-500 resize-none font-mono"
             />
           </div>
         )}
 
         {tab === 'html' && (
           <div className="h-full flex flex-col gap-3">
-            <label className="text-xs font-medium text-gray-400">HTML Content</label>
+            <label className="text-xs font-medium text-slate-500">HTML Content</label>
             <textarea
               value={localStep.html_content || ''}
               onChange={e => updateLocal('html_content', e.target.value)}
               placeholder="Paste full page HTML here..."
-              className="flex-1 min-h-[300px] w-full px-3 py-2 bg-[#0A0B10] border border-[#2A2D3A] rounded-lg text-xs text-green-400 placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-blue-500 resize-none font-mono leading-relaxed"
+              className="flex-1 min-h-[300px] w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs text-emerald-600 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-blue-500 resize-none font-mono leading-relaxed"
             />
           </div>
         )}
@@ -251,30 +251,30 @@ function SidePanel({ step, onClose, onUpdate, onDelete }: {
         {tab === 'settings' && (
           <div className="space-y-4">
             <div>
-              <label className="text-xs font-medium text-gray-400 block mb-1.5">Step Name</label>
+              <label className="text-xs font-medium text-slate-500 block mb-1.5">Step Name</label>
               <input
                 type="text"
                 value={localStep.name}
                 onChange={e => updateLocal('name', e.target.value)}
-                className="w-full px-3 py-2 bg-[#0F1117] border border-[#2A2D3A] rounded-lg text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-500"
               />
             </div>
             <div>
-              <label className="text-xs font-medium text-gray-400 block mb-1.5">Step Type</label>
+              <label className="text-xs font-medium text-slate-500 block mb-1.5">Step Type</label>
               <select
                 value={localStep.step_type}
                 onChange={e => updateLocal('step_type', e.target.value)}
-                className="w-full px-3 py-2 bg-[#0F1117] border border-[#2A2D3A] rounded-lg text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-500"
               >
                 {STEP_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
               </select>
             </div>
             <div>
-              <label className="text-xs font-medium text-gray-400 block mb-1.5">Status</label>
+              <label className="text-xs font-medium text-slate-500 block mb-1.5">Status</label>
               <select
                 value={localStep.status}
                 onChange={e => updateLocal('status', e.target.value)}
-                className="w-full px-3 py-2 bg-[#0F1117] border border-[#2A2D3A] rounded-lg text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-500"
               >
                 <option value="draft">Draft</option>
                 <option value="ready">Ready</option>
@@ -282,31 +282,31 @@ function SidePanel({ step, onClose, onUpdate, onDelete }: {
               </select>
             </div>
             <div>
-              <label className="text-xs font-medium text-gray-400 block mb-1.5">Live URL</label>
+              <label className="text-xs font-medium text-slate-500 block mb-1.5">Live URL</label>
               <input
                 type="text"
                 value={localStep.live_url || ''}
                 onChange={e => updateLocal('live_url', e.target.value)}
                 placeholder="https://..."
-                className="w-full px-3 py-2 bg-[#0F1117] border border-[#2A2D3A] rounded-lg text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-500"
               />
             </div>
             <div>
-              <label className="text-xs font-medium text-gray-400 block mb-1.5">Price ($)</label>
+              <label className="text-xs font-medium text-slate-500 block mb-1.5">Price ($)</label>
               <input
                 type="number"
                 value={localStep.price ?? ''}
                 onChange={e => updateLocal('price', e.target.value ? parseFloat(e.target.value) : null)}
                 placeholder="0.00"
-                className="w-full px-3 py-2 bg-[#0F1117] border border-[#2A2D3A] rounded-lg text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-500"
               />
             </div>
             <div>
-              <label className="text-xs font-medium text-gray-400 block mb-1.5">Offer Type</label>
+              <label className="text-xs font-medium text-slate-500 block mb-1.5">Offer Type</label>
               <select
                 value={localStep.offer_type || ''}
                 onChange={e => updateLocal('offer_type', e.target.value || null)}
-                className="w-full px-3 py-2 bg-[#0F1117] border border-[#2A2D3A] rounded-lg text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-500"
               >
                 <option value="">Select...</option>
                 <option value="fe">Front End (FE)</option>
@@ -317,13 +317,13 @@ function SidePanel({ step, onClose, onUpdate, onDelete }: {
               </select>
             </div>
             <div>
-              <label className="text-xs font-medium text-gray-400 block mb-1.5">Preview Image URL</label>
+              <label className="text-xs font-medium text-slate-500 block mb-1.5">Preview Image URL</label>
               <input
                 type="text"
                 value={localStep.preview_image || ''}
                 onChange={e => updateLocal('preview_image', e.target.value)}
                 placeholder="https://..."
-                className="w-full px-3 py-2 bg-[#0F1117] border border-[#2A2D3A] rounded-lg text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-500"
               />
             </div>
           </div>
@@ -332,25 +332,25 @@ function SidePanel({ step, onClose, onUpdate, onDelete }: {
         {tab === 'kpi' && (
           <div className="space-y-4">
             <div className="grid grid-cols-2 gap-3">
-              <div className="bg-[#0F1117] rounded-xl p-3 border border-[#2A2D3A]">
-                <p className="text-xs text-gray-500 mb-1">Visits</p>
-                <p className="text-2xl font-bold text-white">{localStep.visits?.toLocaleString() || 0}</p>
+              <div className="bg-white rounded-xl p-3 border border-slate-200">
+                <p className="text-xs text-slate-500 mb-1">Visits</p>
+                <p className="text-2xl font-bold text-slate-900">{localStep.visits?.toLocaleString() || 0}</p>
               </div>
-              <div className="bg-[#0F1117] rounded-xl p-3 border border-[#2A2D3A]">
-                <p className="text-xs text-gray-500 mb-1">Conversions</p>
-                <p className="text-2xl font-bold text-green-400">{localStep.conversions?.toLocaleString() || 0}</p>
+              <div className="bg-white rounded-xl p-3 border border-slate-200">
+                <p className="text-xs text-slate-500 mb-1">Conversions</p>
+                <p className="text-2xl font-bold text-emerald-600">{localStep.conversions?.toLocaleString() || 0}</p>
               </div>
-              <div className="bg-[#0F1117] rounded-xl p-3 border border-[#2A2D3A]">
-                <p className="text-xs text-gray-500 mb-1">CVR %</p>
+              <div className="bg-white rounded-xl p-3 border border-slate-200">
+                <p className="text-xs text-slate-500 mb-1">CVR %</p>
                 <p className="text-2xl font-bold text-blue-400">{localStep.cvr || 0}%</p>
               </div>
-              <div className="bg-[#0F1117] rounded-xl p-3 border border-[#2A2D3A]">
-                <p className="text-xs text-gray-500 mb-1">Revenue</p>
+              <div className="bg-white rounded-xl p-3 border border-slate-200">
+                <p className="text-xs text-slate-500 mb-1">Revenue</p>
                 <p className="text-2xl font-bold text-yellow-400">${(localStep.revenue || 0).toLocaleString()}</p>
               </div>
             </div>
             <div className="space-y-3 mt-4">
-              <label className="text-xs font-medium text-gray-400 block">Update KPIs manually</label>
+              <label className="text-xs font-medium text-slate-500 block">Update KPIs manually</label>
               {[
                 { key: 'visits' as keyof FlowStep, label: 'Visits', type: 'number' },
                 { key: 'conversions' as keyof FlowStep, label: 'Conversions', type: 'number' },
@@ -358,12 +358,12 @@ function SidePanel({ step, onClose, onUpdate, onDelete }: {
                 { key: 'revenue' as keyof FlowStep, label: 'Revenue ($)', type: 'number' },
               ].map(field => (
                 <div key={field.key}>
-                  <label className="text-xs text-gray-500 block mb-1">{field.label}</label>
+                  <label className="text-xs text-slate-500 block mb-1">{field.label}</label>
                   <input
                     type={field.type}
                     value={(localStep[field.key] as number) ?? 0}
                     onChange={e => updateLocal(field.key, parseFloat(e.target.value) || 0)}
-                    className="w-full px-3 py-2 bg-[#0F1117] border border-[#2A2D3A] rounded-lg text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-500"
                   />
                 </div>
               ))}
@@ -373,7 +373,7 @@ function SidePanel({ step, onClose, onUpdate, onDelete }: {
       </div>
 
       {/* Save Button */}
-      <div className="px-4 py-3 border-t border-[#2A2D3A]">
+      <div className="px-4 py-3 border-t border-slate-200">
         <button
           onClick={save}
           disabled={saving}
@@ -404,16 +404,16 @@ function AddStepModal({ onAdd, onClose }: {
 
   return (
     <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-      <div className="bg-[#1A1D27] border border-[#2A2D3A] rounded-2xl w-full max-w-md">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-[#2A2D3A]">
-          <h3 className="text-white font-semibold">Add Step</h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-white">
+      <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-md">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200">
+          <h3 className="text-slate-900 font-semibold">Add Step</h3>
+          <button onClick={onClose} className="text-slate-500 hover:text-slate-900">
             <X className="w-5 h-5" />
           </button>
         </div>
         <div className="p-5 space-y-4">
           <div>
-            <label className="text-xs font-medium text-gray-400 block mb-2">Step Type</label>
+            <label className="text-xs font-medium text-slate-500 block mb-2">Step Type</label>
             <div className="grid grid-cols-3 gap-2">
               {STEP_TYPES.map(t => {
                 const Icon = t.icon;
@@ -424,7 +424,7 @@ function AddStepModal({ onAdd, onClose }: {
                     className={`flex flex-col items-center gap-1.5 p-3 rounded-xl border-2 transition-all text-xs font-medium
                       ${selectedType === t.value
                         ? 'border-blue-500 bg-blue-500/10 text-blue-300'
-                        : 'border-[#2A2D3A] text-gray-400 hover:border-[#3A3D4A] hover:text-gray-300'
+                        : 'border-slate-200 text-slate-500 hover:border-slate-300 hover:text-slate-700'
                       }`}
                   >
                     <Icon className="w-5 h-5" style={{ color: selectedType === t.value ? t.color : undefined }} />
@@ -435,18 +435,18 @@ function AddStepModal({ onAdd, onClose }: {
             </div>
           </div>
           <div>
-            <label className="text-xs font-medium text-gray-400 block mb-1.5">Step Name</label>
+            <label className="text-xs font-medium text-slate-500 block mb-1.5">Step Name</label>
             <input
               type="text"
               value={name}
               onChange={e => setName(e.target.value)}
               placeholder="e.g. Main VSL, Order Page..."
-              className="w-full px-3 py-2 bg-[#0F1117] border border-[#2A2D3A] rounded-lg text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
           </div>
         </div>
         <div className="px-5 pb-5 flex gap-3">
-          <button onClick={onClose} className="flex-1 px-4 py-2.5 border border-[#2A2D3A] text-gray-400 text-sm rounded-lg hover:bg-[#252836] transition-colors">
+          <button onClick={onClose} className="flex-1 px-4 py-2.5 border border-slate-200 text-slate-500 text-sm rounded-lg hover:bg-slate-100 transition-colors">
             Cancel
           </button>
           <button
@@ -524,8 +524,8 @@ export default function FlowPage({ params }: { params: Promise<{ id: string; flo
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-[#0F1117] flex items-center justify-center">
-        <div className="text-gray-400 text-lg animate-pulse">Loading flow...</div>
+      <div className="min-h-screen bg-white flex items-center justify-center">
+        <div className="text-slate-500 text-lg animate-pulse">Loading flow...</div>
       </div>
     );
   }
@@ -533,26 +533,26 @@ export default function FlowPage({ params }: { params: Promise<{ id: string; flo
   const panelOpen = selectedStep !== null;
 
   return (
-    <div className="min-h-screen bg-[#0F1117] flex flex-col">
+    <div className="min-h-screen bg-white flex flex-col">
       {/* Top Bar */}
-      <div className="bg-[#13151E] border-b border-[#2A2D3A] px-6 py-3 flex items-center gap-4">
+      <div className="bg-white border-b border-slate-200 px-6 py-3 flex items-center gap-4">
         <Link
           href={`/projects/${projectId}`}
-          className="flex items-center gap-2 text-gray-400 hover:text-white transition-colors text-sm"
+          className="flex items-center gap-2 text-slate-500 hover:text-slate-900 transition-colors text-sm"
         >
           <ArrowLeft className="w-4 h-4" />
           Back
         </Link>
-        <div className="w-px h-5 bg-[#2A2D3A]" />
+        <div className="w-px h-5 bg-slate-200" />
         <div className="flex-1">
-          <h1 className="text-white font-semibold text-sm">{flow?.name || 'Funnel Flow'}</h1>
-          <p className="text-gray-500 text-xs">{steps.length} step{steps.length !== 1 ? 's' : ''}</p>
+          <h1 className="text-slate-900 font-semibold text-sm">{flow?.name || 'Funnel Flow'}</h1>
+          <p className="text-slate-500 text-xs">{steps.length} step{steps.length !== 1 ? 's' : ''}</p>
         </div>
         <div className="flex items-center gap-2">
           <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${
-            flow?.status === 'live' ? 'bg-green-900 text-green-300' :
-            flow?.status === 'paused' ? 'bg-yellow-900 text-yellow-300' :
-            'bg-gray-800 text-gray-400'
+            flow?.status === 'live' ? 'bg-green-100 text-green-700' :
+            flow?.status === 'paused' ? 'bg-amber-100 text-amber-700' :
+            'bg-slate-100 text-slate-500'
           }`}>
             {flow?.status || 'draft'}
           </span>
@@ -573,12 +573,12 @@ export default function FlowPage({ params }: { params: Promise<{ id: string; flo
           <div className="min-h-full p-8 flex items-start">
             {steps.length === 0 ? (
               <div className="w-full flex flex-col items-center justify-center min-h-[400px] gap-4">
-                <div className="w-16 h-16 rounded-2xl bg-[#1A1D27] border-2 border-dashed border-[#2A2D3A] flex items-center justify-center">
-                  <Plus className="w-8 h-8 text-gray-600" />
+                <div className="w-16 h-16 rounded-2xl bg-white border-2 border-dashed border-slate-200 flex items-center justify-center">
+                  <Plus className="w-8 h-8 text-slate-400" />
                 </div>
                 <div className="text-center">
-                  <h3 className="text-gray-400 font-medium">No steps yet</h3>
-                  <p className="text-gray-600 text-sm mt-1">Click &quot;Add Step&quot; to build your funnel flow</p>
+                  <h3 className="text-slate-500 font-medium">No steps yet</h3>
+                  <p className="text-slate-500 text-sm mt-1">Click &quot;Add Step&quot; to build your funnel flow</p>
                 </div>
                 <button
                   onClick={() => setShowAddModal(true)}
@@ -605,9 +605,9 @@ export default function FlowPage({ params }: { params: Promise<{ id: string; flo
                   <Arrow />
                   <button
                     onClick={() => setShowAddModal(true)}
-                    className="flex-shrink-0 w-16 h-16 rounded-xl border-2 border-dashed border-[#2A2D3A] hover:border-blue-500 hover:bg-blue-500/5 flex items-center justify-center transition-all"
+                    className="flex-shrink-0 w-16 h-16 rounded-xl border-2 border-dashed border-slate-200 hover:border-blue-500 hover:bg-blue-500/5 flex items-center justify-center transition-all"
                   >
-                    <Plus className="w-6 h-6 text-gray-600 hover:text-blue-400" />
+                    <Plus className="w-6 h-6 text-slate-400 hover:text-blue-600" />
                   </button>
                 </div>
               </div>

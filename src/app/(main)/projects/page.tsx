@@ -77,11 +77,11 @@ const VIEW_STORAGE_KEY = 'projects:viewMode';
 const STATUS_OPTIONS = ['active', 'in_progress', 'paused', 'completed', 'archived'];
 
 const STATUS_COLOR: Record<string, string> = {
-  active: 'bg-green-900 text-green-300',
-  in_progress: 'bg-blue-900 text-blue-300',
-  paused: 'bg-yellow-900 text-yellow-300',
-  completed: 'bg-emerald-900 text-emerald-300',
-  archived: 'bg-gray-800 text-gray-500',
+  active: 'bg-green-100 text-green-700',
+  in_progress: 'bg-blue-100 text-blue-700',
+  paused: 'bg-amber-100 text-amber-700',
+  completed: 'bg-emerald-100 text-emerald-700',
+  archived: 'bg-slate-100 text-slate-500',
 };
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -287,12 +287,12 @@ function UploadButton({
         type="button"
         onClick={() => inputRef.current?.click()}
         disabled={busy}
-        className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-md bg-[#2A2D3A] hover:bg-[#3A3D4A] text-gray-200 transition-colors disabled:opacity-50"
+        className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-md bg-slate-100 hover:bg-slate-200 text-slate-700 transition-colors disabled:opacity-50"
       >
         {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Upload className="w-3 h-3" />}
         {busy ? 'Reading...' : label}
       </button>
-      {error && <span className="text-xs text-red-400">{error}</span>}
+      {error && <span className="text-xs text-red-600">{error}</span>}
     </div>
   );
 }
@@ -321,12 +321,12 @@ function BrandPalettePreview({ data }: { data: SectionData }) {
   }));
 
   return (
-    <div className="mt-3 border border-emerald-900/40 bg-emerald-950/20 rounded-lg p-3">
+    <div className="mt-3 border border-emerald-200 bg-emerald-50 rounded-lg p-3">
       <div className="flex items-center justify-between mb-2">
-        <div className="text-xs font-medium text-emerald-300">
+        <div className="text-xs font-medium text-emerald-700">
           Detected brand colors ({total})
         </div>
-        <div className="text-[10px] text-gray-500 uppercase tracking-wide">
+        <div className="text-[10px] text-slate-500 uppercase tracking-wide">
           Auto-parsed from uploaded files
         </div>
       </div>
@@ -335,46 +335,46 @@ function BrandPalettePreview({ data }: { data: SectionData }) {
           {canonicalEntries.map(({ label, hex }) => (
             <div
               key={label + hex}
-              className="flex items-center gap-2 bg-[#0F1117] border border-[#2A2D3A] rounded-md px-2 py-1.5"
+              className="flex items-center gap-2 bg-white border border-slate-200 rounded-md px-2 py-1.5"
             >
               <div
-                className="w-6 h-6 rounded border border-black/40 flex-shrink-0"
+                className="w-6 h-6 rounded border border-slate-300 flex-shrink-0"
                 style={{ backgroundColor: hex }}
                 title={hex}
               />
               <div className="min-w-0 flex-1">
-                <div className="text-xs text-white font-medium truncate">{label}</div>
-                <div className="text-[10px] text-gray-500 font-mono">{hex}</div>
+                <div className="text-xs text-slate-800 font-medium truncate">{label}</div>
+                <div className="text-[10px] text-slate-500 font-mono">{hex}</div>
               </div>
             </div>
           ))}
         </div>
       )}
       {extraEntries.length > 0 && (
-        <details className="text-xs text-gray-400">
-          <summary className="cursor-pointer hover:text-gray-200">
+        <details className="text-xs text-slate-500">
+          <summary className="cursor-pointer hover:text-slate-800">
             + {extraEntries.length} other color{extraEntries.length !== 1 ? 's' : ''} (unlabelled)
           </summary>
           <div className="mt-2 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
             {extraEntries.map(({ label, hex }) => (
               <div
                 key={label + hex}
-                className="flex items-center gap-2 bg-[#0F1117] border border-[#2A2D3A] rounded-md px-2 py-1.5"
+                className="flex items-center gap-2 bg-white border border-slate-200 rounded-md px-2 py-1.5"
               >
                 <div
-                  className="w-5 h-5 rounded border border-black/40 flex-shrink-0"
+                  className="w-5 h-5 rounded border border-slate-300 flex-shrink-0"
                   style={{ backgroundColor: hex }}
                 />
                 <div className="min-w-0 flex-1">
-                  <div className="text-[11px] text-gray-300 truncate" title={label}>{label}</div>
-                  <div className="text-[10px] text-gray-500 font-mono">{hex}</div>
+                  <div className="text-[11px] text-slate-600 truncate" title={label}>{label}</div>
+                  <div className="text-[10px] text-slate-500 font-mono">{hex}</div>
                 </div>
               </div>
             ))}
           </div>
         </details>
       )}
-      <div className="mt-2 text-[10px] text-gray-500 leading-relaxed">
+      <div className="mt-2 text-[10px] text-slate-500 leading-relaxed">
         These will be used in Step 2 (color detection on the swiped page) and
         Step 3 (CSS replacement). For now they&apos;re just shown so you can verify
         the parser caught the right hex codes from your brand book.
@@ -392,7 +392,7 @@ function FileRoutingTags({ file }: { file: SectionFile }) {
   const c = classifyFile(file);
   if (c.matched.length === 0) {
     return (
-      <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-800 text-gray-400 font-medium">
+      <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 font-medium">
         Always (no rule matched)
       </span>
     );
@@ -403,8 +403,8 @@ function FileRoutingTags({ file }: { file: SectionFile }) {
       {c.matched.map((rule, idx) => {
         const isFoundational = rule.pageTypes.length === 0;
         const cls = isFoundational
-          ? 'bg-emerald-900/40 text-emerald-300 border-emerald-800/60'
-          : 'bg-blue-900/40 text-blue-300 border-blue-800/60';
+          ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+          : 'bg-blue-50 text-blue-700 border-blue-200';
         const title = isFoundational
           ? `Always loaded — every page receives this file (matched rule: "${rule.label}")`
           : `Loaded only when pageType ∈ [${rule.pageTypes.join(', ')}]`;
@@ -449,22 +449,22 @@ function RoutingPreview({ files }: { files: SectionFile[] }) {
   }
 
   return (
-    <div className="border border-[#2A2D3A] rounded-lg overflow-hidden bg-[#0F1117]/70">
+    <div className="border border-slate-200 rounded-lg overflow-hidden bg-slate-50">
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
-        className="w-full px-3 py-2 flex items-center justify-between gap-2 hover:bg-[#1A1D27]/50 transition-colors"
+        className="w-full px-3 py-2 flex items-center justify-between gap-2 hover:bg-slate-50 transition-colors"
       >
-        <span className="text-xs text-gray-400 font-medium">
+        <span className="text-xs text-slate-500 font-medium">
           Smart routing preview · how many files reach Claude per page type
         </span>
-        <span className="text-[10px] text-gray-500">
+        <span className="text-[10px] text-slate-500">
           {expanded ? 'Hide' : 'Show'}
         </span>
       </button>
       {expanded && (
         <div className="px-3 pb-3 pt-1 space-y-1">
-          <div className="text-[10px] text-gray-500 mb-2 leading-relaxed">
+          <div className="text-[10px] text-slate-500 mb-2 leading-relaxed">
             Foundational files (★) are always sent. Page-type files are sent
             only when their tag matches the page being rewritten. Rename a
             file to change how it&apos;s classified (e.g. add <code>VSL</code>,
@@ -472,7 +472,7 @@ function RoutingPreview({ files }: { files: SectionFile[] }) {
           </div>
           <table className="w-full text-xs">
             <thead>
-              <tr className="text-gray-500 border-b border-[#2A2D3A]">
+              <tr className="text-slate-500 border-b border-slate-200">
                 <th className="text-left py-1 pr-2 font-medium">Page type</th>
                 <th className="text-right py-1 pl-2 font-medium">Files sent</th>
                 <th className="text-right py-1 pl-2 font-medium">Chars</th>
@@ -483,12 +483,12 @@ function RoutingPreview({ files }: { files: SectionFile[] }) {
                 const sent = classified.filter((x) => isRelevant(x.c, pt.key));
                 const chars = sent.reduce((acc, x) => acc + x.f.content.length, 0);
                 return (
-                  <tr key={pt.key} className="border-b border-[#1A1D27] last:border-b-0">
-                    <td className="py-1 pr-2 text-gray-300">{pt.label}</td>
-                    <td className="py-1 pl-2 text-right font-mono text-gray-300">
+                  <tr key={pt.key} className="border-b border-slate-100 last:border-b-0">
+                    <td className="py-1 pr-2 text-slate-600">{pt.label}</td>
+                    <td className="py-1 pl-2 text-right font-mono text-slate-600">
                       {sent.length} / {files.length}
                     </td>
-                    <td className="py-1 pl-2 text-right font-mono text-gray-400">
+                    <td className="py-1 pl-2 text-right font-mono text-slate-500">
                       {chars.toLocaleString()}
                     </td>
                   </tr>
@@ -586,7 +586,7 @@ function SectionFilesEditor({
           if (e.dataTransfer.files?.length) ingestFiles(e.dataTransfer.files);
         }}
         className={`border-2 border-dashed rounded-lg p-4 transition-colors ${
-          dragOver ? 'border-blue-500 bg-blue-500/5' : 'border-[#2A2D3A] bg-[#0F1117]'
+          dragOver ? 'border-blue-500 bg-blue-500/5' : 'border-slate-200 bg-white'
         }`}
       >
         <input
@@ -598,7 +598,7 @@ function SectionFilesEditor({
           className="hidden"
         />
         <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2 text-sm text-gray-400">
+          <div className="flex items-center gap-2 text-sm text-slate-500">
             <Upload className="w-4 h-4" />
             <span>Drop files here or click to upload (PDF, DOCX, TXT, MD, CSV...)</span>
           </div>
@@ -612,7 +612,7 @@ function SectionFilesEditor({
             {busy ? 'Reading...' : 'Upload Files'}
           </button>
         </div>
-        {error && <div className="mt-2 text-xs text-red-400">{error}</div>}
+        {error && <div className="mt-2 text-xs text-red-600">{error}</div>}
       </div>
 
       {/* Smart routing preview */}
@@ -620,26 +620,26 @@ function SectionFilesEditor({
 
       {/* File list */}
       {data.files.length === 0 ? (
-        <div className="text-center text-gray-500 text-xs py-4 border border-[#2A2D3A] rounded-lg bg-[#0F1117]/50">
+        <div className="text-center text-slate-500 text-xs py-4 border border-slate-200 rounded-lg bg-slate-50">
           No files uploaded yet.
         </div>
       ) : (
-        <div className="border border-[#2A2D3A] rounded-lg overflow-hidden">
-          <div className="px-3 py-2 border-b bg-[#1A1D27] border-[#2A2D3A]">
-            <span className="text-xs text-gray-400 font-medium">
+        <div className="border border-slate-200 rounded-lg overflow-hidden">
+          <div className="px-3 py-2 border-b bg-white border-slate-200">
+            <span className="text-xs text-slate-500 font-medium">
               {data.files.length} file{data.files.length !== 1 ? 's' : ''} · {totalChars.toLocaleString()} chars total
-              <span className="text-gray-600"> · see &ldquo;Smart routing preview&rdquo; above for what reaches Claude per page type</span>
+              <span className="text-slate-500"> · see &ldquo;Smart routing preview&rdquo; above for what reaches Claude per page type</span>
             </span>
           </div>
-          <ul className="divide-y divide-[#2A2D3A]">
+          <ul className="divide-y divide-slate-200">
             {data.files.map((f, i) => (
-              <li key={i} className="px-3 py-2 hover:bg-[#1A1D27]/50 transition-colors">
+              <li key={i} className="px-3 py-2 hover:bg-slate-50 transition-colors">
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                    <FileText className="w-4 h-4 text-blue-400 flex-shrink-0" />
+                    <FileText className="w-4 h-4 text-blue-600 flex-shrink-0" />
                     <div className="min-w-0 flex-1">
-                      <div className="text-sm text-white truncate">{f.name}</div>
-                      <div className="text-xs text-gray-500 flex items-center gap-2 mt-0.5">
+                      <div className="text-sm text-slate-800 truncate">{f.name}</div>
+                      <div className="text-xs text-slate-500 flex items-center gap-2 mt-0.5">
                         <span>{formatFileSize(f.size)}</span>
                         <span>·</span>
                         <span>{f.content.length.toLocaleString()} chars</span>
@@ -659,7 +659,7 @@ function SectionFilesEditor({
                     <button
                       type="button"
                       onClick={() => setPreviewIdx(previewIdx === i ? null : i)}
-                      className="p-1.5 text-gray-500 hover:text-blue-400 hover:bg-[#2A2D3A] rounded transition-colors"
+                      className="p-1.5 text-slate-500 hover:text-blue-600 hover:bg-slate-100 rounded transition-colors"
                       title="Preview extracted text"
                     >
                       <Eye className="w-3.5 h-3.5" />
@@ -667,7 +667,7 @@ function SectionFilesEditor({
                     <button
                       type="button"
                       onClick={() => removeFile(i)}
-                      className="p-1.5 text-gray-500 hover:text-red-400 hover:bg-red-900/20 rounded transition-colors"
+                      className="p-1.5 text-slate-500 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
                       title="Remove file"
                     >
                       <X className="w-3.5 h-3.5" />
@@ -675,7 +675,7 @@ function SectionFilesEditor({
                   </div>
                 </div>
                 {previewIdx === i && (
-                  <pre className="mt-2 ml-6 p-2 bg-[#0F1117] border border-[#2A2D3A] rounded text-xs text-gray-300 max-h-48 overflow-auto whitespace-pre-wrap break-words">
+                  <pre className="mt-2 ml-6 p-2 bg-white border border-slate-200 rounded text-xs text-slate-600 max-h-48 overflow-auto whitespace-pre-wrap break-words">
                     {f.content.slice(0, 4000)}
                     {f.content.length > 4000 && '\n\n... (truncated, full text is sent to Claude)'}
                   </pre>
@@ -692,7 +692,7 @@ function SectionFilesEditor({
           <button
             type="button"
             onClick={() => setShowNotes(true)}
-            className="text-xs text-gray-500 hover:text-gray-300 transition-colors flex items-center gap-1"
+            className="text-xs text-slate-500 hover:text-slate-700 transition-colors flex items-center gap-1"
           >
             <Plus className="w-3 h-3" />
             Add notes
@@ -700,12 +700,12 @@ function SectionFilesEditor({
         ) : (
           <>
             <div className="flex items-center justify-between mb-1">
-              <label className="block text-xs text-gray-500">Additional notes (optional)</label>
+              <label className="block text-xs text-slate-500">Additional notes (optional)</label>
               {!data.notes?.trim() && (
                 <button
                   type="button"
                   onClick={() => setShowNotes(false)}
-                  className="text-[10px] text-gray-600 hover:text-gray-400 transition-colors"
+                  className="text-[10px] text-slate-400 hover:text-slate-600 transition-colors"
                 >
                   Hide
                 </button>
@@ -716,7 +716,7 @@ function SectionFilesEditor({
               onChange={(e) => setNotes(e.target.value)}
               placeholder={notesPlaceholder || 'Quick notes appended after the uploaded files...'}
               rows={3}
-              className="w-full bg-[#0F1117] border border-[#2A2D3A] rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500 resize-y"
+              className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-slate-900 text-sm focus:outline-none focus:border-blue-500 resize-y"
             />
           </>
         )}
@@ -743,7 +743,7 @@ function TableEditor({
     <div>
       <table className="w-full text-sm">
         <thead>
-          <tr className="text-gray-500 border-b border-[#2A2D3A]">
+          <tr className="text-slate-500 border-b border-slate-200">
             <th className="text-left py-2 pr-3 font-medium">Step</th>
             <th className="text-left py-2 pr-3 font-medium">URL</th>
             <th className="text-left py-2 pr-3 font-medium">Price</th>
@@ -753,20 +753,20 @@ function TableEditor({
         </thead>
         <tbody>
           {rows.map((row, i) => (
-            <tr key={i} className="border-b border-[#1A1D27]">
+            <tr key={i} className="border-b border-slate-100">
               {(['step', 'url', 'price', 'offerType'] as (keyof FunnelRow)[]).map(field => (
                 <td key={field} className="py-1.5 pr-2">
                   <input
                     value={row[field]}
                     onChange={e => update(i, field, e.target.value)}
-                    className="w-full bg-[#0F1117] border border-[#2A2D3A] rounded px-2 py-1 text-white text-xs focus:outline-none focus:border-blue-500"
+                    className="w-full bg-white border border-slate-200 rounded px-2 py-1 text-slate-900 text-xs focus:outline-none focus:border-blue-500"
                   />
                 </td>
               ))}
               <td className="py-1.5 text-center">
                 <button
                   onClick={() => onChange(rows.filter((_, idx) => idx !== i))}
-                  className="text-gray-600 hover:text-red-400 transition-colors"
+                  className="text-slate-400 hover:text-red-600 transition-colors"
                 >
                   <X className="w-3.5 h-3.5" />
                 </button>
@@ -777,7 +777,7 @@ function TableEditor({
       </table>
       <button
         onClick={() => onChange([...rows, emptyRow()])}
-        className="mt-2 text-xs text-blue-400 hover:text-blue-300 transition-colors flex items-center gap-1"
+        className="mt-2 text-xs text-blue-600 hover:text-blue-700 transition-colors flex items-center gap-1"
       >
         <Plus className="w-3 h-3" /> Add row
       </button>
@@ -851,10 +851,10 @@ function ProjectPanel({
   }
 
   const inputCls =
-    'w-full bg-[#0F1117] border border-[#2A2D3A] rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500';
+    'w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-slate-900 text-sm focus:outline-none focus:border-blue-500';
   const textareaCls =
-    'w-full bg-[#0F1117] border border-[#2A2D3A] rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500 resize-y min-h-[160px]';
-  const labelCls = 'block text-xs text-gray-400 mb-1 font-medium';
+    'w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-slate-900 text-sm focus:outline-none focus:border-blue-500 resize-y min-h-[160px]';
+  const labelCls = 'block text-xs text-slate-500 mb-1 font-medium';
 
   // Section header (label on the left, optional actions on the right).
   function SectionHeader({ title, children }: { title: string; children?: React.ReactNode }) {
@@ -867,7 +867,7 @@ function ProjectPanel({
   }
 
   return (
-    <div className="border-t border-[#2A2D3A] mt-4 pt-4">
+    <div className="border-t border-slate-200 mt-4 pt-4">
       {/* Tabs */}
       <div className="flex gap-1 mb-4 overflow-x-auto pb-1">
         {TABS.map(t => (
@@ -877,7 +877,7 @@ function ProjectPanel({
             className={`px-3 py-1.5 text-xs font-medium rounded-lg whitespace-nowrap transition-colors ${
               tab === t
                 ? 'bg-blue-600 text-white'
-                : 'text-gray-400 hover:text-white hover:bg-[#2A2D3A]'
+                : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100'
             }`}
           >
             {t}
@@ -1015,10 +1015,10 @@ function ProjectPanel({
         )}
 
         {/* Save / Delete actions */}
-        <div className="flex items-center justify-between pt-2 border-t border-[#2A2D3A]">
+        <div className="flex items-center justify-between pt-2 border-t border-slate-200">
           <button
             onClick={() => onDelete(project.id)}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-red-400 hover:text-red-300 hover:bg-red-900/20 text-xs rounded-lg transition-colors"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-red-600 hover:text-red-700 hover:bg-red-50 text-xs rounded-lg transition-colors"
           >
             <Trash2 className="w-3.5 h-3.5" /> Delete Project
           </button>
@@ -1301,7 +1301,7 @@ export default function ProjectsPage() {
   });
 
   return (
-    <div className="min-h-screen bg-[#0F1117]">
+    <div className="min-h-screen bg-white">
       <Header title="My Projects" subtitle="Manage your funnel projects" />
 
       <div className="p-6 max-w-5xl mx-auto">
@@ -1311,13 +1311,13 @@ export default function ProjectsPage() {
           <div className="flex items-center gap-3 flex-1 min-w-0">
             {/* Search */}
             <div className="relative flex-1 max-w-sm">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
               <input
                 type="text"
                 value={search}
                 onChange={e => setSearch(e.target.value)}
                 placeholder="Search projects..."
-                className="w-full bg-[#1A1D27] border border-[#2A2D3A] rounded-lg pl-9 pr-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500"
+                className="w-full bg-white border border-slate-200 rounded-lg pl-9 pr-3 py-2 text-slate-900 text-sm focus:outline-none focus:border-blue-500"
               />
             </div>
 
@@ -1325,7 +1325,7 @@ export default function ProjectsPage() {
             <select
               value={filterStatus}
               onChange={e => setFilterStatus(e.target.value)}
-              className="bg-[#1A1D27] border border-[#2A2D3A] rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500"
+              className="bg-white border border-slate-200 rounded-lg px-3 py-2 text-slate-900 text-sm focus:outline-none focus:border-blue-500"
             >
               <option value="all">All statuses</option>
               {STATUS_OPTIONS.map(s => (
@@ -1335,7 +1335,7 @@ export default function ProjectsPage() {
               ))}
             </select>
 
-            <div className="flex items-center gap-2 text-gray-400 text-sm">
+            <div className="flex items-center gap-2 text-slate-500 text-sm">
               <FolderOpen className="w-4 h-4" />
               <span>{filtered.length} project{filtered.length !== 1 ? 's' : ''}</span>
             </div>
@@ -1346,7 +1346,7 @@ export default function ProjectsPage() {
             <div
               role="tablist"
               aria-label="View mode"
-              className="inline-flex items-center gap-1 bg-[#1A1D27] border border-[#2A2D3A] rounded-lg p-1"
+              className="inline-flex items-center gap-1 bg-white border border-slate-200 rounded-lg p-1"
             >
               <button
                 type="button"
@@ -1357,7 +1357,7 @@ export default function ProjectsPage() {
                 className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors ${
                   view === 'cards'
                     ? 'bg-blue-600 text-white'
-                    : 'text-gray-400 hover:text-white'
+                    : 'text-slate-500 hover:text-slate-900'
                 }`}
               >
                 <LayoutList className="w-3.5 h-3.5" />
@@ -1372,7 +1372,7 @@ export default function ProjectsPage() {
                 className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors ${
                   view === 'grid'
                     ? 'bg-blue-600 text-white'
-                    : 'text-gray-400 hover:text-white'
+                    : 'text-slate-500 hover:text-slate-900'
                 }`}
               >
                 <LayoutGrid className="w-3.5 h-3.5" />
@@ -1392,7 +1392,7 @@ export default function ProjectsPage() {
 
         {/* Add form */}
         {showAdd && (
-          <div className="bg-[#1A1D27] border border-[#2A2D3A] rounded-xl p-4 mb-4">
+          <div className="bg-white border border-slate-200 rounded-xl p-4 mb-4">
             <div className="flex gap-3">
               <input
                 type="text"
@@ -1400,7 +1400,7 @@ export default function ProjectsPage() {
                 onChange={e => setNewName(e.target.value)}
                 onKeyDown={e => e.key === 'Enter' && addProject()}
                 placeholder="Project name..."
-                className="flex-1 bg-[#0F1117] border border-[#2A2D3A] rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500"
+                className="flex-1 bg-white border border-slate-200 rounded-lg px-3 py-2 text-slate-900 text-sm focus:outline-none focus:border-blue-500"
                 autoFocus
               />
               <button
@@ -1412,7 +1412,7 @@ export default function ProjectsPage() {
               </button>
               <button
                 onClick={() => { setShowAdd(false); setNewName(''); }}
-                className="px-3 py-2 text-gray-400 hover:text-white text-sm rounded-lg transition-colors"
+                className="px-3 py-2 text-slate-500 hover:text-slate-900 text-sm rounded-lg transition-colors"
               >
                 Cancel
               </button>
@@ -1422,9 +1422,9 @@ export default function ProjectsPage() {
 
         {/* Project list */}
         {loading ? (
-          <div className="text-center text-gray-500 py-20 animate-pulse">Loading projects...</div>
+          <div className="text-center text-slate-500 py-20 animate-pulse">Loading projects...</div>
         ) : filtered.length === 0 ? (
-          <div className="text-center text-gray-500 py-20">
+          <div className="text-center text-slate-500 py-20">
             <FolderOpen className="w-12 h-12 mx-auto mb-3 opacity-30" />
             <p>{projects.length === 0 ? 'No projects yet. Create your first one.' : 'No projects match your search.'}</p>
           </div>
@@ -1442,7 +1442,7 @@ export default function ProjectsPage() {
               <Link
                 key={project.id}
                 href={'/projects/' + project.id}
-                className="group bg-[#1A1D27] border border-[#2A2D3A] hover:border-blue-600/50 rounded-xl p-4 transition-colors flex flex-col relative"
+                className="group bg-white border border-slate-200 shadow-sm hover:border-blue-400 hover:shadow-md rounded-xl p-4 transition-all flex flex-col relative"
               >
                 {/* Top-right actions: Delete (owner/master only) +
                     Share (master only). Collaborators must NOT see the
@@ -1459,7 +1459,7 @@ export default function ProjectsPage() {
                       }}
                       title="Share with users"
                       aria-label={`Share project ${project.name}`}
-                      className="p-1.5 rounded-md text-gray-500 hover:text-indigo-400 hover:bg-indigo-900/20 opacity-0 group-hover:opacity-100 transition-opacity"
+                      className="p-1.5 rounded-md text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 opacity-0 group-hover:opacity-100 transition-opacity"
                     >
                       <Share2 className="w-3.5 h-3.5" />
                     </button>
@@ -1474,31 +1474,31 @@ export default function ProjectsPage() {
                       }}
                       title="Delete project"
                       aria-label={`Delete project ${project.name}`}
-                      className="p-1.5 rounded-md text-gray-500 hover:text-red-400 hover:bg-red-900/20 opacity-0 group-hover:opacity-100 transition-opacity"
+                      className="p-1.5 rounded-md text-slate-500 hover:text-red-600 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-opacity"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
                   )}
                 </div>
                 <div className="flex items-start justify-between gap-2 mb-3">
-                  <div className="w-10 h-10 rounded-lg bg-blue-600/20 flex items-center justify-center flex-shrink-0">
-                    <FolderOpen className="w-5 h-5 text-blue-400" />
+                  <div className="w-10 h-10 rounded-lg bg-blue-50 flex items-center justify-center flex-shrink-0">
+                    <FolderOpen className="w-5 h-5 text-blue-600" />
                   </div>
                   <span
                     className={`px-2 py-0.5 rounded-full text-[10px] font-medium mr-14 ${
-                      STATUS_COLOR[project.status] || 'bg-gray-700 text-gray-300'
+                      STATUS_COLOR[project.status] || 'bg-slate-100 text-slate-600'
                     }`}
                   >
                     {project.status}
                   </span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <h3 className="text-white font-semibold text-sm truncate">
+                  <h3 className="text-slate-900 font-semibold text-sm truncate">
                     {project.name}
                   </h3>
                   {showSharedBadge && (
                     <span
-                      className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-semibold bg-indigo-900/40 text-indigo-300 border border-indigo-700/50 flex-shrink-0"
+                      className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200 flex-shrink-0"
                       title="This project was shared with you"
                     >
                       <Share2 className="w-2.5 h-2.5" />
@@ -1507,13 +1507,13 @@ export default function ProjectsPage() {
                   )}
                 </div>
                 {project.domain ? (
-                  <p className="text-blue-400 text-xs mt-0.5 truncate">{project.domain}</p>
+                  <p className="text-blue-600 text-xs mt-0.5 truncate">{project.domain}</p>
                 ) : (
-                  <p className="text-gray-600 text-xs mt-0.5 italic">no domain</p>
+                  <p className="text-slate-500 text-xs mt-0.5 italic">no domain</p>
                 )}
                 {project.description ? (
                   <p
-                    className="text-gray-400 text-xs mt-1.5 line-clamp-2"
+                    className="text-slate-500 text-xs mt-1.5 line-clamp-2"
                     title={project.description}
                   >
                     {project.description.replace(/\s+/g, ' ').trim()}
@@ -1533,7 +1533,7 @@ export default function ProjectsPage() {
                     <ShieldCheck className="w-3 h-3" />
                     Checkpoint
                   </button>
-                  <span className="flex items-center gap-1 text-indigo-400 text-[10px] font-medium group-hover:text-indigo-300">
+                  <span className="flex items-center gap-1 text-indigo-600 text-[10px] font-medium group-hover:text-indigo-700">
                     Flows
                     <ChevronRight className="w-3 h-3" />
                   </span>
@@ -1551,8 +1551,8 @@ export default function ProjectsPage() {
               return (
                 <div
                   key={project.id}
-                  className={`bg-[#1A1D27] border rounded-xl transition-colors ${
-                    isOpen ? 'border-blue-600/50' : 'border-[#2A2D3A] hover:border-[#3A3D4A]'
+                  className={`bg-white border rounded-xl shadow-sm transition-colors ${
+                    isOpen ? 'border-blue-400' : 'border-slate-200 hover:border-slate-300'
                   }`}
                 >
                   {/* Row header — click to expand */}
@@ -1561,15 +1561,15 @@ export default function ProjectsPage() {
                     onClick={() => toggleExpand(project.id)}
                   >
                     <div className="flex items-center gap-4 flex-1 min-w-0">
-                      <div className="w-10 h-10 rounded-lg bg-blue-600/20 flex items-center justify-center flex-shrink-0">
-                        <FolderOpen className="w-5 h-5 text-blue-400" />
+                      <div className="w-10 h-10 rounded-lg bg-blue-50 flex items-center justify-center flex-shrink-0">
+                        <FolderOpen className="w-5 h-5 text-blue-600" />
                       </div>
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2 flex-wrap">
-                          <h3 className="text-white font-semibold text-base truncate">{project.name}</h3>
+                          <h3 className="text-slate-900 font-semibold text-base truncate">{project.name}</h3>
                           {showSharedBadge && (
                             <span
-                              className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold bg-indigo-900/40 text-indigo-300 border border-indigo-700/50 flex-shrink-0"
+                              className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200 flex-shrink-0"
                               title="This project was shared with you"
                             >
                               <Share2 className="w-3 h-3" />
@@ -1579,14 +1579,14 @@ export default function ProjectsPage() {
                         </div>
                         {project.description ? (
                           <p
-                            className="text-gray-400 text-sm mt-0.5 truncate"
+                            className="text-slate-500 text-sm mt-0.5 truncate"
                             title={project.description}
                           >
                             {project.description.replace(/\s+/g, ' ').trim()}
                           </p>
                         ) : null}
                         {project.domain ? (
-                          <p className="text-blue-400 text-xs mt-0.5 truncate">{project.domain}</p>
+                          <p className="text-blue-600 text-xs mt-0.5 truncate">{project.domain}</p>
                         ) : null}
                       </div>
                     </div>
@@ -1594,7 +1594,7 @@ export default function ProjectsPage() {
                     <div className="flex items-center gap-3 flex-shrink-0 ml-4">
                       <span
                         className={`px-2.5 py-1 rounded-full text-xs font-medium ${
-                          STATUS_COLOR[project.status] || 'bg-gray-700 text-gray-300'
+                          STATUS_COLOR[project.status] || 'bg-slate-100 text-slate-600'
                         }`}
                       >
                         {project.status}
@@ -1635,7 +1635,7 @@ export default function ProjectsPage() {
                           }}
                           title="Share with users"
                           aria-label={`Share project ${project.name}`}
-                          className="flex items-center gap-1.5 px-3 py-1.5 text-indigo-400 hover:text-indigo-300 hover:bg-indigo-900/20 text-xs font-medium rounded-lg transition-colors"
+                          className="flex items-center gap-1.5 px-3 py-1.5 text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50 text-xs font-medium rounded-lg transition-colors"
                         >
                           <Share2 className="w-3.5 h-3.5" />
                           Share
@@ -1653,7 +1653,7 @@ export default function ProjectsPage() {
                           }}
                           title="Delete project"
                           aria-label={`Delete project ${project.name}`}
-                          className="flex items-center gap-1.5 px-3 py-1.5 text-red-400 hover:text-red-300 hover:bg-red-900/20 text-xs font-medium rounded-lg transition-colors"
+                          className="flex items-center gap-1.5 px-3 py-1.5 text-red-600 hover:text-red-700 hover:bg-red-50 text-xs font-medium rounded-lg transition-colors"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                           Delete
@@ -1662,9 +1662,9 @@ export default function ProjectsPage() {
 
                       {/* Expand chevron */}
                       {isOpen ? (
-                        <ChevronDown className="w-4 h-4 text-blue-400" />
+                        <ChevronDown className="w-4 h-4 text-blue-600" />
                       ) : (
-                        <ChevronRight className="w-4 h-4 text-gray-500" />
+                        <ChevronRight className="w-4 h-4 text-slate-500" />
                       )}
                     </div>
                   </div>
@@ -1706,23 +1706,23 @@ export default function ProjectsPage() {
           onClick={() => !shareSaving && setShareTarget(null)}
         >
           <div
-            className="bg-[#1A1D27] border border-[#2A2D3A] rounded-2xl shadow-2xl w-full max-w-md max-h-[85vh] flex flex-col"
+            className="bg-white border border-slate-200 rounded-2xl shadow-2xl w-full max-w-md max-h-[85vh] flex flex-col"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex items-start justify-between gap-3 p-5 border-b border-[#2A2D3A]">
+            <div className="flex items-start justify-between gap-3 p-5 border-b border-slate-200">
               <div className="min-w-0">
-                <h2 className="text-white font-semibold text-base flex items-center gap-2">
-                  <Share2 className="w-4 h-4 text-indigo-400" />
+                <h2 className="text-slate-900 font-semibold text-base flex items-center gap-2">
+                  <Share2 className="w-4 h-4 text-indigo-600" />
                   Share project
                 </h2>
-                <p className="text-gray-400 text-xs mt-1 truncate" title={shareTarget.name}>
+                <p className="text-slate-500 text-xs mt-1 truncate" title={shareTarget.name}>
                   {shareTarget.name}
                 </p>
               </div>
               <button
                 type="button"
                 onClick={() => !shareSaving && setShareTarget(null)}
-                className="p-1.5 rounded-md text-gray-500 hover:text-white hover:bg-white/5"
+                className="p-1.5 rounded-md text-slate-500 hover:text-slate-900 hover:bg-slate-100"
                 aria-label="Close"
               >
                 <X className="w-4 h-4" />
@@ -1731,16 +1731,16 @@ export default function ProjectsPage() {
 
             <div className="flex-1 overflow-y-auto p-5">
               {shareLoading ? (
-                <div className="flex items-center justify-center text-gray-400 py-10 gap-2">
+                <div className="flex items-center justify-center text-slate-500 py-10 gap-2">
                   <Loader2 className="w-4 h-4 animate-spin" />
                   Loading users…
                 </div>
               ) : shareError ? (
-                <div className="text-sm text-red-300 bg-red-900/20 border border-red-700/40 rounded-lg p-3">
+                <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg p-3">
                   {shareError}
                 </div>
               ) : shareUsers.length === 0 ? (
-                <div className="text-center text-gray-400 text-sm py-10">
+                <div className="text-center text-slate-500 text-sm py-10">
                   <Users className="w-8 h-8 mx-auto mb-2 opacity-40" />
                   No other users to share with yet.
                   <br />
@@ -1748,7 +1748,7 @@ export default function ProjectsPage() {
                 </div>
               ) : (
                 <>
-                  <p className="text-xs text-gray-400 mb-3">
+                  <p className="text-xs text-slate-500 mb-3">
                     Selected users will see this project in their <em>My Projects</em>
                     {' '}and will be able to edit brief, files and funnel steps. They
                     won&apos;t be able to delete the project.
@@ -1761,8 +1761,8 @@ export default function ProjectsPage() {
                           <label
                             className={`flex items-center gap-3 px-3 py-2 rounded-lg cursor-pointer transition-colors ${
                               checked
-                                ? 'bg-indigo-600/20 border border-indigo-500/50'
-                                : 'bg-[#0F1117] border border-[#2A2D3A] hover:border-[#3A3D4A]'
+                                ? 'bg-indigo-50 border border-indigo-300'
+                                : 'bg-white border border-slate-200 hover:border-slate-300'
                             }`}
                           >
                             <input
@@ -1771,7 +1771,7 @@ export default function ProjectsPage() {
                               onChange={() => toggleShareUser(u.user_id)}
                               className="accent-indigo-500 w-4 h-4"
                             />
-                            <span className="text-sm text-white truncate">{u.email}</span>
+                            <span className="text-sm text-slate-800 truncate">{u.email}</span>
                           </label>
                         </li>
                       );
@@ -1781,12 +1781,12 @@ export default function ProjectsPage() {
               )}
             </div>
 
-            <div className="flex items-center justify-end gap-2 p-5 border-t border-[#2A2D3A]">
+            <div className="flex items-center justify-end gap-2 p-5 border-t border-slate-200">
               <button
                 type="button"
                 onClick={() => setShareTarget(null)}
                 disabled={shareSaving}
-                className="px-4 py-2 text-sm text-gray-300 hover:text-white rounded-lg transition-colors disabled:opacity-50"
+                className="px-4 py-2 text-sm text-slate-600 hover:text-slate-900 rounded-lg transition-colors disabled:opacity-50"
               >
                 Cancel
               </button>

@@ -277,8 +277,8 @@ function TemplateSalvati({ projectId }: { projectId: string }) {
                     <img src={getUploadUrl(t.file_path)} alt={t.name}
                       className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
                   ) : t.media_type === "video" ? (
-                    <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-slate-800 to-slate-900">
-                      <Play className="w-10 h-10 text-white/70" />
+                    <div className="w-full h-full flex items-center justify-center bg-slate-100">
+                      <Play className="w-10 h-10 text-slate-400" />
                     </div>
                   ) : (
                     <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-muted to-muted/60">
@@ -392,10 +392,9 @@ function IterationPopup({ iteration, onClose }: { iteration: CreativeIteration; 
         {/* Split-screen */}
         <div className="grid grid-cols-2" style={{ minHeight: 380 }}>
           {/* LEFT — Originale */}
-          <div className="relative bg-slate-800 flex flex-col items-center justify-center p-6 overflow-hidden">
-            <div className="absolute inset-0 opacity-20 bg-gradient-to-br from-slate-700 to-slate-900" />
+          <div className="relative bg-slate-50 flex flex-col items-center justify-center p-6 overflow-hidden border-r border-border">
             <div className="absolute top-3 left-3 z-10">
-              <span className="text-[10px] font-bold px-3 py-1 bg-white/20 text-white rounded-full backdrop-blur-sm border border-white/30">
+              <span className="text-[10px] font-bold px-3 py-1 bg-white text-slate-600 rounded-full shadow-sm border border-slate-200">
                 Original Ad
               </span>
             </div>
@@ -682,7 +681,7 @@ function Iterazione({ projectId }: { projectId: string }) {
                       <p className="text-white font-bold text-xs leading-tight mb-0.5 relative z-10 line-clamp-2">{ad.headline}</p>
                       <p className="text-white/75 text-[10px] leading-tight relative z-10 line-clamp-1">{ad.hook}</p>
                     </div>
-                    <div className="bg-card border-t border-white/10 px-2.5 py-1.5">
+                    <div className="bg-card border-t border-border px-2.5 py-1.5">
                       <p className="text-[10px] text-muted-foreground truncate">{ad.brand_name}</p>
                     </div>
                   </div>
@@ -849,10 +848,9 @@ function SwipePopup({ swipe, onClose }: { swipe: CreativeSwipe; onClose: () => v
       <DialogContent className="max-w-4xl p-0 overflow-hidden gap-0">
         <div className="grid grid-cols-2" style={{ minHeight: 380 }}>
           {/* LEFT — Originale */}
-          <div className="relative bg-slate-800 flex flex-col items-center justify-center p-6 overflow-hidden">
-            <div className="absolute inset-0 opacity-10 bg-gradient-to-br from-slate-600 to-slate-900" />
+          <div className="relative bg-slate-50 flex flex-col items-center justify-center p-6 overflow-hidden border-r border-border">
             <div className="absolute top-3 left-3 z-10">
-              <span className="text-[10px] font-bold px-3 py-1 bg-white/20 text-white rounded-full backdrop-blur-sm border border-white/30">Original Ad</span>
+              <span className="text-[10px] font-bold px-3 py-1 bg-white text-slate-600 rounded-full shadow-sm border border-slate-200">Original Ad</span>
             </div>
             <div className={`relative z-10 w-36 h-48 rounded-2xl bg-gradient-to-br ${gComp.bg} shadow-2xl flex flex-col items-start justify-end p-4 overflow-hidden`}>
               <div className="absolute inset-0 opacity-10 bg-white rounded-2xl" />
@@ -1447,12 +1445,12 @@ function NuoveCreative({ projectId }: { projectId: string }) {
     <div className="space-y-5">
       {/* ── ROBOT + ANGOLI TABLE ── */}
       <div className="border border-border rounded-2xl overflow-hidden">
-        {/* Dark robot header */}
-        <div className="flex items-center gap-5 px-5 py-4 bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 border-b border-slate-700">
+        {/* Robot header */}
+        <div className="flex items-center gap-5 px-5 py-4 bg-gradient-to-r from-slate-50 via-white to-slate-50 border-b border-border">
           <RobotSVG thinking={analyzing} />
           <div className="flex-1 min-w-0">
-            <div className="bg-white/10 border border-white/15 backdrop-blur-sm rounded-2xl rounded-tl-sm px-4 py-3 mb-3">
-              <p className="text-white text-xs leading-relaxed">
+            <div className="bg-white border border-slate-200 shadow-sm rounded-2xl rounded-tl-sm px-4 py-3 mb-3">
+              <p className="text-slate-700 text-xs leading-relaxed">
                 {analyzing
                   ? "I'm analyzing competitor ads, project briefs and market patterns... working out the best creative angles 🧠"
                   : angles.length > 0
@@ -1470,7 +1468,7 @@ function NuoveCreative({ projectId }: { projectId: string }) {
                   : <><Zap className="w-3.5 h-3.5" /> Analyze Angles</>}
               </Button>
               {angles.length > 0 && !analyzing && (
-                <span className="text-xs text-white/50">{angles.length} angoli trovati</span>
+                <span className="text-xs text-muted-foreground">{angles.length} angles found</span>
               )}
             </div>
           </div>

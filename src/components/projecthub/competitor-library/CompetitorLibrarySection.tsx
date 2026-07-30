@@ -160,7 +160,7 @@ function downloadCreative(ad: { file_path: string; name?: string; media_type?: s
 
 // Colori per i placeholder delle ads (senza immagine)
 const AD_GRADIENTS = [
-  { bg: "from-slate-800 to-slate-900", text: "text-white" },
+  { bg: "from-slate-500 to-slate-700", text: "text-white" },
   { bg: "from-emerald-600 to-emerald-800", text: "text-white" },
   { bg: "from-orange-500 to-orange-700", text: "text-white" },
   { bg: "from-sky-500 to-sky-800", text: "text-white" },
@@ -200,14 +200,14 @@ function AdPlaceholder({ ad, index }: { ad: CompetitorAd; index: number }) {
 // Small media thumbnail: image, or video first-frame with a play badge.
 function MediaThumb({ path, type, className = "" }: { path: string; type: string; className?: string }) {
   if (!path) {
-    return <div className={`bg-slate-800 flex items-center justify-center ${className}`}><Globe className="w-6 h-6 text-white/20" /></div>;
+    return <div className={`bg-slate-100 flex items-center justify-center ${className}`}><Globe className="w-6 h-6 text-slate-400" /></div>;
   }
   if (type === "video") {
     return (
-      <div className={`relative bg-slate-900 ${className}`}>
+      <div className={`relative bg-slate-100 ${className}`}>
         <video src={getUploadUrl(path)} muted playsInline preload="metadata" className="w-full h-full object-cover" />
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-          <div className="w-8 h-8 rounded-full bg-black/50 flex items-center justify-center"><Play className="w-3.5 h-3.5 text-white" /></div>
+          <div className="w-8 h-8 rounded-full bg-slate-900/45 flex items-center justify-center"><Play className="w-3.5 h-3.5 text-white" /></div>
         </div>
       </div>
     );
@@ -310,13 +310,13 @@ function ShotsGrid({
               {shots.map((s) => {
                 const hasText = s.has_text === true;
                 return (
-                  <div key={s.id} className="group relative rounded-xl overflow-hidden border border-border bg-black/5">
-                    <button onClick={() => setPlaying(s)} className="block w-full aspect-[9/16] bg-black">
+                  <div key={s.id} className="group relative rounded-xl overflow-hidden border border-border bg-slate-50">
+                    <button onClick={() => setPlaying(s)} className="block w-full aspect-[9/16] bg-slate-100">
                       {s.thumb_path
                         ? <img src={getUploadUrl(s.thumb_path)} alt="" className="w-full h-full object-cover" />
-                        : <div className="w-full h-full flex items-center justify-center text-white/40"><Play className="w-6 h-6" /></div>}
+                        : <div className="w-full h-full flex items-center justify-center text-slate-400"><Play className="w-6 h-6" /></div>}
                     </button>
-                    <span className="absolute top-1.5 left-1.5 text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-black/70 text-white">
+                    <span className="absolute top-1.5 left-1.5 text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-slate-900/70 text-white">
                       {s.duration_sec}s
                     </span>
                     <span
@@ -328,7 +328,7 @@ function ShotsGrid({
                     </span>
                     <button
                       onClick={() => remove(s)}
-                      className="absolute bottom-1.5 right-1.5 opacity-0 group-hover:opacity-100 transition-opacity bg-black/70 text-white rounded-md p-1"
+                      className="absolute bottom-1.5 right-1.5 opacity-0 group-hover:opacity-100 transition-opacity bg-slate-900/70 text-white rounded-md p-1"
                       title="Delete shot">
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
@@ -598,7 +598,7 @@ function CreativeDetailPanel({
         <div className="p-4 border-b border-border">
           {ad.file_path ? (
             ad.media_type === "video"
-              ? <video src={getUploadUrl(ad.file_path)} controls playsInline preload="metadata" className="w-full rounded-xl bg-black max-h-72" />
+              ? <video src={getUploadUrl(ad.file_path)} controls playsInline preload="metadata" className="w-full rounded-xl bg-slate-100 max-h-72" />
               : <img src={getUploadUrl(ad.file_path)} alt={ad.name} className="w-full rounded-xl object-contain max-h-72" />
           ) : (
             <div className="aspect-[4/5] rounded-xl overflow-hidden max-h-48">
@@ -781,8 +781,8 @@ function CreativeDetailPanel({
               )}
               {showInline && buildStatus !== "pending" && buildStatus !== "processing" && buildVideos[0] && (
                 <div className="space-y-1.5 pt-1">
-                  <div className="rounded-lg overflow-hidden border border-border bg-black/5">
-                    <video src={getUploadUrl(buildVideos[0].file_path)} controls playsInline preload="metadata" className="w-full bg-black max-h-64" />
+                  <div className="rounded-lg overflow-hidden border border-border bg-slate-50">
+                    <video src={getUploadUrl(buildVideos[0].file_path)} controls playsInline preload="metadata" className="w-full bg-slate-100 max-h-64" />
                     <div className="flex items-center justify-between px-2 py-1.5">
                       <span className="text-[10px] text-muted-foreground">{Math.round(buildVideos[0].duration_sec)}s · new creative</span>
                       <button onClick={() => downloadCreative({ file_path: buildVideos[0].file_path, name: "recreated", media_type: "video" })}
@@ -923,13 +923,13 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
                 ${c.new_count ? "border-emerald-500/60 hover:border-emerald-500" : "border-border hover:border-primary/40"}`}>
 
               {/* Preview mosaic */}
-              <div className="aspect-[4/3] relative overflow-hidden bg-gradient-to-br from-slate-800 to-slate-900">
+              <div className="aspect-[4/3] relative overflow-hidden bg-slate-100">
                 <Mosaic items={c.previews && c.previews.length ? c.previews : (c.preview_path ? [{ file_path: c.preview_path, media_type: c.preview_type || "" }] : [])} />
                 {/* New creatives from the daily scrape — bottom row keeps clear of
                     the monitoring dot and the hover actions above. */}
                 {!!c.new_count && <NewBadge count={c.new_count} className="absolute bottom-2 left-2.5" />}
                 {/* Monitoring dot */}
-                <div className="absolute top-2.5 left-2.5 flex items-center gap-1.5 bg-black/45 backdrop-blur-sm rounded-full px-2 py-0.5">
+                <div className="absolute top-2.5 left-2.5 flex items-center gap-1.5 bg-slate-900/45 backdrop-blur-sm rounded-full px-2 py-0.5">
                   <span className={`w-1.5 h-1.5 rounded-full ${c.monitoring_status === "attivo" ? "bg-green-400" : "bg-amber-400"}`} />
                   <span className="text-[9px] font-bold text-white uppercase tracking-wide">
                     {c.monitoring_status === "attivo" ? "Active" : "Analyzing"}
@@ -940,12 +940,12 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
                   {c.ads_library_url && (
                     <a href={c.ads_library_url} target="_blank" rel="noopener noreferrer"
                       onClick={e => e.stopPropagation()}
-                      className="p-1.5 rounded-lg bg-black/45 backdrop-blur-sm text-white/90 hover:text-white transition-colors">
+                      className="p-1.5 rounded-lg bg-slate-900/45 backdrop-blur-sm text-white/90 hover:text-white transition-colors">
                       <ExternalLink className="w-3.5 h-3.5" />
                     </a>
                   )}
                   <button onClick={e => del(e, c.id)}
-                    className="p-1.5 rounded-lg bg-black/45 backdrop-blur-sm text-white/90 hover:text-red-400 transition-colors">
+                    className="p-1.5 rounded-lg bg-slate-900/45 backdrop-blur-sm text-white/90 hover:text-red-400 transition-colors">
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>
                 </div>
@@ -1320,11 +1320,11 @@ function CompetitorDetail({ projectId, competitor, onBack }: { projectId: string
                 <div className="aspect-[4/5] relative overflow-hidden rounded-xl">
                   {hasFile ? (
                     ad.media_type === "video" ? (
-                      <div className="w-full h-full relative bg-gradient-to-br from-slate-700 to-slate-900">
+                      <div className="w-full h-full relative bg-slate-100">
                         <video src={getUploadUrl(ad.file_path)} muted playsInline preload="metadata"
                           className="w-full h-full object-cover" />
                         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                          <div className="w-11 h-11 rounded-full bg-black/50 flex items-center justify-center">
+                          <div className="w-11 h-11 rounded-full bg-slate-900/45 flex items-center justify-center">
                             <Play className="w-5 h-5 text-white" />
                           </div>
                         </div>
@@ -1714,17 +1714,17 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
                 {l.screenshot ? (
                   <img src={l.screenshot} alt={l.name} className="w-full h-full object-cover object-top group-hover:scale-[1.02] transition-transform" />
                 ) : (
-                  <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-slate-800 to-slate-900">
-                    <Globe className="w-8 h-8 text-white/20" />
+                  <div className="w-full h-full flex items-center justify-center bg-slate-100">
+                    <Globe className="w-8 h-8 text-slate-400" />
                   </div>
                 )}
-                <span className="absolute top-2 left-2 text-[9px] font-bold px-2 py-0.5 rounded-full bg-black/55 backdrop-blur-sm text-white uppercase tracking-wide">
+                <span className="absolute top-2 left-2 text-[9px] font-bold px-2 py-0.5 rounded-full bg-slate-900/55 backdrop-blur-sm text-white uppercase tracking-wide">
                   {l.page_type || "landing"}
                 </span>
               </button>
               {/* Delete (hover) */}
               <button onClick={() => del(l)}
-                className="absolute top-2 right-2 p-1.5 rounded-lg bg-black/45 backdrop-blur-sm text-white/90 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all"
+                className="absolute top-2 right-2 p-1.5 rounded-lg bg-slate-900/45 backdrop-blur-sm text-white/90 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all"
                 title="Remove landing">
                 <Trash2 className="w-3.5 h-3.5" />
               </button>
@@ -1868,14 +1868,14 @@ function ShotsLibraryView({ projectId }: { projectId: string }) {
     const cleaning = hasText && !s.clean_path && (s.inpaint_status === "pending" || s.inpaint_status === "processing");
     const failed = hasText && !s.clean_path && s.inpaint_status === "error";
     return (
-      <div key={s.id} className="group rounded-xl overflow-hidden border border-border bg-black/5">
+      <div key={s.id} className="group rounded-xl overflow-hidden border border-border bg-slate-50">
         <div className="relative">
-          <button onClick={() => setPlaying(s)} className="block w-full aspect-[9/16] bg-black">
+          <button onClick={() => setPlaying(s)} className="block w-full aspect-[9/16] bg-slate-100">
             {s.thumb_path
               ? <img src={getUploadUrl(s.thumb_path)} alt="" className="w-full h-full object-cover" />
-              : <div className="w-full h-full flex items-center justify-center text-white/40"><Play className="w-6 h-6" /></div>}
+              : <div className="w-full h-full flex items-center justify-center text-slate-400"><Play className="w-6 h-6" /></div>}
           </button>
-          <span className="absolute top-1.5 left-1.5 text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-black/70 text-white">
+          <span className="absolute top-1.5 left-1.5 text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-slate-900/70 text-white">
             {s.duration_sec}s
           </span>
           <span
@@ -1894,7 +1894,7 @@ function ShotsLibraryView({ projectId }: { projectId: string }) {
             {cleaned ? "CLEANED" : cleaning ? "CLEANING…" : hasText ? "SUBS" : "CLEAN"}
           </span>
           {brandNames[s.brand_id] && (
-            <span className="absolute bottom-1.5 left-1.5 max-w-[80%] truncate text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-black/70 text-white">
+            <span className="absolute bottom-1.5 left-1.5 max-w-[80%] truncate text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-900/70 text-white">
               {brandNames[s.brand_id]}
             </span>
           )}
@@ -1909,14 +1909,14 @@ function ShotsLibraryView({ projectId }: { projectId: string }) {
           {cleaned && (
             <button
               onClick={() => inpaint(s.id, true)}
-              className="absolute inset-x-1.5 bottom-8 opacity-0 group-hover:opacity-100 transition-opacity bg-black/70 hover:bg-black/80 text-white rounded-md px-1.5 py-1 text-[10px] font-bold flex items-center justify-center gap-1"
+              className="absolute inset-x-1.5 bottom-8 opacity-0 group-hover:opacity-100 transition-opacity bg-slate-900/70 hover:bg-slate-900/80 text-white rounded-md px-1.5 py-1 text-[10px] font-bold flex items-center justify-center gap-1"
               title="Run the AI cleanup again on this shot">
               <RefreshCw className="w-3 h-3" /> Redo cleanup
             </button>
           )}
           <button
             onClick={() => remove(s)}
-            className="absolute bottom-1.5 right-1.5 opacity-0 group-hover:opacity-100 transition-opacity bg-black/70 text-white rounded-md p-1"
+            className="absolute bottom-1.5 right-1.5 opacity-0 group-hover:opacity-100 transition-opacity bg-slate-900/70 text-white rounded-md p-1"
             title="Delete shot">
             <Trash2 className="w-3.5 h-3.5" />
           </button>
@@ -2102,20 +2102,20 @@ function GeneratedVideosView({ projectId }: { projectId: string }) {
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
           {videos.map((v) => (
-            <div key={v.id} className="group relative rounded-xl overflow-hidden border border-border bg-black/5">
-              <button onClick={() => setPlaying(v)} className="block w-full aspect-[9/16] bg-black">
+            <div key={v.id} className="group relative rounded-xl overflow-hidden border border-border bg-slate-50">
+              <button onClick={() => setPlaying(v)} className="block w-full aspect-[9/16] bg-slate-100">
                 {v.thumb_path
                   ? <img src={getUploadUrl(v.thumb_path)} alt="" className="w-full h-full object-cover" />
-                  : <div className="w-full h-full flex items-center justify-center text-white/40"><Play className="w-7 h-7" /></div>}
+                  : <div className="w-full h-full flex items-center justify-center text-slate-400"><Play className="w-7 h-7" /></div>}
               </button>
-              <span className="absolute top-1.5 left-1.5 text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-black/70 text-white">
+              <span className="absolute top-1.5 left-1.5 text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-slate-900/70 text-white">
                 {Math.round(v.duration_sec)}s
               </span>
               <span className="absolute top-1.5 right-1.5 text-[9px] font-black px-1.5 py-0.5 rounded-full bg-primary text-primary-foreground">
                 NEW
               </span>
               {brandNames[v.brand_id] && (
-                <span className="absolute bottom-9 left-1.5 max-w-[80%] truncate text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-black/70 text-white">
+                <span className="absolute bottom-9 left-1.5 max-w-[80%] truncate text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-900/70 text-white">
                   {brandNames[v.brand_id]}
                 </span>
               )}
@@ -2302,11 +2302,11 @@ function MyFootageView({ projectId }: { projectId: string }) {
             const st = seg[v.id] || { status: "", shots: 0 };
             const busy = st.status === "pending" || st.status === "processing";
             return (
-              <div key={v.id} className="group rounded-xl overflow-hidden border border-border bg-black/5">
-                <button onClick={() => setPlaying(v)} className="relative block w-full aspect-video bg-black">
+              <div key={v.id} className="group rounded-xl overflow-hidden border border-border bg-slate-50">
+                <button onClick={() => setPlaying(v)} className="relative block w-full aspect-video bg-slate-100">
                   <video src={getUploadUrl(v.file_path)} preload="metadata" className="w-full h-full object-cover" muted />
                   <span className="absolute inset-0 flex items-center justify-center">
-                    <span className="bg-black/50 rounded-full p-2"><Play className="w-5 h-5 text-white" /></span>
+                    <span className="bg-slate-900/50 rounded-full p-2"><Play className="w-5 h-5 text-white" /></span>
                   </span>
                   {st.shots > 0 && (
                     <span className="absolute top-1.5 right-1.5 text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-emerald-500 text-white">

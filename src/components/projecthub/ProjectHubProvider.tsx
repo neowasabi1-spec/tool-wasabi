@@ -7,8 +7,8 @@ import { Toaster } from '@/components/ui/toaster';
 /**
  * Wraps any projecthub-derived UI tree with:
  *  - a dedicated React Query client (separate from the rest of the app)
- *  - the `.dark` + `.projecthub-theme` class scope so shadcn HSL tokens
- *    resolve to dark values inside this subtree
+ *  - the `.projecthub-theme` class scope, which pins the shadcn HSL tokens to
+ *    the light palette and paints the surface white behind them
  *  - the shadcn `<Toaster />` so toast notifications render
  */
 export function ProjectHubProvider({ children }: { children: ReactNode }) {
@@ -27,7 +27,7 @@ export function ProjectHubProvider({ children }: { children: ReactNode }) {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <div className="dark projecthub-theme min-h-screen">
+      <div className="projecthub-theme min-h-screen">
         {children}
         <Toaster />
       </div>
