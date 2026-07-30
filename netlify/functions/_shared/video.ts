@@ -364,9 +364,32 @@ export type ShotClip = {
   tags: string[]; caption: string;
   /** Where the shot sat in its source video: 'hook' | 'body' | 'cta'. */
   section: string;
+  /**
+   * Vertical centre of the shot's original caption band as a fraction of frame
+   * height (0 = top, 1 = bottom), if it was measured during subtitle removal.
+   * The builder puts the new subtitle back on this exact spot.
+   */
+  band?: number | null;
   /** Local normalized copy, once this clip was actually chosen. */
   file?: string;
 };
+
+/**
+ * Vertical centre (0..1) of a stored `text_region` string, or null when it
+ * carries no usable position. Accepts either an explicit "0.72-0.94" range or a
+ * bare "top|center|bottom" keyword.
+ */
+export function parseBandCenter(region: string | null | undefined): number | null {
+  const s = (region || '').trim();
+  if (!s) return null;
+  const range = s.match(/(\d*\.?\d+)\s*-\s*(\d*\.?\d+)/);
+  if (range) return (parseFloat(range[1]) + parseFloat(range[2])) / 2;
+  const kind = s.split(/\s+/)[0].toLowerCase();
+  if (kind === 'top') return 0.15;
+  if (kind === 'center' || kind === 'centre' || kind === 'middle') return 0.5;
+  if (kind === 'bottom') return 0.82;
+  return null;
+}
 
 function tokenize(text: string): Set<string> {
   return new Set(
@@ -561,12 +584,13 @@ export async function loadShotPool(
   // 15-minute function limit, which left builds stuck with nothing to show.
   const { data } = await supabase
     .from('competitor_shots')
-    .select('file_path, clean_path, has_text, tags, caption, section, duration_sec')
+    .select('file_path, clean_path, has_text, tags, caption, section, duration_sec, text_region')
     .eq('project_id', projectId)
     .limit(300);
   const shots = (data || []) as Array<{
     file_path: string; clean_path?: string | null; has_text?: boolean | null;
     tags?: string[]; caption?: string; section?: string | null; duration_sec?: number | null;
+    text_region?: string | null;
   }>;
   const pool: ShotClip[] = [];
   for (const s of shots) {
@@ -582,6 +606,7 @@ export async function loadShotPool(
       caption: typeof s.caption === 'string' ? (s.caption as string) : '',
       // Rows from before sections existed can stand in anywhere.
       section: typeof s.section === 'string' && s.section ? s.section : 'body',
+      band: parseBandCenter(s.text_region),
     });
   }
   return pool;
