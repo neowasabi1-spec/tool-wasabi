@@ -46,7 +46,10 @@
 
 [functions."build-video-background"]
   external_node_modules = ["ffmpeg-static"]
-  included_files = ["node_modules/ffmpeg-static/ffmpeg"]
+  # caption.ttf è il font passato a libass per il burn dei sottotitoli: senza un
+  # font nel bundle il runtime Lambda non ne ha nessuno e le scritte non vengono
+  # disegnate (libass fallisce in silenzio → video senza sottotitoli).
+  included_files = ["node_modules/ffmpeg-static/ffmpeg", "netlify/functions/_assets/**"]
 
 # ffmpeg serve per estrarre i frame di controllo tra un passaggio di pulizia
 # e l'altro (verifica se è rimasto del testo).

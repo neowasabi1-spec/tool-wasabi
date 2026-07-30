@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import {
   getSupabase, run, FFMPEG, makeWorkDir, probeDuration, ttsScene,
   buildSceneVisual, pickShotsForScene, sectionForScene, loadShotPool, materializeShot,
@@ -18,6 +19,29 @@ import {
 // libass renders an SRT with no [Script Info] against a 384×288 canvas and then
 // scales it to the frame, so MarginV below is expressed in that 288-tall space.
 const SUB_PLAY_RES_Y = 288;
+
+// Family name inside caption.ttf (Anton). Passed to libass via force_style so it
+// matches the bundled font instead of a system font that doesn't exist on Lambda.
+const CAPTION_FONT = 'Anton';
+
+/**
+ * Absolute path to the bundled caption font. Netlify lays included_files out at
+ * their repo-relative path in the function's working directory, but the exact
+ * cwd varies, so we probe a few candidates (including one resolved next to this
+ * module) and take the first that exists. Returns null if none are found, in
+ * which case the burn falls back to whatever font libass can find.
+ */
+function findCaptionFont(): string | null {
+  const candidates = [
+    path.join(process.cwd(), 'netlify/functions/_assets/caption.ttf'),
+    path.join(process.cwd(), '_assets/caption.ttf'),
+  ];
+  try { candidates.push(fileURLToPath(new URL('./_assets/caption.ttf', import.meta.url))); } catch { /* not ESM path */ }
+  for (const c of candidates) {
+    try { if (fs.existsSync(c)) return c; } catch { /* ignore */ }
+  }
+  return null;
+}
 
 /**
  * Where this project's captions sat, as a fraction of frame height (0 = top,
@@ -154,13 +178,28 @@ export default async (req: Request) => {
     // target height fraction into that gap in the 288-tall subtitle canvas.
     const bandFrac = await captionBandFraction(supabase, projectId);
     const marginV = Math.min(250, Math.max(24, Math.round((1 - bandFrac) * SUB_PLAY_RES_Y)));
-    log(`subtitles on caption band ${bandFrac.toFixed(2)} (MarginV=${marginV})`);
+
+    // Ship the caption font into a local fonts dir and point libass at it. On
+    // Lambda there is no system font, so without this the SRT renders blank.
+    let fontStyle = '';
+    let fontArg = '';
+    const fontSrc = findCaptionFont();
+    if (fontSrc) {
+      const fontDir = path.join(workDir, 'fonts');
+      fs.mkdirSync(fontDir, { recursive: true });
+      fs.copyFileSync(fontSrc, path.join(fontDir, 'caption.ttf'));
+      fontStyle = `FontName=${CAPTION_FONT},`;
+      fontArg = ':fontsdir=fonts';
+    } else {
+      log('WARNING: caption font not found in bundle — subtitles may not render');
+    }
+    log(`subtitles on caption band ${bandFrac.toFixed(2)} (MarginV=${marginV}, font=${fontSrc ? CAPTION_FONT : 'system'})`);
     const style =
-      'FontSize=16,Bold=1,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,' +
+      `${fontStyle}FontSize=16,Bold=1,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,` +
       `BorderStyle=3,Outline=6,Shadow=0,Alignment=2,MarginV=${marginV}`;
     try {
       await run(FFMPEG, [
-        '-y', '-i', base, '-vf', `subtitles=subs.srt:force_style='${style}'`,
+        '-y', '-i', base, '-vf', `subtitles=subs.srt${fontArg}:force_style='${style}'`,
         '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', '-c:a', 'copy', finalFile,
       ], { cwd: workDir });
     } catch (e) {
