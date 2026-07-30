@@ -176,7 +176,10 @@ export default async (req: Request) => {
       let files: string[] = [];
       let have = 0;
       let sections: string[] = [];
-      const sceneBands: number[] = [];
+      // Ordered list of the shots actually shown in this scene, with the real
+      // duration and the band each one's caption originally sat on. Drives
+      // per-shot subtitle placement below.
+      const shownShots: { dur: number; band: number }[] = [];
       // Only the chosen clips are fetched. A clip that fails to download or
       // normalize is dropped and the scene asks the pool for another one.
       for (let attempt = 0; attempt < 2 && files.length === 0; attempt++) {
@@ -187,7 +190,10 @@ export default async (req: Request) => {
           try {
             files.push(await materializeShot(supabase, clip, workDir, fetched++));
             have += clip.dur;
-            if (typeof clip.band === 'number') sceneBands.push(clip.band);
+            shownShots.push({
+              dur: clip.dur,
+              band: typeof clip.band === 'number' ? clip.band : projectBand,
+            });
           } catch (e) {
             log(`scene ${i + 1}: skipping ${clip.key} (${(e as Error).message})`);
           }
@@ -198,10 +204,25 @@ export default async (req: Request) => {
       const vis = await buildSceneVisual(files, have, d, workDir, i);
       sceneVisuals.push(vis);
       sceneAudios.push(mp3);
-      // Put this cue on the band its own footage carried; otherwise fall back to
-      // the project median so it still lands where captions generally were.
-      const band = sceneBands.length ? medianBand(sceneBands) : projectBand;
-      cues.push({ start: t, end: t + d, text: scenes[i], band });
+      // The scene's narration text stays put, but as the visual cuts between
+      // shots the subtitle jumps to the band each shot's original caption sat
+      // on — i.e. exactly where it was erased. The last shot is freeze-padded to
+      // the scene end, and shots past the voiceover length were trimmed away.
+      if (shownShots.length === 0) {
+        cues.push({ start: t, end: t + d, text: scenes[i], band: projectBand });
+      } else {
+        let off = 0;
+        for (let k = 0; k < shownShots.length; k++) {
+          const start = t + off;
+          if (start >= t + d - 0.05) break; // trimmed off the end of the scene
+          const sh = shownShots[k];
+          const last = k === shownShots.length - 1 || off + sh.dur >= d - 0.05;
+          const end = last ? t + d : Math.min(t + off + sh.dur, t + d);
+          cues.push({ start, end, text: scenes[i], band: sh.band });
+          if (last) break;
+          off += sh.dur;
+        }
+      }
       t += d;
     }
 
