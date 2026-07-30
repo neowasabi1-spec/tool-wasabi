@@ -14,6 +14,42 @@ import {
  * Body: { jobId, projectId, brandId, adId }
  * The scenes + voice are read from the video_build_jobs row.
  */
+
+// libass renders an SRT with no [Script Info] against a 384×288 canvas and then
+// scales it to the frame, so MarginV below is expressed in that 288-tall space.
+const SUB_PLAY_RES_Y = 288;
+
+/**
+ * Where this project's captions sat, as a fraction of frame height (0 = top,
+ * 1 = bottom). The subtitle removal recorded each shot's text band in
+ * `text_region`; placing the new subtitles on the median of those bands puts
+ * them back over the spot the originals were erased from. Defaults to a lower
+ * third when nothing was measured.
+ */
+async function captionBandFraction(
+  supabase: ReturnType<typeof getSupabase>, projectId: string,
+): Promise<number> {
+  const { data } = await supabase
+    .from('competitor_shots')
+    .select('text_region')
+    .eq('project_id', projectId)
+    .not('text_region', 'is', null)
+    .limit(400);
+  const fracs: number[] = [];
+  for (const row of (data || []) as { text_region?: string | null }[]) {
+    const s = (row.text_region || '').trim();
+    if (!s) continue;
+    const range = s.match(/(\d*\.?\d+)\s*-\s*(\d*\.?\d+)/);
+    if (range) { fracs.push((parseFloat(range[1]) + parseFloat(range[2])) / 2); continue; }
+    const kind = s.split(/\s+/)[0].toLowerCase();
+    if (kind === 'top') fracs.push(0.15);
+    else if (kind === 'center' || kind === 'centre' || kind === 'middle') fracs.push(0.5);
+    else if (kind === 'bottom') fracs.push(0.82);
+  }
+  if (!fracs.length) return 0.72;
+  fracs.sort((a, b) => a - b);
+  return fracs[Math.floor(fracs.length / 2)];
+}
 export default async (req: Request) => {
   let body: { jobId?: number; projectId?: string; brandId?: number; adId?: number };
   try { body = await req.json(); } catch { return new Response('bad json', { status: 400 }); }
@@ -113,9 +149,15 @@ export default async (req: Request) => {
 
     fs.writeFileSync(path.join(workDir, 'subs.srt'), srt.join('\n'));
     const finalFile = path.join(workDir, 'final.mp4');
+    // Sit the subtitles on the band the originals were removed from. Alignment=2
+    // anchors at the bottom, so MarginV is the gap up from there: convert the
+    // target height fraction into that gap in the 288-tall subtitle canvas.
+    const bandFrac = await captionBandFraction(supabase, projectId);
+    const marginV = Math.min(250, Math.max(24, Math.round((1 - bandFrac) * SUB_PLAY_RES_Y)));
+    log(`subtitles on caption band ${bandFrac.toFixed(2)} (MarginV=${marginV})`);
     const style =
       'FontSize=16,Bold=1,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,' +
-      'BorderStyle=3,Outline=6,Shadow=0,Alignment=2,MarginV=90';
+      `BorderStyle=3,Outline=6,Shadow=0,Alignment=2,MarginV=${marginV}`;
     try {
       await run(FFMPEG, [
         '-y', '-i', base, '-vf', `subtitles=subs.srt:force_style='${style}'`,
