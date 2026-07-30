@@ -512,6 +512,46 @@ async function maskDrivenClean(opts: {
   return { file, srcRgb, frames };
 }
 
+/**
+ * Caption still readable in a cleaned clip, as frames and a box.
+ *
+ * Feeding the caption detector its own output is the only check that caught the
+ * smear the remover can leave behind, and what it reports is exactly what the
+ * frame-drop and erase stages need: which frames are bad and where the text is.
+ */
+function detectRemaining(
+  out: RgbFrames, textRegion: string | null,
+): { bad: number[]; counts: number[]; frames: number; box: Box } | null {
+  const frames = Math.floor(out.buf.length / (out.w * out.h * 3));
+  const cm = captionMasks(out.buf, frames, out.w, out.h, textRegion);
+  if (!cm) return null;
+  if (!maskIsTrustworthy(cm, out.w, out.h).ok) return null;
+
+  const bad: number[] = [];
+  const counts: number[] = [];
+  let x0 = out.w, y0 = out.h, x1 = -1, y1 = -1;
+  for (let f = 0; f < cm.masks.length; f++) {
+    const m = cm.masks[f];
+    let n = 0;
+    for (let p = 0; p < m.length; p++) {
+      if (!m[p]) continue;
+      n++;
+      const x = p % out.w, y = (p - x) / out.w;
+      if (x < x0) x0 = x;
+      if (x > x1) x1 = x;
+      if (y < y0) y0 = y;
+      if (y > y1) y1 = y;
+    }
+    counts.push(n);
+    if (n) bad.push(f);
+  }
+  if (!bad.length || x1 < 0) return null;
+  return {
+    bad, counts, frames,
+    box: { x0: x0 / out.w, y0: y0 / out.h, x1: x1 / out.w, y1: y1 / out.h },
+  };
+}
+
 async function compareRemover(
   supabase: ReturnType<typeof getSupabase>,
   token: string,
@@ -682,6 +722,7 @@ export default async (req: Request) => {
     const dur = await probeDuration(srcFile);
     let srcRgb: { buf: Buffer; w: number; h: number } | null = null;
     let leftover: Leftover | null = null;
+    let captionReadable = false;
 
     // ── Stage 1: mask-driven neural removal. Preferred, because it rebuilds the
     // caption area from surrounding motion instead of leaving the blurred patch
@@ -724,6 +765,18 @@ export default async (req: Request) => {
             const outRgb = await rgbFrames(outFile, W, H, dur, fps, workDir);
             leftover = analyzeLeftoverText(srcRgb.buf, outRgb.buf, srcRgb.w, srcRgb.h);
             log(`mask path: ${leftover.bad.length}/${leftover.frames} frames still show text`);
+            // The detector that builds the mask is the strict judge here: run it
+            // on the result. Some captions come back from the model as a smear
+            // that still reads as letters however the model is tuned, and that
+            // has to be caught rather than trusted away.
+            const stillThere = detectRemaining(
+              outRgb, (claimed as { text_region?: string | null }).text_region ?? null,
+            );
+            if (stillThere) {
+              leftover = { ...leftover, ...stillThere };
+              captionReadable = true;
+              log(`mask path: caption still readable on ${stillThere.bad.length} frame(s) — cleaning up`);
+            }
           } catch (e) {
             log(`mask path: leftover check skipped (${(e as Error).message})`);
           }
@@ -826,6 +879,7 @@ export default async (req: Request) => {
     if (!fs.existsSync(outFile)) return fail('no cleaned video produced');
 
     let note: string | null = null;
+    let unusable = false;
 
     // ── Stage 2a: frames that still show text after every pass. Drop them and
     // hold the previous good frame: erasing the caption area on single frames
@@ -833,7 +887,14 @@ export default async (req: Request) => {
     if (leftover?.bad.length && leftover.box) {
       try {
         const maxDrop = Math.max(2, Math.floor(leftover.frames * MAX_DROP));
-        if (leftover.bad.length <= maxDrop) {
+        if (captionReadable && leftover.bad.length > maxDrop) {
+          // Readable text on most of the clip cannot be dropped or blurred away
+          // without wrecking the footage, and blurred patches were rejected for
+          // good reason. The shot is simply left out of the usable pool.
+          unusable = true;
+          note = `caption still readable on ${leftover.bad.length}/${leftover.frames} frames — shot left out of the pool`;
+          log(`stage 2a: ${note}`);
+        } else if (leftover.bad.length <= maxDrop) {
           const patched = path.join(workDir, 'clean2a.mp4');
           await run(FFMPEG, [
             '-y', '-i', outFile, '-vf', buildDropGraph(leftover.bad, fps),
@@ -931,6 +992,19 @@ export default async (req: Request) => {
         note = `OCR cleanup skipped: ${(e as Error).message}`;
         log(note);
       }
+    }
+
+    // A shot whose caption survived must not keep a cleaned copy on record: the
+    // builder picks footage by that copy, so leaving one would put the text back
+    // into finished videos. Clearing it is what keeps the pool honest.
+    if (unusable) {
+      const { error } = await supabase
+        .from('competitor_shots')
+        .update({ clean_path: null, inpaint_status: 'done', inpaint_error: note?.slice(0, 500) ?? null })
+        .eq('id', shotId);
+      if (error) return fail(`could not mark the shot unusable: ${error.message}`);
+      log('done — left out of the pool');
+      return new Response('done', { status: 200 });
     }
 
     const cleanKey = `${projectId}/shots-clean/${shotId}_${Date.now()}.mp4`;

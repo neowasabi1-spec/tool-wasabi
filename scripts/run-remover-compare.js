@@ -66,8 +66,12 @@ async function get(s, key, file) {
   if (!shot) return console.log(`shot #${shotId} not found`);
 
   const base = `${shot.project_id}/shots-compare/${shotId}_${model.split('/')[1]}`;
-  // Clear a previous attempt so polling can't pick up a stale file.
+  // Deleting the previous attempt first is not enough: with a read-only key the
+  // remove silently does nothing and polling then returns the old report within
+  // seconds, which reads exactly like a successful run of the new settings. The
+  // report's own timestamp is what makes it impossible to mistake.
   await s.storage.from(BUCKET).remove([`${base}.mp4`, `${base}.json`]);
+  const triggeredAt = Date.now();
 
   const resp = await fetch(`${SITE}/.netlify/functions/inpaint-shot-background`, {
     method: 'POST',
@@ -81,8 +85,9 @@ async function get(s, key, file) {
   for (let i = 0; i < 90; i++) {
     await sleep(10000);
     if (await get(s, `${base}.json`, jsonFile)) {
-      report = JSON.parse(fs.readFileSync(jsonFile, 'utf8'));
-      break;
+      const candidate = JSON.parse(fs.readFileSync(jsonFile, 'utf8'));
+      if (Date.parse(candidate.at || 0) >= triggeredAt - 60000) { report = candidate; break; }
+      if (i === 0) console.log(`  ignoring the report from ${candidate.at} — waiting for this run`);
     }
     if (i % 3 === 2) console.log(`  waiting… ${(i + 1) * 10}s`);
   }
