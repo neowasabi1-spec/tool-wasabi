@@ -745,7 +745,7 @@ function CreativeDetailPanel({
                 <p className="text-[9px] text-muted-foreground uppercase tracking-widest font-semibold">Localize video (voiceover + subtitles)</p>
               </div>
               <p className="text-[10px] text-muted-foreground leading-snug">
-                Keeps the <b>original footage</b> and swaps in a translated voiceover + subtitles in the chosen language, from this creative’s transcript. Runs on the server (~1 min). To compose a brand-new video from your own copy, use the <b>Shots</b> tab. (Extract the transcript first; needs an OpenAI key for the voice.)
+                Keeps the <b>original footage</b> and swaps in a translated voiceover + subtitles in the chosen language, from this creative’s transcript. To compose a brand-new video from your own copy, use the <b>Shots</b> tab. (Extract the transcript first; needs an OpenAI key for the voice.)
               </p>
               <div className="flex items-center gap-2">
                 <select
