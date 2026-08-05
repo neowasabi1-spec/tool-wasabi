@@ -1033,6 +1033,26 @@ export default async (req: Request) => {
       return new Response('done', { status: 200 });
     }
 
+    // Normalise to browser-playable H.264. MiniMax-Remover hands back an
+    // MPEG-4 Part 2 (mp4v) file, which ffmpeg reads fine but <video> cannot
+    // decode — so an untouched mask-path result made the player error out and
+    // silently fall back to the ORIGINAL clip, putting the caption right back
+    // on screen. Re-encode to H.264 yuv420p + faststart so it plays and streams
+    // everywhere. (Detector-path outputs are already H.264; re-encoding once
+    // more is cheap and keeps every clean copy uniform.)
+    const playable = path.join(workDir, 'clean-h264.mp4');
+    try {
+      await run(FFMPEG, [
+        '-y', '-i', outFile,
+        '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-profile:v', 'high',
+        '-crf', '20', '-preset', 'veryfast', '-movflags', '+faststart', '-an',
+        playable,
+      ]);
+      fs.copyFileSync(playable, outFile);
+    } catch (e) {
+      log(`h264 normalise failed, uploading as-is: ${(e as Error).message}`);
+    }
+
     const cleanKey = `${projectId}/shots-clean/${shotId}_${Date.now()}.mp4`;
     await uploadFile(supabase, cleanKey, outFile, 'video/mp4');
 
