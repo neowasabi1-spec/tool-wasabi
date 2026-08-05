@@ -99,19 +99,47 @@ export async function GET(req: NextRequest) {
   const friendly = filename.replace(/^\d{10,}_/, '');
   const ab = await data.arrayBuffer();
   const buf = Buffer.from(ab);
+  const contentType = data.type || mimeFromExt(filename);
 
-  const headers = new Headers();
-  headers.set('Content-Type', data.type || mimeFromExt(filename));
-  headers.set('Content-Length', String(buf.length));
-  headers.set('Cache-Control', 'private, max-age=3600');
-  // RFC 5987 filename* covers non-ASCII filenames; the legacy filename= keeps
-  // older browsers happy.
   const encoded = encodeURIComponent(friendly);
   const disposition = wantDownload ? 'attachment' : 'inline';
-  headers.set(
+  const baseHeaders = new Headers();
+  baseHeaders.set('Content-Type', contentType);
+  baseHeaders.set('Cache-Control', 'private, max-age=3600');
+  // Advertise byte-range support: <video> elements seek and loop by asking for
+  // ranges, and a plain 200 that ignores the Range header makes some browsers
+  // fire an error event mid-playback — which used to make the shots preview
+  // silently fall back to the *original* (subtitled) clip.
+  baseHeaders.set('Accept-Ranges', 'bytes');
+  // RFC 5987 filename* covers non-ASCII filenames; the legacy filename= keeps
+  // older browsers happy.
+  baseHeaders.set(
     'Content-Disposition',
     `${disposition}; filename="${friendly.replace(/"/g, '')}"; filename*=UTF-8''${encoded}`,
   );
 
+  // Honour a single byte-range request (the common case for media playback).
+  const range = req.headers.get('range');
+  const m = range && /^bytes=(\d*)-(\d*)$/.exec(range.trim());
+  if (m && (m[1] !== '' || m[2] !== '')) {
+    const size = buf.length;
+    let start = m[1] === '' ? size - Number(m[2]) : Number(m[1]);
+    let end = m[2] === '' ? size - 1 : Number(m[2]);
+    if (!Number.isFinite(start) || start < 0) start = 0;
+    if (!Number.isFinite(end) || end >= size) end = size - 1;
+    if (start > end) {
+      const bad = new Headers(baseHeaders);
+      bad.set('Content-Range', `bytes */${size}`);
+      return new NextResponse(null, { status: 416, headers: bad });
+    }
+    const slice = buf.subarray(start, end + 1);
+    const headers = new Headers(baseHeaders);
+    headers.set('Content-Range', `bytes ${start}-${end}/${size}`);
+    headers.set('Content-Length', String(slice.length));
+    return new NextResponse(slice, { status: 206, headers });
+  }
+
+  const headers = new Headers(baseHeaders);
+  headers.set('Content-Length', String(buf.length));
   return new NextResponse(buf, { status: 200, headers });
 }

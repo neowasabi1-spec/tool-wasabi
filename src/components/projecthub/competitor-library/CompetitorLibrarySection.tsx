@@ -1872,8 +1872,8 @@ function ShotsLibraryView({ projectId }: { projectId: string }) {
     if (!quiet) setLoading(true);
     try {
       const [sr, br] = await Promise.all([
-        fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/shots`),
-        fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library`),
+        fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/shots`, { cache: "no-store" }),
+        fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library`, { cache: "no-store" }),
       ]);
       const sj = await sr.json().catch(() => []);
       setShots(Array.isArray(sj) ? sj : []);
@@ -2135,12 +2135,20 @@ function ShotsLibraryView({ projectId }: { projectId: string }) {
         <div className="fixed inset-0 z-[70] flex items-center justify-center p-6" onClick={() => setPlaying(null)}>
           <div className="absolute inset-0 bg-black/80" />
           <video
+            key={playing.id}
             src={getUploadUrl(playing.clean_path || playing.file_path)}
             onError={(e) => {
-              // A broken cleaned copy must never leave the preview empty: fall
-              // back to the original clip so the shot always plays.
+              // Only fall back to the ORIGINAL (subtitled) clip if the cleaned
+              // copy is genuinely broken — and only once. The previous version
+              // compared an absolute src against a relative URL, so it always
+              // "differed" and swapped to the original on the very first hiccup,
+              // making every cleaned shot look like it still had subtitles.
+              const el = e.currentTarget;
               const orig = getUploadUrl(playing.file_path);
-              if (playing.clean_path && e.currentTarget.src !== orig) e.currentTarget.src = orig;
+              if (playing.clean_path && !el.dataset.fellBack && !el.src.endsWith(orig)) {
+                el.dataset.fellBack = "1";
+                el.src = orig;
+              }
             }}
             controls autoPlay loop playsInline
             className="relative max-h-[80vh] max-w-full rounded-xl bg-black"
