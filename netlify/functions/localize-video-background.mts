@@ -3,7 +3,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import {
   getSupabase, run, FFMPEG, makeWorkDir, probeDuration, ttsScene,
-  normalizeShot, downloadSource, grabThumb, uploadFile, TARGET_W, TARGET_H,
+  downloadSource, grabThumb, uploadFile, TARGET_W, TARGET_H,
 } from './_shared/video';
 
 /**
@@ -130,34 +130,15 @@ export default async (req: Request) => {
     const voiceFile = path.join(workDir, 'voice.mp3');
     await run(FFMPEG, ['-y', '-f', 'concat', '-safe', '0', '-i', aList, '-c', 'copy', voiceFile]);
 
-    // 2. Original footage, normalized to the vertical target, fitted to the
-    // voiceover length: looped if shorter, trimmed if longer.
-    const raw = path.join(workDir, 'raw.mp4');
-    await downloadSource(supabase, sourcePath, raw);
-    const norm = path.join(workDir, 'norm.mp4');
-    await normalizeShot(raw, norm);
-    const srcDur = await probeDuration(norm);
-    const visual = path.join(workDir, 'visual.mp4');
-    if (srcDur >= total - 0.05) {
-      await run(FFMPEG, ['-y', '-i', norm, '-t', total.toFixed(2), '-an',
-        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', '-pix_fmt', 'yuv420p', visual]);
-    } else {
-      await run(FFMPEG, ['-y', '-stream_loop', '-1', '-i', norm, '-t', total.toFixed(2), '-an',
-        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', '-pix_fmt', 'yuv420p', visual]);
-    }
-    log(`source ${srcDur.toFixed(1)}s ${srcDur >= total ? 'trimmed' : 'looped'} to ${total.toFixed(1)}s`);
-
-    // 3. Mux voiceover onto the footage.
-    const base = path.join(workDir, 'base.mp4');
-    await run(FFMPEG, ['-y', '-i', visual, '-i', voiceFile,
-      '-c:v', 'copy', '-c:a', 'aac', '-b:a', '160k', '-shortest', base]);
-
-    // 4. Subtitles: one cue per line, timed to its voiceover clip.
+    // 2. Subtitles: one cue per line, timed to its voiceover clip. Built before
+    // the video pass so the scale+crop+subtitle burn happen in ONE re-encode.
     const cues: { start: number; end: number; text: string }[] = [];
-    let t = 0;
-    for (let i = 0; i < scenes.length; i++) {
-      cues.push({ start: t, end: t + durs[i], text: scenes[i] });
-      t += durs[i];
+    {
+      let t = 0;
+      for (let i = 0; i < scenes.length; i++) {
+        cues.push({ start: t, end: t + durs[i], text: scenes[i] });
+        t += durs[i];
+      }
     }
     fs.writeFileSync(path.join(workDir, 'subs.ass'), buildAss(cues));
 
@@ -171,15 +152,36 @@ export default async (req: Request) => {
     } else {
       log('WARNING: caption font not found — subtitles may not render');
     }
-    const finalFile = path.join(workDir, 'final.mp4');
+
+    // 3. ONE video pass: download the source, scale/crop to the vertical target,
+    // trim (or loop, if the source is shorter) to the voiceover length, and burn
+    // the subtitles — all at once. Re-encoding the full source first and then
+    // trimming (the old 3-pass flow) was what made this take minutes.
+    const raw = path.join(workDir, 'raw.mp4');
+    await downloadSource(supabase, sourcePath, raw);
+    const srcDur = await probeDuration(raw);
+    const loop = srcDur < total - 0.05 ? ['-stream_loop', '-1'] : [];
+    const scale = `scale=${TARGET_W}:${TARGET_H}:force_original_aspect_ratio=increase,` +
+      `crop=${TARGET_W}:${TARGET_H},fps=30`;
+    const visual = path.join(workDir, 'visual.mp4');
     try {
-      await run(FFMPEG, ['-y', '-i', base, '-vf', `ass=subs.ass${fontArg}`,
-        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', '-c:a', 'copy', finalFile],
+      await run(FFMPEG, ['-y', ...loop, '-i', raw, '-t', total.toFixed(2), '-an',
+        '-vf', `${scale},ass=subs.ass${fontArg}`,
+        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', '-pix_fmt', 'yuv420p', visual],
         { cwd: workDir });
     } catch (e) {
-      log(`subtitle burn failed, using base: ${(e as Error).message}`);
-      fs.copyFileSync(base, finalFile);
+      // Subtitle burn failed (e.g. font issue): fall back to footage only.
+      log(`subtitle burn failed, footage only: ${(e as Error).message}`);
+      await run(FFMPEG, ['-y', ...loop, '-i', raw, '-t', total.toFixed(2), '-an',
+        '-vf', scale,
+        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', '-pix_fmt', 'yuv420p', visual]);
     }
+    log(`source ${srcDur.toFixed(1)}s ${srcDur >= total ? 'trimmed' : 'looped'} to ${total.toFixed(1)}s`);
+
+    // 4. Mux the voiceover onto the footage (stream copy — no re-encode).
+    const finalFile = path.join(workDir, 'final.mp4');
+    await run(FFMPEG, ['-y', '-i', visual, '-i', voiceFile,
+      '-c:v', 'copy', '-c:a', 'aac', '-b:a', '160k', '-shortest', finalFile]);
 
     const thumb = path.join(workDir, 'thumb.jpg');
     try { await grabThumb(finalFile, 1, thumb); } catch { /* ignore */ }
