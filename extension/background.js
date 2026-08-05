@@ -273,6 +273,34 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
 
+  // Download media straight to the user's computer. http(s) URLs are handed to
+  // chrome.downloads (bypasses CORS, reuses cookies for hotlink-protected CDNs);
+  // blob:/data: media is downloaded in-page by the content script instead.
+  if (msg.type === 'DOWNLOAD_MEDIA') {
+    try {
+      const url = msg.url || msg.dataUrl;
+      if (!url) {
+        sendResponse({ ok: false, error: 'nothing to download' });
+        return true;
+      }
+      const opts = { url, saveAs: false };
+      if (msg.filename) opts.filename = msg.filename;
+      chrome.downloads.download(opts, (id) => {
+        if (chrome.runtime.lastError || id === undefined) {
+          sendResponse({
+            ok: false,
+            error: (chrome.runtime.lastError && chrome.runtime.lastError.message) || 'download failed',
+          });
+        } else {
+          sendResponse({ ok: true, id });
+        }
+      });
+    } catch (e) {
+      sendResponse({ ok: false, error: String((e && e.message) || e) });
+    }
+    return true;
+  }
+
   // Save a single creative into a project's Competitor Library.
   if (msg.type === 'SAVE_CREATIVE') {
     (async () => {

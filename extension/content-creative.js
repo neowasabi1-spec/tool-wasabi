@@ -93,6 +93,12 @@ function isWasabiTool() {
       .save:disabled { opacity: .6; cursor: default; }
       .cancel { background: #f1f5f9; color: #475569; }
       .cancel:hover { background: #e2e8f0; }
+      /* Small, icon-only direct-download button sitting between Cancel and Save. */
+      .dl { flex: 0 0 auto !important; background: #e2e8f0; color: #334155; display: flex;
+        align-items: center; justify-content: center; padding: 9px 11px; }
+      .dl:hover { background: #cbd5e1; }
+      .dl:disabled { opacity: .6; cursor: default; }
+      .dl svg { width: 15px; height: 15px; }
       .status { margin-top: 10px; font-size: 11px; min-height: 14px; }
       .status.ok { color: #16a34a; } .status.err { color: #dc2626; } .status.muted { color: #64748b; }
       .badge { position: absolute; top: 10px; left: 12px; font-size: 9px; font-weight: 800;
@@ -152,6 +158,9 @@ function isWasabiTool() {
       </div>
       <div class="row">
         <button class="cancel" id="cancel" type="button">Cancel</button>
+        <button class="dl" id="doDownload" type="button" title="Download to your computer">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>
+        </button>
         <button class="save" id="doSave" type="button">Save</button>
       </div>
       <div class="status muted" id="status"></div>
@@ -184,6 +193,7 @@ function isWasabiTool() {
   const popHost = root.getElementById('popHost');
   const thumbWrap = root.getElementById('thumbWrap');
   const nameRow = root.getElementById('nameRow');
+  const downloadBtn = root.getElementById('doDownload');
   const launchBtn = root.getElementById('launch');
   const launchLabel = root.getElementById('launchLabel');
   const bar = root.getElementById('bar');
@@ -530,6 +540,8 @@ function isWasabiTool() {
 
     // Batch: single name-per-item makes no sense; hide it and title with count.
     nameRow.style.display = isBatch ? 'none' : 'block';
+    // Direct download is a single-item action; hide it while batch-importing.
+    downloadBtn.style.display = isBatch ? 'none' : 'flex';
     const h4 = pop.querySelector('h4');
     if (h4) h4.textContent = isBatch
       ? `Import ${selected.size} creative${selected.size === 1 ? '' : 's'}`
@@ -723,6 +735,74 @@ function isWasabiTool() {
       setTimeout(() => { closePopover(); setSelectMode(false); }, 2200);
     }
   }
+
+  // ── Direct download ──────────────────────────────────────────────────────
+  function extForType(type, isVideo) {
+    if (type) {
+      const sub = String(type).split('/')[1];
+      if (sub) return sub.split(';')[0].replace('quicktime', 'mov').replace('jpeg', 'jpg');
+    }
+    return isVideo ? 'mp4' : 'jpg';
+  }
+
+  function buildFilename(name, src, type, isVideo) {
+    const base =
+      (name || 'creative').trim().replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, '_').slice(0, 80) ||
+      'creative';
+    let ext = '';
+    try {
+      const p = new URL(src, location.href).pathname;
+      const m = p.match(/\.([a-z0-9]{2,4})(?:$|\?)/i);
+      if (m) ext = m[1].toLowerCase();
+    } catch {
+      /* blob:/data: — no path */
+    }
+    if (!ext) ext = extForType(type, isVideo);
+    return `${base}.${ext}`;
+  }
+
+  // blob:/data: media is same-origin to the page, so an anchor download works
+  // with no size limit and no CORS — no need to route through the service worker.
+  function anchorDownload(url, filename) {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename || '';
+    a.rel = 'noopener';
+    a.style.display = 'none';
+    (document.body || document.documentElement).appendChild(a);
+    a.click();
+    setTimeout(() => a.remove(), 1500);
+  }
+
+  downloadBtn.addEventListener('click', async () => {
+    const src = pop.__src;
+    const isVideo = pop.__isVideo;
+    if (!src) {
+      setStatus('Nothing to download here.', 'err');
+      return;
+    }
+    downloadBtn.disabled = true;
+    setStatus('<span class="spin"></span>Downloading…', 'muted');
+    try {
+      if (/^https?:\/\//i.test(src)) {
+        // Cross-origin http(s): the SW's chrome.downloads bypasses CORS.
+        const res = await sendMessage({
+          type: 'DOWNLOAD_MEDIA',
+          url: src,
+          filename: buildFilename(nameInput.value, src, '', isVideo),
+        });
+        setStatus(res && res.ok ? 'Download started ✓' : (res && res.error) || 'Download failed.', res && res.ok ? 'ok' : 'err');
+      } else {
+        // blob:/data: — download in-page (no size cap).
+        anchorDownload(src, buildFilename(nameInput.value, src, '', isVideo));
+        setStatus('Download started ✓', 'ok');
+      }
+    } catch (e) {
+      setStatus(String((e && e.message) || 'Download failed.'), 'err');
+    } finally {
+      downloadBtn.disabled = false;
+    }
+  });
 
   root.getElementById('doSave').addEventListener('click', async () => {
     const projectId = projSel.value;
