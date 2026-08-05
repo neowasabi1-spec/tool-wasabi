@@ -114,11 +114,16 @@ function buildAss(cues: { start: number; end: number; text: string; band: number
   return [...header, ...events].join('\n') + '\n';
 }
 
+type Scene = { text: string; match: string };
+
 export default async (req: Request) => {
   let body: { jobId?: number; projectId?: string; brandId?: number; adId?: number };
   try { body = await req.json(); } catch { return new Response('bad json', { status: 400 }); }
-  const { jobId, projectId, brandId, adId } = body;
-  if (!jobId || !projectId || !brandId || !adId) return new Response('missing fields', { status: 400 });
+  const { jobId, projectId } = body;
+  // brand/ad are optional: custom (brand-level) builds carry ad_id = 0.
+  const brandId = body.brandId || 0;
+  const adId = body.adId || 0;
+  if (!jobId || !projectId) return new Response('missing fields', { status: 400 });
 
   const supabase = getSupabase();
   const log = (...a: unknown[]) => console.log('[build-bg]', `job#${jobId}`, ...a);
@@ -128,14 +133,23 @@ export default async (req: Request) => {
     .update({ status: 'processing', started_at: new Date().toISOString() })
     .eq('id', jobId)
     .eq('status', 'pending')
-    .select('id, scenes, voice')
+    .select('*')
     .maybeSingle();
   if (!claimed) { log('not pending — skipping'); return new Response('skip', { status: 200 }); }
 
-  const scenes: string[] = (Array.isArray(claimed.scenes) ? claimed.scenes : [])
-    .map((s: { text?: string }) => (s && typeof s.text === 'string' ? s.text.trim() : ''))
-    .filter(Boolean);
+  // Each scene carries the spoken/subtitle `text` and an ENGLISH `match` hint
+  // used only to choose footage, so a non-English copy still pulls the right
+  // shots while narration and subtitles stay in the target language.
+  const scenes: Scene[] = (Array.isArray(claimed.scenes) ? claimed.scenes : [])
+    .map((s: { text?: string; match?: string }): Scene => ({
+      text: s && typeof s.text === 'string' ? s.text.trim() : '',
+      match: s && typeof s.match === 'string' && s.match.trim()
+        ? s.match.trim()
+        : (s && typeof s.text === 'string' ? s.text.trim() : ''),
+    }))
+    .filter((s: Scene) => s.text);
   const voice = claimed.voice || 'alloy';
+  const language = (claimed as { language?: string | null }).language || null;
 
   const workDir = makeWorkDir('wbuild-');
   try {
@@ -168,7 +182,7 @@ export default async (req: Request) => {
     let fetched = 0;
     for (let i = 0; i < scenes.length; i++) {
       const mp3 = path.join(workDir, `vo_${i}.mp3`);
-      await ttsScene(scenes[i], voice, mp3);
+      await ttsScene(scenes[i].text, voice, mp3);
       const d = Math.max(0.8, await probeDuration(mp3));
       // Hook footage opens the video, CTA footage closes it, body in between —
       // within that, pick the clips matching this scene's text. No reuse.
@@ -183,7 +197,7 @@ export default async (req: Request) => {
       // Only the chosen clips are fetched. A clip that fails to download or
       // normalize is dropped and the scene asks the pool for another one.
       for (let attempt = 0; attempt < 2 && files.length === 0; attempt++) {
-        const picked = pickShotsForScene(pool, used, scenes[i], d, want);
+        const picked = pickShotsForScene(pool, used, scenes[i].match, d, want);
         if (picked.clips.length === 0) break;
         sections = picked.sections;
         for (const clip of picked.clips) {
@@ -209,7 +223,7 @@ export default async (req: Request) => {
       // on — i.e. exactly where it was erased. The last shot is freeze-padded to
       // the scene end, and shots past the voiceover length were trimmed away.
       if (shownShots.length === 0) {
-        cues.push({ start: t, end: t + d, text: scenes[i], band: projectBand });
+        cues.push({ start: t, end: t + d, text: scenes[i].text, band: projectBand });
       } else {
         let off = 0;
         for (let k = 0; k < shownShots.length; k++) {
@@ -218,7 +232,7 @@ export default async (req: Request) => {
           const sh = shownShots[k];
           const last = k === shownShots.length - 1 || off + sh.dur >= d - 0.05;
           const end = last ? t + d : Math.min(t + off + sh.dur, t + d);
-          cues.push({ start, end, text: scenes[i], band: sh.band });
+          cues.push({ start, end, text: scenes[i].text, band: sh.band });
           if (last) break;
           off += sh.dur;
         }
@@ -283,20 +297,24 @@ export default async (req: Request) => {
     try { storedThumb = await uploadFile(supabase, thumbKey, thumb, 'image/jpeg'); } catch { /* ignore */ }
     const totalDur = await probeDuration(finalFile);
 
-    const { data: gv } = await supabase
-      .from('generated_videos')
-      .insert({
-        project_id: projectId,
-        brand_id: brandId,
-        ad_id: adId,
-        file_path: clipKey,
-        thumb_path: storedThumb || null,
-        duration_sec: +totalDur.toFixed(2),
-        script: scenes.join('\n'),
-        voice,
-      })
-      .select('id')
-      .maybeSingle();
+    const gvRow: Record<string, unknown> = {
+      project_id: projectId,
+      brand_id: brandId,
+      ad_id: adId,
+      file_path: clipKey,
+      thumb_path: storedThumb || null,
+      duration_sec: +totalDur.toFixed(2),
+      script: scenes.map((s) => s.text).join('\n'),
+      voice,
+      language,
+    };
+    let gvRes = await supabase.from('generated_videos').insert(gvRow).select('id').maybeSingle();
+    if (gvRes.error && /language/i.test(gvRes.error.message)) {
+      // DB without the language column yet — store everything else.
+      delete gvRow.language;
+      gvRes = await supabase.from('generated_videos').insert(gvRow).select('id').maybeSingle();
+    }
+    const gv = gvRes.data;
 
     await supabase
       .from('video_build_jobs')

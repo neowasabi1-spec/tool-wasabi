@@ -16,6 +16,7 @@ import {
 import { FunnelMonitoringSection } from "./FunnelMonitoringSection";
 import { getUploadUrl } from "@/lib/projecthub-storage";
 import { getSupabaseBrowser } from "@/lib/supabase-browser";
+import { BUILD_LANGUAGES, LANGUAGE_OTHER } from "@/lib/video-languages";
 
 const BASE_URL = "";
 
@@ -462,6 +463,12 @@ function CreativeDetailPanel({
   // otherwise it lives permanently in the "New Creatives" tab, not pinned here.
   const [showInline, setShowInline] = useState(false);
   const [voice, setVoice] = useState("alloy");
+  // Custom copy + language so the same product footage can be reused for your
+  // own script or another geo. Empty language = keep the script's language.
+  const [buildLang, setBuildLang] = useState("");
+  const [buildLangOther, setBuildLangOther] = useState("");
+  const [customCopy, setCustomCopy] = useState("");
+  const [showCustomCopy, setShowCustomCopy] = useState(false);
   const [previewVoiceLoading, setPreviewVoiceLoading] = useState(false);
   const previewAudio = useRef<HTMLAudioElement | null>(null);
   const previewVoice = async (v: string) => {
@@ -509,9 +516,11 @@ function CreativeDetailPanel({
     setBuildStatus("pending");
     setBuildError("");
     setShowInline(true);
+    const language = buildLang === LANGUAGE_OTHER ? buildLangOther.trim() : buildLang;
     try {
       const r = await fetch(`/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/${ad.id}/build-video`, {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ voice }),
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ voice, language, script: customCopy.trim() || undefined }),
       });
       const j = await r.json().catch(() => ({}));
       if (r.ok) {
@@ -731,15 +740,51 @@ function CreativeDetailPanel({
               )}
             </div>
           )}
-          {ad.media_type === "video" && (
+          {(ad.media_type === "video" || !!(text && text.trim()) || !!(script && script.trim())) && (
             <div className="pt-2 border-t border-border space-y-2">
               <div className="flex items-center gap-1.5">
                 <Film className="w-3.5 h-3.5 text-primary" />
                 <p className="text-[9px] text-muted-foreground uppercase tracking-widest font-semibold">Recreate video (real footage)</p>
               </div>
               <p className="text-[10px] text-muted-foreground leading-snug">
-                Assembles a new video from your CLEAN shots + a voiceover of your script + your subtitles. Uses the rewritten script if present. Runs on the server (needs an OpenAI key for the voice).
+                Assembles a new video from the project’s CLEAN shots + a voiceover + your subtitles — works from an image ad too. Reuse this product’s footage with your own copy or another language. Runs on the server (needs an OpenAI key for the voice).
               </p>
+              <div className="flex items-center gap-2">
+                <select
+                  value={buildLang}
+                  onChange={(e) => setBuildLang(e.target.value)}
+                  className="h-8 text-xs rounded-md border border-border bg-background px-2 flex-1"
+                  title="Spoken + subtitle language">
+                  <option value="">Language: same as script</option>
+                  {BUILD_LANGUAGES.map((l) => (
+                    <option key={l} value={l}>{`Language: ${l}`}</option>
+                  ))}
+                  <option value={LANGUAGE_OTHER}>Language: other…</option>
+                </select>
+                {buildLang === LANGUAGE_OTHER && (
+                  <Input
+                    value={buildLangOther}
+                    onChange={(e) => setBuildLangOther(e.target.value)}
+                    placeholder="e.g. Japanese"
+                    className="h-8 text-xs flex-1"
+                  />
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowCustomCopy((v) => !v)}
+                className="text-[10px] font-semibold text-primary hover:underline">
+                {showCustomCopy ? "− Hide custom copy" : "+ Use my own copy (optional)"}
+              </button>
+              {showCustomCopy && (
+                <textarea
+                  value={customCopy}
+                  onChange={(e) => setCustomCopy(e.target.value)}
+                  placeholder="Paste your own script here. Leave empty to use this creative’s script."
+                  rows={4}
+                  className="w-full text-xs rounded-md border border-border bg-background p-2 leading-relaxed resize-y"
+                />
+              )}
               <div className="flex items-center gap-2">
                 <select
                   value={voice}
@@ -2109,12 +2154,184 @@ type GeneratedVideo = {
   created_at: string;
 };
 
+/**
+ * Brand-level "create a custom video": pick a product, paste your own copy,
+ * choose a language + voice, and build a new video from that product's real
+ * shot pool. Not tied to any single competitor creative (ad_id = 0).
+ */
+function CustomVideoModal({
+  projectId, brands, onClose, onQueued,
+}: {
+  projectId: string;
+  brands: { id: number; name: string }[];
+  onClose: () => void;
+  onQueued: () => void;
+}) {
+  const { toast } = useToast();
+  const [brandId, setBrandId] = useState<number | "">(brands[0]?.id ?? "");
+  const [copy, setCopy] = useState("");
+  const [lang, setLang] = useState("");
+  const [langOther, setLangOther] = useState("");
+  const [voice, setVoice] = useState("alloy");
+  const [status, setStatus] = useState<string>("");
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const previewAudio = useRef<HTMLAudioElement | null>(null);
+  const poll = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => () => {
+    if (previewAudio.current) previewAudio.current.pause();
+    if (poll.current) clearInterval(poll.current);
+  }, []);
+
+  const previewVoice = async (v: string) => {
+    try {
+      if (previewAudio.current) { previewAudio.current.pause(); previewAudio.current = null; }
+      setPreviewLoading(true);
+      const r = await fetch(`/api/tts-sample?voice=${encodeURIComponent(v)}`);
+      if (!r.ok) { toast({ title: "Voice preview failed", variant: "destructive" }); return; }
+      const audio = new Audio(URL.createObjectURL(await r.blob()));
+      previewAudio.current = audio;
+      audio.onended = () => { if (previewAudio.current === audio) previewAudio.current = null; };
+      await audio.play();
+    } catch { toast({ title: "Voice preview failed", variant: "destructive" }); }
+    finally { setPreviewLoading(false); }
+  };
+
+  const pollStatus = (bid: number) => {
+    if (poll.current) clearInterval(poll.current);
+    poll.current = setInterval(async () => {
+      try {
+        const r = await fetch(`/api/projecthub/projects/${projectId}/competitor-library/${bid}/build-video`);
+        const j = await r.json().catch(() => ({}));
+        const s = j?.job?.status || "";
+        setStatus(s);
+        if (s === "done") {
+          if (poll.current) { clearInterval(poll.current); poll.current = null; }
+          toast({ title: "Custom video ready 🎬", description: "Saved to New Creatives." });
+          onQueued();
+        } else if (s === "error" || s === "canceled") {
+          if (poll.current) { clearInterval(poll.current); poll.current = null; }
+          toast({ title: "Build failed", description: String(j?.job?.error || "").slice(0, 160), variant: "destructive" });
+        }
+      } catch { /* keep polling */ }
+    }, 5000);
+  };
+
+  const build = async () => {
+    if (!brandId) { toast({ title: "Pick a product first", variant: "destructive" }); return; }
+    if (copy.trim().length < 30) { toast({ title: "Paste a bit more copy (min ~30 chars)", variant: "destructive" }); return; }
+    setStatus("pending");
+    const language = lang === LANGUAGE_OTHER ? langOther.trim() : lang;
+    try {
+      const r = await fetch(`/api/projecthub/projects/${projectId}/competitor-library/${brandId}/build-video`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ voice, language, script: copy.trim() }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (r.ok) {
+        toast({ title: "Queued for build", description: `${j.scenes || ""} scenes — real clean footage only.` });
+        pollStatus(Number(brandId));
+      } else {
+        setStatus("");
+        toast({ title: j.error || "Could not start build", variant: "destructive" });
+      }
+    } catch { setStatus(""); toast({ title: "Could not start build", variant: "destructive" }); }
+  };
+
+  const building = status === "pending" || status === "processing";
+
+  return (
+    <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/40" onClick={onClose} />
+      <div className="relative w-full max-w-lg bg-card border border-border rounded-2xl shadow-2xl max-h-[90vh] overflow-y-auto">
+        <div className="p-4 border-b border-border flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Sparkles className="w-4 h-4 text-primary" />
+            <span className="text-sm font-semibold text-foreground">Create custom video</span>
+          </div>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-4 h-4" /></button>
+        </div>
+        <div className="p-4 space-y-3">
+          <p className="text-[11px] text-muted-foreground leading-snug">
+            Reuse a product’s real footage with your own copy — great for testing new angles or shipping the same shots to another geo in another language.
+          </p>
+          <div>
+            <p className="text-[9px] text-muted-foreground uppercase tracking-wider mb-1">Product footage pool</p>
+            <select
+              value={brandId}
+              onChange={(e) => setBrandId(e.target.value ? Number(e.target.value) : "")}
+              className="w-full h-9 text-sm rounded-md border border-border bg-background px-2">
+              {brands.length === 0 && <option value="">No products yet</option>}
+              {brands.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <p className="text-[9px] text-muted-foreground uppercase tracking-wider mb-1">Your copy</p>
+            <textarea
+              value={copy}
+              onChange={(e) => setCopy(e.target.value)}
+              placeholder="Paste the script you want spoken. It’ll be split into beats, voiced and subtitled automatically."
+              rows={6}
+              className="w-full text-xs rounded-md border border-border bg-background p-2 leading-relaxed resize-y"
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <select
+              value={lang}
+              onChange={(e) => setLang(e.target.value)}
+              className="h-9 text-xs rounded-md border border-border bg-background px-2 flex-1">
+              <option value="">Language: as written</option>
+              {BUILD_LANGUAGES.map((l) => <option key={l} value={l}>{`Language: ${l}`}</option>)}
+              <option value={LANGUAGE_OTHER}>Language: other…</option>
+            </select>
+            {lang === LANGUAGE_OTHER && (
+              <Input value={langOther} onChange={(e) => setLangOther(e.target.value)} placeholder="e.g. Japanese" className="h-9 text-xs flex-1" />
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <select
+              value={voice}
+              onChange={(e) => { setVoice(e.target.value); previewVoice(e.target.value); }}
+              className="h-9 text-xs rounded-md border border-border bg-background px-2 flex-1">
+              {["alloy", "echo", "fable", "onyx", "nova", "shimmer"].map((v) => (
+                <option key={v} value={v}>{`Voice: ${v}`}</option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={() => previewVoice(voice)}
+              disabled={previewLoading}
+              title="Preview this voice"
+              className="h-9 w-9 shrink-0 grid place-items-center rounded-md border border-border bg-background hover:bg-muted disabled:opacity-50">
+              {previewLoading ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
+            </button>
+          </div>
+        </div>
+        <div className="p-4 border-t border-border">
+          <Button onClick={build} disabled={building} className="w-full gap-2">
+            {building
+              ? <><RefreshCw className="w-4 h-4 animate-spin" /> {status === "pending" ? "Queued…" : "Building…"}</>
+              : <><Zap className="w-4 h-4" /> Build video</>}
+          </Button>
+          {building && (
+            <p className="text-[10px] text-muted-foreground mt-2 text-center">
+              Runs on the server — you can keep working; it’ll appear in New Creatives when done.
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function GeneratedVideosView({ projectId }: { projectId: string }) {
   const { toast } = useToast();
   const [videos, setVideos] = useState<GeneratedVideo[]>([]);
   const [brandNames, setBrandNames] = useState<Record<number, string>>({});
+  const [brands, setBrands] = useState<{ id: number; name: string }[]>([]);
   const [loading, setLoading] = useState(true);
   const [playing, setPlaying] = useState<GeneratedVideo | null>(null);
+  const [showCreate, setShowCreate] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -2126,8 +2343,10 @@ function GeneratedVideosView({ projectId }: { projectId: string }) {
       const vj = await vr.json().catch(() => []);
       setVideos(Array.isArray(vj) ? vj : []);
       const bj = await br.json().catch(() => []);
+      const list = (Array.isArray(bj) ? bj : []).map((b: { id: number; name: string }) => ({ id: b.id, name: b.name }));
+      setBrands(list);
       const map: Record<number, string> = {};
-      for (const b of Array.isArray(bj) ? bj : []) map[b.id] = b.name;
+      for (const b of list) map[b.id] = b.name;
       setBrandNames(map);
     } catch { setVideos([]); }
     finally { setLoading(false); }
@@ -2149,10 +2368,23 @@ function GeneratedVideosView({ projectId }: { projectId: string }) {
             Videos you recreated from real footage + AI b-roll. Open a competitor video and use <b>Recreate video</b> to make more.
           </p>
         </div>
-        <Button variant="outline" size="sm" onClick={load} className="gap-1.5 h-8">
-          <RefreshCw className="w-3.5 h-3.5" /> Refresh
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button size="sm" onClick={() => setShowCreate(true)} className="gap-1.5 h-8">
+            <Sparkles className="w-3.5 h-3.5" /> Create custom video
+          </Button>
+          <Button variant="outline" size="sm" onClick={load} className="gap-1.5 h-8">
+            <RefreshCw className="w-3.5 h-3.5" /> Refresh
+          </Button>
+        </div>
       </div>
+      {showCreate && (
+        <CustomVideoModal
+          projectId={projectId}
+          brands={brands}
+          onClose={() => setShowCreate(false)}
+          onQueued={() => { setShowCreate(false); load(); }}
+        />
+      )}
 
       {loading ? (
         <div className="py-16 text-center text-sm text-muted-foreground">Loading…</div>

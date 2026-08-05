@@ -1,45 +1,24 @@
 import { NextRequest, NextResponse } from 'next/server';
-import Anthropic from '@anthropic-ai/sdk';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { canAccessProject } from '@/lib/auth/project-access';
+import {
+  countUsableShots, insertBuildJob, normalizeLanguage, normalizeVoice,
+  splitScriptToScenes, triggerBuildBackground,
+} from '@/lib/video-build';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export const maxDuration = 120;
 
-const OPENAI_VOICES = ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'];
-
-/** Fire the build background function (fire-and-forget; it responds 202). */
-async function triggerBuildBackground(
-  origin: string,
-  payload: { jobId: number; projectId: string; brandId: number; adId: number },
-) {
-  try {
-    await fetch(`${origin}/.netlify/functions/build-video-background`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-  } catch (e) {
-    console.warn('[build-video] background trigger failed:', (e as Error).message);
-  }
-}
-
-const SPLIT_SYSTEM = `You split a short direct-response video ad script into an ordered list of spoken VOICEOVER lines for a vertical short-form video.
-
-Rules:
-- Each line = ONE on-screen beat, natural spoken cadence, ~4-14 words.
-- Keep the persuasive order (hook → problem → solution/mechanism → proof → offer → CTA).
-- Strip stage directions, brackets, "HOOK:", "CTA:", B-roll notes — output ONLY the words to be spoken.
-- 6 to 12 lines total.
-Return ONLY a compact JSON array of strings. No markdown, no explanation.`;
-
 /**
- * Phase 2 step 2 — enqueue "build a new video from real competitor shots".
- * Splits the (rewritten) script into scenes via Claude and queues a
- * video_build_jobs row for the local ffmpeg+TTS worker.
+ * Phase 2 step 2 — enqueue "build a new video from the project's real shot pool".
  *
- * POST body: { voice?: string }
+ * The script is either the creative's own (rewritten) copy or a custom copy the
+ * user pastes in, optionally localized into another language. It is split into
+ * spoken beats and queued as a video_build_jobs row for the ffmpeg+TTS worker;
+ * the same product footage is reused whatever the copy or language.
+ *
+ * POST body: { voice?: string; script?: string; language?: string }
  */
 export async function POST(
   req: NextRequest,
@@ -56,7 +35,9 @@ export async function POST(
   }
 
   const body = await req.json().catch(() => ({} as Record<string, unknown>));
-  const voice = OPENAI_VOICES.includes(String(body.voice)) ? String(body.voice) : 'alloy';
+  const voice = normalizeVoice(body.voice);
+  const language = normalizeLanguage(body.language);
+  const customCopy = String(body.script ?? '').trim();
 
   const { data: ad } = await supabaseAdmin
     .from('competitor_ads')
@@ -67,48 +48,30 @@ export async function POST(
     .maybeSingle();
   if (!ad) return NextResponse.json({ error: 'Creative not found' }, { status: 404 });
 
-  const script = String(
-    (ad as { rewritten_script?: string }).rewritten_script ||
-      (ad as { body_text?: string }).body_text ||
-      '',
-  ).trim();
+  // A pasted copy wins over the creative's own script; otherwise fall back to
+  // the rewritten script and finally the raw ad copy.
+  const script = (customCopy ||
+    String(
+      (ad as { rewritten_script?: string }).rewritten_script ||
+        (ad as { body_text?: string }).body_text ||
+        '',
+    )).trim();
   if (script.length < 30) {
     return NextResponse.json(
-      { error: 'No script yet. Generate “my script” (or transcribe) first.' },
+      { error: 'No script yet. Paste your own copy, or generate “my script” / transcribe first.' },
       { status: 400 },
     );
   }
 
-  // Usable pool = shots that never had subtitles + shots cleaned with AI
-  // inpainting (clean_path). No crop/zoom/delogo retouching and no AI filler.
-  // Block with a clear message when the pool would be empty.
-  let usableCount = 0;
-  {
-    const r = await supabaseAdmin
-      .from('competitor_shots')
-      .select('id', { count: 'exact', head: true })
-      .eq('project_id', id)
-      .or('has_text.is.null,has_text.eq.false,clean_path.not.is.null');
-    if (r.error) {
-      // clean_path column not migrated yet — fall back to truly-clean only.
-      const r2 = await supabaseAdmin
-        .from('competitor_shots')
-        .select('id', { count: 'exact', head: true })
-        .eq('project_id', id)
-        .not('has_text', 'is', true);
-      usableCount = r2.count || 0;
-    } else {
-      usableCount = r.count || 0;
-    }
-  }
-  if (!usableCount || usableCount === 0) {
+  const usableCount = await countUsableShots(id);
+  if (!usableCount) {
     return NextResponse.json(
       { error: 'No usable shots: every shot has burned-in subtitles. Use “Remove subs (AI)” in the Shots tab, upload clean clips in My Footage, or split a subtitle-free video.' },
       { status: 400 },
     );
   }
 
-  // Don't double-queue.
+  // Don't double-queue for the same creative.
   const { data: active } = await supabaseAdmin
     .from('video_build_jobs')
     .select('id, status')
@@ -124,53 +87,19 @@ export async function POST(
     return NextResponse.json({ jobId: active.id, status: active.status, queued: false });
   }
 
-  // Split the script into scenes with Claude.
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) return NextResponse.json({ error: 'ANTHROPIC_API_KEY not configured' }, { status: 500 });
-
-  let scenes: { text: string }[] = [];
-  try {
-    const anthropic = new Anthropic({ apiKey });
-    const resp = await anthropic.messages.create({
-      model: 'claude-opus-4-8',
-      max_tokens: 1500,
-      system: SPLIT_SYSTEM,
-      messages: [{ role: 'user', content: script.slice(0, 6000) }],
-    });
-    const tb = resp.content.find((b) => b.type === 'text');
-    const raw = (tb && 'text' in tb ? tb.text : '') || '';
-    const clean = raw.replace(/```json?/gi, '').replace(/```/g, '').trim();
-    const arr = JSON.parse(clean);
-    if (Array.isArray(arr)) {
-      scenes = arr
-        .map((s) => (typeof s === 'string' ? s.trim() : ''))
-        .filter(Boolean)
-        .slice(0, 12)
-        .map((text) => ({ text }));
-    }
-  } catch {
-    // Fallback: naive split on sentence boundaries.
-    scenes = script
-      .split(/(?<=[.!?])\s+/)
-      .map((s) => s.trim())
-      .filter((s) => s.length > 2)
-      .slice(0, 12)
-      .map((text) => ({ text }));
-  }
+  const scenes = await splitScriptToScenes(script, language);
   if (scenes.length === 0) {
     return NextResponse.json({ error: 'Could not split the script into scenes' }, { status: 500 });
   }
 
-  const { data: job, error } = await supabaseAdmin
-    .from('video_build_jobs')
-    .insert({ project_id: id, brand_id: brandIdNum, ad_id: adIdNum, status: 'pending', voice, scenes })
-    .select('id, status')
-    .single();
-  if (error || !job) {
-    return NextResponse.json({ error: error?.message || 'Failed to queue build' }, { status: 500 });
+  const job = await insertBuildJob({
+    project_id: id, brand_id: brandIdNum, ad_id: adIdNum,
+    voice, scenes, language: language || null,
+  });
+  if (!job) {
+    return NextResponse.json({ error: 'Failed to queue build' }, { status: 500 });
   }
 
-  // Fire the Netlify background function that does the ffmpeg+TTS assembly.
   await triggerBuildBackground(new URL(req.url).origin, {
     jobId: job.id, projectId: id, brandId: brandIdNum, adId: adIdNum,
   });
@@ -179,6 +108,7 @@ export async function POST(
     jobId: job.id,
     status: job.status,
     scenes: scenes.length,
+    language: language || null,
     queued: true,
   });
 }
