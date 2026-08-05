@@ -463,12 +463,10 @@ function CreativeDetailPanel({
   // otherwise it lives permanently in the "New Creatives" tab, not pinned here.
   const [showInline, setShowInline] = useState(false);
   const [voice, setVoice] = useState("alloy");
-  // Custom copy + language so the same product footage can be reused for your
-  // own script or another geo. Empty language = keep the script's language.
+  // Localize the original video into another language: translated voiceover +
+  // subtitles over the same footage. Empty = keep the transcript's language.
   const [buildLang, setBuildLang] = useState("");
   const [buildLangOther, setBuildLangOther] = useState("");
-  const [customCopy, setCustomCopy] = useState("");
-  const [showCustomCopy, setShowCustomCopy] = useState(false);
   const [previewVoiceLoading, setPreviewVoiceLoading] = useState(false);
   const previewAudio = useRef<HTMLAudioElement | null>(null);
   const previewVoice = async (v: string) => {
@@ -520,7 +518,7 @@ function CreativeDetailPanel({
     try {
       const r = await fetch(`/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/${ad.id}/build-video`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ voice, language, script: customCopy.trim() || undefined }),
+        body: JSON.stringify({ mode: "localize", voice, language }),
       });
       const j = await r.json().catch(() => ({}));
       if (r.ok) {
@@ -740,22 +738,22 @@ function CreativeDetailPanel({
               )}
             </div>
           )}
-          {(ad.media_type === "video" || !!(text && text.trim()) || !!(script && script.trim())) && (
+          {ad.media_type === "video" && (
             <div className="pt-2 border-t border-border space-y-2">
               <div className="flex items-center gap-1.5">
-                <Film className="w-3.5 h-3.5 text-primary" />
-                <p className="text-[9px] text-muted-foreground uppercase tracking-widest font-semibold">Recreate video (real footage)</p>
+                <Globe className="w-3.5 h-3.5 text-primary" />
+                <p className="text-[9px] text-muted-foreground uppercase tracking-widest font-semibold">Localize video (voiceover + subtitles)</p>
               </div>
               <p className="text-[10px] text-muted-foreground leading-snug">
-                Assembles a new video from the project’s CLEAN shots + a voiceover + your subtitles — works from an image ad too. Reuse this product’s footage with your own copy or another language. Runs on the server (needs an OpenAI key for the voice).
+                Keeps the <b>original footage</b> and swaps in a translated voiceover + subtitles in the chosen language, from this creative’s transcript. To compose a brand-new video from your own copy, use the <b>Shots</b> tab. (Extract the transcript first; needs an OpenAI key for the voice.)
               </p>
               <div className="flex items-center gap-2">
                 <select
                   value={buildLang}
                   onChange={(e) => setBuildLang(e.target.value)}
                   className="h-8 text-xs rounded-md border border-border bg-background px-2 flex-1"
-                  title="Spoken + subtitle language">
-                  <option value="">Language: same as script</option>
+                  title="Voiceover + subtitle language">
+                  <option value="">Language: same as original</option>
                   {BUILD_LANGUAGES.map((l) => (
                     <option key={l} value={l}>{`Language: ${l}`}</option>
                   ))}
@@ -770,21 +768,6 @@ function CreativeDetailPanel({
                   />
                 )}
               </div>
-              <button
-                type="button"
-                onClick={() => setShowCustomCopy((v) => !v)}
-                className="text-[10px] font-semibold text-primary hover:underline">
-                {showCustomCopy ? "− Hide custom copy" : "+ Use my own copy (optional)"}
-              </button>
-              {showCustomCopy && (
-                <textarea
-                  value={customCopy}
-                  onChange={(e) => setCustomCopy(e.target.value)}
-                  placeholder="Paste your own script here. Leave empty to use this creative’s script."
-                  rows={4}
-                  className="w-full text-xs rounded-md border border-border bg-background p-2 leading-relaxed resize-y"
-                />
-              )}
               <div className="flex items-center gap-2">
                 <select
                   value={voice}
@@ -809,8 +792,8 @@ function CreativeDetailPanel({
                   disabled={buildStatus === "pending" || buildStatus === "processing"}
                   className="gap-2 h-8">
                   {buildStatus === "pending" || buildStatus === "processing"
-                    ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> {buildStatus === "pending" ? "Queued…" : "Building…"}</>
-                    : <><Zap className="w-3.5 h-3.5" /> Build video</>}
+                    ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> {buildStatus === "pending" ? "Queued…" : "Localizing…"}</>
+                    : <><Zap className="w-3.5 h-3.5" /> Localize</>}
                 </Button>
                 {(buildStatus === "pending" || buildStatus === "processing") && (
                   <button
@@ -1877,10 +1860,13 @@ function ShotsLibraryView({ projectId }: { projectId: string }) {
   const { toast } = useToast();
   const [shots, setShots] = useState<Shot[]>([]);
   const [brandNames, setBrandNames] = useState<Record<number, string>>({});
+  const [brands, setBrands] = useState<{ id: number; name: string }[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<"all" | "clean" | "subs">("all");
   const [query, setQuery] = useState("");
   const [playing, setPlaying] = useState<Shot | null>(null);
+  // Compose a brand-new video from these shots + your own copy.
+  const [showCreate, setShowCreate] = useState(false);
 
   const load = async (quiet = false) => {
     if (!quiet) setLoading(true);
@@ -1892,8 +1878,10 @@ function ShotsLibraryView({ projectId }: { projectId: string }) {
       const sj = await sr.json().catch(() => []);
       setShots(Array.isArray(sj) ? sj : []);
       const bj = await br.json().catch(() => []);
+      const list = (Array.isArray(bj) ? bj : []).map((b: { id: number; name: string }) => ({ id: b.id, name: b.name }));
+      setBrands(list);
       const map: Record<number, string> = {};
-      for (const b of Array.isArray(bj) ? bj : []) map[b.id] = b.name;
+      for (const b of list) map[b.id] = b.name;
       setBrandNames(map);
     } catch { if (!quiet) setShots([]); }
     finally { if (!quiet) setLoading(false); }
@@ -2055,10 +2043,18 @@ function ShotsLibraryView({ projectId }: { projectId: string }) {
         <div>
           <h3 className="text-lg font-bold text-foreground">Real footage shots</h3>
           <p className="text-sm text-muted-foreground mt-0.5">
-            Pieces cut from competitor videos (audio removed). Use the <b>CLEAN</b> ones as B-roll to recreate videos.
+            Pieces cut from competitor videos (audio removed). Use the <b>CLEAN</b> ones as B-roll to <b>compose a new video from your copy</b>.
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
+          <Button
+            size="sm"
+            onClick={() => setShowCreate(true)}
+            disabled={cleanCount === 0}
+            title={cleanCount === 0 ? "Split or clean some shots first" : "Compose a new video from these shots + your copy"}
+            className="gap-1.5 h-8">
+            <Sparkles className="w-3.5 h-3.5" /> Create video from copy
+          </Button>
           <div className="relative">
             <Search className="w-3.5 h-3.5 text-muted-foreground absolute left-2.5 top-1/2 -translate-y-1/2" />
             <input
@@ -2097,6 +2093,15 @@ function ShotsLibraryView({ projectId }: { projectId: string }) {
           ) : null}
         </div>
       </div>
+
+      {showCreate && (
+        <CustomVideoModal
+          projectId={projectId}
+          brands={brands}
+          onClose={() => setShowCreate(false)}
+          onQueued={() => { setShowCreate(false); load(true); }}
+        />
+      )}
 
       {loading ? (
         <div className="py-16 text-center text-sm text-muted-foreground">Loading shots…</div>
@@ -2328,10 +2333,8 @@ function GeneratedVideosView({ projectId }: { projectId: string }) {
   const { toast } = useToast();
   const [videos, setVideos] = useState<GeneratedVideo[]>([]);
   const [brandNames, setBrandNames] = useState<Record<number, string>>({});
-  const [brands, setBrands] = useState<{ id: number; name: string }[]>([]);
   const [loading, setLoading] = useState(true);
   const [playing, setPlaying] = useState<GeneratedVideo | null>(null);
-  const [showCreate, setShowCreate] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -2343,10 +2346,8 @@ function GeneratedVideosView({ projectId }: { projectId: string }) {
       const vj = await vr.json().catch(() => []);
       setVideos(Array.isArray(vj) ? vj : []);
       const bj = await br.json().catch(() => []);
-      const list = (Array.isArray(bj) ? bj : []).map((b: { id: number; name: string }) => ({ id: b.id, name: b.name }));
-      setBrands(list);
       const map: Record<number, string> = {};
-      for (const b of list) map[b.id] = b.name;
+      for (const b of Array.isArray(bj) ? bj : []) map[b.id] = b.name;
       setBrandNames(map);
     } catch { setVideos([]); }
     finally { setLoading(false); }
@@ -2368,23 +2369,10 @@ function GeneratedVideosView({ projectId }: { projectId: string }) {
             Videos you recreated from real footage + AI b-roll. Open a competitor video and use <b>Recreate video</b> to make more.
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <Button size="sm" onClick={() => setShowCreate(true)} className="gap-1.5 h-8">
-            <Sparkles className="w-3.5 h-3.5" /> Create custom video
-          </Button>
-          <Button variant="outline" size="sm" onClick={load} className="gap-1.5 h-8">
-            <RefreshCw className="w-3.5 h-3.5" /> Refresh
-          </Button>
-        </div>
+        <Button variant="outline" size="sm" onClick={load} className="gap-1.5 h-8">
+          <RefreshCw className="w-3.5 h-3.5" /> Refresh
+        </Button>
       </div>
-      {showCreate && (
-        <CustomVideoModal
-          projectId={projectId}
-          brands={brands}
-          onClose={() => setShowCreate(false)}
-          onQueued={() => { setShowCreate(false); load(); }}
-        />
-      )}
 
       {loading ? (
         <div className="py-16 text-center text-sm text-muted-foreground">Loading…</div>

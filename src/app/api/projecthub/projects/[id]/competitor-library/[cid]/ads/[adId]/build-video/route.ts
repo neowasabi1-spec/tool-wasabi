@@ -11,14 +11,15 @@ export const runtime = 'nodejs';
 export const maxDuration = 120;
 
 /**
- * Phase 2 step 2 — enqueue "build a new video from the project's real shot pool".
+ * Enqueue a video for one creative.
  *
- * The script is either the creative's own (rewritten) copy or a custom copy the
- * user pastes in, optionally localized into another language. It is split into
- * spoken beats and queued as a video_build_jobs row for the ffmpeg+TTS worker;
- * the same product footage is reused whatever the copy or language.
+ * mode 'localize' (the creative panel): keep the ORIGINAL video, swap in a
+ *   translated voiceover + subtitles in the chosen language. Driven by the
+ *   creative's own transcript. No shot pool involved.
+ * mode 'build' (legacy / compose): assemble a new video from the project's real
+ *   shot pool, driven by the creative's script or a pasted copy.
  *
- * POST body: { voice?: string; script?: string; language?: string }
+ * POST body: { mode?: 'localize' | 'build'; voice?: string; language?: string; script?: string }
  */
 export async function POST(
   req: NextRequest,
@@ -38,24 +39,72 @@ export async function POST(
   const voice = normalizeVoice(body.voice);
   const language = normalizeLanguage(body.language);
   const customCopy = String(body.script ?? '').trim();
+  const mode = body.mode === 'build' ? 'build' : 'localize';
 
   const { data: ad } = await supabaseAdmin
     .from('competitor_ads')
-    .select('id, rewritten_script, body_text')
+    .select('id, rewritten_script, body_text, file_path, media_type')
     .eq('id', adIdNum)
     .eq('brand_id', brandIdNum)
     .eq('project_id', id)
     .maybeSingle();
   if (!ad) return NextResponse.json({ error: 'Creative not found' }, { status: 404 });
 
-  // A pasted copy wins over the creative's own script; otherwise fall back to
-  // the rewritten script and finally the raw ad copy.
+  const a = ad as {
+    rewritten_script?: string; body_text?: string;
+    file_path?: string; media_type?: string;
+  };
+
+  // Localize dubs the original video, so it needs the actual video and its
+  // spoken transcript (not the rewritten-for-my-product script).
+  if (mode === 'localize') {
+    if (a.media_type !== 'video' || !a.file_path) {
+      return NextResponse.json({ error: 'Localize needs the original video — this creative has none.' }, { status: 400 });
+    }
+    const transcript = String(a.body_text || a.rewritten_script || '').trim();
+    if (transcript.length < 20) {
+      return NextResponse.json({ error: 'No transcript yet. Click “Extract text” first.' }, { status: 400 });
+    }
+
+    const { data: active } = await supabaseAdmin
+      .from('video_build_jobs')
+      .select('id, status')
+      .eq('ad_id', adIdNum)
+      .in('status', ['pending', 'processing'])
+      .maybeSingle();
+    if (active?.id) {
+      if (active.status === 'pending') {
+        await triggerBuildBackground(new URL(req.url).origin, {
+          jobId: active.id, projectId: id, brandId: brandIdNum, adId: adIdNum,
+        }, 'localize-video-background');
+      }
+      return NextResponse.json({ jobId: active.id, status: active.status, queued: false });
+    }
+
+    const scenes = await splitScriptToScenes(transcript, language);
+    if (scenes.length === 0) {
+      return NextResponse.json({ error: 'Could not split the transcript into lines' }, { status: 500 });
+    }
+
+    const job = await insertBuildJob({
+      project_id: id, brand_id: brandIdNum, ad_id: adIdNum,
+      voice, scenes, language: language || null, mode: 'localize', source_path: a.file_path,
+    });
+    if (!job) return NextResponse.json({ error: 'Failed to queue localize' }, { status: 500 });
+
+    await triggerBuildBackground(new URL(req.url).origin, {
+      jobId: job.id, projectId: id, brandId: brandIdNum, adId: adIdNum,
+    }, 'localize-video-background');
+
+    return NextResponse.json({
+      jobId: job.id, status: job.status, scenes: scenes.length,
+      language: language || null, mode: 'localize', queued: true,
+    });
+  }
+
+  // mode 'build' — assemble from the shot pool.
   const script = (customCopy ||
-    String(
-      (ad as { rewritten_script?: string }).rewritten_script ||
-        (ad as { body_text?: string }).body_text ||
-        '',
-    )).trim();
+    String(a.rewritten_script || a.body_text || '')).trim();
   if (script.length < 30) {
     return NextResponse.json(
       { error: 'No script yet. Paste your own copy, or generate “my script” / transcribe first.' },
@@ -71,7 +120,6 @@ export async function POST(
     );
   }
 
-  // Don't double-queue for the same creative.
   const { data: active } = await supabaseAdmin
     .from('video_build_jobs')
     .select('id, status')
@@ -94,7 +142,7 @@ export async function POST(
 
   const job = await insertBuildJob({
     project_id: id, brand_id: brandIdNum, ad_id: adIdNum,
-    voice, scenes, language: language || null,
+    voice, scenes, language: language || null, mode: 'build',
   });
   if (!job) {
     return NextResponse.json({ error: 'Failed to queue build' }, { status: 500 });

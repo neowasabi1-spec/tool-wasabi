@@ -51,6 +51,12 @@
   # disegnate (libass fallisce in silenzio → video senza sottotitoli).
   included_files = ["node_modules/ffmpeg-static/ffmpeg", "netlify/functions/_assets/**"]
 
+# Localizza un video esistente (voiceover + sottotitoli tradotti sul filmato
+# originale): stesse dipendenze del build (ffmpeg + font per libass).
+[functions."localize-video-background"]
+  external_node_modules = ["ffmpeg-static"]
+  included_files = ["node_modules/ffmpeg-static/ffmpeg", "netlify/functions/_assets/**"]
+
 # ffmpeg serve per estrarre i frame di controllo tra un passaggio di pulizia
 # e l'altro (verifica se è rimasto del testo).
 [functions."inpaint-shot-background"]

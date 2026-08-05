@@ -137,6 +137,22 @@ export default async (req: Request) => {
     .maybeSingle();
   if (!claimed) { log('not pending — skipping'); return new Response('skip', { status: 200 }); }
 
+  // Localize jobs belong to a different assembler. This only happens when the
+  // scheduler re-fires a stale row without knowing its mode: put it back and
+  // hand off so it isn't processed as a pool build.
+  if ((claimed as { mode?: string }).mode === 'localize') {
+    await supabase.from('video_build_jobs')
+      .update({ status: 'pending', started_at: null }).eq('id', jobId);
+    try {
+      await fetch(`${new URL(req.url).origin}/.netlify/functions/localize-video-background`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jobId, projectId, brandId, adId }),
+      });
+    } catch { /* the next cron tick will retry */ }
+    log('localize job — handed off to localize-video-background');
+    return new Response('handoff', { status: 200 });
+  }
+
   // Each scene carries the spoken/subtitle `text` and an ENGLISH `match` hint
   // used only to choose footage, so a non-English copy still pulls the right
   // shots while narration and subtitles stay in the target language.

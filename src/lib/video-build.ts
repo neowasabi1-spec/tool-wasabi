@@ -111,9 +111,10 @@ export async function countUsableShots(projectId: string): Promise<number> {
 }
 
 /**
- * Insert a build job, tolerating a database that hasn't had the `language`
- * column added yet: if the insert fails because that column is unknown, it
- * retries without it. Returns null on any other failure.
+ * Insert a build job, tolerating a database that hasn't had the newer optional
+ * columns (`language`, `mode`, `source_path`) added yet: if the insert fails
+ * because a column is unknown, it retries with only the base columns. Returns
+ * null on any other failure.
  */
 export async function insertBuildJob(row: {
   project_id: string;
@@ -122,25 +123,35 @@ export async function insertBuildJob(row: {
   voice: string;
   scenes: BuildScene[];
   language: string | null;
+  mode?: 'build' | 'localize';
+  source_path?: string | null;
 }): Promise<{ id: number; status: string } | null> {
-  const base = { ...row, status: 'pending' as const };
-  let res = await supabaseAdmin.from('video_build_jobs').insert(base).select('id, status').single();
-  if (res.error && /language/i.test(res.error.message)) {
-    const { language: _drop, ...noLang } = base;
-    void _drop;
-    res = await supabaseAdmin.from('video_build_jobs').insert(noLang).select('id, status').single();
+  const full = { ...row, status: 'pending' as const };
+  let res = await supabaseAdmin.from('video_build_jobs').insert(full).select('id, status').single();
+  if (res.error && /language|mode|source_path|column/i.test(res.error.message)) {
+    // Older schema: keep only the columns that have always existed.
+    const baseOnly = {
+      project_id: row.project_id, brand_id: row.brand_id, ad_id: row.ad_id,
+      voice: row.voice, scenes: row.scenes, status: 'pending' as const,
+    };
+    res = await supabaseAdmin.from('video_build_jobs').insert(baseOnly).select('id, status').single();
   }
   if (res.error || !res.data) return null;
   return res.data as { id: number; status: string };
 }
 
-/** Fire the ffmpeg+TTS background function (fire-and-forget; it responds 202). */
+/**
+ * Fire an ffmpeg+TTS background function (fire-and-forget; it responds 202).
+ * `fn` selects the assembler: 'build-video-background' composes from the shot
+ * pool, 'localize-video-background' dubs an existing video.
+ */
 export async function triggerBuildBackground(
   origin: string,
   payload: { jobId: number; projectId: string; brandId: number; adId: number },
+  fn: 'build-video-background' | 'localize-video-background' = 'build-video-background',
 ): Promise<void> {
   try {
-    await fetch(`${origin}/.netlify/functions/build-video-background`, {
+    await fetch(`${origin}/.netlify/functions/${fn}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
