@@ -158,12 +158,22 @@ type Leftover = {
  * yellow letter scores like a white highlight — whereas by colour the signal is
  * unambiguous: hundreds of pixels on frames that show text, zero on the rest.
  */
-export function analyzeLeftoverText(orig: Buffer, clean: Buffer, w: number, h: number): Leftover {
+export function analyzeLeftoverText(
+  orig: Buffer, clean: Buffer, w: number, h: number,
+  band?: { y0: number; y1: number } | null,
+): Leftover {
   const px = w * h;
   const fsz = px * 3;
   const frames = Math.min(Math.floor(orig.length / fsz), Math.floor(clean.length / fsz));
   const empty: Leftover = { bad: [], counts: [], frames, maskPx: 0, colour: null, box: null };
   if (!frames) return empty;
+
+  // The remover re-encodes the whole frame, so the raw diff drifts far past the
+  // caption and picks up static graphics elsewhere (a news chyron reads as
+  // "surviving caption colour" on every frame). Judging only the caption band
+  // keeps the check on the text that was actually targeted.
+  const bandY0 = band ? Math.max(0, Math.floor(band.y0 * h)) : 0;
+  const bandY1 = band ? Math.min(h, Math.ceil(band.y1 * h)) : h;
 
   const mask = new Uint8Array(px);
   let maskPx = 0;
@@ -171,6 +181,8 @@ export function analyzeLeftoverText(orig: Buffer, clean: Buffer, w: number, h: n
   for (let f = 0; f < frames; f++) {
     for (let p = 0; p < px; p++) {
       if (mask[p]) continue;
+      const row = (p / w) | 0;
+      if (row < bandY0 || row >= bandY1) continue;
       const i = f * fsz + p * 3;
       const d = Math.abs(orig[i] - clean[i]) + Math.abs(orig[i + 1] - clean[i + 1]) +
         Math.abs(orig[i + 2] - clean[i + 2]);
@@ -411,7 +423,7 @@ async function maskDrivenClean(opts: {
   report?: Record<string, unknown>;
   /** Model knobs to override, for trying settings from a diagnostics run. */
   tuning?: Record<string, number>;
-}): Promise<{ file: string; srcRgb: RgbFrames; frames: number } | null> {
+}): Promise<{ file: string; srcRgb: RgbFrames; frames: number; band: { y0: number; y1: number } | null } | null> {
   const {
     supabase, token, srcKey, srcFile, textRegion, maskKey,
     W, H, fps, dur, workDir, deadline, log, report, tuning,
@@ -509,7 +521,7 @@ async function maskDrivenClean(opts: {
     note(`result is ${outDur.toFixed(2)}s of ${dur.toFixed(2)}s — kept the fallback instead`);
     return null;
   }
-  return { file, srcRgb, frames };
+  return { file, srcRgb, frames, band: cm.band };
 }
 
 async function compareRemover(
@@ -681,6 +693,7 @@ export default async (req: Request) => {
     const fps = srcInfo.fps && srcInfo.fps > 0 ? srcInfo.fps : 30;
     const dur = await probeDuration(srcFile);
     let srcRgb: { buf: Buffer; w: number; h: number } | null = null;
+    let captionBand: { y0: number; y1: number } | null = null;
     let leftover: Leftover | null = null;
     let captionReadable = false;
     // Frame drops re-time the clip so output frame i no longer lines up with
@@ -716,7 +729,7 @@ export default async (req: Request) => {
             break;
           }
           fs.copyFileSync(masked.file, outFile);
-          if (pass === 1) srcRgb = masked.srcRgb;
+          if (pass === 1) { srcRgb = masked.srcRgb; captionBand = masked.band; }
           usedMaskPath = true;
           if (pass === MASK_PASSES || Date.now() > deadline) break;
           curFile = path.join(workDir, `pass${pass}.mp4`);
@@ -733,7 +746,7 @@ export default async (req: Request) => {
             // unreliable: it re-learns the caption's warm "highlight" colour and
             // then flags skin and wood-grain that share it, throwing away
             // perfectly clean reconstructions.
-            leftover = analyzeLeftoverText(srcRgb.buf, outRgb.buf, srcRgb.w, srcRgb.h);
+            leftover = analyzeLeftoverText(srcRgb.buf, outRgb.buf, srcRgb.w, srcRgb.h, captionBand);
             const maxDrop = Math.max(2, Math.floor(leftover.frames * MAX_DROP));
             if (leftover.maskPx < 200) {
               // The model barely touched the frame: its mask missed the caption,
@@ -979,7 +992,7 @@ export default async (req: Request) => {
         } else {
           if (!srcRgb) srcRgb = await rgbFrames(srcFile, W, H, dur, fps, workDir);
           const finalRgb = await rgbFrames(outFile, W, H, dur, fps, workDir);
-          const left = analyzeLeftoverText(srcRgb.buf, finalRgb.buf, srcRgb.w, srcRgb.h);
+          const left = analyzeLeftoverText(srcRgb.buf, finalRgb.buf, srcRgb.w, srcRgb.h, captionBand);
           const maxDrop = Math.max(2, Math.floor(left.frames * MAX_DROP));
           if (!left.bad.length) {
             log('verified: no caption left in the result');

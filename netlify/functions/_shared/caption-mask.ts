@@ -44,7 +44,35 @@ export type CaptionMasks = {
   blockFill: number;
   /** Share of frames where a caption was found. */
   textFrames: number;
+  /**
+   * Vertical band, as [y0,y1] fractions of the frame, that the kept caption
+   * occupies. The mask is confined to it so the remover never touches text that
+   * lives elsewhere (a news chyron, a logo), and the leftover-text gate only
+   * judges this band so those same graphics can't get a clean shot rejected.
+   */
+  band: { y0: number; y1: number } | null;
 };
+
+/**
+ * Pick the contiguous row band around the busiest caption row.
+ *
+ * After blob filtering the mask still carries every burned-in text line, so a
+ * news lower-third and the spoken caption both survive. The spoken caption is
+ * the strongest line (largest, boldest, sized for mobile), so the band grows out
+ * from the busiest row and stops at the gap that separates it from any other
+ * text block. Everything outside is dropped from the mask.
+ */
+function dominantBand(rowSum: Float64Array, h: number): { y0px: number; y1px: number } | null {
+  let peak = 0, yp = -1;
+  for (let y = 0; y < h; y++) if (rowSum[y] > peak) { peak = rowSum[y]; yp = y; }
+  if (yp < 0 || peak <= 0) return null;
+  const thr = peak * 0.15;
+  let y0 = yp, y1 = yp;
+  while (y0 - 1 >= 0 && rowSum[y0 - 1] >= thr) y0--;
+  while (y1 + 1 < h && rowSum[y1 + 1] >= thr) y1++;
+  const margin = Math.max(4, Math.round(h * 0.02));
+  return { y0px: Math.max(0, y0 - margin), y1px: Math.min(h, y1 + 1 + margin) };
+}
 
 /**
  * Is this mask safe to hand to a video remover?
@@ -284,17 +312,43 @@ export function captionMasks(
   // badge through on frames where the yellow caption was absent, because with no
   // caption in that family the badge became its own main line.
   const masks: Uint8Array[] = [];
-  let total = 0, fillSum = 0, withText = 0;
+  const rowSum = new Float64Array(h);
   for (let f = 0; f < frames; f++) {
     const union = new Uint8Array(w * h);
     for (const fam of good) {
       const m = fam.masks[f];
       for (let p = 0; p < union.length; p++) if (m[p]) union[p] = 1;
     }
-    const kept = keepTextBlobs(union, w, 0, h, centre, BLOCK_TALLEST);
+    keepTextBlobs(union, w, 0, h, centre, BLOCK_TALLEST);
+    for (let y = 0; y < h; y++) {
+      const off = y * w;
+      let c = 0;
+      for (let x = 0; x < w; x++) if (union[off + x]) c++;
+      rowSum[y] += c;
+    }
+    masks.push(union);
+  }
+
+  // Confine to the spoken caption's band. Other burned-in text (news lower-third,
+  // logos) is part of the footage and must stay: masking it made the remover
+  // black out half the frame, and letting the gate see it got clean shots
+  // rejected as if the caption were still there.
+  const band = dominantBand(rowSum, h);
+  const by0 = band ? band.y0px : 0;
+  const by1 = band ? band.y1px : h;
+
+  let total = 0, fillSum = 0, withText = 0;
+  for (const union of masks) {
+    if (band) {
+      for (let y = 0; y < h; y++) {
+        if (y >= by0 && y < by1) continue;
+        const off = y * w;
+        for (let x = 0; x < w; x++) union[off + x] = 0;
+      }
+    }
+    const kept = keepTextBlobs(union, w, by0, by1, centre, BLOCK_TALLEST);
     if (kept.px) { fillSum += kept.fill; withText++; }
     total += kept.px;
-    masks.push(union);
   }
 
   return {
@@ -307,6 +361,7 @@ export function captionMasks(
     pxPerFrame: withText ? Math.round(total / withText) : 0,
     blockFill: withText ? fillSum / withText : 0,
     textFrames: withText / frames,
+    band: band ? { y0: by0 / h, y1: by1 / h } : null,
   };
 }
 

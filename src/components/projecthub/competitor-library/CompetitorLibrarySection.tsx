@@ -2136,6 +2136,12 @@ function ShotsLibraryView({ projectId }: { projectId: string }) {
           <div className="absolute inset-0 bg-black/80" />
           <video
             src={getUploadUrl(playing.clean_path || playing.file_path)}
+            onError={(e) => {
+              // A broken cleaned copy must never leave the preview empty: fall
+              // back to the original clip so the shot always plays.
+              const orig = getUploadUrl(playing.file_path);
+              if (playing.clean_path && e.currentTarget.src !== orig) e.currentTarget.src = orig;
+            }}
             controls autoPlay loop playsInline
             className="relative max-h-[80vh] max-w-full rounded-xl bg-black"
             onClick={(e) => e.stopPropagation()}
