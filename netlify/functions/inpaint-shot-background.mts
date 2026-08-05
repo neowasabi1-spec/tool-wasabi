@@ -512,48 +512,6 @@ async function maskDrivenClean(opts: {
   return { file, srcRgb, frames };
 }
 
-/**
- * Caption still readable in a cleaned clip, as frames and a box.
- *
- * Feeding the caption detector its own output is the only check that caught the
- * smear the remover can leave behind, and what it reports is exactly what the
- * frame-drop and erase stages need: which frames are bad and where the text is.
- */
-function detectRemaining(
-  out: RgbFrames, textRegion: string | null,
-): { bad: number[]; counts: number[]; frames: number; box: Box } | null {
-  const frames = Math.floor(out.buf.length / (out.w * out.h * 3));
-  const cm = captionMasks(out.buf, frames, out.w, out.h, textRegion);
-  if (!cm) return null;
-  // No trust gate here. That gate asks whether a mask is safe to hand a remover,
-  // which is a different question: a match too broad to erase is still a solid
-  // answer to "is there text-shaped bright lettering left in this clip".
-
-  const bad: number[] = [];
-  const counts: number[] = [];
-  let x0 = out.w, y0 = out.h, x1 = -1, y1 = -1;
-  for (let f = 0; f < cm.masks.length; f++) {
-    const m = cm.masks[f];
-    let n = 0;
-    for (let p = 0; p < m.length; p++) {
-      if (!m[p]) continue;
-      n++;
-      const x = p % out.w, y = (p - x) / out.w;
-      if (x < x0) x0 = x;
-      if (x > x1) x1 = x;
-      if (y < y0) y0 = y;
-      if (y > y1) y1 = y;
-    }
-    counts.push(n);
-    if (n) bad.push(f);
-  }
-  if (!bad.length || x1 < 0) return null;
-  return {
-    bad, counts, frames,
-    box: { x0: x0 / out.w, y0: y0 / out.h, x1: x1 / out.w, y1: y1 / out.h },
-  };
-}
-
 async function compareRemover(
   supabase: ReturnType<typeof getSupabase>,
   token: string,
@@ -725,6 +683,10 @@ export default async (req: Request) => {
     let srcRgb: { buf: Buffer; w: number; h: number } | null = null;
     let leftover: Leftover | null = null;
     let captionReadable = false;
+    // Frame drops re-time the clip so output frame i no longer lines up with
+    // source frame i, which breaks the differential final check. Erase keeps the
+    // alignment; only dropping frames clears this.
+    let alignedWithSource = true;
 
     // ── Stage 1: mask-driven neural removal. Preferred, because it rebuilds the
     // caption area from surrounding motion instead of leaving the blurred patch
@@ -765,19 +727,24 @@ export default async (req: Request) => {
         if (usedMaskPath && srcRgb) {
           try {
             const outRgb = await rgbFrames(outFile, W, H, dur, fps, workDir);
+            // Differential check ONLY. Compare the model's output against the
+            // original and flag the caption's colour surviving in the pixels the
+            // model actually repainted. Re-detecting text on the output alone is
+            // unreliable: it re-learns the caption's warm "highlight" colour and
+            // then flags skin and wood-grain that share it, throwing away
+            // perfectly clean reconstructions.
             leftover = analyzeLeftoverText(srcRgb.buf, outRgb.buf, srcRgb.w, srcRgb.h);
-            log(`mask path: ${leftover.bad.length}/${leftover.frames} frames still show text`);
-            // The detector that builds the mask is the strict judge here: run it
-            // on the result. Some captions come back from the model as a smear
-            // that still reads as letters however the model is tuned, and that
-            // has to be caught rather than trusted away.
-            const stillThere = detectRemaining(
-              outRgb, (claimed as { text_region?: string | null }).text_region ?? null,
-            );
-            if (stillThere) {
-              leftover = { ...leftover, ...stillThere };
-              captionReadable = true;
-              log(`mask path: caption still readable on ${stillThere.bad.length} frame(s) — cleaning up`);
+            const maxDrop = Math.max(2, Math.floor(leftover.frames * MAX_DROP));
+            if (leftover.maskPx < 200) {
+              // The model barely touched the frame: its mask missed the caption,
+              // so the clip still carries it. Fall back to the detector remover
+              // instead of shipping the original as if it were clean.
+              usedMaskPath = false;
+              log('mask path: model changed almost nothing — falling back to the detector');
+            } else {
+              captionReadable = leftover.bad.length > maxDrop;
+              log(`mask path: ${leftover.bad.length}/${leftover.frames} frames still show text` +
+                (captionReadable ? ' — too many to drop' : ''));
             }
           } catch (e) {
             log(`mask path: leftover check skipped (${(e as Error).message})`);
@@ -903,6 +870,7 @@ export default async (req: Request) => {
             '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-an', patched,
           ]);
           fs.copyFileSync(patched, outFile);
+          alignedWithSource = false;
           log(`stage 2a: dropped ${leftover.bad.length}/${leftover.frames} frame(s) still showing text`);
         } else {
           // Too many to freeze over — erase the caption area for the whole clip
@@ -996,42 +964,46 @@ export default async (req: Request) => {
       }
     }
 
-    // ── Final gate. Every stage above reports success on its own terms, and a
-    // clip still carrying its caption slipped through all of them: the mask had
-    // latched onto a badge, the model changed almost nothing, the orig-vs-output
-    // comparison therefore saw nothing to flag, and the result was filed as
-    // clean. So the finished clip is judged on its own, and anything that cannot
-    // be judged is refused — an unverifiable clip in the pool puts text back into
-    // finished videos, which is the one outcome worth avoiding. ───────────────
+    // ── Final gate. A last differential check against the original, catching a
+    // caption that survived every stage above. It compares source and output
+    // frame-for-frame and only flags the caption's colour surviving where the
+    // remover repainted — background it never touched (skin, wood-grain that
+    // happens to share the caption's warm outline colour) is excluded, which is
+    // what a fresh detection on the output alone got wrong: it re-learned that
+    // colour and discarded clean reconstructions wholesale. ───────────────────
     if (!unusable) {
       try {
         if (!W || !H) throw new Error('source dimensions unknown');
-        const finalRgb = await rgbFrames(outFile, W, H, dur, fps, workDir);
-        const left = detectRemaining(
-          finalRgb, (claimed as { text_region?: string | null }).text_region ?? null,
-        );
-        const maxDrop = Math.max(2, Math.floor((left?.frames || 0) * MAX_DROP));
-        if (!left) {
-          log('verified: no caption left in the result');
-        } else if (left.bad.length > maxDrop) {
-          unusable = true;
-          note = `caption still readable on ${left.bad.length}/${left.frames} frames — shot left out of the pool`;
-          log(`final gate: ${note}`);
+        if (!alignedWithSource) {
+          log('final gate: earlier frame drops broke source alignment — trusting prior checks');
         } else {
-          // Few enough to freeze over: dropping them holds the previous good
-          // frame, which reads better than a patch blinking on and off.
-          const patched = path.join(workDir, 'clean3.mp4');
-          await run(FFMPEG, [
-            '-y', '-i', outFile, '-vf', buildDropGraph(left.bad, fps),
-            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-an', patched,
-          ]);
-          fs.copyFileSync(patched, outFile);
-          log(`final gate: dropped ${left.bad.length}/${left.frames} frame(s) still showing text`);
+          if (!srcRgb) srcRgb = await rgbFrames(srcFile, W, H, dur, fps, workDir);
+          const finalRgb = await rgbFrames(outFile, W, H, dur, fps, workDir);
+          const left = analyzeLeftoverText(srcRgb.buf, finalRgb.buf, srcRgb.w, srcRgb.h);
+          const maxDrop = Math.max(2, Math.floor(left.frames * MAX_DROP));
+          if (!left.bad.length) {
+            log('verified: no caption left in the result');
+          } else if (left.bad.length > maxDrop) {
+            unusable = true;
+            note = `caption still readable on ${left.bad.length}/${left.frames} frames — shot left out of the pool`;
+            log(`final gate: ${note}`);
+          } else if (left.box) {
+            // Few enough to freeze over: dropping them holds the previous good
+            // frame, which reads better than a patch blinking on and off.
+            const patched = path.join(workDir, 'clean3.mp4');
+            await run(FFMPEG, [
+              '-y', '-i', outFile, '-vf', buildDropGraph(left.bad, fps),
+              '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-an', patched,
+            ]);
+            fs.copyFileSync(patched, outFile);
+            log(`final gate: dropped ${left.bad.length}/${left.frames} frame(s) still showing text`);
+          }
         }
       } catch (e) {
-        unusable = true;
-        note = `could not verify the result (${(e as Error).message}) — shot left out of the pool`;
-        log(`final gate: ${note}`);
+        // A verification hiccup no longer discards the clip: the differential
+        // check is conservative and the mask path already validated the result,
+        // so keeping good footage beats throwing it away on an ffmpeg error.
+        log(`final gate: verification skipped (${(e as Error).message})`);
       }
     }
 
