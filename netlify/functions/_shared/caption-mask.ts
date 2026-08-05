@@ -311,15 +311,23 @@ export function captionMasks(
   // Group once, over every kept colour together. Grouping per family let a gold
   // badge through on frames where the yellow caption was absent, because with no
   // caption in that family the badge became its own main line.
+  // Build the per-frame masks over the WHOLE frame. Confining the mask to the
+  // caption band (an earlier attempt) clipped the caption blobs so short they
+  // failed the "shaped like a caption line" test, the mask came back empty, and
+  // every shot fell through to the blurred-patch fallback instead of the model.
+  // The band is still computed, but only as a hint for the leftover-text gate.
   const masks: Uint8Array[] = [];
   const rowSum = new Float64Array(h);
+  let total = 0, fillSum = 0, withText = 0;
   for (let f = 0; f < frames; f++) {
     const union = new Uint8Array(w * h);
     for (const fam of good) {
       const m = fam.masks[f];
       for (let p = 0; p < union.length; p++) if (m[p]) union[p] = 1;
     }
-    keepTextBlobs(union, w, 0, h, centre, BLOCK_TALLEST);
+    const kept = keepTextBlobs(union, w, 0, h, centre, BLOCK_TALLEST);
+    if (kept.px) { fillSum += kept.fill; withText++; }
+    total += kept.px;
     for (let y = 0; y < h; y++) {
       const off = y * w;
       let c = 0;
@@ -329,27 +337,11 @@ export function captionMasks(
     masks.push(union);
   }
 
-  // Confine to the spoken caption's band. Other burned-in text (news lower-third,
-  // logos) is part of the footage and must stay: masking it made the remover
-  // black out half the frame, and letting the gate see it got clean shots
-  // rejected as if the caption were still there.
+  // Vertical band of the busiest caption rows — a hint the gate uses to ignore
+  // static graphics elsewhere, NOT a constraint on what the model repaints.
   const band = dominantBand(rowSum, h);
   const by0 = band ? band.y0px : 0;
   const by1 = band ? band.y1px : h;
-
-  let total = 0, fillSum = 0, withText = 0;
-  for (const union of masks) {
-    if (band) {
-      for (let y = 0; y < h; y++) {
-        if (y >= by0 && y < by1) continue;
-        const off = y * w;
-        for (let x = 0; x < w; x++) union[off + x] = 0;
-      }
-    }
-    const kept = keepTextBlobs(union, w, by0, by1, centre, BLOCK_TALLEST);
-    if (kept.px) { fillSum += kept.fill; withText++; }
-    total += kept.px;
-  }
 
   return {
     colours: good.map((f) => f.colour),
