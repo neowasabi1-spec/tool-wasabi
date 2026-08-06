@@ -266,27 +266,36 @@ export default async (req: Request) => {
         }
       }
 
-      // Top up a short scene with MORE distinct footage instead of freezing or
-      // looping one clip. The LLM usually maps a single shot per line, which is
-      // shorter than the narration; pull additional unused shots so the scene
-      // keeps cutting to fresh footage. buildSceneVisual only stretches/loops
-      // the tiny remainder the pool genuinely can't cover.
+      // Top up a short scene with MORE distinct footage instead of looping one
+      // clip. The LLM usually maps a single shot per line and the heuristic
+      // picker caps itself at one shot per tag, so a long narration was left
+      // with only a few seconds of footage and got looped (the same shots
+      // played 2-3 times). Pull unused shots straight from the pool — the
+      // scene's section first, then anything — until the voiceover is covered.
+      // buildSceneVisual then only stretches/loops the last sub-second the pool
+      // genuinely can't fill.
       if (files.length > 0 && have < d - 0.2) {
-        const extra = pickShotsForScene(pool, used, scenes[i].match, d - have, want);
-        for (const clip of extra.clips) {
-          if (shownKeys.has(clip.key)) continue;
+        const free = pool
+          .map((s, idx) => ({ s, idx }))
+          .filter(({ s, idx }) => !used.has(idx) && !shownKeys.has(s.key));
+        const order = [
+          ...free.filter(({ s }) => (s.section || 'body') === want),
+          ...free.filter(({ s }) => (s.section || 'body') !== want),
+        ];
+        for (const { s, idx } of order) {
           if (have >= d - 0.05) break;
           try {
-            files.push(await materializeShot(supabase, clip, workDir, fetched++));
-            shownKeys.add(clip.key);
-            have += clip.dur;
-            sections.push(clip.section || 'body');
+            files.push(await materializeShot(supabase, s, workDir, fetched++));
+            used.add(idx);
+            shownKeys.add(s.key);
+            have += s.dur;
+            sections.push(s.section || 'body');
             shownShots.push({
-              dur: clip.dur,
-              band: typeof clip.band === 'number' ? clip.band : projectBand,
+              dur: s.dur,
+              band: typeof s.band === 'number' ? s.band : projectBand,
             });
           } catch (e) {
-            log(`scene ${i + 1}: skipping top-up ${clip.key} (${(e as Error).message})`);
+            log(`scene ${i + 1}: skipping top-up ${s.key} (${(e as Error).message})`);
           }
         }
       }
