@@ -4,7 +4,8 @@ import { fileURLToPath } from 'url';
 import {
   getSupabase, run, FFMPEG, makeWorkDir, probeDuration, ttsScene,
   buildSceneVisual, pickShotsForScene, sectionForScene, loadShotPool, materializeShot,
-  grabThumb, uploadFile, TARGET_W, TARGET_H,
+  assignShotsToScenes, grabThumb, uploadFile, TARGET_W, TARGET_H,
+  type ShotClip,
 } from './_shared/video';
 
 /**
@@ -193,6 +194,13 @@ export default async (req: Request) => {
       pool.map((s) => s.band).filter((b): b is number => typeof b === 'number'),
     );
 
+    // Let an LLM match footage to each script line up front (semantic, not word
+    // overlap). Null → fall back to the heuristic picker per scene.
+    const sceneAssign = await assignShotsToScenes(scenes.map((s) => s.text), pool);
+    log(sceneAssign
+      ? `LLM matched footage for ${sceneAssign.filter((a) => a.length).length}/${scenes.length} lines`
+      : 'LLM footage match unavailable — using heuristic picker');
+
     const used = new Set<number>();
     const sceneVisuals: string[] = [];
     const sceneAudios: string[] = [];
@@ -213,11 +221,30 @@ export default async (req: Request) => {
       // duration and the band each one's caption originally sat on. Drives
       // per-shot subtitle placement below.
       const shownShots: { dur: number; band: number }[] = [];
+      // Prefer the LLM's per-line assignment (attempt 0); fall back to the
+      // heuristic picker (attempt 1) if it mapped nothing usable for this line.
+      const llmIdx = (sceneAssign?.[i] || []).filter((k) => !used.has(k));
       // Only the chosen clips are fetched. A clip that fails to download or
       // normalize is dropped and the scene asks the pool for another one.
       for (let attempt = 0; attempt < 2 && files.length === 0; attempt++) {
-        const picked = pickShotsForScene(pool, used, scenes[i].match, d, want);
-        if (picked.clips.length === 0) break;
+        let picked: { clips: ShotClip[]; sections: string[] };
+        if (attempt === 0 && llmIdx.length) {
+          const clips: ShotClip[] = [];
+          const secs: string[] = [];
+          let acc = 0;
+          for (const k of llmIdx) {
+            if (used.has(k)) continue;
+            used.add(k);
+            clips.push(pool[k]);
+            secs.push(pool[k].section);
+            acc += pool[k].dur;
+            if (acc >= d) break;
+          }
+          picked = { clips, sections: secs };
+        } else {
+          picked = pickShotsForScene(pool, used, scenes[i].match, d, want);
+        }
+        if (picked.clips.length === 0) continue;
         sections = picked.sections;
         for (const clip of picked.clips) {
           try {

@@ -362,6 +362,8 @@ export type ShotClip = {
   /** Duration from the database, so choosing footage needs no download. */
   dur: number;
   tags: string[]; caption: string;
+  /** Short human label of the shot, e.g. "Man in gun store". */
+  label?: string;
   /** Where the shot sat in its source video: 'hook' | 'body' | 'cta'. */
   section: string;
   /**
@@ -422,6 +424,78 @@ function sectionRank(shotSection: string, want: string): number {
   if (sec === want) return 0;
   if (sec === 'body') return 1;
   return 2;
+}
+
+/**
+ * Ask an LLM to match footage to each line of the script.
+ *
+ * Literal tag/caption word-overlap barely works here: ad copy ("carry permit",
+ * "official link", "stay safe") rarely shares words with visual tags ("veteran",
+ * "gun store", "soldier"), so most scenes scored zero and fell back to plain
+ * order — footage felt unrelated to what was being said. The model reads every
+ * shot's label/caption/tags once and picks the visually fitting ones per line
+ * (a "wife and kids" line → a family shot, "war escalating" → combat), keeping
+ * hooks up front and CTAs at the end and never repeating a shot.
+ *
+ * Returns, for each scene, an ordered list of pool indices — or null on any
+ * failure, so the caller falls back to the heuristic picker with no regression.
+ */
+export async function assignShotsToScenes(
+  sceneTexts: string[],
+  pool: ShotClip[],
+): Promise<number[][] | null> {
+  if (!OPENAI_API_KEY || pool.length === 0 || sceneTexts.length === 0) return null;
+  const catalog = pool
+    .map((s, i) => `${i}\t${s.section}\t${(s.label || '').slice(0, 40)}\t${(s.caption || '').slice(0, 90)}\t${(s.tags || []).slice(0, 6).join(',')}`)
+    .join('\n');
+  const scenes = sceneTexts.map((t, i) => `${i}\t${t}`).join('\n');
+  const prompt =
+    'You assign B-roll shots to the lines of a short video script.\n' +
+    'SHOTS (index, section, label, caption, tags):\n' + catalog + '\n\n' +
+    'SCRIPT LINES (index, text):\n' + scenes + '\n\n' +
+    'For each script line pick the 1-3 shots whose caption/label/tags best fit ' +
+    'what the line is about (meaning, not shared words). Prefer section "hook" ' +
+    'for the first lines and "cta" for the last. Never use the same shot index ' +
+    'for two different lines. Reply ONLY minified JSON: ' +
+    '{"map":[{"s":0,"shots":[12,4]},{"s":1,"shots":[7]}, ...]} with one entry per line.';
+  try {
+    const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${OPENAI_API_KEY}` },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        temperature: 0.2,
+        max_tokens: 1500,
+        response_format: { type: 'json_object' },
+        messages: [{ role: 'user', content: prompt }],
+      }),
+    });
+    if (!resp.ok) return null;
+    const j = await resp.json();
+    const raw = j?.choices?.[0]?.message?.content || '';
+    const parsed = JSON.parse(raw.replace(/```json?/gi, '').replace(/```/g, '').trim());
+    const entries = Array.isArray(parsed?.map) ? parsed.map : [];
+    const out: number[][] = sceneTexts.map(() => []);
+    const seen = new Set<number>();
+    for (const e of entries) {
+      const s = Number(e?.s);
+      if (!Number.isInteger(s) || s < 0 || s >= out.length) continue;
+      const ids = Array.isArray(e?.shots) ? e.shots : [];
+      for (const idRaw of ids) {
+        const idx = Number(idRaw);
+        if (!Number.isInteger(idx) || idx < 0 || idx >= pool.length) continue;
+        if (seen.has(idx)) continue; // no shot reused across scenes
+        seen.add(idx);
+        out[s].push(idx);
+      }
+    }
+    // Useful only if it actually mapped a decent share of the lines.
+    const covered = out.filter((a) => a.length > 0).length;
+    if (covered < Math.ceil(sceneTexts.length * 0.5)) return null;
+    return out;
+  } catch {
+    return null;
+  }
 }
 
 // Choose UNIQUE shots for one scene: first from the scene's narrative section
@@ -584,13 +658,13 @@ export async function loadShotPool(
   // 15-minute function limit, which left builds stuck with nothing to show.
   const { data } = await supabase
     .from('competitor_shots')
-    .select('file_path, clean_path, has_text, tags, caption, section, duration_sec, text_region')
+    .select('file_path, clean_path, has_text, tags, caption, label, section, duration_sec, text_region')
     .eq('project_id', projectId)
     .limit(300);
   const shots = (data || []) as Array<{
     file_path: string; clean_path?: string | null; has_text?: boolean | null;
-    tags?: string[]; caption?: string; section?: string | null; duration_sec?: number | null;
-    text_region?: string | null;
+    tags?: string[]; caption?: string; label?: string; section?: string | null;
+    duration_sec?: number | null; text_region?: string | null;
   }>;
   const pool: ShotClip[] = [];
   for (const s of shots) {
@@ -604,6 +678,7 @@ export async function loadShotPool(
       dur: Number.isFinite(dur) && dur > 0.2 ? dur : 1.5,
       tags: Array.isArray(s.tags) ? (s.tags as string[]) : [],
       caption: typeof s.caption === 'string' ? (s.caption as string) : '',
+      label: typeof s.label === 'string' ? (s.label as string) : '',
       // Rows from before sections existed can stand in anywhere.
       section: typeof s.section === 'string' && s.section ? s.section : 'body',
       band: parseBandCenter(s.text_region),
