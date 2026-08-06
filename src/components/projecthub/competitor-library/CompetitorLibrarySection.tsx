@@ -2237,7 +2237,7 @@ function CustomVideoModal({
   };
 
   const build = async () => {
-    if (!brandId) { toast({ title: "Pick a product first", variant: "destructive" }); return; }
+    if (!brandId) { toast({ title: "Pick a folder to save under first", variant: "destructive" }); return; }
     if (copy.trim().length < 30) { toast({ title: "Paste a bit more copy (min ~30 chars)", variant: "destructive" }); return; }
     setStatus("pending");
     const language = lang === LANGUAGE_OTHER ? langOther.trim() : lang;
@@ -2272,10 +2272,10 @@ function CustomVideoModal({
         </div>
         <div className="p-4 space-y-3">
           <p className="text-[11px] text-muted-foreground leading-snug">
-            Reuse a product’s real footage with your own copy — great for testing new angles or shipping the same shots to another geo in another language.
+            Paste your copy and the builder auto-picks clips from <b>all your clean shots</b>, matched line-by-line to the script, then voices and subtitles them. Great for new angles or shipping the same footage to another geo/language.
           </p>
           <div>
-            <p className="text-[9px] text-muted-foreground uppercase tracking-wider mb-1">Product footage pool</p>
+            <p className="text-[9px] text-muted-foreground uppercase tracking-wider mb-1">Save under (folder)</p>
             <select
               value={brandId}
               onChange={(e) => setBrandId(e.target.value ? Number(e.target.value) : "")}
@@ -2283,6 +2283,9 @@ function CustomVideoModal({
               {brands.length === 0 && <option value="">No products yet</option>}
               {brands.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
             </select>
+            <p className="text-[9px] text-muted-foreground mt-1 leading-snug">
+              This only files the result — footage is <b>not</b> limited to it. Clips are chosen from every clean shot in the project and matched to the script.
+            </p>
           </div>
           <div>
             <p className="text-[9px] text-muted-foreground uppercase tracking-wider mb-1">Your copy</p>
