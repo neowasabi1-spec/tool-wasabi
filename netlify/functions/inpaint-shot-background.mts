@@ -138,6 +138,14 @@ const RGB_MAX_PIXELS = 24e6;  // analysed pixels per clip; two clips are held at
 const COLOR_MIN = 30;     // caption-coloured pixels left -> text still on screen
 const MAX_DROP = 0.25;    // beyond this, freezing frames would be noticeable
 const MASK_PASSES = 3;    // mask passes; each run only removes what its mask covered
+// The neural remover reconstructs a masked region from a window of frames, so it
+// cleans short clips reliably but leaves readable ghosting on long ones (the
+// caption survives because there's too much to rebuild at once). Clips up to
+// ~2.7s go through in one piece — unchanged, this is what already works — while
+// longer clips are split into ~1.7s windows, each cleaned on its own, then
+// stitched back together.
+const CHUNK_MAX_FRAMES = 80;
+const CHUNK_TARGET_FRAMES = 50;
 
 type Leftover = {
   bad: number[];          // frames still showing text
@@ -406,7 +414,7 @@ type RgbFrames = { buf: Buffer; w: number; h: number };
  * the caller falls back to detector-based removal rather than shipping a clip
  * with legitimate content erased.
  */
-async function maskDrivenClean(opts: {
+type MaskOpts = {
   supabase: ReturnType<typeof getSupabase>;
   token: string;
   srcKey: string;
@@ -423,11 +431,38 @@ async function maskDrivenClean(opts: {
   report?: Record<string, unknown>;
   /** Model knobs to override, for trying settings from a diagnostics run. */
   tuning?: Record<string, number>;
-}): Promise<{ file: string; srcRgb: RgbFrames; frames: number; band: { y0: number; y1: number } | null } | null> {
+};
+
+type ModelInfo = { version: string; props: Record<string, { maximum?: number; minimum?: number }>; videoField: string; maskField: string };
+
+/** Read the wrapper's (undocumented) input field names off its OpenAPI schema. */
+async function resolveMaskModel(token: string, log: (...a: unknown[]) => void): Promise<ModelInfo | null> {
+  const modelResp = await fetch(`https://api.replicate.com/v1/models/${MASK_MODEL}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!modelResp.ok) { log(`model lookup ${modelResp.status}`); return null; }
+  const meta = await modelResp.json();
+  const version = meta?.latest_version?.id;
+  const props = meta?.latest_version?.openapi_schema?.components?.schemas?.Input?.properties || {};
+  const keys = Object.keys(props);
+  const maskField = keys.find((k) => /mask/i.test(k) && !/dilation|iteration/i.test(k));
+  const videoField = keys.find((k) => /^(video|input_video|source_video)$/i.test(k)) ||
+    keys.find((k) => /video/i.test(k) && !/mask/i.test(k));
+  if (!version || !videoField || !maskField) { log('could not map the model inputs'); return null; }
+  return { version, props, videoField, maskField };
+}
+
+/**
+ * Clean ONE clip (whole or a single window) with the mask-driven neural remover.
+ * This is the piece that used to be all of maskDrivenClean; it's unchanged in
+ * behaviour, just parameterised on a pre-resolved model so windows can reuse it.
+ */
+async function miniMaxClip(opts: MaskOpts & { model: ModelInfo }): Promise<{ file: string; srcRgb: RgbFrames; frames: number; band: { y0: number; y1: number } | null } | null> {
   const {
     supabase, token, srcKey, srcFile, textRegion, maskKey,
-    W, H, fps, dur, workDir, deadline, log, report, tuning,
+    W, H, fps, dur, workDir, deadline, log, report, tuning, model,
   } = opts;
+  const { version, props, videoField, maskField } = model;
   const note = (msg: string) => {
     log(msg);
     if (report) report.maskPath = msg;
@@ -459,21 +494,6 @@ async function maskDrivenClean(opts: {
   const videoUrl = await sign(srcKey);
   const maskUrl = await sign(maskKey);
   if (!videoUrl || !maskUrl) { note('could not sign the model inputs'); return null; }
-
-  // The wrapper's field names aren't documented, so read them off the schema.
-  const modelResp = await fetch(`https://api.replicate.com/v1/models/${MASK_MODEL}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (!modelResp.ok) { note(`model lookup ${modelResp.status}`); return null; }
-  const meta = await modelResp.json();
-  const version = meta?.latest_version?.id;
-  const props = meta?.latest_version?.openapi_schema?.components?.schemas?.Input?.properties || {};
-  const keys = Object.keys(props);
-  const maskField = keys.find((k) => /mask/i.test(k) && !/dilation|iteration/i.test(k));
-  const videoField = keys.find((k) => /^(video|input_video|source_video)$/i.test(k)) ||
-    keys.find((k) => /video/i.test(k) && !/mask/i.test(k));
-  if (report) report.inputs = keys;
-  if (!version || !videoField || !maskField) { note('could not map the model inputs'); return null; }
 
   const input: Record<string, unknown> = { [videoField]: videoUrl, [maskField]: maskUrl };
   // These removers work on a block of frames, so a clip longer than the default
@@ -511,7 +531,7 @@ async function maskDrivenClean(opts: {
 
   const dl = await fetch(url);
   if (!dl.ok) { note(`could not download the result (${dl.status})`); return null; }
-  const file = path.join(workDir, 'mask-clean.mp4');
+  const file = path.join(workDir, `mask-clean_${path.basename(maskKey)}.mp4`);
   fs.writeFileSync(file, Buffer.from(await dl.arrayBuffer()));
 
   // A shorter result means frames were dropped somewhere; that is worse than a
@@ -522,6 +542,96 @@ async function maskDrivenClean(opts: {
     return null;
   }
   return { file, srcRgb, frames, band: cm.band };
+}
+
+/** Cut [t0, t0+len) out of a clip, frame-accurate, re-encoded to H.264. */
+async function cutWindow(src: string, t0: number, len: number, out: string): Promise<void> {
+  await run(FFMPEG, [
+    '-y', '-i', src, '-ss', t0.toFixed(3), '-t', len.toFixed(3),
+    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18', '-an', out,
+  ]);
+}
+
+/**
+ * Mask-driven neural removal for a shot.
+ *
+ * Short clips (≤ CHUNK_MAX_FRAMES) go straight through miniMaxClip — the exact
+ * path that already cleans them well. Longer clips are the ones the model chokes
+ * on (it leaves readable ghosting), so they're split into ~CHUNK_TARGET_FRAMES
+ * windows, each cleaned on its own — the conditions the model is good at — then
+ * stitched back together. Windows with no trustworthy caption keep their
+ * original footage so nothing is dropped. Any failure in the chunk path falls
+ * back to cleaning the whole clip, so this can only ever add chances, never
+ * remove the behaviour that works today.
+ */
+async function maskDrivenClean(opts: MaskOpts): Promise<{ file: string; srcRgb: RgbFrames; frames: number; band: { y0: number; y1: number } | null } | null> {
+  const { token, srcFile, W, H, fps, dur, workDir, deadline, log, report } = opts;
+  const model = await resolveMaskModel(token, log);
+  if (report) report.inputs = model ? [model.videoField, model.maskField] : [];
+  if (!model) { if (report) report.maskPath = 'could not resolve the model'; return null; }
+
+  const approxFrames = Math.max(1, Math.round(dur * (fps || 30)));
+  // Short enough for the model to handle in one piece: unchanged behaviour.
+  if (approxFrames <= CHUNK_MAX_FRAMES) {
+    return miniMaxClip({ ...opts, model });
+  }
+
+  // Long clip → clean it in short windows, then stitch. Guarded so any hiccup
+  // just reverts to the whole-clip attempt.
+  try {
+    const nWindows = Math.max(2, Math.ceil(approxFrames / CHUNK_TARGET_FRAMES));
+    const winDur = dur / nWindows;
+    log(`chunking ${dur.toFixed(2)}s clip into ${nWindows} windows of ${winDur.toFixed(2)}s`);
+    if (report) report.chunked = { windows: nWindows, windowSeconds: +winDur.toFixed(2) };
+
+    const pieces: string[] = [];
+    let band: { y0: number; y1: number } | null = null;
+    let cleanedAny = false;
+    for (let i = 0; i < nWindows; i++) {
+      if (Date.now() > deadline) throw new Error('out of time mid-chunk');
+      const t0 = i * winDur;
+      const len = i === nWindows - 1 ? Math.max(0.1, dur - t0) : winDur;
+      const winFile = path.join(workDir, `win_${i}_${Date.now()}.mp4`);
+      await cutWindow(srcFile, t0, len, winFile);
+      const winKey = `${opts.maskKey}.win${i}.mp4`;
+      await uploadFile(opts.supabase, winKey, winFile, 'video/mp4');
+
+      const cleaned = await miniMaxClip({
+        ...opts, model,
+        srcKey: winKey,
+        srcFile: winFile,
+        maskKey: `${opts.maskKey}.win${i}.mask.mp4`,
+        dur: len,
+        report: undefined, // don't let per-window details clobber the shot report
+      });
+      if (cleaned) { pieces.push(cleaned.file); cleanedAny = true; if (!band) band = cleaned.band; }
+      else pieces.push(winFile); // no trustworthy caption here → keep original footage
+    }
+
+    // Every window came back untrusted → nothing was actually removed, so let the
+    // caller fall through to the detector path exactly as before.
+    if (!cleanedAny) { if (report) report.maskPath = 'chunk: no window had a trustworthy caption'; return null; }
+
+    const listFile = path.join(workDir, `concat_${Date.now()}.txt`);
+    fs.writeFileSync(listFile, pieces.map((p) => `file '${p.replace(/\\/g, '/')}'`).join('\n'), 'utf8');
+    const outFile = path.join(workDir, `mask-clean-chunked_${Date.now()}.mp4`);
+    await run(FFMPEG, [
+      '-y', '-f', 'concat', '-safe', '0', '-i', listFile,
+      '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18', '-an', outFile,
+    ]);
+
+    const srcRgb = await rgbFrames(srcFile, W, H, dur, fps, workDir);
+    const frames = Math.floor(srcRgb.buf.length / (srcRgb.w * srcRgb.h * 3));
+    const outDur = await probeDuration(outFile);
+    if (outDur < dur - 0.4) {
+      log(`chunked result is ${outDur.toFixed(2)}s of ${dur.toFixed(2)}s — reverting to whole-clip`);
+      return miniMaxClip({ ...opts, model });
+    }
+    return { file: outFile, srcRgb, frames, band };
+  } catch (e) {
+    log(`chunk path failed (${(e as Error).message}) — reverting to whole-clip`);
+    return miniMaxClip({ ...opts, model });
+  }
 }
 
 async function compareRemover(
