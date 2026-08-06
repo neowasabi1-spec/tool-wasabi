@@ -207,6 +207,10 @@ export default async (req: Request) => {
     const cues: { start: number; end: number; text: string; band: number }[] = [];
     let t = 0;
     let fetched = 0;
+    // Every shot file already shown anywhere in this video. A hard guard against
+    // the same clip appearing twice — the picker's emergency fallback and the
+    // scene loops could otherwise resurface a shot the eye has already seen.
+    const shownKeys = new Set<string>();
     for (let i = 0; i < scenes.length; i++) {
       const mp3 = path.join(workDir, `vo_${i}.mp3`);
       await ttsScene(scenes[i].text, voice, mp3);
@@ -247,8 +251,10 @@ export default async (req: Request) => {
         if (picked.clips.length === 0) continue;
         sections = picked.sections;
         for (const clip of picked.clips) {
+          if (shownKeys.has(clip.key)) continue; // already used earlier in the video
           try {
             files.push(await materializeShot(supabase, clip, workDir, fetched++));
+            shownKeys.add(clip.key);
             have += clip.dur;
             shownShots.push({
               dur: clip.dur,
@@ -256,6 +262,31 @@ export default async (req: Request) => {
             });
           } catch (e) {
             log(`scene ${i + 1}: skipping ${clip.key} (${(e as Error).message})`);
+          }
+        }
+      }
+
+      // Top up a short scene with MORE distinct footage instead of freezing or
+      // looping one clip. The LLM usually maps a single shot per line, which is
+      // shorter than the narration; pull additional unused shots so the scene
+      // keeps cutting to fresh footage. buildSceneVisual only stretches/loops
+      // the tiny remainder the pool genuinely can't cover.
+      if (files.length > 0 && have < d - 0.2) {
+        const extra = pickShotsForScene(pool, used, scenes[i].match, d - have, want);
+        for (const clip of extra.clips) {
+          if (shownKeys.has(clip.key)) continue;
+          if (have >= d - 0.05) break;
+          try {
+            files.push(await materializeShot(supabase, clip, workDir, fetched++));
+            shownKeys.add(clip.key);
+            have += clip.dur;
+            sections.push(clip.section || 'body');
+            shownShots.push({
+              dur: clip.dur,
+              band: typeof clip.band === 'number' ? clip.band : projectBand,
+            });
+          } catch (e) {
+            log(`scene ${i + 1}: skipping top-up ${clip.key} (${(e as Error).message})`);
           }
         }
       }

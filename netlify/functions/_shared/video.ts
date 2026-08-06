@@ -542,15 +542,22 @@ export function pickShotsForScene(
     if (c.primary) usedTags.add(c.primary);
   }
 
-  // Pool exhausted for this scene: reuse the best shot of the wanted section as
-  // an emergency (better than failing the whole build — there is no AI filler).
+  // No unused matching shot for this scene: fall back to the best UNUSED shot
+  // of the wanted section (so nothing repeats), and only reuse one as a true
+  // last resort if literally every shot is spent — better than failing the
+  // whole build, since there is no AI filler.
   if (clips.length === 0 && pool.length > 0) {
-    const best = pool
-      .map((s) => {
+    const idxs = pool.map((_, idx) => idx);
+    const unused = idxs.filter((idx) => !used.has(idx));
+    const searchable = unused.length ? unused : idxs;
+    const best = searchable
+      .map((idx) => {
+        const s = pool[idx];
         const matched = (s.tags || []).filter((t) => words.has(t.toLowerCase()));
-        return { s, score: matched.length, rank: sectionRank(s.section, wantSection) };
+        return { idx, s, score: matched.length, rank: sectionRank(s.section, wantSection) };
       })
       .sort((a, b) => a.rank - b.rank || b.score - a.score)[0];
+    used.add(best.idx);
     clips.push(best.s);
     sections.push(best.s.section || 'body');
     acc = best.s.dur;
