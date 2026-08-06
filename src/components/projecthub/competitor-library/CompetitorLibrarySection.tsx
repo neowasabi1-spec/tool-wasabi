@@ -2196,6 +2196,15 @@ function CustomVideoModal({
   const [previewLoading, setPreviewLoading] = useState(false);
   const previewAudio = useRef<HTMLAudioElement | null>(null);
   const poll = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Stop watching after this many 5s polls (~16 min) so the button never gets
+  // stuck on "Building…" forever if a background job dies without reporting back.
+  const pollCount = useRef(0);
+  const POLL_MAX = 200;
+
+  const stopWatching = () => {
+    if (poll.current) { clearInterval(poll.current); poll.current = null; }
+    setStatus("");
+  };
 
   useEffect(() => () => {
     if (previewAudio.current) previewAudio.current.pause();
@@ -2218,9 +2227,17 @@ function CustomVideoModal({
 
   const pollStatus = (bid: number) => {
     if (poll.current) clearInterval(poll.current);
+    pollCount.current = 0;
     poll.current = setInterval(async () => {
+      pollCount.current += 1;
+      if (pollCount.current > POLL_MAX) {
+        stopWatching();
+        toast({ title: "Still building in the background", description: "Taking longer than usual — it’ll appear in New Creatives when done." });
+        onQueued();
+        return;
+      }
       try {
-        const r = await fetch(`/api/projecthub/projects/${projectId}/competitor-library/${bid}/build-video`);
+        const r = await fetch(`/api/projecthub/projects/${projectId}/competitor-library/${bid}/build-video`, { cache: "no-store" });
         const j = await r.json().catch(() => ({}));
         const s = j?.job?.status || "";
         setStatus(s);
@@ -2241,10 +2258,15 @@ function CustomVideoModal({
     if (copy.trim().length < 30) { toast({ title: "Paste a bit more copy (min ~30 chars)", variant: "destructive" }); return; }
     setStatus("pending");
     const language = lang === LANGUAGE_OTHER ? langOther.trim() : lang;
+    // The start request itself can take a while (it splits the copy into scenes)
+    // — bound it so the button can't sit on "Queued…" forever if it hangs.
+    const ctrl = new AbortController();
+    const abortTimer = setTimeout(() => ctrl.abort(), 130000);
     try {
       const r = await fetch(`/api/projecthub/projects/${projectId}/competitor-library/${brandId}/build-video`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ voice, language, script: copy.trim() }),
+        signal: ctrl.signal,
       });
       const j = await r.json().catch(() => ({}));
       if (r.ok) {
@@ -2254,7 +2276,13 @@ function CustomVideoModal({
         setStatus("");
         toast({ title: j.error || "Could not start build", variant: "destructive" });
       }
-    } catch { setStatus(""); toast({ title: "Could not start build", variant: "destructive" }); }
+    } catch (e) {
+      setStatus("");
+      const aborted = (e as Error).name === "AbortError";
+      toast({ title: aborted ? "Start timed out — try again" : "Could not start build", variant: "destructive" });
+    } finally {
+      clearTimeout(abortTimer);
+    }
   };
 
   const building = status === "pending" || status === "processing";
@@ -2336,9 +2364,17 @@ function CustomVideoModal({
               : <><Zap className="w-4 h-4" /> Build video</>}
           </Button>
           {building && (
-            <p className="text-[10px] text-muted-foreground mt-2 text-center">
-              Runs on the server — you can keep working; it’ll appear in New Creatives when done.
-            </p>
+            <div className="mt-2 text-center space-y-1">
+              <p className="text-[10px] text-muted-foreground">
+                Runs on the server — you can keep working; it’ll appear in New Creatives when done.
+              </p>
+              <button
+                type="button"
+                onClick={() => { stopWatching(); toast({ title: "Stopped watching", description: "The build may still finish on the server and show up in New Creatives." }); }}
+                className="text-[10px] text-muted-foreground underline hover:text-foreground">
+                Stop watching
+              </button>
+            </div>
           )}
         </div>
       </div>
