@@ -559,8 +559,10 @@ export function pickShotsForScene(
 }
 
 // Assemble one scene's visual track from a pre-chosen list of clip files. Real
-// footage only: if the clips don't cover the whole voiceover, the last frame is
-// held (freeze) for the remaining time — no AI-generated filler.
+// footage only — no AI-generated filler. When the clips don't fully cover the
+// voiceover we keep the picture MOVING rather than freezing the last frame
+// (which looked like the video stalled between shots): a small shortfall is
+// filled by a gentle slow-motion stretch, a large one by looping the footage.
 export async function buildSceneVisual(
   chosenFiles: string[],
   chosenDur: number,
@@ -576,14 +578,30 @@ export async function buildSceneVisual(
   const concatFile = path.join(workDir, `scene_${idx}_cat.mp4`);
   await run(FFMPEG, ['-y', '-f', 'concat', '-safe', '0', '-i', listFile, '-c', 'copy', concatFile]);
 
-  // Freeze-extend the tail so the visual always covers the voiceover, then trim.
-  const pad = Math.max(0, targetDur - chosenDur) + 0.5;
+  const ENC = ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p', '-r', '30', '-an'];
   const sceneFile = path.join(workDir, `scene_${idx}_v.mp4`);
+  const EPS = 0.05;
+  // How much slow-motion is acceptable before it reads as unnatural. Beyond this
+  // we loop the footage instead so motion stays lifelike.
+  const MAX_STRETCH = 1.5;
+
+  const input: string[] = [];
+  const filter: string[] = [];
+  if (chosenDur >= targetDur - EPS) {
+    // Enough real footage: just trim to length. No freeze, no repeat.
+  } else if (targetDur / chosenDur <= MAX_STRETCH) {
+    // A little short: retime so the real footage lasts exactly the voiceover.
+    filter.push('-vf', `setpts=${((targetDur + EPS) / chosenDur).toFixed(4)}*PTS`);
+  } else {
+    // Far too short: loop the footage to cover the gap (moving, not frozen).
+    input.push('-stream_loop', '-1');
+  }
+
   await run(FFMPEG, [
-    '-y', '-i', concatFile,
-    '-vf', `tpad=stop_mode=clone:stop_duration=${pad.toFixed(2)}`,
+    '-y', ...input, '-i', concatFile,
+    ...filter,
     '-t', String(targetDur),
-    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p', '-r', '30', '-an',
+    ...ENC,
     sceneFile,
   ]);
   return sceneFile;
