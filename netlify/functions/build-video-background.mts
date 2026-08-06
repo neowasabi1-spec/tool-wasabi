@@ -97,10 +97,12 @@ function buildAss(cues: { start: number; end: number; text: string; band: number
     'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, ' +
       'Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, ' +
       'Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
-    // BorderStyle=3 = opaque box (OutlineColour is the box colour). White text,
-    // black box, centred anchor. Fontsize is in the 1920-tall PlayRes space.
-    `Style: Default,${CAPTION_FONT},80,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,` +
-      '1,0,0,0,100,100,0,0,3,16,0,5,40,40,40,1',
+    // BorderStyle=1 = outline + drop shadow (no background box, which looked ugly).
+    // White text, thick black outline (OutlineColour) plus a soft semi-transparent
+    // shadow (BackColour) so it stays readable on any footage. Centred anchor;
+    // Fontsize/Outline are in the 1920-tall PlayRes space.
+    `Style: Default,${CAPTION_FONT},80,&H00FFFFFF,&H000000FF,&H00000000,&H96000000,` +
+      '1,0,0,0,100,100,0,0,1,5,3,5,40,40,40,1',
     '',
     '[Events]',
     'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
