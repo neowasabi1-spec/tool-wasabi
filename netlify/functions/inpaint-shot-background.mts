@@ -564,7 +564,7 @@ async function cutWindow(src: string, t0: number, len: number, out: string): Pro
  * back to cleaning the whole clip, so this can only ever add chances, never
  * remove the behaviour that works today.
  */
-async function maskDrivenClean(opts: MaskOpts): Promise<{ file: string; srcRgb: RgbFrames; frames: number; band: { y0: number; y1: number } | null } | null> {
+async function maskDrivenClean(opts: MaskOpts): Promise<{ file: string; srcRgb: RgbFrames; frames: number; band: { y0: number; y1: number } | null; verified?: boolean } | null> {
   const { token, srcFile, W, H, fps, dur, workDir, deadline, log, report } = opts;
   const model = await resolveMaskModel(token, log);
   if (report) report.inputs = model ? [model.videoField, model.maskField] : [];
@@ -604,13 +604,38 @@ async function maskDrivenClean(opts: MaskOpts): Promise<{ file: string; srcRgb: 
         dur: len,
         report: undefined, // don't let per-window details clobber the shot report
       });
-      if (cleaned) { pieces.push(cleaned.file); cleanedAny = true; if (!band) band = cleaned.band; }
-      else pieces.push(winFile); // no trustworthy caption here → keep original footage
+
+      if (cleaned) {
+        // Verify THIS window in place. The window's source and the window's
+        // output are frame-aligned, so the differential check is reliable here —
+        // unlike comparing the stitched clip against the whole original, whose
+        // frames drift out of sync and flag even the parts that came out clean.
+        const outRgb = await rgbFrames(cleaned.file, W, H, len, fps, workDir);
+        const lo = analyzeLeftoverText(cleaned.srcRgb.buf, outRgb.buf, cleaned.srcRgb.w, cleaned.srcRgb.h, cleaned.band);
+        const maxDrop = Math.max(2, Math.floor(lo.frames * MAX_DROP));
+        if (lo.maskPx >= 200 && lo.bad.length <= maxDrop) {
+          pieces.push(cleaned.file); cleanedAny = true; if (!band) band = cleaned.band;
+        } else {
+          log(`chunk window ${i}: caption survived (${lo.bad.length}/${lo.frames}) — shot not fully cleanable`);
+          return null; // one window we can't clean ⇒ don't ship the shot as clean
+        }
+      } else {
+        // miniMaxClip returned null: either there was no caption in this window
+        // (fine — keep the original footage) or the mask couldn't be trusted
+        // (then the caption stays, so the shot can't be fully cleaned).
+        const wr = await rgbFrames(winFile, W, H, len, fps, workDir);
+        const wf = Math.floor(wr.buf.length / (wr.w * wr.h * 3));
+        if (captionMasks(wr.buf, wf, wr.w, wr.h, opts.textRegion)) {
+          log(`chunk window ${i}: caption present but unmaskable — shot not fully cleanable`);
+          return null;
+        }
+        pieces.push(winFile); // genuinely no caption in this window
+      }
     }
 
-    // Every window came back untrusted → nothing was actually removed, so let the
+    // No window had a caption to remove → nothing was actually cleaned; let the
     // caller fall through to the detector path exactly as before.
-    if (!cleanedAny) { if (report) report.maskPath = 'chunk: no window had a trustworthy caption'; return null; }
+    if (!cleanedAny) { if (report) report.maskPath = 'chunk: no window had a caption to remove'; return null; }
 
     const listFile = path.join(workDir, `concat_${Date.now()}.txt`);
     fs.writeFileSync(listFile, pieces.map((p) => `file '${p.replace(/\\/g, '/')}'`).join('\n'), 'utf8');
@@ -627,9 +652,11 @@ async function maskDrivenClean(opts: MaskOpts): Promise<{ file: string; srcRgb: 
       log(`chunked result is ${outDur.toFixed(2)}s of ${dur.toFixed(2)}s — reverting to whole-clip`);
       return miniMaxClip({ ...opts, model });
     }
-    return { file: outFile, srcRgb, frames, band };
-  } catch (e) {
-    log(`chunk path failed (${(e as Error).message}) — reverting to whole-clip`);
+      // Every window was verified aligned above, so the stitched result is
+      // trusted — the caller must skip the whole-clip differential (it drifts).
+      return { file: outFile, srcRgb, frames, band, verified: true };
+    } catch (e) {
+      log(`chunk path failed (${(e as Error).message}) — reverting to whole-clip`);
     return miniMaxClip({ ...opts, model });
   }
 }
@@ -810,6 +837,10 @@ export default async (req: Request) => {
     // source frame i, which breaks the differential final check. Erase keeps the
     // alignment; only dropping frames clears this.
     let alignedWithSource = true;
+    // Set when the mask path returned a chunked result it already verified
+    // window-by-window; the whole-clip differential below would drift and must be
+    // skipped for it.
+    let maskVerified = false;
 
     // ── Stage 1: mask-driven neural removal. Preferred, because it rebuilds the
     // caption area from surrounding motion instead of leaving the blurred patch
@@ -839,7 +870,7 @@ export default async (req: Request) => {
             break;
           }
           fs.copyFileSync(masked.file, outFile);
-          if (pass === 1) { srcRgb = masked.srcRgb; captionBand = masked.band; }
+          if (pass === 1) { srcRgb = masked.srcRgb; captionBand = masked.band; maskVerified = !!masked.verified; }
           usedMaskPath = true;
           if (pass === MASK_PASSES || Date.now() > deadline) break;
           curFile = path.join(workDir, `pass${pass}.mp4`);
@@ -847,7 +878,14 @@ export default async (req: Request) => {
           curKey = `${projectId}/shots-tmp/${shotId}_p${pass}_${Date.now()}.mp4`;
           await uploadFile(supabase, curKey, curFile, 'video/mp4');
         }
-        if (usedMaskPath && srcRgb) {
+        if (usedMaskPath && maskVerified) {
+          // Chunked + already verified window-by-window (aligned). Comparing the
+          // stitched clip against the whole original drifts out of sync and would
+          // falsely reject the parts that came out clean, so trust it and skip both
+          // the differential here and the final gate below.
+          alignedWithSource = false;
+          log('mask path: chunked result verified per-window — skipping whole-clip differential');
+        } else if (usedMaskPath && srcRgb) {
           try {
             const outRgb = await rgbFrames(outFile, W, H, dur, fps, workDir);
             // Differential check ONLY. Compare the model's output against the
