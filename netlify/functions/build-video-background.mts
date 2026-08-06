@@ -62,9 +62,10 @@ function assTime(sec: number): string {
   return `${h}:${p(m)}:${p(s)}.${p(c)}`;
 }
 
-/** Wrap a caption into short lines joined by ASS line breaks (\N). */
-function wrapCaption(text: string, maxChars = 24): string {
-  const words = text.replace(/\s+/g, ' ').trim().split(' ');
+/** Wrap a caption into short lines joined by ASS line breaks (\N). Upper-cased
+ * for the punchy, all-caps look of modern social captions. */
+function wrapCaption(text: string, maxChars = 18): string {
+  const words = text.replace(/\s+/g, ' ').trim().toUpperCase().split(' ');
   const lines: string[] = [];
   let line = '';
   for (const w of words) {
@@ -101,8 +102,8 @@ function buildAss(cues: { start: number; end: number; text: string; band: number
     // White text, thick black outline (OutlineColour) plus a soft semi-transparent
     // shadow (BackColour) so it stays readable on any footage. Centred anchor;
     // Fontsize/Outline are in the 1920-tall PlayRes space.
-    `Style: Default,${CAPTION_FONT},80,&H00FFFFFF,&H000000FF,&H00000000,&H96000000,` +
-      '1,0,0,0,100,100,0,0,1,5,3,5,40,40,40,1',
+    `Style: Default,${CAPTION_FONT},104,&H00FFFFFF,&H000000FF,&H00000000,&H96000000,` +
+      '1,0,0,0,100,100,0,0,1,6,3,5,60,60,60,1',
     '',
     '[Events]',
     'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
@@ -271,7 +272,11 @@ export default async (req: Request) => {
     const base = path.join(workDir, 'base.mp4');
     await run(FFMPEG, [
       '-y', '-i', visual, '-i', voiceFile,
-      '-c:v', 'copy', '-c:a', 'aac', '-b:a', '160k', '-shortest', base,
+      '-c:v', 'copy', '-c:a', 'aac', '-b:a', '160k', '-shortest',
+      // Move the moov atom to the front so the browser can start playing before
+      // the whole file is fetched. Without it the player only ever showed the
+      // first second (moov landed at the end, unreachable over a range request).
+      '-movflags', '+faststart', base,
     ]);
 
     // Each cue is positioned on the band its own scene's footage originally
@@ -297,7 +302,8 @@ export default async (req: Request) => {
     try {
       await run(FFMPEG, [
         '-y', '-i', base, '-vf', `ass=subs.ass${fontArg}`,
-        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', '-c:a', 'copy', finalFile,
+        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', '-c:a', 'copy',
+        '-movflags', '+faststart', finalFile,
       ], { cwd: workDir });
     } catch (e) {
       log(`subtitle burn failed, using base: ${(e as Error).message}`);

@@ -43,8 +43,8 @@ function assTime(sec: number): string {
   return `${h}:${p(m)}:${p(s)}.${p(c)}`;
 }
 
-function wrapCaption(text: string, maxChars = 24): string {
-  const words = text.replace(/\s+/g, ' ').trim().split(' ');
+function wrapCaption(text: string, maxChars = 18): string {
+  const words = text.replace(/\s+/g, ' ').trim().toUpperCase().split(' ');
   const lines: string[] = [];
   let line = '';
   for (const w of words) {
@@ -70,8 +70,8 @@ function buildAss(cues: { start: number; end: number; text: string }[]): string 
       'Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
     // Outline + soft shadow, no background box (BorderStyle=1): white text, thick
     // black outline, semi-transparent shadow so it reads on any footage.
-    `Style: Default,${CAPTION_FONT},80,&H00FFFFFF,&H000000FF,&H00000000,&H96000000,` +
-      '1,0,0,0,100,100,0,0,1,5,3,5,40,40,40,1',
+    `Style: Default,${CAPTION_FONT},104,&H00FFFFFF,&H000000FF,&H00000000,&H96000000,` +
+      '1,0,0,0,100,100,0,0,1,6,3,5,60,60,60,1',
     '',
     '[Events]',
     'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
@@ -152,7 +152,10 @@ export default async (req: Request) => {
     // 3. Mux voiceover onto the footage.
     const base = path.join(workDir, 'base.mp4');
     await run(FFMPEG, ['-y', '-i', visual, '-i', voiceFile,
-      '-c:v', 'copy', '-c:a', 'aac', '-b:a', '160k', '-shortest', base]);
+      '-c:v', 'copy', '-c:a', 'aac', '-b:a', '160k', '-shortest',
+      // faststart so the browser can stream it; otherwise the moov atom lands at
+      // the end and the player only shows the first second over a range request.
+      '-movflags', '+faststart', base]);
 
     // 4. Subtitles: one cue per line, timed to its voiceover clip.
     const cues: { start: number; end: number; text: string }[] = [];
@@ -176,7 +179,8 @@ export default async (req: Request) => {
     const finalFile = path.join(workDir, 'final.mp4');
     try {
       await run(FFMPEG, ['-y', '-i', base, '-vf', `ass=subs.ass${fontArg}`,
-        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', '-c:a', 'copy', finalFile],
+        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', '-c:a', 'copy',
+        '-movflags', '+faststart', finalFile],
         { cwd: workDir });
     } catch (e) {
       log(`subtitle burn failed, using base: ${(e as Error).message}`);
