@@ -1726,6 +1726,8 @@ type Landing = {
   category: string;
   tags: string[];
   screenshot: string;
+  screenshot_desktop?: string;
+  screenshot_mobile?: string;
   html_url: string;
   editor_url: string;
   created_at: string;
@@ -1741,6 +1743,7 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
   const [landings, setLandings] = useState<Landing[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
+  const [preview, setPreview] = useState<Landing | null>(null);
 
   // Add this landing as a swipe step in Clone/Swipe (front-end-funnel), then go there.
   const cloneSwipe = (l: Landing) => {
@@ -1763,9 +1766,30 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
   useEffect(() => { load(); }, [projectId]);
 
   const del = async (l: Landing) => {
+    setPreview(p => (p?.id === l.id ? null : p));
     setLandings(p => p.filter(x => x.id !== l.id));
     await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/landings/${l.id}`, { method: "DELETE" });
     toast({ title: "Landing removed" });
+  };
+
+  // Pull the saved HTML and hand it to the browser as a .html download, so the
+  // page can be opened/edited offline without relying on the original link.
+  const downloadHtml = async (l: Landing) => {
+    try {
+      const r = await fetch(l.html_url);
+      if (!r.ok) throw new Error(String(r.status));
+      const html = await r.text();
+      const blob = new Blob([html], { type: "text/html" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `${(l.name || hostOf(l.url) || "landing").replace(/[^\w.-]+/g, "-").slice(0, 80)}.html`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    } catch {
+      toast({ title: "Could not download the HTML", variant: "destructive" });
+    }
   };
 
   const filtered = landings.filter(l =>
@@ -1801,9 +1825,12 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {filtered.map(l => (
             <div key={l.id}
-              className="group relative bg-card border border-border rounded-2xl overflow-hidden hover:border-primary/40 hover:shadow-lg transition-all">
-              {/* Preview (click = Clone/Swipe) */}
-              <button onClick={() => cloneSwipe(l)} className="block w-full text-left aspect-[16/10] relative overflow-hidden bg-slate-100 cursor-pointer">
+              onClick={() => setPreview(l)}
+              role="button" tabIndex={0}
+              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setPreview(l); } }}
+              className="group relative bg-card border border-border rounded-2xl overflow-hidden hover:border-primary/40 hover:shadow-lg transition-all cursor-pointer">
+              {/* Whole card opens the screenshots popup (Download HTML / Clone-Swipe live inside). */}
+              <div className="block w-full aspect-[16/10] relative overflow-hidden bg-slate-100">
                 {l.screenshot ? (
                   <img src={l.screenshot} alt={l.name} className="w-full h-full object-cover object-top group-hover:scale-[1.02] transition-transform" />
                 ) : (
@@ -1814,9 +1841,13 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
                 <span className="absolute top-2 left-2 text-[9px] font-bold px-2 py-0.5 rounded-full bg-slate-900/55 backdrop-blur-sm text-white uppercase tracking-wide">
                   {l.page_type || "landing"}
                 </span>
-              </button>
-              {/* Delete (hover) */}
-              <button onClick={() => del(l)}
+                {/* Hover hint that the card opens a preview */}
+                <span className="absolute bottom-2 right-2 flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-slate-900/55 backdrop-blur-sm text-white opacity-0 group-hover:opacity-100 transition-opacity">
+                  <Eye className="w-3 h-3" /> Preview
+                </span>
+              </div>
+              {/* Delete (hover) — must not open the popup */}
+              <button onClick={(e) => { e.stopPropagation(); del(l); }}
                 className="absolute top-2 right-2 p-1.5 rounded-lg bg-slate-900/45 backdrop-blur-sm text-white/90 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all"
                 title="Remove landing">
                 <Trash2 className="w-3.5 h-3.5" />
@@ -1824,29 +1855,79 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
               {/* Footer */}
               <div className="p-3">
                 <p className="text-sm font-semibold text-foreground truncate">{l.name}</p>
-                <p className="text-[11px] text-muted-foreground truncate mb-2 flex items-center gap-1">
+                <p className="text-[11px] text-muted-foreground truncate flex items-center gap-1">
                   <Globe className="w-3 h-3" /> {hostOf(l.url)}
                 </p>
-                <div className="flex items-center gap-1.5">
-                  <button onClick={() => cloneSwipe(l)}
-                    className="flex-1 flex items-center justify-center gap-1 bg-primary text-white text-[11px] font-semibold py-1.5 rounded-lg hover:opacity-90 transition-opacity">
-                    <Repeat className="w-3 h-3" /> Clone / Swipe
-                  </button>
-                  <a href={l.html_url} target="_blank" rel="noopener noreferrer"
-                    className="flex items-center justify-center gap-1 border border-border text-foreground text-[11px] font-semibold py-1.5 px-2.5 rounded-lg hover:bg-muted transition-colors">
-                    <Eye className="w-3 h-3" /> View
-                  </a>
-                  {l.url && (
-                    <a href={l.url} target="_blank" rel="noopener noreferrer"
-                      className="flex items-center justify-center border border-border text-muted-foreground py-1.5 px-2 rounded-lg hover:bg-muted transition-colors"
-                      title="Open original">
-                      <ExternalLink className="w-3 h-3" />
-                    </a>
-                  )}
-                </div>
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {preview && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          onClick={() => setPreview(null)}>
+          <div className="bg-card border border-border rounded-2xl w-full max-w-3xl max-h-[90vh] overflow-hidden flex flex-col"
+            onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between gap-3 p-4 border-b border-border">
+              <div className="min-w-0">
+                <p className="text-sm font-bold text-foreground truncate">{preview.name}</p>
+                <p className="text-[11px] text-muted-foreground truncate flex items-center gap-1">
+                  <Globe className="w-3 h-3" /> {hostOf(preview.url)}
+                </p>
+              </div>
+              <button onClick={() => setPreview(null)} className="text-muted-foreground hover:text-foreground">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-4 overflow-y-auto flex-1 bg-muted/30">
+              {(preview.screenshot_desktop || preview.screenshot_mobile) ? (
+                <div className="flex flex-wrap gap-4 justify-center items-start">
+                  {preview.screenshot_desktop && (
+                    <figure className="flex-1 min-w-[260px] max-w-full">
+                      <figcaption className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1 text-center">Desktop</figcaption>
+                      <img src={preview.screenshot_desktop} alt="Desktop screenshot"
+                        className="w-full rounded-lg border border-border bg-white" />
+                    </figure>
+                  )}
+                  {preview.screenshot_mobile && (
+                    <figure className="w-40 shrink-0">
+                      <figcaption className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1 text-center">Mobile</figcaption>
+                      <img src={preview.screenshot_mobile} alt="Mobile screenshot"
+                        className="w-full rounded-lg border border-border bg-white" />
+                    </figure>
+                  )}
+                </div>
+              ) : preview.screenshot ? (
+                <img src={preview.screenshot} alt={preview.name}
+                  className="w-full rounded-lg border border-border bg-white" />
+              ) : (
+                <div className="py-16 text-center text-sm text-muted-foreground">No screenshots saved for this page.</div>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2 p-4 border-t border-border flex-wrap">
+              <button onClick={() => downloadHtml(preview)}
+                className="flex items-center gap-1.5 bg-primary text-white text-xs font-semibold py-2 px-3 rounded-lg hover:opacity-90 transition-opacity">
+                <Download className="w-3.5 h-3.5" /> Download HTML
+              </button>
+              <button onClick={() => cloneSwipe(preview)}
+                className="flex items-center gap-1.5 border border-border text-foreground text-xs font-semibold py-2 px-3 rounded-lg hover:bg-muted transition-colors">
+                <Repeat className="w-3.5 h-3.5" /> Clone / Swipe
+              </button>
+              <a href={preview.html_url} target="_blank" rel="noopener noreferrer"
+                className="flex items-center gap-1.5 border border-border text-foreground text-xs font-semibold py-2 px-3 rounded-lg hover:bg-muted transition-colors">
+                <Eye className="w-3.5 h-3.5" /> View HTML
+              </a>
+              {preview.url && (
+                <a href={preview.url} target="_blank" rel="noopener noreferrer"
+                  className="flex items-center gap-1.5 border border-border text-muted-foreground text-xs font-semibold py-2 px-3 rounded-lg hover:bg-muted transition-colors ml-auto">
+                  <ExternalLink className="w-3.5 h-3.5" /> Original
+                </a>
+              )}
+            </div>
+          </div>
         </div>
       )}
     </div>
