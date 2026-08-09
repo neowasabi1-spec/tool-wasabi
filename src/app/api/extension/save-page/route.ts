@@ -29,6 +29,10 @@ interface SaveBody {
   name?: string;
   html?: string;
   screenshots?: { desktop?: string; mobile?: string };
+  // Storage paths for screenshots already uploaded via /api/extension/sign-shot
+  // (the extension uploads them directly to bypass the 6MB body limit).
+  screenshotDesktopPath?: string;
+  screenshotMobilePath?: string;
   pageType?: string;
   folderId?: string | null; // legacy — treated as pageType if pageType absent
   category?: string;
@@ -67,6 +71,15 @@ async function uploadScreenshot(
   }
   const { data } = supabaseAdmin.storage.from('media').getPublicUrl(path);
   return data.publicUrl;
+}
+
+// Turn a pre-uploaded storage path (from /api/extension/sign-shot) into a public
+// URL. Guarded to our capture prefix so an arbitrary path can't be surfaced.
+function publicUrlForShotPath(storagePath: string): string | null {
+  const clean = String(storagePath || '').replace(/^\/+/, '');
+  if (!clean.startsWith('extension-captures/')) return null;
+  const { data } = supabaseAdmin.storage.from('media').getPublicUrl(clean);
+  return data.publicUrl || null;
 }
 
 export async function POST(req: NextRequest) {
@@ -187,11 +200,22 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // 2) Upload screenshots (best-effort).
+  // 2) Resolve screenshots (best-effort). Preferred path: the extension already
+  // uploaded them via signed URLs and sent only the storage paths (keeps the
+  // body small). Fallback: legacy inline base64 for older extension versions.
   const shots = body.screenshots || {};
+  const resolveShot = (
+    variant: 'desktop' | 'mobile',
+    storagePath?: string,
+    dataUrl?: string,
+  ): Promise<string | null> => {
+    if (storagePath) return Promise.resolve(publicUrlForShotPath(storagePath));
+    if (dataUrl) return uploadScreenshot(pageId, variant, dataUrl);
+    return Promise.resolve(null);
+  };
   const [desktopUrl, mobileUrl] = await Promise.all([
-    shots.desktop ? uploadScreenshot(pageId, 'desktop', shots.desktop) : Promise.resolve(null),
-    shots.mobile ? uploadScreenshot(pageId, 'mobile', shots.mobile) : Promise.resolve(null),
+    resolveShot('desktop', body.screenshotDesktopPath, shots.desktop),
+    resolveShot('mobile', body.screenshotMobilePath, shots.mobile),
   ]);
 
   // 3) Mirror the HTML into page_html so the standalone editor can load it.

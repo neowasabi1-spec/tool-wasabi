@@ -219,6 +219,39 @@ async function captureHtml(tabId) {
   return r;
 }
 
+// Convert a "data:image/png;base64,…" URL into a Blob so it can be PUT to
+// storage without inflating it back through JSON.
+function dataUrlToBlob(dataUrl) {
+  const comma = dataUrl.indexOf(',');
+  const meta = dataUrl.slice(0, comma);
+  const b64 = dataUrl.slice(comma + 1);
+  const mime = (meta.match(/data:([^;]+)/) || [])[1] || 'image/png';
+  const bin = atob(b64);
+  const arr = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  return new Blob([arr], { type: mime });
+}
+
+// Ask the tool for a signed upload URL, then push the screenshot bytes straight
+// to storage. Returns the stored path to hand to save-page.
+async function uploadShot(token, variant, dataUrl) {
+  const contentType = (dataUrl.match(/^data:([^;]+)/) || [])[1] || 'image/png';
+  const signRes = await fetch(`${TOOL}/api/extension/sign-shot`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ variant, contentType }),
+  });
+  const sj = await signRes.json().catch(() => ({}));
+  if (!signRes.ok || !sj.uploadUrl) throw new Error(sj.error || `sign failed (${signRes.status})`);
+  const up = await fetch(sj.uploadUrl, {
+    method: 'PUT',
+    headers: { 'Content-Type': sj.contentType || contentType, 'x-upsert': 'true' },
+    body: dataUrlToBlob(dataUrl),
+  });
+  if (!up.ok) throw new Error(`upload failed (${up.status})`);
+  return sj.path;
+}
+
 async function onSave() {
   els.save.disabled = true;
   try {
@@ -232,13 +265,30 @@ async function onSave() {
     setStatus('<span class="spinner"></span>Reading page…');
     const page = await captureHtml(activeTab.id);
 
-    let screenshots = {};
+    // Capture screenshots, then upload them STRAIGHT to storage via signed URLs.
+    // Full-page PNGs are megabytes each; sending them inline in the save JSON
+    // blew past the 6MB serverless body limit and failed the whole save with a
+    // 413. Now only their storage paths travel in the save request.
+    const screenshotPaths = {};
     if (els.shotDesktop.checked || els.shotMobile.checked) {
       setStatus('<span class="spinner"></span>Taking screenshots…');
       const shots = await sendMessage({ type: 'CAPTURE_SHOTS', tabId: activeTab.id });
       if (shots && shots.ok) {
-        if (els.shotDesktop.checked && shots.desktop) screenshots.desktop = shots.desktop;
-        if (els.shotMobile.checked && shots.mobile) screenshots.mobile = shots.mobile;
+        const pending = [];
+        if (els.shotDesktop.checked && shots.desktop) pending.push(['desktop', shots.desktop]);
+        if (els.shotMobile.checked && shots.mobile) pending.push(['mobile', shots.mobile]);
+        if (pending.length) {
+          setStatus('<span class="spinner"></span>Uploading screenshots…');
+          for (const [variant, dataUrl] of pending) {
+            try {
+              screenshotPaths[variant] = await uploadShot(token, variant, dataUrl);
+            } catch (e) {
+              // Screenshots are best-effort: don't fail the save over them, and
+              // don't fall back to inline base64 (that's what caused the 413).
+              console.warn(`screenshot ${variant} upload failed:`, (e && e.message) || e);
+            }
+          }
+        }
       } else {
         console.warn('screenshots failed:', shots && shots.error);
       }
@@ -259,7 +309,8 @@ async function onSave() {
       title: page.title,
       name: els.name.value.trim() || page.title,
       html: page.html,
-      screenshots,
+      screenshotDesktopPath: screenshotPaths.desktop || null,
+      screenshotMobilePath: screenshotPaths.mobile || null,
       pageType: els.folder.value || 'landing',
       category,
       tags,
