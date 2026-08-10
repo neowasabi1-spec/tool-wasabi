@@ -12,6 +12,7 @@
  */
 import { verifyAccessToken } from '@/lib/mcp/oauth/jwt';
 import { oauthConfig } from '@/lib/mcp/oauth/config';
+import { validateApiKey } from '@/lib/api-key-auth';
 
 export interface ResolvedAuth {
   ownerId: string;
@@ -40,6 +41,33 @@ export function resolveOwner(req: Request): ResolvedAuth | null {
   if (devToken && bearer === devToken) {
     const userHint = req.headers.get('x-mcp-user')?.trim();
     return { ownerId: userHint ? `u:${userHint}` : 'shared-token-user' };
+  }
+
+  return null;
+}
+
+/**
+ * Async owner resolution that ALSO accepts a Funnel Swiper API key (`fsk_...`),
+ * passed either as `X-API-Key` or `Authorization: Bearer`. This is the key the
+ * external clients (Neo / Morfeo / OpenClaw) have always used — the original
+ * MCP handler validated it here. Because the `api_keys` table is not scoped to
+ * a Supabase user (single-tenant tool), the owner is derived stably from the
+ * key id so cloned assets stay consistently owned across calls.
+ *
+ * Order: per-user OAuth token → shared dev token → `fsk_` API key.
+ */
+export async function resolveOwnerAsync(req: Request): Promise<ResolvedAuth | null> {
+  const sync = resolveOwner(req);
+  if (sync) return sync;
+
+  const headerKey =
+    req.headers.get('x-api-key') ||
+    (req.headers.get('authorization') || '').replace(/^Bearer\s+/i, '').trim();
+  if (headerKey.startsWith('fsk_')) {
+    const result = await validateApiKey(req, 'clone_swipe');
+    if (result.valid) {
+      return { ownerId: `key:${result.apiKey.id}` };
+    }
   }
 
   return null;

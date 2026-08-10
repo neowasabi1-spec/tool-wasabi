@@ -32,7 +32,7 @@ export const maxDuration = 60;
  * must land on the same warm instance — true in practice for a single worker.
  */
 import { randomUUID } from 'node:crypto';
-import { resolveOwner, unauthorizedResponse } from '@/lib/mcp/auth';
+import { resolveOwnerAsync, unauthorizedResponse } from '@/lib/mcp/auth';
 import { mcpContext } from '@/lib/mcp/context';
 import { cloneLandingPage, extractTexts, applyRewrites } from '@/lib/mcp/tools';
 
@@ -245,7 +245,7 @@ async function handlePost(req: Request): Promise<Response> {
     // Authenticate the message. Some SSE clients send the key only on the POST
     // (not on the GET stream), so we resolve auth here and backfill the session
     // owner. OAuth clients that send nothing get the 401 discovery challenge.
-    const postAuth = resolveOwner(req);
+    const postAuth = await resolveOwnerAsync(req);
     const ownerId = postAuth?.ownerId || session.ownerId;
     if (!ownerId) return unauthorizedResponse();
     if (!session.ownerId) session.ownerId = ownerId;
@@ -273,7 +273,7 @@ async function handlePost(req: Request): Promise<Response> {
   }
 
   // ---- Streamable HTTP transport: respond inline ----------------------------
-  const auth = resolveOwner(req);
+  const auth = await resolveOwnerAsync(req);
   if (!auth) return unauthorizedResponse();
 
   const payload = await parseBody(req);
@@ -318,7 +318,7 @@ async function handleGet(req: Request): Promise<Response> {
   // attach the key to the POST messages. Auth is enforced on the POST (above).
   // If the GET DOES carry auth we capture the owner now; otherwise it's pending
   // ('') and gets set from the first authenticated POST.
-  const auth = resolveOwner(req);
+  const auth = await resolveOwnerAsync(req);
 
   const sessionId = randomUUID();
   const ownerId = auth?.ownerId ?? '';
