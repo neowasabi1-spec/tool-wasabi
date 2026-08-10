@@ -1,27 +1,42 @@
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+export const maxDuration = 60;
 
 /**
- * MCP endpoint — Streamable HTTP transport, dependency-free.
+ * MCP endpoint — dependency-free, supports BOTH MCP transports.
  *
  * History: this route used to depend on `mcp-handler` + `@modelcontextprotocol/sdk`.
  * Those packages were declared but never made it into the installed lockfile,
  * which broke the production build, so a previous change stubbed this route to
- * return 503 ("temporarily unavailable"). That stub is exactly why connected
- * Claude clients (Neo / Morfeo) reported "the MCP server is down".
+ * return 503. That stub is why connected Claude clients (Neo / Morfeo) reported
+ * "the MCP server is down".
  *
- * Rather than reintroduce the fragile external dependency, we implement the MCP
- * JSON-RPC 2.0 protocol directly here. It's a tiny surface (initialize,
- * tools/list, tools/call, ping) and it sits on top of the already-present,
- * battle-tested tool implementations in src/lib/mcp/tools.ts + the per-user
- * OAuth auth in src/lib/mcp/auth.ts. No npm install required, so the build can
- * never break on a missing MCP dependency again.
+ * We reimplement MCP directly (tiny JSON-RPC surface) over the already-present
+ * tool implementations (src/lib/mcp/tools.ts) + per-user OAuth / shared-key auth
+ * (src/lib/mcp/auth.ts). No npm install required, so the build can never break
+ * on a missing MCP dependency again.
+ *
+ * Transports supported:
+ *   1. HTTP+SSE (protocol 2024-11-05) — the transport OpenClaw uses:
+ *        GET  /api/mcp                     → opens an SSE stream, first emits an
+ *                                            `endpoint` event with the POST URL.
+ *        POST /api/mcp?sessionId=<id>      → JSON-RPC message; the RESPONSE is
+ *                                            delivered back over that SSE stream,
+ *                                            the POST itself returns 202.
+ *   2. Streamable HTTP (protocol 2025+):
+ *        POST /api/mcp (no sessionId)      → JSON-RPC message; response returned
+ *                                            inline in the POST body.
+ *
+ * The SSE session registry is a module-level Map (per server instance), exactly
+ * like the reference SDK's SSEServerTransport. GET and POST for the same session
+ * must land on the same warm instance — true in practice for a single worker.
  */
+import { randomUUID } from 'node:crypto';
 import { resolveOwner, unauthorizedResponse } from '@/lib/mcp/auth';
 import { mcpContext } from '@/lib/mcp/context';
 import { cloneLandingPage, extractTexts, applyRewrites } from '@/lib/mcp/tools';
 
-const PROTOCOL_VERSION = '2025-06-18';
+const PROTOCOL_VERSION = '2024-11-05';
 const SERVER_INFO = { name: 'tool-wasabi', version: '1.0.0' } as const;
 
 // JSON-RPC error codes.
@@ -50,6 +65,26 @@ function rpcError(
   data?: unknown,
 ) {
   return { jsonrpc: '2.0', id: id ?? null, error: { code, message, ...(data !== undefined ? { data } : {}) } };
+}
+
+// ── SSE session registry (module-level, per server instance) ────────────────
+interface SseSession {
+  controller: ReadableStreamDefaultController<Uint8Array>;
+  ownerId: string;
+  heartbeat: ReturnType<typeof setInterval>;
+}
+const sseSessions = new Map<string, SseSession>();
+const encoder = new TextEncoder();
+
+function sseWrite(controller: ReadableStreamDefaultController<Uint8Array>, chunk: string): void {
+  controller.enqueue(encoder.encode(chunk));
+}
+function sseEvent(
+  controller: ReadableStreamDefaultController<Uint8Array>,
+  event: string | null,
+  data: string,
+): void {
+  sseWrite(controller, (event ? `event: ${event}\n` : '') + `data: ${data}\n\n`);
 }
 
 // ── Tool catalog (JSON schemas advertised to the MCP client) ────────────────
@@ -139,18 +174,12 @@ async function callTool(
   }
 }
 
-async function handleRpc(
-  ownerId: string,
-  msg: JsonRpcRequest,
-): Promise<object | null> {
+async function handleRpc(ownerId: string, msg: JsonRpcRequest): Promise<object | null> {
   const { id, method } = msg;
   const params = (msg.params || {}) as Record<string, unknown>;
 
   // Notifications (no id): acknowledge without a response body.
-  if (id === undefined || id === null) {
-    // e.g. notifications/initialized, notifications/cancelled — nothing to do.
-    return null;
-  }
+  if (id === undefined || id === null) return null;
 
   switch (method) {
     case 'initialize': {
@@ -177,8 +206,6 @@ async function handleRpc(
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        // Tool-level failures are reported as a successful RPC with isError,
-        // per MCP, so the client model can read and react to the error text.
         return rpcResult(id, {
           content: [{ type: 'text', text: `Error: ${message}` }],
           isError: true,
@@ -190,21 +217,72 @@ async function handleRpc(
   }
 }
 
+async function parseBody(req: Request): Promise<unknown | typeof PARSE_ERROR> {
+  try {
+    const raw = await req.text();
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return PARSE_ERROR;
+  }
+}
+
+// ── POST: JSON-RPC messages for BOTH transports ─────────────────────────────
 async function handlePost(req: Request): Promise<Response> {
+  const url = new URL(req.url);
+  const sessionId = url.searchParams.get('sessionId');
+
+  // ---- HTTP+SSE transport: message posted to an existing SSE session --------
+  if (sessionId) {
+    const session = sseSessions.get(sessionId);
+    if (!session) {
+      // The GET/SSE stream that owned this session is gone (expired, or landed
+      // on a different instance). Tell the client to reconnect.
+      return new Response(
+        JSON.stringify(rpcError(null, INVALID_REQUEST, 'Unknown or expired sessionId — reopen the SSE stream (GET /api/mcp).')),
+        { status: 404, headers: JSON_HEADERS },
+      );
+    }
+    // Authenticate the message. Some SSE clients send the key only on the POST
+    // (not on the GET stream), so we resolve auth here and backfill the session
+    // owner. OAuth clients that send nothing get the 401 discovery challenge.
+    const postAuth = resolveOwner(req);
+    const ownerId = postAuth?.ownerId || session.ownerId;
+    if (!ownerId) return unauthorizedResponse();
+    if (!session.ownerId) session.ownerId = ownerId;
+
+    const payload = await parseBody(req);
+    if (payload === PARSE_ERROR) {
+      return new Response('invalid json', { status: 400 });
+    }
+    const messages = Array.isArray(payload) ? (payload as JsonRpcRequest[]) : [payload as JsonRpcRequest];
+    // Process and push each response back over the SSE channel.
+    await mcpContext.run({ ownerId }, async () => {
+      for (const m of messages) {
+        const resp = await handleRpc(ownerId, m);
+        if (resp !== null) {
+          try {
+            sseEvent(session.controller, 'message', JSON.stringify(resp));
+          } catch {
+            /* stream closed mid-flight; client will reconnect */
+          }
+        }
+      }
+    });
+    // Accepted — the actual JSON-RPC response goes over the SSE stream.
+    return new Response(null, { status: 202 });
+  }
+
+  // ---- Streamable HTTP transport: respond inline ----------------------------
   const auth = resolveOwner(req);
   if (!auth) return unauthorizedResponse();
 
-  let payload: unknown;
-  try {
-    const raw = await req.text();
-    payload = raw ? JSON.parse(raw) : null;
-  } catch {
+  const payload = await parseBody(req);
+  if (payload === PARSE_ERROR) {
     return new Response(JSON.stringify(rpcError(null, PARSE_ERROR, 'Invalid JSON body.')), {
       status: 400,
       headers: JSON_HEADERS,
     });
   }
-
   if (!payload || (typeof payload !== 'object' && !Array.isArray(payload))) {
     return new Response(JSON.stringify(rpcError(null, INVALID_REQUEST, 'Expected a JSON-RPC request object or array.')), {
       status: 400,
@@ -218,11 +296,9 @@ async function handlePost(req: Request): Promise<Response> {
         const responses = (
           await Promise.all((payload as JsonRpcRequest[]).map((m) => handleRpc(auth.ownerId, m)))
         ).filter((r): r is object => r !== null);
-        // If every message was a notification there is nothing to return.
         if (responses.length === 0) return new Response(null, { status: 202 });
         return new Response(JSON.stringify(responses), { status: 200, headers: JSON_HEADERS });
       }
-
       const response = await handleRpc(auth.ownerId, payload as JsonRpcRequest);
       if (response === null) return new Response(null, { status: 202 });
       return new Response(JSON.stringify(response), { status: 200, headers: JSON_HEADERS });
@@ -236,18 +312,71 @@ async function handlePost(req: Request): Promise<Response> {
   });
 }
 
-// GET is used by the Streamable HTTP transport to open a server->client SSE
-// stream. This server is stateless (request/response only) and offers no such
-// stream, so per the spec we return 405.
-async function handleGet(): Promise<Response> {
-  return new Response('Method Not Allowed', {
-    status: 405,
-    headers: { allow: 'POST, DELETE' },
+// ── GET: open an SSE stream (HTTP+SSE transport used by OpenClaw) ────────────
+async function handleGet(req: Request): Promise<Response> {
+  // Open the stream even if the GET carries no auth: many SSE clients only
+  // attach the key to the POST messages. Auth is enforced on the POST (above).
+  // If the GET DOES carry auth we capture the owner now; otherwise it's pending
+  // ('') and gets set from the first authenticated POST.
+  const auth = resolveOwner(req);
+
+  const sessionId = randomUUID();
+  const ownerId = auth?.ownerId ?? '';
+
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const heartbeat = setInterval(() => {
+        try {
+          sseWrite(controller, `: keep-alive ${Date.now()}\n\n`);
+        } catch {
+          /* closed */
+        }
+      }, 15000);
+      sseSessions.set(sessionId, { controller, ownerId, heartbeat });
+      // First event tells the client WHERE to POST its JSON-RPC messages.
+      sseEvent(controller, 'endpoint', `/api/mcp?sessionId=${sessionId}`);
+    },
+    cancel() {
+      const s = sseSessions.get(sessionId);
+      if (s) {
+        clearInterval(s.heartbeat);
+        sseSessions.delete(sessionId);
+      }
+    },
+  });
+
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      'content-type': 'text/event-stream; charset=utf-8',
+      'cache-control': 'no-cache, no-transform',
+      connection: 'keep-alive',
+      // Disable proxy buffering so events flush immediately.
+      'x-accel-buffering': 'no',
+    },
   });
 }
 
-// DELETE terminates a session. We are stateless, so just acknowledge.
-async function handleDelete(): Promise<Response> {
+// DELETE terminates a session (Streamable HTTP). We are effectively stateless
+// beyond the SSE registry, so drop any matching session and acknowledge.
+async function handleDelete(req: Request): Promise<Response> {
+  try {
+    const sessionId = new URL(req.url).searchParams.get('sessionId');
+    if (sessionId) {
+      const s = sseSessions.get(sessionId);
+      if (s) {
+        clearInterval(s.heartbeat);
+        try {
+          s.controller.close();
+        } catch {
+          /* already closed */
+        }
+        sseSessions.delete(sessionId);
+      }
+    }
+  } catch {
+    /* ignore */
+  }
   return new Response(null, { status: 204 });
 }
 
