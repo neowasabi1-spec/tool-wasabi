@@ -219,6 +219,19 @@ function estSpendFromReach(reach: number, cpm: number): string {
   return `≈$${fmtCompact(Math.round(dollars))}`;
 }
 
+// US (and any non-EU) ads have NO disclosed reach — the DSA reach only exists
+// for EU-served ads — so for them we fall back to a longevity model, the same
+// proxy ad-spy tools use: cumulative spend ≈ days_live × daily_budget × f(variants).
+// Variants are dampened (sqrt) so a big collation count doesn't explode the
+// figure. Deliberately conservative; tune DAILY_SPEND_BASE.
+const DAILY_SPEND_BASE = 50; // $/day baseline to keep one active DR ad live
+function estSpendFromLongevity(days: number | null, variants: number): string {
+  if (!days || days <= 0) return "";
+  const vf = Math.sqrt(Math.max(1, variants));
+  const dollars = days * DAILY_SPEND_BASE * vf;
+  return `≈$${fmtCompact(Math.round(dollars))}`;
+}
+
 // Compact number formatting: 47_000_000 -> "47M", 12_300 -> "12.3K".
 function fmtCompact(n: number): string {
   if (!isFinite(n)) return String(n);
@@ -240,7 +253,15 @@ function CardMetrics({ ad, country }: { ad: CompetitorAd; country?: string }) {
   const impressions = (ad.impressions || "").trim();
 
   const estCpm = cpmFor(ad, country);
-  const estSpend = reach ? estSpendFromReach(reach, estCpm) : "";
+  let estSpend = "";
+  let estTitle = "";
+  if (reach) {
+    estSpend = estSpendFromReach(reach, estCpm);
+    estTitle = `Estimated spend — from EU reach ${reach.toLocaleString()} at ~$${estCpm} CPM (${detectVertical(ad)}${country ? ` · ${country}` : ""}). Not disclosed.`;
+  } else if (d !== null) {
+    estSpend = estSpendFromLongevity(d, variants || 1);
+    estTitle = `Estimated spend — ${d}d live${variants ? ` × ${variants} variants` : ""} at ~$${DAILY_SPEND_BASE}/day baseline. Rough proxy, not disclosed.`;
+  }
 
   // FIXED-SLOT metrics header, 2 rows so the spend value has room to show in
   // full (a single row truncated it to "USD $..."). Both rows always render at
@@ -271,7 +292,7 @@ function CardMetrics({ ad, country }: { ad: CompetitorAd; country?: string }) {
             <DollarSign className="w-3 h-3 shrink-0" /><span className="truncate">{spend}</span>
           </span>
         ) : estSpend ? (
-          <span title={`Estimated spend — modeled from EU reach ${reach!.toLocaleString()} at ~$${estCpm} CPM (${detectVertical(ad)}${country ? ` · ${country}` : ""}). Not a disclosed figure.`}
+          <span title={estTitle}
             className="inline-flex items-center gap-1 min-w-0 text-emerald-700/80">
             <DollarSign className="w-3 h-3 shrink-0" /><span className="truncate">{estSpend}</span>
             <span className="text-[9px] font-semibold text-muted-foreground/70">est.</span>
