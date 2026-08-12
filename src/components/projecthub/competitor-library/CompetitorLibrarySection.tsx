@@ -150,31 +150,55 @@ function videoThumbSrc(path: string): string {
 // commercial ads: the EU-mandated reach (DSA). Real spend is published only for
 // political ads, so like every ad-spy tool we model it:
 //   spend ≈ (impressions / 1000) × CPM,  impressions ≈ reach × frequency
-// The CPM depends heavily on WHERE the ad runs, so we key it off the market
-// (the `country=` of the competitor's Ad Library URL). Rough $/1000-impressions
-// benchmarks by market tier — tune here.
+// CPM is driven mainly by the VERTICAL (restricted, high-competition niches pay
+// far more) and scaled by geo. Baselines below are real DR benchmarks for the
+// verticals this tool targets — tune here.
 const EST_FREQUENCY = 1.5; // avg times each reached person sees the ad
-const CPM_DEFAULT = 12; // used for "ALL"/unknown geo
-const CPM_BY_COUNTRY: Record<string, number> = {
-  // Tier 1 (expensive)
-  US: 20, CA: 16, AU: 16, GB: 15, UK: 15, IE: 13, CH: 16, DE: 14, NO: 14, JP: 14,
-  // Tier 2 (Western/Northern Europe + developed Asia)
-  AT: 13, NL: 13, SE: 13, DK: 13, BE: 12, FI: 12, FR: 12, KR: 12, SG: 12, AE: 12, IL: 12,
-  // Tier 3 (Southern Europe)
-  IT: 9, ES: 9, PT: 8, GR: 7,
-  // Tier 4 (Eastern Europe)
-  PL: 6, CZ: 6, RO: 5, HU: 5, BG: 5,
-  // Tier 5 (LATAM / emerging)
-  BR: 5, MX: 5, ZA: 5, TR: 4, AR: 4, IN: 3, ID: 3, PH: 3,
+
+// $/1000-impressions at the US / tier-1 baseline, by vertical.
+const CPM_BY_VERTICAL: Record<string, number> = {
+  nutra: 100, // supplements / weight-loss / health — ~$80–120
+  finance: 90, // crypto / trading / bizopp
+  skincare: 70, // beauty / anti-age
+  gadget: 55, // gadgets / ecom devices — ~$50–60 floor
+  other: 45, // generic ecom
 };
 
-function cpmForCountry(code?: string): number {
-  if (!code) return CPM_DEFAULT;
-  return CPM_BY_COUNTRY[code.toUpperCase()] ?? CPM_DEFAULT;
+// Geo multiplier normalized to the US (tier-1 = 1.0). DR advertisers mostly run
+// tier-1, so unknown/"ALL" assumes near-tier-1.
+const GEO_FACTOR_DEFAULT = 0.9;
+const GEO_FACTOR: Record<string, number> = {
+  US: 1, CH: 1, CA: 0.95, AU: 0.95, GB: 0.9, UK: 0.9, DE: 0.9, NO: 0.9, IE: 0.85, JP: 0.85,
+  AT: 0.85, NL: 0.85, SE: 0.85, DK: 0.85, BE: 0.8, FI: 0.8, FR: 0.8, KR: 0.75, SG: 0.75, AE: 0.75, IL: 0.75,
+  IT: 0.7, ES: 0.7, PT: 0.6, GR: 0.55,
+  PL: 0.5, CZ: 0.5, RO: 0.45, HU: 0.45, BG: 0.45,
+  BR: 0.4, MX: 0.4, ZA: 0.4, TR: 0.35, AR: 0.3, IN: 0.25, ID: 0.25, PH: 0.25,
+};
+
+const NUTRA_RE = /\b(supplement|capsule|gummies|gummy|weight|fat|burn|metabol|blood\s?sugar|glucose|prostate|testosteron|collagen|probiotic|gut|detox|keto|slim|pounds|lbs|diet|inflammat|joint|tinnitus|libido|menopause|bloat|liver|kidney|vitamin|herbal|remedy|nerve)\b/i;
+const FINANCE_RE = /\b(crypto|bitcoin|forex|trading|invest|profit|passive income|make money|bizopp|wealth|stocks?)\b/i;
+const SKINCARE_RE = /\b(skin|wrinkle|anti[-\s]?age|serum|collagen cream|cream|moisturi|acne|pores|dark spot|glow)\b/i;
+const GADGET_RE = /\b(device|gadget|portable|rechargeable|waterproof|charger|led|filter|straw|pump|camera|cooler|heater|mosquito|cleaner|light|kit|tool|mini)\b/i;
+
+// Infer the vertical from the ad copy (we have no vertical field yet).
+function detectVertical(ad: { headline?: string; hook?: string; body_text?: string; name?: string }): string {
+  const t = `${ad.name || ""} ${ad.headline || ""} ${ad.hook || ""} ${ad.body_text || ""}`;
+  if (NUTRA_RE.test(t)) return "nutra";
+  if (FINANCE_RE.test(t)) return "finance";
+  if (SKINCARE_RE.test(t)) return "skincare";
+  if (GADGET_RE.test(t)) return "gadget";
+  return "other";
+}
+
+// Effective CPM for an ad = vertical baseline × geo factor.
+function cpmFor(ad: Parameters<typeof detectVertical>[0], country?: string): number {
+  const base = CPM_BY_VERTICAL[detectVertical(ad)] ?? CPM_BY_VERTICAL.other;
+  const geo = country ? (GEO_FACTOR[country.toUpperCase()] ?? GEO_FACTOR_DEFAULT) : GEO_FACTOR_DEFAULT;
+  return Math.round(base * geo);
 }
 
 // Read the market from a Meta Ad Library URL's `country=` param (ISO-2, e.g.
-// US/DE/GB). "ALL" or missing → "" (falls back to the default CPM).
+// US/DE/GB). "ALL" or missing → "" (falls back to the default geo factor).
 function countryFromAdLibraryUrl(url?: string | null): string {
   if (!url) return "";
   try {
@@ -185,13 +209,13 @@ function countryFromAdLibraryUrl(url?: string | null): string {
   }
 }
 
-// Estimated spend from EU reach for a given market, formatted like "≈$1.8K".
+// Estimated spend from EU reach at a given CPM, formatted like "≈$1.8K".
 // Returns "" if reach is unusable. Always shown with an "est." marker so it
 // never reads as a disclosed figure.
-function estSpendFromReach(reach: number, country?: string): string {
+function estSpendFromReach(reach: number, cpm: number): string {
   if (!Number.isFinite(reach) || reach <= 0) return "";
   const impressions = reach * EST_FREQUENCY;
-  const dollars = (impressions / 1000) * cpmForCountry(country);
+  const dollars = (impressions / 1000) * cpm;
   return `≈$${fmtCompact(Math.round(dollars))}`;
 }
 
@@ -215,7 +239,8 @@ function CardMetrics({ ad, country }: { ad: CompetitorAd; country?: string }) {
   const reach = typeof ad.reach === "number" && ad.reach > 0 ? ad.reach : null;
   const impressions = (ad.impressions || "").trim();
 
-  const estSpend = reach ? estSpendFromReach(reach, country) : "";
+  const estCpm = cpmFor(ad, country);
+  const estSpend = reach ? estSpendFromReach(reach, estCpm) : "";
 
   // FIXED-SLOT metrics header, 2 rows so the spend value has room to show in
   // full (a single row truncated it to "USD $..."). Both rows always render at
@@ -246,7 +271,7 @@ function CardMetrics({ ad, country }: { ad: CompetitorAd; country?: string }) {
             <DollarSign className="w-3 h-3 shrink-0" /><span className="truncate">{spend}</span>
           </span>
         ) : estSpend ? (
-          <span title={`Estimated spend — modeled from EU reach ${reach!.toLocaleString()} at ~$${cpmForCountry(country)} CPM (${country || "avg"}). Not a disclosed figure.`}
+          <span title={`Estimated spend — modeled from EU reach ${reach!.toLocaleString()} at ~$${estCpm} CPM (${detectVertical(ad)}${country ? ` · ${country}` : ""}). Not a disclosed figure.`}
             className="inline-flex items-center gap-1 min-w-0 text-emerald-700/80">
             <DollarSign className="w-3 h-3 shrink-0" /><span className="truncate">{estSpend}</span>
             <span className="text-[9px] font-semibold text-muted-foreground/70">est.</span>
