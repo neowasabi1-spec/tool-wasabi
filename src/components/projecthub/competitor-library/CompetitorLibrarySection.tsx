@@ -137,6 +137,15 @@ function NewBadge({ count, className = "" }: { count?: number; className?: strin
   );
 }
 
+// Force a poster frame for muted <video> thumbnails. Chrome does NOT paint the
+// first frame with preload="metadata" until the element seeks, so a freshly
+// loaded (uncached) thumbnail shows a grey box. The media fragment #t=0.1 makes
+// the browser seek to 0.1s and paint that frame — a real thumbnail, not grey.
+function videoThumbSrc(path: string): string {
+  const u = getUploadUrl(path);
+  return u.includes("#") ? u : `${u}#t=0.1`;
+}
+
 // Compact number formatting: 47_000_000 -> "47M", 12_300 -> "12.3K".
 function fmtCompact(n: number): string {
   if (!isFinite(n)) return String(n);
@@ -280,7 +289,7 @@ function MediaThumb({ path, type, className = "" }: { path: string; type: string
   if (type === "video") {
     return (
       <div className={`relative bg-slate-100 ${className}`}>
-        <video src={getUploadUrl(path)} muted playsInline preload="metadata" className="w-full h-full object-cover" />
+        <video src={videoThumbSrc(path)} muted playsInline preload="metadata" className="w-full h-full object-cover" />
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
           <div className="w-8 h-8 rounded-full bg-slate-900/45 flex items-center justify-center"><Play className="w-3.5 h-3.5 text-white" /></div>
         </div>
@@ -1485,7 +1494,7 @@ function CompetitorDetail({ projectId, competitor, onBack }: { projectId: string
                   {hasFile ? (
                     ad.media_type === "video" ? (
                       <div className="w-full h-full relative bg-slate-100">
-                        <video src={getUploadUrl(ad.file_path)} muted playsInline preload="metadata"
+                        <video src={videoThumbSrc(ad.file_path)} muted playsInline preload="metadata"
                           className="w-full h-full object-cover" />
                         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                           <div className="w-11 h-11 rounded-full bg-slate-900/45 flex items-center justify-center">
@@ -2795,7 +2804,7 @@ function MyFootageView({ projectId }: { projectId: string }) {
             return (
               <div key={v.id} className="group rounded-xl overflow-hidden border border-border bg-slate-50">
                 <button onClick={() => setPlaying(v)} className="relative block w-full aspect-video bg-slate-100">
-                  <video src={getUploadUrl(v.file_path)} preload="metadata" className="w-full h-full object-cover" muted />
+                  <video src={videoThumbSrc(v.file_path)} preload="metadata" className="w-full h-full object-cover" muted />
                   <span className="absolute inset-0 flex items-center justify-center">
                     <span className="bg-slate-900/50 rounded-full p-2"><Play className="w-5 h-5 text-white" /></span>
                   </span>
