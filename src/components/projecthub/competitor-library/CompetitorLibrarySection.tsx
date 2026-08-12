@@ -168,35 +168,37 @@ function CardMetrics({ ad }: { ad: CompetitorAd }) {
 
   const reachVal = reach ? fmtCompact(reach) : impressions || null;
 
-  // FIXED-SLOT metrics bar. Every card renders the exact same layout at the
-  // same height so cards stay perfectly aligned in the grid; each slot has a
-  // fixed width and only fills in when the data exists (otherwise it stays
-  // empty). Single line, no wrap — never grows the card.
+  // FIXED-SLOT metrics header, 2 rows so the spend value has room to show in
+  // full (a single row truncated it to "USD $..."). Both rows always render at
+  // a constant height, so every card stays the same height and the grid stays
+  // aligned; each slot only fills in when the data exists.
   return (
-    <div className="flex items-center gap-1 h-7 px-2 bg-muted/50 border-b border-border text-[10px] font-bold text-foreground whitespace-nowrap overflow-hidden">
-      {/* Live status */}
-      <span className="inline-flex items-center gap-1 w-11 shrink-0 text-green-700">
-        {active && (<><span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />LIVE</>)}
-      </span>
-      {/* Days running */}
-      <span title={d !== null ? `Running ${d} day${d === 1 ? "" : "s"}` : undefined}
-        className="inline-flex items-center gap-0.5 w-11 shrink-0 text-amber-700">
-        {d !== null && (<><Calendar className="w-3 h-3" />{d}d</>)}
-      </span>
-      {/* Active variants */}
-      <span title={variants ? `${variants} active variants` : undefined}
-        className="inline-flex items-center gap-0.5 w-9 shrink-0 text-slate-600">
-        {variants && (<><Repeat className="w-3 h-3" />×{variants}</>)}
-      </span>
-      {/* Spend (preferred) or reach/impressions — flexible, right-aligned */}
-      <span title={spend ? `Meta-disclosed spend ${spend}` : reachVal ? `Reach/impressions ${reachVal}` : undefined}
-        className="inline-flex items-center gap-0.5 ml-auto min-w-0 justify-end text-emerald-700 truncate">
-        {spend
-          ? (<><DollarSign className="w-3 h-3 shrink-0" /><span className="truncate">{spend}</span></>)
-          : reachVal
-            ? (<><Eye className="w-3 h-3 shrink-0" /><span className="truncate">{reachVal}</span></>)
-            : null}
-      </span>
+    <div className="bg-muted/50 border-b border-border text-[10px] font-bold text-foreground">
+      {/* Row 1 — live status · days running · active variants */}
+      <div className="flex items-center gap-2 h-6 px-2 whitespace-nowrap overflow-hidden">
+        <span className="inline-flex items-center gap-1 w-11 shrink-0 text-green-700">
+          {active && (<><span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />LIVE</>)}
+        </span>
+        <span title={d !== null ? `Running ${d} day${d === 1 ? "" : "s"}` : undefined}
+          className="inline-flex items-center gap-0.5 w-11 shrink-0 text-amber-700">
+          {d !== null && (<><Calendar className="w-3 h-3" />{d}d</>)}
+        </span>
+        <span title={variants ? `${variants} active variants` : undefined}
+          className="inline-flex items-center gap-0.5 shrink-0 text-slate-600">
+          {variants && (<><Repeat className="w-3 h-3" />×{variants}</>)}
+        </span>
+      </div>
+      {/* Row 2 — Meta-disclosed spend (or reach/impressions), full width */}
+      <div className="flex items-center h-6 px-2 border-t border-border/60 whitespace-nowrap overflow-hidden">
+        <span title={spend ? `Meta-disclosed spend ${spend}` : reachVal ? `Reach/impressions ${reachVal}` : undefined}
+          className="inline-flex items-center gap-1 min-w-0 text-emerald-700">
+          {spend
+            ? (<><DollarSign className="w-3 h-3 shrink-0" /><span className="truncate">{spend}</span></>)
+            : reachVal
+              ? (<><Eye className="w-3 h-3 shrink-0" /><span className="truncate">{reachVal}</span></>)
+              : <span className="text-muted-foreground/60">—</span>}
+        </span>
+      </div>
     </div>
   );
 }
