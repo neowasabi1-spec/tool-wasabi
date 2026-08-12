@@ -1,6 +1,0 @@
-Card metrics: 2-row header so spend shows in full
-
-Single-row layout truncated the spend to "USD $...". Split the fixed-slot
-metrics header into two constant-height rows: row 1 = live/days/variants,
-row 2 = full-width spend (or reach/impressions). Both rows always render at a
-fixed height so cards stay aligned; empty spend shows a dash.

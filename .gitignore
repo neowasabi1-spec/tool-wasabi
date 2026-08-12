@@ -85,3 +85,8 @@ supabase/.temp/
 *-FIXED.html
 
 .tmp-*.html
+
+# Local debug/comparison artifacts and one-off maintenance scripts (never commit)
+.tmp-*
+COMMIT_MSG.tmp.txt
+scripts/tmp-*.js
