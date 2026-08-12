@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
@@ -134,6 +134,71 @@ function NewBadge({ count, className = "" }: { count?: number; className?: strin
       className={`inline-flex items-center gap-1 text-[9px] font-black px-1.5 py-0.5 rounded-full shadow-sm bg-emerald-500 text-white ${className}`}>
       <Sparkles className="w-2.5 h-2.5" /> {label}
     </span>
+  );
+}
+
+// Compact number formatting: 47_000_000 -> "47M", 12_300 -> "12.3K".
+function fmtCompact(n: number): string {
+  if (!isFinite(n)) return String(n);
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1).replace(/\.0$/, "") + "M";
+  if (n >= 1_000) return (n / 1_000).toFixed(n >= 10_000 ? 0 : 1).replace(/\.0$/, "") + "K";
+  return String(n);
+}
+
+// Compact data strip shown directly on each creative card so the key ad
+// signals (longevity, live variants, reach/impressions, disclosed spend) are
+// visible at a glance — no need to open the detail panel. Only renders the
+// metrics we actually have for this ad.
+function CardMetrics({ ad }: { ad: CompetitorAd }) {
+  const d = daysRunning(ad);
+  const active = ad.ad_active === "true" || ad.is_active === "true";
+  const variants = ad.ad_variants && ad.ad_variants > 1 ? ad.ad_variants : null;
+  const spend = (ad.spend || "").trim();
+  const reach = typeof ad.reach === "number" && ad.reach > 0 ? ad.reach : null;
+  const impressions = (ad.impressions || "").trim();
+
+  const chips: ReactNode[] = [];
+  if (d !== null)
+    chips.push(
+      <span key="d" title={`Running ${d} day${d === 1 ? "" : "s"}`} className="inline-flex items-center gap-0.5">
+        <Calendar className="w-3 h-3" />{d}d
+      </span>,
+    );
+  if (variants)
+    chips.push(
+      <span key="v" title={`${variants} active variants`} className="inline-flex items-center gap-0.5">
+        <Repeat className="w-3 h-3" />{variants}
+      </span>,
+    );
+  if (reach)
+    chips.push(
+      <span key="r" title={`Reach ${reach.toLocaleString()}`} className="inline-flex items-center gap-0.5">
+        <Eye className="w-3 h-3" />{fmtCompact(reach)}
+      </span>,
+    );
+  else if (impressions)
+    chips.push(
+      <span key="i" title={`Impressions ${impressions}`} className="inline-flex items-center gap-0.5">
+        <Eye className="w-3 h-3" />{impressions}
+      </span>,
+    );
+  if (spend)
+    chips.push(
+      <span key="s" title={`Meta-disclosed spend ${spend}`} className="inline-flex items-center gap-0.5 text-emerald-600 font-semibold">
+        <DollarSign className="w-3 h-3" />{spend}
+      </span>,
+    );
+
+  if (chips.length === 0 && !active) return null;
+  return (
+    <div className="flex items-center gap-2 flex-wrap px-2 pt-1.5 text-[10px] font-medium text-muted-foreground">
+      {active && (
+        <span title="Live now" className="inline-flex items-center gap-1 text-green-600 font-semibold">
+          <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />Live
+        </span>
+      )}
+      {chips}
+    </div>
   );
 }
 
@@ -1685,6 +1750,7 @@ function AllCreativesView({ projectId }: { projectId: string }) {
                   </button>
                 </div>
               </div>
+              <CardMetrics ad={ad} />
               <div className="px-2 py-2 flex items-start justify-between gap-1">
                 <div className="min-w-0">
                   <p className="text-xs font-semibold text-foreground truncate leading-tight">{ad.headline || ad.name || "Creative"}</p>
