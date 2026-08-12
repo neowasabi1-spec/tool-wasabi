@@ -40,6 +40,35 @@ const STRONG_PATTERNS = [
   { re: /\b(revealOffer|offerShown|OFFER_REVEAL_SEC)\b/i, label: 'time-based offer reveal' },
 ];
 
+// Commerce / checkout machinery that is script-driven: multi-step popup
+// checkouts, package/quantity selectors, Shopify / Funnelish / ClickFunnels
+// forms, payment SDKs (Stripe / PayPal / Braintree). Stripping these scripts
+// leaves a dead "half" page — the step-2 popup never opens, the package
+// selector does nothing, the embedded checkout never mounts. We scan the
+// WHOLE html (external <script src> included) because the machinery usually
+// lives in bundles, not inline JS. High precision on purpose: only real
+// payment/checkout platforms and explicit checkout-open functions — never the
+// bare word "checkout" — so static pages with a "Checkout" button aren't flagged.
+const COMMERCE_MARKERS = [
+  { re: /js\.stripe\.com|\bStripe\s*\(/i, label: 'Stripe checkout SDK' },
+  { re: /paypal\.com\/sdk|paypalobjects\.com|braintreegateway|checkout\.com\/(js|sdk)/i, label: 'payment SDK (PayPal/Braintree/Checkout.com)' },
+  { re: /cdn\.shopify\.com|myshopify\.com|Shopify\.(Checkout|theme|shop)|ShopifyAnalytics|\/checkouts\//i, label: 'Shopify checkout/platform' },
+  { re: /funnelish|clickfunnels|systeme\.io|shopifycloud|cartflows|woocommerce/i, label: 'funnel/commerce platform' },
+  { re: /\b(openCheckout|showCheckout|beginCheckout|toggleCheckout|selectPackage|choosePackage|selectPlan)\s*\(/i, label: 'multi-step popup checkout / package selector' },
+];
+
+/**
+ * Detect script-driven commerce/checkout machinery across the whole HTML.
+ * @param {string} html
+ * @returns {string[]} matched signal labels
+ */
+function detectCommerceMarkers(html) {
+  if (!html || typeof html !== 'string') return [];
+  const out = [];
+  for (const m of COMMERCE_MARKERS) if (m.re.test(html)) out.push(m.label);
+  return out;
+}
+
 /**
  * Concatenate the text content of every INLINE <script> (no src attribute).
  * External scripts can't be inspected, so we only look at inline bodies.
@@ -116,13 +145,18 @@ function detectDynamicScripts(html) {
   const inlineJs = extractInlineScriptText(html);
   const inlineScriptCount = (html && html.match(/<script\b(?![^>]*\bsrc=)/gi) || []).length;
 
-  if (!inlineJs.trim()) {
+  // Commerce/checkout machinery lives in external bundles too, so scan the
+  // whole HTML — even when there is no inline JS at all.
+  const commerceSignals = detectCommerceMarkers(html);
+
+  if (!inlineJs.trim() && commerceSignals.length === 0) {
     return { functional: false, signals, inlineScriptCount };
   }
 
   for (const p of STRONG_PATTERNS) {
     if (p.re.test(inlineJs)) signals.push(p.label);
   }
+  for (const s of commerceSignals) signals.push(s);
 
   // NOTE (regression fix 2026-07-08): a loose combo — content keyword + DOM
   // mutation + timer — used to ALSO flag a page as functional. But
@@ -146,6 +180,7 @@ function detectDynamicScripts(html) {
 
 module.exports = {
   detectDynamicScripts,
+  detectCommerceMarkers,
   extractInlineScriptText,
   extractReinjectableScripts,
   reattachDynamicScripts,

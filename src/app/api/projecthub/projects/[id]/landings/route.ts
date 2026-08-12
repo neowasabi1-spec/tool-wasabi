@@ -66,6 +66,8 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
       category: cd.category || '',
       tags: Array.isArray(cd.tags) ? cd.tags : [],
       screenshot: cd.screenshotDesktopUrl || cd.screenshotMobileUrl || '',
+      screenshot_desktop: cd.screenshotDesktopUrl || '',
+      screenshot_mobile: cd.screenshotMobileUrl || '',
       html_url:
         cd.htmlUrl ||
         `/api/funnel-html?pageId=${encodeURIComponent(row.id)}&kind=cloned&variant=desktop`,

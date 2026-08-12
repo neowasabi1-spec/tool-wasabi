@@ -126,6 +126,31 @@ function isSafeContext(ctx: string): boolean {
   return SAFE_TAG_PREFIXES.some((p) => ctx === p || ctx.startsWith(p + ':'));
 }
 
+// Detect the page's own language from the HTML so the rewrite stays in the
+// SAME language as the original (an English page must come back in English).
+// Previously the language defaulted to Italian when the caller didn't pass one,
+// which made Neo/Morfeo translate English pages into Italian. Uses <html lang>
+// first, then a light stopword heuristic, and falls back to English.
+function detectLangFromHtml(html: string): string {
+  const m = html.match(/<html[^>]*\blang\s*=\s*["']([a-zA-Z]{2})/i);
+  if (m && m[1]) return m[1].toLowerCase();
+  const sample = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 4000).toLowerCase();
+  const itHits = (sample.match(/\b(il|la|le|gli|che|con|per|del|della|dei|delle|sono|questo|questa|come|piu|gia|hanno)\b/g) || []).length;
+  const enHits = (sample.match(/\b(the|and|of|is|for|with|that|this|are|have|from|your|you|our|will|can|been)\b/g) || []).length;
+  const esHits = (sample.match(/\b(que|los|las|del|para|con|por|este|esta|como|mas|son|han|estan)\b/g) || []).length;
+  if (esHits > enHits && esHits > itHits) return 'es';
+  if (itHits > enHits && itHits >= 3) return 'it';
+  return 'en';
+}
+
+function langLabel(code: string): string {
+  const map: Record<string, string> = {
+    it: 'Italiano', en: 'English', es: 'Español', fr: 'Français',
+    de: 'Deutsch', pt: 'Português', nl: 'Nederlands',
+  };
+  return map[code] || code;
+}
+
 const MAX_TEXTS_FOR_AI = Math.max(
   50,
   Math.min(800, Number.parseInt(process.env.SWIPE_MAX_TEXTS_FOR_AI || '350', 10) || 350),
@@ -409,7 +434,10 @@ export async function POST(req: NextRequest) {
   const productCtx = buildProductContextMarkdown(product);
   const knowledgeMd = buildKnowledgeMarkdown(body.knowledge);
   const builtinKb = buildBuiltinKnowledge();
-  const lang = body.language || 'it';
+  // Honor an explicit language from the caller; otherwise keep the page's OWN
+  // language (never silently default to Italian).
+  const explicitLang = typeof body.language === 'string' ? body.language.trim().toLowerCase() : '';
+  const lang = explicitLang || detectLangFromHtml(body.html);
   const toneStr = body.tone || 'professional';
 
   const knowledgeSection = knowledgeMd
@@ -434,9 +462,10 @@ CONTESTO PRODOTTO COMPLETO (USA tutto: fatti, angle, benefit, proof, obiezioni, 
 ${productCtx || `(dati catalogo minimi — deriva tutto solo dal nome prodotto: ${product.name})`}
 ${builtinKbSection}${knowledgeSection}
 TONO: ${toneStr}
-LINGUA OUTPUT: ${lang === 'it' ? 'Italiano' : lang === 'en' ? 'English' : lang}
+LINGUA OUTPUT: ${langLabel(lang)} (codice: ${lang}) — QUESTA È LA LINGUA DELLA PAGINA ORIGINALE. Scrivi OGNI "rewritten" in questa lingua e NON tradurre in un'altra lingua.
 
 REGOLE OBBLIGATORIE:
+0. LINGUA: scrivi SEMPRE in ${langLabel(lang)}. Se l'originale è in inglese, l'output resta in inglese; se in italiano, resta in italiano. NON tradurre mai a meno che non ti sia esplicitamente richiesto.
 1. Per ogni testo: NON parafrasare. Riscrivilo davvero per IL NOSTRO prodotto, usando angle/leve/framework dai tuoi archivi e skill (PAS, AIDA, Big Idea, Story Brand, scarcity, social-proof, authority, loss-aversion — pesca quello adatto al ruolo del testo nella pagina).
 2. SE sopra trovi una "LIBRERIA TECNICHE / KNOWLEDGE": e' la libreria personale dell'utente — USALA con priorita' rispetto alle tecniche generiche. Quei prompt sono il modo in cui l'utente VUOLE scrivere.
 3. SE sopra trovi un "BRIEF DEL PROGETTO" o "MARKET RESEARCH": tirane fuori positioning, target, claim approvati, voice/tone, vincoli, e applicali in OGNI rewrite.

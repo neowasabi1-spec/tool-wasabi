@@ -3426,7 +3426,9 @@ export default function FrontEndFunnel() {
           );
         }
 
-        const detectedLangForRow = detectPageLanguage(url, null);
+        // Batch swipe: no explicit UI language here, so send empty and let the
+        // worker detect the page's OWN language from the real HTML it fetches.
+        // (URL-only guessing was unreliable and could flip English → Italian.)
         const enqueueRes = await fetch('/api/openclaw/queue', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -3437,7 +3439,7 @@ export default function FrontEndFunnel() {
               sourceUrl: url,
               product: productPayload,
               tone: 'professional',
-              language: detectedLangForRow,
+              language: '',
               knowledge: pageKnowledge,
             }),
             targetAgent,
@@ -4131,13 +4133,18 @@ export default function FrontEndFunnel() {
             // non fatale
           }
 
+          // Preview-only hint (for the debug modal). The ACTUAL language sent
+          // is the explicit UI choice ONLY — when empty we send nothing so the
+          // worker detects the page's OWN language from the real HTML it holds.
+          // Previously we sent this client-side guess, which could be wrong and
+          // made English pages come back in Italian.
           const detectedLangSingle = detectPageLanguage(url, htmlToRewrite || null);
           const swipePayload: Record<string, unknown> = {
             action: 'swipe_landing_local',
             sourceUrl: url,
             product: productPayloadForRow,
             tone: 'professional',
-            language: cloneConfig.language || detectedLangSingle,
+            language: cloneConfig.language || '',
             knowledge: rowKnowledge,
           };
           // Manda l'html in cache solo se sotto il cap: se è enorme lo

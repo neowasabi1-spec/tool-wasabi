@@ -34,7 +34,29 @@ export const maxDuration = 60;
 import { randomUUID } from 'node:crypto';
 import { resolveOwnerAsync, unauthorizedResponse } from '@/lib/mcp/auth';
 import { mcpContext } from '@/lib/mcp/context';
-import { cloneLandingPage, extractTexts, applyRewrites } from '@/lib/mcp/tools';
+import {
+  cloneLandingPage,
+  extractTexts,
+  applyRewrites,
+  listProjects,
+  getProject,
+  createProject,
+  listTemplates,
+  listSavedPages,
+  savePageToArchive,
+  saveSwipeToArchive,
+  listFunnels,
+  saveFunnelPage,
+} from '@/lib/mcp/tools';
+
+/** Pull the raw fsk_ API key off the request so tools can reuse /api/v1/*. */
+function extractApiKey(req: Request): string {
+  return (
+    req.headers.get('x-api-key') ||
+    (req.headers.get('authorization') || '').replace(/^Bearer\s+/i, '').trim() ||
+    ''
+  );
+}
 
 const PROTOCOL_VERSION = '2024-11-05';
 const SERVER_INFO = { name: 'tool-wasabi', version: '1.0.0' } as const;
@@ -143,6 +165,110 @@ const TOOLS = [
       required: ['assetId', 'rewrites'],
     },
   },
+  // ── Section tools: expose the rest of the app so results show up in-app ──
+  {
+    name: 'list_projects',
+    description:
+      'List the projects in the tool. Optionally filter by status. Returns id + name for each — use the id with get_project or when saving pages/funnels into a project.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        status: { type: 'string', description: "Optional status filter, e.g. 'active'." },
+      },
+    },
+  },
+  {
+    name: 'get_project',
+    description:
+      'Get one project with its funnel pages, swipe templates and archived (saved) pages.',
+    inputSchema: {
+      type: 'object',
+      properties: { projectId: { type: 'string', description: 'The project id from list_projects.' } },
+      required: ['projectId'],
+    },
+  },
+  {
+    name: 'create_project',
+    description: 'Create a new project.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Project name.' },
+        description: { type: 'string' },
+        status: { type: 'string', description: "Defaults to 'active'." },
+        tags: { type: 'array', items: { type: 'string' } },
+        notes: { type: 'string' },
+      },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'list_templates',
+    description: 'List the swipe-template catalog (the Templates section).',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'list_saved_pages',
+    description:
+      'List the pages/funnels saved in My Archive (the "By Type" / Template section), including quizzes.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'save_page_to_archive',
+    description:
+      'Save an HTML page into My Archive so it appears in the tool (By Type / Template section). If projectId is given it is also linked to that project. Returns preview + editor URLs.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Display name for the saved page.' },
+        html: { type: 'string', description: 'The full HTML of the page.' },
+        sourceUrl: { type: 'string', description: 'Original URL, if any.' },
+        pageType: {
+          type: 'string',
+          description: "Page type for the 'By Type' grouping (e.g. landing, advertorial, vsl, quiz, checkout). Defaults to 'landing'.",
+        },
+        category: { type: 'string', description: 'Optional niche/category (e.g. Weight loss).' },
+        tags: { type: 'array', items: { type: 'string' } },
+        section: { type: 'string', enum: ['funnel', 'quiz'], description: "Defaults to 'funnel'." },
+        projectId: { type: 'string', description: 'Optional project id to link the page to.' },
+      },
+      required: ['name', 'html'],
+    },
+  },
+  {
+    name: 'save_swipe_to_archive',
+    description:
+      'Persist a previously cloned/swiped MCP asset (from clone_landing_page / apply_rewrites) into My Archive so it shows up inside the tool instead of only living in the MCP store. Uses the rewritten result when available.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        assetId: { type: 'string', description: 'The assetId from clone_landing_page / apply_rewrites.' },
+        name: { type: 'string', description: 'Optional display name (defaults to the page title).' },
+        pageType: { type: 'string', description: "Optional page type. Defaults to 'landing'." },
+        category: { type: 'string' },
+        tags: { type: 'array', items: { type: 'string' } },
+        projectId: { type: 'string', description: 'Optional project id to link the page to.' },
+      },
+      required: ['assetId'],
+    },
+  },
+  {
+    name: 'list_funnels',
+    description: 'List the funnel pages in the Front-End Funnel workspace.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'save_funnel_page',
+    description:
+      'Create or update a funnel page (funnel_pages table). Pass the full row; include an id to update. Advanced — prefer save_page_to_archive for saving a cloned page.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        page: { type: 'object', description: 'The funnel_pages row fields (name, page_type, project_id, url_to_swipe, …). Include id to update.' },
+      },
+      required: ['page'],
+    },
+  },
 ] as const;
 
 async function callTool(
@@ -168,6 +294,51 @@ async function callTool(
       const rewrites = Array.isArray(args.rewrites) ? (args.rewrites as Array<{ id: number; rewritten: string }>) : [];
       if (rewrites.length === 0) throw new Error("Missing required argument 'rewrites' (non-empty array).");
       return applyRewrites(ownerId, assetId, rewrites);
+    }
+    // ── Section tools ────────────────────────────────────────────────────
+    case 'list_projects':
+      return listProjects(args.status ? String(args.status) : undefined);
+    case 'get_project':
+      return getProject(String(args.projectId || '').trim());
+    case 'create_project':
+      return createProject(String(args.name || ''), {
+        description: args.description !== undefined ? String(args.description) : undefined,
+        status: args.status !== undefined ? String(args.status) : undefined,
+        tags: Array.isArray(args.tags) ? (args.tags as string[]) : undefined,
+        notes: args.notes !== undefined ? String(args.notes) : undefined,
+      });
+    case 'list_templates':
+      return listTemplates();
+    case 'list_saved_pages':
+      return listSavedPages();
+    case 'save_page_to_archive':
+      return savePageToArchive({
+        name: String(args.name || ''),
+        html: String(args.html || ''),
+        sourceUrl: args.sourceUrl !== undefined ? String(args.sourceUrl) : undefined,
+        pageType: args.pageType !== undefined ? String(args.pageType) : undefined,
+        category: args.category !== undefined ? String(args.category) : undefined,
+        tags: Array.isArray(args.tags) ? (args.tags as string[]) : undefined,
+        section: args.section === 'quiz' ? 'quiz' : args.section === 'funnel' ? 'funnel' : undefined,
+        projectId: args.projectId !== undefined ? String(args.projectId) : undefined,
+      });
+    case 'save_swipe_to_archive':
+      return saveSwipeToArchive(ownerId, {
+        assetId: String(args.assetId || '').trim(),
+        name: args.name !== undefined ? String(args.name) : undefined,
+        pageType: args.pageType !== undefined ? String(args.pageType) : undefined,
+        category: args.category !== undefined ? String(args.category) : undefined,
+        tags: Array.isArray(args.tags) ? (args.tags as string[]) : undefined,
+        projectId: args.projectId !== undefined ? String(args.projectId) : undefined,
+      });
+    case 'list_funnels':
+      return listFunnels();
+    case 'save_funnel_page': {
+      const page = (args.page || {}) as Record<string, unknown>;
+      if (!page || typeof page !== 'object' || Object.keys(page).length === 0) {
+        throw new Error("Missing required argument 'page' (funnel_pages row).");
+      }
+      return saveFunnelPage(page);
     }
     default:
       throw new Error(`Unknown tool "${name}".`);
@@ -256,7 +427,7 @@ async function handlePost(req: Request): Promise<Response> {
     }
     const messages = Array.isArray(payload) ? (payload as JsonRpcRequest[]) : [payload as JsonRpcRequest];
     // Process and push each response back over the SSE channel.
-    await mcpContext.run({ ownerId }, async () => {
+    await mcpContext.run({ ownerId, apiKey: extractApiKey(req) }, async () => {
       for (const m of messages) {
         const resp = await handleRpc(ownerId, m);
         if (resp !== null) {
@@ -290,7 +461,7 @@ async function handlePost(req: Request): Promise<Response> {
     });
   }
 
-  return mcpContext.run({ ownerId: auth.ownerId }, async () => {
+  return mcpContext.run({ ownerId: auth.ownerId, apiKey: extractApiKey(req) }, async () => {
     try {
       if (Array.isArray(payload)) {
         const responses = (

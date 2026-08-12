@@ -395,8 +395,41 @@ async function tryPlaywright(
         );
       }
 
-      // Step 4: hydration grace + capture.
+      // Step 4: hydration grace.
       await page.waitForTimeout(1500);
+
+      // Step 4b: scroll through the page to trigger lazy-loaded content
+      // (below-the-fold images, testimonial sliders, sticky checkout widgets,
+      // IntersectionObserver-gated sections). Without this the capture is a
+      // "half page" on long offer/checkout funnels — the exact symptom on
+      // Blackout Water / Dermafix / Shopify-style offers. Bounded so it can't
+      // hang the capture (~6s worst case) and non-fatal on error.
+      try {
+        await page.evaluate(async () => {
+          await new Promise<void>((resolve) => {
+            const step = Math.max(400, Math.floor(window.innerHeight * 0.9));
+            let y = 0;
+            let n = 0;
+            const MAX_STEPS = 40;
+            const timer = setInterval(() => {
+              window.scrollTo(0, y);
+              y += step;
+              n += 1;
+              if (y >= document.body.scrollHeight || n >= MAX_STEPS) {
+                clearInterval(timer);
+                window.scrollTo(0, 0);
+                resolve();
+              }
+            }, 150);
+          });
+        });
+        // Let freshly-triggered lazy images/sections settle before snapshot.
+        await page.waitForTimeout(800);
+      } catch (scrollErr) {
+        const m = scrollErr instanceof Error ? scrollErr.message : String(scrollErr);
+        console.warn(`[SPA-FALLBACK] lazy-load scroll skipped: ${m}`);
+      }
+
       const html = await page.content();
       console.log(
         `[SPA-FALLBACK] page.content() captured ${html.length} chars (total Playwright path: ${Date.now() - t0}ms)`,

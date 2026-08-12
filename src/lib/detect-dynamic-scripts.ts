@@ -40,6 +40,35 @@ const STRONG_PATTERNS: Array<{ re: RegExp; label: string }> = [
   { re: /\b(revealOffer|offerShown|OFFER_REVEAL_SEC)\b/i, label: 'time-based offer reveal' },
 ];
 
+// Commerce / checkout machinery that is script-driven: multi-step popup
+// checkouts, package/quantity selectors, Shopify / Funnelish / ClickFunnels
+// forms, payment SDKs (Stripe / PayPal / Braintree). Stripping these scripts
+// leaves a dead "half" page — the step-2 popup never opens, the package
+// selector does nothing, the embedded checkout never mounts. Unlike the
+// STRONG_PATTERNS above we scan the WHOLE html (external <script src>
+// included) because the machinery usually lives in bundles, not inline JS.
+// High precision on purpose: we only match real payment/checkout platforms
+// and explicit checkout-open functions — never the bare word "checkout" —
+// so ordinary static pages with a "Checkout" button are NOT flagged.
+const COMMERCE_MARKERS: Array<{ re: RegExp; label: string }> = [
+  { re: /js\.stripe\.com|\bStripe\s*\(/i, label: 'Stripe checkout SDK' },
+  { re: /paypal\.com\/sdk|paypalobjects\.com|braintreegateway|checkout\.com\/(js|sdk)/i, label: 'payment SDK (PayPal/Braintree/Checkout.com)' },
+  { re: /cdn\.shopify\.com|myshopify\.com|Shopify\.(Checkout|theme|shop)|ShopifyAnalytics|\/checkouts\//i, label: 'Shopify checkout/platform' },
+  { re: /funnelish|clickfunnels|systeme\.io|shopifycloud|cartflows|woocommerce/i, label: 'funnel/commerce platform' },
+  { re: /\b(openCheckout|showCheckout|beginCheckout|toggleCheckout|selectPackage|choosePackage|selectPlan)\s*\(/i, label: 'multi-step popup checkout / package selector' },
+];
+
+/**
+ * Detect script-driven commerce/checkout machinery across the whole HTML
+ * (external bundles included). Returns the matched signal labels.
+ */
+export function detectCommerceMarkers(html: string): string[] {
+  if (!html || typeof html !== 'string') return [];
+  const out: string[] = [];
+  for (const m of COMMERCE_MARKERS) if (m.re.test(html)) out.push(m.label);
+  return out;
+}
+
 export interface DynamicScriptsResult {
   functional: boolean;
   signals: string[];
@@ -123,13 +152,19 @@ export function detectDynamicScripts(html: string): DynamicScriptsResult {
   const inlineJs = extractInlineScriptText(html);
   const inlineScriptCount = (html && html.match(/<script\b(?![^>]*\bsrc=)/gi))?.length ?? 0;
 
-  if (!inlineJs.trim()) {
+  // Commerce/checkout machinery lives in external bundles too, so scan the
+  // whole HTML — even when there is no inline JS at all (e.g. a Shopify
+  // checkout whose logic is entirely in cdn.shopify.com bundles).
+  const commerceSignals = detectCommerceMarkers(html);
+
+  if (!inlineJs.trim() && commerceSignals.length === 0) {
     return { functional: false, signals, inlineScriptCount };
   }
 
   for (const p of STRONG_PATTERNS) {
     if (p.re.test(inlineJs)) signals.push(p.label);
   }
+  for (const s of commerceSignals) signals.push(s);
 
   // NOTE (regression fix 2026-07-08): a loose combo — content keyword + DOM
   // mutation + timer — used to ALSO flag a page as functional. But

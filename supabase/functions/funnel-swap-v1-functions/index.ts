@@ -1396,9 +1396,18 @@ html body [class*="line-clamp-"],html body [class*="truncate"]{-webkit-line-clam
         .eq('id', userId)
         .single()
 
-      if (!userProfile?.anthropic_api_key) {
+      // Chiave Anthropic: prima quella del profilo utente (BYOK); se manca,
+      // ripiega sul secret ANTHROPIC_API_KEY della function (chiave condivisa).
+      // Senza questo fallback lo swipe via Claude andava SEMPRE in errore
+      // "API Key Anthropic non configurata" perché non c'è UI per salvare la
+      // chiave per-utente.
+      const resolvedAnthropicKey =
+        String(userProfile?.anthropic_api_key || '').trim() ||
+        (Deno.env.get('ANTHROPIC_API_KEY')?.trim() || '')
+
+      if (!resolvedAnthropicKey) {
         return new Response(
-          JSON.stringify({ error: 'API Key Anthropic non configurata' }),
+          JSON.stringify({ error: 'API Key Anthropic non configurata (né sul profilo utente né come secret ANTHROPIC_API_KEY della function)' }),
           { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         )
       }
@@ -1413,7 +1422,7 @@ html body [class*="line-clamp-"],html body [class*="truncate"]{-webkit-line-clam
       try { pageBlueprint = (job.page_blueprint && String(job.page_blueprint).trim()) || '' } catch { pageBlueprint = '' }
       if (!pageBlueprint && Number(batchNumber) === 0) {
         pageBlueprint = await generateClaudePageBlueprint({
-          apiKey: String(userProfile.anthropic_api_key || '').trim(),
+          apiKey: resolvedAnthropicKey,
           supabase,
           jobId,
           job,
@@ -1681,7 +1690,7 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
       // injection vector) makes upstream proxies STRIP the x-api-key header
       // entirely — Anthropic then returns 401 with EMPTY body. Trim before
       // use to avoid this silent failure mode.
-      const anthropicKey = String(userProfile.anthropic_api_key || '').trim()
+      const anthropicKey = resolvedAnthropicKey
 
       try {
         claudeResponse = await fetch('https://api.anthropic.com/v1/messages', {
@@ -1749,7 +1758,7 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
         // Key diagnostics on 401: helps tell apart "wrong key" from "key
         // mangled in DB". Logs only length + first/last 4 chars (safe to
         // surface — not enough to reconstruct the secret).
-        const rawKey = String(userProfile.anthropic_api_key || '')
+        const rawKey = resolvedAnthropicKey
         const trimmedKey = rawKey.trim()
         const keyDiag = status === 401 ? {
           keyLen: trimmedKey.length,

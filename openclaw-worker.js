@@ -2806,8 +2806,41 @@ async function fetchCheckpointPageHtml(url) {
           /* nav error — measure whatever we have, maybe reload helps */
         }
         const len = await waitForContent();
-        if (len > bestLen) {
-          bestLen = len;
+        // Scroll through the whole page to trigger lazy-loaded content
+        // (below-the-fold images, testimonial sliders, sticky/checkout
+        // widgets, IntersectionObserver-gated sections). Without this, long
+        // offer/checkout funnels are captured "half" — the exact symptom on
+        // Blackout Water / PureFlow / Dermafix / Shopify-style offers.
+        // Bounded (~8s worst case) + best-effort so it can never hang capture.
+        try {
+          await page.evaluate(async () => {
+            const step = Math.max(300, Math.floor(window.innerHeight * 0.85));
+            let stableH = -1;
+            let stableHits = 0;
+            for (let i = 0; i < 60; i++) {
+              const h = document.body ? document.body.scrollHeight : 0;
+              const y = Math.min(i * step, h);
+              window.scrollTo(0, y);
+              await new Promise((r) => setTimeout(r, 130));
+              if (h === stableH) {
+                if (++stableHits >= 2 && y >= h) break;
+              } else {
+                stableHits = 0;
+                stableH = h;
+              }
+            }
+            window.scrollTo(0, 0);
+          });
+          // Let freshly-triggered lazy assets settle before serialising.
+          await page.waitForTimeout(500);
+        } catch {
+          /* scroll is best-effort; capture whatever we have */
+        }
+        // Re-measure: lazy content may have grown the page after scrolling.
+        const lenAfterScroll = await measure().catch(() => len);
+        const effLen = Math.max(len, lenAfterScroll);
+        if (effLen > bestLen) {
+          bestLen = effLen;
           bestHtml = await page.content().catch(() => bestHtml);
         }
         if (bestLen >= CHECKPOINT_RICH_TEXT_THRESHOLD) break; // good enough

@@ -422,6 +422,29 @@ function buildProductContextMarkdown(product) {
   return lines.join('\n\n');
 }
 
+// Rileva la lingua PROPRIA della pagina dall'HTML, cosi' lo swipe resta nella
+// STESSA lingua dell'originale (una pagina inglese torna in inglese). Usa
+// prima <html lang>, poi un'euristica di stopword, e ripiega su 'en'.
+// NB: il brief/market research dell'utente sono spesso in italiano — NON
+// vanno usati per decidere la lingua di output: quella la decide la PAGINA.
+function detectLangFromHtml(html) {
+  if (!html || typeof html !== 'string') return 'en';
+  const m = html.match(/<html[^>]*\blang\s*=\s*["']([a-zA-Z]{2})/i);
+  if (m && m[1]) return m[1].toLowerCase();
+  const sample = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 4000).toLowerCase();
+  const itHits = (sample.match(/\b(il|la|le|gli|che|con|per|del|della|dei|delle|sono|questo|questa|come|piu|gia|hanno)\b/g) || []).length;
+  const enHits = (sample.match(/\b(the|and|of|is|for|with|that|this|are|have|from|your|you|our|will|can|been)\b/g) || []).length;
+  const esHits = (sample.match(/\b(que|los|las|del|para|con|por|este|esta|como|mas|son|han|estan)\b/g) || []).length;
+  if (esHits > enHits && esHits > itHits) return 'es';
+  if (itHits > enHits && itHits >= 3) return 'it';
+  return 'en';
+}
+
+function langLabel(code) {
+  const map = { it: 'Italiano', en: 'English', es: 'Español', fr: 'Français', de: 'Deutsch', pt: 'Português', nl: 'Nederlands' };
+  return map[code] || code;
+}
+
 /**
  * Build everything the worker needs to send to the local LLM.
  * Sincrono e in-process: ZERO chiamate HTTP a Netlify.
@@ -443,7 +466,14 @@ function buildPrompts({ html, sourceUrl, product, tone, language, knowledge, ext
   const builtinKb = buildBuiltinKnowledge();
   const productFacts = extractProductFacts(product, knowledge);
   const productFactsBlock = buildProductFactsBlock(productFacts);
-  const lang = language || 'en';
+  // Lingua di output: se l'utente ha scelto ESPLICITAMENTE una lingua nella UI
+  // la rispettiamo (serve per tradurre di proposito); altrimenti usiamo la
+  // lingua PROPRIA della pagina rilevata dall'HTML reale che il worker ha
+  // scaricato. NON defaultiamo mai all'italiano: prima causava swipe in
+  // italiano di pagine inglesi quando la UI non passava una lingua.
+  const requestedLang = (typeof language === 'string' && language.trim()) ? language.trim().toLowerCase() : '';
+  const detectedLang = detectLangFromHtml(html);
+  const lang = requestedLang || detectedLang;
   const toneStr = tone || 'professional';
 
   // PRODUCT FACTS sheet: dati concreti (nome, prezzo, dottori, durate,
@@ -541,6 +571,13 @@ REGOLE OBBLIGATORIE:
     productName: product.name,
     originalTitle: html.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || '',
     sourceUrl: sourceUrl ?? null,
+    languageInfo: {
+      requested: requestedLang || null,
+      detected: detectedLang,
+      effective: lang,
+      label: langLabel(lang),
+      promptLanguage: langLabel(lang),
+    },
     knowledgeIncluded: {
       promptCount: knowledge?.prompts?.length || 0,
       hasProjectBrief: !!(knowledge?.project?.brief),

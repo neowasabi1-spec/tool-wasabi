@@ -13,7 +13,9 @@
  * The LLM rewrite step lives with the CALLER (the user's Claude), not here —
  * that is the whole point of exposing this as an MCP server.
  */
+import { randomUUID } from 'node:crypto';
 import { getBaseUrl } from './base-url';
+import { currentApiKey } from './context';
 import {
   getAsset,
   newAssetId,
@@ -27,6 +29,43 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
+  });
+  const text = await res.text();
+  let json: unknown;
+  try {
+    json = text ? JSON.parse(text) : {};
+  } catch {
+    throw new Error(`${path} returned non-JSON (${res.status}): ${text.slice(0, 200)}`);
+  }
+  if (!res.ok) {
+    const msg = (json as { error?: string })?.error || `HTTP ${res.status}`;
+    throw new Error(`${path} failed: ${msg}`);
+  }
+  return json as T;
+}
+
+/**
+ * Call a key-authed `/api/v1/*` route, forwarding the caller's `fsk_` API key
+ * (captured in the MCP request context). These routes back the Projects,
+ * Templates, Archive and Funnels sections of the tool — reusing them means MCP
+ * writes land in the exact same tables the UI reads, so they show up in-app.
+ */
+async function v1<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const key = currentApiKey();
+  if (!key) {
+    throw new Error(
+      'This tool needs an fsk_ API key. Connect the MCP server with your ' +
+        'X-API-Key (fsk_…) — the key must have full_access (or the matching ' +
+        'read/write permission for this section).',
+    );
+  }
+  const res = await fetch(`${getBaseUrl()}${path}`, {
+    method,
+    headers: {
+      'content-type': 'application/json',
+      'x-api-key': key,
+    },
+    body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   const text = await res.text();
   let json: unknown;
@@ -175,4 +214,203 @@ export async function applyRewrites(
     unresolvedTextIds: finalized.unresolved_text_ids || [],
     newTitle: finalized.new_title || '',
   };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION TOOLS — expose the rest of the app (Projects, Templates, Archive,
+// Funnels) via the same fsk_-key `/api/v1/*` routes the UI uses, so anything
+// Neo/Morfeo do through MCP shows up inside the tool.
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface ProjectRow {
+  id: string;
+  name: string;
+  status?: string;
+  description?: string | null;
+  domain?: unknown;
+  created_at?: string;
+  updated_at?: string;
+}
+
+/** List all projects (optionally filtered by status). */
+export async function listProjects(status?: string): Promise<{
+  count: number;
+  projects: Array<{ id: string; name: string; status?: string; description?: string | null; created_at?: string }>;
+}> {
+  const qs = status ? `?status=${encodeURIComponent(status)}` : '';
+  const res = await v1<{ projects: ProjectRow[]; count: number }>('GET', `/api/v1/projects${qs}`);
+  return {
+    count: res.count ?? res.projects?.length ?? 0,
+    projects: (res.projects || []).map((p) => ({
+      id: p.id,
+      name: p.name,
+      status: p.status,
+      description: p.description ?? null,
+      created_at: p.created_at,
+    })),
+  };
+}
+
+/** Get a single project plus its funnel pages, templates and archived funnels. */
+export async function getProject(projectId: string): Promise<unknown> {
+  if (!projectId) throw new Error("Missing required argument 'projectId'.");
+  return v1('GET', `/api/v1/projects?id=${encodeURIComponent(projectId)}`);
+}
+
+/** Create a new project. */
+export async function createProject(
+  name: string,
+  opts: { description?: string; status?: string; tags?: string[]; notes?: string } = {},
+): Promise<{ id: string; name: string }> {
+  if (!name?.trim()) throw new Error("Missing required argument 'name'.");
+  const res = await v1<{ project: ProjectRow }>('POST', '/api/v1/projects', {
+    name: name.trim(),
+    description: opts.description ?? '',
+    status: opts.status ?? 'active',
+    tags: opts.tags ?? [],
+    notes: opts.notes ?? '',
+  });
+  return { id: res.project.id, name: res.project.name };
+}
+
+/** List the swipe-template catalog. */
+export async function listTemplates(): Promise<{ count: number; templates: unknown[] }> {
+  const res = await v1<{ templates: unknown[] }>('GET', '/api/v1/templates');
+  return { count: res.templates?.length ?? 0, templates: res.templates || [] };
+}
+
+/** List saved pages / funnels in My Archive (the "By Type" / Template section). */
+export async function listSavedPages(): Promise<{
+  count: number;
+  pages: Array<{ id: string; name: string; section?: string; total_steps?: number; project_id?: string | null; created_at?: string }>;
+}> {
+  const res = await v1<{ archived_funnels: Array<Record<string, unknown>> }>('GET', '/api/v1/archive');
+  const rows = res.archived_funnels || [];
+  return {
+    count: rows.length,
+    pages: rows.map((r) => ({
+      id: String(r.id),
+      name: String(r.name ?? ''),
+      section: r.section as string | undefined,
+      total_steps: r.total_steps as number | undefined,
+      project_id: (r.project_id as string | null) ?? null,
+      created_at: r.created_at as string | undefined,
+    })),
+  };
+}
+
+export interface SavePageResult {
+  pageId: string;
+  name: string;
+  section: string;
+  previewUrl: string;
+  editorUrl: string;
+  archived: boolean;
+}
+
+/**
+ * Save an HTML page into My Archive so it appears in the tool's "By Type" /
+ * Template section (and, if projectId is given, under that project). Stores the
+ * HTML in page_html (via /api/funnel-html) and inserts an archived_funnels row
+ * whose step points at that HTML — exactly the shape the UI + editor expect.
+ */
+export async function savePageToArchive(args: {
+  name: string;
+  html: string;
+  sourceUrl?: string;
+  pageType?: string;
+  category?: string;
+  tags?: string[];
+  section?: 'funnel' | 'quiz';
+  projectId?: string;
+}): Promise<SavePageResult> {
+  const name = (args.name || '').trim();
+  if (!name) throw new Error("Missing required argument 'name'.");
+  if (!args.html || args.html.length < 30) throw new Error("Missing or too-short 'html'.");
+
+  const pageId = randomUUID();
+  const base = getBaseUrl();
+  const pageType = args.pageType || 'landing';
+  const section = args.section || 'funnel';
+  const htmlUrl = `/api/funnel-html?pageId=${pageId}&kind=cloned&variant=desktop`;
+
+  const step = {
+    step_index: 1,
+    name,
+    page_type: pageType,
+    category: args.category || '',
+    url_to_swipe: args.sourceUrl || '',
+    cloned_data: {
+      title: name,
+      source_url: args.sourceUrl || '',
+      method_used: 'mcp',
+      cloned_at: new Date().toISOString(),
+      category: args.category || '',
+      tags: args.tags || [],
+      htmlUrl,
+    },
+  };
+
+  // 1) Insert the archive row with a known id (so the htmlUrl above resolves).
+  await v1('POST', '/api/v1/archive', {
+    id: pageId,
+    name,
+    total_steps: 1,
+    steps: [step],
+    section,
+    ...(args.projectId ? { project_id: args.projectId } : {}),
+  });
+
+  // 2) Persist the HTML blob keyed by that page id. /api/funnel-html is not
+  //    key-authed (JWT optional) so we call it without the fsk_ header.
+  await postJson('/api/funnel-html', {
+    pageId,
+    kind: 'cloned',
+    variant: 'desktop',
+    html: args.html,
+  });
+
+  return {
+    pageId,
+    name,
+    section,
+    previewUrl: `${base}${htmlUrl}`,
+    editorUrl: `${base}/edit/${pageId}`,
+    archived: true,
+  };
+}
+
+/**
+ * Persist a previously cloned/swiped MCP asset into My Archive so it stops
+ * living only in the MCP blob store and shows up inside the tool. Uses the
+ * rewritten result when available, otherwise the original clone.
+ */
+export async function saveSwipeToArchive(
+  ownerId: string,
+  args: { assetId: string; name?: string; pageType?: string; category?: string; tags?: string[]; projectId?: string },
+): Promise<SavePageResult> {
+  const asset = await loadOwnedAsset(ownerId, args.assetId);
+  const html = asset.resultHtml || asset.html;
+  if (!html) throw new Error('This asset has no HTML yet — clone the page first.');
+  return savePageToArchive({
+    name: args.name || asset.title || asset.sourceUrl || 'MCP page',
+    html,
+    sourceUrl: asset.sourceUrl,
+    pageType: args.pageType,
+    category: args.category,
+    tags: args.tags,
+    projectId: args.projectId,
+  });
+}
+
+/** List funnel pages (Front-End Funnel workspace). */
+export async function listFunnels(): Promise<{ count: number; funnels: unknown[] }> {
+  const res = await v1<{ funnels: unknown[] }>('GET', '/api/v1/funnels');
+  return { count: res.funnels?.length ?? 0, funnels: res.funnels || [] };
+}
+
+/** Create or update a funnel page (pass-through to the funnel_pages table). */
+export async function saveFunnelPage(body: Record<string, unknown>): Promise<unknown> {
+  if (!body || typeof body !== 'object') throw new Error('Missing funnel page body.');
+  return v1('POST', '/api/v1/funnels', body);
 }
