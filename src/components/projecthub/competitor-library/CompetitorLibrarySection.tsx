@@ -146,21 +146,52 @@ function videoThumbSrc(path: string): string {
   return u.includes("#") ? u : `${u}#t=0.1`;
 }
 
-// Blended CPM (cost per 1000 impressions) assumption used to ESTIMATE ad spend
-// from the only spend-adjacent figure Meta discloses for commercial ads: the
-// EU-mandated reach (DSA). Real spend is only published for political ads, so
-// like every ad-spy tool we model it: spend ≈ (impressions / 1000) × CPM, with
-// impressions ≈ reach × frequency. Tunable in one place.
-const EST_CPM = 12; // $/€ per 1000 impressions
+// We ESTIMATE ad spend from the only spend-adjacent figure Meta discloses for
+// commercial ads: the EU-mandated reach (DSA). Real spend is published only for
+// political ads, so like every ad-spy tool we model it:
+//   spend ≈ (impressions / 1000) × CPM,  impressions ≈ reach × frequency
+// The CPM depends heavily on WHERE the ad runs, so we key it off the market
+// (the `country=` of the competitor's Ad Library URL). Rough $/1000-impressions
+// benchmarks by market tier — tune here.
 const EST_FREQUENCY = 1.5; // avg times each reached person sees the ad
+const CPM_DEFAULT = 12; // used for "ALL"/unknown geo
+const CPM_BY_COUNTRY: Record<string, number> = {
+  // Tier 1 (expensive)
+  US: 20, CA: 16, AU: 16, GB: 15, UK: 15, IE: 13, CH: 16, DE: 14, NO: 14, JP: 14,
+  // Tier 2 (Western/Northern Europe + developed Asia)
+  AT: 13, NL: 13, SE: 13, DK: 13, BE: 12, FI: 12, FR: 12, KR: 12, SG: 12, AE: 12, IL: 12,
+  // Tier 3 (Southern Europe)
+  IT: 9, ES: 9, PT: 8, GR: 7,
+  // Tier 4 (Eastern Europe)
+  PL: 6, CZ: 6, RO: 5, HU: 5, BG: 5,
+  // Tier 5 (LATAM / emerging)
+  BR: 5, MX: 5, ZA: 5, TR: 4, AR: 4, IN: 3, ID: 3, PH: 3,
+};
 
-// Estimated spend from EU reach, formatted like "≈$1.8K". Returns "" if reach
-// is not usable. Always shown alongside an "est." marker so it never reads as a
-// disclosed figure.
-function estSpendFromReach(reach: number): string {
+function cpmForCountry(code?: string): number {
+  if (!code) return CPM_DEFAULT;
+  return CPM_BY_COUNTRY[code.toUpperCase()] ?? CPM_DEFAULT;
+}
+
+// Read the market from a Meta Ad Library URL's `country=` param (ISO-2, e.g.
+// US/DE/GB). "ALL" or missing → "" (falls back to the default CPM).
+function countryFromAdLibraryUrl(url?: string | null): string {
+  if (!url) return "";
+  try {
+    const c = (new URL(url).searchParams.get("country") || "").toUpperCase();
+    return c && c !== "ALL" ? c : "";
+  } catch {
+    return "";
+  }
+}
+
+// Estimated spend from EU reach for a given market, formatted like "≈$1.8K".
+// Returns "" if reach is unusable. Always shown with an "est." marker so it
+// never reads as a disclosed figure.
+function estSpendFromReach(reach: number, country?: string): string {
   if (!Number.isFinite(reach) || reach <= 0) return "";
   const impressions = reach * EST_FREQUENCY;
-  const dollars = (impressions / 1000) * EST_CPM;
+  const dollars = (impressions / 1000) * cpmForCountry(country);
   return `≈$${fmtCompact(Math.round(dollars))}`;
 }
 
@@ -176,7 +207,7 @@ function fmtCompact(n: number): string {
 // signals (longevity, live variants, reach/impressions, disclosed spend) are
 // visible at a glance — no need to open the detail panel. Only renders the
 // metrics we actually have for this ad.
-function CardMetrics({ ad }: { ad: CompetitorAd }) {
+function CardMetrics({ ad, country }: { ad: CompetitorAd; country?: string }) {
   const d = daysRunning(ad);
   const active = ad.ad_active === "true" || ad.is_active === "true";
   const variants = ad.ad_variants && ad.ad_variants > 1 ? ad.ad_variants : null;
@@ -184,7 +215,7 @@ function CardMetrics({ ad }: { ad: CompetitorAd }) {
   const reach = typeof ad.reach === "number" && ad.reach > 0 ? ad.reach : null;
   const impressions = (ad.impressions || "").trim();
 
-  const estSpend = reach ? estSpendFromReach(reach) : "";
+  const estSpend = reach ? estSpendFromReach(reach, country) : "";
 
   // FIXED-SLOT metrics header, 2 rows so the spend value has room to show in
   // full (a single row truncated it to "USD $..."). Both rows always render at
@@ -215,7 +246,7 @@ function CardMetrics({ ad }: { ad: CompetitorAd }) {
             <DollarSign className="w-3 h-3 shrink-0" /><span className="truncate">{spend}</span>
           </span>
         ) : estSpend ? (
-          <span title={`Estimated spend — modeled from EU reach ${reach!.toLocaleString()} at ~$${EST_CPM} CPM. Not a disclosed figure.`}
+          <span title={`Estimated spend — modeled from EU reach ${reach!.toLocaleString()} at ~$${cpmForCountry(country)} CPM (${country || "avg"}). Not a disclosed figure.`}
             className="inline-flex items-center gap-1 min-w-0 text-emerald-700/80">
             <DollarSign className="w-3 h-3 shrink-0" /><span className="truncate">{estSpend}</span>
             <span className="text-[9px] font-semibold text-muted-foreground/70">est.</span>
@@ -1506,7 +1537,7 @@ function CompetitorDetail({ projectId, competitor, onBack }: { projectId: string
                 onClick={() => setDetailAd(ad)}>
 
                 {/* Metrics bar — key ad signals on top, clear */}
-                <CardMetrics ad={ad} />
+                <CardMetrics ad={ad} country={countryFromAdLibraryUrl(competitor.ads_library_url)} />
 
                 {/* Thumbnail / Placeholder */}
                 <div className="aspect-[4/5] relative overflow-hidden rounded-xl">
@@ -1686,12 +1717,22 @@ function AllCreativesView({ projectId }: { projectId: string }) {
   const [winnersOnly, setWinnersOnly] = useState(false);
   const [newOnly, setNewOnly] = useState(false);
   const [detailAd, setDetailAd] = useState<CreativeWithBrand | null>(null);
+  // brand_id -> market (from each competitor's Ad Library country=), used to
+  // pick the right CPM when estimating spend.
+  const [countryByBrand, setCountryByBrand] = useState<Map<number, string>>(new Map());
 
   const load = async () => {
     setLoading(true);
     try {
       const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library/creatives`);
       if (r.ok) setCreatives(await r.json());
+      const rc = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library`);
+      if (rc.ok) {
+        const comps: CompetitorWithStats[] = await rc.json();
+        const m = new Map<number, string>();
+        for (const c of comps) m.set(c.id, countryFromAdLibraryUrl(c.ads_library_url));
+        setCountryByBrand(m);
+      }
     } finally { setLoading(false); }
   };
   useEffect(() => { load(); }, [projectId]);
@@ -1769,7 +1810,7 @@ function AllCreativesView({ projectId }: { projectId: string }) {
             <div key={ad.id} onClick={() => setDetailAd(ad)}
               className={`group relative rounded-2xl overflow-hidden bg-card border-2 hover:shadow-lg transition-all cursor-pointer
                 ${ad.is_new ? "border-emerald-500/70" : "border-transparent hover:border-border"}`}>
-              <CardMetrics ad={ad} />
+              <CardMetrics ad={ad} country={countryByBrand.get(ad.brand_id)} />
               <div className="aspect-[4/5] relative overflow-hidden rounded-xl">
                 {ad.file_path
                   ? <MediaThumb path={ad.file_path} type={ad.media_type} className="w-full h-full" />
