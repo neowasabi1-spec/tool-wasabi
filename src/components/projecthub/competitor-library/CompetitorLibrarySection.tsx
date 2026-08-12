@@ -146,6 +146,24 @@ function videoThumbSrc(path: string): string {
   return u.includes("#") ? u : `${u}#t=0.1`;
 }
 
+// Blended CPM (cost per 1000 impressions) assumption used to ESTIMATE ad spend
+// from the only spend-adjacent figure Meta discloses for commercial ads: the
+// EU-mandated reach (DSA). Real spend is only published for political ads, so
+// like every ad-spy tool we model it: spend ≈ (impressions / 1000) × CPM, with
+// impressions ≈ reach × frequency. Tunable in one place.
+const EST_CPM = 12; // $/€ per 1000 impressions
+const EST_FREQUENCY = 1.5; // avg times each reached person sees the ad
+
+// Estimated spend from EU reach, formatted like "≈$1.8K". Returns "" if reach
+// is not usable. Always shown alongside an "est." marker so it never reads as a
+// disclosed figure.
+function estSpendFromReach(reach: number): string {
+  if (!Number.isFinite(reach) || reach <= 0) return "";
+  const impressions = reach * EST_FREQUENCY;
+  const dollars = (impressions / 1000) * EST_CPM;
+  return `≈$${fmtCompact(Math.round(dollars))}`;
+}
+
 // Compact number formatting: 47_000_000 -> "47M", 12_300 -> "12.3K".
 function fmtCompact(n: number): string {
   if (!isFinite(n)) return String(n);
@@ -166,7 +184,7 @@ function CardMetrics({ ad }: { ad: CompetitorAd }) {
   const reach = typeof ad.reach === "number" && ad.reach > 0 ? ad.reach : null;
   const impressions = (ad.impressions || "").trim();
 
-  const reachVal = reach ? fmtCompact(reach) : impressions || null;
+  const estSpend = reach ? estSpendFromReach(reach) : "";
 
   // FIXED-SLOT metrics header, 2 rows so the spend value has room to show in
   // full (a single row truncated it to "USD $..."). Both rows always render at
@@ -188,16 +206,28 @@ function CardMetrics({ ad }: { ad: CompetitorAd }) {
           {variants && (<><Repeat className="w-3 h-3" />×{variants}</>)}
         </span>
       </div>
-      {/* Row 2 — Meta-disclosed spend (or reach/impressions), full width */}
+      {/* Row 2 — Meta-disclosed spend when available, else an estimate from EU
+          reach (marked "est."), else impressions, else empty. Full width. */}
       <div className="flex items-center h-6 px-2 border-t border-border/60 whitespace-nowrap overflow-hidden">
-        <span title={spend ? `Meta-disclosed spend ${spend}` : reachVal ? `Reach/impressions ${reachVal}` : undefined}
-          className="inline-flex items-center gap-1 min-w-0 text-emerald-700">
-          {spend
-            ? (<><DollarSign className="w-3 h-3 shrink-0" /><span className="truncate">{spend}</span></>)
-            : reachVal
-              ? (<><Eye className="w-3 h-3 shrink-0" /><span className="truncate">{reachVal}</span></>)
-              : <span className="text-muted-foreground/60">—</span>}
-        </span>
+        {spend ? (
+          <span title={`Meta-disclosed spend ${spend}`}
+            className="inline-flex items-center gap-1 min-w-0 text-emerald-700">
+            <DollarSign className="w-3 h-3 shrink-0" /><span className="truncate">{spend}</span>
+          </span>
+        ) : estSpend ? (
+          <span title={`Estimated spend — modeled from EU reach ${reach!.toLocaleString()} at ~$${EST_CPM} CPM. Not a disclosed figure.`}
+            className="inline-flex items-center gap-1 min-w-0 text-emerald-700/80">
+            <DollarSign className="w-3 h-3 shrink-0" /><span className="truncate">{estSpend}</span>
+            <span className="text-[9px] font-semibold text-muted-foreground/70">est.</span>
+          </span>
+        ) : impressions ? (
+          <span title={`Impressions ${impressions}`}
+            className="inline-flex items-center gap-1 min-w-0 text-sky-700">
+            <Eye className="w-3 h-3 shrink-0" /><span className="truncate">{impressions}</span>
+          </span>
+        ) : (
+          <span className="text-muted-foreground/60">—</span>
+        )}
       </div>
     </div>
   );
