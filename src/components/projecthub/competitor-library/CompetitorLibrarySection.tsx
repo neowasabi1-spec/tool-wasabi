@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, type ReactNode } from "react";
+import { useState, useRef, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
@@ -166,50 +166,37 @@ function CardMetrics({ ad }: { ad: CompetitorAd }) {
   const reach = typeof ad.reach === "number" && ad.reach > 0 ? ad.reach : null;
   const impressions = (ad.impressions || "").trim();
 
-  const pill = "inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md leading-none";
-  const chips: ReactNode[] = [];
-  if (d !== null)
-    chips.push(
-      <span key="d" title={`Running ${d} day${d === 1 ? "" : "s"}`} className={`${pill} bg-amber-100 text-amber-900`}>
-        <Calendar className="w-3.5 h-3.5" />{d}d
-      </span>,
-    );
-  if (variants)
-    chips.push(
-      <span key="v" title={`${variants} active variants`} className={`${pill} bg-slate-100 text-slate-700`}>
-        <Repeat className="w-3.5 h-3.5" />×{variants}
-      </span>,
-    );
-  if (reach)
-    chips.push(
-      <span key="r" title={`Reach ${reach.toLocaleString()}`} className={`${pill} bg-sky-100 text-sky-900`}>
-        <Eye className="w-3.5 h-3.5" />{fmtCompact(reach)}
-      </span>,
-    );
-  else if (impressions)
-    chips.push(
-      <span key="i" title={`Impressions ${impressions}`} className={`${pill} bg-sky-100 text-sky-900`}>
-        <Eye className="w-3.5 h-3.5" />{impressions}
-      </span>,
-    );
-  if (spend)
-    chips.push(
-      <span key="s" title={`Meta-disclosed spend ${spend}`} className={`${pill} bg-emerald-100 text-emerald-800`}>
-        <DollarSign className="w-3.5 h-3.5" />{spend}
-      </span>,
-    );
+  const reachVal = reach ? fmtCompact(reach) : impressions || null;
 
-  if (chips.length === 0 && !active) return null;
-  // Prominent metrics BAR on top of the card (like the reference ad-spy tool):
-  // bold, colored pills so the key ad signals read at a glance.
+  // FIXED-SLOT metrics bar. Every card renders the exact same layout at the
+  // same height so cards stay perfectly aligned in the grid; each slot has a
+  // fixed width and only fills in when the data exists (otherwise it stays
+  // empty). Single line, no wrap — never grows the card.
   return (
-    <div className="flex items-center gap-1.5 flex-wrap px-2 py-1.5 bg-muted/50 border-b border-border text-[11px] font-bold text-foreground">
-      {active && (
-        <span title="Live now" className="inline-flex items-center gap-1 text-green-700">
-          <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />LIVE
-        </span>
-      )}
-      {chips}
+    <div className="flex items-center gap-1 h-7 px-2 bg-muted/50 border-b border-border text-[10px] font-bold text-foreground whitespace-nowrap overflow-hidden">
+      {/* Live status */}
+      <span className="inline-flex items-center gap-1 w-11 shrink-0 text-green-700">
+        {active && (<><span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />LIVE</>)}
+      </span>
+      {/* Days running */}
+      <span title={d !== null ? `Running ${d} day${d === 1 ? "" : "s"}` : undefined}
+        className="inline-flex items-center gap-0.5 w-11 shrink-0 text-amber-700">
+        {d !== null && (<><Calendar className="w-3 h-3" />{d}d</>)}
+      </span>
+      {/* Active variants */}
+      <span title={variants ? `${variants} active variants` : undefined}
+        className="inline-flex items-center gap-0.5 w-9 shrink-0 text-slate-600">
+        {variants && (<><Repeat className="w-3 h-3" />×{variants}</>)}
+      </span>
+      {/* Spend (preferred) or reach/impressions — flexible, right-aligned */}
+      <span title={spend ? `Meta-disclosed spend ${spend}` : reachVal ? `Reach/impressions ${reachVal}` : undefined}
+        className="inline-flex items-center gap-0.5 ml-auto min-w-0 justify-end text-emerald-700 truncate">
+        {spend
+          ? (<><DollarSign className="w-3 h-3 shrink-0" /><span className="truncate">{spend}</span></>)
+          : reachVal
+            ? (<><Eye className="w-3 h-3 shrink-0" /><span className="truncate">{reachVal}</span></>)
+            : null}
+      </span>
     </div>
   );
 }
