@@ -8,7 +8,7 @@ import {
   BarChart2, Calendar, Globe, X, RefreshCw, Image as ImageIcon,
   Video, Bookmark, CheckSquare, Square, TrendingUp, Download, Copy, Check,
   Settings, Zap, FileText, Eye, LayoutTemplate, Repeat, Star, Flame,
-  Scissors, Film, Sparkles, DollarSign,
+  Scissors, Film, Sparkles, DollarSign, Eraser,
 } from "lucide-react";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
@@ -628,6 +628,43 @@ function CreativeDetailPanel({
       }
     } catch { setSegStatus(""); toast({ title: "Could not queue", variant: "destructive" }); }
   };
+  // Whole-video subtitle removal — clean the FULL video (captions gone, audio
+  // kept) with the same engine the shots use. Result lands in clean_full_path.
+  const [cleanStatus, setCleanStatus] = useState<string>("");
+  const [cleanPath, setCleanPath] = useState<string>("");
+  const [cleanErr, setCleanErr] = useState<string>("");
+  const cleanPoll = useRef<ReturnType<typeof setInterval> | null>(null);
+  const loadCleanStatus = async () => {
+    try {
+      const r = await fetch(`/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/${ad.id}/clean-video`);
+      const j = await r.json().catch(() => ({}));
+      setCleanStatus(j?.status || "");
+      setCleanPath(j?.cleanPath || "");
+      setCleanErr(String(j?.error || ""));
+      if (j?.status === "pending" || j?.status === "processing") {
+        if (!cleanPoll.current) cleanPoll.current = setInterval(loadCleanStatus, 5000);
+      } else if (cleanPoll.current) { clearInterval(cleanPoll.current); cleanPoll.current = null; }
+    } catch { /* ignore */ }
+  };
+  useEffect(() => {
+    if (ad.media_type === "video") loadCleanStatus();
+    return () => { if (cleanPoll.current) { clearInterval(cleanPoll.current); cleanPoll.current = null; } };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ad.id]);
+  const removeSubtitles = async () => {
+    setCleanStatus("pending"); setCleanErr("");
+    try {
+      const r = await fetch(`/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/${ad.id}/clean-video`, { method: "POST" });
+      const j = await r.json().catch(() => ({}));
+      if (r.ok) {
+        toast({ title: "Removing subtitles…", description: "Runs on the server — may take a minute or two." });
+        if (!cleanPoll.current) cleanPoll.current = setInterval(loadCleanStatus, 5000);
+      } else {
+        setCleanStatus("");
+        toast({ title: j.error || "Could not start", variant: "destructive" });
+      }
+    } catch { setCleanStatus(""); toast({ title: "Could not start", variant: "destructive" }); }
+  };
   // Phase 2 step 2 — recreate a new video from clean shots + our voice.
   const [buildStatus, setBuildStatus] = useState<string>("");
   const [buildError, setBuildError] = useState<string>("");
@@ -908,6 +945,51 @@ function CreativeDetailPanel({
               </div>
               {segStatus === "error" && (
                 <p className="text-[10px] text-destructive">Splitting failed — check the worker logs.</p>
+              )}
+            </div>
+          )}
+          {ad.media_type === "video" && (
+            <div className="pt-2 border-t border-border space-y-2">
+              <div className="flex items-center gap-1.5">
+                <Eraser className="w-3.5 h-3.5 text-primary" />
+                <p className="text-[9px] text-muted-foreground uppercase tracking-widest font-semibold">Remove subtitles (whole video)</p>
+              </div>
+              <p className="text-[10px] text-muted-foreground leading-snug">
+                Erases burned-in captions from the <b>entire</b> video while keeping the original audio, using the same AI cleaning the shots use. Needs a Replicate key.
+              </p>
+              <div className="flex items-center gap-2">
+                <Button
+                  onClick={removeSubtitles}
+                  disabled={cleanStatus === "pending" || cleanStatus === "processing"}
+                  variant="outline"
+                  className="flex-1 gap-2 h-8">
+                  {cleanStatus === "pending" || cleanStatus === "processing"
+                    ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> {cleanStatus === "pending" ? "Queued…" : "Cleaning…"}</>
+                    : <><Eraser className="w-3.5 h-3.5" /> {cleanPath ? "Clean again" : "Remove subtitles"}</>}
+                </Button>
+                {cleanPath && (
+                  <a
+                    href={`${getUploadUrl(cleanPath)}${getUploadUrl(cleanPath).includes("?") ? "&" : "?"}download=1`}
+                    className="inline-flex items-center gap-2 h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-semibold hover:opacity-90">
+                    <Download className="w-3.5 h-3.5" /> Download
+                  </a>
+                )}
+              </div>
+              {cleanPath && cleanStatus === "done" && (
+                <video
+                  src={getUploadUrl(cleanPath)}
+                  controls
+                  playsInline
+                  className="w-full rounded-lg border border-border bg-black max-h-72"
+                />
+              )}
+              {cleanStatus === "done" && !cleanPath && (
+                <p className="text-[10px] text-amber-600">
+                  {cleanErr || "The captions couldn’t be removed cleanly on this video."}
+                </p>
+              )}
+              {cleanStatus === "error" && (
+                <p className="text-[10px] text-destructive">{cleanErr || "Cleaning failed — check the Replicate key / logs."}</p>
               )}
             </div>
           )}

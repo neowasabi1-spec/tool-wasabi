@@ -738,17 +738,481 @@ async function compareRemover(
   }
 }
 
+export type CleanResult =
+  | { ok: true; outFile: string; note: string | null }
+  | { ok: false; unusable: true; note: string };
+
+/**
+ * Remove burned-in captions from ONE video file and return a browser-playable
+ * H.264 result. This is the whole engine — mask-driven neural removal, the
+ * detector fallback, the OCR pass, the frame-drop / erase stages and the final
+ * differential gate — lifted out of the shot handler so both a single shot and
+ * a whole ad video clean identically. No database work happens here: the caller
+ * owns claiming/persisting. `srcFile` must already be downloaded and probed.
+ */
+export async function cleanClipFile(opts: {
+  supabase: ReturnType<typeof getSupabase>;
+  token: string;
+  srcKey: string;        // storage key of srcFile (signed for the detector model)
+  srcFile: string;       // already downloaded to disk
+  textRegion: string | null;
+  W: number; H: number; fps: number; dur: number;
+  workDir: string;
+  deadline: number;
+  keyBase: string;       // prefix for temporary mask/pass uploads
+  log: (...a: unknown[]) => void;
+  jitterMs?: number;     // random pre-delay to spread parallel shot jobs (0 for one-offs)
+}): Promise<CleanResult> {
+  const {
+    supabase, token, srcKey, srcFile, textRegion,
+    W, H, fps, dur, workDir, deadline, keyBase, log,
+  } = opts;
+
+  // Public-ish URL Replicate can download the source clip from (detector path).
+  const { data: signed, error: signErr } = await supabase.storage
+    .from(BUCKET)
+    .createSignedUrl(srcKey, 3600);
+  if (signErr || !signed?.signedUrl) throw new Error(`could not sign source URL: ${signErr?.message || 'no url'}`);
+
+  const modelResp = await fetch(`https://api.replicate.com/v1/models/${REPLICATE_MODEL}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!modelResp.ok) throw new Error(`could not resolve model version ${modelResp.status}: ${(await modelResp.text()).slice(0, 200)}`);
+  const model = await modelResp.json();
+  const version = model?.latest_version?.id;
+  if (!version) throw new Error('model has no latest version on Replicate');
+
+  // Spread simultaneous shots apart before the first attempt.
+  if (opts.jitterMs !== 0) await sleep(Math.random() * (opts.jitterMs ?? 15000));
+
+  let inputUrl = signed.signedUrl;
+  const outFile = path.join(workDir, `clean_${Date.now()}.mp4`);
+  let srcRgb: { buf: Buffer; w: number; h: number } | null = null;
+  let captionBand: { y0: number; y1: number } | null = null;
+  let leftover: Leftover | null = null;
+  let captionReadable = false;
+  let alignedWithSource = true;
+  let maskVerified = false;
+
+  // ── Stage 1: mask-driven neural removal. ──────────────────────────────────
+  let usedMaskPath = false;
+  if (W && H) {
+    try {
+      let curKey = srcKey;
+      let curFile = srcFile;
+      for (let pass = 1; pass <= MASK_PASSES; pass++) {
+        const masked = await maskDrivenClean({
+          supabase, token,
+          srcKey: curKey,
+          srcFile: curFile,
+          textRegion,
+          maskKey: `${keyBase}_mask_p${pass}_${Date.now()}.mp4`,
+          W, H, fps, dur, workDir, deadline, log,
+        });
+        if (!masked) {
+          if (usedMaskPath) log(`mask pass ${pass}: no caption left to remove`);
+          break;
+        }
+        fs.copyFileSync(masked.file, outFile);
+        if (pass === 1) { srcRgb = masked.srcRgb; captionBand = masked.band; maskVerified = !!masked.verified; }
+        usedMaskPath = true;
+        if (pass === MASK_PASSES || Date.now() > deadline) break;
+        curFile = path.join(workDir, `pass${pass}_${Date.now()}.mp4`);
+        fs.copyFileSync(outFile, curFile);
+        curKey = `${keyBase}_tmp_p${pass}_${Date.now()}.mp4`;
+        await uploadFile(supabase, curKey, curFile, 'video/mp4');
+      }
+      if (usedMaskPath && maskVerified) {
+        alignedWithSource = false;
+        log('mask path: chunked result verified per-window — skipping whole-clip differential');
+      } else if (usedMaskPath && srcRgb) {
+        try {
+          const outRgb = await rgbFrames(outFile, W, H, dur, fps, workDir);
+          leftover = analyzeLeftoverText(srcRgb.buf, outRgb.buf, srcRgb.w, srcRgb.h, captionBand);
+          const maxDrop = Math.max(2, Math.floor(leftover.frames * MAX_DROP));
+          if (leftover.maskPx < 200) {
+            usedMaskPath = false;
+            log('mask path: model changed almost nothing — falling back to the detector');
+          } else {
+            captionReadable = leftover.bad.length > maxDrop;
+            log(`mask path: ${leftover.bad.length}/${leftover.frames} frames still show text` +
+              (captionReadable ? ' — too many to drop' : ''));
+          }
+        } catch (e) {
+          log(`mask path: leftover check skipped (${(e as Error).message})`);
+        }
+      }
+    } catch (e) {
+      log(`mask pass skipped: ${(e as Error).message}`);
+    }
+  }
+
+  for (let pass = 1; !usedMaskPath && pass <= MAX_PASSES; pass++) {
+    let predId: string | null = null;
+    const createBody = JSON.stringify({
+      version,
+      input: {
+        video: inputUrl,
+        method: 'hybrid',
+        resolution: 'original',
+        conf_threshold: 0.15,
+        margin: 15,
+        detection_interval: 1,
+      },
+    });
+    for (let attempt = 0; attempt < 40 && !predId; attempt++) {
+      const createResp = await fetch('https://api.replicate.com/v1/predictions', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: createBody,
+      });
+      if (createResp.status === 429) {
+        const txt = await createResp.text();
+        let ra = 12;
+        try { ra = Number(JSON.parse(txt)?.retry_after) || 12; } catch { /* default */ }
+        const wait = ra + 2 + Math.random() * 8;
+        log(`pass ${pass}: rate limited, retrying in ${wait.toFixed(0)}s (attempt ${attempt + 1})`);
+        await sleep(wait * 1000);
+        continue;
+      }
+      if (!createResp.ok) {
+        throw new Error(`Replicate create failed ${createResp.status}: ${(await createResp.text()).slice(0, 300)}`);
+      }
+      const created = await createResp.json();
+      predId = created?.id || null;
+    }
+    if (!predId) throw new Error('Replicate kept rate-limiting the request — add credit at replicate.com/account/billing and retry');
+    log(`pass ${pass}: prediction ${predId} created`);
+
+    let outputUrl: string | null = null;
+    for (;;) {
+      if (Date.now() > deadline) {
+        if (pass > 1) break;
+        throw new Error('Replicate prediction timed out');
+      }
+      await sleep(POLL_MS);
+      const pollResp = await fetch(`https://api.replicate.com/v1/predictions/${predId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!pollResp.ok) continue;
+      const pred = await pollResp.json();
+      if (pred.status === 'succeeded') {
+        outputUrl = extractOutputUrl(pred.output);
+        if (!outputUrl) throw new Error('prediction succeeded but returned no video URL');
+        break;
+      }
+      if (pred.status === 'failed' || pred.status === 'canceled') {
+        if (pass > 1) break;
+        throw new Error(`Replicate prediction ${pred.status}: ${String(pred.error || '').slice(0, 300)}`);
+      }
+    }
+    if (!outputUrl) break;
+
+    const dl = await fetch(outputUrl);
+    if (!dl.ok) throw new Error(`could not download cleaned video (${dl.status})`);
+    fs.writeFileSync(outFile, Buffer.from(await dl.arrayBuffer()));
+    inputUrl = outputUrl;
+
+    try {
+      if (!W || !H) throw new Error('could not probe source dimensions');
+      if (!srcRgb) srcRgb = await rgbFrames(srcFile, W, H, dur, fps, workDir);
+      const outRgb = await rgbFrames(outFile, W, H, dur, fps, workDir);
+      leftover = analyzeLeftoverText(srcRgb.buf, outRgb.buf, srcRgb.w, srcRgb.h);
+      log(`pass ${pass}: ${leftover.bad.length}/${leftover.frames} frames still show text` +
+        (leftover.colour ? ` (caption rgb ${leftover.colour.join(',')})` : ' (caption colour unknown)'));
+    } catch (e) {
+      log(`pass ${pass}: leftover check skipped (${(e as Error).message})`);
+      break;
+    }
+    if (!leftover.maskPx) break;
+    if (!leftover.bad.length) break;
+    if (pass === MAX_PASSES || Date.now() > deadline) break;
+  }
+
+  if (!fs.existsSync(outFile)) throw new Error('no cleaned video produced');
+
+  let note: string | null = null;
+  let unusable = false;
+
+  // ── Stage 2a: frames still showing text. ──────────────────────────────────
+  if (leftover?.bad.length && leftover.box) {
+    try {
+      const maxDrop = Math.max(2, Math.floor(leftover.frames * MAX_DROP));
+      if (captionReadable && leftover.bad.length > maxDrop) {
+        unusable = true;
+        note = `caption still readable on ${leftover.bad.length}/${leftover.frames} frames — shot left out of the pool`;
+        log(`stage 2a: ${note}`);
+      } else if (leftover.bad.length <= maxDrop) {
+        const patched = path.join(workDir, 'clean2a.mp4');
+        await run(FFMPEG, [
+          '-y', '-i', outFile, '-vf', buildDropGraph(leftover.bad, fps),
+          '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-an', patched,
+        ]);
+        fs.copyFileSync(patched, outFile);
+        alignedWithSource = false;
+        log(`stage 2a: dropped ${leftover.bad.length}/${leftover.frames} frame(s) still showing text`);
+      } else {
+        const rect = toRect({ b: leftover.box, t0: 0, t1: dur + 1 }, W, H);
+        if (rect) {
+          const patched = path.join(workDir, 'clean2a.mp4');
+          await run(FFMPEG, [
+            '-y', '-i', outFile, '-filter_complex', buildEraseGraph([rect]),
+            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-an', patched,
+          ]);
+          fs.copyFileSync(patched, outFile);
+          note = `text on ${leftover.bad.length}/${leftover.frames} frames — area erased for the whole clip`;
+          log(`stage 2a: ${note}`);
+        }
+      }
+    } catch (e) {
+      note = `frame cleanup skipped: ${(e as Error).message}`;
+      log(note);
+    }
+  }
+
+  // ── Stage 2b: OCR-located stylized text the detector never sees. ───────────
+  if (leftover && !leftover.maskPx) {
+    try {
+      const info = await ffprobeInfo(outFile);
+      const OW = info.width || 0;
+      const OH = info.height || 0;
+      if (!OW || !OH) throw new Error('could not probe dimensions');
+
+      const framesDir = path.join(workDir, 'ocr');
+      fs.mkdirSync(framesDir, { recursive: true });
+      await run(FFMPEG, [
+        '-y', '-i', outFile, '-vf', `fps=${OCR_FPS}`,
+        '-frames:v', String(OCR_MAX_FRAMES), '-q:v', '3',
+        path.join(framesDir, 'f%03d.jpg'),
+      ]);
+      const frames = fs.readdirSync(framesDir).filter((f) => f.endsWith('.jpg')).sort();
+      log(`stage 2b: OCR on ${frames.length} frames`);
+
+      const ocrVersion = await resolveVersion(token, OCR_MODEL);
+      const taskCandidates = ['OCR with Region', '<OCR_WITH_REGION>', 'OCR'];
+      let task: string | null = null;
+      const dets: Detection[] = [];
+
+      for (let i = 0; i < frames.length; i++) {
+        if (Date.now() > deadline) { log('stage 2b: out of time'); break; }
+        const t = i / OCR_FPS;
+        const b64 = fs.readFileSync(path.join(framesDir, frames[i])).toString('base64');
+        const image = `data:image/jpeg;base64,${b64}`;
+        let boxes: Box[] = [];
+        if (task) {
+          boxes = parseOcrBoxes(await replicateRun(token, ocrVersion, { image, task_input: task }, deadline, log), OW, OH);
+        } else {
+          for (const cand of taskCandidates) {
+            try {
+              const out = await replicateRun(token, ocrVersion, { image, task_input: cand }, deadline, log);
+              const parsed = parseOcrBoxes(out, OW, OH);
+              if (parsed.length) { task = cand; boxes = parsed; break; }
+            } catch (e) {
+              log(`stage 2b: task "${cand}" failed (${(e as Error).message})`);
+            }
+          }
+          if (!task) { note = 'OCR located no text boxes'; break; }
+        }
+        for (const b of boxes) dets.push({ b, t });
+      }
+
+      const rects = clusterDetections(dets, 1 / OCR_FPS + 0.2)
+        .map((c) => toRect(c, OW, OH))
+        .filter((r): r is Rect => !!r);
+
+      if (rects.length) {
+        const finalFile = path.join(workDir, 'clean2.mp4');
+        await run(FFMPEG, [
+          '-y', '-i', outFile, '-filter_complex', buildEraseGraph(rects),
+          '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-an', finalFile,
+        ]);
+        fs.copyFileSync(finalFile, outFile);
+        log(`stage 2b: erased ${rects.length} text region(s)`);
+      } else if (!note) {
+        note = 'no leftover text boxes located by OCR';
+      }
+    } catch (e) {
+      note = `OCR cleanup skipped: ${(e as Error).message}`;
+      log(note);
+    }
+  }
+
+  // ── Final gate. ───────────────────────────────────────────────────────────
+  if (!unusable) {
+    try {
+      if (!W || !H) throw new Error('source dimensions unknown');
+      if (!alignedWithSource) {
+        log('final gate: earlier frame drops broke source alignment — trusting prior checks');
+      } else {
+        if (!srcRgb) srcRgb = await rgbFrames(srcFile, W, H, dur, fps, workDir);
+        const finalRgb = await rgbFrames(outFile, W, H, dur, fps, workDir);
+        const left = analyzeLeftoverText(srcRgb.buf, finalRgb.buf, srcRgb.w, srcRgb.h, captionBand);
+        const maxDrop = Math.max(2, Math.floor(left.frames * MAX_DROP));
+        if (!left.bad.length) {
+          log('verified: no caption left in the result');
+        } else if (left.bad.length > maxDrop) {
+          unusable = true;
+          note = `caption still readable on ${left.bad.length}/${left.frames} frames — shot left out of the pool`;
+          log(`final gate: ${note}`);
+        } else if (left.box) {
+          const patched = path.join(workDir, 'clean3.mp4');
+          await run(FFMPEG, [
+            '-y', '-i', outFile, '-vf', buildDropGraph(left.bad, fps),
+            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-an', patched,
+          ]);
+          fs.copyFileSync(patched, outFile);
+          log(`final gate: dropped ${left.bad.length}/${left.frames} frame(s) still showing text`);
+        }
+      }
+    } catch (e) {
+      log(`final gate: verification skipped (${(e as Error).message})`);
+    }
+  }
+
+  if (unusable) return { ok: false, unusable: true, note: note || 'caption not removable' };
+
+  // Normalise to browser-playable H.264 (MiniMax hands back mp4v that <video> can't decode).
+  const playable = path.join(workDir, 'clean-h264.mp4');
+  try {
+    await run(FFMPEG, [
+      '-y', '-i', outFile,
+      '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-profile:v', 'high',
+      '-crf', '20', '-preset', 'veryfast', '-movflags', '+faststart', '-an',
+      playable,
+    ]);
+    fs.copyFileSync(playable, outFile);
+  } catch (e) {
+    log(`h264 normalise failed, uploading as-is: ${(e as Error).message}`);
+  }
+
+  return { ok: true, outFile, note };
+}
+
+/**
+ * Remove burned-in subtitles from a WHOLE ad video (not a shot), keeping its
+ * original audio. Reuses cleanClipFile so quality matches the shots pipeline,
+ * then muxes the source audio back over the cleaned (silent) video track.
+ * State lives on competitor_ads (clean_status / clean_full_path / clean_error).
+ */
+async function cleanWholeAd(
+  supabase: ReturnType<typeof getSupabase>,
+  token: string,
+  adId: number,
+  projectId: string,
+  log: (...a: unknown[]) => void,
+): Promise<Response> {
+  const fail = async (msg: string) => {
+    log('error:', msg);
+    await supabase.from('competitor_ads')
+      .update({ clean_status: 'error', clean_error: msg.slice(0, 500) })
+      .eq('id', adId);
+    return new Response('error', { status: 200 });
+  };
+
+  // Claim: pending -> processing.
+  const { data: claimed, error: claimErr } = await supabase
+    .from('competitor_ads')
+    .update({ clean_status: 'processing', clean_error: null })
+    .eq('id', adId)
+    .eq('project_id', projectId)
+    .eq('clean_status', 'pending')
+    .select('id, file_path, media_type')
+    .maybeSingle();
+  if (claimErr && /clean_status|clean_full_path/i.test(claimErr.message)) {
+    log('MISSING MIGRATION: run supabase-migration-ad-clean.sql');
+    return new Response('missing migration', { status: 200 });
+  }
+  if (!claimed) { log('ad not pending — skipping'); return new Response('skip', { status: 200 }); }
+  if ((claimed as { media_type?: string }).media_type !== 'video') return fail('only video creatives can be cleaned');
+
+  const workDir = makeWorkDir('wcleanvid-');
+  try {
+    const srcFile = path.join(workDir, 'src.mp4');
+    await downloadSource(supabase, claimed.file_path as string, srcFile);
+    const info = await ffprobeInfo(srcFile);
+    const W = info.width || 0;
+    const H = info.height || 0;
+    const fps = info.fps && info.fps > 0 ? info.fps : 30;
+    const dur = await probeDuration(srcFile);
+    if (!W || !H) return fail('could not probe video dimensions');
+
+    const res = await cleanClipFile({
+      supabase, token,
+      srcKey: claimed.file_path as string,
+      srcFile, textRegion: null,
+      W, H, fps, dur, workDir,
+      deadline: Date.now() + MAX_WAIT_MS,
+      keyBase: `${projectId}/ads-clean/${adId}`,
+      log, jitterMs: 0,
+    });
+
+    if (!res.ok) {
+      await supabase.from('competitor_ads')
+        .update({ clean_status: 'done', clean_full_path: null, clean_error: res.note?.slice(0, 500) ?? null })
+        .eq('id', adId);
+      log('done — captions not removable, no clean copy stored');
+      return new Response('done', { status: 200 });
+    }
+
+    // cleanClipFile strips audio (-an); an ad should keep its voiceover. Mux the
+    // ORIGINAL audio back on the cleaned video (optional 1:a:0? → silent sources
+    // just yield a video-only result rather than failing).
+    const withAudio = path.join(workDir, 'clean-audio.mp4');
+    let finalFile = res.outFile;
+    try {
+      await run(FFMPEG, [
+        '-y', '-i', res.outFile, '-i', srcFile,
+        '-map', '0:v:0', '-map', '1:a:0?',
+        '-c:v', 'copy', '-c:a', 'aac', '-b:a', '160k',
+        '-movflags', '+faststart', '-shortest', withAudio,
+      ]);
+      if (fs.existsSync(withAudio) && fs.statSync(withAudio).size > 0) finalFile = withAudio;
+    } catch (e) {
+      log(`audio mux failed, keeping silent clean video: ${(e as Error).message}`);
+    }
+
+    const cleanKey = `${projectId}/ads-clean/${adId}_${Date.now()}.mp4`;
+    await uploadFile(supabase, cleanKey, finalFile, 'video/mp4');
+    await supabase.from('competitor_ads')
+      .update({ clean_status: 'done', clean_full_path: cleanKey, clean_error: res.note ? res.note.slice(0, 500) : null })
+      .eq('id', adId);
+    log(`done — ${cleanKey}`);
+    return new Response('done', { status: 200 });
+  } catch (e) {
+    return fail((e as Error).message);
+  } finally {
+    try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+}
+
 export default async (req: Request) => {
   let body: {
     shotId?: number; projectId?: string; compareModel?: string;
     tuning?: Record<string, number>;
+    adId?: number; // whole-video cleaning (Creative Detail "remove subtitles")
   };
   try {
     body = await req.json();
   } catch {
     return new Response('bad json', { status: 400 });
   }
-  const { shotId, projectId, compareModel, tuning } = body;
+  const { shotId, projectId, compareModel, tuning, adId } = body;
+
+  // Whole-video cleaning path: same engine, different target + audio kept.
+  if (adId && !shotId) {
+    if (!projectId) return new Response('missing fields', { status: 400 });
+    const supabase = getSupabase();
+    const token = process.env.REPLICATE_API_TOKEN;
+    const log = (...a: unknown[]) => console.log('[inpaint-bg]', `ad#${adId}`, ...a);
+    if (!token) {
+      await supabase.from('competitor_ads')
+        .update({ clean_status: 'error', clean_error: 'REPLICATE_API_TOKEN is not set in Netlify env vars' })
+        .eq('id', adId);
+      return new Response('no token', { status: 200 });
+    }
+    return cleanWholeAd(supabase, token, adId, projectId, log);
+  }
+
   if (!shotId || !projectId) return new Response('missing fields', { status: 400 });
 
   const supabase = getSupabase();
