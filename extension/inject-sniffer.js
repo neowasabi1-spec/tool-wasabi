@@ -1,14 +1,16 @@
 /* Wasabi Saver — MAIN-world network sniffer.
  *
- * Facebook/Instagram serve Ad Library videos as `blob:` MSE streams, so the
- * <video> element's src is a blob we can't download and can't ship inline once
- * it's bigger than ~4MB. The real bytes, however, come from fbcdn over normal
- * fetch/XHR requests (progressive MP4, split by byte range). We hook fetch/XHR
- * here — at document_start, before the page's own code runs — record any
- * video-CDN URL we see, strip the byte-range params to get the full-file URL,
- * and forward it to the (isolated-world) content script via postMessage. The
- * content script can then send that URL to the server, which downloads the
- * complete video with no blob/size limit.
+ * Many sites (Facebook/Instagram Ad Library, but also generic pages) serve
+ * videos as `blob:` MSE streams, so the <video> element's src is a blob we
+ * can't download and can't ship inline once it's over ~4MB. The real bytes,
+ * though, travel over normal fetch/XHR requests to a CDN — as a progressive
+ * file (mp4/webm/mov, often split by byte range) or via an HLS/DASH manifest
+ * (.m3u8/.mpd). We hook fetch/XHR here — at document_start, before the page's
+ * own code runs — record any media URL we see, strip byte-range params to get
+ * the full-file URL, tag it progressive vs manifest, and forward it to the
+ * (isolated-world) content script via postMessage. The content script prefers
+ * a progressive URL (directly downloadable by the server) and only falls back
+ * to a manifest when that's all there is.
  *
  * Runs in the MAIN world (no chrome.* APIs); communication is postMessage only.
  */
@@ -16,11 +18,13 @@
   if (window.__wasabiSniffer) return;
   window.__wasabiSniffer = true;
 
-  // Matches fbcdn video segments / progressive mp4 / dash video URLs. `bytestart`
-  // is the strongest signal for a ranged video-file request.
-  const VIDEO_RE = /\.mp4([?&]|$)|bytestart=|\/video_redirect\/|fbcdn\.net\/v\//i;
-  // Best-effort: skip obvious audio-only DASH tracks.
-  const AUDIO_HINT = /[?&](?:_nc_)?.*audio|\/audio\/|dash_audio|mime_type=audio/i;
+  // Progressive video files (a single downloadable file). `bytestart` is the
+  // strong signal for a ranged video request; `videoplayback` covers YT-style.
+  const PROGRESSIVE_RE = /\.(mp4|m4v|mov|webm)([?&]|$)|bytestart=|\/video_redirect\/|videoplayback/i;
+  // Streaming manifests — need server-side muxing (ffmpeg), not a plain fetch.
+  const MANIFEST_RE = /\.m3u8([?&]|$)|\.mpd([?&]|$)/i;
+  // Best-effort: skip obvious audio-only tracks.
+  const AUDIO_HINT = /\/audio\/|dash_audio|mime_type=audio|[?&]a?itag=(?:139|140|141|249|250|251)\b/i;
 
   function normalize(u) {
     try {
@@ -28,6 +32,7 @@
       // Drop byte-range params so the URL resolves to the WHOLE file.
       url.searchParams.delete('bytestart');
       url.searchParams.delete('byteend');
+      url.searchParams.delete('range');
       return url.href;
     } catch {
       return u;
@@ -36,10 +41,13 @@
 
   function report(u) {
     if (!u || typeof u !== 'string') return;
-    if (!VIDEO_RE.test(u)) return;
     if (AUDIO_HINT.test(u)) return;
+    let kind = '';
+    if (PROGRESSIVE_RE.test(u)) kind = 'progressive';
+    else if (MANIFEST_RE.test(u)) kind = 'manifest';
+    else return;
     try {
-      window.postMessage({ __wasabiVideoUrl: normalize(u), t: Date.now() }, '*');
+      window.postMessage({ __wasabiVideoUrl: normalize(u), kind, t: Date.now() }, '*');
     } catch {
       /* ignore */
     }

@@ -45,22 +45,28 @@ function isWasabiTool() {
   const MAX_INLINE_BYTES = 4 * 1024 * 1024;
 
   // ── Video CDN resolution ───────────────────────────────────────────────────
-  // The MAIN-world sniffer (inject-sniffer.js) posts real fbcdn video URLs it
-  // sees on the wire. We keep a short rolling list so that, when the user saves
-  // a blob:/streamed video, we can hand the server a downloadable URL instead of
-  // failing on the inline size cap.
-  const capturedVideoUrls = []; // { url, t }
+  // The MAIN-world sniffer (inject-sniffer.js) posts real video URLs it sees on
+  // the wire (any site, not just FB). We keep a short rolling list so that, when
+  // the user saves a blob:/streamed video, we can hand the server a downloadable
+  // URL instead of failing on the inline size cap. We prefer a "progressive"
+  // file (mp4/webm/mov) the server can fetch directly; a "manifest" (HLS/DASH)
+  // is only used as a last resort since it needs server-side muxing.
+  const capturedVideoUrls = []; // { url, kind, t }
   window.addEventListener('message', (e) => {
     if (e.source !== window) return;
     const d = e.data;
     if (!d || typeof d !== 'object' || !d.__wasabiVideoUrl) return;
-    capturedVideoUrls.push({ url: String(d.__wasabiVideoUrl), t: d.t || Date.now() });
-    if (capturedVideoUrls.length > 40) capturedVideoUrls.shift();
+    capturedVideoUrls.push({
+      url: String(d.__wasabiVideoUrl),
+      kind: d.kind === 'manifest' ? 'manifest' : 'progressive',
+      t: d.t || Date.now(),
+    });
+    if (capturedVideoUrls.length > 60) capturedVideoUrls.shift();
   });
 
   // Try to resolve the real CDN URL for a (blob) video. Nudges the element to
   // (re)stream so a fresh segment URL is captured, then returns the most recent
-  // capture. Returns '' if nothing was seen.
+  // PROGRESSIVE capture (falling back to a manifest). Returns '' if nothing.
   async function resolveCdnUrl(mediaEl) {
     const before = capturedVideoUrls.length;
     try {
@@ -75,7 +81,10 @@ function isWasabiTool() {
       await new Promise((r) => setTimeout(r, 120));
     }
     if (!capturedVideoUrls.length) return '';
-    return capturedVideoUrls[capturedVideoUrls.length - 1].url;
+    for (let i = capturedVideoUrls.length - 1; i >= 0; i--) {
+      if (capturedVideoUrls[i].kind === 'progressive') return capturedVideoUrls[i].url;
+    }
+    return capturedVideoUrls[capturedVideoUrls.length - 1].url; // manifest fallback
   }
 
   // ── Shadow host ──────────────────────────────────────────────────────────
