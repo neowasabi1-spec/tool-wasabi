@@ -325,6 +325,79 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
 
+  // Fetch a (usually cross-origin, streamed) video URL from the background —
+  // host_permissions let us read the bytes past CORS — then upload straight to
+  // storage via a signed URL and register the creative. This is the path for FB
+  // /TikTok/etc. MSE videos the content script can't read in-page.
+  if (msg.type === 'FETCH_AND_UPLOAD') {
+    (async () => {
+      try {
+        const resp = await fetch(msg.url, { headers: { Accept: '*/*' }, redirect: 'follow' });
+        if (!resp.ok) {
+          sendResponse({ ok: false, error: `Could not download video (${resp.status})` });
+          return;
+        }
+        const blob = await resp.blob();
+        if (!blob || !blob.size) {
+          sendResponse({ ok: false, error: 'Downloaded video was empty' });
+          return;
+        }
+        const contentType = blob.type || msg.contentType || (msg.isVideo ? 'video/mp4' : 'image/jpeg');
+
+        const sr = await toolFetch('/api/extension/sign-creative', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            projectId: msg.projectId,
+            contentType,
+            mediaType: msg.isVideo ? 'video' : 'image',
+          }),
+        });
+        if (!sr.ok || !sr.data || !sr.data.uploadUrl) {
+          sendResponse({ ok: false, error: (sr.data && (sr.data.message || sr.data.error)) || `Sign failed (${sr.status})` });
+          return;
+        }
+
+        const up = await fetch(sr.data.uploadUrl, {
+          method: 'PUT',
+          headers: { 'Content-Type': contentType, 'x-upsert': 'true' },
+          body: blob,
+        });
+        if (!up.ok) {
+          sendResponse({ ok: false, error: `Upload failed (${up.status})` });
+          return;
+        }
+
+        const body = {
+          projectId: msg.projectId,
+          pageUrl: msg.pageUrl,
+          pageTitle: msg.pageTitle || '',
+          mediaType: msg.isVideo ? 'video' : 'image',
+          name: msg.name,
+          storagePath: sr.data.path,
+          contentType,
+        };
+        if (msg.brandId) body.brandId = msg.brandId;
+        if (msg.brandName) body.brandName = msg.brandName;
+        if (msg.autoScrape) {
+          body.autoScrape = true;
+          body.frequency = msg.frequency;
+          body.adsLibraryUrl = msg.adsLibraryUrl;
+        }
+        const r = await toolFetch('/api/extension/save-creative', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (r.ok) sendResponse({ ok: true, ...r.data });
+        else sendResponse({ ok: false, error: (r.data && (r.data.message || r.data.error)) || `Save failed (${r.status})` });
+      } catch (e) {
+        sendResponse({ ok: false, error: String((e && e.message) || e) });
+      }
+    })();
+    return true;
+  }
+
   // Save a single creative into a project's Competitor Library.
   if (msg.type === 'SAVE_CREATIVE') {
     (async () => {

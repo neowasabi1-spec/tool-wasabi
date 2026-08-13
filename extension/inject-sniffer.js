@@ -18,9 +18,12 @@
   if (window.__wasabiSniffer) return;
   window.__wasabiSniffer = true;
 
-  // Progressive video files (a single downloadable file). `bytestart` is the
-  // strong signal for a ranged video request; `videoplayback` covers YT-style.
-  const PROGRESSIVE_RE = /\.(mp4|m4v|mov|webm)([?&]|$)|bytestart=|\/video_redirect\/|videoplayback/i;
+  // Progressive video files (a single downloadable file). Covers plain
+  // extensions, ranged requests (bytestart), YT-style (videoplayback), and
+  // TikTok/ByteDance which serve mp4 with no extension (mime_type=video_mp4,
+  // /video/tos/, tiktokcdn/tiktokv/muscdn hosts).
+  const PROGRESSIVE_RE =
+    /\.(mp4|m4v|mov|webm)([?&]|$)|bytestart=|\/video_redirect\/|videoplayback|mime_type=video|\/video\/tos\/|tiktokcdn|tiktokv\.com|muscdn|byteicdn/i;
   // Streaming manifests — need server-side muxing (ffmpeg), not a plain fetch.
   const MANIFEST_RE = /\.m3u8([?&]|$)|\.mpd([?&]|$)/i;
   // Best-effort: skip obvious audio-only tracks.

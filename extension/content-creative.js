@@ -764,11 +764,10 @@ function isWasabiTool() {
     return { payload };
   }
 
-  // Get the full media bytes as a Blob when inline shipping failed (blob too big
-  // to inline, or unreadable MSE). A same-origin blob:/data: reads at any size;
-  // for a streamed video we fall back to the resolved CDN URL (best effort — a
-  // cross-origin fetch only reads if the CDN allows it).
-  async function getMediaBlob(src, isVideo, mediaEl) {
+  // Read same-origin blob:/data: bytes as a Blob (any size). Returns null for
+  // unreadable MSE streams — those are handled by resolving the CDN URL and
+  // letting the background fetch it (host permissions bypass CORS).
+  async function getMediaBlob(src) {
     try {
       const r = await fetch(src);
       if (r.ok) {
@@ -776,19 +775,33 @@ function isWasabiTool() {
         if (b && b.size) return b;
       }
     } catch { /* ignore */ }
-    if (isVideo) {
-      const cdn = await resolveCdnUrl(mediaEl);
-      if (cdn) {
-        try {
-          const r = await fetch(cdn);
-          if (r.ok) {
-            const b = await r.blob();
-            if (b && b.size) return b;
-          }
-        } catch { /* ignore */ }
-      }
-    }
     return null;
+  }
+
+  // Pull a real video URL out of the page for streamed (blob/MSE) videos.
+  // TikTok/IG embed the playable URL in a rehydration <script>; otherwise fall
+  // back to whatever the network sniffer captured.
+  function resolveVideoUrlFromDom() {
+    try {
+      const ids = ['__UNIVERSAL_DATA_FOR_REHYDRATION__', 'SIGI_STATE', '__NEXT_DATA__'];
+      for (const id of ids) {
+        const s = document.getElementById(id);
+        const txt = s && s.textContent;
+        if (!txt) continue;
+        const m = txt.match(/"(?:playAddr|downloadAddr|play_addr|download_addr)":"(https?:\\?\/\\?\/[^"]+)"/i);
+        if (m && m[1]) {
+          return m[1].replace(/\\u002F/gi, '/').replace(/\\\//g, '/').replace(/\\/g, '');
+        }
+      }
+    } catch { /* ignore */ }
+    return '';
+  }
+
+  async function resolveVideoUrl(mediaEl, isVideo) {
+    const dom = resolveVideoUrlFromDom();
+    if (dom) return dom;
+    if (isVideo) return await resolveCdnUrl(mediaEl);
+    return '';
   }
 
   // Upload the bytes straight to storage via a signed URL (no size limit), then
@@ -941,22 +954,48 @@ function isWasabiTool() {
 
     const built = await buildCreativePayload(projectId, src, isVideo, nameInput.value, pop.__media);
     if (built.error) {
-      // Inline shipping failed (too large / unreadable). Try to grab the full
-      // bytes and push them straight to storage via a signed URL — no size cap.
+      // Inline shipping failed (too large / unreadable). No size cap from here.
       setStatus('<span class="spin"></span>Uploading large file…', 'muted');
-      const blob = await getMediaBlob(src, isVideo, pop.__media);
-      if (blob) {
-        const res2 = await saveViaSignedUpload(projectId, blob, isVideo, nameInput.value);
+
+      const finish = (res) => {
         saveBtn.disabled = false;
-        if (res2 && res2.ok) {
-          await chrome.storage.local.set({ wasabi_last_project: projectId }).catch(() => {});
-          setStatus(res2.message || 'Saved to Competitor Library ✓', 'ok');
-          setTimeout(closePopover, res2.message ? 2600 : 1100);
+        if (res && res.ok) {
+          chrome.storage.local.set({ wasabi_last_project: projectId }).catch(() => {});
+          setStatus(res.message || 'Saved to Competitor Library ✓', 'ok');
+          setTimeout(closePopover, res.message ? 2600 : 1100);
         } else {
-          setStatus((res2 && res2.error) || 'Save failed.', 'err');
+          setStatus((res && res.error) || 'Save failed.', 'err');
         }
+      };
+
+      // 1) Readable blob:/data: → we have the bytes here; upload via signed URL.
+      const blob = await getMediaBlob(src);
+      if (blob) {
+        finish(await saveViaSignedUpload(projectId, blob, isVideo, nameInput.value));
         return;
       }
+
+      // 2) Streamed (MSE) video: resolve the real CDN/page URL and let the
+      // background fetch it (host permissions bypass CORS) + upload to storage.
+      const url = await resolveVideoUrl(pop.__media, isVideo);
+      if (url) {
+        const dest = {};
+        applyDestination(dest);
+        finish(
+          await sendMessage({
+            type: 'FETCH_AND_UPLOAD',
+            projectId,
+            url,
+            isVideo,
+            name: nameInput.value,
+            pageUrl: location.href,
+            pageTitle: document.title || '',
+            ...dest,
+          }),
+        );
+        return;
+      }
+
       setStatus(
         isVideo
           ? 'Video too large to save directly — enable auto-scraping with the Ad Library URL instead.'
