@@ -764,6 +764,67 @@ function isWasabiTool() {
     return { payload };
   }
 
+  // Get the full media bytes as a Blob when inline shipping failed (blob too big
+  // to inline, or unreadable MSE). A same-origin blob:/data: reads at any size;
+  // for a streamed video we fall back to the resolved CDN URL (best effort — a
+  // cross-origin fetch only reads if the CDN allows it).
+  async function getMediaBlob(src, isVideo, mediaEl) {
+    try {
+      const r = await fetch(src);
+      if (r.ok) {
+        const b = await r.blob();
+        if (b && b.size) return b;
+      }
+    } catch { /* ignore */ }
+    if (isVideo) {
+      const cdn = await resolveCdnUrl(mediaEl);
+      if (cdn) {
+        try {
+          const r = await fetch(cdn);
+          if (r.ok) {
+            const b = await r.blob();
+            if (b && b.size) return b;
+          }
+        } catch { /* ignore */ }
+      }
+    }
+    return null;
+  }
+
+  // Upload the bytes straight to storage via a signed URL (no size limit), then
+  // register the creative from the stored path. Bypasses the ~6MB save-request
+  // body limit that triggers the "video too large" message.
+  async function saveViaSignedUpload(projectId, blob, isVideo, name) {
+    const contentType = blob.type || (isVideo ? 'video/mp4' : 'image/jpeg');
+    const sign = await sendMessage({
+      type: 'SIGN_CREATIVE',
+      projectId,
+      contentType,
+      mediaType: isVideo ? 'video' : 'image',
+    });
+    if (!sign || !sign.ok || !sign.uploadUrl) {
+      return { ok: false, error: (sign && sign.error) || 'Could not sign upload' };
+    }
+    const up = await fetch(sign.uploadUrl, {
+      method: 'PUT',
+      headers: { 'Content-Type': contentType, 'x-upsert': 'true' },
+      body: blob,
+    });
+    if (!up.ok) return { ok: false, error: `Upload failed (${up.status})` };
+    const payload = {
+      type: 'SAVE_CREATIVE',
+      projectId,
+      pageUrl: location.href,
+      pageTitle: document.title || '',
+      mediaType: isVideo ? 'video' : 'image',
+      name: (name || '').trim(),
+      storagePath: sign.path,
+      contentType: sign.contentType || contentType,
+    };
+    applyDestination(payload);
+    return await sendMessage(payload);
+  }
+
   async function importSelected(projectId, saveBtn) {
     const items = [...selected.entries()].map(([el, v]) => ({ el, ...v }));
     let ok = 0;
@@ -880,6 +941,22 @@ function isWasabiTool() {
 
     const built = await buildCreativePayload(projectId, src, isVideo, nameInput.value, pop.__media);
     if (built.error) {
+      // Inline shipping failed (too large / unreadable). Try to grab the full
+      // bytes and push them straight to storage via a signed URL — no size cap.
+      setStatus('<span class="spin"></span>Uploading large file…', 'muted');
+      const blob = await getMediaBlob(src, isVideo, pop.__media);
+      if (blob) {
+        const res2 = await saveViaSignedUpload(projectId, blob, isVideo, nameInput.value);
+        saveBtn.disabled = false;
+        if (res2 && res2.ok) {
+          await chrome.storage.local.set({ wasabi_last_project: projectId }).catch(() => {});
+          setStatus(res2.message || 'Saved to Competitor Library ✓', 'ok');
+          setTimeout(closePopover, res2.message ? 2600 : 1100);
+        } else {
+          setStatus((res2 && res2.error) || 'Save failed.', 'err');
+        }
+        return;
+      }
       setStatus(
         isVideo
           ? 'Video too large to save directly — enable auto-scraping with the Ad Library URL instead.'

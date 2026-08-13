@@ -40,6 +40,7 @@ interface SaveCreativeBody {
   mediaUrl?: string;
   mediaType?: 'image' | 'video';
   mediaBase64?: string; // data URL or raw base64
+  storagePath?: string; // media the extension already uploaded via signed URL
   contentType?: string;
   name?: string;
   headline?: string;
@@ -124,8 +125,15 @@ export async function POST(req: NextRequest) {
 
   const pageUrl = String(body.pageUrl || '').trim();
   const mediaUrl = String(body.mediaUrl || '').trim();
-  if (!mediaUrl && !body.mediaBase64) {
-    return NextResponse.json({ error: 'mediaUrl or mediaBase64 is required' }, { status: 400 });
+  // A creative the extension already pushed to storage via a signed URL (big
+  // videos that can't go inline). Must live under this project's prefix.
+  let storagePath = String(body.storagePath || '').trim();
+  if (storagePath && !storagePath.startsWith(`${projectId}/`)) storagePath = '';
+  if (!mediaUrl && !body.mediaBase64 && !storagePath) {
+    return NextResponse.json(
+      { error: 'mediaUrl, mediaBase64 or storagePath is required' },
+      { status: 400 },
+    );
   }
 
   // Resolve the media bytes: inline base64 first, then server-side fetch.
@@ -214,7 +222,7 @@ export async function POST(req: NextRequest) {
   // over and the server can't fetch. If we have neither bytes nor a fetchable
   // URL, don't 500: if auto-scraping was configured, that path will capture it.
   const hasHttpUrl = /^https?:\/\//i.test(mediaUrl);
-  if (!buffer && !hasHttpUrl) {
+  if (!buffer && !hasHttpUrl && !storagePath) {
     if (Object.keys(brandPatch).length > 0) {
       return NextResponse.json({
         success: true,
@@ -245,6 +253,7 @@ export async function POST(req: NextRequest) {
     brandId,
     buffer,
     contentType,
+    preUploadedPath: storagePath || undefined,
     remoteUrl: mediaUrl,
     meta: {
       name: body.name || body.pageTitle || brandName,

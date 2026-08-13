@@ -112,6 +112,12 @@ export async function insertCompetitorAd(opts: {
   contentType: string;
   originalName?: string;
   remoteUrl?: string;
+  /**
+   * A storage path (in BUCKET) for media the caller already uploaded directly
+   * (e.g. the extension pushing a large video straight to storage via a signed
+   * URL to bypass the serverless body limit). Used as-is; no re-upload.
+   */
+  preUploadedPath?: string;
   meta?: CreativeMeta;
   externalId?: string;
   source?: string;
@@ -132,7 +138,10 @@ export async function insertCompetitorAd(opts: {
   const usesScrapeCols = opts.externalId !== undefined || opts.source !== undefined;
 
   let filePath = '';
-  if (buffer && buffer.length > 0) {
+  if (opts.preUploadedPath && opts.preUploadedPath.trim()) {
+    // Bytes were already uploaded straight to storage (signed URL) — use as-is.
+    filePath = opts.preUploadedPath.trim();
+  } else if (buffer && buffer.length > 0) {
     const ext = extForContentType(contentType, mediaType === 'video' ? 'mp4' : 'jpg');
     const rand = Math.random().toString(36).slice(2, 8);
     filePath = `${projectId}/competitor-ads/${brandId}/${Date.now()}_${rand}.${ext}`;

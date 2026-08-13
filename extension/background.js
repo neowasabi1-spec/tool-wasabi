@@ -301,6 +301,30 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
 
+  // Sign a direct-to-storage upload for a creative (large videos that can't go
+  // inline through the save request). Returns { uploadUrl, path, contentType }.
+  if (msg.type === 'SIGN_CREATIVE') {
+    toolFetch('/api/extension/sign-creative', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        projectId: msg.projectId,
+        contentType: msg.contentType || 'video/mp4',
+        mediaType: msg.mediaType || 'video',
+      }),
+    }).then((r) => {
+      if (r.ok && r.data && r.data.uploadUrl) {
+        sendResponse({ ok: true, uploadUrl: r.data.uploadUrl, path: r.data.path, contentType: r.data.contentType });
+      } else {
+        sendResponse({
+          ok: false,
+          error: (r.data && (r.data.message || r.data.error)) || `Sign failed (${r.status})`,
+        });
+      }
+    });
+    return true;
+  }
+
   // Save a single creative into a project's Competitor Library.
   if (msg.type === 'SAVE_CREATIVE') {
     (async () => {
@@ -319,7 +343,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         body.frequency = msg.frequency;
         body.adsLibraryUrl = msg.adsLibraryUrl;
       }
-      if (msg.mediaBase64) {
+      if (msg.storagePath) {
+        // Bytes already uploaded straight to storage via a signed URL.
+        body.storagePath = msg.storagePath;
+        if (msg.contentType) body.contentType = msg.contentType;
+      } else if (msg.mediaBase64) {
         body.mediaBase64 = msg.mediaBase64;
         if (msg.contentType) body.contentType = msg.contentType;
       } else if (msg.mediaUrl && /^https?:\/\//i.test(msg.mediaUrl)) {
