@@ -150,6 +150,75 @@ async function fetchMediaAsDataUrl(url) {
   }
 }
 
+// Download a (usually hotlink-protected, streamed) video from the background.
+// Host permissions bypass CORS and `credentials:'include'` reuses the page's
+// cookies; a temporary declarativeNetRequest rule injects the Referer/Origin
+// (fetch forbids setting those headers directly) that CDNs like TikTok require.
+const DNR_REFERER_RULE_ID = 8931;
+async function downloadWithReferer(url, pageUrl) {
+  let host = '';
+  let referer = '';
+  let origin = '';
+  try {
+    const u = new URL(url);
+    host = u.hostname;
+  } catch {
+    return null;
+  }
+  try {
+    if (pageUrl) {
+      const p = new URL(pageUrl);
+      origin = p.origin;
+      referer = p.origin + '/';
+    }
+  } catch { /* ignore */ }
+
+  const canDNR =
+    typeof chrome !== 'undefined' &&
+    chrome.declarativeNetRequest &&
+    typeof chrome.declarativeNetRequest.updateSessionRules === 'function';
+
+  if (canDNR && referer) {
+    try {
+      await chrome.declarativeNetRequest.updateSessionRules({
+        removeRuleIds: [DNR_REFERER_RULE_ID],
+        addRules: [
+          {
+            id: DNR_REFERER_RULE_ID,
+            priority: 1,
+            action: {
+              type: 'modifyHeaders',
+              requestHeaders: [
+                { header: 'referer', operation: 'set', value: referer },
+                { header: 'origin', operation: 'set', value: origin || referer },
+              ],
+            },
+            condition: {
+              requestDomains: [host],
+              resourceTypes: ['xmlhttprequest', 'media', 'other', 'sub_frame', 'image'],
+            },
+          },
+        ],
+      });
+    } catch { /* best effort */ }
+  }
+
+  try {
+    const resp = await fetch(url, { credentials: 'include', redirect: 'follow', headers: { Accept: '*/*' } });
+    if (!resp.ok) return null;
+    const blob = await resp.blob();
+    return blob && blob.size ? blob : null;
+  } catch {
+    return null;
+  } finally {
+    if (canDNR) {
+      try {
+        await chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [DNR_REFERER_RULE_ID] });
+      } catch { /* ignore */ }
+    }
+  }
+}
+
 const MAX_SHOT_HEIGHT = 18000; // cap absurdly tall pages
 
 async function captureViewport(tabId, { width, height, mobile, dsf }) {
@@ -332,17 +401,21 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === 'FETCH_AND_UPLOAD') {
     (async () => {
       try {
-        const resp = await fetch(msg.url, { headers: { Accept: '*/*' }, redirect: 'follow' });
-        if (!resp.ok) {
-          sendResponse({ ok: false, error: `Could not download video (${resp.status})` });
+        const blob = await downloadWithReferer(msg.url, msg.pageUrl || '');
+        if (!blob) {
+          sendResponse({ ok: false, error: 'Could not download this video (the source blocked the request).' });
           return;
         }
-        const blob = await resp.blob();
-        if (!blob || !blob.size) {
-          sendResponse({ ok: false, error: 'Downloaded video was empty' });
+        if (blob.size < 10240) {
+          sendResponse({ ok: false, error: 'The source returned an invalid/empty video.' });
           return;
         }
-        const contentType = blob.type || msg.contentType || (msg.isVideo ? 'video/mp4' : 'image/jpeg');
+        const ct = blob.type || '';
+        if (/^text\/html/i.test(ct)) {
+          sendResponse({ ok: false, error: 'The source returned a web page instead of the video.' });
+          return;
+        }
+        const contentType = ct || msg.contentType || (msg.isVideo ? 'video/mp4' : 'image/jpeg');
 
         const sr = await toolFetch('/api/extension/sign-creative', {
           method: 'POST',

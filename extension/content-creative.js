@@ -741,23 +741,14 @@ function isWasabiTool() {
 
     // For blob:/data: sources we must get the bytes to the server somehow.
     if (!payload.mediaUrl && src) {
-      // Videos: the blob is usually an MSE stream (can't be read) or over the
-      // 4MB inline cap. Recover the real progressive URL — the page's embedded
-      // playAddr (TikTok/IG) first, then whatever the sniffer saw — so the
-      // server can download the full file (with Referer) at no size limit.
-      if (isVideo) {
-        const cdn = await resolveVideoUrl(mediaEl, true);
-        if (cdn) {
-          payload.mediaUrl = cdn;
-          return { payload };
-        }
-      }
+      // Streamed videos (blob:/MSE — TikTok/FB/IG) can't be shipped inline and
+      // the server can't fetch the CDN URL (needs the browser's cookies +
+      // Referer). Bail out to the background download+upload path in doSave.
+      if (isVideo) return { error: 'video streamed' };
       const inline = await readInline(src);
       if (inline) {
         payload.mediaBase64 = inline.base64;
         payload.contentType = inline.type;
-      } else if (isVideo) {
-        return { error: 'video too large / streamed' };
       } else {
         return { error: 'could not read media' };
       }
