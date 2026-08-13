@@ -742,10 +742,11 @@ function isWasabiTool() {
     // For blob:/data: sources we must get the bytes to the server somehow.
     if (!payload.mediaUrl && src) {
       // Videos: the blob is usually an MSE stream (can't be read) or over the
-      // 4MB inline cap. First try to recover the real fbcdn URL the sniffer saw
-      // so the server can download the full file with no size limit.
+      // 4MB inline cap. Recover the real progressive URL — the page's embedded
+      // playAddr (TikTok/IG) first, then whatever the sniffer saw — so the
+      // server can download the full file (with Referer) at no size limit.
       if (isVideo) {
-        const cdn = await resolveCdnUrl(mediaEl);
+        const cdn = await resolveVideoUrl(mediaEl, true);
         if (cdn) {
           payload.mediaUrl = cdn;
           return { payload };
@@ -788,9 +789,15 @@ function isWasabiTool() {
         const s = document.getElementById(id);
         const txt = s && s.textContent;
         if (!txt) continue;
-        const m = txt.match(/"(?:playAddr|downloadAddr|play_addr|download_addr)":"(https?:\\?\/\\?\/[^"]+)"/i);
+        const m = txt.match(/"(?:playAddr|downloadAddr|play_addr|download_addr)":"(https?:[^"]+)"/i);
         if (m && m[1]) {
-          return m[1].replace(/\\u002F/gi, '/').replace(/\\\//g, '/').replace(/\\/g, '');
+          return m[1]
+            .replace(/\\u002F/gi, '/')
+            .replace(/\\u0026/gi, '&')
+            .replace(/\\u003D/gi, '=')
+            .replace(/\\u003F/gi, '?')
+            .replace(/\\\//g, '/')
+            .replace(/\\/g, '');
         }
       }
     } catch { /* ignore */ }

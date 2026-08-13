@@ -148,7 +148,7 @@ export async function POST(req: NextRequest) {
     }
   }
   if (!buffer && mediaUrl && /^https?:\/\//i.test(mediaUrl)) {
-    const fetched = await fetchMedia(mediaUrl, pageUrl);
+    const fetched = await fetchMedia(mediaUrl, pageUrl, body.mediaType === 'video' ? 45000 : 12000);
     if (fetched) {
       buffer = fetched.buffer;
       if (!contentType) contentType = fetched.contentType;
@@ -242,6 +242,28 @@ export async function POST(req: NextRequest) {
 
   // Short videos → transcribe inline; long videos → skip (manual on-demand).
   const mediaType = mediaTypeForContentType(contentType);
+
+  // A video record that points only at a remote CDN URL is useless: those URLs
+  // are short-lived / range-scoped and won't play back. Require real bytes
+  // (server-fetched or pre-uploaded via signed URL). Never persist a dead card.
+  if (mediaType === 'video' && !buffer && !storagePath) {
+    if (Object.keys(brandPatch).length > 0) {
+      return NextResponse.json({
+        success: true,
+        savedConfig: true,
+        captured: false,
+        message: 'Auto-scraping enabled — this video will be captured by the scheduled scrape.',
+      });
+    }
+    return NextResponse.json(
+      {
+        error:
+          'Could not download this video (the source blocked the request). Open it on its own page and try again, or enable auto-scraping.',
+      },
+      { status: 422 },
+    );
+  }
+
   let transcript = '';
   if (mediaType === 'video' && buffer && buffer.length <= SHORT_VIDEO_MAX_BYTES) {
     transcript = await transcribeVideo(buffer, contentType, 120000);
