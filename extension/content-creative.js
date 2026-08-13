@@ -44,6 +44,40 @@ function isWasabiTool() {
   // directly — the user is steered to auto-scraping instead.
   const MAX_INLINE_BYTES = 4 * 1024 * 1024;
 
+  // ── Video CDN resolution ───────────────────────────────────────────────────
+  // The MAIN-world sniffer (inject-sniffer.js) posts real fbcdn video URLs it
+  // sees on the wire. We keep a short rolling list so that, when the user saves
+  // a blob:/streamed video, we can hand the server a downloadable URL instead of
+  // failing on the inline size cap.
+  const capturedVideoUrls = []; // { url, t }
+  window.addEventListener('message', (e) => {
+    if (e.source !== window) return;
+    const d = e.data;
+    if (!d || typeof d !== 'object' || !d.__wasabiVideoUrl) return;
+    capturedVideoUrls.push({ url: String(d.__wasabiVideoUrl), t: d.t || Date.now() });
+    if (capturedVideoUrls.length > 40) capturedVideoUrls.shift();
+  });
+
+  // Try to resolve the real CDN URL for a (blob) video. Nudges the element to
+  // (re)stream so a fresh segment URL is captured, then returns the most recent
+  // capture. Returns '' if nothing was seen.
+  async function resolveCdnUrl(mediaEl) {
+    const before = capturedVideoUrls.length;
+    try {
+      if (mediaEl && typeof mediaEl.play === 'function') {
+        const p = mediaEl.play();
+        if (p && typeof p.catch === 'function') p.catch(() => {});
+      }
+    } catch { /* ignore */ }
+    const deadline = Date.now() + 1500;
+    while (Date.now() < deadline) {
+      if (capturedVideoUrls.length > before) break;
+      await new Promise((r) => setTimeout(r, 120));
+    }
+    if (!capturedVideoUrls.length) return '';
+    return capturedVideoUrls[capturedVideoUrls.length - 1].url;
+  }
+
   // ── Shadow host ──────────────────────────────────────────────────────────
   const host = document.createElement('div');
   host.id = 'wasabi-creative-host';
@@ -684,7 +718,7 @@ function isWasabiTool() {
   }
 
   // Build a SAVE_CREATIVE payload for one media. Returns { payload } or { error }.
-  async function buildCreativePayload(projectId, src, isVideo, name) {
+  async function buildCreativePayload(projectId, src, isVideo, name, mediaEl) {
     const payload = {
       type: 'SAVE_CREATIVE',
       projectId,
@@ -696,8 +730,18 @@ function isWasabiTool() {
     };
     applyDestination(payload);
 
-    // For blob:/data: sources we must ship the bytes ourselves.
+    // For blob:/data: sources we must get the bytes to the server somehow.
     if (!payload.mediaUrl && src) {
+      // Videos: the blob is usually an MSE stream (can't be read) or over the
+      // 4MB inline cap. First try to recover the real fbcdn URL the sniffer saw
+      // so the server can download the full file with no size limit.
+      if (isVideo) {
+        const cdn = await resolveCdnUrl(mediaEl);
+        if (cdn) {
+          payload.mediaUrl = cdn;
+          return { payload };
+        }
+      }
       const inline = await readInline(src);
       if (inline) {
         payload.mediaBase64 = inline.base64;
@@ -712,13 +756,13 @@ function isWasabiTool() {
   }
 
   async function importSelected(projectId, saveBtn) {
-    const items = [...selected.values()];
+    const items = [...selected.entries()].map(([el, v]) => ({ el, ...v }));
     let ok = 0;
     let fail = 0;
     for (let i = 0; i < items.length; i++) {
       setStatus(`<span class="spin"></span>Importing ${i + 1}/${items.length}…`, 'muted');
       const it = items[i];
-      const built = await buildCreativePayload(projectId, it.src, it.isVideo, it.name);
+      const built = await buildCreativePayload(projectId, it.src, it.isVideo, it.name, it.el);
       if (built.error) { fail++; continue; }
       const res = await sendMessage(built.payload);
       if (res && res.ok) ok++;
@@ -825,7 +869,7 @@ function isWasabiTool() {
     if (!pop.__media) { saveBtn.disabled = false; return; }
     setStatus('<span class="spin"></span>Saving…', 'muted');
 
-    const built = await buildCreativePayload(projectId, src, isVideo, nameInput.value);
+    const built = await buildCreativePayload(projectId, src, isVideo, nameInput.value, pop.__media);
     if (built.error) {
       setStatus(
         isVideo
