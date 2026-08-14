@@ -983,6 +983,9 @@ function CreativeDetailPanel({
                   className="w-full rounded-lg border border-border bg-black max-h-72"
                 />
               )}
+              {cleanPath && cleanStatus === "done" && cleanErr && (
+                <p className="text-[10px] text-amber-600">{cleanErr}</p>
+              )}
               {cleanStatus === "done" && !cleanPath && (
                 <p className="text-[10px] text-amber-600">
                   {cleanErr || "The captions couldn’t be removed cleanly on this video."}

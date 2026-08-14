@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import {
   getSupabase, uploadFile, makeWorkDir, downloadSource, probeDuration,
-  run, FFMPEG, ffprobeInfo,
+  run, FFMPEG, ffprobeInfo, cutClip,
 } from './_shared/video';
 import { captionMasks, writeMaskVideo, maskIsTrustworthy } from './_shared/caption-mask';
 
@@ -1136,32 +1136,62 @@ async function cleanWholeAd(
     const dur = await probeDuration(srcFile);
     if (!W || !H) return fail('could not probe video dimensions');
 
-    const res = await cleanClipFile({
-      supabase, token,
-      srcKey: claimed.file_path as string,
-      srcFile, textRegion: null,
-      W, H, fps, dur, workDir,
-      deadline: Date.now() + MAX_WAIT_MS,
-      keyBase: `${projectId}/ads-clean/${adId}`,
-      log, jitterMs: 0,
-    });
+    // Clean in SHORT windows — the granularity the remover is proven at — and
+    // BEST-EFFORT: a window that can't be cleaned keeps its original footage
+    // instead of failing the whole video. The shots pipeline discards unclean
+    // clips, but a whole video must always come back with a result, so here we
+    // never bail: worst case a window keeps its captions, most windows come out
+    // clean. Windows are concatenated and the original audio muxed back on top.
+    const deadline = Date.now() + MAX_WAIT_MS;
+    const SEG_SEC = 2.6;
+    const nseg = Math.max(1, Math.ceil(dur / SEG_SEC));
+    const segDur = dur / nseg;
+    log(`cleaning ${dur.toFixed(1)}s in ${nseg} window(s) of ~${segDur.toFixed(1)}s`);
 
-    if (!res.ok) {
-      await supabase.from('competitor_ads')
-        .update({ clean_status: 'done', clean_full_path: null, clean_error: res.note?.slice(0, 500) ?? null })
-        .eq('id', adId);
-      log('done — captions not removable, no clean copy stored');
-      return new Response('done', { status: 200 });
+    const pieces: string[] = [];
+    let cleanedCount = 0;
+    for (let i = 0; i < nseg; i++) {
+      const t0 = i * segDur;
+      const len = i === nseg - 1 ? Math.max(0.1, dur - t0) : segDur;
+      const segFile = path.join(workDir, `seg_${i}.mp4`);
+      await cutClip(srcFile, t0, t0 + len, segFile);
+      // Leave enough budget to still stitch + upload; keep the rest as-is.
+      if (Date.now() > deadline - 45000) { pieces.push(segFile); log(`window ${i}: out of time — kept original`); continue; }
+      const segKey = `${projectId}/ads-clean/${adId}_seg${i}_${Date.now()}.mp4`;
+      let out = segFile;
+      try {
+        await uploadFile(supabase, segKey, segFile, 'video/mp4');
+        const r = await cleanClipFile({
+          supabase, token, srcKey: segKey, srcFile: segFile, textRegion: null,
+          W, H, fps, dur: len, workDir, deadline,
+          keyBase: `${projectId}/ads-clean/${adId}_s${i}`, log, jitterMs: 0,
+        });
+        if (r.ok) { out = r.outFile; cleanedCount++; }
+        else log(`window ${i}: ${r.note || 'not cleanable'} — kept original`);
+      } catch (e) {
+        log(`window ${i} failed (${(e as Error).message}) — kept original`);
+      }
+      pieces.push(out);
     }
 
-    // cleanClipFile strips audio (-an); an ad should keep its voiceover. Mux the
-    // ORIGINAL audio back on the cleaned video (optional 1:a:0? → silent sources
-    // just yield a video-only result rather than failing).
+    // Concatenate the (mixed clean / original) windows, re-encoding to a uniform
+    // H.264 so the demuxer never chokes on parameter mismatches between windows.
+    const listFile = path.join(workDir, 'concat.txt');
+    fs.writeFileSync(listFile, pieces.map((p) => `file '${p.replace(/\\/g, '/')}'`).join('\n'), 'utf8');
+    const stitched = path.join(workDir, 'stitched.mp4');
+    await run(FFMPEG, [
+      '-y', '-f', 'concat', '-safe', '0', '-i', listFile,
+      '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '20', '-preset', 'veryfast',
+      '-movflags', '+faststart', '-an', stitched,
+    ]);
+
+    // cleanClipFile / cutClip strip audio (-an); an ad should keep its voiceover.
+    // Mux the ORIGINAL audio back (optional 1:a:0? → silent sources stay video-only).
     const withAudio = path.join(workDir, 'clean-audio.mp4');
-    let finalFile = res.outFile;
+    let finalFile = stitched;
     try {
       await run(FFMPEG, [
-        '-y', '-i', res.outFile, '-i', srcFile,
+        '-y', '-i', stitched, '-i', srcFile,
         '-map', '0:v:0', '-map', '1:a:0?',
         '-c:v', 'copy', '-c:a', 'aac', '-b:a', '160k',
         '-movflags', '+faststart', '-shortest', withAudio,
@@ -1173,10 +1203,13 @@ async function cleanWholeAd(
 
     const cleanKey = `${projectId}/ads-clean/${adId}_${Date.now()}.mp4`;
     await uploadFile(supabase, cleanKey, finalFile, 'video/mp4');
+    const note = cleanedCount === nseg
+      ? null
+      : `${cleanedCount}/${nseg} windows fully cleaned — the rest kept original footage`;
     await supabase.from('competitor_ads')
-      .update({ clean_status: 'done', clean_full_path: cleanKey, clean_error: res.note ? res.note.slice(0, 500) : null })
+      .update({ clean_status: 'done', clean_full_path: cleanKey, clean_error: note })
       .eq('id', adId);
-    log(`done — ${cleanKey}`);
+    log(`done — ${cleanKey} (${cleanedCount}/${nseg} windows cleaned)`);
     return new Response('done', { status: 200 });
   } catch (e) {
     return fail((e as Error).message);
