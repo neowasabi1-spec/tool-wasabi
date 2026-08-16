@@ -762,6 +762,10 @@ export async function cleanClipFile(opts: {
   keyBase: string;       // prefix for temporary mask/pass uploads
   log: (...a: unknown[]) => void;
   jitterMs?: number;     // random pre-delay to spread parallel shot jobs (0 for one-offs)
+  // When the caption can't be reconstructed, ERASE its band (soft blur) instead
+  // of giving up. Shots leave a clip out of the pool (default); a whole video
+  // wants the text gone even if the patch is visible, so it sets this true.
+  eraseIfUnreadable?: boolean;
 }): Promise<CleanResult> {
   const {
     supabase, token, srcKey, srcFile, textRegion,
@@ -939,9 +943,23 @@ export async function cleanClipFile(opts: {
     try {
       const maxDrop = Math.max(2, Math.floor(leftover.frames * MAX_DROP));
       if (captionReadable && leftover.bad.length > maxDrop) {
-        unusable = true;
-        note = `caption still readable on ${leftover.bad.length}/${leftover.frames} frames — shot left out of the pool`;
-        log(`stage 2a: ${note}`);
+        const rect = opts.eraseIfUnreadable && leftover.box
+          ? toRect({ b: leftover.box, t0: 0, t1: dur + 1 }, W, H)
+          : null;
+        if (rect) {
+          const patched = path.join(workDir, 'clean2a-erase.mp4');
+          await run(FFMPEG, [
+            '-y', '-i', outFile, '-filter_complex', buildEraseGraph([rect]),
+            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-an', patched,
+          ]);
+          fs.copyFileSync(patched, outFile);
+          note = `caption not reconstructable — band erased (${leftover.bad.length}/${leftover.frames} frames)`;
+          log(`stage 2a: ${note}`);
+        } else {
+          unusable = true;
+          note = `caption still readable on ${leftover.bad.length}/${leftover.frames} frames — shot left out of the pool`;
+          log(`stage 2a: ${note}`);
+        }
       } else if (leftover.bad.length <= maxDrop) {
         const patched = path.join(workDir, 'clean2a.mp4');
         await run(FFMPEG, [
@@ -1051,9 +1069,23 @@ export async function cleanClipFile(opts: {
         if (!left.bad.length) {
           log('verified: no caption left in the result');
         } else if (left.bad.length > maxDrop) {
-          unusable = true;
-          note = `caption still readable on ${left.bad.length}/${left.frames} frames — shot left out of the pool`;
-          log(`final gate: ${note}`);
+          const rect = opts.eraseIfUnreadable && left.box
+            ? toRect({ b: left.box, t0: 0, t1: dur + 1 }, W, H)
+            : null;
+          if (rect) {
+            const patched = path.join(workDir, 'clean3-erase.mp4');
+            await run(FFMPEG, [
+              '-y', '-i', outFile, '-filter_complex', buildEraseGraph([rect]),
+              '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-an', patched,
+            ]);
+            fs.copyFileSync(patched, outFile);
+            note = `caption not reconstructable — band erased (${left.bad.length}/${left.frames} frames)`;
+            log(`final gate: ${note}`);
+          } else {
+            unusable = true;
+            note = `caption still readable on ${left.bad.length}/${left.frames} frames — shot left out of the pool`;
+            log(`final gate: ${note}`);
+          }
         } else if (left.box) {
           const patched = path.join(workDir, 'clean3.mp4');
           await run(FFMPEG, [
@@ -1165,6 +1197,7 @@ async function cleanWholeAd(
           supabase, token, srcKey: segKey, srcFile: segFile, textRegion: null,
           W, H, fps, dur: len, workDir, deadline,
           keyBase: `${projectId}/ads-clean/${adId}_s${i}`, log, jitterMs: 0,
+          eraseIfUnreadable: true, // whole video: erase the caption band rather than keep the text
         });
         if (r.ok) { out = r.outFile; cleanedCount++; }
         else log(`window ${i}: ${r.note || 'not cleanable'} — kept original`);
