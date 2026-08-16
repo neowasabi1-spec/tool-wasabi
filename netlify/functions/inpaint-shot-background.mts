@@ -739,8 +739,8 @@ async function compareRemover(
 }
 
 export type CleanResult =
-  | { ok: true; outFile: string; note: string | null }
-  | { ok: false; unusable: true; note: string };
+  | { ok: true; outFile: string; note: string | null; band?: { y0: number; y1: number } | null }
+  | { ok: false; unusable: true; note: string; band?: { y0: number; y1: number } | null };
 
 /**
  * Remove burned-in captions from ONE video file and return a browser-playable
@@ -1101,7 +1101,7 @@ export async function cleanClipFile(opts: {
     }
   }
 
-  if (unusable) return { ok: false, unusable: true, note: note || 'caption not removable' };
+  if (unusable) return { ok: false, unusable: true, note: note || 'caption not removable', band: captionBand };
 
   // Normalise to browser-playable H.264 (MiniMax hands back mp4v that <video> can't decode).
   const playable = path.join(workDir, 'clean-h264.mp4');
@@ -1117,7 +1117,7 @@ export async function cleanClipFile(opts: {
     log(`h264 normalise failed, uploading as-is: ${(e as Error).message}`);
   }
 
-  return { ok: true, outFile, note };
+  return { ok: true, outFile, note, band: captionBand };
 }
 
 /**
@@ -1180,17 +1180,29 @@ async function cleanWholeAd(
     const segDur = dur / nseg;
     log(`cleaning ${dur.toFixed(1)}s in ${nseg} window(s) of ~${segDur.toFixed(1)}s`);
 
-    const pieces: string[] = [];
-    let cleanedCount = 0;
+    type Piece = { file: string; segFile: string; len: number; cleaned: boolean };
+    const pieces: Piece[] = [];
+    // The caption sits in the same vertical band for the whole video, so learn
+    // that band from the windows the mask path DID clean, then reuse it to erase
+    // the band on windows that couldn't be cleaned — no window keeps its text.
+    let learnedBand: { y0: number; y1: number } | null = null;
+    const mergeBand = (b: { y0: number; y1: number } | null | undefined) => {
+      if (!b) return;
+      learnedBand = learnedBand
+        ? { y0: Math.min(learnedBand.y0, b.y0), y1: Math.max(learnedBand.y1, b.y1) }
+        : { y0: b.y0, y1: b.y1 };
+    };
+
     for (let i = 0; i < nseg; i++) {
       const t0 = i * segDur;
       const len = i === nseg - 1 ? Math.max(0.1, dur - t0) : segDur;
       const segFile = path.join(workDir, `seg_${i}.mp4`);
       await cutClip(srcFile, t0, t0 + len, segFile);
       // Leave enough budget to still stitch + upload; keep the rest as-is.
-      if (Date.now() > deadline - 45000) { pieces.push(segFile); log(`window ${i}: out of time — kept original`); continue; }
+      if (Date.now() > deadline - 45000) { pieces.push({ file: segFile, segFile, len, cleaned: false }); log(`window ${i}: out of time — kept original`); continue; }
       const segKey = `${projectId}/ads-clean/${adId}_seg${i}_${Date.now()}.mp4`;
       let out = segFile;
+      let cleaned = false;
       try {
         await uploadFile(supabase, segKey, segFile, 'video/mp4');
         const r = await cleanClipFile({
@@ -1199,18 +1211,50 @@ async function cleanWholeAd(
           keyBase: `${projectId}/ads-clean/${adId}_s${i}`, log, jitterMs: 0,
           eraseIfUnreadable: true, // whole video: erase the caption band rather than keep the text
         });
-        if (r.ok) { out = r.outFile; cleanedCount++; }
-        else log(`window ${i}: ${r.note || 'not cleanable'} — kept original`);
+        mergeBand(r.band);
+        if (r.ok) { out = r.outFile; cleaned = true; }
+        else log(`window ${i}: ${r.note || 'not cleanable'} — will retry with the learned band`);
       } catch (e) {
-        log(`window ${i} failed (${(e as Error).message}) — kept original`);
+        log(`window ${i} failed (${(e as Error).message}) — will retry with the learned band`);
       }
-      pieces.push(out);
+      pieces.push({ file: out, segFile, len, cleaned });
+    }
+
+    // Second pass: windows that still carry their original footage get the caption
+    // band (learned above) erased, so every window ends up text-free.
+    let cleanedCount = pieces.filter((p) => p.cleaned).length;
+    const band = learnedBand as { y0: number; y1: number } | null;
+    if (band && cleanedCount < nseg) {
+      const box: Box = {
+        x0: 0.01, x1: 0.99,
+        y0: Math.max(0, band.y0 - 0.02),
+        y1: Math.min(1, band.y1 + 0.02),
+      };
+      for (let i = 0; i < pieces.length; i++) {
+        const p = pieces[i];
+        if (p.cleaned) continue;
+        const rect = toRect({ b: box, t0: 0, t1: p.len + 1 }, W, H);
+        if (!rect) continue;
+        try {
+          const erased = path.join(workDir, `erase_${i}.mp4`);
+          await run(FFMPEG, [
+            '-y', '-i', p.segFile, '-filter_complex', buildEraseGraph([rect]),
+            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-an', erased,
+          ]);
+          p.file = erased;
+          p.cleaned = true;
+          cleanedCount++;
+          log(`window ${i}: erased the caption band with the learned region`);
+        } catch (e) {
+          log(`window ${i}: band-erase fallback failed (${(e as Error).message}) — kept original`);
+        }
+      }
     }
 
     // Concatenate the (mixed clean / original) windows, re-encoding to a uniform
     // H.264 so the demuxer never chokes on parameter mismatches between windows.
     const listFile = path.join(workDir, 'concat.txt');
-    fs.writeFileSync(listFile, pieces.map((p) => `file '${p.replace(/\\/g, '/')}'`).join('\n'), 'utf8');
+    fs.writeFileSync(listFile, pieces.map((p) => `file '${p.file.replace(/\\/g, '/')}'`).join('\n'), 'utf8');
     const stitched = path.join(workDir, 'stitched.mp4');
     await run(FFMPEG, [
       '-y', '-f', 'concat', '-safe', '0', '-i', listFile,
@@ -1238,7 +1282,7 @@ async function cleanWholeAd(
     await uploadFile(supabase, cleanKey, finalFile, 'video/mp4');
     const note = cleanedCount === nseg
       ? null
-      : `${cleanedCount}/${nseg} windows fully cleaned — the rest kept original footage`;
+      : `${cleanedCount}/${nseg} windows cleared of captions — the rest kept original footage (no caption band could be located)`;
     await supabase.from('competitor_ads')
       .update({ clean_status: 'done', clean_full_path: cleanKey, clean_error: note })
       .eq('id', adId);
