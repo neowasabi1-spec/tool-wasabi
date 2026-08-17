@@ -47,6 +47,11 @@ import {
   saveSwipeToArchive,
   listFunnels,
   saveFunnelPage,
+  listCompetitors,
+  addCompetitor,
+  scrapeCompetitor,
+  saveCreative,
+  listCreatives,
 } from '@/lib/mcp/tools';
 
 /** Pull the raw fsk_ API key off the request so tools can reuse /api/v1/*. */
@@ -252,6 +257,83 @@ const TOOLS = [
       required: ['assetId'],
     },
   },
+  // ── Competitor Library tools (what the browser extension does, server-side) ──
+  {
+    name: 'list_competitors',
+    description:
+      "List competitor brands in the Competitor Library, with per-brand creative counts. Optionally scope to one project. Use a brand's id with save_creative / scrape_competitor / list_creatives.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string', description: 'Optional project id to scope the list.' },
+      },
+    },
+  },
+  {
+    name: 'add_competitor',
+    description:
+      'Add (or reuse) a competitor brand in a project. Pass adsLibraryUrl + autoScrape=true to enable scheduled Meta Ad Library monitoring.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string', description: 'The project id (from list_projects).' },
+        name: { type: 'string', description: 'Competitor display name.' },
+        adsLibraryUrl: { type: 'string', description: 'Meta Ad Library URL to monitor.' },
+        frequency: { type: 'string', description: "Scrape cadence, e.g. 'every_7_days'." },
+        scrapeCount: { type: 'number', description: 'How many ads to pull per run (default 10).' },
+        autoScrape: { type: 'boolean', description: 'Enable scheduled monitoring.' },
+      },
+      required: ['projectId', 'name'],
+    },
+  },
+  {
+    name: 'scrape_competitor',
+    description:
+      'Start a Meta Ad Library scrape for a competitor now (like the "Scrape now" button). Pass an existing brandId, or name + adsLibraryUrl to create it first. Ingestion is async. Needs APIFY_KEY configured.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string', description: 'The project id.' },
+        brandId: { type: 'number', description: 'Existing competitor brand id.' },
+        name: { type: 'string', description: 'Competitor name (if creating on the fly).' },
+        adsLibraryUrl: { type: 'string', description: 'Meta Ad Library URL (required if creating on the fly).' },
+      },
+      required: ['projectId'],
+    },
+  },
+  {
+    name: 'save_creative',
+    description:
+      "Save one competitor creative (image or video) from a URL into a project's Competitor Library — the bytes are fetched server-side and stored (videos auto-split into shots). Groups under an existing brandId, a brandName, or the source domain.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string', description: 'The destination project id.' },
+        mediaUrl: { type: 'string', description: 'Direct http(s) URL of the image or video.' },
+        mediaType: { type: 'string', enum: ['image', 'video'], description: 'Optional hint.' },
+        pageUrl: { type: 'string', description: 'The page the creative was seen on (sets Referer + brand domain).' },
+        brandId: { type: 'number', description: 'Save under this existing competitor.' },
+        brandName: { type: 'string', description: 'Create/reuse a competitor by this name (overrides domain).' },
+        name: { type: 'string', description: 'Creative label.' },
+        headline: { type: 'string' },
+        hook: { type: 'string' },
+        bodyText: { type: 'string', description: 'Ad body / description.' },
+      },
+      required: ['projectId', 'mediaUrl'],
+    },
+  },
+  {
+    name: 'list_creatives',
+    description: 'List saved creatives in a project (optionally filtered to one competitor brandId).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string', description: 'The project id.' },
+        brandId: { type: 'number', description: 'Optional competitor brand id filter.' },
+      },
+      required: ['projectId'],
+    },
+  },
   {
     name: 'list_funnels',
     description: 'List the funnel pages in the Front-End Funnel workspace.',
@@ -330,6 +412,43 @@ async function callTool(
         category: args.category !== undefined ? String(args.category) : undefined,
         tags: Array.isArray(args.tags) ? (args.tags as string[]) : undefined,
         projectId: args.projectId !== undefined ? String(args.projectId) : undefined,
+      });
+    // ── Competitor Library tools ─────────────────────────────────────────
+    case 'list_competitors':
+      return listCompetitors(args.projectId ? String(args.projectId) : undefined);
+    case 'add_competitor':
+      return addCompetitor({
+        projectId: String(args.projectId || ''),
+        name: String(args.name || ''),
+        adsLibraryUrl: args.adsLibraryUrl !== undefined ? String(args.adsLibraryUrl) : undefined,
+        frequency: args.frequency !== undefined ? String(args.frequency) : undefined,
+        scrapeCount: args.scrapeCount !== undefined ? Number(args.scrapeCount) : undefined,
+        autoScrape: args.autoScrape === true || args.autoScrape === 'true',
+      });
+    case 'scrape_competitor':
+      return scrapeCompetitor({
+        projectId: String(args.projectId || ''),
+        brandId: args.brandId !== undefined ? Number(args.brandId) : undefined,
+        name: args.name !== undefined ? String(args.name) : undefined,
+        adsLibraryUrl: args.adsLibraryUrl !== undefined ? String(args.adsLibraryUrl) : undefined,
+      });
+    case 'save_creative':
+      return saveCreative({
+        projectId: String(args.projectId || ''),
+        mediaUrl: String(args.mediaUrl || ''),
+        mediaType: args.mediaType === 'video' ? 'video' : args.mediaType === 'image' ? 'image' : undefined,
+        pageUrl: args.pageUrl !== undefined ? String(args.pageUrl) : undefined,
+        brandId: args.brandId !== undefined ? Number(args.brandId) : undefined,
+        brandName: args.brandName !== undefined ? String(args.brandName) : undefined,
+        name: args.name !== undefined ? String(args.name) : undefined,
+        headline: args.headline !== undefined ? String(args.headline) : undefined,
+        hook: args.hook !== undefined ? String(args.hook) : undefined,
+        bodyText: args.bodyText !== undefined ? String(args.bodyText) : undefined,
+      });
+    case 'list_creatives':
+      return listCreatives({
+        projectId: String(args.projectId || ''),
+        brandId: args.brandId !== undefined ? Number(args.brandId) : undefined,
       });
     case 'list_funnels':
       return listFunnels();

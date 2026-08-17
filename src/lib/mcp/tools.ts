@@ -403,6 +403,96 @@ export async function saveSwipeToArchive(
   });
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// COMPETITOR LIBRARY TOOLS — the server-backed actions the browser extension
+// performs (save creative, add/scrape competitor, list). These call the same
+// fsk_-keyed /api/v1/* routes the UI/extension use, so Neo/Morfeo write into the
+// exact same competitor_brands / competitor_ads tables the Project Hub reads.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** List competitor brands (optionally scoped to a project), with creative counts. */
+export async function listCompetitors(projectId?: string): Promise<{ count: number; competitors: unknown[] }> {
+  const qs = projectId ? `?projectId=${encodeURIComponent(projectId)}` : '';
+  const res = await v1<{ competitors: unknown[]; count: number }>('GET', `/api/v1/competitors${qs}`);
+  return { count: res.count ?? res.competitors?.length ?? 0, competitors: res.competitors || [] };
+}
+
+/** Add (or reuse) a competitor brand in a project. Optionally enable monitoring. */
+export async function addCompetitor(args: {
+  projectId: string;
+  name: string;
+  adsLibraryUrl?: string;
+  frequency?: string;
+  scrapeCount?: number;
+  autoScrape?: boolean;
+}): Promise<unknown> {
+  if (!args.projectId?.trim()) throw new Error("Missing required argument 'projectId'.");
+  if (!args.name?.trim()) throw new Error("Missing required argument 'name'.");
+  const res = await v1<{ competitor: unknown }>('POST', '/api/v1/competitors', {
+    projectId: args.projectId,
+    name: args.name.trim(),
+    adsLibraryUrl: args.adsLibraryUrl,
+    frequency: args.frequency,
+    scrapeCount: args.scrapeCount,
+    autoScrape: args.autoScrape,
+  });
+  return res.competitor;
+}
+
+/** Kick off an Apify Ad Library scrape for a competitor (creates it if needed). */
+export async function scrapeCompetitor(args: {
+  projectId: string;
+  brandId?: number;
+  name?: string;
+  adsLibraryUrl?: string;
+}): Promise<unknown> {
+  if (!args.projectId?.trim()) throw new Error("Missing required argument 'projectId'.");
+  return v1('POST', '/api/v1/competitors/scrape', {
+    projectId: args.projectId,
+    brandId: args.brandId,
+    name: args.name,
+    adsLibraryUrl: args.adsLibraryUrl,
+  });
+}
+
+/** Save one creative (image/video) from a URL into a project's Competitor Library. */
+export async function saveCreative(args: {
+  projectId: string;
+  mediaUrl: string;
+  mediaType?: 'image' | 'video';
+  pageUrl?: string;
+  brandId?: number;
+  brandName?: string;
+  name?: string;
+  headline?: string;
+  hook?: string;
+  bodyText?: string;
+}): Promise<unknown> {
+  if (!args.projectId?.trim()) throw new Error("Missing required argument 'projectId'.");
+  if (!args.mediaUrl?.trim()) throw new Error("Missing required argument 'mediaUrl'.");
+  return v1('POST', '/api/v1/creatives', {
+    projectId: args.projectId,
+    mediaUrl: args.mediaUrl.trim(),
+    mediaType: args.mediaType,
+    pageUrl: args.pageUrl,
+    brandId: args.brandId,
+    brandName: args.brandName,
+    name: args.name,
+    headline: args.headline,
+    hook: args.hook,
+    bodyText: args.bodyText,
+  });
+}
+
+/** List saved creatives in a project (optionally for one competitor). */
+export async function listCreatives(args: { projectId: string; brandId?: number }): Promise<{ count: number; creatives: unknown[] }> {
+  if (!args.projectId?.trim()) throw new Error("Missing required argument 'projectId'.");
+  const qs = new URLSearchParams({ projectId: args.projectId });
+  if (args.brandId) qs.set('brandId', String(args.brandId));
+  const res = await v1<{ creatives: unknown[]; count: number }>('GET', `/api/v1/creatives?${qs.toString()}`);
+  return { count: res.count ?? res.creatives?.length ?? 0, creatives: res.creatives || [] };
+}
+
 /** List funnel pages (Front-End Funnel workspace). */
 export async function listFunnels(): Promise<{ count: number; funnels: unknown[] }> {
   const res = await v1<{ funnels: unknown[] }>('GET', '/api/v1/funnels');
