@@ -544,6 +544,85 @@ async function miniMaxClip(opts: MaskOpts & { model: ModelInfo }): Promise<{ fil
   return { file, srcRgb, frames, band: cm.band };
 }
 
+/**
+ * Neural reconstruction of a KNOWN band.
+ *
+ * When the colour mask can't be trusted (so miniMaxClip bails) but we already
+ * know where the caption lives — e.g. learned from sibling windows of the same
+ * video — we can still hand the remover a mask: a solid white rectangle over
+ * that band for every frame. The model then rebuilds those pixels from temporal
+ * context instead of us blurring them. Returns the cleaned file, or null so the
+ * caller can fall back to a blur.
+ */
+async function bandInpaintClip(opts: {
+  supabase: ReturnType<typeof getSupabase>;
+  token: string;
+  model: ModelInfo;
+  srcKey: string;      // already uploaded source window
+  srcFile: string;
+  maskKey: string;
+  band: { y0: number; y1: number };
+  W: number; H: number; fps: number; dur: number;
+  workDir: string; deadline: number; tag: string;
+  log: (...a: unknown[]) => void;
+}): Promise<string | null> {
+  const { supabase, token, model, srcKey, maskKey, band, W, H, fps, dur, workDir, deadline, tag, log } = opts;
+  const { version, props, videoField, maskField } = model;
+
+  const y = Math.max(0, Math.round(band.y0 * H)) & ~1;
+  const bh = Math.min(H - y, Math.round((band.y1 - band.y0) * H)) & ~1;
+  if (bh < 8) return null;
+  const frames = Math.max(1, Math.round(fps * dur));
+
+  // Solid white band on black, matching the clip's size/fps/length.
+  const maskFile = path.join(workDir, `bandmask_${tag}.mp4`);
+  await run(FFMPEG, [
+    '-y', '-f', 'lavfi', '-i', `color=c=black:s=${W}x${H}:d=${dur.toFixed(3)}:r=${Math.round(fps)}`,
+    '-vf', `drawbox=x=0:y=${y}:w=${W}:h=${bh}:color=white:t=fill`,
+    '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-an', maskFile,
+  ]);
+  await uploadFile(supabase, maskKey, maskFile, 'video/mp4');
+
+  const sign = async (key: string) => {
+    const { data } = await supabase.storage.from(BUCKET).createSignedUrl(key, 3600);
+    return data?.signedUrl || null;
+  };
+  const videoUrl = await sign(srcKey);
+  const maskUrl = await sign(maskKey);
+  if (!videoUrl || !maskUrl) { log(`${tag}: could not sign band-inpaint inputs`); return null; }
+
+  const input: Record<string, unknown> = { [videoField]: videoUrl, [maskField]: maskUrl };
+  const wanted: Record<string, number> = {
+    fps: Math.round(fps), num_frames: frames, width: W, height: H,
+    mask_dilation_iterations: 10, num_inference_steps: 12,
+  };
+  for (const [name, value] of Object.entries(wanted)) {
+    const spec = props[name];
+    if (!spec) continue;
+    const max = typeof spec.maximum === 'number' ? spec.maximum : Infinity;
+    const min = typeof spec.minimum === 'number' ? spec.minimum : 0;
+    input[name] = Math.max(min, Math.min(max, value));
+  }
+
+  let url: string | null = null;
+  try {
+    url = extractOutputUrl(await replicateRun(token, version, input, deadline, log));
+  } catch (e) {
+    log(`${tag}: band inpaint failed (${(e as Error).message})`);
+    return null;
+  }
+  if (!url) { log(`${tag}: band inpaint returned no video`); return null; }
+
+  const dl = await fetch(url);
+  if (!dl.ok) { log(`${tag}: could not download band-inpaint result (${dl.status})`); return null; }
+  const file = path.join(workDir, `bandclean_${tag}.mp4`);
+  fs.writeFileSync(file, Buffer.from(await dl.arrayBuffer()));
+
+  const outDur = await probeDuration(file);
+  if (outDur < dur - 0.3) { log(`${tag}: band inpaint truncated to ${outDur.toFixed(2)}s of ${dur.toFixed(2)}s`); return null; }
+  return file;
+}
+
 /** Cut [t0, t0+len) out of a clip, frame-accurate, re-encoded to H.264. */
 async function cutWindow(src: string, t0: number, len: number, out: string): Promise<void> {
   await run(FFMPEG, [
@@ -1221,32 +1300,55 @@ async function cleanWholeAd(
     }
 
     // Second pass: windows that still carry their original footage get the caption
-    // band (learned above) erased, so every window ends up text-free.
+    // band (learned above) rebuilt. First choice is neural RECONSTRUCTION — the
+    // remover repaints the band from temporal context, no blur. Only if that
+    // can't run do we blur-erase the band, so a window never keeps its text.
     let cleanedCount = pieces.filter((p) => p.cleaned).length;
     const band = learnedBand as { y0: number; y1: number } | null;
     if (band && cleanedCount < nseg) {
-      const box: Box = {
-        x0: 0.01, x1: 0.99,
-        y0: Math.max(0, band.y0 - 0.02),
-        y1: Math.min(1, band.y1 + 0.02),
-      };
+      const padded = { y0: Math.max(0, band.y0 - 0.02), y1: Math.min(1, band.y1 + 0.02) };
+      const box: Box = { x0: 0.01, x1: 0.99, y0: padded.y0, y1: padded.y1 };
+      const fbModel = await resolveMaskModel(token, log);
       for (let i = 0; i < pieces.length; i++) {
         const p = pieces[i];
         if (p.cleaned) continue;
-        const rect = toRect({ b: box, t0: 0, t1: p.len + 1 }, W, H);
-        if (!rect) continue;
-        try {
-          const erased = path.join(workDir, `erase_${i}.mp4`);
-          await run(FFMPEG, [
-            '-y', '-i', p.segFile, '-filter_complex', buildEraseGraph([rect]),
-            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-an', erased,
-          ]);
-          p.file = erased;
-          p.cleaned = true;
-          cleanedCount++;
-          log(`window ${i}: erased the caption band with the learned region`);
-        } catch (e) {
-          log(`window ${i}: band-erase fallback failed (${(e as Error).message}) — kept original`);
+        if (Date.now() > deadline - 45000) { log(`window ${i}: out of time for the fallback — kept original`); continue; }
+        let done = false;
+
+        // 1) Neural reconstruction of the learned band (rebuilds pixels).
+        if (fbModel) {
+          try {
+            const segKey = `${projectId}/ads-clean/${adId}_fb${i}_${Date.now()}.mp4`;
+            await uploadFile(supabase, segKey, p.segFile, 'video/mp4');
+            const rebuilt = await bandInpaintClip({
+              supabase, token, model: fbModel, srcKey: segKey, srcFile: p.segFile,
+              maskKey: `${projectId}/ads-clean/${adId}_fbmask${i}_${Date.now()}.mp4`,
+              band: padded, W, H, fps, dur: p.len, workDir, deadline, tag: `w${i}`, log,
+            });
+            if (rebuilt) {
+              p.file = rebuilt; p.cleaned = true; cleanedCount++; done = true;
+              log(`window ${i}: reconstructed the caption band neurally`);
+            }
+          } catch (e) {
+            log(`window ${i}: neural band reconstruct failed (${(e as Error).message})`);
+          }
+        }
+
+        // 2) Last resort: blur-erase the band so no text remains.
+        if (!done) {
+          const rect = toRect({ b: box, t0: 0, t1: p.len + 1 }, W, H);
+          if (!rect) continue;
+          try {
+            const erased = path.join(workDir, `erase_${i}.mp4`);
+            await run(FFMPEG, [
+              '-y', '-i', p.segFile, '-filter_complex', buildEraseGraph([rect]),
+              '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-an', erased,
+            ]);
+            p.file = erased; p.cleaned = true; cleanedCount++;
+            log(`window ${i}: blur-erased the caption band (neural reconstruct unavailable)`);
+          } catch (e) {
+            log(`window ${i}: band-erase fallback failed (${(e as Error).message}) — kept original`);
+          }
         }
       }
     }
