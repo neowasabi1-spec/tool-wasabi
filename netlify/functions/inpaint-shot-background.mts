@@ -1027,21 +1027,13 @@ export async function cleanClipFile(opts: {
     try {
       const maxDrop = Math.max(2, Math.floor(leftover.frames * MAX_DROP));
       if (opts.eraseIfUnreadable) {
-        // Whole-video mode: NEVER drop frames — that shortens the clip and, once
-        // the windows are stitched and the audio muxed with -shortest, cuts the
-        // whole video (15s → 8s). Erase the caption band instead: same frame
-        // count, same length, audio stays in sync.
-        const rect = leftover.box ? toRect({ b: leftover.box, t0: 0, t1: dur + 1 }, W, H) : null;
-        if (rect) {
-          const patched = path.join(workDir, 'clean2a-erase.mp4');
-          await run(FFMPEG, [
-            '-y', '-i', outFile, '-filter_complex', buildEraseGraph([rect]),
-            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-an', patched,
-          ]);
-          fs.copyFileSync(patched, outFile);
-          note = `caption band erased on ${leftover.bad.length}/${leftover.frames} frames (length preserved)`;
-          log(`stage 2a: ${note}`);
-        }
+        // Whole-video mode: don't blur and don't drop frames here. Blurring
+        // leaves an opaque patch ("non ha ricostruito i pixel") and dropping
+        // frames shortens the video. Bail instead so the caller can NEURALLY
+        // reconstruct the band (pass 2) — real pixels, full length.
+        unusable = true;
+        note = `caption survived in-clip removal on ${leftover.bad.length}/${leftover.frames} frames — deferring to band reconstruction`;
+        log(`stage 2a: ${note}`);
       } else if (captionReadable && leftover.bad.length > maxDrop) {
         unusable = true;
         note = `caption still readable on ${leftover.bad.length}/${leftover.frames} frames — shot left out of the pool`;
@@ -1156,19 +1148,11 @@ export async function cleanClipFile(opts: {
         if (!left.bad.length) {
           log('verified: no caption left in the result');
         } else if (opts.eraseIfUnreadable) {
-          // Whole-video: erase the band, NEVER drop frames (dropping shortens the
-          // clip and, after stitch + -shortest audio mux, cuts the whole video).
-          const rect = left.box ? toRect({ b: left.box, t0: 0, t1: dur + 1 }, W, H) : null;
-          if (rect) {
-            const patched = path.join(workDir, 'clean3-erase.mp4');
-            await run(FFMPEG, [
-              '-y', '-i', outFile, '-filter_complex', buildEraseGraph([rect]),
-              '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-an', patched,
-            ]);
-            fs.copyFileSync(patched, outFile);
-            note = `caption band erased on ${left.bad.length}/${left.frames} frames (length preserved)`;
-            log(`final gate: ${note}`);
-          }
+          // Whole-video: don't blur / don't drop. Defer to pass-2 neural band
+          // reconstruction so pixels are rebuilt (not smeared) and length kept.
+          unusable = true;
+          note = `caption survived on ${left.bad.length}/${left.frames} frames — deferring to band reconstruction`;
+          log(`final gate: ${note}`);
         } else if (left.bad.length > maxDrop) {
           unusable = true;
           note = `caption still readable on ${left.bad.length}/${left.frames} frames — shot left out of the pool`;
@@ -1315,7 +1299,10 @@ async function cleanWholeAd(
     let cleanedCount = pieces.filter((p) => p.cleaned).length;
     const band = learnedBand as { y0: number; y1: number } | null;
     if (band && cleanedCount < nseg) {
-      const padded = { y0: Math.max(0, band.y0 - 0.02), y1: Math.min(1, band.y1 + 0.02) };
+      // Pad generously: captions drift vertically between scenes and can be two
+      // lines, so a tight band leaves text peeking out ("in alcuni punti si vede
+      // testo"). A wider band reconstructs a bit more background but removes it.
+      const padded = { y0: Math.max(0, band.y0 - 0.05), y1: Math.min(1, band.y1 + 0.05) };
       const box: Box = { x0: 0.01, x1: 0.99, y0: padded.y0, y1: padded.y1 };
       const fbModel = await resolveMaskModel(token, log);
       for (let i = 0; i < pieces.length; i++) {
@@ -1327,9 +1314,9 @@ async function cleanWholeAd(
         if (Date.now() > deadline - 15000) { log(`window ${i}: out of time for the fallback — kept original`); continue; }
         let done = false;
 
-        // 1) Neural reconstruction of the learned band (rebuilds pixels) — only
-        //    when there's ample time left for a Replicate round-trip.
-        if (fbModel && Date.now() < deadline - 90000) {
+        // 1) Neural reconstruction of the learned band (rebuilds pixels) — the
+        //    preferred path so text is replaced with real pixels, not a blur.
+        if (fbModel && Date.now() < deadline - 60000) {
           try {
             const segKey = `${projectId}/ads-clean/${adId}_fb${i}_${Date.now()}.mp4`;
             await uploadFile(supabase, segKey, p.segFile, 'video/mp4');
