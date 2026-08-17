@@ -1021,10 +1021,12 @@ export async function cleanClipFile(opts: {
   if (leftover?.bad.length && leftover.box) {
     try {
       const maxDrop = Math.max(2, Math.floor(leftover.frames * MAX_DROP));
-      if (captionReadable && leftover.bad.length > maxDrop) {
-        const rect = opts.eraseIfUnreadable && leftover.box
-          ? toRect({ b: leftover.box, t0: 0, t1: dur + 1 }, W, H)
-          : null;
+      if (opts.eraseIfUnreadable) {
+        // Whole-video mode: NEVER drop frames — that shortens the clip and, once
+        // the windows are stitched and the audio muxed with -shortest, cuts the
+        // whole video (15s → 8s). Erase the caption band instead: same frame
+        // count, same length, audio stays in sync.
+        const rect = leftover.box ? toRect({ b: leftover.box, t0: 0, t1: dur + 1 }, W, H) : null;
         if (rect) {
           const patched = path.join(workDir, 'clean2a-erase.mp4');
           await run(FFMPEG, [
@@ -1032,13 +1034,13 @@ export async function cleanClipFile(opts: {
             '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-an', patched,
           ]);
           fs.copyFileSync(patched, outFile);
-          note = `caption not reconstructable — band erased (${leftover.bad.length}/${leftover.frames} frames)`;
-          log(`stage 2a: ${note}`);
-        } else {
-          unusable = true;
-          note = `caption still readable on ${leftover.bad.length}/${leftover.frames} frames — shot left out of the pool`;
+          note = `caption band erased on ${leftover.bad.length}/${leftover.frames} frames (length preserved)`;
           log(`stage 2a: ${note}`);
         }
+      } else if (captionReadable && leftover.bad.length > maxDrop) {
+        unusable = true;
+        note = `caption still readable on ${leftover.bad.length}/${leftover.frames} frames — shot left out of the pool`;
+        log(`stage 2a: ${note}`);
       } else if (leftover.bad.length <= maxDrop) {
         const patched = path.join(workDir, 'clean2a.mp4');
         await run(FFMPEG, [
@@ -1147,10 +1149,10 @@ export async function cleanClipFile(opts: {
         const maxDrop = Math.max(2, Math.floor(left.frames * MAX_DROP));
         if (!left.bad.length) {
           log('verified: no caption left in the result');
-        } else if (left.bad.length > maxDrop) {
-          const rect = opts.eraseIfUnreadable && left.box
-            ? toRect({ b: left.box, t0: 0, t1: dur + 1 }, W, H)
-            : null;
+        } else if (opts.eraseIfUnreadable) {
+          // Whole-video: erase the band, NEVER drop frames (dropping shortens the
+          // clip and, after stitch + -shortest audio mux, cuts the whole video).
+          const rect = left.box ? toRect({ b: left.box, t0: 0, t1: dur + 1 }, W, H) : null;
           if (rect) {
             const patched = path.join(workDir, 'clean3-erase.mp4');
             await run(FFMPEG, [
@@ -1158,13 +1160,13 @@ export async function cleanClipFile(opts: {
               '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-an', patched,
             ]);
             fs.copyFileSync(patched, outFile);
-            note = `caption not reconstructable — band erased (${left.bad.length}/${left.frames} frames)`;
-            log(`final gate: ${note}`);
-          } else {
-            unusable = true;
-            note = `caption still readable on ${left.bad.length}/${left.frames} frames — shot left out of the pool`;
+            note = `caption band erased on ${left.bad.length}/${left.frames} frames (length preserved)`;
             log(`final gate: ${note}`);
           }
+        } else if (left.bad.length > maxDrop) {
+          unusable = true;
+          note = `caption still readable on ${left.bad.length}/${left.frames} frames — shot left out of the pool`;
+          log(`final gate: ${note}`);
         } else if (left.box) {
           const patched = path.join(workDir, 'clean3.mp4');
           await run(FFMPEG, [
