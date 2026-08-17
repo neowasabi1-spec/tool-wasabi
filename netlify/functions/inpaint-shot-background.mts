@@ -1016,6 +1016,11 @@ export async function cleanClipFile(opts: {
 
   let note: string | null = null;
   let unusable = false;
+  // The vertical region we actually worked on. captionBand is only set on the
+  // mask path; when the detector/erase path handles the clip we still want to
+  // report WHERE the caption was, so a whole-video caller can learn the band
+  // from any window (not just mask-path ones) and clean the rest.
+  let sawBox: Box | null = leftover?.box ?? null;
 
   // ── Stage 2a: frames still showing text. ──────────────────────────────────
   if (leftover?.bad.length && leftover.box) {
@@ -1146,6 +1151,7 @@ export async function cleanClipFile(opts: {
         if (!srcRgb) srcRgb = await rgbFrames(srcFile, W, H, dur, fps, workDir);
         const finalRgb = await rgbFrames(outFile, W, H, dur, fps, workDir);
         const left = analyzeLeftoverText(srcRgb.buf, finalRgb.buf, srcRgb.w, srcRgb.h, captionBand);
+        if (left.box) sawBox = left.box;
         const maxDrop = Math.max(2, Math.floor(left.frames * MAX_DROP));
         if (!left.bad.length) {
           log('verified: no caption left in the result');
@@ -1182,7 +1188,8 @@ export async function cleanClipFile(opts: {
     }
   }
 
-  if (unusable) return { ok: false, unusable: true, note: note || 'caption not removable', band: captionBand };
+  const resultBand = captionBand ?? (sawBox ? { y0: sawBox.y0, y1: sawBox.y1 } : null);
+  if (unusable) return { ok: false, unusable: true, note: note || 'caption not removable', band: resultBand };
 
   // Normalise to browser-playable H.264 (MiniMax hands back mp4v that <video> can't decode).
   const playable = path.join(workDir, 'clean-h264.mp4');
@@ -1198,7 +1205,7 @@ export async function cleanClipFile(opts: {
     log(`h264 normalise failed, uploading as-is: ${(e as Error).message}`);
   }
 
-  return { ok: true, outFile, note, band: captionBand };
+  return { ok: true, outFile, note, band: resultBand };
 }
 
 /**
@@ -1314,11 +1321,15 @@ async function cleanWholeAd(
       for (let i = 0; i < pieces.length; i++) {
         const p = pieces[i];
         if (p.cleaned) continue;
-        if (Date.now() > deadline - 45000) { log(`window ${i}: out of time for the fallback — kept original`); continue; }
+        // Only bail if there isn't even time to blur + stitch + upload. The blur
+        // step below is a couple of seconds, so it still runs when the slower
+        // neural pass can't — that's what stops "5/7" leaving raw captions.
+        if (Date.now() > deadline - 15000) { log(`window ${i}: out of time for the fallback — kept original`); continue; }
         let done = false;
 
-        // 1) Neural reconstruction of the learned band (rebuilds pixels).
-        if (fbModel) {
+        // 1) Neural reconstruction of the learned band (rebuilds pixels) — only
+        //    when there's ample time left for a Replicate round-trip.
+        if (fbModel && Date.now() < deadline - 90000) {
           try {
             const segKey = `${projectId}/ads-clean/${adId}_fb${i}_${Date.now()}.mp4`;
             await uploadFile(supabase, segKey, p.segFile, 'video/mp4');
