@@ -31,6 +31,40 @@ function getSupabase() {
   return createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
 }
 
+type SupabaseClient = ReturnType<typeof getSupabase>;
+
+/**
+ * Poll the pipeline_jobs row until the given step reaches a terminal state.
+ * Returns the step status ('completed' | 'failed' | 'skipped') or null on
+ * timeout. The step route is the single writer, so this is authoritative and
+ * immune to Netlify cutting the internal HTTP stream.
+ */
+async function pollStepOutcome(
+  supabase: SupabaseClient,
+  jobId: string,
+  stepKey: string,
+  timeoutMs: number,
+): Promise<string | null> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 3000));
+    const { data } = await supabase
+      .from('pipeline_jobs')
+      .select('status, steps')
+      .eq('id', jobId)
+      .single();
+    if (!data) continue;
+    if (data.status === 'canceled') return 'skipped';
+    const step = (Array.isArray(data.steps) ? data.steps : []).find(
+      (s: { key: string }) => s.key === stepKey,
+    ) as { status?: string } | undefined;
+    if (step?.status === 'completed' || step?.status === 'failed' || step?.status === 'skipped') {
+      return step.status;
+    }
+  }
+  return null;
+}
+
 function siteOrigin(req: Request): string {
   const raw =
     process.env.URL ||
@@ -88,37 +122,40 @@ export default async (req: Request) => {
     }
 
     log('running step', key);
-    let stepStatus = 'failed';
+
+    // Fire the step. We deliberately DO NOT trust the HTTP response: Netlify
+    // cuts internal function-to-function streaming at ~26s (undici throws
+    // "terminated"), yet the step route keeps running server-side and is the
+    // single writer of job state. So we swallow any fetch/stream error and
+    // poll the DB below for the authoritative outcome.
     try {
       const res = await fetch(`${origin}/api/pipeline/step`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ jobId, stepKey: key }),
       });
-      // The step route streams whitespace heartbeats then a final JSON line
-      // (to survive Netlify's ~26s inactivity timeout). Parse the last line.
-      const text = await res.text();
-      const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
-      let data: { stepStatus?: string } = {};
-      for (let i = lines.length - 1; i >= 0; i--) {
-        try { data = JSON.parse(lines[i]); break; } catch { /* heartbeat line */ }
-      }
-      stepStatus = data?.stepStatus || (res.ok ? 'completed' : 'failed');
-      log('step', key, '→', stepStatus);
+      await res.text().catch(() => '');
     } catch (e) {
-      log('step', key, 'request failed:', (e as Error).message);
-      // Mark the job failed so the UI doesn't spin forever.
-      await supabase
-        .from('pipeline_jobs')
-        .update({ status: 'failed', error: `Step ${key}: ${(e as Error).message}`.slice(0, 1000) })
-        .eq('id', jobId);
-      return new Response('step request failed', { status: 200 });
+      log('step', key, 'fetch ended early (expected on long steps):', (e as Error).message);
     }
 
-    if (stepStatus === 'failed') {
-      log('stopping — step failed');
-      return new Response('failed', { status: 200 });
+    // Poll the DB until the step settles (completed/failed) or we time out.
+    const outcome = await pollStepOutcome(supabase, jobId, key, 300000);
+    log('step', key, '→', outcome ?? 'timeout');
+
+    if (outcome === 'completed' || outcome === 'skipped') {
+      continue;
     }
+
+    // failed or timed out → stop the pipeline.
+    if (outcome !== 'failed') {
+      await supabase
+        .from('pipeline_jobs')
+        .update({ status: 'failed', current_step: key, error: `Step ${key}: timeout (nessun esito dopo 5 min)` })
+        .eq('id', jobId);
+    }
+    log('stopping — step did not complete:', outcome ?? 'timeout');
+    return new Response('failed', { status: 200 });
   }
 
   log('done');
