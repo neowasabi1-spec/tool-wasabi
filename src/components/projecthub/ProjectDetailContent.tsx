@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { FunnelTab } from '@/components/projecthub/funnel-builder/FunnelTab';
 import { GeneralBriefSection } from '@/components/projecthub/general-brief/GeneralBriefSection';
@@ -41,12 +41,18 @@ const SECTIONS = [
 
 export function ProjectDetailContent({ projectId }: { projectId: string }) {
   const router = useRouter();
-  const [activeSection, setActiveSection] = useState<Section>(() => {
-    if (typeof window === 'undefined') return 'brief';
-    const s = new URLSearchParams(window.location.search).get('section');
-    return SECTIONS.some((sec) => sec.id === s) ? (s as Section) : 'brief';
-  });
+  const [activeSection, setActiveSection] = useState<Section>('brief');
   const [collapsed, setCollapsed] = useState(false);
+
+  // Open the section requested via ?section=... (e.g. after launching the
+  // Autopilot from /projects). Runs on the client only, so it survives SSR
+  // hydration instead of being reset to the default 'brief'.
+  useEffect(() => {
+    const s = new URLSearchParams(window.location.search).get('section');
+    if (s && SECTIONS.some((sec) => sec.id === s)) {
+      setActiveSection(s as Section);
+    }
+  }, []);
 
   const { data: project, isLoading } = useGetProject(projectId, {
     query: { enabled: !!projectId, queryKey: getGetProjectQueryKey(projectId) },
