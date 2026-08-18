@@ -46,6 +46,8 @@ export function AutopilotSection({
   const [competitorLink, setCompetitorLink] = useState('');
   const [market, setMarket] = useState('');
   const [description, setDescription] = useState('');
+  const [templateUrl, setTemplateUrl] = useState('');
+  const [templates, setTemplates] = useState<Array<{ id: string; name: string; source_url: string; page_type?: string }>>([]);
   const [launching, setLaunching] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -92,6 +94,20 @@ export function AutopilotSection({
 
   useEffect(() => {
     loadHistory();
+    // Load funnel templates for the picker (source_url is used as design ref).
+    (async () => {
+      try {
+        const res = await fetch('/api/templates', { cache: 'no-store' });
+        if (!res.ok) return;
+        const rows = await res.json();
+        const list = (Array.isArray(rows) ? rows : rows?.templates || [])
+          .filter((t: { source_url?: string }) => t?.source_url)
+          .map((t: { id: string; name: string; source_url: string; page_type?: string }) => ({
+            id: String(t.id), name: t.name || t.source_url, source_url: t.source_url, page_type: t.page_type,
+          }));
+        setTemplates(list);
+      } catch { /* ignore */ }
+    })();
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
     };
@@ -114,6 +130,7 @@ export function AutopilotSection({
           competitorLink: competitorLink.trim() || undefined,
           market: market.trim() || undefined,
           description: description.trim() || undefined,
+          templateUrl: templateUrl.trim() || undefined,
         }),
       });
       const data = await res.json();
@@ -135,8 +152,9 @@ export function AutopilotSection({
           <Rocket className="w-5 h-5 text-primary" /> Autopilot
         </h2>
         <p className="text-sm text-muted-foreground">
-          Dai il prodotto (e opzionalmente un competitor + descrizione): il tool fa in automatico
-          ricerca mercato → brief → competitor → ads → landing, salvando tutto in questo progetto.
+          Dai prodotto, mercato, competitor e (opzionale) un template funnel: il tool fa in automatico
+          ricerca mercato → brief → <strong>ricerca ads su Facebook</strong> → angoli/ads → <strong>landing + mockup HTML</strong>,
+          salvando tutto in questo progetto (Competitor Library, Funnel, Brief).
         </p>
       </div>
 
@@ -173,6 +191,28 @@ export function AutopilotSection({
             placeholder="Es. Germania · tedesco. Se vuoto, lo deduce dalla descrizione"
             disabled={running || launching}
           />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="ap-template">Funnel template da usare (opzionale)</Label>
+          <div className="flex gap-2">
+            <select
+              id="ap-template"
+              value={templateUrl}
+              onChange={(e) => setTemplateUrl(e.target.value)}
+              disabled={running || launching}
+              className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm disabled:opacity-50"
+            >
+              <option value="">— Nessun template: genera mockup ex-novo —</option>
+              {templates.map((t) => (
+                <option key={t.id} value={t.source_url}>
+                  {t.name}{t.page_type ? ` · ${t.page_type}` : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            La landing verrà generata come mockup HTML ispirato a questo template (stile e struttura).
+          </p>
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="ap-desc">Descrizione / note (opzionale)</Label>

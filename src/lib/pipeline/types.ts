@@ -41,17 +41,17 @@ export const PIPELINE_STEPS: PipelineStepDef[] = [
   {
     key: 'competitor',
     label: 'Ricerca competitor',
-    description: 'Analizza il competitor e lo salva nella Competitor Library.',
+    description: 'Cerca le ads su Facebook Ad Library (Apify) e le salva nella Competitor Library.',
   },
   {
     key: 'ads',
     label: 'Angoli & Ads',
-    description: 'Concept pubblicitari e angoli derivati da brief + competitor.',
+    description: 'Concept pubblicitari (visibili come step nel Funnel) da brief + competitor.',
   },
   {
     key: 'landing',
-    label: 'Landing copy',
-    description: 'Struttura e copy della landing page basati sul brief.',
+    label: 'Landing + mockup',
+    description: 'Copy della landing + mockup HTML visibile nella tab Funnel.',
   },
 ];
 
@@ -69,6 +69,9 @@ export interface PipelineInput {
   market?: string;
   /** Legacy alias for `market` — kept for back-compat. */
   language?: string;
+  /** Optional funnel template URL (chosen in the launcher) used as design +
+   *  copy reference when generating the landing mockup. */
+  templateUrl?: string;
 }
 
 export interface PipelineStepState {

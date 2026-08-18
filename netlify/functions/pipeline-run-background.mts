@@ -28,6 +28,9 @@ interface PipelineInput {
   description?: string;
   market?: string;
   language?: string;
+  /** Optional funnel template URL to use as design/copy reference for the
+   *  landing mockup (the user picks it in the launcher). */
+  templateUrl?: string;
 }
 
 interface StepState {
@@ -100,7 +103,10 @@ function sectionContentFrom(val: unknown): string {
 // Anthropic call with Knowledge Base injection + prompt caching
 // ---------------------------------------------------------------------------
 
+type CopyTask = 'general' | 'vsl' | 'pdp' | 'headline' | 'ad' | 'advertorial' | 'mechanism';
+
 interface ClaudeOpts {
+  task?: CopyTask;
   instructions: string;
   brief?: string;
   marketResearch?: string;
@@ -113,11 +119,13 @@ async function callClaude(opts: ClaudeOpts): Promise<string> {
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not configured');
 
   // System blocks: instructions + Tier1 KB (cached), Tier2 KB (cached).
+  // The Tier2 selection depends on the task, so ads load ad-specific
+  // frameworks, landing loads pdp recipes, brief/VSL load Georgi big-ideas, etc.
   const system: Array<{ type: 'text'; text: string; cache_control?: { type: 'ephemeral' } }> = [];
   let core = '';
   let tier2 = '';
   try { core = getCoreKnowledge().trim(); } catch { core = ''; }
-  try { tier2 = getKnowledgeForTask('general').trim(); } catch { tier2 = ''; }
+  try { tier2 = getKnowledgeForTask((opts.task || 'general') as never).trim(); } catch { tier2 = ''; }
 
   const tier1 = [opts.instructions.trim(), core].filter(Boolean).join('\n\n---\n\n');
   system.push({ type: 'text', text: tier1, cache_control: { type: 'ephemeral' } });
@@ -202,6 +210,100 @@ function parseAdConcepts(raw: string): AdConcept[] {
 }
 
 // ---------------------------------------------------------------------------
+// Real competitor search (Facebook Ad Library via Apify)
+// ---------------------------------------------------------------------------
+
+/** Map a free-text market/language hint to an ISO country code for the FB
+ *  Ad Library `country` filter. Defaults to IT. */
+function countryFromMarket(input: PipelineInput): string {
+  const s = `${input.market || ''} ${input.language || ''} ${input.description || ''}`.toLowerCase();
+  const table: Array<[RegExp, string]> = [
+    [/german|deutsch|tedesc|germani|\bde\b/, 'DE'],
+    [/franc|french|français|\bfr\b/, 'FR'],
+    [/spa(gn|in|ño)|espa|\bes\b/, 'ES'],
+    [/portug|\bpt\b|brasil|brazil/, 'PT'],
+    [/nederl|dutch|holland|\bnl\b/, 'NL'],
+    [/united states|\busa\b|\bus\b|america|english/, 'US'],
+    [/united kingdom|\buk\b|england|britain/, 'GB'],
+    [/ital|\bit\b/, 'IT'],
+  ];
+  for (const [re, cc] of table) if (re.test(s)) return cc;
+  return 'IT';
+}
+
+function fbAdLibrarySearchUrl(keyword: string, country: string): string {
+  const q = encodeURIComponent(keyword.trim());
+  return `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=${country}&q=${q}&search_type=keyword_unordered&media_type=all`;
+}
+
+/** Start an Apify FB Ad Library run (mirrors src/lib/apify.ts startAdsLibraryRun).
+ *  Ingestion is async via /api/apify/webhook. */
+async function startApifyAdsRun(adsLibraryUrl: string, count: number, webhookUrl: string): Promise<{ ok: boolean; runId?: string; error?: string }> {
+  const token = process.env.APIFY_KEY || process.env.APIFY_TOKEN || process.env.APIFY_API_TOKEN || '';
+  if (!token) return { ok: false, error: 'APIFY_KEY not configured' };
+  const actor = process.env.APIFY_FB_ADS_ACTOR || 'curious_coder~facebook-ads-library-scraper';
+  const n = Math.min(Math.max(count || 20, 1), 200);
+  const input: Record<string, unknown> = {
+    urls: [{ url: adsLibraryUrl, method: 'GET' }],
+    startUrls: [{ url: adsLibraryUrl }],
+    adLibraryUrl: adsLibraryUrl,
+    count: n, maxResults: n, resultsLimit: n,
+    scrapeAdDetails: true, scrapePageAds: true, activeStatus: 'active',
+  };
+  const webhooks = Buffer.from(JSON.stringify([{
+    eventTypes: ['ACTOR.RUN.SUCCEEDED', 'ACTOR.RUN.FAILED', 'ACTOR.RUN.ABORTED', 'ACTOR.RUN.TIMED_OUT'],
+    requestUrl: webhookUrl,
+  }]), 'utf8').toString('base64');
+  const url = `https://api.apify.com/v2/acts/${actor}/runs?token=${encodeURIComponent(token)}&webhooks=${encodeURIComponent(webhooks)}`;
+  try {
+    const resp = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input), signal: AbortSignal.timeout(30_000) });
+    const json = await resp.json().catch(() => null);
+    if (!resp.ok) return { ok: false, error: json?.error?.message || `Apify start failed (${resp.status})` };
+    const runId = json?.data?.id;
+    if (!runId) return { ok: false, error: 'No run id returned by Apify' };
+    return { ok: true, runId };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+}
+
+function siteBaseUrl(): string {
+  return (process.env.URL || process.env.DEPLOY_PRIME_URL || process.env.NEXT_PUBLIC_SITE_URL || '').replace(/\/$/, '');
+}
+
+/** Fetch a template/landing page's readable content via Jina Reader (plain
+ *  fetch, no headless browser). Best-effort; returns '' on failure. */
+async function fetchTemplateReference(url: string): Promise<string> {
+  if (!url) return '';
+  try {
+    const headers: Record<string, string> = { 'X-Return-Format': 'text' };
+    if (process.env.JINA_API_KEY) headers.Authorization = `Bearer ${process.env.JINA_API_KEY}`;
+    const resp = await fetch(`https://r.jina.ai/${url}`, { headers, signal: AbortSignal.timeout(45_000) });
+    if (!resp.ok) return '';
+    const text = await resp.text();
+    return text.slice(0, 12_000);
+  } catch { return ''; }
+}
+
+/** Insert a funnel_steps row so the output is visible in the ProjectHub
+ *  Funnel tab (which renders result_content, HTML included). */
+async function createFunnelStep(supabase: SupabaseClient, projectId: string, opts: {
+  stepNumber: number; pageName: string; stepType: string; resultContent: string; flowName?: string;
+}) {
+  const { error } = await supabase.from('funnel_steps').insert({
+    project_id: projectId,
+    step_number: opts.stepNumber,
+    page_name: opts.pageName,
+    step_type: opts.stepType,
+    status: 'ready',
+    auto_gen: true,
+    flow_name: opts.flowName || 'Autopilot',
+    result_content: opts.resultContent,
+  });
+  if (error) throw new Error(`Failed to save funnel step: ${error.message}`);
+}
+
+// ---------------------------------------------------------------------------
 // Steps — each returns { summary, output }
 // ---------------------------------------------------------------------------
 
@@ -249,7 +351,7 @@ ${input.competitorLink ? `\nLink competitor di riferimento: ${input.competitorLi
 
 Genera la ricerca di mercato completa per questo prodotto.`;
 
-  const content = await callClaude({ instructions, userMessage, maxTokens: 4096 });
+  const content = await callClaude({ task: 'general', instructions, userMessage, maxTokens: 4096 });
   if (!content) throw new Error('Market research returned empty output');
 
   const { error } = await supabase
@@ -294,7 +396,7 @@ ${input.description ? `\nDescrizione fornita:\n${input.description}` : ''}
 
 Genera il brief completo. Basati fortemente sulla RICERCA DI MERCATO fornita nel contesto.`;
 
-  const content = await callClaude({ instructions, marketResearch: research, userMessage, maxTokens: 4096 });
+  const content = await callClaude({ task: 'vsl', instructions, marketResearch: research, userMessage, maxTokens: 4096 });
   if (!content) throw new Error('Brief returned empty output');
 
   const { error } = await supabase.from('projects').update({ brief: content }).eq('id', projectId);
@@ -308,40 +410,80 @@ Genera il brief completo. Basati fortemente sulla RICERCA DI MERCATO fornita nel
 
 async function runCompetitor(supabase: SupabaseClient, projectId: string, input: PipelineInput): Promise<StepResult> {
   const link = (input.competitorLink || '').trim();
-  if (!link) {
-    return { summary: 'Nessun link competitor fornito — step saltato.', output: 'Nessun competitor da analizzare.' };
-  }
   const project = await loadProject(supabase, projectId);
   const research = sectionContentFrom(project.market_research);
   const brief = typeof project.brief === 'string' && project.brief.trim() ? (project.brief as string) : sectionContentFrom(project.brief);
+  const productName = (project.name as string) || input.product || '';
 
+  // Keyword to search on Facebook: the competitor brand if a link was given,
+  // otherwise the product name itself (finds who advertises in this space).
+  const brandName = link ? brandNameFromUrl(link) : (productName.split('/')[0].trim() || 'Competitor');
+  const country = countryFromMarket(input);
+  // If the user pasted a Meta Ad Library URL, use it directly; otherwise build
+  // a keyword search URL for that brand in the target country.
+  const adsLibraryUrl = link && isMetaAdLibrary(link) ? link : fbAdLibrarySearchUrl(brandName, country);
+
+  // Short strategic analysis (for the brand card notes).
   const instructions = `Sei un analista competitor per funnel direct response.
-Analizza il competitor indicato (dal link e dal contesto di brief/ricerca) e produci una SCHEDA COMPETITOR sintetica e operativa.
+Analizza il competitor/mercato indicato e produci una SCHEDA COMPETITOR sintetica e operativa.
 ${marketDirective(input)}
 Includi: posizionamento, angolo principale, meccanismo comunicato, punti di forza, debolezze sfruttabili, e 3 idee per superarlo.
 Sii concreto. Se non puoi vedere la pagina, ragiona sulle info disponibili senza inventare dati falsi.`;
-
-  const userMessage = `Link competitor: ${link}
-Prodotto: ${(project.name as string) || input.product || ''}
+  const userMessage = `${link ? `Link competitor: ${link}\n` : ''}Brand/keyword: ${brandName}
+Mercato: ${input.market || country}
+Prodotto: ${productName}
 
 Analizza questo competitor e produci la scheda.`;
+  const analysis = await callClaude({ task: 'ad', instructions, brief, marketResearch: research, userMessage, maxTokens: 2048 });
 
-  const analysis = await callClaude({ instructions, brief, marketResearch: research, userMessage, maxTokens: 2048 });
-  const brandName = brandNameFromUrl(link);
+  // Create the competitor brand row with a real FB Ad Library URL so the
+  // library can scrape + monitor it.
+  const { data: brand, error } = await supabase
+    .from('competitor_brands')
+    .insert({
+      project_id: projectId,
+      name: brandName,
+      ads_library_url: adsLibraryUrl,
+      brand_type: 'competitor',
+      scrape_count: 20,
+      frequency: 'every_7_days',
+      notes: link || `Ricerca Facebook Ad Library (${country})`,
+      creative_quality_notes: analysis.slice(0, 4000),
+    })
+    .select('id')
+    .single();
 
-  const row: Record<string, unknown> = {
-    project_id: projectId,
-    name: brandName,
-    ads_library_url: isMetaAdLibrary(link) ? link : '',
-    brand_type: 'competitor',
-    notes: link,
-    creative_quality_notes: analysis.slice(0, 4000),
-  };
-  const { error } = await supabase.from('competitor_brands').insert(row);
-  if (error) {
-    return { summary: `Analisi competitor generata (salvataggio brand fallito: ${error.message}).`, output: analysis };
+  if (error || !brand) {
+    return { summary: `Analisi competitor generata (salvataggio brand fallito: ${error?.message}).`, output: analysis };
   }
-  return { summary: `Competitor "${brandName}" salvato nella Competitor Library con analisi.`, output: analysis };
+
+  // Kick off the REAL Facebook Ad Library scrape (Apify). Ingestion is async
+  // via the webhook; scraped ads appear in the Competitor Library.
+  const base = siteBaseUrl();
+  let scrapeMsg = '';
+  const token = process.env.APIFY_KEY || process.env.APIFY_TOKEN || process.env.APIFY_API_TOKEN || '';
+  if (!token) {
+    scrapeMsg = ' (scrape FB non configurato: manca APIFY_KEY)';
+  } else if (!base) {
+    scrapeMsg = ' (scrape FB non avviato: manca env URL)';
+  } else {
+    const secret = process.env.APIFY_WEBHOOK_SECRET || process.env.CRON_SECRET || '';
+    const params = new URLSearchParams({ projectId, brandId: String(brand.id) });
+    if (secret) params.set('secret', secret);
+    const webhookUrl = `${base}/api/apify/webhook?${params.toString()}`;
+    const run = await startApifyAdsRun(adsLibraryUrl, 20, webhookUrl);
+    if (run.ok) {
+      await supabase.from('competitor_brands').update({ last_run_id: run.runId }).eq('id', brand.id);
+      scrapeMsg = ` — ricerca FB avviata (run ${run.runId}), le ads compariranno a breve nella Competitor Library`;
+    } else {
+      scrapeMsg = ` (scrape FB non avviato: ${run.error})`;
+    }
+  }
+
+  return {
+    summary: `Competitor "${brandName}" salvato + ricerca su Facebook Ad Library (${country})${scrapeMsg}.`,
+    output: `URL ricerca FB: ${adsLibraryUrl}\n\n${analysis}`,
+  };
 }
 
 async function runAds(supabase: SupabaseClient, projectId: string, input: PipelineInput): Promise<StepResult> {
@@ -365,7 +507,7 @@ Gli angoli devono essere davvero diversi tra loro (meccanismo, paura, desiderio,
   const userMessage = `Prodotto: ${(project.name as string) || input.product || ''}
 Genera i 5 concept basandoti su brief e ricerca di mercato forniti nel contesto.`;
 
-  const raw = await callClaude({ instructions, brief, marketResearch: research, userMessage, maxTokens: 3000 });
+  const raw = await callClaude({ task: 'ad', instructions, brief, marketResearch: research, userMessage, maxTokens: 3000 });
   const concepts = parseAdConcepts(raw);
 
   let saved = 0;
@@ -380,12 +522,42 @@ Genera i 5 concept basandoti su brief e ricerca di mercato forniti nel contesto.
     const { error } = await supabase.from('creative_outputs').insert(rows);
     if (!error) saved = rows.length;
   }
+
+  // Make the concepts VISIBLE in the Funnel tab (the Creative tab APIs are not
+  // wired in this build) by saving a readable HTML doc as a funnel step.
+  const html = adsConceptsToHtml(raw, concepts);
+  try {
+    await createFunnelStep(supabase, projectId, {
+      stepNumber: 90,
+      pageName: 'Angoli & Ads (Autopilot)',
+      stepType: 'ads',
+      resultContent: html,
+    });
+  } catch { /* non-fatal */ }
+
   return {
-    summary: saved > 0
-      ? `${saved} concept pubblicitari generati e salvati (Creative).`
-      : `${concepts.length || 5} concept generati (salvataggio non riuscito, output nel log).`,
+    summary: `${concepts.length || 5} concept pubblicitari generati — visibili nella tab Funnel ("Angoli & Ads")${saved ? ` e salvati in creative_outputs (${saved})` : ''}.`,
     output: raw,
   };
+}
+
+function esc(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function adsConceptsToHtml(raw: string, concepts: AdConcept[]): string {
+  const cards = concepts.length
+    ? concepts.map((c, i) => `
+      <div style="border:1px solid #e5e7eb;border-radius:12px;padding:16px;margin:12px 0;background:#fff">
+        <div style="font-size:12px;font-weight:700;color:#6d28d9;text-transform:uppercase;letter-spacing:.04em">Concept ${i + 1} — ${esc(c.angle)}</div>
+        <pre style="white-space:pre-wrap;font-family:inherit;margin:8px 0 0;color:#111827">${esc(c.body)}</pre>
+      </div>`).join('')
+    : `<pre style="white-space:pre-wrap">${esc(raw)}</pre>`;
+  return `<div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:820px;margin:0 auto;padding:8px">
+    <h1 style="font-size:20px;margin:0 0 4px">Angoli &amp; Ads generati dall'Autopilot</h1>
+    <p style="color:#6b7280;margin:0 0 12px">${concepts.length || 0} concept pronti per la produzione creativa.</p>
+    ${cards}
+  </div>`;
 }
 
 async function runLanding(supabase: SupabaseClient, projectId: string, input: PipelineInput): Promise<StepResult> {
@@ -411,7 +583,7 @@ Il copy deve essere pronto all'uso, coerente con brief e ricerca. Sii specifico,
   const userMessage = `Prodotto: ${(project.name as string) || input.product || ''}
 Scrivi la landing completa basandoti su brief e ricerca di mercato forniti nel contesto.`;
 
-  const content = await callClaude({ instructions, brief, marketResearch: research, userMessage, maxTokens: 4096 });
+  const content = await callClaude({ task: 'pdp', instructions, brief, marketResearch: research, userMessage, maxTokens: 4096 });
   if (!content) throw new Error('Landing returned empty output');
 
   const { error } = await supabase
@@ -420,7 +592,44 @@ Scrivi la landing completa basandoti su brief e ricerca di mercato forniti nel c
     .eq('id', projectId);
   if (error) throw new Error(`Failed to save funnel: ${error.message}`);
 
-  return { summary: 'Copy della landing page generato e salvato nella sezione Funnel.', output: content };
+  // Build a real, visible HTML landing MOCKUP from the copy, optionally using
+  // a chosen funnel template as a design reference (fetched via Jina, no
+  // headless browser). Saved as a funnel step → visible/previewable in the
+  // Funnel tab.
+  const templateRef = await fetchTemplateReference((input.templateUrl || '').trim());
+  let mockupSaved = false;
+  try {
+    const mockupInstructions = `Sei un web designer + copywriter direct response.
+Genera UNA landing page COMPLETA in HTML STANDALONE (un solo file), pronta da aprire nel browser.
+${marketDirective(input)}
+Requisiti tecnici:
+- HTML5 completo con <style> inline nel <head> (nessuna risorsa esterna, nessun JS necessario).
+- Design moderno, mobile-first, responsive, con sezioni: hero, problema/agitazione, meccanismo unico, soluzione, come funziona, prove/testimonianze (placeholder realistici), offerta+garanzia, FAQ, CTA finale.
+- Usa il COPY fornito qui sotto (adattalo, non inventare claim medici/legali non supportati).
+- Bottoni CTA ben visibili. Palette coerente col prodotto.
+${templateRef ? '- Usa lo STILE/STRUTTURA della pagina di riferimento fornita come ispirazione (layout, ordine sezioni, tono), ma con contenuti del nostro prodotto.' : ''}
+Rispondi SOLO con l'HTML, senza spiegazioni e senza \`\`\`.`;
+
+    const mockupUser = `COPY DELLA LANDING (da usare):\n\n${content}\n\n${templateRef ? `PAGINA DI RIFERIMENTO (stile/struttura da imitare):\n\n${templateRef}` : ''}`;
+    let mockup = await callClaude({ task: 'pdp', instructions: mockupInstructions, userMessage: mockupUser, maxTokens: 8000 });
+    mockup = mockup.replace(/^```html\s*/i, '').replace(/```\s*$/i, '').trim();
+    if (mockup.toLowerCase().includes('<html') || mockup.toLowerCase().includes('<!doctype')) {
+      await createFunnelStep(supabase, projectId, {
+        stepNumber: 1,
+        pageName: 'Landing (Autopilot)',
+        stepType: 'landing',
+        resultContent: mockup,
+      });
+      mockupSaved = true;
+    }
+  } catch { /* non-fatal: copy is already saved */ }
+
+  return {
+    summary: mockupSaved
+      ? 'Landing generata: copy in sezione Funnel + mockup HTML visibile nella tab Funnel.'
+      : 'Copy della landing generato e salvato nella sezione Funnel.',
+    output: content,
+  };
 }
 
 const RUNNERS: Record<StepKey, (s: SupabaseClient, p: string, i: PipelineInput) => Promise<StepResult>> = {
