@@ -95,7 +95,14 @@ export default async (req: Request) => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ jobId, stepKey: key }),
       });
-      const data = await res.json().catch(() => ({}));
+      // The step route streams whitespace heartbeats then a final JSON line
+      // (to survive Netlify's ~26s inactivity timeout). Parse the last line.
+      const text = await res.text();
+      const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+      let data: { stepStatus?: string } = {};
+      for (let i = lines.length - 1; i >= 0; i--) {
+        try { data = JSON.parse(lines[i]); break; } catch { /* heartbeat line */ }
+      }
       stepStatus = data?.stepStatus || (res.ok ? 'completed' : 'failed');
       log('step', key, '→', stepStatus);
     } catch (e) {

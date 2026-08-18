@@ -22,14 +22,31 @@ export interface StepOutput {
   output: string;
 }
 
-const DEFAULT_LANGUAGE = 'italiano';
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function lang(input: PipelineInput): string {
-  return (input.language || DEFAULT_LANGUAGE).trim() || DEFAULT_LANGUAGE;
+/**
+ * Market/language directive injected into every step so the whole pipeline
+ * adapts to the target market. Priority:
+ *   1. explicit `market` / `language` field (from the launcher), else
+ *   2. inferred from the free-text description (e.g. "per il mercato tedesco"
+ *      → tedesco + Germania), else
+ *   3. Italian / Italy as the default.
+ * The research + competitor references are tied to that geography, not just
+ * the output language.
+ */
+function marketDirective(input: PipelineInput): string {
+  const explicit = (input.market || input.language || '').trim();
+  if (explicit) {
+    return `MERCATO TARGET: ${explicit}.
+- Scrivi TUTTO l'output nella lingua di questo mercato (es. mercato tedesco/Germania → in tedesco).
+- Fai ricerca, esempi, concorrenti, abitudini d'acquisto, prezzi e riferimenti normativi relativi a QUESTA geografia.`;
+  }
+  return `MERCATO TARGET: deducilo dalla DESCRIZIONE del prodotto (es. "per il mercato tedesco" → lingua tedesca + Germania).
+- Scrivi TUTTO l'output nella lingua del mercato target dedotto.
+- Fai ricerca ed esempi riferiti alla geografia di quel mercato.
+- Se nella descrizione non è indicato alcun mercato/lingua, usa l'italiano e il mercato Italia.`;
 }
 
 /** Read the current project row (only the columns the steps care about). */
@@ -109,7 +126,8 @@ async function runMarketResearch(ctx: StepContext): Promise<StepOutput> {
 
   const instructions = `Sei un ricercatore di mercato senior specializzato in direct response e ecommerce.
 Produci una RICERCA DI MERCATO completa e operativa, pronta per essere usata da un copywriter.
-Scrivi in ${lang(ctx.input)}. Usa markdown con intestazioni chiare.
+${marketDirective(ctx.input)}
+Usa markdown con intestazioni chiare.
 
 La ricerca DEVE contenere queste sezioni:
 ## Avatar / Cliente ideale
@@ -163,7 +181,8 @@ async function runBrief(ctx: StepContext): Promise<StepOutput> {
 
   const instructions = `Sei un copywriter direct response e stratega ecommerce di alto livello.
 Data la ricerca di mercato e le info prodotto, genera un PRODUCT RESEARCH BRIEF completo seguendo il framework "Ecom Domination".
-Scrivi in ${lang(ctx.input)}. Usa markdown con intestazioni in grassetto.
+${marketDirective(ctx.input)}
+Usa markdown con intestazioni in grassetto.
 
 Struttura richiesta:
 **TARGET MARKET** — chi è il buyer ideale (demografia, psicografia, pain, lifestyle)
@@ -237,7 +256,8 @@ async function runCompetitor(ctx: StepContext): Promise<StepOutput> {
   const brief = briefText(project);
 
   const instructions = `Sei un analista competitor per funnel direct response.
-Analizza il competitor indicato (dal link e dal contesto di brief/ricerca) e produci una SCHEDA COMPETITOR sintetica e operativa in ${lang(ctx.input)}.
+Analizza il competitor indicato (dal link e dal contesto di brief/ricerca) e produci una SCHEDA COMPETITOR sintetica e operativa.
+${marketDirective(ctx.input)}
 Includi: posizionamento, angolo principale, meccanismo comunicato, punti di forza, debolezze sfruttabili, e 3 idee per superarlo.
 Sii concreto. Se non puoi vedere la pagina, ragiona sulle info disponibili senza inventare dati falsi.`;
 
@@ -292,7 +312,8 @@ async function runAds(ctx: StepContext): Promise<StepOutput> {
   const research = researchText(project);
 
   const instructions = `Sei un direct response copywriter esperto in creativi ad alta conversione.
-Genera 5 CONCEPT PUBBLICITARI distinti per questo prodotto, in ${lang(ctx.input)}.
+Genera 5 CONCEPT PUBBLICITARI distinti per questo prodotto.
+${marketDirective(ctx.input)}
 Per OGNI concept usa ESATTAMENTE questo formato, separando i concept con una riga "---":
 
 ANGOLO: <nome sintetico dell'angolo>
@@ -381,7 +402,8 @@ async function runLanding(ctx: StepContext): Promise<StepOutput> {
   const research = researchText(project);
 
   const instructions = `Sei un copywriter di landing page direct response.
-Scrivi la STRUTTURA + COPY completo di una landing page ad alta conversione per questo prodotto, in ${lang(ctx.input)}.
+Scrivi la STRUTTURA + COPY completo di una landing page ad alta conversione per questo prodotto.
+${marketDirective(ctx.input)}
 Usa markdown con una sezione per blocco:
 ## Hero (headline + subheadline + CTA)
 ## Problema / Agitazione

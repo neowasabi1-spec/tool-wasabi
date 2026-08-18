@@ -1052,6 +1052,7 @@ export default function ProjectsPage() {
   const [showAutopilot, setShowAutopilot] = useState(false);
   const [apProduct, setApProduct] = useState('');
   const [apCompetitor, setApCompetitor] = useState('');
+  const [apMarket, setApMarket] = useState('');
   const [apDesc, setApDesc] = useState('');
   const [apLaunching, setApLaunching] = useState(false);
   const [search, setSearch] = useState('');
@@ -1279,6 +1280,7 @@ export default function ProjectsPage() {
         body: JSON.stringify({
           product: apProduct.trim(),
           competitorLink: apCompetitor.trim() || undefined,
+          market: apMarket.trim() || undefined,
           description: apDesc.trim() || undefined,
         }),
       });
@@ -1465,6 +1467,14 @@ export default function ProjectsPage() {
                 disabled={apLaunching}
               />
             </div>
+            <input
+              type="text"
+              value={apMarket}
+              onChange={e => setApMarket(e.target.value)}
+              placeholder="Mercato / lingua target (es. Germania · tedesco). Opzionale: altrimenti lo deduce dalla descrizione"
+              className="mt-3 w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-slate-900 text-sm focus:outline-none focus:border-violet-500"
+              disabled={apLaunching}
+            />
             <textarea
               value={apDesc}
               onChange={e => setApDesc(e.target.value)}
@@ -1484,7 +1494,7 @@ export default function ProjectsPage() {
                   : <><Sparkles className="w-4 h-4" /> Avvia Autopilot</>}
               </button>
               <button
-                onClick={() => { setShowAutopilot(false); setApProduct(''); setApCompetitor(''); setApDesc(''); }}
+                onClick={() => { setShowAutopilot(false); setApProduct(''); setApCompetitor(''); setApMarket(''); setApDesc(''); }}
                 disabled={apLaunching}
                 className="px-3 py-2 text-slate-500 hover:text-slate-900 text-sm rounded-lg transition-colors"
               >

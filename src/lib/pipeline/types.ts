@@ -62,7 +62,12 @@ export interface PipelineInput {
   competitorLink?: string;
   /** Optional free-form product description / notes. */
   description?: string;
-  /** Output language. Defaults to Italian. */
+  /** Target market / language (e.g. "Germania", "tedesco", "US market").
+   *  Drives the language of ALL outputs and the geography of the research.
+   *  When empty, the pipeline infers it from the description, else defaults
+   *  to Italian / Italy. */
+  market?: string;
+  /** Legacy alias for `market` — kept for back-compat. */
   language?: string;
 }
 

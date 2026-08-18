@@ -16,10 +16,13 @@ export const maxDuration = 300;
  *
  * Body: { jobId, stepKey }
  *
- * This is the unit of work the background sequencer calls, one step at a
- * time. Keeping each step in its own request means every LLM call runs with
- * a fresh, focused context (high quality) and well within the serverless
- * timeout, while the job row is the single source of truth for progress.
+ * IMPORTANT — streaming heartbeat:
+ * A step performs a 30–90s LLM call. Netlify's edge proxy closes any
+ * synchronous response that sends no data for ~26s ("Inactivity Timeout" →
+ * 504), which would kill the step mid-run and leave it stuck as "running".
+ * So we return a streamed response and emit a whitespace heartbeat every few
+ * seconds while the step works; the final line of the stream is the JSON
+ * result. The background sequencer reads the last line to get the outcome.
  */
 export async function POST(req: NextRequest) {
   const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
@@ -30,27 +33,53 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'jobId e stepKey richiesti' }, { status: 400 });
   }
 
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      let closed = false;
+      const emit = (s: string) => { if (!closed) { try { controller.enqueue(encoder.encode(s)); } catch { /* ignore */ } } };
+      // Keep the connection alive past Netlify's ~26s inactivity limit.
+      emit(' ');
+      const beat = setInterval(() => emit(' '), 8000);
+      const finish = (obj: unknown) => {
+        clearInterval(beat);
+        emit('\n' + JSON.stringify(obj) + '\n');
+        closed = true;
+        try { controller.close(); } catch { /* ignore */ }
+      };
+
+      try {
+        const result = await runOneStep(jobId, stepKey);
+        finish(result);
+      } catch (e) {
+        finish({ ok: false, stepStatus: 'failed', jobStatus: 'failed', error: (e as Error).message?.slice(0, 1000) });
+      }
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+    },
+  });
+}
+
+async function runOneStep(jobId: string, stepKey: StepKey) {
   const { data: job, error } = await supabaseAdmin
     .from('pipeline_jobs')
     .select('id, project_id, input, steps, status')
     .eq('id', jobId)
     .single();
 
-  if (error || !job) {
-    return NextResponse.json({ error: `Job non trovato: ${error?.message}` }, { status: 404 });
-  }
-  if (job.status === 'canceled') {
-    return NextResponse.json({ ok: false, jobStatus: 'canceled', stepStatus: 'skipped' });
-  }
-  if (!job.project_id) {
-    return NextResponse.json({ error: 'Job senza project_id' }, { status: 400 });
-  }
+  if (error || !job) throw new Error(`Job non trovato: ${error?.message}`);
+  if (job.status === 'canceled') return { ok: false, jobStatus: 'canceled', stepStatus: 'skipped' };
+  if (!job.project_id) throw new Error('Job senza project_id');
 
   const steps = (job.steps as PipelineStepState[]) || [];
   const idx = steps.findIndex((s) => s.key === stepKey);
-  if (idx === -1) {
-    return NextResponse.json({ error: `Step ${stepKey} non presente nel job` }, { status: 400 });
-  }
+  if (idx === -1) throw new Error(`Step ${stepKey} non presente nel job`);
 
   // Mark step running.
   steps[idx] = { ...steps[idx], status: 'running', startedAt: new Date().toISOString(), error: undefined };
@@ -80,27 +109,17 @@ export async function POST(req: NextRequest) {
 
     await supabaseAdmin
       .from('pipeline_jobs')
-      .update({
-        steps,
-        status: jobStatus,
-        current_step: allDone ? null : stepKey,
-      })
+      .update({ steps, status: jobStatus, current_step: allDone ? null : stepKey })
       .eq('id', jobId);
 
-    return NextResponse.json({ ok: true, stepStatus: 'completed', jobStatus });
+    return { ok: true, stepStatus: 'completed', jobStatus };
   } catch (e) {
     const msg = (e as Error).message?.slice(0, 1000) || 'Errore step';
-    steps[idx] = {
-      ...steps[idx],
-      status: 'failed',
-      error: msg,
-      finishedAt: new Date().toISOString(),
-    };
+    steps[idx] = { ...steps[idx], status: 'failed', error: msg, finishedAt: new Date().toISOString() };
     await supabaseAdmin
       .from('pipeline_jobs')
       .update({ steps, status: 'failed', current_step: stepKey, error: msg })
       .eq('id', jobId);
-
-    return NextResponse.json({ ok: false, stepStatus: 'failed', jobStatus: 'failed', error: msg });
+    return { ok: false, stepStatus: 'failed', jobStatus: 'failed', error: msg };
   }
 }

@@ -21,6 +21,7 @@ export async function POST(req: NextRequest) {
   const product = String(body.product || '').trim();
   const competitorLink = body.competitorLink ? String(body.competitorLink).trim() : '';
   const description = body.description ? String(body.description).trim() : '';
+  const market = body.market ? String(body.market).trim() : '';
   const language = body.language ? String(body.language).trim() : '';
   const requestedProjectId = body.projectId ? String(body.projectId) : '';
 
@@ -68,6 +69,7 @@ export async function POST(req: NextRequest) {
     product: product || '',
     competitorLink: competitorLink || undefined,
     description: description || undefined,
+    market: market || undefined,
     language: language || undefined,
   };
 

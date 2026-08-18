@@ -44,6 +44,7 @@ export function AutopilotSection({
 }) {
   const [product, setProduct] = useState(projectName || '');
   const [competitorLink, setCompetitorLink] = useState('');
+  const [market, setMarket] = useState('');
   const [description, setDescription] = useState('');
   const [launching, setLaunching] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -111,6 +112,7 @@ export function AutopilotSection({
           projectId,
           product: product.trim(),
           competitorLink: competitorLink.trim() || undefined,
+          market: market.trim() || undefined,
           description: description.trim() || undefined,
         }),
       });
@@ -161,6 +163,16 @@ export function AutopilotSection({
               disabled={running || launching}
             />
           </div>
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="ap-market">Mercato / lingua target (opzionale)</Label>
+          <Input
+            id="ap-market"
+            value={market}
+            onChange={(e) => setMarket(e.target.value)}
+            placeholder="Es. Germania · tedesco. Se vuoto, lo deduce dalla descrizione"
+            disabled={running || launching}
+          />
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="ap-desc">Descrizione / note (opzionale)</Label>

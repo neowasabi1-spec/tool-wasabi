@@ -1317,106 +1317,70 @@ async function cleanWholeAd(
 
     type Piece = { file: string; segFile: string; len: number; cleaned: boolean };
     const pieces: Piece[] = [];
-    // Detect the caption band ONCE, up front, from the whole video — so a band
-    // always exists and every leftover window can be neurally reconstructed.
-    // (Learning it only from a "cleaned" window left 0/7 when none exposed one.)
-    // Per-window results still refine it via mergeBand below.
-    let learnedBand: { y0: number; y1: number } | null =
-      await detectCaptionBandWhole(srcFile, W, H, fps, dur, workDir, log);
-    const mergeBand = (b: { y0: number; y1: number } | null | undefined) => {
-      if (!b) return;
-      learnedBand = learnedBand
-        ? { y0: Math.min(learnedBand.y0, b.y0), y1: Math.max(learnedBand.y1, b.y1) }
-        : { y0: b.y0, y1: b.y1 };
-    };
+    // Detect the caption band ONCE, up front, from the whole video, then rebuild
+    // that band on every window directly. The old design ran a per-window
+    // mask+detector "pass 1" that burned the entire time budget and then marked
+    // every window unusable, so the reconstruction pass never got time → 0/7.
+    const learnedBand = await detectCaptionBandWhole(srcFile, W, H, fps, dur, workDir, log);
+
+    // Pad the band generously: captions drift vertically between scenes and can
+    // be two lines, so a tight band leaves text peeking out. A wider band
+    // reconstructs a little more background but guarantees the text is gone.
+    const padded = learnedBand
+      ? { y0: Math.max(0, learnedBand.y0 - 0.05), y1: Math.min(1, learnedBand.y1 + 0.05) }
+      : { y0: 0.55, y1: 0.98 };
+    const box: Box = { x0: 0.01, x1: 0.99, y0: padded.y0, y1: padded.y1 };
+    // Resolve the neural remover once, then rebuild the band on each window.
+    const fbModel = await resolveMaskModel(token, log);
 
     for (let i = 0; i < nseg; i++) {
       const t0 = i * segDur;
       const len = i === nseg - 1 ? Math.max(0.1, dur - t0) : segDur;
       const segFile = path.join(workDir, `seg_${i}.mp4`);
       await cutClip(srcFile, t0, t0 + len, segFile);
-      // Leave enough budget to still stitch + upload; keep the rest as-is.
-      if (Date.now() > deadline - 45000) { pieces.push({ file: segFile, segFile, len, cleaned: false }); log(`window ${i}: out of time — kept original`); continue; }
-      const segKey = `${projectId}/ads-clean/${adId}_seg${i}_${Date.now()}.mp4`;
       let out = segFile;
       let cleaned = false;
-      try {
-        await uploadFile(supabase, segKey, segFile, 'video/mp4');
-        const r = await cleanClipFile({
-          supabase, token, srcKey: segKey, srcFile: segFile, textRegion: null,
-          W, H, fps, dur: len, workDir, deadline,
-          keyBase: `${projectId}/ads-clean/${adId}_s${i}`, log, jitterMs: 0,
-          eraseIfUnreadable: true, // whole video: erase the caption band rather than keep the text
-        });
-        mergeBand(r.band);
-        if (r.ok) { out = r.outFile; cleaned = true; }
-        else log(`window ${i}: ${r.note || 'not cleanable'} — will retry with the learned band`);
-      } catch (e) {
-        log(`window ${i} failed (${(e as Error).message}) — will retry with the learned band`);
-      }
-      pieces.push({ file: out, segFile, len, cleaned });
-    }
 
-    // Second pass: windows that still carry their original footage get the caption
-    // band (learned above) rebuilt. First choice is neural RECONSTRUCTION — the
-    // remover repaints the band from temporal context, no blur. Only if that
-    // can't run do we blur-erase the band, so a window never keeps its text.
-    let cleanedCount = pieces.filter((p) => p.cleaned).length;
-    const band = learnedBand as { y0: number; y1: number } | null;
-    if (band && cleanedCount < nseg) {
-      // Pad generously: captions drift vertically between scenes and can be two
-      // lines, so a tight band leaves text peeking out ("in alcuni punti si vede
-      // testo"). A wider band reconstructs a bit more background but removes it.
-      const padded = { y0: Math.max(0, band.y0 - 0.05), y1: Math.min(1, band.y1 + 0.05) };
-      const box: Box = { x0: 0.01, x1: 0.99, y0: padded.y0, y1: padded.y1 };
-      const fbModel = await resolveMaskModel(token, log);
-      for (let i = 0; i < pieces.length; i++) {
-        const p = pieces[i];
-        if (p.cleaned) continue;
-        // Only bail if there isn't even time to blur + stitch + upload. The blur
-        // step below is a couple of seconds, so it still runs when the slower
-        // neural pass can't — that's what stops "5/7" leaving raw captions.
-        if (Date.now() > deadline - 15000) { log(`window ${i}: out of time for the fallback — kept original`); continue; }
-        let done = false;
-
-        // 1) Neural reconstruction of the learned band (rebuilds pixels) — the
-        //    preferred path so text is replaced with real pixels, not a blur.
-        if (fbModel && Date.now() < deadline - 60000) {
-          try {
-            const segKey = `${projectId}/ads-clean/${adId}_fb${i}_${Date.now()}.mp4`;
-            await uploadFile(supabase, segKey, p.segFile, 'video/mp4');
-            const rebuilt = await bandInpaintClip({
-              supabase, token, model: fbModel, srcKey: segKey, srcFile: p.segFile,
-              maskKey: `${projectId}/ads-clean/${adId}_fbmask${i}_${Date.now()}.mp4`,
-              band: padded, W, H, fps, dur: p.len, workDir, deadline, tag: `w${i}`, log,
-            });
-            if (rebuilt) {
-              p.file = rebuilt; p.cleaned = true; cleanedCount++; done = true;
-              log(`window ${i}: reconstructed the caption band neurally`);
-            }
-          } catch (e) {
-            log(`window ${i}: neural band reconstruct failed (${(e as Error).message})`);
-          }
+      // 1) Neural reconstruction of the caption band — repaints real pixels from
+      //    temporal context, no blur, and keeps the window's full length.
+      if (fbModel && Date.now() < deadline - 60000) {
+        try {
+          const segKey = `${projectId}/ads-clean/${adId}_w${i}_${Date.now()}.mp4`;
+          await uploadFile(supabase, segKey, segFile, 'video/mp4');
+          const rebuilt = await bandInpaintClip({
+            supabase, token, model: fbModel, srcKey: segKey, srcFile: segFile,
+            maskKey: `${projectId}/ads-clean/${adId}_wmask${i}_${Date.now()}.mp4`,
+            band: padded, W, H, fps, dur: len, workDir, deadline, tag: `w${i}`, log,
+          });
+          if (rebuilt) { out = rebuilt; cleaned = true; log(`window ${i}: reconstructed the caption band neurally`); }
+        } catch (e) {
+          log(`window ${i}: neural reconstruct failed (${(e as Error).message})`);
         }
+      }
 
-        // 2) Last resort: blur-erase the band so no text remains.
-        if (!done) {
-          const rect = toRect({ b: box, t0: 0, t1: p.len + 1 }, W, H);
-          if (!rect) continue;
+      // 2) Fallback: blur-erase the band so text never survives a window.
+      if (!cleaned && Date.now() < deadline - 15000) {
+        const rect = toRect({ b: box, t0: 0, t1: len + 1 }, W, H);
+        if (rect) {
           try {
             const erased = path.join(workDir, `erase_${i}.mp4`);
             await run(FFMPEG, [
-              '-y', '-i', p.segFile, '-filter_complex', buildEraseGraph([rect]),
+              '-y', '-i', segFile, '-filter_complex', buildEraseGraph([rect]),
               '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-an', erased,
             ]);
-            p.file = erased; p.cleaned = true; cleanedCount++;
-            log(`window ${i}: blur-erased the caption band (neural reconstruct unavailable)`);
+            out = erased; cleaned = true;
+            log(`window ${i}: blur-erased the caption band (neural unavailable)`);
           } catch (e) {
-            log(`window ${i}: band-erase fallback failed (${(e as Error).message}) — kept original`);
+            log(`window ${i}: band-erase failed (${(e as Error).message}) — kept original`);
           }
         }
       }
+
+      if (!cleaned) log(`window ${i}: out of time — kept original`);
+      pieces.push({ file: out, segFile, len, cleaned });
     }
+
+    const cleanedCount = pieces.filter((p) => p.cleaned).length;
 
     // Concatenate the (mixed clean / original) windows, re-encoding to a uniform
     // H.264 so the demuxer never chokes on parameter mismatches between windows.
