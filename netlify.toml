@@ -63,5 +63,12 @@
   external_node_modules = ["ffmpeg-static"]
   included_files = ["node_modules/ffmpeg-static/ffmpeg"]
 
+# Autopilot pipeline: la background function esegue le chiamate AI DIRETTAMENTE
+# (non richiama più la route Next internamente, perché Netlify taglia le
+# chiamate funzione→funzione a ~26s). Le servono i file della Knowledge Base
+# di copywriting a runtime, quindi li includiamo nel bundle.
+[functions."pipeline-run-background"]
+  included_files = ["src/knowledge/copywriting/raw/**"]
+
 [[plugins]]
   package = "@netlify/plugin-nextjs"
