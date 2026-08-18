@@ -566,7 +566,7 @@ async function bandInpaintClip(opts: {
   workDir: string; deadline: number; tag: string;
   log: (...a: unknown[]) => void;
 }): Promise<string | null> {
-  const { supabase, token, model, srcKey, maskKey, band, W, H, fps, dur, workDir, deadline, tag, log } = opts;
+  const { supabase, token, model, srcKey, srcFile, maskKey, band, W, H, fps, dur, workDir, deadline, tag, log } = opts;
   const { version, props, videoField, maskField } = model;
 
   const y = Math.max(0, Math.round(band.y0 * H)) & ~1;
@@ -594,7 +594,9 @@ async function bandInpaintClip(opts: {
   const input: Record<string, unknown> = { [videoField]: videoUrl, [maskField]: maskUrl };
   const wanted: Record<string, number> = {
     fps: Math.round(fps), num_frames: frames, width: W, height: H,
-    mask_dilation_iterations: 10, num_inference_steps: 12,
+    // Keep the repainted area tight to the band (heavy dilation smears far
+    // beyond the text) and give the model enough steps to reconstruct cleanly.
+    mask_dilation_iterations: 4, num_inference_steps: 20,
   };
   for (const [name, value] of Object.entries(wanted)) {
     const spec = props[name];
@@ -615,11 +617,29 @@ async function bandInpaintClip(opts: {
 
   const dl = await fetch(url);
   if (!dl.ok) { log(`${tag}: could not download band-inpaint result (${dl.status})`); return null; }
-  const file = path.join(workDir, `bandclean_${tag}.mp4`);
-  fs.writeFileSync(file, Buffer.from(await dl.arrayBuffer()));
+  const raw = path.join(workDir, `bandraw_${tag}.mp4`);
+  fs.writeFileSync(raw, Buffer.from(await dl.arrayBuffer()));
 
-  const outDur = await probeDuration(file);
+  const outDur = await probeDuration(raw);
   if (outDur < dur - 0.3) { log(`${tag}: band inpaint truncated to ${outDur.toFixed(2)}s of ${dur.toFixed(2)}s`); return null; }
+
+  // The remover re-encodes and can reshape the WHOLE frame ("tutto brullato e
+  // sformato"). Take ONLY the band from its output and overlay it back onto the
+  // untouched original, so everything outside the caption band stays pixel-exact
+  // and correctly shaped — only the caption strip is the reconstruction.
+  const file = path.join(workDir, `bandclean_${tag}.mp4`);
+  try {
+    await run(FFMPEG, [
+      '-y', '-i', srcFile, '-i', raw,
+      '-filter_complex',
+      `[1:v]scale=${W}:${H},setsar=1,crop=${W}:${bh}:0:${y}[band];[0:v][band]overlay=0:${y}[v]`,
+      '-map', '[v]', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '18',
+      '-preset', 'veryfast', '-movflags', '+faststart', '-an', file,
+    ]);
+  } catch (e) {
+    log(`${tag}: band composite failed (${(e as Error).message}) — keeping original`);
+    return null;
+  }
   return file;
 }
 
@@ -1326,9 +1346,11 @@ async function cleanWholeAd(
     // Pad the band generously: captions drift vertically between scenes and can
     // be two lines, so a tight band leaves text peeking out. A wider band
     // reconstructs a little more background but guarantees the text is gone.
+    // Now that only the band is composited back (everything else stays original),
+    // keep it tight — a smaller strip means a smaller reconstructed area.
     const padded = learnedBand
-      ? { y0: Math.max(0, learnedBand.y0 - 0.05), y1: Math.min(1, learnedBand.y1 + 0.05) }
-      : { y0: 0.55, y1: 0.98 };
+      ? { y0: Math.max(0, learnedBand.y0 - 0.02), y1: Math.min(1, learnedBand.y1 + 0.02) }
+      : { y0: 0.62, y1: 0.95 };
     const box: Box = { x0: 0.01, x1: 0.99, y0: padded.y0, y1: padded.y1 };
     // Resolve the neural remover once, then rebuild the band on each window.
     const fbModel = await resolveMaskModel(token, log);
