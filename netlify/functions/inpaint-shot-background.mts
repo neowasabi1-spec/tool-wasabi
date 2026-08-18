@@ -643,6 +643,90 @@ async function bandInpaintClip(opts: {
   return file;
 }
 
+/**
+ * Reconstruct ONLY the caption TEXT pixels of a clip. Unlike bandInpaintClip
+ * (which repaints a full-width horizontal band → "blur enorme / sformato"),
+ * this feeds the remover a TIGHT per-frame mask of the actual letters, then
+ * composites the reconstructed result back through that same mask so ONLY the
+ * text pixels change and everything else stays pixel-exact. Returns null if the
+ * model can't run or produces a truncated result — the caller then keeps the
+ * original window rather than degrading it.
+ */
+async function textMaskReconstruct(opts: {
+  supabase: ReturnType<typeof getSupabase>;
+  token: string;
+  model: ModelInfo;
+  srcKey: string;
+  srcFile: string;
+  maskFile: string;    // tight per-frame text mask, already sized to WxH
+  maskKey: string;
+  W: number; H: number; fps: number; dur: number;
+  workDir: string; deadline: number; tag: string;
+  log: (...a: unknown[]) => void;
+}): Promise<string | null> {
+  const { supabase, token, model, srcKey, srcFile, maskFile, maskKey, W, H, fps, dur, workDir, deadline, tag, log } = opts;
+  const { version, props, videoField, maskField } = model;
+  const frames = Math.max(1, Math.round(fps * dur));
+
+  await uploadFile(supabase, maskKey, maskFile, 'video/mp4');
+  const sign = async (key: string) => {
+    const { data } = await supabase.storage.from(BUCKET).createSignedUrl(key, 3600);
+    return data?.signedUrl || null;
+  };
+  const videoUrl = await sign(srcKey);
+  const maskUrl = await sign(maskKey);
+  if (!videoUrl || !maskUrl) { log(`${tag}: could not sign inpaint inputs`); return null; }
+
+  const input: Record<string, unknown> = { [videoField]: videoUrl, [maskField]: maskUrl };
+  const wanted: Record<string, number> = {
+    fps: Math.round(fps), num_frames: frames, width: W, height: H,
+    mask_dilation_iterations: 6, num_inference_steps: 20,
+  };
+  for (const [name, value] of Object.entries(wanted)) {
+    const spec = props[name];
+    if (!spec) continue;
+    const max = typeof spec.maximum === 'number' ? spec.maximum : Infinity;
+    const min = typeof spec.minimum === 'number' ? spec.minimum : 0;
+    input[name] = Math.max(min, Math.min(max, value));
+  }
+
+  let url: string | null = null;
+  try {
+    url = extractOutputUrl(await replicateRun(token, version, input, deadline, log));
+  } catch (e) {
+    log(`${tag}: text inpaint failed (${(e as Error).message})`);
+    return null;
+  }
+  if (!url) { log(`${tag}: text inpaint returned no video`); return null; }
+
+  const dl = await fetch(url);
+  if (!dl.ok) { log(`${tag}: could not download inpaint result (${dl.status})`); return null; }
+  const raw = path.join(workDir, `textraw_${tag}.mp4`);
+  fs.writeFileSync(raw, Buffer.from(await dl.arrayBuffer()));
+  const outDur = await probeDuration(raw);
+  if (outDur < dur - 0.3) { log(`${tag}: inpaint truncated to ${outDur.toFixed(2)}s of ${dur.toFixed(2)}s`); return null; }
+
+  // Composite: take the reconstruction ONLY where the mask marks text (alpha),
+  // overlay it on the untouched original. Everything but the letters is source.
+  const file = path.join(workDir, `textclean_${tag}.mp4`);
+  try {
+    await run(FFMPEG, [
+      '-y', '-i', srcFile, '-i', raw, '-i', maskFile,
+      '-filter_complex',
+      `[1:v]scale=${W}:${H},setsar=1[recon];` +
+      `[2:v]scale=${W}:${H}:flags=neighbor,format=gray[mk];` +
+      `[recon][mk]alphamerge[reconA];` +
+      `[0:v][reconA]overlay=0:0:format=auto[v]`,
+      '-map', '[v]', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '18',
+      '-preset', 'veryfast', '-movflags', '+faststart', '-an', file,
+    ]);
+  } catch (e) {
+    log(`${tag}: text composite failed (${(e as Error).message}) — keeping original`);
+    return null;
+  }
+  return file;
+}
+
 /** Cut [t0, t0+len) out of a clip, frame-accurate, re-encoded to H.264. */
 async function cutWindow(src: string, t0: number, len: number, out: string): Promise<void> {
   await run(FFMPEG, [
@@ -1335,24 +1419,12 @@ async function cleanWholeAd(
     const segDur = dur / nseg;
     log(`cleaning ${dur.toFixed(1)}s in ${nseg} window(s) of ~${segDur.toFixed(1)}s`);
 
-    type Piece = { file: string; segFile: string; len: number; cleaned: boolean };
+    type Piece = { file: string; segFile: string; len: number; cleaned: boolean; hadText: boolean };
     const pieces: Piece[] = [];
-    // Detect the caption band ONCE, up front, from the whole video, then rebuild
-    // that band on every window directly. The old design ran a per-window
-    // mask+detector "pass 1" that burned the entire time budget and then marked
-    // every window unusable, so the reconstruction pass never got time → 0/7.
-    const learnedBand = await detectCaptionBandWhole(srcFile, W, H, fps, dur, workDir, log);
-
-    // Pad the band generously: captions drift vertically between scenes and can
-    // be two lines, so a tight band leaves text peeking out. A wider band
-    // reconstructs a little more background but guarantees the text is gone.
-    // Now that only the band is composited back (everything else stays original),
-    // keep it tight — a smaller strip means a smaller reconstructed area.
-    const padded = learnedBand
-      ? { y0: Math.max(0, learnedBand.y0 - 0.02), y1: Math.min(1, learnedBand.y1 + 0.02) }
-      : { y0: 0.62, y1: 0.95 };
-    const box: Box = { x0: 0.01, x1: 0.99, y0: padded.y0, y1: padded.y1 };
-    // Resolve the neural remover once, then rebuild the band on each window.
+    // Resolve the neural remover once. Each window builds a TIGHT per-frame mask
+    // of the actual caption letters and reconstructs ONLY those pixels — never a
+    // full-width band (that was the "blur enorme / sformato"). Windows without
+    // detectable caption text keep their original footage untouched.
     const fbModel = await resolveMaskModel(token, log);
 
     for (let i = 0; i < nseg; i++) {
@@ -1360,49 +1432,55 @@ async function cleanWholeAd(
       const len = i === nseg - 1 ? Math.max(0.1, dur - t0) : segDur;
       const segFile = path.join(workDir, `seg_${i}.mp4`);
       await cutClip(srcFile, t0, t0 + len, segFile);
+
+      // Build the tight text mask from the caption colour.
+      let maskFile: string | null = null;
+      let hadText = false;
+      try {
+        const rgb = await rgbFrames(segFile, W, H, len, fps, workDir);
+        const nf = Math.floor(rgb.buf.length / (rgb.w * rgb.h * 3));
+        const cm = captionMasks(rgb.buf, nf, rgb.w, rgb.h, null);
+        if (cm && cm.pxPerFrame > 0 && cm.textFrames > 0) {
+          const trust = maskIsTrustworthy(cm, rgb.w, rgb.h);
+          hadText = true;
+          maskFile = await writeMaskVideo(cm.masks, rgb.w, rgb.h, Math.round(fps), W, H, workDir);
+          log(`window ${i}: caption mask ${trust.ok ? 'ok' : 'weak'} — ${trust.why}`);
+        }
+      } catch (e) {
+        log(`window ${i}: mask build skipped (${(e as Error).message})`);
+      }
+
+      // No caption letters here → nothing to remove, keep original untouched.
+      if (!maskFile) {
+        log(`window ${i}: no caption text detected — kept original`);
+        pieces.push({ file: segFile, segFile, len, cleaned: true, hadText: false });
+        continue;
+      }
+
+      // Reconstruct ONLY the text pixels; keep original if the model can't run.
       let out = segFile;
       let cleaned = false;
-
-      // 1) Neural reconstruction of the caption band — repaints real pixels from
-      //    temporal context, no blur, and keeps the window's full length.
-      if (fbModel && Date.now() < deadline - 60000) {
+      if (fbModel && Date.now() < deadline - 45000) {
         try {
           const segKey = `${projectId}/ads-clean/${adId}_w${i}_${Date.now()}.mp4`;
           await uploadFile(supabase, segKey, segFile, 'video/mp4');
-          const rebuilt = await bandInpaintClip({
+          const rebuilt = await textMaskReconstruct({
             supabase, token, model: fbModel, srcKey: segKey, srcFile: segFile,
-            maskKey: `${projectId}/ads-clean/${adId}_wmask${i}_${Date.now()}.mp4`,
-            band: padded, W, H, fps, dur: len, workDir, deadline, tag: `w${i}`, log,
+            maskFile, maskKey: `${projectId}/ads-clean/${adId}_wmask${i}_${Date.now()}.mp4`,
+            W, H, fps, dur: len, workDir, deadline, tag: `w${i}`, log,
           });
-          if (rebuilt) { out = rebuilt; cleaned = true; log(`window ${i}: reconstructed the caption band neurally`); }
+          if (rebuilt) { out = rebuilt; cleaned = true; log(`window ${i}: reconstructed the caption text pixels`); }
         } catch (e) {
-          log(`window ${i}: neural reconstruct failed (${(e as Error).message})`);
+          log(`window ${i}: text reconstruct failed (${(e as Error).message})`);
         }
       }
-
-      // 2) Fallback: blur-erase the band so text never survives a window.
-      if (!cleaned && Date.now() < deadline - 15000) {
-        const rect = toRect({ b: box, t0: 0, t1: len + 1 }, W, H);
-        if (rect) {
-          try {
-            const erased = path.join(workDir, `erase_${i}.mp4`);
-            await run(FFMPEG, [
-              '-y', '-i', segFile, '-filter_complex', buildEraseGraph([rect]),
-              '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-an', erased,
-            ]);
-            out = erased; cleaned = true;
-            log(`window ${i}: blur-erased the caption band (neural unavailable)`);
-          } catch (e) {
-            log(`window ${i}: band-erase failed (${(e as Error).message}) — kept original`);
-          }
-        }
-      }
-
-      if (!cleaned) log(`window ${i}: out of time — kept original`);
-      pieces.push({ file: out, segFile, len, cleaned });
+      if (!cleaned) log(`window ${i}: could not reconstruct — kept original`);
+      pieces.push({ file: out, segFile, len, cleaned, hadText });
     }
 
-    const cleanedCount = pieces.filter((p) => p.cleaned).length;
+    // A window only "needs" cleaning if it actually had caption text.
+    const withText = pieces.filter((p) => p.hadText).length;
+    const cleanedCount = pieces.filter((p) => p.hadText && p.cleaned).length;
 
     // Concatenate the (mixed clean / original) windows, re-encoding to a uniform
     // H.264 so the demuxer never chokes on parameter mismatches between windows.
@@ -1433,13 +1511,13 @@ async function cleanWholeAd(
 
     const cleanKey = `${projectId}/ads-clean/${adId}_${Date.now()}.mp4`;
     await uploadFile(supabase, cleanKey, finalFile, 'video/mp4');
-    const note = cleanedCount === nseg
+    const note = cleanedCount >= withText
       ? null
-      : `${cleanedCount}/${nseg} windows cleared of captions — the rest ran out of processing time and kept original footage`;
+      : `${cleanedCount}/${withText} caption windows reconstructed — the rest ran out of processing time and kept their text`;
     await supabase.from('competitor_ads')
       .update({ clean_status: 'done', clean_full_path: cleanKey, clean_error: note })
       .eq('id', adId);
-    log(`done — ${cleanKey} (${cleanedCount}/${nseg} windows cleaned)`);
+    log(`done — ${cleanKey} (${cleanedCount}/${withText} caption windows reconstructed, ${nseg} total)`);
     return new Response('done', { status: 200 });
   } catch (e) {
     return fail((e as Error).message);
