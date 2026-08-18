@@ -7,6 +7,7 @@ import { GeneralBriefSection } from '@/components/projecthub/general-brief/Gener
 import { CreativeSection } from '@/components/projecthub/creative/CreativeSection';
 import { AnalyticsSection } from '@/components/projecthub/analytics/AnalyticsSection';
 import { CompetitorLibrarySection } from '@/components/projecthub/competitor-library/CompetitorLibrarySection';
+import { AutopilotSection } from '@/components/projecthub/autopilot/AutopilotSection';
 import {
   useGetProject,
   getGetProjectQueryKey,
@@ -16,10 +17,10 @@ import { Button } from '@/components/ui/button';
 import { getUploadUrl } from '@/lib/projecthub-storage';
 import {
   ArrowLeft, FileText, Layers, Palette, BarChart2,
-  ChevronLeft, ChevronRight, Globe2,
+  ChevronLeft, ChevronRight, Globe2, Rocket,
 } from 'lucide-react';
 
-type Section = 'brief' | 'funnel' | 'competitor-library' | 'creative' | 'chief' | 'analytics';
+type Section = 'autopilot' | 'brief' | 'funnel' | 'competitor-library' | 'creative' | 'chief' | 'analytics';
 
 type ProjectFile = {
   id: number;
@@ -30,6 +31,7 @@ type ProjectFile = {
 };
 
 const SECTIONS = [
+  { id: 'autopilot' as Section, label: 'Autopilot', icon: Rocket },
   { id: 'brief' as Section, label: 'General Brief', icon: FileText },
   { id: 'funnel' as Section, label: 'Funnel', icon: Layers },
   { id: 'competitor-library' as Section, label: 'Competitor Library', icon: Globe2 },
@@ -156,6 +158,9 @@ export function ProjectDetailContent({ projectId }: { projectId: string }) {
 
         <main className="flex-1 overflow-y-auto">
           <div className="max-w-6xl mx-auto px-6 py-6 pb-12">
+            {activeSection === 'autopilot' && (
+              <AutopilotSection projectId={projectId} projectName={project.name ?? ''} />
+            )}
             {activeSection === 'brief' && (
               <GeneralBriefSection
                 projectId={projectId}
