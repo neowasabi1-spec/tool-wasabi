@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import Header from '@/components/Header';
 import { supabase } from '@/lib/supabase';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
@@ -11,6 +12,7 @@ import {
   Plus, FolderOpen, ChevronRight, ChevronDown, Layers,
   Trash2, Search, Save, X, Upload, Loader2, FileText, Eye,
   ShieldCheck, LayoutGrid, LayoutList, Share2, Users,
+  Rocket, Sparkles,
 } from 'lucide-react';
 import {
   parseSectionData, buildSectionBlob, formatFileSize,
@@ -1039,12 +1041,19 @@ function ProjectPanel({
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 export default function ProjectsPage() {
+  const router = useRouter();
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [newName, setNewName] = useState('');
   const [adding, setAdding] = useState(false);
+  // ── Autopilot launcher (create-or-update a project and run the full pipeline) ──
+  const [showAutopilot, setShowAutopilot] = useState(false);
+  const [apProduct, setApProduct] = useState('');
+  const [apCompetitor, setApCompetitor] = useState('');
+  const [apDesc, setApDesc] = useState('');
+  const [apLaunching, setApLaunching] = useState(false);
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
   const [checkpointTarget, setCheckpointTarget] = useState<Project | null>(null);
@@ -1257,6 +1266,34 @@ export default function ProjectsPage() {
     setAdding(false);
   }
 
+  async function launchAutopilot() {
+    if (!apProduct.trim()) {
+      toast.error('Inserisci almeno il nome del prodotto.');
+      return;
+    }
+    setApLaunching(true);
+    try {
+      const res = await fetch('/api/pipeline', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          product: apProduct.trim(),
+          competitorLink: apCompetitor.trim() || undefined,
+          description: apDesc.trim() || undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || 'Avvio fallito');
+      toast.success(data.created ? 'Progetto creato — Autopilot avviato.' : 'Autopilot avviato sul progetto esistente.');
+      // Jump straight to the project's Autopilot tab to watch progress.
+      router.push(`/projects/${data.projectId}?section=autopilot`);
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setApLaunching(false);
+    }
+  }
+
   async function updateProject(id: string, fields: Partial<Project>) {
     let { error } = await supabase.from('projects').update(fields).eq('id', id);
     // Migration `brief_files` may not be applied yet — retry without it.
@@ -1381,7 +1418,15 @@ export default function ProjectsPage() {
             </div>
 
             <button
-              onClick={() => setShowAdd(!showAdd)}
+              onClick={() => { setShowAutopilot(v => !v); setShowAdd(false); }}
+              className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-violet-600 to-blue-600 hover:from-violet-700 hover:to-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
+            >
+              <Rocket className="w-4 h-4" />
+              Nuovo con Autopilot
+            </button>
+
+            <button
+              onClick={() => { setShowAdd(!showAdd); setShowAutopilot(false); }}
               className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
             >
               <Plus className="w-4 h-4" />
@@ -1389,6 +1434,65 @@ export default function ProjectsPage() {
             </button>
           </div>
         </div>
+
+        {/* Autopilot launcher */}
+        {showAutopilot && (
+          <div className="bg-white border border-violet-200 rounded-xl p-5 mb-4 shadow-sm">
+            <div className="flex items-center gap-2 mb-1">
+              <Rocket className="w-4 h-4 text-violet-600" />
+              <h3 className="text-sm font-semibold text-slate-900">Nuovo progetto con Autopilot</h3>
+            </div>
+            <p className="text-xs text-slate-500 mb-4">
+              Dai il prodotto (e opzionalmente competitor + descrizione): crea/aggiorna il progetto e fa da solo
+              ricerca mercato → brief → competitor → ads → landing.
+            </p>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <input
+                type="text"
+                value={apProduct}
+                onChange={e => setApProduct(e.target.value)}
+                placeholder="Nome prodotto (es. Crema anti-age Rivela)"
+                className="bg-white border border-slate-200 rounded-lg px-3 py-2 text-slate-900 text-sm focus:outline-none focus:border-violet-500"
+                autoFocus
+                disabled={apLaunching}
+              />
+              <input
+                type="text"
+                value={apCompetitor}
+                onChange={e => setApCompetitor(e.target.value)}
+                placeholder="Link competitor (opzionale)"
+                className="bg-white border border-slate-200 rounded-lg px-3 py-2 text-slate-900 text-sm focus:outline-none focus:border-violet-500"
+                disabled={apLaunching}
+              />
+            </div>
+            <textarea
+              value={apDesc}
+              onChange={e => setApDesc(e.target.value)}
+              placeholder="Descrizione / note (opzionale): ingredienti, benefici, prezzo, target, tono..."
+              rows={3}
+              className="mt-3 w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-slate-900 text-sm focus:outline-none focus:border-violet-500 resize-y"
+              disabled={apLaunching}
+            />
+            <div className="flex items-center gap-2 mt-3">
+              <button
+                onClick={launchAutopilot}
+                disabled={apLaunching || !apProduct.trim()}
+                className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-violet-600 to-blue-600 hover:from-violet-700 hover:to-blue-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors"
+              >
+                {apLaunching
+                  ? <><Loader2 className="w-4 h-4 animate-spin" /> Avvio…</>
+                  : <><Sparkles className="w-4 h-4" /> Avvia Autopilot</>}
+              </button>
+              <button
+                onClick={() => { setShowAutopilot(false); setApProduct(''); setApCompetitor(''); setApDesc(''); }}
+                disabled={apLaunching}
+                className="px-3 py-2 text-slate-500 hover:text-slate-900 text-sm rounded-lg transition-colors"
+              >
+                Annulla
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Add form */}
         {showAdd && (

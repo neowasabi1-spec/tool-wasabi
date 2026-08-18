@@ -41,7 +41,11 @@ const SECTIONS = [
 
 export function ProjectDetailContent({ projectId }: { projectId: string }) {
   const router = useRouter();
-  const [activeSection, setActiveSection] = useState<Section>('brief');
+  const [activeSection, setActiveSection] = useState<Section>(() => {
+    if (typeof window === 'undefined') return 'brief';
+    const s = new URLSearchParams(window.location.search).get('section');
+    return SECTIONS.some((sec) => sec.id === s) ? (s as Section) : 'brief';
+  });
   const [collapsed, setCollapsed] = useState(false);
 
   const { data: project, isLoading } = useGetProject(projectId, {
