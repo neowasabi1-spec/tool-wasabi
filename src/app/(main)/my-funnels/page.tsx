@@ -411,7 +411,7 @@ export default function MyFunnelsPage() {
         archivedFunnels: [created, ...state.archivedFunnels],
         archivedFunnelsLoaded: true,
       }));
-      toast.success(`"${funnel.funnel_name}" imported to My Archive!`);
+      toast.success(`"${funnel.funnel_name}" imported to Template!`);
     } catch (err) {
       setError((err as Error)?.message ?? 'Error importing to archive');
     } finally {
@@ -1098,7 +1098,7 @@ export default function MyFunnelsPage() {
                         onClick={() => handleImportToArchive(funnel)}
                         disabled={archivingId === funnel.id}
                         className="flex items-center gap-1 text-sm font-medium text-blue-600 hover:text-blue-700 disabled:opacity-50"
-                        title="Import to My Archive"
+                        title="Import to Template"
                       >
                         {archivingId === funnel.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Archive className="h-4 w-4" />}
                         Archive

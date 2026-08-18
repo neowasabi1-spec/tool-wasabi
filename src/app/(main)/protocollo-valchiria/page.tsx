@@ -285,7 +285,7 @@ export default function ProtocolloValchiriaPage() {
               <Swords className="w-12 h-12 text-gray-300 mx-auto mb-3" />
               <p className="text-gray-500 font-medium">No funnels in Protocollo Valchiria yet</p>
               <p className="text-gray-400 text-sm mt-1">
-                Open <span className="font-semibold">My Archive</span> and click{' '}
+                Open <span className="font-semibold">Template</span> and click{' '}
                 <span className="font-semibold">&ldquo;Add to Valchiria&rdquo;</span> on any saved funnel
                 to make it available here.
               </p>

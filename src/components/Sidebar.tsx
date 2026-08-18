@@ -60,7 +60,7 @@ const menuGroups: MenuGroup[] = [
   {
     label: 'Libreria',
     items: [
-      { name: 'My Archive', href: '/templates', icon: FileCode, sectionId: 'templates' },
+      { name: 'Template', href: '/templates', icon: FileCode, sectionId: 'templates' },
       { name: 'Catalogue', href: '/products', icon: ShoppingBag, sectionId: 'products' },
       { name: 'My Projects', href: '/projects', icon: FolderOpen, sectionId: 'projects' },
     ],

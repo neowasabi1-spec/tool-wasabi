@@ -1002,8 +1002,8 @@ export default function TemplatesPage() {
   return (
     <div className="min-h-screen">
       <Header
-        title="My Archive"
-        subtitle="Templates, saved funnels and pages organized by type"
+        title="Template"
+        subtitle="Pagine singole e Funnel interi salvati come template"
       />
 
       <div className="p-6">
@@ -1012,14 +1012,28 @@ export default function TemplatesPage() {
           <div className="flex gap-1 bg-gray-100 rounded-xl p-1.5">
             <button
               onClick={() => setMainView('byType')}
+              title="Pagine singole salvate come template"
               className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-semibold transition-colors ${
                 mainView === 'byType' ? 'bg-white text-indigo-700 shadow-sm ring-1 ring-black/5' : 'text-gray-500 hover:text-gray-700'
               }`}
             >
-              <FolderOpen className="w-4 h-4" />
-              Template
+              <FileCode className="w-4 h-4" />
+              Pages
               {Object.keys(pagesByType).length > 0 && (
                 <span className="ml-1 px-1.5 py-0.5 bg-indigo-100 text-indigo-700 rounded-full text-xs font-semibold">{Object.keys(pagesByType).length}</span>
+              )}
+            </button>
+            <button
+              onClick={() => setMainView('funnels')}
+              title="Funnel interi salvati in blocco come template"
+              className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-semibold transition-colors ${
+                mainView === 'funnels' ? 'bg-white text-indigo-700 shadow-sm ring-1 ring-black/5' : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              <FolderOpen className="w-4 h-4" />
+              Funnel
+              {(archivedFunnels?.length ?? 0) > 0 && (
+                <span className="ml-1 px-1.5 py-0.5 bg-indigo-100 text-indigo-700 rounded-full text-xs font-semibold">{archivedFunnels.length}</span>
               )}
             </button>
           </div>
@@ -1175,7 +1189,7 @@ export default function TemplatesPage() {
                           disabled={shareTogglingId === funnel.id}
                           title={funnel.share_with_users
                             ? 'Stop sharing with users (only you will see it in Valchiria)'
-                            : 'Share with every user (read-only in their Valchiria + My Archive)'}
+                            : 'Share with every user (read-only in their Valchiria + Template)'}
                           className={`ml-2 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
                             funnel.share_with_users
                               ? 'bg-amber-50 border-amber-300 text-amber-800 hover:bg-amber-100'

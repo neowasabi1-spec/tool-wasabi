@@ -46,7 +46,7 @@ const SECTION_CONTEXT: Record<string, { name: string; description: string }> = {
   '/reverse-funnel': { name: 'Reverse Funnel', description: 'Reverse-engineer competitor funnels from a URL' },
   '/front-end-funnel': { name: 'Front End Funnel', description: 'Build front-end funnel step by step: bridge pages, VSLs, presell pages, each with clone & swipe' },
   '/post-purchase': { name: 'Post Purchase Funnel', description: 'Build post-purchase funnel: upsells, downsells, order bumps, thank you pages' },
-  '/templates': { name: 'My Archive', description: 'Saved funnel templates and pages organized by type, with AI analysis per category' },
+  '/templates': { name: 'Template', description: 'Saved funnel templates and single pages organized by type, with AI analysis per category' },
   '/products': { name: 'My Products', description: 'Product catalog with name, description, price, benefits, CTA, AI-generated briefs' },
   '/quiz-creator': { name: 'Quiz Creator', description: 'Create quiz funnels for lead generation and engagement' },
   '/swipe-quiz': { name: 'Swipe Quiz', description: 'Swipe and adapt quiz templates' },

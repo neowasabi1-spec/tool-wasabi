@@ -68,8 +68,8 @@ export default function Dashboard() {
       tint: 'from-indigo-500 to-violet-600',
     },
     {
-      name: 'My Archive',
-      desc: 'Your saved pages, organized by type',
+      name: 'Template',
+      desc: 'Pagine singole e Funnel interi salvati come template',
       icon: FileCode,
       href: '/templates',
       tint: 'from-sky-500 to-indigo-600',
