@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import {
   getSupabase, uploadFile, makeWorkDir, downloadSource, probeDuration,
-  run, FFMPEG, ffprobeInfo, cutClip,
+  run, FFMPEG, ffprobeInfo, cutClip, grabThumb, analyzeShot,
 } from './_shared/video';
 import { captionMasks, writeMaskVideo, maskIsTrustworthy } from './_shared/caption-mask';
 
@@ -1192,6 +1192,69 @@ export async function cleanClipFile(opts: {
   return { ok: true, outFile, note, band: resultBand };
 }
 
+/** Coarse band from a vision "top|center|bottom" region hint. */
+function regionToBand(region: string): { y0: number; y1: number } | null {
+  const r = (region || '').toLowerCase();
+  if (r.includes('top')) return { y0: 0.02, y1: 0.32 };
+  if (r.includes('center') || r.includes('centre') || r.includes('middle')) return { y0: 0.34, y1: 0.66 };
+  if (r.includes('bottom')) return { y0: 0.62, y1: 0.95 };
+  return null;
+}
+
+/**
+ * Detect the caption band for the WHOLE video, up front and independently of
+ * the per-window cleaning. This guarantees a band always exists so every window
+ * can be neurally reconstructed — the earlier "learn it from a cleaned window"
+ * approach left 0/7 when no window happened to expose a band. Order: colour
+ * (fast, free) → vision (handles any position) → lower-third default.
+ */
+async function detectCaptionBandWhole(
+  srcFile: string, W: number, H: number, fps: number, dur: number,
+  workDir: string, log: (...a: unknown[]) => void,
+): Promise<{ y0: number; y1: number } | null> {
+  // 1) Colour-based: learn the caption band from the whole clip.
+  try {
+    const rgb = await rgbFrames(srcFile, W, H, dur, fps, workDir);
+    const frames = Math.floor(rgb.buf.length / (rgb.w * rgb.h * 3));
+    const cm = captionMasks(rgb.buf, frames, rgb.w, rgb.h, null);
+    if (cm?.band) {
+      log(`band (colour): ${cm.band.y0.toFixed(2)}–${cm.band.y1.toFixed(2)}`);
+      return cm.band;
+    }
+  } catch (e) {
+    log(`band colour detect skipped: ${(e as Error).message}`);
+  }
+
+  // 2) Vision: sample a few frames, union the detected caption regions.
+  try {
+    let y0 = 1;
+    let y1 = 0;
+    let found = false;
+    for (const frac of [0.2, 0.45, 0.7, 0.9]) {
+      const thumb = path.join(workDir, `bandprobe_${Math.round(frac * 100)}.jpg`);
+      await grabThumb(srcFile, Math.min(Math.max(0, dur - 0.1), dur * frac), thumb);
+      const info = await analyzeShot(thumb);
+      if (!info.hasText) continue;
+      const band = regionToBand(info.region);
+      if (band) {
+        y0 = Math.min(y0, band.y0);
+        y1 = Math.max(y1, band.y1);
+        found = true;
+      }
+    }
+    if (found && y1 > y0) {
+      log(`band (vision): ${y0.toFixed(2)}–${y1.toFixed(2)}`);
+      return { y0, y1 };
+    }
+  } catch (e) {
+    log(`band vision detect skipped: ${(e as Error).message}`);
+  }
+
+  // 3) Default: lower third, where most UGC/news captions sit.
+  log('band: falling back to default lower-third');
+  return { y0: 0.6, y1: 0.93 };
+}
+
 /**
  * Remove burned-in subtitles from a WHOLE ad video (not a shot), keeping its
  * original audio. Reuses cleanClipFile so quality matches the shots pipeline,
@@ -1254,10 +1317,12 @@ async function cleanWholeAd(
 
     type Piece = { file: string; segFile: string; len: number; cleaned: boolean };
     const pieces: Piece[] = [];
-    // The caption sits in the same vertical band for the whole video, so learn
-    // that band from the windows the mask path DID clean, then reuse it to erase
-    // the band on windows that couldn't be cleaned — no window keeps its text.
-    let learnedBand: { y0: number; y1: number } | null = null;
+    // Detect the caption band ONCE, up front, from the whole video — so a band
+    // always exists and every leftover window can be neurally reconstructed.
+    // (Learning it only from a "cleaned" window left 0/7 when none exposed one.)
+    // Per-window results still refine it via mergeBand below.
+    let learnedBand: { y0: number; y1: number } | null =
+      await detectCaptionBandWhole(srcFile, W, H, fps, dur, workDir, log);
     const mergeBand = (b: { y0: number; y1: number } | null | undefined) => {
       if (!b) return;
       learnedBand = learnedBand
@@ -1384,7 +1449,7 @@ async function cleanWholeAd(
     await uploadFile(supabase, cleanKey, finalFile, 'video/mp4');
     const note = cleanedCount === nseg
       ? null
-      : `${cleanedCount}/${nseg} windows cleared of captions — the rest kept original footage (no caption band could be located)`;
+      : `${cleanedCount}/${nseg} windows cleared of captions — the rest ran out of processing time and kept original footage`;
     await supabase.from('competitor_ads')
       .update({ clean_status: 'done', clean_full_path: cleanKey, clean_error: note })
       .eq('id', adId);
