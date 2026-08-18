@@ -262,11 +262,16 @@ function GeneralBriefTabContent({ projectId, files, projectName }: {
         ) : (
           <div className="grid grid-cols-4 sm:grid-cols-5 md:grid-cols-6 gap-2.5">
             {byType("ugc").map(f => (
-              <button key={f.id} onClick={() => setLightbox({ src: getUploadUrl(f.file_path), alt: f.original_name })}
-                className="group aspect-square rounded-lg overflow-hidden border border-border bg-muted hover:border-primary/40 transition-all">
-                <img src={getUploadUrl(f.file_path)} alt={f.original_name}
-                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
-              </button>
+              <div key={f.id} className="space-y-1.5">
+                <button onClick={() => setLightbox({ src: getUploadUrl(f.file_path), alt: f.original_name })}
+                  className="group block w-full aspect-square rounded-lg overflow-hidden border border-border bg-muted hover:border-primary/40 transition-all">
+                  <img src={getUploadUrl(f.file_path)} alt={f.original_name}
+                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
+                </button>
+                <p className="text-[11px] text-muted-foreground truncate text-center" title={f.original_name}>
+                  {f.original_name}
+                </p>
+              </div>
             ))}
           </div>
         )}
