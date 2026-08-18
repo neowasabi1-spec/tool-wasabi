@@ -245,19 +245,19 @@ function GeneralBriefTabContent({ projectId, files, projectName }: {
         )}
       </div>
 
-      {/* UGC Photos */}
+      {/* Mockup */}
       <div className="bg-card border border-border rounded-xl p-5 space-y-4">
         <div className="flex items-center justify-between">
           <h3 className="font-semibold text-sm flex items-center gap-2">
-            <Image className="w-4 h-4 text-primary" /> UGC Photos
+            <Image className="w-4 h-4 text-primary" /> Mockup
             {byType("ugc").length > 0 && <Badge variant="secondary" className="text-[10px]">{byType("ugc").length}</Badge>}
           </h3>
-          <UploadBtn projectId={projectId} fileType="ugc" label="Add photo" accept=".jpg,.jpeg,.png,.webp" multiple />
+          <UploadBtn projectId={projectId} fileType="ugc" label="Add mockup" accept=".jpg,.jpeg,.png,.webp" multiple />
         </div>
         {byType("ugc").length === 0 ? (
           <div className="border-2 border-dashed border-border rounded-lg p-8 text-center">
             <Image className="w-8 h-8 text-muted-foreground/30 mx-auto mb-2" />
-            <p className="text-sm text-muted-foreground italic">No photos uploaded</p>
+            <p className="text-sm text-muted-foreground italic">No mockup uploaded</p>
           </div>
         ) : (
           <div className="grid grid-cols-4 sm:grid-cols-5 md:grid-cols-6 gap-2.5">
