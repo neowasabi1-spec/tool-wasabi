@@ -176,14 +176,6 @@ function marketDirective(input: PipelineInput): string {
 - WRITE ALL OUTPUT IN ENGLISH. This is a strategy document for the team; localization into the market's local language happens later, during ad/landing production.`;
 }
 
-function brandNameFromUrl(url: string): string {
-  try {
-    const u = new URL(url.startsWith('http') ? url : `https://${url}`);
-    const host = u.hostname.replace(/^www\./, '');
-    const base = host.split('.')[0] || host;
-    return base.charAt(0).toUpperCase() + base.slice(1);
-  } catch { return 'Competitor'; }
-}
 function isMetaAdLibrary(url: string): boolean { return /facebook\.com\/ads\/library/i.test(url); }
 
 interface AdConcept { angle: string; body: string; }
@@ -628,17 +620,16 @@ async function runCompetitor(supabase: SupabaseClient, projectId: string, input:
 CRITICAL RULES:
 - Write the keywords in the LOCAL LANGUAGE actually spoken by consumers/advertisers in ${geo} (e.g. German for a German market). Do NOT output English keywords unless the market itself is English-speaking. English keywords surface the wrong (foreign) brands.
 - Use the exact words a native buyer would type: the product category, the core benefit/outcome, and the problem — phrased the way a local advertiser writes ad copy.
-- Include 1-2 REAL local competitor/brand names in this niche for ${geo} if you know them.
+- Use ONLY product-category, problem and benefit terms (for a vaginal-health product that would be e.g. "Milchsäurebakterien", "Scheidenflora", "Intimflora", "vaginale Gesundheit", "Scheideninfektion vorbeugen"). Do NOT output brand or company names — a brand search pulls in that competitor's UNRELATED products and makes the results generic.
 - NEVER output generic platform/tech/agency terms (e.g. "shopify", "ecommerce", "dropshipping", "print on demand", "agency") — only product- and market-specific terms.
 - Output ONLY the keywords, one per line. No numbering, no explanations.`;
   const kwUser = `Product: ${productName}\nMarket: ${input.market || country}\n${link ? `Competitor link: ${link}\n` : ''}\nGive the keywords now.`;
   const kwRaw = await callClaude({ task: 'ad', instructions: kwInstructions, brief, marketResearch: research, userMessage: kwUser, maxTokens: 300 });
 
+  // Use only the topical (category/problem/benefit) keywords Claude produced.
+  // The competitor link's brand name is deliberately NOT used as a keyword — a
+  // brand search surfaces that company's unrelated products (generic results).
   let keywords = parseKeywords(kwRaw);
-  if (link) {
-    const brand = brandNameFromUrl(link);
-    if (brand && brand !== 'Saved creatives') keywords.unshift(brand);
-  }
   if (keywords.length === 0) keywords = [productName.split('/')[0].trim() || 'competitor'];
   // Cap the number of keyword searches per platform to control Apify spend.
   const searchTerms = keywords.slice(0, 2);
