@@ -101,6 +101,17 @@ export async function startBrandScrape(
   return res;
 }
 
+/** True for a real advertiser destination (not a social/ad-platform host). */
+function isRealLandingUrl(url: string | undefined): boolean {
+  if (!url || !/^https?:\/\//i.test(url)) return false;
+  try {
+    const host = new URL(url).hostname.replace(/^www\./, '').toLowerCase();
+    return !/(^|\.)(facebook\.com|fb\.me|instagram\.com|tiktok\.com|library\.tiktok\.com|google\.com|adstransparency\.google\.com|youtube\.com|l\.facebook\.com)$/.test(host);
+  } catch {
+    return false;
+  }
+}
+
 /** Best-effort fetch of a landing page's rendered-enough HTML. */
 async function fetchLandingHtml(url: string): Promise<string> {
   try {
@@ -237,10 +248,11 @@ export async function ingestDataset(opts: {
     const mapped = map(raw);
     if (!mapped) { failed++; continue; }
 
-    // Collect landing pages from Google only (its landing_page_url is the real
-    // advertiser destination; TikTok/Meta expose internal ad-detail links).
-    if (platform === 'google' && mapped.landingUrl && /^https?:\/\//i.test(mapped.landingUrl)) {
-      landingUrls.add(mapped.landingUrl);
+    // Collect REAL advertiser landing pages from Meta (snapshot.link_url) and
+    // Google (landing_page_url). TikTok only exposes its own ad-detail link, so
+    // it's excluded. Social/internal hosts are filtered out.
+    if ((platform === 'meta' || platform === 'google') && isRealLandingUrl(mapped.landingUrl)) {
+      landingUrls.add(mapped.landingUrl as string);
     }
     if (!mapped.mediaUrl) { continue; } // text-only ad → landing captured, no creative
 

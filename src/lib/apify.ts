@@ -349,6 +349,15 @@ export function mapApifyAdItem(raw: unknown): MappedAd | null {
   const adVariants =
     firstNum(r.collationCount, r.collation_count, r.total, r.totalCount, snap.collation_count) ?? 0;
 
+  // Real advertiser DESTINATION URL (the landing the ad clicks through to).
+  // FB Ad Library exposes it as snapshot.link_url and per-card link_url.
+  const landingRaw = firstStr(snap.link_url, card0.link_url, r.link_url, r.linkUrl, r.link);
+  let landingUrl = '';
+  if (landingRaw) {
+    try { const u = new URL(landingRaw); landingUrl = u.origin + u.pathname; } // drop tracking query
+    catch { landingUrl = landingRaw; }
+  }
+
   // ── Spend / reach (disclosed only for political & social-issue ads) ───────
   const currency = firstStr(r.currency, snap.currency);
   const spend = formatRange(r.spend ?? snap.spend, currency).slice(0, 60);
@@ -371,6 +380,7 @@ export function mapApifyAdItem(raw: unknown): MappedAd | null {
     spend,
     impressions,
     reach: reach !== null && reach > 0 ? Math.round(reach) : null,
+    landingUrl: landingUrl || undefined,
   };
 }
 
