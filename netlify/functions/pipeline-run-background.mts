@@ -20,7 +20,7 @@ type StepKey = (typeof STEP_ORDER)[number];
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
 const MODEL = 'claude-opus-4-8';
-const STEP_OUTPUT_PREVIEW_CHARS = 4000;
+const STEP_OUTPUT_PREVIEW_CHARS = 16000;
 
 interface PipelineInput {
   product?: string;
@@ -112,6 +112,8 @@ interface ClaudeOpts {
   marketResearch?: string;
   userMessage: string;
   maxTokens: number;
+  /** Per-call fetch timeout. Defaults to 300s for long generations. */
+  timeoutMs?: number;
 }
 
 async function callClaude(opts: ClaudeOpts): Promise<string> {
@@ -151,7 +153,7 @@ async function callClaude(opts: ClaudeOpts): Promise<string> {
       system,
       messages: [{ role: 'user', content: userContent }],
     }),
-    signal: AbortSignal.timeout(120_000),
+    signal: AbortSignal.timeout(opts.timeoutMs ?? 300_000),
   });
 
   if (!res.ok) {
@@ -318,55 +320,74 @@ async function runMarketResearch(supabase: SupabaseClient, projectId: string, in
   const project = await loadProject(supabase, projectId);
   const productName = (project.name as string) || input.product || '';
 
-  const instructions = `You are a senior direct-response market researcher. Produce a UNIFIED RESEARCH DOCUMENT following Stefan Georgi's RMBC "Deep Research" methodology (the R in RMBC). This document must be complete enough to be fed to an LLM to write copy, exactly as taught in the RMBC framework you have in your knowledge base.
+  const instructions = `You are a world-class direct-response market researcher (think Stefan Georgi + Gary Bencivenga level). Produce a COMPREHENSIVE UNIFIED RESEARCH DOCUMENT following Georgi's RMBC "Deep Research" methodology (the R in RMBC). This is the single source of truth a copywriter will use to write the entire funnel, so it must be DEEP, exhaustive and immediately usable — NOT a summary.
 ${marketDirective(input)}
-Apply the frameworks from your knowledge base rigorously: Schwartz (5 Awareness Levels + 5 Sophistication Stages), voice-of-customer language mining, and psychographic drivers.
-Output clean markdown with the exact section headers below. Be specific, concrete and evidence-driven — never generic. Where you infer rather than know, label it "(inference)".
 
-# 1. PRODUCT / MARKET AWARENESS (Schwartz)
-- Core customer & the ONE market you're targeting.
-- Awareness Level (1 Unaware → 5 Most Aware) with justification, and the practical implication: how you must open/speak to them at this level.
-- Market Sophistication Stage (1→5) with justification and what that means for the angle (new claim vs. mechanism vs. amplification).
+DEPTH REQUIREMENTS (this is the difference between amateur and pro research — do not skimp):
+- Aim for a 2,500–4,000 word professional dossier. Each section must be substantive, not just a bullet or two.
+- Apply your knowledge base frameworks EXPLICITLY and by name where useful: Schwartz (5 Awareness Levels + 5 Sophistication Stages), Georgi Big Ideas & Unique Mechanism, Tony Flores root-cause/identity mechanisms, Evaldo's core-emotion logic, Sugarman psychological triggers, Bencivenga proof.
+- Be concrete and specific to THIS product/market — never generic filler. Use the reference competitor and category to ground every claim.
+- Where you infer rather than know, label it "(inference)". Where a real citation/study would be needed, label it "(needs source)".
+- Write realistic Voice-of-Customer quotes as if mined from reviews/forums/Reddit/Amazon/Trustpilot for this geography.
 
-# 2. AVATAR & PSYCHOGRAPHIC RESEARCH
-- Demographics + a vivid "day in the life".
-- Deep psychological drivers (fears, frustrations, secret desires, status anxieties, identity).
-- Trigger event: the moment they realize something MUST change.
-- Dominant emotion driving the purchase.
+Output clean markdown with EXACTLY these sections and sub-sections:
 
-# 3. PAINS & DESIRES (Voice of Customer)
-- Deep pains (not surface) in the prospect's OWN words / phrasing.
-- Desires & the identity-level transformation they're really buying.
-- 10+ verbatim-style "voice of customer" phrases to reuse in copy.
+# 1. MARKET SNAPSHOT
+- The category, its size/momentum in this geography, and why now (trends, cultural context).
+- The core problem this product solves, framed the way the market experiences it.
 
-# 4. COMPETITOR RESEARCH
-- Main competitors/alternatives in this geography.
-- Claims worth modeling ("swiping") + gaps/weaknesses to exploit for differentiation.
+# 2. PRODUCT / MARKET AWARENESS (Schwartz)
+- Core customer & the ONE market you're targeting (be surgical).
+- Awareness Level (1 Unaware → 5 Most Aware) with detailed justification AND the practical copy implication: exactly how to open and what NOT to do at this level.
+- Market Sophistication Stage (1→5) with justification and the resulting angle strategy (new claim vs. mechanism vs. amplification vs. identification).
+
+# 3. AVATAR (deep)
+- A named, vivid primary avatar: demographics, psychographics, identity, self-image, aspirations.
+- A detailed "day in the life" narrative (a real paragraph, not bullets) showing where the problem intrudes.
+- 1–2 secondary sub-avatars worth targeting separately.
+
+# 4. PSYCHOGRAPHIC DRIVERS
+- Deep fears (5+), frustrations (5+), secret desires (5+), and status/identity anxieties.
+- The trigger event that makes them finally act.
+- The single DOMINANT emotion driving purchase (Evaldo logic) + the "away from" pain and the "toward" desire.
+- False solutions they've already tried and why each failed them (this fuels the mechanism).
+
+# 5. VOICE OF CUSTOMER (language mining)
+- 20+ verbatim-style quotes, grouped under: Pains, Failed solutions, Desires/Dreams, Objections/Skepticism.
+- The exact words, metaphors and phrases they use (so copy can mirror them).
+
+# 6. COMPETITOR RESEARCH (teardown)
+- 3–5 real competitors/alternatives in this geography. For EACH: positioning, primary claim, angle, rough price, strengths, and weaknesses.
+- A "claims to swipe" list (proven claims worth modeling) and a "gaps to exploit" list.
 - The positioning white space this product can own.
 
-# 5. UNIQUE MECHANISM
-- Unique Mechanism of the PROBLEM (the hidden root cause keeping the problem alive).
-- Unique Mechanism of the SOLUTION (why THIS product uniquely fixes it).
+# 7. UNIQUE MECHANISM
+- Unique Mechanism of the PROBLEM: the specific, nameable hidden root cause keeping the problem alive (give it a memorable name).
+- Unique Mechanism of the SOLUTION: why THIS product uniquely breaks that loop (specific ingredient/strain/delivery/synergy), also named.
+- Why this mechanism beats a louder claim at this sophistication stage.
 
-# 6. INGREDIENT / PROOF RESEARCH (when relevant)
-- Key ingredients/components and the benefit/claim each supports.
-- Types of proof/studies/authority available (note where a real citation would be needed). Label unverified items "(needs source)".
+# 8. INGREDIENT / PROOF DOSSIER (when relevant)
+- Each key ingredient/component → the benefit and the claim it supports, with mechanism of action.
+- Proof assets available or needed: studies, authority, demonstrations, testimonials, guarantees. Label unverified "(needs source)".
 
-# 7. OBJECTIONS & CORE BUYING BELIEF
-- Top objections and how to dissolve each.
-- The single core buying belief the copy must install.
+# 9. OBJECTIONS & CORE BUYING BELIEF
+- 10+ objections, each with a concrete rebuttal/reframe.
+- The single CORE BUYING BELIEF the copy must install for the sale to happen.
 
-# 8. BIG IDEA & MARKET ANGLES
-- 1 Big Idea candidate.
-- 5-7 distinct, testable marketing angles usable across ads and the landing page.`;
+# 10. BIG IDEAS & ANGLES
+- 3 distinct Big Idea candidates (Georgi style), each with a one-line articulation.
+- 8–10 distinct, testable marketing angles for ads + landing. For EACH angle: the awareness level it fits, the emotional driver, and a sample hook/headline.
+
+# 11. COPY DIRECTION SUMMARY
+- The recommended lead type, tone, and the single most important thing the copy must do. A 3–5 sentence brief-of-the-brief.`;
 
   const userMessage = `Product: ${productName}
 ${input.description ? `\nProvided description:\n${input.description}` : ''}
 ${input.competitorLink ? `\nReference competitor link: ${input.competitorLink}` : ''}
 
-Generate the full RMBC-style unified research document for this product.`;
+Generate the FULL, deep RMBC-style unified research document for this product. Be exhaustive — this must be the definitive research dossier, not a summary.`;
 
-  const content = await callClaude({ task: 'vsl', instructions, userMessage, maxTokens: 6000 });
+  const content = await callClaude({ task: 'vsl', instructions, userMessage, maxTokens: 16000 });
   if (!content) throw new Error('Market research returned empty output');
 
   const { error } = await supabase
