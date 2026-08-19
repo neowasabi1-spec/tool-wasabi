@@ -293,7 +293,9 @@ async function startApifyTiktokRun(keyword: string, country: string, count: numb
   const region = (country || '').trim() || 'all';
   const input: Record<string, unknown> = {
     searchQuery: keyword, query: keyword, keyword,
-    source: 'both', region, regions: [region], countries: [region],
+    // 'ad_library' is keyword-filtered (verified advertisers, EU/UK/TR) →
+    // relevant competitors, vs 'creative_center' top-ads which ignore the query.
+    source: 'ad_library', region, regions: [region], countries: [region],
     adType: 'all', maxResults: n, maxResultsPerQuery: n, resultsLimit: n, count: n,
   };
   return startApifyRun(actor, input, webhookUrl);

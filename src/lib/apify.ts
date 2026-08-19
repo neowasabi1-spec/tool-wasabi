@@ -127,7 +127,8 @@ export async function startTiktokAdsRun(opts: {
     searchQuery: opts.keyword,
     query: opts.keyword,
     keyword: opts.keyword,
-    source: 'both',
+    // Keyword-filtered verified advertisers (EU/UK/TR) → relevant competitors.
+    source: 'ad_library',
     region,
     regions: [region],
     countries: [region],
