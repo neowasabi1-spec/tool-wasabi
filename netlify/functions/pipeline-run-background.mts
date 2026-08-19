@@ -307,7 +307,7 @@ async function startApifyGoogleRun(keyword: string, region: string, count: numbe
   const input: Record<string, unknown> = {
     queries: [keyword], searchQuery: keyword, searchTargets: [keyword],
     region: reg, regions: [reg], dateRangePreset: 'LAST_30_DAYS',
-    adFormat: 'all', platform: 'All', enrichLandingPages: true, scrapeDetails: true,
+    adFormat: 'ALL', enrichLandingPages: true, scrapeDetails: true,
     maxResults: n, maxAdsPerTarget: n, maxAdvertisersPerKeyword: 8,
   };
   return startApifyRun(actor, input, webhookUrl);
