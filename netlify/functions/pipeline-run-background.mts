@@ -319,6 +319,59 @@ function siteBaseUrl(): string {
   return (process.env.URL || process.env.DEPLOY_PRIME_URL || process.env.NEXT_PUBLIC_SITE_URL || '').replace(/\/$/, '');
 }
 
+/** Fetch + save a REAL competitor landing page into the project's Competitor
+ *  Landings (archived_funnels + page_html). Deduped by source_url. */
+async function saveLandingFromUrl(
+  supabase: SupabaseClient, projectId: string, url: string, label = '',
+): Promise<boolean> {
+  if (!/^https?:\/\//i.test(url)) return false;
+  try {
+    const { data: existing } = await supabase
+      .from('archived_funnels').select('id, steps').eq('project_id', projectId);
+    for (const r of (existing || []) as Array<{ steps?: unknown }>) {
+      const s = Array.isArray(r.steps) ? (r.steps[0] as Record<string, unknown>) : null;
+      const cd = s?.cloned_data as Record<string, unknown> | undefined;
+      if (cd && cd.source_url === url) return false; // already saved
+    }
+    const resp = await fetch(url, {
+      signal: AbortSignal.timeout(15_000),
+      redirect: 'follow',
+      headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36' },
+    });
+    if (!resp.ok) return false;
+    const ct = resp.headers.get('content-type') || '';
+    if (!/text\/html/i.test(ct)) return false;
+    const html = (await resp.text()).slice(0, 3_000_000);
+    if (html.length < 200) return false;
+
+    let name = 'Competitor landing';
+    try { name = new URL(url).hostname.replace(/^www\./, ''); } catch { /* keep default */ }
+    if (label) name = `${name} (${label})`;
+
+    const step = {
+      step_index: 1, name, page_type: 'landing', category: '', template_name: '',
+      product_name: '', url_to_swipe: url, prompt: '', feedback: '',
+      swipe_status: 'completed', swipe_result: '', swiped_data: null,
+      cloned_data: {
+        html, title: name, source_url: url, method_used: 'competitor-link',
+        cloned_at: new Date().toISOString(), category: '', tags: [] as string[],
+      },
+    };
+    const { data: created } = await supabase
+      .from('archived_funnels')
+      .insert({ name, total_steps: 1, steps: [step], project_id: projectId })
+      .select('id').single();
+    if (!created) return false;
+    await supabase.from('page_html').upsert(
+      { page_id: created.id, kind: 'cloned', variant: 'desktop', html, updated_at: new Date().toISOString() },
+      { onConflict: 'page_id,kind,variant' },
+    ).then(() => undefined, () => undefined);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Fetch a template/landing page's readable content via Jina Reader (plain
  *  fetch, no headless browser). Best-effort; returns '' on failure. */
 async function fetchTemplateReference(url: string): Promise<string> {
@@ -683,11 +736,19 @@ Rules:
     else runs.push(`Google(${kw}): ${gg.error}`);
   }
 
+  // Save the REAL competitor landing the user provided (if it's a normal page,
+  // not a Meta Ad Library URL) into the project's Competitor Landings.
+  let savedLandingMsg = '';
+  if (link && !isMetaAdLibrary(link)) {
+    const ok = await saveLandingFromUrl(supabase, projectId, link, 'Competitor');
+    savedLandingMsg = ok ? ' Real competitor landing saved.' : '';
+  }
+
   const byPlatform = (p: string) => started.filter((s) => s.platform === p).length;
   const summary =
     started.length > 0
-      ? `Competitor discovery started on ${started.length} run(s): Meta ${byPlatform('meta')}, TikTok ${byPlatform('tiktok')}, Google ${byPlatform('google')}. Advertisers, creatives (video/image) and landings will appear shortly in the Competitor Library.`
-      : `Competitor research: no runs started. ${runs.join(' | ')}`;
+      ? `Competitor discovery started on ${started.length} run(s): Meta ${byPlatform('meta')}, TikTok ${byPlatform('tiktok')}, Google ${byPlatform('google')}. Advertisers, creatives (video/image) and landings will appear shortly in the Competitor Library.${savedLandingMsg}`
+      : `Competitor research: no runs started. ${runs.join(' | ')}${savedLandingMsg}`;
 
   const output = [
     `Search keywords: ${searchTerms.join(', ')}`,
