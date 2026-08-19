@@ -101,12 +101,27 @@ export async function startBrandScrape(
   return res;
 }
 
-/** True for a real advertiser destination (not a social/ad-platform host). */
+// Platform / SaaS / agency / marketplace brands that are NOT real product
+// competitors — they advertise everywhere and pollute niche discovery.
+const NOISE_TERMS = /\b(shopify|whatchimp|manychat|klaviyo|mailchimp|hubspot|salesforce|semrush|ahrefs|wix|squarespace|godaddy|bluehost|hostinger|printful|printify|oberlo|aliexpress|alibaba|fiverr|upwork|canva|easyads|adspy|dropshipping|clickfunnels|systeme\.io|kajabi|teachable|shesellsremote|podpluser)\b/i;
+
+/** True for an advertiser name that is a real product competitor (not a
+ *  platform/agency/marketplace that advertises across every niche). */
+function isRealAdvertiser(name: string | undefined): boolean {
+  if (!name) return false;
+  return !NOISE_TERMS.test(name);
+}
+
+/** True for a real advertiser destination (not a social/ad-platform host,
+ *  jobs/careers page, or known platform/agency domain). */
 function isRealLandingUrl(url: string | undefined): boolean {
   if (!url || !/^https?:\/\//i.test(url)) return false;
   try {
     const host = new URL(url).hostname.replace(/^www\./, '').toLowerCase();
-    return !/(^|\.)(facebook\.com|fb\.me|instagram\.com|tiktok\.com|library\.tiktok\.com|google\.com|adstransparency\.google\.com|youtube\.com|l\.facebook\.com)$/.test(host);
+    if (/(^|\.)(facebook\.com|fb\.me|instagram\.com|tiktok\.com|library\.tiktok\.com|google\.com|adstransparency\.google\.com|youtube\.com|l\.facebook\.com|linkedin\.com)$/.test(host)) return false;
+    if (/^(jobs|careers|karriere|recruiting)\.|\.personio\.|\.jobs\./.test(host)) return false; // hiring pages
+    if (NOISE_TERMS.test(host)) return false;
+    return true;
   } catch {
     return false;
   }
@@ -260,6 +275,7 @@ export async function ingestDataset(opts: {
     let brandId = fixedBrandId;
     if (!brandId) {
       const advertiser = (mapped.pageName || '').trim() || `${platformLabel || 'Unknown'} advertiser`;
+      if (!isRealAdvertiser(advertiser)) { skipped++; continue; } // drop platform/agency noise
       // Tag with platform so the same brand name from different networks stays
       // grouped per advertiser but is still traceable to its source.
       const brandName = platformLabel ? `${advertiser} (${platformLabel})` : advertiser;
