@@ -24,10 +24,10 @@ const steps = [
 (async () => {
   const projectId = process.argv[2] || '53738dcb-862c-41e0-b422-c45101518d4a';
   const input = {
-    product: 'Intima Balance / DE',
-    market: 'Germania · tedesco',
-    competitorLink: 'https://naturtreu.de/products/floraintima-milchsaurebakterien-mit-cranberry-vitamin-b3',
-    description: 'prodotto per il mercato tedesco per i problemi intimi delle donne',
+    product: process.env.PRODUCT || 'Intima Balance / DE',
+    market: process.env.MARKET || 'Germania · tedesco',
+    competitorLink: process.env.LINK || 'https://naturtreu.de/products/floraintima-milchsaurebakterien-mit-cranberry-vitamin-b3',
+    description: process.env.DESC || 'prodotto per il mercato tedesco per i problemi intimi delle donne',
   };
 
   const { data: job, error } = await sb

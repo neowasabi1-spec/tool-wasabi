@@ -457,34 +457,40 @@ export function mapTiktokAdItem(raw: unknown): MappedAd | null {
 /** Map one Google Ads Transparency item into our creative shape. */
 export function mapGoogleAdItem(raw: unknown): MappedAd | null {
   const r = rec(raw);
+  // jaybird's actor flags empty results per query with noAdsFound.
+  if (r.noAdsFound === true) return null;
+
   const advertiser = firstStr(
-    r.advertiserName, r.advertiser_name, r.advertiser, r.brand, r.brandName,
+    r.advertiserName, r.advertiser_name, r.advertiserDomain, r.advertiser, r.brand, r.brandName,
     rec(r.advertiser).name,
   );
   const externalId = firstStr(r.creativeId, r.creative_id, r.adId, r.ad_id, r.id);
   const format = firstStr(r.adFormat, r.ad_format, r.format, r.type, r.creativeType).toLowerCase();
 
-  const videoUrl = deepUrl(
-    r.videoUrl, r.video_url, r.video, r.youtubeUrl, r.youtube_url, r.mp4Url,
-    format.includes('video') ? (r.previewUrl ?? r.preview_url) : '',
+  // jaybird returns media as a `mediaUrls` array; other actors use single keys.
+  const mediaArr = arr(r.mediaUrls ?? r.media_urls);
+  const firstMedia = deepUrl(
+    ...mediaArr,
+    r.videoUrl, r.video_url, r.imageUrl, r.image_url, r.image, r.video,
+    r.youtubeUrl, r.previewUrl, r.preview_url, r.thumbnailUrl,
   );
-  const imageUrl = deepUrl(
-    r.imageUrl, r.image_url, r.image, r.thumbnailUrl, r.thumbnail_url, r.thumbnail,
-    !format.includes('video') ? (r.previewUrl ?? r.preview_url) : '',
-  );
+  let videoUrl = '', imageUrl = '';
+  if (firstMedia) {
+    const isVideo = format.includes('video') || /\.(mp4|webm|mov|m3u8)(\?|$)/i.test(firstMedia) || /youtube|ytimg/i.test(firstMedia);
+    if (isVideo) videoUrl = firstMedia; else imageUrl = firstMedia;
+  }
   const mediaUrl = videoUrl || imageUrl;
 
   const landingUrl = firstStr(
-    r.landingPageUrl, r.landing_page_url, r.landingUrl, r.destinationUrl, r.destination_url,
-    r.finalUrl, r.final_url, r.clickUrl, r.adUrl, r.ad_url, rec(r.landingPage).url,
+    r.landingFinalUrl, r.landing_final_url, r.landingUrl, r.landing_url, r.landingPageUrl,
+    r.destinationUrl, r.finalUrl, r.clickUrl, r.adUrl, rec(r.landingPage).url,
   );
 
-  const headline = firstStr(r.headline, r.title, r.text, r.body).slice(0, 500);
-  const bodyText = firstStr(r.text, r.body, r.description).slice(0, 4000);
+  const headline = firstStr(r.headline, r.landingTitle, r.landingH1, r.title, r.landingPrimaryCta).slice(0, 500);
+  const bodyText = firstStr(r.landingMetaDescription, r.text, r.body, r.description).slice(0, 4000);
   const adStartedAt = toIsoDate(r.firstShown, r.first_shown, r.firstShownDate, r.startDate);
 
-  // Text-only ads have no media but still carry a landing page — return them
-  // with an empty mediaUrl handled by the caller (used for landing capture).
+  // No media but a real landing → keep for landing capture (text/display ad).
   if (!mediaUrl) {
     if (!landingUrl) return null;
     return {
