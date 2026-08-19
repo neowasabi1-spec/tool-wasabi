@@ -85,7 +85,7 @@
 [functions."shot-check"]
   external_node_modules = ["@sparticuz/chromium-min", "playwright-core"]
   included_files = ["node_modules/@sparticuz/chromium-min/**"]
-  timeout = 60
+  timeout = 120
 
 [[plugins]]
   package = "@netlify/plugin-nextjs"

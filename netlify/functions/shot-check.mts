@@ -9,8 +9,10 @@ const REMOTE_TAR_URL =
   'https://github.com/Sparticuz/chromium/releases/download/v131.0.1/chromium-v131.0.1-pack.tar';
 
 export default async (req: Request) => {
-  const url = new URL(req.url).searchParams.get('url') || 'https://example.com';
-  const out: Record<string, unknown> = { url, serverless: IS_SERVERLESS };
+  const params = new URL(req.url).searchParams;
+  const url = params.get('url') || 'https://example.com';
+  const doNav = params.get('nav') === '1';
+  const out: Record<string, unknown> = { url, serverless: IS_SERVERLESS, doNav };
   const t0 = Date.now();
   try {
     let executablePath: string | undefined;
@@ -26,22 +28,25 @@ export default async (req: Request) => {
     out.resolveMs = Date.now() - t0;
     const browser = await chromium.launch({ args, executablePath, headless: true });
     out.launchMs = Date.now() - t0;
+    out.launched = true;
     try {
-      const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, ignoreHTTPSErrors: true });
-      const page = await ctx.newPage();
-      await page.goto(url, { waitUntil: 'load', timeout: 25_000 });
-      const buf = await page.screenshot({ type: 'jpeg', quality: 72 });
+      if (doNav) {
+        const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, ignoreHTTPSErrors: true });
+        const page = await ctx.newPage();
+        await page.goto(url, { waitUntil: 'load', timeout: 20_000 });
+        const buf = await page.screenshot({ type: 'jpeg', quality: 72 });
+        out.bytes = buf.length;
+        await ctx.close().catch(() => {});
+      }
       out.ok = true;
-      out.bytes = buf.length;
       out.totalMs = Date.now() - t0;
-      await ctx.close().catch(() => {});
     } finally {
       await browser.close().catch(() => {});
     }
   } catch (e) {
     out.ok = false;
     out.error = (e as Error).message;
-    out.stack = (e as Error).stack?.split('\n').slice(0, 4).join(' | ');
+    out.stack = (e as Error).stack?.split('\n').slice(0, 5).join(' | ');
     out.failMs = Date.now() - t0;
   }
   return new Response(JSON.stringify(out, null, 2), {
