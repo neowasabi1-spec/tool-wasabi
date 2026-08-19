@@ -375,46 +375,63 @@ export function mapApifyAdItem(raw: unknown): MappedAd | null {
 
 // ── TikTok Ad Library / Creative Center ─────────────────────────────────────
 
-/** Deep-probe a URL-ish value that may live under nested objects. */
+/**
+ * Deep-probe a URL-ish value that may be a plain string, an object keyed by
+ * resolution (TikTok `video_url: {360p,540p,720p,1080p}`), an `{url|src|...}`
+ * object, or a `urlList` array. Returns the first usable https URL.
+ */
 function deepUrl(...vals: unknown[]): string {
   for (const v of vals) {
-    const s = firstStr(v, rec(v).url, rec(v).src, rec(v).downloadAddr, rec(v).playAddr);
-    if (s && /^https?:\/\//i.test(s)) return s;
-    // playAddr/urlList arrays
-    const list = arr(rec(v).urlList ?? rec(v).url_list);
+    if (!v) continue;
+    if (typeof v === 'string') {
+      if (/^https?:\/\//i.test(v)) return v;
+      continue;
+    }
+    const o = rec(v);
+    const known = firstStr(
+      o.url, o.src, o.downloadAddr, o.playAddr, o.play_url, o.download_url,
+      o['1080p'], o['720p'], o['540p'], o['360p'], o.hd, o.sd,
+    );
+    if (known && /^https?:\/\//i.test(known)) return known;
+    const list = arr(o.urlList ?? o.url_list);
     if (list.length) {
       const u = firstStr(...list);
       if (u && /^https?:\/\//i.test(u)) return u;
+    }
+    // Last resort: any string value that looks like an https URL.
+    for (const val of Object.values(o)) {
+      if (typeof val === 'string' && /^https?:\/\//i.test(val)) return val;
     }
   }
   return '';
 }
 
-/** Map one TikTok ad-library / creative-center item into our creative shape. */
+/** Map one TikTok ad-library / creative-center item into our creative shape.
+ *  Matches the aiscraperdev actor's snake_case schema (video_url object for
+ *  Creative Center, cover_image_url for Ad Library) plus tolerant fallbacks. */
 export function mapTiktokAdItem(raw: unknown): MappedAd | null {
   const r = rec(raw);
-  const video = rec(r.video ?? r.videoInfo ?? r.videoMeta);
+  const video = r.video_url ?? r.videoUrl ?? r.video ?? r.videoInfo;
 
   const advertiser = firstStr(
-    r.advertiserName, r.advertiser, r.brandName, r.brand, r.pageName,
-    r.author, rec(r.advertiser).name, rec(r.brand).name,
+    r.advertiser_name, r.advertiserName, r.advertiser, r.brandName, r.brand,
+    r.pageName, r.author, rec(r.advertiser).name, rec(r.brand).name,
   );
-  const externalId = firstStr(r.adId, r.ad_id, r.id, r.creativeId, r.itemId, r.adDetailId);
+  const externalId = firstStr(r.ad_id, r.adId, r.id, r.creativeId, r.itemId);
 
-  const videoUrl = deepUrl(
-    r.videoUrl, r.video_url, r.playAddr, r.downloadAddr, r.playUrl,
-    video.playAddr, video.downloadAddr, video.url, r.videoUrlNoWaterMark,
-  );
+  const videoUrl = deepUrl(video, r.playAddr, r.downloadAddr, r.playUrl, r.videoUrlNoWaterMark);
   const imageUrl = deepUrl(
-    r.coverUrl, r.cover, r.imageUrl, r.image, r.thumbnail, r.thumbnailUrl,
-    r.videoCoverUrl, video.cover, video.originCover, r.originCover,
+    r.cover_image_url, r.coverImageUrl, r.coverUrl, r.cover, r.imageUrl, r.image,
+    r.thumbnail, r.thumbnailUrl, r.videoCoverUrl, r.originCover,
   );
   const mediaUrl = videoUrl || imageUrl;
   if (!mediaUrl) return null;
 
-  const bodyText = firstStr(r.adText, r.text, r.caption, r.description, r.desc, r.adTitle);
+  const bodyText = firstStr(r.ad_text, r.adText, r.text, r.caption, r.description, r.desc);
   const headline = firstStr(r.title, r.adTitle, r.headline, r.name);
-  const landingUrl = firstStr(r.landingPageUrl, r.landingUrl, r.clickUrl, r.destinationUrl, r.adDetailUrl);
+  const landingUrl = firstStr(
+    r.landing_page_url, r.landingPageUrl, r.landingUrl, r.clickUrl, r.destinationUrl,
+  );
 
   return {
     externalId,
@@ -424,7 +441,7 @@ export function mapTiktokAdItem(raw: unknown): MappedAd | null {
     headline: headline.slice(0, 500),
     hook: '',
     bodyText: bodyText.slice(0, 4000),
-    adStartedAt: toIsoDate(r.firstShownDate, r.firstShown, r.startDate, r.createTime),
+    adStartedAt: toIsoDate(r.first_shown_date, r.firstShownDate, r.firstShown, r.startDate),
     adActive: '',
     adVariants: 0,
     spend: '',
@@ -440,25 +457,30 @@ export function mapTiktokAdItem(raw: unknown): MappedAd | null {
 export function mapGoogleAdItem(raw: unknown): MappedAd | null {
   const r = rec(raw);
   const advertiser = firstStr(
-    r.advertiserName, r.advertiser, r.brand, r.brandName, rec(r.advertiser).name,
+    r.advertiserName, r.advertiser_name, r.advertiser, r.brand, r.brandName,
+    rec(r.advertiser).name,
   );
-  const externalId = firstStr(r.creativeId, r.adId, r.id, r.ad_id);
-  const format = firstStr(r.adFormat, r.format, r.type, r.creativeType).toLowerCase();
+  const externalId = firstStr(r.creativeId, r.creative_id, r.adId, r.ad_id, r.id);
+  const format = firstStr(r.adFormat, r.ad_format, r.format, r.type, r.creativeType).toLowerCase();
 
   const videoUrl = deepUrl(
-    r.videoUrl, r.video, r.youtubeUrl, r.mp4Url,
-    format.includes('video') ? r.previewUrl : '',
+    r.videoUrl, r.video_url, r.video, r.youtubeUrl, r.youtube_url, r.mp4Url,
+    format.includes('video') ? (r.previewUrl ?? r.preview_url) : '',
   );
   const imageUrl = deepUrl(
-    r.imageUrl, r.image, r.thumbnailUrl, r.thumbnail,
-    !format.includes('video') ? r.previewUrl : '',
+    r.imageUrl, r.image_url, r.image, r.thumbnailUrl, r.thumbnail_url, r.thumbnail,
+    !format.includes('video') ? (r.previewUrl ?? r.preview_url) : '',
   );
   const mediaUrl = videoUrl || imageUrl;
 
   const landingUrl = firstStr(
-    r.landingPageUrl, r.landingUrl, r.destinationUrl, r.finalUrl, r.clickUrl,
-    r.adUrl, rec(r.landingPage).url,
+    r.landingPageUrl, r.landing_page_url, r.landingUrl, r.destinationUrl, r.destination_url,
+    r.finalUrl, r.final_url, r.clickUrl, r.adUrl, r.ad_url, rec(r.landingPage).url,
   );
+
+  const headline = firstStr(r.headline, r.title, r.text, r.body).slice(0, 500);
+  const bodyText = firstStr(r.text, r.body, r.description).slice(0, 4000);
+  const adStartedAt = toIsoDate(r.firstShown, r.first_shown, r.firstShownDate, r.startDate);
 
   // Text-only ads have no media but still carry a landing page — return them
   // with an empty mediaUrl handled by the caller (used for landing capture).
@@ -466,11 +488,8 @@ export function mapGoogleAdItem(raw: unknown): MappedAd | null {
     if (!landingUrl) return null;
     return {
       externalId, mediaType: 'image', mediaUrl: '', pageName: advertiser || 'Google advertiser',
-      headline: firstStr(r.headline, r.title, r.text).slice(0, 500), hook: '',
-      bodyText: firstStr(r.text, r.body, r.description).slice(0, 4000),
-      adStartedAt: toIsoDate(r.firstShown, r.firstShownDate, r.startDate),
-      adActive: '', adVariants: 0, spend: '', impressions: '', reach: null,
-      landingUrl,
+      headline, hook: '', bodyText, adStartedAt,
+      adActive: '', adVariants: 0, spend: '', impressions: '', reach: null, landingUrl,
     };
   }
 
@@ -479,10 +498,10 @@ export function mapGoogleAdItem(raw: unknown): MappedAd | null {
     mediaType: videoUrl ? 'video' : 'image',
     mediaUrl,
     pageName: advertiser || 'Google advertiser',
-    headline: firstStr(r.headline, r.title, r.text).slice(0, 500),
+    headline,
     hook: '',
-    bodyText: firstStr(r.text, r.body, r.description).slice(0, 4000),
-    adStartedAt: toIsoDate(r.firstShown, r.firstShownDate, r.startDate),
+    bodyText,
+    adStartedAt,
     adActive: '',
     adVariants: 0,
     spend: '',

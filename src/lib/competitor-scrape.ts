@@ -237,8 +237,11 @@ export async function ingestDataset(opts: {
     const mapped = map(raw);
     if (!mapped) { failed++; continue; }
 
-    // Collect landing pages (mainly Google) even for text-only ads.
-    if (mapped.landingUrl && /^https?:\/\//i.test(mapped.landingUrl)) landingUrls.add(mapped.landingUrl);
+    // Collect landing pages from Google only (its landing_page_url is the real
+    // advertiser destination; TikTok/Meta expose internal ad-detail links).
+    if (platform === 'google' && mapped.landingUrl && /^https?:\/\//i.test(mapped.landingUrl)) {
+      landingUrls.add(mapped.landingUrl);
+    }
     if (!mapped.mediaUrl) { continue; } // text-only ad → landing captured, no creative
 
     // Resolve the brand this creative belongs to.
