@@ -116,7 +116,7 @@ export function AutopilotSection({
   const launch = async () => {
     setError(null);
     if (!product.trim()) {
-      setError('Inserisci almeno il nome del prodotto.');
+      setError('Enter at least the product name.');
       return;
     }
     setLaunching(true);
@@ -134,7 +134,7 @@ export function AutopilotSection({
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || 'Avvio fallito');
+      if (!res.ok) throw new Error(data?.error || 'Launch failed');
       startPolling(data.jobId);
     } catch (e) {
       setError((e as Error).message);
@@ -152,9 +152,9 @@ export function AutopilotSection({
           <Rocket className="w-5 h-5 text-primary" /> Autopilot
         </h2>
         <p className="text-sm text-muted-foreground">
-          Dai prodotto, mercato, competitor e (opzionale) un template funnel: il tool fa in automatico
-          ricerca mercato → brief → <strong>ricerca ads su Facebook</strong> → angoli/ads → <strong>landing + mockup HTML</strong>,
-          salvando tutto in questo progetto (Competitor Library, Funnel, Brief).
+          Give it the product, market, competitor and (optionally) a funnel template. The tool automatically runs
+          market research → brief → <strong>Facebook ad research</strong> → angles/ads → <strong>landing + HTML mockup</strong>,
+          saving everything into this project (Competitor Library, Funnel, Brief).
         </p>
       </div>
 
@@ -162,17 +162,17 @@ export function AutopilotSection({
       <div className="rounded-xl border border-border bg-card p-5 space-y-4">
         <div className="grid gap-4 sm:grid-cols-2">
           <div className="space-y-1.5">
-            <Label htmlFor="ap-product">Prodotto</Label>
+            <Label htmlFor="ap-product">Product</Label>
             <Input
               id="ap-product"
               value={product}
               onChange={(e) => setProduct(e.target.value)}
-              placeholder="Es. Crema anti-age Rivela"
+              placeholder="e.g. Rivela anti-age cream"
               disabled={running || launching}
             />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="ap-competitor">Link competitor (opzionale)</Label>
+            <Label htmlFor="ap-competitor">Competitor link (optional)</Label>
             <Input
               id="ap-competitor"
               value={competitorLink}
@@ -183,17 +183,17 @@ export function AutopilotSection({
           </div>
         </div>
         <div className="space-y-1.5">
-          <Label htmlFor="ap-market">Mercato / lingua target (opzionale)</Label>
+          <Label htmlFor="ap-market">Target market / language (optional)</Label>
           <Input
             id="ap-market"
             value={market}
             onChange={(e) => setMarket(e.target.value)}
-            placeholder="Es. Germania · tedesco. Se vuoto, lo deduce dalla descrizione"
+            placeholder="e.g. Germany · German. If empty, it's inferred from the description"
             disabled={running || launching}
           />
         </div>
         <div className="space-y-1.5">
-          <Label htmlFor="ap-template">Funnel template da usare (opzionale)</Label>
+          <Label htmlFor="ap-template">Funnel template to use (optional)</Label>
           <div className="flex gap-2">
             <select
               id="ap-template"
@@ -202,7 +202,7 @@ export function AutopilotSection({
               disabled={running || launching}
               className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm disabled:opacity-50"
             >
-              <option value="">— Nessun template: genera mockup ex-novo —</option>
+              <option value="">— No template: generate mockup from scratch —</option>
               {templates.map((t) => (
                 <option key={t.id} value={t.source_url}>
                   {t.name}{t.page_type ? ` · ${t.page_type}` : ''}
@@ -211,16 +211,16 @@ export function AutopilotSection({
             </select>
           </div>
           <p className="text-xs text-muted-foreground">
-            La landing verrà generata come mockup HTML ispirato a questo template (stile e struttura).
+            The landing will be generated as an HTML mockup inspired by this template (style and structure).
           </p>
         </div>
         <div className="space-y-1.5">
-          <Label htmlFor="ap-desc">Descrizione / note (opzionale)</Label>
+          <Label htmlFor="ap-desc">Description / notes (optional)</Label>
           <Textarea
             id="ap-desc"
             value={description}
             onChange={(e) => setDescription(e.target.value)}
-            placeholder="Ingredienti, benefici, prezzo, target, tono di voce..."
+            placeholder="Ingredients, benefits, price, target audience, tone of voice..."
             rows={3}
             disabled={running || launching}
           />
@@ -231,13 +231,13 @@ export function AutopilotSection({
         <div className="flex items-center gap-3">
           <Button onClick={launch} disabled={running || launching} className="gap-2">
             {launching || running ? (
-              <><Loader2 className="w-4 h-4 animate-spin" /> {running ? 'In esecuzione…' : 'Avvio…'}</>
+              <><Loader2 className="w-4 h-4 animate-spin" /> {running ? 'Running…' : 'Launching…'}</>
             ) : (
-              <><Sparkles className="w-4 h-4" /> Avvia Autopilot</>
+              <><Sparkles className="w-4 h-4" /> Start Autopilot</>
             )}
           </Button>
           <Button variant="outline" size="sm" onClick={loadHistory} className="gap-2">
-            <RefreshCw className="w-3.5 h-3.5" /> Aggiorna
+            <RefreshCw className="w-3.5 h-3.5" /> Refresh
           </Button>
         </div>
       </div>
@@ -247,7 +247,7 @@ export function AutopilotSection({
         <div className="rounded-xl border border-border bg-card p-5 space-y-3">
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
-              Esecuzione <JobBadge status={job.status} />
+              Run <JobBadge status={job.status} />
             </h3>
             {job.updated_at && (
               <span className="text-xs text-muted-foreground">
@@ -256,7 +256,7 @@ export function AutopilotSection({
             )}
           </div>
 
-          {job.error && <p className="text-sm text-red-500">Errore: {job.error}</p>}
+          {job.error && <p className="text-sm text-red-500">Error: {job.error}</p>}
 
           <ol className="space-y-2">
             {job.steps.map((s) => {
@@ -302,7 +302,7 @@ export function AutopilotSection({
       {/* ── Past runs ── */}
       {history.length > 0 && (
         <div className="space-y-2">
-          <h3 className="text-sm font-semibold text-foreground">Esecuzioni precedenti</h3>
+          <h3 className="text-sm font-semibold text-foreground">Past runs</h3>
           <div className="space-y-1.5">
             {history.map((r) => (
               <button
@@ -353,11 +353,11 @@ function JobBadge({ status }: { status: JobStatus }) {
     canceled: 'bg-muted text-muted-foreground',
   };
   const label: Record<JobStatus, string> = {
-    pending: 'In coda',
-    running: 'In corso',
-    completed: 'Completato',
-    failed: 'Fallito',
-    canceled: 'Annullato',
+    pending: 'Queued',
+    running: 'Running',
+    completed: 'Completed',
+    failed: 'Failed',
+    canceled: 'Canceled',
   };
   return (
     <span className={`text-[11px] font-medium px-2 py-0.5 rounded-full ${map[status]}`}>

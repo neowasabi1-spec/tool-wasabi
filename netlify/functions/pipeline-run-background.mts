@@ -167,16 +167,11 @@ async function callClaude(opts: ClaudeOpts): Promise<string> {
 // ---------------------------------------------------------------------------
 
 function marketDirective(input: PipelineInput): string {
-  const explicit = (input.market || input.language || '').trim();
-  if (explicit) {
-    return `MERCATO TARGET: ${explicit}.
-- Scrivi TUTTO l'output nella lingua di questo mercato (es. mercato tedesco/Germania → in tedesco).
-- Fai ricerca, esempi, concorrenti, abitudini d'acquisto, prezzi e riferimenti normativi relativi a QUESTA geografia.`;
-  }
-  return `MERCATO TARGET: deducilo dalla DESCRIZIONE del prodotto (es. "per il mercato tedesco" → lingua tedesca + Germania).
-- Scrivi TUTTO l'output nella lingua del mercato target dedotto.
-- Fai ricerca ed esempi riferiti alla geografia di quel mercato.
-- Se nella descrizione non è indicato alcun mercato/lingua, usa l'italiano e il mercato Italia.`;
+  const geo = (input.market || input.language || '').trim()
+    || 'infer the target market/geography from the product description; if none is stated, assume a broad English-speaking market (US)';
+  return `TARGET MARKET / GEOGRAPHY: ${geo}.
+- Research the audience, competitors, buying habits, price points and regulatory context of THIS geography.
+- WRITE ALL OUTPUT IN ENGLISH. This is a strategy document for the team; localization into the market's local language happens later, during ad/landing production.`;
 }
 
 function brandNameFromUrl(url: string): string {
@@ -323,44 +318,64 @@ async function runMarketResearch(supabase: SupabaseClient, projectId: string, in
   const project = await loadProject(supabase, projectId);
   const productName = (project.name as string) || input.product || '';
 
-  const instructions = `Sei un ricercatore di mercato senior specializzato in direct response e ecommerce.
-Produci una RICERCA DI MERCATO completa e operativa, pronta per essere usata da un copywriter.
+  const instructions = `You are a senior direct-response market researcher. Produce a UNIFIED RESEARCH DOCUMENT following Stefan Georgi's RMBC "Deep Research" methodology (the R in RMBC). This document must be complete enough to be fed to an LLM to write copy, exactly as taught in the RMBC framework you have in your knowledge base.
 ${marketDirective(input)}
-Usa markdown con intestazioni chiare.
+Apply the frameworks from your knowledge base rigorously: Schwartz (5 Awareness Levels + 5 Sophistication Stages), voice-of-customer language mining, and psychographic drivers.
+Output clean markdown with the exact section headers below. Be specific, concrete and evidence-driven — never generic. Where you infer rather than know, label it "(inference)".
 
-La ricerca DEVE contenere queste sezioni:
-## Avatar / Cliente ideale
-Demografia, psicografia, giornata tipo, identità.
-## Dolori e frustrazioni
-Elenca i dolori profondi (non superficiali), con linguaggio "voice of customer".
-## Desideri e sogni
-Cosa vogliono davvero ottenere (risultato + trasformazione identitaria).
-## Consapevolezza e sofisticazione (Schwartz)
-Stima lo stadio di consapevolezza (1-5) e il livello di sofisticazione del mercato, con motivazione.
-## Obiezioni e credenze da spostare
-Le obiezioni principali e la "core buying belief" da costruire.
-## Meccanismo del problema e della soluzione
-Il meccanismo unico che tiene vivo il problema e come il prodotto lo risolve.
-## Angoli di mercato
-5-7 angoli distinti sfruttabili nelle ads e nella landing.
-Sii specifico, concreto e non generico.`;
+# 1. PRODUCT / MARKET AWARENESS (Schwartz)
+- Core customer & the ONE market you're targeting.
+- Awareness Level (1 Unaware → 5 Most Aware) with justification, and the practical implication: how you must open/speak to them at this level.
+- Market Sophistication Stage (1→5) with justification and what that means for the angle (new claim vs. mechanism vs. amplification).
 
-  const userMessage = `Prodotto: ${productName}
-${input.description ? `\nDescrizione fornita:\n${input.description}` : ''}
-${input.competitorLink ? `\nLink competitor di riferimento: ${input.competitorLink}` : ''}
+# 2. AVATAR & PSYCHOGRAPHIC RESEARCH
+- Demographics + a vivid "day in the life".
+- Deep psychological drivers (fears, frustrations, secret desires, status anxieties, identity).
+- Trigger event: the moment they realize something MUST change.
+- Dominant emotion driving the purchase.
 
-Genera la ricerca di mercato completa per questo prodotto.`;
+# 3. PAINS & DESIRES (Voice of Customer)
+- Deep pains (not surface) in the prospect's OWN words / phrasing.
+- Desires & the identity-level transformation they're really buying.
+- 10+ verbatim-style "voice of customer" phrases to reuse in copy.
 
-  const content = await callClaude({ task: 'general', instructions, userMessage, maxTokens: 4096 });
+# 4. COMPETITOR RESEARCH
+- Main competitors/alternatives in this geography.
+- Claims worth modeling ("swiping") + gaps/weaknesses to exploit for differentiation.
+- The positioning white space this product can own.
+
+# 5. UNIQUE MECHANISM
+- Unique Mechanism of the PROBLEM (the hidden root cause keeping the problem alive).
+- Unique Mechanism of the SOLUTION (why THIS product uniquely fixes it).
+
+# 6. INGREDIENT / PROOF RESEARCH (when relevant)
+- Key ingredients/components and the benefit/claim each supports.
+- Types of proof/studies/authority available (note where a real citation would be needed). Label unverified items "(needs source)".
+
+# 7. OBJECTIONS & CORE BUYING BELIEF
+- Top objections and how to dissolve each.
+- The single core buying belief the copy must install.
+
+# 8. BIG IDEA & MARKET ANGLES
+- 1 Big Idea candidate.
+- 5-7 distinct, testable marketing angles usable across ads and the landing page.`;
+
+  const userMessage = `Product: ${productName}
+${input.description ? `\nProvided description:\n${input.description}` : ''}
+${input.competitorLink ? `\nReference competitor link: ${input.competitorLink}` : ''}
+
+Generate the full RMBC-style unified research document for this product.`;
+
+  const content = await callClaude({ task: 'vsl', instructions, userMessage, maxTokens: 6000 });
   if (!content) throw new Error('Market research returned empty output');
 
   const { error } = await supabase
     .from('projects')
-    .update({ market_research: toSectionBlob('AI — Ricerca di mercato', content) })
+    .update({ market_research: toSectionBlob('AI — Market Research (RMBC)', content) })
     .eq('id', projectId);
   if (error) throw new Error(`Failed to save market_research: ${error.message}`);
 
-  return { summary: 'Ricerca di mercato generata e salvata nella sezione Market Research.', output: content };
+  return { summary: 'RMBC-style market research generated and saved to the Market Research section.', output: content };
 }
 
 async function runBrief(supabase: SupabaseClient, projectId: string, input: PipelineInput): Promise<StepResult> {
@@ -402,10 +417,10 @@ Genera il brief completo. Basati fortemente sulla RICERCA DI MERCATO fornita nel
   const { error } = await supabase.from('projects').update({ brief: content }).eq('id', projectId);
   if (error) throw new Error(`Failed to save brief: ${error.message}`);
   try {
-    await supabase.from('projects').update({ brief_files: toSectionBlob('AI — Brief prodotto', content) }).eq('id', projectId);
+    await supabase.from('projects').update({ brief_files: toSectionBlob('AI — Product brief', content) }).eq('id', projectId);
   } catch { /* brief_files column may not exist */ }
 
-  return { summary: 'Brief prodotto generato e salvato nella sezione Brief.', output: content };
+  return { summary: 'Product brief generated and saved to the Brief section.', output: content };
 }
 
 async function runCompetitor(supabase: SupabaseClient, projectId: string, input: PipelineInput): Promise<StepResult> {
@@ -447,14 +462,14 @@ Analizza questo competitor e produci la scheda.`;
       brand_type: 'competitor',
       scrape_count: 20,
       frequency: 'every_7_days',
-      notes: link || `Ricerca Facebook Ad Library (${country})`,
+      notes: link || `Facebook Ad Library search (${country})`,
       creative_quality_notes: analysis.slice(0, 4000),
     })
     .select('id')
     .single();
 
   if (error || !brand) {
-    return { summary: `Analisi competitor generata (salvataggio brand fallito: ${error?.message}).`, output: analysis };
+    return { summary: `Competitor analysis generated (brand save failed: ${error?.message}).`, output: analysis };
   }
 
   // Kick off the REAL Facebook Ad Library scrape (Apify). Ingestion is async
@@ -463,9 +478,9 @@ Analizza questo competitor e produci la scheda.`;
   let scrapeMsg = '';
   const token = process.env.APIFY_KEY || process.env.APIFY_TOKEN || process.env.APIFY_API_TOKEN || '';
   if (!token) {
-    scrapeMsg = ' (scrape FB non configurato: manca APIFY_KEY)';
+    scrapeMsg = ' (FB scrape not configured: APIFY_KEY missing)';
   } else if (!base) {
-    scrapeMsg = ' (scrape FB non avviato: manca env URL)';
+    scrapeMsg = ' (FB scrape not started: URL env missing)';
   } else {
     const secret = process.env.APIFY_WEBHOOK_SECRET || process.env.CRON_SECRET || '';
     const params = new URLSearchParams({ projectId, brandId: String(brand.id) });
@@ -474,15 +489,15 @@ Analizza questo competitor e produci la scheda.`;
     const run = await startApifyAdsRun(adsLibraryUrl, 20, webhookUrl);
     if (run.ok) {
       await supabase.from('competitor_brands').update({ last_run_id: run.runId }).eq('id', brand.id);
-      scrapeMsg = ` — ricerca FB avviata (run ${run.runId}), le ads compariranno a breve nella Competitor Library`;
+      scrapeMsg = ` — FB search started (run ${run.runId}); the ads will appear shortly in the Competitor Library`;
     } else {
-      scrapeMsg = ` (scrape FB non avviato: ${run.error})`;
+      scrapeMsg = ` (FB scrape not started: ${run.error})`;
     }
   }
 
   return {
-    summary: `Competitor "${brandName}" salvato + ricerca su Facebook Ad Library (${country})${scrapeMsg}.`,
-    output: `URL ricerca FB: ${adsLibraryUrl}\n\n${analysis}`,
+    summary: `Competitor "${brandName}" saved + Facebook Ad Library search (${country})${scrapeMsg}.`,
+    output: `FB search URL: ${adsLibraryUrl}\n\n${analysis}`,
   };
 }
 
@@ -529,14 +544,14 @@ Genera i 5 concept basandoti su brief e ricerca di mercato forniti nel contesto.
   try {
     await createFunnelStep(supabase, projectId, {
       stepNumber: 90,
-      pageName: 'Angoli & Ads (Autopilot)',
+      pageName: 'Angles & Ads (Autopilot)',
       stepType: 'ads',
       resultContent: html,
     });
   } catch { /* non-fatal */ }
 
   return {
-    summary: `${concepts.length || 5} concept pubblicitari generati — visibili nella tab Funnel ("Angoli & Ads")${saved ? ` e salvati in creative_outputs (${saved})` : ''}.`,
+    summary: `${concepts.length || 5} ad concepts generated — visible in the Funnel tab ("Angles & Ads")${saved ? ` and saved to creative_outputs (${saved})` : ''}.`,
     output: raw,
   };
 }
@@ -554,8 +569,8 @@ function adsConceptsToHtml(raw: string, concepts: AdConcept[]): string {
       </div>`).join('')
     : `<pre style="white-space:pre-wrap">${esc(raw)}</pre>`;
   return `<div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:820px;margin:0 auto;padding:8px">
-    <h1 style="font-size:20px;margin:0 0 4px">Angoli &amp; Ads generati dall'Autopilot</h1>
-    <p style="color:#6b7280;margin:0 0 12px">${concepts.length || 0} concept pronti per la produzione creativa.</p>
+    <h1 style="font-size:20px;margin:0 0 4px">Angles &amp; Ads generated by Autopilot</h1>
+    <p style="color:#6b7280;margin:0 0 12px">${concepts.length || 0} concepts ready for creative production.</p>
     ${cards}
   </div>`;
 }
@@ -626,8 +641,8 @@ Rispondi SOLO con l'HTML, senza spiegazioni e senza \`\`\`.`;
 
   return {
     summary: mockupSaved
-      ? 'Landing generata: copy in sezione Funnel + mockup HTML visibile nella tab Funnel.'
-      : 'Copy della landing generato e salvato nella sezione Funnel.',
+      ? 'Landing generated: copy in the Funnel section + HTML mockup visible in the Funnel tab.'
+      : 'Landing copy generated and saved to the Funnel section.',
     output: content,
   };
 }

@@ -70,5 +70,9 @@
 [functions."pipeline-run-background"]
   included_files = ["src/knowledge/copywriting/raw/**"]
 
+# Diagnostic endpoint to confirm the KB loads inside a function bundle.
+[functions."kb-check"]
+  included_files = ["src/knowledge/copywriting/raw/**"]
+
 [[plugins]]
   package = "@netlify/plugin-nextjs"

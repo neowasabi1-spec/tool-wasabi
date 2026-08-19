@@ -30,28 +30,28 @@ export interface PipelineStepDef {
 export const PIPELINE_STEPS: PipelineStepDef[] = [
   {
     key: 'market_research',
-    label: 'Ricerca mercato',
-    description: 'Avatar, dolori, desideri, livello di consapevolezza e sofisticazione.',
+    label: 'Market research',
+    description: 'RMBC deep research: awareness/sophistication, avatar, competitors, mechanism, angles.',
   },
   {
     key: 'brief',
-    label: 'Brief prodotto',
-    description: 'Brief strategico (framework Ecom Domination) basato sulla ricerca.',
+    label: 'Product brief',
+    description: 'Strategic brief (Ecom Domination framework) built on the research.',
   },
   {
     key: 'competitor',
-    label: 'Ricerca competitor',
-    description: 'Cerca le ads su Facebook Ad Library (Apify) e le salva nella Competitor Library.',
+    label: 'Competitor research',
+    description: 'Searches ads on Facebook Ad Library (Apify) and saves them to the Competitor Library.',
   },
   {
     key: 'ads',
-    label: 'Angoli & Ads',
-    description: 'Concept pubblicitari (visibili come step nel Funnel) da brief + competitor.',
+    label: 'Angles & Ads',
+    description: 'Ad concepts (visible as a Funnel step) from the brief + competitors.',
   },
   {
     key: 'landing',
     label: 'Landing + mockup',
-    description: 'Copy della landing + mockup HTML visibile nella tab Funnel.',
+    description: 'Landing copy + HTML mockup visible in the Funnel tab.',
   },
 ];
 
@@ -62,10 +62,11 @@ export interface PipelineInput {
   competitorLink?: string;
   /** Optional free-form product description / notes. */
   description?: string;
-  /** Target market / language (e.g. "Germania", "tedesco", "US market").
-   *  Drives the language of ALL outputs and the geography of the research.
-   *  When empty, the pipeline infers it from the description, else defaults
-   *  to Italian / Italy. */
+  /** Target market / geography (e.g. "Germany", "US market"). Drives the
+   *  geography of the research (audience, competitors, prices, regulation).
+   *  Output is always written in English (a strategy doc for the team);
+   *  localization into the market's local language happens later at
+   *  ad/landing production. When empty, it's inferred from the description. */
   market?: string;
   /** Legacy alias for `market` — kept for back-compat. */
   language?: string;
