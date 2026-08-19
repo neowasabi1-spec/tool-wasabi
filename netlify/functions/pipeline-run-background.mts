@@ -301,6 +301,84 @@ async function createFunnelStep(supabase: SupabaseClient, projectId: string, opt
 }
 
 // ---------------------------------------------------------------------------
+// Section files — the ProjectHub "General Brief" tab renders FILES from
+// `project_files` (Supabase Storage bucket `project-files`) filtered by
+// `file_type` (e.g. market_research, pb_frontend), NOT the JSONB columns.
+// So the pipeline must write its docs as project_files rows to be visible.
+// ---------------------------------------------------------------------------
+
+const PROJECT_FILES_BUCKET = 'project-files';
+let _bucketEnsured = false;
+
+async function ensureProjectFilesBucket(supabase: SupabaseClient): Promise<void> {
+  if (_bucketEnsured) return;
+  try {
+    const { error } = await supabase.storage.createBucket(PROJECT_FILES_BUCKET, {
+      public: true,
+      fileSizeLimit: 52428800,
+    });
+    if (error && !/already exists|duplicate/i.test(error.message)) {
+      console.warn('[pipeline] ensureBucket:', error.message);
+    }
+  } catch (e) { console.warn('[pipeline] ensureBucket threw:', (e as Error).message); }
+  _bucketEnsured = true;
+}
+
+/** Save a markdown document into the right ProjectHub section as a real file.
+ *  Replaces any previous Autopilot-generated file of the same type (marked by
+ *  the "Autopilot — " prefix) so re-runs don't pile up duplicates, while
+ *  leaving the user's own uploads untouched. */
+async function saveSectionFile(
+  supabase: SupabaseClient,
+  projectId: string,
+  fileType: string,
+  displayName: string,
+  markdown: string,
+): Promise<boolean> {
+  try {
+    await ensureProjectFilesBucket(supabase);
+    const originalName = `Autopilot — ${displayName}`;
+
+    // Clean up previous Autopilot file(s) of this type.
+    const { data: prev } = await supabase
+      .from('project_files')
+      .select('id, file_path')
+      .eq('project_id', projectId)
+      .eq('file_type', fileType)
+      .like('original_name', 'Autopilot — %');
+    if (Array.isArray(prev) && prev.length) {
+      const paths = prev.map((p) => p.file_path as string).filter(Boolean);
+      if (paths.length) await supabase.storage.from(PROJECT_FILES_BUCKET).remove(paths).catch(() => {});
+      await supabase.from('project_files').delete().in('id', prev.map((p) => p.id));
+    }
+
+    const safe = originalName.replace(/[^a-zA-Z0-9._-]/g, '_') + '.md';
+    const objectKey = `${projectId}/${fileType}/${Date.now()}_${safe}`;
+    const buf = Buffer.from(markdown, 'utf-8');
+    const { error: upErr } = await supabase.storage
+      .from(PROJECT_FILES_BUCKET)
+      .upload(objectKey, buf, { contentType: 'text/markdown; charset=utf-8', upsert: false });
+    if (upErr) { console.warn('[pipeline] section file upload failed:', upErr.message); return false; }
+
+    const { error: insErr } = await supabase.from('project_files').insert({
+      project_id: projectId,
+      file_type: fileType,
+      file_path: objectKey,
+      original_name: `${originalName}.md`,
+    });
+    if (insErr) {
+      console.warn('[pipeline] project_files insert failed:', insErr.message);
+      await supabase.storage.from(PROJECT_FILES_BUCKET).remove([objectKey]).catch(() => {});
+      return false;
+    }
+    return true;
+  } catch (e) {
+    console.warn('[pipeline] saveSectionFile threw:', (e as Error).message);
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Steps — each returns { summary, output }
 // ---------------------------------------------------------------------------
 
@@ -392,11 +470,22 @@ Generate the FULL, deep RMBC-style unified research document for this product. B
 
   const { error } = await supabase
     .from('projects')
-    .update({ market_research: toSectionBlob('AI — Market Research (RMBC)', content) })
+    // JSONB SectionData is what the generation/rewrite features CONSUME. The
+    // file entry name is kept identical to the uploaded file's original_name
+    // so the General Brief backfill (which dedupes by name) never duplicates it.
+    .update({ market_research: toSectionBlob('Autopilot — Market Research (RMBC).md', content) })
     .eq('id', projectId);
   if (error) throw new Error(`Failed to save market_research: ${error.message}`);
 
-  return { summary: 'RMBC-style market research generated and saved to the Market Research section.', output: content };
+  // Also save as a real file so it SHOWS in the "Market Research" section of the UI.
+  const fileSaved = await saveSectionFile(supabase, projectId, 'market_research', 'Market Research (RMBC)', content);
+
+  return {
+    summary: fileSaved
+      ? 'RMBC market research generated — saved as a document in the Market Research section.'
+      : 'RMBC market research generated and saved (file mirror failed; content is in the project).',
+    output: content,
+  };
 }
 
 async function runBrief(supabase: SupabaseClient, projectId: string, input: PipelineInput): Promise<StepResult> {
@@ -438,10 +527,19 @@ Genera il brief completo. Basati fortemente sulla RICERCA DI MERCATO fornita nel
   const { error } = await supabase.from('projects').update({ brief: content }).eq('id', projectId);
   if (error) throw new Error(`Failed to save brief: ${error.message}`);
   try {
-    await supabase.from('projects').update({ brief_files: toSectionBlob('AI — Product brief', content) }).eq('id', projectId);
+    // Name matches the uploaded file so the backfill dedupes instead of duplicating.
+    await supabase.from('projects').update({ brief_files: toSectionBlob('Autopilot — Product Brief.md', content) }).eq('id', projectId);
   } catch { /* brief_files column may not exist */ }
 
-  return { summary: 'Product brief generated and saved to the Brief section.', output: content };
+  // Also save as a real file so it SHOWS in the "Product Brief — Frontend" tab.
+  const fileSaved = await saveSectionFile(supabase, projectId, 'pb_frontend', 'Product Brief', content);
+
+  return {
+    summary: fileSaved
+      ? 'Product brief generated — saved as a document in the Product Brief (Frontend) tab.'
+      : 'Product brief generated and saved (file mirror failed; content is in the project).',
+    output: content,
+  };
 }
 
 async function runCompetitor(supabase: SupabaseClient, projectId: string, input: PipelineInput): Promise<StepResult> {
