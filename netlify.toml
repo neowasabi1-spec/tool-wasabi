@@ -74,5 +74,12 @@
 [functions."kb-check"]
   included_files = ["src/knowledge/copywriting/raw/**"]
 
+# Competitor landing screenshots: renders desktop+mobile previews with headless
+# Chromium (like the extension). Needs the same chromium bundling as the Next
+# server handler; the binary is downloaded at runtime from the remote tar.
+[functions."competitor-shots-background"]
+  external_node_modules = ["@sparticuz/chromium-min", "playwright-core"]
+  included_files = ["node_modules/@sparticuz/chromium-min/**"]
+
 [[plugins]]
   package = "@netlify/plugin-nextjs"

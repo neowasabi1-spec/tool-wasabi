@@ -17,6 +17,8 @@ const sb = createClient(URL, KEY);
   for (const r of data || []) {
     const step = Array.isArray(r.steps) ? r.steps[0] : null;
     const cd = (step && step.cloned_data) || {};
-    console.log(`- ${r.name}  src=${(cd.source_url || '').slice(0, 90)}  htmlLen=${(cd.html || '').length}`);
+    const shotD = cd.screenshotDesktopUrl ? 'D' : '-';
+    const shotM = cd.screenshotMobileUrl ? 'M' : '-';
+    console.log(`- ${r.name}  shots=[${shotD}${shotM}]  src=${(cd.source_url || '').slice(0, 70)}  htmlLen=${(cd.html || '').length}`);
   }
 })().catch((e) => { console.error('Fatal:', e.message); process.exit(1); });
