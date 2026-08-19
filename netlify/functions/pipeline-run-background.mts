@@ -264,6 +264,55 @@ async function startApifyAdsRun(adsLibraryUrl: string, count: number, webhookUrl
   }
 }
 
+/** Generic Apify actor start with a run webhook (used for TikTok + Google). */
+async function startApifyRun(actor: string, input: Record<string, unknown>, webhookUrl: string): Promise<{ ok: boolean; runId?: string; error?: string }> {
+  const token = process.env.APIFY_KEY || process.env.APIFY_TOKEN || process.env.APIFY_API_TOKEN || '';
+  if (!token) return { ok: false, error: 'APIFY_KEY not configured' };
+  const actorId = actor.trim().replace('/', '~');
+  const webhooks = Buffer.from(JSON.stringify([{
+    eventTypes: ['ACTOR.RUN.SUCCEEDED', 'ACTOR.RUN.FAILED', 'ACTOR.RUN.ABORTED', 'ACTOR.RUN.TIMED_OUT'],
+    requestUrl: webhookUrl,
+  }]), 'utf8').toString('base64');
+  const url = `https://api.apify.com/v2/acts/${actorId}/runs?token=${encodeURIComponent(token)}&webhooks=${encodeURIComponent(webhooks)}`;
+  try {
+    const resp = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input), signal: AbortSignal.timeout(30_000) });
+    const json = await resp.json().catch(() => null);
+    if (!resp.ok) return { ok: false, error: json?.error?.message || `Apify start failed (${resp.status})` };
+    const runId = json?.data?.id;
+    if (!runId) return { ok: false, error: 'No run id returned by Apify' };
+    return { ok: true, runId };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+}
+
+/** Start a TikTok Ad Library / Creative Center keyword run. */
+async function startApifyTiktokRun(keyword: string, country: string, count: number, webhookUrl: string): Promise<{ ok: boolean; runId?: string; error?: string }> {
+  const actor = process.env.APIFY_TIKTOK_ADS_ACTOR || 'aiscraperdev~tiktok-ads-library-scraper';
+  const n = Math.min(Math.max(count || 20, 1), 200);
+  const region = (country || '').trim() || 'all';
+  const input: Record<string, unknown> = {
+    searchQuery: keyword, query: keyword, keyword,
+    source: 'both', region, regions: [region], countries: [region],
+    adType: 'all', maxResults: n, maxResultsPerQuery: n, resultsLimit: n, count: n,
+  };
+  return startApifyRun(actor, input, webhookUrl);
+}
+
+/** Start a Google Ads Transparency Center keyword run. */
+async function startApifyGoogleRun(keyword: string, region: string, count: number, webhookUrl: string): Promise<{ ok: boolean; runId?: string; error?: string }> {
+  const actor = process.env.APIFY_GOOGLE_ADS_ACTOR || 'jaybird~google-ads-transparency-scraper';
+  const n = Math.min(Math.max(count || 20, 1), 200);
+  const reg = (region || '').trim() || 'anywhere';
+  const input: Record<string, unknown> = {
+    queries: [keyword], searchQuery: keyword, searchTargets: [keyword],
+    region: reg, regions: [reg], dateRangePreset: 'LAST_30_DAYS',
+    adFormat: 'all', platform: 'All', enrichLandingPages: true, scrapeDetails: true,
+    maxResults: n, maxAdsPerTarget: n, maxAdvertisersPerKeyword: 8,
+  };
+  return startApifyRun(actor, input, webhookUrl);
+}
+
 function siteBaseUrl(): string {
   return (process.env.URL || process.env.DEPLOY_PRIME_URL || process.env.NEXT_PUBLIC_SITE_URL || '').replace(/\/$/, '');
 }
@@ -542,82 +591,109 @@ Genera il brief completo. Basati fortemente sulla RICERCA DI MERCATO fornita nel
   };
 }
 
+/** Parse a Claude keyword list (one per line / comma) into clean terms. */
+function parseKeywords(raw: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const line of (raw || '').split(/[\n,]+/)) {
+    const k = line
+      .replace(/^[\s\-*0-9.)\]]+/, '')      // strip bullets / numbering
+      .replace(/^["'`]+|["'`]+$/g, '')       // strip quotes
+      .trim();
+    if (k.length < 2 || k.length > 60) continue;
+    const key = k.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(k);
+  }
+  return out;
+}
+
 async function runCompetitor(supabase: SupabaseClient, projectId: string, input: PipelineInput): Promise<StepResult> {
   const link = (input.competitorLink || '').trim();
   const project = await loadProject(supabase, projectId);
   const research = sectionContentFrom(project.market_research);
   const brief = typeof project.brief === 'string' && project.brief.trim() ? (project.brief as string) : sectionContentFrom(project.brief);
   const productName = (project.name as string) || input.product || '';
-
-  // Keyword to search on Facebook: the competitor brand if a link was given,
-  // otherwise the product name itself (finds who advertises in this space).
-  const brandName = link ? brandNameFromUrl(link) : (productName.split('/')[0].trim() || 'Competitor');
   const country = countryFromMarket(input);
-  // If the user pasted a Meta Ad Library URL, use it directly; otherwise build
-  // a keyword search URL for that brand in the target country.
-  const adsLibraryUrl = link && isMetaAdLibrary(link) ? link : fbAdLibrarySearchUrl(brandName, country);
 
-  // Short strategic analysis (for the brand card notes).
-  const instructions = `Sei un analista competitor per funnel direct response.
-Analizza il competitor/mercato indicato e produci una SCHEDA COMPETITOR sintetica e operativa.
+  // 1) Ask Claude for the best AD-LIBRARY SEARCH KEYWORDS for this product —
+  //    the terms a media buyer would type to surface competitors on Meta,
+  //    TikTok and Google. Output in the market's local language.
+  const kwInstructions = `You are a media buyer doing competitor research. Based on the product, market research and brief, output the BEST 5 SEARCH KEYWORDS to find competitors' ads in the Meta Ad Library, TikTok Ad Library and Google Ads Transparency Center.
 ${marketDirective(input)}
-Includi: posizionamento, angolo principale, meccanismo comunicato, punti di forza, debolezze sfruttabili, e 3 idee per superarlo.
-Sii concreto. Se non puoi vedere la pagina, ragiona sulle info disponibili senza inventare dati falsi.`;
-  const userMessage = `${link ? `Link competitor: ${link}\n` : ''}Brand/keyword: ${brandName}
-Mercato: ${input.market || country}
-Prodotto: ${productName}
+Rules:
+- Keywords must be in the LOCAL LANGUAGE of the target market (this is what advertisers use in their ad copy/brand terms).
+- Mix: product category terms, key benefit/outcome terms, and problem terms. Include 1-2 well-known competitor/brand names in this niche if you know them.
+- Output ONLY the keywords, one per line. No numbering, no explanations.`;
+  const kwUser = `Product: ${productName}\nMarket: ${input.market || country}\n${link ? `Competitor link: ${link}\n` : ''}\nGive the keywords now.`;
+  const kwRaw = await callClaude({ task: 'ad', instructions: kwInstructions, brief, marketResearch: research, userMessage: kwUser, maxTokens: 300 });
 
-Analizza questo competitor e produci la scheda.`;
-  const analysis = await callClaude({ task: 'ad', instructions, brief, marketResearch: research, userMessage, maxTokens: 2048 });
-
-  // Create the competitor brand row with a real FB Ad Library URL so the
-  // library can scrape + monitor it.
-  const { data: brand, error } = await supabase
-    .from('competitor_brands')
-    .insert({
-      project_id: projectId,
-      name: brandName,
-      ads_library_url: adsLibraryUrl,
-      brand_type: 'competitor',
-      scrape_count: 20,
-      frequency: 'every_7_days',
-      notes: link || `Facebook Ad Library search (${country})`,
-      creative_quality_notes: analysis.slice(0, 4000),
-    })
-    .select('id')
-    .single();
-
-  if (error || !brand) {
-    return { summary: `Competitor analysis generated (brand save failed: ${error?.message}).`, output: analysis };
+  let keywords = parseKeywords(kwRaw);
+  if (link) {
+    const brand = brandNameFromUrl(link);
+    if (brand && brand !== 'Saved creatives') keywords.unshift(brand);
   }
+  if (keywords.length === 0) keywords = [productName.split('/')[0].trim() || 'competitor'];
+  // Cap the number of keyword searches per platform to control Apify spend.
+  const searchTerms = keywords.slice(0, 2);
 
-  // Kick off the REAL Facebook Ad Library scrape (Apify). Ingestion is async
-  // via the webhook; scraped ads appear in the Competitor Library.
   const base = siteBaseUrl();
-  let scrapeMsg = '';
   const token = process.env.APIFY_KEY || process.env.APIFY_TOKEN || process.env.APIFY_API_TOKEN || '';
-  if (!token) {
-    scrapeMsg = ' (FB scrape not configured: APIFY_KEY missing)';
-  } else if (!base) {
-    scrapeMsg = ' (FB scrape not started: URL env missing)';
-  } else {
-    const secret = process.env.APIFY_WEBHOOK_SECRET || process.env.CRON_SECRET || '';
-    const params = new URLSearchParams({ projectId, brandId: String(brand.id) });
+  if (!token || !base) {
+    return {
+      summary: !token ? 'Competitor keywords generated (Apify not configured: APIFY_KEY missing).' : 'Competitor keywords generated (URL env missing).',
+      output: `Search keywords:\n- ${keywords.join('\n- ')}`,
+    };
+  }
+  const secret = process.env.APIFY_WEBHOOK_SECRET || process.env.CRON_SECRET || '';
+
+  // Build a discovery webhook URL (no brandId → ingestion creates one brand
+  // per advertiser found, "divided by page").
+  const webhookFor = (platform: string): string => {
+    const params = new URLSearchParams({ projectId, platform });
     if (secret) params.set('secret', secret);
-    const webhookUrl = `${base}/api/apify/webhook?${params.toString()}`;
-    const run = await startApifyAdsRun(adsLibraryUrl, 20, webhookUrl);
-    if (run.ok) {
-      await supabase.from('competitor_brands').update({ last_run_id: run.runId }).eq('id', brand.id);
-      scrapeMsg = ` — FB search started (run ${run.runId}); the ads will appear shortly in the Competitor Library`;
-    } else {
-      scrapeMsg = ` (FB scrape not started: ${run.error})`;
-    }
+    return `${base}/api/apify/webhook?${params.toString()}`;
+  };
+
+  // 2) Fire the scrapes across all three networks.
+  const runs: string[] = [];
+  const started: Array<{ platform: string; keyword: string; runId: string }> = [];
+
+  // Meta / Facebook — one keyword search per term (or the pasted library URL).
+  if (link && isMetaAdLibrary(link)) {
+    const run = await startApifyAdsRun(link, 25, webhookFor('meta'));
+    if (run.ok) { started.push({ platform: 'meta', keyword: '(link)', runId: run.runId! }); }
+    else runs.push(`Meta(link): ${run.error}`);
+  }
+  for (const kw of searchTerms) {
+    const metaUrl = fbAdLibrarySearchUrl(kw, country);
+    const run = await startApifyAdsRun(metaUrl, 25, webhookFor('meta'));
+    if (run.ok) started.push({ platform: 'meta', keyword: kw, runId: run.runId! });
+    else runs.push(`Meta(${kw}): ${run.error}`);
+
+    const tk = await startApifyTiktokRun(kw, country, 25, webhookFor('tiktok'));
+    if (tk.ok) started.push({ platform: 'tiktok', keyword: kw, runId: tk.runId! });
+    else runs.push(`TikTok(${kw}): ${tk.error}`);
+
+    const gg = await startApifyGoogleRun(kw, country, 25, webhookFor('google'));
+    if (gg.ok) started.push({ platform: 'google', keyword: kw, runId: gg.runId! });
+    else runs.push(`Google(${kw}): ${gg.error}`);
   }
 
-  return {
-    summary: `Competitor "${brandName}" saved + Facebook Ad Library search (${country})${scrapeMsg}.`,
-    output: `FB search URL: ${adsLibraryUrl}\n\n${analysis}`,
-  };
+  const byPlatform = (p: string) => started.filter((s) => s.platform === p).length;
+  const summary =
+    started.length > 0
+      ? `Competitor discovery started on ${started.length} run(s): Meta ${byPlatform('meta')}, TikTok ${byPlatform('tiktok')}, Google ${byPlatform('google')}. Advertisers, creatives (video/image) and landings will appear shortly in the Competitor Library.`
+      : `Competitor research: no runs started. ${runs.join(' | ')}`;
+
+  const output = [
+    `Search keywords: ${searchTerms.join(', ')}`,
+    started.length ? `\nStarted runs:\n${started.map((s) => `- ${s.platform} · "${s.keyword}" · run ${s.runId}`).join('\n')}` : '',
+    runs.length ? `\nErrors:\n${runs.map((r) => `- ${r}`).join('\n')}` : '',
+  ].filter(Boolean).join('\n');
+
+  return { summary, output };
 }
 
 async function runAds(supabase: SupabaseClient, projectId: string, input: PipelineInput): Promise<StepResult> {

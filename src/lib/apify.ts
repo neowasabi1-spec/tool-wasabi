@@ -13,11 +13,27 @@ export function apifyToken(): string {
   return process.env.APIFY_KEY || process.env.APIFY_TOKEN || process.env.APIFY_API_TOKEN || '';
 }
 
+/** Apify uses `username~actor-name` in the REST path; the store shows
+ *  `username/actor-name`. Accept either and normalize. */
+function normalizeActorId(slug: string): string {
+  return slug.trim().replace('/', '~');
+}
+
 export function apifyActorId(): string {
   // Override with APIFY_FB_ADS_ACTOR ("username~actor-name"). Default is a
   // widely-used FB Ad Library scraper.
-  return process.env.APIFY_FB_ADS_ACTOR || 'curious_coder~facebook-ads-library-scraper';
+  return normalizeActorId(process.env.APIFY_FB_ADS_ACTOR || 'curious_coder~facebook-ads-library-scraper');
 }
+
+export function apifyTiktokActorId(): string {
+  return normalizeActorId(process.env.APIFY_TIKTOK_ADS_ACTOR || 'aiscraperdev~tiktok-ads-library-scraper');
+}
+
+export function apifyGoogleActorId(): string {
+  return normalizeActorId(process.env.APIFY_GOOGLE_ADS_ACTOR || 'jaybird~google-ads-transparency-scraper');
+}
+
+export type AdPlatform = 'meta' | 'tiktok' | 'google';
 
 export function apifyConfigured(): boolean {
   return !!apifyToken();
@@ -34,40 +50,19 @@ function webhooksParam(requestUrl: string): string {
   return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64');
 }
 
-/**
- * Start an actor run for an Ad Library URL. Returns the Apify run id.
- * `webhookUrl` should already carry any context we need back (brandId, etc.)
- * as query params; Apify appends its own payload.
- */
-export async function startAdsLibraryRun(opts: {
-  adsLibraryUrl: string;
-  count?: number;
-  webhookUrl: string;
-}): Promise<{ ok: true; runId: string } | { ok: false; error: string }> {
+/** Low-level: start any actor with a JSON input + run webhook. */
+export async function startActorRun(
+  actorId: string,
+  input: Record<string, unknown>,
+  webhookUrl: string,
+): Promise<{ ok: true; runId: string } | { ok: false; error: string }> {
   const token = apifyToken();
   if (!token) return { ok: false, error: 'APIFY_KEY not configured' };
-  if (!opts.adsLibraryUrl) return { ok: false, error: 'Missing ads_library_url' };
-
-  const count = Math.min(Math.max(opts.count || 20, 1), 200);
-
-  // Superset input — unknown keys are ignored by actors, so this works across
-  // the common FB Ad Library actors without per-actor branching.
-  const input: Record<string, unknown> = {
-    urls: [{ url: opts.adsLibraryUrl, method: 'GET' }],
-    startUrls: [{ url: opts.adsLibraryUrl }],
-    adLibraryUrl: opts.adsLibraryUrl,
-    count,
-    maxResults: count,
-    resultsLimit: count,
-    scrapeAdDetails: true,
-    scrapePageAds: true,
-    activeStatus: 'active',
-  };
 
   const url =
-    `${APIFY_BASE}/acts/${apifyActorId()}/runs` +
+    `${APIFY_BASE}/acts/${actorId}/runs` +
     `?token=${encodeURIComponent(token)}` +
-    `&webhooks=${encodeURIComponent(webhooksParam(opts.webhookUrl))}`;
+    `&webhooks=${encodeURIComponent(webhooksParam(webhookUrl))}`;
 
   try {
     const resp = await fetch(url, {
@@ -86,6 +81,92 @@ export async function startAdsLibraryRun(opts: {
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : 'Apify request failed' };
   }
+}
+
+/**
+ * Start a Meta/Facebook Ad Library run for an Ad Library URL. Returns the run id.
+ * `webhookUrl` should already carry any context we need back (projectId,
+ * platform, brandId, etc.) as query params; Apify appends its own payload.
+ */
+export async function startAdsLibraryRun(opts: {
+  adsLibraryUrl: string;
+  count?: number;
+  webhookUrl: string;
+}): Promise<{ ok: true; runId: string } | { ok: false; error: string }> {
+  if (!opts.adsLibraryUrl) return { ok: false, error: 'Missing ads_library_url' };
+  const count = Math.min(Math.max(opts.count || 20, 1), 200);
+
+  // Superset input — unknown keys are ignored by actors, so this works across
+  // the common FB Ad Library actors without per-actor branching.
+  const input: Record<string, unknown> = {
+    urls: [{ url: opts.adsLibraryUrl, method: 'GET' }],
+    startUrls: [{ url: opts.adsLibraryUrl }],
+    adLibraryUrl: opts.adsLibraryUrl,
+    count,
+    maxResults: count,
+    resultsLimit: count,
+    scrapeAdDetails: true,
+    scrapePageAds: true,
+    activeStatus: 'active',
+  };
+  return startActorRun(apifyActorId(), input, opts.webhookUrl);
+}
+
+/** Start a TikTok Ad Library / Creative Center run for a keyword. */
+export async function startTiktokAdsRun(opts: {
+  keyword: string;
+  country?: string;
+  count?: number;
+  webhookUrl: string;
+}): Promise<{ ok: true; runId: string } | { ok: false; error: string }> {
+  if (!opts.keyword) return { ok: false, error: 'Missing keyword' };
+  const count = Math.min(Math.max(opts.count || 20, 1), 200);
+  const region = (opts.country || '').trim() || 'all';
+  // Tolerant superset across the common TikTok ad-library actors.
+  const input: Record<string, unknown> = {
+    searchQuery: opts.keyword,
+    query: opts.keyword,
+    keyword: opts.keyword,
+    source: 'both',
+    region,
+    regions: [region],
+    countries: [region],
+    adType: 'all',
+    maxResults: count,
+    maxResultsPerQuery: count,
+    resultsLimit: count,
+    count,
+  };
+  return startActorRun(apifyTiktokActorId(), input, opts.webhookUrl);
+}
+
+/** Start a Google Ads Transparency Center run for a keyword. */
+export async function startGoogleAdsRun(opts: {
+  keyword: string;
+  region?: string;
+  count?: number;
+  webhookUrl: string;
+}): Promise<{ ok: true; runId: string } | { ok: false; error: string }> {
+  if (!opts.keyword) return { ok: false, error: 'Missing keyword' };
+  const count = Math.min(Math.max(opts.count || 20, 1), 200);
+  const region = (opts.region || '').trim() || 'anywhere';
+  // Tolerant superset across the common Google Ads Transparency actors.
+  const input: Record<string, unknown> = {
+    queries: [opts.keyword],
+    searchQuery: opts.keyword,
+    searchTargets: [opts.keyword],
+    region,
+    regions: [region],
+    dateRangePreset: 'LAST_30_DAYS',
+    adFormat: 'all',
+    platform: 'All',
+    enrichLandingPages: true,
+    scrapeDetails: true,
+    maxResults: count,
+    maxAdsPerTarget: count,
+    maxAdvertisersPerKeyword: 8,
+  };
+  return startActorRun(apifyGoogleActorId(), input, opts.webhookUrl);
 }
 
 /** Fetch dataset items produced by a finished run. */
@@ -169,6 +250,8 @@ export interface MappedAd {
   spend: string;
   impressions: string;
   reach: number | null;
+  /** Destination/landing page URL (mainly from Google Ads Transparency). */
+  landingUrl?: string;
 }
 
 /** Format a Meta `{ lower_bound, upper_bound }` range (or a plain value). */
@@ -289,4 +372,130 @@ export function mapApifyAdItem(raw: unknown): MappedAd | null {
     impressions,
     reach: reach !== null && reach > 0 ? Math.round(reach) : null,
   };
+}
+
+// ── TikTok Ad Library / Creative Center ─────────────────────────────────────
+
+/** Deep-probe a URL-ish value that may live under nested objects. */
+function deepUrl(...vals: unknown[]): string {
+  for (const v of vals) {
+    const s = firstStr(v, rec(v).url, rec(v).src, rec(v).downloadAddr, rec(v).playAddr);
+    if (s && /^https?:\/\//i.test(s)) return s;
+    // playAddr/urlList arrays
+    const list = arr(rec(v).urlList ?? rec(v).url_list);
+    if (list.length) {
+      const u = firstStr(...list);
+      if (u && /^https?:\/\//i.test(u)) return u;
+    }
+  }
+  return '';
+}
+
+/** Map one TikTok ad-library / creative-center item into our creative shape. */
+export function mapTiktokAdItem(raw: unknown): MappedAd | null {
+  const r = rec(raw);
+  const video = rec(r.video ?? r.videoInfo ?? r.videoMeta);
+
+  const advertiser = firstStr(
+    r.advertiserName, r.advertiser, r.brandName, r.brand, r.pageName,
+    r.author, rec(r.advertiser).name, rec(r.brand).name,
+  );
+  const externalId = firstStr(r.adId, r.ad_id, r.id, r.creativeId, r.itemId, r.adDetailId);
+
+  const videoUrl = deepUrl(
+    r.videoUrl, r.video_url, r.playAddr, r.downloadAddr, r.playUrl,
+    video.playAddr, video.downloadAddr, video.url, r.videoUrlNoWaterMark,
+  );
+  const imageUrl = deepUrl(
+    r.coverUrl, r.cover, r.imageUrl, r.image, r.thumbnail, r.thumbnailUrl,
+    r.videoCoverUrl, video.cover, video.originCover, r.originCover,
+  );
+  const mediaUrl = videoUrl || imageUrl;
+  if (!mediaUrl) return null;
+
+  const bodyText = firstStr(r.adText, r.text, r.caption, r.description, r.desc, r.adTitle);
+  const headline = firstStr(r.title, r.adTitle, r.headline, r.name);
+  const landingUrl = firstStr(r.landingPageUrl, r.landingUrl, r.clickUrl, r.destinationUrl, r.adDetailUrl);
+
+  return {
+    externalId,
+    mediaType: videoUrl ? 'video' : 'image',
+    mediaUrl,
+    pageName: advertiser || 'TikTok advertiser',
+    headline: headline.slice(0, 500),
+    hook: '',
+    bodyText: bodyText.slice(0, 4000),
+    adStartedAt: toIsoDate(r.firstShownDate, r.firstShown, r.startDate, r.createTime),
+    adActive: '',
+    adVariants: 0,
+    spend: '',
+    impressions: firstStr(r.estimatedAudience, r.impressions).slice(0, 60),
+    reach: null,
+    landingUrl: landingUrl || undefined,
+  };
+}
+
+// ── Google Ads Transparency Center ──────────────────────────────────────────
+
+/** Map one Google Ads Transparency item into our creative shape. */
+export function mapGoogleAdItem(raw: unknown): MappedAd | null {
+  const r = rec(raw);
+  const advertiser = firstStr(
+    r.advertiserName, r.advertiser, r.brand, r.brandName, rec(r.advertiser).name,
+  );
+  const externalId = firstStr(r.creativeId, r.adId, r.id, r.ad_id);
+  const format = firstStr(r.adFormat, r.format, r.type, r.creativeType).toLowerCase();
+
+  const videoUrl = deepUrl(
+    r.videoUrl, r.video, r.youtubeUrl, r.mp4Url,
+    format.includes('video') ? r.previewUrl : '',
+  );
+  const imageUrl = deepUrl(
+    r.imageUrl, r.image, r.thumbnailUrl, r.thumbnail,
+    !format.includes('video') ? r.previewUrl : '',
+  );
+  const mediaUrl = videoUrl || imageUrl;
+
+  const landingUrl = firstStr(
+    r.landingPageUrl, r.landingUrl, r.destinationUrl, r.finalUrl, r.clickUrl,
+    r.adUrl, rec(r.landingPage).url,
+  );
+
+  // Text-only ads have no media but still carry a landing page — return them
+  // with an empty mediaUrl handled by the caller (used for landing capture).
+  if (!mediaUrl) {
+    if (!landingUrl) return null;
+    return {
+      externalId, mediaType: 'image', mediaUrl: '', pageName: advertiser || 'Google advertiser',
+      headline: firstStr(r.headline, r.title, r.text).slice(0, 500), hook: '',
+      bodyText: firstStr(r.text, r.body, r.description).slice(0, 4000),
+      adStartedAt: toIsoDate(r.firstShown, r.firstShownDate, r.startDate),
+      adActive: '', adVariants: 0, spend: '', impressions: '', reach: null,
+      landingUrl,
+    };
+  }
+
+  return {
+    externalId,
+    mediaType: videoUrl ? 'video' : 'image',
+    mediaUrl,
+    pageName: advertiser || 'Google advertiser',
+    headline: firstStr(r.headline, r.title, r.text).slice(0, 500),
+    hook: '',
+    bodyText: firstStr(r.text, r.body, r.description).slice(0, 4000),
+    adStartedAt: toIsoDate(r.firstShown, r.firstShownDate, r.startDate),
+    adActive: '',
+    adVariants: 0,
+    spend: '',
+    impressions: '',
+    reach: null,
+    landingUrl: landingUrl || undefined,
+  };
+}
+
+/** Pick the right mapper for a platform. */
+export function mapperForPlatform(platform: AdPlatform): (raw: unknown) => MappedAd | null {
+  if (platform === 'tiktok') return mapTiktokAdItem;
+  if (platform === 'google') return mapGoogleAdItem;
+  return mapApifyAdItem;
 }

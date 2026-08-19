@@ -9,9 +9,10 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import {
   startAdsLibraryRun,
   getDatasetItems,
-  mapApifyAdItem,
+  mapperForPlatform,
+  type AdPlatform,
 } from '@/lib/apify';
-import { adExistsByExternalId, insertCompetitorAd } from '@/lib/competitor-ads';
+import { adExistsByExternalId, insertCompetitorAd, ensureBrand } from '@/lib/competitor-ads';
 import { transcribeVideo } from '@/lib/transcribe';
 
 // Download cap for a single creative. Generous so even long VSL-style videos
@@ -100,6 +101,87 @@ export async function startBrandScrape(
   return res;
 }
 
+/** Best-effort fetch of a landing page's rendered-enough HTML. */
+async function fetchLandingHtml(url: string): Promise<string> {
+  try {
+    const resp = await fetch(url, {
+      signal: AbortSignal.timeout(12_000),
+      redirect: 'follow',
+      headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36' },
+    });
+    if (!resp.ok) return '';
+    const ct = resp.headers.get('content-type') || '';
+    if (!/text\/html/i.test(ct)) return '';
+    const text = await resp.text();
+    return text.slice(0, 3_000_000);
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Save discovered competitor LANDING pages into the project's "Competitor
+ * Landings" (archived_funnels rows with project_id). Best-effort, deduped by
+ * source_url, capped so a run stays within the webhook time budget.
+ */
+export async function saveCompetitorLandings(
+  projectId: string,
+  urls: string[],
+  platformLabel = '',
+): Promise<number> {
+  const MAX = 6;
+  const { data: existingRows } = await supabaseAdmin
+    .from('archived_funnels')
+    .select('id, steps')
+    .eq('project_id', projectId);
+  const existing = new Set<string>();
+  for (const r of (existingRows || []) as Array<{ steps?: unknown }>) {
+    const step = Array.isArray(r.steps) ? (r.steps[0] as Record<string, unknown>) : null;
+    const cd = step?.cloned_data as Record<string, unknown> | undefined;
+    const u = typeof cd?.source_url === 'string' ? cd.source_url : '';
+    if (u) existing.add(u);
+  }
+
+  let saved = 0;
+  for (const url of urls) {
+    if (saved >= MAX) break;
+    if (existing.has(url)) continue;
+    const html = await fetchLandingHtml(url);
+    if (!html || html.length < 200) continue;
+
+    let name = 'Competitor landing';
+    try { name = new URL(url).hostname.replace(/^www\./, ''); } catch { /* keep default */ }
+    if (platformLabel) name = `${name} (${platformLabel})`;
+
+    const step = {
+      step_index: 1, name, page_type: 'landing', category: '', template_name: '',
+      product_name: '', url_to_swipe: url, prompt: '', feedback: '',
+      swipe_status: 'completed', swipe_result: '', swiped_data: null,
+      cloned_data: {
+        html, title: name, source_url: url, method_used: 'apify',
+        cloned_at: new Date().toISOString(), category: '', tags: [] as string[],
+      },
+    };
+    const { data: created, error } = await supabaseAdmin
+      .from('archived_funnels')
+      .insert({ name, total_steps: 1, steps: [step], project_id: projectId })
+      .select('id')
+      .single();
+    if (error || !created) continue;
+
+    try {
+      await supabaseAdmin.from('page_html').upsert(
+        { page_id: created.id, kind: 'cloned', variant: 'desktop', html, updated_at: new Date().toISOString() },
+        { onConflict: 'page_id,kind,variant' },
+      );
+    } catch { /* editor mirror is optional */ }
+
+    saved++;
+    existing.add(url);
+  }
+  return saved;
+}
+
 async function downloadMedia(
   url: string,
 ): Promise<{ buffer: Buffer; contentType: string } | null> {
@@ -118,25 +200,64 @@ async function downloadMedia(
 }
 
 /**
- * Ingest a finished run's dataset for a brand: dedup by external id, download
- * media, insert, and (best-effort, time-budgeted) transcribe videos.
+ * Ingest a finished run's dataset: dedup by external id, download media,
+ * insert, and (best-effort, time-budgeted) transcribe videos.
+ *
+ * Two modes:
+ *  - LEGACY per-brand (brandId given): all creatives go under that brand
+ *    (scheduled/manual scrapes of one competitor's Ad Library).
+ *  - DISCOVERY (no brandId): a keyword search that surfaces MANY advertisers.
+ *    We create/resolve one competitor brand PER advertiser ("divided by page")
+ *    and file each creative under its advertiser. `platform` selects the mapper
+ *    and tags the source.
  */
 export async function ingestDataset(opts: {
   projectId: string;
-  brandId: number;
+  brandId?: number;
   datasetId: string;
-}): Promise<{ added: number; skipped: number; failed: number }> {
-  const { projectId, brandId, datasetId } = opts;
+  platform?: AdPlatform;
+}): Promise<{ added: number; skipped: number; failed: number; brands: number; landings: number }> {
+  const { projectId, datasetId } = opts;
+  const platform: AdPlatform = opts.platform || 'meta';
+  const fixedBrandId = opts.brandId && opts.brandId > 0 ? opts.brandId : 0;
+  const map = mapperForPlatform(platform);
   const items = await getDatasetItems(datasetId);
   const startedAt = Date.now();
-  // Leave headroom before the 300s ceiling; past this, stop downloading and
-  // just record remaining creatives as remote URLs (fast) so nothing is lost.
   const DOWNLOAD_BUDGET_MS = 240_000;
   let added = 0, skipped = 0, failed = 0;
 
+  // Discovery-mode caches so we resolve each advertiser's brand only once.
+  const brandCache = new Map<string, number>();
+  const touchedBrands = new Set<number>();
+  const landingUrls = new Set<string>();
+
+  const platformLabel = platform === 'tiktok' ? 'TikTok' : platform === 'google' ? 'Google' : '';
+
   for (const raw of items) {
-    const mapped = mapApifyAdItem(raw);
-    if (!mapped || !mapped.mediaUrl) { failed++; continue; }
+    const mapped = map(raw);
+    if (!mapped) { failed++; continue; }
+
+    // Collect landing pages (mainly Google) even for text-only ads.
+    if (mapped.landingUrl && /^https?:\/\//i.test(mapped.landingUrl)) landingUrls.add(mapped.landingUrl);
+    if (!mapped.mediaUrl) { continue; } // text-only ad → landing captured, no creative
+
+    // Resolve the brand this creative belongs to.
+    let brandId = fixedBrandId;
+    if (!brandId) {
+      const advertiser = (mapped.pageName || '').trim() || `${platformLabel || 'Unknown'} advertiser`;
+      // Tag with platform so the same brand name from different networks stays
+      // grouped per advertiser but is still traceable to its source.
+      const brandName = platformLabel ? `${advertiser} (${platformLabel})` : advertiser;
+      const cached = brandCache.get(brandName);
+      if (cached) brandId = cached;
+      else {
+        const resolved = await ensureBrand(projectId, brandName);
+        if (!resolved) { failed++; continue; }
+        brandId = resolved;
+        brandCache.set(brandName, resolved);
+      }
+    }
+    touchedBrands.add(brandId);
 
     if (mapped.externalId && (await adExistsByExternalId(brandId, mapped.externalId))) {
       skipped++;
@@ -149,8 +270,6 @@ export async function ingestDataset(opts: {
       dl?.contentType || (mapped.mediaType === 'video' ? 'video/mp4' : 'image/jpeg');
 
     let bodyText = mapped.bodyText;
-    // Auto-transcribe only SHORT clips (inline-capable). Long videos are still
-    // downloaded/stored and can be transcribed later on demand via the button.
     const AUTO_TRANSCRIBE_MAX = 18 * 1024 * 1024;
     if (
       mapped.mediaType === 'video' &&
@@ -188,10 +307,19 @@ export async function ingestDataset(opts: {
     else failed++;
   }
 
-  await supabaseAdmin
-    .from('competitor_brands')
-    .update({ last_scraped: new Date().toISOString() })
-    .eq('id', brandId);
+  // Mark touched brands as scraped so the "new" badge + cron behave.
+  const now = new Date().toISOString();
+  if (fixedBrandId) {
+    await supabaseAdmin.from('competitor_brands').update({ last_scraped: now }).eq('id', fixedBrandId);
+  } else if (touchedBrands.size) {
+    await supabaseAdmin.from('competitor_brands').update({ last_scraped: now }).in('id', [...touchedBrands]);
+  }
 
-  return { added, skipped, failed };
+  // Best-effort: save discovered competitor landing pages into the project.
+  let landings = 0;
+  if (landingUrls.size) {
+    landings = await saveCompetitorLandings(projectId, [...landingUrls], platformLabel).catch(() => 0);
+  }
+
+  return { added, skipped, failed, brands: touchedBrands.size, landings };
 }

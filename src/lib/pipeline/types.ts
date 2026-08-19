@@ -41,7 +41,7 @@ export const PIPELINE_STEPS: PipelineStepDef[] = [
   {
     key: 'competitor',
     label: 'Competitor research',
-    description: 'Searches ads on Facebook Ad Library (Apify) and saves them to the Competitor Library.',
+    description: 'Auto keyword search across Meta, TikTok & Google ad libraries (Apify). Saves creatives per advertiser + their landings.',
   },
   {
     key: 'ads',
