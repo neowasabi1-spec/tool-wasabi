@@ -620,13 +620,16 @@ async function runCompetitor(supabase: SupabaseClient, projectId: string, input:
   const country = countryFromMarket(input);
 
   // 1) Ask Claude for the best AD-LIBRARY SEARCH KEYWORDS for this product —
-  //    the terms a media buyer would type to surface competitors on Meta,
-  //    TikTok and Google. Output in the market's local language.
-  const kwInstructions = `You are a media buyer doing competitor research. Based on the product, market research and brief, output the BEST 5 SEARCH KEYWORDS to find competitors' ads in the Meta Ad Library, TikTok Ad Library and Google Ads Transparency Center.
-${marketDirective(input)}
-Rules:
-- Keywords must be in the LOCAL LANGUAGE of the target market (this is what advertisers use in their ad copy/brand terms).
-- Mix: product category terms, key benefit/outcome terms, and problem terms. Include 1-2 well-known competitor/brand names in this niche if you know them.
+  //    the terms a media buyer would type to surface LOCAL competitors on Meta,
+  //    TikTok and Google. These MUST be in the target market's language, otherwise
+  //    the ad libraries surface foreign (US/English) brands.
+  const geo = (input.market || input.language || '').trim() || country;
+  const kwInstructions = `You are a media buyer doing competitor research for the ${geo} market. Output the BEST 5 SEARCH KEYWORDS to find LOCAL competitors' ads in the Meta Ad Library, TikTok Ad Library and Google Ads Transparency Center for ${geo}.
+CRITICAL RULES:
+- Write the keywords in the LOCAL LANGUAGE actually spoken by consumers/advertisers in ${geo} (e.g. German for a German market). Do NOT output English keywords unless the market itself is English-speaking. English keywords surface the wrong (foreign) brands.
+- Use the exact words a native buyer would type: the product category, the core benefit/outcome, and the problem — phrased the way a local advertiser writes ad copy.
+- Include 1-2 REAL local competitor/brand names in this niche for ${geo} if you know them.
+- NEVER output generic platform/tech/agency terms (e.g. "shopify", "ecommerce", "dropshipping", "print on demand", "agency") — only product- and market-specific terms.
 - Output ONLY the keywords, one per line. No numbering, no explanations.`;
   const kwUser = `Product: ${productName}\nMarket: ${input.market || country}\n${link ? `Competitor link: ${link}\n` : ''}\nGive the keywords now.`;
   const kwRaw = await callClaude({ task: 'ad', instructions: kwInstructions, brief, marketResearch: research, userMessage: kwUser, maxTokens: 300 });
