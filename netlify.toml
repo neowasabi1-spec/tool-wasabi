@@ -81,5 +81,11 @@
   external_node_modules = ["@sparticuz/chromium-min", "playwright-core"]
   included_files = ["node_modules/@sparticuz/chromium-min/**"]
 
+# Synchronous diagnostic for headless Chromium inside a standalone function.
+[functions."shot-check"]
+  external_node_modules = ["@sparticuz/chromium-min", "playwright-core"]
+  included_files = ["node_modules/@sparticuz/chromium-min/**"]
+  timeout = 60
+
 [[plugins]]
   package = "@netlify/plugin-nextjs"
