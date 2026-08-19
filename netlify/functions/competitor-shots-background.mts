@@ -12,8 +12,11 @@ import { chromium, type Browser } from 'playwright-core';
  * Body: { projectId, secret }
  */
 
-const IS_SERVERLESS =
-  !!process.env.NETLIFY && !process.env.NETLIFY_LOCAL && !process.env.NETLIFY_DEV;
+// A standalone Netlify function runs either under `netlify dev` locally or on
+// the Netlify (AWS Lambda) cloud. Unlike the Next server handler, NETLIFY is
+// NOT reliably set in the standalone function runtime, so default to the
+// serverless (Sparticuz) Chromium path unless we detect a local dev run.
+const IS_SERVERLESS = !(process.env.NETLIFY_DEV || process.env.NETLIFY_LOCAL);
 const REMOTE_TAR_URL =
   process.env.CHROMIUM_REMOTE_TAR ||
   'https://github.com/Sparticuz/chromium/releases/download/v131.0.1/chromium-v131.0.1-pack.tar';

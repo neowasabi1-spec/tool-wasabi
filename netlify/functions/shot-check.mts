@@ -3,8 +3,7 @@ import { chromium } from 'playwright-core';
 /** Synchronous diagnostic: verifies headless Chromium can launch + screenshot
  *  inside a standalone Netlify function bundle (not the Next server handler).
  *  GET /.netlify/functions/shot-check?url=... */
-const IS_SERVERLESS =
-  !!process.env.NETLIFY && !process.env.NETLIFY_LOCAL && !process.env.NETLIFY_DEV;
+const IS_SERVERLESS = !(process.env.NETLIFY_DEV || process.env.NETLIFY_LOCAL);
 const REMOTE_TAR_URL =
   process.env.CHROMIUM_REMOTE_TAR ||
   'https://github.com/Sparticuz/chromium/releases/download/v131.0.1/chromium-v131.0.1-pack.tar';
