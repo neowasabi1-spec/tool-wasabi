@@ -64,14 +64,18 @@ async function runJob(projectId: string, out: Record<string, unknown>) {
   }
   out.todo = todo.length;
   if (todo.length === 0) return;
-  const browser = await launch();
   let done = 0;
   const errors: string[] = [];
-  try {
+  {
     for (const t of todo.slice(0, 3)) {
       let d: Buffer | null = null, m: Buffer | null = null;
-      try { d = await shot(browser, t.url, 'desktop'); } catch (e) { errors.push(`d:${t.url}:${(e as Error).message}`); }
-      try { m = await shot(browser, t.url, 'mobile'); } catch (e) { errors.push(`m:${t.url}:${(e as Error).message}`); }
+      let browser: Awaited<ReturnType<typeof launch>> | null = null;
+      try {
+        browser = await launch();
+        try { d = await shot(browser, t.url, 'desktop'); } catch (e) { errors.push(`d:${t.url}:${(e as Error).message}`); }
+        try { m = await shot(browser, t.url, 'mobile'); } catch (e) { errors.push(`m:${t.url}:${(e as Error).message}`); }
+      } catch (e) { errors.push(`launch:${t.url}:${(e as Error).message}`); }
+      finally { if (browser) await browser.close().catch(() => {}); }
       const upload = async (variant: 'desktop' | 'mobile', buf: Buffer | null) => {
         if (!buf) return null;
         const path = `extension-captures/${t.id}/${variant}.jpg`;
@@ -89,7 +93,7 @@ async function runJob(projectId: string, out: Record<string, unknown>) {
       if (upd.error) errors.push(`db:${t.id}:${upd.error.message}`);
       else done++;
     }
-  } finally { await browser.close().catch(() => {}); }
+  }
   out.done = done;
   out.errors = errors.slice(0, 8);
 }

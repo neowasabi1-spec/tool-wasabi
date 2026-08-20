@@ -152,50 +152,47 @@ export default async (req: Request) => {
   if (todo.length === 0) return new Response(JSON.stringify({ ok: true, done: 0 }), { status: 200 });
   log(`capturing ${Math.min(todo.length, MAX_LANDINGS)} landing(s)`);
 
-  let browser: Browser | null = null;
   let done = 0;
-  try {
-    browser = await launchBrowser();
-    log('browser launched');
-    for (const t of todo.slice(0, MAX_LANDINGS)) {
-      const cd = t.step.cloned_data as Record<string, unknown>;
-      const errs: string[] = [];
+  // Serverless Chromium runs with --single-process and reliably survives only
+  // ONE page before the renderer dies ("Target/context/browser has been
+  // closed"). So we launch a FRESH browser per landing and both captures reuse
+  // it, closing it before moving to the next landing.
+  for (const t of todo.slice(0, MAX_LANDINGS)) {
+    const cd = t.step.cloned_data as Record<string, unknown>;
+    const errs: string[] = [];
+    let browser: Browser | null = null;
+    let dUrl: string | null = null;
+    let mUrl: string | null = null;
 
-      let dUrl: string | null = null;
+    try {
+      browser = await launchBrowser();
       try {
         const d = await capture(browser, t.url, 'desktop');
         dUrl = await uploadShot(sb, t.id, 'desktop', d);
         if (!dUrl) errs.push('desktop upload failed');
       } catch (e) { errs.push(`desktop: ${(e as Error).message}`); }
-
-      // Persist the desktop preview immediately so the grid shows it even if
-      // the mobile capture later fails or the run is cut short.
-      if (dUrl) {
-        cd.screenshotDesktopUrl = dUrl;
-        cd.htmlUrl = `/api/funnel-html?pageId=${encodeURIComponent(t.id)}&kind=cloned&variant=desktop&v=${Date.now()}`;
-        await sb.from('archived_funnels').update({ steps: [t.step] }).eq('id', t.id).then(() => undefined, () => undefined);
-      }
-
-      let mUrl: string | null = null;
       try {
         const m = await capture(browser, t.url, 'mobile');
         mUrl = await uploadShot(sb, t.id, 'mobile', m);
         if (!mUrl) errs.push('mobile upload failed');
       } catch (e) { errs.push(`mobile: ${(e as Error).message}`); }
-
-      if (mUrl) cd.screenshotMobileUrl = mUrl;
-      // Record diagnostics on the row so failures are visible without logs.
-      if (errs.length) cd.shotError = errs.join(' | ');
-      else delete cd.shotError;
-      await sb.from('archived_funnels').update({ steps: [t.step] }).eq('id', t.id).then(() => undefined, () => undefined);
-
-      if (dUrl || mUrl) { done++; log(`saved shots for ${t.url} (${done})`); }
-      else log(`no shots for ${t.url}: ${errs.join(' | ')}`);
+    } catch (e) {
+      errs.push(`launch: ${(e as Error).message}`);
+    } finally {
+      if (browser) await browser.close().catch(() => {});
     }
-  } catch (e) {
-    log('FATAL', (e as Error).message);
-  } finally {
-    if (browser) await browser.close().catch(() => {});
+
+    if (dUrl) {
+      cd.screenshotDesktopUrl = dUrl;
+      cd.htmlUrl = `/api/funnel-html?pageId=${encodeURIComponent(t.id)}&kind=cloned&variant=desktop&v=${Date.now()}`;
+    }
+    if (mUrl) cd.screenshotMobileUrl = mUrl;
+    if (errs.length) cd.shotError = errs.join(' | ');
+    else delete cd.shotError;
+    await sb.from('archived_funnels').update({ steps: [t.step] }).eq('id', t.id).then(() => undefined, () => undefined);
+
+    if (dUrl || mUrl) { done++; log(`saved shots for ${t.url} (${done})`); }
+    else log(`no shots for ${t.url}: ${errs.join(' | ')}`);
   }
 
   return new Response(JSON.stringify({ ok: true, done }), { status: 200 });
