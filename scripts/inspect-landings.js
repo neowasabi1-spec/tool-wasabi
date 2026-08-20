@@ -19,6 +19,7 @@ const sb = createClient(URL, KEY);
     const cd = (step && step.cloned_data) || {};
     const shotD = cd.screenshotDesktopUrl ? 'D' : '-';
     const shotM = cd.screenshotMobileUrl ? 'M' : '-';
-    console.log(`- ${r.name}  shots=[${shotD}${shotM}]  src=${(cd.source_url || '').slice(0, 70)}  htmlLen=${(cd.html || '').length}`);
+    const err = cd.shotError ? `  ERR=${cd.shotError}` : '';
+    console.log(`- ${r.name}  shots=[${shotD}${shotM}]  src=${(cd.source_url || '').slice(0, 70)}  htmlLen=${(cd.html || '').length}${err}`);
   }
 })().catch((e) => { console.error('Fatal:', e.message); process.exit(1); });

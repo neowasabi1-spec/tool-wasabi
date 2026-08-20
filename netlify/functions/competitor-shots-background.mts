@@ -51,8 +51,11 @@ async function launchBrowser(): Promise<Browser> {
   return chromium.launch({ headless: true, args: ['--disable-dev-shm-usage', '--disable-gpu'] });
 }
 
-/** Full-page JPEG of a URL at the given device profile. */
-async function capture(browser: Browser, url: string, device: 'desktop' | 'mobile'): Promise<Buffer | null> {
+/** Full-page JPEG of a URL at the given device profile. Uses a lightweight
+ *  load strategy (domcontentloaded + settle) to avoid networkidle hangs on
+ *  tracker-heavy ad landings, and caps height to keep the image buffer within
+ *  the function's memory limit. Throws on failure so the caller can record it. */
+async function capture(browser: Browser, url: string, device: 'desktop' | 'mobile'): Promise<Buffer> {
   const viewport = device === 'mobile' ? MOBILE_VIEWPORT : DESKTOP_VIEWPORT;
   const context = await browser.newContext({
     userAgent: device === 'mobile' ? MOBILE_UA : DESKTOP_UA,
@@ -65,36 +68,32 @@ async function capture(browser: Browser, url: string, device: 'desktop' | 'mobil
   });
   const page = await context.newPage();
   try {
-    try {
-      await page.goto(url, { waitUntil: 'networkidle', timeout: 30_000 });
-    } catch {
-      await page.goto(url, { waitUntil: 'load', timeout: 20_000 });
-    }
-    await page.waitForTimeout(1500);
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 25_000 });
+    // Give hero media + fonts a moment, then trigger lazy-load by scrolling.
+    await page.waitForTimeout(1200);
     try {
       await page.evaluate(async () => {
         await new Promise<void>((resolve) => {
           let total = 0;
-          const step = 700;
+          const step = 800;
           const timer = setInterval(() => {
             window.scrollBy(0, step);
             total += step;
             if (total >= document.body.scrollHeight - window.innerHeight) {
               clearInterval(timer);
               window.scrollTo(0, 0);
-              setTimeout(resolve, 500);
+              setTimeout(resolve, 400);
             }
-          }, 100);
+          }, 80);
         });
       });
     } catch { /* CSP/eval blocked */ }
     const pageHeight = await page.evaluate(() => document.body.scrollHeight).catch(() => 0);
-    const clip = Math.min(MAX_HEIGHT, pageHeight || MAX_HEIGHT);
+    const clip = Math.min(MAX_HEIGHT, pageHeight || viewport.height);
     return (await page.screenshot({
       type: 'jpeg',
       quality: 72,
-      fullPage: clip >= (pageHeight || 0),
-      clip: clip < (pageHeight || 0) ? { x: 0, y: 0, width: viewport.width, height: clip } : undefined,
+      clip: { x: 0, y: 0, width: viewport.width, height: Math.max(clip, viewport.height) },
     })) as Buffer;
   } finally {
     await page.close().catch(() => {});
@@ -157,23 +156,41 @@ export default async (req: Request) => {
   let done = 0;
   try {
     browser = await launchBrowser();
+    log('browser launched');
     for (const t of todo.slice(0, MAX_LANDINGS)) {
-      let d: Buffer | null = null;
-      let m: Buffer | null = null;
-      try { d = await capture(browser, t.url, 'desktop'); } catch (e) { log('desktop fail', t.url, (e as Error).message); }
-      try { m = await capture(browser, t.url, 'mobile'); } catch (e) { log('mobile fail', t.url, (e as Error).message); }
-      const [dUrl, mUrl] = await Promise.all([
-        d ? uploadShot(sb, t.id, 'desktop', d) : Promise.resolve(null),
-        m ? uploadShot(sb, t.id, 'mobile', m) : Promise.resolve(null),
-      ]);
-      if (!dUrl && !mUrl) continue;
       const cd = t.step.cloned_data as Record<string, unknown>;
-      cd.screenshotDesktopUrl = dUrl;
-      cd.screenshotMobileUrl = mUrl;
-      cd.htmlUrl = `/api/funnel-html?pageId=${encodeURIComponent(t.id)}&kind=cloned&variant=desktop&v=${Date.now()}`;
-      await sb.from('archived_funnels').update({ steps: [t.step] }).eq('id', t.id);
-      done++;
-      log(`saved shots for ${t.url} (${done})`);
+      const errs: string[] = [];
+
+      let dUrl: string | null = null;
+      try {
+        const d = await capture(browser, t.url, 'desktop');
+        dUrl = await uploadShot(sb, t.id, 'desktop', d);
+        if (!dUrl) errs.push('desktop upload failed');
+      } catch (e) { errs.push(`desktop: ${(e as Error).message}`); }
+
+      // Persist the desktop preview immediately so the grid shows it even if
+      // the mobile capture later fails or the run is cut short.
+      if (dUrl) {
+        cd.screenshotDesktopUrl = dUrl;
+        cd.htmlUrl = `/api/funnel-html?pageId=${encodeURIComponent(t.id)}&kind=cloned&variant=desktop&v=${Date.now()}`;
+        await sb.from('archived_funnels').update({ steps: [t.step] }).eq('id', t.id).then(() => undefined, () => undefined);
+      }
+
+      let mUrl: string | null = null;
+      try {
+        const m = await capture(browser, t.url, 'mobile');
+        mUrl = await uploadShot(sb, t.id, 'mobile', m);
+        if (!mUrl) errs.push('mobile upload failed');
+      } catch (e) { errs.push(`mobile: ${(e as Error).message}`); }
+
+      if (mUrl) cd.screenshotMobileUrl = mUrl;
+      // Record diagnostics on the row so failures are visible without logs.
+      if (errs.length) cd.shotError = errs.join(' | ');
+      else delete cd.shotError;
+      await sb.from('archived_funnels').update({ steps: [t.step] }).eq('id', t.id).then(() => undefined, () => undefined);
+
+      if (dUrl || mUrl) { done++; log(`saved shots for ${t.url} (${done})`); }
+      else log(`no shots for ${t.url}: ${errs.join(' | ')}`);
     }
   } catch (e) {
     log('FATAL', (e as Error).message);
