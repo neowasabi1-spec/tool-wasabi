@@ -10,6 +10,7 @@ export type StepKey =
   | 'market_research'
   | 'brief'
   | 'competitor'
+  | 'angle'
   | 'ads'
   | 'landing';
 
@@ -44,9 +45,14 @@ export const PIPELINE_STEPS: PipelineStepDef[] = [
     description: 'Auto keyword search across Meta, TikTok & Google ad libraries (Apify). Saves creatives per advertiser + their landings.',
   },
   {
+    key: 'angle',
+    label: 'Angle strategy',
+    description: 'Prioritized Angle Matrix (English) from research + brief + real competitor ads: awareness, sophistication move, mechanism, competitor gap.',
+  },
+  {
     key: 'ads',
-    label: 'Angles & Ads',
-    description: 'Ad concepts (visible as a Funnel step) from the brief + competitors.',
+    label: 'Ads (Meta / TikTok / Google)',
+    description: 'For the top 3 angles: 3 platform-ready ads each (Meta, TikTok/UGC, Google RSA) in the market language, saved to Creative + Funnel.',
   },
   {
     key: 'landing',

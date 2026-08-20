@@ -303,7 +303,56 @@ Analizza questo competitor e produci la scheda.`;
 }
 
 // ---------------------------------------------------------------------------
-// STEP 4 — Ads / angles
+// STEP 4 — Angle strategy (prioritized Angle Matrix)
+// ---------------------------------------------------------------------------
+
+async function runAngle(ctx: StepContext): Promise<StepOutput> {
+  const project = await loadProject(ctx);
+  const productName = (project.name as string) || ctx.input.product;
+  const research = researchText(project);
+  const brief = briefText(project);
+
+  const instructions = `Sei uno stratega direct response. Costruisci una ANGLE MATRIX prioritizzata (6-8 angoli, best-first) per questo prodotto, basata su ricerca e brief.
+${marketDirective(ctx.input)}
+Per OGNI angolo usa questo formato markdown:
+## ANGLE 1 — <nome angolo>
+- **Awareness:** <1-5 + perché>
+- **Sophistication:** <new claim | mechanism | amplified claim | identification>
+- **Core emotion:** <emozione dominante>
+- **Big idea:** <una frase>
+- **Meccanismo unico:** <nome>
+- **Prova richiesta:** <...>
+- **Gap competitor:** <cosa non dicono i competitor>
+- **Hook:** "<apertura scroll-stopping>"
+Gli angoli devono essere davvero diversi tra loro. Niente filler generico.`;
+
+  const userMessage = `Prodotto: ${productName}
+${ctx.input.description ? `\nDescrizione:\n${ctx.input.description}` : ''}
+
+Costruisci la Angle Matrix, angolo migliore per primo.`;
+
+  const { reply } = await callClaudeWithKnowledge({
+    task: 'general',
+    instructions,
+    brief,
+    marketResearch: research,
+    messages: [{ role: 'user', content: userMessage }],
+    maxTokens: 4096,
+  });
+
+  const content = reply.trim();
+  if (!content) throw new Error('Angle step returned empty output');
+
+  await saveSection(ctx, 'front_end', 'AI — Angle Matrix', content);
+
+  return {
+    summary: 'Angle Matrix generata e salvata.',
+    output: content,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// STEP 5 — Ads / angles
 // ---------------------------------------------------------------------------
 
 async function runAds(ctx: StepContext): Promise<StepOutput> {
@@ -447,6 +496,7 @@ const RUNNERS: Record<StepKey, (ctx: StepContext) => Promise<StepOutput>> = {
   market_research: runMarketResearch,
   brief: runBrief,
   competitor: runCompetitor,
+  angle: runAngle,
   ads: runAds,
   landing: runLanding,
 };

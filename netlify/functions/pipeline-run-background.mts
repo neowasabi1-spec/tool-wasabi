@@ -14,7 +14,7 @@ import { getCoreKnowledge, getKnowledgeForTask } from '../../src/knowledge/copyw
  * Body: { jobId }
  */
 
-const STEP_ORDER = ['market_research', 'brief', 'competitor', 'ads', 'landing'] as const;
+const STEP_ORDER = ['market_research', 'brief', 'competitor', 'angle', 'ads', 'landing'] as const;
 type StepKey = (typeof STEP_ORDER)[number];
 
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
@@ -178,22 +178,62 @@ function marketDirective(input: PipelineInput): string {
 
 function isMetaAdLibrary(url: string): boolean { return /facebook\.com\/ads\/library/i.test(url); }
 
-interface AdConcept { angle: string; body: string; }
-function parseAdConcepts(raw: string): AdConcept[] {
-  const blocks = raw.split(/\n-{2,}\n|\n---\n/g).map((b) => b.trim()).filter(Boolean);
-  const out: AdConcept[] = [];
+/** One angle parsed out of the Angle Matrix produced by the angle step. */
+interface AngleItem { name: string; body: string; }
+
+/** Parse the Angle Matrix. Each angle starts with a markdown heading of the
+ *  form "## ANGLE N — <name>" (we also tolerate "### ANGLE:" / "ANGLE:"). */
+function parseAngles(raw: string): AngleItem[] {
+  const lines = (raw || '').split('\n');
+  const items: AngleItem[] = [];
+  let cur: AngleItem | null = null;
+  const headRe = /^#{2,3}\s*ANGLE\s*\d*\s*[—:\-–]\s*(.+?)\s*$/i;
+  const altRe = /^ANGLE\s*\d*\s*[—:\-–]\s*(.+?)\s*$/i;
+  for (const ln of lines) {
+    const m = ln.match(headRe) || ln.match(altRe);
+    if (m) {
+      if (cur) items.push(cur);
+      cur = { name: m[1].replace(/[*_`]/g, '').trim().slice(0, 200), body: '' };
+    } else if (cur) {
+      cur.body += (cur.body ? '\n' : '') + ln;
+    }
+  }
+  if (cur) items.push(cur);
+  return items.map((a) => ({ name: a.name, body: a.body.trim() })).filter((a) => a.name);
+}
+
+type AdPlatform = 'meta' | 'tiktok' | 'google';
+interface PlatformAd { angle: string; platform: AdPlatform; text: string; }
+
+/** Parse the multi-platform ads output. Angles are separated by a line of
+ *  "---"; inside each block, platform sections are marked [META] / [TIKTOK] /
+ *  [GOOGLE] (case-insensitive). */
+function parseMultiPlatformAds(raw: string): PlatformAd[] {
+  const out: PlatformAd[] = [];
+  const blocks = (raw || '').split(/\n-{3,}\s*\n/g).map((b) => b.trim()).filter(Boolean);
   for (const b of blocks) {
-    const get = (label: string) => {
-      const m = b.match(new RegExp(`${label}\\s*:\\s*(.+)`, 'i'));
-      return m ? m[1].trim() : '';
-    };
-    const angle = get('ANGOLO') || get('ANGLE');
-    if (!angle && !get('HEADLINE')) continue;
-    out.push({
-      angle: angle || 'Concept',
-      body: [get('HOOK'), get('HEADLINE'), get('BODY'), get('CTA') ? `CTA: ${get('CTA')}` : '']
-        .filter(Boolean).join('\n'),
-    });
+    const nameM = b.match(/^#{0,3}\s*ANGLE\s*\d*\s*[—:\-–]\s*(.+?)\s*$/im);
+    const angle = (nameM ? nameM[1] : 'Concept').replace(/[*_`]/g, '').trim().slice(0, 200);
+    const markers: Array<{ p: AdPlatform; re: RegExp }> = [
+      { p: 'meta', re: /\[\s*META\s*\]/i },
+      { p: 'tiktok', re: /\[\s*TIKTOK\s*\]/i },
+      { p: 'google', re: /\[\s*GOOGLE\s*\]/i },
+    ];
+    const hits = markers
+      .map((m) => ({ p: m.p, idx: b.search(m.re) }))
+      .filter((h) => h.idx >= 0)
+      .sort((a, c) => a.idx - c.idx);
+    if (hits.length === 0) {
+      // No platform markers — keep the whole block under META so nothing is lost.
+      out.push({ angle, platform: 'meta', text: b });
+      continue;
+    }
+    for (let i = 0; i < hits.length; i++) {
+      const start = hits[i].idx;
+      const end = i + 1 < hits.length ? hits[i + 1].idx : b.length;
+      const text = b.slice(start, end).replace(/^\[[^\]]+\]\s*/, '').trim();
+      if (text) out.push({ angle, platform: hits[i].p, text });
+    }
   }
   return out;
 }
@@ -435,6 +475,90 @@ async function loadProject(supabase: SupabaseClient, projectId: string) {
     .single();
   if (error || !data) throw new Error(`Cannot load project ${projectId}: ${error?.message || 'not found'}`);
   return data as Record<string, unknown>;
+}
+
+/** Read back the markdown of the latest Autopilot-generated section file of a
+ *  given type (e.g. the Angle Matrix saved by the angle step). Empty string if
+ *  none — callers must degrade gracefully. */
+async function loadSectionFileText(
+  supabase: SupabaseClient,
+  projectId: string,
+  fileType: string,
+): Promise<string> {
+  try {
+    const { data } = await supabase
+      .from('project_files')
+      .select('file_path, created_at')
+      .eq('project_id', projectId)
+      .eq('file_type', fileType)
+      .like('original_name', 'Autopilot — %')
+      .order('created_at', { ascending: false })
+      .limit(1);
+    const path = data?.[0]?.file_path as string | undefined;
+    if (!path) return '';
+    const { data: blob } = await supabase.storage.from(PROJECT_FILES_BUCKET).download(path);
+    if (!blob) return '';
+    return (await blob.text()).trim();
+  } catch {
+    return '';
+  }
+}
+
+/** Build a compact "swipe" digest of the real competitor ads already scraped
+ *  into this project. Winners first (more variants / more reach = validated),
+ *  so the angle + ad steps model what is actually working in THIS market. */
+async function loadCompetitorSwipe(
+  supabase: SupabaseClient,
+  projectId: string,
+  max = 14,
+): Promise<string> {
+  try {
+    const { data: brands } = await supabase
+      .from('competitor_brands')
+      .select('id, name')
+      .eq('project_id', projectId);
+    const brandName = new Map<number, string>();
+    for (const b of (brands || []) as Array<{ id: number; name: string }>) brandName.set(b.id, b.name);
+
+    const { data: ads } = await supabase
+      .from('competitor_ads')
+      .select('brand_id, headline, hook, body_text, ad_variants, reach')
+      .eq('project_id', projectId)
+      .limit(400);
+    const rows = (ads || []) as Array<{
+      brand_id: number; headline?: string; hook?: string; body_text?: string;
+      ad_variants?: number; reach?: number;
+    }>;
+    if (rows.length === 0) return '';
+
+    const score = (r: { ad_variants?: number; reach?: number }) =>
+      (Number(r.ad_variants) || 0) * 1000 + (Number(r.reach) || 0);
+    rows.sort((a, b) => score(b) - score(a));
+
+    const seen = new Set<string>();
+    const lines: string[] = [];
+    for (const r of rows) {
+      const brand = brandName.get(r.brand_id) || 'Competitor';
+      const hook = (r.hook || '').trim();
+      const head = (r.headline || '').trim();
+      const body = (r.body_text || '').replace(/\s+/g, ' ').trim().slice(0, 260);
+      const key = (hook || head || body).slice(0, 80).toLowerCase();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      const variants = Number(r.ad_variants) || 0;
+      const parts = [
+        `• [${brand}${variants > 1 ? `, ${variants} variants` : ''}]`,
+        hook ? `HOOK: ${hook.slice(0, 160)}` : '',
+        head ? `HEADLINE: ${head.slice(0, 160)}` : '',
+        body ? `BODY: ${body}` : '',
+      ].filter(Boolean);
+      lines.push(parts.join(' '));
+      if (lines.length >= max) break;
+    }
+    return lines.join('\n');
+  } catch {
+    return '';
+  }
 }
 
 async function runMarketResearch(supabase: SupabaseClient, projectId: string, input: PipelineInput): Promise<StepResult> {
@@ -692,57 +816,168 @@ CRITICAL RULES:
   return { summary, output };
 }
 
-async function runAds(supabase: SupabaseClient, projectId: string, input: PipelineInput): Promise<StepResult> {
+/** Market/geography string used to localize AD COPY into the local language. */
+function marketGeo(input: PipelineInput): string {
+  return (input.market || input.language || '').trim();
+}
+
+// ---------------------------------------------------------------------------
+// STEP 4 — Angle strategy (prioritized Angle Matrix, English strategy doc)
+// ---------------------------------------------------------------------------
+
+async function runAngle(supabase: SupabaseClient, projectId: string, input: PipelineInput): Promise<StepResult> {
   const project = await loadProject(supabase, projectId);
+  const productName = (project.name as string) || input.product || '';
   const research = sectionContentFrom(project.market_research);
   const brief = typeof project.brief === 'string' && project.brief.trim() ? (project.brief as string) : sectionContentFrom(project.brief);
+  const swipe = await loadCompetitorSwipe(supabase, projectId);
 
-  const instructions = `Sei un direct response copywriter esperto in creativi ad alta conversione.
-Genera 5 CONCEPT PUBBLICITARI distinti per questo prodotto.
+  const instructions = `You are a world-class direct-response strategist (Stefan Georgi / Todd Brown level). Build a prioritized ANGLE MATRIX: the master list of marketing angles the team will test for this product — grounded in the research, the brief, and the REAL competitor ads already running in this market.
 ${marketDirective(input)}
-Per OGNI concept usa ESATTAMENTE questo formato, separando i concept con una riga "---":
 
-ANGOLO: <nome sintetico dell'angolo>
-HOOK: <prima riga / scroll-stopper>
-HEADLINE: <headline principale>
-BODY: <2-4 frasi di corpo persuasivo>
-CTA: <call to action>
+Apply the knowledge base BY NAME: Schwartz (5 Awareness Levels + 5 Sophistication Stages), Georgi Big Idea & Unique Mechanism, Todd Brown "one big marketing idea", Breakthrough Advertising sophistication plays (new claim → mechanism → amplified claim → identification), Evaldo core-emotion logic, Bencivenga proof.
 
-Gli angoli devono essere davvero diversi tra loro (meccanismo, paura, desiderio, identità, prova sociale...). Nessun testo extra fuori dal formato.`;
+Produce 6-8 DISTINCT angles, ORDERED best-first (ANGLE 1 = highest expected win rate). Use EXACTLY this markdown format, one block per angle:
 
-  const userMessage = `Prodotto: ${(project.name as string) || input.product || ''}
-Genera i 5 concept basandoti su brief e ricerca di mercato forniti nel contesto.`;
+## ANGLE 1 — <short, memorable angle name>
+- **Awareness level:** <1-5 + label> — <why this level>
+- **Sophistication move:** <new claim | mechanism | amplified claim | identification> — <why it fits this stage>
+- **Core emotion:** <dominant emotion> — away-from: <pain> / toward: <desire>
+- **Big idea / promise:** <one sentence that makes this angle feel NEW>
+- **Unique mechanism leaned on:** <named problem/solution mechanism from the research>
+- **Proof required:** <what makes it believable>
+- **Competitor gap it exploits:** <what the running competitor ads FAIL to say — cite the swipe>
+- **Sample hook:** "<a scroll-stopping opening line>"
 
-  const raw = await callClaude({ task: 'ad', instructions, brief, marketResearch: research, userMessage, maxTokens: 3000 });
-  const concepts = parseAdConcepts(raw);
+Rules:
+- Angles must be genuinely different from one another (not 8 rewrites of one idea).
+- Ground "competitor gap" in the REAL competitor ads provided; if none are provided, infer from the research teardown and label it "(inference)".
+- Be specific to THIS product/market — no generic filler.
+- Write the whole document in ENGLISH (this is a strategy doc for the team; localization happens at ad production).`;
+
+  const userMessage = `Product: ${productName}
+${input.description ? `\nDescription:\n${input.description}` : ''}
+
+${swipe
+    ? `# REAL COMPETITOR ADS RUNNING IN THIS MARKET (swipe — winners first)\n\n${swipe}`
+    : 'No competitor ads were scraped — infer competitor gaps from the market research competitor teardown.'}
+
+Build the prioritized Angle Matrix now, best angle first.`;
+
+  const content = await callClaude({ task: 'ad', instructions, brief, marketResearch: research, userMessage, maxTokens: 6000 });
+  if (!content) throw new Error('Angle step returned empty output');
+
+  const angles = parseAngles(content);
+
+  // Persist for machine consumption (the ads step reads it back) + a downloadable doc.
+  const fileSaved = await saveSectionFile(supabase, projectId, 'angles', 'Angle Matrix', content);
+
+  // Human-visible artifact in the Funnel tab.
+  try {
+    await createFunnelStep(supabase, projectId, {
+      stepNumber: 80,
+      pageName: 'Angle Matrix (Autopilot)',
+      stepType: 'angle',
+      resultContent: angleMatrixToHtml(content, angles),
+    });
+  } catch { /* non-fatal */ }
+
+  return {
+    summary: `${angles.length || 6} angles prioritized (Angle Matrix)${fileSaved ? ' — saved as a document + visible in the Funnel tab.' : ' — visible in the Funnel tab.'}`,
+    output: content,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// STEP 5 — Ads (top 3 angles × Meta / TikTok / Google, in the market language)
+// ---------------------------------------------------------------------------
+
+async function runAds(supabase: SupabaseClient, projectId: string, input: PipelineInput): Promise<StepResult> {
+  const project = await loadProject(supabase, projectId);
+  const productName = (project.name as string) || input.product || '';
+  const research = sectionContentFrom(project.market_research);
+  const brief = typeof project.brief === 'string' && project.brief.trim() ? (project.brief as string) : sectionContentFrom(project.brief);
+  const swipe = await loadCompetitorSwipe(supabase, projectId);
+  const angleDoc = await loadSectionFileText(supabase, projectId, 'angles');
+
+  const geo = marketGeo(input);
+  const langLine = geo
+    ? `Write ALL AD COPY in the LOCAL LANGUAGE actually spoken by consumers in ${geo} (e.g. German for a German market). These are production assets shown to real buyers — NOT English, unless ${geo} is English-speaking. Keep the section LABELS (META/TIKTOK/GOOGLE, HEADLINE, etc.) in English.`
+    : `Write the ad copy in the market's local language (infer it from the product/market). Keep the section LABELS in English.`;
+
+  const instructions = `You are an elite direct-response copywriter producing PLATFORM-READY ads.
+Take the TOP 3 angles from the ANGLE MATRIX provided (angles are already ordered best-first — use ANGLE 1, 2 and 3). For EACH of those 3 angles write ONE ad for EACH platform: Meta, TikTok (UGC), Google. That is 3 angles × 3 platforms = 9 ads.
+${langLine}
+Model what WORKS in the real competitor ads (the swipe) — the emotional register and hook patterns validated in this market — but do NOT copy them: express OUR angle and OUR unique mechanism.
+
+Use EXACTLY this format. Separate the 3 angle blocks with a line containing only "---":
+
+## ANGLE 1 — <the angle name from the matrix>
+
+[META]
+PRIMARY TEXT: <3-6 lines, hook-first, scroll-stopping: benefit + mechanism + proof + soft CTA>
+HEADLINE: <max ~40 chars>
+DESCRIPTION: <max ~30 chars>
+
+[TIKTOK]
+HOOK: <the spoken first 3 seconds>
+SCRIPT: <4-6 beats, native UGC / talking-to-camera; each beat on its own line>
+ON-SCREEN TEXT: <short captions>
+CTA: <spoken call to action>
+
+[GOOGLE]
+HEADLINES: <h1> | <h2> | <h3> | <h4> (each max ~30 chars)
+DESCRIPTIONS: <d1> | <d2> (each max ~90 chars)
+
+---
+(then ANGLE 2, then ANGLE 3, same structure)
+
+Rules:
+- Ads must be specific and immediately usable — no placeholders, no "[insert benefit]".
+- Respect platform norms (Meta = story/benefit; TikTok = native UGC hook + script; Google = tight keyworded headlines).
+- Keep claims defensible (no unsupported medical/legal claims).`;
+
+  const userMessage = `Product: ${productName}
+${input.description ? `\nDescription:\n${input.description}` : ''}
+
+# ANGLE MATRIX (use the top 3, best-first)
+
+${angleDoc || '(No angle matrix found — derive the 3 strongest angles from the market research, best-first.)'}
+
+${swipe ? `# REAL COMPETITOR ADS (swipe — model the winning register, don't copy)\n\n${swipe}` : ''}
+
+Write the 9 platform-ready ads now.`;
+
+  const raw = await callClaude({ task: 'ad', instructions, brief, marketResearch: research, userMessage, maxTokens: 8000 });
+  if (!raw) throw new Error('Ads step returned empty output');
+
+  const ads = parseMultiPlatformAds(raw);
 
   let saved = 0;
-  if (concepts.length > 0) {
-    const rows = concepts.map((c) => ({
+  if (ads.length > 0) {
+    const rows = ads.map((a) => ({
       project_id: projectId,
-      type: 'concept',
-      angle: c.angle.slice(0, 300),
-      concept_notes: c.body,
+      type: `${a.platform}_ad`,
+      angle: a.angle.slice(0, 300),
+      concept_notes: `[${a.platform.toUpperCase()}]\n${a.text}`.slice(0, 8000),
       output_status: 'ready',
     }));
     const { error } = await supabase.from('creative_outputs').insert(rows);
     if (!error) saved = rows.length;
   }
 
-  // Make the concepts VISIBLE in the Funnel tab (the Creative tab APIs are not
-  // wired in this build) by saving a readable HTML doc as a funnel step.
-  const html = adsConceptsToHtml(raw, concepts);
   try {
     await createFunnelStep(supabase, projectId, {
       stepNumber: 90,
-      pageName: 'Angles & Ads (Autopilot)',
+      pageName: 'Ads — Meta / TikTok / Google (Autopilot)',
       stepType: 'ads',
-      resultContent: html,
+      resultContent: adsToHtml(raw, ads),
     });
   } catch { /* non-fatal */ }
 
+  const angleCount = new Set(ads.map((a) => a.angle)).size;
   return {
-    summary: `${concepts.length || 5} ad concepts generated — visible in the Funnel tab ("Angles & Ads")${saved ? ` and saved to creative_outputs (${saved})` : ''}.`,
+    summary: `${ads.length || 9} platform-ready ads across ${angleCount || 3} angles (Meta/TikTok/Google)${saved ? ` — saved to Creative (${saved}) + visible in the Funnel tab.` : ' — visible in the Funnel tab.'}`,
     output: raw,
   };
 }
@@ -751,18 +986,61 @@ function esc(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-function adsConceptsToHtml(raw: string, concepts: AdConcept[]): string {
-  const cards = concepts.length
-    ? concepts.map((c, i) => `
+function angleMatrixToHtml(raw: string, angles: AngleItem[]): string {
+  const cards = angles.length
+    ? angles.map((a, i) => `
       <div style="border:1px solid #e5e7eb;border-radius:12px;padding:16px;margin:12px 0;background:#fff">
-        <div style="font-size:12px;font-weight:700;color:#6d28d9;text-transform:uppercase;letter-spacing:.04em">Concept ${i + 1} — ${esc(c.angle)}</div>
-        <pre style="white-space:pre-wrap;font-family:inherit;margin:8px 0 0;color:#111827">${esc(c.body)}</pre>
+        <div style="font-size:12px;font-weight:700;color:#6d28d9;text-transform:uppercase;letter-spacing:.04em">Angle ${i + 1} — ${esc(a.name)}</div>
+        <pre style="white-space:pre-wrap;font-family:inherit;margin:8px 0 0;color:#111827">${esc(a.body)}</pre>
       </div>`).join('')
     : `<pre style="white-space:pre-wrap">${esc(raw)}</pre>`;
-  return `<div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:820px;margin:0 auto;padding:8px">
-    <h1 style="font-size:20px;margin:0 0 4px">Angles &amp; Ads generated by Autopilot</h1>
-    <p style="color:#6b7280;margin:0 0 12px">${concepts.length || 0} concepts ready for creative production.</p>
+  return `<div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:860px;margin:0 auto;padding:8px">
+    <h1 style="font-size:20px;margin:0 0 4px">Angle Matrix — prioritized</h1>
+    <p style="color:#6b7280;margin:0 0 12px">${angles.length || 0} angles, best-first. Feeds the ads step.</p>
     ${cards}
+  </div>`;
+}
+
+const PLATFORM_STYLE: Record<AdPlatform, { label: string; color: string }> = {
+  meta: { label: 'Meta / Facebook', color: '#1877f2' },
+  tiktok: { label: 'TikTok / UGC', color: '#000000' },
+  google: { label: 'Google', color: '#0f9d58' },
+};
+
+function adsToHtml(raw: string, ads: PlatformAd[]): string {
+  if (ads.length === 0) {
+    return `<div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:860px;margin:0 auto;padding:8px">
+      <h1 style="font-size:20px;margin:0 0 12px">Ads — Meta / TikTok / Google</h1>
+      <pre style="white-space:pre-wrap">${esc(raw)}</pre>
+    </div>`;
+  }
+  const byAngle = new Map<string, PlatformAd[]>();
+  for (const a of ads) {
+    const list = byAngle.get(a.angle) || [];
+    list.push(a);
+    byAngle.set(a.angle, list);
+  }
+  const order: AdPlatform[] = ['meta', 'tiktok', 'google'];
+  const sections = [...byAngle.entries()].map(([angle, list], i) => {
+    const sorted = [...list].sort((x, y) => order.indexOf(x.platform) - order.indexOf(y.platform));
+    const cards = sorted.map((ad) => {
+      const st = PLATFORM_STYLE[ad.platform];
+      return `
+        <div style="border:1px solid #e5e7eb;border-radius:12px;padding:14px;margin:10px 0;background:#fff">
+          <div style="display:inline-block;font-size:11px;font-weight:700;color:#fff;background:${st.color};border-radius:999px;padding:2px 10px;letter-spacing:.03em">${esc(st.label)}</div>
+          <pre style="white-space:pre-wrap;font-family:inherit;margin:8px 0 0;color:#111827">${esc(ad.text)}</pre>
+        </div>`;
+    }).join('');
+    return `
+      <div style="margin:18px 0 8px">
+        <div style="font-size:12px;font-weight:700;color:#6d28d9;text-transform:uppercase;letter-spacing:.04em">Angle ${i + 1} — ${esc(angle)}</div>
+        ${cards}
+      </div>`;
+  }).join('');
+  return `<div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:860px;margin:0 auto;padding:8px">
+    <h1 style="font-size:20px;margin:0 0 4px">Ads — Meta / TikTok / Google</h1>
+    <p style="color:#6b7280;margin:0 0 4px">${ads.length} platform-ready ads across ${byAngle.size} angles.</p>
+    ${sections}
   </div>`;
 }
 
@@ -842,6 +1120,7 @@ const RUNNERS: Record<StepKey, (s: SupabaseClient, p: string, i: PipelineInput) 
   market_research: runMarketResearch,
   brief: runBrief,
   competitor: runCompetitor,
+  angle: runAngle,
   ads: runAds,
   landing: runLanding,
 };
