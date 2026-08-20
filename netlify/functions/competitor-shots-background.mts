@@ -51,50 +51,62 @@ async function launchBrowser(): Promise<Browser> {
   return chromium.launch({ headless: true, args: ['--disable-dev-shm-usage', '--disable-gpu'] });
 }
 
-/** Full-page JPEG of a URL at the given device profile. Uses a lightweight
- *  load strategy (domcontentloaded + settle) to avoid networkidle hangs on
- *  tracker-heavy ad landings, and caps height to keep the image buffer within
- *  the function's memory limit. Throws on failure so the caller can record it. */
-async function capture(browser: Browser, url: string, device: 'desktop' | 'mobile'): Promise<Buffer> {
-  const viewport = device === 'mobile' ? MOBILE_VIEWPORT : DESKTOP_VIEWPORT;
-  const context = await browser.newContext({
-    userAgent: device === 'mobile' ? MOBILE_UA : DESKTOP_UA,
-    viewport,
-    deviceScaleFactor: device === 'mobile' ? 2 : 1,
-    isMobile: device === 'mobile',
-    hasTouch: device === 'mobile',
-    ignoreHTTPSErrors: true,
-    bypassCSP: true,
-  });
+/** Capture DESKTOP + MOBILE full-page JPEGs of a URL in ONE tab, exactly like
+ *  the browser extension (background.js): a single page + navigation, switching
+ *  device profiles via CDP Emulation.setDeviceMetricsOverride. This is critical
+ *  on serverless Chromium (--single-process): opening a SECOND context/page
+ *  crashes the renderer ("Target/context/browser has been closed"), so we must
+ *  reuse one page and one CDP session for both viewports. */
+async function captureBoth(
+  browser: Browser,
+  url: string,
+): Promise<{ desktop: Buffer | null; mobile: Buffer | null }> {
+  const context = await browser.newContext({ ignoreHTTPSErrors: true, bypassCSP: true });
   const page = await context.newPage();
-  try {
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 25_000 });
-    // Give hero media + fonts a moment, then trigger lazy-load by scrolling.
-    await page.waitForTimeout(1200);
+  const client = await context.newCDPSession(page);
+
+  const shot = async (o: { width: number; height: number; mobile: boolean; dsf: number }): Promise<Buffer> => {
+    await client.send('Emulation.setDeviceMetricsOverride', {
+      width: o.width,
+      height: o.height,
+      deviceScaleFactor: o.dsf,
+      mobile: o.mobile,
+      screenWidth: o.width,
+      screenHeight: o.height,
+    });
+    await page.waitForTimeout(700);
     try {
-      await page.evaluate(async () => {
-        await new Promise<void>((resolve) => {
-          let total = 0;
-          const step = 800;
-          const timer = setInterval(() => {
-            window.scrollBy(0, step);
-            total += step;
-            if (total >= document.body.scrollHeight - window.innerHeight) {
-              clearInterval(timer);
-              window.scrollTo(0, 0);
-              setTimeout(resolve, 400);
-            }
-          }, 80);
-        });
-      });
-    } catch { /* CSP/eval blocked */ }
-    const pageHeight = await page.evaluate(() => document.body.scrollHeight).catch(() => 0);
-    const clip = Math.min(MAX_HEIGHT, pageHeight || viewport.height);
-    return (await page.screenshot({
-      type: 'jpeg',
+      await client.send('Runtime.evaluate', { expression: 'window.scrollTo(0, document.body.scrollHeight); void 0;' });
+      await page.waitForTimeout(400);
+      await client.send('Runtime.evaluate', { expression: 'window.scrollTo(0, 0); void 0;' });
+      await page.waitForTimeout(200);
+    } catch { /* ignore */ }
+    const metrics = (await client.send('Page.getLayoutMetrics')) as {
+      cssContentSize?: { width: number; height: number };
+      contentSize?: { width: number; height: number };
+    };
+    const cs = metrics.cssContentSize || metrics.contentSize || { width: o.width, height: o.height };
+    const shotWidth = Math.ceil(cs.width) || o.width;
+    const shotHeight = Math.min(Math.ceil(cs.height) || o.height, MAX_HEIGHT);
+    const res = (await client.send('Page.captureScreenshot', {
+      format: 'jpeg',
       quality: 72,
-      clip: { x: 0, y: 0, width: viewport.width, height: Math.max(clip, viewport.height) },
-    })) as Buffer;
+      captureBeyondViewport: true,
+      clip: { x: 0, y: 0, width: shotWidth, height: shotHeight, scale: 1 },
+    })) as { data: string };
+    await client.send('Emulation.clearDeviceMetricsOverride').catch(() => {});
+    return Buffer.from(res.data, 'base64');
+  };
+
+  try {
+    await client.send('Page.enable').catch(() => {});
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 25_000 });
+    await page.waitForTimeout(900); // let hero media + fonts settle
+    let desktop: Buffer | null = null;
+    let mobile: Buffer | null = null;
+    try { desktop = await shot({ width: 1280, height: 900, mobile: false, dsf: 1 }); } catch { /* record upstream */ }
+    try { mobile = await shot({ width: 390, height: 844, mobile: true, dsf: 2 }); } catch { /* record upstream */ }
+    return { desktop, mobile };
   } finally {
     await page.close().catch(() => {});
     await context.close().catch(() => {});
@@ -153,39 +165,29 @@ export default async (req: Request) => {
   log(`capturing ${Math.min(todo.length, MAX_LANDINGS)} landing(s)`);
 
   let done = 0;
-  // Serverless Chromium runs with --single-process and reliably survives only
-  // ONE page/context before the renderer dies ("Target/context/browser has
-  // been closed") — even a second newContext in the same browser crashes. So we
-  // launch a FRESH browser for EVERY screenshot (desktop and mobile separately).
-  const captureFresh = async (url: string, device: 'desktop' | 'mobile'): Promise<Buffer> => {
-    let browser: Browser | null = null;
-    try {
-      browser = await launchBrowser();
-      return await capture(browser, url, device);
-    } finally {
-      if (browser) await browser.close().catch(() => {});
-    }
-  };
-
   for (const t of todo.slice(0, MAX_LANDINGS)) {
     const cd = t.step.cloned_data as Record<string, unknown>;
     const errs: string[] = [];
     let dUrl: string | null = typeof cd.screenshotDesktopUrl === 'string' ? cd.screenshotDesktopUrl : null;
     let mUrl: string | null = typeof cd.screenshotMobileUrl === 'string' ? cd.screenshotMobileUrl : null;
 
-    if (!dUrl) {
-      try {
-        const d = await captureFresh(t.url, 'desktop');
-        dUrl = await uploadShot(sb, t.id, 'desktop', d);
+    // Fresh browser per landing; both viewports captured in ONE tab via CDP.
+    let browser: Browser | null = null;
+    try {
+      browser = await launchBrowser();
+      const shots = await captureBoth(browser, t.url);
+      if (!dUrl && shots.desktop) {
+        dUrl = await uploadShot(sb, t.id, 'desktop', shots.desktop);
         if (!dUrl) errs.push('desktop upload failed');
-      } catch (e) { errs.push(`desktop: ${(e as Error).message}`); }
-    }
-    if (!mUrl) {
-      try {
-        const m = await captureFresh(t.url, 'mobile');
-        mUrl = await uploadShot(sb, t.id, 'mobile', m);
+      } else if (!shots.desktop) errs.push('desktop capture empty');
+      if (!mUrl && shots.mobile) {
+        mUrl = await uploadShot(sb, t.id, 'mobile', shots.mobile);
         if (!mUrl) errs.push('mobile upload failed');
-      } catch (e) { errs.push(`mobile: ${(e as Error).message}`); }
+      } else if (!shots.mobile) errs.push('mobile capture empty');
+    } catch (e) {
+      errs.push(`capture: ${(e as Error).message}`);
+    } finally {
+      if (browser) await browser.close().catch(() => {});
     }
 
     if (dUrl) {

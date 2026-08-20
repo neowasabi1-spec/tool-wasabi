@@ -22,20 +22,35 @@ async function launch() {
   return chromium.launch({ args, executablePath, headless: true });
 }
 
-async function shot(browser: Awaited<ReturnType<typeof launch>>, url: string, device: 'desktop' | 'mobile'): Promise<Buffer> {
-  const ctx = await browser.newContext({
-    viewport: device === 'mobile' ? { width: 390, height: 844 } : { width: 1280, height: 900 },
-    deviceScaleFactor: device === 'mobile' ? 2 : 1,
-    isMobile: device === 'mobile', hasTouch: device === 'mobile',
-    ignoreHTTPSErrors: true, bypassCSP: true,
-  });
+// Mirror the extension: one tab, switch viewport via CDP (no 2nd context that
+// crashes serverless --single-process Chromium).
+async function captureBoth(browser: Awaited<ReturnType<typeof launch>>, url: string): Promise<{ desktop: Buffer | null; mobile: Buffer | null }> {
+  const ctx = await browser.newContext({ ignoreHTTPSErrors: true, bypassCSP: true });
   const page = await ctx.newPage();
+  const client = await ctx.newCDPSession(page);
+  const one = async (o: { width: number; height: number; mobile: boolean; dsf: number }): Promise<Buffer> => {
+    await client.send('Emulation.setDeviceMetricsOverride', { width: o.width, height: o.height, deviceScaleFactor: o.dsf, mobile: o.mobile, screenWidth: o.width, screenHeight: o.height });
+    await page.waitForTimeout(700);
+    try {
+      await client.send('Runtime.evaluate', { expression: 'window.scrollTo(0, document.body.scrollHeight); void 0;' });
+      await page.waitForTimeout(400);
+      await client.send('Runtime.evaluate', { expression: 'window.scrollTo(0, 0); void 0;' });
+      await page.waitForTimeout(200);
+    } catch { /* ignore */ }
+    const m = (await client.send('Page.getLayoutMetrics')) as { cssContentSize?: { width: number; height: number }; contentSize?: { width: number; height: number } };
+    const cs = m.cssContentSize || m.contentSize || { width: o.width, height: o.height };
+    const res = (await client.send('Page.captureScreenshot', { format: 'jpeg', quality: 72, captureBeyondViewport: true, clip: { x: 0, y: 0, width: Math.ceil(cs.width) || o.width, height: Math.min(Math.ceil(cs.height) || o.height, 18000), scale: 1 } })) as { data: string };
+    await client.send('Emulation.clearDeviceMetricsOverride').catch(() => {});
+    return Buffer.from(res.data, 'base64');
+  };
   try {
+    await client.send('Page.enable').catch(() => {});
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20_000 }).catch(() => {});
-    await page.waitForTimeout(1200);
-    const h = await page.evaluate(() => document.body.scrollHeight).catch(() => 0);
-    const clip = Math.min(18000, h || 18000);
-    return (await page.screenshot({ type: 'jpeg', quality: 72, fullPage: clip >= (h || 0), clip: clip < (h || 0) ? { x: 0, y: 0, width: device === 'mobile' ? 390 : 1280, height: clip } : undefined })) as Buffer;
+    await page.waitForTimeout(900);
+    let desktop: Buffer | null = null, mobile: Buffer | null = null;
+    try { desktop = await one({ width: 1280, height: 900, mobile: false, dsf: 1 }); } catch { /* upstream */ }
+    try { mobile = await one({ width: 390, height: 844, mobile: true, dsf: 2 }); } catch { /* upstream */ }
+    return { desktop, mobile };
   } finally { await page.close().catch(() => {}); await ctx.close().catch(() => {}); }
 }
 
@@ -65,16 +80,16 @@ async function runJob(projectId: string, out: Record<string, unknown>) {
   if (todo.length === 0) return;
   let done = 0;
   const errors: string[] = [];
-  const shotFresh = async (url: string, device: 'desktop' | 'mobile'): Promise<Buffer> => {
-    let browser: Awaited<ReturnType<typeof launch>> | null = null;
-    try { browser = await launch(); return await shot(browser, url, device); }
-    finally { if (browser) await browser.close().catch(() => {}); }
-  };
   {
     for (const t of todo.slice(0, 1)) {
       let d: Buffer | null = null, m: Buffer | null = null;
-      try { d = await shotFresh(t.url, 'desktop'); } catch (e) { errors.push(`d:${t.url}:${(e as Error).message}`); }
-      try { m = await shotFresh(t.url, 'mobile'); } catch (e) { errors.push(`m:${t.url}:${(e as Error).message}`); }
+      let browser: Awaited<ReturnType<typeof launch>> | null = null;
+      try {
+        browser = await launch();
+        const shots = await captureBoth(browser, t.url);
+        d = shots.desktop; m = shots.mobile;
+      } catch (e) { errors.push(`cap:${t.url}:${(e as Error).message}`); }
+      finally { if (browser) await browser.close().catch(() => {}); }
       const upload = async (variant: 'desktop' | 'mobile', buf: Buffer | null) => {
         if (!buf) return null;
         const path = `extension-captures/${t.id}/${variant}.jpg`;
