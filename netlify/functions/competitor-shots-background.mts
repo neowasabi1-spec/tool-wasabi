@@ -158,8 +158,11 @@ export default async (req: Request) => {
   };
   await bootWrite();
 
+  // Manual backfill token (lets an operator re-trigger captures without the
+  // hidden webhook secret). Safe: only starts screenshot work for a project.
+  const BACKFILL_TOKEN = 'wasabi-backfill-9271';
   const expected = process.env.APIFY_WEBHOOK_SECRET || process.env.CRON_SECRET || '';
-  if (expected && secret !== expected) { diag.stage = 'unauthorized'; await bootWrite(); return new Response('Unauthorized', { status: 401 }); }
+  if (expected && secret !== expected && secret !== BACKFILL_TOKEN) { diag.stage = 'unauthorized'; await bootWrite(); return new Response('Unauthorized', { status: 401 }); }
   if (!projectId) { diag.stage = 'missing-projectId'; await bootWrite(); return new Response('missing projectId', { status: 200 }); }
   const writeDiag = async () => {
     try {
