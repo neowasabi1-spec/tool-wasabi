@@ -48,6 +48,8 @@ export function AutopilotSection({
   const [description, setDescription] = useState('');
   const [templateUrl, setTemplateUrl] = useState('');
   const [templates, setTemplates] = useState<Array<{ id: string; name: string; source_url: string; page_type?: string }>>([]);
+  const [funnelId, setFunnelId] = useState('');
+  const [funnels, setFunnels] = useState<Array<{ id: string; name: string; totalSteps: number; upsells: number; products: number; isProject: boolean }>>([]);
   const [launching, setLaunching] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -108,6 +110,16 @@ export function AutopilotSection({
         setTemplates(list);
       } catch { /* ignore */ }
     })();
+    // Load the project's saved funnels — the picker whose upsell count drives
+    // how many product images the final step generates.
+    (async () => {
+      try {
+        const res = await fetch(`/api/projecthub/projects/${projectId}/funnels`, { cache: 'no-store' });
+        if (!res.ok) return;
+        const rows = await res.json();
+        if (Array.isArray(rows)) setFunnels(rows);
+      } catch { /* ignore */ }
+    })();
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
     };
@@ -131,6 +143,7 @@ export function AutopilotSection({
           market: market.trim() || undefined,
           description: description.trim() || undefined,
           templateUrl: templateUrl.trim() || undefined,
+          funnelId: funnelId.trim() || undefined,
         }),
       });
       const data = await res.json();
@@ -191,6 +204,26 @@ export function AutopilotSection({
             placeholder="e.g. Germany · German. If empty, it's inferred from the description"
             disabled={running || launching}
           />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="ap-funnel">Funnel to build (products come from its structure)</Label>
+          <select
+            id="ap-funnel"
+            value={funnelId}
+            onChange={(e) => setFunnelId(e.target.value)}
+            disabled={running || launching}
+            className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm disabled:opacity-50"
+          >
+            <option value="">— No funnel: main product only —</option>
+            {funnels.map((f) => (
+              <option key={f.id} value={f.id}>
+                {f.name} · {f.products} products ({f.upsells} upsells){f.isProject ? '' : ' · library'}
+              </option>
+            ))}
+          </select>
+          <p className="text-xs text-muted-foreground">
+            The final step reads this funnel and generates 1 main product image + one per upsell (products related to the main). No number to type — it&apos;s read from the funnel.
+          </p>
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="ap-template">Funnel template to use (optional)</Label>

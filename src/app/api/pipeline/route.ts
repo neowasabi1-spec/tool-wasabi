@@ -24,6 +24,7 @@ export async function POST(req: NextRequest) {
   const market = body.market ? String(body.market).trim() : '';
   const language = body.language ? String(body.language).trim() : '';
   const templateUrl = body.templateUrl ? String(body.templateUrl).trim() : '';
+  const funnelId = body.funnelId ? String(body.funnelId).trim() : '';
   const requestedProjectId = body.projectId ? String(body.projectId) : '';
 
   if (!product && !requestedProjectId) {
@@ -73,6 +74,7 @@ export async function POST(req: NextRequest) {
     market: market || undefined,
     language: language || undefined,
     templateUrl: templateUrl || undefined,
+    funnelId: funnelId || undefined,
   };
 
   // ── Create the job row ──

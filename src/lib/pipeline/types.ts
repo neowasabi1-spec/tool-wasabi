@@ -79,6 +79,10 @@ export interface PipelineInput {
   /** Optional funnel template URL (chosen in the launcher) used as design +
    *  copy reference when generating the landing mockup. */
   templateUrl?: string;
+  /** Optional saved funnel id (archived_funnels). The final step reads its
+   *  steps to derive how many products to generate (1 main + one per upsell/
+   *  downsell page) — the count is read from the funnel, never guessed. */
+  funnelId?: string;
 }
 
 export interface PipelineStepState {

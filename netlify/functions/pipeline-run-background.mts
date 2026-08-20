@@ -31,6 +31,10 @@ interface PipelineInput {
   /** Optional funnel template URL to use as design/copy reference for the
    *  landing mockup (the user picks it in the launcher). */
   templateUrl?: string;
+  /** Optional saved funnel id (archived_funnels). The final step READS its
+   *  steps to know how many products to generate: 1 main + one per upsell/
+   *  downsell page. The number is derived from the funnel, never guessed. */
+  funnelId?: string;
 }
 
 interface StepState {
@@ -162,6 +166,66 @@ async function callClaude(opts: ClaudeOpts): Promise<string> {
   }
   const data = await res.json();
   return (data.content?.[0]?.text ?? '').trim();
+}
+
+// ---------------------------------------------------------------------------
+// Gemini image generation (via Netlify AI Gateway, else a direct GEMINI key).
+// text-to-image for the main product, image-to-image for correlated upsells.
+// ---------------------------------------------------------------------------
+
+const GEMINI_IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || 'gemini-3.1-flash-image-preview';
+
+interface GenImage { data: Buffer; mimeType: string; }
+
+/** Resolve the Gemini endpoint: prefer the Netlify AI Gateway base (injected
+ *  when AI is enabled on the site), otherwise the public Google endpoint with
+ *  a user-provided GEMINI_API_KEY. Returns null when neither is configured. */
+function geminiEndpoint(): { base: string; key: string } | null {
+  const base = (process.env.GOOGLE_GEMINI_BASE_URL || '').replace(/\/+$/, '')
+    || (process.env.GEMINI_API_KEY ? 'https://generativelanguage.googleapis.com' : '');
+  const key = process.env.GEMINI_API_KEY || process.env.NETLIFY_AI_GATEWAY_KEY || '';
+  if (!base || !key) return null;
+  return { base, key };
+}
+
+/** Generate ONE image. `referenceImage` (base64) makes it image-to-image so an
+ *  upsell keeps the same brand look as the main product. Null on any failure
+ *  (missing config, HTTP error, no image part) — callers degrade gracefully. */
+async function geminiGenerateImage(opts: {
+  prompt: string;
+  referenceImage?: { data: string; mimeType: string };
+  timeoutMs?: number;
+}): Promise<GenImage | null> {
+  const ep = geminiEndpoint();
+  if (!ep) return null;
+
+  const parts: Array<Record<string, unknown>> = [{ text: opts.prompt }];
+  if (opts.referenceImage) {
+    parts.push({ inlineData: { mimeType: opts.referenceImage.mimeType, data: opts.referenceImage.data } });
+  }
+
+  const url = `${ep.base}/v1beta/models/${GEMINI_IMAGE_MODEL}:generateContent`;
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': ep.key },
+      body: JSON.stringify({ contents: [{ role: 'user', parts }] }),
+      signal: AbortSignal.timeout(opts.timeoutMs ?? 120_000),
+    });
+    if (!res.ok) {
+      console.warn('[pipeline] gemini image HTTP', res.status, (await res.text()).slice(0, 300));
+      return null;
+    }
+    const data = await res.json();
+    const candParts = data?.candidates?.[0]?.content?.parts as Array<Record<string, unknown>> | undefined;
+    const imgPart = (candParts || []).find((p) => (p.inlineData || p.inline_data));
+    const inline = (imgPart?.inlineData || imgPart?.inline_data) as { data?: string; mimeType?: string; mime_type?: string } | undefined;
+    if (!inline?.data) return null;
+    return { data: Buffer.from(inline.data, 'base64'), mimeType: inline.mimeType || inline.mime_type || 'image/png' };
+  } catch (e) {
+    console.warn('[pipeline] gemini image threw:', (e as Error).message);
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -459,6 +523,165 @@ async function saveSectionFile(
     console.warn('[pipeline] saveSectionFile threw:', (e as Error).message);
     return false;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Product images — main product + upsells (count derived from the funnel)
+// ---------------------------------------------------------------------------
+
+/** Upload a generated product image into the project-files bucket + register a
+ *  `project_files` row (file_type product_image). Returns the public URL. */
+async function saveProductImage(
+  supabase: SupabaseClient,
+  projectId: string,
+  label: string,
+  img: GenImage,
+): Promise<string | null> {
+  try {
+    await ensureProjectFilesBucket(supabase);
+    const ext = /jpeg|jpg/.test(img.mimeType) ? 'jpg' : /webp/.test(img.mimeType) ? 'webp' : 'png';
+    const safe = `Autopilot — ${label}`.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const objectKey = `${projectId}/product_image/${Date.now()}_${safe}.${ext}`;
+    const { error: upErr } = await supabase.storage
+      .from(PROJECT_FILES_BUCKET)
+      .upload(objectKey, img.data, { contentType: img.mimeType, upsert: false });
+    if (upErr) { console.warn('[pipeline] product image upload failed:', upErr.message); return null; }
+    const { error: insErr } = await supabase.from('project_files').insert({
+      project_id: projectId,
+      file_type: 'product_image',
+      file_path: objectKey,
+      original_name: `${safe}.${ext}`,
+    });
+    if (insErr) {
+      console.warn('[pipeline] product_files insert failed:', insErr.message);
+      await supabase.storage.from(PROJECT_FILES_BUCKET).remove([objectKey]).catch(() => {});
+      return null;
+    }
+    const { data: pub } = supabase.storage.from(PROJECT_FILES_BUCKET).getPublicUrl(objectKey);
+    return pub?.publicUrl || null;
+  } catch (e) {
+    console.warn('[pipeline] saveProductImage threw:', (e as Error).message);
+    return null;
+  }
+}
+
+interface FunnelProducts { total: number; upsells: number; pages: Array<{ name: string; type: string }>; funnelName: string; }
+
+/** Read the SELECTED funnel and derive how many products it needs:
+ *  1 main + one per upsell/downsell page. The count comes from the funnel's
+ *  own steps — never guessed, never a manual number. Null when no funnel. */
+async function loadFunnelProducts(supabase: SupabaseClient, funnelId: string | undefined): Promise<FunnelProducts | null> {
+  if (!funnelId) return null;
+  try {
+    const { data } = await supabase
+      .from('archived_funnels')
+      .select('id, name, steps, total_steps')
+      .eq('id', funnelId)
+      .single();
+    if (!data) return null;
+    const steps = Array.isArray(data.steps) ? (data.steps as Array<Record<string, unknown>>) : [];
+    const pages = steps.map((s) => ({
+      name: String(s?.name || ''),
+      type: String(s?.page_type || s?.step_type || '').toLowerCase(),
+    }));
+    const upsells = pages.filter((p) => /upsell|downsell|\boto\b|bump/i.test(p.type)).length;
+    return { total: 1 + upsells, upsells, pages, funnelName: String(data.name || '') };
+  } catch {
+    return null;
+  }
+}
+
+interface ProductSpec { main: { name: string; imagePrompt: string }; upsells: Array<{ name: string; relation: string; imagePrompt: string }>; }
+
+/** Parse the strict-JSON product line from Claude, tolerating code fences and
+ *  padding/truncating the upsell list to the exact count the funnel requires. */
+function parseProductSpec(raw: string, upsellCount: number, fallbackName: string): ProductSpec {
+  let main = { name: fallbackName, imagePrompt: `${fallbackName} product packshot` };
+  let upsells: Array<{ name: string; relation: string; imagePrompt: string }> = [];
+  try {
+    const jsonStr = raw.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '').trim();
+    const start = jsonStr.indexOf('{');
+    const end = jsonStr.lastIndexOf('}');
+    const obj = JSON.parse(start >= 0 && end > start ? jsonStr.slice(start, end + 1) : jsonStr);
+    if (obj?.main?.name) main = { name: String(obj.main.name).slice(0, 120), imagePrompt: String(obj.main.imagePrompt || main.imagePrompt).slice(0, 800) };
+    if (Array.isArray(obj?.upsells)) {
+      upsells = obj.upsells.slice(0, upsellCount).map((u: Record<string, unknown>) => ({
+        name: String(u?.name || 'Upsell').slice(0, 120),
+        relation: String(u?.relation || '').slice(0, 200),
+        imagePrompt: String(u?.imagePrompt || `${main.name} related product packshot`).slice(0, 800),
+      }));
+    }
+  } catch { /* fall back to main-only */ }
+  // Pad if the model under-delivered, so we always try to fill every upsell slot.
+  while (upsells.length < upsellCount) {
+    const n = upsells.length + 1;
+    upsells.push({ name: `${main.name} — Upsell ${n}`, relation: 'related bundle/refill', imagePrompt: `${main.name} related product packshot, variant ${n}` });
+  }
+  return { main, upsells };
+}
+
+/** Wrap an image prompt in consistent ecommerce packshot styling. */
+function buildPackshotPrompt(core: string): string {
+  return `Photorealistic ecommerce product packshot. ${core}. Centered product on a clean seamless light studio background, soft natural shadow, crisp high-detail lighting, no people, no added text or logos beyond the product's own label, square framing, high resolution.`;
+}
+
+/** Generate the product line images (main + correlated upsells). Main is
+ *  text-to-image; each upsell is image-to-image off the main so the whole line
+ *  shares one brand look. Best-effort: returns counts + a human note. */
+async function generateProductImages(
+  supabase: SupabaseClient,
+  projectId: string,
+  input: PipelineInput,
+  funnel: FunnelProducts | null,
+  research: string,
+  brief: string,
+  productName: string,
+): Promise<{ saved: number; total: number; note: string; mainImageUrl: string | null; images: Array<{ name: string; url: string; role: string }> }> {
+  const upsellCount = funnel ? funnel.upsells : 0;
+  const images: Array<{ name: string; url: string; role: string }> = [];
+
+  if (!geminiEndpoint()) {
+    return { saved: 0, total: 1 + upsellCount, note: 'image generation skipped: AI image gateway not configured (enable AI on the Netlify site).', mainImageUrl: null, images };
+  }
+
+  const specRaw = await callClaude({
+    task: 'general',
+    instructions: `You are a product designer + ecommerce merchandiser. Define a coherent PRODUCT LINE for a sales funnel: the MAIN product and EXACTLY ${upsellCount} UPSELL products that are directly RELATED to the main (same brand world — e.g. multi-pack/bulk, complementary accessory, refill, premium/bundle version). For EACH product write a photorealistic packshot image prompt describing the physical product, packaging and colors, consistent across the whole line.
+Return STRICT JSON ONLY, no prose, no code fences:
+{"main":{"name":"...","imagePrompt":"..."},"upsells":[{"name":"...","relation":"...","imagePrompt":"..."}]}
+The "upsells" array MUST contain EXACTLY ${upsellCount} items${upsellCount === 0 ? ' (an empty array)' : ''}.`,
+    brief,
+    marketResearch: research,
+    userMessage: `Main product: ${productName}\n${input.description ? `Description: ${input.description}\n` : ''}Market: ${marketGeo(input) || 'infer from product'}\nReturn the product line as JSON with exactly ${upsellCount} upsells.`,
+    maxTokens: 2000,
+  });
+
+  const spec = parseProductSpec(specRaw, upsellCount, productName);
+
+  let saved = 0;
+  let mainImageUrl: string | null = null;
+  let mainRef: { data: string; mimeType: string } | undefined;
+
+  const mainImg = await geminiGenerateImage({ prompt: buildPackshotPrompt(spec.main.imagePrompt) });
+  if (mainImg) {
+    mainImageUrl = await saveProductImage(supabase, projectId, `Product — ${spec.main.name}`, mainImg);
+    if (mainImageUrl) { saved++; images.push({ name: spec.main.name, url: mainImageUrl, role: 'Main product' }); }
+    mainRef = { data: mainImg.data.toString('base64'), mimeType: mainImg.mimeType };
+  }
+
+  let upIdx = 0;
+  for (const up of spec.upsells) {
+    upIdx++;
+    const prompt = `${buildPackshotPrompt(up.imagePrompt)} It belongs to the SAME product family/brand as the reference image — keep the same palette, packaging style and branding.`;
+    const img = await geminiGenerateImage({ prompt, referenceImage: mainRef });
+    if (img) {
+      const url = await saveProductImage(supabase, projectId, `Upsell ${upIdx} — ${up.name}`, img);
+      if (url) { saved++; images.push({ name: up.name, url, role: `Upsell ${upIdx}` }); }
+    }
+  }
+
+  const total = 1 + spec.upsells.length;
+  return { saved, total, note: `${saved}/${total} product images generated.`, mainImageUrl, images };
 }
 
 // ---------------------------------------------------------------------------
@@ -1048,6 +1271,11 @@ async function runLanding(supabase: SupabaseClient, projectId: string, input: Pi
   const project = await loadProject(supabase, projectId);
   const research = sectionContentFrom(project.market_research);
   const brief = typeof project.brief === 'string' && project.brief.trim() ? (project.brief as string) : sectionContentFrom(project.brief);
+  const productName = (project.name as string) || input.product || '';
+
+  // Read the SELECTED funnel to know how many products to make (1 main + one
+  // per upsell/downsell page). The number comes from the funnel, not a guess.
+  const funnel = await loadFunnelProducts(supabase, input.funnelId);
 
   const instructions = `Sei un copywriter di landing page direct response.
 Scrivi la STRUTTURA + COPY completo di una landing page ad alta conversione per questo prodotto.
@@ -1064,7 +1292,7 @@ Usa markdown con una sezione per blocco:
 ## CTA finale
 Il copy deve essere pronto all'uso, coerente con brief e ricerca. Sii specifico, niente placeholder generici.`;
 
-  const userMessage = `Prodotto: ${(project.name as string) || input.product || ''}
+  const userMessage = `Prodotto: ${productName}
 Scrivi la landing completa basandoti su brief e ricerca di mercato forniti nel contesto.`;
 
   const content = await callClaude({ task: 'pdp', instructions, brief, marketResearch: research, userMessage, maxTokens: 4096 });
@@ -1075,6 +1303,36 @@ Scrivi la landing completa basandoti su brief e ricerca di mercato forniti nel c
     .update({ funnel: toSectionBlob('AI — Landing copy', content) })
     .eq('id', projectId);
   if (error) throw new Error(`Failed to save funnel: ${error.message}`);
+
+  // Generate the PRODUCT IMAGES first (main + correlated upsells), so the
+  // mockup can actually show the real generated product in its hero.
+  let images: { saved: number; total: number; note: string; mainImageUrl: string | null; images: Array<{ name: string; url: string; role: string }> } =
+    { saved: 0, total: 1, note: '', mainImageUrl: null, images: [] };
+  try {
+    images = await generateProductImages(supabase, projectId, input, funnel, research, brief, productName);
+  } catch (e) { images.note = `image gen error: ${(e as Error).message}`; }
+
+  // Make the generated product images visible as a gallery in the Funnel tab.
+  if (images.images.length > 0) {
+    try {
+      const cards = images.images.map((im) => `
+        <figure style="margin:0;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden;background:#fff">
+          <img src="${im.url}" alt="${esc(im.name)}" style="width:100%;height:auto;display:block" />
+          <figcaption style="padding:8px 10px;font-size:12px;color:#111827"><strong>${esc(im.role)}</strong> — ${esc(im.name)}</figcaption>
+        </figure>`).join('');
+      const gallery = `<div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:900px;margin:0 auto;padding:8px">
+        <h1 style="font-size:20px;margin:0 0 4px">Product images (Autopilot)</h1>
+        <p style="color:#6b7280;margin:0 0 12px">${images.saved} product images${funnel ? ` for funnel "${esc(funnel.funnelName)}"` : ''}.</p>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px">${cards}</div>
+      </div>`;
+      await createFunnelStep(supabase, projectId, {
+        stepNumber: 2,
+        pageName: 'Product Images (Autopilot)',
+        stepType: 'assets',
+        resultContent: gallery,
+      });
+    } catch { /* non-fatal */ }
+  }
 
   // Build a real, visible HTML landing MOCKUP from the copy, optionally using
   // a chosen funnel template as a design reference (fetched via Jina, no
@@ -1091,10 +1349,11 @@ Requisiti tecnici:
 - Design moderno, mobile-first, responsive, con sezioni: hero, problema/agitazione, meccanismo unico, soluzione, come funziona, prove/testimonianze (placeholder realistici), offerta+garanzia, FAQ, CTA finale.
 - Usa il COPY fornito qui sotto (adattalo, non inventare claim medici/legali non supportati).
 - Bottoni CTA ben visibili. Palette coerente col prodotto.
+${images.mainImageUrl ? `- Usa QUESTA immagine reale del prodotto nell'hero e dove serve: <img src="${images.mainImageUrl}" alt="${esc(productName)}">. Non usare altri placeholder immagine per il prodotto principale.` : ''}
 ${templateRef ? '- Usa lo STILE/STRUTTURA della pagina di riferimento fornita come ispirazione (layout, ordine sezioni, tono), ma con contenuti del nostro prodotto.' : ''}
 Rispondi SOLO con l'HTML, senza spiegazioni e senza \`\`\`.`;
 
-    const mockupUser = `COPY DELLA LANDING (da usare):\n\n${content}\n\n${templateRef ? `PAGINA DI RIFERIMENTO (stile/struttura da imitare):\n\n${templateRef}` : ''}`;
+    const mockupUser = `COPY DELLA LANDING (da usare):\n\n${content}\n\n${images.mainImageUrl ? `IMMAGINE PRODOTTO PRINCIPALE (usa questo URL nell'hero): ${images.mainImageUrl}\n\n` : ''}${templateRef ? `PAGINA DI RIFERIMENTO (stile/struttura da imitare):\n\n${templateRef}` : ''}`;
     let mockup = await callClaude({ task: 'pdp', instructions: mockupInstructions, userMessage: mockupUser, maxTokens: 8000 });
     mockup = mockup.replace(/^```html\s*/i, '').replace(/```\s*$/i, '').trim();
     if (mockup.toLowerCase().includes('<html') || mockup.toLowerCase().includes('<!doctype')) {
@@ -1108,10 +1367,13 @@ Rispondi SOLO con l'HTML, senza spiegazioni e senza \`\`\`.`;
     }
   } catch { /* non-fatal: copy is already saved */ }
 
+  const funnelNote = funnel
+    ? `Funnel "${funnel.funnelName}" → ${funnel.total} products (1 main + ${funnel.upsells} upsells). `
+    : 'No funnel selected → main product only. ';
+  const imgNote = images.note || (images.saved ? `${images.saved}/${images.total} product images generated.` : '');
+
   return {
-    summary: mockupSaved
-      ? 'Landing generated: copy in the Funnel section + HTML mockup visible in the Funnel tab.'
-      : 'Landing copy generated and saved to the Funnel section.',
+    summary: `${funnelNote}${imgNote}${mockupSaved ? 'HTML mockup visible in the Funnel tab.' : 'Landing copy saved to the Funnel section.'}`.trim(),
     output: content,
   };
 }
