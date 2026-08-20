@@ -31,9 +31,8 @@ async function shot(browser: Awaited<ReturnType<typeof launch>>, url: string, de
   });
   const page = await ctx.newPage();
   try {
-    try { await page.goto(url, { waitUntil: 'load', timeout: 25_000 }); }
-    catch { await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15_000 }); }
-    await page.waitForTimeout(1500);
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20_000 }).catch(() => {});
+    await page.waitForTimeout(1200);
     const h = await page.evaluate(() => document.body.scrollHeight).catch(() => 0);
     const clip = Math.min(18000, h || 18000);
     return (await page.screenshot({ type: 'jpeg', quality: 72, fullPage: clip >= (h || 0), clip: clip < (h || 0) ? { x: 0, y: 0, width: device === 'mobile' ? 390 : 1280, height: clip } : undefined })) as Buffer;
