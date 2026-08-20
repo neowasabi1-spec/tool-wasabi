@@ -66,16 +66,16 @@ async function runJob(projectId: string, out: Record<string, unknown>) {
   if (todo.length === 0) return;
   let done = 0;
   const errors: string[] = [];
+  const shotFresh = async (url: string, device: 'desktop' | 'mobile'): Promise<Buffer> => {
+    let browser: Awaited<ReturnType<typeof launch>> | null = null;
+    try { browser = await launch(); return await shot(browser, url, device); }
+    finally { if (browser) await browser.close().catch(() => {}); }
+  };
   {
-    for (const t of todo.slice(0, 3)) {
+    for (const t of todo.slice(0, 1)) {
       let d: Buffer | null = null, m: Buffer | null = null;
-      let browser: Awaited<ReturnType<typeof launch>> | null = null;
-      try {
-        browser = await launch();
-        try { d = await shot(browser, t.url, 'desktop'); } catch (e) { errors.push(`d:${t.url}:${(e as Error).message}`); }
-        try { m = await shot(browser, t.url, 'mobile'); } catch (e) { errors.push(`m:${t.url}:${(e as Error).message}`); }
-      } catch (e) { errors.push(`launch:${t.url}:${(e as Error).message}`); }
-      finally { if (browser) await browser.close().catch(() => {}); }
+      try { d = await shotFresh(t.url, 'desktop'); } catch (e) { errors.push(`d:${t.url}:${(e as Error).message}`); }
+      try { m = await shotFresh(t.url, 'mobile'); } catch (e) { errors.push(`m:${t.url}:${(e as Error).message}`); }
       const upload = async (variant: 'desktop' | 'mobile', buf: Buffer | null) => {
         if (!buf) return null;
         const path = `extension-captures/${t.id}/${variant}.jpg`;
