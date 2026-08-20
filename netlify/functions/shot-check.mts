@@ -22,15 +22,21 @@ async function launch() {
   return chromium.launch({ args, executablePath, headless: true });
 }
 
-// Mirror the extension: one tab, switch viewport via CDP (no 2nd context that
-// crashes serverless --single-process Chromium).
-async function captureBoth(browser: Awaited<ReturnType<typeof launch>>, url: string): Promise<{ desktop: Buffer | null; mobile: Buffer | null }> {
+// Mirror the extension: one tab, set the device profile via CDP, capture ONE
+// full-page viewport. Single-viewport-per-call keeps each request well within
+// the synchronous function budget (a fresh launch is ~13s).
+async function captureOne(browser: Awaited<ReturnType<typeof launch>>, url: string, variant: 'desktop' | 'mobile'): Promise<Buffer> {
+  const o = variant === 'mobile'
+    ? { width: 390, height: 844, mobile: true, dsf: 2 }
+    : { width: 1280, height: 900, mobile: false, dsf: 1 };
   const ctx = await browser.newContext({ ignoreHTTPSErrors: true, bypassCSP: true });
   const page = await ctx.newPage();
   const client = await ctx.newCDPSession(page);
-  const one = async (o: { width: number; height: number; mobile: boolean; dsf: number }): Promise<Buffer> => {
+  try {
+    await client.send('Page.enable').catch(() => {});
     await client.send('Emulation.setDeviceMetricsOverride', { width: o.width, height: o.height, deviceScaleFactor: o.dsf, mobile: o.mobile, screenWidth: o.width, screenHeight: o.height });
-    await page.waitForTimeout(700);
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20_000 }).catch(() => {});
+    await page.waitForTimeout(900);
     try {
       await client.send('Runtime.evaluate', { expression: 'window.scrollTo(0, document.body.scrollHeight); void 0;' });
       await page.waitForTimeout(400);
@@ -40,75 +46,65 @@ async function captureBoth(browser: Awaited<ReturnType<typeof launch>>, url: str
     const m = (await client.send('Page.getLayoutMetrics')) as { cssContentSize?: { width: number; height: number }; contentSize?: { width: number; height: number } };
     const cs = m.cssContentSize || m.contentSize || { width: o.width, height: o.height };
     const res = (await client.send('Page.captureScreenshot', { format: 'jpeg', quality: 72, captureBeyondViewport: true, clip: { x: 0, y: 0, width: Math.ceil(cs.width) || o.width, height: Math.min(Math.ceil(cs.height) || o.height, 18000), scale: 1 } })) as { data: string };
-    await client.send('Emulation.clearDeviceMetricsOverride').catch(() => {});
     return Buffer.from(res.data, 'base64');
-  };
-  try {
-    await client.send('Page.enable').catch(() => {});
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20_000 }).catch(() => {});
-    await page.waitForTimeout(900);
-    let desktop: Buffer | null = null, mobile: Buffer | null = null;
-    try { desktop = await one({ width: 1280, height: 900, mobile: false, dsf: 1 }); } catch { /* upstream */ }
-    try { mobile = await one({ width: 390, height: 844, mobile: true, dsf: 2 }); } catch { /* upstream */ }
-    return { desktop, mobile };
   } finally { await page.close().catch(() => {}); await ctx.close().catch(() => {}); }
 }
 
-/** Full job (synchronous): capture desktop+mobile for a project's landings
- *  missing screenshots and patch them. ?projectId=... */
-async function runJob(projectId: string, out: Record<string, unknown>) {
+/** Synchronous single-viewport capture: finds ONE landing in the project still
+ *  missing the requested `variant` screenshot, captures + patches it, and
+ *  reports how many remain. Call repeatedly (per variant) until remaining = 0.
+ *  ?projectId=...&variant=desktop|mobile */
+async function runJob(projectId: string, variant: 'desktop' | 'mobile', out: Record<string, unknown>) {
   const surl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
   const skey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || '';
   out.hasSupabaseEnv = !!(surl && skey);
   if (!surl || !skey) { out.error = 'no supabase env'; return; }
   const sb = createClient(surl, skey, { auth: { persistSession: false } });
+  const field = variant === 'mobile' ? 'screenshotMobileUrl' : 'screenshotDesktopUrl';
   const { data: rows, error: selErr } = await sb.from('archived_funnels').select('id, steps').eq('project_id', projectId);
   out.selError = selErr ? selErr.message : null;
   out.rowCount = (rows || []).length;
-  const todo: Array<{ id: string; url: string; step: Record<string, unknown> }> = [];
+
+  const pending: Array<{ id: string; url: string; step: Record<string, unknown> }> = [];
   for (const r of (rows || []) as Array<{ id: string; steps?: unknown }>) {
     const step = Array.isArray(r.steps) ? (r.steps[0] as Record<string, unknown>) : null;
     const cd = step?.cloned_data as Record<string, unknown> | undefined;
     if (!step || !cd) continue;
     if (step.page_type !== 'landing') continue;
-    if (cd.screenshotDesktopUrl || cd.screenshotMobileUrl) continue;
+    if (typeof cd[field] === 'string' && cd[field]) continue; // this variant already done
     const src = typeof cd.source_url === 'string' ? cd.source_url : '';
     if (!/^https?:\/\//i.test(src)) continue;
-    todo.push({ id: r.id, url: src, step });
+    pending.push({ id: r.id, url: src, step });
   }
-  out.todo = todo.length;
-  if (todo.length === 0) return;
-  let done = 0;
+  out.variant = variant;
+  out.pending = pending.length;
+  if (pending.length === 0) { out.done = 0; out.remaining = 0; return; }
+
+  const t = pending[0];
   const errors: string[] = [];
-  {
-    for (const t of todo.slice(0, 1)) {
-      let d: Buffer | null = null, m: Buffer | null = null;
-      let browser: Awaited<ReturnType<typeof launch>> | null = null;
-      try {
-        browser = await launch();
-        const shots = await captureBoth(browser, t.url);
-        d = shots.desktop; m = shots.mobile;
-      } catch (e) { errors.push(`cap:${t.url}:${(e as Error).message}`); }
-      finally { if (browser) await browser.close().catch(() => {}); }
-      const upload = async (variant: 'desktop' | 'mobile', buf: Buffer | null) => {
-        if (!buf) return null;
-        const path = `extension-captures/${t.id}/${variant}.jpg`;
-        const up = await sb.storage.from('media').upload(path, buf, { contentType: 'image/jpeg', upsert: true });
-        if (up.error) { errors.push(`up:${variant}:${up.error.message}`); return null; }
-        return sb.storage.from('media').getPublicUrl(path).data.publicUrl;
-      };
-      const dUrl = await upload('desktop', d);
-      const mUrl = await upload('mobile', m);
-      if (!dUrl && !mUrl) continue;
-      const cd = t.step.cloned_data as Record<string, unknown>;
-      cd.screenshotDesktopUrl = dUrl; cd.screenshotMobileUrl = mUrl;
-      cd.htmlUrl = `/api/funnel-html?pageId=${encodeURIComponent(t.id)}&kind=cloned&variant=desktop&v=${Date.now()}`;
-      const upd = await sb.from('archived_funnels').update({ steps: [t.step] }).eq('id', t.id);
-      if (upd.error) errors.push(`db:${t.id}:${upd.error.message}`);
-      else done++;
-    }
+  let shotUrl: string | null = null;
+  let browser: Awaited<ReturnType<typeof launch>> | null = null;
+  try {
+    browser = await launch();
+    const buf = await captureOne(browser, t.url, variant);
+    const path = `extension-captures/${t.id}/${variant}.jpg`;
+    const up = await sb.storage.from('media').upload(path, buf, { contentType: 'image/jpeg', upsert: true });
+    if (up.error) errors.push(`up:${up.error.message}`);
+    else shotUrl = sb.storage.from('media').getPublicUrl(path).data.publicUrl;
+  } catch (e) { errors.push(`cap:${(e as Error).message}`); }
+  finally { if (browser) await browser.close().catch(() => {}); }
+
+  out.page = t.url;
+  if (shotUrl) {
+    const cd = t.step.cloned_data as Record<string, unknown>;
+    cd[field] = shotUrl;
+    cd.htmlUrl = `/api/funnel-html?pageId=${encodeURIComponent(t.id)}&kind=cloned&variant=desktop&v=${Date.now()}`;
+    const upd = await sb.from('archived_funnels').update({ steps: [t.step] }).eq('id', t.id);
+    if (upd.error) errors.push(`db:${upd.error.message}`);
+    else { out.done = 1; out.remaining = pending.length - 1; }
+  } else {
+    out.done = 0; out.remaining = pending.length;
   }
-  out.done = done;
   out.errors = errors.slice(0, 8);
 }
 
@@ -116,11 +112,12 @@ export default async (req: Request) => {
   const params = new URL(req.url).searchParams;
   const url = params.get('url') || 'https://example.com';
   const projectId = params.get('projectId') || '';
+  const variant = params.get('variant') === 'mobile' ? 'mobile' : 'desktop';
   const doNav = params.get('nav') === '1';
   const out: Record<string, unknown> = { url, serverless: IS_SERVERLESS, doNav, projectId };
   const t0 = Date.now();
   if (projectId) {
-    try { await runJob(projectId, out); out.ok = true; }
+    try { await runJob(projectId, variant, out); out.ok = true; }
     catch (e) { out.ok = false; out.error = (e as Error).message; out.stack = (e as Error).stack?.split('\n').slice(0, 5).join(' | '); }
     out.totalMs = Date.now() - t0;
     return new Response(JSON.stringify(out, null, 2), { status: 200, headers: { 'Content-Type': 'application/json' } });
