@@ -26,8 +26,10 @@ async function launch() {
 // full-page viewport. Single-viewport-per-call keeps each request well within
 // the synchronous function budget (a fresh launch is ~13s).
 async function captureOne(browser: Awaited<ReturnType<typeof launch>>, url: string, variant: 'desktop' | 'mobile'): Promise<Buffer> {
+  // dsf:1 (not retina) for mobile too — a 2x full-page shot is heavy enough to
+  // blow the synchronous function budget on tall pages.
   const o = variant === 'mobile'
-    ? { width: 390, height: 844, mobile: true, dsf: 2 }
+    ? { width: 390, height: 844, mobile: true, dsf: 1 }
     : { width: 1280, height: 900, mobile: false, dsf: 1 };
   const ctx = await browser.newContext({ ignoreHTTPSErrors: true, bypassCSP: true });
   const page = await ctx.newPage();
