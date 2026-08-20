@@ -144,10 +144,37 @@ export default async (req: Request) => {
   const log = (...a: unknown[]) => console.log(`[shots ${projectId}]`, ...a);
   const sb = getSupabase();
 
-  const { data: rows } = await sb
+  // Observability: background functions can't be tailed here, so we mirror
+  // progress into a small JSON in the public media bucket that we can curl.
+  const diag: Record<string, unknown> = { projectId, startedAt: new Date().toISOString(), stage: 'entry' };
+  const writeDiag = async () => {
+    try {
+      await sb.storage.from('media').upload(
+        `extension-captures/_diag/${projectId}.json`,
+        Buffer.from(JSON.stringify(diag, null, 2)),
+        { contentType: 'application/json', upsert: true },
+      );
+    } catch { /* diag is best-effort */ }
+  };
+  await writeDiag();
+
+  try {
+    return await runShots();
+  } catch (e) {
+    diag.stage = 'fatal';
+    diag.error = (e as Error).message;
+    diag.stack = (e as Error).stack?.split('\n').slice(0, 6).join(' | ');
+    await writeDiag();
+    return new Response(JSON.stringify({ ok: false, error: (e as Error).message }), { status: 200 });
+  }
+
+  async function runShots(): Promise<Response> {
+  const { data: rows, error: selErr } = await sb
     .from('archived_funnels')
     .select('id, steps')
     .eq('project_id', projectId);
+  diag.selError = selErr ? selErr.message : null;
+  diag.rowCount = (rows || []).length;
 
   const todo: Array<{ id: string; url: string; step: Record<string, unknown> }> = [];
   for (const r of (rows || []) as Array<{ id: string; steps?: unknown }>) {
@@ -161,9 +188,16 @@ export default async (req: Request) => {
     todo.push({ id: r.id, url: src, step });
   }
 
-  if (todo.length === 0) return new Response(JSON.stringify({ ok: true, done: 0 }), { status: 200 });
+  diag.todo = todo.length;
+  diag.stage = 'todo';
+  await writeDiag();
+  if (todo.length === 0) {
+    diag.stage = 'done'; diag.done = 0; await writeDiag();
+    return new Response(JSON.stringify({ ok: true, done: 0 }), { status: 200 });
+  }
   log(`capturing ${Math.min(todo.length, MAX_LANDINGS)} landing(s)`);
 
+  const results: Array<Record<string, unknown>> = [];
   let done = 0;
   for (const t of todo.slice(0, MAX_LANDINGS)) {
     const cd = t.step.cloned_data as Record<string, unknown>;
@@ -201,7 +235,15 @@ export default async (req: Request) => {
 
     if (dUrl || mUrl) { done++; log(`saved shots for ${t.url} (${done})`); }
     else log(`no shots for ${t.url}: ${errs.join(' | ')}`);
+
+    results.push({ url: t.url, d: !!dUrl, m: !!mUrl, err: errs.join(' | ') || null });
+    diag.stage = 'progress'; diag.done = done; diag.results = results; await writeDiag();
   }
 
+  diag.stage = 'done';
+  diag.done = done;
+  diag.finishedAt = new Date().toISOString();
+  await writeDiag();
   return new Response(JSON.stringify({ ok: true, done }), { status: 200 });
+  }
 };
