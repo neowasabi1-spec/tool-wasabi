@@ -143,7 +143,7 @@ export default async (req: Request) => {
     const cd = step?.cloned_data as Record<string, unknown> | undefined;
     if (!step || !cd) continue;
     if (step.page_type !== 'landing') continue;
-    if (cd.screenshotDesktopUrl || cd.screenshotMobileUrl) continue; // already done
+    if (cd.screenshotDesktopUrl && cd.screenshotMobileUrl) continue; // both done
     const src = typeof cd.source_url === 'string' ? cd.source_url : '';
     if (!/^https?:\/\//i.test(src)) continue;
     todo.push({ id: r.id, url: src, step });
@@ -154,32 +154,38 @@ export default async (req: Request) => {
 
   let done = 0;
   // Serverless Chromium runs with --single-process and reliably survives only
-  // ONE page before the renderer dies ("Target/context/browser has been
-  // closed"). So we launch a FRESH browser per landing and both captures reuse
-  // it, closing it before moving to the next landing.
+  // ONE page/context before the renderer dies ("Target/context/browser has
+  // been closed") — even a second newContext in the same browser crashes. So we
+  // launch a FRESH browser for EVERY screenshot (desktop and mobile separately).
+  const captureFresh = async (url: string, device: 'desktop' | 'mobile'): Promise<Buffer> => {
+    let browser: Browser | null = null;
+    try {
+      browser = await launchBrowser();
+      return await capture(browser, url, device);
+    } finally {
+      if (browser) await browser.close().catch(() => {});
+    }
+  };
+
   for (const t of todo.slice(0, MAX_LANDINGS)) {
     const cd = t.step.cloned_data as Record<string, unknown>;
     const errs: string[] = [];
-    let browser: Browser | null = null;
-    let dUrl: string | null = null;
-    let mUrl: string | null = null;
+    let dUrl: string | null = typeof cd.screenshotDesktopUrl === 'string' ? cd.screenshotDesktopUrl : null;
+    let mUrl: string | null = typeof cd.screenshotMobileUrl === 'string' ? cd.screenshotMobileUrl : null;
 
-    try {
-      browser = await launchBrowser();
+    if (!dUrl) {
       try {
-        const d = await capture(browser, t.url, 'desktop');
+        const d = await captureFresh(t.url, 'desktop');
         dUrl = await uploadShot(sb, t.id, 'desktop', d);
         if (!dUrl) errs.push('desktop upload failed');
       } catch (e) { errs.push(`desktop: ${(e as Error).message}`); }
+    }
+    if (!mUrl) {
       try {
-        const m = await capture(browser, t.url, 'mobile');
+        const m = await captureFresh(t.url, 'mobile');
         mUrl = await uploadShot(sb, t.id, 'mobile', m);
         if (!mUrl) errs.push('mobile upload failed');
       } catch (e) { errs.push(`mobile: ${(e as Error).message}`); }
-    } catch (e) {
-      errs.push(`launch: ${(e as Error).message}`);
-    } finally {
-      if (browser) await browser.close().catch(() => {});
     }
 
     if (dUrl) {
