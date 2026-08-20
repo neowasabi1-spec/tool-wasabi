@@ -129,9 +129,8 @@ async function uploadShot(
 }
 
 export default async (req: Request) => {
-  // Accept projectId + secret from the query string (robust) OR the JSON body.
-  // Background functions don't always surface a parseable body, so the query
-  // string is the reliable channel.
+  // Accept projectId + secret from the query string OR the JSON body — the
+  // pipeline posts a JSON body; the query string is a robust fallback.
   const qs = new URL(req.url).searchParams;
   let projectId = qs.get('projectId') || '';
   let secret = qs.get('secret') || '';
@@ -141,57 +140,17 @@ export default async (req: Request) => {
     if (!secret) secret = String(body?.secret || '');
   } catch { /* body may be absent for a query-string invocation */ }
 
-  const sb = getSupabase();
-  const log = (...a: unknown[]) => console.log(`[shots ${projectId}]`, ...a);
-
-  // Observability: background functions can't be tailed here, so we mirror
-  // progress into a small JSON in the public media bucket that we can curl.
-  const diag: Record<string, unknown> = { projectId: projectId || '(none)', startedAt: new Date().toISOString(), stage: 'entry' };
-  const bootWrite = async () => {
-    try {
-      await sb.storage.from('media').upload(
-        `extension-captures/_diag/${projectId || '_noproject'}.json`,
-        Buffer.from(JSON.stringify(diag, null, 2)),
-        { contentType: 'application/json', upsert: true },
-      );
-    } catch { /* best-effort */ }
-  };
-  await bootWrite();
-
-  // Manual backfill token (lets an operator re-trigger captures without the
-  // hidden webhook secret). Safe: only starts screenshot work for a project.
-  const BACKFILL_TOKEN = 'wasabi-backfill-9271';
   const expected = process.env.APIFY_WEBHOOK_SECRET || process.env.CRON_SECRET || '';
-  if (expected && secret !== expected && secret !== BACKFILL_TOKEN) { diag.stage = 'unauthorized'; await bootWrite(); return new Response('Unauthorized', { status: 401 }); }
-  if (!projectId) { diag.stage = 'missing-projectId'; await bootWrite(); return new Response('missing projectId', { status: 200 }); }
-  const writeDiag = async () => {
-    try {
-      await sb.storage.from('media').upload(
-        `extension-captures/_diag/${projectId}.json`,
-        Buffer.from(JSON.stringify(diag, null, 2)),
-        { contentType: 'application/json', upsert: true },
-      );
-    } catch { /* diag is best-effort */ }
-  };
-  await writeDiag();
+  if (expected && secret !== expected) return new Response('Unauthorized', { status: 401 });
+  if (!projectId) return new Response('missing projectId', { status: 200 });
 
-  try {
-    return await runShots();
-  } catch (e) {
-    diag.stage = 'fatal';
-    diag.error = (e as Error).message;
-    diag.stack = (e as Error).stack?.split('\n').slice(0, 6).join(' | ');
-    await writeDiag();
-    return new Response(JSON.stringify({ ok: false, error: (e as Error).message }), { status: 200 });
-  }
+  const log = (...a: unknown[]) => console.log(`[shots ${projectId}]`, ...a);
+  const sb = getSupabase();
 
-  async function runShots(): Promise<Response> {
-  const { data: rows, error: selErr } = await sb
+  const { data: rows } = await sb
     .from('archived_funnels')
     .select('id, steps')
     .eq('project_id', projectId);
-  diag.selError = selErr ? selErr.message : null;
-  diag.rowCount = (rows || []).length;
 
   const todo: Array<{ id: string; url: string; step: Record<string, unknown> }> = [];
   for (const r of (rows || []) as Array<{ id: string; steps?: unknown }>) {
@@ -205,16 +164,9 @@ export default async (req: Request) => {
     todo.push({ id: r.id, url: src, step });
   }
 
-  diag.todo = todo.length;
-  diag.stage = 'todo';
-  await writeDiag();
-  if (todo.length === 0) {
-    diag.stage = 'done'; diag.done = 0; await writeDiag();
-    return new Response(JSON.stringify({ ok: true, done: 0 }), { status: 200 });
-  }
+  if (todo.length === 0) return new Response(JSON.stringify({ ok: true, done: 0 }), { status: 200 });
   log(`capturing ${Math.min(todo.length, MAX_LANDINGS)} landing(s)`);
 
-  const results: Array<Record<string, unknown>> = [];
   let done = 0;
   for (const t of todo.slice(0, MAX_LANDINGS)) {
     const cd = t.step.cloned_data as Record<string, unknown>;
@@ -252,15 +204,7 @@ export default async (req: Request) => {
 
     if (dUrl || mUrl) { done++; log(`saved shots for ${t.url} (${done})`); }
     else log(`no shots for ${t.url}: ${errs.join(' | ')}`);
-
-    results.push({ url: t.url, d: !!dUrl, m: !!mUrl, err: errs.join(' | ') || null });
-    diag.stage = 'progress'; diag.done = done; diag.results = results; await writeDiag();
   }
 
-  diag.stage = 'done';
-  diag.done = done;
-  diag.finishedAt = new Date().toISOString();
-  await writeDiag();
   return new Response(JSON.stringify({ ok: true, done }), { status: 200 });
-  }
 };
