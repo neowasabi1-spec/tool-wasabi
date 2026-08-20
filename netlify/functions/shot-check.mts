@@ -37,17 +37,18 @@ async function captureOne(browser: Awaited<ReturnType<typeof launch>>, url: stri
   try {
     await client.send('Page.enable').catch(() => {});
     await client.send('Emulation.setDeviceMetricsOverride', { width: o.width, height: o.height, deviceScaleFactor: o.dsf, mobile: o.mobile, screenWidth: o.width, screenHeight: o.height });
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20_000 }).catch(() => {});
-    await page.waitForTimeout(900);
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 18_000 }).catch(() => {});
+    await page.waitForTimeout(500);
     try {
       await client.send('Runtime.evaluate', { expression: 'window.scrollTo(0, document.body.scrollHeight); void 0;' });
-      await page.waitForTimeout(400);
+      await page.waitForTimeout(250);
       await client.send('Runtime.evaluate', { expression: 'window.scrollTo(0, 0); void 0;' });
-      await page.waitForTimeout(200);
+      await page.waitForTimeout(150);
     } catch { /* ignore */ }
     const m = (await client.send('Page.getLayoutMetrics')) as { cssContentSize?: { width: number; height: number }; contentSize?: { width: number; height: number } };
     const cs = m.cssContentSize || m.contentSize || { width: o.width, height: o.height };
-    const res = (await client.send('Page.captureScreenshot', { format: 'jpeg', quality: 72, captureBeyondViewport: true, clip: { x: 0, y: 0, width: Math.ceil(cs.width) || o.width, height: Math.min(Math.ceil(cs.height) || o.height, 18000), scale: 1 } })) as { data: string };
+    // Cap height for a fast preview — tall ad landings otherwise blow the budget.
+    const res = (await client.send('Page.captureScreenshot', { format: 'jpeg', quality: 68, captureBeyondViewport: true, clip: { x: 0, y: 0, width: Math.ceil(cs.width) || o.width, height: Math.min(Math.ceil(cs.height) || o.height, 6000), scale: 1 } })) as { data: string };
     return Buffer.from(res.data, 'base64');
   } finally { await page.close().catch(() => {}); await ctx.close().catch(() => {}); }
 }
