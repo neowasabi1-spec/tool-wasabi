@@ -129,24 +129,38 @@ async function uploadShot(
 }
 
 export default async (req: Request) => {
-  let projectId = '';
-  let secret = '';
+  // Accept projectId + secret from the query string (robust) OR the JSON body.
+  // Background functions don't always surface a parseable body, so the query
+  // string is the reliable channel.
+  const qs = new URL(req.url).searchParams;
+  let projectId = qs.get('projectId') || '';
+  let secret = qs.get('secret') || '';
   try {
     const body = (await req.json()) as { projectId?: string; secret?: string };
-    projectId = String(body?.projectId || '');
-    secret = String(body?.secret || '');
-  } catch { /* ignore */ }
+    if (!projectId) projectId = String(body?.projectId || '');
+    if (!secret) secret = String(body?.secret || '');
+  } catch { /* body may be absent for a query-string invocation */ }
 
-  const expected = process.env.APIFY_WEBHOOK_SECRET || process.env.CRON_SECRET || '';
-  if (expected && secret !== expected) return new Response('Unauthorized', { status: 401 });
-  if (!projectId) return new Response('missing projectId', { status: 200 });
-
-  const log = (...a: unknown[]) => console.log(`[shots ${projectId}]`, ...a);
   const sb = getSupabase();
+  const log = (...a: unknown[]) => console.log(`[shots ${projectId}]`, ...a);
 
   // Observability: background functions can't be tailed here, so we mirror
   // progress into a small JSON in the public media bucket that we can curl.
-  const diag: Record<string, unknown> = { projectId, startedAt: new Date().toISOString(), stage: 'entry' };
+  const diag: Record<string, unknown> = { projectId: projectId || '(none)', startedAt: new Date().toISOString(), stage: 'entry' };
+  const bootWrite = async () => {
+    try {
+      await sb.storage.from('media').upload(
+        `extension-captures/_diag/${projectId || '_noproject'}.json`,
+        Buffer.from(JSON.stringify(diag, null, 2)),
+        { contentType: 'application/json', upsert: true },
+      );
+    } catch { /* best-effort */ }
+  };
+  await bootWrite();
+
+  const expected = process.env.APIFY_WEBHOOK_SECRET || process.env.CRON_SECRET || '';
+  if (expected && secret !== expected) { diag.stage = 'unauthorized'; await bootWrite(); return new Response('Unauthorized', { status: 401 }); }
+  if (!projectId) { diag.stage = 'missing-projectId'; await bootWrite(); return new Response('missing projectId', { status: 200 }); }
   const writeDiag = async () => {
     try {
       await sb.storage.from('media').upload(

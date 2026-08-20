@@ -47,8 +47,8 @@ async function captureOne(browser: Awaited<ReturnType<typeof launch>>, url: stri
     } catch { /* ignore */ }
     const m = (await client.send('Page.getLayoutMetrics')) as { cssContentSize?: { width: number; height: number }; contentSize?: { width: number; height: number } };
     const cs = m.cssContentSize || m.contentSize || { width: o.width, height: o.height };
-    // Cap height for a fast preview — tall ad landings otherwise blow the budget.
-    const res = (await client.send('Page.captureScreenshot', { format: 'jpeg', quality: 68, captureBeyondViewport: true, clip: { x: 0, y: 0, width: Math.ceil(cs.width) || o.width, height: Math.min(Math.ceil(cs.height) || o.height, 6000), scale: 1 } })) as { data: string };
+    // FULL page like the extension (cap only at an absurd 18000px safety limit).
+    const res = (await client.send('Page.captureScreenshot', { format: 'jpeg', quality: 72, captureBeyondViewport: true, clip: { x: 0, y: 0, width: Math.ceil(cs.width) || o.width, height: Math.min(Math.ceil(cs.height) || o.height, 18000), scale: 1 } })) as { data: string };
     return Buffer.from(res.data, 'base64');
   } finally { await page.close().catch(() => {}); await ctx.close().catch(() => {}); }
 }
