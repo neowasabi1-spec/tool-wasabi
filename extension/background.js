@@ -345,7 +345,7 @@ function fillFunnelForms() {
   const pageHtml = document.documentElement.outerHTML || '';
   const isCC = /checkoutchamp|konnektive|sticky\.io/i.test(pageHtml)
     || Array.from(document.scripts).some((s) => /checkoutchamp|konnektive/i.test(s.src || ''));
-  const cardNum = isCC ? '0000000000000000' : '4111111111111111';
+  const cardNum = isCC ? '0000000000000000' : '4242424242424242';
 
   let filled = 0;
   const radioSeen = {};
@@ -750,6 +750,81 @@ async function collectSitemapUrls(origin) {
   return Array.from(out);
 }
 
+// Scan raw source/JS for funnel step URLs embedded in globals (next_page_url,
+// upsell_url, redirect_url, wffnfunnelData, etc.) plus any same-origin absolute
+// URL whose path looks funnel-ish. Deterministic, no purchase required.
+function scanSourceUrls(html, origin) {
+  const out = new Set();
+  const src = String(html || '');
+  const keyRe = /(?:next[_-]?page[_-]?url|next[_-]?step[_-]?url|next[_-]?url|upsell[_-]?url|downsell[_-]?url|offer[_-]?url|redirect[_-]?url|thank[_-]?you[_-]?url|thankyou[_-]?url|step[_-]?url|success[_-]?url|continue[_-]?url|permalink)\\?["']?\s*[:=]\s*\\?["']([^"'\\<>]+)["']/gi;
+  let m;
+  while ((m = keyRe.exec(src))) {
+    let u = (m[1] || '').replace(/\\\//g, '/').trim();
+    if (!u || /^#|^javascript:|^mailto:|^tel:/i.test(u)) continue;
+    try { out.add(new URL(u, origin).href); } catch { /* skip */ }
+  }
+  const urlRe = /https?:\\?\/\\?\/[^"'\s<>)\]]+/gi;
+  let u2;
+  while ((u2 = urlRe.exec(src))) {
+    let raw = u2[0].replace(/\\\//g, '/').replace(/[",'.]+$/, '');
+    try {
+      const url = new URL(raw);
+      if (url.origin === origin && FUNNEL_PATH_RE.test(url.pathname)) out.add(url.origin + url.pathname + url.search);
+    } catch { /* skip */ }
+  }
+  return Array.from(out);
+}
+
+// FunnelKit / WooFunnels (WordPress) exposes funnel steps as public custom post
+// types over the unauthenticated REST API. Pull the real permalinks directly.
+async function funnelKitUrls(origin) {
+  const cpts = ['wffn_landing', 'wffn_optin', 'wffn_checkout', 'wffn_upsell', 'wffn_downsell', 'wffn_thankyou', 'wffn_oty'];
+  const out = new Set();
+  for (const cpt of cpts) {
+    const txt = await fetchText(`${origin}/wp-json/wp/v2/${cpt}?per_page=100`);
+    if (!txt) continue;
+    try {
+      const arr = JSON.parse(txt);
+      if (Array.isArray(arr)) {
+        for (const it of arr) {
+          if (it && typeof it.link === 'string') { try { out.add(new URL(it.link).href); } catch { /* skip */ } }
+        }
+      }
+    } catch { /* endpoint returned non-JSON */ }
+  }
+  return Array.from(out);
+}
+
+// Shopify exposes products (incl. sold-out OTOs) and collections as public JSON.
+// Pull upsell/OTO collections + product handles without any purchase.
+async function shopifyFunnelUrls(origin) {
+  const out = new Set();
+  for (const handle of ['upsell', 'upsells', 'oto', 'otos', 'offers', 'special-offer', 'post-purchase', 'bundle']) {
+    const txt = await fetchText(`${origin}/collections/${handle}/products.json?limit=100`);
+    if (!txt) continue;
+    try {
+      const j = JSON.parse(txt);
+      for (const p of (j && j.products) || []) {
+        if (p && p.handle) out.add(`${origin}/products/${p.handle}`);
+      }
+    } catch { /* not a shopify store / collection absent */ }
+  }
+  return Array.from(out);
+}
+
+// Identify the funnel platform from source + scripts (STEP 1).
+function detectPlatform(html) {
+  const h = String(html || '').toLowerCase();
+  return {
+    shopify: /cdn\/shop\/|myshopify\.com|shopify\.theme|x-shopify/.test(h),
+    checkoutChamp: /checkoutchamp|konnektive|sticky\.io/.test(h),
+    clickFunnels: /clickfunnels|myclickfunnels/.test(h),
+    funnelish: /funnelish|api\.funnelish\.com/.test(h),
+    funnelKit: /wp-content|funnelkit|wffn|woofunnels|wffnfunneldata|cartflows/.test(h),
+    digistore: /digistore24|checkout-ds24\.com/.test(h),
+  };
+}
+
 async function funnelDiscover(tabId, visitedArr) {
   const visited = new Set((visitedArr || []).map(canonUrl));
   let curUrl = '';
@@ -772,11 +847,24 @@ async function funnelDiscover(tabId, visitedArr) {
     if (res) { html = res.html || ''; pageLinks = res.links || []; }
   } catch { /* page may block injection */ }
 
+  // STEP 1 — identify the platform from the source.
+  const platform = detectPlatform(html);
+
   // Build the candidate set.
   const cand = new Set();
+  // Generic guesses + funnel-looking on-page links.
   for (const p of guessPaths(html)) cand.add(origin + p);
   for (const l of pageLinks) {
     try { if (new URL(l).origin === origin && FUNNEL_PATH_RE.test(l)) cand.add(l); } catch { /* skip */ }
+  }
+  // STEP 4 — source/JS scan for embedded step URLs (curated: added directly).
+  try { for (const u of scanSourceUrls(html, origin)) cand.add(u); } catch { /* skip */ }
+  // STEP 2 — platform-specific public maps (no purchase).
+  if (platform.funnelKit) {
+    try { for (const u of await funnelKitUrls(origin)) { if (u.startsWith(origin)) cand.add(u); } } catch { /* skip */ }
+  }
+  if (platform.shopify) {
+    try { for (const u of await shopifyFunnelUrls(origin)) cand.add(u); } catch { /* skip */ }
   }
   try {
     for (const l of await collectSitemapUrls(origin)) {
