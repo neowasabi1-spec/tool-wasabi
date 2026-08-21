@@ -581,6 +581,44 @@ async function finalizeNav(tabId, visited) {
   return { ok: true, moved: true, url: after };
 }
 
+// Injected: force every CTA to advance the CURRENT tab. Advertorial "GET 50% OFF"
+// buttons often open the checkout in a NEW tab (target=_blank / window.open) — the
+// walk would then think the click "did nothing" and fall through to a stray
+// /upsell link, skipping the checkout. Neutralise that so the real CTA navigates
+// here.
+function neutralizeNewTab() {
+  try {
+    document.querySelectorAll('a[target],form[target],[target=_blank]').forEach((el) => {
+      const t = (el.getAttribute('target') || '').toLowerCase();
+      if (t && t !== '_self') el.setAttribute('target', '_self');
+    });
+    let base = document.querySelector('base');
+    if (base && /_blank/i.test(base.getAttribute('target') || '')) base.setAttribute('target', '_self');
+    if (!window.__wsbOpenPatched) {
+      window.__wsbOpenPatched = true;
+      window.open = function (u) { try { if (u) location.href = u; } catch (e) {} return window; };
+    }
+  } catch (e) { /* ignore */ }
+}
+
+// Safety net: watch for a tab spawned by `openerId` (a CTA that still slips a new
+// tab past neutraliseNewTab). Capture its URL and close it so we can continue the
+// walk in the original tab instead of losing the funnel to a background tab.
+function watchNewTab(openerId) {
+  let url = '';
+  const created = (t) => {
+    if (!t || t.id === openerId) return;
+    if (t.openerTabId === openerId) {
+      url = t.pendingUrl || t.url || url;
+      if (t.id != null) { try { chrome.tabs.remove(t.id); } catch (e) { /* ignore */ } }
+    }
+  };
+  chrome.tabs.onCreated.addListener(created);
+  return {
+    stop() { try { chrome.tabs.onCreated.removeListener(created); } catch (e) { /* ignore */ } return url; },
+  };
+}
+
 async function clickSelector(tabId, selector) {
   try {
     const cr = await chrome.scripting.executeScript({
@@ -615,6 +653,10 @@ async function funnelNext(tabId, visitedArr) {
     // Fill fields every pass — each quiz question / step may reveal new ones.
     try { await chrome.scripting.executeScript({ target: { tabId }, func: fillFunnelForms }); await sleep(250); }
     catch { /* page may block injection */ }
+    // Force CTAs to stay in this tab (kill target=_blank / window.open new tabs).
+    // MAIN world so the window.open override patches the page's own function.
+    try { await chrome.scripting.executeScript({ target: { tabId }, func: neutralizeNewTab, world: 'MAIN' }); }
+    catch { /* page may block injection */ }
 
     let candidates = [];
     try {
@@ -639,11 +681,20 @@ async function funnelNext(tabId, visitedArr) {
 
       let moved = false;
       if (cand.selector) {
+        const watcher = watchNewTab(tabId);
         const clicked = await clickSelector(tabId, cand.selector);
         if (clicked) {
           const ch = await waitForChange(tabId, before, sig, 12000);
-          if (ch.type === 'nav') return finalizeNav(tabId, visited);
+          if (ch.type === 'nav') { watcher.stop(); return finalizeNav(tabId, visited); }
           if (ch.type === 'content') { sig = ch.sig; progressed = true; moved = true; }
+        }
+        // The click opened (and we closed) a new tab — follow it here instead.
+        const spawned = watcher.stop();
+        if (!moved && spawned && !isStopHost(spawned) && !visited.has(canonUrl(spawned))) {
+          try { await chrome.tabs.update(tabId, { url: spawned }); } catch { /* ignore */ }
+          const ch2 = await waitForChange(tabId, before, sig, 15000);
+          if (ch2.type === 'nav') return finalizeNav(tabId, visited);
+          if (ch2.type === 'content') { sig = ch2.sig; progressed = true; moved = true; }
         }
       }
       if (moved) break;
