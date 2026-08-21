@@ -470,13 +470,32 @@ function findForwardCandidates() {
     const selector = sel(el);
     if (seenSel.has(selector)) continue;
     seenSel.add(selector);
-    scored.push({ selector, href: href && /^https?:/i.test(href) ? href : '', txt, score, top: r.top });
+    // Real cross-page hrefs are kept only as a fallback (we click first). A '#'
+    // / same-path / javascript href is NOT a usable destination.
+    let navHref = '';
+    if (href && /^https?:/i.test(href)) {
+      try {
+        const uo = new URL(href);
+        const samePath = uo.origin === location.origin && uo.pathname.replace(/\/$/, '') === location.pathname.replace(/\/$/, '');
+        if (!samePath) navHref = uo.href;
+      } catch { /* ignore */ }
+    }
+    scored.push({ selector, href: navHref, txt, score, top: r.top });
   }
   // Best score first; break ties by vertical position (higher on the page).
   scored.sort((a, b) => b.score - a.score || a.top - b.top);
-  return scored.slice(0, 8).map((s) =>
-    s.href ? { kind: 'link', href: s.href, text: s.txt } : { kind: 'click', selector: s.selector, text: s.txt },
-  );
+  // Collapse the many identical CTAs (advertorials repeat "GET 50% OFF" dozens of
+  // times) so the shortlist holds DISTINCT actions, not 8 copies of one button.
+  const seenTxt = new Set();
+  const out = [];
+  for (const s of scored) {
+    const key = s.txt.toLowerCase().replace(/\s+/g, ' ').trim() || s.selector;
+    if (seenTxt.has(key)) continue;
+    seenTxt.add(key);
+    out.push({ selector: s.selector, href: s.href, text: s.txt });
+    if (out.length >= 8) break;
+  }
+  return out;
 }
 
 // Wait until the tab finishes loading a URL different from `beforeUrl`.
@@ -607,26 +626,35 @@ async function funnelNext(tabId, visitedArr) {
 
     // Try each candidate until one produces a URL change (new step) or a
     // content change (advanced in-page). A candidate that does nothing is
-    // abandoned and we try the next one.
+    // abandoned and we try the next one — we NEVER bail on a single dud.
+    //
+    // Strategy: CLICK first. Real <a href> links navigate natively on click, and
+    // JS/hash CTAs ("GET 50% OFF" that fires an onclick) run their real handler —
+    // which tabs.update(href) would skip. Only if the click moves nothing AND the
+    // control carries a genuine cross-page href do we fall back to navigating it.
     let progressed = false;
     for (const cand of candidates) {
-      if (cand.kind === 'link' && cand.href) {
-        if (isStopHost(cand.href)) continue;
-        if (visited.has(canonUrl(cand.href))) continue;
+      if (cand.href && isStopHost(cand.href)) continue;
+      if (cand.href && visited.has(canonUrl(cand.href))) continue;
+
+      let moved = false;
+      if (cand.selector) {
+        const clicked = await clickSelector(tabId, cand.selector);
+        if (clicked) {
+          const ch = await waitForChange(tabId, before, sig, 12000);
+          if (ch.type === 'nav') return finalizeNav(tabId, visited);
+          if (ch.type === 'content') { sig = ch.sig; progressed = true; moved = true; }
+        }
+      }
+      if (moved) break;
+
+      // Click didn't move us — if this control points somewhere real, go there.
+      if (cand.href && !visited.has(canonUrl(cand.href))) {
         try { await chrome.tabs.update(tabId, { url: cand.href }); } catch { continue; }
         const ch = await waitForChange(tabId, before, sig, 15000);
         if (ch.type === 'nav') return finalizeNav(tabId, visited);
         if (ch.type === 'content') { sig = ch.sig; progressed = true; break; }
-        // Link didn't move us — stop trying links (we may have altered the URL).
-        return { ok: true, moved: false, reason: 'link-no-nav' };
-      }
-      if (cand.kind === 'click' && cand.selector) {
-        const clicked = await clickSelector(tabId, cand.selector);
-        if (!clicked) continue; // stale selector — next candidate
-        const ch = await waitForChange(tabId, before, sig, 6000);
-        if (ch.type === 'nav') return finalizeNav(tabId, visited);
-        if (ch.type === 'content') { sig = ch.sig; progressed = true; break; }
-        // No change from this button — try the next candidate.
+        // href didn't move us either — try the next candidate.
       }
     }
 
