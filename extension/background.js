@@ -974,6 +974,35 @@ function detectPlatform(html) {
   };
 }
 
+// Injected (MAIN world): read the funnel's own page map from the page-builder's
+// JS globals. CheckoutChamp/FunnelKit expose EVERY step — presell, sales,
+// checkout, OTO/upsell, thank-you — in window.pageData.funnelData.pages[].urlSlug,
+// so we get the whole funnel (incl. post-checkout OTOs) deterministically, with
+// no purchase, card, or session. Zipify and similar builders are handled too.
+function readBuilderFunnelMap() {
+  const origin = location.origin;
+  const urls = [];
+  const add = (s) => {
+    if (!s || typeof s !== 'string') return;
+    if (/^https?:/i.test(s)) { urls.push(s); return; }
+    urls.push(origin + '/' + s.replace(/^\/+/, ''));
+  };
+  const eatPages = (pages) => {
+    if (!Array.isArray(pages)) return;
+    for (const p of pages) {
+      if (!p) continue;
+      add(p.urlSlug || p.slug || p.url || p.path || p.pagePath);
+      if (p.externalURL) add(p.externalURL);
+    }
+  };
+  try { eatPages(window.pageData && window.pageData.funnelData && window.pageData.funnelData.pages); } catch (e) { /* ignore */ }
+  try {
+    const fd = window.funnelData;
+    if (fd && typeof fd === 'object') eatPages(fd.pages || fd.steps || fd.links);
+  } catch (e) { /* ignore */ }
+  return Array.from(new Set(urls));
+}
+
 async function funnelDiscover(tabId, visitedArr) {
   const visited = new Set((visitedArr || []).map(canonUrl));
   let curUrl = '';
@@ -1006,6 +1035,13 @@ async function funnelDiscover(tabId, visitedArr) {
   for (const l of pageLinks) {
     try { if (new URL(l).origin === origin && FUNNEL_PATH_RE.test(l)) cand.add(l); } catch { /* skip */ }
   }
+  // STEP 2 (best) — the funnel builder's own page map from JS globals. Gives every
+  // step incl. post-checkout OTOs/thank-you with no purchase. MAIN world required.
+  try {
+    const rb = await chrome.scripting.executeScript({ target: { tabId }, func: readBuilderFunnelMap, world: 'MAIN' });
+    const built = (rb && rb[0] && rb[0].result) || [];
+    for (const u of built) { try { if (new URL(u).origin === origin) cand.add(u); } catch { /* skip */ } }
+  } catch { /* skip */ }
   // STEP 4 — source/JS scan for embedded step URLs (curated: added directly).
   try { for (const u of scanSourceUrls(html, origin)) cand.add(u); } catch { /* skip */ }
   // STEP 2 — platform-specific public maps (no purchase).
