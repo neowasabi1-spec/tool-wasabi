@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Wasabi Saver",
-  "version": "1.6.9",
+  "version": "1.6.10",
   "description": "Save landing pages (HTML + screenshots) to your Wasabi archive or a project's Competitor Landings, and save images/videos as creatives into a project's Competitor Library.",
   "permissions": ["activeTab", "scripting", "tabs", "storage", "debugger", "downloads", "declarativeNetRequest"],
   "host_permissions": ["<all_urls>"],

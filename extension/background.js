@@ -412,12 +412,25 @@ function fillFunnelForms() {
 // page actually advances — so if the first button (e.g. "False") doesn't move
 // the funnel, it falls back to the next ("True"), a "Continue", etc.
 function findForwardCandidates() {
-  const CTA = /(continue|next|proceed|checkout|order now|place order|complete|get\s|claim|add to cart|buy now|yes[,! ]|start|begin|apply|check|verify|eligib|qualif|get started|find out|see if|submit|reveal|unlock|avanti|continua|procedi|ordina|acquista|completa|aggiungi al carrello|prosegui|vai al|inizia|verifica|controlla|scopri|richiedi|invia|s[iì][,! ])/i;
+  // Deliberately broad — funnel CTAs say anything ("Save 65% OFF + Free Shipping",
+  // "Grab yours", "Rush my order", "Get started"). Short words are boundaried to
+  // limit false hits; a false positive only costs one extra click attempt.
+  const CTA = /(continue|next\b|proceed|checkout|\border\b|place order|complete|get\b|got it|claim|add to cart|\badd\b|\bbuy\b|purchase|\bshop\b|grab|rush|reserve|secure|select|choose|start|begin|apply|check\b|verify|eligib|qualif|find out|see if|submit|reveal|unlock|\bjoin\b|\btry\b|\bsave\b|discount|\boff\b|free ship|\bdeal\b|special offer|\boffer\b|yes[,! ]|avanti|continua|procedi|ordina|acquista|completa|aggiungi|prosegui|vai al|inizia|verifica|scopri|richiedi|invia|risparmia|sconto|spedizione|s[iì][,! ]|→|➜|➔|»|>>)/i;
   const BAD = /(log ?in|sign ?in|sign ?up|register|menu|\bhome\b|\bback\b|indietro|privacy|terms|termini|cookie|\bclose\b|chiudi|account|my cart|\bsearch\b|cerca|faq|contact|contatt|support|assist|\bshare\b|condividi|facebook|instagram|twitter|tiktok|youtube|refund|\breturn\b|\breso\b)/i;
   const ANSWER = /^(true|false|yes|no|s[iì]|vero|falso|a|b|c|d|1|2|3|4|male|female|maschio|femmina|agree|disagree|d'accordo)$/i;
   const vpH = window.innerHeight || 800;
+  // Page-builder navigation controls (Zipify / FunnelKit / GemPages style) route
+  // via JS, often with generic or promo text and no href — detect them by their
+  // signature attributes so they win regardless of wording.
+  const isBuilderCta = (el) => {
+    const s = `${el.getAttribute('onclick') || ''} ${el.getAttribute('action') || ''} ${el.id || ''} ${el.getAttribute('data-id') || ''} ${el.className || ''}`;
+    return /linkmethod|fkt-link|k_btn|\bkbtn\b|funnel|gem-|route/i.test(s) || el.getAttribute('action') === 'route';
+  };
+  // Cast a wide net: real tags, ARIA/handler hooks, common builder classes, AND
+  // anything visibly styled as clickable (inline cursor:pointer). Whatever tech
+  // or wording a funnel uses, its forward control almost always falls in here.
   const nodes = Array.from(
-    document.querySelectorAll('a[href],button,input[type=submit],input[type=button],[role=button],[onclick],.btn,[class*="btn"],[class*="cta"],[class*="answer"],[class*="option"],[class*="choice"]'),
+    document.querySelectorAll('a,button,input[type=submit],input[type=button],[role=button],[onclick],[action="route"],[id^="fkt-link"],[data-id^="fkt-link"],.btn,[class*="btn"],[class*="cta"],[class*="k_btn"],[class*="answer"],[class*="option"],[class*="choice"],[style*="pointer"]'),
   );
   const sel = (node) => {
     if (node.id) return '#' + CSS.escape(node.id);
@@ -450,22 +463,26 @@ function findForwardCandidates() {
     if (!txt && el.tagName !== 'A') continue;
     if (BAD.test(txt)) continue;
 
+    const builder = isBuilderCta(el);
     const href = el.tagName === 'A' ? el.href : '';
-    // For anchors, only keep ones that look like a forward step (CTA text or a
-    // funnel-ish destination) — plain nav/footer links must not pull us away.
-    if (href && /^https?:/i.test(href)) {
+    // For plain anchors with a real href, only keep ones that look like a forward
+    // step (CTA text or a funnel-ish destination) — nav/footer links must not pull
+    // us away. Builder controls (JS-routed, usually href-less) are exempt.
+    if (!builder && href && /^https?:/i.test(href)) {
       const path = (() => { try { return new URL(href).pathname; } catch { return ''; } })();
       if (!CTA.test(txt) && !/(upsell|downsell|\boto\b|offer|checkout|order|continue|next|thank|confirm|step|apply|quiz|survey)/i.test(path)) continue;
     }
 
     let score = 0;
+    if (builder) score += 150; // JS-routed page-builder CTA — the real forward control
     if (CTA.test(txt)) score += 100;
     if (ANSWER.test(txt)) score += 60; // quiz/survey answer buttons
+    if (style.cursor === 'pointer') score += 25; // styled/clickable element
     score += Math.min((r.width * r.height) / 5000, 40);
     if (r.top >= 0 && r.top < vpH) score += 20;
     if (href && href.indexOf(location.origin) === 0) score += 10;
     if (el.tagName === 'BUTTON' || (el.tagName === 'INPUT' && /submit|button/.test(el.type))) score += 15;
-    if (score < 15) continue;
+    if (score < 25) continue;
 
     const selector = sel(el);
     if (seenSel.has(selector)) continue;
@@ -493,7 +510,7 @@ function findForwardCandidates() {
     if (seenTxt.has(key)) continue;
     seenTxt.add(key);
     out.push({ selector: s.selector, href: s.href, text: s.txt });
-    if (out.length >= 8) break;
+    if (out.length >= 12) break;
   }
   return out;
 }
