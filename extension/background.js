@@ -307,11 +307,86 @@ function isStopHost(u) {
   }
 }
 
+// Injected into the page: fill visible, empty form fields with plausible test
+// data so required-field validation (ZIP, email, name, consent…) passes and the
+// funnel can advance. Uses the native value setter + input/change/blur events so
+// React/Vue-controlled inputs register the value. Returns how many it filled.
+function fillFunnelForms() {
+  const setVal = (el, val) => {
+    const proto =
+      el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype
+      : el.tagName === 'SELECT' ? window.HTMLSelectElement.prototype
+      : window.HTMLInputElement.prototype;
+    try {
+      const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+      if (desc && desc.set) desc.set.call(el, val); else el.value = val;
+    } catch { el.value = val; }
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    el.dispatchEvent(new Event('blur', { bubbles: true }));
+  };
+  const visible = (el) => {
+    let r;
+    try { r = el.getBoundingClientRect(); } catch { return false; }
+    if (r.width < 2 || r.height < 2) return false;
+    const s = getComputedStyle(el);
+    return s.visibility !== 'hidden' && s.display !== 'none' && Number(s.opacity) !== 0;
+  };
+  const ctx = (el) => {
+    let t = `${el.name || ''} ${el.id || ''} ${el.placeholder || ''} ${el.getAttribute('aria-label') || ''} ${el.getAttribute('autocomplete') || ''}`;
+    const lab = el.labels && el.labels[0];
+    if (lab) t += ' ' + (lab.textContent || '');
+    return t.toLowerCase();
+  };
+  let filled = 0;
+  const radioSeen = {};
+  document.querySelectorAll('input, select, textarea').forEach((el) => {
+    if (!visible(el) || el.disabled || el.readOnly) return;
+    const type = (el.type || '').toLowerCase();
+    if (['hidden', 'submit', 'button', 'reset', 'file', 'image', 'search'].includes(type)) return;
+
+    if (el.tagName === 'SELECT') {
+      if (!el.value || el.selectedIndex <= 0) {
+        const opt = Array.from(el.options).find((o) => o.value && !o.disabled);
+        if (opt) { el.value = opt.value; el.dispatchEvent(new Event('change', { bubbles: true })); filled++; }
+      }
+      return;
+    }
+    if (type === 'checkbox') {
+      if (!el.checked) { el.checked = true; el.dispatchEvent(new Event('change', { bubbles: true })); filled++; }
+      return;
+    }
+    if (type === 'radio') {
+      const n = el.name || String(Math.random());
+      if (!radioSeen[n]) { radioSeen[n] = true; if (!el.checked) { el.checked = true; el.dispatchEvent(new Event('change', { bubbles: true })); filled++; } }
+      return;
+    }
+    if (el.value && el.value.trim()) return; // leave pre-filled values alone
+
+    const c = ctx(el);
+    let val = 'John';
+    if (type === 'email' || /e-?mail/.test(c)) val = 'test' + Math.floor(100 + Math.random() * 899) + '@gmail.com';
+    else if (type === 'tel' || /phone|tel\b|mobile|cell|telefono|whatsapp/.test(c)) val = '2025550' + Math.floor(100 + Math.random() * 899);
+    else if (/zip|postal|postcode|\bcap\b/.test(c)) val = '10001';
+    else if (/first ?name|given|\bnome\b/.test(c)) val = 'John';
+    else if (/last ?name|surname|family|cognome/.test(c)) val = 'Smith';
+    else if (/full ?name|your name|\bname\b|nominativo/.test(c)) val = 'John Smith';
+    else if (/city|citt/.test(c)) val = 'New York';
+    else if (/address|indirizzo|street|via\b/.test(c)) val = '123 Main St';
+    else if (/state|provincia|region/.test(c)) val = 'NY';
+    else if (type === 'date') val = '1990-01-01';
+    else if (type === 'number') val = /age|et[aà]/.test(c) ? '30' : /qty|quantit/.test(c) ? '1' : '10001';
+    setVal(el, val);
+    filled++;
+  });
+  return filled;
+}
+
 // Injected into the page (runs in the page's context, must be self-contained):
 // pick the single most likely "go forward" control. Returns
 // { kind:'link', href } | { kind:'click', selector } | null.
 function findForwardCta() {
-  const CTA = /(continue|next|proceed|checkout|order now|place order|complete|get\s|claim|add to cart|buy now|yes[,! ]|start|begin|avanti|continua|procedi|ordina|acquista|completa|aggiungi al carrello|prosegui|vai al|inizia|s[iì][,! ])/i;
+  const CTA = /(continue|next|proceed|checkout|order now|place order|complete|get\s|claim|add to cart|buy now|yes[,! ]|start|begin|apply|check|verify|eligib|qualif|get started|find out|see if|submit|reveal|unlock|avanti|continua|procedi|ordina|acquista|completa|aggiungi al carrello|prosegui|vai al|inizia|verifica|controlla|scopri|richiedi|invia|s[iì][,! ])/i;
   const BAD = /(log ?in|sign ?in|sign ?up|register|menu|home|back|indietro|privacy|terms|termini|cookie|close|chiudi|account|my cart|search|cerca|faq|contact|contatt|support|assist|share|condividi|facebook|instagram|twitter|tiktok|youtube|refund|return|reso)/i;
   const vpH = window.innerHeight || 800;
   const nodes = Array.from(
@@ -393,6 +468,13 @@ async function funnelNext(tabId, visitedArr) {
   const visited = new Set((visitedArr || []).map(canonUrl));
   let before = '';
   try { before = (await chrome.tabs.get(tabId)).url || ''; } catch { return { ok: true, moved: false, reason: 'no-tab' }; }
+
+  // Fill any required form fields first (ZIP, email, name, consent…) so the
+  // page's validation lets the CTA advance to the next step.
+  try {
+    await chrome.scripting.executeScript({ target: { tabId }, func: fillFunnelForms });
+    await sleep(350);
+  } catch { /* page may block injection */ }
 
   let cta = null;
   try {

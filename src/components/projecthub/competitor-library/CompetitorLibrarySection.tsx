@@ -8,7 +8,7 @@ import {
   BarChart2, Calendar, Globe, X, RefreshCw, Image as ImageIcon,
   Video, Bookmark, CheckSquare, Square, TrendingUp, Download, Copy, Check,
   Settings, Zap, FileText, Eye, LayoutTemplate, Repeat, Star, Flame,
-  Scissors, Film, Sparkles, DollarSign, Eraser,
+  Scissors, Film, Sparkles, DollarSign, Eraser, Folder,
 } from "lucide-react";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
@@ -2016,6 +2016,7 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [preview, setPreview] = useState<Landing | null>(null);
+  const [openFolder, setOpenFolder] = useState<string | null>(null);
 
   // Add this landing as a swipe step in Clone/Swipe (front-end-funnel), then go there.
   const cloneSwipe = (l: Landing) => {
@@ -2067,13 +2068,67 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
   const filtered = landings.filter(l =>
     !search || `${l.name} ${l.url} ${l.category} ${(l.tags || []).join(" ")}`.toLowerCase().includes(search.toLowerCase()));
 
+  // All pages of one funnel share category = domain — group them into a single
+  // folder so the whole funnel reads as ONE entry (not N loose cards).
+  const stepNum = (name: string) => { const m = /step\s*(\d+)/i.exec(name || ""); return m ? parseInt(m[1], 10) : 9999; };
+  const folderKey = (l: Landing) => (l.category && l.category.trim()) || hostOf(l.url) || "Other";
+  const folderMap = new Map<string, Landing[]>();
+  for (const l of filtered) {
+    const k = folderKey(l);
+    if (!folderMap.has(k)) folderMap.set(k, []);
+    folderMap.get(k)!.push(l);
+  }
+  const folders = Array.from(folderMap.entries())
+    .map(([name, items]) => ({
+      name,
+      items: items.slice().sort((a, b) => stepNum(a.name) - stepNum(b.name) || a.created_at.localeCompare(b.created_at)),
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const openItems = openFolder ? (folders.find(f => f.name === openFolder)?.items || []) : [];
+
+  // A single landing/step card (reused inside an open folder).
+  const card = (l: Landing) => (
+    <div key={l.id}
+      onClick={() => setPreview(l)}
+      role="button" tabIndex={0}
+      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setPreview(l); } }}
+      className="group relative bg-card border border-border rounded-2xl overflow-hidden hover:border-primary/40 hover:shadow-lg transition-all cursor-pointer">
+      <div className="block w-full aspect-[16/10] relative overflow-hidden bg-slate-100">
+        {l.screenshot ? (
+          <img src={l.screenshot} alt={l.name} className="w-full h-full object-cover object-top group-hover:scale-[1.02] transition-transform" />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center bg-slate-100">
+            <Globe className="w-8 h-8 text-slate-400" />
+          </div>
+        )}
+        <span className="absolute top-2 left-2 text-[9px] font-bold px-2 py-0.5 rounded-full bg-slate-900/55 backdrop-blur-sm text-white uppercase tracking-wide">
+          {l.page_type || "landing"}
+        </span>
+        <span className="absolute bottom-2 right-2 flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-slate-900/55 backdrop-blur-sm text-white opacity-0 group-hover:opacity-100 transition-opacity">
+          <Eye className="w-3 h-3" /> Preview
+        </span>
+      </div>
+      <button onClick={(e) => { e.stopPropagation(); del(l); }}
+        className="absolute top-2 right-2 p-1.5 rounded-lg bg-slate-900/45 backdrop-blur-sm text-white/90 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all"
+        title="Remove landing">
+        <Trash2 className="w-3.5 h-3.5" />
+      </button>
+      <div className="p-3">
+        <p className="text-sm font-semibold text-foreground truncate">{l.name}</p>
+        <p className="text-[11px] text-muted-foreground truncate flex items-center gap-1">
+          <Globe className="w-3 h-3" /> {hostOf(l.url)}
+        </p>
+      </div>
+    </div>
+  );
+
   return (
     <div className="space-y-4">
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <h3 className="text-lg font-bold text-foreground">Competitor Landings</h3>
           <p className="text-sm text-muted-foreground mt-0.5">
-            Landing &amp; funnel pages saved from the browser extension. Monitor them or reuse as templates.
+            Landing &amp; funnel pages saved from the browser extension. Each funnel is one folder — open it to see every step.
           </p>
         </div>
         <div className="relative min-w-56">
@@ -2093,46 +2148,54 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
             “Project · Competitor Landings” and pick this project.
           </p>
         </div>
+      ) : openFolder ? (
+        <div className="space-y-3">
+          <button onClick={() => setOpenFolder(null)}
+            className="inline-flex items-center gap-1.5 text-sm font-semibold text-foreground hover:text-primary transition-colors">
+            <ArrowLeft className="w-4 h-4" /> All funnels
+          </button>
+          <div className="flex items-center gap-2">
+            <p className="text-base font-bold text-foreground truncate">{openFolder}</p>
+            <span className="text-[11px] text-muted-foreground">{openItems.length} step{openItems.length === 1 ? "" : "s"}</span>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {openItems.map(card)}
+          </div>
+        </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {filtered.map(l => (
-            <div key={l.id}
-              onClick={() => setPreview(l)}
-              role="button" tabIndex={0}
-              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setPreview(l); } }}
-              className="group relative bg-card border border-border rounded-2xl overflow-hidden hover:border-primary/40 hover:shadow-lg transition-all cursor-pointer">
-              {/* Whole card opens the screenshots popup (Download HTML / Clone-Swipe live inside). */}
-              <div className="block w-full aspect-[16/10] relative overflow-hidden bg-slate-100">
-                {l.screenshot ? (
-                  <img src={l.screenshot} alt={l.name} className="w-full h-full object-cover object-top group-hover:scale-[1.02] transition-transform" />
-                ) : (
-                  <div className="w-full h-full flex items-center justify-center bg-slate-100">
-                    <Globe className="w-8 h-8 text-slate-400" />
-                  </div>
-                )}
-                <span className="absolute top-2 left-2 text-[9px] font-bold px-2 py-0.5 rounded-full bg-slate-900/55 backdrop-blur-sm text-white uppercase tracking-wide">
-                  {l.page_type || "landing"}
-                </span>
-                {/* Hover hint that the card opens a preview */}
-                <span className="absolute bottom-2 right-2 flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-slate-900/55 backdrop-blur-sm text-white opacity-0 group-hover:opacity-100 transition-opacity">
-                  <Eye className="w-3 h-3" /> Preview
-                </span>
+          {folders.map(f => {
+            const cover = f.items[0];
+            return (
+              <div key={f.name}
+                onClick={() => setOpenFolder(f.name)}
+                role="button" tabIndex={0}
+                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpenFolder(f.name); } }}
+                className="group relative bg-card border border-border rounded-2xl overflow-hidden hover:border-primary/40 hover:shadow-lg transition-all cursor-pointer">
+                <div className="block w-full aspect-[16/10] relative overflow-hidden bg-slate-100">
+                  {cover?.screenshot ? (
+                    <img src={cover.screenshot} alt={f.name} className="w-full h-full object-cover object-top group-hover:scale-[1.02] transition-transform" />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center bg-slate-100">
+                      <Globe className="w-8 h-8 text-slate-400" />
+                    </div>
+                  )}
+                  <span className="absolute top-2 left-2 flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-900/60 backdrop-blur-sm text-white uppercase tracking-wide">
+                    <Folder className="w-3 h-3" /> Funnel
+                  </span>
+                  <span className="absolute bottom-2 right-2 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-primary/85 backdrop-blur-sm text-primary-foreground">
+                    {f.items.length} step{f.items.length === 1 ? "" : "s"}
+                  </span>
+                </div>
+                <div className="p-3">
+                  <p className="text-sm font-semibold text-foreground truncate">{f.name}</p>
+                  <p className="text-[11px] text-muted-foreground truncate flex items-center gap-1">
+                    <Globe className="w-3 h-3" /> {hostOf(cover?.url || "")}
+                  </p>
+                </div>
               </div>
-              {/* Delete (hover) — must not open the popup */}
-              <button onClick={(e) => { e.stopPropagation(); del(l); }}
-                className="absolute top-2 right-2 p-1.5 rounded-lg bg-slate-900/45 backdrop-blur-sm text-white/90 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all"
-                title="Remove landing">
-                <Trash2 className="w-3.5 h-3.5" />
-              </button>
-              {/* Footer */}
-              <div className="p-3">
-                <p className="text-sm font-semibold text-foreground truncate">{l.name}</p>
-                <p className="text-[11px] text-muted-foreground truncate flex items-center gap-1">
-                  <Globe className="w-3 h-3" /> {hostOf(l.url)}
-                </p>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
