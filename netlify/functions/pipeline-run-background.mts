@@ -169,61 +169,72 @@ async function callClaude(opts: ClaudeOpts): Promise<string> {
 }
 
 // ---------------------------------------------------------------------------
-// Gemini image generation (via Netlify AI Gateway, else a direct GEMINI key).
-// text-to-image for the main product, image-to-image for correlated upsells.
+// Image generation via fal.ai — GPT Image 2 (ChatGPT Image 2), the same model
+// the app's /api/generate-image route uses (FAL_KEY). text2image for the main
+// product, image2image (edit) for upsells so they share the brand look.
 // ---------------------------------------------------------------------------
 
-const GEMINI_IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || 'gemini-3.1-flash-image-preview';
+const IMG_MODEL_T2I = process.env.PIPELINE_IMAGE_MODEL || 'openai/gpt-image-2';
+const IMG_MODEL_I2I = `${IMG_MODEL_T2I}/edit`;
 
 interface GenImage { data: Buffer; mimeType: string; }
 
-/** Resolve the Gemini endpoint: prefer the Netlify AI Gateway base (injected
- *  when AI is enabled on the site), otherwise the public Google endpoint with
- *  a user-provided GEMINI_API_KEY. Returns null when neither is configured. */
-function geminiEndpoint(): { base: string; key: string } | null {
-  const base = (process.env.GOOGLE_GEMINI_BASE_URL || '').replace(/\/+$/, '')
-    || (process.env.GEMINI_API_KEY ? 'https://generativelanguage.googleapis.com' : '');
-  const key = process.env.GEMINI_API_KEY || process.env.NETLIFY_AI_GATEWAY_KEY || '';
-  if (!base || !key) return null;
-  return { base, key };
+function falKey(): string { return process.env.FAL_KEY || process.env.FAL_AI_API_KEY || ''; }
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/** Submit a fal.ai image job and poll until it completes; returns the image
+ *  URL fal hosts, or null on any failure. Runs inside the 15-min background
+ *  budget, so an internal poll loop is fine (no Netlify 10s wall here). */
+async function falGenerateImageUrl(
+  endpoint: string,
+  input: Record<string, unknown>,
+  timeoutMs = 240_000,
+): Promise<string | null> {
+  const key = falKey();
+  if (!key) return null;
+  try {
+    const sub = await fetch(`https://queue.fal.run/${endpoint}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Key ${key}` },
+      body: JSON.stringify(input),
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!sub.ok) { console.warn('[pipeline] fal submit', sub.status, (await sub.text()).slice(0, 300)); return null; }
+    const s = await sub.json() as { status_url?: string; response_url?: string };
+    if (!s.status_url || !s.response_url) return null;
+
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      await sleep(3_000);
+      const st = await fetch(s.status_url, { headers: { Authorization: `Key ${key}` }, cache: 'no-store' });
+      if (!st.ok) continue;
+      const sj = await st.json() as { status?: string; error?: string };
+      if (sj.status === 'COMPLETED') {
+        const rr = await fetch(s.response_url, { headers: { Authorization: `Key ${key}` }, cache: 'no-store' });
+        if (!rr.ok) return null;
+        const result = await rr.json() as { images?: Array<{ url?: string }> };
+        return result?.images?.[0]?.url || null;
+      }
+      if (sj.status === 'ERROR') { console.warn('[pipeline] fal job error', sj.error); return null; }
+    }
+    console.warn('[pipeline] fal job timed out');
+    return null;
+  } catch (e) {
+    console.warn('[pipeline] fal image threw:', (e as Error).message);
+    return null;
+  }
 }
 
-/** Generate ONE image. `referenceImage` (base64) makes it image-to-image so an
- *  upsell keeps the same brand look as the main product. Null on any failure
- *  (missing config, HTTP error, no image part) — callers degrade gracefully. */
-async function geminiGenerateImage(opts: {
-  prompt: string;
-  referenceImage?: { data: string; mimeType: string };
-  timeoutMs?: number;
-}): Promise<GenImage | null> {
-  const ep = geminiEndpoint();
-  if (!ep) return null;
-
-  const parts: Array<Record<string, unknown>> = [{ text: opts.prompt }];
-  if (opts.referenceImage) {
-    parts.push({ inlineData: { mimeType: opts.referenceImage.mimeType, data: opts.referenceImage.data } });
-  }
-
-  const url = `${ep.base}/v1beta/models/${GEMINI_IMAGE_MODEL}:generateContent`;
+/** Download a generated image URL into a Buffer for permanent storage. */
+async function downloadImage(url: string): Promise<GenImage | null> {
   try {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': ep.key },
-      body: JSON.stringify({ contents: [{ role: 'user', parts }] }),
-      signal: AbortSignal.timeout(opts.timeoutMs ?? 120_000),
-    });
-    if (!res.ok) {
-      console.warn('[pipeline] gemini image HTTP', res.status, (await res.text()).slice(0, 300));
-      return null;
-    }
-    const data = await res.json();
-    const candParts = data?.candidates?.[0]?.content?.parts as Array<Record<string, unknown>> | undefined;
-    const imgPart = (candParts || []).find((p) => (p.inlineData || p.inline_data));
-    const inline = (imgPart?.inlineData || imgPart?.inline_data) as { data?: string; mimeType?: string; mime_type?: string } | undefined;
-    if (!inline?.data) return null;
-    return { data: Buffer.from(inline.data, 'base64'), mimeType: inline.mimeType || inline.mime_type || 'image/png' };
-  } catch (e) {
-    console.warn('[pipeline] gemini image threw:', (e as Error).message);
+    const res = await fetch(url, { signal: AbortSignal.timeout(60_000) });
+    if (!res.ok) return null;
+    const mimeType = res.headers.get('content-type') || 'image/png';
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length < 100) return null;
+    return { data: buf, mimeType };
+  } catch {
     return null;
   }
 }
@@ -640,8 +651,8 @@ async function generateProductImages(
   const upsellCount = funnel ? funnel.upsells : 0;
   const images: Array<{ name: string; url: string; role: string }> = [];
 
-  if (!geminiEndpoint()) {
-    return { saved: 0, total: 1 + upsellCount, note: 'image generation skipped: AI image gateway not configured (enable AI on the Netlify site).', mainImageUrl: null, images };
+  if (!falKey()) {
+    return { saved: 0, total: 1 + upsellCount, note: 'image generation skipped: FAL_KEY not configured.', mainImageUrl: null, images };
   }
 
   const specRaw = await callClaude({
@@ -660,23 +671,52 @@ The "upsells" array MUST contain EXACTLY ${upsellCount} items${upsellCount === 0
 
   let saved = 0;
   let mainImageUrl: string | null = null;
-  let mainRef: { data: string; mimeType: string } | undefined;
+  let mainRefUrl: string | null = null; // a public URL fal can fetch for edits
 
-  const mainImg = await geminiGenerateImage({ prompt: buildPackshotPrompt(spec.main.imagePrompt) });
-  if (mainImg) {
-    mainImageUrl = await saveProductImage(supabase, projectId, `Product — ${spec.main.name}`, mainImg);
-    if (mainImageUrl) { saved++; images.push({ name: spec.main.name, url: mainImageUrl, role: 'Main product' }); }
-    mainRef = { data: mainImg.data.toString('base64'), mimeType: mainImg.mimeType };
+  const mainFalUrl = await falGenerateImageUrl(IMG_MODEL_T2I, {
+    prompt: buildPackshotPrompt(spec.main.imagePrompt),
+    image_size: 'square_hd',
+    quality: 'medium',
+    num_images: 1,
+    output_format: 'png',
+  });
+  if (mainFalUrl) {
+    mainRefUrl = mainFalUrl;
+    const dl = await downloadImage(mainFalUrl);
+    if (dl) {
+      const stored = await saveProductImage(supabase, projectId, `Product — ${spec.main.name}`, dl);
+      if (stored) { mainImageUrl = stored; mainRefUrl = stored; saved++; images.push({ name: spec.main.name, url: stored, role: 'Main product' }); }
+    }
   }
 
   let upIdx = 0;
   for (const up of spec.upsells) {
     upIdx++;
     const prompt = `${buildPackshotPrompt(up.imagePrompt)} It belongs to the SAME product family/brand as the reference image — keep the same palette, packaging style and branding.`;
-    const img = await geminiGenerateImage({ prompt, referenceImage: mainRef });
-    if (img) {
-      const url = await saveProductImage(supabase, projectId, `Upsell ${upIdx} — ${up.name}`, img);
-      if (url) { saved++; images.push({ name: up.name, url, role: `Upsell ${upIdx}` }); }
+    // If we have the main image, do an image2image edit so the upsell matches;
+    // otherwise fall back to a text2image with a strong "same line" prompt.
+    const upFalUrl = mainRefUrl
+      ? await falGenerateImageUrl(IMG_MODEL_I2I, {
+          prompt,
+          image_urls: [mainRefUrl],
+          image_size: 'auto',
+          quality: 'medium',
+          num_images: 1,
+          output_format: 'png',
+        })
+      : await falGenerateImageUrl(IMG_MODEL_T2I, {
+          prompt,
+          image_size: 'square_hd',
+          quality: 'medium',
+          num_images: 1,
+          output_format: 'png',
+        });
+    if (upFalUrl) {
+      const dl = await downloadImage(upFalUrl);
+      const stored = dl ? await saveProductImage(supabase, projectId, `Upsell ${upIdx} — ${up.name}`, dl) : null;
+      const finalUrl = stored || upFalUrl;
+      saved++;
+      images.push({ name: up.name, url: finalUrl, role: `Upsell ${upIdx}` });
     }
   }
 

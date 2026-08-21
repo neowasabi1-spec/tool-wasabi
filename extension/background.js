@@ -281,6 +281,336 @@ async function captureScreenshots(tabId) {
 }
 
 // ---------------------------------------------------------------------------
+// Funnel walk — advance the tab to the next funnel step by clicking the most
+// likely forward CTA, then wait for the navigation to settle. Runs in the
+// background so it survives across page loads and can drive chrome.tabs.
+// ---------------------------------------------------------------------------
+
+// Canonical URL (origin + path, no hash/trailing slash) for loop detection.
+function canonUrl(u) {
+  try {
+    const x = new URL(u);
+    return (x.origin + x.pathname).replace(/\/$/, '');
+  } catch {
+    return String(u || '');
+  }
+}
+
+// Hosts where we stop BEFORE navigating (external payment/social — a competitor
+// funnel can't be walked past its checkout without actually paying).
+function isStopHost(u) {
+  try {
+    const h = new URL(u).hostname;
+    return /(^|\.)(paypal\.com|stripe\.com|checkout\.stripe\.com|braintreegateway\.com|facebook\.com|instagram\.com|google\.com|youtube\.com|apple\.com|shopifypay|shop\.app)$/i.test(h);
+  } catch {
+    return false;
+  }
+}
+
+// Injected into the page (runs in the page's context, must be self-contained):
+// pick the single most likely "go forward" control. Returns
+// { kind:'link', href } | { kind:'click', selector } | null.
+function findForwardCta() {
+  const CTA = /(continue|next|proceed|checkout|order now|place order|complete|get\s|claim|add to cart|buy now|yes[,! ]|start|begin|avanti|continua|procedi|ordina|acquista|completa|aggiungi al carrello|prosegui|vai al|inizia|s[iì][,! ])/i;
+  const BAD = /(log ?in|sign ?in|sign ?up|register|menu|home|back|indietro|privacy|terms|termini|cookie|close|chiudi|account|my cart|search|cerca|faq|contact|contatt|support|assist|share|condividi|facebook|instagram|twitter|tiktok|youtube|refund|return|reso)/i;
+  const vpH = window.innerHeight || 800;
+  const nodes = Array.from(
+    document.querySelectorAll('a[href],button,input[type=submit],input[type=button],[role=button],.btn,[class*="btn"],[class*="cta"]'),
+  );
+  let best = null;
+  let bestScore = -1;
+  for (const el of nodes) {
+    let r;
+    try { r = el.getBoundingClientRect(); } catch { continue; }
+    if (r.width < 40 || r.height < 18) continue;
+    let style;
+    try { style = getComputedStyle(el); } catch { continue; }
+    if (style.visibility === 'hidden' || style.display === 'none' || Number(style.opacity) === 0) continue;
+    const txt = String(el.innerText || el.value || el.getAttribute('aria-label') || '').trim().slice(0, 100);
+    if (!txt && el.tagName !== 'A') continue;
+    if (BAD.test(txt)) continue;
+    let score = 0;
+    if (CTA.test(txt)) score += 100;
+    score += Math.min((r.width * r.height) / 5000, 40);
+    if (r.top >= 0 && r.top < vpH) score += 20;
+    const href = el.tagName === 'A' ? el.href : '';
+    if (href && href.indexOf(location.origin) === 0) score += 10;
+    if (el.tagName === 'BUTTON' || (el.tagName === 'INPUT' && /submit|button/.test(el.type))) score += 15;
+    if (score > bestScore) { bestScore = score; best = { el, href, txt }; }
+  }
+  if (!best || bestScore < 40) return null;
+
+  if (best.href && /^https?:/i.test(best.href)) return { kind: 'link', href: best.href, text: best.txt };
+
+  // Build a reasonably-unique selector for the click target.
+  const sel = (node) => {
+    if (node.id) return '#' + CSS.escape(node.id);
+    const parts = [];
+    let cur = node;
+    while (cur && cur.nodeType === 1 && cur.tagName !== 'BODY' && parts.length < 6) {
+      let p = cur.tagName.toLowerCase();
+      const par = cur.parentElement;
+      if (par) {
+        const same = Array.from(par.children).filter((c) => c.tagName === cur.tagName);
+        if (same.length > 1) p += `:nth-of-type(${same.indexOf(cur) + 1})`;
+      }
+      parts.unshift(p);
+      cur = par;
+    }
+    return parts.join('>');
+  };
+  return { kind: 'click', selector: sel(best.el), text: best.txt };
+}
+
+// Wait until the tab finishes loading a URL different from `beforeUrl`.
+function waitForNavigation(tabId, beforeUrl, timeoutMs) {
+  const beforeCanon = canonUrl(beforeUrl);
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (v) => {
+      if (done) return;
+      done = true;
+      chrome.tabs.onUpdated.removeListener(listener);
+      clearTimeout(timer);
+      resolve(v);
+    };
+    const listener = (id, info, tab) => {
+      if (id !== tabId) return;
+      const url = (tab && tab.url) || info.url || '';
+      if (!url) return;
+      if (canonUrl(url) === beforeCanon) return;
+      if (info.status === 'complete' || info.url) {
+        // Give SPA/redirect chains a moment to settle before capturing.
+        setTimeout(() => finish(true), 900);
+      }
+    };
+    chrome.tabs.onUpdated.addListener(listener);
+    const timer = setTimeout(() => finish(false), timeoutMs || 15000);
+  });
+}
+
+async function funnelNext(tabId, visitedArr) {
+  const visited = new Set((visitedArr || []).map(canonUrl));
+  let before = '';
+  try { before = (await chrome.tabs.get(tabId)).url || ''; } catch { return { ok: true, moved: false, reason: 'no-tab' }; }
+
+  let cta = null;
+  try {
+    const results = await chrome.scripting.executeScript({ target: { tabId }, func: findForwardCta });
+    cta = results && results[0] && results[0].result;
+  } catch (e) {
+    return { ok: true, moved: false, reason: 'inject-failed: ' + (e && e.message) };
+  }
+  if (!cta) return { ok: true, moved: false, reason: 'no-cta' };
+
+  // Attach the navigation waiter BEFORE triggering the action, otherwise a fast
+  // page can fire its 'complete' event before we start listening (false timeout).
+  if (cta.kind === 'link' && cta.href) {
+    if (isStopHost(cta.href)) return { ok: true, moved: false, reason: 'stop-host' };
+    if (visited.has(canonUrl(cta.href))) return { ok: true, moved: false, reason: 'visited' };
+    const navPromise = waitForNavigation(tabId, before, 15000);
+    try { await chrome.tabs.update(tabId, { url: cta.href }); } catch { return { ok: true, moved: false, reason: 'nav-failed' }; }
+    if (!(await navPromise)) return { ok: true, moved: false, reason: 'no-nav' };
+  } else if (cta.kind === 'click' && cta.selector) {
+    const navPromise = waitForNavigation(tabId, before, 15000);
+    let clicked = false;
+    try {
+      const cr = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: (selector) => {
+          const el = document.querySelector(selector);
+          if (el) { el.scrollIntoView({ block: 'center' }); el.click(); return true; }
+          return false;
+        },
+        args: [cta.selector],
+      });
+      clicked = cr && cr[0] && cr[0].result === true;
+    } catch { return { ok: true, moved: false, reason: 'click-failed' }; }
+    if (!clicked) return { ok: true, moved: false, reason: 'target-gone' };
+    if (!(await navPromise)) return { ok: true, moved: false, reason: 'no-nav' };
+  } else {
+    return { ok: true, moved: false, reason: 'no-target' };
+  }
+
+  let after = '';
+  try { after = (await chrome.tabs.get(tabId)).url || ''; } catch { return { ok: true, moved: false, reason: 'no-tab-after' }; }
+  if (isStopHost(after)) return { ok: true, moved: false, reason: 'stop-host-after', url: after };
+  if (visited.has(canonUrl(after))) return { ok: true, moved: false, reason: 'loop', url: after };
+  return { ok: true, moved: true, url: after };
+}
+
+// ---------------------------------------------------------------------------
+// Funnel discovery — after the click-walk stops (e.g. at the checkout), find
+// the post-checkout steps (upsell / downsell / thank-you) the way morfeo does:
+// the site's sitemap, same-origin links on the page, and platform-specific path
+// guesses (Funnelish / CheckoutChamp-Konnektive / WordPress-CartFlows). Every
+// candidate is fetched server-side (host permissions bypass CORS) and validated
+// before we hand it back for capture.
+// ---------------------------------------------------------------------------
+
+// Paths that smell like a funnel step (not blog/legal/nav pages).
+const FUNNEL_PATH_RE = /(upsell|up-sell|downsell|down-sell|\boto\b|oto[-_]?\d|one[-_]?time|special[-_]?offer|\boffer\b|order[-_]?bump|\bbump\b|thank[-_ ]?you|thankyou|confirm|confirmation|receipt|success|order[-_]?received|step[-_]?\d|presentation|\bvsl\b|advertorial|checkout|\border\b)/i;
+
+async function fetchText(url) {
+  try {
+    const r = await fetch(url, { credentials: 'include', redirect: 'follow' });
+    if (!r.ok) return null;
+    return await r.text();
+  } catch {
+    return null;
+  }
+}
+
+// Fetch a candidate page; returns { finalUrl, html } only for real HTML 200s.
+async function fetchPage(url) {
+  try {
+    const r = await fetch(url, { credentials: 'include', redirect: 'follow' });
+    const ct = r.headers.get('content-type') || '';
+    if (!r.ok || !/text\/html/i.test(ct)) return null;
+    const html = await r.text();
+    return { finalUrl: r.url || url, html };
+  } catch {
+    return null;
+  }
+}
+
+function looksLike404(html) {
+  const head = String(html || '').slice(0, 2500).toLowerCase();
+  return /(404|not found|page not found|pagina non trovata|nothing found|doesn'?t exist)/.test(head) &&
+    String(html || '').length < 6000;
+}
+
+// Order upsells/OTOs first, downsells next, thank-you/confirmation last.
+function scorePath(u) {
+  const s = String(u).toLowerCase();
+  if (/thank|confirm|receipt|success|order[-_]?received/.test(s)) return 3;
+  if (/downsell|down-sell/.test(s)) return 2;
+  if (/upsell|up-sell|\boto\b|oto[-_]?\d|offer|special|bump|step/.test(s)) return 1;
+  return 2;
+}
+
+// Platform-aware path guesses appended to the funnel origin.
+function guessPaths(html) {
+  const base = [
+    '/upsell', '/upsell1', '/upsell-1', '/upsell/1', '/upsell2', '/upsell-2', '/upsell/2',
+    '/oto', '/oto1', '/oto-1', '/oto2', '/oto-2',
+    '/downsell', '/downsell1', '/downsell-1', '/downsell/1',
+    '/offer', '/offer-1', '/special-offer', '/bump',
+    '/thank-you', '/thankyou', '/thank_you', '/confirmation', '/order-confirmation',
+    '/receipt', '/success', '/step2', '/step3',
+  ];
+  const h = String(html || '').toLowerCase();
+  const extra = [];
+  if (/funnelish/.test(h)) extra.push('/upsell/1', '/upsell/2', '/downsell/1', '/downsell/2', '/thank-you');
+  if (/checkoutchamp|konnektive|sticky\.io/.test(h)) extra.push('/upsell1', '/upsell2', '/downsell1', '/confirmation', '/step2', '/step3');
+  if (/cartflows|woocommerce|woofunnels|wp-content/.test(h)) extra.push('/upsell', '/offer-1', '/thankyou', '/order-received', '/upsell-offer');
+  return Array.from(new Set(base.concat(extra)));
+}
+
+async function collectSitemapUrls(origin) {
+  const out = new Set();
+  const queue = ['/sitemap.xml', '/sitemap_index.xml', '/sitemap-index.xml', '/wp-sitemap.xml'];
+  const robots = await fetchText(origin + '/robots.txt');
+  if (robots) {
+    for (const line of robots.match(/^\s*sitemap:\s*(\S+)/gim) || []) {
+      const u = line.split(/:\s*/).slice(1).join(':').trim();
+      if (u) queue.push(u);
+    }
+  }
+  const seen = new Set();
+  let budget = 6; // cap total sitemap fetches
+  for (const c of queue) {
+    if (budget <= 0) break;
+    let u;
+    try { u = /^https?:/i.test(c) ? c : origin + c; } catch { continue; }
+    if (seen.has(u)) continue;
+    seen.add(u);
+    budget--;
+    const xml = await fetchText(u);
+    if (!xml) continue;
+    const locs = Array.from(xml.matchAll(/<loc>\s*([^<\s]+)\s*<\/loc>/gi)).map((m) => m[1]);
+    if (/<sitemapindex/i.test(xml)) {
+      for (const child of locs.slice(0, 4)) {
+        if (budget <= 0) break;
+        budget--;
+        const cx = await fetchText(child);
+        if (!cx) continue;
+        for (const m of cx.matchAll(/<loc>\s*([^<\s]+)\s*<\/loc>/gi)) out.add(m[1]);
+      }
+    } else {
+      for (const l of locs) out.add(l);
+    }
+  }
+  return Array.from(out);
+}
+
+async function funnelDiscover(tabId, visitedArr) {
+  const visited = new Set((visitedArr || []).map(canonUrl));
+  let curUrl = '';
+  try { curUrl = (await chrome.tabs.get(tabId)).url || ''; } catch { return { ok: false, urls: [] }; }
+  let origin = '';
+  try { origin = new URL(curUrl).origin; } catch { return { ok: false, urls: [] }; }
+
+  // Read the current page for platform detection + same-origin links.
+  let html = '';
+  let pageLinks = [];
+  try {
+    const r = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => ({
+        html: document.documentElement.outerHTML.slice(0, 200000),
+        links: Array.from(document.querySelectorAll('a[href]')).map((a) => a.href).slice(0, 400),
+      }),
+    });
+    const res = r && r[0] && r[0].result;
+    if (res) { html = res.html || ''; pageLinks = res.links || []; }
+  } catch { /* page may block injection */ }
+
+  // Build the candidate set.
+  const cand = new Set();
+  for (const p of guessPaths(html)) cand.add(origin + p);
+  for (const l of pageLinks) {
+    try { if (new URL(l).origin === origin && FUNNEL_PATH_RE.test(l)) cand.add(l); } catch { /* skip */ }
+  }
+  try {
+    for (const l of await collectSitemapUrls(origin)) {
+      try { if (new URL(l).origin === origin && FUNNEL_PATH_RE.test(l)) cand.add(l); } catch { /* skip */ }
+    }
+  } catch { /* sitemap best-effort */ }
+
+  // Validate candidates (real HTML 200, not a soft-404, not a redirect home /
+  // to an already-captured page). Cap the number of network checks.
+  const valid = [];
+  let checks = 0;
+  for (const url of cand) {
+    if (checks >= 60) break;
+    if (visited.has(canonUrl(url))) continue;
+    checks++;
+    const res = await fetchPage(url);
+    if (!res) continue;
+    const fu = canonUrl(res.finalUrl);
+    if (visited.has(fu)) continue;
+    if (fu === canonUrl(origin)) continue; // redirected to home
+    if (!res.html || res.html.length < 800) continue;
+    if (looksLike404(res.html)) continue;
+    valid.push({ url: res.finalUrl, score: scorePath(res.finalUrl) });
+    visited.add(fu);
+  }
+  valid.sort((a, b) => a.score - b.score);
+  return { ok: true, urls: valid.map((v) => v.url) };
+}
+
+// Navigate the tab to a discovered URL and wait for it to load.
+async function funnelGoto(tabId, url) {
+  let before = '';
+  try { before = (await chrome.tabs.get(tabId)).url || ''; } catch { /* ignore */ }
+  const navPromise = waitForNavigation(tabId, before, 20000);
+  try { await chrome.tabs.update(tabId, { url }); } catch { return { ok: false }; }
+  const ok = await navPromise;
+  return { ok };
+}
+
+// ---------------------------------------------------------------------------
 // Message router
 // ---------------------------------------------------------------------------
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
@@ -307,6 +637,32 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     captureScreenshots(msg.tabId)
       .then((shots) => sendResponse({ ok: true, ...shots }))
       .catch((e) => sendResponse({ ok: false, error: e.message }));
+    return true;
+  }
+
+  // Advance the tab to the next funnel step (click the forward CTA + wait for
+  // the new page). The popup loops on this to walk the whole funnel.
+  if (msg.type === 'FUNNEL_NEXT' && typeof msg.tabId === 'number') {
+    funnelNext(msg.tabId, msg.visited || [])
+      .then((r) => sendResponse(r))
+      .catch((e) => sendResponse({ ok: false, moved: false, error: (e && e.message) || String(e) }));
+    return true;
+  }
+
+  // Discover post-checkout steps (sitemap + on-page links + path guesses).
+  if (msg.type === 'FUNNEL_DISCOVER' && typeof msg.tabId === 'number') {
+    funnelDiscover(msg.tabId, msg.visited || [])
+      .then((r) => sendResponse(r))
+      .catch((e) => sendResponse({ ok: false, urls: [], error: (e && e.message) || String(e) }));
+    return true;
+  }
+
+  // Navigate the tab to a discovered URL and wait for load, so the popup can
+  // capture it like any other step.
+  if (msg.type === 'FUNNEL_GOTO' && typeof msg.tabId === 'number' && msg.url) {
+    funnelGoto(msg.tabId, msg.url)
+      .then((r) => sendResponse(r))
+      .catch((e) => sendResponse({ ok: false, error: (e && e.message) || String(e) }));
     return true;
   }
 
