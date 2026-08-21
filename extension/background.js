@@ -619,7 +619,60 @@ function watchNewTab(openerId) {
   };
 }
 
+// Scroll the target into view and return its viewport-centre click point.
+async function elementClickPoint(tabId, selector) {
+  try {
+    const r = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (sel) => {
+        const el = document.querySelector(sel);
+        if (!el) return null;
+        el.scrollIntoView({ block: 'center', inline: 'center' });
+        const b = el.getBoundingClientRect();
+        return {
+          x: b.left + b.width / 2, y: b.top + b.height / 2,
+          w: b.width, h: b.height, iw: window.innerWidth, ih: window.innerHeight,
+        };
+      },
+      args: [selector],
+    });
+    return (r && r[0] && r[0].result) || null;
+  } catch {
+    return null;
+  }
+}
+
+// A TRUSTED click via CDP (Input.dispatchMouseEvent). Funnel builders (Zipify /
+// FunnelKit-style `<a onclick="linkMethod(event)">`, quiz routers) gate on
+// event.isTrusted and IGNORE a programmatic el.click(), so a synthetic click
+// looks like "nothing happened". A real CDP mouse press/release fires their
+// handlers and advances the funnel. Requires the `debugger` permission.
+async function clickTrusted(tabId, selector) {
+  const pt = await elementClickPoint(tabId, selector);
+  if (!pt) return false;
+  await sleep(200); // let the scroll settle before we measure/press
+  const pt2 = (await elementClickPoint(tabId, selector)) || pt;
+  const x = Math.max(1, Math.min(pt2.x, (pt2.iw || 1200) - 1));
+  const y = Math.max(1, Math.min(pt2.y, (pt2.ih || 800) - 1));
+  let attached = false;
+  try {
+    await dbgAttach(tabId);
+    attached = true;
+    await dbgSend(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, button: 'none', buttons: 0 });
+    await dbgSend(tabId, 'Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', buttons: 1, clickCount: 1 });
+    await dbgSend(tabId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', buttons: 0, clickCount: 1 });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    if (attached) { try { await dbgDetach(tabId); } catch { /* nav auto-detaches */ } }
+  }
+}
+
 async function clickSelector(tabId, selector) {
+  // Trusted CDP click first (required by isTrusted-gated funnel CTAs); fall back
+  // to a plain DOM click if the debugger can't attach.
+  if (await clickTrusted(tabId, selector)) return true;
   try {
     const cr = await chrome.scripting.executeScript({
       target: { tabId },
