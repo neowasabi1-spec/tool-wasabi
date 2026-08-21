@@ -338,6 +338,15 @@ function fillFunnelForms() {
     if (lab) t += ' ' + (lab.textContent || '');
     return t.toLowerCase();
   };
+  // CheckoutChamp/Konnektive accept a generic test card (0000…, CVV not 9xx/7xx/8xx
+  // = approved) that bypasses the live gateway; elsewhere use a Luhn-valid Visa so
+  // client-side validation passes. If the order still declines, the caller falls
+  // back to sitemap/direct-link discovery — it never hard-fails on the checkout.
+  const pageHtml = document.documentElement.outerHTML || '';
+  const isCC = /checkoutchamp|konnektive|sticky\.io/i.test(pageHtml)
+    || Array.from(document.scripts).some((s) => /checkoutchamp|konnektive/i.test(s.src || ''));
+  const cardNum = isCC ? '0000000000000000' : '4111111111111111';
+
   let filled = 0;
   const radioSeen = {};
   document.querySelectorAll('input, select, textarea').forEach((el) => {
@@ -347,7 +356,14 @@ function fillFunnelForms() {
 
     if (el.tagName === 'SELECT') {
       if (!el.value || el.selectedIndex <= 0) {
-        const opt = Array.from(el.options).find((o) => o.value && !o.disabled);
+        const opts = Array.from(el.options).filter((o) => o.value && !o.disabled);
+        let opt = opts[0];
+        const sc = ctx(el);
+        if (/year|\byy\b|anno/.test(sc)) {
+          const yr = new Date().getFullYear();
+          const fut = opts.find((o) => { const n = parseInt(String(o.value || o.textContent).replace(/\D/g, ''), 10); const full = n < 100 ? 2000 + n : n; return full >= yr + 1; });
+          if (fut) opt = fut;
+        }
         if (opt) { el.value = opt.value; el.dispatchEvent(new Event('change', { bubbles: true })); filled++; }
       }
       return;
@@ -364,8 +380,17 @@ function fillFunnelForms() {
     if (el.value && el.value.trim()) return; // leave pre-filled values alone
 
     const c = ctx(el);
+    const ml = parseInt(el.getAttribute('maxlength') || '0', 10);
     let val = 'John';
-    if (type === 'email' || /e-?mail/.test(c)) val = 'test' + Math.floor(100 + Math.random() * 899) + '@gmail.com';
+    if (/card ?number|cardnumber|cc[-_ ]?number|credit ?card|card[_-]?no|numero carta|\bpan\b/.test(c)) val = cardNum;
+    else if (/security ?code|\bcvc\b|\bcvv\b|\bcid\b|card ?code|codice/.test(c)) val = '123';
+    else if (/(exp|scad).*(month|mese)/.test(c) || /^mm$/.test(c.trim())) val = '12';
+    else if (/(exp|scad).*(year|anno)/.test(c) || /^yy(yy)?$/.test(c.trim())) val = (ml && ml <= 2) ? '30' : '2030';
+    else if (/expir|scadenza|exp.?date|mm\s*\/\s*yy/.test(c)) val = (ml && ml <= 5) ? '12/30' : '12/2030';
+    else if (/cardholder|name on card|intestatario|card ?holder/.test(c)) val = 'John Smith';
+    else if (/\bmonth\b|\bmese\b/.test(c)) val = '12';
+    else if (/\byear\b|\banno\b/.test(c)) val = (ml && ml <= 2) ? '30' : '2030';
+    else if (type === 'email' || /e-?mail/.test(c)) val = 'test' + Math.floor(100 + Math.random() * 899) + '@gmail.com';
     else if (type === 'tel' || /phone|tel\b|mobile|cell|telefono|whatsapp/.test(c)) val = '2025550' + Math.floor(100 + Math.random() * 899);
     else if (/zip|postal|postcode|\bcap\b/.test(c)) val = '10001';
     else if (/first ?name|given|\bnome\b/.test(c)) val = 'John';
