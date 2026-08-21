@@ -2593,6 +2593,43 @@ export default function FrontEndFunnel() {
     window.history.replaceState({}, '', url.toString());
   }, [searchParams, addFunnelPage]);
 
+  // Import a WHOLE funnel to swipe at once via ?swipe_steps=[{url,name,type},...]
+  // (from Competitor Library → open folder → "Swipe all steps"). Adds every step
+  // as its own Clone/Swipe page, in order.
+  const swipeStepsDoneRef = useRef(false);
+  useEffect(() => {
+    if (swipeStepsDoneRef.current) return;
+    const raw = searchParams.get('swipe_steps');
+    if (!raw) return;
+    swipeStepsDoneRef.current = true;
+
+    let steps: Array<{ url?: string; name?: string; type?: string }> = [];
+    try { const parsed = JSON.parse(raw); if (Array.isArray(parsed)) steps = parsed; } catch { steps = []; }
+
+    (async () => {
+      for (const s of steps) {
+        if (!s || !s.url) continue;
+        const rawType = s.type || 'landing';
+        const validType = BUILT_IN_PAGE_TYPE_OPTIONS.some((o) => o.value === rawType);
+        const pageType = (validType ? rawType : 'landing') as PageType;
+        const name = (s.name || '').slice(0, 80) || 'Step';
+        await addFunnelPage({
+          name,
+          pageType,
+          productId: '',
+          urlToSwipe: s.url,
+          prompt: '',
+          swipeStatus: 'pending',
+          feedback: '',
+        });
+      }
+    })();
+
+    const url = new URL(window.location.href);
+    url.searchParams.delete('swipe_steps');
+    window.history.replaceState({}, '', url.toString());
+  }, [searchParams, addFunnelPage]);
+
   // Build a labelled context block from a Project so the rewriter (Claude)
   // can treat the brief as the source of truth, separate from description /
   // domain / etc.

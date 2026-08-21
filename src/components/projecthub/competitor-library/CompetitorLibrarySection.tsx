@@ -2029,6 +2029,17 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
     router.push(`/front-end-funnel?${q.toString()}`);
   };
 
+  // Load EVERY step of an open funnel into Clone/Swipe as an ordered page list,
+  // so the whole funnel can be swiped/cloned in one go.
+  const cloneSwipeFolder = (items: Landing[]) => {
+    const steps = items
+      .filter((l) => !!l.url)
+      .map((l) => ({ url: l.url, name: l.name || "Step", type: l.page_type || "landing" }));
+    if (!steps.length) { toast({ title: "No steps with a source URL to swipe", variant: "destructive" }); return; }
+    const q = new URLSearchParams({ swipe_steps: JSON.stringify(steps) });
+    router.push(`/front-end-funnel?${q.toString()}`);
+  };
+
   const load = async () => {
     setLoading(true);
     try {
@@ -2154,9 +2165,13 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
             className="inline-flex items-center gap-1.5 text-sm font-semibold text-foreground hover:text-primary transition-colors">
             <ArrowLeft className="w-4 h-4" /> All funnels
           </button>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <p className="text-base font-bold text-foreground truncate">{openFolder}</p>
             <span className="text-[11px] text-muted-foreground">{openItems.length} step{openItems.length === 1 ? "" : "s"}</span>
+            <button onClick={() => cloneSwipeFolder(openItems)}
+              className="ml-auto inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 transition-colors">
+              <Repeat className="w-3.5 h-3.5" /> Swipe all steps
+            </button>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {openItems.map(card)}
