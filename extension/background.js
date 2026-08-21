@@ -401,6 +401,8 @@ function findForwardCta() {
     let style;
     try { style = getComputedStyle(el); } catch { continue; }
     if (style.visibility === 'hidden' || style.display === 'none' || Number(style.opacity) === 0) continue;
+    const rawHref = el.tagName === 'A' ? (el.getAttribute('href') || '') : '';
+    if (/^(tel:|mailto:|sms:|https?:\/\/(wa\.me|api\.whatsapp))/i.test(rawHref)) continue; // not a funnel step
     const txt = String(el.innerText || el.value || el.getAttribute('aria-label') || '').trim().slice(0, 100);
     if (!txt && el.tagName !== 'A') continue;
     if (BAD.test(txt)) continue;
@@ -464,61 +466,136 @@ function waitForNavigation(tabId, beforeUrl, timeoutMs) {
   });
 }
 
-async function funnelNext(tabId, visitedArr) {
-  const visited = new Set((visitedArr || []).map(canonUrl));
-  let before = '';
-  try { before = (await chrome.tabs.get(tabId)).url || ''; } catch { return { ok: true, moved: false, reason: 'no-tab' }; }
-
-  // Fill any required form fields first (ZIP, email, name, consent…) so the
-  // page's validation lets the CTA advance to the next step.
+// A cheap fingerprint of the visible page — length + a text snippet. Used to
+// tell an in-page advance (quiz "Question 1 of 6" -> "Question 2 of 6", a
+// multi-step form) apart from "nothing happened".
+async function pageSignature(tabId) {
   try {
-    await chrome.scripting.executeScript({ target: { tabId }, func: fillFunnelForms });
-    await sleep(350);
-  } catch { /* page may block injection */ }
-
-  let cta = null;
-  try {
-    const results = await chrome.scripting.executeScript({ target: { tabId }, func: findForwardCta });
-    cta = results && results[0] && results[0].result;
-  } catch (e) {
-    return { ok: true, moved: false, reason: 'inject-failed: ' + (e && e.message) };
+    const r = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => {
+        const t = ((document.body && document.body.innerText) || '').replace(/\s+/g, ' ').trim();
+        return t.length + '::' + t.slice(0, 180);
+      },
+    });
+    return (r && r[0] && r[0].result) || '';
+  } catch {
+    return '';
   }
-  if (!cta) return { ok: true, moved: false, reason: 'no-cta' };
+}
 
-  // Attach the navigation waiter BEFORE triggering the action, otherwise a fast
-  // page can fire its 'complete' event before we start listening (false timeout).
-  if (cta.kind === 'link' && cta.href) {
-    if (isStopHost(cta.href)) return { ok: true, moved: false, reason: 'stop-host' };
-    if (visited.has(canonUrl(cta.href))) return { ok: true, moved: false, reason: 'visited' };
-    const navPromise = waitForNavigation(tabId, before, 15000);
-    try { await chrome.tabs.update(tabId, { url: cta.href }); } catch { return { ok: true, moved: false, reason: 'nav-failed' }; }
-    if (!(await navPromise)) return { ok: true, moved: false, reason: 'no-nav' };
-  } else if (cta.kind === 'click' && cta.selector) {
-    const navPromise = waitForNavigation(tabId, before, 15000);
-    let clicked = false;
-    try {
-      const cr = await chrome.scripting.executeScript({
-        target: { tabId },
-        func: (selector) => {
-          const el = document.querySelector(selector);
-          if (el) { el.scrollIntoView({ block: 'center' }); el.click(); return true; }
-          return false;
-        },
-        args: [cta.selector],
-      });
-      clicked = cr && cr[0] && cr[0].result === true;
-    } catch { return { ok: true, moved: false, reason: 'click-failed' }; }
-    if (!clicked) return { ok: true, moved: false, reason: 'target-gone' };
-    if (!(await navPromise)) return { ok: true, moved: false, reason: 'no-nav' };
-  } else {
-    return { ok: true, moved: false, reason: 'no-target' };
+// After an action, poll for the first of: a URL change ('nav'), a visible
+// content change ('content'), or nothing ('none') within the timeout.
+async function waitForChange(tabId, beforeUrl, beforeSig, timeoutMs) {
+  const bc = canonUrl(beforeUrl);
+  const deadline = Date.now() + (timeoutMs || 10000);
+  while (Date.now() < deadline) {
+    await sleep(300);
+    let url = '';
+    try { url = (await chrome.tabs.get(tabId)).url || ''; } catch { return { type: 'none' }; }
+    if (canonUrl(url) !== bc) return { type: 'nav', url };
+    const sig = await pageSignature(tabId);
+    if (sig && sig !== beforeSig) return { type: 'content', sig };
   }
+  return { type: 'none' };
+}
 
+// Wait until the tab reports it finished loading (best-effort).
+async function waitForLoad(tabId, timeoutMs) {
+  const deadline = Date.now() + (timeoutMs || 12000);
+  while (Date.now() < deadline) {
+    let st = 'complete';
+    try { st = (await chrome.tabs.get(tabId)).status || 'complete'; } catch { return; }
+    if (st === 'complete') { await sleep(600); return; }
+    await sleep(300);
+  }
+}
+
+// A real URL change happened — resolve the destination (respecting stop hosts
+// and the visited set) after the page settles.
+async function finalizeNav(tabId, visited) {
+  await waitForLoad(tabId, 15000);
   let after = '';
   try { after = (await chrome.tabs.get(tabId)).url || ''; } catch { return { ok: true, moved: false, reason: 'no-tab-after' }; }
   if (isStopHost(after)) return { ok: true, moved: false, reason: 'stop-host-after', url: after };
   if (visited.has(canonUrl(after))) return { ok: true, moved: false, reason: 'loop', url: after };
   return { ok: true, moved: true, url: after };
+}
+
+async function clickSelector(tabId, selector) {
+  try {
+    const cr = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (sel) => {
+        const el = document.querySelector(sel);
+        if (el) { el.scrollIntoView({ block: 'center' }); el.click(); return true; }
+        return false;
+      },
+      args: [selector],
+    });
+    return cr && cr[0] && cr[0].result === true;
+  } catch {
+    return false;
+  }
+}
+
+async function funnelNext(tabId, visitedArr) {
+  const visited = new Set((visitedArr || []).map(canonUrl));
+  let before = '';
+  try { before = (await chrome.tabs.get(tabId)).url || ''; } catch { return { ok: true, moved: false, reason: 'no-tab' }; }
+
+  // Keep clicking the forward control until the URL changes (a real new step)
+  // or the page stops advancing. This handles in-page multi-step widgets — quiz
+  // questions, opt-in steppers — where the content changes but the URL doesn't.
+  const MAX_INPAGE = 25;
+  let sig = await pageSignature(tabId);
+
+  for (let k = 0; k < MAX_INPAGE; k++) {
+    // Fill fields every pass — each quiz question / step may reveal new ones.
+    try { await chrome.scripting.executeScript({ target: { tabId }, func: fillFunnelForms }); await sleep(250); }
+    catch { /* page may block injection */ }
+
+    let cta = null;
+    try {
+      const results = await chrome.scripting.executeScript({ target: { tabId }, func: findForwardCta });
+      cta = results && results[0] && results[0].result;
+    } catch (e) {
+      return { ok: true, moved: false, reason: 'inject-failed: ' + (e && e.message) };
+    }
+
+    if (!cta) {
+      // No forward control right now. If we've been advancing in-page, the last
+      // action may still trigger an async redirect — give it a moment.
+      if (k > 0) {
+        const ch = await waitForChange(tabId, before, sig, 6000);
+        if (ch.type === 'nav') return finalizeNav(tabId, visited);
+        if (ch.type === 'content') { sig = ch.sig; continue; }
+      }
+      return { ok: true, moved: false, reason: k > 0 ? 'inpage-end' : 'no-cta' };
+    }
+
+    if (cta.kind === 'link' && cta.href) {
+      if (isStopHost(cta.href)) return { ok: true, moved: false, reason: 'stop-host' };
+      if (visited.has(canonUrl(cta.href))) return { ok: true, moved: false, reason: 'visited' };
+      try { await chrome.tabs.update(tabId, { url: cta.href }); } catch { return { ok: true, moved: false, reason: 'nav-failed' }; }
+      const ch = await waitForChange(tabId, before, sig, 15000);
+      if (ch.type === 'nav') return finalizeNav(tabId, visited);
+      return { ok: true, moved: false, reason: 'link-no-nav' };
+    }
+
+    if (cta.kind === 'click' && cta.selector) {
+      const clicked = await clickSelector(tabId, cta.selector);
+      if (!clicked) return { ok: true, moved: false, reason: k > 0 ? 'inpage-target-gone' : 'target-gone' };
+      const ch = await waitForChange(tabId, before, sig, 12000);
+      if (ch.type === 'nav') return finalizeNav(tabId, visited);
+      if (ch.type === 'content') { sig = ch.sig; continue; } // advanced in-page → keep going
+      return { ok: true, moved: false, reason: k > 0 ? 'inpage-stuck' : 'no-nav' };
+    }
+
+    return { ok: true, moved: false, reason: 'no-target' };
+  }
+
+  return { ok: true, moved: false, reason: 'inpage-max' };
 }
 
 // ---------------------------------------------------------------------------
