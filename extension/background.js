@@ -382,44 +382,18 @@ function fillFunnelForms() {
   return filled;
 }
 
-// Injected into the page (runs in the page's context, must be self-contained):
-// pick the single most likely "go forward" control. Returns
-// { kind:'link', href } | { kind:'click', selector } | null.
-function findForwardCta() {
+// Injected into the page (self-contained): return a RANKED LIST of plausible
+// "go forward" controls, best first. The caller tries them one by one until the
+// page actually advances — so if the first button (e.g. "False") doesn't move
+// the funnel, it falls back to the next ("True"), a "Continue", etc.
+function findForwardCandidates() {
   const CTA = /(continue|next|proceed|checkout|order now|place order|complete|get\s|claim|add to cart|buy now|yes[,! ]|start|begin|apply|check|verify|eligib|qualif|get started|find out|see if|submit|reveal|unlock|avanti|continua|procedi|ordina|acquista|completa|aggiungi al carrello|prosegui|vai al|inizia|verifica|controlla|scopri|richiedi|invia|s[iì][,! ])/i;
-  const BAD = /(log ?in|sign ?in|sign ?up|register|menu|home|back|indietro|privacy|terms|termini|cookie|close|chiudi|account|my cart|search|cerca|faq|contact|contatt|support|assist|share|condividi|facebook|instagram|twitter|tiktok|youtube|refund|return|reso)/i;
+  const BAD = /(log ?in|sign ?in|sign ?up|register|menu|\bhome\b|\bback\b|indietro|privacy|terms|termini|cookie|\bclose\b|chiudi|account|my cart|\bsearch\b|cerca|faq|contact|contatt|support|assist|\bshare\b|condividi|facebook|instagram|twitter|tiktok|youtube|refund|\breturn\b|\breso\b)/i;
+  const ANSWER = /^(true|false|yes|no|s[iì]|vero|falso|a|b|c|d|1|2|3|4|male|female|maschio|femmina|agree|disagree|d'accordo)$/i;
   const vpH = window.innerHeight || 800;
   const nodes = Array.from(
-    document.querySelectorAll('a[href],button,input[type=submit],input[type=button],[role=button],.btn,[class*="btn"],[class*="cta"]'),
+    document.querySelectorAll('a[href],button,input[type=submit],input[type=button],[role=button],[onclick],.btn,[class*="btn"],[class*="cta"],[class*="answer"],[class*="option"],[class*="choice"]'),
   );
-  let best = null;
-  let bestScore = -1;
-  for (const el of nodes) {
-    let r;
-    try { r = el.getBoundingClientRect(); } catch { continue; }
-    if (r.width < 40 || r.height < 18) continue;
-    let style;
-    try { style = getComputedStyle(el); } catch { continue; }
-    if (style.visibility === 'hidden' || style.display === 'none' || Number(style.opacity) === 0) continue;
-    const rawHref = el.tagName === 'A' ? (el.getAttribute('href') || '') : '';
-    if (/^(tel:|mailto:|sms:|https?:\/\/(wa\.me|api\.whatsapp))/i.test(rawHref)) continue; // not a funnel step
-    const txt = String(el.innerText || el.value || el.getAttribute('aria-label') || '').trim().slice(0, 100);
-    if (!txt && el.tagName !== 'A') continue;
-    if (BAD.test(txt)) continue;
-    let score = 0;
-    if (CTA.test(txt)) score += 100;
-    score += Math.min((r.width * r.height) / 5000, 40);
-    if (r.top >= 0 && r.top < vpH) score += 20;
-    const href = el.tagName === 'A' ? el.href : '';
-    if (href && href.indexOf(location.origin) === 0) score += 10;
-    if (el.tagName === 'BUTTON' || (el.tagName === 'INPUT' && /submit|button/.test(el.type))) score += 15;
-    if (score > bestScore) { bestScore = score; best = { el, href, txt }; }
-  }
-  if (!best || bestScore < 40) return null;
-
-  if (best.href && /^https?:/i.test(best.href)) return { kind: 'link', href: best.href, text: best.txt };
-
-  // Build a reasonably-unique selector for the click target.
   const sel = (node) => {
     if (node.id) return '#' + CSS.escape(node.id);
     const parts = [];
@@ -436,7 +410,48 @@ function findForwardCta() {
     }
     return parts.join('>');
   };
-  return { kind: 'click', selector: sel(best.el), text: best.txt };
+  const scored = [];
+  const seenSel = new Set();
+  for (const el of nodes) {
+    let r;
+    try { r = el.getBoundingClientRect(); } catch { continue; }
+    if (r.width < 32 || r.height < 16) continue;
+    let style;
+    try { style = getComputedStyle(el); } catch { continue; }
+    if (style.visibility === 'hidden' || style.display === 'none' || Number(style.opacity) === 0) continue;
+    const rawHref = el.tagName === 'A' ? (el.getAttribute('href') || '') : '';
+    if (/^(tel:|mailto:|sms:|https?:\/\/(wa\.me|api\.whatsapp))/i.test(rawHref)) continue;
+    const txt = String(el.innerText || el.value || el.getAttribute('aria-label') || '').trim().slice(0, 100);
+    if (!txt && el.tagName !== 'A') continue;
+    if (BAD.test(txt)) continue;
+
+    const href = el.tagName === 'A' ? el.href : '';
+    // For anchors, only keep ones that look like a forward step (CTA text or a
+    // funnel-ish destination) — plain nav/footer links must not pull us away.
+    if (href && /^https?:/i.test(href)) {
+      const path = (() => { try { return new URL(href).pathname; } catch { return ''; } })();
+      if (!CTA.test(txt) && !/(upsell|downsell|\boto\b|offer|checkout|order|continue|next|thank|confirm|step|apply|quiz|survey)/i.test(path)) continue;
+    }
+
+    let score = 0;
+    if (CTA.test(txt)) score += 100;
+    if (ANSWER.test(txt)) score += 60; // quiz/survey answer buttons
+    score += Math.min((r.width * r.height) / 5000, 40);
+    if (r.top >= 0 && r.top < vpH) score += 20;
+    if (href && href.indexOf(location.origin) === 0) score += 10;
+    if (el.tagName === 'BUTTON' || (el.tagName === 'INPUT' && /submit|button/.test(el.type))) score += 15;
+    if (score < 15) continue;
+
+    const selector = sel(el);
+    if (seenSel.has(selector)) continue;
+    seenSel.add(selector);
+    scored.push({ selector, href: href && /^https?:/i.test(href) ? href : '', txt, score, top: r.top });
+  }
+  // Best score first; break ties by vertical position (higher on the page).
+  scored.sort((a, b) => b.score - a.score || a.top - b.top);
+  return scored.slice(0, 8).map((s) =>
+    s.href ? { kind: 'link', href: s.href, text: s.txt } : { kind: 'click', selector: s.selector, text: s.txt },
+  );
 }
 
 // Wait until the tab finishes loading a URL different from `beforeUrl`.
@@ -544,10 +559,12 @@ async function funnelNext(tabId, visitedArr) {
   let before = '';
   try { before = (await chrome.tabs.get(tabId)).url || ''; } catch { return { ok: true, moved: false, reason: 'no-tab' }; }
 
-  // Keep clicking the forward control until the URL changes (a real new step)
-  // or the page stops advancing. This handles in-page multi-step widgets — quiz
-  // questions, opt-in steppers — where the content changes but the URL doesn't.
-  const MAX_INPAGE = 25;
+  // Keep advancing until the URL changes (a real new step) or the page truly
+  // stops moving. Handles in-page multi-step widgets — quiz questions, opt-in
+  // steppers — where content changes but the URL doesn't. On each page state we
+  // try SEVERAL candidate controls in order: if the first (e.g. "False") does
+  // nothing, we fall back to the next ("True", "Continue", …) until one moves.
+  const MAX_INPAGE = 30;
   let sig = await pageSignature(tabId);
 
   for (let k = 0; k < MAX_INPAGE; k++) {
@@ -555,44 +572,49 @@ async function funnelNext(tabId, visitedArr) {
     try { await chrome.scripting.executeScript({ target: { tabId }, func: fillFunnelForms }); await sleep(250); }
     catch { /* page may block injection */ }
 
-    let cta = null;
+    let candidates = [];
     try {
-      const results = await chrome.scripting.executeScript({ target: { tabId }, func: findForwardCta });
-      cta = results && results[0] && results[0].result;
+      const results = await chrome.scripting.executeScript({ target: { tabId }, func: findForwardCandidates });
+      candidates = (results && results[0] && results[0].result) || [];
     } catch (e) {
       return { ok: true, moved: false, reason: 'inject-failed: ' + (e && e.message) };
     }
 
-    if (!cta) {
-      // No forward control right now. If we've been advancing in-page, the last
-      // action may still trigger an async redirect — give it a moment.
-      if (k > 0) {
+    // Try each candidate until one produces a URL change (new step) or a
+    // content change (advanced in-page). A candidate that does nothing is
+    // abandoned and we try the next one.
+    let progressed = false;
+    for (const cand of candidates) {
+      if (cand.kind === 'link' && cand.href) {
+        if (isStopHost(cand.href)) continue;
+        if (visited.has(canonUrl(cand.href))) continue;
+        try { await chrome.tabs.update(tabId, { url: cand.href }); } catch { continue; }
+        const ch = await waitForChange(tabId, before, sig, 15000);
+        if (ch.type === 'nav') return finalizeNav(tabId, visited);
+        if (ch.type === 'content') { sig = ch.sig; progressed = true; break; }
+        // Link didn't move us — stop trying links (we may have altered the URL).
+        return { ok: true, moved: false, reason: 'link-no-nav' };
+      }
+      if (cand.kind === 'click' && cand.selector) {
+        const clicked = await clickSelector(tabId, cand.selector);
+        if (!clicked) continue; // stale selector — next candidate
         const ch = await waitForChange(tabId, before, sig, 6000);
         if (ch.type === 'nav') return finalizeNav(tabId, visited);
-        if (ch.type === 'content') { sig = ch.sig; continue; }
+        if (ch.type === 'content') { sig = ch.sig; progressed = true; break; }
+        // No change from this button — try the next candidate.
       }
-      return { ok: true, moved: false, reason: k > 0 ? 'inpage-end' : 'no-cta' };
     }
 
-    if (cta.kind === 'link' && cta.href) {
-      if (isStopHost(cta.href)) return { ok: true, moved: false, reason: 'stop-host' };
-      if (visited.has(canonUrl(cta.href))) return { ok: true, moved: false, reason: 'visited' };
-      try { await chrome.tabs.update(tabId, { url: cta.href }); } catch { return { ok: true, moved: false, reason: 'nav-failed' }; }
-      const ch = await waitForChange(tabId, before, sig, 15000);
+    if (progressed) continue; // re-scan the (advanced) page for the next control
+
+    // Nothing we clicked moved the page. The last action might still trigger a
+    // delayed redirect — wait briefly before giving up.
+    if (k > 0) {
+      const ch = await waitForChange(tabId, before, sig, 6000);
       if (ch.type === 'nav') return finalizeNav(tabId, visited);
-      return { ok: true, moved: false, reason: 'link-no-nav' };
+      if (ch.type === 'content') { sig = ch.sig; continue; }
     }
-
-    if (cta.kind === 'click' && cta.selector) {
-      const clicked = await clickSelector(tabId, cta.selector);
-      if (!clicked) return { ok: true, moved: false, reason: k > 0 ? 'inpage-target-gone' : 'target-gone' };
-      const ch = await waitForChange(tabId, before, sig, 12000);
-      if (ch.type === 'nav') return finalizeNav(tabId, visited);
-      if (ch.type === 'content') { sig = ch.sig; continue; } // advanced in-page → keep going
-      return { ok: true, moved: false, reason: k > 0 ? 'inpage-stuck' : 'no-nav' };
-    }
-
-    return { ok: true, moved: false, reason: 'no-target' };
+    return { ok: true, moved: false, reason: k > 0 ? 'inpage-stuck-all' : (candidates.length ? 'no-progress' : 'no-cta') };
   }
 
   return { ok: true, moved: false, reason: 'inpage-max' };
