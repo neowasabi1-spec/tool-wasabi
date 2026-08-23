@@ -75,9 +75,14 @@ export async function GET(req: NextRequest) {
     // endpoint so we can deterministically join "own" + "shared library"
     // in a single round-trip; the per-branch filtering below replaces
     // the RLS we'd otherwise rely on.
+    // Templates / Valchiria library = archive-scoped funnels only. Rows linked
+    // to a project (project_id set) are the project's Competitor Landings and
+    // must NOT leak into the global Templates list — they live only inside that
+    // project. So we exclude them here.
     const baseSelect = supabaseAdmin
       .from('archived_funnels')
       .select(SELECT_COLS)
+      .is('project_id', null)
       .order('created_at', { ascending: false });
 
     // Master / no-JWT branch: see everything. The "Shared" badge is a
@@ -111,6 +116,7 @@ export async function GET(req: NextRequest) {
             .select(SELECT_COLS)
             .eq('owner_user_id', masterId)
             .eq('share_with_users', true)
+            .is('project_id', null)
             .order('created_at', { ascending: false })
         : Promise.resolve({ data: [], error: null } as { data: unknown[]; error: null }),
       supabaseAdmin
