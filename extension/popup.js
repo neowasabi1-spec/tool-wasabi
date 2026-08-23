@@ -395,6 +395,9 @@ async function onSaveFunnel(token, projectId) {
   const tags = els.tags.value.split(',').map((t) => t.trim()).filter(Boolean);
   const visited = [];
   const saved = [];
+  // All steps of this walk go into ONE archived_funnels "folder". The first
+  // save creates it and returns funnelId; every next save appends to it.
+  let funnelId = null;
 
   // Capture + save whatever page the tab is currently on as the next step.
   const captureCurrentStep = async (index) => {
@@ -415,7 +418,13 @@ async function onSaveFunnel(token, projectId) {
       category: domain.slice(0, 60), // domain acts as the funnel "folder"
       tags,
       projectId: projectId || null,
+      // Group every step under a single funnel folder.
+      funnelGroup: true,
+      funnelId: funnelId || undefined,
+      funnelName: domain,
+      stepIndex: index,
     });
+    if (data.funnelId) funnelId = data.funnelId;
     if (data.projectId) {
       await chrome.storage.local.set({ wasabi_last_project: data.projectId }).catch(() => {});
     }

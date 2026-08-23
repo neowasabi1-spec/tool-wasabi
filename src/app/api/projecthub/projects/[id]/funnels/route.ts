@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { canAccessProject } from '@/lib/auth/project-access';
+import { getCurrentUserId } from '@/lib/auth/get-current-user';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -34,12 +35,20 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   const { allowed } = await canAccessProject(req, id);
   if (!allowed) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
-  // Project-owned funnels + the shared library (section='funnel'), multi-step
-  // only so single-page competitor landings don't clutter the picker.
+  // Project-owned funnels + the shared library (section='funnel') + the
+  // caller's own saved funnels (so funnels walked by the extension into their
+  // archive are selectable too). Multi-step only, so single-page competitor
+  // landings don't clutter the picker.
+  const userId = await getCurrentUserId(req);
+  const orFilter = [
+    `project_id.eq.${id}`,
+    `section.eq.funnel`,
+    ...(userId ? [`owner_user_id.eq.${userId}`] : []),
+  ].join(',');
   const { data, error } = await supabaseAdmin
     .from('archived_funnels')
     .select('id, name, steps, total_steps, project_id, created_at')
-    .or(`project_id.eq.${id},section.eq.funnel`)
+    .or(orFilter)
     .order('created_at', { ascending: false })
     .limit(200);
 

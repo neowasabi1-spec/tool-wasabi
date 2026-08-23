@@ -18,6 +18,40 @@ export async function DELETE(
   const { allowed } = await canAccessProject(req, id);
   if (!allowed) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
+  // Composite id `${rowId}::${stepIndex}` → remove a single step from a funnel
+  // folder (delete the whole row only when it was its last step).
+  if (lid.includes('::')) {
+    const [rowId, idxRaw] = lid.split('::');
+    const idx = Number(idxRaw);
+    const { data: row } = await supabaseAdmin
+      .from('archived_funnels')
+      .select('id, steps')
+      .eq('id', rowId)
+      .eq('project_id', id)
+      .maybeSingle();
+    if (!row) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+
+    const steps = Array.isArray(row.steps) ? (row.steps as Array<{ page_id?: string }>) : [];
+    const removed = steps[idx];
+    const nextSteps = steps.filter((_, i) => i !== idx);
+
+    if (nextSteps.length === 0) {
+      await supabaseAdmin.from('archived_funnels').delete().eq('id', rowId).eq('project_id', id);
+    } else {
+      await supabaseAdmin
+        .from('archived_funnels')
+        .update({ steps: nextSteps, total_steps: nextSteps.length })
+        .eq('id', rowId)
+        .eq('project_id', id);
+    }
+    // Best-effort: drop the removed step's mirrored HTML.
+    try {
+      const pid = removed?.page_id;
+      if (pid) await supabaseAdmin.from('page_html').delete().eq('page_id', pid);
+    } catch { /* ignore */ }
+    return NextResponse.json({ success: true });
+  }
+
   const { error } = await supabaseAdmin
     .from('archived_funnels')
     .delete()

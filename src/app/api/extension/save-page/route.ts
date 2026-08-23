@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getCurrentUserId } from '@/lib/auth/get-current-user';
@@ -38,6 +39,14 @@ interface SaveBody {
   category?: string;
   tags?: string[];
   projectId?: string | null; // when set, link the page to a project's Competitor Landings
+  // Funnel-walk mode: instead of one single-step row per page, all the steps of
+  // a walked funnel go into ONE `archived_funnels` row (the "folder"). The first
+  // step creates the folder and returns its `funnelId`; every next step passes
+  // that `funnelId` (+ stepIndex) so it is appended to the same folder.
+  funnelGroup?: boolean;
+  funnelId?: string | null;
+  funnelName?: string; // folder name (usually the funnel domain)
+  stepIndex?: number;
 }
 
 const VALID_TYPES = new Set(PAGE_TYPE_OPTIONS.map((o) => o.value as string));
@@ -149,6 +158,130 @@ export async function POST(req: NextRequest) {
     category,
     tags,
   };
+
+  // ── Funnel-walk mode: one folder row, many steps ──────────────────────────
+  // Each captured page becomes a STEP inside a single archived_funnels row so
+  // the walked funnel reads as ONE multi-step folder (and shows up in the
+  // Chimera "Funnel to build" picker), instead of N loose single-step rows.
+  if (body.funnelGroup) {
+    const stepIndex = Number(body.stepIndex) > 0 ? Math.floor(Number(body.stepIndex)) : 1;
+    // Per-step storage key (page_html.page_id is free text, no FK) so every step
+    // keeps its own HTML mirror + screenshots + editor link.
+    const stepPageId = randomUUID();
+
+    const shots = body.screenshots || {};
+    const resolveShot = (
+      variant: 'desktop' | 'mobile',
+      storagePath?: string,
+      dataUrl?: string,
+    ): Promise<string | null> => {
+      if (storagePath) return Promise.resolve(publicUrlForShotPath(storagePath));
+      if (dataUrl) return uploadScreenshot(stepPageId, variant, dataUrl);
+      return Promise.resolve(null);
+    };
+    const [desktopUrl, mobileUrl] = await Promise.all([
+      resolveShot('desktop', body.screenshotDesktopPath, shots.desktop),
+      resolveShot('mobile', body.screenshotMobilePath, shots.mobile),
+    ]);
+
+    const { error: htmlErr } = await supabaseAdmin.from('page_html').upsert(
+      { page_id: stepPageId, kind: 'cloned', variant: 'desktop', html, owner_user_id: userId, updated_at: new Date().toISOString() },
+      { onConflict: 'page_id,kind,variant' },
+    );
+    if (htmlErr) console.warn('[extension/save-page] page_html upsert failed:', htmlErr.message);
+    const htmlUrl = `/api/funnel-html?pageId=${encodeURIComponent(stepPageId)}&kind=cloned&variant=desktop&v=${Date.now()}`;
+
+    clonedData.screenshotDesktopUrl = desktopUrl;
+    clonedData.screenshotMobileUrl = mobileUrl;
+    clonedData.htmlUrl = htmlUrl;
+
+    const step = {
+      step_index: stepIndex,
+      name,
+      page_type: pageType,
+      category,
+      template_name: '',
+      product_name: '',
+      url_to_swipe: url,
+      prompt: '',
+      feedback: '',
+      swipe_status: 'completed',
+      swipe_result: '',
+      swiped_data: null,
+      cloned_data: clonedData,
+      page_id: stepPageId,
+    };
+
+    if (category) {
+      try {
+        await supabaseAdmin
+          .from('archive_categories')
+          .upsert({ name: category, owner_user_id: userId }, { onConflict: 'owner_user_id,name' });
+      } catch { /* table may not exist yet */ }
+    }
+
+    const folderName = String(body.funnelName || category || name).slice(0, 120);
+    const existingId = String(body.funnelId || '').trim();
+
+    // Append to an existing folder the caller owns.
+    if (existingId) {
+      const { data: row } = await supabaseAdmin
+        .from('archived_funnels')
+        .select('id, steps, owner_user_id')
+        .eq('id', existingId)
+        .maybeSingle();
+      if (row && row.owner_user_id === userId) {
+        const steps = Array.isArray(row.steps) ? (row.steps as unknown[]) : [];
+        steps.push(step);
+        await supabaseAdmin
+          .from('archived_funnels')
+          .update({ steps, total_steps: steps.length })
+          .eq('id', existingId);
+        return NextResponse.json({
+          success: true,
+          funnelId: existingId,
+          stepIndex,
+          pageId: stepPageId,
+          projectId,
+          htmlUrl,
+          editorUrl: `/edit/${stepPageId}`,
+          screenshotDesktopUrl: desktopUrl,
+          screenshotMobileUrl: mobileUrl,
+        });
+      }
+      // Not found / not owned → fall through and start a fresh folder.
+    }
+
+    // First step → create the folder row.
+    const { data: createdFolder, error: folderErr } = await supabaseAdmin
+      .from('archived_funnels')
+      .insert({
+        name: folderName,
+        total_steps: 1,
+        steps: [step],
+        owner_user_id: userId,
+        ...(projectId ? { project_id: projectId } : {}),
+      })
+      .select('id')
+      .single();
+    if (folderErr || !createdFolder) {
+      return NextResponse.json(
+        { error: `Could not create funnel folder: ${folderErr?.message || 'unknown'}` },
+        { status: 500 },
+      );
+    }
+    return NextResponse.json({
+      success: true,
+      funnelId: createdFolder.id,
+      stepIndex,
+      pageId: stepPageId,
+      projectId,
+      htmlUrl,
+      editorUrl: `/edit/${stepPageId}`,
+      screenshotDesktopUrl: desktopUrl,
+      screenshotMobileUrl: mobileUrl,
+    });
+  }
 
   const buildStep = () => ({
     step_index: 1,
