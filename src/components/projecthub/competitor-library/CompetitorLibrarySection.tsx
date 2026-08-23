@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
@@ -8,8 +8,12 @@ import {
   BarChart2, Calendar, Globe, X, RefreshCw, Image as ImageIcon,
   Video, Bookmark, CheckSquare, Square, TrendingUp, Download, Copy, Check,
   Settings, Zap, FileText, Eye, LayoutTemplate, Repeat, Star, Flame,
-  Scissors, Film, Sparkles, DollarSign, Eraser, Folder,
+  Scissors, Film, Sparkles, DollarSign, Eraser, Folder, Activity, Users, Gauge,
 } from "lucide-react";
+import {
+  AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
+  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+} from "recharts";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
@@ -3138,10 +3142,405 @@ function MyFootageView({ projectId }: { projectId: string }) {
   );
 }
 
+// ──────────────────────────────────────────────────────────────────────────
+// SECTOR OVERVIEW — aggregated market-intelligence dashboard across every
+// tracked competitor in the project. Spend/reach are ESTIMATES (Meta does not
+// disclose them for commercial ads) and are always marked "est.".
+// ──────────────────────────────────────────────────────────────────────────
+
+// Numeric spend estimate (mirrors CardMetrics' string logic) for aggregation.
+function estSpendNumber(ad: CompetitorAd, country?: string): number {
+  const reach = typeof ad.reach === "number" && ad.reach > 0 ? ad.reach : null;
+  const cpm = cpmFor(ad, country);
+  if (reach) return (reach * EST_FREQUENCY / 1000) * cpm;
+  const d = daysRunning(ad);
+  const variants = ad.ad_variants && ad.ad_variants > 1 ? ad.ad_variants : 1;
+  if (d && d > 0) return d * DAILY_SPEND_BASE * Math.sqrt(Math.max(1, variants));
+  return 0;
+}
+
+function isActiveAd(ad: CompetitorAd): boolean {
+  return ad.ad_active === "true" || ad.is_active === "true";
+}
+
+// Monday-based ISO week key (YYYY-MM-DD of that Monday).
+function weekKey(dateStr: string | null | undefined): string | null {
+  if (!dateStr) return null;
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return null;
+  const day = (d.getDay() + 6) % 7;
+  const monday = new Date(d);
+  monday.setDate(d.getDate() - day);
+  monday.setHours(0, 0, 0, 0);
+  return monday.toISOString().slice(0, 10);
+}
+
+function KpiCard({ children }: { children: ReactNode }) {
+  return <div className="bg-card border border-border rounded-2xl p-4 flex flex-col">{children}</div>;
+}
+
+function SectorOverview({ projectId, onOpenBrand }: { projectId: string; onOpenBrand?: (b: CompetitorWithStats) => void }) {
+  const [brands, setBrands] = useState<CompetitorWithStats[]>([]);
+  const [creatives, setCreatives] = useState<CreativeWithBrand[]>([]);
+  const [landings, setLandings] = useState<Landing[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      setLoading(true);
+      try {
+        const [rb, rc, rl] = await Promise.all([
+          fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library`),
+          fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library/creatives`),
+          fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/landings`),
+        ]);
+        if (!alive) return;
+        if (rb.ok) setBrands(await rb.json());
+        if (rc.ok) setCreatives(await rc.json());
+        if (rl.ok) setLandings(await rl.json());
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, [projectId]);
+
+  const countryByBrand = useMemo(() => {
+    const m = new Map<number, string>();
+    for (const b of brands) m.set(b.id, countryFromAdLibraryUrl(b.ads_library_url));
+    return m;
+  }, [brands]);
+
+  const stats = useMemo(() => {
+    let totalSpend = 0, totalReach = 0, active = 0, images = 0, videos = 0;
+    for (const ad of creatives) {
+      totalSpend += estSpendNumber(ad, countryByBrand.get(ad.brand_id) || "");
+      if (typeof ad.reach === "number" && ad.reach > 0) totalReach += ad.reach;
+      if (isActiveAd(ad)) active++;
+      if (ad.media_type === "video") videos++; else images++;
+    }
+    return { totalSpend, totalReach, active, images, videos, total: creatives.length };
+  }, [creatives, countryByBrand]);
+
+  const weekly = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const ad of creatives) {
+      const k = weekKey(ad.ad_started_at || ad.created_at);
+      if (!k) continue;
+      map.set(k, (map.get(k) || 0) + 1);
+    }
+    return [...map.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1))
+      .slice(-26)
+      .map(([week, count]) => ({ label: week.slice(5), count }));
+  }, [creatives]);
+
+  const avgPerDay = weekly.length ? (weekly.reduce((s, w) => s + w.count, 0) / (weekly.length * 7)) : 0;
+
+  const countries = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const ad of creatives) {
+      const c = countryByBrand.get(ad.brand_id) || "—";
+      map.set(c, (map.get(c) || 0) + 1);
+    }
+    const total = creatives.length || 1;
+    return [...map.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5)
+      .map(([code, n]) => ({ code: code || "—", n, pct: Math.round((n / total) * 100) }));
+  }, [creatives, countryByBrand]);
+
+  const brandSpend = useMemo(() => {
+    const map = new Map<number, { id: number; name: string; spend: number; ads: number }>();
+    for (const ad of creatives) {
+      const cur = map.get(ad.brand_id) || { id: ad.brand_id, name: ad.brand_name || `Brand ${ad.brand_id}`, spend: 0, ads: 0 };
+      cur.spend += estSpendNumber(ad, countryByBrand.get(ad.brand_id) || "");
+      cur.ads += 1;
+      map.set(ad.brand_id, cur);
+    }
+    return [...map.values()].sort((a, b) => b.spend - a.spend).slice(0, 8);
+  }, [creatives, countryByBrand]);
+
+  const topAds = useMemo(() =>
+    [...creatives]
+      .map(ad => ({ ad, spend: estSpendNumber(ad, countryByBrand.get(ad.brand_id) || "") }))
+      .sort((a, b) => b.spend - a.spend)
+      .slice(0, 12),
+    [creatives, countryByBrand]);
+
+  const latest = useMemo(() =>
+    [...creatives]
+      .sort((a, b) => new Date(b.ad_started_at || b.created_at).getTime() - new Date(a.ad_started_at || a.created_at).getTime())
+      .slice(0, 5),
+    [creatives]);
+
+  const topLandings = useMemo(() => {
+    const map = new Map<string, { host: string; count: number; screenshot?: string; url: string }>();
+    for (const l of landings) {
+      const host = hostOf(l.url) || l.name;
+      const cur = map.get(host) || { host, count: 0, screenshot: l.screenshot, url: l.url };
+      cur.count += 1;
+      if (!cur.screenshot && l.screenshot) cur.screenshot = l.screenshot;
+      map.set(host, cur);
+    }
+    return [...map.values()].sort((a, b) => b.count - a.count).slice(0, 6);
+  }, [landings]);
+
+  const donut = [
+    { name: "Image", value: stats.images, color: "#3b82f6" },
+    { name: "Video", value: stats.videos, color: "#a855f7" },
+  ];
+  const money = (n: number) => `$${fmtCompact(Math.round(n))}`;
+
+  if (loading) {
+    return <div className="py-20 text-center text-sm text-muted-foreground">Loading market intelligence…</div>;
+  }
+
+  if (brands.length === 0) {
+    return (
+      <div className="py-20 text-center border-2 border-dashed border-border rounded-2xl">
+        <Gauge className="w-12 h-12 text-muted-foreground/30 mx-auto mb-3" />
+        <p className="text-sm font-semibold text-foreground mb-1">No competitors tracked yet</p>
+        <p className="text-xs text-muted-foreground max-w-md mx-auto">
+          Add competitors in the <b>Ads Library</b> tab. Once their ads are scraped, this overview
+          shows sector-wide spend, reach and the top-performing ads.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-end justify-between gap-3 flex-wrap">
+        <div>
+          <h3 className="text-lg font-bold text-foreground">Sector Overview</h3>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            Aggregated across {brands.length} tracked competitor{brands.length === 1 ? "" : "s"}.
+            Spend &amp; reach are modelled estimates (<span className="font-semibold">est.</span>), not disclosed figures.
+          </p>
+        </div>
+      </div>
+
+      {/* ── KPI ROW ── */}
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+        {/* Ads + image/video donut */}
+        <KpiCard>
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Ads tracked</p>
+          <div className="flex items-center gap-3 mt-1">
+            <div className="relative w-24 h-24 shrink-0">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie data={donut} dataKey="value" innerRadius={30} outerRadius={44} paddingAngle={2} stroke="none">
+                    {donut.map((d, i) => <Cell key={i} fill={d.color} />)}
+                  </Pie>
+                </PieChart>
+              </ResponsiveContainer>
+              <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                <span className="text-lg font-black text-foreground leading-none">{stats.total}</span>
+                <span className="text-[9px] text-muted-foreground">ads</span>
+              </div>
+            </div>
+            <div className="space-y-1 text-xs">
+              <p className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" /><b>{stats.active}</b> active</p>
+              <p className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-blue-500" /><b>{stats.images}</b> image</p>
+              <p className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-purple-500" /><b>{stats.videos}</b> video</p>
+            </div>
+          </div>
+        </KpiCard>
+
+        {/* Total est. spend + latest moves */}
+        <KpiCard>
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1">
+            <DollarSign className="w-3.5 h-3.5" /> Total AdSpend <span className="text-[9px] font-semibold text-muted-foreground/70">est.</span>
+          </p>
+          <p className="text-2xl font-black text-foreground mt-1">{money(stats.totalSpend)}</p>
+          <p className="text-[10px] text-muted-foreground mb-1.5">Latest moves</p>
+          <div className="space-y-1 overflow-hidden">
+            {latest.slice(0, 3).map(a => (
+              <p key={a.id} className="text-[11px] text-muted-foreground truncate flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" />
+                <b className="text-foreground">{a.brand_name}</b> · {a.headline || a.name || "new ad"}
+              </p>
+            ))}
+            {latest.length === 0 && <p className="text-[11px] text-muted-foreground">—</p>}
+          </div>
+        </KpiCard>
+
+        {/* Total est. reach + country distribution */}
+        <KpiCard>
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1">
+            <Eye className="w-3.5 h-3.5" /> Total Reach <span className="text-[9px] font-semibold text-muted-foreground/70">est.</span>
+          </p>
+          <p className="text-2xl font-black text-foreground mt-1">{fmtCompact(stats.totalReach)}</p>
+          <p className="text-[10px] text-muted-foreground mb-1.5">Country distribution</p>
+          <div className="space-y-1">
+            {countries.map(c => (
+              <div key={c.code} className="flex items-center gap-2 text-[11px]">
+                <span className="w-7 font-semibold text-foreground">{c.code}</span>
+                <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
+                  <div className="h-full bg-primary" style={{ width: `${c.pct}%` }} />
+                </div>
+                <span className="w-8 text-right text-muted-foreground">{c.pct}%</span>
+              </div>
+            ))}
+          </div>
+        </KpiCard>
+
+        {/* Brands / most active */}
+        <KpiCard>
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1">
+            <Users className="w-3.5 h-3.5" /> Competitors
+          </p>
+          <p className="text-2xl font-black text-foreground mt-1">{brands.length}</p>
+          <p className="text-[10px] text-muted-foreground mb-1.5">Top spenders <span className="text-muted-foreground/70">est.</span></p>
+          <div className="space-y-1">
+            {brandSpend.slice(0, 4).map(b => (
+              <button key={b.id}
+                onClick={() => { const full = brands.find(x => x.id === b.id); if (full && onOpenBrand) onOpenBrand(full); }}
+                className="w-full flex items-center gap-2 text-[11px] hover:text-primary transition-colors">
+                <span className="flex-1 text-left truncate font-medium text-foreground">{b.name}</span>
+                <span className="text-muted-foreground">{money(b.spend)}</span>
+              </button>
+            ))}
+          </div>
+        </KpiCard>
+      </div>
+
+      {/* ── CHARTS ROW ── */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="lg:col-span-2 bg-card border border-border rounded-2xl p-4">
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-sm font-bold text-foreground flex items-center gap-1.5"><Activity className="w-4 h-4 text-primary" /> New ads over time</p>
+            <p className="text-xs text-muted-foreground">Ø {avgPerDay.toFixed(2)} / day</p>
+          </div>
+          <div className="h-56">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={weekly} margin={{ top: 4, right: 8, left: -18, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="newAds" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#22c55e" stopOpacity={0.35} />
+                    <stop offset="100%" stopColor="#22c55e" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
+                <XAxis dataKey="label" tick={{ fontSize: 10 }} tickLine={false} axisLine={false} minTickGap={16} />
+                <YAxis tick={{ fontSize: 10 }} tickLine={false} axisLine={false} allowDecimals={false} width={28} />
+                <Tooltip contentStyle={{ fontSize: 12, borderRadius: 8 }} />
+                <Area type="monotone" dataKey="count" stroke="#16a34a" strokeWidth={2} fill="url(#newAds)" name="New ads" />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        <div className="bg-card border border-border rounded-2xl p-4">
+          <p className="text-sm font-bold text-foreground flex items-center gap-1.5 mb-2"><BarChart2 className="w-4 h-4 text-primary" /> Ads by competitor</p>
+          <div className="h-56">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={brandSpend} layout="vertical" margin={{ top: 0, right: 8, left: 0, bottom: 0 }}>
+                <XAxis type="number" hide />
+                <YAxis type="category" dataKey="name" tick={{ fontSize: 10 }} tickLine={false} axisLine={false} width={90} />
+                <Tooltip contentStyle={{ fontSize: 12, borderRadius: 8 }} />
+                <Bar dataKey="ads" fill="#22c55e" radius={[0, 4, 4, 0]} name="ads" />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      </div>
+
+      {/* ── TOP LANDING PAGES ── */}
+      {topLandings.length > 0 && (
+        <div className="bg-card border border-border rounded-2xl p-4">
+          <p className="text-sm font-bold text-foreground flex items-center gap-1.5 mb-3"><LayoutTemplate className="w-4 h-4 text-primary" /> Top landing pages</p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {topLandings.map(l => (
+              <div key={l.host} className="flex items-center gap-3 border border-border rounded-xl p-2">
+                <div className="w-14 h-14 rounded-lg overflow-hidden bg-slate-100 shrink-0">
+                  {l.screenshot
+                    ? <img src={l.screenshot} alt={l.host} className="w-full h-full object-cover object-top" />
+                    : <div className="w-full h-full flex items-center justify-center"><Globe className="w-5 h-5 text-slate-400" /></div>}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-semibold text-foreground truncate flex items-center gap-1">
+                    <img src={`https://www.google.com/s2/favicons?domain=${l.host}&sz=32`} alt="" className="w-3.5 h-3.5 rounded-sm"
+                      onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }} />
+                    {l.host}
+                  </p>
+                  <p className="text-[11px] text-muted-foreground">{l.count} page{l.count === 1 ? "" : "s"} saved</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── TOP ADS BOARD ── */}
+      <div>
+        <div className="flex items-center gap-2 mb-3">
+          <Flame className="w-4 h-4 text-orange-500" />
+          <h4 className="text-base font-bold text-foreground">Top Ads</h4>
+          <span className="text-[11px] text-muted-foreground">ranked by estimated spend</span>
+        </div>
+        {topAds.length === 0 ? (
+          <div className="py-12 text-center border-2 border-dashed border-border rounded-2xl text-sm text-muted-foreground">
+            No ads scraped yet.
+          </div>
+        ) : (
+          <div className="columns-1 sm:columns-2 lg:columns-3 xl:columns-4 gap-4">
+            {topAds.map(({ ad, spend }, i) => {
+              const reach = typeof ad.reach === "number" && ad.reach > 0 ? ad.reach : null;
+              return (
+                <div key={ad.id} className="group relative mb-4 break-inside-avoid bg-card border border-border rounded-2xl overflow-hidden hover:border-primary/40 hover:shadow-lg transition-all">
+                  {/* rank + est metrics header */}
+                  <div className="flex items-center gap-2 px-3 py-2 border-b border-border/60">
+                    <span className="flex items-center justify-center w-5 h-5 rounded-full bg-foreground text-background text-[10px] font-black shrink-0">{i + 1}</span>
+                    <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600">
+                      <DollarSign className="w-3 h-3" />{money(spend)} <span className="text-[8px] font-semibold text-muted-foreground/70">est.</span>
+                    </span>
+                    {reach != null && (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-sky-500/10 text-sky-600">
+                        <Eye className="w-3 h-3" />{fmtCompact(reach)}
+                      </span>
+                    )}
+                  </div>
+                  {/* brand line */}
+                  <div className="flex items-center gap-1.5 px-3 pt-2 text-[11px] text-muted-foreground">
+                    <Globe className="w-3 h-3 shrink-0" />
+                    <span className="font-semibold text-foreground truncate">{ad.brand_name}</span>
+                    {isActiveAd(ad) && <span className="ml-auto text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-green-500 text-white shrink-0">ACTIVE</span>}
+                  </div>
+                  {(ad.hook || ad.headline || ad.body_text) && (
+                    <p className="px-3 pt-1 pb-2 text-xs text-foreground/90 line-clamp-2">{ad.hook || ad.headline || ad.body_text}</p>
+                  )}
+                  {/* creative */}
+                  <div className="relative overflow-hidden bg-slate-100">
+                    {ad.file_path ? (
+                      ad.media_type === "video" ? (
+                        <div className="w-full aspect-[4/5] relative bg-slate-100">
+                          <video src={videoThumbSrc(ad.file_path)} muted playsInline preload="metadata" className="w-full h-full object-cover" />
+                          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                            <div className="w-10 h-10 rounded-full bg-slate-900/45 flex items-center justify-center"><Play className="w-4 h-4 text-white" /></div>
+                          </div>
+                        </div>
+                      ) : (
+                        <img src={getUploadUrl(ad.file_path)} alt={ad.name} className="w-full h-auto block" />
+                      )
+                    ) : (
+                      <div className="w-full aspect-[4/5]"><AdPlaceholder ad={ad} index={i} /></div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── MAIN EXPORT ──
-type Tab = "ads" | "landings" | "shots" | "footage" | "generated" | "funnel";
+type Tab = "overview" | "ads" | "landings" | "shots" | "footage" | "generated" | "funnel";
 
 const LIBRARY_TABS = [
+  { id: "overview" as Tab, label: "Overview", icon: Gauge },
   { id: "ads" as Tab, label: "Ads Library", icon: BarChart2 },
   { id: "landings" as Tab, label: "Landings", icon: LayoutTemplate },
   { id: "shots" as Tab, label: "Shots", icon: Film },
@@ -3151,7 +3550,7 @@ const LIBRARY_TABS = [
 ] as const;
 
 export function CompetitorLibrarySection({ projectId }: { projectId: string }) {
-  const [tab, setTab] = useState<Tab>("ads");
+  const [tab, setTab] = useState<Tab>("overview");
   const [selected, setSelected] = useState<CompetitorWithStats | null>(null);
   const [adsView, setAdsView] = useState<"by" | "all">("by");
 
@@ -3190,6 +3589,10 @@ export function CompetitorLibrarySection({ projectId }: { projectId: string }) {
           </button>
         ))}
       </div>
+
+      {tab === "overview" && (
+        <SectorOverview projectId={projectId} onOpenBrand={(b) => { setTab("ads"); setSelected(b); }} />
+      )}
 
       {tab === "landings" && <CompetitorLandingsView projectId={projectId} />}
 
