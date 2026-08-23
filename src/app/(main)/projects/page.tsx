@@ -1269,7 +1269,7 @@ export default function ProjectsPage() {
 
   async function launchAutopilot() {
     if (!apProduct.trim()) {
-      toast.error('Inserisci almeno il nome del prodotto.');
+      toast.error('Enter at least the product name.');
       return;
     }
     setApLaunching(true);
@@ -1285,8 +1285,8 @@ export default function ProjectsPage() {
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || 'Avvio fallito');
-      toast.success(data.created ? 'Progetto creato — Protocollo Chimera avviato.' : 'Protocollo Chimera avviato sul progetto esistente.');
+      if (!res.ok) throw new Error(data?.error || 'Launch failed');
+      toast.success(data.created ? 'Project created — Chimera Protocol started.' : 'Chimera Protocol started on the existing project.');
       // Jump straight to the project's Autopilot tab to watch progress.
       router.push(`/projects/${data.projectId}?section=autopilot`);
     } catch (e) {
@@ -1424,7 +1424,7 @@ export default function ProjectsPage() {
               className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-violet-600 to-blue-600 hover:from-violet-700 hover:to-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
             >
               <Rocket className="w-4 h-4" />
-              Nuovo con Protocollo Chimera
+              New with Chimera Protocol
             </button>
 
             <button
@@ -1442,18 +1442,18 @@ export default function ProjectsPage() {
           <div className="bg-white border border-violet-200 rounded-xl p-5 mb-4 shadow-sm">
             <div className="flex items-center gap-2 mb-1">
               <Rocket className="w-4 h-4 text-violet-600" />
-              <h3 className="text-sm font-semibold text-slate-900">Nuovo progetto con Protocollo Chimera</h3>
+              <h3 className="text-sm font-semibold text-slate-900">New project with Chimera Protocol</h3>
             </div>
             <p className="text-xs text-slate-500 mb-4">
-              Dai il prodotto (e opzionalmente competitor + descrizione): crea/aggiorna il progetto e fa da solo
-              ricerca mercato → brief → competitor → ads → landing.
+              Give it the product (and optionally competitor + description): it creates/updates the project and runs
+              everything on its own — market research → brief → competitor → ads → landing.
             </p>
             <div className="grid gap-3 sm:grid-cols-2">
               <input
                 type="text"
                 value={apProduct}
                 onChange={e => setApProduct(e.target.value)}
-                placeholder="Nome prodotto (es. Crema anti-age Rivela)"
+                placeholder="Product name (e.g. Rivela anti-age cream)"
                 className="bg-white border border-slate-200 rounded-lg px-3 py-2 text-slate-900 text-sm focus:outline-none focus:border-violet-500"
                 autoFocus
                 disabled={apLaunching}
@@ -1462,7 +1462,7 @@ export default function ProjectsPage() {
                 type="text"
                 value={apCompetitor}
                 onChange={e => setApCompetitor(e.target.value)}
-                placeholder="Link competitor (opzionale)"
+                placeholder="Competitor link (optional)"
                 className="bg-white border border-slate-200 rounded-lg px-3 py-2 text-slate-900 text-sm focus:outline-none focus:border-violet-500"
                 disabled={apLaunching}
               />
@@ -1471,14 +1471,14 @@ export default function ProjectsPage() {
               type="text"
               value={apMarket}
               onChange={e => setApMarket(e.target.value)}
-              placeholder="Mercato / lingua target (es. Germania · tedesco). Opzionale: altrimenti lo deduce dalla descrizione"
+              placeholder="Target market / language (e.g. Germany · German). Optional: otherwise inferred from the description"
               className="mt-3 w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-slate-900 text-sm focus:outline-none focus:border-violet-500"
               disabled={apLaunching}
             />
             <textarea
               value={apDesc}
               onChange={e => setApDesc(e.target.value)}
-              placeholder="Descrizione / note (opzionale): ingredienti, benefici, prezzo, target, tono..."
+              placeholder="Description / notes (optional): ingredients, benefits, price, target, tone..."
               rows={3}
               className="mt-3 w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-slate-900 text-sm focus:outline-none focus:border-violet-500 resize-y"
               disabled={apLaunching}
@@ -1490,15 +1490,15 @@ export default function ProjectsPage() {
                 className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-violet-600 to-blue-600 hover:from-violet-700 hover:to-blue-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors"
               >
                 {apLaunching
-                  ? <><Loader2 className="w-4 h-4 animate-spin" /> Avvio…</>
-                  : <><Sparkles className="w-4 h-4" /> Avvia Protocollo Chimera</>}
+                  ? <><Loader2 className="w-4 h-4 animate-spin" /> Launching…</>
+                  : <><Sparkles className="w-4 h-4" /> Start Chimera Protocol</>}
               </button>
               <button
                 onClick={() => { setShowAutopilot(false); setApProduct(''); setApCompetitor(''); setApMarket(''); setApDesc(''); }}
                 disabled={apLaunching}
                 className="px-3 py-2 text-slate-500 hover:text-slate-900 text-sm rounded-lg transition-colors"
               >
-                Annulla
+                Cancel
               </button>
             </div>
           </div>

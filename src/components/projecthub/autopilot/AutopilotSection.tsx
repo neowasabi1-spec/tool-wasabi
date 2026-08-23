@@ -146,7 +146,7 @@ export function AutopilotSection({
     <div className="space-y-6">
       <div>
         <h2 className="text-xl font-semibold text-foreground mb-1 flex items-center gap-2">
-          <Rocket className="w-5 h-5 text-primary" /> Protocollo Chimera
+          <Rocket className="w-5 h-5 text-primary" /> Chimera Protocol
         </h2>
         <p className="text-sm text-muted-foreground">
           Give it the product, market, competitor and (optionally) a funnel. The tool automatically runs
@@ -230,7 +230,7 @@ export function AutopilotSection({
             {launching || running ? (
               <><Loader2 className="w-4 h-4 animate-spin" /> {running ? 'Running…' : 'Launching…'}</>
             ) : (
-              <><Sparkles className="w-4 h-4" /> Start Protocollo Chimera</>
+              <><Sparkles className="w-4 h-4" /> Start Chimera Protocol</>
             )}
           </Button>
           <Button variant="outline" size="sm" onClick={loadHistory} className="gap-2">

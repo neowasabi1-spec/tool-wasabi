@@ -31,7 +31,7 @@ type ProjectFile = {
 };
 
 const SECTIONS = [
-  { id: 'autopilot' as Section, label: 'Protocollo Chimera', icon: Rocket },
+  { id: 'autopilot' as Section, label: 'Chimera Protocol', icon: Rocket },
   { id: 'brief' as Section, label: 'General Brief', icon: FileText },
   { id: 'funnel' as Section, label: 'Funnel', icon: Layers },
   { id: 'competitor-library' as Section, label: 'Competitor Library', icon: Globe2 },

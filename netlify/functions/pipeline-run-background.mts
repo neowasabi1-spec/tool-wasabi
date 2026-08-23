@@ -452,7 +452,7 @@ async function createFunnelStep(supabase: SupabaseClient, projectId: string, opt
     step_type: opts.stepType,
     status: 'ready',
     auto_gen: true,
-    flow_name: opts.flowName || 'Autopilot',
+    flow_name: opts.flowName || 'Chimera Protocol',
     result_content: opts.resultContent,
   });
   if (error) throw new Error(`Failed to save funnel step: ${error.message}`);
@@ -495,15 +495,15 @@ async function saveSectionFile(
 ): Promise<boolean> {
   try {
     await ensureProjectFilesBucket(supabase);
-    const originalName = `Autopilot — ${displayName}`;
+    const originalName = `Chimera Protocol — ${displayName}`;
 
-    // Clean up previous Autopilot file(s) of this type.
+    // Clean up previous auto-generated file(s) of this type (new + legacy prefix).
     const { data: prev } = await supabase
       .from('project_files')
       .select('id, file_path')
       .eq('project_id', projectId)
       .eq('file_type', fileType)
-      .like('original_name', 'Autopilot — %');
+      .or('original_name.like.Chimera Protocol — %,original_name.like.Autopilot — %');
     if (Array.isArray(prev) && prev.length) {
       const paths = prev.map((p) => p.file_path as string).filter(Boolean);
       if (paths.length) await supabase.storage.from(PROJECT_FILES_BUCKET).remove(paths).catch(() => {});
@@ -551,7 +551,7 @@ async function saveProductImage(
   try {
     await ensureProjectFilesBucket(supabase);
     const ext = /jpeg|jpg/.test(img.mimeType) ? 'jpg' : /webp/.test(img.mimeType) ? 'webp' : 'png';
-    const safe = `Autopilot — ${label}`.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const safe = `Chimera Protocol — ${label}`.replace(/[^a-zA-Z0-9._-]/g, '_');
     const objectKey = `${projectId}/product_image/${Date.now()}_${safe}.${ext}`;
     const { error: upErr } = await supabase.storage
       .from(PROJECT_FILES_BUCKET)
@@ -785,7 +785,7 @@ async function loadSectionFileText(
       .select('file_path, created_at')
       .eq('project_id', projectId)
       .eq('file_type', fileType)
-      .like('original_name', 'Autopilot — %')
+      .or('original_name.like.Chimera Protocol — %,original_name.like.Autopilot — %')
       .order('created_at', { ascending: false })
       .limit(1);
     const path = data?.[0]?.file_path as string | undefined;
@@ -934,7 +934,7 @@ Generate the FULL, deep RMBC-style unified research document for this product. B
     // JSONB SectionData is what the generation/rewrite features CONSUME. The
     // file entry name is kept identical to the uploaded file's original_name
     // so the General Brief backfill (which dedupes by name) never duplicates it.
-    .update({ market_research: toSectionBlob('Autopilot — Market Research (RMBC).md', content) })
+    .update({ market_research: toSectionBlob('Chimera Protocol — Market Research (RMBC).md', content) })
     .eq('id', projectId);
   if (error) throw new Error(`Failed to save market_research: ${error.message}`);
 
@@ -989,7 +989,7 @@ Genera il brief completo. Basati fortemente sulla RICERCA DI MERCATO fornita nel
   if (error) throw new Error(`Failed to save brief: ${error.message}`);
   try {
     // Name matches the uploaded file so the backfill dedupes instead of duplicating.
-    await supabase.from('projects').update({ brief_files: toSectionBlob('Autopilot — Product Brief.md', content) }).eq('id', projectId);
+    await supabase.from('projects').update({ brief_files: toSectionBlob('Chimera Protocol — Product Brief.md', content) }).eq('id', projectId);
   } catch { /* brief_files column may not exist */ }
 
   // Also save as a real file so it SHOWS in the "Product Brief — Frontend" tab.
@@ -1170,7 +1170,7 @@ Build the prioritized Angle Matrix now, best angle first.`;
   try {
     await createFunnelStep(supabase, projectId, {
       stepNumber: 80,
-      pageName: 'Angle Matrix (Autopilot)',
+      pageName: 'Angle Matrix (Chimera Protocol)',
       stepType: 'angle',
       resultContent: angleMatrixToHtml(content, angles),
     });
@@ -1263,7 +1263,7 @@ Write the 9 platform-ready ads now.`;
   try {
     await createFunnelStep(supabase, projectId, {
       stepNumber: 90,
-      pageName: 'Ads — Meta / TikTok / Google (Autopilot)',
+      pageName: 'Ads — Meta / TikTok / Google (Chimera Protocol)',
       stepType: 'ads',
       resultContent: adsToHtml(raw, ads),
     });
@@ -1392,13 +1392,13 @@ Scrivi la landing completa basandoti su brief e ricerca di mercato forniti nel c
           <figcaption style="padding:8px 10px;font-size:12px;color:#111827"><strong>${esc(im.role)}</strong> — ${esc(im.name)}</figcaption>
         </figure>`).join('');
       const gallery = `<div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:900px;margin:0 auto;padding:8px">
-        <h1 style="font-size:20px;margin:0 0 4px">Product images (Autopilot)</h1>
+        <h1 style="font-size:20px;margin:0 0 4px">Product images (Chimera Protocol)</h1>
         <p style="color:#6b7280;margin:0 0 12px">${images.saved} product images${funnel ? ` for funnel "${esc(funnel.funnelName)}"` : ''}.</p>
         <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px">${cards}</div>
       </div>`;
       await createFunnelStep(supabase, projectId, {
         stepNumber: 2,
-        pageName: 'Product Images (Autopilot)',
+        pageName: 'Product Images (Chimera Protocol)',
         stepType: 'assets',
         resultContent: gallery,
       });
@@ -1437,7 +1437,7 @@ Rispondi SOLO con l'HTML, senza spiegazioni e senza \`\`\`.`;
     if (mockup.toLowerCase().includes('<html') || mockup.toLowerCase().includes('<!doctype')) {
       await createFunnelStep(supabase, projectId, {
         stepNumber: 1,
-        pageName: 'Landing (Autopilot)',
+        pageName: 'Landing (Chimera Protocol)',
         stepType: 'landing',
         resultContent: mockup,
       });

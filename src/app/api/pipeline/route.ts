@@ -29,7 +29,7 @@ export async function POST(req: NextRequest) {
 
   if (!product && !requestedProjectId) {
     return NextResponse.json(
-      { error: 'Serve almeno il nome prodotto o un projectId.' },
+      { error: 'At least a product name or a projectId is required.' },
       { status: 400 },
     );
   }
