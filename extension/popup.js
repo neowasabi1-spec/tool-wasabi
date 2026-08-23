@@ -109,6 +109,9 @@ async function init() {
   els.destination.addEventListener('change', syncDestination);
   syncDestination();
   revealForm();
+
+  // A funnel walk runs in the background; if one is in progress, show it.
+  resumeFunnelWalkIfRunning();
 }
 
 async function loadProjects() {
@@ -316,10 +319,10 @@ async function onSave() {
       return;
     }
 
-    // Funnel mode: walk the whole funnel and save every step. Delegated to its
-    // own routine (it drives navigation via the background worker).
+    // Funnel mode: run the whole walk in the BACKGROUND so it survives the
+    // popup being closed/reopened. The popup only shows live progress.
     if (els.funnelMode.checked) {
-      await onSaveFunnel(token, toProject ? projectId : null);
+      await startBackgroundFunnelWalk(toProject ? projectId : null);
       return;
     }
 
@@ -367,7 +370,8 @@ async function onSave() {
   } catch (e) {
     setStatus(String((e && e.message) || e), 'err');
   } finally {
-    els.save.disabled = false;
+    // Keep the button disabled while a background funnel walk is polling.
+    if (!funnelPollTimer) els.save.disabled = false;
   }
 }
 
@@ -494,6 +498,78 @@ async function onSaveFunnel(token, projectId) {
     `Funnel saved: ${saved.length} step${saved.length > 1 ? 's' : ''} ✓ (${domain}) &nbsp;${projLink}`,
     'ok',
   );
+}
+
+// ── Background funnel walk: start + live progress (survives popup close) ──────
+let funnelPollTimer = null;
+
+function stopFunnelPoll() {
+  if (funnelPollTimer) { clearInterval(funnelPollTimer); funnelPollTimer = null; }
+}
+
+async function refreshFunnelStatusOnce() {
+  const r = await sendMessage({ type: 'FUNNEL_STATUS' });
+  const st = r && r.state;
+  if (!st) { stopFunnelPoll(); els.save.disabled = false; return; }
+  const count = st.savedCount ? ` (${st.savedCount})` : '';
+  // Stalled guard: the background worker can be evicted; if the state hasn't
+  // advanced for a while and the worker isn't running, let the user resume.
+  if (!st.done && !(r && r.running) && st.updatedAt && Date.now() - st.updatedAt > 45000) {
+    stopFunnelPoll();
+    els.save.disabled = false;
+    setStatus(`Walk interrupted at ${st.savedCount || 0} step(s). Press “Save to Wasabi” to resume.`, 'err');
+    return;
+  }
+  if (st.done) {
+    stopFunnelPoll();
+    els.save.disabled = false;
+    const cls = st.error && !st.savedCount ? 'err' : 'ok';
+    const link = st.projectId
+      ? ` &nbsp;<a href="${TOOL}/projects/${st.projectId}" target="_blank">open project</a>`
+      : ` &nbsp;<a href="${TOOL}" target="_blank">open tool</a>`;
+    setStatus(`${st.status || 'Done'}${st.savedCount ? link : ''}`, cls);
+    // Return to 0: clear the stored session so reopening shows the idle form.
+    await sendMessage({ type: 'FUNNEL_WALK_RESET' });
+  } else {
+    els.save.disabled = true;
+    setStatus(`<span class="spinner"></span>${st.status || 'Walking the funnel…'}${count}`);
+  }
+}
+
+function startFunnelPoll() {
+  stopFunnelPoll();
+  els.save.disabled = true;
+  refreshFunnelStatusOnce();
+  funnelPollTimer = setInterval(refreshFunnelStatusOnce, 1200);
+}
+
+async function startBackgroundFunnelWalk(projectId) {
+  const tags = els.tags.value.split(',').map((t) => t.trim()).filter(Boolean);
+  const r = await sendMessage({
+    type: 'FUNNEL_WALK_START',
+    tabId: activeTab.id,
+    projectId: projectId || null,
+    tags,
+    wantDesktop: els.shotDesktop.checked,
+    wantMobile: els.shotMobile.checked,
+  });
+  if (!r || !r.ok) { setStatus('Could not start the funnel walk.', 'err'); els.save.disabled = false; return; }
+  startFunnelPoll();
+}
+
+// If a walk is already running (popup was reopened), resume showing progress
+// instead of resetting the form. A leftover finished session is cleared → 0.
+async function resumeFunnelWalkIfRunning() {
+  try {
+    const r = await sendMessage({ type: 'FUNNEL_STATUS' });
+    const st = r && r.state;
+    if (st && st.running && !st.done) {
+      if (els.funnelMode) els.funnelMode.checked = true;
+      startFunnelPoll();
+    } else if (st && st.done) {
+      await sendMessage({ type: 'FUNNEL_WALK_RESET' });
+    }
+  } catch { /* ignore */ }
 }
 
 els.save.addEventListener('click', onSave);

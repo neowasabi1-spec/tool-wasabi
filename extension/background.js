@@ -1090,10 +1090,213 @@ async function funnelGoto(tabId, url) {
 }
 
 // ---------------------------------------------------------------------------
+// Funnel walk orchestration — runs the WHOLE walk in the background so it keeps
+// going even if the popup is closed. Progress is persisted to storage so a
+// reopened popup can show the in-progress session (and clears back to 0 when
+// the walk finishes).
+// ---------------------------------------------------------------------------
+const WALK_KEY = 'wasabi_funnel_walk';
+const FUNNEL_MAX_STEPS = 14;
+let walkRunning = false;
+
+function domainOf(url) {
+  try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return ''; }
+}
+
+async function setWalkState(patch) {
+  const cur = (await chrome.storage.local.get(WALK_KEY))[WALK_KEY] || {};
+  const next = { ...cur, ...patch, updatedAt: Date.now() };
+  await chrome.storage.local.set({ [WALK_KEY]: next });
+  return next;
+}
+async function getWalkState() {
+  return (await chrome.storage.local.get(WALK_KEY))[WALK_KEY] || null;
+}
+async function clearWalkState() {
+  await chrome.storage.local.remove(WALK_KEY);
+}
+
+function walkDataUrlToBlob(dataUrl) {
+  const comma = dataUrl.indexOf(',');
+  const meta = dataUrl.slice(0, comma);
+  const b64 = dataUrl.slice(comma + 1);
+  const mime = (meta.match(/data:([^;]+)/) || [])[1] || 'image/png';
+  const bin = atob(b64);
+  const arr = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  return new Blob([arr], { type: mime });
+}
+
+async function bgCaptureHtml(tabId) {
+  const results = await chrome.scripting.executeScript({ target: { tabId }, files: ['content-capture.js'] });
+  const r = results && results[0] && results[0].result;
+  if (!r || !r.ok) throw new Error((r && r.error) || 'Could not read the page');
+  return r;
+}
+
+async function bgUploadShot(token, variant, dataUrl) {
+  const contentType = (dataUrl.match(/^data:([^;]+)/) || [])[1] || 'image/png';
+  const signRes = await fetch(`${TOOL_ORIGIN}/api/extension/sign-shot`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ variant, contentType }),
+  });
+  const sj = await signRes.json().catch(() => ({}));
+  if (!signRes.ok || !sj.uploadUrl) throw new Error(sj.error || `sign failed (${signRes.status})`);
+  const up = await fetch(sj.uploadUrl, {
+    method: 'PUT',
+    headers: { 'Content-Type': sj.contentType || contentType, 'x-upsert': 'true' },
+    body: walkDataUrlToBlob(dataUrl),
+  });
+  if (!up.ok) throw new Error(`upload failed (${up.status})`);
+  return sj.path;
+}
+
+async function bgCaptureShots(token, tabId, wantDesktop, wantMobile) {
+  const paths = {};
+  if (!wantDesktop && !wantMobile) return paths;
+  let shots;
+  try { shots = await captureScreenshots(tabId); } catch (e) { console.warn('[walk] shots failed', e); return paths; }
+  const pending = [];
+  if (wantDesktop && shots.desktop) pending.push(['desktop', shots.desktop]);
+  if (wantMobile && shots.mobile) pending.push(['mobile', shots.mobile]);
+  for (const [variant, dataUrl] of pending) {
+    try { paths[variant] = await bgUploadShot(token, variant, dataUrl); }
+    catch (e) { console.warn(`[walk] upload ${variant} failed`, e); }
+  }
+  return paths;
+}
+
+async function bgSavePage(token, body) {
+  const res = await fetch(`${TOOL_ORIGIN}/api/extension/save-page`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.message || data.error || `Save failed (${res.status})`);
+  return data;
+}
+
+async function runFunnelWalk(opts) {
+  const { tabId, projectId, tags, wantDesktop, wantMobile } = opts;
+  walkRunning = true;
+
+  const token = await getValidToken();
+  if (!token) {
+    await setWalkState({ running: false, done: true, error: 'auth', status: 'Session expired — open the tool and log in.' });
+    walkRunning = false; return;
+  }
+
+  let startUrl = '';
+  try { startUrl = (await chrome.tabs.get(tabId)).url || ''; }
+  catch { await setWalkState({ running: false, done: true, error: 'tab', status: 'The tab was closed.' }); walkRunning = false; return; }
+
+  const domain = domainOf(startUrl) || 'funnel';
+  const visited = [];
+  let funnelId = null;
+  let savedCount = 0;
+
+  await setWalkState({ running: true, done: false, error: null, domain, projectId: projectId || null, savedCount: 0, funnelId: null, status: `Starting walk on ${domain}…` });
+
+  const captureCurrentStep = async (index) => {
+    const page = await bgCaptureHtml(tabId);
+    if (visited.some((u) => canonUrl(u) === canonUrl(page.url))) return { skipped: true };
+    await setWalkState({ status: `Step ${index}: taking screenshots…` });
+    const screenshotPaths = await bgCaptureShots(token, tabId, wantDesktop, wantMobile);
+    await setWalkState({ status: `Step ${index}: saving…` });
+    const data = await bgSavePage(token, {
+      url: page.url,
+      title: page.title,
+      name: `${domain} — Step ${index}`,
+      html: page.html,
+      screenshotDesktopPath: screenshotPaths.desktop || null,
+      screenshotMobilePath: screenshotPaths.mobile || null,
+      pageType: 'landing',
+      category: domain.slice(0, 60),
+      tags,
+      projectId: projectId || null,
+      funnelGroup: true,
+      funnelId: funnelId || undefined,
+      funnelName: domain,
+      stepIndex: index,
+    });
+    if (data.funnelId) funnelId = data.funnelId;
+    visited.push(page.url);
+    savedCount++;
+    await setWalkState({ savedCount, funnelId, status: `Step ${savedCount} saved ✓` });
+    return { ok: true };
+  };
+
+  try {
+    // 1) Click-walk the forward CTA page by page.
+    for (let i = 1; i <= FUNNEL_MAX_STEPS; i++) {
+      await setWalkState({ status: `Step ${savedCount + 1}: reading page…` });
+      try { await captureCurrentStep(savedCount + 1); }
+      catch (e) { console.warn('[walk] capture stopped:', (e && e.message) || e); break; }
+      await setWalkState({ status: `Step ${savedCount} saved ✓ — looking for next step…` });
+      const nav = await funnelNext(tabId, visited).catch(() => ({ ok: false, moved: false }));
+      if (!nav || !nav.ok || !nav.moved) break;
+    }
+
+    // 2) Beyond the checkout: discover + capture remaining steps.
+    if (savedCount && savedCount < FUNNEL_MAX_STEPS) {
+      await setWalkState({ status: 'Looking beyond the checkout (sitemap / links / paths)…' });
+      let urls = [];
+      try { const disc = await funnelDiscover(tabId, visited); if (disc && disc.ok && Array.isArray(disc.urls)) urls = disc.urls; }
+      catch (e) { console.warn('[walk] discover failed:', (e && e.message) || e); }
+      for (const url of urls) {
+        if (savedCount >= FUNNEL_MAX_STEPS) break;
+        if (visited.some((u) => canonUrl(u) === canonUrl(url))) continue;
+        await setWalkState({ status: 'Opening discovered step…' });
+        const g = await funnelGoto(tabId, url).catch(() => ({ ok: false }));
+        if (!g || !g.ok) continue;
+        try { await captureCurrentStep(savedCount + 1); }
+        catch (e) { console.warn('[walk] discovered capture failed:', (e && e.message) || e); }
+      }
+    }
+  } catch (e) {
+    await setWalkState({ error: String((e && e.message) || e) });
+  }
+
+  const finalStatus = savedCount
+    ? `Funnel saved: ${savedCount} step${savedCount > 1 ? 's' : ''} ✓ (${domain})`
+    : 'Could not capture any funnel step.';
+  await setWalkState({ running: false, done: true, savedCount, funnelId, status: finalStatus });
+  walkRunning = false;
+}
+
+// ---------------------------------------------------------------------------
 // Message router
 // ---------------------------------------------------------------------------
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (!msg || !msg.type) return;
+
+  // Start the whole funnel walk in the background (survives popup close).
+  if (msg.type === 'FUNNEL_WALK_START' && typeof msg.tabId === 'number') {
+    if (walkRunning) { sendResponse({ ok: true, already: true }); return true; }
+    runFunnelWalk({
+      tabId: msg.tabId,
+      projectId: msg.projectId || null,
+      tags: Array.isArray(msg.tags) ? msg.tags : [],
+      wantDesktop: !!msg.wantDesktop,
+      wantMobile: !!msg.wantMobile,
+    });
+    sendResponse({ ok: true, started: true });
+    return true;
+  }
+
+  // Current walk progress (for the popup to render / poll).
+  if (msg.type === 'FUNNEL_STATUS') {
+    getWalkState().then((state) => sendResponse({ ok: true, state, running: walkRunning }));
+    return true;
+  }
+
+  // Clear a finished walk so the popup goes back to its idle (0) state.
+  if (msg.type === 'FUNNEL_WALK_RESET') {
+    clearWalkState().then(() => sendResponse({ ok: true }));
+    return true;
+  }
 
   if (msg.type === 'WASABI_SESSION' && msg.session) {
     setSession(msg.session).then(() => sendResponse({ ok: true }));
