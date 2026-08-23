@@ -761,6 +761,63 @@ export default function TemplatesPage() {
     });
   }, [archivedFunnels, archiveSearch]);
 
+  // The browser extension's funnel-walk saves each captured page as its OWN
+  // single-step row named "<domain> — Step N". That reads as a flat list of
+  // dozens of "1 step" entries. Fold those siblings back into ONE folder per
+  // domain (steps inside), like a project — without touching stored data.
+  const displayFunnels = useMemo(() => {
+    type DisplayFunnel = ArchivedFunnel & { __merged?: boolean; __memberIds?: string[] };
+    const WALK_STEP_RE = /^(.*\S)\s+—\s+Step\s+(\d+)$/i;
+    const groups = new Map<string, ArchivedFunnel[]>();
+    const passthrough: DisplayFunnel[] = [];
+    for (const f of filteredArchivedFunnels) {
+      const m = f.name.match(WALK_STEP_RE);
+      const steps = (f.steps as unknown[]) || [];
+      // Only fold single-step, owned rows that match the walk naming pattern.
+      if (m && steps.length <= 1 && !f.isShared) {
+        const key = m[1].trim();
+        const arr = groups.get(key) || [];
+        arr.push(f);
+        groups.set(key, arr);
+      } else {
+        passthrough.push(f);
+      }
+    }
+    const stepNumOf = (name: string) => {
+      const mm = name.match(/Step\s+(\d+)/i);
+      return mm ? parseInt(mm[1], 10) : 0;
+    };
+    const merged: DisplayFunnel[] = [];
+    groups.forEach((rows, domain) => {
+      if (rows.length <= 1) {
+        // A lone walk row: keep it as-is (real funnel, all controls work).
+        passthrough.push(rows[0] as DisplayFunnel);
+        return;
+      }
+      const sorted = [...rows].sort((a, b) => stepNumOf(a.name) - stepNumOf(b.name));
+      const mergedSteps = sorted.map((r, i) => {
+        const s = ((r.steps as Record<string, unknown>[]) || [])[0] || {};
+        return { ...s, step_index: i + 1, name: `Step ${i + 1}` };
+      });
+      const latest = sorted.reduce(
+        (acc, r) => (new Date(r.created_at) > new Date(acc.created_at) ? r : acc),
+        sorted[0],
+      );
+      merged.push({
+        ...latest,
+        id: `group:${domain}`,
+        name: domain,
+        total_steps: mergedSteps.length,
+        steps: mergedSteps,
+        __merged: true,
+        __memberIds: sorted.map((r) => r.id),
+      } as DisplayFunnel);
+    });
+    return [...passthrough, ...merged].sort(
+      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+    );
+  }, [filteredArchivedFunnels]);
+
   const filteredPagesByType = useMemo(() => {
     if (!archiveSearch.trim()) return pagesByType;
     const q = archiveSearch.toLowerCase();
@@ -1060,7 +1117,7 @@ export default function TemplatesPage() {
         {/* ============ SAVED FUNNELS VIEW ============ */}
         {mainView === 'funnels' && (
           <div className="space-y-6">
-            {filteredArchivedFunnels.length === 0 ? (
+            {displayFunnels.length === 0 ? (
               <div className="bg-white rounded-lg border border-gray-200 p-12 text-center">
                 <Archive className="w-12 h-12 text-gray-300 mx-auto mb-3" />
                 <p className="text-gray-500 text-lg font-medium">
@@ -1093,7 +1150,9 @@ export default function TemplatesPage() {
                 )}
               </div>
             ) : (
-              filteredArchivedFunnels.map((funnel) => {
+              displayFunnels.map((funnel) => {
+                const isMerged = Boolean((funnel as { __merged?: boolean }).__merged);
+                const memberIds = (funnel as { __memberIds?: string[] }).__memberIds || [];
                 const steps = (funnel.steps as { step_index: number; name: string; page_type: string; url_to_swipe: string; prompt: string; template_name: string; product_name: string; swipe_status: string; feedback: string; cloned_data?: { html?: string } | null; swiped_data?: { html?: string } | null }[]) || [];
                 const isExpanded = expandedFunnelIds.includes(funnel.id);
                 const allSelected = isFunnelFullySelected(funnel);
@@ -1134,7 +1193,7 @@ export default function TemplatesPage() {
                           We read funnel.isInMyValchiria (server-resolved)
                           as the source of truth so the toggle reflects
                           the per-user state for shared rows too. */}
-                      {(() => {
+                      {!isMerged && (() => {
                         const inMine = funnel.isInMyValchiria ?? funnel.show_in_valchiria ?? false;
                         return (
                           <button
@@ -1172,7 +1231,7 @@ export default function TemplatesPage() {
                           from the personal show_in_valchiria flag so the
                           master can keep a funnel in their own Valchiria
                           without exposing it to every collaborator. */}
-                      {!funnel.isShared && isMaster && (
+                      {!isMerged && !funnel.isShared && isMaster && (
                         <button
                           onClick={async (e) => {
                             e.stopPropagation();
@@ -1207,10 +1266,20 @@ export default function TemplatesPage() {
                         <button
                           onClick={async (e) => {
                             e.stopPropagation();
-                            const ok = await confirmDialog({ title: 'Delete funnel', message: `Do you want to delete "${funnel.name}"?`, confirmText: 'Delete', danger: true });
+                            const ids = isMerged ? memberIds : [funnel.id];
+                            const ok = await confirmDialog({
+                              title: 'Delete funnel',
+                              message: isMerged
+                                ? `Do you want to delete the folder "${funnel.name}" and all its ${ids.length} steps?`
+                                : `Do you want to delete "${funnel.name}"?`,
+                              confirmText: 'Delete',
+                              danger: true,
+                            });
                             if (!ok) return;
-                            try { await deleteArchivedFunnel(funnel.id); toast.success('Funnel deleted'); }
-                            catch { toast.error('Delete failed'); }
+                            try {
+                              for (const id of ids) await deleteArchivedFunnel(id);
+                              toast.success(isMerged ? 'Folder deleted' : 'Funnel deleted');
+                            } catch { toast.error('Delete failed'); }
                           }}
                           className="ml-2 p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
                         >
@@ -1306,7 +1375,9 @@ export default function TemplatesPage() {
                           })}
                         </div>
 
-                        {/* AI Analysis Section */}
+                        {/* AI Analysis Section — only for real rows, not the
+                            synthetic domain folder (its id isn't a DB row). */}
+                        {!isMerged && (
                         <div className="border-t border-gray-200 pt-5 space-y-5">
                           {/* Brief - loading or content */}
                           {analyzingFunnelIds.has(funnel.id) ? (
@@ -1388,6 +1459,7 @@ export default function TemplatesPage() {
                             </>
                           ) : null}
                         </div>
+                        )}
                       </div>
                     )}
                   </div>

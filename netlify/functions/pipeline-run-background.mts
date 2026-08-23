@@ -576,11 +576,22 @@ async function saveProductImage(
   }
 }
 
-interface FunnelProducts { total: number; upsells: number; pages: Array<{ name: string; type: string }>; funnelName: string; }
+interface FunnelProducts {
+  total: number;
+  upsells: number;
+  pages: Array<{ name: string; type: string }>;
+  funnelName: string;
+  /** Main page URL (used as the landing design reference when set). */
+  templateUrl: string;
+  /** Main page saved HTML — offline design reference when no URL is available. */
+  templateHtml: string;
+}
 
-/** Read the SELECTED funnel and derive how many products it needs:
- *  1 main + one per upsell/downsell page. The count comes from the funnel's
- *  own steps — never guessed, never a manual number. Null when no funnel. */
+/** Read the SELECTED funnel and derive both:
+ *   - how many products it needs (1 main + one per upsell/downsell page), and
+ *   - a landing DESIGN REFERENCE from its main page (URL or saved HTML).
+ *  Everything comes from the funnel's own steps — never guessed. Null when no
+ *  funnel is selected. */
 async function loadFunnelProducts(supabase: SupabaseClient, funnelId: string | undefined): Promise<FunnelProducts | null> {
   if (!funnelId) return null;
   try {
@@ -596,7 +607,27 @@ async function loadFunnelProducts(supabase: SupabaseClient, funnelId: string | u
       type: String(s?.page_type || s?.step_type || '').toLowerCase(),
     }));
     const upsells = pages.filter((p) => /upsell|downsell|\boto\b|bump/i.test(p.type)).length;
-    return { total: 1 + upsells, upsells, pages, funnelName: String(data.name || '') };
+
+    // Pick the best step to imitate for the landing: prefer a sales/landing/
+    // presell/advertorial page; otherwise the first step with a real URL.
+    const rank = (t: string) =>
+      /sales|\bvsl\b/i.test(t) ? 5 : /landing|\blp\b/i.test(t) ? 4 : /presell|advertorial/i.test(t) ? 3 : /checkout/i.test(t) ? 1 : 2;
+    let best: Record<string, unknown> | null = null;
+    let bestRank = -1;
+    for (const s of steps) {
+      const t = String(s?.page_type || s?.step_type || '').toLowerCase();
+      // Skip pure upsell/thank-you pages as the landing reference.
+      if (/upsell|downsell|\boto\b|bump|thank|receipt/i.test(t)) continue;
+      const r = rank(t);
+      if (r > bestRank) { bestRank = r; best = s; }
+    }
+    if (!best && steps.length) best = steps[0];
+    const cloned = (best?.cloned_data && typeof best.cloned_data === 'object' ? best.cloned_data : {}) as Record<string, unknown>;
+    const url = String(best?.url_to_swipe || '');
+    const templateUrl = /^https?:\/\//i.test(url) ? url : '';
+    const templateHtml = typeof cloned.html === 'string' ? (cloned.html as string) : '';
+
+    return { total: 1 + upsells, upsells, pages, funnelName: String(data.name || ''), templateUrl, templateHtml };
   } catch {
     return null;
   }
@@ -1378,7 +1409,14 @@ Scrivi la landing completa basandoti su brief e ricerca di mercato forniti nel c
   // a chosen funnel template as a design reference (fetched via Jina, no
   // headless browser). Saved as a funnel step → visible/previewable in the
   // Funnel tab.
-  const templateRef = await fetchTemplateReference((input.templateUrl || '').trim());
+  // Design reference for the landing mockup. One funnel now drives everything:
+  // if no explicit templateUrl was passed, imitate the SELECTED funnel's main
+  // page — via its URL (fetched through Jina) or, offline, its saved HTML.
+  let templateRef = await fetchTemplateReference((input.templateUrl || '').trim());
+  if (!templateRef && funnel) {
+    if (funnel.templateUrl) templateRef = await fetchTemplateReference(funnel.templateUrl);
+    if (!templateRef && funnel.templateHtml) templateRef = funnel.templateHtml.slice(0, 12_000);
+  }
   let mockupSaved = false;
   try {
     const mockupInstructions = `Sei un web designer + copywriter direct response.

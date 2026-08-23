@@ -46,8 +46,6 @@ export function AutopilotSection({
   const [competitorLink, setCompetitorLink] = useState('');
   const [market, setMarket] = useState('');
   const [description, setDescription] = useState('');
-  const [templateUrl, setTemplateUrl] = useState('');
-  const [templates, setTemplates] = useState<Array<{ id: string; name: string; source_url: string; page_type?: string }>>([]);
   const [funnelId, setFunnelId] = useState('');
   const [funnels, setFunnels] = useState<Array<{ id: string; name: string; totalSteps: number; upsells: number; products: number; isProject: boolean }>>([]);
   const [launching, setLaunching] = useState(false);
@@ -96,22 +94,9 @@ export function AutopilotSection({
 
   useEffect(() => {
     loadHistory();
-    // Load funnel templates for the picker (source_url is used as design ref).
-    (async () => {
-      try {
-        const res = await fetch('/api/templates', { cache: 'no-store' });
-        if (!res.ok) return;
-        const rows = await res.json();
-        const list = (Array.isArray(rows) ? rows : rows?.templates || [])
-          .filter((t: { source_url?: string }) => t?.source_url)
-          .map((t: { id: string; name: string; source_url: string; page_type?: string }) => ({
-            id: String(t.id), name: t.name || t.source_url, source_url: t.source_url, page_type: t.page_type,
-          }));
-        setTemplates(list);
-      } catch { /* ignore */ }
-    })();
-    // Load the project's saved funnels — the picker whose upsell count drives
-    // how many product images the final step generates.
+    // Load the selectable funnels. The chosen funnel drives BOTH: how many
+    // product images the final step generates (main + one per upsell) AND the
+    // landing's style/structure (its main page is used as the design reference).
     (async () => {
       try {
         const res = await fetch(`/api/projecthub/projects/${projectId}/funnels`, { cache: 'no-store' });
@@ -142,7 +127,6 @@ export function AutopilotSection({
           competitorLink: competitorLink.trim() || undefined,
           market: market.trim() || undefined,
           description: description.trim() || undefined,
-          templateUrl: templateUrl.trim() || undefined,
           funnelId: funnelId.trim() || undefined,
         }),
       });
@@ -162,10 +146,10 @@ export function AutopilotSection({
     <div className="space-y-6">
       <div>
         <h2 className="text-xl font-semibold text-foreground mb-1 flex items-center gap-2">
-          <Rocket className="w-5 h-5 text-primary" /> Autopilot
+          <Rocket className="w-5 h-5 text-primary" /> Protocollo Chimera
         </h2>
         <p className="text-sm text-muted-foreground">
-          Give it the product, market, competitor and (optionally) a funnel template. The tool automatically runs
+          Give it the product, market, competitor and (optionally) a funnel. The tool automatically runs
           market research → brief → <strong>Facebook ad research</strong> → angles/ads → <strong>landing + HTML mockup</strong>,
           saving everything into this project (Competitor Library, Funnel, Brief).
         </p>
@@ -206,7 +190,7 @@ export function AutopilotSection({
           />
         </div>
         <div className="space-y-1.5">
-          <Label htmlFor="ap-funnel">Funnel to build (products come from its structure)</Label>
+          <Label htmlFor="ap-funnel">Funnel to build (from templates)</Label>
           <select
             id="ap-funnel"
             value={funnelId}
@@ -222,29 +206,9 @@ export function AutopilotSection({
             ))}
           </select>
           <p className="text-xs text-muted-foreground">
-            The final step reads this funnel and generates 1 main product image + one per upsell (products related to the main). No number to type — it&apos;s read from the funnel.
-          </p>
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="ap-template">Funnel template to use (optional)</Label>
-          <div className="flex gap-2">
-            <select
-              id="ap-template"
-              value={templateUrl}
-              onChange={(e) => setTemplateUrl(e.target.value)}
-              disabled={running || launching}
-              className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm disabled:opacity-50"
-            >
-              <option value="">— No template: generate mockup from scratch —</option>
-              {templates.map((t) => (
-                <option key={t.id} value={t.source_url}>
-                  {t.name}{t.page_type ? ` · ${t.page_type}` : ''}
-                </option>
-              ))}
-            </select>
-          </div>
-          <p className="text-xs text-muted-foreground">
-            The landing will be generated as an HTML mockup inspired by this template (style and structure).
+            Pick one funnel and it drives everything automatically: the landing is generated as an HTML mockup
+            inspired by the funnel&apos;s main page (style + structure), and the final step generates 1 main product
+            image + one per upsell — the count is read from the funnel, no number to type.
           </p>
         </div>
         <div className="space-y-1.5">
@@ -266,7 +230,7 @@ export function AutopilotSection({
             {launching || running ? (
               <><Loader2 className="w-4 h-4 animate-spin" /> {running ? 'Running…' : 'Launching…'}</>
             ) : (
-              <><Sparkles className="w-4 h-4" /> Start Autopilot</>
+              <><Sparkles className="w-4 h-4" /> Start Protocollo Chimera</>
             )}
           </Button>
           <Button variant="outline" size="sm" onClick={loadHistory} className="gap-2">

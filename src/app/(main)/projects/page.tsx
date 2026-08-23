@@ -1286,7 +1286,7 @@ export default function ProjectsPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || 'Avvio fallito');
-      toast.success(data.created ? 'Progetto creato — Autopilot avviato.' : 'Autopilot avviato sul progetto esistente.');
+      toast.success(data.created ? 'Progetto creato — Protocollo Chimera avviato.' : 'Protocollo Chimera avviato sul progetto esistente.');
       // Jump straight to the project's Autopilot tab to watch progress.
       router.push(`/projects/${data.projectId}?section=autopilot`);
     } catch (e) {
@@ -1424,7 +1424,7 @@ export default function ProjectsPage() {
               className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-violet-600 to-blue-600 hover:from-violet-700 hover:to-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
             >
               <Rocket className="w-4 h-4" />
-              Nuovo con Autopilot
+              Nuovo con Protocollo Chimera
             </button>
 
             <button
@@ -1442,7 +1442,7 @@ export default function ProjectsPage() {
           <div className="bg-white border border-violet-200 rounded-xl p-5 mb-4 shadow-sm">
             <div className="flex items-center gap-2 mb-1">
               <Rocket className="w-4 h-4 text-violet-600" />
-              <h3 className="text-sm font-semibold text-slate-900">Nuovo progetto con Autopilot</h3>
+              <h3 className="text-sm font-semibold text-slate-900">Nuovo progetto con Protocollo Chimera</h3>
             </div>
             <p className="text-xs text-slate-500 mb-4">
               Dai il prodotto (e opzionalmente competitor + descrizione): crea/aggiorna il progetto e fa da solo
@@ -1491,7 +1491,7 @@ export default function ProjectsPage() {
               >
                 {apLaunching
                   ? <><Loader2 className="w-4 h-4 animate-spin" /> Avvio…</>
-                  : <><Sparkles className="w-4 h-4" /> Avvia Autopilot</>}
+                  : <><Sparkles className="w-4 h-4" /> Avvia Protocollo Chimera</>}
               </button>
               <button
                 onClick={() => { setShowAutopilot(false); setApProduct(''); setApCompetitor(''); setApMarket(''); setApDesc(''); }}

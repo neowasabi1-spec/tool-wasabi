@@ -32,6 +32,7 @@ function isWasabiTool() {
 (function () {
   if (window.__wasabiCreativeSaver) return;
   window.__wasabiCreativeSaver = true;
+  try { console.debug('[Wasabi] creative saver v1.6.12 (Select all)'); } catch { /* ignore */ }
 
   // Never run inside the Wasabi tool itself — the floating "Save" button would
   // overlap the app's own card actions (Save / Save template). We only want it
@@ -166,6 +167,8 @@ function isWasabiTool() {
       .bar button { font-size: 12px; font-weight: 800; border: none; border-radius: 8px; padding: 8px 12px; cursor: pointer; }
       .bar .imp { background: #4f46e5; color: #fff; } .bar .imp:hover { background: #4338ca; }
       .bar .imp:disabled { opacity: .5; cursor: default; }
+      .bar .all { background: #1e293b; color: #c7d2fe; } .bar .all:hover { background: #334155; }
+      .bar .all:disabled { opacity: .6; cursor: default; }
       .bar .clr { background: #334155; color: #e2e8f0; } .bar .clr:hover { background: #475569; }
       .bar .done { background: transparent; color: #94a3b8; padding: 8px 6px; } .bar .done:hover { color: #e2e8f0; }
     </style>
@@ -214,6 +217,7 @@ function isWasabiTool() {
     </button>
     <div class="bar" id="bar">
       <span><b id="selCount">0</b> selected</span>
+      <button class="all" id="selectAll" type="button" title="Scroll the whole page and select every ad (all pages)">Select all</button>
       <button class="imp" id="importSel" type="button" disabled>Import selected</button>
       <button class="clr" id="clearSel" type="button">Clear</button>
       <button class="done" id="exitSel" type="button">Done</button>
@@ -242,6 +246,7 @@ function isWasabiTool() {
   const bar = root.getElementById('bar');
   const selCountEl = root.getElementById('selCount');
   const importSelBtn = root.getElementById('importSel');
+  const selectAllBtn = root.getElementById('selectAll');
 
   let currentMedia = null; // element the button currently points at
   let hideTimer = null;
@@ -253,10 +258,17 @@ function isWasabiTool() {
   // element -> { src, isVideo, name }. We snapshot the src at selection time
   // because ad-library pages virtualize/recycle nodes as you scroll.
   const selected = new Map();
+  // Bulk "Select all" captures live behind virtualization: keyed by normalized
+  // src (not element) so an ad counts once even after its node is recycled and
+  // survives when it scrolls out of view. Merged with `selected` at import time.
+  const bulk = new Map(); // srcKey -> { src, isVideo, name }
+  let scanning = false;
   const prevOutline = new WeakMap();
 
+  const srcKey = (s) => String(s || '').split('#')[0];
+
   function renderBtn() {
-    const isSel = currentMedia && selected.has(currentMedia);
+    const isSel = currentMedia && isMediaSelected(currentMedia);
     if (selectMode) {
       btn.innerHTML = isSel
         ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg> Selected'
@@ -294,26 +306,48 @@ function isWasabiTool() {
     return g.slice(0, 120);
   }
 
+  function isMediaSelected(el) {
+    if (!el) return false;
+    if (selected.has(el)) return true;
+    return bulk.has(srcKey(currentSrc(el)));
+  }
+
   function toggleSelect(el) {
     if (!el) return;
+    const src = currentSrc(el);
+    const k = srcKey(src);
     if (selected.has(el)) {
       selected.delete(el);
       restoreOutline(el);
+    } else if (bulk.has(k)) {
+      // Was captured by "Select all" — a click deselects it.
+      bulk.delete(k);
+      restoreOutline(el);
     } else {
-      selected.set(el, {
-        src: currentSrc(el),
-        isVideo: el.tagName === 'VIDEO',
-        name: guessName(el),
-      });
+      selected.set(el, { src, isVideo: el.tagName === 'VIDEO', name: guessName(el) });
       applyOutline(el);
     }
     updateBar();
     renderBtn();
   }
 
+  // Union count across manual (element) + bulk (src) selections, deduped by src.
+  function selectedSrcKeys() {
+    const set = new Set();
+    for (const v of selected.values()) set.add(srcKey(v.src));
+    return set;
+  }
+  function totalCount() {
+    const inSel = selectedSrcKeys();
+    let extra = 0;
+    for (const k of bulk.keys()) if (!inSel.has(k)) extra++;
+    return selected.size + extra;
+  }
+
   function updateBar() {
-    selCountEl.textContent = String(selected.size);
-    importSelBtn.disabled = selected.size === 0;
+    const n = totalCount();
+    selCountEl.textContent = String(n);
+    importSelBtn.disabled = n === 0;
   }
 
   function setSelectMode(on) {
@@ -321,13 +355,15 @@ function isWasabiTool() {
     launchBtn.classList.toggle('on', on);
     launchLabel.textContent = on ? 'Selecting…' : 'Select creatives';
     bar.style.display = on ? 'flex' : 'none';
-    if (!on) clearSelection();
+    if (!on) { scanning = false; clearSelection(); }
     hideButton();
   }
 
   function clearSelection() {
+    scanning = false;
     for (const el of selected.keys()) restoreOutline(el);
     selected.clear();
+    bulk.clear();
     updateBar();
   }
 
@@ -335,8 +371,87 @@ function isWasabiTool() {
   root.getElementById('clearSel').addEventListener('click', clearSelection);
   root.getElementById('exitSel').addEventListener('click', () => setSelectMode(false));
   importSelBtn.addEventListener('click', () => {
-    if (selected.size > 0) openPopover(true);
+    if (totalCount() > 0) openPopover(true);
   });
+  selectAllBtn.addEventListener('click', () => {
+    if (scanning) { scanning = false; return; } // second click = stop
+    autoSelectAll();
+  });
+
+  // ── Select all (auto-scroll capture) ───────────────────────────────────────
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // Every eligible <img>/<video> currently in the DOM (excludes our own UI).
+  function collectEligibleMedia() {
+    const out = [];
+    let nodes;
+    try { nodes = document.querySelectorAll('img, video'); } catch { return out; }
+    for (const el of nodes) {
+      if (el === host || (host.contains && host.contains(el))) continue;
+      if (isEligible(el)) out.push(el);
+    }
+    return out;
+  }
+
+  // Snapshot whatever is on screen right now into `bulk` (deduped by src, and
+  // skipping anything already picked manually). Returns how many were new.
+  function grabIntoBulk() {
+    let added = 0;
+    const inSel = selectedSrcKeys();
+    for (const el of collectEligibleMedia()) {
+      const src = currentSrc(el);
+      if (!src) continue;
+      const k = srcKey(src);
+      if (inSel.has(k) || bulk.has(k)) continue;
+      bulk.set(k, { src, isVideo: el.tagName === 'VIDEO', name: guessName(el) });
+      added++;
+    }
+    return added;
+  }
+
+  // Walk the whole page top→bottom, capturing every ad as it lazy-loads. Ad
+  // libraries virtualize their lists, so we snapshot srcs step by step instead
+  // of relying on live element references. Click again to stop.
+  async function autoSelectAll() {
+    if (scanning) return;
+    if (!selectMode) setSelectMode(true);
+    scanning = true;
+    const origLabel = 'Select all';
+    const MAX_ITEMS = 2000;
+    const MAX_STEPS = 500;
+    const startY = window.scrollY;
+    const setLbl = () => { selectAllBtn.textContent = scanning ? `Stop (${totalCount()})` : origLabel; };
+
+    grabIntoBulk();
+    updateBar();
+    setLbl();
+
+    let stagnant = 0;
+    let lastHeight = document.documentElement.scrollHeight;
+    for (let i = 0; i < MAX_STEPS && scanning; i++) {
+      if (totalCount() >= MAX_ITEMS) break;
+      window.scrollBy(0, Math.max(600, Math.floor(window.innerHeight * 0.9)));
+      await sleep(700);
+      const added = grabIntoBulk();
+      updateBar();
+      setLbl();
+      const h = document.documentElement.scrollHeight;
+      const atBottom = window.innerHeight + window.scrollY >= h - 6;
+      if (added === 0 && h === lastHeight && atBottom) {
+        stagnant++;
+        if (stagnant >= 4) break; // settled at the bottom, nothing new loading
+      } else {
+        stagnant = 0;
+      }
+      lastHeight = h;
+    }
+
+    grabIntoBulk(); // final sweep once things settle
+    updateBar();
+    window.scrollTo(0, startY);
+    scanning = false;
+    selectAllBtn.textContent = origLabel;
+  }
 
   function sendMessage(msg) {
     return new Promise((resolve) => {
@@ -575,7 +690,8 @@ function isWasabiTool() {
     const isBatch = batch === true;
     pop.__batch = isBatch;
     if (!isBatch && !currentMedia) return;
-    if (isBatch && selected.size === 0) return;
+    const batchCount = totalCount();
+    if (isBatch && batchCount === 0) return;
 
     const media = isBatch ? null : currentMedia;
     const isVideo = media ? media.tagName === 'VIDEO' : false;
@@ -587,10 +703,10 @@ function isWasabiTool() {
     downloadBtn.style.display = isBatch ? 'none' : 'flex';
     const h4 = pop.querySelector('h4');
     if (h4) h4.textContent = isBatch
-      ? `Import ${selected.size} creative${selected.size === 1 ? '' : 's'}`
+      ? `Import ${batchCount} creative${batchCount === 1 ? '' : 's'}`
       : 'Save to Competitor Library';
 
-    popBadge.textContent = isBatch ? `${selected.size} selected` : (isVideo ? 'Video' : 'Image');
+    popBadge.textContent = isBatch ? `${batchCount} selected` : (isVideo ? 'Video' : 'Image');
     try {
       popHost.textContent = new URL(location.href).hostname.replace(/^www\./, '');
     } catch {
@@ -837,7 +953,20 @@ function isWasabiTool() {
   }
 
   async function importSelected(projectId, saveBtn) {
-    const items = [...selected.entries()].map(([el, v]) => ({ el, ...v }));
+    // Merge manual (element) + bulk (src) picks, deduped by src.
+    const items = [];
+    const seen = new Set();
+    for (const [el, v] of selected.entries()) {
+      const k = srcKey(v.src);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      items.push({ el, ...v });
+    }
+    for (const [k, v] of bulk.entries()) {
+      if (seen.has(k)) continue;
+      seen.add(k);
+      items.push({ el: null, ...v });
+    }
     let ok = 0;
     let fail = 0;
     for (let i = 0; i < items.length; i++) {
