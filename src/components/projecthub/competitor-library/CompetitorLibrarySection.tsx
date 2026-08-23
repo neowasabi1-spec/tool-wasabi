@@ -1653,13 +1653,13 @@ function CompetitorDetail({ projectId, competitor, onBack }: { projectId: string
           )}
         </div>
       ) : (
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-3">
+        <div className="columns-2 sm:columns-3 md:columns-4 xl:columns-5 gap-3">
           {filtered.map((ad, idx) => {
             const isSelected = selected.has(ad.id);
             const hasFile = !!ad.file_path;
             return (
               <div key={ad.id}
-                className={`group relative rounded-2xl overflow-hidden bg-card border-2 transition-all duration-200 cursor-pointer
+                className={`group relative mb-3 break-inside-avoid rounded-2xl overflow-hidden bg-card border-2 transition-all duration-200 cursor-pointer
                   ${isSelected
                     ? "border-primary shadow-[0_0_0_3px_rgba(34,197,94,0.2)]"
                     : isNew(ad)
@@ -1670,11 +1670,11 @@ function CompetitorDetail({ projectId, competitor, onBack }: { projectId: string
                 {/* Metrics bar — key ad signals on top, clear */}
                 <CardMetrics ad={ad} country={countryFromAdLibraryUrl(competitor.ads_library_url)} />
 
-                {/* Thumbnail / Placeholder */}
-                <div className="aspect-[4/5] relative overflow-hidden rounded-xl">
+                {/* Creative — full/natural height (masonry) */}
+                <div className="relative overflow-hidden rounded-xl bg-slate-100">
                   {hasFile ? (
                     ad.media_type === "video" ? (
-                      <div className="w-full h-full relative bg-slate-100">
+                      <div className="w-full aspect-[4/5] relative bg-slate-100">
                         <video src={videoThumbSrc(ad.file_path)} muted playsInline preload="metadata"
                           className="w-full h-full object-cover" />
                         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
@@ -1685,10 +1685,12 @@ function CompetitorDetail({ projectId, competitor, onBack }: { projectId: string
                       </div>
                     ) : (
                       <img src={getUploadUrl(ad.file_path)} alt={ad.name}
-                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
+                        className="w-full h-auto block group-hover:scale-105 transition-transform duration-300" />
                     )
                   ) : (
-                    <AdPlaceholder ad={ad} index={idx} />
+                    <div className="w-full aspect-[4/5]">
+                      <AdPlaceholder ad={ad} index={idx} />
+                    </div>
                   )}
 
                   {/* ── CHECKBOX (always visible top-right) ── */}
@@ -2097,41 +2099,52 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
     .sort((a, b) => a.name.localeCompare(b.name));
   const openItems = openFolder ? (folders.find(f => f.name === openFolder)?.items || []) : [];
 
-  // A single landing/step card (reused inside an open folder).
-  const card = (l: Landing) => (
-    <div key={l.id}
-      onClick={() => setPreview(l)}
-      role="button" tabIndex={0}
-      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setPreview(l); } }}
-      className="group relative bg-card border border-border rounded-2xl overflow-hidden hover:border-primary/40 hover:shadow-lg transition-all cursor-pointer">
-      <div className="block w-full aspect-[16/10] relative overflow-hidden bg-slate-100">
-        {l.screenshot ? (
-          <img src={l.screenshot} alt={l.name} className="w-full h-full object-cover object-top group-hover:scale-[1.02] transition-transform" />
-        ) : (
-          <div className="w-full h-full flex items-center justify-center bg-slate-100">
-            <Globe className="w-8 h-8 text-slate-400" />
-          </div>
-        )}
-        <span className="absolute top-2 left-2 text-[9px] font-bold px-2 py-0.5 rounded-full bg-slate-900/55 backdrop-blur-sm text-white uppercase tracking-wide">
-          {l.page_type || "landing"}
-        </span>
-        <span className="absolute bottom-2 right-2 flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-slate-900/55 backdrop-blur-sm text-white opacity-0 group-hover:opacity-100 transition-opacity">
-          <Eye className="w-3 h-3" /> Preview
-        </span>
+  // A single landing/step card — masonry style: domain header on top, then the
+  // FULL-length screenshot (capped, with a soft fade), like a swipe-file board.
+  const card = (l: Landing) => {
+    const host = hostOf(l.url);
+    return (
+      <div key={l.id}
+        onClick={() => setPreview(l)}
+        role="button" tabIndex={0}
+        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setPreview(l); } }}
+        className="group relative mb-4 break-inside-avoid bg-card border border-border rounded-2xl overflow-hidden hover:border-primary/40 hover:shadow-lg transition-all cursor-pointer">
+        {/* Domain header */}
+        <div className="flex items-center gap-2 px-3 py-2 border-b border-border/60">
+          {host ? (
+            <img src={`https://www.google.com/s2/favicons?domain=${host}&sz=32`} alt="" className="w-4 h-4 rounded-sm flex-shrink-0"
+              onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }} />
+          ) : <Globe className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />}
+          <span className="text-[11px] font-medium text-muted-foreground truncate flex-1">{host || l.name}</span>
+          <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-muted text-muted-foreground uppercase tracking-wide flex-shrink-0">
+            {l.page_type || "landing"}
+          </span>
+        </div>
+        {/* Full screenshot (capped) */}
+        <div className="relative w-full overflow-hidden bg-slate-100" style={{ maxHeight: 560 }}>
+          {l.screenshot ? (
+            <img src={l.screenshot} alt={l.name} className="w-full h-auto block" />
+          ) : (
+            <div className="w-full h-40 flex items-center justify-center bg-slate-100">
+              <Globe className="w-8 h-8 text-slate-400" />
+            </div>
+          )}
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-14 bg-gradient-to-t from-card to-transparent" />
+          <span className="absolute bottom-2 right-2 flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-slate-900/60 backdrop-blur-sm text-white opacity-0 group-hover:opacity-100 transition-opacity">
+            <Eye className="w-3 h-3" /> Preview
+          </span>
+          <button onClick={(e) => { e.stopPropagation(); del(l); }}
+            className="absolute top-2 right-2 p-1.5 rounded-lg bg-slate-900/45 backdrop-blur-sm text-white/90 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all"
+            title="Remove landing">
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+        </div>
+        <div className="px-3 py-2">
+          <p className="text-sm font-semibold text-foreground truncate">{l.name}</p>
+        </div>
       </div>
-      <button onClick={(e) => { e.stopPropagation(); del(l); }}
-        className="absolute top-2 right-2 p-1.5 rounded-lg bg-slate-900/45 backdrop-blur-sm text-white/90 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all"
-        title="Remove landing">
-        <Trash2 className="w-3.5 h-3.5" />
-      </button>
-      <div className="p-3">
-        <p className="text-sm font-semibold text-foreground truncate">{l.name}</p>
-        <p className="text-[11px] text-muted-foreground truncate flex items-center gap-1">
-          <Globe className="w-3 h-3" /> {hostOf(l.url)}
-        </p>
-      </div>
-    </div>
-  );
+    );
+  };
 
   return (
     <div className="space-y-4">
@@ -2173,40 +2186,48 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
               <Repeat className="w-3.5 h-3.5" /> Swipe all steps
             </button>
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div className="columns-1 sm:columns-2 lg:columns-3 xl:columns-4 gap-4">
             {openItems.map(card)}
           </div>
         </div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="columns-1 sm:columns-2 lg:columns-3 xl:columns-4 gap-4">
           {folders.map(f => {
             const cover = f.items[0];
+            const host = hostOf(cover?.url || "");
             return (
               <div key={f.name}
                 onClick={() => setOpenFolder(f.name)}
                 role="button" tabIndex={0}
                 onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpenFolder(f.name); } }}
-                className="group relative bg-card border border-border rounded-2xl overflow-hidden hover:border-primary/40 hover:shadow-lg transition-all cursor-pointer">
-                <div className="block w-full aspect-[16/10] relative overflow-hidden bg-slate-100">
+                className="group relative mb-4 break-inside-avoid bg-card border border-border rounded-2xl overflow-hidden hover:border-primary/40 hover:shadow-lg transition-all cursor-pointer">
+                {/* Domain header */}
+                <div className="flex items-center gap-2 px-3 py-2 border-b border-border/60">
+                  {host ? (
+                    <img src={`https://www.google.com/s2/favicons?domain=${host}&sz=32`} alt="" className="w-4 h-4 rounded-sm flex-shrink-0"
+                      onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }} />
+                  ) : <Globe className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />}
+                  <span className="text-[11px] font-medium text-muted-foreground truncate flex-1">{host || f.name}</span>
+                  <span className="flex items-center gap-1 text-[9px] font-bold px-2 py-0.5 rounded-full bg-primary/10 text-primary uppercase tracking-wide flex-shrink-0">
+                    <Folder className="w-3 h-3" /> {f.items.length}
+                  </span>
+                </div>
+                {/* Full cover screenshot (capped) */}
+                <div className="relative w-full overflow-hidden bg-slate-100" style={{ maxHeight: 560 }}>
                   {cover?.screenshot ? (
-                    <img src={cover.screenshot} alt={f.name} className="w-full h-full object-cover object-top group-hover:scale-[1.02] transition-transform" />
+                    <img src={cover.screenshot} alt={f.name} className="w-full h-auto block" />
                   ) : (
-                    <div className="w-full h-full flex items-center justify-center bg-slate-100">
+                    <div className="w-full h-40 flex items-center justify-center bg-slate-100">
                       <Globe className="w-8 h-8 text-slate-400" />
                     </div>
                   )}
-                  <span className="absolute top-2 left-2 flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-900/60 backdrop-blur-sm text-white uppercase tracking-wide">
-                    <Folder className="w-3 h-3" /> Funnel
-                  </span>
+                  <div className="pointer-events-none absolute inset-x-0 bottom-0 h-14 bg-gradient-to-t from-card to-transparent" />
                   <span className="absolute bottom-2 right-2 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-primary/85 backdrop-blur-sm text-primary-foreground">
                     {f.items.length} step{f.items.length === 1 ? "" : "s"}
                   </span>
                 </div>
-                <div className="p-3">
+                <div className="px-3 py-2">
                   <p className="text-sm font-semibold text-foreground truncate">{f.name}</p>
-                  <p className="text-[11px] text-muted-foreground truncate flex items-center gap-1">
-                    <Globe className="w-3 h-3" /> {hostOf(cover?.url || "")}
-                  </p>
                 </div>
               </div>
             );
