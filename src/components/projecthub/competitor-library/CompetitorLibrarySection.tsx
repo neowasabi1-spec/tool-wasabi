@@ -1657,13 +1657,13 @@ function CompetitorDetail({ projectId, competitor, onBack }: { projectId: string
           )}
         </div>
       ) : (
-        <div className="columns-2 sm:columns-3 md:columns-4 xl:columns-5 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
           {filtered.map((ad, idx) => {
             const isSelected = selected.has(ad.id);
             const hasFile = !!ad.file_path;
             return (
               <div key={ad.id}
-                className={`group relative mb-3 break-inside-avoid rounded-2xl overflow-hidden bg-card border-2 transition-all duration-200 cursor-pointer
+                className={`group relative rounded-2xl overflow-hidden bg-card border-2 transition-all duration-200 cursor-pointer
                   ${isSelected
                     ? "border-primary shadow-[0_0_0_3px_rgba(34,197,94,0.2)]"
                     : isNew(ad)
@@ -1674,11 +1674,11 @@ function CompetitorDetail({ projectId, competitor, onBack }: { projectId: string
                 {/* Metrics bar — key ad signals on top, clear */}
                 <CardMetrics ad={ad} country={countryFromAdLibraryUrl(competitor.ads_library_url)} />
 
-                {/* Creative — full/natural height (masonry) */}
-                <div className="relative overflow-hidden rounded-xl bg-slate-100">
+                {/* Creative — fixed aspect, uniform cards */}
+                <div className="aspect-[4/5] relative overflow-hidden rounded-xl bg-slate-100">
                   {hasFile ? (
                     ad.media_type === "video" ? (
-                      <div className="w-full aspect-[4/5] relative bg-slate-100">
+                      <div className="w-full h-full relative bg-slate-100">
                         <video src={videoThumbSrc(ad.file_path)} muted playsInline preload="metadata"
                           className="w-full h-full object-cover" />
                         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
@@ -1689,12 +1689,10 @@ function CompetitorDetail({ projectId, competitor, onBack }: { projectId: string
                       </div>
                     ) : (
                       <img src={getUploadUrl(ad.file_path)} alt={ad.name}
-                        className="w-full h-auto block group-hover:scale-105 transition-transform duration-300" />
+                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
                     )
                   ) : (
-                    <div className="w-full aspect-[4/5]">
-                      <AdPlaceholder ad={ad} index={idx} />
-                    </div>
+                    <AdPlaceholder ad={ad} index={idx} />
                   )}
 
                   {/* ── CHECKBOX (always visible top-right) ── */}
@@ -1942,7 +1940,7 @@ function AllCreativesView({ projectId }: { projectId: string }) {
           <p className="text-xs text-muted-foreground">Save images/videos with the extension, or add competitors.</p>
         </div>
       ) : (
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
           {filtered.map((ad, idx) => (
             <div key={ad.id} onClick={() => setDetailAd(ad)}
               className={`group relative rounded-2xl overflow-hidden bg-card border-2 hover:shadow-lg transition-all cursor-pointer
@@ -2112,9 +2110,9 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
         onClick={() => setPreview(l)}
         role="button" tabIndex={0}
         onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setPreview(l); } }}
-        className="group relative mb-4 break-inside-avoid bg-card border border-border rounded-2xl overflow-hidden hover:border-primary/40 hover:shadow-lg transition-all cursor-pointer">
+        className="group relative bg-card border border-border rounded-2xl overflow-hidden hover:border-primary/40 hover:shadow-lg transition-all cursor-pointer">
         {/* Domain header */}
-        <div className="flex items-center gap-2 px-3 py-2 border-b border-border/60">
+        <div className="flex items-center gap-2 px-3 py-2.5 border-b border-border/60">
           {host ? (
             <img src={`https://www.google.com/s2/favicons?domain=${host}&sz=32`} alt="" className="w-4 h-4 rounded-sm flex-shrink-0"
               onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }} />
@@ -2124,16 +2122,15 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
             {l.page_type || "landing"}
           </span>
         </div>
-        {/* Full screenshot (capped) */}
-        <div className="relative w-full overflow-hidden bg-slate-100" style={{ maxHeight: 560 }}>
+        {/* Fixed-height screenshot — uniform cards */}
+        <div className="relative w-full aspect-[3/4] overflow-hidden bg-slate-100">
           {l.screenshot ? (
-            <img src={l.screenshot} alt={l.name} className="w-full h-auto block" />
+            <img src={l.screenshot} alt={l.name} className="w-full h-full object-cover object-top group-hover:scale-[1.02] transition-transform" />
           ) : (
-            <div className="w-full h-40 flex items-center justify-center bg-slate-100">
-              <Globe className="w-8 h-8 text-slate-400" />
+            <div className="w-full h-full flex items-center justify-center bg-slate-100">
+              <Globe className="w-10 h-10 text-slate-400" />
             </div>
           )}
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-14 bg-gradient-to-t from-card to-transparent" />
           <span className="absolute bottom-2 right-2 flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-slate-900/60 backdrop-blur-sm text-white opacity-0 group-hover:opacity-100 transition-opacity">
             <Eye className="w-3 h-3" /> Preview
           </span>
@@ -2143,7 +2140,7 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
             <Trash2 className="w-3.5 h-3.5" />
           </button>
         </div>
-        <div className="px-3 py-2">
+        <div className="px-3 py-2.5">
           <p className="text-sm font-semibold text-foreground truncate">{l.name}</p>
         </div>
       </div>
@@ -2190,12 +2187,12 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
               <Repeat className="w-3.5 h-3.5" /> Swipe all steps
             </button>
           </div>
-          <div className="columns-1 sm:columns-2 lg:columns-3 xl:columns-4 gap-4">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
             {openItems.map(card)}
           </div>
         </div>
       ) : (
-        <div className="columns-1 sm:columns-2 lg:columns-3 xl:columns-4 gap-4">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
           {folders.map(f => {
             const cover = f.items[0];
             const host = hostOf(cover?.url || "");
@@ -2204,9 +2201,9 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
                 onClick={() => setOpenFolder(f.name)}
                 role="button" tabIndex={0}
                 onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpenFolder(f.name); } }}
-                className="group relative mb-4 break-inside-avoid bg-card border border-border rounded-2xl overflow-hidden hover:border-primary/40 hover:shadow-lg transition-all cursor-pointer">
+                className="group relative bg-card border border-border rounded-2xl overflow-hidden hover:border-primary/40 hover:shadow-lg transition-all cursor-pointer">
                 {/* Domain header */}
-                <div className="flex items-center gap-2 px-3 py-2 border-b border-border/60">
+                <div className="flex items-center gap-2 px-3 py-2.5 border-b border-border/60">
                   {host ? (
                     <img src={`https://www.google.com/s2/favicons?domain=${host}&sz=32`} alt="" className="w-4 h-4 rounded-sm flex-shrink-0"
                       onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }} />
@@ -2216,21 +2213,20 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
                     <Folder className="w-3 h-3" /> {f.items.length}
                   </span>
                 </div>
-                {/* Full cover screenshot (capped) */}
-                <div className="relative w-full overflow-hidden bg-slate-100" style={{ maxHeight: 560 }}>
+                {/* Fixed-height cover screenshot — uniform cards */}
+                <div className="relative w-full aspect-[3/4] overflow-hidden bg-slate-100">
                   {cover?.screenshot ? (
-                    <img src={cover.screenshot} alt={f.name} className="w-full h-auto block" />
+                    <img src={cover.screenshot} alt={f.name} className="w-full h-full object-cover object-top group-hover:scale-[1.02] transition-transform" />
                   ) : (
-                    <div className="w-full h-40 flex items-center justify-center bg-slate-100">
-                      <Globe className="w-8 h-8 text-slate-400" />
+                    <div className="w-full h-full flex items-center justify-center bg-slate-100">
+                      <Globe className="w-10 h-10 text-slate-400" />
                     </div>
                   )}
-                  <div className="pointer-events-none absolute inset-x-0 bottom-0 h-14 bg-gradient-to-t from-card to-transparent" />
                   <span className="absolute bottom-2 right-2 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-primary/85 backdrop-blur-sm text-primary-foreground">
                     {f.items.length} step{f.items.length === 1 ? "" : "s"}
                   </span>
                 </div>
-                <div className="px-3 py-2">
+                <div className="px-3 py-2.5">
                   <p className="text-sm font-semibold text-foreground truncate">{f.name}</p>
                 </div>
               </div>
@@ -3483,11 +3479,11 @@ function SectorOverview({ projectId, onOpenBrand }: { projectId: string; onOpenB
             No ads scraped yet.
           </div>
         ) : (
-          <div className="columns-1 sm:columns-2 lg:columns-3 xl:columns-4 gap-4">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
             {topAds.map(({ ad, spend }, i) => {
               const reach = typeof ad.reach === "number" && ad.reach > 0 ? ad.reach : null;
               return (
-                <div key={ad.id} className="group relative mb-4 break-inside-avoid bg-card border border-border rounded-2xl overflow-hidden hover:border-primary/40 hover:shadow-lg transition-all">
+                <div key={ad.id} className="group relative flex flex-col bg-card border border-border rounded-2xl overflow-hidden hover:border-primary/40 hover:shadow-lg transition-all">
                   {/* rank + est metrics header */}
                   <div className="flex items-center gap-2 px-3 py-2 border-b border-border/60">
                     <span className="flex items-center justify-center w-5 h-5 rounded-full bg-foreground text-background text-[10px] font-black shrink-0">{i + 1}</span>
@@ -3506,24 +3502,25 @@ function SectorOverview({ projectId, onOpenBrand }: { projectId: string; onOpenB
                     <span className="font-semibold text-foreground truncate">{ad.brand_name}</span>
                     {isActiveAd(ad) && <span className="ml-auto text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-green-500 text-white shrink-0">ACTIVE</span>}
                   </div>
-                  {(ad.hook || ad.headline || ad.body_text) && (
-                    <p className="px-3 pt-1 pb-2 text-xs text-foreground/90 line-clamp-2">{ad.hook || ad.headline || ad.body_text}</p>
-                  )}
-                  {/* creative */}
-                  <div className="relative overflow-hidden bg-slate-100">
+                  {/* copy — fixed height so every card lines up */}
+                  <p className="px-3 pt-1 pb-2 text-xs text-foreground/90 line-clamp-2 min-h-[2.5rem]">
+                    {ad.hook || ad.headline || ad.body_text || ""}
+                  </p>
+                  {/* creative — fixed aspect, uniform */}
+                  <div className="relative aspect-[4/5] overflow-hidden bg-slate-100 mt-auto">
                     {ad.file_path ? (
                       ad.media_type === "video" ? (
-                        <div className="w-full aspect-[4/5] relative bg-slate-100">
+                        <>
                           <video src={videoThumbSrc(ad.file_path)} muted playsInline preload="metadata" className="w-full h-full object-cover" />
                           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                             <div className="w-10 h-10 rounded-full bg-slate-900/45 flex items-center justify-center"><Play className="w-4 h-4 text-white" /></div>
                           </div>
-                        </div>
+                        </>
                       ) : (
-                        <img src={getUploadUrl(ad.file_path)} alt={ad.name} className="w-full h-auto block" />
+                        <img src={getUploadUrl(ad.file_path)} alt={ad.name} className="w-full h-full object-cover" />
                       )
                     ) : (
-                      <div className="w-full aspect-[4/5]"><AdPlaceholder ad={ad} index={i} /></div>
+                      <AdPlaceholder ad={ad} index={i} />
                     )}
                   </div>
                 </div>
