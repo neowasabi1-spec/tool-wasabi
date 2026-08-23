@@ -212,13 +212,10 @@ export async function POST(req: NextRequest) {
       page_id: stepPageId,
     };
 
-    if (category) {
-      try {
-        await supabaseAdmin
-          .from('archive_categories')
-          .upsert({ name: category, owner_user_id: userId }, { onConflict: 'owner_user_id,name' });
-      } catch { /* table may not exist yet */ }
-    }
+    // NOTE: in funnel-walk mode `category` is the funnel DOMAIN (used only for
+    // folder grouping) — it must NOT be registered as a user category, or the
+    // popup's Category picker fills up with domains. So no archive_categories
+    // upsert here on purpose.
 
     const folderName = String(body.funnelName || category || name).slice(0, 120);
     const existingId = String(body.funnelId || '').trim();
@@ -322,8 +319,10 @@ export async function POST(req: NextRequest) {
   const pageId: string = created.id;
 
   // Register the category so it appears in the picker next time (best-effort;
-  // ignored if the archive_categories table hasn't been migrated yet).
-  if (category) {
+  // ignored if the archive_categories table hasn't been migrated yet). Skip
+  // domain-like values so a domain never ends up in the Category picker.
+  const isDomainLike = (s: string) => !/\s/.test(s) && /\.[a-z]{2,}$/i.test(s.trim());
+  if (category && !isDomainLike(category)) {
     try {
       await supabaseAdmin
         .from('archive_categories')

@@ -38,32 +38,25 @@ export async function GET(req: NextRequest) {
     /* ignore */
   }
 
-  // Known categories (niches) — from the archive_categories table + any used
-  // on the user's saved pages.
+  // Known categories (niches) — ONLY the ones the user builds with the "+"
+  // button, i.e. rows in `archive_categories`. We deliberately do NOT derive
+  // categories from saved pages' step data: funnel walks store the domain as
+  // the step category (for folder grouping), which would otherwise flood this
+  // list with domains / funnel / landing names. Domain-like names are filtered
+  // out too, so any legacy pollution never surfaces in the picker.
+  const isDomainLike = (s: string) => !/\s/.test(s) && /\.[a-z]{2,}$/i.test(s.trim());
   const catSet = new Set<string>();
   try {
     const { data } = await supabaseAdmin
       .from('archive_categories')
       .select('name')
       .eq('owner_user_id', userId);
-    for (const c of data || []) if (c.name) catSet.add(String(c.name));
-  } catch {
-    /* table may not exist yet */
-  }
-  try {
-    const { data } = await supabaseAdmin
-      .from('archived_funnels')
-      .select('steps')
-      .eq('owner_user_id', userId);
-    for (const f of data || []) {
-      const steps = Array.isArray(f.steps) ? (f.steps as Record<string, unknown>[]) : [];
-      for (const s of steps) {
-        const c = (s.category as string) || ((s.cloned_data as Record<string, unknown>)?.category as string);
-        if (c) catSet.add(String(c));
-      }
+    for (const c of data || []) {
+      const name = c.name ? String(c.name) : '';
+      if (name && !isDomainLike(name)) catSet.add(name);
     }
   } catch {
-    /* ignore */
+    /* table may not exist yet */
   }
 
   return NextResponse.json({
