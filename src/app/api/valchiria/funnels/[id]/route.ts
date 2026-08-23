@@ -41,6 +41,81 @@ interface PatchBody {
   in_my_valchiria?: boolean;
 }
 
+/**
+ * DELETE /api/valchiria/funnels/[id]
+ *   - ?step=<index> → remove a single step from the funnel's steps[] (deletes
+ *     the whole row only when it was the last step).
+ *   - no ?step      → delete the whole archived funnel row.
+ * Owner (or master) only.
+ */
+export async function DELETE(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  try {
+    const { id } = await params;
+    if (!id) return NextResponse.json({ error: 'missing_id' }, { status: 400 });
+
+    const ctx = await getUserAccessContext(req);
+    if (!ctx.userId) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+
+    const { data: row, error: lookupErr } = await supabaseAdmin
+      .from('archived_funnels')
+      .select('owner_user_id, steps')
+      .eq('id', id)
+      .maybeSingle();
+    if (lookupErr) throw lookupErr;
+    if (!row) return NextResponse.json({ error: 'not_found' }, { status: 404 });
+    if (row.owner_user_id !== ctx.userId && !ctx.isMaster) {
+      return NextResponse.json({ error: 'forbidden' }, { status: 403 });
+    }
+
+    const stepParam = req.nextUrl.searchParams.get('step');
+
+    // Whole-row delete.
+    if (stepParam === null) {
+      const { error } = await supabaseAdmin.from('archived_funnels').delete().eq('id', id);
+      if (error) throw error;
+      return NextResponse.json({ success: true, deletedRow: true });
+    }
+
+    // Single-step delete.
+    const idx = Number(stepParam);
+    const steps = Array.isArray(row.steps) ? (row.steps as Array<Record<string, unknown>>) : [];
+    if (!Number.isInteger(idx) || idx < 0 || idx >= steps.length) {
+      return NextResponse.json({ error: 'invalid_step' }, { status: 400 });
+    }
+    const removed = steps[idx];
+    const next = steps
+      .filter((_, i) => i !== idx)
+      .map((s, i) => ({ ...s, step_index: i + 1 }));
+
+    if (next.length === 0) {
+      const { error } = await supabaseAdmin.from('archived_funnels').delete().eq('id', id);
+      if (error) throw error;
+    } else {
+      const { error } = await supabaseAdmin
+        .from('archived_funnels')
+        .update({ steps: next, total_steps: next.length })
+        .eq('id', id);
+      if (error) throw error;
+    }
+
+    // Best-effort: drop the removed step's mirrored HTML.
+    try {
+      const pid = removed?.page_id as string | undefined;
+      if (pid) await supabaseAdmin.from('page_html').delete().eq('page_id', pid);
+    } catch { /* ignore */ }
+
+    return NextResponse.json({ success: true, deletedRow: next.length === 0, total_steps: next.length });
+  } catch (e) {
+    return NextResponse.json(
+      { success: false, error: e instanceof Error ? e.message : String(e) },
+      { status: 500 },
+    );
+  }
+}
+
 export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },

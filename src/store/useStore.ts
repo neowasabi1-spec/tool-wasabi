@@ -543,6 +543,10 @@ interface Store {
   loadArchivedFunnels: (force?: boolean) => Promise<void>;
   saveCurrentFunnelAsArchive: (name: string, section?: string, pageIds?: string[]) => Promise<void>;
   deleteArchivedFunnel: (id: string) => Promise<void>;
+  /** Delete a single step from a multi-step archived funnel. Removes the whole
+   *  row if it was its last step. Server-side (service role) so it works
+   *  regardless of RLS. */
+  deleteArchivedFunnelStep: (id: string, stepIndex: number) => Promise<void>;
   /** Toggle whether an archived funnel surfaces in the OWNER's own
    *  Protocollo Valchiria. Hits the dedicated API route (server-side
    *  ownership check) and optimistically updates the in-memory list. */
@@ -1598,6 +1602,34 @@ export const useStore = create<Store>()((set, get) => ({
       }));
     } catch (error) {
       console.error('Error deleting archived funnel:', error);
+      throw error;
+    }
+  },
+
+  deleteArchivedFunnelStep: async (id: string, stepIndex: number) => {
+    const previous = get().archivedFunnels;
+    // Optimistic: drop the step locally (and the whole row if it was the last).
+    set((state) => ({
+      archivedFunnels: state.archivedFunnels
+        .map((f) => {
+          if (f.id !== id) return f;
+          const steps = Array.isArray(f.steps) ? (f.steps as Record<string, unknown>[]) : [];
+          const next = steps
+            .filter((_, i) => i !== stepIndex)
+            .map((s, i) => ({ ...s, step_index: i + 1 }));
+          return { ...f, steps: next, total_steps: next.length } as typeof f;
+        })
+        .filter((f) => !(f.id === id && Array.isArray(f.steps) && f.steps.length === 0)),
+    }));
+    try {
+      const res = await fetch(`/api/valchiria/funnels/${id}?step=${stepIndex}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const t = await res.text().catch(() => '');
+        throw new Error(`HTTP ${res.status} ${t}`);
+      }
+    } catch (error) {
+      console.error('Error deleting funnel step:', error);
+      set({ archivedFunnels: previous });
       throw error;
     }
   },

@@ -305,7 +305,7 @@ function PageThumbnail({ url, alt, height = '180px', savedHtml }: { url: string;
 }
 
 export default function TemplatesPage() {
-  const { templates, addTemplate, updateTemplate, deleteTemplate, customPageTypes, addCustomPageType, deleteCustomPageType, archivedFunnels, archivedFunnelsLoaded, archivedFunnelsError, archivedFunnelsLoading, loadArchivedFunnels, deleteArchivedFunnel, setArchivedFunnelValchiriaFlag, setArchivedFunnelShareFlag, products, addFunnelPage, funnelPages, deleteFunnelPage } = useStore();
+  const { templates, addTemplate, updateTemplate, deleteTemplate, customPageTypes, addCustomPageType, deleteCustomPageType, archivedFunnels, archivedFunnelsLoaded, archivedFunnelsError, archivedFunnelsLoading, loadArchivedFunnels, deleteArchivedFunnel, deleteArchivedFunnelStep, setArchivedFunnelValchiriaFlag, setArchivedFunnelShareFlag, products, addFunnelPage, funnelPages, deleteFunnelPage } = useStore();
   const [valchiriaTogglingId, setValchiriaTogglingId] = useState<string | null>(null);
   const [shareTogglingId, setShareTogglingId] = useState<string | null>(null);
   const { permissions: currentUserPermissions } = useCurrentUser();
@@ -1330,10 +1330,38 @@ export default function TemplatesPage() {
                                       target="_blank"
                                       rel="noopener noreferrer"
                                       onClick={(e) => e.stopPropagation()}
-                                      className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity bg-white/90 rounded-full p-1.5 shadow"
+                                      className="absolute top-2 right-11 opacity-0 group-hover:opacity-100 transition-opacity bg-white/90 rounded-full p-1.5 shadow"
                                     >
                                       <ExternalLink className="w-3.5 h-3.5 text-gray-700" />
                                     </a>
+                                  )}
+                                  {!funnel.isShared && (
+                                    <button
+                                      onClick={async (e) => {
+                                        e.stopPropagation();
+                                        const ok = await confirmDialog({
+                                          title: 'Delete step',
+                                          message: `Delete "${s.name}" from "${funnel.name}"?`,
+                                          confirmText: 'Delete',
+                                          danger: true,
+                                        });
+                                        if (!ok) return;
+                                        try {
+                                          if (isMerged) {
+                                            await deleteArchivedFunnel(memberIds[i]);
+                                          } else {
+                                            await deleteArchivedFunnelStep(funnel.id, i);
+                                          }
+                                          toast.success('Step deleted');
+                                        } catch {
+                                          toast.error('Delete failed');
+                                        }
+                                      }}
+                                      className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity bg-white/90 rounded-full p-1.5 shadow text-gray-500 hover:text-red-600"
+                                      title="Delete this step"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
                                   )}
                                 </div>
                                 <div className="p-3">
