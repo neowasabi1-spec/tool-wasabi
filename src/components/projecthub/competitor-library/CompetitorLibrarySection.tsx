@@ -796,7 +796,7 @@ function CreativeDetailPanel({
     <>
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
-      <div className="relative w-full max-w-lg bg-card border border-border rounded-2xl max-h-[90vh] overflow-y-auto shadow-2xl flex flex-col">
+      <div className="relative w-full max-w-3xl bg-card border border-border rounded-2xl max-h-[90vh] overflow-y-auto shadow-2xl flex flex-col">
         <div className="p-4 border-b border-border flex items-center justify-between sticky top-0 bg-card z-10">
           <div className="min-w-0">
             <span className="text-sm font-semibold text-foreground">Creative Detail</span>
@@ -3176,10 +3176,24 @@ function KpiCard({ children }: { children: ReactNode }) {
 }
 
 function SectorOverview({ projectId, onOpenBrand }: { projectId: string; onOpenBrand?: (b: CompetitorWithStats) => void }) {
+  const { toast } = useToast();
   const [brands, setBrands] = useState<CompetitorWithStats[]>([]);
   const [creatives, setCreatives] = useState<CreativeWithBrand[]>([]);
   const [landings, setLandings] = useState<Landing[]>([]);
   const [loading, setLoading] = useState(true);
+  const [detailAd, setDetailAd] = useState<CreativeWithBrand | null>(null);
+
+  const delAd = async (ad: CompetitorAd) => {
+    setCreatives(p => p.filter(a => a.id !== ad.id));
+    await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/${ad.id}`, { method: "DELETE" });
+    toast({ title: "Creative removed" });
+  };
+  const saveTpl = async (ad: CompetitorAd) => {
+    const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/save-to-templates`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ad_ids: [ad.id] }),
+    });
+    if (r.ok) toast({ title: "Saved to templates!" });
+  };
 
   useEffect(() => {
     let alive = true;
@@ -3483,7 +3497,11 @@ function SectorOverview({ projectId, onOpenBrand }: { projectId: string; onOpenB
             {topAds.map(({ ad, spend }, i) => {
               const reach = typeof ad.reach === "number" && ad.reach > 0 ? ad.reach : null;
               return (
-                <div key={ad.id} className="group relative flex flex-col bg-card border border-border rounded-2xl overflow-hidden hover:border-primary/40 hover:shadow-lg transition-all">
+                <div key={ad.id}
+                  onClick={() => setDetailAd(ad)}
+                  role="button" tabIndex={0}
+                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setDetailAd(ad); } }}
+                  className="group relative flex flex-col bg-card border border-border rounded-2xl overflow-hidden hover:border-primary/40 hover:shadow-lg transition-all cursor-pointer">
                   {/* rank + est metrics header */}
                   <div className="flex items-center gap-2 px-3 py-2 border-b border-border/60">
                     <span className="flex items-center justify-center w-5 h-5 rounded-full bg-foreground text-background text-[10px] font-black shrink-0">{i + 1}</span>
@@ -3529,6 +3547,20 @@ function SectorOverview({ projectId, onOpenBrand }: { projectId: string; onOpenB
           </div>
         )}
       </div>
+
+      {detailAd && (
+        <CreativeDetailPanel
+          ad={detailAd}
+          placeholderIndex={topAds.findIndex(t => t.ad.id === detailAd.id)}
+          brandName={detailAd.brand_name}
+          projectId={projectId}
+          onClose={() => setDetailAd(null)}
+          onSaveTemplate={() => { saveTpl(detailAd); }}
+          onDelete={() => { delAd(detailAd); setDetailAd(null); }}
+          onTranscribed={(adId, t) => setCreatives(p => p.map(a => a.id === adId ? { ...a, body_text: t } : a))}
+          onWinnerChange={(adId, w) => setCreatives(p => p.map(a => a.id === adId ? { ...a, is_winner: w } : a))}
+        />
+      )}
     </div>
   );
 }
