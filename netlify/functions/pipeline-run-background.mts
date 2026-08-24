@@ -14,7 +14,7 @@ import { getCoreKnowledge, getKnowledgeForTask } from '../../src/knowledge/copyw
  * Body: { jobId }
  */
 
-const STEP_ORDER = ['market_research', 'brief', 'competitor', 'angle', 'ads', 'landing'] as const;
+const STEP_ORDER = ['market_research', 'brief', 'competitor', 'angle', 'ads', 'landing', 'swipe'] as const;
 type StepKey = (typeof STEP_ORDER)[number];
 
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
@@ -1456,6 +1456,132 @@ Rispondi SOLO con l'HTML, senza spiegazioni e senza \`\`\`.`;
   };
 }
 
+// ---------------------------------------------------------------------------
+// STEP 7 — Funnel swipe: load every step of the SELECTED funnel into the
+// Clone/Swipe section (funnel_pages) and hand off the heavy work (text rewrite
+// + GPT Image 2 image regeneration + product-mockup swap) to a dedicated
+// background function with its own 15-minute budget.
+// ---------------------------------------------------------------------------
+
+/** Map an archived step's page/step type onto a funnel_pages-valid page_type
+ *  (mirrors sanitizePageTypeForDb's whitelist). */
+function swipePageType(raw: string): string {
+  const t = raw.toLowerCase();
+  if (/checkout/.test(t)) return 'checkout';
+  if (/quiz/.test(t)) return 'quiz_funnel';
+  if (/listicle/.test(t)) return '5_reasons_listicle';
+  if (/advertorial|article|blog|review|content/.test(t)) return 'advertorial';
+  if (/product/.test(t)) return 'product_page';
+  if (/landing|sales|vsl|presell|opt|lead|squeeze|bridge|webinar/.test(t)) return 'landing';
+  return 'altro';
+}
+
+/** Latest generated MAIN product image (the mockup from the landing step) —
+ *  used by the swipe worker wherever the competitor page shows THEIR product. */
+async function loadMainProductImageUrl(supabase: SupabaseClient, projectId: string): Promise<string | null> {
+  try {
+    const { data } = await supabase
+      .from('project_files')
+      .select('file_path, original_name, created_at')
+      .eq('project_id', projectId)
+      .eq('file_type', 'product_image')
+      .order('created_at', { ascending: false })
+      .limit(20);
+    const rows = (data || []) as Array<{ file_path: string; original_name?: string | null }>;
+    if (!rows.length) return null;
+    // saveProductImage labels the main as "… Product — …" and upsells as
+    // "… Upsell N — …": prefer the newest non-upsell image.
+    const main = rows.find((r) => !/upsell/i.test(r.original_name || '')) || rows[0];
+    const { data: pub } = supabase.storage.from(PROJECT_FILES_BUCKET).getPublicUrl(main.file_path);
+    return pub?.publicUrl || null;
+  } catch {
+    return null;
+  }
+}
+
+const MAX_SWIPE_STEPS = 8;
+
+async function runSwipe(supabase: SupabaseClient, projectId: string, input: PipelineInput): Promise<StepResult> {
+  if (!input.funnelId) {
+    return { summary: 'No funnel selected in the launcher — Clone/Swipe step skipped.', output: '' };
+  }
+
+  const { data: funnelRow, error: fErr } = await supabase
+    .from('archived_funnels')
+    .select('id, name, steps')
+    .eq('id', input.funnelId)
+    .single();
+  if (fErr || !funnelRow) throw new Error(`Selected funnel not found: ${fErr?.message || input.funnelId}`);
+
+  const steps = Array.isArray(funnelRow.steps) ? (funnelRow.steps as Array<Record<string, unknown>>) : [];
+  if (!steps.length) throw new Error('Selected funnel has no steps to swipe');
+
+  const funnelName = String(funnelRow.name || 'Funnel');
+  const mainImageUrl = await loadMainProductImageUrl(supabase, projectId);
+
+  // One Clone/Swipe page per funnel step, in order. The worker fills
+  // cloned/swiped HTML afterwards; status starts as in_progress so the UI
+  // shows the swipe as running as soon as the pages appear.
+  const pages: Array<{ funnelPageId: string; sourcePageId: string; sourceUrl: string; name: string; type: string }> = [];
+  const usable = steps.slice(0, MAX_SWIPE_STEPS);
+  for (let i = 0; i < usable.length; i++) {
+    const s = usable[i] || {};
+    const rawType = String(s.page_type || s.step_type || 'landing');
+    const pageType = swipePageType(rawType);
+    const url = String(s.url_to_swipe || s.url || '');
+    const cloned = (s.cloned_data && typeof s.cloned_data === 'object' ? s.cloned_data : {}) as Record<string, unknown>;
+    const sourcePageId = String(s.page_id || ''); // page_html key written by the extension's funnel walk
+    const stepName = String(s.name || '').slice(0, 60);
+    const name = `${funnelName} — Step ${i + 1}${stepName ? `: ${stepName}` : ''}`.slice(0, 120);
+
+    const { data: created, error } = await supabase
+      .from('funnel_pages')
+      .insert({
+        name,
+        page_type: pageType,
+        project_id: projectId,
+        product_id: null,
+        url_to_swipe: url,
+        prompt: '',
+        swipe_status: 'in_progress',
+        cloned_data: typeof cloned.htmlUrl === 'string' && cloned.htmlUrl
+          ? { htmlUrl: cloned.htmlUrl, title: name, htmlSkipped: true, source_url: url }
+          : null,
+      })
+      .select('id')
+      .single();
+    if (error || !created) {
+      console.warn('[pipeline] swipe page insert failed:', error?.message);
+      continue;
+    }
+    pages.push({ funnelPageId: created.id as string, sourcePageId, sourceUrl: url, name, type: pageType });
+  }
+  if (!pages.length) throw new Error('Could not create any Clone/Swipe pages for the funnel');
+
+  // Hand off to the dedicated background worker (own 15-min budget). It
+  // answers 202 immediately, so a short timeout is enough to enqueue it.
+  const base = siteBaseUrl();
+  if (!base) throw new Error('Site base URL missing — cannot start the swipe worker');
+  const secret = process.env.APIFY_WEBHOOK_SECRET || process.env.CRON_SECRET || '';
+  try {
+    await fetch(`${base}/.netlify/functions/pipeline-swipe-background`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectId, secret, market: marketGeo(input), mainImageUrl, pages }),
+      signal: AbortSignal.timeout(8_000),
+    });
+  } catch (e) {
+    // Background functions ACK with 202 before running; a timeout here does
+    // not necessarily mean the worker was not queued. Log and continue.
+    console.warn('[pipeline] swipe worker trigger:', (e as Error).message);
+  }
+
+  return {
+    summary: `${pages.length} funnel steps loaded into Clone/Swipe — text + image swipe running in background${mainImageUrl ? ' (product shots use the generated mockup)' : ''}.`,
+    output: pages.map((p, i) => `${i + 1}. ${p.name}${p.sourceUrl ? ` — ${p.sourceUrl}` : ''}`).join('\n'),
+  };
+}
+
 const RUNNERS: Record<StepKey, (s: SupabaseClient, p: string, i: PipelineInput) => Promise<StepResult>> = {
   market_research: runMarketResearch,
   brief: runBrief,
@@ -1463,6 +1589,7 @@ const RUNNERS: Record<StepKey, (s: SupabaseClient, p: string, i: PipelineInput) 
   angle: runAngle,
   ads: runAds,
   landing: runLanding,
+  swipe: runSwipe,
 };
 
 // ---------------------------------------------------------------------------

@@ -1,0 +1,896 @@
+import { createClient } from '@supabase/supabase-js';
+import { extractAllTextsUniversal } from '../../src/lib/universal-text-extractor';
+
+/**
+ * Background function (up to 15 min) that performs the Chimera Protocol
+ * FUNNEL SWIPE: for every Clone/Swipe page created by the pipeline's `swipe`
+ * step it
+ *   1. loads the competitor step's saved HTML (page_html written by the
+ *      extension's funnel walk) or fetches the live URL,
+ *   2. rewrites ALL marketing texts for OUR product (Claude, in the market's
+ *      local language) using the same universal-extract + DOM-replacer
+ *      technique as /api/landing/swipe,
+ *   3. swipes the page IMAGES: Claude vision understands each image and
+ *      writes a generation prompt → GPT Image 2 (fal.ai) recreates it for our
+ *      product; competitor PRODUCT SHOTS are replaced with the generated
+ *      product mockup instead,
+ *   4. saves the swiped HTML into page_html + updates the funnel_pages row
+ *      so the result is visible in the Clone/Swipe section.
+ *
+ * Decoupled from pipeline-run-background so the swipe gets its own 15-minute
+ * budget (a multi-step funnel with images can take >10 min on its own).
+ *
+ * Body: { projectId, secret, market, mainImageUrl, pages: [{ funnelPageId,
+ *         sourcePageId, sourceUrl, name, type }] }
+ */
+
+const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
+const ANTHROPIC_VERSION = '2023-06-01';
+const MODEL = process.env.PIPELINE_SWIPE_MODEL || 'claude-opus-4-8';
+const IMG_MODEL_T2I = process.env.PIPELINE_IMAGE_MODEL || 'openai/gpt-image-2';
+const PROJECT_FILES_BUCKET = 'project-files';
+
+const GLOBAL_BUDGET_MS = 13.5 * 60_000;
+const MAX_TEXTS = 350;
+const BATCH_SIZE = 30;
+const BATCH_CONCURRENCY = 3;
+const MAX_IMAGES_PER_PAGE = 5;
+const MAX_IMAGES_TOTAL = 18;
+
+function getSupabase() {
+  const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || '';
+  if (!url || !key) throw new Error('Supabase env (URL / SERVICE_ROLE_KEY) missing');
+  return createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
+}
+type SupabaseClient = ReturnType<typeof getSupabase>;
+
+interface SwipePage {
+  funnelPageId: string;
+  sourcePageId: string;
+  sourceUrl: string;
+  name: string;
+  type: string;
+}
+
+interface SwipeCtx {
+  projectId: string;
+  productName: string;
+  productContext: string;
+  market: string;
+  mainImageUrl: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Anthropic helpers (plain caller + vision caller)
+// ---------------------------------------------------------------------------
+
+function anthropicKey(): string {
+  const k = process.env.ANTHROPIC_API_KEY;
+  if (!k) throw new Error('ANTHROPIC_API_KEY is not configured');
+  return k;
+}
+
+async function callClaudeText(system: string, user: string, maxTokens: number, timeoutMs = 150_000): Promise<string> {
+  const res = await fetch(ANTHROPIC_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-api-key': anthropicKey(), 'anthropic-version': ANTHROPIC_VERSION },
+    body: JSON.stringify({
+      model: MODEL,
+      max_tokens: maxTokens,
+      system,
+      messages: [{ role: 'user', content: user }],
+    }),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!res.ok) throw new Error(`Anthropic ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  const data = await res.json();
+  return (data.content?.[0]?.text ?? '').trim();
+}
+
+async function callClaudeVision(
+  system: string,
+  userText: string,
+  image: { mediaType: string; b64: string } | null,
+  maxTokens: number,
+): Promise<string> {
+  const content: Array<Record<string, unknown>> = [];
+  if (image) {
+    content.push({ type: 'image', source: { type: 'base64', media_type: image.mediaType, data: image.b64 } });
+  }
+  content.push({ type: 'text', text: userText });
+  const res = await fetch(ANTHROPIC_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-api-key': anthropicKey(), 'anthropic-version': ANTHROPIC_VERSION },
+    body: JSON.stringify({ model: MODEL, max_tokens: maxTokens, system, messages: [{ role: 'user', content }] }),
+    signal: AbortSignal.timeout(90_000),
+  });
+  if (!res.ok) throw new Error(`Anthropic ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  const data = await res.json();
+  return (data.content?.[0]?.text ?? '').trim();
+}
+
+// ---------------------------------------------------------------------------
+// fal.ai — GPT Image 2 (same queue API as pipeline-run-background)
+// ---------------------------------------------------------------------------
+
+function falKey(): string { return process.env.FAL_KEY || process.env.FAL_AI_API_KEY || ''; }
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+async function falGenerateImageUrl(endpoint: string, input: Record<string, unknown>, timeoutMs = 180_000): Promise<string | null> {
+  const key = falKey();
+  if (!key) return null;
+  try {
+    const sub = await fetch(`https://queue.fal.run/${endpoint}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Key ${key}` },
+      body: JSON.stringify(input),
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!sub.ok) { console.warn('[swipe] fal submit', sub.status, (await sub.text()).slice(0, 200)); return null; }
+    const s = await sub.json() as { status_url?: string; response_url?: string };
+    if (!s.status_url || !s.response_url) return null;
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      await sleep(3_000);
+      const st = await fetch(s.status_url, { headers: { Authorization: `Key ${key}` }, cache: 'no-store' });
+      if (!st.ok) continue;
+      const sj = await st.json() as { status?: string; error?: string };
+      if (sj.status === 'COMPLETED') {
+        const rr = await fetch(s.response_url, { headers: { Authorization: `Key ${key}` }, cache: 'no-store' });
+        if (!rr.ok) return null;
+        const result = await rr.json() as { images?: Array<{ url?: string }> };
+        return result?.images?.[0]?.url || null;
+      }
+      if (sj.status === 'ERROR') { console.warn('[swipe] fal job error', sj.error); return null; }
+    }
+    return null;
+  } catch (e) {
+    console.warn('[swipe] fal threw:', (e as Error).message);
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Source HTML loading
+// ---------------------------------------------------------------------------
+
+async function loadSavedHtml(sb: SupabaseClient, pageId: string): Promise<string> {
+  if (!pageId) return '';
+  try {
+    const { data } = await sb
+      .from('page_html')
+      .select('html')
+      .eq('page_id', pageId)
+      .eq('kind', 'cloned')
+      .eq('variant', 'desktop')
+      .maybeSingle();
+    return typeof data?.html === 'string' ? data.html : '';
+  } catch {
+    return '';
+  }
+}
+
+async function fetchLiveHtml(url: string): Promise<string> {
+  if (!/^https?:\/\//i.test(url)) return '';
+  try {
+    const res = await fetch(url, {
+      headers: {
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        accept: 'text/html,application/xhtml+xml',
+      },
+      signal: AbortSignal.timeout(20_000),
+      redirect: 'follow',
+    });
+    if (!res.ok) return '';
+    const ct = res.headers.get('content-type') || '';
+    if (ct && !/text\/html|application\/xhtml/i.test(ct)) return '';
+    const html = await res.text();
+    return html.length > 500 ? html : '';
+  } catch {
+    return '';
+  }
+}
+
+/** Relative assets in a saved snapshot break outside the origin — a <base>
+ *  tag fixes images/css/links in one move without touching <script> bodies. */
+function ensureBaseHref(html: string, sourceUrl: string): string {
+  if (!/^https?:\/\//i.test(sourceUrl)) return html;
+  if (/<base\b/i.test(html)) return html;
+  let baseHref = '';
+  try { baseHref = new URL('.', sourceUrl).href; } catch { return html; }
+  const headMatch = html.match(/<head\b[^>]*>/i);
+  if (!headMatch || headMatch.index === undefined) return html;
+  const at = headMatch.index + headMatch[0].length;
+  return `${html.slice(0, at)}<base href="${baseHref}">${html.slice(at)}`;
+}
+
+// ---------------------------------------------------------------------------
+// TEXT SWIPE — universal extract + batched Claude rewrite + DOM-replacer
+// (same technique as /api/landing/swipe, adapted to run inside this worker)
+// ---------------------------------------------------------------------------
+
+const SAFE_META_NAMES = new Set([
+  'description', 'keywords', 'author',
+  'og:title', 'og:description', 'og:site_name',
+  'twitter:title', 'twitter:description',
+]);
+
+const SAFE_TEXT_PREFIXES = [
+  'tag:h1', 'tag:h2', 'tag:h3', 'tag:h4', 'tag:h5', 'tag:h6',
+  'tag:p', 'tag:li', 'tag:td', 'tag:th', 'tag:dt', 'tag:dd',
+  'tag:button', 'tag:a', 'tag:label', 'tag:figcaption',
+  'tag:blockquote', 'tag:summary', 'tag:legend', 'tag:option',
+  'tag:span', 'tag:strong', 'tag:em', 'tag:b', 'tag:i', 'tag:u',
+  'tag:small', 'tag:mark', 'tag:cite', 'tag:q',
+  'mixed:p', 'mixed:div', 'mixed:li', 'mixed:td', 'mixed:th',
+  'mixed:h1', 'mixed:h2', 'mixed:h3', 'mixed:h4', 'mixed:h5', 'mixed:h6',
+  'mixed:span', 'mixed:strong', 'mixed:em', 'mixed:a', 'mixed:b', 'mixed:i',
+];
+const SAFE_ATTRS = new Set(['alt', 'title', 'placeholder', 'aria-label', 'value']);
+
+interface SwipeText { original: string; kind: 'title' | 'meta' | 'attr' | 'text'; attr?: string; prio: number; }
+
+function classifyContext(ctx: string): { kind: SwipeText['kind']; attr?: string; prio: number } | null {
+  if (ctx === 'title') return { kind: 'title', prio: 0 };
+  if (ctx.startsWith('meta:')) {
+    return SAFE_META_NAMES.has(ctx.slice(5).toLowerCase()) ? { kind: 'meta', prio: 5 } : null;
+  }
+  if (ctx.startsWith('attr:')) {
+    const a = ctx.slice(5).split(':')[0].toLowerCase();
+    return SAFE_ATTRS.has(a) ? { kind: 'attr', attr: a, prio: 5 } : null;
+  }
+  for (const p of SAFE_TEXT_PREFIXES) {
+    if (ctx === p || ctx.startsWith(p + ':')) {
+      const tag = p.split(':')[1];
+      const prio = /^h[12]$|^button$/.test(tag) ? 1 : /^h[3-6]$|^p$|^li$/.test(tag) ? 2 : /^a$|^label$/.test(tag) ? 3 : 6;
+      return { kind: 'text', prio };
+    }
+  }
+  return null;
+}
+
+function collectSwipeTexts(html: string): SwipeText[] {
+  const universal = extractAllTextsUniversal(html);
+  const seen = new Map<string, SwipeText>();
+  const out: SwipeText[] = [];
+  for (const u of universal) {
+    const cls = classifyContext(u.context);
+    if (!cls) continue;
+    const t = u.text;
+    if (t.length < 2 || t.length > 4000) continue;
+    if (!/[a-zA-ZÀ-ÿ]/.test(t)) continue;
+    if (t.startsWith('http://') || t.startsWith('https://')) continue;
+    if (t.includes('{') && t.includes('}') && /[=:]\s*function|=>/.test(t)) continue;
+    const existing = seen.get(t);
+    if (existing) {
+      if (cls.prio < existing.prio) { existing.kind = cls.kind; existing.attr = cls.attr; existing.prio = cls.prio; }
+      continue;
+    }
+    const entry: SwipeText = { original: t, kind: cls.kind, attr: cls.attr, prio: cls.prio };
+    seen.set(t, entry);
+    out.push(entry);
+  }
+  if (out.length > MAX_TEXTS) {
+    out.sort((a, b) => a.prio - b.prio);
+    return out.slice(0, MAX_TEXTS);
+  }
+  return out;
+}
+
+function cleanJsonArray(text: string): string {
+  let c = text.trim().replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/i, '');
+  const s = c.indexOf('[');
+  const e = c.lastIndexOf(']');
+  if (s >= 0 && e > s) c = c.substring(s, e + 1);
+  return c.trim();
+}
+
+async function rewriteAllTexts(
+  systemPrompt: string,
+  texts: SwipeText[],
+  deadline: number,
+): Promise<Map<number, string>> {
+  const items = texts.map((t, i) => ({ id: i, text: t.original }));
+  const result = new Map<number, string>();
+  const byId = new Map(items.map((t) => [t.id, t.text]));
+
+  const runBatch = async (batch: Array<{ id: number; text: string }>, label: string) => {
+    const user = `${label}: return exactly one JSON object per input id (${batch.length} items). Never skip an id.
+
+Rewrite these texts so they sell ONLY the described product. Keep the same conversational energy (headlines stay headlines, CTAs stay CTAs). Plain text only in "rewritten" — no HTML or markdown.
+
+Input:
+${JSON.stringify(batch, null, 2)}
+
+Output shape: [{"id": number, "rewritten": "..."}, ...] — include EVERY id (any order ok).`;
+    const raw = await callClaudeText(systemPrompt, user, 8000, 120_000);
+    const parsed = JSON.parse(cleanJsonArray(raw)) as Array<{ id: number; rewritten: string }>;
+    if (!Array.isArray(parsed)) throw new Error('batch: expected JSON array');
+    for (const rw of parsed) {
+      if (typeof rw.id !== 'number' || rw.rewritten == null) continue;
+      const trimmed = String(rw.rewritten).trim();
+      if (!trimmed || trimmed === byId.get(rw.id)) continue;
+      result.set(rw.id, trimmed);
+    }
+  };
+
+  const runPool = async (pool: Array<Array<{ id: number; text: string }>>, labelOf: (i: number) => string) => {
+    let cursor = 0;
+    const worker = async () => {
+      for (;;) {
+        if (Date.now() > deadline) return;
+        const idx = cursor++;
+        if (idx >= pool.length) return;
+        try { await runBatch(pool[idx], labelOf(idx)); }
+        catch (e) { console.warn('[swipe] batch failed:', (e as Error).message); }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(BATCH_CONCURRENCY, pool.length) }, worker));
+  };
+
+  const batches: Array<Array<{ id: number; text: string }>> = [];
+  for (let i = 0; i < items.length; i += BATCH_SIZE) batches.push(items.slice(i, i + BATCH_SIZE));
+  await runPool(batches, (i) => `Batch ${i + 1} of ${batches.length}`);
+
+  // One gap-fill sweep for ids missed by failed batches.
+  const missing = items.filter((t) => !result.has(t.id));
+  if (missing.length && Date.now() < deadline) {
+    const gaps: Array<Array<{ id: number; text: string }>> = [];
+    for (let i = 0; i < missing.length; i += BATCH_SIZE) gaps.push(missing.slice(i, i + BATCH_SIZE));
+    await runPool(gaps, () => 'GAP-FILL — every id mandatory');
+  }
+  return result;
+}
+
+function escRxLiteral(s: string): string { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+function escAttr(s: string): string { return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
+function escHtml(s: string): string { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+
+/** Apply rewrites: server-side <title>/<meta>, plus the injected DOM-replacer
+ *  script (whitespace-tolerant) for body texts + attributes — the exact
+ *  technique /api/landing/swipe uses, so results render identically. */
+function applyRewrites(
+  originalHtml: string,
+  texts: SwipeText[],
+  rewrites: Map<number, string>,
+): { html: string; replacements: number; newTitle: string; changes: Array<{ from: string; to: string }> } {
+  const replacementPairs: Array<{ from: string; to: string; attr?: string }> = [];
+  const titlePairs: Array<{ from: string; to: string }> = [];
+  const metaPairs: Array<{ from: string; to: string }> = [];
+
+  for (const [id, rewritten] of rewrites) {
+    const t = texts[id];
+    if (!t || !rewritten || t.original === rewritten) continue;
+    if (t.kind === 'title') {
+      titlePairs.push({ from: t.original, to: rewritten });
+      replacementPairs.push({ from: t.original, to: rewritten });
+    } else if (t.kind === 'meta') {
+      metaPairs.push({ from: t.original, to: rewritten });
+    } else if (t.kind === 'attr') {
+      replacementPairs.push({ from: t.original, to: rewritten, attr: t.attr });
+    } else {
+      replacementPairs.push({ from: t.original, to: rewritten });
+    }
+  }
+
+  // JSON-in-<script> safe encode (see /api/landing/swipe for the rationale).
+  const pairsJson = JSON.stringify(replacementPairs)
+    .replace(/<\/(script|style)/gi, '<\\/$1')
+    .replace(/<!--/g, '<\\!--')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+  const swipeScript = `<script data-swipe-replacer>
+(function(){
+  var pairs = ${pairsJson};
+  function escRx(s){return s.replace(/[.*+?^\${}()|[\\]\\\\]/g,'\\\\$&');}
+  function normWS(s){return (s||'').replace(/\\s+/g,' ').trim();}
+  var prepared = pairs.map(function(p){
+    var fn = normWS(p.from);
+    return { from: p.from, to: p.to, attr: p.attr, norm: fn,
+      rx: fn ? new RegExp(escRx(fn).replace(/ /g,'\\\\s+'),'g') : null };
+  }).filter(function(p){return p.norm && p.norm.length>=2;});
+  function tryReplace(text){
+    if(!text) return text;
+    var out = text;
+    for(var i=0;i<prepared.length;i++){
+      var p = prepared[i];
+      if(p.attr) continue;
+      if(out.indexOf(p.from)!==-1){ out = out.split(p.from).join(p.to); }
+      else if(p.rx && p.rx.test(out)){ p.rx.lastIndex = 0; out = out.replace(p.rx, p.to); }
+    }
+    return out;
+  }
+  var blockSel = 'h1,h2,h3,h4,h5,h6,p,li,td,th,dt,dd,button,a,label,figcaption,blockquote,summary,legend,span,strong,em,b,i';
+  var elems = document.body ? document.body.querySelectorAll(blockSel) : [];
+  for(var k=0;k<elems.length;k++){
+    var el = elems[k];
+    if(el.querySelector(blockSel)) continue;
+    var fullNorm = normWS(el.textContent);
+    if(!fullNorm) continue;
+    for(var p2=0;p2<prepared.length;p2++){
+      var pp = prepared[p2];
+      if(pp.attr) continue;
+      if(fullNorm === pp.norm){ el.textContent = pp.to; break; }
+    }
+  }
+  function walkText(node){
+    if(node.nodeType===3){
+      var t = node.textContent;
+      var nt = tryReplace(t);
+      if(nt !== t) node.textContent = nt;
+    } else if(node.nodeType===1 && node.tagName!=='SCRIPT' && node.tagName!=='STYLE'){
+      for(var c=node.firstChild;c;c=c.nextSibling) walkText(c);
+    }
+  }
+  if(document.body) walkText(document.body);
+  for(var a=0;a<prepared.length;a++){
+    var pa = prepared[a];
+    if(!pa.attr) continue;
+    var els = document.querySelectorAll('['+pa.attr+']');
+    for(var j=0;j<els.length;j++){
+      var v = els[j].getAttribute(pa.attr);
+      if(!v) continue;
+      var nv = v;
+      if(v.indexOf(pa.from)!==-1){ nv = v.split(pa.from).join(pa.to); }
+      else if(pa.rx && pa.rx.test(v)){ pa.rx.lastIndex = 0; nv = v.replace(pa.rx, pa.to); }
+      if(nv !== v) els[j].setAttribute(pa.attr, nv);
+    }
+  }
+  var titleEl = document.querySelector('title');
+  if(titleEl){
+    var tt = titleEl.textContent;
+    var ntt = tryReplace(tt);
+    if(ntt !== tt) titleEl.textContent = ntt;
+  }
+})();
+<\/script>`;
+
+  let html = originalHtml;
+  // Server-side <title> replace (browser tab + SEO/social preview).
+  for (const tp of titlePairs) {
+    const rx = new RegExp(`(<title[^>]*>)\\s*${escRxLiteral(escHtml(tp.from))}\\s*(<\\/title>)`, 'gi');
+    const before = html;
+    html = html.replace(rx, `$1${escHtml(tp.to)}$2`);
+    if (html === before) {
+      const rxRaw = new RegExp(`(<title[^>]*>)\\s*${escRxLiteral(tp.from)}\\s*(<\\/title>)`, 'gi');
+      html = html.replace(rxRaw, `$1${escHtml(tp.to)}$2`);
+    }
+  }
+  // Server-side <meta content> replace, whitelist-guarded.
+  const isSafeMetaTag = (metaTagStr: string): boolean => {
+    const m = metaTagStr.match(/\b(?:name|property|itemprop)\s*=\s*["']([^"']+)["']/i);
+    return !!m && SAFE_META_NAMES.has(m[1].toLowerCase());
+  };
+  for (const mp of metaPairs) {
+    const replaceMetaContent = (htmlStr: string, fromValue: string, toValue: string) => {
+      const tagRe = new RegExp(`<meta\\b([^>]*?)\\bcontent\\s*=\\s*(["'])${escRxLiteral(fromValue)}\\2([^>]*)>`, 'gi');
+      return htmlStr.replace(tagRe, (full, attrsBefore, q, attrsAfter) => {
+        if (!isSafeMetaTag(full)) return full;
+        return `<meta${attrsBefore}content=${q}${escAttr(toValue)}${q}${attrsAfter}>`;
+      });
+    };
+    html = replaceMetaContent(html, escAttr(mp.from), mp.to);
+    if (mp.from !== escAttr(mp.from)) html = replaceMetaContent(html, mp.from, mp.to);
+  }
+
+  // Idempotency: strip any previous swipe-replacer before injecting ours.
+  html = html.replace(/<script\b[^>]*\bdata-swipe-replacer\b[^>]*>[\s\S]*?<\/script>/gi, '');
+  if (html.includes('</body>')) {
+    html = html.replace('</body>', () => swipeScript + '</body>');
+  } else {
+    html += swipeScript;
+  }
+
+  const newTitle = titlePairs[0]?.to || replacementPairs.find((p) => !p.attr)?.to || '';
+  const replacements = replacementPairs.length + titlePairs.length + metaPairs.length;
+  const changes = replacementPairs.slice(0, 40).map((p) => ({ from: p.from.slice(0, 50), to: p.to.slice(0, 50) }));
+  return { html, replacements, newTitle, changes };
+}
+
+// ---------------------------------------------------------------------------
+// IMAGE SWIPE — understand each image (Claude vision) → GPT Image 2 prompt →
+// generate → replace; competitor product shots use the product mockup instead.
+// ---------------------------------------------------------------------------
+
+const IMG_JUNK_RE = /logo|icon|favicon|sprite|pixel|badge|payment|visa|mastercard|amex|paypal|klarna|apple-?pay|g-?pay|arrow|chevron|star|rating|trustpilot|flag|emoji|loader|spinner|spacer|blank\.|placeholder\./i;
+
+interface PageImage { src: string; alt: string; width: number; height: number; position: number; context: string; }
+
+function collectImages(html: string, sourceUrl: string): PageImage[] {
+  const out: PageImage[] = [];
+  const seen = new Set<string>();
+  const tagRe = /<img\b[^>]*>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = tagRe.exec(html)) !== null) {
+    const tag = m[0];
+    const src = tag.match(/\bsrc\s*=\s*["']([^"']+)["']/i)?.[1]
+      || tag.match(/\bdata-src\s*=\s*["']([^"']+)["']/i)?.[1] || '';
+    if (!src || src.startsWith('data:')) continue;
+    if (/\.svg(\?|#|$)/i.test(src)) continue;
+    const alt = tag.match(/\balt\s*=\s*["']([^"']*)["']/i)?.[1] || '';
+    if (IMG_JUNK_RE.test(src) || IMG_JUNK_RE.test(alt)) continue;
+    const width = Number.parseInt(tag.match(/\bwidth\s*=\s*["']?(\d+)/i)?.[1] || '0', 10);
+    const height = Number.parseInt(tag.match(/\bheight\s*=\s*["']?(\d+)/i)?.[1] || '0', 10);
+    if ((width && width < 80) || (height && height < 80)) continue;
+    if (seen.has(src)) continue;
+    seen.add(src);
+    // Nearby text gives the vision model the section's message.
+    const from = Math.max(0, m.index - 700);
+    const to = Math.min(html.length, m.index + tag.length + 700);
+    const context = html.slice(from, to)
+      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 400);
+    out.push({ src, alt, width, height, position: m.index, context });
+    if (out.length >= 40) break;
+  }
+  // Earlier on the page = more important (hero first).
+  out.sort((a, b) => a.position - b.position);
+  void sourceUrl;
+  return out.slice(0, MAX_IMAGES_PER_PAGE);
+}
+
+function absolutizeSrc(src: string, sourceUrl: string): string {
+  if (/^https?:\/\//i.test(src)) return src;
+  if (src.startsWith('//')) return `https:${src}`;
+  if (!sourceUrl) return '';
+  try { return new URL(src, sourceUrl).href; } catch { return ''; }
+}
+
+const VISION_MEDIA_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+
+async function downloadForVision(url: string): Promise<{ mediaType: string; b64: string } | null> {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(12_000) });
+    if (!res.ok) return null;
+    const ct = (res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+    if (!VISION_MEDIA_TYPES.has(ct)) return null;
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length < 2_000 || buf.length > 4_500_000) return null;
+    return { mediaType: ct, b64: buf.toString('base64') };
+  } catch {
+    return null;
+  }
+}
+
+interface ImageAnalysis { productShot: boolean; format: string; prompt: string; }
+
+function parseImageAnalysis(raw: string): ImageAnalysis | null {
+  try {
+    let c = raw.trim().replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/i, '');
+    const s = c.indexOf('{');
+    const e = c.lastIndexOf('}');
+    if (s >= 0 && e > s) c = c.slice(s, e + 1);
+    const obj = JSON.parse(c) as Record<string, unknown>;
+    const prompt = String(obj.prompt || '').trim();
+    if (!prompt) return null;
+    return {
+      productShot: obj.product_shot === true || obj.productShot === true,
+      format: String(obj.format || 'image').slice(0, 80),
+      prompt: prompt.slice(0, 1200),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function falImageSize(img: PageImage): string {
+  if (img.width && img.height) {
+    const ratio = img.width / img.height;
+    if (ratio >= 1.4) return 'landscape_4_3';
+    if (ratio <= 0.72) return 'portrait_4_3';
+  }
+  return 'square_hd';
+}
+
+let _bucketEnsured = false;
+async function ensureBucket(sb: SupabaseClient): Promise<void> {
+  if (_bucketEnsured) return;
+  try {
+    const { error } = await sb.storage.createBucket(PROJECT_FILES_BUCKET, { public: true, fileSizeLimit: 52428800 });
+    if (error && !/already exists|duplicate/i.test(error.message)) console.warn('[swipe] ensureBucket:', error.message);
+  } catch (e) { console.warn('[swipe] ensureBucket threw:', (e as Error).message); }
+  _bucketEnsured = true;
+}
+
+async function storeGeneratedImage(sb: SupabaseClient, projectId: string, falUrl: string, idx: number): Promise<string | null> {
+  try {
+    const res = await fetch(falUrl, { signal: AbortSignal.timeout(60_000) });
+    if (!res.ok) return null;
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length < 100) return null;
+    const ct = res.headers.get('content-type') || 'image/png';
+    const ext = /jpeg|jpg/.test(ct) ? 'jpg' : /webp/.test(ct) ? 'webp' : 'png';
+    await ensureBucket(sb);
+    const key = `${projectId}/swipe_image/${Date.now()}_${idx}.${ext}`;
+    const { error } = await sb.storage.from(PROJECT_FILES_BUCKET).upload(key, buf, { contentType: ct, upsert: false });
+    if (error) { console.warn('[swipe] image upload failed:', error.message); return null; }
+    const { data: pub } = sb.storage.from(PROJECT_FILES_BUCKET).getPublicUrl(key);
+    return pub?.publicUrl || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Replace every occurrence of the original src (raw + HTML-escaped) so both
+ *  src= and srcset= entries pick up the new image. */
+function replaceImageSrc(html: string, oldSrc: string, newUrl: string): string {
+  let out = html.split(oldSrc).join(newUrl);
+  const escaped = oldSrc.replace(/&/g, '&amp;');
+  if (escaped !== oldSrc) out = out.split(escaped).join(newUrl);
+  return out;
+}
+
+async function swipeImages(
+  sb: SupabaseClient,
+  html: string,
+  ctx: SwipeCtx,
+  page: SwipePage,
+  budget: { imagesLeft: number },
+  deadline: number,
+): Promise<{ html: string; generated: number; productSwaps: number; analyzed: number }> {
+  let out = html;
+  let generated = 0;
+  let productSwaps = 0;
+  let analyzed = 0;
+
+  const images = collectImages(html, page.sourceUrl);
+  if (!images.length) return { html: out, generated, productSwaps, analyzed };
+
+  const system = `You are a senior direct-response creative director. You "swipe" a competitor's landing-page image: detect the FORMAT of the original (before/after split-frame, product hero/packshot, lifestyle photo, ingredient close-up, mechanism diagram, infographic/chart, testimonial portrait, press clipping, UGC selfie, comparison table) and write ONE text-to-image prompt that recreates THE SAME FORMAT for OUR product — same tone, framing and layout. Never default to a before/after unless the original truly is one. No competitor brand names in the prompt.
+
+OUR PRODUCT: ${ctx.productName}
+${ctx.productContext ? `PRODUCT CONTEXT:\n${ctx.productContext.slice(0, 3000)}` : ''}
+${ctx.market ? `TARGET MARKET: ${ctx.market} — any text visible inside the generated image MUST be in this market's local language.` : ''}
+
+Return STRICT JSON only, no prose:
+{"product_shot": true|false, "format": "...", "prompt": "..."}
+Set "product_shot": true ONLY when the image is essentially a packshot/hero of the competitor's own product (bottle, jar, box, device) — we will substitute OUR real product photo there instead of generating.`;
+
+  for (const img of images) {
+    if (budget.imagesLeft <= 0) break;
+    if (Date.now() > deadline - 60_000) break;
+    const absSrc = absolutizeSrc(img.src, page.sourceUrl);
+
+    let analysis: ImageAnalysis | null = null;
+    try {
+      const visual = absSrc ? await downloadForVision(absSrc) : null;
+      const user = `Analyze this landing-page image and produce the swipe JSON.
+${visual ? '' : '(The image file was not downloadable — infer the format from the metadata below.)'}
+ALT text: ${img.alt || '(none)'}
+Surrounding page copy: ${img.context || '(none)'}`;
+      const raw = await callClaudeVision(system, user, visual, 800);
+      analysis = parseImageAnalysis(raw);
+      analyzed++;
+    } catch (e) {
+      console.warn('[swipe] image analysis failed:', (e as Error).message);
+    }
+    if (!analysis) continue;
+
+    if (analysis.productShot && ctx.mainImageUrl) {
+      out = replaceImageSrc(out, img.src, ctx.mainImageUrl);
+      productSwaps++;
+      budget.imagesLeft--;
+      continue;
+    }
+
+    const falUrl = await falGenerateImageUrl(IMG_MODEL_T2I, {
+      prompt: analysis.prompt,
+      image_size: falImageSize(img),
+      quality: 'medium',
+      num_images: 1,
+      output_format: 'png',
+    });
+    if (!falUrl) continue;
+    const stored = await storeGeneratedImage(sb, ctx.projectId, falUrl, generated);
+    const finalUrl = stored || falUrl;
+    out = replaceImageSrc(out, img.src, finalUrl);
+    generated++;
+    budget.imagesLeft--;
+  }
+
+  return { html: out, generated, productSwaps, analyzed };
+}
+
+// ---------------------------------------------------------------------------
+// Per-page processing + persistence
+// ---------------------------------------------------------------------------
+
+function funnelHtmlUrl(pageId: string, kind: 'cloned' | 'swiped'): string {
+  return `/api/funnel-html?pageId=${encodeURIComponent(pageId)}&kind=${kind}&variant=desktop&v=${Date.now()}`;
+}
+
+async function processPage(
+  sb: SupabaseClient,
+  ctx: SwipeCtx,
+  page: SwipePage,
+  budget: { imagesLeft: number },
+  deadline: number,
+): Promise<string> {
+  const started = Date.now();
+
+  // 1) Source HTML: prefer the extension's saved snapshot, else live fetch.
+  let html = await loadSavedHtml(sb, page.sourcePageId);
+  if (!html) html = await fetchLiveHtml(page.sourceUrl);
+  if (!html) throw new Error('no source HTML (saved snapshot missing and live fetch failed)');
+  html = ensureBaseHref(html, page.sourceUrl);
+  const originalHtml = html;
+  const originalTitle = originalHtml.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || '';
+
+  // 2) TEXT swipe.
+  const texts = collectSwipeTexts(originalHtml);
+  let replacements = 0;
+  let newTitle = '';
+  let changes: Array<{ from: string; to: string }> = [];
+  if (texts.length) {
+    const system = `You are a world-class direct-response copywriter. You rewrite competitor-style marketing texts to sell ONLY one specific product, without changing HTML structure downstream.
+
+PRODUCT NAME: ${ctx.productName}
+
+FULL PRODUCT CONTEXT (source of truth for facts, angles, benefits, proofs, objections; never invent medical/legal claims):
+${ctx.productContext || `(minimal data — derive from the product name: ${ctx.productName})`}
+
+OUTPUT LANGUAGE FOR ALL REWRITES: ${ctx.market ? `the local language of this target market: ${ctx.market} (e.g. German for Germany, Italian for Italy)` : 'the same language as the original text'}
+
+CRITICAL RULES:
+1. Treat each input line as discrete visible copy — rewrite it completely for OUR product whenever it is substantive marketing text.
+2. Keep the same conversational energy (headline stays headline, CTA stays CTA). Length is free.
+3. Plain text ONLY in rewritten strings — no HTML, no markdown.
+4. Legal/compliance texts: rewrite only where safe; keep mandatory disclosures.
+5. Every batch MUST return one {"id","rewritten"} object per supplied id.`;
+    const textDeadline = Math.min(deadline, Date.now() + 240_000);
+    const rewrites = await rewriteAllTexts(system, texts, textDeadline);
+    const applied = applyRewrites(originalHtml, texts, rewrites);
+    html = applied.html;
+    replacements = applied.replacements;
+    newTitle = applied.newTitle;
+    changes = applied.changes;
+  }
+
+  // 3) IMAGE swipe (GPT Image 2 + product mockup for product shots).
+  let imgRes = { html, generated: 0, productSwaps: 0, analyzed: 0 };
+  try {
+    imgRes = await swipeImages(sb, html, ctx, page, budget, deadline);
+    html = imgRes.html;
+  } catch (e) {
+    console.warn('[swipe] image swipe failed:', (e as Error).message);
+  }
+
+  // 4) Persist: original + swiped HTML into page_html, metadata on the row.
+  const now = new Date().toISOString();
+  await sb.from('page_html').upsert(
+    { page_id: page.funnelPageId, kind: 'cloned', variant: 'desktop', html: originalHtml, updated_at: now },
+    { onConflict: 'page_id,kind,variant' },
+  );
+  const { error: swErr } = await sb.from('page_html').upsert(
+    { page_id: page.funnelPageId, kind: 'swiped', variant: 'desktop', html, updated_at: now },
+    { onConflict: 'page_id,kind,variant' },
+  );
+  if (swErr) throw new Error(`saving swiped HTML failed: ${swErr.message}`);
+
+  const summary =
+    `${replacements}/${texts.length} texts rewritten` +
+    `${imgRes.generated ? `, ${imgRes.generated} images regenerated (GPT Image 2)` : ''}` +
+    `${imgRes.productSwaps ? `, ${imgRes.productSwaps} product shots replaced with the product mockup` : ''}`;
+
+  const { error: updErr } = await sb.from('funnel_pages').update({
+    swipe_status: 'completed',
+    swipe_result: summary,
+    cloned_data: {
+      htmlUrl: funnelHtmlUrl(page.funnelPageId, 'cloned'),
+      title: originalTitle || page.name,
+      source_url: page.sourceUrl,
+      htmlSkipped: true,
+      htmlLength: originalHtml.length,
+      clonedAt: now,
+    },
+    swiped_data: {
+      htmlUrl: funnelHtmlUrl(page.funnelPageId, 'swiped'),
+      originalTitle,
+      newTitle: newTitle || originalTitle,
+      originalLength: originalHtml.length,
+      newLength: html.length,
+      processingTime: Date.now() - started,
+      methodUsed: 'chimera-protocol-auto-swipe',
+      changesMade: changes,
+      swipedAt: now,
+      htmlSkipped: true,
+      htmlLength: html.length,
+    },
+  }).eq('id', page.funnelPageId);
+  if (updErr) throw new Error(`funnel_pages update failed: ${updErr.message}`);
+
+  return summary;
+}
+
+// ---------------------------------------------------------------------------
+// Handler
+// ---------------------------------------------------------------------------
+
+export default async (req: Request) => {
+  const startedAt = Date.now();
+  let body: Record<string, unknown> = {};
+  try { body = (await req.json()) as Record<string, unknown>; } catch { /* empty body */ }
+
+  const secret = String(body.secret || '');
+  const expected = process.env.APIFY_WEBHOOK_SECRET || process.env.CRON_SECRET || '';
+  if (expected && secret !== expected) return new Response('Unauthorized', { status: 401 });
+
+  const projectId = String(body.projectId || '');
+  const market = String(body.market || '');
+  const mainImageUrl = typeof body.mainImageUrl === 'string' && body.mainImageUrl ? body.mainImageUrl : null;
+  const pages = (Array.isArray(body.pages) ? body.pages : []) as SwipePage[];
+  if (!projectId || !pages.length) return new Response('missing projectId/pages', { status: 200 });
+
+  const log = (...a: unknown[]) => console.log(`[swipe ${projectId}]`, ...a);
+  const sb = getSupabase();
+
+  // Product context: name + description + brief + research from the project.
+  const { data: project } = await sb
+    .from('projects')
+    .select('name, description, brief, market_research')
+    .eq('id', projectId)
+    .single();
+  const sectionText = (val: unknown): string => {
+    if (val == null) return '';
+    if (typeof val === 'string') {
+      const t = val.trim();
+      if (t.startsWith('{')) {
+        try {
+          const p = JSON.parse(t) as Record<string, unknown>;
+          if (typeof p.content === 'string') return p.content;
+        } catch { /* plain string */ }
+      }
+      return val;
+    }
+    if (typeof val === 'object' && typeof (val as Record<string, unknown>).content === 'string') {
+      return (val as Record<string, unknown>).content as string;
+    }
+    return '';
+  };
+  const productName = String(project?.name || 'Our product');
+  const brief = sectionText(project?.brief);
+  const research = sectionText(project?.market_research);
+  const parts: string[] = [];
+  if (project?.description) parts.push(`DESCRIPTION:\n${String(project.description).slice(0, 2000)}`);
+  if (brief) parts.push(`MARKETING BRIEF:\n${brief.slice(0, 6000)}`);
+  if (research) parts.push(`MARKET RESEARCH (extract):\n${research.slice(0, 3000)}`);
+  const ctx: SwipeCtx = { projectId, productName, productContext: parts.join('\n\n'), market, mainImageUrl };
+
+  log(`swiping ${pages.length} page(s), market="${market || 'auto'}", mockup=${mainImageUrl ? 'yes' : 'no'}`);
+
+  const deadline = startedAt + GLOBAL_BUDGET_MS;
+  const budget = { imagesLeft: MAX_IMAGES_TOTAL };
+  let ok = 0;
+  let failed = 0;
+
+  for (const page of pages) {
+    if (Date.now() > deadline - 90_000) {
+      await sb.from('funnel_pages').update({
+        swipe_status: 'failed',
+        swipe_result: 'Skipped: swipe time budget exhausted — relaunch the swipe for this page.',
+      }).eq('id', page.funnelPageId);
+      failed++;
+      continue;
+    }
+    try {
+      const summary = await processPage(sb, ctx, page, budget, deadline);
+      ok++;
+      log(`✔ ${page.name}: ${summary}`);
+    } catch (e) {
+      failed++;
+      const msg = (e as Error).message?.slice(0, 400) || 'swipe error';
+      log(`✘ ${page.name}: ${msg}`);
+      await sb.from('funnel_pages').update({ swipe_status: 'failed', swipe_result: msg })
+        .eq('id', page.funnelPageId)
+        .then(() => undefined, () => undefined);
+    }
+  }
+
+  log(`done: ${ok} ok, ${failed} failed, ${Math.round((Date.now() - startedAt) / 1000)}s`);
+  return new Response(JSON.stringify({ ok: true, swiped: ok, failed }), { status: 200 });
+};

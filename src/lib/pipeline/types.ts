@@ -12,7 +12,8 @@ export type StepKey =
   | 'competitor'
   | 'angle'
   | 'ads'
-  | 'landing';
+  | 'landing'
+  | 'swipe';
 
 export type StepStatus = 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
 
@@ -58,6 +59,12 @@ export const PIPELINE_STEPS: PipelineStepDef[] = [
     key: 'landing',
     label: 'Landing + mockup',
     description: 'Landing copy + HTML mockup visible in the Funnel tab.',
+  },
+  {
+    key: 'swipe',
+    label: 'Funnel swipe (Clone/Swipe)',
+    description:
+      'Loads every step of the selected funnel into Clone/Swipe, rewrites all texts for our product in the market language, regenerates images with GPT Image 2 and swaps product shots with the generated product mockup.',
   },
 ];
 
