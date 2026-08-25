@@ -202,7 +202,7 @@ async function htmlToScreenshot(html: string, cacheKey: string): Promise<string 
   });
 }
 
-function PageThumbnail({ url, alt, height = '180px', savedHtml }: { url: string; alt: string; height?: string; savedHtml?: string | null }) {
+function PageThumbnail({ url, alt, height = '180px', savedHtml, savedHtmlUrl }: { url: string; alt: string; height?: string; savedHtml?: string | null; savedHtmlUrl?: string | null }) {
   const [imgSrc, setImgSrc] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   // Bumped to force a fresh render (skip cache) when the user clicks
@@ -217,7 +217,11 @@ function PageThumbnail({ url, alt, height = '180px', savedHtml }: { url: string;
     setImgSrc(null);
     setLoading(true);
 
-    const cacheKey = savedHtml ? `h_${savedHtml.length}_${savedHtml.substring(0, 100)}` : `u_${url}`;
+    const cacheKey = savedHtml
+      ? `h_${savedHtml.length}_${savedHtml.substring(0, 100)}`
+      : savedHtmlUrl
+        ? `hu_${savedHtmlUrl.replace(/[&?]v=\d+/, '')}`
+        : `u_${url}`;
     // Force-regenerate: skip both in-memory and localStorage caches,
     // and evict whatever blank/corrupt entry was there. The next
     // capture will run from scratch and store a fresh one if it
@@ -251,6 +255,17 @@ function PageThumbnail({ url, alt, height = '180px', savedHtml }: { url: string;
       const doWork = async () => {
         activeScreenshots++;
         let htmlContent = savedHtml || null;
+        // Saved snapshots are no longer shipped inline in the funnels list
+        // (they froze the tab); fetch the mirror from page_html on demand.
+        if (!htmlContent && savedHtmlUrl) {
+          try {
+            const r = await fetch(savedHtmlUrl);
+            if (r.ok) {
+              const t = await r.text();
+              if (t && t.length > 100) htmlContent = t;
+            }
+          } catch { /* fall through to URL proxy */ }
+        }
         if (!htmlContent && url) {
           try {
             const r = await fetch('/api/proxy-page', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }) });
@@ -276,7 +291,7 @@ function PageThumbnail({ url, alt, height = '180px', savedHtml }: { url: string;
 
     if (containerRef.current) observer.observe(containerRef.current);
     return () => observer.disconnect();
-  }, [url, savedHtml, regenNonce]);
+  }, [url, savedHtml, savedHtmlUrl, regenNonce]);
 
   return (
     <div ref={containerRef} className="relative w-full overflow-hidden bg-gray-50" style={{ height }}>
@@ -289,7 +304,7 @@ function PageThumbnail({ url, alt, height = '180px', savedHtml }: { url: string;
       ) : (
         <div className="w-full h-full flex flex-col items-center justify-center bg-gray-100 gap-2">
           <span className="text-gray-400 text-xs">No preview</span>
-          {(savedHtml || url) && (
+          {(savedHtml || savedHtmlUrl || url) && (
             <button
               type="button"
               onClick={(e) => { e.stopPropagation(); setRegenNonce(n => n + 1); }}
@@ -456,9 +471,9 @@ export default function TemplatesPage() {
   }, [mainView, archivedFunnelsLoaded, loadArchivedFunnels]);
 
   const pagesByType = useMemo(() => {
-    const map: Record<string, { funnel_name: string; funnel_id: string; name: string; url_to_swipe: string; prompt: string; template_name: string; product_name: string; swipe_status: string; category: string; savedHtml: string | null; screenshotUrl: string | null }[]> = {};
+    const map: Record<string, { funnel_name: string; funnel_id: string; name: string; url_to_swipe: string; prompt: string; template_name: string; product_name: string; swipe_status: string; category: string; savedHtml: string | null; savedHtmlUrl: string | null; screenshotUrl: string | null }[]> = {};
     (archivedFunnels || []).forEach((f: ArchivedFunnel) => {
-      const steps = (f.steps as { step_index: number; name: string; page_type: string; url_to_swipe: string; prompt: string; template_name: string; product_name: string; swipe_status: string; category?: string; cloned_data?: { category?: string; html?: string; screenshotDesktopUrl?: string | null }; swiped_data?: { html?: string } }[]) || [];
+      const steps = (f.steps as { step_index: number; name: string; page_type: string; url_to_swipe: string; prompt: string; template_name: string; product_name: string; swipe_status: string; category?: string; cloned_data?: { category?: string; html?: string; htmlUrl?: string | null; screenshotDesktopUrl?: string | null }; swiped_data?: { html?: string; htmlUrl?: string | null } }[]) || [];
       steps.forEach((s) => {
         const t = normalizeArchiveType(s.page_type);
         if (!map[t]) map[t] = [];
@@ -473,6 +488,7 @@ export default function TemplatesPage() {
           swipe_status: s.swipe_status || '',
           category: s.category || s.cloned_data?.category || '',
           savedHtml: s.swiped_data?.html || s.cloned_data?.html || null,
+          savedHtmlUrl: s.swiped_data?.htmlUrl || s.cloned_data?.htmlUrl || null,
           screenshotUrl: s.cloned_data?.screenshotDesktopUrl || null,
         });
       });
@@ -848,7 +864,7 @@ export default function TemplatesPage() {
     name: '',
     viewFormat: 'desktop',
   });
-  const [pagePreview, setPagePreview] = useState<{ isOpen: boolean; url: string; name: string; pageType: string; savedHtml?: string | null } | null>(null);
+  const [pagePreview, setPagePreview] = useState<{ isOpen: boolean; url: string; name: string; pageType: string; savedHtml?: string | null; savedHtmlUrl?: string | null } | null>(null);
   const [previewHtml, setPreviewHtml] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
 
@@ -857,16 +873,30 @@ export default function TemplatesPage() {
       setPreviewHtml(null);
       return;
     }
-    if (pagePreview.savedHtml) {
+    if (pagePreview.savedHtml || pagePreview.savedHtmlUrl) {
       // L'HTML salvato e' spesso uno snapshot SPA con il JS originale
       // rimosso in clonazione: in un iframe resta BIANCO perche' manca lo
       // script che svela il contenuto. Iniettiamo lo stesso "spa-rescue"
       // usato dal VisualHtmlEditor per renderizzarlo correttamente.
-      const saved = pagePreview.savedHtml;
+      // Nota: la lista funnels non spedisce piu' l'HTML inline (troppo
+      // pesante) — quando c'e' solo `savedHtmlUrl` lo scarichiamo qui,
+      // on-demand, dalla tabella page_html.
+      const savedUrl = pagePreview.savedHtmlUrl;
       let cancelled = false;
       setPreviewLoading(true);
       (async () => {
+        let saved = pagePreview.savedHtml || '';
         try {
+          if (!saved && savedUrl) {
+            try {
+              const r = await fetch(savedUrl);
+              if (r.ok) saved = await r.text();
+            } catch { /* fall back below */ }
+          }
+          if (!saved) {
+            if (!cancelled) { setPreviewHtml(null); setPreviewLoading(false); }
+            return;
+          }
           // Rimuovi gli <script> originali del sito clonato: nell'iframe
           // vivo il bundle SPA del sito si ri-esegue e SVUOTA il DOM (la
           // miniatura via html2canvas invece scatta prima e mostra il
@@ -917,7 +947,7 @@ export default function TemplatesPage() {
       .catch(() => {})
       .finally(() => { if (!cancelled) setPreviewLoading(false); });
     return () => { cancelled = true; };
-  }, [pagePreview?.isOpen, pagePreview?.url, pagePreview?.savedHtml]);
+  }, [pagePreview?.isOpen, pagePreview?.url, pagePreview?.savedHtml, pagePreview?.savedHtmlUrl]);
   
   // Custom page types management
   const [showPageTypeManager, setShowPageTypeManager] = useState(false);
@@ -1153,7 +1183,7 @@ export default function TemplatesPage() {
               displayFunnels.map((funnel) => {
                 const isMerged = Boolean((funnel as { __merged?: boolean }).__merged);
                 const memberIds = (funnel as { __memberIds?: string[] }).__memberIds || [];
-                const steps = (funnel.steps as { step_index: number; name: string; page_type: string; url_to_swipe: string; prompt: string; template_name: string; product_name: string; swipe_status: string; feedback: string; cloned_data?: { html?: string } | null; swiped_data?: { html?: string } | null }[]) || [];
+                const steps = (funnel.steps as { step_index: number; name: string; page_type: string; url_to_swipe: string; prompt: string; template_name: string; product_name: string; swipe_status: string; feedback: string; cloned_data?: { html?: string; htmlUrl?: string | null; screenshotDesktopUrl?: string | null } | null; swiped_data?: { html?: string; htmlUrl?: string | null } | null }[]) || [];
                 const isExpanded = expandedFunnelIds.includes(funnel.id);
                 const allSelected = isFunnelFullySelected(funnel);
                 return (
@@ -1295,19 +1325,26 @@ export default function TemplatesPage() {
                             const sp: SelectedPage = { name: s.name, page_type: s.page_type, url_to_swipe: s.url_to_swipe, prompt: s.prompt || '', funnel_name: funnel.name };
                             const checked = isPageSelected(sp);
                             const stepHtml = s.swiped_data?.html || s.cloned_data?.html || null;
+                            const stepHtmlUrl = s.swiped_data?.htmlUrl || s.cloned_data?.htmlUrl || null;
+                            const stepShot = s.cloned_data?.screenshotDesktopUrl || null;
                             return (
                               <div
                                 key={i}
-                                onClick={() => (s.url_to_swipe || s.swiped_data?.html || s.cloned_data?.html) ? setPagePreview({ isOpen: true, url: s.url_to_swipe, name: s.name, pageType: s.page_type, savedHtml: s.swiped_data?.html || s.cloned_data?.html || null }) : togglePage(sp)}
+                                onClick={() => (s.url_to_swipe || stepHtml || stepHtmlUrl) ? setPagePreview({ isOpen: true, url: s.url_to_swipe, name: s.name, pageType: s.page_type, savedHtml: stepHtml, savedHtmlUrl: stepHtmlUrl }) : togglePage(sp)}
                                 className={`group bg-white rounded-xl border overflow-hidden cursor-pointer transition-all ${
                                   checked ? 'border-green-400 ring-2 ring-green-200 shadow-md' : 'border-gray-200 hover:shadow-lg hover:border-blue-300'
                                 }`}
                               >
                                 <div className="relative w-full h-[180px] overflow-hidden bg-gray-50">
                                   {(() => {
+                                    // The extension already stores a REAL screenshot per step: use it
+                                    // directly (one <img>) instead of re-rendering the page client-side.
+                                    if (stepShot) {
+                                      return <img src={stepShot} alt={s.name} className="w-full h-full object-cover object-top" />;
+                                    }
                                     const isRealUrl = s.url_to_swipe && /^https?:\/\/.+\..+/.test(s.url_to_swipe);
-                                    if (stepHtml || isRealUrl) {
-                                      return <PageThumbnail url={s.url_to_swipe} alt={s.name} savedHtml={stepHtml} />;
+                                    if (stepHtml || stepHtmlUrl || isRealUrl) {
+                                      return <PageThumbnail url={s.url_to_swipe} alt={s.name} savedHtml={stepHtml} savedHtmlUrl={stepHtmlUrl} />;
                                     }
                                     const hue = (i * 47 + 200) % 360;
                                     return (
@@ -1613,16 +1650,16 @@ export default function TemplatesPage() {
                           <div className="relative w-full h-[170px] overflow-hidden bg-gray-50">
                             {p.screenshotUrl
                               ? <img src={p.screenshotUrl} alt={p.name} className="w-full h-full object-cover object-top" />
-                              : p.savedHtml
-                                ? <PageThumbnail url="" savedHtml={p.savedHtml} alt={p.name} height="170px" />
+                              : (p.savedHtml || p.savedHtmlUrl)
+                                ? <PageThumbnail url="" savedHtml={p.savedHtml} savedHtmlUrl={p.savedHtmlUrl} alt={p.name} height="170px" />
                                 : p.url_to_swipe && /^https?:\/\/.+\..+/.test(p.url_to_swipe)
                                   ? <PageThumbnail url={p.url_to_swipe} alt={p.name} height="170px" />
                                   : <div className="w-full h-full flex items-center justify-center text-gray-300"><FileCode className="w-8 h-8" /></div>
                             }
                             <div className="absolute inset-x-0 bottom-0 flex items-center justify-end gap-2 p-2 bg-gradient-to-t from-black/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity">
-                              {(p.savedHtml || p.url_to_swipe) && (
+                              {(p.savedHtml || p.savedHtmlUrl || p.url_to_swipe) && (
                                 <button
-                                  onClick={() => setPagePreview({ isOpen: true, url: p.url_to_swipe, name: p.name, pageType: openType, savedHtml: p.savedHtml })}
+                                  onClick={() => setPagePreview({ isOpen: true, url: p.url_to_swipe, name: p.name, pageType: openType, savedHtml: p.savedHtml, savedHtmlUrl: p.savedHtmlUrl })}
                                   className="p-2 bg-white/90 rounded-lg text-gray-700 hover:text-indigo-600 shadow"
                                   title="Preview"
                                 >
