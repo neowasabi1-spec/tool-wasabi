@@ -18,6 +18,10 @@ function isMissingTable(msg?: string): boolean {
   return /archive_categories|relation .* does not exist|does not exist/i.test(msg || '');
 }
 
+// Funnel-walk saves store the funnel DOMAIN in `category` (used only to group
+// the folder). Domains must never show up in the niche Category picker.
+const isDomainLike = (s: string) => !/\s/.test(s) && /\.[a-z]{2,}$/i.test(s.trim());
+
 async function knownCategories(userId: string): Promise<string[]> {
   const set = new Set<string>();
   // 1) explicit list (table)
@@ -26,7 +30,7 @@ async function knownCategories(userId: string): Promise<string[]> {
       .from('archive_categories')
       .select('name')
       .eq('owner_user_id', userId);
-    if (!error) for (const r of data || []) if (r.name) set.add(String(r.name));
+    if (!error) for (const r of data || []) if (r.name && !isDomainLike(String(r.name))) set.add(String(r.name));
   } catch {
     /* table may not exist yet */
   }
@@ -40,7 +44,7 @@ async function knownCategories(userId: string): Promise<string[]> {
       const steps = Array.isArray(f.steps) ? (f.steps as Record<string, unknown>[]) : [];
       for (const s of steps) {
         const c = (s.category as string) || ((s.cloned_data as Record<string, unknown>)?.category as string);
-        if (c) set.add(String(c));
+        if (c && !isDomainLike(String(c))) set.add(String(c));
       }
     }
   } catch {
