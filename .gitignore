@@ -90,3 +90,4 @@ supabase/.temp/
 .tmp-*
 COMMIT_MSG.tmp.txt
 scripts/tmp-*.js
+tsc-out.txt
