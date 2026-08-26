@@ -44,6 +44,36 @@ function readStoredSession(): StoredSession | null {
   }
 }
 
+/**
+ * Local cache of the last GOOD whoami result. After a deploy the Netlify
+ * function is cold and can take >4s to answer: without a cache the timeout
+ * used to fail-open into `user=null` (bounce to /login) or into an empty
+ * permissions fallback (bounce to /no-access) — the user experienced it as
+ * "login is broken". With the cache we render immediately with the last
+ * known permissions and revalidate in background.
+ */
+const PERMS_CACHE_KEY = 'wasabi_perms_cache';
+
+function readCachedPermissions(userId: string): AppUserPermissions | null {
+  try {
+    const raw = window.localStorage.getItem(PERMS_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { user_id?: string; permissions?: AppUserPermissions };
+    if (parsed?.user_id !== userId || !parsed.permissions) return null;
+    return parsed.permissions;
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedPermissions(userId: string, permissions: AppUserPermissions): void {
+  try {
+    window.localStorage.setItem(PERMS_CACHE_KEY, JSON.stringify({ user_id: userId, permissions }));
+  } catch {
+    /* storage full/blocked — cache is best-effort */
+  }
+}
+
 /** Server-side "who am I" call. Goes through our own /api/auth/whoami
  *  endpoint which uses the service-role admin client under the hood,
  *  so any RLS misconfiguration on app_user_permissions can NOT silently
@@ -95,23 +125,49 @@ export function useCurrentUser() {
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
-    const result = await fetchWhoamiViaServer(accessToken, 4000);
-    return result?.permissions ?? fallback;
+    // 8s + one retry: right after a deploy the whoami function is cold and
+    // the first call can exceed the old 4s budget, which used to lock the
+    // user out. The retry hits a now-warm function and returns fast.
+    let result = await fetchWhoamiViaServer(accessToken, 8000);
+    if (!result) {
+      console.warn('[useCurrentUser] whoami failed, retrying once (cold start?)');
+      result = await fetchWhoamiViaServer(accessToken, 8000);
+    }
+    if (result?.permissions) {
+      writeCachedPermissions(user.id, result.permissions);
+      return result.permissions;
+    }
+    // Server unreachable: prefer the last known-good permissions over an
+    // empty fallback that would route a legitimate user to /no-access.
+    return readCachedPermissions(user.id) ?? fallback;
   }, []);
 
   useEffect(() => {
     let cancelled = false;
 
-    // Hard timeout: if for any reason the permissions REST call hangs
-    // we still flip loading=false after 4s so the AuthGate can decide
-    // whether to render the page or redirect to /login. Failing open
-    // (= treating timeouts as "no session") sends the user back to
-    // login, which is the safest option.
+    // Hard timeout: if for any reason the permissions REST call hangs we
+    // still release the spinner. IMPORTANT: when a stored session EXISTS we
+    // fail into "logged in with cached permissions", NOT into user=null —
+    // bouncing a logged-in user to /login just because whoami was slow is
+    // exactly the "non si logga più" loop. 18s covers whoami's 8s + retry.
     const timeout = setTimeout(() => {
       if (cancelled) return;
-      console.warn('[useCurrentUser] auth check timed out after 4s — releasing spinner');
+      console.warn('[useCurrentUser] auth check timed out — releasing spinner');
+      const stored = readStoredSession();
+      if (stored) {
+        const user = {
+          id: stored.user_id,
+          email: stored.email,
+          aud: 'authenticated',
+          app_metadata: {},
+          user_metadata: {},
+          created_at: '',
+        } as unknown as User;
+        const cached = readCachedPermissions(stored.user_id);
+        if (cached) setData({ user, permissions: cached });
+      }
       setLoading(false);
-    }, 4000);
+    }, 18000);
 
     (async () => {
       try {

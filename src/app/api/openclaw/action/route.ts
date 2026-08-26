@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { offloadFunnelBlobHtml } from '@/lib/server/funnel-html-offload';
 import { supabase } from '@/lib/supabase';
 
 export const maxDuration = 60;
@@ -224,11 +225,15 @@ async function exec(a: ToolAction, o: string): Promise<{ success: boolean; resul
         const d = await r.json();
         if (!r.ok || !d.html) return { success: false, result: d.error || 'Clone failed.' };
         const pageName = d.title || new URL(p.url as string).pathname.split('/').pop() || 'Cloned Page';
+        // Insert light, then offload the HTML into page_html (needs the row
+        // id) — inline multi-MB JSONB blobs blow up the app's boot SELECT.
         const { data: saved, error: saveErr } = await supabase.from('funnel_pages').insert({
           name: pageName, page_type: 'landing', url_to_swipe: p.url as string,
-          swipe_status: 'pending', cloned_data: { html: d.html, title: d.title, url: p.url },
+          swipe_status: 'pending', cloned_data: null,
         }).select().single();
         if (saveErr) return { success: true, result: `Clonato (${d.html.length} car.) ma errore salvataggio: ${saveErr.message}`, data: { title: d.title } };
+        const clonedSlim = await offloadFunnelBlobHtml(supabase, saved.id as string, 'cloned', { html: d.html, title: d.title, url: p.url });
+        await supabase.from('funnel_pages').update({ cloned_data: clonedSlim }).eq('id', saved.id);
         return { success: true, result: `Clonato e salvato! "${pageName}" — ${d.html.length} caratteri. HTML salvato in Front End Funnel.`, data: { id: saved.id, title: d.title, length: d.html.length } };
       }
       case 'swipe_page': {
@@ -241,13 +246,21 @@ async function exec(a: ToolAction, o: string): Promise<{ success: boolean; resul
         const d = await r.json();
         if (!r.ok || !d.html) return { success: false, result: d.error || 'Swipe failed.' };
         const swipeName = `${p.productName} — ${new URL(p.url as string).pathname.split('/').pop() || 'Swiped'}`;
+        // Insert light, then offload both HTML blobs into page_html — see
+        // clone_page above for why inline JSONB HTML is banned.
         const { data: saved, error: saveErr } = await supabase.from('funnel_pages').insert({
           name: swipeName, page_type: 'landing', url_to_swipe: p.url as string,
           swipe_status: 'completed', swipe_result: d.html.substring(0, 500),
-          cloned_data: clonedHtml ? { html: clonedHtml, title: cloneD.title, url: p.url } : null,
-          swiped_data: { html: d.html, url: p.url, product: p.productName },
+          cloned_data: null, swiped_data: null,
         }).select().single();
         if (saveErr) return { success: true, result: `Swipato (${d.html.length} car.) ma errore salvataggio: ${saveErr.message}` };
+        const [clonedSlim2, swipedSlim] = await Promise.all([
+          clonedHtml
+            ? offloadFunnelBlobHtml(supabase, saved.id as string, 'cloned', { html: clonedHtml, title: cloneD.title, url: p.url })
+            : Promise.resolve(null),
+          offloadFunnelBlobHtml(supabase, saved.id as string, 'swiped', { html: d.html, url: p.url, product: p.productName }),
+        ]);
+        await supabase.from('funnel_pages').update({ cloned_data: clonedSlim2, swiped_data: swipedSlim }).eq('id', saved.id);
         return { success: true, result: `Swipato e salvato! "${swipeName}" — ${d.html.length} caratteri. HTML originale + riscritto salvati in Front End Funnel.`, data: { id: saved.id, length: d.html.length } };
       }
 

@@ -643,6 +643,9 @@ export const useStore = create<Store>()((set, get) => ({
           htmlPresent: boolean;
           // Timestamp dell'ultimo edit registrato sul server.
           editedAt?: number;
+          // updated_at della pagina — usato per PRIORITIZZARE la
+          // reidratazione (le pagine su cui l'utente lavora ora prima).
+          pageUpdatedAt: number;
         }> = [];
         // IMPORTANTE: includiamo TUTTE le pagine con clonedData/swipedData,
         // non solo quelle strippate. Motivo: l'edit dell'editor viene scritto
@@ -652,6 +655,7 @@ export const useStore = create<Store>()((set, get) => ({
         // anche per le pagine con html presente, al reload si rivedrebbe la
         // versione originale e l'edit andrebbe perso.
         for (const p of appFunnelPages) {
+          const pageUpdatedAt = p.updatedAt instanceof Date ? p.updatedAt.getTime() : 0;
           if (p.swipedData) {
             targets.push({
               pageId: p.id,
@@ -661,6 +665,7 @@ export const useStore = create<Store>()((set, get) => ({
               mobileHtmlUrl: p.swipedData.mobileHtmlUrl,
               htmlPresent: !p.swipedData.htmlSkipped && !!p.swipedData.html,
               editedAt: p.swipedData.editedAt,
+              pageUpdatedAt,
             });
           }
           if (p.clonedData) {
@@ -672,10 +677,14 @@ export const useStore = create<Store>()((set, get) => ({
               mobileHtmlUrl: p.clonedData.mobileHtmlUrl,
               htmlPresent: !p.clonedData.htmlSkipped && !!p.clonedData.html,
               editedAt: p.clonedData.editedAt,
+              pageUpdatedAt,
             });
           }
         }
         if (targets.length === 0) return;
+        // Le pagine toccate più di recente si reidratano PER PRIME: sono
+        // quelle che l'utente sta con ogni probabilità guardando adesso.
+        targets.sort((a, b) => b.pageUpdatedAt - a.pageUpdatedAt);
         // eslint-disable-next-line no-console
         console.log(`[store] tentativo reidratazione HTML per ${targets.length} target (IndexedDB → Storage URL → openclaw_messages)…`);
 
@@ -701,12 +710,7 @@ export const useStore = create<Store>()((set, get) => ({
           }));
         };
 
-        // Limita 4 in parallelo per non saturare l'API route Next.js
-        const PARALLEL = 4;
-        for (let i = 0; i < targets.length; i += PARALLEL) {
-          const slice = targets.slice(i, i + PARALLEL);
-          await Promise.all(
-            slice.map(async ({ pageId, target, jobId, htmlUrl, mobileHtmlUrl, htmlPresent }) => {
+        const hydrateOne = async ({ pageId, target, jobId, htmlUrl, mobileHtmlUrl, htmlPresent }: (typeof targets)[number]) => {
               const kind = target === 'swipedData' ? 'swiped' : 'cloned';
 
               // 1) SERVER (tabella page_html via service role) — SORGENTE DI
@@ -784,8 +788,30 @@ export const useStore = create<Store>()((set, get) => ({
                 // eslint-disable-next-line no-console
                 console.warn(`[store] IndexedDB rehydrate (ultima risorsa) fallita per page ${pageId}/${target}:`, err);
               }
-            })
-          );
+        };
+
+        // ── Due fasi per non congelare l'app ─────────────────────────────
+        // Con decine di pagine (multi-MB l'una) reidratare TUTTO a 4 in
+        // parallelo satura rete + main thread per minuti e l'app sembra
+        // morta ("ci mette un'eternità"). Quindi:
+        //   FASE 1 — le HOT_COUNT pagine toccate più di recente (quelle che
+        //            l'utente sta quasi certamente usando) a 4 in parallelo;
+        //   FASE 2 — tutto il resto in coda a 1 per volta, con una pausa tra
+        //            i fetch, così la banda resta libera per la navigazione.
+        // Le garanzie non cambiano: ogni pagina viene comunque reidratata,
+        // solo più tardi. I flussi (clone/translate/preview) hanno già i
+        // fallback IndexedDB/page_html per le pagine non ancora idratate.
+        const HOT_COUNT = 12;
+        const hot = targets.slice(0, HOT_COUNT);
+        const cold = targets.slice(HOT_COUNT);
+
+        const PARALLEL = 4;
+        for (let i = 0; i < hot.length; i += PARALLEL) {
+          await Promise.all(hot.slice(i, i + PARALLEL).map(hydrateOne));
+        }
+        for (const t of cold) {
+          await hydrateOne(t);
+          await new Promise((r) => setTimeout(r, 250));
         }
       })();
     } catch (error) {
