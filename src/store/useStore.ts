@@ -554,6 +554,11 @@ interface Store {
   /** Master-only: toggle whether a master-owned funnel is shared as
    *  read-only with every other authenticated user. */
   setArchivedFunnelShareFlag: (id: string, value: boolean) => Promise<void>;
+  /** Manual reordering of funnel-walk steps (Templates folders). Takes the
+   *  member row ids in the DESIRED order and renumbers their "Step N"
+   *  names server-side. Optimistic: the in-memory rows are renamed first
+   *  so the folder re-sorts instantly. */
+  reorderArchivedWalkSteps: (orderedIds: string[]) => Promise<void>;
 
   // Ultimo errore di upload HTML su Supabase Storage (null = nessun errore).
   // Settato da updateFunnelPage/persistHtmlBlobs; letto dalla UI per
@@ -1694,6 +1699,51 @@ export const useStore = create<Store>()((set, get) => ({
       }
     } catch (error) {
       console.error('Error toggling Valchiria flag:', error);
+      set({ archivedFunnels: previous });
+      throw error;
+    }
+  },
+
+  reorderArchivedWalkSteps: async (orderedIds: string[]) => {
+    const previous = get().archivedFunnels;
+    const stepById = new Map(orderedIds.map((id, i) => [id, i + 1]));
+    const STEP_SUFFIX_RE = /Step\s+\d+\s*$/i;
+    const renameRow = (f: (typeof previous)[number]) => {
+      const step = stepById.get(f.id);
+      if (!step) return f;
+      const name = STEP_SUFFIX_RE.test(f.name)
+        ? f.name.replace(STEP_SUFFIX_RE, `Step ${step}`)
+        : `${f.name} — Step ${step}`;
+      const steps = Array.isArray(f.steps)
+        ? (f.steps as Array<Record<string, unknown>>).map((s, i) =>
+            i === 0
+              ? {
+                  ...s,
+                  step_index: step,
+                  ...(typeof s.name === 'string' && STEP_SUFFIX_RE.test(s.name as string)
+                    ? { name: (s.name as string).replace(STEP_SUFFIX_RE, `Step ${step}`) }
+                    : {}),
+                }
+              : s,
+          )
+        : f.steps;
+      return { ...f, name, steps };
+    };
+    set((state) => ({ archivedFunnels: state.archivedFunnels.map(renameRow) }));
+    try {
+      const res = await fetch('/api/valchiria/funnels/reorder', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          renames: orderedIds.map((id, i) => ({ id, step: i + 1 })),
+        }),
+      });
+      if (!res.ok) {
+        const txt = await res.text().catch(() => '');
+        throw new Error(`HTTP ${res.status} ${txt}`);
+      }
+    } catch (error) {
+      console.error('Error reordering walk steps:', error);
       set({ archivedFunnels: previous });
       throw error;
     }

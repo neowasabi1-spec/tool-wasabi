@@ -6,7 +6,7 @@ import Header from '@/components/Header';
 import { useStore } from '@/store/useStore';
 import { BUILT_IN_PAGE_TYPE_OPTIONS, PAGE_TYPE_CATEGORIES, PageType, PageTypeOption, TemplateCategory, TEMPLATE_CATEGORY_OPTIONS, TemplateViewFormat, TEMPLATE_VIEW_FORMAT_OPTIONS, LIBRARY_TEMPLATES, normalizeArchiveType } from '@/types';
 import type { ArchivedFunnel } from '@/types/database';
-import { Plus, Trash2, Edit2, Save, X, FileCode, ExternalLink, Tag, Filter, Eye, EyeOff, Maximize2, Layers, HelpCircle, FolderPlus, Settings, Monitor, Smartphone, BookOpen, ChevronDown, ChevronRight, FolderOpen, Archive, CheckSquare, Square, Package, Sparkles, Send, Loader2, MessageCircle, Search, Download, Swords, Lock, Share2 } from 'lucide-react';
+import { Plus, Trash2, Edit2, Save, X, FileCode, ExternalLink, Tag, Filter, Eye, EyeOff, Maximize2, Layers, HelpCircle, FolderPlus, Settings, Monitor, Smartphone, BookOpen, ChevronDown, ChevronRight, ChevronLeft, FolderOpen, Archive, CheckSquare, Square, Package, Sparkles, Send, Loader2, MessageCircle, Search, Download, Swords, Lock, Share2 } from 'lucide-react';
 import CachedScreenshot from '@/components/CachedScreenshot';
 import QuizArchiveView from './QuizArchiveView';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
@@ -320,7 +320,7 @@ function PageThumbnail({ url, alt, height = '180px', savedHtml, savedHtmlUrl }: 
 }
 
 export default function TemplatesPage() {
-  const { templates, addTemplate, updateTemplate, deleteTemplate, customPageTypes, addCustomPageType, deleteCustomPageType, archivedFunnels, archivedFunnelsLoaded, archivedFunnelsError, archivedFunnelsLoading, loadArchivedFunnels, deleteArchivedFunnel, deleteArchivedFunnelStep, setArchivedFunnelValchiriaFlag, setArchivedFunnelShareFlag, products, addFunnelPage, funnelPages, deleteFunnelPage } = useStore();
+  const { templates, addTemplate, updateTemplate, deleteTemplate, customPageTypes, addCustomPageType, deleteCustomPageType, archivedFunnels, archivedFunnelsLoaded, archivedFunnelsError, archivedFunnelsLoading, loadArchivedFunnels, deleteArchivedFunnel, deleteArchivedFunnelStep, setArchivedFunnelValchiriaFlag, setArchivedFunnelShareFlag, reorderArchivedWalkSteps, products, addFunnelPage, funnelPages, deleteFunnelPage } = useStore();
   const [valchiriaTogglingId, setValchiriaTogglingId] = useState<string | null>(null);
   const [shareTogglingId, setShareTogglingId] = useState<string | null>(null);
   const { permissions: currentUserPermissions } = useCurrentUser();
@@ -338,6 +338,26 @@ export default function TemplatesPage() {
 
   // Staged imports for "By Type" (accumulate before final import)
   const [stagedImports, setStagedImports] = useState<StagedImport[]>([]);
+
+  // Manual reordering of funnel-walk steps (folders in the Funnel view).
+  // Each step is its own archived_funnels row named "<domain> — Step N";
+  // moving a card swaps the two numbers server-side and the folder
+  // re-sorts. Busy-flag guards against double clicks mid-flight.
+  const [reorderBusy, setReorderBusy] = useState(false);
+  const moveWalkStep = async (memberIds: string[], from: number, dir: -1 | 1) => {
+    const to = from + dir;
+    if (to < 0 || to >= memberIds.length || reorderBusy) return;
+    const ids = [...memberIds];
+    [ids[from], ids[to]] = [ids[to], ids[from]];
+    setReorderBusy(true);
+    try {
+      await reorderArchivedWalkSteps(ids);
+    } catch {
+      toast.error('Reorder failed');
+    } finally {
+      setReorderBusy(false);
+    }
+  };
 
   const togglePage = useCallback((page: SelectedPage) => {
     setSelectedPages(prev => {
@@ -1361,6 +1381,26 @@ export default function TemplatesPage() {
                                       : <Square className="w-5 h-5 text-white/70 drop-shadow group-hover:text-white cursor-pointer" />
                                     }
                                   </div>
+                                  {isMerged && memberIds.length === steps.length && (
+                                    <div className="absolute bottom-2 left-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                      <button
+                                        onClick={(e) => { e.stopPropagation(); moveWalkStep(memberIds, i, -1); }}
+                                        disabled={i === 0 || reorderBusy}
+                                        className="p-1.5 bg-white/90 rounded-full shadow text-gray-700 hover:text-indigo-600 disabled:opacity-30 disabled:cursor-not-allowed"
+                                        title="Move step left"
+                                      >
+                                        <ChevronLeft className="w-3.5 h-3.5" />
+                                      </button>
+                                      <button
+                                        onClick={(e) => { e.stopPropagation(); moveWalkStep(memberIds, i, 1); }}
+                                        disabled={i === steps.length - 1 || reorderBusy}
+                                        className="p-1.5 bg-white/90 rounded-full shadow text-gray-700 hover:text-indigo-600 disabled:opacity-30 disabled:cursor-not-allowed"
+                                        title="Move step right"
+                                      >
+                                        <ChevronRight className="w-3.5 h-3.5" />
+                                      </button>
+                                    </div>
+                                  )}
                                   {s.url_to_swipe && /^https?:\/\//.test(s.url_to_swipe) && (
                                     <a
                                       href={s.url_to_swipe}
