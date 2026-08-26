@@ -5,6 +5,7 @@ import { getCurrentUserId } from '@/lib/auth/get-current-user';
 import { canAccessProject } from '@/lib/auth/project-access';
 import { absolutizeUrlsInHtml } from '@/lib/spa-rescue';
 import { PAGE_TYPE_OPTIONS } from '@/types';
+import { inferPageType, isUpsellType, isDownsellType } from '@/lib/server/page-type-classifier';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -132,6 +133,13 @@ export async function POST(req: NextRequest) {
   const pageType = VALID_TYPES.has(requestedType) ? requestedType : 'landing';
   const category = String(body.category || '').trim().slice(0, 60);
 
+  // During a funnel walk the popup does not ask a type per step, so the
+  // request degrades to 'landing' for EVERY page — checkouts, upsells and
+  // thank-you pages all landed in the "Landing Page" folder. When the type
+  // is missing/default we infer the real one from URL + title + HTML.
+  // An explicit non-landing choice from the user is always respected.
+  const typeWasExplicit = VALID_TYPES.has(requestedType) && requestedType !== 'landing';
+
   // Optionally link the saved page to a project (Competitor Landings). Only
   // honored when the user actually has access to that project.
   let projectId: string | null = null;
@@ -229,6 +237,17 @@ export async function POST(req: NextRequest) {
         .maybeSingle();
       if (row && row.owner_user_id === userId) {
         const steps = Array.isArray(row.steps) ? (row.steps as unknown[]) : [];
+        if (!typeWasExplicit) {
+          const prior = steps as Array<{ page_type?: string }>;
+          step.page_type = inferPageType({
+            url,
+            title,
+            name,
+            html,
+            upsellsSeen: prior.filter((s) => isUpsellType(String(s?.page_type || ''))).length,
+            downsellsSeen: prior.filter((s) => isDownsellType(String(s?.page_type || ''))).length,
+          });
+        }
         steps.push(step);
         await supabaseAdmin
           .from('archived_funnels')
@@ -250,6 +269,9 @@ export async function POST(req: NextRequest) {
     }
 
     // First step → create the folder row.
+    if (!typeWasExplicit) {
+      step.page_type = inferPageType({ url, title, name, html });
+    }
     const { data: createdFolder, error: folderErr } = await supabaseAdmin
       .from('archived_funnels')
       .insert({
@@ -280,10 +302,16 @@ export async function POST(req: NextRequest) {
     });
   }
 
+  // Old-style walks saved each step as its own single row named
+  // "<domain> — Step N" (no funnelGroup flag): infer the type for those too.
+  const looksLikeWalkStep = /—\s*Step\s+\d+\s*$/i.test(name);
+  const effectiveType =
+    !typeWasExplicit && looksLikeWalkStep ? inferPageType({ url, title, name, html }) : pageType;
+
   const buildStep = () => ({
     step_index: 1,
     name,
-    page_type: pageType,
+    page_type: effectiveType,
     category,
     template_name: '',
     product_name: '',
@@ -379,7 +407,7 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({
     success: true,
     pageId,
-    pageType,
+    pageType: effectiveType,
     category,
     name,
     tags,

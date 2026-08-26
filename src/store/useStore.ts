@@ -559,6 +559,10 @@ interface Store {
    *  names server-side. Optimistic: the in-memory rows are renamed first
    *  so the folder re-sorts instantly. */
   reorderArchivedWalkSteps: (orderedIds: string[]) => Promise<void>;
+  /** Re-infer the page_type of the given archived rows' steps (in funnel
+   *  order) server-side, then mirror the result in memory. Fixes walks
+   *  where every step was saved as 'landing'. */
+  reclassifyArchivedFunnelSteps: (ids: string[]) => Promise<number>;
 
   // Ultimo errore di upload HTML su Supabase Storage (null = nessun errore).
   // Settato da updateFunnelPage/persistHtmlBlobs; letto dalla UI per
@@ -1715,7 +1719,7 @@ export const useStore = create<Store>()((set, get) => ({
         ? f.name.replace(STEP_SUFFIX_RE, `Step ${step}`)
         : `${f.name} — Step ${step}`;
       const steps = Array.isArray(f.steps)
-        ? (f.steps as Array<Record<string, unknown>>).map((s, i) =>
+        ? ((f.steps as Array<Record<string, unknown>>).map((s, i) =>
             i === 0
               ? {
                   ...s,
@@ -1725,7 +1729,7 @@ export const useStore = create<Store>()((set, get) => ({
                     : {}),
                 }
               : s,
-          )
+          ) as typeof f.steps)
         : f.steps;
       return { ...f, name, steps };
     };
@@ -1747,6 +1751,38 @@ export const useStore = create<Store>()((set, get) => ({
       set({ archivedFunnels: previous });
       throw error;
     }
+  },
+
+  reclassifyArchivedFunnelSteps: async (ids: string[]) => {
+    const res = await fetch('/api/valchiria/funnels/reclassify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids }),
+    });
+    if (!res.ok) {
+      const txt = await res.text().catch(() => '');
+      throw new Error(`HTTP ${res.status} ${txt}`);
+    }
+    const payload = (await res.json()) as {
+      results?: Array<{ id: string; steps: Array<{ index: number; page_type: string }> }>;
+    };
+    const results = payload.results || [];
+    const byId = new Map(results.map((r) => [r.id, r]));
+    let changedSteps = 0;
+    set((state) => ({
+      archivedFunnels: state.archivedFunnels.map((f) => {
+        const r = byId.get(f.id);
+        if (!r || !Array.isArray(f.steps)) return f;
+        const steps = (f.steps as Array<Record<string, unknown>>).map((s, i) => {
+          const upd = r.steps.find((x) => x.index === i);
+          if (!upd || String(s.page_type || '') === upd.page_type) return s;
+          changedSteps++;
+          return { ...s, page_type: upd.page_type };
+        }) as typeof f.steps;
+        return { ...f, steps };
+      }),
+    }));
+    return changedSteps;
   },
 
   setArchivedFunnelShareFlag: async (id: string, value: boolean) => {

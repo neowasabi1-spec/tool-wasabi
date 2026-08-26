@@ -320,7 +320,7 @@ function PageThumbnail({ url, alt, height = '180px', savedHtml, savedHtmlUrl }: 
 }
 
 export default function TemplatesPage() {
-  const { templates, addTemplate, updateTemplate, deleteTemplate, customPageTypes, addCustomPageType, deleteCustomPageType, archivedFunnels, archivedFunnelsLoaded, archivedFunnelsError, archivedFunnelsLoading, loadArchivedFunnels, deleteArchivedFunnel, deleteArchivedFunnelStep, setArchivedFunnelValchiriaFlag, setArchivedFunnelShareFlag, reorderArchivedWalkSteps, products, addFunnelPage, funnelPages, deleteFunnelPage } = useStore();
+  const { templates, addTemplate, updateTemplate, deleteTemplate, customPageTypes, addCustomPageType, deleteCustomPageType, archivedFunnels, archivedFunnelsLoaded, archivedFunnelsError, archivedFunnelsLoading, loadArchivedFunnels, deleteArchivedFunnel, deleteArchivedFunnelStep, setArchivedFunnelValchiriaFlag, setArchivedFunnelShareFlag, reorderArchivedWalkSteps, reclassifyArchivedFunnelSteps, products, addFunnelPage, funnelPages, deleteFunnelPage } = useStore();
   const [valchiriaTogglingId, setValchiriaTogglingId] = useState<string | null>(null);
   const [shareTogglingId, setShareTogglingId] = useState<string | null>(null);
   const { permissions: currentUserPermissions } = useCurrentUser();
@@ -358,6 +358,31 @@ export default function TemplatesPage() {
       setReorderBusy(false);
     }
   };
+
+  // Drag & drop reordering (same persistence as the arrows, but the card is
+  // INSERTED at the drop position instead of swapped).
+  const walkDragRef = useRef<{ folderId: string; from: number } | null>(null);
+  const [walkDragOver, setWalkDragOver] = useState<{ folderId: string; idx: number } | null>(null);
+  const dropWalkStep = async (memberIds: string[], to: number) => {
+    const drag = walkDragRef.current;
+    walkDragRef.current = null;
+    setWalkDragOver(null);
+    if (!drag || drag.from === to || reorderBusy) return;
+    const ids = [...memberIds];
+    const [moved] = ids.splice(drag.from, 1);
+    ids.splice(to, 0, moved);
+    setReorderBusy(true);
+    try {
+      await reorderArchivedWalkSteps(ids);
+    } catch {
+      toast.error('Reorder failed');
+    } finally {
+      setReorderBusy(false);
+    }
+  };
+
+  // Busy-id for the "Fix types" (auto page-type detection) header button.
+  const [reclassifyingId, setReclassifyingId] = useState<string | null>(null);
 
   const togglePage = useCallback((page: SelectedPage) => {
     setSelectedPages(prev => {
@@ -1316,6 +1341,32 @@ export default function TemplatesPage() {
                         <button
                           onClick={async (e) => {
                             e.stopPropagation();
+                            if (reclassifyingId) return;
+                            setReclassifyingId(funnel.id);
+                            try {
+                              const changed = await reclassifyArchivedFunnelSteps(isMerged ? memberIds : [funnel.id]);
+                              toast.success(changed > 0 ? `${changed} step types fixed` : 'Step types already correct');
+                            } catch (err) {
+                              toast.error(`Could not fix types: ${err instanceof Error ? err.message : String(err)}`);
+                            } finally {
+                              setReclassifyingId(null);
+                            }
+                          }}
+                          disabled={reclassifyingId === funnel.id}
+                          title="Auto-detect the page type of every step (advertorial, checkout, upsell…) from its content"
+                          className="ml-2 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold border bg-white border-gray-200 text-gray-500 hover:border-indigo-300 hover:text-indigo-600 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                        >
+                          {reclassifyingId === funnel.id
+                            ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            : <Sparkles className="w-3.5 h-3.5" />
+                          }
+                          Fix types
+                        </button>
+                      )}
+                      {!funnel.isShared && (
+                        <button
+                          onClick={async (e) => {
+                            e.stopPropagation();
                             const ids = isMerged ? memberIds : [funnel.id];
                             const ok = await confirmDialog({
                               title: 'Delete funnel',
@@ -1351,9 +1402,29 @@ export default function TemplatesPage() {
                               <div
                                 key={i}
                                 onClick={() => (s.url_to_swipe || stepHtml || stepHtmlUrl) ? setPagePreview({ isOpen: true, url: s.url_to_swipe, name: s.name, pageType: s.page_type, savedHtml: stepHtml, savedHtmlUrl: stepHtmlUrl }) : togglePage(sp)}
+                                draggable={isMerged && !reorderBusy}
+                                onDragStart={isMerged ? ((e) => {
+                                  walkDragRef.current = { folderId: funnel.id, from: i };
+                                  e.dataTransfer.effectAllowed = 'move';
+                                }) : undefined}
+                                onDragOver={isMerged ? ((e) => {
+                                  if (walkDragRef.current?.folderId !== funnel.id) return;
+                                  e.preventDefault();
+                                  e.dataTransfer.dropEffect = 'move';
+                                  if (walkDragOver?.idx !== i || walkDragOver?.folderId !== funnel.id) {
+                                    setWalkDragOver({ folderId: funnel.id, idx: i });
+                                  }
+                                }) : undefined}
+                                onDragLeave={isMerged ? (() => setWalkDragOver(null)) : undefined}
+                                onDrop={isMerged ? ((e) => {
+                                  e.preventDefault();
+                                  if (walkDragRef.current?.folderId !== funnel.id) return;
+                                  void dropWalkStep(memberIds, i);
+                                }) : undefined}
+                                onDragEnd={isMerged ? (() => { walkDragRef.current = null; setWalkDragOver(null); }) : undefined}
                                 className={`group bg-white rounded-xl border overflow-hidden cursor-pointer transition-all ${
                                   checked ? 'border-green-400 ring-2 ring-green-200 shadow-md' : 'border-gray-200 hover:shadow-lg hover:border-blue-300'
-                                }`}
+                                } ${walkDragOver?.folderId === funnel.id && walkDragOver?.idx === i ? 'ring-2 ring-indigo-400 border-indigo-400' : ''}`}
                               >
                                 <div className="relative w-full h-[180px] overflow-hidden bg-gray-50">
                                   {(() => {
