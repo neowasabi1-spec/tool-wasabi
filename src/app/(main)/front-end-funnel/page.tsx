@@ -733,22 +733,38 @@ function sanitizeClonedHtml(html: string, originalUrl: string, options?: { keepS
     for (const m of loomMatches) videoEmbeds.push({ provider: 'loom', id: m[1] });
 
     // 1. Remove scripts & dangerous content (unless keepScripts for quiz pages)
-    clean = clean.replace(/<base[^>]*>/gi, '');
-    if (!options?.keepScripts) {
+    //
+    // keepScripts=true: gli <script> vengono ESTRATTI in placeholder e
+    // riattaccati intatti alla fine. Prima le regex sotto (strip handler,
+    // riscrittura src/href, url()...) giravano anche DENTRO i corpi JS:
+    // le landing "chat/live" che costruiscono i messaggi via stringhe HTML
+    // inline (onclick nei template literal, path relativi) uscivano con
+    // l'engine corrotto → commenti/messaggi morti. Il src degli script
+    // esterni viene assolutizzato qui, tutto il resto non si tocca.
+    const scriptSlots: string[] = [];
+    if (options?.keepScripts) {
+      clean = clean.replace(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi, (_m, attrs: string, jsBody: string) => {
+        const fixedAttrs = attrs
+          .replace(/(\ssrc\s*=\s*")([^"]*)(")/i, (_x, pre: string, u: string, post: string) => `${pre}${abs(u)}${post}`)
+          .replace(/(\ssrc\s*=\s*')([^']*)(')/i, (_x, pre: string, u: string, post: string) => `${pre}${abs(u)}${post}`);
+        scriptSlots.push(`<script${fixedAttrs}>${jsBody}</script>`);
+        return `<!--__WASABI_SCRIPT_${scriptSlots.length - 1}__-->`;
+      });
+      // Manteniamo il <base href> (lo inietta il clone server): serve ai nodi
+      // creati a runtime dal JS (avatar/immagini dei messaggi con path
+      // relativi) per risolvere verso il dominio originale.
+      // <noscript> via comunque ("Activate JavaScript").
+      clean = clean.replace(/<noscript[^>]*>[\s\S]*?<\/noscript>/gi, '');
+      // NIENTE strip degli inline handler qui: onclick/onkeydown sono la UI
+      // stessa di queste pagine (input commento, like, quick reply). Il JS
+      // della pagina è già kept per intero, toglierli non protegge nulla.
+    } else {
+      clean = clean.replace(/<base[^>]*>/gi, '');
       clean = clean.replace(/<script[\s\S]*?<\/script>/gi, '');
       clean = clean.replace(/<script[^>]*\/>/gi, '');
       // Non-quiz: remove noscript tags but keep inner content as fallback text
       clean = clean.replace(/<\/?noscript[^>]*>/gi, '');
       // Strip inline event handlers for security
-      clean = clean.replace(/\s+on[a-z]+\s*=\s*"[^"]*"/gi, '');
-      clean = clean.replace(/\s+on[a-z]+\s*=\s*'[^']*'/gi, '');
-    } else {
-      // keepScripts=true: preserviamo i runtime (Swiper, FAQ accordion, sticky bar,
-      // image gallery, ecc.) ma rimuoviamo comunque i pezzi pericolosi/rumorosi:
-      //  - <noscript> blocks (mostrano messaggi "Activate JavaScript")
-      //  - inline event handlers (onclick=, onerror=, ...) che possono nascondere
-      //    redirect verso il dominio originale o leak di referer.
-      clean = clean.replace(/<noscript[^>]*>[\s\S]*?<\/noscript>/gi, '');
       clean = clean.replace(/\s+on[a-z]+\s*=\s*"[^"]*"/gi, '');
       clean = clean.replace(/\s+on[a-z]+\s*=\s*'[^']*'/gi, '');
     }
@@ -947,6 +963,11 @@ function sanitizeClonedHtml(html: string, originalUrl: string, options?: { keepS
         clean = clean.replace(emptyLiRe, '');
         guard++;
       }
+    }
+
+    // 12. Riattacca gli <script> estratti al passo 1 (keepScripts), intatti.
+    if (scriptSlots.length > 0) {
+      clean = clean.replace(/<!--__WASABI_SCRIPT_(\d+)__-->/g, (_m, i: string) => scriptSlots[Number(i)] ?? '');
     }
 
     return clean;
