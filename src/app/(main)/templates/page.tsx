@@ -381,8 +381,56 @@ export default function TemplatesPage() {
     }
   };
 
-  // Busy-id for the "Fix types" (auto page-type detection) header button.
-  const [reclassifyingId, setReclassifyingId] = useState<string | null>(null);
+  // "Fix types" (Pages view): re-infer the page type of EVERY saved step
+  // across all own funnels/folders. One API call per funnel so the
+  // upsell_1/2/3 numbering stays scoped to its own funnel.
+  const [fixingTypes, setFixingTypes] = useState(false);
+  const fixAllPageTypes = async () => {
+    if (fixingTypes) return;
+    setFixingTypes(true);
+    try {
+      // Rebuild the walk-folder grouping from the FULL list (not the
+      // search-filtered one): single-step own rows named "<domain> — Step N"
+      // form one ordered group per domain; everything else goes alone.
+      const WALK_STEP_RE = /^(.*\S)\s+—\s+Step\s+(\d+)$/i;
+      const stepNumOf = (name: string) => {
+        const mm = name.match(/Step\s+(\d+)/i);
+        return mm ? parseInt(mm[1], 10) : 0;
+      };
+      const walkGroups = new Map<string, ArchivedFunnel[]>();
+      const loneRows: ArchivedFunnel[] = [];
+      for (const f of archivedFunnels || []) {
+        if (f.isShared) continue;
+        const m = f.name.match(WALK_STEP_RE);
+        const steps = (f.steps as unknown[]) || [];
+        if (m && steps.length <= 1) {
+          const key = m[1].trim();
+          walkGroups.set(key, [...(walkGroups.get(key) || []), f]);
+        } else {
+          loneRows.push(f);
+        }
+      }
+      const groups: string[][] = [];
+      walkGroups.forEach((rows) => {
+        groups.push([...rows].sort((a, b) => stepNumOf(a.name) - stepNumOf(b.name)).map((r) => r.id));
+      });
+      for (const f of loneRows) groups.push([f.id]);
+
+      let changed = 0;
+      let failed = 0;
+      for (const ids of groups) {
+        try {
+          changed += await reclassifyArchivedFunnelSteps(ids);
+        } catch {
+          failed++;
+        }
+      }
+      if (failed > 0) toast.error(`${failed} funnels could not be reclassified`);
+      toast.success(changed > 0 ? `${changed} page types fixed` : 'Page types already correct');
+    } finally {
+      setFixingTypes(false);
+    }
+  };
 
   const togglePage = useCallback((page: SelectedPage) => {
     setSelectedPages(prev => {
@@ -1187,6 +1235,18 @@ export default function TemplatesPage() {
               )}
             </div>
           )}
+
+          {mainView === 'byType' && (
+            <button
+              onClick={fixAllPageTypes}
+              disabled={fixingTypes}
+              title="Auto-detect the correct type of every saved page (advertorial, checkout, upsell…) and move it to the right folder"
+              className="inline-flex items-center gap-2 px-4 py-2.5 bg-indigo-600 text-white rounded-xl text-sm font-semibold hover:bg-indigo-700 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+            >
+              {fixingTypes ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+              {fixingTypes ? 'Fixing types…' : 'Fix types'}
+            </button>
+          )}
         </div>
 
         {/* ============ SAVED FUNNELS VIEW ============ */}
@@ -1335,32 +1395,6 @@ export default function TemplatesPage() {
                             : <Share2 className="w-3.5 h-3.5" />
                           }
                           {funnel.share_with_users ? 'Shared' : 'Share with users'}
-                        </button>
-                      )}
-                      {!funnel.isShared && (
-                        <button
-                          onClick={async (e) => {
-                            e.stopPropagation();
-                            if (reclassifyingId) return;
-                            setReclassifyingId(funnel.id);
-                            try {
-                              const changed = await reclassifyArchivedFunnelSteps(isMerged ? memberIds : [funnel.id]);
-                              toast.success(changed > 0 ? `${changed} step types fixed` : 'Step types already correct');
-                            } catch (err) {
-                              toast.error(`Could not fix types: ${err instanceof Error ? err.message : String(err)}`);
-                            } finally {
-                              setReclassifyingId(null);
-                            }
-                          }}
-                          disabled={reclassifyingId === funnel.id}
-                          title="Auto-detect the page type of every step (advertorial, checkout, upsell…) from its content"
-                          className="ml-2 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold border bg-white border-gray-200 text-gray-500 hover:border-indigo-300 hover:text-indigo-600 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
-                        >
-                          {reclassifyingId === funnel.id
-                            ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                            : <Sparkles className="w-3.5 h-3.5" />
-                          }
-                          Fix types
                         </button>
                       )}
                       {!funnel.isShared && (
