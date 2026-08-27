@@ -2013,6 +2013,55 @@ function hostOf(url: string) {
   try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return url; }
 }
 
+// Live thumbnail rendered from the SAVED HTML (page_html mirror). Used when a
+// landing has no stored screenshot (e.g. rows recovered after the archive
+// wipe): the saved page itself — full CSS, images, layout — becomes the
+// preview. Fetch is lazy (IntersectionObserver) so a big grid stays cheap.
+function HtmlThumb({ htmlUrl, className = "" }: { htmlUrl: string; className?: string }) {
+  const [html, setHtml] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [scale, setScale] = useState(0.22);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !htmlUrl) return;
+    const obs = new IntersectionObserver((entries) => {
+      if (!entries[0]?.isIntersecting) return;
+      obs.disconnect();
+      setScale((el.clientWidth || 280) / 1280);
+      fetch(htmlUrl)
+        .then((r) => (r.ok ? r.text() : Promise.reject(new Error(String(r.status)))))
+        .then((t) => { if (t && t.length > 100) setHtml(t); else setFailed(true); })
+        .catch(() => setFailed(true));
+    }, { rootMargin: "400px" });
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [htmlUrl]);
+
+  return (
+    <div ref={ref} className={`relative overflow-hidden bg-white ${className}`}>
+      {html ? (
+        <iframe
+          srcDoc={html}
+          sandbox=""
+          scrolling="no"
+          tabIndex={-1}
+          title="Landing preview"
+          className="absolute top-0 left-0 border-0 pointer-events-none select-none"
+          style={{ width: "1280px", height: "1800px", transform: `scale(${scale})`, transformOrigin: "top left" }}
+        />
+      ) : (
+        <div className="w-full h-full flex items-center justify-center bg-slate-100">
+          {failed
+            ? <Globe className="w-10 h-10 text-slate-400" />
+            : <RefreshCw className="w-6 h-6 text-slate-300 animate-spin" />}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CompetitorLandingsView({ projectId }: { projectId: string }) {
   const { toast } = useToast();
   const router = useRouter();
@@ -2126,6 +2175,8 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
         <div className="relative w-full aspect-[3/4] overflow-hidden bg-slate-100">
           {l.screenshot ? (
             <img src={l.screenshot} alt={l.name} className="w-full h-full object-cover object-top group-hover:scale-[1.02] transition-transform" />
+          ) : l.html_url ? (
+            <HtmlThumb htmlUrl={l.html_url} className="w-full h-full" />
           ) : (
             <div className="w-full h-full flex items-center justify-center bg-slate-100">
               <Globe className="w-10 h-10 text-slate-400" />
@@ -2217,6 +2268,8 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
                 <div className="relative w-full aspect-[3/4] overflow-hidden bg-slate-100">
                   {cover?.screenshot ? (
                     <img src={cover.screenshot} alt={f.name} className="w-full h-full object-cover object-top group-hover:scale-[1.02] transition-transform" />
+                  ) : cover?.html_url ? (
+                    <HtmlThumb htmlUrl={cover.html_url} className="w-full h-full" />
                   ) : (
                     <div className="w-full h-full flex items-center justify-center bg-slate-100">
                       <Globe className="w-10 h-10 text-slate-400" />
@@ -2273,6 +2326,12 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
               ) : preview.screenshot ? (
                 <img src={preview.screenshot} alt={preview.name}
                   className="w-full rounded-lg border border-border bg-white" />
+              ) : preview.html_url ? (
+                // No screenshots stored — render the saved page itself (full
+                // HTML/CSS/JS from the page_html mirror) as a live preview.
+                <iframe src={preview.html_url} title={preview.name}
+                  sandbox="allow-scripts allow-same-origin"
+                  className="w-full h-[65vh] rounded-lg border border-border bg-white" />
               ) : (
                 <div className="py-16 text-center text-sm text-muted-foreground">No screenshots saved for this page.</div>
               )}
