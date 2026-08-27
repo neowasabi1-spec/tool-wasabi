@@ -40,8 +40,30 @@ export async function GET(req: NextRequest) {
     counts[t] = error ? `ERR ${error.message}` : (count ?? -1);
   }
 
+  // Decisive probe: a REAL service-role key bypasses RLS, so an insert +
+  // read-back must succeed. If the insert is rejected by RLS, the configured
+  // "service" key is actually anon-level and the data is merely invisible.
+  const probe: Record<string, unknown> = {};
+  const { data: ins, error: insErr } = await supabaseAdmin
+    .from('archived_funnels')
+    .insert({ name: '__wsb_diag_probe__', total_steps: 0, steps: [] })
+    .select('id')
+    .single();
+  probe.insertError = insErr ? insErr.message : null;
+  if (ins?.id) {
+    const { data: back, error: readErr } = await supabaseAdmin
+      .from('archived_funnels')
+      .select('id, name')
+      .eq('id', ins.id)
+      .maybeSingle();
+    probe.readBack = back ? 'ok' : `MISSING${readErr ? ' err=' + readErr.message : ''}`;
+    const { error: delErr } = await supabaseAdmin.from('archived_funnels').delete().eq('id', ins.id);
+    probe.cleanup = delErr ? `ERR ${delErr.message}` : 'deleted';
+  }
+
   return NextResponse.json({
     hasServiceRoleKey: hasServiceRoleKey(),
+    probe,
     counts,
     total,
     linked,
