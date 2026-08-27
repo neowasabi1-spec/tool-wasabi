@@ -77,12 +77,22 @@ export async function POST(req: NextRequest) {
       const s = r.steps[0] as { url_to_swipe?: string };
       try {
         const d = s?.url_to_swipe ? new URL(s.url_to_swipe).hostname.replace(/^www\./, '') : '';
-        if (d) domains.set(d, (domains.get(d) || 0) + 1);
+        // ".local" hosts are placeholders for manually-uploaded pages, not real domains.
+        if (d && !d.endsWith('.local')) domains.set(d, (domains.get(d) || 0) + 1);
       } catch { /* no url */ }
     }
+    // Fallback label: the most frequent page name in the session (ties → shortest).
+    const nameFreq = new Map<string, number>();
+    for (const r of session) {
+      const n = r.name.trim();
+      if (n && !/^recovered page$/i.test(n)) nameFreq.set(n, (nameFreq.get(n) || 0) + 1);
+    }
+    const topName = [...nameFreq.entries()].sort(
+      (a, b) => b[1] - a[1] || a[0].length - b[0].length,
+    )[0]?.[0];
     let label =
       [...domains.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ||
-      [...session].map((r) => r.name).sort((a, b) => a.length - b.length)[0] ||
+      topName ||
       'Recovered funnel';
     label = label.slice(0, 90);
     let unique = label;
