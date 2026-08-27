@@ -899,7 +899,7 @@ export default function TemplatesPage() {
     const merged: DisplayFunnel[] = [];
     groups.forEach((rows, domain) => {
       if (rows.length <= 1) {
-        // A lone walk row: keep it as-is (real funnel, all controls work).
+        // A lone walk row: single page, belongs to the Pages view only.
         passthrough.push(rows[0] as DisplayFunnel);
         return;
       }
@@ -922,7 +922,15 @@ export default function TemplatesPage() {
         __memberIds: sorted.map((r) => r.id),
       } as DisplayFunnel);
     });
-    return [...passthrough, ...merged].sort(
+    // The Funnel tab lists FUNNELS only: multi-step rows and folded walk
+    // folders. Single loose pages (1 step, no walk siblings) live in the
+    // Pages view — showing them here turned the tab into a page dump.
+    const funnelsOnly = [...passthrough, ...merged].filter((f) => {
+      if ((f as DisplayFunnel).__merged) return true;
+      const n = Array.isArray(f.steps) ? (f.steps as unknown[]).length : 0;
+      return Math.max(n, f.total_steps || 0) > 1;
+    });
+    return funnelsOnly.sort(
       (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
     );
   }, [filteredArchivedFunnels]);
@@ -1212,8 +1220,8 @@ export default function TemplatesPage() {
             >
               <FolderOpen className="w-4 h-4" />
               Funnel
-              {(archivedFunnels?.length ?? 0) > 0 && (
-                <span className="ml-1 px-1.5 py-0.5 bg-indigo-100 text-indigo-700 rounded-full text-xs font-semibold">{archivedFunnels.length}</span>
+              {displayFunnels.length > 0 && (
+                <span className="ml-1 px-1.5 py-0.5 bg-indigo-100 text-indigo-700 rounded-full text-xs font-semibold">{displayFunnels.length}</span>
               )}
             </button>
           </div>
