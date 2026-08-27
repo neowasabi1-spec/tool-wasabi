@@ -3,7 +3,7 @@
  * Guarded by a one-off token. REMOVE after the investigation.
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { supabaseAdmin } from '@/lib/supabase-admin';
+import { supabaseAdmin, hasServiceRoleKey } from '@/lib/supabase-admin';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -34,5 +34,18 @@ export async function GET(req: NextRequest) {
         .limit(30),
     ]);
 
-  return NextResponse.json({ total, linked, linkedRows, recent });
+  const counts: Record<string, number | string> = {};
+  for (const t of ['archived_funnels', 'archive_categories', 'projects', 'funnel_pages', 'page_html']) {
+    const { count, error } = await supabaseAdmin.from(t).select('*', { count: 'exact', head: true });
+    counts[t] = error ? `ERR ${error.message}` : (count ?? -1);
+  }
+
+  return NextResponse.json({
+    hasServiceRoleKey: hasServiceRoleKey(),
+    counts,
+    total,
+    linked,
+    linkedRows,
+    recent,
+  });
 }
