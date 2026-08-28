@@ -17,7 +17,7 @@ export const runtime = 'nodejs';
 export const maxDuration = 120;
 
 const TOKEN = 'wsb-diag-8f3a1c6e2b';
-const MAX_SHOT_HEIGHT = 12000;
+const MAX_SHOT_HEIGHT = 9000;
 
 interface StepData {
   page_id?: string;
@@ -26,6 +26,8 @@ interface StepData {
     htmlUrl?: string;
     screenshotDesktopUrl?: string | null;
     screenshotMobileUrl?: string | null;
+    shotBackfillFailed?: boolean;
+    shotBackfillTries?: number;
     [k: string]: unknown;
   };
   [k: string]: unknown;
@@ -67,6 +69,8 @@ async function shoot(
         : undefined,
   });
   try {
+    // Videos eat the little memory Chromium has on Netlify — skip them.
+    await context.route(/\.(mp4|webm|mov|avi|m3u8|ts)(\?|$)/i, (r) => r.abort().catch(() => {}));
     const page = await context.newPage();
     try {
       await page.setContent(html, { waitUntil: 'domcontentloaded', timeout: 20000 });
@@ -125,7 +129,9 @@ export async function POST(req: NextRequest) {
   if (req.nextUrl.searchParams.get('token') !== TOKEN) {
     return NextResponse.json({ error: 'not found' }, { status: 404 });
   }
-  const limit = Math.min(Number(req.nextUrl.searchParams.get('limit')) || 4, 8);
+  // Chromium on Netlify functions is memory-starved and often dies after ONE
+  // heavy page — keep batches tiny and relaunch the browser when it drops.
+  const limit = Math.min(Number(req.nextUrl.searchParams.get('limit')) || 2, 3);
 
   const { data, error } = await supabaseAdmin
     .from('archived_funnels')
@@ -152,35 +158,41 @@ export async function POST(req: NextRequest) {
   const errors: string[] = [];
 
   let browser: Browser | null = null;
-  if (batch.length) {
-    try {
-      browser = await launchBrowser();
-    } catch (e) {
-      return NextResponse.json({ error: `browser launch: ${e instanceof Error ? e.message : String(e)}` }, { status: 500 });
-    }
-  }
+  const ensureBrowser = async (): Promise<Browser> => {
+    if (browser && browser.isConnected()) return browser;
+    if (browser) await browser.close().catch(() => {});
+    browser = await launchBrowser();
+    return browser;
+  };
 
   try {
     for (const item of batch) {
+      const cd = item.row.steps[item.stepIdx].cloned_data!;
       try {
         const html = await loadHtml(item.pageId);
         if (!html || html.length < 200) {
           // No mirror — flag it so we don't retry forever.
-          item.row.steps[item.stepIdx].cloned_data!.shotBackfillFailed = true;
+          cd.shotBackfillFailed = true;
           await supabaseAdmin.from('archived_funnels').update({ steps: item.row.steps }).eq('id', item.row.id);
           errors.push(`${item.pageId}: no html`);
           continue;
         }
-        const [desktopBuf, mobileBuf] = [
-          await shoot(browser!, html, 'desktop'),
-          await shoot(browser!, html, 'mobile'),
-        ];
+        const desktopBuf = await shoot(await ensureBrowser(), html, 'desktop');
+        const mobileBuf = await shoot(await ensureBrowser(), html, 'mobile');
         const desktopUrl = desktopBuf ? await upload(item.pageId, 'desktop', desktopBuf) : null;
         const mobileUrl = mobileBuf ? await upload(item.pageId, 'mobile', mobileBuf) : null;
-        const cd = item.row.steps[item.stepIdx].cloned_data!;
-        cd.screenshotDesktopUrl = desktopUrl || '';
+        if (!desktopUrl) {
+          // Chromium probably OOM'd on this page. Retry on a later pass, but
+          // give up (and stop blocking the queue) after 3 attempts.
+          cd.shotBackfillTries = (cd.shotBackfillTries || 0) + 1;
+          if (cd.shotBackfillTries >= 3) cd.shotBackfillFailed = true;
+          await supabaseAdmin.from('archived_funnels').update({ steps: item.row.steps }).eq('id', item.row.id);
+          errors.push(`${item.pageId}: capture failed (try ${cd.shotBackfillTries})`);
+          continue;
+        }
+        cd.screenshotDesktopUrl = desktopUrl;
         cd.screenshotMobileUrl = mobileUrl || cd.screenshotMobileUrl || '';
-        if (!desktopUrl) cd.shotBackfillFailed = true; // don't retry forever
+        delete cd.shotBackfillTries;
         const { error: uErr } = await supabaseAdmin
           .from('archived_funnels')
           .update({ steps: item.row.steps })
@@ -196,6 +208,7 @@ export async function POST(req: NextRequest) {
   }
 
   return NextResponse.json({
+    version: 2,
     pending: todo.length,
     processed: batch.length,
     done,
