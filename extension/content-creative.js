@@ -828,6 +828,14 @@ function isWasabiTool() {
     btn.style.display = 'none';
     positionPopover();
 
+    // Stash the media + src for the save/download handlers NOW — before any
+    // network call. Download must work even if projects fail to load.
+    pop.__media = media;
+    pop.__src = src;
+    pop.__isVideo = isVideo;
+    // Ad copy from the surrounding card — saved as the creative's body text.
+    pop.__text = media ? cardContext(media).text : '';
+
     setStatus('<span class="spin"></span>Loading projects…', 'muted');
     const projects = await loadProjects();
     if (!projects) {
@@ -855,13 +863,6 @@ function isWasabiTool() {
     }
     await populateCompetitors(projSel.value);
     setStatus('', 'muted');
-
-    // Stash the media + src for the save handler.
-    pop.__media = media;
-    pop.__src = src;
-    pop.__isVideo = isVideo;
-    // Ad copy from the surrounding card — saved as the creative's body text.
-    pop.__text = media ? cardContext(media).text : '';
   }
 
   function closePopover() {
@@ -940,12 +941,13 @@ function isWasabiTool() {
     };
     applyDestination(payload);
 
-    // For blob:/data: sources we must get the bytes to the server somehow.
-    if (!payload.mediaUrl && src) {
-      // Streamed videos (blob:/MSE — TikTok/FB/IG) can't be shipped inline and
-      // the server can't fetch the CDN URL (needs the browser's cookies +
-      // Referer). Bail out to the background download+upload path in doSave.
+    // For blob:/data:/src-less sources we must get the bytes to the server somehow.
+    if (!payload.mediaUrl) {
+      // Streamed videos (blob:/MSE/srcObject — TikTok/FB/IG) can't be shipped
+      // inline and the server can't fetch the CDN URL (needs the browser's
+      // cookies + Referer). Bail out to the background path in doSave.
       if (isVideo) return { error: 'video streamed' };
+      if (!src) return { error: 'could not read media' };
       const inline = await readInline(src);
       if (inline) {
         payload.mediaBase64 = inline.base64;
@@ -1215,7 +1217,9 @@ function isWasabiTool() {
   downloadBtn.addEventListener('click', async () => {
     const src = pop.__src;
     const isVideo = pop.__isVideo;
-    if (!src) {
+    // Videos may have NO src at all (srcObject/MSE — e.g. TikTok): still
+    // downloadable by resolving the real network URL below.
+    if (!src && !(isVideo && pop.__media)) {
       setStatus('Nothing to download here.', 'err');
       return;
     }
@@ -1236,22 +1240,28 @@ function isWasabiTool() {
           setStatus(res && res.ok ? 'Download started ✓' : (res && res.error) || 'Download failed.', res && res.ok ? 'ok' : 'err');
         }
       } else if (isVideo) {
-        // blob:/MSE video — the blob URL usually has no real bytes behind it.
+        // blob:/MSE/srcObject video — no real bytes behind the element's URL.
         // Try to resolve the actual network URL (progressive mp4 or HLS).
         const netUrl = await resolveVideoUrl(pop.__media, true);
         if (netUrl && isHlsUrl(netUrl)) {
           await downloadHls(netUrl, nameInput.value);
         } else if (netUrl) {
+          // viaFetch: the background fetches with cookies + injected Referer
+          // (TikTok & co. 403 plain downloads), then hands Chrome the bytes.
           const res = await sendMessage({
             type: 'DOWNLOAD_MEDIA',
             url: netUrl,
+            pageUrl: location.href,
+            viaFetch: true,
             filename: buildFilename(nameInput.value, netUrl, '', true),
           });
           setStatus(res && res.ok ? 'Download started ✓' : (res && res.error) || 'Download failed.', res && res.ok ? 'ok' : 'err');
-        } else {
+        } else if (src) {
           // Last resort: download whatever the blob URL yields in-page.
           anchorDownload(src, buildFilename(nameInput.value, src, '', true));
           setStatus('Download started ✓', 'ok');
+        } else {
+          setStatus('Could not resolve this video — try playing it first, then retry.', 'err');
         }
       } else {
         // blob:/data: image — download in-page (no size cap).
@@ -1303,7 +1313,8 @@ function isWasabiTool() {
       };
 
       // 1) Readable blob:/data: → we have the bytes here; upload via signed URL.
-      const blob = await getMediaBlob(src);
+      // (src can be empty for srcObject/MSE videos — nothing to read in-page.)
+      const blob = src ? await getMediaBlob(src) : null;
       if (blob) {
         finish(await saveViaSignedUpload(projectId, blob, isVideo, nameInput.value, pop.__text));
         return;

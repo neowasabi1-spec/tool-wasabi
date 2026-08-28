@@ -1384,27 +1384,48 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   // chrome.downloads (bypasses CORS, reuses cookies for hotlink-protected CDNs);
   // blob:/data: media is downloaded in-page by the content script instead.
   if (msg.type === 'DOWNLOAD_MEDIA') {
-    try {
-      const url = msg.url || msg.dataUrl;
-      if (!url) {
-        sendResponse({ ok: false, error: 'nothing to download' });
-        return true;
-      }
-      const opts = { url, saveAs: false };
-      if (msg.filename) opts.filename = msg.filename;
-      chrome.downloads.download(opts, (id) => {
-        if (chrome.runtime.lastError || id === undefined) {
-          sendResponse({
-            ok: false,
-            error: (chrome.runtime.lastError && chrome.runtime.lastError.message) || 'download failed',
-          });
-        } else {
-          sendResponse({ ok: true, id });
+    (async () => {
+      try {
+        let url = msg.url || msg.dataUrl;
+        if (!url) {
+          sendResponse({ ok: false, error: 'nothing to download' });
+          return;
         }
-      });
-    } catch (e) {
-      sendResponse({ ok: false, error: String((e && e.message) || e) });
-    }
+        // Hotlink-protected CDNs (TikTok & co.) 403 a plain chrome.downloads
+        // request. viaFetch: fetch the bytes here (cookies + injected Referer),
+        // then hand Chrome a data: URL with the actual bytes.
+        if (msg.viaFetch && /^https?:\/\//i.test(url)) {
+          try {
+            const blob = await downloadWithReferer(url, msg.pageUrl || '');
+            if (blob && blob.size >= 10240 && !/^text\/html/i.test(blob.type || '')) {
+              const bytes = new Uint8Array(await blob.arrayBuffer());
+              let bin = '';
+              const CHUNK = 0x8000;
+              for (let i = 0; i < bytes.length; i += CHUNK) {
+                bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+              }
+              url = `data:${blob.type || 'video/mp4'};base64,${btoa(bin)}`;
+            }
+            // Fetch failed → fall through with the original URL; a direct
+            // chrome.downloads attempt is still better than nothing.
+          } catch { /* fall through to direct download */ }
+        }
+        const opts = { url, saveAs: false };
+        if (msg.filename) opts.filename = msg.filename;
+        chrome.downloads.download(opts, (id) => {
+          if (chrome.runtime.lastError || id === undefined) {
+            sendResponse({
+              ok: false,
+              error: (chrome.runtime.lastError && chrome.runtime.lastError.message) || 'download failed',
+            });
+          } else {
+            sendResponse({ ok: true, id });
+          }
+        });
+      } catch (e) {
+        sendResponse({ ok: false, error: String((e && e.message) || e) });
+      }
+    })();
     return true;
   }
 
