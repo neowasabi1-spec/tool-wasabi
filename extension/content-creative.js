@@ -1149,6 +1149,69 @@ function isWasabiTool() {
     setTimeout(() => a.remove(), 1500);
   }
 
+  // ── HLS (m3u8) download ────────────────────────────────────────────────────
+  // Long VSLs (Vidalytics/vTurb/…) are HLS-only: a .m3u8 manifest + hundreds of
+  // small .ts segments, with NO progressive mp4 to download. Fetch every
+  // segment in-page (the player already streams them from here, so CORS is
+  // open) and stitch them into ONE MPEG-TS file.
+  const isHlsUrl = (u) => /\.m3u8(\?|$)/i.test(String(u || ''));
+
+  async function assembleHls(m3u8Url, onProgress) {
+    const abs = (u, base) => new URL(u, base).href;
+    const fetchText = async (u) => {
+      const r = await fetch(u, { credentials: 'omit' });
+      if (!r.ok) throw new Error(`Playlist fetch failed (${r.status})`);
+      return r.text();
+    };
+    let url = m3u8Url;
+    let text = await fetchText(url);
+
+    // Master playlist → pick the highest-bandwidth variant.
+    if (/#EXT-X-STREAM-INF/i.test(text)) {
+      const lines = text.split('\n');
+      let best = '';
+      let bestBw = -1;
+      for (let i = 0; i < lines.length; i++) {
+        const m = lines[i].match(/#EXT-X-STREAM-INF[^\n]*BANDWIDTH=(\d+)/i);
+        if (!m) continue;
+        for (let j = i + 1; j < lines.length; j++) {
+          const cand = lines[j].trim();
+          if (cand && !cand.startsWith('#')) {
+            if (Number(m[1]) > bestBw) { bestBw = Number(m[1]); best = cand; }
+            break;
+          }
+        }
+      }
+      if (!best) throw new Error('No video variant found in the playlist');
+      url = abs(best, url);
+      text = await fetchText(url);
+    }
+
+    const segs = text.split('\n').map((s) => s.trim()).filter((s) => s && !s.startsWith('#'));
+    if (!segs.length) throw new Error('No segments found in the playlist');
+
+    const parts = [];
+    for (let i = 0; i < segs.length; i++) {
+      const r = await fetch(abs(segs[i], url), { credentials: 'omit' });
+      if (!r.ok) throw new Error(`Segment ${i + 1}/${segs.length} failed (${r.status})`);
+      parts.push(new Uint8Array(await r.arrayBuffer()));
+      if (onProgress && (i % 5 === 0 || i === segs.length - 1)) onProgress(i + 1, segs.length);
+    }
+    return new Blob(parts, { type: 'video/mp2t' });
+  }
+
+  async function downloadHls(url, name) {
+    const blob = await assembleHls(url, (done, total) =>
+      setStatus(`<span class="spin"></span>Downloading video… ${done}/${total} segments`, 'muted'),
+    );
+    const filename = buildFilename(name, '', '', true).replace(/\.\w+$/, '.ts');
+    const objUrl = URL.createObjectURL(blob);
+    anchorDownload(objUrl, filename);
+    setTimeout(() => URL.revokeObjectURL(objUrl), 60000);
+    const mb = Math.round(blob.size / 1048576);
+    setStatus(`Download started ✓ (${mb} MB — .ts file, opens in VLC/CapCut/Premiere)`, 'ok');
+  }
+
   downloadBtn.addEventListener('click', async () => {
     const src = pop.__src;
     const isVideo = pop.__isVideo;
@@ -1159,12 +1222,22 @@ function isWasabiTool() {
     downloadBtn.disabled = true;
     setStatus('<span class="spin"></span>Downloading…', 'muted');
     try {
-      if (/^https?:\/\//i.test(src)) {
+      // Streamed (blob:/MSE) videos can't be saved from the blob: URL — resolve
+      // the real network URL first (progressive mp4 or HLS manifest).
+      let netUrl = /^https?:\/\//i.test(src) ? src : '';
+      if (!netUrl && isVideo) {
+        netUrl = await resolveVideoUrl(pop.__media, true);
+      }
+
+      if (isVideo && isHlsUrl(netUrl)) {
+        // HLS stream (long VSLs): stitch all the segments into one file.
+        await downloadHls(netUrl, nameInput.value);
+      } else if (netUrl) {
         // Cross-origin http(s): the SW's chrome.downloads bypasses CORS.
         const res = await sendMessage({
           type: 'DOWNLOAD_MEDIA',
-          url: src,
-          filename: buildFilename(nameInput.value, src, '', isVideo),
+          url: netUrl,
+          filename: buildFilename(nameInput.value, netUrl, '', isVideo),
         });
         setStatus(res && res.ok ? 'Download started ✓' : (res && res.error) || 'Download failed.', res && res.ok ? 'ok' : 'err');
       } else {
