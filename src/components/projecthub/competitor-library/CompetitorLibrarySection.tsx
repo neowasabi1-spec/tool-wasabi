@@ -1477,6 +1477,33 @@ function CompetitorDetail({ projectId, competitor, onBack }: { projectId: string
     toast({ title: "Ad removed" });
   };
 
+  // Bulk-download every selected creative (sequential, small gap — firing all
+  // the anchor clicks at once makes the browser drop most of them).
+  const [bulkDownloading, setBulkDownloading] = useState(false);
+  const downloadSelected = async (ids: number[]) => {
+    const list = ads.filter(a => ids.includes(a.id) && a.file_path);
+    if (!list.length) { toast({ title: "Nothing downloadable in the selection" }); return; }
+    setBulkDownloading(true);
+    try {
+      for (const ad of list) {
+        downloadCreative(ad);
+        await new Promise(r => setTimeout(r, 350));
+      }
+      toast({ title: `Downloading ${list.length} creative${list.length > 1 ? "s" : ""}…` });
+    } finally { setBulkDownloading(false); }
+  };
+
+  const deleteSelected = async (ids: number[]) => {
+    if (!ids.length) return;
+    if (!window.confirm(`Delete ${ids.length} creative${ids.length > 1 ? "s" : ""} from this competitor?`)) return;
+    setAds(p => p.filter(a => !ids.includes(a.id)));
+    setSelected(new Set());
+    await Promise.allSettled(ids.map(id =>
+      fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library/${competitor.id}/ads/${id}`, { method: "DELETE" })
+    ));
+    toast({ title: `${ids.length} creative${ids.length > 1 ? "s" : ""} removed` });
+  };
+
   const saveToTemplates = async (ids: number[]) => {
     if (ids.length === 0) return;
     setSaving(true);
@@ -1632,12 +1659,24 @@ function CompetitorDetail({ projectId, competitor, onBack }: { projectId: string
             <span className="text-xs text-muted-foreground border-l border-border pl-3">{selected.size} selected</span>
           )}
           {selected.size > 0 && (
-            <Button size="sm" onClick={() => saveToTemplates(Array.from(selected))} disabled={saving}
-              className="ml-auto bg-sky-500 hover:bg-sky-600 text-white gap-1.5 h-8 text-xs px-4">
-              {saving
-                ? <><RefreshCw className="w-3 h-3 animate-spin" /> Saving...</>
-                : <><Bookmark className="w-3.5 h-3.5" /> Import to templates ({selected.size})</>}
-            </Button>
+            <div className="ml-auto flex items-center gap-2">
+              <Button size="sm" variant="outline" onClick={() => downloadSelected(Array.from(selected))}
+                disabled={bulkDownloading} className="gap-1.5 h-8 text-xs px-4">
+                {bulkDownloading
+                  ? <><RefreshCw className="w-3 h-3 animate-spin" /> Downloading…</>
+                  : <><Download className="w-3.5 h-3.5" /> Download ({selected.size})</>}
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => deleteSelected(Array.from(selected))}
+                className="gap-1.5 h-8 text-xs px-4 border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700">
+                <Trash2 className="w-3.5 h-3.5" /> Delete ({selected.size})
+              </Button>
+              <Button size="sm" onClick={() => saveToTemplates(Array.from(selected))} disabled={saving}
+                variant="ghost" className="gap-1.5 h-8 text-xs px-3 text-muted-foreground">
+                {saving
+                  ? <><RefreshCw className="w-3 h-3 animate-spin" /> Saving...</>
+                  : <><Bookmark className="w-3.5 h-3.5" /> Templates</>}
+              </Button>
+            </div>
           )}
         </div>
       )}
