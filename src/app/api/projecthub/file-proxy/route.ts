@@ -85,6 +85,27 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid path' }, { status: 400 });
   }
 
+  const filename = path.split('/').pop() || 'download';
+  // Strip the timestamp prefix the upload route adds (e.g.
+  // "1718291234_brief.pdf" → "brief.pdf") for a friendly download name.
+  const friendly = filename.replace(/^\d{10,}_/, '');
+
+  // Serve via a short-lived Supabase signed URL whenever possible: the bytes
+  // then come straight from the storage CDN with full range support and NO
+  // size cap. Buffering the file through this serverless function truncates
+  // anything over ~6MB (Lambda response limit) — long videos died mid-download
+  // and the browser reported it as a network error ("connessione assente").
+  try {
+    const { data: signed } = await supabaseAdmin.storage
+      .from(BUCKET)
+      .createSignedUrl(path, 3600, wantDownload ? { download: friendly } : undefined);
+    if (signed?.signedUrl) {
+      return NextResponse.redirect(signed.signedUrl, 302);
+    }
+  } catch {
+    /* fall through to the streaming fallback below */
+  }
+
   const { data, error } = await supabaseAdmin.storage.from(BUCKET).download(path);
   if (error || !data) {
     return NextResponse.json(
@@ -92,11 +113,6 @@ export async function GET(req: NextRequest) {
       { status: 404 },
     );
   }
-
-  const filename = path.split('/').pop() || 'download';
-  // Strip the timestamp prefix the upload route adds (e.g.
-  // "1718291234_brief.pdf" → "brief.pdf") for a friendly download name.
-  const friendly = filename.replace(/^\d{10,}_/, '');
   const ab = await data.arrayBuffer();
   const buf = Buffer.from(ab);
   const contentType = data.type || mimeFromExt(filename);
