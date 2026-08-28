@@ -65,58 +65,27 @@ function isWasabiTool() {
     if (capturedVideoUrls.length > 60) capturedVideoUrls.shift();
   });
 
-  // Try to resolve the real CDN URL for a (blob) video. Pauses every OTHER
-  // video, nudges the target to (re)stream, then considers ONLY the captures
-  // that arrived after the nudge — so on multi-video pages (ad libraries in
-  // autoplay) the URL belongs to THIS video, not whichever streamed last.
+  // Try to resolve the real CDN URL for a (blob) video. Nudges the element to
+  // (re)stream so a fresh segment URL is captured, then returns the most recent
+  // PROGRESSIVE capture (falling back to a manifest). Returns '' if nothing.
   async function resolveCdnUrl(mediaEl) {
-    // Quiet the page: other playing videos would pollute the capture window.
-    const paused = [];
-    try {
-      for (const v of document.querySelectorAll('video')) {
-        if (v !== mediaEl && !v.paused) {
-          try { v.pause(); paused.push(v); } catch { /* ignore */ }
-        }
-      }
-    } catch { /* ignore */ }
-    await new Promise((r) => setTimeout(r, 150)); // let in-flight requests land
-
     const before = capturedVideoUrls.length;
     try {
       if (mediaEl && typeof mediaEl.play === 'function') {
-        // Nudge a fresh segment fetch even when the buffer is warm.
-        try { if (mediaEl.currentTime > 1) mediaEl.currentTime = 0; } catch { /* ignore */ }
         const p = mediaEl.play();
         if (p && typeof p.catch === 'function') p.catch(() => {});
       }
     } catch { /* ignore */ }
-    const deadline = Date.now() + 2500;
+    const deadline = Date.now() + 1500;
     while (Date.now() < deadline) {
       if (capturedVideoUrls.length > before) break;
       await new Promise((r) => setTimeout(r, 120));
     }
-
-    // Only captures that arrived after OUR nudge count as this video's.
-    const fresh = capturedVideoUrls.slice(before);
-    let url = '';
-    for (let i = fresh.length - 1; i >= 0; i--) {
-      if (fresh[i].kind === 'progressive') { url = fresh[i].url; break; }
+    if (!capturedVideoUrls.length) return '';
+    for (let i = capturedVideoUrls.length - 1; i >= 0; i--) {
+      if (capturedVideoUrls[i].kind === 'progressive') return capturedVideoUrls[i].url;
     }
-    if (!url && fresh.length) url = fresh[fresh.length - 1].url; // manifest fallback
-
-    // Nothing fresh (fully buffered video, no new requests): the old "last
-    // capture on the page" guess is only safe when there's a single video.
-    if (!url) {
-      let videoCount = 0;
-      try { videoCount = document.querySelectorAll('video').length; } catch { /* ignore */ }
-      if (videoCount <= 1 && capturedVideoUrls.length) {
-        for (let i = capturedVideoUrls.length - 1; i >= 0; i--) {
-          if (capturedVideoUrls[i].kind === 'progressive') { url = capturedVideoUrls[i].url; break; }
-        }
-        if (!url) url = capturedVideoUrls[capturedVideoUrls.length - 1].url;
-      }
-    }
-    return url;
+    return capturedVideoUrls[capturedVideoUrls.length - 1].url; // manifest fallback
   }
 
   // ── Shadow host ──────────────────────────────────────────────────────────
@@ -1028,13 +997,10 @@ function isWasabiTool() {
   }
 
   async function resolveVideoUrl(mediaEl, isVideo) {
-    // Element-scoped sniffing FIRST: the DOM rehydration blob describes the
-    // page's MAIN video, which is the wrong one when saving from a grid.
-    if (isVideo) {
-      const sniffed = await resolveCdnUrl(mediaEl);
-      if (sniffed) return sniffed;
-    }
-    return resolveVideoUrlFromDom();
+    const dom = resolveVideoUrlFromDom();
+    if (dom) return dom;
+    if (isVideo) return await resolveCdnUrl(mediaEl);
+    return '';
   }
 
   // Upload the bytes straight to storage via a signed URL (no size limit), then
@@ -1256,27 +1222,40 @@ function isWasabiTool() {
     downloadBtn.disabled = true;
     setStatus('<span class="spin"></span>Downloading…', 'muted');
     try {
-      // Streamed (blob:/MSE) videos can't be saved from the blob: URL — resolve
-      // the real network URL first (progressive mp4 or HLS manifest).
-      let netUrl = /^https?:\/\//i.test(src) ? src : '';
-      if (!netUrl && isVideo) {
-        netUrl = await resolveVideoUrl(pop.__media, true);
-      }
-
-      if (isVideo && isHlsUrl(netUrl)) {
-        // HLS stream (long VSLs): stitch all the segments into one file.
-        await downloadHls(netUrl, nameInput.value);
-      } else if (netUrl) {
-        // Cross-origin http(s): the SW's chrome.downloads bypasses CORS.
-        const res = await sendMessage({
-          type: 'DOWNLOAD_MEDIA',
-          url: netUrl,
-          filename: buildFilename(nameInput.value, netUrl, '', isVideo),
-        });
-        setStatus(res && res.ok ? 'Download started ✓' : (res && res.error) || 'Download failed.', res && res.ok ? 'ok' : 'err');
+      if (/^https?:\/\//i.test(src)) {
+        if (isVideo && isHlsUrl(src)) {
+          // HLS stream (long VSLs): stitch all the segments into one file.
+          await downloadHls(src, nameInput.value);
+        } else {
+          // Cross-origin http(s): the SW's chrome.downloads bypasses CORS.
+          const res = await sendMessage({
+            type: 'DOWNLOAD_MEDIA',
+            url: src,
+            filename: buildFilename(nameInput.value, src, '', isVideo),
+          });
+          setStatus(res && res.ok ? 'Download started ✓' : (res && res.error) || 'Download failed.', res && res.ok ? 'ok' : 'err');
+        }
+      } else if (isVideo) {
+        // blob:/MSE video — the blob URL usually has no real bytes behind it.
+        // Try to resolve the actual network URL (progressive mp4 or HLS).
+        const netUrl = await resolveVideoUrl(pop.__media, true);
+        if (netUrl && isHlsUrl(netUrl)) {
+          await downloadHls(netUrl, nameInput.value);
+        } else if (netUrl) {
+          const res = await sendMessage({
+            type: 'DOWNLOAD_MEDIA',
+            url: netUrl,
+            filename: buildFilename(nameInput.value, netUrl, '', true),
+          });
+          setStatus(res && res.ok ? 'Download started ✓' : (res && res.error) || 'Download failed.', res && res.ok ? 'ok' : 'err');
+        } else {
+          // Last resort: download whatever the blob URL yields in-page.
+          anchorDownload(src, buildFilename(nameInput.value, src, '', true));
+          setStatus('Download started ✓', 'ok');
+        }
       } else {
-        // blob:/data: — download in-page (no size cap).
-        anchorDownload(src, buildFilename(nameInput.value, src, '', isVideo));
+        // blob:/data: image — download in-page (no size cap).
+        anchorDownload(src, buildFilename(nameInput.value, src, '', false));
         setStatus('Download started ✓', 'ok');
       }
     } catch (e) {
