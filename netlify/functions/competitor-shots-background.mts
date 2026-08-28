@@ -131,45 +131,61 @@ async function uploadShot(
 export default async (req: Request) => {
   // Accept projectId + secret from the query string OR the JSON body — the
   // pipeline posts a JSON body; the query string is a robust fallback.
+  // scope=all → sweep EVERY archived page missing shots (used to backfill the
+  // recovered archive), instead of a single project's landings.
   const qs = new URL(req.url).searchParams;
   let projectId = qs.get('projectId') || '';
   let secret = qs.get('secret') || '';
+  let scope = qs.get('scope') || '';
   try {
-    const body = (await req.json()) as { projectId?: string; secret?: string };
+    const body = (await req.json()) as { projectId?: string; secret?: string; scope?: string };
     if (!projectId) projectId = String(body?.projectId || '');
     if (!secret) secret = String(body?.secret || '');
+    if (!scope) scope = String(body?.scope || '');
   } catch { /* body may be absent for a query-string invocation */ }
 
   const expected = process.env.APIFY_WEBHOOK_SECRET || process.env.CRON_SECRET || '';
   if (expected && secret !== expected) return new Response('Unauthorized', { status: 401 });
-  if (!projectId) return new Response('missing projectId', { status: 200 });
+  const sweepAll = scope === 'all';
+  if (!projectId && !sweepAll) return new Response('missing projectId', { status: 200 });
 
-  const log = (...a: unknown[]) => console.log(`[shots ${projectId}]`, ...a);
+  const log = (...a: unknown[]) => console.log(`[shots ${sweepAll ? 'ALL' : projectId}]`, ...a);
   const sb = getSupabase();
 
-  const { data: rows } = await sb
-    .from('archived_funnels')
-    .select('id, steps')
-    .eq('project_id', projectId);
+  let query = sb.from('archived_funnels').select('id, steps').order('created_at', { ascending: false });
+  if (!sweepAll) query = query.eq('project_id', projectId);
+  const { data: rows } = await query;
 
-  const todo: Array<{ id: string; url: string; step: Record<string, unknown> }> = [];
+  // One work item per STEP missing a screenshot — covers single-page saves,
+  // multi-step walk folders, and every page type (advertorial, checkout,
+  // upsell… not just 'landing': the Competitor Library shows them all).
+  type Todo = { rowId: string; stepIdx: number; shotKey: string; url: string };
+  const stepsByRow = new Map<string, Record<string, unknown>[]>();
+  const todo: Todo[] = [];
   for (const r of (rows || []) as Array<{ id: string; steps?: unknown }>) {
-    const step = Array.isArray(r.steps) ? (r.steps[0] as Record<string, unknown>) : null;
-    const cd = step?.cloned_data as Record<string, unknown> | undefined;
-    if (!step || !cd) continue;
-    if (step.page_type !== 'landing') continue;
-    if (cd.screenshotDesktopUrl && cd.screenshotMobileUrl) continue; // both done
-    const src = typeof cd.source_url === 'string' ? cd.source_url : '';
-    if (!/^https?:\/\//i.test(src)) continue;
-    todo.push({ id: r.id, url: src, step });
+    const steps = Array.isArray(r.steps) ? (r.steps as Record<string, unknown>[]) : [];
+    if (!steps.length) continue;
+    stepsByRow.set(r.id, steps);
+    steps.forEach((step, i) => {
+      const cd = step?.cloned_data as Record<string, unknown> | undefined;
+      if (!cd) return;
+      if (cd.screenshotDesktopUrl && cd.screenshotMobileUrl) return; // both done
+      const src = typeof cd.source_url === 'string' ? cd.source_url : '';
+      if (!/^https?:\/\//i.test(src)) return;
+      const shotKey = typeof step.page_id === 'string' && step.page_id ? (step.page_id as string) : r.id;
+      todo.push({ rowId: r.id, stepIdx: i, shotKey, url: src });
+    });
   }
 
-  if (todo.length === 0) return new Response(JSON.stringify({ ok: true, done: 0 }), { status: 200 });
-  log(`capturing ${Math.min(todo.length, MAX_LANDINGS)} landing(s)`);
+  if (todo.length === 0) return new Response(JSON.stringify({ ok: true, done: 0, remaining: 0 }), { status: 200 });
+  log(`capturing ${Math.min(todo.length, MAX_LANDINGS)} of ${todo.length} page(s)`);
 
   let done = 0;
-  for (const t of todo.slice(0, MAX_LANDINGS)) {
-    const cd = t.step.cloned_data as Record<string, unknown>;
+  const batch = todo.slice(0, MAX_LANDINGS);
+  for (const t of batch) {
+    const steps = stepsByRow.get(t.rowId)!;
+    const step = steps[t.stepIdx];
+    const cd = step.cloned_data as Record<string, unknown>;
     const errs: string[] = [];
     let dUrl: string | null = typeof cd.screenshotDesktopUrl === 'string' ? cd.screenshotDesktopUrl : null;
     let mUrl: string | null = typeof cd.screenshotMobileUrl === 'string' ? cd.screenshotMobileUrl : null;
@@ -180,31 +196,31 @@ export default async (req: Request) => {
       browser = await launchBrowser();
       const shots = await captureBoth(browser, t.url);
       if (!dUrl && shots.desktop) {
-        dUrl = await uploadShot(sb, t.id, 'desktop', shots.desktop);
+        dUrl = await uploadShot(sb, t.shotKey, 'desktop', shots.desktop);
         if (!dUrl) errs.push('desktop upload failed');
-      } else if (!shots.desktop) errs.push('desktop capture empty');
+      } else if (!dUrl && !shots.desktop) errs.push('desktop capture empty');
       if (!mUrl && shots.mobile) {
-        mUrl = await uploadShot(sb, t.id, 'mobile', shots.mobile);
+        mUrl = await uploadShot(sb, t.shotKey, 'mobile', shots.mobile);
         if (!mUrl) errs.push('mobile upload failed');
-      } else if (!shots.mobile) errs.push('mobile capture empty');
+      } else if (!mUrl && !shots.mobile) errs.push('mobile capture empty');
     } catch (e) {
       errs.push(`capture: ${(e as Error).message}`);
     } finally {
       if (browser) await browser.close().catch(() => {});
     }
 
-    if (dUrl) {
-      cd.screenshotDesktopUrl = dUrl;
-      cd.htmlUrl = `/api/funnel-html?pageId=${encodeURIComponent(t.id)}&kind=cloned&variant=desktop&v=${Date.now()}`;
-    }
+    if (dUrl) cd.screenshotDesktopUrl = dUrl;
     if (mUrl) cd.screenshotMobileUrl = mUrl;
     if (errs.length) cd.shotError = errs.join(' | ');
     else delete cd.shotError;
-    await sb.from('archived_funnels').update({ steps: [t.step] }).eq('id', t.id).then(() => undefined, () => undefined);
+    await sb.from('archived_funnels').update({ steps }).eq('id', t.rowId).then(() => undefined, () => undefined);
 
     if (dUrl || mUrl) { done++; log(`saved shots for ${t.url} (${done})`); }
     else log(`no shots for ${t.url}: ${errs.join(' | ')}`);
   }
 
-  return new Response(JSON.stringify({ ok: true, done }), { status: 200 });
+  return new Response(
+    JSON.stringify({ ok: true, done, remaining: todo.length - batch.length }),
+    { status: 200 },
+  );
 };
