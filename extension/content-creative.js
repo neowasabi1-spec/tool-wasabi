@@ -32,7 +32,7 @@ function isWasabiTool() {
 (function () {
   if (window.__wasabiCreativeSaver) return;
   window.__wasabiCreativeSaver = true;
-  try { console.debug('[Wasabi] creative saver v1.6.12 (Select all)'); } catch { /* ignore */ }
+  try { console.debug('[Wasabi] creative saver v1.7.0 (card-aware bulk: videos + ad copy)'); } catch { /* ignore */ }
 
   // Never run inside the Wasabi tool itself — the floating "Save" button would
   // overlap the app's own card actions (Save / Save template). We only want it
@@ -306,6 +306,50 @@ function isWasabiTool() {
     return g.slice(0, 120);
   }
 
+  // ── Ad-card context ─────────────────────────────────────────────────────
+  // Ad libraries/spy tools render each ad as a self-contained card: media +
+  // advertiser + the ad copy. Climb from the media element to the card so we
+  // can (a) grab the REAL ad text instead of the page title and (b) find the
+  // <video> behind a poster <img>, so video ads save as videos.
+  function findAdCard(el) {
+    let node = el;
+    let best = null;
+    for (let i = 0; i < 10 && node; i++) {
+      node = node.parentElement;
+      if (!node || node === document.body || node === document.documentElement) break;
+      let r;
+      try { r = node.getBoundingClientRect(); } catch { break; }
+      // Full-width ancestors are page sections / virtualized lists, not cards.
+      if (r.width > innerWidth * 0.95) break;
+      const txt = (node.innerText || '').trim();
+      if (txt.length > 3000) break; // grabbed a container with several ads
+      if (txt.length >= 20) best = node;
+    }
+    return best;
+  }
+
+  function cardContext(el) {
+    const card = findAdCard(el);
+    const raw = card ? String(card.innerText || '') : '';
+    const text = raw.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim().slice(0, 1500);
+    const lines = text.split('\n').map((s) => s.trim()).filter((s) => s.length >= 3);
+    const name = (lines.find((s) => s.length >= 8 && s.length <= 90) || lines[0] || '').slice(0, 120);
+    let video = null;
+    try { video = card ? card.querySelector('video') : null; } catch { /* ignore */ }
+    return { card, text, name: name || guessName(el), video };
+  }
+
+  // Get a downloadable http(s) URL for a video element: direct src first, then
+  // nudge the stream (muted play) so the network sniffer catches the CDN URL.
+  async function resolveVideoSrc(videoEl) {
+    const direct = currentSrc(videoEl);
+    if (/^https?:\/\//i.test(direct)) return direct;
+    try { videoEl.muted = true; } catch { /* ignore */ }
+    const sniffed = await resolveCdnUrl(videoEl);
+    try { videoEl.pause(); } catch { /* ignore */ }
+    return /^https?:\/\//i.test(sniffed) ? sniffed : '';
+  }
+
   function isMediaSelected(el) {
     if (!el) return false;
     if (selected.has(el)) return true;
@@ -324,7 +368,16 @@ function isWasabiTool() {
       bulk.delete(k);
       restoreOutline(el);
     } else {
-      selected.set(el, { src, isVideo: el.tagName === 'VIDEO', name: guessName(el) });
+      // Card-aware: a poster <img> whose card holds a <video> is a VIDEO ad.
+      const ctx = cardContext(el);
+      const videoEl = el.tagName === 'VIDEO' ? el : ctx.video;
+      selected.set(el, {
+        src,
+        isVideo: !!videoEl,
+        videoEl: videoEl || null,
+        name: ctx.name,
+        text: ctx.text,
+      });
       applyOutline(el);
     }
     updateBar();
@@ -395,15 +448,42 @@ function isWasabiTool() {
 
   // Snapshot whatever is on screen right now into `bulk` (deduped by src, and
   // skipping anything already picked manually). Returns how many were new.
-  function grabIntoBulk() {
+  //
+  // Card-aware: when the media's ad card contains a <video>, the item is saved
+  // as a VIDEO (its real CDN URL resolved right now, while the element is
+  // alive — virtualized lists recycle nodes) with the poster only as dedupe
+  // key. The card's text is captured as the ad copy.
+  const handledVideos = new WeakSet();
+  async function grabIntoBulk() {
     let added = 0;
     const inSel = selectedSrcKeys();
     for (const el of collectEligibleMedia()) {
       const src = currentSrc(el);
+      const ctx = cardContext(el);
+      const videoEl = el.tagName === 'VIDEO' ? el : ctx.video;
+
+      if (videoEl) {
+        if (handledVideos.has(videoEl)) continue;
+        handledVideos.add(videoEl);
+        const videoUrl = await resolveVideoSrc(videoEl);
+        const k = srcKey(videoUrl || src || ('vid:' + Math.random()));
+        if (inSel.has(k) || bulk.has(k)) continue;
+        bulk.set(k, {
+          src: videoUrl || src,
+          isVideo: true,
+          videoUrl,
+          videoEl,
+          name: ctx.name,
+          text: ctx.text,
+        });
+        added++;
+        continue;
+      }
+
       if (!src) continue;
       const k = srcKey(src);
       if (inSel.has(k) || bulk.has(k)) continue;
-      bulk.set(k, { src, isVideo: el.tagName === 'VIDEO', name: guessName(el) });
+      bulk.set(k, { src, isVideo: false, name: ctx.name, text: ctx.text });
       added++;
     }
     return added;
@@ -422,7 +502,7 @@ function isWasabiTool() {
     const startY = window.scrollY;
     const setLbl = () => { selectAllBtn.textContent = scanning ? `Stop (${totalCount()})` : origLabel; };
 
-    grabIntoBulk();
+    await grabIntoBulk();
     updateBar();
     setLbl();
 
@@ -431,8 +511,10 @@ function isWasabiTool() {
     for (let i = 0; i < MAX_STEPS && scanning; i++) {
       if (totalCount() >= MAX_ITEMS) break;
       window.scrollBy(0, Math.max(600, Math.floor(window.innerHeight * 0.9)));
-      await sleep(700);
-      const added = grabIntoBulk();
+      // Ad libraries mount <video> elements lazily as cards enter the viewport;
+      // give them time to hydrate or video ads get scanned as poster images.
+      await sleep(900);
+      const added = await grabIntoBulk();
       updateBar();
       setLbl();
       const h = document.documentElement.scrollHeight;
@@ -446,7 +528,7 @@ function isWasabiTool() {
       lastHeight = h;
     }
 
-    grabIntoBulk(); // final sweep once things settle
+    await grabIntoBulk(); // final sweep once things settle
     updateBar();
     window.scrollTo(0, startY);
     scanning = false;
@@ -778,6 +860,8 @@ function isWasabiTool() {
     pop.__media = media;
     pop.__src = src;
     pop.__isVideo = isVideo;
+    // Ad copy from the surrounding card — saved as the creative's body text.
+    pop.__text = media ? cardContext(media).text : '';
   }
 
   function closePopover() {
@@ -843,7 +927,7 @@ function isWasabiTool() {
   }
 
   // Build a SAVE_CREATIVE payload for one media. Returns { payload } or { error }.
-  async function buildCreativePayload(projectId, src, isVideo, name, mediaEl) {
+  async function buildCreativePayload(projectId, src, isVideo, name, mediaEl, text) {
     const payload = {
       type: 'SAVE_CREATIVE',
       projectId,
@@ -852,6 +936,7 @@ function isWasabiTool() {
       mediaUrl: /^https?:\/\//i.test(src) ? src : '',
       mediaType: isVideo ? 'video' : 'image',
       name: (name || '').trim(),
+      bodyText: (text || '').trim(),
     };
     applyDestination(payload);
 
@@ -921,7 +1006,7 @@ function isWasabiTool() {
   // Upload the bytes straight to storage via a signed URL (no size limit), then
   // register the creative from the stored path. Bypasses the ~6MB save-request
   // body limit that triggers the "video too large" message.
-  async function saveViaSignedUpload(projectId, blob, isVideo, name) {
+  async function saveViaSignedUpload(projectId, blob, isVideo, name, text) {
     const contentType = blob.type || (isVideo ? 'video/mp4' : 'image/jpeg');
     const sign = await sendMessage({
       type: 'SIGN_CREATIVE',
@@ -945,6 +1030,7 @@ function isWasabiTool() {
       pageTitle: document.title || '',
       mediaType: isVideo ? 'video' : 'image',
       name: (name || '').trim(),
+      bodyText: (text || '').trim(),
       storagePath: sign.path,
       contentType: sign.contentType || contentType,
     };
@@ -972,7 +1058,42 @@ function isWasabiTool() {
     for (let i = 0; i < items.length; i++) {
       setStatus(`<span class="spin"></span>Importing ${i + 1}/${items.length}…`, 'muted');
       const it = items[i];
-      const built = await buildCreativePayload(projectId, it.src, it.isVideo, it.name, it.el);
+
+      // VIDEO ads must be saved as real playable videos, never as their poster
+      // image. Resolve a downloadable URL (stored at scan time, or re-sniffed
+      // now from the live element) and ship it through the background
+      // download+upload path (browser cookies/Referer get past the CDN).
+      if (it.isVideo) {
+        let url = /^https?:\/\//i.test(it.videoUrl || '') ? it.videoUrl : '';
+        if (!url && it.videoEl && it.videoEl.isConnected) {
+          url = await resolveVideoSrc(it.videoEl);
+        }
+        if (!url && /^https?:\/\//i.test(it.src || '') && /\.(mp4|webm|mov|m4v)(\?|$)/i.test(it.src)) {
+          url = it.src;
+        }
+        if (url) {
+          const dest = {};
+          applyDestination(dest);
+          const res = await sendMessage({
+            type: 'FETCH_AND_UPLOAD',
+            projectId,
+            url,
+            isVideo: true,
+            name: it.name,
+            bodyText: it.text || '',
+            pageUrl: location.href,
+            pageTitle: document.title || '',
+            ...dest,
+          });
+          if (res && res.ok) ok++;
+          else fail++;
+        } else {
+          fail++; // no playable source — do NOT save the poster as a fake video
+        }
+        continue;
+      }
+
+      const built = await buildCreativePayload(projectId, it.src, it.isVideo, it.name, it.el, it.text);
       if (built.error) { fail++; continue; }
       const res = await sendMessage(built.payload);
       if (res && res.ok) ok++;
@@ -981,7 +1102,7 @@ function isWasabiTool() {
     await chrome.storage.local.set({ wasabi_last_project: projectId }).catch(() => {});
     saveBtn.disabled = false;
     setStatus(
-      `Imported ${ok}/${items.length}${fail ? ` · ${fail} skipped (large/streamed videos)` : ''}`,
+      `Imported ${ok}/${items.length}${fail ? ` · ${fail} skipped (streamed videos — play them once, then retry)` : ''}`,
       fail && !ok ? 'err' : 'ok',
     );
     if (ok > 0) {
@@ -1079,7 +1200,7 @@ function isWasabiTool() {
     if (!pop.__media) { saveBtn.disabled = false; return; }
     setStatus('<span class="spin"></span>Saving…', 'muted');
 
-    const built = await buildCreativePayload(projectId, src, isVideo, nameInput.value, pop.__media);
+    const built = await buildCreativePayload(projectId, src, isVideo, nameInput.value, pop.__media, pop.__text);
     if (built.error) {
       // Inline shipping failed (too large / unreadable). No size cap from here.
       setStatus('<span class="spin"></span>Uploading large file…', 'muted');
@@ -1098,7 +1219,7 @@ function isWasabiTool() {
       // 1) Readable blob:/data: → we have the bytes here; upload via signed URL.
       const blob = await getMediaBlob(src);
       if (blob) {
-        finish(await saveViaSignedUpload(projectId, blob, isVideo, nameInput.value));
+        finish(await saveViaSignedUpload(projectId, blob, isVideo, nameInput.value, pop.__text));
         return;
       }
 
@@ -1115,6 +1236,7 @@ function isWasabiTool() {
             url,
             isVideo,
             name: nameInput.value,
+            bodyText: pop.__text || '',
             pageUrl: location.href,
             pageTitle: document.title || '',
             ...dest,

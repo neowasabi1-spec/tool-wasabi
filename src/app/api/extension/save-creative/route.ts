@@ -267,6 +267,18 @@ export async function POST(req: NextRequest) {
   let transcript = '';
   if (mediaType === 'video' && buffer && buffer.length <= SHORT_VIDEO_MAX_BYTES) {
     transcript = await transcribeVideo(buffer, contentType, 120000);
+  } else if (mediaType === 'video' && !buffer && storagePath) {
+    // Signed-upload path (bulk import / large blobs): the bytes went straight
+    // to storage, so pull them back for the auto-transcript when small enough.
+    try {
+      const { data: file } = await supabaseAdmin.storage.from('project-files').download(storagePath);
+      if (file && file.size > 0 && file.size <= SHORT_VIDEO_MAX_BYTES) {
+        const buf = Buffer.from(await file.arrayBuffer());
+        transcript = await transcribeVideo(buf, contentType, 120000);
+      }
+    } catch {
+      /* transcript stays on-demand via the "Extract text" button */
+    }
   }
   const bodyText = [body.body_text, transcript].filter(Boolean).join('\n\n').trim();
 

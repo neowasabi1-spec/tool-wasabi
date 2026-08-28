@@ -1488,6 +1488,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           storagePath: sr.data.path,
           contentType,
         };
+        if (msg.bodyText) body.body_text = msg.bodyText;
         if (msg.brandId) body.brandId = msg.brandId;
         if (msg.brandName) body.brandName = msg.brandName;
         if (msg.autoScrape) {
@@ -1520,6 +1521,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         mediaType: msg.mediaType,
         name: msg.name,
       };
+      if (msg.bodyText) body.body_text = msg.bodyText;
       if (msg.brandId) body.brandId = msg.brandId;
       if (msg.brandName) body.brandName = msg.brandName;
       if (msg.autoScrape) {
