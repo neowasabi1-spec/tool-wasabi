@@ -588,9 +588,12 @@ function isWasabiTool() {
   }
 
   // Videos are frequently covered by overlay divs (player controls,
-  // click-catchers), so a direct `closest('video')` on the hovered element
-  // misses them. Fall back to scanning the element stack under the cursor —
+  // click-catchers, poster images), so a direct `closest('video')` on the
+  // hovered element misses them. Scan the element stack under the cursor —
   // elementsFromPoint returns covered elements too, including the <video>.
+  // A VIDEO anywhere in the stack wins over an IMG: the image on top is
+  // almost always the video's own poster/thumbnail (TikTok, FB, IG), and the
+  // user wants the video, not its screenshot.
   function findMediaAtPoint(x, y) {
     let stack;
     try {
@@ -598,13 +601,13 @@ function isWasabiTool() {
     } catch {
       return null;
     }
+    let img = null;
     for (const node of stack) {
       if (!node || node === host) continue;
-      if ((node.tagName === 'VIDEO' || node.tagName === 'IMG') && isEligible(node)) {
-        return node;
-      }
+      if (node.tagName === 'VIDEO' && isEligible(node)) return node;
+      if (!img && node.tagName === 'IMG' && isEligible(node)) img = node;
     }
-    return null;
+    return img;
   }
 
   document.addEventListener(
@@ -612,8 +615,11 @@ function isWasabiTool() {
     (e) => {
       const t = e.target;
       let el = t && t.closest ? t.closest('img, video') : null;
-      if ((!el || !isEligible(el)) && typeof e.clientX === 'number') {
-        el = findMediaAtPoint(e.clientX, e.clientY);
+      // Even when we hit an IMG directly, check the stack underneath: a
+      // poster image sitting on a <video> must resolve to the video.
+      if (typeof e.clientX === 'number' && (!el || el.tagName !== 'VIDEO' || !isEligible(el))) {
+        const stacked = findMediaAtPoint(e.clientX, e.clientY);
+        if (stacked && (stacked.tagName === 'VIDEO' || !el || !isEligible(el))) el = stacked;
       }
       if (el && isEligible(el)) {
         clearTimeout(hideTimer);
