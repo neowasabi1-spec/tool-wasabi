@@ -65,27 +65,58 @@ function isWasabiTool() {
     if (capturedVideoUrls.length > 60) capturedVideoUrls.shift();
   });
 
-  // Try to resolve the real CDN URL for a (blob) video. Nudges the element to
-  // (re)stream so a fresh segment URL is captured, then returns the most recent
-  // PROGRESSIVE capture (falling back to a manifest). Returns '' if nothing.
+  // Try to resolve the real CDN URL for a (blob) video. Pauses every OTHER
+  // video, nudges the target to (re)stream, then considers ONLY the captures
+  // that arrived after the nudge — so on multi-video pages (ad libraries in
+  // autoplay) the URL belongs to THIS video, not whichever streamed last.
   async function resolveCdnUrl(mediaEl) {
+    // Quiet the page: other playing videos would pollute the capture window.
+    const paused = [];
+    try {
+      for (const v of document.querySelectorAll('video')) {
+        if (v !== mediaEl && !v.paused) {
+          try { v.pause(); paused.push(v); } catch { /* ignore */ }
+        }
+      }
+    } catch { /* ignore */ }
+    await new Promise((r) => setTimeout(r, 150)); // let in-flight requests land
+
     const before = capturedVideoUrls.length;
     try {
       if (mediaEl && typeof mediaEl.play === 'function') {
+        // Nudge a fresh segment fetch even when the buffer is warm.
+        try { if (mediaEl.currentTime > 1) mediaEl.currentTime = 0; } catch { /* ignore */ }
         const p = mediaEl.play();
         if (p && typeof p.catch === 'function') p.catch(() => {});
       }
     } catch { /* ignore */ }
-    const deadline = Date.now() + 1500;
+    const deadline = Date.now() + 2500;
     while (Date.now() < deadline) {
       if (capturedVideoUrls.length > before) break;
       await new Promise((r) => setTimeout(r, 120));
     }
-    if (!capturedVideoUrls.length) return '';
-    for (let i = capturedVideoUrls.length - 1; i >= 0; i--) {
-      if (capturedVideoUrls[i].kind === 'progressive') return capturedVideoUrls[i].url;
+
+    // Only captures that arrived after OUR nudge count as this video's.
+    const fresh = capturedVideoUrls.slice(before);
+    let url = '';
+    for (let i = fresh.length - 1; i >= 0; i--) {
+      if (fresh[i].kind === 'progressive') { url = fresh[i].url; break; }
     }
-    return capturedVideoUrls[capturedVideoUrls.length - 1].url; // manifest fallback
+    if (!url && fresh.length) url = fresh[fresh.length - 1].url; // manifest fallback
+
+    // Nothing fresh (fully buffered video, no new requests): the old "last
+    // capture on the page" guess is only safe when there's a single video.
+    if (!url) {
+      let videoCount = 0;
+      try { videoCount = document.querySelectorAll('video').length; } catch { /* ignore */ }
+      if (videoCount <= 1 && capturedVideoUrls.length) {
+        for (let i = capturedVideoUrls.length - 1; i >= 0; i--) {
+          if (capturedVideoUrls[i].kind === 'progressive') { url = capturedVideoUrls[i].url; break; }
+        }
+        if (!url) url = capturedVideoUrls[capturedVideoUrls.length - 1].url;
+      }
+    }
+    return url;
   }
 
   // ── Shadow host ──────────────────────────────────────────────────────────
@@ -997,10 +1028,13 @@ function isWasabiTool() {
   }
 
   async function resolveVideoUrl(mediaEl, isVideo) {
-    const dom = resolveVideoUrlFromDom();
-    if (dom) return dom;
-    if (isVideo) return await resolveCdnUrl(mediaEl);
-    return '';
+    // Element-scoped sniffing FIRST: the DOM rehydration blob describes the
+    // page's MAIN video, which is the wrong one when saving from a grid.
+    if (isVideo) {
+      const sniffed = await resolveCdnUrl(mediaEl);
+      if (sniffed) return sniffed;
+    }
+    return resolveVideoUrlFromDom();
   }
 
   // Upload the bytes straight to storage via a signed URL (no size limit), then
