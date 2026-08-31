@@ -1409,20 +1409,47 @@ async function cleanWholeAd(
     const dur = await probeDuration(srcFile);
     if (!W || !H) return fail('could not probe video dimensions');
 
-    // Clean in SHORT windows — the granularity the remover is proven at — and
-    // BEST-EFFORT: a window that can't be cleaned keeps its original footage
-    // instead of failing the whole video. The shots pipeline discards unclean
-    // clips, but a whole video must always come back with a result, so here we
-    // never bail: worst case a window keeps its captions, most windows come out
-    // clean. Windows are concatenated and the original audio muxed back on top.
+    // Clean in SHORT windows — the granularity the remover is proven at — in
+    // BATCHES across as many background runs as needed. Netlify kills a run at
+    // 15 min, so a long video can't finish in one go: each run cleans as many
+    // windows as fit in its budget, persists per-window progress to storage,
+    // then re-triggers itself. The final video is only assembled once EVERY
+    // window is resolved — no half-cleaned results.
     const deadline = Date.now() + MAX_WAIT_MS;
     const SEG_SEC = 2.6;
     const nseg = Math.max(1, Math.ceil(dur / SEG_SEC));
     const segDur = dur / nseg;
-    log(`cleaning ${dur.toFixed(1)}s in ${nseg} window(s) of ~${segDur.toFixed(1)}s`);
 
-    type Piece = { file: string; segFile: string; len: number; cleaned: boolean; hadText: boolean };
-    const pieces: Piece[] = [];
+    type WinState = { s: 'todo' | 'clean' | 'original' | 'failed'; key?: string; tries?: number };
+    type Progress = { src: string; nseg: number; runs: number; wins: WinState[] };
+    const progressKey = `${projectId}/ads-clean/${adId}_progress.json`;
+    let prog: Progress | null = null;
+    try {
+      const { data } = await supabase.storage.from(BUCKET).download(progressKey);
+      if (data) prog = JSON.parse(Buffer.from(await data.arrayBuffer()).toString('utf8')) as Progress;
+    } catch { /* no previous progress */ }
+    if (!prog || prog.src !== (claimed.file_path as string) || prog.nseg !== nseg || !Array.isArray(prog.wins)) {
+      prog = {
+        src: claimed.file_path as string,
+        nseg,
+        runs: 0,
+        wins: Array.from({ length: nseg }, () => ({ s: 'todo' as const, tries: 0 })),
+      };
+    }
+    prog.runs += 1;
+    const MAX_RUNS = 20;
+    if (prog.runs > MAX_RUNS) {
+      try { await supabase.storage.from(BUCKET).remove([progressKey]); } catch { /* ignore */ }
+      return fail(`cleaning did not finish after ${MAX_RUNS} runs — the video may be too long`);
+    }
+    const saveProgress = async () => {
+      const f = path.join(workDir, 'progress.json');
+      fs.writeFileSync(f, JSON.stringify(prog), 'utf8');
+      await uploadFile(supabase, progressKey, f, 'application/json');
+    };
+    const doneCount = () => prog!.wins.filter((w) => w.s !== 'todo').length;
+    log(`run ${prog.runs}: ${dur.toFixed(1)}s in ${nseg} window(s) of ~${segDur.toFixed(1)}s — ${doneCount()}/${nseg} already resolved`);
+
     // Resolve the neural remover once. Each window builds a TIGHT per-frame mask
     // of the actual caption letters and reconstructs ONLY those pixels — never a
     // full-width band (that was the "blur enorme / sformato"). Windows without
@@ -1430,30 +1457,25 @@ async function cleanWholeAd(
     const fbModel = await resolveMaskModel(token, log);
 
     for (let i = 0; i < nseg; i++) {
+      const w = prog.wins[i];
+      if (w.s !== 'todo') continue; // resolved in a previous run
+
+      // Out of budget for THIS run: stop here — a fresh run picks up window i.
+      if (Date.now() > deadline - 90000) break;
+
       const t0 = i * segDur;
       const len = i === nseg - 1 ? Math.max(0.1, dur - t0) : segDur;
       const segFile = path.join(workDir, `seg_${i}.mp4`);
       await cutClip(srcFile, t0, t0 + len, segFile);
 
-      // Out of time budget: keep the remaining windows as-is so we ALWAYS
-      // reach concat + upload + 'done' before Netlify kills the function
-      // (a killed run used to leave clean_status stuck at 'processing').
-      if (Date.now() > deadline - 60000) {
-        log(`window ${i}: out of time — kept original`);
-        pieces.push({ file: segFile, segFile, len, cleaned: false, hadText: true });
-        continue;
-      }
-
       // Build the tight text mask from the caption colour.
       let maskFile: string | null = null;
-      let hadText = false;
       try {
         const rgb = await rgbFrames(segFile, W, H, len, fps, workDir);
         const nf = Math.floor(rgb.buf.length / (rgb.w * rgb.h * 3));
         const cm = captionMasks(rgb.buf, nf, rgb.w, rgb.h, null);
         if (cm && cm.pxPerFrame > 0 && cm.textFrames > 0) {
           const trust = maskIsTrustworthy(cm, rgb.w, rgb.h);
-          hadText = true;
           maskFile = await writeMaskVideo(cm.masks, rgb.w, rgb.h, Math.round(fps), W, H, workDir);
           log(`window ${i}: caption mask ${trust.ok ? 'ok' : 'weak'} — ${trust.why}`);
         }
@@ -1464,14 +1486,14 @@ async function cleanWholeAd(
       // No caption letters here → nothing to remove, keep original untouched.
       if (!maskFile) {
         log(`window ${i}: no caption text detected — kept original`);
-        pieces.push({ file: segFile, segFile, len, cleaned: true, hadText: false });
+        w.s = 'original';
+        await saveProgress();
         continue;
       }
 
-      // Reconstruct ONLY the text pixels; keep original if the model can't run.
-      let out = segFile;
+      // Reconstruct ONLY the text pixels; retry in a later run on failure.
       let cleaned = false;
-      if (fbModel && Date.now() < deadline - 45000) {
+      if (fbModel) {
         try {
           const segKey = `${projectId}/ads-clean/${adId}_w${i}_${Date.now()}.mp4`;
           await uploadFile(supabase, segKey, segFile, 'video/mp4');
@@ -1480,23 +1502,82 @@ async function cleanWholeAd(
             maskFile, maskKey: `${projectId}/ads-clean/${adId}_wmask${i}_${Date.now()}.mp4`,
             W, H, fps, dur: len, workDir, deadline, tag: `w${i}`, log,
           });
-          if (rebuilt) { out = rebuilt; cleaned = true; log(`window ${i}: reconstructed the caption text pixels`); }
+          if (rebuilt) {
+            const winKey = `${projectId}/ads-clean/${adId}_win${i}_r${prog.runs}.mp4`;
+            await uploadFile(supabase, winKey, rebuilt, 'video/mp4');
+            w.s = 'clean';
+            w.key = winKey;
+            cleaned = true;
+            log(`window ${i}: reconstructed the caption text pixels`);
+          }
         } catch (e) {
           log(`window ${i}: text reconstruct failed (${(e as Error).message})`);
         }
       }
-      if (!cleaned) log(`window ${i}: could not reconstruct — kept original`);
-      pieces.push({ file: out, segFile, len, cleaned, hadText });
+      if (!cleaned) {
+        w.tries = (w.tries || 0) + 1;
+        // Three genuine attempts across runs before giving a window up.
+        if (w.tries >= 3) {
+          w.s = 'failed';
+          log(`window ${i}: giving up after ${w.tries} attempts — keeps original footage`);
+        } else {
+          log(`window ${i}: attempt ${w.tries} failed — will retry in a later run`);
+        }
+      }
+      await saveProgress();
     }
 
-    // A window only "needs" cleaning if it actually had caption text.
-    const withText = pieces.filter((p) => p.hadText).length;
-    const cleanedCount = pieces.filter((p) => p.hadText && p.cleaned).length;
+    // Any window still 'todo'? Persist progress, flip back to 'pending' and
+    // re-trigger ourselves: the next run continues exactly where this stopped.
+    const unresolved = prog.wins.filter((x) => x.s === 'todo').length;
+    if (unresolved > 0) {
+      await saveProgress();
+      await supabase.from('competitor_ads')
+        .update({ clean_status: 'pending', clean_error: `__ts:${Date.now()}` })
+        .eq('id', adId);
+      const origin = process.env.URL || process.env.DEPLOY_PRIME_URL || '';
+      let retriggered = false;
+      if (origin) {
+        try {
+          await fetch(`${origin}/.netlify/functions/inpaint-shot-background`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ adId, projectId }),
+          });
+          retriggered = true;
+        } catch (e) {
+          log(`self-retrigger failed: ${(e as Error).message}`);
+        }
+      }
+      // If the retrigger failed the __ts stamp goes stale in a few minutes and
+      // the status API resets the job to a retryable error — nothing gets stuck.
+      log(`run ${prog.runs}: ${doneCount()}/${nseg} windows resolved — ${retriggered ? 'continuing in a new run' : 'retrigger failed, will self-heal'}`);
+      return new Response('continuing', { status: 200 });
+    }
 
-    // Concatenate the (mixed clean / original) windows, re-encoding to a uniform
-    // H.264 so the demuxer never chokes on parameter mismatches between windows.
+    // Every window resolved — assemble the full video: cleaned windows come
+    // from storage, text-free/unfixable ones are recut from the source.
+    const localFiles: string[] = [];
+    for (let i = 0; i < nseg; i++) {
+      const w = prog.wins[i];
+      const t0 = i * segDur;
+      const len = i === nseg - 1 ? Math.max(0.1, dur - t0) : segDur;
+      let f: string;
+      if (w.s === 'clean' && w.key) {
+        f = path.join(workDir, `win_${i}.mp4`);
+        await downloadSource(supabase, w.key, f);
+      } else {
+        f = path.join(workDir, `seg_${i}.mp4`);
+        if (!fs.existsSync(f)) await cutClip(srcFile, t0, t0 + len, f);
+      }
+      localFiles.push(f);
+    }
+    const failedCount = prog.wins.filter((x) => x.s === 'failed').length;
+
+    // Concatenate the windows, re-encoding to a uniform H.264 so the demuxer
+    // never chokes on parameter mismatches between windows.
     const listFile = path.join(workDir, 'concat.txt');
-    fs.writeFileSync(listFile, pieces.map((p) => `file '${p.file.replace(/\\/g, '/')}'`).join('\n'), 'utf8');
+    fs.writeFileSync(listFile, localFiles.map((f) => `file '${f.replace(/\\/g, '/')}'`).join('\n'), 'utf8');
     const stitched = path.join(workDir, 'stitched.mp4');
     await run(FFMPEG, [
       '-y', '-f', 'concat', '-safe', '0', '-i', listFile,
@@ -1522,13 +1603,18 @@ async function cleanWholeAd(
 
     const cleanKey = `${projectId}/ads-clean/${adId}_${Date.now()}.mp4`;
     await uploadFile(supabase, cleanKey, finalFile, 'video/mp4');
-    const note = cleanedCount >= withText
+    const note = failedCount === 0
       ? null
-      : `${cleanedCount}/${withText} caption windows reconstructed — the rest ran out of processing time and kept their text`;
+      : `${failedCount}/${nseg} windows could not be cleaned after 3 attempts and kept their original footage`;
     await supabase.from('competitor_ads')
       .update({ clean_status: 'done', clean_full_path: cleanKey, clean_error: note })
       .eq('id', adId);
-    log(`done — ${cleanKey} (${cleanedCount}/${withText} caption windows reconstructed, ${nseg} total)`);
+    // Progress ledger + per-window files are no longer needed.
+    try {
+      const junk = [progressKey, ...prog.wins.filter((x) => x.key).map((x) => x.key as string)];
+      await supabase.storage.from(BUCKET).remove(junk);
+    } catch { /* best effort */ }
+    log(`done in ${prog.runs} run(s) — ${cleanKey} (${nseg} windows, ${failedCount} unfixable)`);
     return new Response('done', { status: 200 });
   } catch (e) {
     return fail((e as Error).message);
