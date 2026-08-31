@@ -14,6 +14,25 @@ export const runtime = 'nodejs';
  * GET  → current clean_status + cleaned path.
  */
 
+// While a job is queued/running, clean_error holds an opaque `__ts:<ms>` stamp
+// (set here on queue, refreshed by the background fn on claim). Netlify kills
+// background functions at 15 min without warning, so a run can die leaving
+// clean_status stuck — the stamp lets us detect and self-heal that.
+const STALE_PROCESSING_MS = 16 * 60 * 1000;
+const STALE_PENDING_MS = 3 * 60 * 1000;
+
+function isTsStamp(v: string | null | undefined) {
+  return /^__ts:\d+$/.test(v || '');
+}
+
+function isStale(status: string | null | undefined, cleanError: string | null | undefined) {
+  if (status !== 'processing' && status !== 'pending') return false;
+  const m = /^__ts:(\d+)$/.exec(cleanError || '');
+  if (!m) return true; // in-flight status without a stamp = leftover from a dead run
+  const age = Date.now() - Number(m[1]);
+  return age > (status === 'processing' ? STALE_PROCESSING_MS : STALE_PENDING_MS);
+}
+
 async function triggerBackground(origin: string, payload: { adId: number; projectId: string }) {
   try {
     await fetch(`${origin}/.netlify/functions/inpaint-shot-background`, {
@@ -42,7 +61,7 @@ export async function POST(
 
   const { data: ad } = await supabaseAdmin
     .from('competitor_ads')
-    .select('id, media_type, clean_status')
+    .select('id, media_type, clean_status, clean_error')
     .eq('id', adIdNum)
     .eq('brand_id', brandIdNum)
     .eq('project_id', id)
@@ -52,14 +71,17 @@ export async function POST(
     return NextResponse.json({ error: 'Only video creatives can be cleaned' }, { status: 400 });
   }
 
-  // Don't double-run while one is in flight.
-  if ((ad as { clean_status?: string }).clean_status === 'processing') {
+  // Don't double-run while one is genuinely in flight — but a stale
+  // "processing" (the background run was killed) must be re-queueable.
+  const status = (ad as { clean_status?: string }).clean_status;
+  const cleanError = (ad as { clean_error?: string }).clean_error;
+  if (status === 'processing' && !isStale(status, cleanError)) {
     return NextResponse.json({ status: 'processing', queued: false });
   }
 
   const { error } = await supabaseAdmin
     .from('competitor_ads')
-    .update({ clean_status: 'pending', clean_error: null })
+    .update({ clean_status: 'pending', clean_error: `__ts:${Date.now()}` })
     .eq('id', adIdNum)
     .eq('project_id', id);
   if (error) {
@@ -92,9 +114,31 @@ export async function GET(
     .eq('project_id', id)
     .maybeSingle();
 
+  let status = (ad as { clean_status?: string })?.clean_status || null;
+  const cleanPath = (ad as { clean_full_path?: string })?.clean_full_path || null;
+  let error = (ad as { clean_error?: string })?.clean_error || null;
+
+  // Self-heal: a run that died mid-flight leaves 'processing'/'pending'
+  // forever. Flip it to a retryable error the moment anyone looks at it.
+  if (isStale(status, error)) {
+    // If an earlier run already produced a cleaned video, just surface it.
+    if (cleanPath) {
+      status = 'done';
+      error = null;
+    } else {
+      status = 'error';
+      error = 'Cleaning timed out — click Remove subtitles to retry.';
+    }
+    await supabaseAdmin
+      .from('competitor_ads')
+      .update({ clean_status: status, clean_error: error })
+      .eq('id', adIdNum)
+      .eq('project_id', id);
+  }
+
   return NextResponse.json({
-    status: (ad as { clean_status?: string })?.clean_status || null,
-    cleanPath: (ad as { clean_full_path?: string })?.clean_full_path || null,
-    error: (ad as { clean_error?: string })?.clean_error || null,
+    status,
+    cleanPath,
+    error: isTsStamp(error) ? null : error,
   });
 }

@@ -1380,10 +1380,12 @@ async function cleanWholeAd(
     return new Response('error', { status: 200 });
   };
 
-  // Claim: pending -> processing.
+  // Claim: pending -> processing. The __ts: stamp lets the API detect a run
+  // that was killed mid-flight (Netlify hard-stops background functions) and
+  // auto-reset it instead of staying "processing" forever.
   const { data: claimed, error: claimErr } = await supabase
     .from('competitor_ads')
-    .update({ clean_status: 'processing', clean_error: null })
+    .update({ clean_status: 'processing', clean_error: `__ts:${Date.now()}` })
     .eq('id', adId)
     .eq('project_id', projectId)
     .eq('clean_status', 'pending')
@@ -1432,6 +1434,15 @@ async function cleanWholeAd(
       const len = i === nseg - 1 ? Math.max(0.1, dur - t0) : segDur;
       const segFile = path.join(workDir, `seg_${i}.mp4`);
       await cutClip(srcFile, t0, t0 + len, segFile);
+
+      // Out of time budget: keep the remaining windows as-is so we ALWAYS
+      // reach concat + upload + 'done' before Netlify kills the function
+      // (a killed run used to leave clean_status stuck at 'processing').
+      if (Date.now() > deadline - 60000) {
+        log(`window ${i}: out of time — kept original`);
+        pieces.push({ file: segFile, segFile, len, cleaned: false, hadText: true });
+        continue;
+      }
 
       // Build the tight text mask from the caption colour.
       let maskFile: string | null = null;
