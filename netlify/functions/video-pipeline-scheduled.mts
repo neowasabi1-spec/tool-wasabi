@@ -113,12 +113,13 @@ export default async () => {
 
   // 4. Fire a small batch of the cleanups waiting in line. Shots that already
   // have a cleaned copy count too: marking one pending is how a shot gets
-  // redone with a better method.
+  // redone with a better method. NEWEST first: what the user just asked for
+  // must never sit behind a stale backlog silently burning Replicate money.
   const { data: pending } = await supabase
     .from('competitor_shots')
     .select('id, project_id')
     .eq('inpaint_status', 'pending')
-    .order('id')
+    .order('id', { ascending: false })
     .limit(CLEAN_PER_TICK);
   for (const s of pending || []) {
     await fire('inpaint-shot-background', { shotId: s.id, projectId: s.project_id });
