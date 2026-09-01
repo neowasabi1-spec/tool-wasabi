@@ -1421,7 +1421,7 @@ async function cleanWholeAd(
     const segDur = dur / nseg;
 
     type WinState = { s: 'todo' | 'clean' | 'original' | 'failed'; key?: string; tries?: number };
-    type Progress = { src: string; nseg: number; runs: number; wins: WinState[] };
+    type Progress = { src: string; nseg: number; runs: number; band?: { y0: number; y1: number } | null; wins: WinState[] };
     const progressKey = `${projectId}/ads-clean/${adId}_progress.json`;
     let prog: Progress | null = null;
     try {
@@ -1436,11 +1436,24 @@ async function cleanWholeAd(
         wins: Array.from({ length: nseg }, () => ({ s: 'todo' as const, tries: 0 })),
       };
     }
-    prog.runs += 1;
+    // The ledger is KEPT after 'done' (every neural call costs money): a fresh
+    // request on a finished job only retries the windows that failed — cleaned
+    // and text-free windows are never paid for twice.
     const MAX_RUNS = 20;
+    if (!prog.wins.some((x) => x.s === 'todo')) {
+      prog.runs = 0;
+      for (const x of prog.wins) {
+        if (x.s === 'failed') { x.s = 'todo'; x.tries = 0; }
+      }
+    } else if (prog.runs >= MAX_RUNS) {
+      // A claim arriving over the cap is a manual retry (continuations stop at
+      // the cap) — give it a fresh run budget; done windows are still reused.
+      prog.runs = 0;
+    }
+    prog.runs += 1;
     if (prog.runs > MAX_RUNS) {
-      try { await supabase.storage.from(BUCKET).remove([progressKey]); } catch { /* ignore */ }
-      return fail(`cleaning did not finish after ${MAX_RUNS} runs — the video may be too long`);
+      // Keep the ledger: the cleaned windows are paid for — a retry reuses them.
+      return fail(`cleaning did not finish after ${MAX_RUNS} runs — retry to continue from ${prog.wins.filter((x) => x.s !== 'todo').length}/${nseg} windows`);
     }
     const saveProgress = async () => {
       const f = path.join(workDir, 'progress.json');
@@ -1449,6 +1462,15 @@ async function cleanWholeAd(
     };
     const doneCount = () => prog!.wins.filter((w) => w.s !== 'todo').length;
     log(`run ${prog.runs}: ${dur.toFixed(1)}s in ${nseg} window(s) of ~${segDur.toFixed(1)}s — ${doneCount()}/${nseg} already resolved`);
+
+    // Where do the captions live? Detected ONCE per ad and persisted: mask
+    // pixels outside this band are discarded, so a white badge or bright object
+    // mid-frame can't get "reconstructed" into a smear — and windows whose only
+    // "text" was such an object never reach the paid model at all.
+    if (prog.band === undefined) {
+      prog.band = await detectCaptionBandWhole(srcFile, W, H, fps, dur, workDir, log);
+      await saveProgress();
+    }
 
     // Resolve the neural remover once. Each window builds a TIGHT per-frame mask
     // of the actual caption letters and reconstructs ONLY those pixels — never a
@@ -1475,9 +1497,25 @@ async function cleanWholeAd(
         const nf = Math.floor(rgb.buf.length / (rgb.w * rgb.h * 3));
         const cm = captionMasks(rgb.buf, nf, rgb.w, rgb.h, null);
         if (cm && cm.pxPerFrame > 0 && cm.textFrames > 0) {
-          const trust = maskIsTrustworthy(cm, rgb.w, rgb.h);
-          maskFile = await writeMaskVideo(cm.masks, rgb.w, rgb.h, Math.round(fps), W, H, workDir);
-          log(`window ${i}: caption mask ${trust.ok ? 'ok' : 'weak'} — ${trust.why}`);
+          // Drop mask pixels outside the caption band (+ a small margin):
+          // that's a badge/logo/bright object, not subtitle text.
+          let px = 0;
+          if (prog.band) {
+            const m0 = Math.max(0, Math.floor((prog.band.y0 - 0.08) * rgb.h));
+            const m1 = Math.min(rgb.h, Math.ceil((prog.band.y1 + 0.08) * rgb.h));
+            for (const m of cm.masks) {
+              if (m0 > 0) m.fill(0, 0, m0 * rgb.w);
+              if (m1 < rgb.h) m.fill(0, m1 * rgb.w);
+            }
+          }
+          for (const m of cm.masks) for (let p = 0; p < m.length; p++) if (m[p]) px++;
+          if (px >= nf * 4) { // at least a few caption pixels per frame on average
+            const trust = maskIsTrustworthy(cm, rgb.w, rgb.h);
+            maskFile = await writeMaskVideo(cm.masks, rgb.w, rgb.h, Math.round(fps), W, H, workDir);
+            log(`window ${i}: caption mask ${trust.ok ? 'ok' : 'weak'} — ${trust.why}`);
+          } else {
+            log(`window ${i}: mask only outside the caption band — treated as no caption`);
+          }
         }
       } catch (e) {
         log(`window ${i}: mask build skipped (${(e as Error).message})`);
@@ -1503,7 +1541,7 @@ async function cleanWholeAd(
             W, H, fps, dur: len, workDir, deadline, tag: `w${i}`, log,
           });
           if (rebuilt) {
-            const winKey = `${projectId}/ads-clean/${adId}_win${i}_r${prog.runs}.mp4`;
+            const winKey = `${projectId}/ads-clean/${adId}_win${i}.mp4`;
             await uploadFile(supabase, winKey, rebuilt, 'video/mp4');
             w.s = 'clean';
             w.key = winKey;
@@ -1609,11 +1647,9 @@ async function cleanWholeAd(
     await supabase.from('competitor_ads')
       .update({ clean_status: 'done', clean_full_path: cleanKey, clean_error: note })
       .eq('id', adId);
-    // Progress ledger + per-window files are no longer needed.
-    try {
-      const junk = [progressKey, ...prog.wins.filter((x) => x.key).map((x) => x.key as string)];
-      await supabase.storage.from(BUCKET).remove(junk);
-    } catch { /* best effort */ }
+    // KEEP the ledger + per-window files: a future re-request must reuse the
+    // already-cleaned windows instead of paying the model for them again.
+    await saveProgress();
     log(`done in ${prog.runs} run(s) — ${cleanKey} (${nseg} windows, ${failedCount} unfixable)`);
     return new Response('done', { status: 200 });
   } catch (e) {
