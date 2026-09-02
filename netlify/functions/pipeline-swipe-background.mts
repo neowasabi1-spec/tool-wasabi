@@ -922,6 +922,7 @@ Surrounding page copy: ${img.context || '(none)'}`;
     }
     if (!analysis) continue;
 
+    await touchPage(sb, page.funnelPageId, `Photo ${start + processed}/${images.length} — analyzing…`);
     if (analysis.productShot && ctx.mainImageUrl) {
       out = replaceImageSrc(out, img.src, ctx.mainImageUrl);
       productSwaps++;
@@ -939,6 +940,7 @@ Surrounding page copy: ${img.context || '(none)'}`;
       num_images: 1,
       output_format: 'png',
     });
+    await touchPage(sb, page.funnelPageId, `Photo ${start + processed}/${images.length} — generating…`);
     if (!falUrl) continue;
     const stored = await storeGeneratedImage(sb, ctx.projectId, falUrl, generated);
     const finalUrl = stored || falUrl;
@@ -970,6 +972,14 @@ interface PageBatchResult {
   summary: string;
   done: boolean;
   nextOffset: number;
+}
+
+async function touchPage(sb: SupabaseClient, pageId: string, swipeResult: string): Promise<void> {
+  await sb.from('funnel_pages').update({
+    swipe_status: 'in_progress',
+    swipe_result: swipeResult.slice(0, 400),
+    updated_at: new Date().toISOString(),
+  }).eq('id', pageId).then(() => undefined, () => undefined);
 }
 
 async function persistHtml(
@@ -1010,6 +1020,10 @@ async function processPage(
   let newTitle = '';
   let changes: Array<{ from: string; to: string }> = [];
 
+  await touchPage(sb, page.funnelPageId, resume
+    ? `Worker running — photo batch from ${imageOffset + 1}…`
+    : 'Worker running — loading page HTML…');
+
   if (resume) {
     html = await loadSavedHtml(sb, page.funnelPageId, 'swiped');
     originalHtml = await loadSavedHtml(sb, page.funnelPageId, 'cloned');
@@ -1024,6 +1038,9 @@ async function processPage(
 
     const texts = collectSwipeTexts(originalHtml);
     textsCount = texts.length;
+    await touchPage(sb, page.funnelPageId, textsCount
+      ? `Rewriting ${textsCount} texts…`
+      : 'No texts found — restyling photos…');
     if (texts.length) {
       const system = `You are a world-class direct-response copywriter. You rewrite competitor-style marketing texts to sell ONLY one specific product, without changing HTML structure downstream.
 
@@ -1050,11 +1067,15 @@ CRITICAL RULES:
     }
 
     if (ctx.imageMode === 'internal') {
+      await touchPage(sb, page.funnelPageId, `${replacements}/${textsCount} texts rewritten — choosing palette…`);
       if (!ctx.restyle) ctx.restyle = await buildRestyleSpec(originalHtml, ctx);
       if (ctx.restyle) html = applyPalette(html, ctx.restyle);
     }
 
     await persistHtml(sb, page.funnelPageId, 'cloned', originalHtml, ctx.ownerUserId);
+    await persistHtml(sb, page.funnelPageId, 'swiped', html, ctx.ownerUserId);
+    await touchPage(sb, page.funnelPageId,
+      `${replacements}/${textsCount} texts rewritten${ctx.restyle ? ', palette restyled' : ''} — regenerating photos…`);
   }
 
   let imgRes = { html, generated: 0, productSwaps: 0, analyzed: 0, placed: 0, videos: 0, remaining: 0, total: 0, processed: 0 };
@@ -1168,6 +1189,10 @@ export default async (req: Request) => {
 
   const log = (...a: unknown[]) => console.log(`[swipe ${projectId}]`, ...a);
   const sb = getSupabase();
+  await Promise.all(pages.map((p) =>
+    touchPage(sb, p.funnelPageId, imageOffset > 0
+      ? `Worker picked up — photos from ${imageOffset + 1}…`
+      : 'Worker picked up — restyle running…')));
 
   // Product context: name + description + brief + research from the project.
   const { data: project } = await sb

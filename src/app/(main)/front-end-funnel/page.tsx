@@ -7041,6 +7041,15 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
           .filter((p) => p.swipeStatus === 'in_progress' || p.id === restyleWatch.pageId)
           .map((p) => ({ id: p.id, name: p.name, swipeStatus: p.swipeStatus }))}
         onSelectPage={(id, name) => openRestyleWatch(id, name)}
+        onStatus={(id, swipeStatus, swipeResult) => {
+          const cur = (funnelPages || []).find((p) => p.id === id);
+          if (!cur) return;
+          if (cur.swipeStatus === swipeStatus && (cur.swipeResult || '') === swipeResult) return;
+          void updateFunnelPage(id, {
+            swipeStatus: swipeStatus as 'pending' | 'in_progress' | 'completed' | 'failed',
+            swipeResult,
+          });
+        }}
         onClose={closeRestyleWatch}
       />
 

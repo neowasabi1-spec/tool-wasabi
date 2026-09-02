@@ -20,6 +20,7 @@ export function RestyleWatchModal({
   pageName,
   siblings,
   onSelectPage,
+  onStatus,
   onClose,
 }: {
   open: boolean;
@@ -27,6 +28,7 @@ export function RestyleWatchModal({
   pageName: string;
   siblings?: RestyleWatchSibling[];
   onSelectPage?: (id: string, name: string) => void;
+  onStatus?: (pageId: string, swipeStatus: string, swipeResult: string) => void;
   onClose: () => void;
 }) {
   const [html, setHtml] = useState('');
@@ -36,6 +38,8 @@ export function RestyleWatchModal({
   const [updatedAt, setUpdatedAt] = useState<number | null>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const lastSig = useRef('');
+  const onStatusRef = useRef(onStatus);
+  onStatusRef.current = onStatus;
 
   useEffect(() => {
     if (!open || !pageId) return;
@@ -56,6 +60,7 @@ export function RestyleWatchModal({
         if (!cancelled && row) {
           setStatus(row.swipeStatus || 'in_progress');
           if (row.swipeResult) setResult(row.swipeResult);
+          if (row.swipeStatus) onStatusRef.current?.(pageId, row.swipeStatus, row.swipeResult || '');
         }
         const nextHtml = await loadSwipedHtml(pageId);
         if (cancelled || !nextHtml) return;
