@@ -33,6 +33,7 @@ import {
 } from "@/components/ui/dialog";
 import { getUploadUrl } from "@/lib/projecthub-storage";
 import { getSupabaseBrowser } from "@/lib/supabase-browser";
+import { displayCreativeCopy } from "@/lib/creative-copy";
 
 type CreativeRow = {
   id: number; project_id: string; name: string; source_brand: string;
@@ -212,8 +213,9 @@ export function CreativesTab({ projectId }: { projectId: string }) {
       });
       const j = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(j.error || "error");
-      setRows(prev => prev.map(x => x.id === detail.id ? { ...x, tags: detailText } : x));
-      setDetail(prev => prev ? { ...prev, tags: detailText } : prev);
+      const saved = j.tags ?? detail.tags;
+      setRows(prev => prev.map(x => x.id === detail.id ? { ...x, tags: saved } : x));
+      setDetail(prev => prev ? { ...prev, tags: saved } : prev);
       toast({ title: "Text saved" });
     } catch (e) {
       toast({ title: "Could not save text", description: e instanceof Error ? e.message : "", variant: "destructive" });
@@ -224,7 +226,7 @@ export function CreativesTab({ projectId }: { projectId: string }) {
     if (item.file_path) {
       window.open(getUploadUrl(item.file_path), "_blank");
     } else if (item.tags) {
-      const blob = new Blob([item.tags], { type: "text/plain;charset=utf-8" });
+      const blob = new Blob([displayCreativeCopy(item.tags)], { type: "text/plain;charset=utf-8" });
       const a = document.createElement("a");
       a.href = URL.createObjectURL(blob);
       a.download = `${item.name || "creative"}.txt`;
@@ -241,7 +243,7 @@ export function CreativesTab({ projectId }: { projectId: string }) {
     });
   };
 
-  const openDetail = (item: CreativeRow) => { setDetail(item); setDetailText(item.tags || ""); };
+  const openDetail = (item: CreativeRow) => { setDetail(item); setDetailText(displayCreativeCopy(item.tags)); };
 
   const folderLabel = currentFolder === UNFILED ? "Uncategorized" : currentFolder;
 
@@ -503,7 +505,7 @@ export function CreativesTab({ projectId }: { projectId: string }) {
                     <div className="w-full h-full bg-gradient-to-br from-slate-50 to-slate-100 p-3 overflow-hidden">
                       <FileText className="w-4 h-4 text-primary/60 mb-1.5" />
                       <p className="text-[10px] text-slate-600 leading-snug whitespace-pre-wrap break-words">
-                        {item.tags.slice(0, 420)}
+                        {displayCreativeCopy(item.tags).slice(0, 420)}
                       </p>
                     </div>
                   )}
@@ -598,7 +600,7 @@ export function CreativesTab({ projectId }: { projectId: string }) {
                   <Button variant="outline" size="sm" className="gap-1.5" onClick={() => downloadOne(detail)}>
                     <Download className="w-3.5 h-3.5" /> Download
                   </Button>
-                  <Button size="sm" onClick={saveDetailText} disabled={busy || detailText === (detail.tags || "")}
+                  <Button size="sm" onClick={saveDetailText} disabled={busy || detailText === displayCreativeCopy(detail.tags)}
                     className="bg-primary text-white gap-1.5">
                     {busy ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle className="w-3.5 h-3.5" />}
                     Save text

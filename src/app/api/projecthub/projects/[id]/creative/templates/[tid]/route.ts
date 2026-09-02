@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { canAccessProject } from '@/lib/auth/project-access';
+import { encodeCreativeCopy, parseCreativeCopy } from '@/lib/creative-copy';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -11,12 +12,13 @@ type TemplateRow = {
   name: string;
   file_path: string;
   category: string;
+  tags: string;
 };
 
 async function loadRow(projectId: string, tid: number): Promise<TemplateRow | null> {
   const { data } = await supabaseAdmin
     .from('creative_templates')
-    .select('id, media_type, name, file_path, category')
+    .select('id, media_type, name, file_path, category, tags')
     .eq('project_id', projectId)
     .eq('id', tid)
     .maybeSingle();
@@ -40,8 +42,11 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
   const patch: Record<string, string> = {};
   if (typeof body.name === 'string' && body.name.trim()) patch.name = body.name.trim().slice(0, 300);
   if (typeof body.category === 'string') patch.category = body.category.slice(0, 200);
-  // `tags` doubles as the creative's text/copy — editable on every media type.
-  if (typeof body.content === 'string') patch.tags = body.content;
+  // UI sends one textarea; keep headline/hook if MCP stored structured copy.
+  if (typeof body.content === 'string') {
+    const prev = parseCreativeCopy(row.tags);
+    patch.tags = encodeCreativeCopy({ ...prev, bodyText: body.content });
+  }
   if (Object.keys(patch).length === 0) return NextResponse.json({ error: 'Nothing to update' }, { status: 400 });
 
   const { data, error } = await supabaseAdmin

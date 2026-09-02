@@ -52,6 +52,12 @@ import {
   scrapeCompetitor,
   saveCreative,
   listCreatives,
+  listCreativeFolders,
+  createCreativeFolder,
+  saveProjectCreative,
+  listProjectCreatives,
+  updateProjectCreative,
+  deleteProjectCreative,
 } from '@/lib/mcp/tools';
 
 /** Pull the raw fsk_ API key off the request so tools can reuse /api/v1/*. */
@@ -324,7 +330,8 @@ const TOOLS = [
   },
   {
     name: 'list_creatives',
-    description: 'List saved creatives in a project (optionally filtered to one competitor brandId).',
+    description:
+      "List COMPETITOR ads in a project's Competitor Library (optionally filtered to one brandId). For OUR creatives (Creative → Creatives folders) use list_project_creatives.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -332,6 +339,97 @@ const TOOLS = [
         brandId: { type: 'number', description: 'Optional competitor brand id filter.' },
       },
       required: ['projectId'],
+    },
+  },
+  {
+    name: 'list_creative_folders',
+    description:
+      "List folders in the project's Creative → Creatives tab. Returns folderId + name + count. Use folderId with save_project_creative / list_project_creatives. Does NOT list Competitor Library brands.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string', description: 'The project id (from list_projects).' },
+      },
+      required: ['projectId'],
+    },
+  },
+  {
+    name: 'create_creative_folder',
+    description:
+      "Create a folder in Creative → Creatives (idempotent: returns the existing folder if the name already exists). Output: { folderId, name }.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string', description: 'The project id.' },
+        name: { type: 'string', description: 'Folder name (e.g. UGC, Hooks).' },
+      },
+      required: ['projectId', 'name'],
+    },
+  },
+  {
+    name: 'save_project_creative',
+    description:
+      "Save an image or video into the project's Creative → Creatives tab (NOT Competitor Library). Pass folderId or folderName, and mediaUrl or filePath. Copy (headline, hook, bodyText) is stored on the same card.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string', description: 'The destination project id.' },
+        folderId: { type: 'number', description: 'Folder id from create_creative_folder / list_creative_folders.' },
+        folderName: { type: 'string', description: 'Folder name (created if missing). Use this OR folderId.' },
+        mediaUrl: { type: 'string', description: 'Direct http(s) URL of the image or video.' },
+        filePath: { type: 'string', description: 'Existing storage path if the file is already uploaded. Use this OR mediaUrl.' },
+        mediaType: { type: 'string', enum: ['image', 'video'] },
+        name: { type: 'string', description: 'Creative title.' },
+        headline: { type: 'string' },
+        hook: { type: 'string' },
+        bodyText: { type: 'string', description: 'Ad body / script stored on the card.' },
+      },
+      required: ['projectId'],
+    },
+  },
+  {
+    name: 'list_project_creatives',
+    description:
+      "List creatives in Creative → Creatives (image/video + headline/hook/bodyText + folder). Optional folderId filter. Not competitor ads.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string', description: 'The project id.' },
+        folderId: { type: 'number', description: 'Optional folder id from list_creative_folders.' },
+      },
+      required: ['projectId'],
+    },
+  },
+  {
+    name: 'update_project_creative',
+    description:
+      'Update a Creative-tab item: rename, move (folderId or folderName), or change headline / hook / bodyText.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string' },
+        id: { type: 'number', description: 'Creative id from list_project_creatives.' },
+        name: { type: 'string' },
+        folderId: { type: 'number' },
+        folderName: { type: 'string' },
+        headline: { type: 'string' },
+        hook: { type: 'string' },
+        bodyText: { type: 'string' },
+      },
+      required: ['projectId', 'id'],
+    },
+  },
+  {
+    name: 'delete_project_creative',
+    description:
+      'Delete a creative or a folder from Creative → Creatives. Deleting a folder keeps the creatives and moves them to Uncategorized.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string' },
+        id: { type: 'number', description: 'Creative id, or folderId to delete a folder.' },
+      },
+      required: ['projectId', 'id'],
     },
   },
   {
@@ -449,6 +547,47 @@ async function callTool(
       return listCreatives({
         projectId: String(args.projectId || ''),
         brandId: args.brandId !== undefined ? Number(args.brandId) : undefined,
+      });
+    case 'list_creative_folders':
+      return listCreativeFolders({ projectId: String(args.projectId || '') });
+    case 'create_creative_folder':
+      return createCreativeFolder({
+        projectId: String(args.projectId || ''),
+        name: String(args.name || ''),
+      });
+    case 'save_project_creative':
+      return saveProjectCreative({
+        projectId: String(args.projectId || ''),
+        folderId: args.folderId !== undefined ? Number(args.folderId) : undefined,
+        folderName: args.folderName !== undefined ? String(args.folderName) : args.folder !== undefined ? String(args.folder) : undefined,
+        mediaUrl: args.mediaUrl !== undefined ? String(args.mediaUrl) : undefined,
+        filePath: args.filePath !== undefined ? String(args.filePath) : undefined,
+        mediaType: args.mediaType === 'video' ? 'video' : args.mediaType === 'image' ? 'image' : undefined,
+        name: args.name !== undefined ? String(args.name) : undefined,
+        headline: args.headline !== undefined ? String(args.headline) : undefined,
+        hook: args.hook !== undefined ? String(args.hook) : undefined,
+        bodyText: args.bodyText !== undefined ? String(args.bodyText) : undefined,
+      });
+    case 'list_project_creatives':
+      return listProjectCreatives({
+        projectId: String(args.projectId || ''),
+        folderId: args.folderId !== undefined ? Number(args.folderId) : undefined,
+      });
+    case 'update_project_creative':
+      return updateProjectCreative({
+        projectId: String(args.projectId || ''),
+        id: Number(args.id),
+        name: args.name !== undefined ? String(args.name) : undefined,
+        folderId: args.folderId !== undefined ? Number(args.folderId) : undefined,
+        folderName: args.folderName !== undefined ? String(args.folderName) : undefined,
+        headline: args.headline !== undefined ? String(args.headline) : undefined,
+        hook: args.hook !== undefined ? String(args.hook) : undefined,
+        bodyText: args.bodyText !== undefined ? String(args.bodyText) : undefined,
+      });
+    case 'delete_project_creative':
+      return deleteProjectCreative({
+        projectId: String(args.projectId || ''),
+        id: Number(args.id),
       });
     case 'list_funnels':
       return listFunnels();

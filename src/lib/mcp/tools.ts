@@ -493,6 +493,124 @@ export async function listCreatives(args: { projectId: string; brandId?: number 
   return { count: res.count ?? res.creatives?.length ?? 0, creatives: res.creatives || [] };
 }
 
+// ── Project Creative library (Creative → Creatives tab) ───────────────────
+// These write to `creative_templates`. They never touch competitor_ads.
+
+/** Folders in Creative → Creatives. */
+export async function listCreativeFolders(args: { projectId: string }): Promise<{
+  count: number;
+  folders: Array<{ folderId: number; name: string; count: number }>;
+}> {
+  if (!args.projectId?.trim()) throw new Error("Missing required argument 'projectId'.");
+  const qs = new URLSearchParams({ projectId: args.projectId.trim(), foldersOnly: '1' });
+  const res = await v1<{ folders?: Array<{ folderId: number; name: string; count: number }>; count?: number }>(
+    'GET',
+    `/api/v1/project-creatives?${qs.toString()}`,
+  );
+  return { count: res.count ?? res.folders?.length ?? 0, folders: res.folders || [] };
+}
+
+/** Create (or reuse) a folder. Returns { folderId, name }. */
+export async function createCreativeFolder(args: {
+  projectId: string;
+  name: string;
+}): Promise<{ folderId: number; name: string }> {
+  if (!args.projectId?.trim()) throw new Error("Missing required argument 'projectId'.");
+  if (!args.name?.trim()) throw new Error("Missing required argument 'name'.");
+  return v1('POST', '/api/v1/project-creatives', {
+    kind: 'folder',
+    projectId: args.projectId.trim(),
+    name: args.name.trim(),
+  });
+}
+
+/**
+ * Save an image/video into Creative → Creatives (never Competitor Library).
+ * Pass folderId or folderName, and mediaUrl or filePath.
+ */
+export async function saveProjectCreative(args: {
+  projectId: string;
+  folderId?: number;
+  folderName?: string;
+  mediaUrl?: string;
+  filePath?: string;
+  mediaType?: 'image' | 'video';
+  name?: string;
+  headline?: string;
+  hook?: string;
+  bodyText?: string;
+}): Promise<unknown> {
+  if (!args.projectId?.trim()) throw new Error("Missing required argument 'projectId'.");
+  if (!args.mediaUrl?.trim() && !args.filePath?.trim()) {
+    throw new Error("Provide mediaUrl or filePath.");
+  }
+  return v1('POST', '/api/v1/project-creatives', {
+    kind: 'file',
+    projectId: args.projectId.trim(),
+    folderId: args.folderId,
+    folderName: args.folderName,
+    mediaUrl: args.mediaUrl,
+    filePath: args.filePath,
+    mediaType: args.mediaType,
+    name: args.name,
+    headline: args.headline,
+    hook: args.hook,
+    bodyText: args.bodyText,
+  });
+}
+
+/** List creatives in Creative → Creatives (text + media + folder). */
+export async function listProjectCreatives(args: {
+  projectId: string;
+  folderId?: number;
+}): Promise<{ count: number; creatives: unknown[] }> {
+  if (!args.projectId?.trim()) throw new Error("Missing required argument 'projectId'.");
+  const qs = new URLSearchParams({ projectId: args.projectId.trim() });
+  if (args.folderId && Number.isFinite(args.folderId)) qs.set('folderId', String(args.folderId));
+  const res = await v1<{ creatives?: unknown[]; count?: number }>(
+    'GET',
+    `/api/v1/project-creatives?${qs.toString()}`,
+  );
+  return { count: res.count ?? res.creatives?.length ?? 0, creatives: res.creatives || [] };
+}
+
+/** Update name, folder, or copy (headline / hook / bodyText). */
+export async function updateProjectCreative(args: {
+  projectId: string;
+  id: number;
+  name?: string;
+  folderId?: number;
+  folderName?: string;
+  headline?: string;
+  hook?: string;
+  bodyText?: string;
+}): Promise<unknown> {
+  if (!args.projectId?.trim()) throw new Error("Missing required argument 'projectId'.");
+  if (!Number.isFinite(args.id)) throw new Error("Missing required argument 'id'.");
+  return v1('PATCH', `/api/v1/project-creatives/${args.id}`, {
+    projectId: args.projectId.trim(),
+    name: args.name,
+    folderId: args.folderId,
+    folderName: args.folderName,
+    headline: args.headline,
+    hook: args.hook,
+    bodyText: args.bodyText,
+  });
+}
+
+/** Delete a creative or a folder (folder items move to Uncategorized). */
+export async function deleteProjectCreative(args: {
+  projectId: string;
+  id: number;
+}): Promise<unknown> {
+  if (!args.projectId?.trim()) throw new Error("Missing required argument 'projectId'.");
+  if (!Number.isFinite(args.id)) throw new Error("Missing required argument 'id'.");
+  return v1(
+    'DELETE',
+    `/api/v1/project-creatives/${args.id}?projectId=${encodeURIComponent(args.projectId.trim())}`,
+  );
+}
+
 /** List funnel pages (Front-End Funnel workspace). */
 export async function listFunnels(): Promise<{ count: number; funnels: unknown[] }> {
   const res = await v1<{ funnels: unknown[] }>('GET', '/api/v1/funnels');
