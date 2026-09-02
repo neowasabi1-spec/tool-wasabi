@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, ReactNode } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import { useStore } from '@/store/useStore';
+import { ensureFreshSession } from '@/lib/auth/session-refresh';
 
 interface SupabaseProviderProps {
   children: ReactNode;
@@ -51,7 +52,10 @@ export function SupabaseProvider({ children }: SupabaseProviderProps) {
   const redirectedRef = useRef(false);
 
   useEffect(() => {
-    initializeData();
+    // Renew the access token first if it's stale (e.g. the tab was closed
+    // for hours): booting with a dead JWT makes every query 401 and used
+    // to bounce the user straight back to /login.
+    ensureFreshSession().finally(() => initializeData());
   }, [initializeData]);
 
   // Auth-bounce: if the initial load fails AND the error looks like a

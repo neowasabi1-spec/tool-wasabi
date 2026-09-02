@@ -40,6 +40,7 @@
 'use client';
 
 import { IMPERSONATE_HEADER, getImpersonationUserId } from './impersonation-client';
+import { ensureFreshSession, sessionNeedsRefresh } from './session-refresh';
 
 interface StoredSession {
   access_token?: string;
@@ -94,6 +95,14 @@ export function installAuthFetchInterceptor(): void {
   ): Promise<Response> {
     if (!isSameOriginApiPath(input)) {
       return originalFetch(input, init);
+    }
+
+    // If the stored token is expired or about to expire (e.g. the laptop
+    // just woke from sleep and the 60s refresh timer hasn't fired yet),
+    // renew it BEFORE sending the request so we never hand out a dead JWT.
+    // Cheap sync check first; the await only happens when a refresh is due.
+    if (sessionNeedsRefresh()) {
+      await ensureFreshSession();
     }
 
     const initHeaders = new Headers(init?.headers || {});

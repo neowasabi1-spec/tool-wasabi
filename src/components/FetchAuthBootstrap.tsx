@@ -12,10 +12,14 @@
 
 import { useEffect } from 'react';
 import { installAuthFetchInterceptor } from '@/lib/auth/install-fetch-interceptor';
+import { startSessionAutoRefresh } from '@/lib/auth/session-refresh';
 
 export default function FetchAuthBootstrap() {
   useEffect(() => {
     installAuthFetchInterceptor();
+    // Keep the Supabase session alive: without this the access token
+    // silently expires (~30-60 min) and the user is bounced to /login.
+    startSessionAutoRefresh();
   }, []);
   return null;
 }
