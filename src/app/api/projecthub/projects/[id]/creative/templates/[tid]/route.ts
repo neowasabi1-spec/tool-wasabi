@@ -40,7 +40,8 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
   const patch: Record<string, string> = {};
   if (typeof body.name === 'string' && body.name.trim()) patch.name = body.name.trim().slice(0, 300);
   if (typeof body.category === 'string') patch.category = body.category.slice(0, 200);
-  if (typeof body.content === 'string' && row.media_type === 'text') patch.tags = body.content;
+  // `tags` doubles as the creative's text/copy — editable on every media type.
+  if (typeof body.content === 'string') patch.tags = body.content;
   if (Object.keys(patch).length === 0) return NextResponse.json({ error: 'Nothing to update' }, { status: 400 });
 
   const { data, error } = await supabaseAdmin
