@@ -70,6 +70,7 @@ import * as XLSX from 'xlsx';
 import VisualHtmlEditor from '@/components/VisualHtmlEditor';
 import { bakeDynamicComments } from '@/lib/bake-dynamic-comments';
 import { saveHtmlBlob } from '@/lib/html-blob-store';
+import { runChimeraInternalSwipe, loadSwipedHtml } from '@/lib/chimera-restyle-client';
 import {
   buildTranslateContext,
   type ExtractedText,
@@ -3660,11 +3661,10 @@ export default function FrontEndFunnel() {
     const ok = await confirmDialog({
       title: `Swipe All — ${eligible.length} pages`,
       message:
-        `They will be rewritten in sequence, keeping narrative coherence ` +
-        `from one page to the next (Claude sees the summary of the pages ` +
-        `already done). Estimated time: ${Math.max(1, Math.round(eligible.length * 1.2))}-` +
-        `${Math.max(2, Math.round(eligible.length * 2.5))} minutes.`,
-      confirmText: 'Start',
+        `Internal restyle: new palette, rewritten copy, every photo regenerated ` +
+        `(GPT Image 2). Same layout as the competitor. Several minutes per page ` +
+        `(photos run in batches).`,
+      confirmText: 'Start restyle',
     });
     if (!ok) return;
 
@@ -3684,66 +3684,94 @@ export default function FrontEndFunnel() {
     });
     pushSwipeLog('info', `Swipe All start \u2014 ${eligible.length} pages in queue`);
 
-    // ── Swipe All = loop del "Riscrivi" manuale ───────────────────────
-    // Per ogni pagina impostiamo lo stato ESATTAMENTE come fa openCloneModal
-    // (ma in modalità 'rewrite') in modo SINCRONO via flushSync, poi
-    // invochiamo la STESSA funzione del pulsante manuale (handleClone, in
-    // modalità silenziosa). Quando una pagina è completata parte la
-    // successiva — identico a farlo a mano, ma in sequenza. Niente più
-    // orchestratore separato che impilava brief + research + funnel_context
-    // in un'unica richiesta Claude (causa dell'errore "prompt too long").
-    for (let i = 0; i < eligible.length; i++) {
-      if (swipeAllCancelRef.current) break;
-      const page = eligible[i];
-      const project = (projects || []).find((p) => p.id === page.productId);
-      const pageName = page.name || `Step ${i + 1}`;
+    const byProject = new Map<string, typeof eligible>();
+    for (const page of eligible) {
+      const key = page.productId || '';
+      const list = byProject.get(key) || [];
+      list.push(page);
+      byProject.set(key, list);
+    }
 
+    for (const [projectId, group] of byProject) {
+      if (swipeAllCancelRef.current) break;
+      if (!projectId) continue;
+      const project = (projects || []).find((p) => p.id === projectId);
+      const label = project?.name || group[0].name || 'Funnel';
       setSwipeAllJob((s) =>
         s
-          ? { ...s, currentIndex: i + 1, currentPageName: pageName, currentStep: 'rewriting', batchInfo: '' }
+          ? { ...s, currentIndex: 1, currentPageName: label, currentStep: 'rewriting', batchInfo: `${group.length} pages` }
           : s
       );
-      pushSwipeLog('info', `\u25b6 Page ${i + 1}/${eligible.length} \u2014 rewrite (like manual)`, pageName);
-
-      if (!project) {
-        const msg = `Project not found for the page (productId=${page.productId})`;
-        updateFunnelPage(page.id, { swipeStatus: 'failed', swipeResult: msg });
-        setSwipeAllJob((s) =>
-          s ? { ...s, errors: [...s.errors, { pageId: page.id, pageName, message: msg }] } : s
-        );
-        pushSwipeLog('error', `\u2717 ${msg}`, pageName);
-        continue;
+      pushSwipeLog('info', `Internal restyle — ${group.length} page(s) for ${label}`, label);
+      for (const page of group) {
+        updateFunnelPage(page.id, { swipeStatus: 'in_progress', swipeResult: 'Internal restyle queued…' });
       }
-
-      const researchText = extractSectionContent(project.marketResearch);
-      flushSync(() => {
-        setCloneConfig({
-          productName: project.name || '',
-          productDescription: buildProjectContext(project),
-          framework: '',
-          target: '',
-          customPrompt: page.prompt || '',
-          language: '',
-          targetLanguage: 'Auto (rileva dalla pagina)',
-          useOpenClaw: false,
-          brief: getProjectBriefText(project),
-          marketResearch: researchText.trim(),
-        });
-        setCloneMode('rewrite');
-        setCloneModal({ isOpen: false, pageId: page.id, pageName: page.name, url: page.urlToSwipe || '' });
+      const restyled = await runChimeraInternalSwipe({
+        pageIds: group.map((p) => p.id),
+        projectId,
+        onProgress: (st) => {
+          const page = group.find((p) => p.id === st.id);
+          const pageName = page?.name || st.id;
+          updateFunnelPage(st.id, {
+            swipeStatus: (st.swipeStatus as 'in_progress' | 'completed' | 'failed') || 'in_progress',
+            swipeResult: st.swipeResult,
+          });
+          pushSwipeLog(
+            st.swipeStatus === 'failed' ? 'error' : st.swipeStatus === 'completed' ? 'success' : 'progress',
+            st.swipeResult || st.swipeStatus,
+            pageName,
+          );
+          setSwipeAllJob((s) =>
+            s ? { ...s, currentPageName: pageName, currentStep: 'rewriting', batchInfo: st.swipeResult || '' } : s
+          );
+        },
       });
-
-      const res = await handleCloneRef.current?.({ silent: true });
-      if (res?.ok) {
-        setSwipeAllJob((s) => (s ? { ...s, completed: s.completed + 1 } : s));
-        pushSwipeLog('success', `\u2713\u2713 Pagina completata`, pageName);
+      if (restyled.ok) {
+        for (const page of group) {
+          const html = await loadSwipedHtml(page.id);
+          if (html) {
+            updateFunnelPage(page.id, {
+              swipeStatus: 'completed',
+              swipeResult: restyled.summary || 'Internal restyle completed',
+              swipedData: {
+                html,
+                originalTitle: page.name,
+                newTitle: `Restyle: ${page.name}`,
+                originalLength: 0,
+                newLength: html.length,
+                processingTime: 0,
+                methodUsed: 'chimera-internal-restyle',
+                changesMade: [restyled.summary || 'restyle'],
+                swipedAt: new Date(),
+              },
+            });
+            void saveHtmlBlob(page.id, 'swipedData', html);
+          }
+          setSwipeAllJob((s) => (s ? { ...s, completed: s.completed + 1 } : s));
+        }
+        pushSwipeLog('success', `✓ Restyle done — ${group.length} page(s)`, label);
       } else {
-        const msg = res?.error || 'Rewrite failed';
-        setSwipeAllJob((s) =>
-          s ? { ...s, errors: [...s.errors, { pageId: page.id, pageName, message: msg }] } : s
-        );
-        pushSwipeLog('error', `\u2717 ${msg}`, pageName);
+        const msg = restyled.error || 'Restyle failed';
+        for (const page of group) {
+          if ((restyled.pages || []).find((p) => p.id === page.id)?.swipeStatus === 'failed') {
+            updateFunnelPage(page.id, { swipeStatus: 'failed', swipeResult: msg });
+          }
+          setSwipeAllJob((s) =>
+            s ? { ...s, errors: [...s.errors, { pageId: page.id, pageName: page.name, message: msg }] } : s
+          );
+        }
+        pushSwipeLog('error', `✗ ${msg}`, label);
       }
+    }
+
+    const leftover = eligible.filter((p) => !p.productId);
+    for (const page of leftover) {
+      const msg = 'Link a project on the row — Internal restyle needs the product.';
+      updateFunnelPage(page.id, { swipeStatus: 'failed', swipeResult: msg });
+      setSwipeAllJob((s) =>
+        s ? { ...s, errors: [...s.errors, { pageId: page.id, pageName: page.name, message: msg }] } : s
+      );
+      pushSwipeLog('error', `\u2717 ${msg}`, page.name);
     }
 
     setSwipeAllJob((s) =>
@@ -4039,6 +4067,75 @@ export default function FrontEndFunnel() {
           sourceType: 'cloned',
           sourceUrl: isUploadedClone ? undefined : url,
         });
+
+      } else if (mode === 'rewrite' && currentPage?.productId) {
+        // Full Internal restyle (palette + every photo) — not the old text-only path.
+        setCloneProgress({
+          phase: 'processing',
+          totalTexts: 0,
+          processedTexts: 0,
+          message: 'Internal restyle: new palette + every photo…',
+        });
+        updateFunnelPage(pageId, {
+          swipeStatus: 'in_progress',
+          swipeResult: 'Internal restyle queued — new palette + every photo…',
+        });
+        pushSwipeLog('info', 'Internal restyle started (colors + all photos)', pageName);
+        const restyled = await runChimeraInternalSwipe({
+          pageIds: [pageId],
+          projectId: currentPage.productId,
+          onProgress: (st) => {
+            setCloneProgress({
+              phase: 'processing',
+              totalTexts: 0,
+              processedTexts: 0,
+              message: st.swipeResult || 'Restyling…',
+            });
+            updateFunnelPage(pageId, {
+              swipeStatus: (st.swipeStatus as 'in_progress' | 'completed' | 'failed') || 'in_progress',
+              swipeResult: st.swipeResult,
+            });
+            pushSwipeLog(
+              st.swipeStatus === 'failed' ? 'error' : st.swipeStatus === 'completed' ? 'success' : 'progress',
+              st.swipeResult || st.swipeStatus,
+              pageName,
+            );
+          },
+        });
+        if (!restyled.ok) throw new Error(restyled.error || 'Restyle failed');
+        const rewrittenHtml = restyled.html || (await loadSwipedHtml(pageId));
+        if (!rewrittenHtml) throw new Error('Restyle finished but HTML is empty. Retry Swipe.');
+        setCloneProgress(null);
+        updateFunnelPage(pageId, {
+          swipeStatus: 'completed',
+          swipeResult: restyled.summary || 'Internal restyle completed',
+          swipedData: {
+            html: rewrittenHtml,
+            originalTitle: pageName,
+            newTitle: `Restyle: ${pageName}`,
+            originalLength: 0,
+            newLength: rewrittenHtml.length,
+            processingTime: 0,
+            methodUsed: 'chimera-internal-restyle',
+            changesMade: [restyled.summary || 'palette + photos'],
+            swipedAt: new Date(),
+          },
+        });
+        void saveHtmlBlob(pageId, 'swipedData', rewrittenHtml);
+        if (!silent) {
+          setPreviewTab('preview');
+          setHtmlPreviewModal({
+            isOpen: true,
+            title: `Restyle: ${pageName}`,
+            html: rewrittenHtml,
+            mobileHtml: '',
+            iframeSrc: '',
+            metadata: { method: 'chimera-internal-restyle', length: rewrittenHtml.length, duration: 0 },
+            pageId,
+            sourceType: 'swiped',
+            sourceUrl: url,
+          });
+        }
 
       } else if (mode === 'rewrite') {
         // All rewrites go through /api/quiz-rewrite (Anthropic Claude)
@@ -8679,7 +8776,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                       </div>
                     ) : (
                       <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
-                        The HTML structure of the page is kept identical. Only the texts are rewritten by Claude AI for your product.
+                        Same layout. New palette, rewritten copy, every photo regenerated for your product (Internal restyle). Takes several minutes — photos run in batches.
                       </div>
                     );
                   })()}
@@ -8909,7 +9006,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                   const isQ = mp && isQuizPage(mp);
                   return isQ
                     ? <><Sparkles className="w-4 h-4" /> Quiz Rewrite (keep JS)</>
-                    : <><Wand2 className="w-4 h-4" /> Clone &amp; Rewrite</>;
+                    : <><Wand2 className="w-4 h-4" /> Restyle (colors + photos)</>;
                 })()}
                 {cloneMode === 'translate' && <><Globe className="w-4 h-4" /> Translate</>}
               </button>
