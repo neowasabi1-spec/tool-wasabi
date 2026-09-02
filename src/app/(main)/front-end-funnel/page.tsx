@@ -71,6 +71,7 @@ import VisualHtmlEditor from '@/components/VisualHtmlEditor';
 import { bakeDynamicComments } from '@/lib/bake-dynamic-comments';
 import { saveHtmlBlob } from '@/lib/html-blob-store';
 import { runChimeraInternalSwipe, loadSwipedHtml } from '@/lib/chimera-restyle-client';
+import { RestyleWatchModal } from '@/components/RestyleWatchModal';
 import {
   buildTranslateContext,
   type ExtractedText,
@@ -1930,6 +1931,29 @@ export default function FrontEndFunnel() {
     processedTexts: number;
     message: string;
   } | null>(null);
+  const [restyleWatch, setRestyleWatch] = useState<{ open: boolean; pageId: string; pageName: string }>({
+    open: false,
+    pageId: '',
+    pageName: '',
+  });
+  const restyleWatchDismissedRef = useRef<Set<string>>(new Set());
+  const openRestyleWatch = useCallback((pageId: string, pageName: string) => {
+    restyleWatchDismissedRef.current.delete(pageId);
+    setRestyleWatch({ open: true, pageId, pageName });
+  }, []);
+  const closeRestyleWatch = useCallback(() => {
+    setRestyleWatch((s) => {
+      if (s.pageId) restyleWatchDismissedRef.current.add(s.pageId);
+      return { ...s, open: false };
+    });
+  }, []);
+
+  useEffect(() => {
+    const running = (funnelPages || []).filter((p) => p.swipeStatus === 'in_progress');
+    if (!running.length || restyleWatch.open) return;
+    const next = running.find((p) => !restyleWatchDismissedRef.current.has(p.id));
+    if (next) setRestyleWatch({ open: true, pageId: next.id, pageName: next.name });
+  }, [funnelPages, restyleWatch.open]);
 
   // Live activity log for the cinematic overlay. Each rewrite step
   // (cloning, extracting, per-batch progress, narrative, completion)
@@ -3702,7 +3726,8 @@ export default function FrontEndFunnel() {
           ? { ...s, currentIndex: 1, currentPageName: label, currentStep: 'rewriting', batchInfo: `${group.length} pages` }
           : s
       );
-      pushSwipeLog('info', `Internal restyle — ${group.length} page(s) for ${label}`, label);
+        pushSwipeLog('info', `Internal restyle — ${group.length} page(s) for ${label}`, label);
+      openRestyleWatch(group[0].id, group[0].name);
       for (const page of group) {
         updateFunnelPage(page.id, { swipeStatus: 'in_progress', swipeResult: 'Internal restyle queued…' });
       }
@@ -3724,6 +3749,7 @@ export default function FrontEndFunnel() {
           setSwipeAllJob((s) =>
             s ? { ...s, currentPageName: pageName, currentStep: 'rewriting', batchInfo: st.swipeResult || '' } : s
           );
+          setRestyleWatch((s) => (s.open ? { open: true, pageId: st.id, pageName } : s));
         },
       });
       if (restyled.ok) {
@@ -3778,7 +3804,7 @@ export default function FrontEndFunnel() {
       s ? { ...s, isRunning: false, currentStep: 'idle', batchInfo: '' } : s
     );
     pushSwipeLog('info', '\u25fc Swipe All finished');
-  }, [funnelPages, projects, updateFunnelPage, pushSwipeLog, resetSwipeLog, runSwipeAllViaOpenclaw]);
+  }, [funnelPages, projects, updateFunnelPage, pushSwipeLog, resetSwipeLog, runSwipeAllViaOpenclaw, openRestyleWatch]);
 
   const cancelSwipeAll = useCallback(() => {
     swipeAllCancelRef.current = true;
@@ -4081,6 +4107,7 @@ export default function FrontEndFunnel() {
           swipeResult: 'Internal restyle queued — new palette + every photo…',
         });
         pushSwipeLog('info', 'Internal restyle started (colors + all photos)', pageName);
+        openRestyleWatch(pageId, pageName);
         const restyled = await runChimeraInternalSwipe({
           pageIds: [pageId],
           projectId: currentPage.productId,
@@ -4122,7 +4149,7 @@ export default function FrontEndFunnel() {
           },
         });
         void saveHtmlBlob(pageId, 'swipedData', rewrittenHtml);
-        if (!silent) {
+        if (!silent && !restyleWatch.open) {
           setPreviewTab('preview');
           setHtmlPreviewModal({
             isOpen: true,
@@ -6437,9 +6464,14 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                           <span className="truncate max-w-[80px]" title={page.swipeResult || ''}>
                             {page.swipeResult || '-'}
                           </span>
-                          {(page.swipedData || page.clonedData) && (
+                          {(page.swipedData || page.clonedData || page.swipeStatus === 'in_progress') && (
                             <button
+                              title={page.swipeStatus === 'in_progress' ? 'Watch live restyle' : 'Preview'}
                               onClick={async () => {
+                                if (page.swipeStatus === 'in_progress') {
+                                  openRestyleWatch(page.id, page.name);
+                                  return;
+                                }
                                 // Helper: cerca l'HTML in tre posti, in ordine:
                                 //   1) blob in memoria (Zustand)
                                 //   2) IndexedDB locale (html-blob-store) — copre il caso
@@ -7000,6 +7032,17 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
           </div>
         </div>
       )}
+
+      <RestyleWatchModal
+        open={restyleWatch.open}
+        pageId={restyleWatch.pageId}
+        pageName={restyleWatch.pageName}
+        siblings={(funnelPages || [])
+          .filter((p) => p.swipeStatus === 'in_progress' || p.id === restyleWatch.pageId)
+          .map((p) => ({ id: p.id, name: p.name, swipeStatus: p.swipeStatus }))}
+        onSelectPage={(id, name) => openRestyleWatch(id, name)}
+        onClose={closeRestyleWatch}
+      />
 
       {/* HTML Preview Modal */}
       {htmlPreviewModal.isOpen && (
