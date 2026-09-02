@@ -9,8 +9,7 @@ import {
   Rocket, Loader2, CheckCircle2, XCircle, Circle, MinusCircle,
   ChevronDown, ChevronRight, RefreshCw, Sparkles,
 } from 'lucide-react';
-import { authFetch } from '@/lib/auth/client-fetch';
-import { pickerFunnelsFromArchive } from '@/lib/archive-placement';
+import { ChimeraFunnelPicker } from '@/components/projecthub/autopilot/ChimeraFunnelPicker';
 
 type StepStatus = 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
 type JobStatus = 'pending' | 'running' | 'completed' | 'failed' | 'canceled';
@@ -49,9 +48,6 @@ export function AutopilotSection({
   const [market, setMarket] = useState('');
   const [description, setDescription] = useState('');
   const [funnelId, setFunnelId] = useState('');
-  const [funnels, setFunnels] = useState<Array<{ id: string; name: string; totalSteps: number; upsells: number; products: number; isProject: boolean }>>([]);
-  const [funnelsError, setFunnelsError] = useState<string | null>(null);
-  const [funnelsLoaded, setFunnelsLoaded] = useState(false);
   const [launching, setLaunching] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -98,26 +94,6 @@ export function AutopilotSection({
 
   useEffect(() => {
     loadHistory();
-    // Load the selectable funnels. The chosen funnel drives BOTH: how many
-    // product images the final step generates (main + one per upsell) AND the
-    // landing's style/structure (its main page is used as the design reference).
-    (async () => {
-      try {
-        // Same shared library Templates → Funnel already shows every user.
-        const res = await authFetch('/api/valchiria/funnels', { cache: 'no-store' });
-        const data = await res.json().catch(() => null);
-        if (!res.ok) {
-          setFunnelsError((data && data.error) || `Could not load funnels (${res.status})`);
-          return;
-        }
-        const rows = Array.isArray(data?.funnels) ? data.funnels : [];
-        setFunnels(pickerFunnelsFromArchive(rows));
-      } catch (e) {
-        setFunnelsError((e as Error).message || 'Could not load funnels');
-      } finally {
-        setFunnelsLoaded(true);
-      }
-    })();
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
     };
@@ -202,36 +178,11 @@ export function AutopilotSection({
             disabled={running || launching}
           />
         </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="ap-funnel">Funnel to build (from templates)</Label>
-          <select
-            id="ap-funnel"
-            value={funnelId}
-            onChange={(e) => setFunnelId(e.target.value)}
-            disabled={running || launching}
-            className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm disabled:opacity-50"
-          >
-            <option value="">— No funnel: main product only —</option>
-            {funnels.map((f) => (
-              <option key={f.id} value={f.id}>
-                {f.name} · {f.products} products ({f.upsells} upsells){f.isProject ? '' : ' · library'}
-              </option>
-            ))}
-          </select>
-          {funnelsLoaded && funnelsError && (
-            <p className="text-xs text-red-500">{funnelsError}</p>
-          )}
-          {funnelsLoaded && !funnelsError && funnels.length === 0 && (
-            <p className="text-xs text-muted-foreground">
-              No multi-step funnels in Templates yet. Whatever you see under Templates → Funnel appears here.
-            </p>
-          )}
-          <p className="text-xs text-muted-foreground">
-            Pick one funnel and it drives everything automatically: the landing is generated as an HTML mockup
-            inspired by the funnel&apos;s main page (style + structure), and the final step generates 1 main product
-            image + one per upsell — the count is read from the funnel, no number to type.
-          </p>
-        </div>
+        <ChimeraFunnelPicker
+          value={funnelId}
+          onChange={setFunnelId}
+          disabled={running || launching}
+        />
         <div className="space-y-1.5">
           <Label htmlFor="ap-desc">Description / notes (optional)</Label>
           <Textarea

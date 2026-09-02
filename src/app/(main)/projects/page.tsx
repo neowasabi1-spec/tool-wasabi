@@ -24,6 +24,7 @@ import {
 } from '@/lib/brand-colors';
 import { classifyFile } from '@/lib/section-routing';
 import ImportCheckpointModal from '@/components/projects/ImportCheckpointModal';
+import { ChimeraFunnelPicker } from '@/components/projecthub/autopilot/ChimeraFunnelPicker';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -1150,6 +1151,7 @@ export default function ProjectsPage() {
   const [apCompetitor, setApCompetitor] = useState('');
   const [apMarket, setApMarket] = useState('');
   const [apDesc, setApDesc] = useState('');
+  const [apFunnelId, setApFunnelId] = useState('');
   const [apLaunching, setApLaunching] = useState(false);
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
@@ -1378,6 +1380,7 @@ export default function ProjectsPage() {
           competitorLink: apCompetitor.trim() || undefined,
           market: apMarket.trim() || undefined,
           description: apDesc.trim() || undefined,
+          funnelId: apFunnelId.trim() || undefined,
         }),
       });
       const data = await res.json();
@@ -1543,8 +1546,8 @@ export default function ProjectsPage() {
               <h3 className="text-sm font-semibold text-slate-900">New project with Chimera Protocol</h3>
             </div>
             <p className="text-xs text-slate-500 mb-4">
-              Give it the product (and optionally competitor + description): it creates/updates the project and runs
-              everything on its own — market research → brief → competitor → ads → landing.
+              Same form as Chimera inside a project: product, competitor, market, funnel from Templates, then it
+              creates/updates the project and runs market research → brief → competitor → ads → landing.
             </p>
             <div className="grid gap-3 sm:grid-cols-2">
               <input
@@ -1573,6 +1576,15 @@ export default function ProjectsPage() {
               className="mt-3 w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-slate-900 text-sm focus:outline-none focus:border-violet-500"
               disabled={apLaunching}
             />
+            <div className="mt-3">
+              <ChimeraFunnelPicker
+                id="new-ap-funnel"
+                value={apFunnelId}
+                onChange={setApFunnelId}
+                disabled={apLaunching}
+                selectClassName="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-slate-900 text-sm focus:outline-none focus:border-violet-500 disabled:opacity-50"
+              />
+            </div>
             <textarea
               value={apDesc}
               onChange={e => setApDesc(e.target.value)}
@@ -1592,7 +1604,14 @@ export default function ProjectsPage() {
                   : <><Sparkles className="w-4 h-4" /> Start Chimera Protocol</>}
               </button>
               <button
-                onClick={() => { setShowAutopilot(false); setApProduct(''); setApCompetitor(''); setApMarket(''); setApDesc(''); }}
+                onClick={() => {
+                  setShowAutopilot(false);
+                  setApProduct('');
+                  setApCompetitor('');
+                  setApMarket('');
+                  setApDesc('');
+                  setApFunnelId('');
+                }}
                 disabled={apLaunching}
                 className="px-3 py-2 text-slate-500 hover:text-slate-900 text-sm rounded-lg transition-colors"
               >
