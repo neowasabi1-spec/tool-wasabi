@@ -36,7 +36,6 @@ export function RestyleWatchModal({
   const [result, setResult] = useState('');
   const [status, setStatus] = useState('in_progress');
   const [updatedAt, setUpdatedAt] = useState<number | null>(null);
-  const iframeRef = useRef<HTMLIFrameElement>(null);
   const lastSig = useRef('');
   const onStatusRef = useRef(onStatus);
   onStatusRef.current = onStatus;
@@ -82,17 +81,6 @@ export function RestyleWatchModal({
       window.clearInterval(id);
     };
   }, [open, pageId]);
-
-  useEffect(() => {
-    if (!open || !html) return;
-    const iframe = iframeRef.current;
-    if (!iframe) return;
-    const doc = iframe.contentDocument;
-    if (!doc) return;
-    doc.open();
-    doc.write(html);
-    doc.close();
-  }, [open, htmlSig, html]);
 
   if (!open) return null;
 
@@ -172,10 +160,11 @@ export function RestyleWatchModal({
             </div>
           )}
           <iframe
-            ref={iframeRef}
+            key={htmlSig || 'empty'}
             title={`Restyle preview ${pageName}`}
             className={`w-full h-full bg-white ${html ? '' : 'invisible'}`}
-            sandbox="allow-same-origin allow-popups"
+            sandbox="allow-scripts allow-same-origin allow-popups"
+            srcDoc={html || undefined}
           />
         </div>
       </div>

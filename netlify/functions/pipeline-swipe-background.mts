@@ -424,6 +424,27 @@ function escHtml(s: string): string { return s.replace(/&/g, '&amp;').replace(/<
 /** Apply rewrites: server-side <title>/<meta>, plus the injected DOM-replacer
  *  script (whitespace-tolerant) for body texts + attributes — the exact
  *  technique /api/landing/swipe uses, so results render identically. */
+function bakePairsIntoHtml(
+  html: string,
+  pairs: Array<{ from: string; to: string; attr?: string }>,
+): string {
+  const sorted = pairs
+    .filter((p) => !p.attr && p.from && p.to && p.from !== p.to && p.from.length >= 2)
+    .sort((a, b) => b.from.length - a.from.length);
+  if (!sorted.length) return html;
+  const parts = html.split(/(<script\b[\s\S]*?<\/script>|<style\b[\s\S]*?<\/style>)/gi);
+  return parts.map((part) => {
+    if (/^<(script|style)\b/i.test(part)) return part;
+    let out = part;
+    for (const p of sorted) {
+      if (out.includes(p.from)) out = out.split(p.from).join(p.to);
+      const escFrom = escHtml(p.from);
+      if (escFrom !== p.from && out.includes(escFrom)) out = out.split(escFrom).join(escHtml(p.to));
+    }
+    return out;
+  }).join('');
+}
+
 function applyRewrites(
   originalHtml: string,
   texts: SwipeText[],
@@ -548,6 +569,10 @@ function applyRewrites(
     if (mp.from !== escAttr(mp.from)) html = replaceMetaContent(html, mp.from, mp.to);
   }
 
+  // Bake copy into the HTML so preview works without JavaScript (the
+  // watch popup sandboxes scripts; a script-only swipe looks unchanged).
+  html = bakePairsIntoHtml(html, replacementPairs);
+
   // Idempotency: strip any previous swipe-replacer before injecting ours.
   html = html.replace(/<script\b[^>]*\bdata-swipe-replacer\b[^>]*>[\s\S]*?<\/script>/gi, '');
   if (html.includes('</body>')) {
@@ -617,6 +642,23 @@ function collectImages(html: string, sourceUrl: string, restyle = false): PageIm
     const section = sectionFromNearbyHtml(html, m.index, tag);
     out.push({ src, alt, width, height, position: m.index, context, section });
     if (out.length >= 40) break;
+  }
+  const bgRe = /background-image\s*:\s*url\((['"]?)([^'")]+)\1\)/gi;
+  let bm: RegExpExecArray | null;
+  while ((bm = bgRe.exec(html)) !== null && out.length < 40) {
+    const src = bm[2];
+    if (!src || src.startsWith('data:') || /\.svg(\?|#|$)/i.test(src) || seen.has(src)) continue;
+    if (IMG_JUNK_RE.test(src)) continue;
+    seen.add(src);
+    out.push({
+      src,
+      alt: '',
+      width: 0,
+      height: 0,
+      position: bm.index,
+      context: '',
+      section: sectionFromNearbyHtml(html, bm.index, bm[0]),
+    });
   }
   // Earlier on the page = more important (hero first).
   out.sort((a, b) => a.position - b.position);
@@ -736,6 +778,13 @@ function topPageHex(html: string, limit = 14): string[] {
     .slice(0, limit);
 }
 
+function hexToRgbCsv(hex: string): string {
+  const h = normHex(hex);
+  if (!h) return '';
+  const n = Number.parseInt(h.slice(1), 16);
+  return `${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}`;
+}
+
 function applyPalette(html: string, spec: RestyleSpec): string {
   let out = html;
   const pairs = spec.palette.filter((p) => normHex(p.from) && normHex(p.to) && normHex(p.from) !== normHex(p.to));
@@ -744,12 +793,29 @@ function applyPalette(html: string, spec: RestyleSpec): string {
     const b = normHex(to);
     out = out.split(a).join(b);
     out = out.split(a.toUpperCase()).join(b);
+    const rgbA = hexToRgbCsv(a);
+    const rgbB = hexToRgbCsv(b);
+    if (rgbA && rgbB) {
+      out = out.split(`rgb(${rgbA})`).join(`rgb(${rgbB})`);
+      out = out.split(`rgba(${rgbA},`).join(`rgba(${rgbB},`);
+    }
     if (a[1] === a[2] && a[3] === a[4] && a[5] === a[6]) {
       const short = `#${a[1]}${a[3]}${a[5]}`;
       out = out.split(short).join(b);
       out = out.split(short.toUpperCase()).join(b);
     }
   }
+  const css = `<style data-chimera-palette>
+:root{--chimera-primary:${spec.primary};--chimera-secondary:${spec.secondary};--chimera-accent:${spec.accent};--chimera-bg:${spec.background};--chimera-ink:${spec.ink};}
+html,body{background:${spec.background} !important;color:${spec.ink} !important;}
+h1,h2,h3,h4,h5{color:${spec.primary} !important;}
+a{color:${spec.accent} !important;}
+button,input[type=submit],.btn,[class*="btn"],[class*="cta"],[class*="CTA"]{background:${spec.primary} !important;border-color:${spec.primary} !important;color:#fff !important;}
+header,[class*="hero"],[class*="Hero"],[class*="banner"]{background:${spec.secondary} !important;}
+</style>`;
+  out = out.replace(/<style\b[^>]*\bdata-chimera-palette\b[^>]*>[\s\S]*?<\/style>/gi, '');
+  if (out.includes('</head>')) out = out.replace('</head>', `${css}</head>`);
+  else out = css + out;
   return out;
 }
 
@@ -927,6 +993,8 @@ Surrounding page copy: ${img.context || '(none)'}`;
       out = replaceImageSrc(out, img.src, ctx.mainImageUrl);
       productSwaps++;
       budget.imagesLeft--;
+      await persistHtml(sb, page.funnelPageId, 'swiped', out, ctx.ownerUserId);
+      await touchPage(sb, page.funnelPageId, `Photo ${start + processed}/${images.length} — product shot replaced`);
       continue;
     }
 
@@ -947,6 +1015,8 @@ Surrounding page copy: ${img.context || '(none)'}`;
     out = replaceImageSrc(out, img.src, finalUrl);
     generated++;
     budget.imagesLeft--;
+    await persistHtml(sb, page.funnelPageId, 'swiped', out, ctx.ownerUserId);
+    await touchPage(sb, page.funnelPageId, `Photo ${start + processed}/${images.length} replaced`);
   }
 
   return {

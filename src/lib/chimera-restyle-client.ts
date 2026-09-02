@@ -69,10 +69,11 @@ export async function pollChimeraRestyle(opts: {
 }
 
 export async function loadSwipedHtml(pageId: string): Promise<string> {
+  const bust = `v=${Date.now()}`;
   const base = `/api/funnel-html?pageId=${encodeURIComponent(pageId)}`;
   return (
-    (await fetchHtmlFromStorage(`${base}&kind=swiped&variant=desktop`))
-    || (await fetchHtmlFromStorage(`${base}&kind=cloned&variant=desktop`))
+    (await fetchHtmlFromStorage(`${base}&kind=swiped&variant=desktop&${bust}`))
+    || (await fetchHtmlFromStorage(`${base}&kind=cloned&variant=desktop&${bust}`))
     || ''
   );
 }
