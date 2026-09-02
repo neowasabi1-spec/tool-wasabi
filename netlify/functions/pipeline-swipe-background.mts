@@ -67,6 +67,7 @@ interface SwipePage {
   sourceUrl: string;
   name: string;
   type: string;
+  htmlUrl?: string;
 }
 
 interface RestyleSpec {
@@ -91,6 +92,7 @@ interface SwipeCtx {
   landingVideos: LandingMediaItem[];
   mediaUsed: Set<string>;
   restyle: RestyleSpec | null;
+  ownerUserId: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -201,6 +203,46 @@ async function loadSavedHtml(sb: SupabaseClient, pageId: string, kind: 'cloned' 
   } catch {
     return '';
   }
+}
+
+async function fetchHtmlUrl(url: string): Promise<string> {
+  if (!url) return '';
+  const abs = /^https?:\/\//i.test(url) ? url : `${siteBaseUrl()}${url.startsWith('/') ? '' : '/'}${url}`;
+  if (!abs) return '';
+  try {
+    const res = await fetch(abs, { signal: AbortSignal.timeout(25_000), redirect: 'follow' });
+    if (!res.ok) return '';
+    const html = await res.text();
+    return html.length > 500 ? html : '';
+  } catch {
+    return '';
+  }
+}
+
+async function fetchViaJina(url: string): Promise<string> {
+  if (!/^https?:\/\//i.test(url)) return '';
+  try {
+    const headers: Record<string, string> = { 'X-Return-Format': 'html' };
+    if (process.env.JINA_API_KEY) headers.Authorization = `Bearer ${process.env.JINA_API_KEY}`;
+    const res = await fetch(`https://r.jina.ai/${url}`, { headers, signal: AbortSignal.timeout(45_000) });
+    if (!res.ok) return '';
+    const html = await res.text();
+    return html.length > 800 ? html : '';
+  } catch {
+    return '';
+  }
+}
+
+async function loadSourceHtml(sb: SupabaseClient, page: SwipePage): Promise<string> {
+  let html = '';
+  if (page.sourcePageId) {
+    html = await loadSavedHtml(sb, page.sourcePageId, 'cloned');
+    if (html.length < 800) html = (await loadSavedHtml(sb, page.sourcePageId, 'swiped')) || html;
+  }
+  if (html.length < 800 && page.htmlUrl) html = (await fetchHtmlUrl(page.htmlUrl)) || html;
+  if (html.length < 800 && page.sourceUrl) html = (await fetchLiveHtml(page.sourceUrl)) || html;
+  if (html.length < 800 && page.sourceUrl) html = (await fetchViaJina(page.sourceUrl)) || html;
+  return html;
 }
 
 async function fetchLiveHtml(url: string): Promise<string> {
@@ -544,8 +586,11 @@ function collectImages(html: string, sourceUrl: string, restyle = false): PageIm
   let m: RegExpExecArray | null;
   while ((m = tagRe.exec(html)) !== null) {
     const tag = m[0];
+    const srcset = tag.match(/\bsrcset\s*=\s*["']([^"']+)["']/i)?.[1] || '';
     const src = tag.match(/\bsrc\s*=\s*["']([^"']+)["']/i)?.[1]
-      || tag.match(/\bdata-src\s*=\s*["']([^"']+)["']/i)?.[1] || '';
+      || tag.match(/\bdata-src\s*=\s*["']([^"']+)["']/i)?.[1]
+      || tag.match(/\bdata-lazy-src\s*=\s*["']([^"']+)["']/i)?.[1]
+      || (srcset.split(',')[0] || '').trim().split(/\s+/)[0] || '';
     if (!src || src.startsWith('data:')) continue;
     if (/\.svg(\?|#|$)/i.test(src)) continue;
     const alt = tag.match(/\balt\s*=\s*["']([^"']*)["']/i)?.[1] || '';
@@ -932,11 +977,17 @@ async function persistHtml(
   pageId: string,
   kind: 'cloned' | 'swiped',
   html: string,
+  ownerUserId: string | null,
 ): Promise<void> {
-  const { error } = await sb.from('page_html').upsert(
-    { page_id: pageId, kind, variant: 'desktop', html, updated_at: new Date().toISOString() },
-    { onConflict: 'page_id,kind,variant' },
-  );
+  const row: Record<string, unknown> = {
+    page_id: pageId,
+    kind,
+    variant: 'desktop',
+    html,
+    updated_at: new Date().toISOString(),
+  };
+  if (ownerUserId) row.owner_user_id = ownerUserId;
+  const { error } = await sb.from('page_html').upsert(row, { onConflict: 'page_id,kind,variant' });
   if (error) throw new Error(`saving ${kind} HTML failed: ${error.message}`);
 }
 
@@ -965,8 +1016,7 @@ async function processPage(
     if (!html) throw new Error('resume failed: swiped HTML missing');
     originalTitle = originalHtml.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || page.name;
   } else {
-    html = await loadSavedHtml(sb, page.sourcePageId);
-    if (!html) html = await fetchLiveHtml(page.sourceUrl);
+    html = await loadSourceHtml(sb, page);
     if (!html) throw new Error('no source HTML (saved snapshot missing and live fetch failed)');
     html = ensureBaseHref(html, page.sourceUrl);
     originalHtml = html;
@@ -1004,7 +1054,7 @@ CRITICAL RULES:
       if (ctx.restyle) html = applyPalette(html, ctx.restyle);
     }
 
-    await persistHtml(sb, page.funnelPageId, 'cloned', originalHtml);
+    await persistHtml(sb, page.funnelPageId, 'cloned', originalHtml, ctx.ownerUserId);
   }
 
   let imgRes = { html, generated: 0, productSwaps: 0, analyzed: 0, placed: 0, videos: 0, remaining: 0, total: 0, processed: 0 };
@@ -1028,9 +1078,29 @@ CRITICAL RULES:
     throw e;
   }
 
-  await persistHtml(sb, page.funnelPageId, 'swiped', html);
+  await persistHtml(sb, page.funnelPageId, 'swiped', html, ctx.ownerUserId);
 
-  const done = ctx.imageMode === 'affiliate' || imgRes.remaining <= 0 || budget.imagesLeft <= 0;
+  let done = ctx.imageMode === 'affiliate' || imgRes.remaining <= 0 || budget.imagesLeft <= 0;
+  if (
+    ctx.imageMode === 'internal'
+    && !resume
+    && replacements === 0
+    && imgRes.generated === 0
+    && imgRes.productSwaps === 0
+    && imgRes.placed === 0
+  ) {
+    throw new Error('Swipe wrote nothing — source HTML empty or image generation failed. Retry Chimera Internal.');
+  }
+  if (
+    ctx.imageMode === 'internal'
+    && done
+    && imgRes.total > 0
+    && imgRes.generated === 0
+    && imgRes.productSwaps === 0
+    && !resume
+  ) {
+    throw new Error(`Found ${imgRes.total} photos but regenerated 0 (FAL_KEY / GPT Image). Retry the swipe.`);
+  }
   const nextOffset = imageOffset + (imgRes.processed || 0);
   const now = new Date().toISOString();
   const summary =
@@ -1102,7 +1172,7 @@ export default async (req: Request) => {
   // Product context: name + description + brief + research from the project.
   const { data: project } = await sb
     .from('projects')
-    .select('name, description, brief, market_research')
+    .select('name, description, brief, market_research, owner_user_id')
     .eq('id', projectId)
     .single();
   const sectionText = (val: unknown): string => {
@@ -1152,6 +1222,7 @@ export default async (req: Request) => {
     landingVideos,
     mediaUsed: new Set<string>(incomingUsed),
     restyle: incomingRestyle && incomingRestyle.stylePrefix ? incomingRestyle : null,
+    ownerUserId: typeof project?.owner_user_id === 'string' ? project.owner_user_id : null,
   };
 
   log(`batch ${pages.length} page(s) offset=${imageOffset} market="${market || 'auto'}" mode=${imageMode} landingMedia=${landingItems.length} photo=${mainImageUrl ? 'yes' : 'no'}`);

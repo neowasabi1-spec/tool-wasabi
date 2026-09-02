@@ -796,7 +796,7 @@ interface StepResult { summary: string; output: string; }
 async function loadProject(supabase: SupabaseClient, projectId: string) {
   const { data, error } = await supabase
     .from('projects')
-    .select('id, name, description, domain, market_research, brief, front_end, funnel')
+    .select('id, name, description, domain, market_research, brief, front_end, funnel, owner_user_id')
     .eq('id', projectId)
     .single();
   if (error || !data) throw new Error(`Cannot load project ${projectId}: ${error?.message || 'not found'}`);
@@ -1526,6 +1526,8 @@ async function runSwipe(supabase: SupabaseClient, projectId: string, input: Pipe
     ? input.productImageUrl
     : null;
   const mainImageUrl = uploaded || await loadMainProductImageUrl(supabase, projectId);
+  const { data: projOwner } = await supabase.from('projects').select('owner_user_id').eq('id', projectId).maybeSingle();
+  const ownerUserId = typeof projOwner?.owner_user_id === 'string' ? projOwner.owner_user_id : null;
 
   // One Clone/Swipe page per funnel step, in order. The worker fills
   // cloned/swiped HTML afterwards; status starts as in_progress so the UI
@@ -1542,6 +1544,7 @@ async function runSwipe(supabase: SupabaseClient, projectId: string, input: Pipe
     const stepName = String(s.name || '').slice(0, 60);
     const name = `${funnelName} — Step ${i + 1}${stepName ? `: ${stepName}` : ''}`.slice(0, 120);
 
+    const htmlUrl = typeof cloned.htmlUrl === 'string' ? cloned.htmlUrl : '';
     const { data: created, error } = await supabase
       .from('funnel_pages')
       .insert({
@@ -1552,8 +1555,9 @@ async function runSwipe(supabase: SupabaseClient, projectId: string, input: Pipe
         url_to_swipe: url,
         prompt: '',
         swipe_status: 'in_progress',
-        cloned_data: typeof cloned.htmlUrl === 'string' && cloned.htmlUrl
-          ? { htmlUrl: cloned.htmlUrl, title: name, htmlSkipped: true, source_url: url }
+        ...(ownerUserId ? { owner_user_id: ownerUserId } : {}),
+        cloned_data: htmlUrl
+          ? { htmlUrl, title: name, htmlSkipped: true, source_url: url }
           : null,
       })
       .select('id')
@@ -1562,7 +1566,14 @@ async function runSwipe(supabase: SupabaseClient, projectId: string, input: Pipe
       console.warn('[pipeline] swipe page insert failed:', error?.message);
       continue;
     }
-    pages.push({ funnelPageId: created.id as string, sourcePageId, sourceUrl: url, name, type: pageType });
+    pages.push({
+      funnelPageId: created.id as string,
+      sourcePageId,
+      sourceUrl: url,
+      name,
+      type: pageType,
+      htmlUrl,
+    });
   }
   if (!pages.length) throw new Error('Could not create any Clone/Swipe pages for the funnel');
 

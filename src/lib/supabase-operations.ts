@@ -229,11 +229,29 @@ export async function deleteTemplate(id: string): Promise<void> {
 // =====================================================
 
 export async function fetchFunnelPages(): Promise<FunnelPage[]> {
+  try {
+    const headers: Record<string, string> = {};
+    if (typeof window !== 'undefined') {
+      try {
+        const raw = window.localStorage.getItem('wasabi_session');
+        const token = raw ? (JSON.parse(raw) as { access_token?: string }).access_token : '';
+        if (token) headers.Authorization = `Bearer ${token}`;
+      } catch { /* ignore */ }
+    }
+    const res = await fetch('/api/funnel-pages', { cache: 'no-store', headers });
+    if (res.ok) {
+      const rows = (await res.json()) as FunnelPage[];
+      if (Array.isArray(rows)) return rows;
+    }
+  } catch (e) {
+    console.warn('[funnel_pages] API list failed, falling back to RLS:', (e as Error).message);
+  }
+
   const { data, error } = await supabase
     .from('funnel_pages')
     .select('*')
-    .order('created_at', { ascending: true }); // oldest first = Step 1 at top
-  
+    .order('created_at', { ascending: true });
+
   if (error) {
     console.error('Error fetching funnel pages:', error);
     throw error;
