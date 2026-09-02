@@ -25,6 +25,26 @@ export async function POST(req: NextRequest) {
   const language = body.language ? String(body.language).trim() : '';
   const templateUrl = body.templateUrl ? String(body.templateUrl).trim() : '';
   const funnelId = body.funnelId ? String(body.funnelId).trim() : '';
+  const rawSteps = Array.isArray(body.funnelSteps) ? body.funnelSteps : [];
+  const funnelSteps = rawSteps
+    .map((raw, i) => {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+      const s = raw as Record<string, unknown>;
+      const pageType = String(s.pageType || s.page_type || '');
+      return {
+        index: Number.isFinite(Number(s.index)) ? Number(s.index) : i,
+        name: String(s.name || `Step ${i + 1}`),
+        pageType,
+        isUpsell: Boolean(s.isUpsell) || /upsell|downsell|\boto\b|bump/i.test(pageType),
+        url: s.url ? String(s.url) : undefined,
+        pageId: s.pageId ? String(s.pageId) : undefined,
+        htmlUrl: s.htmlUrl ? String(s.htmlUrl) : undefined,
+      };
+    })
+    .filter((s): s is NonNullable<typeof s> => !!s);
+  const funnelStepIndexes = Array.isArray(body.funnelStepIndexes)
+    ? (body.funnelStepIndexes as unknown[]).map((n) => Number(n)).filter((n) => Number.isFinite(n))
+    : funnelSteps.map((s) => s.index);
   const requestedProjectId = body.projectId ? String(body.projectId) : '';
 
   if (!product && !requestedProjectId) {
@@ -75,6 +95,8 @@ export async function POST(req: NextRequest) {
     language: language || undefined,
     templateUrl: templateUrl || undefined,
     funnelId: funnelId || undefined,
+    funnelStepIndexes: funnelStepIndexes.length ? funnelStepIndexes : undefined,
+    funnelSteps: funnelSteps.length ? funnelSteps : undefined,
   };
 
   // ── Create the job row ──

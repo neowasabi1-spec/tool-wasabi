@@ -64,7 +64,7 @@ export const PIPELINE_STEPS: PipelineStepDef[] = [
     key: 'swipe',
     label: 'Funnel swipe (Clone/Swipe)',
     description:
-      'Loads every step of the selected funnel into Clone/Swipe, rewrites all texts for our product in the market language, regenerates images with GPT Image 2 and swaps product shots with the generated product mockup.',
+      'Loads the selected funnel steps into Clone/Swipe, rewrites texts for our product, regenerates images, and creates one product per main + each selected upsell.',
   },
 ];
 
@@ -90,6 +90,19 @@ export interface PipelineInput {
    *  steps to derive how many products to generate (1 main + one per upsell/
    *  downsell page) — the count is read from the funnel, never guessed. */
   funnelId?: string;
+  /** 0-based indexes of the steps the user ticked. Empty / omitted = all. */
+  funnelStepIndexes?: number[];
+  /** Snapshot of the ticked steps (walk-merged funnels included). When
+   *  present, product count + swipe use this list, not the raw DB row. */
+  funnelSteps?: Array<{
+    index: number;
+    name: string;
+    pageType: string;
+    isUpsell?: boolean;
+    url?: string;
+    pageId?: string;
+    htmlUrl?: string;
+  }>;
 }
 
 export interface PipelineStepState {

@@ -24,7 +24,9 @@ import {
 } from '@/lib/brand-colors';
 import { classifyFile } from '@/lib/section-routing';
 import ImportCheckpointModal from '@/components/projects/ImportCheckpointModal';
-import { ChimeraFunnelPicker } from '@/components/projecthub/autopilot/ChimeraFunnelPicker';
+import { ChimeraFunnelPicker, type ChimeraFunnelPick } from '@/components/projecthub/autopilot/ChimeraFunnelPicker';
+
+const EMPTY_CHIMERA_FUNNEL: ChimeraFunnelPick = { funnelId: '', steps: [] };
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -1151,7 +1153,7 @@ export default function ProjectsPage() {
   const [apCompetitor, setApCompetitor] = useState('');
   const [apMarket, setApMarket] = useState('');
   const [apDesc, setApDesc] = useState('');
-  const [apFunnelId, setApFunnelId] = useState('');
+  const [apFunnelPick, setApFunnelPick] = useState<ChimeraFunnelPick>(EMPTY_CHIMERA_FUNNEL);
   const [apLaunching, setApLaunching] = useState(false);
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
@@ -1380,7 +1382,9 @@ export default function ProjectsPage() {
           competitorLink: apCompetitor.trim() || undefined,
           market: apMarket.trim() || undefined,
           description: apDesc.trim() || undefined,
-          funnelId: apFunnelId.trim() || undefined,
+          funnelId: apFunnelPick.steps.length ? apFunnelPick.funnelId || undefined : undefined,
+          funnelSteps: apFunnelPick.steps.length ? apFunnelPick.steps : undefined,
+          funnelStepIndexes: apFunnelPick.steps.length ? apFunnelPick.steps.map((s) => s.index) : undefined,
         }),
       });
       const data = await res.json();
@@ -1579,8 +1583,8 @@ export default function ProjectsPage() {
             <div className="mt-3">
               <ChimeraFunnelPicker
                 id="new-ap-funnel"
-                value={apFunnelId}
-                onChange={setApFunnelId}
+                value={apFunnelPick}
+                onChange={setApFunnelPick}
                 disabled={apLaunching}
                 selectClassName="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-slate-900 text-sm focus:outline-none focus:border-violet-500 disabled:opacity-50"
               />
@@ -1610,7 +1614,7 @@ export default function ProjectsPage() {
                   setApCompetitor('');
                   setApMarket('');
                   setApDesc('');
-                  setApFunnelId('');
+                  setApFunnelPick(EMPTY_CHIMERA_FUNNEL);
                 }}
                 disabled={apLaunching}
                 className="px-3 py-2 text-slate-500 hover:text-slate-900 text-sm rounded-lg transition-colors"

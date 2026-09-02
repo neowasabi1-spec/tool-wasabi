@@ -36,6 +36,16 @@ interface PipelineInput {
    *  steps to know how many products to generate: 1 main + one per upsell/
    *  downsell page. The number is derived from the funnel, never guessed. */
   funnelId?: string;
+  funnelStepIndexes?: number[];
+  funnelSteps?: Array<{
+    index: number;
+    name: string;
+    pageType: string;
+    isUpsell?: boolean;
+    url?: string;
+    pageId?: string;
+    htmlUrl?: string;
+  }>;
 }
 
 interface StepState {
@@ -595,21 +605,47 @@ interface FunnelProducts {
  *   - a landing DESIGN REFERENCE from its main page (URL or saved HTML).
  *  Everything comes from the funnel's own steps — never guessed. Null when no
  *  funnel is selected. */
-async function loadFunnelProducts(supabase: SupabaseClient, funnelId: string | undefined): Promise<FunnelProducts | null> {
-  if (!funnelId) return null;
+const UPSELL_PAGE_RE = /upsell|downsell|\boto\b|bump/i;
+
+function selectedArchiveSteps(input: PipelineInput, dbSteps: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+  if (Array.isArray(input.funnelSteps) && input.funnelSteps.length) {
+    return input.funnelSteps.map((s) => ({
+      name: s.name,
+      page_type: s.pageType,
+      step_type: s.pageType,
+      url_to_swipe: s.url || '',
+      page_id: s.pageId || '',
+      cloned_data: s.htmlUrl ? { htmlUrl: s.htmlUrl, source_url: s.url || '' } : { source_url: s.url || '' },
+    }));
+  }
+  const idx = Array.isArray(input.funnelStepIndexes) ? new Set(input.funnelStepIndexes) : null;
+  if (!idx || !idx.size) return dbSteps;
+  return dbSteps.filter((_, i) => idx.has(i));
+}
+
+async function loadFunnelProducts(supabase: SupabaseClient, input: PipelineInput): Promise<FunnelProducts | null> {
+  if (!input.funnelId && !(input.funnelSteps && input.funnelSteps.length)) return null;
   try {
-    const { data } = await supabase
-      .from('archived_funnels')
-      .select('id, name, steps, total_steps')
-      .eq('id', funnelId)
-      .single();
-    if (!data) return null;
-    const steps = Array.isArray(data.steps) ? (data.steps as Array<Record<string, unknown>>) : [];
+    let dbSteps: Array<Record<string, unknown>> = [];
+    let funnelName = '';
+    if (input.funnelId) {
+      const { data } = await supabase
+        .from('archived_funnels')
+        .select('id, name, steps, total_steps')
+        .eq('id', input.funnelId)
+        .single();
+      if (data) {
+        funnelName = String(data.name || '');
+        dbSteps = Array.isArray(data.steps) ? (data.steps as Array<Record<string, unknown>>) : [];
+      }
+    }
+    const steps = selectedArchiveSteps(input, dbSteps);
+    if (!steps.length) return null;
     const pages = steps.map((s) => ({
       name: String(s?.name || ''),
       type: String(s?.page_type || s?.step_type || '').toLowerCase(),
     }));
-    const upsells = pages.filter((p) => /upsell|downsell|\boto\b|bump/i.test(p.type)).length;
+    const upsells = pages.filter((p) => UPSELL_PAGE_RE.test(p.type)).length;
 
     // Pick the best step to imitate for the landing: prefer a sales/landing/
     // presell/advertorial page; otherwise the first step with a real URL.
@@ -630,7 +666,9 @@ async function loadFunnelProducts(supabase: SupabaseClient, funnelId: string | u
     const templateUrl = /^https?:\/\//i.test(url) ? url : '';
     const templateHtml = typeof cloned.html === 'string' ? (cloned.html as string) : '';
 
-    return { total: 1 + upsells, upsells, pages, funnelName: String(data.name || ''), templateUrl, templateHtml };
+    const hasMain = pages.some((p) => !UPSELL_PAGE_RE.test(p.type));
+    const total = (hasMain ? 1 : 0) + upsells || 1;
+    return { total, upsells, pages, funnelName: funnelName || 'Funnel', templateUrl, templateHtml };
   } catch {
     return null;
   }
@@ -1349,7 +1387,7 @@ async function runLanding(supabase: SupabaseClient, projectId: string, input: Pi
 
   // Read the SELECTED funnel to know how many products to make (1 main + one
   // per upsell/downsell page). The number comes from the funnel, not a guess.
-  const funnel = await loadFunnelProducts(supabase, input.funnelId);
+  const funnel = await loadFunnelProducts(supabase, input);
 
   const instructions = `Sei un copywriter di landing page direct response.
 Scrivi la STRUTTURA + COPY completo di una landing page ad alta conversione per questo prodotto.
@@ -1505,21 +1543,30 @@ async function loadMainProductImageUrl(supabase: SupabaseClient, projectId: stri
 const MAX_SWIPE_STEPS = 8;
 
 async function runSwipe(supabase: SupabaseClient, projectId: string, input: PipelineInput): Promise<StepResult> {
-  if (!input.funnelId) {
+  if (!input.funnelId && !(input.funnelSteps && input.funnelSteps.length)) {
     return { summary: 'No funnel selected in the launcher — Clone/Swipe step skipped.', output: '' };
   }
+  if (input.funnelId && input.funnelSteps && input.funnelSteps.length === 0) {
+    return { summary: 'No funnel steps selected — Clone/Swipe step skipped.', output: '' };
+  }
 
-  const { data: funnelRow, error: fErr } = await supabase
-    .from('archived_funnels')
-    .select('id, name, steps')
-    .eq('id', input.funnelId)
-    .single();
-  if (fErr || !funnelRow) throw new Error(`Selected funnel not found: ${fErr?.message || input.funnelId}`);
-
-  const steps = Array.isArray(funnelRow.steps) ? (funnelRow.steps as Array<Record<string, unknown>>) : [];
+  let dbSteps: Array<Record<string, unknown>> = [];
+  let funnelName = 'Funnel';
+  if (input.funnelId) {
+    const { data: funnelRow, error: fErr } = await supabase
+      .from('archived_funnels')
+      .select('id, name, steps')
+      .eq('id', input.funnelId)
+      .single();
+    if (fErr || !funnelRow) {
+      if (!input.funnelSteps?.length) throw new Error(`Selected funnel not found: ${fErr?.message || input.funnelId}`);
+    } else {
+      funnelName = String(funnelRow.name || 'Funnel');
+      dbSteps = Array.isArray(funnelRow.steps) ? (funnelRow.steps as Array<Record<string, unknown>>) : [];
+    }
+  }
+  const steps = selectedArchiveSteps(input, dbSteps);
   if (!steps.length) throw new Error('Selected funnel has no steps to swipe');
-
-  const funnelName = String(funnelRow.name || 'Funnel');
   const mainImageUrl = await loadMainProductImageUrl(supabase, projectId);
 
   // One Clone/Swipe page per funnel step, in order. The worker fills

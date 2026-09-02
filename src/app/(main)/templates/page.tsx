@@ -12,7 +12,7 @@ import QuizArchiveView from './QuizArchiveView';
 import { authFetch } from '@/lib/auth/client-fetch';
 import { toast } from 'sonner';
 import { confirmDialog } from '@/components/ui/confirm';
-import { dedupeStepsByUrl, isStandaloneTemplatePage } from '@/lib/archive-placement';
+import { countProductsFromSteps, dedupeStepsByUrl, isStandaloneTemplatePage } from '@/lib/archive-placement';
 
 interface SelectedPage {
   name: string;
@@ -332,6 +332,10 @@ export default function TemplatesPage() {
   const [selectedPages, setSelectedPages] = useState<SelectedPage[]>([]);
   const [selectedProductId, setSelectedProductId] = useState<string>('');
   const [isImporting, setIsImporting] = useState(false);
+  const selectedStepProducts = useMemo(
+    () => countProductsFromSteps(selectedPages),
+    [selectedPages],
+  );
 
   // Staged imports for "By Type" (accumulate before final import)
   const [stagedImports, setStagedImports] = useState<StagedImport[]>([]);
@@ -1265,6 +1269,9 @@ export default function TemplatesPage() {
         {/* ============ SAVED FUNNELS VIEW ============ */}
         {mainView === 'funnels' && (
           <div className="space-y-6">
+            <p className="text-sm text-gray-500">
+              Tick the steps you want to swipe (or the whole funnel). Product count is 1 main + one per selected upsell/OTO.
+            </p>
             {displayFunnels.length === 0 ? (
               <div className="bg-white rounded-lg border border-gray-200 p-12 text-center">
                 <Archive className="w-12 h-12 text-gray-300 mx-auto mb-3" />
@@ -2805,6 +2812,12 @@ export default function TemplatesPage() {
                   <CheckSquare className="w-5 h-5 text-green-400" />
                   <span className="font-semibold">{selectedPages.length}</span>
                   <span className="text-gray-300 text-sm">{selectedPages.length === 1 ? 'page selected' : 'pages selected'}</span>
+                  <span className="text-emerald-300 text-sm">
+                    · {selectedStepProducts.products} product{selectedStepProducts.products === 1 ? '' : 's'}
+                    {selectedStepProducts.upsells > 0
+                      ? ` (${selectedStepProducts.hasMain ? '1 main + ' : ''}${selectedStepProducts.upsells} upsell${selectedStepProducts.upsells === 1 ? '' : 's'})`
+                      : ' (main only)'}
+                  </span>
                 </div>
 
                 <div className="h-6 w-px bg-gray-700" />
@@ -2853,7 +2866,7 @@ export default function TemplatesPage() {
                         Importing...
                       </>
                     ) : (
-                      <>Import to Funnel &rarr;</>
+                      <>Swipe selected &rarr;</>
                     )}
                   </button>
                 )}

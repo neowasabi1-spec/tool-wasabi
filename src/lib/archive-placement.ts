@@ -137,13 +137,37 @@ export function isStandaloneTemplatePage(
   return true;
 }
 
-const UPSELL_RE = /upsell|downsell|\boto\b|bump/i;
+export const UPSELL_RE = /upsell|downsell|\boto\b|bump/i;
 
-/** Same multi-step / merged-walk list as Templates → Funnel, shaped for pickers. */
-export function pickerFunnelsFromArchive(
-  rows: Array<WalkMergeable & { project_id?: string | null }>,
-  projectId?: string,
-): Array<{
+export function isUpsellPageType(pageType: string): boolean {
+  return UPSELL_RE.test(pageType || '');
+}
+
+/** 1 main (if any non-upsell step) + one product per selected upsell/OTO. */
+export function countProductsFromSteps(
+  steps: Array<{ pageType?: string; page_type?: string; isUpsell?: boolean }>,
+): { products: number; upsells: number; hasMain: boolean } {
+  if (!steps.length) return { products: 0, upsells: 0, hasMain: false };
+  const upsells = steps.filter((s) =>
+    s.isUpsell ?? isUpsellPageType(String(s.pageType || s.page_type || '')),
+  ).length;
+  const hasMain = steps.some(
+    (s) => !(s.isUpsell ?? isUpsellPageType(String(s.pageType || s.page_type || ''))),
+  );
+  return { products: (hasMain ? 1 : 0) + upsells || 1, upsells, hasMain };
+}
+
+export type PickerStep = {
+  index: number;
+  name: string;
+  pageType: string;
+  isUpsell: boolean;
+  url?: string;
+  pageId?: string;
+  htmlUrl?: string;
+};
+
+export type PickerFunnel = {
   id: string;
   name: string;
   totalSteps: number;
@@ -151,24 +175,51 @@ export function pickerFunnelsFromArchive(
   products: number;
   isProject: boolean;
   created_at: string;
-}> {
+  steps: PickerStep[];
+};
+
+function slimPickerStep(s: Record<string, unknown>, i: number): PickerStep {
+  const pageType = String(s.page_type || s.step_type || '');
+  const cloned =
+    s.cloned_data && typeof s.cloned_data === 'object' && !Array.isArray(s.cloned_data)
+      ? (s.cloned_data as Record<string, unknown>)
+      : {};
+  const url = String(s.url_to_swipe || cloned.source_url || '').trim();
+  const htmlUrl = typeof cloned.htmlUrl === 'string' ? cloned.htmlUrl : '';
+  const pageId = typeof s.page_id === 'string' ? s.page_id : '';
+  return {
+    index: i,
+    name: String(s.name || `Step ${i + 1}`),
+    pageType,
+    isUpsell: isUpsellPageType(pageType),
+    url: url || undefined,
+    pageId: pageId || undefined,
+    htmlUrl: htmlUrl || undefined,
+  };
+}
+
+/** Same multi-step / merged-walk list as Templates → Funnel, shaped for pickers. */
+export function pickerFunnelsFromArchive(
+  rows: Array<WalkMergeable & { project_id?: string | null }>,
+  projectId?: string,
+): PickerFunnel[] {
   return mergeWalkFunnels(rows)
     .filter((row) => row.section !== 'page')
     .map((row) => {
       const raw = Array.isArray(row.steps) ? (row.steps as Record<string, unknown>[]) : [];
-      const steps = dedupeStepsByUrl(raw);
-      const upsells = steps.filter((s) =>
-        UPSELL_RE.test(String(s?.page_type || s?.step_type || '')),
-      ).length;
-      const totalSteps = Math.max(steps.length, archiveStepCount({ ...row, steps }));
+      const unique = dedupeStepsByUrl(raw);
+      const steps = unique.map((s, i) => slimPickerStep(s, i));
+      const counts = countProductsFromSteps(steps);
+      const totalSteps = Math.max(steps.length, archiveStepCount({ ...row, steps: unique }));
       return {
         id: row.id,
         name: row.name || 'Funnel',
         totalSteps,
-        upsells,
-        products: 1 + upsells,
+        upsells: counts.upsells,
+        products: counts.products,
         isProject: !!(projectId && row.project_id === projectId),
         created_at: row.created_at,
+        steps,
       };
     })
     .filter((f) => f.totalSteps >= 2)

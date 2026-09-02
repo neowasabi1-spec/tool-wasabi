@@ -9,7 +9,9 @@ import {
   Rocket, Loader2, CheckCircle2, XCircle, Circle, MinusCircle,
   ChevronDown, ChevronRight, RefreshCw, Sparkles,
 } from 'lucide-react';
-import { ChimeraFunnelPicker } from '@/components/projecthub/autopilot/ChimeraFunnelPicker';
+import { ChimeraFunnelPicker, type ChimeraFunnelPick } from '@/components/projecthub/autopilot/ChimeraFunnelPicker';
+
+const EMPTY_FUNNEL: ChimeraFunnelPick = { funnelId: '', steps: [] };
 
 type StepStatus = 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
 type JobStatus = 'pending' | 'running' | 'completed' | 'failed' | 'canceled';
@@ -47,7 +49,7 @@ export function AutopilotSection({
   const [competitorLink, setCompetitorLink] = useState('');
   const [market, setMarket] = useState('');
   const [description, setDescription] = useState('');
-  const [funnelId, setFunnelId] = useState('');
+  const [funnelPick, setFunnelPick] = useState<ChimeraFunnelPick>(EMPTY_FUNNEL);
   const [launching, setLaunching] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -116,7 +118,9 @@ export function AutopilotSection({
           competitorLink: competitorLink.trim() || undefined,
           market: market.trim() || undefined,
           description: description.trim() || undefined,
-          funnelId: funnelId.trim() || undefined,
+          funnelId: funnelPick.steps.length ? funnelPick.funnelId || undefined : undefined,
+          funnelSteps: funnelPick.steps.length ? funnelPick.steps : undefined,
+          funnelStepIndexes: funnelPick.steps.length ? funnelPick.steps.map((s) => s.index) : undefined,
         }),
       });
       const data = await res.json();
@@ -179,8 +183,8 @@ export function AutopilotSection({
           />
         </div>
         <ChimeraFunnelPicker
-          value={funnelId}
-          onChange={setFunnelId}
+          value={funnelPick}
+          onChange={setFunnelPick}
           disabled={running || launching}
         />
         <div className="space-y-1.5">
