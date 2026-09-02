@@ -10,14 +10,157 @@ export const LANDING_MEDIA_TYPE = 'landing_media';
 
 export type LandingMediaKind = 'image' | 'gif' | 'video';
 
+export const LANDING_SECTIONS = [
+  'hero',
+  'product',
+  'lifestyle',
+  'mechanism',
+  'benefits',
+  'ingredients',
+  'testimonials',
+  'comparison',
+  'offer',
+  'guarantee',
+  'faq',
+  'video',
+  'other',
+] as const;
+
+export type LandingSection = (typeof LANDING_SECTIONS)[number];
+
+export const LANDING_SECTION_LABEL: Record<LandingSection, string> = {
+  hero: 'Hero',
+  product: 'Product',
+  lifestyle: 'Lifestyle',
+  mechanism: 'How it works',
+  benefits: 'Benefits',
+  ingredients: 'Ingredients',
+  testimonials: 'Testimonials',
+  comparison: 'Comparison',
+  offer: 'Offer',
+  guarantee: 'Guarantee',
+  faq: 'FAQ',
+  video: 'Video',
+  other: 'Other',
+};
+
 export type LandingMediaItem = {
   id: number | string;
   kind: LandingMediaKind;
+  section: LandingSection;
   sourceUrl: string;
   storedUrl: string;
   filePath: string;
   name: string;
 };
+
+const SECTION_RULES: Array<{ section: LandingSection; re: RegExp }> = [
+  { section: 'hero', re: /\b(hero|banner|jumbotron|masthead|above[-_ ]?fold|first[-_ ]?screen|splash)\b/i },
+  { section: 'testimonials', re: /\b(testimonial|reviews?|rating|stars?|customer[-_ ]?(said|love)|ugc)\b/i },
+  { section: 'ingredients', re: /\b(ingredient|formula|composition|what'?s inside|actives?)\b/i },
+  { section: 'mechanism', re: /\b(how[-_ ]?it[-_ ]?works|mechanism|science|why[-_ ]?it|process|steps?)\b/i },
+  { section: 'comparison', re: /\b(compar|versus|\bvs\b|before[-_ ]?after|beforeafter|split[-_ ]?frame)\b/i },
+  { section: 'guarantee', re: /\b(guarantee|refund|money[-_ ]?back|risk[-_ ]?free|warranty)\b/i },
+  { section: 'faq', re: /\b(faq|questions?|answers?)\b/i },
+  { section: 'offer', re: /\b(offer|checkout|buy[-_ ]?now|add[-_ ]?to[-_ ]?cart|price|bundle|order|cta|call[-_ ]?to[-_ ]?action)\b/i },
+  { section: 'benefits', re: /\b(benefit|feature|advantage|results?|transform)\b/i },
+  { section: 'product', re: /\b(product|packshot|bottle|jar|box|device|mockup|packaging)\b/i },
+  { section: 'lifestyle', re: /\b(lifestyle|people|woman|man|using|in[-_ ]?use|portrait)\b/i },
+  { section: 'video', re: /\b(video|vsl|wistia|vimeo|youtube|player)\b/i },
+];
+
+const RELATED_SECTIONS: Record<LandingSection, LandingSection[]> = {
+  hero: ['product', 'lifestyle', 'video'],
+  product: ['hero', 'lifestyle', 'offer'],
+  lifestyle: ['product', 'hero', 'testimonials'],
+  mechanism: ['benefits', 'product'],
+  benefits: ['mechanism', 'product'],
+  ingredients: ['product', 'mechanism'],
+  testimonials: ['lifestyle', 'guarantee'],
+  comparison: ['product', 'benefits'],
+  offer: ['product', 'hero', 'guarantee'],
+  guarantee: ['offer', 'testimonials'],
+  faq: ['guarantee', 'offer'],
+  video: ['hero', 'product'],
+  other: [],
+};
+
+export function isLandingSection(v: string): v is LandingSection {
+  return (LANDING_SECTIONS as readonly string[]).includes(v);
+}
+
+/** Guess the landing block an asset sat in, from nearby markup + copy. */
+export function inferLandingSection(
+  blob: string,
+  opts?: { positionRatio?: number; kind?: LandingMediaKind },
+): LandingSection {
+  const text = String(blob || '').slice(0, 4000);
+  if (opts?.kind === 'video') {
+    const hit = SECTION_RULES.find((r) => r.section !== 'video' && r.re.test(text));
+    return hit?.section || 'video';
+  }
+  for (const rule of SECTION_RULES) {
+    if (rule.re.test(text)) return rule.section;
+  }
+  const ratio = opts?.positionRatio;
+  if (typeof ratio === 'number') {
+    if (ratio < 0.14) return 'hero';
+    if (ratio > 0.82) return 'offer';
+  }
+  return 'other';
+}
+
+export function sectionFromNearbyHtml(
+  html: string,
+  index: number,
+  tag = '',
+  opts?: { kind?: LandingMediaKind },
+): LandingSection {
+  const from = Math.max(0, index - 1400);
+  const to = Math.min(html.length, index + tag.length + 500);
+  const chunk = html.slice(from, to);
+  const ids = [...chunk.matchAll(/\b(?:id|class|data-section|data-name|aria-label)\s*=\s*["']([^"']+)["']/gi)]
+    .map((m) => m[1])
+    .join(' ');
+  const headings = [...chunk.matchAll(/<h[1-4][^>]*>([\s\S]*?)<\/h[1-4]>/gi)]
+    .map((m) => m[1].replace(/<[^>]+>/g, ' '))
+    .join(' ');
+  const alt = tag.match(/\balt\s*=\s*["']([^"']*)["']/i)?.[1] || '';
+  const text = chunk
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ');
+  const ratio = html.length ? index / html.length : 0;
+  return inferLandingSection(`${ids} ${headings} ${alt} ${text}`, { positionRatio: ratio, kind: opts?.kind });
+}
+
+/** Pair target slots with source media: same section first, then related, then leftovers. */
+export function matchLandingMediaToSlots<S extends { section: LandingSection }>(
+  slots: S[],
+  media: LandingMediaItem[],
+  used: Set<string>,
+): Array<{ slot: S; item: LandingMediaItem | null }> {
+  const take = (pred: (m: LandingMediaItem) => boolean): LandingMediaItem | null => {
+    const found = media.find((m) => !used.has(String(m.id)) && pred(m));
+    if (!found) return null;
+    used.add(String(found.id));
+    return found;
+  };
+  const out: Array<{ slot: S; item: LandingMediaItem | null }> = slots.map((slot) => {
+    const exact = take((m) => m.section === slot.section);
+    return { slot, item: exact };
+  });
+  for (const row of out) {
+    if (row.item) continue;
+    const related = RELATED_SECTIONS[row.slot.section] || [];
+    row.item = take((m) => related.includes(m.section));
+  }
+  for (const row of out) {
+    if (row.item) continue;
+    row.item = take(() => true);
+  }
+  return out;
+}
 
 type Sb = {
   from: (table: string) => any;
@@ -62,17 +205,25 @@ export function classifyLandingAsset(url: string): LandingMediaKind | null {
 }
 
 function pushAsset(
-  out: Array<{ url: string; kind: LandingMediaKind }>,
+  out: Array<{ url: string; kind: LandingMediaKind; section: LandingSection; position: number }>,
   seen: Set<string>,
   raw: string,
   pageUrl: string,
+  html: string,
+  index: number,
+  tag = '',
 ) {
   const abs = absolutize(raw, pageUrl);
   if (!abs || seen.has(abs) || JUNK_RE.test(abs)) return;
   const kind = classifyLandingAsset(abs);
   if (!kind) return;
   seen.add(abs);
-  out.push({ url: abs, kind });
+  out.push({
+    url: abs,
+    kind,
+    section: sectionFromNearbyHtml(html, index, tag, { kind }),
+    position: index,
+  });
 }
 
 function largestSrcset(srcset: string): string {
@@ -90,42 +241,52 @@ function largestSrcset(srcset: string): string {
   return best || (parts[0] || '').split(/\s+/)[0] || '';
 }
 
-/** Pull image / gif / video URLs out of a landing HTML document. */
+/** Pull image / gif / video URLs out of a landing HTML document, with section. */
 export function collectLandingAssetUrls(
   html: string,
   pageUrl: string,
-): Array<{ url: string; kind: LandingMediaKind }> {
-  const out: Array<{ url: string; kind: LandingMediaKind }> = [];
+): Array<{ url: string; kind: LandingMediaKind; section: LandingSection; position: number }> {
+  const out: Array<{ url: string; kind: LandingMediaKind; section: LandingSection; position: number }> = [];
   const seen = new Set<string>();
   const h = String(html || '');
   if (!h) return out;
 
   const attrRe = /\b(?:src|data-src|data-lazy-src|poster)\s*=\s*["']([^"']+)["']/gi;
   let m: RegExpExecArray | null;
-  while ((m = attrRe.exec(h)) !== null) pushAsset(out, seen, m[1], pageUrl);
+  while ((m = attrRe.exec(h)) !== null) {
+    pushAsset(out, seen, m[1], pageUrl, h, m.index, m[0]);
+  }
 
   const srcsetRe = /\bsrcset\s*=\s*["']([^"']+)["']/gi;
-  while ((m = srcsetRe.exec(h)) !== null) pushAsset(out, seen, largestSrcset(m[1]), pageUrl);
+  while ((m = srcsetRe.exec(h)) !== null) {
+    pushAsset(out, seen, largestSrcset(m[1]), pageUrl, h, m.index, m[0]);
+  }
 
   const cssRe = /url\(\s*['"]?([^'")\s]+)['"]?\s*\)/gi;
-  while ((m = cssRe.exec(h)) !== null) pushAsset(out, seen, m[1], pageUrl);
-
-  return out.slice(0, MAX_PER_PAGE);
-}
-
-function encodeName(kind: LandingMediaKind, sourceUrl: string): string {
-  return `${kind}|${sourceUrl}`.slice(0, 480);
-}
-
-function decodeName(name: string): { kind: LandingMediaKind; sourceUrl: string } {
-  const pipe = name.indexOf('|');
-  if (pipe > 0) {
-    const kind = name.slice(0, pipe) as LandingMediaKind;
-    if (kind === 'image' || kind === 'gif' || kind === 'video') {
-      return { kind, sourceUrl: name.slice(pipe + 1) };
-    }
+  while ((m = cssRe.exec(h)) !== null) {
+    pushAsset(out, seen, m[1], pageUrl, h, m.index, m[0]);
   }
-  return { kind: classifyLandingAsset(name) || 'image', sourceUrl: name };
+
+  return out.sort((a, b) => a.position - b.position).slice(0, MAX_PER_PAGE);
+}
+
+function encodeName(kind: LandingMediaKind, section: LandingSection, sourceUrl: string): string {
+  return `${kind}|${section}|${sourceUrl}`.slice(0, 500);
+}
+
+function isKind(v: string): v is LandingMediaKind {
+  return v === 'image' || v === 'gif' || v === 'video';
+}
+
+function decodeName(name: string): { kind: LandingMediaKind; section: LandingSection; sourceUrl: string } {
+  const parts = String(name || '').split('|');
+  if (parts.length >= 3 && isKind(parts[0]) && isLandingSection(parts[1])) {
+    return { kind: parts[0], section: parts[1], sourceUrl: parts.slice(2).join('|') };
+  }
+  if (parts.length >= 2 && isKind(parts[0])) {
+    return { kind: parts[0], section: 'other', sourceUrl: parts.slice(1).join('|') };
+  }
+  return { kind: classifyLandingAsset(name) || 'image', section: 'other', sourceUrl: name };
 }
 
 function publicUrl(sb: Sb, path: string): string {
@@ -147,6 +308,7 @@ export async function listLandingMedia(sb: Sb, projectId: string): Promise<Landi
     return {
       id: row.id,
       kind: meta.kind,
+      section: meta.section,
       sourceUrl: meta.sourceUrl,
       storedUrl,
       filePath: row.file_path,
@@ -196,11 +358,19 @@ export async function extractLandingMediaFromHtml(
   const assets = collectLandingAssetUrls(args.html, args.pageUrl);
   if (!assets.length) return { saved: 0, skipped: 0 };
   const existing = await listLandingMedia(sb, args.projectId);
-  const have = new Set(existing.map((e) => e.sourceUrl));
+  const have = new Map(existing.map((e) => [e.sourceUrl, e]));
   let saved = 0;
   let skipped = 0;
   for (const a of assets) {
-    if (have.has(a.url)) {
+    const prev = have.get(a.url);
+    if (prev) {
+      if (a.section !== 'other' && prev.section === 'other') {
+        await sb
+          .from('project_files')
+          .update({ original_name: encodeName(a.kind, a.section, a.url) })
+          .eq('id', prev.id);
+        prev.section = a.section;
+      }
       skipped++;
       continue;
     }
@@ -224,7 +394,7 @@ export async function extractLandingMediaFromHtml(
       project_id: args.projectId,
       file_type: LANDING_MEDIA_TYPE,
       file_path: key,
-      original_name: encodeName(a.kind, a.url),
+      original_name: encodeName(a.kind, a.section, a.url),
     };
     if (args.ownerUserId) row.owner_user_id = args.ownerUserId;
     const { error: insErr } = await sb.from('project_files').insert(row);
@@ -233,7 +403,15 @@ export async function extractLandingMediaFromHtml(
       skipped++;
       continue;
     }
-    have.add(a.url);
+    have.set(a.url, {
+      id: `new-${saved}`,
+      kind: a.kind,
+      section: a.section,
+      sourceUrl: a.url,
+      storedUrl: '',
+      filePath: key,
+      name: a.kind,
+    });
     saved++;
   }
   return { saved, skipped };

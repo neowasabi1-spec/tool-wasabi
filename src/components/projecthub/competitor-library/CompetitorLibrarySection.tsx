@@ -20,6 +20,7 @@ import {
 import { getUploadUrl } from "@/lib/projecthub-storage";
 import { getSupabaseBrowser } from "@/lib/supabase-browser";
 import { BUILD_LANGUAGES, LANGUAGE_OTHER } from "@/lib/video-languages";
+import { LANDING_SECTION_LABEL, type LandingSection } from "@/lib/landing-media";
 
 const BASE_URL = "";
 
@@ -3666,6 +3667,7 @@ function SectorOverview({ projectId, onOpenBrand }: { projectId: string; onOpenB
 type LandingMedia = {
   id: number | string;
   kind: "image" | "gif" | "video";
+  section?: LandingSection;
   sourceUrl: string;
   storedUrl: string;
   name: string;
@@ -3722,9 +3724,9 @@ function ImageLandingsView({ projectId }: { projectId: string }) {
         <div>
           <h3 className="text-lg font-bold text-foreground">Image landings</h3>
           <p className="text-sm text-muted-foreground max-w-2xl">
-            Images, GIFs and videos downloaded from this project&apos;s competitor landings.
-            Chimera puts them into the <b>template funnel you pick</b> — Affiliate keeps them identical,
-            Internal swipes them onto your product.
+            Images, GIFs and videos downloaded from this project&apos;s competitor landings,
+            tagged with the section they came from (hero, product, testimonials…).
+            Chimera puts each one back in the matching block of the funnel you pick.
           </p>
         </div>
         <Button onClick={extract} disabled={extracting} className="gap-2">
@@ -3754,11 +3756,10 @@ function ImageLandingsView({ projectId }: { projectId: string }) {
                 {images.map((m) => (
                   <div key={m.id} className="group relative rounded-xl border border-border overflow-hidden bg-muted/30">
                     <img src={m.storedUrl} alt={m.name} className="w-full h-36 object-cover" />
-                    {m.kind === "gif" && (
-                      <span className="absolute top-2 left-2 text-[10px] font-bold uppercase bg-black/70 text-white px-1.5 py-0.5 rounded">
-                        GIF
-                      </span>
-                    )}
+                    <span className="absolute top-2 left-2 text-[10px] font-bold uppercase bg-black/70 text-white px-1.5 py-0.5 rounded">
+                      {m.kind === "gif" ? "GIF · " : ""}
+                      {LANDING_SECTION_LABEL[m.section || "other"]}
+                    </span>
                     <button
                       type="button"
                       onClick={() => del(m)}
@@ -3781,6 +3782,9 @@ function ImageLandingsView({ projectId }: { projectId: string }) {
                 {videos.map((m) => (
                   <div key={m.id} className="group relative rounded-xl border border-border overflow-hidden bg-black">
                     <video src={m.storedUrl} controls className="w-full h-44 object-contain bg-black" />
+                    <span className="absolute top-2 left-2 text-[10px] font-bold uppercase bg-black/70 text-white px-1.5 py-0.5 rounded">
+                      {LANDING_SECTION_LABEL[m.section || "video"]}
+                    </span>
                     <button
                       type="button"
                       onClick={() => del(m)}

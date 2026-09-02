@@ -3,7 +3,10 @@ import { extractAllTextsUniversal } from '../../src/lib/universal-text-extractor
 import {
   extractLandingMediaForProject,
   listLandingMedia,
+  matchLandingMediaToSlots,
+  sectionFromNearbyHtml,
   type LandingMediaItem,
+  type LandingSection,
 } from '../../src/lib/landing-media';
 
 /**
@@ -67,7 +70,7 @@ interface SwipeCtx {
   imageMode: 'affiliate' | 'internal';
   landingStills: LandingMediaItem[];
   landingVideos: LandingMediaItem[];
-  mediaCursor: { still: number; video: number };
+  mediaUsed: Set<string>;
 }
 
 // ---------------------------------------------------------------------------
@@ -504,7 +507,15 @@ function applyRewrites(
 
 const IMG_JUNK_RE = /logo|icon|favicon|sprite|pixel|badge|payment|visa|mastercard|amex|paypal|klarna|apple-?pay|g-?pay|arrow|chevron|star|rating|trustpilot|flag|emoji|loader|spinner|spacer|blank\.|placeholder\./i;
 
-interface PageImage { src: string; alt: string; width: number; height: number; position: number; context: string; }
+interface PageImage {
+  src: string;
+  alt: string;
+  width: number;
+  height: number;
+  position: number;
+  context: string;
+  section: LandingSection;
+}
 
 function collectImages(html: string, sourceUrl: string): PageImage[] {
   const out: PageImage[] = [];
@@ -534,7 +545,8 @@ function collectImages(html: string, sourceUrl: string): PageImage[] {
       .replace(/\s+/g, ' ')
       .trim()
       .slice(0, 400);
-    out.push({ src, alt, width, height, position: m.index, context });
+    const section = sectionFromNearbyHtml(html, m.index, tag);
+    out.push({ src, alt, width, height, position: m.index, context, section });
     if (out.length >= 40) break;
   }
   // Earlier on the page = more important (hero first).
@@ -634,14 +646,8 @@ function replaceImageSrc(html: string, oldSrc: string, newUrl: string): string {
   return out;
 }
 
-function takeMedia(list: LandingMediaItem[], cursor: { n: number }, count: number): LandingMediaItem[] {
-  const slice = list.slice(cursor.n, cursor.n + count);
-  cursor.n += slice.length;
-  return slice;
-}
-
-function collectVideos(html: string): Array<{ src: string }> {
-  const out: Array<{ src: string }> = [];
+function collectVideos(html: string): Array<{ src: string; section: LandingSection }> {
+  const out: Array<{ src: string; section: LandingSection }> = [];
   const seen = new Set<string>();
   const re = /<video\b[^>]*>[\s\S]*?<\/video>/gi;
   let m: RegExpExecArray | null;
@@ -649,7 +655,7 @@ function collectVideos(html: string): Array<{ src: string }> {
     const src = m[0].match(/\bsrc\s*=\s*["']([^"']+)["']/i)?.[1] || '';
     if (!src || src.startsWith('data:') || seen.has(src)) continue;
     seen.add(src);
-    out.push({ src });
+    out.push({ src, section: sectionFromNearbyHtml(html, m.index, m[0], { kind: 'video' }) });
   }
   const srcRe = /<(?:source|video)\b[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*>/gi;
   while ((m = srcRe.exec(html)) !== null) {
@@ -657,7 +663,7 @@ function collectVideos(html: string): Array<{ src: string }> {
     if (!src || src.startsWith('data:') || seen.has(src)) continue;
     if (!/\.(mp4|webm|mov|m4v)(\?|#|$)/i.test(src) && !/<video/i.test(m[0])) continue;
     seen.add(src);
-    out.push({ src });
+    out.push({ src, section: sectionFromNearbyHtml(html, m.index, m[0], { kind: 'video' }) });
   }
   return out.slice(0, 6);
 }
@@ -666,18 +672,21 @@ function applyAffiliateMedia(
   html: string,
   stills: LandingMediaItem[],
   videos: LandingMediaItem[],
+  used: Set<string>,
 ): { html: string; placed: number; videos: number } {
   let out = html;
   let placed = 0;
   let vids = 0;
   const images = collectImages(out, '');
-  for (let i = 0; i < images.length && i < stills.length; i++) {
-    out = replaceImageSrc(out, images[i].src, stills[i].storedUrl);
+  for (const { slot, item } of matchLandingMediaToSlots(images, stills, used)) {
+    if (!item) continue;
+    out = replaceImageSrc(out, slot.src, item.storedUrl);
     placed++;
   }
   const vtags = collectVideos(out);
-  for (let i = 0; i < vtags.length && i < videos.length; i++) {
-    out = replaceImageSrc(out, vtags[i].src, videos[i].storedUrl);
+  for (const { slot, item } of matchLandingMediaToSlots(vtags, videos, used)) {
+    if (!item) continue;
+    out = replaceImageSrc(out, slot.src, item.storedUrl);
     vids++;
   }
   return { html: out, placed, videos: vids };
@@ -699,6 +708,9 @@ async function swipeImages(
 
   const images = collectImages(html, page.sourceUrl);
   if (!images.length) return { html: out, generated, productSwaps, analyzed };
+  const sourceBySrc = new Map(
+    matchLandingMediaToSlots(images, sourceStills, ctx.mediaUsed).map((p) => [p.slot.src, p.item]),
+  );
 
   const system = `You are a senior direct-response creative director. You "swipe" a competitor's landing-page image: detect the FORMAT of the original (before/after split-frame, product hero/packshot, lifestyle photo, ingredient close-up, mechanism diagram, infographic/chart, testimonial portrait, press clipping, UGC selfie, comparison table) and write ONE text-to-image prompt that recreates THE SAME FORMAT for OUR product — same tone, framing and layout. Never default to a before/after unless the original truly is one. No competitor brand names in the prompt.
 
@@ -713,7 +725,7 @@ Set "product_shot": true ONLY when the image is essentially a packshot/hero of t
   for (const img of images) {
     if (budget.imagesLeft <= 0) break;
     if (Date.now() > deadline - 60_000) break;
-    const source = sourceStills[images.indexOf(img)];
+    const source = sourceBySrc.get(img.src);
     const absSrc = source?.storedUrl || absolutizeSrc(img.src, page.sourceUrl);
 
     let analysis: ImageAnalysis | null = null;
@@ -816,17 +828,12 @@ CRITICAL RULES:
   //    affiliate = same files; internal = swipe those assets onto our product.
   let imgRes = { html, generated: 0, productSwaps: 0, analyzed: 0, placed: 0, videos: 0 };
   try {
-    const stills = takeMedia(ctx.landingStills, { n: ctx.mediaCursor.still }, MAX_IMAGES_PER_PAGE);
-    ctx.mediaCursor.still += stills.length;
-    const videos = takeMedia(ctx.landingVideos, { n: ctx.mediaCursor.video }, 4);
-    ctx.mediaCursor.video += videos.length;
-
-    if (ctx.imageMode === 'affiliate' && (stills.length || videos.length)) {
-      const applied = applyAffiliateMedia(html, stills, videos);
+    if (ctx.imageMode === 'affiliate' && (ctx.landingStills.length || ctx.landingVideos.length)) {
+      const applied = applyAffiliateMedia(html, ctx.landingStills, ctx.landingVideos, ctx.mediaUsed);
       html = applied.html;
       imgRes = { html, generated: 0, productSwaps: 0, analyzed: 0, placed: applied.placed, videos: applied.videos };
     } else {
-      imgRes = { ...(await swipeImages(sb, html, ctx, page, budget, deadline, stills)), placed: 0, videos: 0 };
+      imgRes = { ...(await swipeImages(sb, html, ctx, page, budget, deadline, ctx.landingStills)), placed: 0, videos: 0 };
       html = imgRes.html;
     }
   } catch (e) {
@@ -956,7 +963,7 @@ export default async (req: Request) => {
     imageMode,
     landingStills,
     landingVideos,
-    mediaCursor: { still: 0, video: 0 },
+    mediaUsed: new Set<string>(),
   };
 
   log(`swiping ${pages.length} page(s), market="${market || 'auto'}", mode=${imageMode}, landingMedia=${landingItems.length}, mockup=${mainImageUrl ? 'yes' : 'no'}`);
