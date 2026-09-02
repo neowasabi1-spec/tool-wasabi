@@ -76,15 +76,111 @@ type Tab = (typeof TABS)[number];
 type ViewMode = 'cards' | 'grid';
 const VIEW_STORAGE_KEY = 'projects:viewMode';
 
-const STATUS_OPTIONS = ['active', 'in_progress', 'paused', 'completed', 'archived'];
+const STATUS_OPTIONS = ['active', 'in_progress', 'off'] as const;
+
+const STATUS_LABEL: Record<string, string> = {
+  active: 'Active',
+  in_progress: 'Progress',
+  off: 'Off',
+  paused: 'Off',
+  completed: 'Completed',
+  archived: 'Archived',
+};
 
 const STATUS_COLOR: Record<string, string> = {
   active: 'bg-green-100 text-green-700',
   in_progress: 'bg-blue-100 text-blue-700',
-  paused: 'bg-amber-100 text-amber-700',
+  off: 'bg-slate-200 text-slate-600',
+  paused: 'bg-slate-200 text-slate-600',
   completed: 'bg-emerald-100 text-emerald-700',
   archived: 'bg-slate-100 text-slate-500',
 };
+
+function StatusPicker({
+  projectId,
+  status,
+  onChange,
+  className = '',
+}: {
+  projectId: string;
+  status: string;
+  onChange: (next: string) => void;
+  className?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const box = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => {
+      if (box.current && !box.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [open]);
+
+  const pick = async (next: string) => {
+    if (next === status) { setOpen(false); return; }
+    setBusy(true);
+    try {
+      const r = await fetch(`/api/projecthub/projects/${projectId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: next }),
+      });
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        throw new Error((j as { error?: string }).error || 'Save failed');
+      }
+      onChange(next);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Could not update status');
+    } finally {
+      setBusy(false);
+      setOpen(false);
+    }
+  };
+
+  return (
+    <div
+      ref={box}
+      className={`relative ${className}`}
+      onClick={e => { e.preventDefault(); e.stopPropagation(); }}
+    >
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => setOpen(v => !v)}
+        title="Change status"
+        className={`px-2 py-0.5 rounded-full text-[10px] font-medium capitalize transition-shadow hover:ring-2 hover:ring-offset-1 hover:ring-slate-300 ${
+          STATUS_COLOR[status] || 'bg-slate-100 text-slate-600'
+        } ${busy ? 'opacity-60' : ''}`}
+      >
+        {STATUS_LABEL[status] || status}
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full mt-1 z-30 min-w-[8rem] bg-white border border-slate-200 rounded-lg shadow-lg py-1">
+          {STATUS_OPTIONS.map(s => (
+            <button
+              key={s}
+              type="button"
+              onClick={() => pick(s)}
+              className={`w-full text-left px-3 py-1.5 text-xs font-medium hover:bg-slate-50 ${
+                s === status ? 'text-slate-900' : 'text-slate-600'
+              }`}
+            >
+              <span className={`inline-block w-1.5 h-1.5 rounded-full mr-2 align-middle ${
+                s === 'active' ? 'bg-green-500' : s === 'in_progress' ? 'bg-blue-500' : 'bg-slate-400'
+              }`} />
+              {STATUS_LABEL[s]}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -905,7 +1001,7 @@ function ProjectPanel({
                 >
                   {STATUS_OPTIONS.map(s => (
                     <option key={s} value={s}>
-                      {s}
+                      {STATUS_LABEL[s]}
                     </option>
                   ))}
                 </select>
@@ -1335,7 +1431,9 @@ export default function ProjectsPage() {
       p.name.toLowerCase().includes(search.toLowerCase()) ||
       p.domain.toLowerCase().includes(search.toLowerCase()) ||
       p.description.toLowerCase().includes(search.toLowerCase());
-    const matchStatus = filterStatus === 'all' || p.status === filterStatus;
+    const matchStatus = filterStatus === 'all'
+      || p.status === filterStatus
+      || (filterStatus === 'off' && p.status === 'paused');
     return matchSearch && matchStatus;
   });
 
@@ -1369,7 +1467,7 @@ export default function ProjectsPage() {
               <option value="all">All statuses</option>
               {STATUS_OPTIONS.map(s => (
                 <option key={s} value={s}>
-                  {s}
+                  {STATUS_LABEL[s]}
                 </option>
               ))}
             </select>
@@ -1598,13 +1696,12 @@ export default function ProjectsPage() {
                   <div className="w-10 h-10 rounded-lg bg-blue-50 flex items-center justify-center flex-shrink-0">
                     <FolderOpen className="w-5 h-5 text-blue-600" />
                   </div>
-                  <span
-                    className={`px-2 py-0.5 rounded-full text-[10px] font-medium mr-14 ${
-                      STATUS_COLOR[project.status] || 'bg-slate-100 text-slate-600'
-                    }`}
-                  >
-                    {project.status}
-                  </span>
+                  <StatusPicker
+                    projectId={project.id}
+                    status={project.status}
+                    className="mr-14"
+                    onChange={next => setProjects(prev => prev.map(p => p.id === project.id ? { ...p, status: next } : p))}
+                  />
                 </div>
                 <div className="flex items-center gap-2">
                   <h3 className="text-slate-900 font-semibold text-sm truncate">
@@ -1706,13 +1803,11 @@ export default function ProjectsPage() {
                     </div>
 
                     <div className="flex items-center gap-3 flex-shrink-0 ml-4">
-                      <span
-                        className={`px-2.5 py-1 rounded-full text-xs font-medium ${
-                          STATUS_COLOR[project.status] || 'bg-slate-100 text-slate-600'
-                        }`}
-                      >
-                        {project.status}
-                      </span>
+                      <StatusPicker
+                        projectId={project.id}
+                        status={project.status}
+                        onChange={next => setProjects(prev => prev.map(p => p.id === project.id ? { ...p, status: next } : p))}
+                      />
 
                       {/* Checkpoint button — imports the project's
                           funnel pages into the audit library. */}
