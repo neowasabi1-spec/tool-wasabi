@@ -6,13 +6,13 @@ import Header from '@/components/Header';
 import { useStore } from '@/store/useStore';
 import { BUILT_IN_PAGE_TYPE_OPTIONS, PAGE_TYPE_CATEGORIES, PageType, PageTypeOption, TemplateCategory, TEMPLATE_CATEGORY_OPTIONS, TemplateViewFormat, TEMPLATE_VIEW_FORMAT_OPTIONS, LIBRARY_TEMPLATES, normalizeArchiveType } from '@/types';
 import type { ArchivedFunnel } from '@/types/database';
-import { Plus, Trash2, Edit2, Save, X, FileCode, ExternalLink, Tag, Filter, Eye, EyeOff, Maximize2, Layers, HelpCircle, FolderPlus, Settings, Monitor, Smartphone, BookOpen, ChevronDown, ChevronRight, ChevronLeft, FolderOpen, Archive, CheckSquare, Square, Package, Sparkles, Send, Loader2, MessageCircle, Search, Download, Swords, Lock, Share2 } from 'lucide-react';
+import { Plus, Trash2, Edit2, Save, X, FileCode, ExternalLink, Tag, Filter, Eye, EyeOff, Maximize2, Layers, HelpCircle, FolderPlus, Settings, Monitor, Smartphone, BookOpen, ChevronDown, ChevronRight, ChevronLeft, FolderOpen, Archive, CheckSquare, Square, Package, Sparkles, Send, Loader2, MessageCircle, Search, Download, Swords, Lock } from 'lucide-react';
 import CachedScreenshot from '@/components/CachedScreenshot';
 import QuizArchiveView from './QuizArchiveView';
-import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { authFetch } from '@/lib/auth/client-fetch';
 import { toast } from 'sonner';
 import { confirmDialog } from '@/components/ui/confirm';
+import { dedupeStepsByUrl, isStandaloneTemplatePage } from '@/lib/archive-placement';
 
 interface SelectedPage {
   name: string;
@@ -320,11 +320,8 @@ function PageThumbnail({ url, alt, height = '180px', savedHtml, savedHtmlUrl }: 
 }
 
 export default function TemplatesPage() {
-  const { templates, addTemplate, updateTemplate, deleteTemplate, customPageTypes, addCustomPageType, deleteCustomPageType, archivedFunnels, archivedFunnelsLoaded, archivedFunnelsError, archivedFunnelsLoading, loadArchivedFunnels, deleteArchivedFunnel, deleteArchivedFunnelStep, setArchivedFunnelValchiriaFlag, setArchivedFunnelShareFlag, reorderArchivedWalkSteps, reclassifyArchivedFunnelSteps, products, addFunnelPage, funnelPages, deleteFunnelPage } = useStore();
+  const { templates, addTemplate, updateTemplate, deleteTemplate, customPageTypes, addCustomPageType, deleteCustomPageType, archivedFunnels, archivedFunnelsLoaded, archivedFunnelsError, archivedFunnelsLoading, loadArchivedFunnels, deleteArchivedFunnel, deleteArchivedFunnelStep, setArchivedFunnelValchiriaFlag, reorderArchivedWalkSteps, reclassifyArchivedFunnelSteps, products, addFunnelPage, funnelPages, deleteFunnelPage } = useStore();
   const [valchiriaTogglingId, setValchiriaTogglingId] = useState<string | null>(null);
-  const [shareTogglingId, setShareTogglingId] = useState<string | null>(null);
-  const { permissions: currentUserPermissions } = useCurrentUser();
-  const isMaster = currentUserPermissions?.role === 'master';
   const router = useRouter();
   
   const [mainView, setMainView] = useState<'templates' | 'funnels' | 'byType' | 'quiz'>('byType');
@@ -565,7 +562,9 @@ export default function TemplatesPage() {
 
   const pagesByType = useMemo(() => {
     const map: Record<string, { funnel_name: string; funnel_id: string; name: string; url_to_swipe: string; prompt: string; template_name: string; product_name: string; swipe_status: string; category: string; savedHtml: string | null; savedHtmlUrl: string | null; screenshotUrl: string | null }[]> = {};
-    (archivedFunnels || []).forEach((f: ArchivedFunnel) => {
+    const all = archivedFunnels || [];
+    all.forEach((f: ArchivedFunnel) => {
+      if (!isStandaloneTemplatePage(f, all)) return;
       const steps = (f.steps as { step_index: number; name: string; page_type: string; url_to_swipe: string; prompt: string; template_name: string; product_name: string; swipe_status: string; category?: string; cloned_data?: { category?: string; html?: string; htmlUrl?: string | null; screenshotDesktopUrl?: string | null }; swiped_data?: { html?: string; htmlUrl?: string | null } }[]) || [];
       steps.forEach((s) => {
         const t = normalizeArchiveType(s.page_type);
@@ -926,9 +925,15 @@ export default function TemplatesPage() {
     // folders. Single loose pages (1 step, no walk siblings) live in the
     // Pages view — showing them here turned the tab into a page dump.
     const funnelsOnly = [...passthrough, ...merged].filter((f) => {
+      if (f.section === 'page') return false;
       if ((f as DisplayFunnel).__merged) return true;
       const n = Array.isArray(f.steps) ? (f.steps as unknown[]).length : 0;
       return Math.max(n, f.total_steps || 0) > 1;
+    }).map((f) => {
+      const raw = Array.isArray(f.steps) ? (f.steps as Record<string, unknown>[]) : [];
+      const unique = dedupeStepsByUrl(raw).map((s, i) => ({ ...s, step_index: i + 1 }));
+      if (unique.length === raw.length) return f;
+      return { ...f, steps: unique, total_steps: unique.length };
     });
     return funnelsOnly.sort(
       (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
@@ -1191,7 +1196,7 @@ export default function TemplatesPage() {
     <div className="min-h-screen">
       <Header
         title="Template"
-        subtitle="Pagine singole e Funnel interi salvati come template"
+        subtitle="Libreria comune — le stesse pagine e gli stessi funnel per tutti"
       />
 
       <div className="p-6">
@@ -1370,41 +1375,6 @@ export default function TemplatesPage() {
                           </button>
                         );
                       })()}
-                      {/* Share-with-users toggle — master only. Decoupled
-                          from the personal show_in_valchiria flag so the
-                          master can keep a funnel in their own Valchiria
-                          without exposing it to every collaborator. */}
-                      {!isMerged && !funnel.isShared && isMaster && (
-                        <button
-                          onClick={async (e) => {
-                            e.stopPropagation();
-                            if (shareTogglingId) return;
-                            setShareTogglingId(funnel.id);
-                            try {
-                              await setArchivedFunnelShareFlag(funnel.id, !funnel.share_with_users);
-                            } catch (err) {
-                              toast.error(`Could not update share flag: ${err instanceof Error ? err.message : String(err)}`);
-                            } finally {
-                              setShareTogglingId(null);
-                            }
-                          }}
-                          disabled={shareTogglingId === funnel.id}
-                          title={funnel.share_with_users
-                            ? 'Stop sharing with users (only you will see it in Valchiria)'
-                            : 'Share with every user (read-only in their Valchiria + Template)'}
-                          className={`ml-2 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
-                            funnel.share_with_users
-                              ? 'bg-amber-50 border-amber-300 text-amber-800 hover:bg-amber-100'
-                              : 'bg-white border-gray-200 text-gray-500 hover:border-amber-300 hover:text-amber-700'
-                          } disabled:opacity-60 disabled:cursor-not-allowed`}
-                        >
-                          {shareTogglingId === funnel.id
-                            ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                            : <Share2 className="w-3.5 h-3.5" />
-                          }
-                          {funnel.share_with_users ? 'Shared' : 'Share with users'}
-                        </button>
-                      )}
                       {!funnel.isShared && (
                         <button
                           onClick={async (e) => {

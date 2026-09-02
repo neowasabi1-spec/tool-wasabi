@@ -15,6 +15,7 @@ import {
 import { adExistsByExternalId, insertCompetitorAd, ensureBrand } from '@/lib/competitor-ads';
 import { transcribeVideo } from '@/lib/transcribe';
 import { absolutizeUrlsInHtml } from '@/lib/spa-rescue';
+import { isOnNiche } from '@/lib/competitor-relevance';
 
 // Download cap for a single creative. Generous so even long VSL-style videos
 // get stored permanently (the Supabase bucket file-size limit must allow it).
@@ -271,10 +272,16 @@ export async function ingestDataset(opts: {
   brandId?: number;
   datasetId: string;
   platform?: AdPlatform;
+  /** Discovery-only: keep creatives that mention the product, drop the rest. */
+  includeTerms?: string[];
+  excludeTerms?: string[];
 }): Promise<{ added: number; skipped: number; failed: number; brands: number; landings: number }> {
   const { projectId, datasetId } = opts;
   const platform: AdPlatform = opts.platform || 'meta';
   const fixedBrandId = opts.brandId && opts.brandId > 0 ? opts.brandId : 0;
+  const includeTerms = opts.includeTerms || [];
+  const excludeTerms = opts.excludeTerms || [];
+  const discoveryFilter = !fixedBrandId && includeTerms.length > 0;
   const map = mapperForPlatform(platform);
   const items = await getDatasetItems(datasetId);
   const startedAt = Date.now();
@@ -291,6 +298,14 @@ export async function ingestDataset(opts: {
   for (const raw of items) {
     const mapped = map(raw);
     if (!mapped) { failed++; continue; }
+
+    const nicheParts = [
+      mapped.pageName, mapped.headline, mapped.hook, mapped.bodyText, mapped.landingUrl,
+    ];
+    if (discoveryFilter && !isOnNiche(nicheParts, includeTerms, excludeTerms)) {
+      skipped++;
+      continue;
+    }
 
     // Collect REAL advertiser landing pages from Meta (snapshot.link_url) and
     // Google (landing_page_url). TikTok only exposes its own ad-detail link, so

@@ -321,7 +321,7 @@ export async function savePageToArchive(args: {
   pageType?: string;
   category?: string;
   tags?: string[];
-  section?: 'funnel' | 'quiz';
+  section?: 'page' | 'funnel' | 'quiz';
   projectId?: string;
 }): Promise<SavePageResult> {
   const name = (args.name || '').trim();
@@ -331,7 +331,7 @@ export async function savePageToArchive(args: {
   const pageId = randomUUID();
   const base = getBaseUrl();
   const pageType = args.pageType || 'landing';
-  const section = args.section || 'funnel';
+  const section = args.section || 'page';
   const htmlUrl = `/api/funnel-html?pageId=${pageId}&kind=cloned&variant=desktop`;
 
   const step = {

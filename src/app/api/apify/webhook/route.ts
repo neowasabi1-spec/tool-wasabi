@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { ingestDataset, webhookSecret } from '@/lib/competitor-scrape';
 import type { AdPlatform } from '@/lib/apify';
+import { decodeLexiconParam } from '@/lib/competitor-relevance';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -55,6 +56,8 @@ export async function POST(req: NextRequest) {
     brandId: brandId > 0 ? brandId : undefined,
     datasetId,
     platform,
+    includeTerms: decodeLexiconParam(url.searchParams.get('include')),
+    excludeTerms: decodeLexiconParam(url.searchParams.get('exclude')),
   });
   return NextResponse.json({ ok: true, platform, ...result });
 }

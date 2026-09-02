@@ -290,9 +290,15 @@ async function captureScreenshots(tabId) {
 function canonUrl(u) {
   try {
     const x = new URL(u);
-    return (x.origin + x.pathname).replace(/\/$/, '');
+    x.hash = '';
+    ['fbclid', 'gclid', 'gbraid', 'wbraid', 'msclkid', 'ttclid',
+      'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'utm_id',
+      'c1', 'c2', 'c3', 'aff_id', 'affiliate_id', 'transaction_id', 'clickid'].forEach((k) => x.searchParams.delete(k));
+    const path = (x.pathname || '/').replace(/\/+$/, '') || '/';
+    const q = x.searchParams.toString();
+    return `${x.origin.toLowerCase()}${path.toLowerCase()}${q ? `?${q}` : ''}`;
   } catch {
-    return String(u || '');
+    return String(u || '').toLowerCase().replace(/\/+$/, '');
   }
 }
 
@@ -419,18 +425,41 @@ function findForwardCandidates() {
   const BAD = /(log ?in|sign ?in|sign ?up|register|menu|\bhome\b|\bback\b|indietro|privacy|terms|termini|cookie|\bclose\b|chiudi|account|my cart|\bsearch\b|cerca|faq|contact|contatt|support|assist|\bshare\b|condividi|facebook|instagram|twitter|tiktok|youtube|refund|\breturn\b|\breso\b)/i;
   const ANSWER = /^(true|false|yes|no|s[iì]|vero|falso|a|b|c|d|1|2|3|4|male|female|maschio|femmina|agree|disagree|d'accordo)$/i;
   const vpH = window.innerHeight || 800;
-  // Page-builder navigation controls (Zipify / FunnelKit / GemPages style) route
-  // via JS, often with generic or promo text and no href — detect them by their
-  // signature attributes so they win regardless of wording.
-  const isBuilderCta = (el) => {
-    const s = `${el.getAttribute('onclick') || ''} ${el.getAttribute('action') || ''} ${el.id || ''} ${el.getAttribute('data-id') || ''} ${el.className || ''}`;
-    return /linkmethod|fkt-link|k_btn|\bkbtn\b|funnel|gem-|route/i.test(s) || el.getAttribute('action') === 'route';
+  // Any page-builder / JS-routed control (ClickFunnels, Funnelish, FunnelKit,
+  // Zipify, CheckoutChamp, Kartra, GHL, Shopify, Elementor, Webflow, …).
+  // Detect by attributes — wording is often just a promo line.
+  const destOf = (el) => {
+    const keys = ['href', 'data-href', 'data-url', 'data-redirect', 'data-link', 'data-next', 'data-page', 'data-page-url', 'data-goto', 'formaction'];
+    for (const k of keys) {
+      const v = el.getAttribute(k);
+      if (v && !/^(#|javascript:|void\(0\))/i.test(v.trim())) return v.trim();
+    }
+    return '';
   };
-  // Cast a wide net: real tags, ARIA/handler hooks, common builder classes, AND
-  // anything visibly styled as clickable (inline cursor:pointer). Whatever tech
-  // or wording a funnel uses, its forward control almost always falls in here.
+  const isBuilderCta = (el) => {
+    const s = [
+      el.getAttribute('onclick') || '', el.getAttribute('action') || '',
+      el.id || '', el.getAttribute('data-id') || '', el.className || '',
+      el.getAttribute('data-action') || '',
+    ].join(' ');
+    return /linkmethod|fkt-link|k_btn|\bkbtn\b|elbutton|elButton|funnel|gem-|route|cartflows|konnektive|checkoutchamp|samcart|kartra|gohighlevel|leadconnector|thrive|elementor|webflow|shopify|buy-button|add-to-cart/i.test(s)
+      || el.getAttribute('action') === 'route'
+      || !!destOf(el);
+  };
+  // Cast a wide net across tags, ARIA, handlers, builder classes, AND anything
+  // styled clickable. Do not require ClickFunnels-specific markup.
   const nodes = Array.from(
-    document.querySelectorAll('a,button,input[type=submit],input[type=button],[role=button],[onclick],[action="route"],[id^="fkt-link"],[data-id^="fkt-link"],.btn,[class*="btn"],[class*="cta"],[class*="k_btn"],[class*="answer"],[class*="option"],[class*="choice"],[style*="pointer"]'),
+    document.querySelectorAll([
+      'a', 'button', 'input[type=submit]', 'input[type=button]', 'input[type=image]',
+      '[role=button]', '[onclick]', '[action="route"]',
+      '[data-href]', '[data-url]', '[data-redirect]', '[data-link]', '[data-next]',
+      '[id^="fkt-link"]', '[data-id^="fkt-link"]',
+      '.btn', '.elButton', '.elButtonPrimary',
+      '[class*="btn"]', '[class*="cta"]', '[class*="k_btn"]',
+      '[class*="answer"]', '[class*="option"]', '[class*="choice"]',
+      '[class*="elButton"]', '[class*="cart"]',
+      '[style*="pointer"]',
+    ].join(',')),
   );
   const sel = (node) => {
     if (node.id) return '#' + CSS.escape(node.id);
@@ -457,14 +486,18 @@ function findForwardCandidates() {
     let style;
     try { style = getComputedStyle(el); } catch { continue; }
     if (style.visibility === 'hidden' || style.display === 'none' || Number(style.opacity) === 0) continue;
-    const rawHref = el.tagName === 'A' ? (el.getAttribute('href') || '') : '';
+    const rawHref = destOf(el) || (el.tagName === 'A' ? (el.getAttribute('href') || '') : '');
     if (/^(tel:|mailto:|sms:|https?:\/\/(wa\.me|api\.whatsapp))/i.test(rawHref)) continue;
-    const txt = String(el.innerText || el.value || el.getAttribute('aria-label') || '').trim().slice(0, 100);
-    if (!txt && el.tagName !== 'A') continue;
+    const txt = String(el.innerText || el.value || el.getAttribute('aria-label') || el.getAttribute('alt') || '').trim().slice(0, 100);
+    if (!txt && el.tagName !== 'A' && !rawHref) continue;
     if (BAD.test(txt)) continue;
 
     const builder = isBuilderCta(el);
-    const href = el.tagName === 'A' ? el.href : '';
+    let href = '';
+    if (rawHref && !/^(#|javascript:|void\(0\))/i.test(rawHref)) {
+      try { href = new URL(rawHref, location.href).href; } catch { href = ''; }
+    }
+    if (!href && el.tagName === 'A' && el.href && /^https?:/i.test(el.href)) href = el.href;
     // For plain anchors with a real href, only keep ones that look like a forward
     // step (CTA text or a funnel-ish destination) — nav/footer links must not pull
     // us away. Builder controls (JS-routed, usually href-less) are exempt.
@@ -474,7 +507,8 @@ function findForwardCandidates() {
     }
 
     let score = 0;
-    if (builder) score += 150; // JS-routed page-builder CTA — the real forward control
+    if (href && /^https?:/i.test(href)) score += 80; // real destination beats a dead JS button
+    if (builder) score += 90;
     if (CTA.test(txt)) score += 100;
     if (ANSWER.test(txt)) score += 60; // quiz/survey answer buttons
     if (style.cursor === 'pointer') score += 25; // styled/clickable element
@@ -618,6 +652,21 @@ function neutralizeNewTab() {
   } catch (e) { /* ignore */ }
 }
 
+// Any builder can pop a native alert/confirm when a button has no next step
+// (ClickFunnels "No page routing found", Funnelish, custom JS…). During a walk
+// those dialogs freeze the tab until a human clicks OK. Swallow them and flag
+// the click as a miss so we try the next button.
+function swallowBlockingDialogs() {
+  if (window.__wsbDialogPatched) return;
+  window.__wsbDialogPatched = true;
+  window.__wsbDialogBlocked = false;
+  const mark = () => { window.__wsbDialogBlocked = true; };
+  const wrap = (fn) => function () { mark(); return typeof fn === 'function' ? undefined : fn; };
+  try { window.alert = wrap(window.alert); } catch (e) { /* ignore */ }
+  try { window.confirm = function () { mark(); return true; }; } catch (e) { /* ignore */ }
+  try { window.prompt = function () { mark(); return ''; }; } catch (e) { /* ignore */ }
+}
+
 // Safety net: watch for a tab spawned by `openerId` (a CTA that still slips a new
 // tab past neutraliseNewTab). Capture its URL and close it so we can continue the
 // walk in the original tab instead of losing the funnel to a background tab.
@@ -675,9 +724,12 @@ async function clickTrusted(tabId, selector) {
   try {
     await dbgAttach(tabId);
     attached = true;
+    await dbgSend(tabId, 'Page.enable', {}).catch(() => {});
     await dbgSend(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, button: 'none', buttons: 0 });
     await dbgSend(tabId, 'Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', buttons: 1, clickCount: 1 });
     await dbgSend(tabId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', buttons: 0, clickCount: 1 });
+    await sleep(250);
+    try { await dbgSend(tabId, 'Page.handleJavaScriptDialog', { accept: true }); } catch { /* no dialog */ }
     return true;
   } catch {
     return false;
@@ -727,6 +779,8 @@ async function funnelNext(tabId, visitedArr) {
     // MAIN world so the window.open override patches the page's own function.
     try { await chrome.scripting.executeScript({ target: { tabId }, func: neutralizeNewTab, world: 'MAIN' }); }
     catch { /* page may block injection */ }
+    try { await chrome.scripting.executeScript({ target: { tabId }, func: swallowBlockingDialogs, world: 'MAIN' }); }
+    catch { /* page may block injection */ }
 
     let candidates = [];
     try {
@@ -754,6 +808,23 @@ async function funnelNext(tabId, visitedArr) {
         const watcher = watchNewTab(tabId);
         const clicked = await clickSelector(tabId, cand.selector);
         if (clicked) {
+          let dialogMiss = false;
+          try {
+            const dr = await chrome.scripting.executeScript({
+              target: { tabId },
+              world: 'MAIN',
+              func: () => {
+                const hit = !!window.__wsbDialogBlocked;
+                window.__wsbDialogBlocked = false;
+                return hit;
+              },
+            });
+            dialogMiss = !!(dr && dr[0] && dr[0].result);
+          } catch { /* ignore */ }
+          if (dialogMiss) {
+            watcher.stop();
+            continue;
+          }
           const ch = await waitForChange(tabId, before, sig, 12000);
           if (ch.type === 'nav') { watcher.stop(); return finalizeNav(tabId, visited); }
           if (ch.type === 'content') { sig = ch.sig; progressed = true; moved = true; }
@@ -1223,6 +1294,7 @@ async function runFunnelWalk(opts) {
     });
     if (data.funnelId) funnelId = data.funnelId;
     visited.push(page.url);
+    if (data.duplicate) return { skipped: true };
     savedCount++;
     await setWalkState({ savedCount, funnelId, status: `Step ${savedCount} saved ✓` });
     return { ok: true };
@@ -1261,7 +1333,9 @@ async function runFunnelWalk(opts) {
 
   const finalStatus = savedCount
     ? `Funnel saved: ${savedCount} step${savedCount > 1 ? 's' : ''} ✓ (${domain})`
-    : 'Could not capture any funnel step.';
+    : funnelId
+      ? `Funnel already saved (${domain}) — no new pages.`
+      : 'Could not capture any funnel step.';
   await setWalkState({ running: false, done: true, savedCount, funnelId, status: finalStatus });
   walkRunning = false;
 }

@@ -6,6 +6,7 @@ import { canAccessProject } from '@/lib/auth/project-access';
 import { absolutizeUrlsInHtml } from '@/lib/spa-rescue';
 import { PAGE_TYPE_OPTIONS } from '@/types';
 import { inferPageType, isUpsellType, isDownsellType } from '@/lib/server/page-type-classifier';
+import { canonPageUrl, dedupeStepsByUrl, stepSourceUrl } from '@/lib/archive-placement';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -226,7 +227,20 @@ export async function POST(req: NextRequest) {
     // upsert here on purpose.
 
     const folderName = String(body.funnelName || category || name).slice(0, 120);
-    const existingId = String(body.funnelId || '').trim();
+    let existingId = String(body.funnelId || '').trim();
+
+    // Reuse an existing folder of the same name + destination (template vs
+    // competitor project) so a second walk doesn't create a twin funnel.
+    if (!existingId && folderName) {
+      let q = supabaseAdmin
+        .from('archived_funnels')
+        .select('id, steps, owner_user_id, project_id')
+        .eq('owner_user_id', userId)
+        .eq('name', folderName);
+      q = projectId ? q.eq('project_id', projectId) : q.is('project_id', null);
+      const { data: twins } = await q.order('created_at', { ascending: false }).limit(8);
+      if (twins && twins.length > 0) existingId = String(twins[0].id);
+    }
 
     // Append to an existing folder the caller owns.
     if (existingId) {
@@ -236,7 +250,33 @@ export async function POST(req: NextRequest) {
         .eq('id', existingId)
         .maybeSingle();
       if (row && row.owner_user_id === userId) {
-        const steps = Array.isArray(row.steps) ? (row.steps as unknown[]) : [];
+        const rawSteps = Array.isArray(row.steps) ? (row.steps as Record<string, unknown>[]) : [];
+        const steps = dedupeStepsByUrl(rawSteps);
+        const incoming = canonPageUrl(url);
+        const already = incoming
+          ? steps.find((s) => canonPageUrl(stepSourceUrl(s as { url_to_swipe?: unknown; cloned_data?: { source_url?: unknown } })) === incoming)
+          : undefined;
+        if (already) {
+          if (steps.length !== rawSteps.length) {
+            await supabaseAdmin
+              .from('archived_funnels')
+              .update({ steps, total_steps: steps.length, section: 'funnel' })
+              .eq('id', existingId);
+          }
+          const existingPageId = String((already as { page_id?: string }).page_id || existingId);
+          return NextResponse.json({
+            success: true,
+            duplicate: true,
+            funnelId: existingId,
+            stepIndex: Number((already as { step_index?: number }).step_index) || steps.length,
+            pageId: existingPageId,
+            projectId,
+            htmlUrl: String((already as { cloned_data?: { htmlUrl?: string } }).cloned_data?.htmlUrl || htmlUrl),
+            editorUrl: `/edit/${existingPageId}`,
+            screenshotDesktopUrl: desktopUrl,
+            screenshotMobileUrl: mobileUrl,
+          });
+        }
         if (!typeWasExplicit) {
           const prior = steps as Array<{ page_type?: string }>;
           step.page_type = inferPageType({
@@ -251,7 +291,12 @@ export async function POST(req: NextRequest) {
         steps.push(step);
         await supabaseAdmin
           .from('archived_funnels')
-          .update({ steps, total_steps: steps.length })
+          .update({
+            steps,
+            total_steps: steps.length,
+            section: 'funnel',
+            ...(projectId ? { project_id: projectId } : {}),
+          })
           .eq('id', existingId);
         return NextResponse.json({
           success: true,
@@ -278,6 +323,7 @@ export async function POST(req: NextRequest) {
         name: folderName,
         total_steps: 1,
         steps: [step],
+        section: 'funnel',
         owner_user_id: userId,
         ...(projectId ? { project_id: projectId } : {}),
       })
@@ -331,6 +377,7 @@ export async function POST(req: NextRequest) {
       name,
       total_steps: 1,
       steps: [buildStep()],
+      section: 'page',
       owner_user_id: userId,
       ...(projectId ? { project_id: projectId } : {}),
     })

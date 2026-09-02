@@ -64,9 +64,7 @@ export async function POST(req: NextRequest) {
     for (const { id } of renames) {
       const row = byId.get(id);
       if (!row) return NextResponse.json({ error: 'not_found', id }, { status: 404 });
-      if (row.owner_user_id !== ctx.userId && !ctx.isMaster) {
-        return NextResponse.json({ error: 'forbidden', id }, { status: 403 });
-      }
+      // Shared Templates library: any logged-in user may reorder.
     }
 
     for (const { id, step } of renames) {

@@ -61,12 +61,15 @@ export async function DELETE(
 
     const { data: row, error: lookupErr } = await supabaseAdmin
       .from('archived_funnels')
-      .select('owner_user_id, steps')
+      .select('owner_user_id, steps, project_id')
       .eq('id', id)
       .maybeSingle();
     if (lookupErr) throw lookupErr;
     if (!row) return NextResponse.json({ error: 'not_found' }, { status: 404 });
-    if (row.owner_user_id !== ctx.userId && !ctx.isMaster) {
+    // Templates is a shared library (project_id null): any logged-in user
+    // may edit/delete. Project-scoped rows stay owner/master only.
+    const isCommonLibrary = row.project_id == null;
+    if (!isCommonLibrary && row.owner_user_id !== ctx.userId && !ctx.isMaster) {
       return NextResponse.json({ error: 'forbidden' }, { status: 403 });
     }
 

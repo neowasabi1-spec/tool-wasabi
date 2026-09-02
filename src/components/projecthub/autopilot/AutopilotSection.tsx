@@ -9,6 +9,7 @@ import {
   Rocket, Loader2, CheckCircle2, XCircle, Circle, MinusCircle,
   ChevronDown, ChevronRight, RefreshCw, Sparkles,
 } from 'lucide-react';
+import { authFetch } from '@/lib/auth/client-fetch';
 
 type StepStatus = 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
 type JobStatus = 'pending' | 'running' | 'completed' | 'failed' | 'canceled';
@@ -48,6 +49,8 @@ export function AutopilotSection({
   const [description, setDescription] = useState('');
   const [funnelId, setFunnelId] = useState('');
   const [funnels, setFunnels] = useState<Array<{ id: string; name: string; totalSteps: number; upsells: number; products: number; isProject: boolean }>>([]);
+  const [funnelsError, setFunnelsError] = useState<string | null>(null);
+  const [funnelsLoaded, setFunnelsLoaded] = useState(false);
   const [launching, setLaunching] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -99,11 +102,19 @@ export function AutopilotSection({
     // landing's style/structure (its main page is used as the design reference).
     (async () => {
       try {
-        const res = await fetch(`/api/projecthub/projects/${projectId}/funnels`, { cache: 'no-store' });
-        if (!res.ok) return;
-        const rows = await res.json();
+        const res = await authFetch(`/api/projecthub/projects/${projectId}/funnels`, { cache: 'no-store' });
+        const rows = await res.json().catch(() => null);
+        if (!res.ok) {
+          setFunnelsError((rows && rows.error) || `Could not load funnels (${res.status})`);
+          return;
+        }
         if (Array.isArray(rows)) setFunnels(rows);
-      } catch { /* ignore */ }
+        else setFunnelsError('Could not load funnels');
+      } catch (e) {
+        setFunnelsError((e as Error).message || 'Could not load funnels');
+      } finally {
+        setFunnelsLoaded(true);
+      }
     })();
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
@@ -205,6 +216,14 @@ export function AutopilotSection({
               </option>
             ))}
           </select>
+          {funnelsLoaded && funnelsError && (
+            <p className="text-xs text-red-500">{funnelsError}</p>
+          )}
+          {funnelsLoaded && !funnelsError && funnels.length === 0 && (
+            <p className="text-xs text-muted-foreground">
+              No multi-step funnels in Templates yet. Save a funnel (not a single page) and it will show up here.
+            </p>
+          )}
           <p className="text-xs text-muted-foreground">
             Pick one funnel and it drives everything automatically: the landing is generated as an HTML mockup
             inspired by the funnel&apos;s main page (style + structure), and the final step generates 1 main product

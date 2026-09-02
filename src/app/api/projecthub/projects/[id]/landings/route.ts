@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { canAccessProject } from '@/lib/auth/project-access';
+import { dedupeStepsByUrl } from '@/lib/archive-placement';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -62,8 +63,11 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   // landing card per step. Single-step rows (legacy / one-off saves) yield a
   // single card with the plain row id, so their existing delete/edit links keep
   // working; multi-step folders use a composite id `${rowId}::${index}`.
+  const persist: { id: string; steps: Record<string, unknown>[] }[] = [];
   const landings = ((data || []) as ArchiveRow[]).flatMap((row) => {
-    const steps = Array.isArray(row.steps) ? row.steps : [];
+    const raw = (Array.isArray(row.steps) ? row.steps : []) as Record<string, unknown>[];
+    const steps = dedupeStepsByUrl(raw) as ArchiveStep[];
+    if (steps.length !== raw.length) persist.push({ id: row.id, steps: steps as Record<string, unknown>[] });
     if (!steps.length) return [];
     const multi = steps.length > 1;
     return steps.map((step, i) => {
@@ -88,6 +92,17 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
       };
     });
   });
+
+  if (persist.length) {
+    await Promise.all(
+      persist.map(({ id, steps }) =>
+        supabaseAdmin
+          .from('archived_funnels')
+          .update({ steps, total_steps: steps.length })
+          .eq('id', id),
+      ),
+    );
+  }
 
   return NextResponse.json(landings);
 }

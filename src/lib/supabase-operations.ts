@@ -982,6 +982,7 @@ export async function fetchArchivedFunnels(): Promise<ArchivedFunnel[]> {
   const { data, error } = await supabase
     .from('archived_funnels')
     .select('*')
+    .is('project_id', null)
     .order('created_at', { ascending: false });
 
   if (error) {

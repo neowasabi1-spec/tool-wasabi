@@ -387,9 +387,15 @@ const FUNNEL_MAX_STEPS = 14;
 function canonUrl(u) {
   try {
     const x = new URL(u);
-    return (x.origin + x.pathname).replace(/\/$/, '');
+    x.hash = '';
+    ['fbclid', 'gclid', 'gbraid', 'wbraid', 'msclkid', 'ttclid',
+      'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'utm_id',
+      'c1', 'c2', 'c3', 'aff_id', 'affiliate_id', 'transaction_id', 'clickid'].forEach((k) => x.searchParams.delete(k));
+    const path = (x.pathname || '/').replace(/\/+$/, '') || '/';
+    const q = x.searchParams.toString();
+    return `${x.origin.toLowerCase()}${path.toLowerCase()}${q ? `?${q}` : ''}`;
   } catch {
-    return String(u || '');
+    return String(u || '').toLowerCase().replace(/\/+$/, '');
   }
 }
 
@@ -433,6 +439,7 @@ async function onSaveFunnel(token, projectId) {
       await chrome.storage.local.set({ wasabi_last_project: data.projectId }).catch(() => {});
     }
     visited.push(page.url);
+    if (data.duplicate) return { skipped: true };
     saved.push({ name: `${domain} — Step ${index}`, pageId: data.pageId });
     return { ok: true };
   };
@@ -488,7 +495,10 @@ async function onSaveFunnel(token, projectId) {
   }
 
   if (!saved.length) {
-    setStatus('Could not capture any funnel step.', 'err');
+    setStatus(
+      funnelId ? `Funnel already saved (${domain}) — no new pages.` : 'Could not capture any funnel step.',
+      funnelId ? 'ok' : 'err',
+    );
     return;
   }
   const projLink = projectId

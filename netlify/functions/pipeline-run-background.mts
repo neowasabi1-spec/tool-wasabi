@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { getCoreKnowledge, getKnowledgeForTask } from '../../src/knowledge/copywriting';
+import { encodeLexiconParam, parseDiscoveryLexicon } from '../../src/lib/competitor-relevance';
 
 /**
  * Background function (up to 15 min) that RUNS the Project Autopilot pipeline
@@ -337,7 +338,9 @@ function countryFromMarket(input: PipelineInput): string {
 
 function fbAdLibrarySearchUrl(keyword: string, country: string): string {
   const q = encodeURIComponent(keyword.trim());
-  return `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=${country}&q=${q}&search_type=keyword_unordered&media_type=all`;
+  // keyword_exact: the phrase must appear. keyword_unordered matches ANY
+  // word ("coffee" → coffee shops, machines, grocery).
+  return `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=${country}&q=${q}&search_type=keyword_exact&media_type=all`;
 }
 
 /** Start an Apify FB Ad Library run (mirrors src/lib/apify.ts startAdsLibraryRun).
@@ -1003,24 +1006,6 @@ Genera il brief completo. Basati fortemente sulla RICERCA DI MERCATO fornita nel
   };
 }
 
-/** Parse a Claude keyword list (one per line / comma) into clean terms. */
-function parseKeywords(raw: string): string[] {
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const line of (raw || '').split(/[\n,]+/)) {
-    const k = line
-      .replace(/^[\s\-*0-9.)\]]+/, '')      // strip bullets / numbering
-      .replace(/^["'`]+|["'`]+$/g, '')       // strip quotes
-      .trim();
-    if (k.length < 2 || k.length > 60) continue;
-    const key = k.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(k);
-  }
-  return out;
-}
-
 async function runCompetitor(supabase: SupabaseClient, projectId: string, input: PipelineInput): Promise<StepResult> {
   const link = (input.competitorLink || '').trim();
   const project = await loadProject(supabase, projectId);
@@ -1034,30 +1019,41 @@ async function runCompetitor(supabase: SupabaseClient, projectId: string, input:
   //    TikTok and Google. These MUST be in the target market's language, otherwise
   //    the ad libraries surface foreign (US/English) brands.
   const geo = (input.market || input.language || '').trim() || country;
-  const kwInstructions = `You are a media buyer doing competitor research for the ${geo} market. Output the BEST 5 SEARCH KEYWORDS to find LOCAL competitors' ads in the Meta Ad Library, TikTok Ad Library and Google Ads Transparency Center for ${geo}.
-CRITICAL RULES:
-- Write the keywords in the LOCAL LANGUAGE actually spoken by consumers/advertisers in ${geo} (e.g. German for a German market). Do NOT output English keywords unless the market itself is English-speaking. English keywords surface the wrong (foreign) brands.
-- Use the exact words a native buyer would type: the product category, the core benefit/outcome, and the problem — phrased the way a local advertiser writes ad copy.
-- Use ONLY product-category, problem and benefit terms (for a vaginal-health product that would be e.g. "Milchsäurebakterien", "Scheidenflora", "Intimflora", "vaginale Gesundheit", "Scheideninfektion vorbeugen"). Do NOT output brand or company names — a brand search pulls in that competitor's UNRELATED products and makes the results generic.
-- NEVER output generic platform/tech/agency terms (e.g. "shopify", "ecommerce", "dropshipping", "print on demand", "agency") — only product- and market-specific terms.
-- Output ONLY the keywords, one per line. No numbering, no explanations.`;
-  const kwUser = `Product: ${productName}\nMarket: ${input.market || country}\n${link ? `Competitor link: ${link}\n` : ''}\nGive the keywords now.`;
-  const kwRaw = await callClaude({ task: 'ad', instructions: kwInstructions, brief, marketResearch: research, userMessage: kwUser, maxTokens: 300 });
+  const kwInstructions = `You are a media buyer doing competitor research for the ${geo} market.
+Find LOCAL competitors' ads for THIS exact product — not the whole category.
 
-  // Use only the topical (category/problem/benefit) keywords Claude produced.
-  // The competitor link's brand name is deliberately NOT used as a keyword — a
-  // brand search surfaces that company's unrelated products (generic results).
-  let keywords = parseKeywords(kwRaw);
-  if (keywords.length === 0) keywords = [productName.split('/')[0].trim() || 'competitor'];
-  // Cap the number of keyword searches per platform to control Apify spend.
-  const searchTerms = keywords.slice(0, 2);
+Output EXACTLY this format (no extra text):
+
+SEARCH
+<3 phrases, one per line>
+
+INCLUDE
+<8-12 short phrases that MUST appear in a relevant ad>
+
+EXCLUDE
+<8-12 off-niche traps this search often pulls>
+
+CRITICAL RULES:
+- SEARCH phrases MUST be 2-4 words (never a single word). Combine product FORM + outcome, the way a local advertiser writes copy. Examples: "caffè dimagrante", "slim coffee", "Kaffee abnehmen" — NOT "caffè", NOT "dimagrire", NOT "coffee", NOT "weight loss".
+- Write SEARCH + INCLUDE in the LOCAL LANGUAGE of ${geo}. Add the English product-form phrase only if locals also advertise in English.
+- INCLUDE = product form + problem + distinctive ingredients/mechanism (enough to recognize a real competitor ad).
+- EXCLUDE = adjacent junk the loose libraries return (shops, machines, generic retail, other health verticals, jobs, SaaS).
+- Do NOT output brand or company names.
+- NEVER output generic platform/tech terms (shopify, ecommerce, dropshipping).`;
+  const kwUser = `Product: ${productName}\nMarket: ${input.market || country}\n${input.description ? `Description: ${input.description}\n` : ''}${link ? `Competitor link: ${link}\n` : ''}\nGive SEARCH / INCLUDE / EXCLUDE now.`;
+  const kwRaw = await callClaude({ task: 'ad', instructions: kwInstructions, brief, marketResearch: research, userMessage: kwUser, maxTokens: 500 });
+
+  const lexicon = parseDiscoveryLexicon(kwRaw, productName);
+  const searchTerms = lexicon.search;
+  const includeTerms = lexicon.include;
+  const excludeTerms = lexicon.exclude;
 
   const base = siteBaseUrl();
   const token = process.env.APIFY_KEY || process.env.APIFY_TOKEN || process.env.APIFY_API_TOKEN || '';
   if (!token || !base) {
     return {
       summary: !token ? 'Competitor keywords generated (Apify not configured: APIFY_KEY missing).' : 'Competitor keywords generated (URL env missing).',
-      output: `Search keywords:\n- ${keywords.join('\n- ')}`,
+      output: `Search keywords:\n- ${searchTerms.join('\n- ')}\nInclude:\n- ${includeTerms.join('\n- ')}`,
     };
   }
   const secret = process.env.APIFY_WEBHOOK_SECRET || process.env.CRON_SECRET || '';
@@ -1067,6 +1063,8 @@ CRITICAL RULES:
   const webhookFor = (platform: string): string => {
     const params = new URLSearchParams({ projectId, platform });
     if (secret) params.set('secret', secret);
+    if (includeTerms.length) params.set('include', encodeLexiconParam(includeTerms));
+    if (excludeTerms.length) params.set('exclude', encodeLexiconParam(excludeTerms));
     return `${base}/api/apify/webhook?${params.toString()}`;
   };
 
@@ -1074,23 +1072,26 @@ CRITICAL RULES:
   const runs: string[] = [];
   const started: Array<{ platform: string; keyword: string; runId: string }> = [];
 
-  // Meta / Facebook — one keyword search per term (or the pasted library URL).
+  // Meta / Facebook — pasted library URL is a chosen competitor: keep every
+  // ad (no include/exclude). Keyword searches stay filtered.
   if (link && isMetaAdLibrary(link)) {
-    const run = await startApifyAdsRun(link, 25, webhookFor('meta'));
+    const params = new URLSearchParams({ projectId, platform: 'meta' });
+    if (secret) params.set('secret', secret);
+    const run = await startApifyAdsRun(link, 25, `${base}/api/apify/webhook?${params.toString()}`);
     if (run.ok) { started.push({ platform: 'meta', keyword: '(link)', runId: run.runId! }); }
     else runs.push(`Meta(link): ${run.error}`);
   }
   for (const kw of searchTerms) {
     const metaUrl = fbAdLibrarySearchUrl(kw, country);
-    const run = await startApifyAdsRun(metaUrl, 25, webhookFor('meta'));
+    const run = await startApifyAdsRun(metaUrl, 12, webhookFor('meta'));
     if (run.ok) started.push({ platform: 'meta', keyword: kw, runId: run.runId! });
     else runs.push(`Meta(${kw}): ${run.error}`);
 
-    const tk = await startApifyTiktokRun(kw, country, 25, webhookFor('tiktok'));
+    const tk = await startApifyTiktokRun(kw, country, 12, webhookFor('tiktok'));
     if (tk.ok) started.push({ platform: 'tiktok', keyword: kw, runId: tk.runId! });
     else runs.push(`TikTok(${kw}): ${tk.error}`);
 
-    const gg = await startApifyGoogleRun(kw, country, 25, webhookFor('google'));
+    const gg = await startApifyGoogleRun(kw, country, 12, webhookFor('google'));
     if (gg.ok) started.push({ platform: 'google', keyword: kw, runId: gg.runId! });
     else runs.push(`Google(${kw}): ${gg.error}`);
   }
@@ -1103,6 +1104,8 @@ CRITICAL RULES:
 
   const output = [
     `Search keywords: ${searchTerms.join(', ')}`,
+    includeTerms.length ? `Keep ads mentioning: ${includeTerms.join(', ')}` : '',
+    excludeTerms.length ? `Drop off-niche: ${excludeTerms.slice(0, 8).join(', ')}` : '',
     started.length ? `\nStarted runs:\n${started.map((s) => `- ${s.platform} · "${s.keyword}" · run ${s.runId}`).join('\n')}` : '',
     runs.length ? `\nErrors:\n${runs.map((r) => `- ${r}`).join('\n')}` : '',
   ].filter(Boolean).join('\n');
