@@ -64,7 +64,7 @@ export const PIPELINE_STEPS: PipelineStepDef[] = [
     key: 'swipe',
     label: 'Funnel swipe (Clone/Swipe)',
     description:
-      'Loads the selected funnel steps into Clone/Swipe, rewrites texts for our product, regenerates images, and creates one product per main + each selected upsell.',
+      'Loads the selected funnel steps into Clone/Swipe, rewrites texts, restyles the palette, and regenerates every photo for our product (Internal) or places competitor landing media as-is (Affiliate).',
   },
 ];
 

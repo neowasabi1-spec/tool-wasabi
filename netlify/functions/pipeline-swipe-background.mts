@@ -44,6 +44,8 @@ const BATCH_SIZE = 30;
 const BATCH_CONCURRENCY = 3;
 const MAX_IMAGES_PER_PAGE = 5;
 const MAX_IMAGES_TOTAL = 18;
+const MAX_IMAGES_PER_PAGE_RESTYLE = 18;
+const MAX_IMAGES_TOTAL_RESTYLE = 36;
 
 function getSupabase() {
   const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
@@ -61,6 +63,17 @@ interface SwipePage {
   type: string;
 }
 
+interface RestyleSpec {
+  primary: string;
+  secondary: string;
+  accent: string;
+  background: string;
+  ink: string;
+  avatar: string;
+  stylePrefix: string;
+  palette: Array<{ from: string; to: string }>;
+}
+
 interface SwipeCtx {
   projectId: string;
   productName: string;
@@ -71,6 +84,7 @@ interface SwipeCtx {
   landingStills: LandingMediaItem[];
   landingVideos: LandingMediaItem[];
   mediaUsed: Set<string>;
+  restyle: RestyleSpec | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -517,7 +531,7 @@ interface PageImage {
   section: LandingSection;
 }
 
-function collectImages(html: string, sourceUrl: string): PageImage[] {
+function collectImages(html: string, sourceUrl: string, restyle = false): PageImage[] {
   const out: PageImage[] = [];
   const seen = new Set<string>();
   const tagRe = /<img\b[^>]*>/gi;
@@ -529,10 +543,14 @@ function collectImages(html: string, sourceUrl: string): PageImage[] {
     if (!src || src.startsWith('data:')) continue;
     if (/\.svg(\?|#|$)/i.test(src)) continue;
     const alt = tag.match(/\balt\s*=\s*["']([^"']*)["']/i)?.[1] || '';
-    if (IMG_JUNK_RE.test(src) || IMG_JUNK_RE.test(alt)) continue;
+    const junk = restyle
+      ? /favicon|sprite|pixel|1x1|tracking|doubleclick|visa|mastercard|amex|paypal|klarna|apple-?pay|loader|spinner|spacer/i
+      : IMG_JUNK_RE;
+    if (junk.test(src) || junk.test(alt)) continue;
     const width = Number.parseInt(tag.match(/\bwidth\s*=\s*["']?(\d+)/i)?.[1] || '0', 10);
     const height = Number.parseInt(tag.match(/\bheight\s*=\s*["']?(\d+)/i)?.[1] || '0', 10);
-    if ((width && width < 80) || (height && height < 80)) continue;
+    const minPx = restyle ? 40 : 80;
+    if ((width && width < minPx) || (height && height < minPx)) continue;
     if (seen.has(src)) continue;
     seen.add(src);
     // Nearby text gives the vision model the section's message.
@@ -552,7 +570,7 @@ function collectImages(html: string, sourceUrl: string): PageImage[] {
   // Earlier on the page = more important (hero first).
   out.sort((a, b) => a.position - b.position);
   void sourceUrl;
-  return out.slice(0, MAX_IMAGES_PER_PAGE);
+  return out.slice(0, restyle ? MAX_IMAGES_PER_PAGE_RESTYLE : MAX_IMAGES_PER_PAGE);
 }
 
 function absolutizeSrc(src: string, sourceUrl: string): string {
@@ -646,6 +664,101 @@ function replaceImageSrc(html: string, oldSrc: string, newUrl: string): string {
   return out;
 }
 
+function normHex(raw: string): string {
+  let h = raw.replace('#', '').toLowerCase();
+  if (h.length === 3) h = h.split('').map((c) => c + c).join('');
+  return /^[0-9a-f]{6}$/.test(h) ? `#${h}` : '';
+}
+
+function topPageHex(html: string, limit = 14): string[] {
+  const counts = new Map<string, number>();
+  const re = /#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})\b/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html)) !== null) {
+    const hex = normHex(m[0]);
+    if (!hex) continue;
+    counts.set(hex, (counts.get(hex) || 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([h]) => h)
+    .slice(0, limit);
+}
+
+function applyPalette(html: string, spec: RestyleSpec): string {
+  let out = html;
+  const pairs = spec.palette.filter((p) => normHex(p.from) && normHex(p.to) && normHex(p.from) !== normHex(p.to));
+  for (const { from, to } of pairs) {
+    const a = normHex(from);
+    const b = normHex(to);
+    out = out.split(a).join(b);
+    out = out.split(a.toUpperCase()).join(b);
+    if (a[1] === a[2] && a[3] === a[4] && a[5] === a[6]) {
+      const short = `#${a[1]}${a[3]}${a[5]}`;
+      out = out.split(short).join(b);
+      out = out.split(short.toUpperCase()).join(b);
+    }
+  }
+  return out;
+}
+
+function parseRestyleSpec(raw: string): RestyleSpec | null {
+  try {
+    let c = raw.trim().replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/i, '');
+    const s = c.indexOf('{');
+    const e = c.lastIndexOf('}');
+    if (s >= 0 && e > s) c = c.slice(s, e + 1);
+    const obj = JSON.parse(c) as Record<string, unknown>;
+    const palette = Array.isArray(obj.palette)
+      ? (obj.palette as Array<Record<string, unknown>>)
+          .map((p) => ({ from: normHex(String(p.from || '')), to: normHex(String(p.to || '')) }))
+          .filter((p) => p.from && p.to)
+      : [];
+    const stylePrefix = String(obj.stylePrefix || obj.style_prefix || '').trim();
+    if (!stylePrefix) return null;
+    return {
+      primary: normHex(String(obj.primary || '')) || '#c45c12',
+      secondary: normHex(String(obj.secondary || '')) || '#7a1f1a',
+      accent: normHex(String(obj.accent || '')) || '#e8b84a',
+      background: normHex(String(obj.background || '')) || '#fff8f2',
+      ink: normHex(String(obj.ink || '')) || '#1a120c',
+      avatar: String(obj.avatar || 'same demographic as the original, updated for our product').slice(0, 280),
+      stylePrefix: stylePrefix.slice(0, 700),
+      palette,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function buildRestyleSpec(html: string, ctx: SwipeCtx): Promise<RestyleSpec | null> {
+  const colors = topPageHex(html);
+  const system = `You are an art director restyling a competitor landing into OUR product — same layout, new visual world (ChatGPT swipe quality).
+Return STRICT JSON only:
+{
+  "primary":"#rrggbb",
+  "secondary":"#rrggbb",
+  "accent":"#rrggbb",
+  "background":"#rrggbb",
+  "ink":"#rrggbb",
+  "avatar":"one consistent person/casting description used in EVERY lifestyle photo",
+  "stylePrefix":"20-40 words: photography style + color world + product look, prepended to every image prompt",
+  "palette":[{"from":"#old","to":"#new"}, ...]
+}
+Map EVERY supplied old hex that is a brand/section color (not #fff/#000 unless they are accent fills). New palette must match OUR product (flavor, category, mood). No competitor brand names.`;
+  const user = `OUR PRODUCT: ${ctx.productName}
+${ctx.productContext ? `CONTEXT:\n${ctx.productContext.slice(0, 2500)}` : ''}
+OLD PAGE HEX COLORS (most used first): ${colors.join(', ') || '(none found)'}
+Design a full restyle so green-product pages become our product the way a designer would: new palette, same grid.`;
+  try {
+    const raw = await callClaudeText(system, user, 1200, 60_000);
+    return parseRestyleSpec(raw);
+  } catch (e) {
+    console.warn('[swipe] restyle spec failed:', (e as Error).message);
+    return null;
+  }
+}
+
 function collectVideos(html: string): Array<{ src: string; section: LandingSection }> {
   const out: Array<{ src: string; section: LandingSection }> = [];
   const seen = new Set<string>();
@@ -706,17 +819,20 @@ async function swipeImages(
   let productSwaps = 0;
   let analyzed = 0;
 
-  const images = collectImages(html, page.sourceUrl);
+  const restyle = ctx.imageMode === 'internal';
+  const images = collectImages(html, page.sourceUrl, restyle);
   if (!images.length) return { html: out, generated, productSwaps, analyzed };
   const sourceBySrc = new Map(
     matchLandingMediaToSlots(images, sourceStills, ctx.mediaUsed).map((p) => [p.slot.src, p.item]),
   );
 
+  const spec = ctx.restyle;
   const system = `You are a senior direct-response creative director. You "swipe" a competitor's landing-page image: detect the FORMAT of the original (before/after split-frame, product hero/packshot, lifestyle photo, ingredient close-up, mechanism diagram, infographic/chart, testimonial portrait, press clipping, UGC selfie, comparison table) and write ONE text-to-image prompt that recreates THE SAME FORMAT for OUR product — same tone, framing and layout. Never default to a before/after unless the original truly is one. No competitor brand names in the prompt.
 
 OUR PRODUCT: ${ctx.productName}
 ${ctx.productContext ? `PRODUCT CONTEXT:\n${ctx.productContext.slice(0, 3000)}` : ''}
 ${ctx.market ? `TARGET MARKET: ${ctx.market} — any text visible inside the generated image MUST be in this market's local language.` : ''}
+${spec ? `VISUAL WORLD (must match every image): ${spec.stylePrefix}\nCASTING (same person in every lifestyle shot): ${spec.avatar}\nPALETTE: ${spec.primary} / ${spec.secondary} / ${spec.accent}` : ''}
 
 Return STRICT JSON only, no prose:
 {"product_shot": true|false, "format": "...", "prompt": "..."}
@@ -750,10 +866,13 @@ Surrounding page copy: ${img.context || '(none)'}`;
       continue;
     }
 
+    const prompt = spec
+      ? `${spec.stylePrefix}. Same consistent look across the landing. Casting: ${spec.avatar}. Product: ${ctx.productName}. ${analysis.prompt}`
+      : analysis.prompt;
     const falUrl = await falGenerateImageUrl(IMG_MODEL_T2I, {
-      prompt: analysis.prompt,
+      prompt: prompt.slice(0, 1800),
       image_size: falImageSize(img),
-      quality: 'medium',
+      quality: restyle && generated < 3 ? 'high' : 'medium',
       num_images: 1,
       output_format: 'png',
     });
@@ -823,9 +942,13 @@ CRITICAL RULES:
     changes = applied.changes;
   }
 
-  // 3) IMAGES — from Competitor Library → Image landings, placed into THIS
-  //    template-funnel page (not the competitor funnel).
-  //    affiliate = same files; internal = swipe those assets onto our product.
+  if (ctx.imageMode === 'internal') {
+    if (!ctx.restyle) ctx.restyle = await buildRestyleSpec(originalHtml, ctx);
+    if (ctx.restyle) html = applyPalette(html, ctx.restyle);
+  }
+
+  // 3) IMAGES — Internal = full restyle (palette + every photo). Affiliate =
+  //    drop Image-landings files into the matching sections unchanged.
   let imgRes = { html, generated: 0, productSwaps: 0, analyzed: 0, placed: 0, videos: 0 };
   try {
     if (ctx.imageMode === 'affiliate' && (ctx.landingStills.length || ctx.landingVideos.length)) {
@@ -856,6 +979,7 @@ CRITICAL RULES:
     `${replacements}/${texts.length} texts rewritten` +
     `${imgRes.placed ? `, ${imgRes.placed} landing images placed (affiliate)` : ''}` +
     `${imgRes.videos ? `, ${imgRes.videos} landing videos placed` : ''}` +
+    `${ctx.restyle ? ', palette restyled' : ''}` +
     `${imgRes.generated ? `, ${imgRes.generated} images regenerated (GPT Image 2)` : ''}` +
     `${imgRes.productSwaps ? `, ${imgRes.productSwaps} product shots replaced with the product mockup` : ''}`;
 
@@ -964,12 +1088,13 @@ export default async (req: Request) => {
     landingStills,
     landingVideos,
     mediaUsed: new Set<string>(),
+    restyle: null,
   };
 
   log(`swiping ${pages.length} page(s), market="${market || 'auto'}", mode=${imageMode}, landingMedia=${landingItems.length}, mockup=${mainImageUrl ? 'yes' : 'no'}`);
 
   const deadline = startedAt + GLOBAL_BUDGET_MS;
-  const budget = { imagesLeft: MAX_IMAGES_TOTAL };
+  const budget = { imagesLeft: imageMode === 'internal' ? MAX_IMAGES_TOTAL_RESTYLE : MAX_IMAGES_TOTAL };
   let ok = 0;
   let failed = 0;
 

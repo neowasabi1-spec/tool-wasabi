@@ -36,8 +36,8 @@ export function ChimeraImageModeToggle({
       </div>
       <p className="text-xs text-muted-foreground">
         {value === 'affiliate'
-          ? 'Puts the images / GIFs / videos from Competitor Library → Image landings into the funnel you picked, unchanged.'
-          : 'Takes those Image landings assets and swipes them onto this project’s product inside the funnel you picked.'}
+          ? 'Puts Image landings files into the matching sections of the funnel you picked, unchanged.'
+          : 'Full restyle: new color palette + every photo regenerated for this product (same layout as the template).'}
       </p>
     </div>
   );
