@@ -13,7 +13,7 @@ UPDATE public.funnel_pages fp
 UPDATE public.page_html ph
    SET owner_user_id = fp.owner_user_id
   FROM public.funnel_pages fp
- WHERE ph.page_id = fp.id
+ WHERE ph.page_id::text = fp.id::text
    AND fp.owner_user_id IS NOT NULL
    AND ph.owner_user_id IS DISTINCT FROM fp.owner_user_id;
 
@@ -70,7 +70,7 @@ CREATE POLICY "page_html_owner_or_master_select" ON public.page_html FOR SELECT
     OR auth.uid() IS NULL
     OR EXISTS (
       SELECT 1 FROM public.funnel_pages fp
-      WHERE fp.id = page_id
+      WHERE fp.id::text = page_id::text
         AND fp.project_id IS NOT NULL
         AND public.has_project_access(fp.project_id, auth.uid())
     )
@@ -82,7 +82,7 @@ CREATE POLICY "page_html_owner_or_master_insert" ON public.page_html FOR INSERT
     OR auth.uid() IS NULL
     OR EXISTS (
       SELECT 1 FROM public.funnel_pages fp
-      WHERE fp.id = page_id
+      WHERE fp.id::text = page_id::text
         AND fp.project_id IS NOT NULL
         AND public.has_project_access(fp.project_id, auth.uid())
     )
@@ -94,7 +94,7 @@ CREATE POLICY "page_html_owner_or_master_update" ON public.page_html FOR UPDATE
     OR auth.uid() IS NULL
     OR EXISTS (
       SELECT 1 FROM public.funnel_pages fp
-      WHERE fp.id = page_id
+      WHERE fp.id::text = page_id::text
         AND fp.project_id IS NOT NULL
         AND public.has_project_access(fp.project_id, auth.uid())
     )
@@ -105,7 +105,7 @@ CREATE POLICY "page_html_owner_or_master_update" ON public.page_html FOR UPDATE
     OR auth.uid() IS NULL
     OR EXISTS (
       SELECT 1 FROM public.funnel_pages fp
-      WHERE fp.id = page_id
+      WHERE fp.id::text = page_id::text
         AND fp.project_id IS NOT NULL
         AND public.has_project_access(fp.project_id, auth.uid())
     )
@@ -117,7 +117,7 @@ CREATE POLICY "page_html_owner_or_master_delete" ON public.page_html FOR DELETE
     OR auth.uid() IS NULL
     OR EXISTS (
       SELECT 1 FROM public.funnel_pages fp
-      WHERE fp.id = page_id
+      WHERE fp.id::text = page_id::text
         AND fp.project_id IS NOT NULL
         AND public.has_project_access(fp.project_id, auth.uid())
     )
