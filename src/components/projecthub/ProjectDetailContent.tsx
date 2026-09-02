@@ -8,6 +8,7 @@ import { CreativeSection } from '@/components/projecthub/creative/CreativeSectio
 import { AnalyticsSection } from '@/components/projecthub/analytics/AnalyticsSection';
 import { CompetitorLibrarySection } from '@/components/projecthub/competitor-library/CompetitorLibrarySection';
 import { AutopilotSection } from '@/components/projecthub/autopilot/AutopilotSection';
+import { DashboardSection } from '@/components/projecthub/dashboard/DashboardSection';
 import {
   useGetProject,
   getGetProjectQueryKey,
@@ -17,10 +18,10 @@ import { Button } from '@/components/ui/button';
 import { getUploadUrl } from '@/lib/projecthub-storage';
 import {
   ArrowLeft, FileText, Layers, Palette, BarChart2,
-  ChevronLeft, ChevronRight, Globe2, Rocket,
+  ChevronLeft, ChevronRight, Globe2, Rocket, LayoutDashboard,
 } from 'lucide-react';
 
-type Section = 'autopilot' | 'brief' | 'funnel' | 'competitor-library' | 'creative' | 'chief' | 'analytics';
+type Section = 'dashboard' | 'autopilot' | 'brief' | 'funnel' | 'competitor-library' | 'creative' | 'chief' | 'analytics';
 
 type ProjectFile = {
   id: number;
@@ -31,6 +32,7 @@ type ProjectFile = {
 };
 
 const SECTIONS = [
+  { id: 'dashboard' as Section, label: 'Dashboard', icon: LayoutDashboard },
   { id: 'autopilot' as Section, label: 'Chimera Protocol', icon: Rocket },
   { id: 'brief' as Section, label: 'General Brief', icon: FileText },
   { id: 'funnel' as Section, label: 'Funnel', icon: Layers },
@@ -41,7 +43,7 @@ const SECTIONS = [
 
 export function ProjectDetailContent({ projectId }: { projectId: string }) {
   const router = useRouter();
-  const [activeSection, setActiveSection] = useState<Section>('brief');
+  const [activeSection, setActiveSection] = useState<Section>('dashboard');
   const [collapsed, setCollapsed] = useState(false);
 
   // Open the section requested via ?section=... (e.g. after launching the
@@ -168,6 +170,13 @@ export function ProjectDetailContent({ projectId }: { projectId: string }) {
 
         <main className="flex-1 overflow-y-auto">
           <div className="max-w-6xl mx-auto px-6 py-6 pb-12">
+            {activeSection === 'dashboard' && (
+              <DashboardSection
+                projectId={projectId}
+                projectName={project.name ?? ''}
+                onNavigate={(s) => setActiveSection(s)}
+              />
+            )}
             {activeSection === 'autopilot' && (
               <AutopilotSection projectId={projectId} projectName={project.name ?? ''} />
             )}
