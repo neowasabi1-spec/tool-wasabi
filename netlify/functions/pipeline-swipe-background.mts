@@ -19,8 +19,9 @@ import {
  *      local language) using the same universal-extract + DOM-replacer
  *      technique as /api/landing/swipe,
  *   3. INTERNAL restyle (ChatGPT quality): same template skeleton, new visual
- *      world — full theme CSS, every photo recreated (GPT Image 2), packshots
- *      swapped to our product, copy baked into the HTML. Not a hex/script patch.
+ *      world — inlined template CSS remapped, theme tokens, every photo edited
+ *      via GPT Image 2 image-to-image (keeps composition), packshots swapped
+ *      to our product, copy baked into the HTML.
  *   4. saves the swiped HTML into page_html + updates the funnel_pages row
  *      so the result is visible in the Clone/Swipe section.
  *
@@ -36,6 +37,7 @@ const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
 const MODEL = process.env.PIPELINE_SWIPE_MODEL || 'claude-opus-4-8';
 const IMG_MODEL_T2I = process.env.PIPELINE_IMAGE_MODEL || 'openai/gpt-image-2';
+const IMG_MODEL_I2I = `${IMG_MODEL_T2I}/edit`;
 const PROJECT_FILES_BUCKET = 'project-files';
 
 const GLOBAL_BUDGET_MS = 8 * 60_000;
@@ -45,8 +47,8 @@ const BATCH_SIZE = 30;
 const BATCH_CONCURRENCY = 3;
 const MAX_IMAGES_PER_PAGE = 5;
 const MAX_IMAGES_TOTAL = 18;
-const MAX_IMAGES_PER_PAGE_RESTYLE = 18;
-const MAX_IMAGES_TOTAL_RESTYLE = 36;
+const MAX_IMAGES_PER_PAGE_RESTYLE = 40;
+const MAX_IMAGES_TOTAL_RESTYLE = 80;
 
 function siteBaseUrl(): string {
   return (process.env.URL || process.env.DEPLOY_PRIME_URL || process.env.NEXT_PUBLIC_SITE_URL || '').replace(/\/$/, '');
@@ -276,6 +278,48 @@ function ensureBaseHref(html: string, sourceUrl: string): string {
   if (!headMatch || headMatch.index === undefined) return html;
   const at = headMatch.index + headMatch[0].length;
   return `${html.slice(0, at)}<base href="${baseHref}">${html.slice(at)}`;
+}
+
+function rewriteCssUrls(css: string, cssUrl: string): string {
+  return css.replace(/url\(\s*(['"]?)([^'")]+)\1\s*\)/gi, (all, q: string, raw: string) => {
+    const u = String(raw || '').trim();
+    if (!u || u.startsWith('data:') || /^https?:\/\//i.test(u) || u.startsWith('//')) return all;
+    const abs = absolutizeSrc(u, cssUrl);
+    return abs ? `url(${q}${abs}${q})` : all;
+  });
+}
+
+/** Pull the template's real CSS into the HTML so the new palette remaps the
+ *  actual brand colors (linked Tailwind/compiled sheets are invisible to hex
+ *  replace until they live in the document). */
+async function inlineExternalStyles(html: string, sourceUrl: string): Promise<string> {
+  const linkRe = /<link\b[^>]*>/gi;
+  const links: Array<{ full: string; href: string }> = [];
+  let m: RegExpExecArray | null;
+  while ((m = linkRe.exec(html)) !== null) {
+    if (!/rel\s*=\s*["'][^"']*stylesheet/i.test(m[0])) continue;
+    const href = m[0].match(/\bhref\s*=\s*["']([^"']+)["']/i)?.[1];
+    if (!href || href.startsWith('data:')) continue;
+    if (/fonts\.google|fonts\.gstatic|font-awesome|typekit|use\.typekit|cloudflareinsights/i.test(href)) continue;
+    links.push({ full: m[0], href });
+  }
+  let out = html;
+  for (const l of links.slice(0, 10)) {
+    const abs = absolutizeSrc(l.href, sourceUrl);
+    if (!abs) continue;
+    try {
+      const res = await fetch(abs, { signal: AbortSignal.timeout(12_000) });
+      if (!res.ok) continue;
+      let css = await res.text();
+      if (!css || css.length < 20) continue;
+      if (css.length > 800_000) css = css.slice(0, 800_000);
+      css = rewriteCssUrls(css, abs);
+      out = out.split(l.full).join(`<style data-chimera-inlined="${escAttr(abs)}">\n${css}\n</style>`);
+    } catch {
+      /* keep the original link */
+    }
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -807,9 +851,30 @@ function remapOldColors(html: string, spec: RestyleSpec): string {
   return out;
 }
 
-/** Full visual theme on the existing template — not a hex patch. */
+function rewriteRootTokens(html: string, spec: RestyleSpec): string {
+  return html.replace(/:root\s*\{[\s\S]*?\}/gi, (block) => {
+    let out = block;
+    const swap = (names: string, color: string) => {
+      out = out.replace(
+        new RegExp(`(--(?:${names})\\s*:\\s*)([^;}{]+)`, 'gi'),
+        `$1${color}`,
+      );
+    };
+    swap('primary|color-primary|brand|brand-color|bs-primary|theme-color|main-color|accent-color', spec.primary);
+    swap('secondary|color-secondary|header-bg|nav-bg', spec.secondary);
+    swap('accent|highlight|cta', spec.accent);
+    swap('background|bg|surface|page-bg|body-bg', spec.background);
+    swap('text|ink|foreground|body-color|color-text', spec.ink);
+    return out;
+  });
+}
+
+/** Same template skeleton, new brand tokens — remaps the inlined CSS then
+ *  overrides framework utilities (Tailwind/Bootstrap class names) that never
+ *  contain a hex to replace. */
 function applyTheme(html: string, spec: RestyleSpec): string {
   let out = remapOldColors(html, spec);
+  out = rewriteRootTokens(out, spec);
   const css = `<style data-chimera-theme>
 :root,html{
   --chimera-primary:${spec.primary};--chimera-secondary:${spec.secondary};--chimera-accent:${spec.accent};
@@ -821,26 +886,15 @@ function applyTheme(html: string, spec: RestyleSpec): string {
   --text:${spec.ink};--ink:${spec.ink};--foreground:${spec.ink};
 }
 html,body{background:${spec.background} !important;color:${spec.ink} !important;}
-h1,h2,h3,h4,h5,h6{color:${spec.primary} !important;}
-p,li,td,th,label,span,div{color:inherit;}
-a{color:${spec.accent} !important;}
-button,input[type=submit],input[type=button],.btn,[class*="btn"],[class*="Btn"],[class*="cta"],[class*="CTA"],[class*="button"]{
+a{color:${spec.accent};}
+button,input[type=submit],input[type=button],.btn,[class*="btn-primary"],[class*="cta"],[class*="CTA"]{
   background:${spec.primary} !important;border-color:${spec.primary} !important;color:#fff !important;
 }
-header,nav,[class*="header"],[class*="Header"],[class*="navbar"],[class*="nav-"]{
-  background:${spec.secondary} !important;color:#fff !important;
-}
-[class*="hero"],[class*="Hero"],[class*="banner"],[class*="Banner"],[class*="jumbo"]{
-  background:${spec.secondary} !important;color:#fff !important;
-}
-[class*="hero"] h1,[class*="Hero"] h1,[class*="banner"] h1,[class*="hero"] p,[class*="Hero"] p{color:#fff !important;}
-section,[class*="section"],[class*="block"],[class*="wrapper"]{background-color:transparent;}
+header,nav,[class*="navbar"]{background:${spec.secondary} !important;}
+[class*="hero"],[class*="Hero"],[class*="banner"],[class*="Banner"]{background:${spec.secondary} !important;}
 footer,[class*="footer"],[class*="Footer"]{background:${spec.secondary} !important;color:#fff !important;}
-[class*="card"],[class*="Card"],[class*="tile"],[class*="panel"]{
-  background:#fff !important;border-color:${spec.accent} !important;
-}
 input,select,textarea{border-color:${spec.primary} !important;accent-color:${spec.primary} !important;}
-::selection{background:${spec.accent};color:${spec.ink};}
+::selection{background:${spec.accent};color:#fff;}
 </style>`;
   out = out.replace(/<style\b[^>]*\bdata-chimera-(?:theme|palette)\b[^>]*>[\s\S]*?<\/style>/gi, '');
   if (out.includes('</head>')) out = out.replace('</head>', `${css}</head>`);
@@ -848,20 +902,67 @@ input,select,textarea{border-color:${spec.primary} !important;accent-color:${spe
   return out;
 }
 
+function productWorldGuess(ctx: SwipeCtx): {
+  primary: string; secondary: string; accent: string; background: string; ink: string; world: string;
+} {
+  const blob = `${ctx.productName} ${ctx.productContext}`.toLowerCase();
+  if (/nad|nmn|purple|viola|violet|resveratrol/.test(blob)) {
+    return {
+      primary: '#6b21a8', secondary: '#3b0764', accent: '#c084fc',
+      background: '#faf5ff', ink: '#1e1033',
+      world: 'deep violet and amethyst clinical luxury, cool studio light',
+    };
+  }
+  if (/collagen|collagene|berry|mirtillo|cherry|pomegranate|melograno/.test(blob)) {
+    return {
+      primary: '#b42318', secondary: '#7a1b14', accent: '#f97066',
+      background: '#fff7f6', ink: '#1f100e',
+      world: 'rich crimson and berry, warm editorial light',
+    };
+  }
+  if (/saffron|zafferano|turmeric|curcuma|gold|oro/.test(blob)) {
+    return {
+      primary: '#c45c12', secondary: '#7a1f1a', accent: '#e8b84a',
+      background: '#fff8f2', ink: '#1a120c',
+      world: 'warm saffron and burgundy, golden hour commercial light',
+    };
+  }
+  if (/matcha|chlorophyll|spirulina|green tea|tè verde/.test(blob)) {
+    return {
+      primary: '#2f6b3a', secondary: '#1a3d24', accent: '#8fbf6a',
+      background: '#f4faf4', ink: '#122016',
+      world: 'fresh botanical greens, daylight kitchen',
+    };
+  }
+  if (/marine|omega|blue|blu|iodine/.test(blob)) {
+    return {
+      primary: '#1d4ed8', secondary: '#1e3a5f', accent: '#38bdf8',
+      background: '#f0f7ff', ink: '#0b1c2c',
+      world: 'oceanic navy and ice blue, clean clinical daylight',
+    };
+  }
+  return {
+    primary: '#c45c12', secondary: '#3f2a1d', accent: '#d4a017',
+    background: '#faf7f2', ink: '#1a1410',
+    world: `premium commercial photography matching ${ctx.productName}`,
+  };
+}
+
 function fallbackRestyleSpec(ctx: SwipeCtx, oldHex: string[]): RestyleSpec {
-  const news = ['#c45c12', '#7a1f1a', '#e8b84a', '#2d4a3e', '#8b3a1a'];
+  const g = productWorldGuess(ctx);
+  const news = [g.primary, g.secondary, g.accent, g.ink, g.primary];
   const palette = oldHex
     .filter((h) => h !== '#ffffff' && h !== '#000000' && h !== '#fff' && h !== '#000')
     .slice(0, 12)
     .map((from, i) => ({ from, to: news[i % news.length] }));
   return {
-    primary: '#c45c12',
-    secondary: '#7a1f1a',
-    accent: '#e8b84a',
-    background: '#fff8f2',
-    ink: '#1a120c',
-    avatar: `One consistent on-brand customer for ${ctx.productName}, same face and age in every lifestyle photo`,
-    stylePrefix: `Premium commercial photography for ${ctx.productName}: warm saffron and burgundy world, shallow depth of field, consistent lighting and casting`,
+    primary: g.primary,
+    secondary: g.secondary,
+    accent: g.accent,
+    background: g.background,
+    ink: g.ink,
+    avatar: `One consistent on-brand customer for ${ctx.productName}, same face, age and styling in every lifestyle photo`,
+    stylePrefix: `Premium commercial photography for ${ctx.productName}: ${g.world}, shallow depth of field, consistent lighting and casting`,
     palette,
   };
 }
@@ -1002,16 +1103,19 @@ async function swipeImages(
   );
 
   const spec = ctx.restyle;
-  const system = `You are a senior direct-response creative director. You "swipe" a competitor's landing-page image: detect the FORMAT of the original (before/after split-frame, product hero/packshot, lifestyle photo, ingredient close-up, mechanism diagram, infographic/chart, testimonial portrait, press clipping, UGC selfie, comparison table) and write ONE text-to-image prompt that recreates THE SAME FORMAT for OUR product — same tone, framing and layout. Never default to a before/after unless the original truly is one. No competitor brand names in the prompt.
+  const system = `You are a senior direct-response creative director. The generator will EDIT the original photo (image-to-image): same composition, new visual world for OUR product.
+
+Detect the FORMAT (before/after split-frame, product hero/packshot, lifestyle, ingredient close-up, mechanism diagram, infographic, testimonial portrait, press clipping, UGC, comparison). Never default to a before/after unless the original truly is one. No competitor brand names.
 
 OUR PRODUCT: ${ctx.productName}
 ${ctx.productContext ? `PRODUCT CONTEXT:\n${ctx.productContext.slice(0, 3000)}` : ''}
-${ctx.market ? `TARGET MARKET: ${ctx.market} — any text visible inside the generated image MUST be in this market's local language.` : ''}
+${ctx.market ? `TARGET MARKET: ${ctx.market} — any text painted inside the image MUST be in this market's local language.` : ''}
 ${spec ? `VISUAL WORLD (must match every image): ${spec.stylePrefix}\nCASTING (same person in every lifestyle shot): ${spec.avatar}\nPALETTE: ${spec.primary} / ${spec.secondary} / ${spec.accent}` : ''}
 
-Return STRICT JSON only, no prose:
+Return STRICT JSON only:
 {"product_shot": true|false, "format": "...", "prompt": "..."}
-Set "product_shot": true ONLY when the image is essentially a packshot/hero of the competitor's own product (bottle, jar, box, device) — we will substitute OUR real product photo there instead of generating.`;
+"prompt" = edit instructions: keep framing/crop/layout, restyle into our world, put OUR product where theirs was.
+Set "product_shot": true ONLY for a packshot/hero of the competitor's own product (bottle, jar, box, device) — we will drop in OUR real product photo.`;
 
   for (const img of slice) {
     if (budget.imagesLeft <= 0) break;
@@ -1052,17 +1156,20 @@ Surrounding page copy: ${img.context || '(none)'}`;
     }
 
     const prompt = spec
-      ? `${spec.stylePrefix}. Same consistent look across the landing. Casting: ${spec.avatar}. Product: ${ctx.productName}. ${analysis.prompt}`
-      : analysis.prompt;
-    const falInput = {
-      prompt: prompt.slice(0, 1800),
-      image_size: falImageSize(img),
-      quality: restyle ? 'high' : 'medium',
-      num_images: 1,
-      output_format: 'png',
-    };
-    let falUrl = await falGenerateImageUrl(IMG_MODEL_T2I, falInput);
-    if (!falUrl) falUrl = await falGenerateImageUrl(IMG_MODEL_T2I, falInput);
+      ? `Keep the EXACT composition, camera angle, crop and layout of image 1. Restyle the entire visual world: ${spec.stylePrefix}. Casting: ${spec.avatar}. Replace any competitor product with ${ctx.productName}. ${analysis.prompt}`
+      : `Keep the EXACT composition of image 1. Recreate it for ${ctx.productName}. ${analysis.prompt}`;
+    const sourceRef = absSrc && /^https?:\/\//i.test(absSrc) ? absSrc : '';
+    const refs = [sourceRef, ctx.mainImageUrl].filter((u): u is string => !!u && /^https?:\/\//i.test(u));
+    const quality = restyle ? 'high' : 'medium';
+    const common = { prompt: prompt.slice(0, 1800), num_images: 1, output_format: 'png', quality };
+    let falUrl: string | null = null;
+    if (restyle && sourceRef) {
+      falUrl = await falGenerateImageUrl(IMG_MODEL_I2I, { ...common, image_urls: refs, image_size: 'auto' }, 240_000);
+      if (!falUrl) falUrl = await falGenerateImageUrl(IMG_MODEL_I2I, { ...common, image_urls: refs, image_size: 'auto' }, 240_000);
+    }
+    if (!falUrl) {
+      falUrl = await falGenerateImageUrl(IMG_MODEL_T2I, { ...common, image_size: falImageSize(img) }, 240_000);
+    }
     if (!falUrl) throw new Error(`GPT Image failed on photo ${start + processed}/${images.length}`);
     const stored = await storeGeneratedImage(sb, ctx.projectId, falUrl, generated);
     const finalUrl = stored || falUrl;
@@ -1157,6 +1264,10 @@ async function processPage(
     html = await loadSourceHtml(sb, page);
     if (!html) throw new Error('no source HTML (saved snapshot missing and live fetch failed)');
     html = ensureBaseHref(html, page.sourceUrl);
+    if (ctx.imageMode === 'internal') {
+      await touchPage(sb, page.funnelPageId, 'Inlining template CSS…');
+      html = await inlineExternalStyles(html, page.sourceUrl);
+    }
     originalHtml = html;
     originalTitle = originalHtml.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || '';
 
@@ -1200,7 +1311,7 @@ CRITICAL RULES:
     await persistHtml(sb, page.funnelPageId, 'cloned', originalHtml, ctx.ownerUserId);
     await persistHtml(sb, page.funnelPageId, 'swiped', html, ctx.ownerUserId);
     await touchPage(sb, page.funnelPageId,
-      `${replacements}/${textsCount} texts rewritten${ctx.restyle ? ', palette restyled' : ''} — regenerating photos…`);
+      `${replacements}/${textsCount} texts rewritten${ctx.restyle ? ', new visual world' : ''} — editing photos…`);
   }
 
   let imgRes = { html, generated: 0, productSwaps: 0, analyzed: 0, placed: 0, videos: 0, remaining: 0, total: 0, processed: 0 };
