@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { ChimeraFunnelPicker, type ChimeraFunnelPick } from '@/components/projecthub/autopilot/ChimeraFunnelPicker';
 import { ChimeraImageModeToggle, type ChimeraImageMode } from '@/components/projecthub/autopilot/ChimeraImageModeToggle';
+import { ChimeraProductPhoto } from '@/components/projecthub/autopilot/ChimeraProductPhoto';
 
 const EMPTY_FUNNEL: ChimeraFunnelPick = { funnelId: '', steps: [] };
 
@@ -52,6 +53,7 @@ export function AutopilotSection({
   const [description, setDescription] = useState('');
   const [funnelPick, setFunnelPick] = useState<ChimeraFunnelPick>(EMPTY_FUNNEL);
   const [imageMode, setImageMode] = useState<ChimeraImageMode>('internal');
+  const [productImageUrl, setProductImageUrl] = useState('');
   const [launching, setLaunching] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -124,6 +126,7 @@ export function AutopilotSection({
           funnelSteps: funnelPick.steps.length ? funnelPick.steps : undefined,
           funnelStepIndexes: funnelPick.steps.length ? funnelPick.steps.map((s) => s.index) : undefined,
           imageMode,
+          productImageUrl: productImageUrl || undefined,
         }),
       });
       const data = await res.json();
@@ -193,6 +196,13 @@ export function AutopilotSection({
         <ChimeraImageModeToggle
           value={imageMode}
           onChange={setImageMode}
+          disabled={running || launching}
+        />
+        <ChimeraProductPhoto
+          projectId={projectId}
+          imageMode={imageMode}
+          value={productImageUrl}
+          onChange={setProductImageUrl}
           disabled={running || launching}
         />
         <div className="space-y-1.5">

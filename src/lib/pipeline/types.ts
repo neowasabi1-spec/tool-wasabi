@@ -58,7 +58,8 @@ export const PIPELINE_STEPS: PipelineStepDef[] = [
   {
     key: 'landing',
     label: 'Landing + mockup',
-    description: 'Landing copy + HTML mockup visible in the Funnel tab.',
+    description:
+      'Landing copy. Internal invents a product mockup unless you uploaded a photo; Affiliate skips the mockup.',
   },
   {
     key: 'swipe',
@@ -110,6 +111,8 @@ export interface PipelineInput {
    *   internal  — swipe those assets onto this project's product
    */
   imageMode?: 'affiliate' | 'internal';
+  /** Public URL of a user-uploaded packshot. When set, skip inventing one. */
+  productImageUrl?: string;
 }
 
 export interface PipelineStepState {

@@ -25,11 +25,12 @@ import {
  *   4. saves the swiped HTML into page_html + updates the funnel_pages row
  *      so the result is visible in the Clone/Swipe section.
  *
- * Decoupled from pipeline-run-background so the swipe gets its own 15-minute
- * budget (a multi-step funnel with images can take >10 min on its own).
+ * Decoupled from pipeline-run-background. Image restyle is split into short
+ * batches (a few photos each). When a batch finishes the worker re-invokes
+ * itself with the leftover work, so a run never rides the 15-minute cap.
  *
- * Body: { projectId, secret, market, mainImageUrl, pages: [{ funnelPageId,
- *         sourcePageId, sourceUrl, name, type }] }
+ * Body: { projectId, secret, market, mainImageUrl, pages, imageOffset?,
+ *         restyle?, imagesLeft?, mediaUsed? }
  */
 
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
@@ -38,7 +39,8 @@ const MODEL = process.env.PIPELINE_SWIPE_MODEL || 'claude-opus-4-8';
 const IMG_MODEL_T2I = process.env.PIPELINE_IMAGE_MODEL || 'openai/gpt-image-2';
 const PROJECT_FILES_BUCKET = 'project-files';
 
-const GLOBAL_BUDGET_MS = 13.5 * 60_000;
+const GLOBAL_BUDGET_MS = 8 * 60_000;
+const IMAGE_BATCH = 4;
 const MAX_TEXTS = 350;
 const BATCH_SIZE = 30;
 const BATCH_CONCURRENCY = 3;
@@ -46,6 +48,10 @@ const MAX_IMAGES_PER_PAGE = 5;
 const MAX_IMAGES_TOTAL = 18;
 const MAX_IMAGES_PER_PAGE_RESTYLE = 18;
 const MAX_IMAGES_TOTAL_RESTYLE = 36;
+
+function siteBaseUrl(): string {
+  return (process.env.URL || process.env.DEPLOY_PRIME_URL || process.env.NEXT_PUBLIC_SITE_URL || '').replace(/\/$/, '');
+}
 
 function getSupabase() {
   const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
@@ -181,14 +187,14 @@ async function falGenerateImageUrl(endpoint: string, input: Record<string, unkno
 // Source HTML loading
 // ---------------------------------------------------------------------------
 
-async function loadSavedHtml(sb: SupabaseClient, pageId: string): Promise<string> {
+async function loadSavedHtml(sb: SupabaseClient, pageId: string, kind: 'cloned' | 'swiped' = 'cloned'): Promise<string> {
   if (!pageId) return '';
   try {
     const { data } = await sb
       .from('page_html')
       .select('html')
       .eq('page_id', pageId)
-      .eq('kind', 'cloned')
+      .eq('kind', kind)
       .eq('variant', 'desktop')
       .maybeSingle();
     return typeof data?.html === 'string' ? data.html : '';
@@ -745,13 +751,17 @@ Return STRICT JSON only:
   "stylePrefix":"20-40 words: photography style + color world + product look, prepended to every image prompt",
   "palette":[{"from":"#old","to":"#new"}, ...]
 }
-Map EVERY supplied old hex that is a brand/section color (not #fff/#000 unless they are accent fills). New palette must match OUR product (flavor, category, mood). No competitor brand names.`;
+Map EVERY supplied old hex that is a brand/section color (not #fff/#000 unless they are accent fills). New palette must match OUR product (flavor, category, mood). If a product photo is attached, take primary/secondary/accent FROM that photo. No competitor brand names.`;
   const user = `OUR PRODUCT: ${ctx.productName}
 ${ctx.productContext ? `CONTEXT:\n${ctx.productContext.slice(0, 2500)}` : ''}
+${ctx.mainImageUrl ? 'A photo of OUR real product is attached — extract its actual colors and use them as the new palette.' : 'No product photo — invent a coherent palette for this product.'}
 OLD PAGE HEX COLORS (most used first): ${colors.join(', ') || '(none found)'}
-Design a full restyle so green-product pages become our product the way a designer would: new palette, same grid.`;
+Design a full restyle so the competitor page becomes our product the way a designer would: new palette, same grid.`;
   try {
-    const raw = await callClaudeText(system, user, 1200, 60_000);
+    const visual = ctx.mainImageUrl ? await downloadForVision(ctx.mainImageUrl) : null;
+    const raw = visual
+      ? await callClaudeVision(system, user, visual, 1200)
+      : await callClaudeText(system, user, 1200, 60_000);
     return parseRestyleSpec(raw);
   } catch (e) {
     console.warn('[swipe] restyle spec failed:', (e as Error).message);
@@ -813,15 +823,22 @@ async function swipeImages(
   budget: { imagesLeft: number },
   deadline: number,
   sourceStills: LandingMediaItem[],
-): Promise<{ html: string; generated: number; productSwaps: number; analyzed: number }> {
+  opts: { startOffset?: number; maxThisBatch?: number } = {},
+): Promise<{ html: string; generated: number; productSwaps: number; analyzed: number; processed: number; remaining: number; total: number }> {
   let out = html;
   let generated = 0;
   let productSwaps = 0;
   let analyzed = 0;
+  let processed = 0;
 
   const restyle = ctx.imageMode === 'internal';
   const images = collectImages(html, page.sourceUrl, restyle);
-  if (!images.length) return { html: out, generated, productSwaps, analyzed };
+  const start = Math.max(0, opts.startOffset || 0);
+  const cap = opts.maxThisBatch && opts.maxThisBatch > 0 ? opts.maxThisBatch : images.length;
+  const slice = images.slice(start, start + cap);
+  if (!images.length || !slice.length) {
+    return { html: out, generated, productSwaps, analyzed, processed: 0, remaining: Math.max(0, images.length - start), total: images.length };
+  }
   const sourceBySrc = new Map(
     matchLandingMediaToSlots(images, sourceStills, ctx.mediaUsed).map((p) => [p.slot.src, p.item]),
   );
@@ -838,9 +855,10 @@ Return STRICT JSON only, no prose:
 {"product_shot": true|false, "format": "...", "prompt": "..."}
 Set "product_shot": true ONLY when the image is essentially a packshot/hero of the competitor's own product (bottle, jar, box, device) — we will substitute OUR real product photo there instead of generating.`;
 
-  for (const img of images) {
+  for (const img of slice) {
     if (budget.imagesLeft <= 0) break;
-    if (Date.now() > deadline - 60_000) break;
+    if (Date.now() > deadline - 45_000) break;
+    processed++;
     const source = sourceBySrc.get(img.src);
     const absSrc = source?.storedUrl || absolutizeSrc(img.src, page.sourceUrl);
 
@@ -884,7 +902,15 @@ Surrounding page copy: ${img.context || '(none)'}`;
     budget.imagesLeft--;
   }
 
-  return { html: out, generated, productSwaps, analyzed };
+  return {
+    html: out,
+    generated,
+    productSwaps,
+    analyzed,
+    processed,
+    remaining: Math.max(0, images.length - start - processed),
+    total: images.length,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -895,30 +921,61 @@ function funnelHtmlUrl(pageId: string, kind: 'cloned' | 'swiped'): string {
   return `/api/funnel-html?pageId=${encodeURIComponent(pageId)}&kind=${kind}&variant=desktop&v=${Date.now()}`;
 }
 
+interface PageBatchResult {
+  summary: string;
+  done: boolean;
+  nextOffset: number;
+}
+
+async function persistHtml(
+  sb: SupabaseClient,
+  pageId: string,
+  kind: 'cloned' | 'swiped',
+  html: string,
+): Promise<void> {
+  const { error } = await sb.from('page_html').upsert(
+    { page_id: pageId, kind, variant: 'desktop', html, updated_at: new Date().toISOString() },
+    { onConflict: 'page_id,kind,variant' },
+  );
+  if (error) throw new Error(`saving ${kind} HTML failed: ${error.message}`);
+}
+
 async function processPage(
   sb: SupabaseClient,
   ctx: SwipeCtx,
   page: SwipePage,
   budget: { imagesLeft: number },
   deadline: number,
-): Promise<string> {
+  imageOffset: number,
+): Promise<PageBatchResult> {
   const started = Date.now();
+  const resume = imageOffset > 0;
 
-  // 1) Source HTML: prefer the extension's saved snapshot, else live fetch.
-  let html = await loadSavedHtml(sb, page.sourcePageId);
-  if (!html) html = await fetchLiveHtml(page.sourceUrl);
-  if (!html) throw new Error('no source HTML (saved snapshot missing and live fetch failed)');
-  html = ensureBaseHref(html, page.sourceUrl);
-  const originalHtml = html;
-  const originalTitle = originalHtml.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || '';
-
-  // 2) TEXT swipe.
-  const texts = collectSwipeTexts(originalHtml);
+  let html = '';
+  let originalHtml = '';
+  let originalTitle = '';
   let replacements = 0;
+  let textsCount = 0;
   let newTitle = '';
   let changes: Array<{ from: string; to: string }> = [];
-  if (texts.length) {
-    const system = `You are a world-class direct-response copywriter. You rewrite competitor-style marketing texts to sell ONLY one specific product, without changing HTML structure downstream.
+
+  if (resume) {
+    html = await loadSavedHtml(sb, page.funnelPageId, 'swiped');
+    originalHtml = await loadSavedHtml(sb, page.funnelPageId, 'cloned');
+    if (!html) throw new Error('resume failed: swiped HTML missing');
+    originalTitle = originalHtml.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || page.name;
+  } else {
+    html = await loadSavedHtml(sb, page.sourcePageId);
+    if (!html) html = await fetchLiveHtml(page.sourceUrl);
+    if (!html) throw new Error('no source HTML (saved snapshot missing and live fetch failed)');
+    html = ensureBaseHref(html, page.sourceUrl);
+    originalHtml = html;
+    originalTitle = originalHtml.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || '';
+
+    const texts = collectSwipeTexts(originalHtml);
+    textsCount = texts.length;
+    if (texts.length) {
+      const system = `You are a world-class direct-response copywriter. You rewrite competitor-style marketing texts to sell ONLY one specific product, without changing HTML structure downstream.
 
 PRODUCT NAME: ${ctx.productName}
 
@@ -933,72 +990,74 @@ CRITICAL RULES:
 3. Plain text ONLY in rewritten strings — no HTML, no markdown.
 4. Legal/compliance texts: rewrite only where safe; keep mandatory disclosures.
 5. Every batch MUST return one {"id","rewritten"} object per supplied id.`;
-    const textDeadline = Math.min(deadline, Date.now() + 240_000);
-    const rewrites = await rewriteAllTexts(system, texts, textDeadline);
-    const applied = applyRewrites(originalHtml, texts, rewrites);
-    html = applied.html;
-    replacements = applied.replacements;
-    newTitle = applied.newTitle;
-    changes = applied.changes;
-  }
-
-  if (ctx.imageMode === 'internal') {
-    if (!ctx.restyle) ctx.restyle = await buildRestyleSpec(originalHtml, ctx);
-    if (ctx.restyle) html = applyPalette(html, ctx.restyle);
-  }
-
-  // 3) IMAGES — Internal = full restyle (palette + every photo). Affiliate =
-  //    drop Image-landings files into the matching sections unchanged.
-  let imgRes = { html, generated: 0, productSwaps: 0, analyzed: 0, placed: 0, videos: 0 };
-  try {
-    if (ctx.imageMode === 'affiliate' && (ctx.landingStills.length || ctx.landingVideos.length)) {
-      const applied = applyAffiliateMedia(html, ctx.landingStills, ctx.landingVideos, ctx.mediaUsed);
+      const textDeadline = Math.min(deadline, Date.now() + 180_000);
+      const rewrites = await rewriteAllTexts(system, texts, textDeadline);
+      const applied = applyRewrites(originalHtml, texts, rewrites);
       html = applied.html;
-      imgRes = { html, generated: 0, productSwaps: 0, analyzed: 0, placed: applied.placed, videos: applied.videos };
+      replacements = applied.replacements;
+      newTitle = applied.newTitle;
+      changes = applied.changes;
+    }
+
+    if (ctx.imageMode === 'internal') {
+      if (!ctx.restyle) ctx.restyle = await buildRestyleSpec(originalHtml, ctx);
+      if (ctx.restyle) html = applyPalette(html, ctx.restyle);
+    }
+
+    await persistHtml(sb, page.funnelPageId, 'cloned', originalHtml);
+  }
+
+  let imgRes = { html, generated: 0, productSwaps: 0, analyzed: 0, placed: 0, videos: 0, remaining: 0, total: 0, processed: 0 };
+  try {
+    if (ctx.imageMode === 'affiliate') {
+      if (ctx.landingStills.length || ctx.landingVideos.length) {
+        const applied = applyAffiliateMedia(html, ctx.landingStills, ctx.landingVideos, ctx.mediaUsed);
+        html = applied.html;
+        imgRes = { html, generated: 0, productSwaps: 0, analyzed: 0, placed: applied.placed, videos: applied.videos, remaining: 0, total: 0, processed: 0 };
+      }
     } else {
-      imgRes = { ...(await swipeImages(sb, html, ctx, page, budget, deadline, ctx.landingStills)), placed: 0, videos: 0 };
-      html = imgRes.html;
+      const batch = await swipeImages(sb, html, ctx, page, budget, deadline, ctx.landingStills, {
+        startOffset: imageOffset,
+        maxThisBatch: IMAGE_BATCH,
+      });
+      html = batch.html;
+      imgRes = { ...batch, placed: 0, videos: 0 };
     }
   } catch (e) {
     console.warn('[swipe] image swipe failed:', (e as Error).message);
+    throw e;
   }
 
-  // 4) Persist: original + swiped HTML into page_html, metadata on the row.
-  const now = new Date().toISOString();
-  await sb.from('page_html').upsert(
-    { page_id: page.funnelPageId, kind: 'cloned', variant: 'desktop', html: originalHtml, updated_at: now },
-    { onConflict: 'page_id,kind,variant' },
-  );
-  const { error: swErr } = await sb.from('page_html').upsert(
-    { page_id: page.funnelPageId, kind: 'swiped', variant: 'desktop', html, updated_at: now },
-    { onConflict: 'page_id,kind,variant' },
-  );
-  if (swErr) throw new Error(`saving swiped HTML failed: ${swErr.message}`);
+  await persistHtml(sb, page.funnelPageId, 'swiped', html);
 
+  const done = ctx.imageMode === 'affiliate' || imgRes.remaining <= 0 || budget.imagesLeft <= 0;
+  const nextOffset = imageOffset + (imgRes.processed || 0);
+  const now = new Date().toISOString();
   const summary =
-    `${replacements}/${texts.length} texts rewritten` +
+    (resume ? `photo batch ${imageOffset + 1}–${nextOffset}` : `${replacements}/${textsCount} texts rewritten`) +
     `${imgRes.placed ? `, ${imgRes.placed} landing images placed (affiliate)` : ''}` +
     `${imgRes.videos ? `, ${imgRes.videos} landing videos placed` : ''}` +
-    `${ctx.restyle ? ', palette restyled' : ''}` +
-    `${imgRes.generated ? `, ${imgRes.generated} images regenerated (GPT Image 2)` : ''}` +
-    `${imgRes.productSwaps ? `, ${imgRes.productSwaps} product shots replaced with the product mockup` : ''}`;
+    `${!resume && ctx.restyle ? ', palette restyled' : ''}` +
+    `${imgRes.generated ? `, ${imgRes.generated} images regenerated` : ''}` +
+    `${imgRes.productSwaps ? `, ${imgRes.productSwaps} product shots replaced` : ''}` +
+    `${!done && imgRes.total ? ` (${nextOffset}/${imgRes.total} photos)` : ''}`;
 
   const { error: updErr } = await sb.from('funnel_pages').update({
-    swipe_status: 'completed',
-    swipe_result: summary,
+    swipe_status: done ? 'completed' : 'in_progress',
+    swipe_result: done ? summary : `${summary} — next batch queued`,
     cloned_data: {
       htmlUrl: funnelHtmlUrl(page.funnelPageId, 'cloned'),
       title: originalTitle || page.name,
       source_url: page.sourceUrl,
       htmlSkipped: true,
-      htmlLength: originalHtml.length,
+      htmlLength: originalHtml.length || html.length,
       clonedAt: now,
     },
     swiped_data: {
       htmlUrl: funnelHtmlUrl(page.funnelPageId, 'swiped'),
       originalTitle,
       newTitle: newTitle || originalTitle,
-      originalLength: originalHtml.length,
+      originalLength: originalHtml.length || html.length,
       newLength: html.length,
       processingTime: Date.now() - started,
       methodUsed: 'chimera-protocol-auto-swipe',
@@ -1006,11 +1065,12 @@ CRITICAL RULES:
       swipedAt: now,
       htmlSkipped: true,
       htmlLength: html.length,
+      imageOffset: nextOffset,
     },
   }).eq('id', page.funnelPageId);
   if (updErr) throw new Error(`funnel_pages update failed: ${updErr.message}`);
 
-  return summary;
+  return { summary, done, nextOffset };
 }
 
 // ---------------------------------------------------------------------------
@@ -1031,6 +1091,9 @@ export default async (req: Request) => {
   const mainImageUrl = typeof body.mainImageUrl === 'string' && body.mainImageUrl ? body.mainImageUrl : null;
   const imageMode = body.imageMode === 'affiliate' ? 'affiliate' : 'internal';
   const pages = (Array.isArray(body.pages) ? body.pages : []) as SwipePage[];
+  const imageOffset = Math.max(0, Number(body.imageOffset) || 0);
+  const incomingRestyle = body.restyle && typeof body.restyle === 'object' ? (body.restyle as RestyleSpec) : null;
+  const incomingUsed = Array.isArray(body.mediaUsed) ? (body.mediaUsed as unknown[]).map(String) : [];
   if (!projectId || !pages.length) return new Response('missing projectId/pages', { status: 200 });
 
   const log = (...a: unknown[]) => console.log(`[swipe ${projectId}]`, ...a);
@@ -1087,40 +1150,94 @@ export default async (req: Request) => {
     imageMode,
     landingStills,
     landingVideos,
-    mediaUsed: new Set<string>(),
-    restyle: null,
+    mediaUsed: new Set<string>(incomingUsed),
+    restyle: incomingRestyle && incomingRestyle.stylePrefix ? incomingRestyle : null,
   };
 
-  log(`swiping ${pages.length} page(s), market="${market || 'auto'}", mode=${imageMode}, landingMedia=${landingItems.length}, mockup=${mainImageUrl ? 'yes' : 'no'}`);
+  log(`batch ${pages.length} page(s) offset=${imageOffset} market="${market || 'auto'}" mode=${imageMode} landingMedia=${landingItems.length} photo=${mainImageUrl ? 'yes' : 'no'}`);
 
   const deadline = startedAt + GLOBAL_BUDGET_MS;
-  const budget = { imagesLeft: imageMode === 'internal' ? MAX_IMAGES_TOTAL_RESTYLE : MAX_IMAGES_TOTAL };
-  let ok = 0;
-  let failed = 0;
+  const defaultBudget = imageMode === 'internal' ? MAX_IMAGES_TOTAL_RESTYLE : MAX_IMAGES_TOTAL;
+  const budget = { imagesLeft: Number.isFinite(Number(body.imagesLeft)) ? Number(body.imagesLeft) : defaultBudget };
 
-  for (const page of pages) {
-    if (Date.now() > deadline - 90_000) {
-      await sb.from('funnel_pages').update({
-        swipe_status: 'failed',
-        swipe_result: 'Skipped: swipe time budget exhausted — relaunch the swipe for this page.',
-      }).eq('id', page.funnelPageId);
-      failed++;
-      continue;
+  const page = pages[0];
+  let nextPages = pages;
+  let nextOffset = imageOffset;
+
+  const runOne = async (p: SwipePage, offset: number): Promise<PageBatchResult> => {
+    const result = await processPage(sb, ctx, p, budget, deadline, offset);
+    log(`✔ ${p.name}: ${result.summary}`);
+    return result;
+  };
+
+  try {
+    if (imageMode === 'affiliate') {
+      for (const p of pages) {
+        try { await runOne(p, 0); }
+        catch (e) {
+          const msg = (e as Error).message?.slice(0, 400) || 'swipe error';
+          log(`✘ ${p.name}: ${msg}`);
+          await sb.from('funnel_pages').update({ swipe_status: 'failed', swipe_result: msg })
+            .eq('id', p.funnelPageId)
+            .then(() => undefined, () => undefined);
+        }
+      }
+      nextPages = [];
+      nextOffset = 0;
+    } else {
+      const result = await runOne(page, imageOffset);
+      if (result.done) {
+        nextPages = pages.slice(1);
+        nextOffset = 0;
+      } else {
+        nextOffset = result.nextOffset;
+      }
     }
-    try {
-      const summary = await processPage(sb, ctx, page, budget, deadline);
-      ok++;
-      log(`✔ ${page.name}: ${summary}`);
-    } catch (e) {
-      failed++;
-      const msg = (e as Error).message?.slice(0, 400) || 'swipe error';
-      log(`✘ ${page.name}: ${msg}`);
-      await sb.from('funnel_pages').update({ swipe_status: 'failed', swipe_result: msg })
-        .eq('id', page.funnelPageId)
-        .then(() => undefined, () => undefined);
+  } catch (e) {
+    const msg = (e as Error).message?.slice(0, 400) || 'swipe error';
+    log(`✘ ${page.name}: ${msg}`);
+    await sb.from('funnel_pages').update({ swipe_status: 'failed', swipe_result: msg })
+      .eq('id', page.funnelPageId)
+      .then(() => undefined, () => undefined);
+    nextPages = pages.slice(1);
+    nextOffset = 0;
+  }
+
+  if (nextPages.length && Date.now() < deadline) {
+    const base = siteBaseUrl();
+    const secretOut = process.env.APIFY_WEBHOOK_SECRET || process.env.CRON_SECRET || '';
+    if (base) {
+      try {
+        await fetch(`${base}/.netlify/functions/pipeline-swipe-background`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            projectId,
+            secret: secretOut,
+            market,
+            mainImageUrl,
+            imageMode,
+            pages: nextPages,
+            imageOffset: nextOffset,
+            restyle: ctx.restyle,
+            imagesLeft: budget.imagesLeft,
+            mediaUsed: [...ctx.mediaUsed],
+          }),
+          signal: AbortSignal.timeout(8_000),
+        });
+        log(`chained next batch: ${nextPages.length} page(s) offset=${nextOffset}`);
+      } catch (e) {
+        log('chain trigger:', (e as Error).message);
+      }
+    } else {
+      log('cannot chain — site URL missing');
     }
   }
 
-  log(`done: ${ok} ok, ${failed} failed, ${Math.round((Date.now() - startedAt) / 1000)}s`);
-  return new Response(JSON.stringify({ ok: true, swiped: ok, failed }), { status: 200 });
+  log(`batch done in ${Math.round((Date.now() - startedAt) / 1000)}s, left=${nextPages.length}`);
+  return new Response(JSON.stringify({
+    ok: true,
+    remaining: nextPages.length,
+    imageOffset: nextOffset,
+  }), { status: 200 });
 };

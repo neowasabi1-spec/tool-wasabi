@@ -47,6 +47,7 @@ interface PipelineInput {
     htmlUrl?: string;
   }>;
   imageMode?: 'affiliate' | 'internal';
+  productImageUrl?: string;
 }
 
 interface StepState {
@@ -1417,13 +1418,31 @@ Scrivi la landing completa basandoti su brief e ricerca di mercato forniti nel c
     .eq('id', projectId);
   if (error) throw new Error(`Failed to save funnel: ${error.message}`);
 
-  // Generate the PRODUCT IMAGES first (main + correlated upsells), so the
-  // mockup can actually show the real generated product in its hero.
+  // Product photo: uploaded packshot wins. Affiliate never invents a mockup.
+  // Internal without a photo invents one (and upsells) as before.
+  const uploadedUrl = typeof input.productImageUrl === 'string' && /^https?:\/\//i.test(input.productImageUrl)
+    ? input.productImageUrl
+    : null;
+  const skipMockup = input.imageMode === 'affiliate';
   let images: { saved: number; total: number; note: string; mainImageUrl: string | null; images: Array<{ name: string; url: string; role: string }> } =
-    { saved: 0, total: 1, note: '', mainImageUrl: null, images: [] };
-  try {
-    images = await generateProductImages(supabase, projectId, input, funnel, research, brief, productName);
-  } catch (e) { images.note = `image gen error: ${(e as Error).message}`; }
+    { saved: 0, total: 1, note: '', mainImageUrl: uploadedUrl, images: [] };
+
+  if (uploadedUrl) {
+    images = {
+      saved: 1,
+      total: 1,
+      note: 'Using the uploaded product photo.',
+      mainImageUrl: uploadedUrl,
+      images: [{ name: productName, url: uploadedUrl, role: 'Main product' }],
+    };
+    try { await adoptUploadedProductImage(supabase, projectId, uploadedUrl, productName); } catch { /* already on project */ }
+  } else if (!skipMockup) {
+    try {
+      images = await generateProductImages(supabase, projectId, input, funnel, research, brief, productName);
+    } catch (e) { images.note = `image gen error: ${(e as Error).message}`; }
+  } else {
+    images.note = 'Affiliate: mockup skipped — competitor landing photos are used as-is.';
+  }
 
   // Make the generated product images visible as a gallery in the Funnel tab.
   if (images.images.length > 0) {
@@ -1445,6 +1464,16 @@ Scrivi la landing completa basandoti su brief e ricerca di mercato forniti nel c
         resultContent: gallery,
       });
     } catch { /* non-fatal */ }
+  }
+
+  if (skipMockup) {
+    const funnelNote = funnel
+      ? `Funnel "${funnel.funnelName}" → ${funnel.total} products (1 main + ${funnel.upsells} upsells). `
+      : 'No funnel selected → main product only. ';
+    return {
+      summary: `${funnelNote}Landing copy saved. Affiliate skipped the HTML mockup.${uploadedUrl ? ' Uploaded product photo stored.' : ''}`.trim(),
+      output: content,
+    };
   }
 
   // Build a real, visible HTML landing MOCKUP from the copy, optionally using
@@ -1541,6 +1570,32 @@ async function loadMainProductImageUrl(supabase: SupabaseClient, projectId: stri
   }
 }
 
+/** If the user uploaded a packshot (possibly to chimera-uploads/), copy it
+ *  onto this project as product_image so swipe + Funnel tab can find it. */
+async function adoptUploadedProductImage(
+  supabase: SupabaseClient,
+  projectId: string,
+  url: string,
+  productName: string,
+): Promise<void> {
+  const already = await loadMainProductImageUrl(supabase, projectId);
+  if (already && already === url) return;
+  if (already && url.includes(`/${projectId}/product_image/`)) return;
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(20_000) });
+    if (!res.ok) return;
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length < 100) return;
+    const mime = (res.headers.get('content-type') || 'image/jpeg').split(';')[0].trim();
+    await saveProductImage(supabase, projectId, `Product — ${productName}`, {
+      data: buf,
+      mimeType: mime,
+    });
+  } catch (e) {
+    console.warn('[pipeline] adopt uploaded photo:', (e as Error).message);
+  }
+}
+
 const MAX_SWIPE_STEPS = 8;
 
 async function runSwipe(supabase: SupabaseClient, projectId: string, input: PipelineInput): Promise<StepResult> {
@@ -1568,7 +1623,10 @@ async function runSwipe(supabase: SupabaseClient, projectId: string, input: Pipe
   }
   const steps = selectedArchiveSteps(input, dbSteps);
   if (!steps.length) throw new Error('Selected funnel has no steps to swipe');
-  const mainImageUrl = await loadMainProductImageUrl(supabase, projectId);
+  const uploaded = typeof input.productImageUrl === 'string' && /^https?:\/\//i.test(input.productImageUrl)
+    ? input.productImageUrl
+    : null;
+  const mainImageUrl = uploaded || await loadMainProductImageUrl(supabase, projectId);
 
   // One Clone/Swipe page per funnel step, in order. The worker fills
   // cloned/swiped HTML afterwards; status starts as in_progress so the UI
@@ -1635,7 +1693,7 @@ async function runSwipe(supabase: SupabaseClient, projectId: string, input: Pipe
   }
 
   return {
-    summary: `${pages.length} funnel steps loaded into Clone/Swipe — text + image swipe running in background${mainImageUrl ? ' (product shots use the generated mockup)' : ''}.`,
+    summary: `${pages.length} funnel steps loaded into Clone/Swipe — swipe runs in photo batches (never one 15-min block)${mainImageUrl ? (uploaded ? ' · product shots use the uploaded photo' : ' · product shots use the generated mockup') : ''}.`,
     output: pages.map((p, i) => `${i + 1}. ${p.name}${p.sourceUrl ? ` — ${p.sourceUrl}` : ''}`).join('\n'),
   };
 }

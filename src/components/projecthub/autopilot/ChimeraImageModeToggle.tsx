@@ -36,8 +36,8 @@ export function ChimeraImageModeToggle({
       </div>
       <p className="text-xs text-muted-foreground">
         {value === 'affiliate'
-          ? 'Puts Image landings files into the matching sections of the funnel you picked, unchanged.'
-          : 'Full restyle: new color palette + every photo regenerated for this product (same layout as the template).'}
+          ? 'Puts Image landings files into the matching sections of the funnel you picked, unchanged. Skips the invented mockup.'
+          : 'Full restyle: new color palette + every photo regenerated in batches. Upload a product photo to lock colors; otherwise Chimera invents a mockup.'}
       </p>
     </div>
   );

@@ -47,6 +47,9 @@ export async function POST(req: NextRequest) {
     : funnelSteps.map((s) => s.index);
   const requestedProjectId = body.projectId ? String(body.projectId) : '';
   const imageMode = body.imageMode === 'affiliate' ? 'affiliate' : 'internal';
+  const productImageUrl = typeof body.productImageUrl === 'string' && /^https?:\/\//i.test(body.productImageUrl.trim())
+    ? body.productImageUrl.trim()
+    : undefined;
 
   if (!product && !requestedProjectId) {
     return NextResponse.json(
@@ -99,6 +102,7 @@ export async function POST(req: NextRequest) {
     funnelStepIndexes: funnelStepIndexes.length ? funnelStepIndexes : undefined,
     funnelSteps: funnelSteps.length ? funnelSteps : undefined,
     imageMode,
+    productImageUrl,
   };
 
   // ── Create the job row ──

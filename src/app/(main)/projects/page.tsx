@@ -26,6 +26,7 @@ import { classifyFile } from '@/lib/section-routing';
 import ImportCheckpointModal from '@/components/projects/ImportCheckpointModal';
 import { ChimeraFunnelPicker, type ChimeraFunnelPick } from '@/components/projecthub/autopilot/ChimeraFunnelPicker';
 import { ChimeraImageModeToggle, type ChimeraImageMode } from '@/components/projecthub/autopilot/ChimeraImageModeToggle';
+import { ChimeraProductPhoto } from '@/components/projecthub/autopilot/ChimeraProductPhoto';
 
 const EMPTY_CHIMERA_FUNNEL: ChimeraFunnelPick = { funnelId: '', steps: [] };
 
@@ -1156,6 +1157,7 @@ export default function ProjectsPage() {
   const [apDesc, setApDesc] = useState('');
   const [apFunnelPick, setApFunnelPick] = useState<ChimeraFunnelPick>(EMPTY_CHIMERA_FUNNEL);
   const [apImageMode, setApImageMode] = useState<ChimeraImageMode>('internal');
+  const [apProductImageUrl, setApProductImageUrl] = useState('');
   const [apLaunching, setApLaunching] = useState(false);
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
@@ -1388,6 +1390,7 @@ export default function ProjectsPage() {
           funnelSteps: apFunnelPick.steps.length ? apFunnelPick.steps : undefined,
           funnelStepIndexes: apFunnelPick.steps.length ? apFunnelPick.steps.map((s) => s.index) : undefined,
           imageMode: apImageMode,
+          productImageUrl: apProductImageUrl || undefined,
         }),
       });
       const data = await res.json();
@@ -1599,6 +1602,14 @@ export default function ProjectsPage() {
                 disabled={apLaunching}
               />
             </div>
+            <div className="mt-3">
+              <ChimeraProductPhoto
+                imageMode={apImageMode}
+                value={apProductImageUrl}
+                onChange={setApProductImageUrl}
+                disabled={apLaunching}
+              />
+            </div>
             <textarea
               value={apDesc}
               onChange={e => setApDesc(e.target.value)}
@@ -1626,6 +1637,7 @@ export default function ProjectsPage() {
                   setApDesc('');
                   setApFunnelPick(EMPTY_CHIMERA_FUNNEL);
                   setApImageMode('internal');
+                  setApProductImageUrl('');
                 }}
                 disabled={apLaunching}
                 className="px-3 py-2 text-slate-500 hover:text-slate-900 text-sm rounded-lg transition-colors"
