@@ -1955,6 +1955,75 @@ export default function FrontEndFunnel() {
     if (next) setRestyleWatch({ open: true, pageId: next.id, pageName: next.name });
   }, [funnelPages, restyleWatch.open]);
 
+  const applyRemoteSwipeStatus = useCallback((id: string, swipeStatus: string, swipeResult: string) => {
+    const cur = useStore.getState().funnelPages.find((p) => p.id === id);
+    if (!cur) return;
+    if (cur.swipeStatus === swipeStatus && (cur.swipeResult || '') === swipeResult) return;
+    if (swipeStatus === 'failed' || swipeStatus === 'completed') {
+      void updateFunnelPage(id, {
+        swipeStatus: swipeStatus as 'completed' | 'failed',
+        swipeResult,
+      });
+      return;
+    }
+    // Keep in-progress heartbeats in memory only. Persisting them resets
+    // updated_at and the server never treats the row as stalled.
+    useStore.setState({
+      funnelPages: useStore.getState().funnelPages.map((p) =>
+        p.id === id ? { ...p, swipeStatus: swipeStatus as typeof p.swipeStatus, swipeResult } : p
+      ),
+    });
+  }, [updateFunnelPage]);
+
+  const inProgressIds = (funnelPages || []).filter((p) => p.swipeStatus === 'in_progress').map((p) => p.id);
+  const inProgressKey = inProgressIds.join(',');
+  useEffect(() => {
+    if (!inProgressKey) return;
+    const ids = inProgressKey.split(',').filter(Boolean);
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const res = await fetch(`/api/chimera/swipe?ids=${ids.map(encodeURIComponent).join(',')}`, { cache: 'no-store' });
+        const data = (await res.json()) as { pages?: Array<{ id: string; swipeStatus: string; swipeResult?: string }> };
+        if (cancelled) return;
+        for (const st of data.pages || []) {
+          applyRemoteSwipeStatus(st.id, st.swipeStatus, st.swipeResult || '');
+        }
+      } catch { /* ignore */ }
+    };
+    void tick();
+    const t = window.setInterval(tick, 4000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(t);
+    };
+  }, [inProgressKey, applyRemoteSwipeStatus]);
+
+  const unstickSentRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const stuck = (funnelPages || []).filter((p) => {
+      if (p.swipeStatus !== 'in_progress') return false;
+      if (!/queued/i.test(p.swipeResult || '')) return false;
+      if (unstickSentRef.current.has(p.id)) return false;
+      const age = Date.now() - new Date(p.updatedAt).getTime();
+      return Number.isFinite(age) && age > 90_000;
+    });
+    if (!stuck.length) return;
+    for (const p of stuck) unstickSentRef.current.add(p.id);
+    void fetch('/api/chimera/swipe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ unstick: true, pageIds: stuck.map((p) => p.id) }),
+    })
+      .then((r) => r.json())
+      .then((data: { pages?: Array<{ id: string; swipeStatus: string; swipeResult?: string }> }) => {
+        for (const st of data.pages || []) {
+          applyRemoteSwipeStatus(st.id, st.swipeStatus, st.swipeResult || '');
+        }
+      })
+      .catch(() => undefined);
+  }, [funnelPages, applyRemoteSwipeStatus]);
+
   // Live activity log for the cinematic overlay. Each rewrite step
   // (cloning, extracting, per-batch progress, narrative, completion)
   // pushes a structured event here so the overlay can render a real
@@ -6449,7 +6518,31 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
 
                       {/* Status */}
                       <td className="text-center">
-                        {getStatusBadge(page.swipeStatus)}
+                        {page.swipeStatus === 'in_progress' ? (
+                          <button
+                            type="button"
+                            title="If this is stuck, click to mark failed (worker keeps going only if it is actually alive)"
+                            onClick={() => {
+                              unstickSentRef.current.add(page.id);
+                              void fetch('/api/chimera/swipe', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ unstick: true, pageIds: [page.id] }),
+                              })
+                                .then((r) => r.json())
+                                .then((data: { pages?: Array<{ id: string; swipeStatus: string; swipeResult?: string }> }) => {
+                                  for (const st of data.pages || []) {
+                                    applyRemoteSwipeStatus(st.id, st.swipeStatus, st.swipeResult || '');
+                                  }
+                                })
+                                .catch(() => undefined);
+                            }}
+                          >
+                            {getStatusBadge(page.swipeStatus)}
+                          </button>
+                        ) : (
+                          getStatusBadge(page.swipeStatus)
+                        )}
                       </td>
 
                       {/* Swipe Result */}
@@ -7042,13 +7135,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
           .map((p) => ({ id: p.id, name: p.name, swipeStatus: p.swipeStatus }))}
         onSelectPage={(id, name) => openRestyleWatch(id, name)}
         onStatus={(id, swipeStatus, swipeResult) => {
-          const cur = (funnelPages || []).find((p) => p.id === id);
-          if (!cur) return;
-          if (cur.swipeStatus === swipeStatus && (cur.swipeResult || '') === swipeResult) return;
-          void updateFunnelPage(id, {
-            swipeStatus: swipeStatus as 'pending' | 'in_progress' | 'completed' | 'failed',
-            swipeResult,
-          });
+          applyRemoteSwipeStatus(id, swipeStatus, swipeResult);
         }}
         onClose={closeRestyleWatch}
       />

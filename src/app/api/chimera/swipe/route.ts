@@ -44,12 +44,12 @@ export async function GET(req: NextRequest) {
 
   const ctx = await getUserAccessContext(req);
   const rows = data || [];
-  const STALE_QUEUED_MS = 8 * 60_000;
-  const STALE_ANY_MS = 16 * 60_000;
+  const STALE_QUEUED_MS = 2 * 60_000;
+  const STALE_ANY_MS = 12 * 60_000;
   for (const row of rows) {
     if (row.swipe_status !== 'in_progress') continue;
     const age = Date.now() - new Date(String(row.updated_at || 0)).getTime();
-    const queued = /internal restyle queued/i.test(String(row.swipe_result || ''));
+    const queued = /restyle queued/i.test(String(row.swipe_result || ''));
     const stale = (queued && age > STALE_QUEUED_MS) || age > STALE_ANY_MS;
     if (!stale) continue;
     const msg = queued
@@ -87,6 +87,9 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+  if (body.unstick === true) {
+    return unstickPages(req, body);
+  }
   const pageIds = (Array.isArray(body.pageIds) ? body.pageIds : [])
     .map((v) => String(v || '').trim())
     .filter(Boolean)
@@ -172,6 +175,45 @@ export async function POST(req: NextRequest) {
     pageIds: pages.map((p) => p.funnelPageId),
     photo: Boolean(mainImageUrl),
   });
+}
+
+async function unstickPages(req: NextRequest, body: Record<string, unknown>) {
+  const pageIds = (Array.isArray(body.pageIds) ? body.pageIds : [])
+    .map((v) => String(v || '').trim())
+    .filter(Boolean)
+    .slice(0, 40);
+  if (!pageIds.length) {
+    return NextResponse.json({ error: 'pageIds required' }, { status: 400 });
+  }
+  const { data, error } = await supabaseAdmin
+    .from('funnel_pages')
+    .select('id, swipe_status, swipe_result, project_id, product_id, owner_user_id')
+    .in('id', pageIds);
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  const ctx = await getUserAccessContext(req);
+  const msg = 'Restyle stalled — worker never started. Click Restyle again.';
+  const out: Array<{ id: string; swipeStatus: string; swipeResult: string }> = [];
+  for (const row of data || []) {
+    if (ctx.userId && !ctx.isMaster) {
+      const projectId = String(row.project_id || row.product_id || '');
+      if (projectId) {
+        const { allowed } = await canAccessProject(req, projectId);
+        if (!allowed && row.owner_user_id !== ctx.userId) continue;
+      } else if (row.owner_user_id && row.owner_user_id !== ctx.userId) {
+        continue;
+      }
+    }
+    if (row.swipe_status !== 'in_progress') {
+      out.push({ id: row.id, swipeStatus: row.swipe_status || 'pending', swipeResult: row.swipe_result || '' });
+      continue;
+    }
+    await supabaseAdmin
+      .from('funnel_pages')
+      .update({ swipe_status: 'failed', swipe_result: msg })
+      .eq('id', row.id);
+    out.push({ id: row.id, swipeStatus: 'failed', swipeResult: msg });
+  }
+  return NextResponse.json({ ok: true, pages: out });
 }
 
 async function loadMainProductImageUrl(projectId: string): Promise<string | null> {
