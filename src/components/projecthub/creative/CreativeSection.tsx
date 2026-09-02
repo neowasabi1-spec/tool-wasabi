@@ -18,6 +18,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
 import { getUploadUrl } from "@/lib/projecthub-storage";
+import { CreativesTab } from "./CreativesTab";
 
 const BASE_URL = "";
 
@@ -2259,9 +2260,7 @@ function ListaBrand({ projectId }: { projectId: string }) {
 
 // ─── MAIN CREATIVE SECTION ───
 const CREATIVE_TABS = [
-  { id: "competitors", label: "Competitors List", yellow: true },
-  { id: "brand", label: "Brand List", yellow: true },
-  { id: "templates", label: "Saved Templates", yellow: false },
+  { id: "templates", label: "Creatives", yellow: false },
   { id: "iterazione", label: "Iteration", yellow: false },
   { id: "swipe", label: "Swipe", yellow: false },
   { id: "nuove", label: "New Creatives", yellow: false },
@@ -2271,7 +2270,7 @@ const CREATIVE_TABS = [
 type CreativeTabId = typeof CREATIVE_TABS[number]["id"];
 
 export function CreativeSection({ projectId }: { projectId: string }) {
-  const [activeTab, setActiveTab] = useState<CreativeTabId>("competitors");
+  const [activeTab, setActiveTab] = useState<CreativeTabId>("templates");
 
   return (
     <div className="space-y-5">
@@ -2309,9 +2308,7 @@ export function CreativeSection({ projectId }: { projectId: string }) {
       </div>
 
       <div>
-        {activeTab === "competitors" && <ListaCompetitors projectId={projectId} />}
-        {activeTab === "brand" && <ListaBrand projectId={projectId} />}
-        {activeTab === "templates" && <TemplateSalvati projectId={projectId} />}
+        {activeTab === "templates" && <CreativesTab projectId={projectId} />}
         {activeTab === "iterazione" && <Iterazione projectId={projectId} />}
         {activeTab === "swipe" && <SwipeTab projectId={projectId} />}
         {activeTab === "nuove" && <NuoveCreative projectId={projectId} />}
