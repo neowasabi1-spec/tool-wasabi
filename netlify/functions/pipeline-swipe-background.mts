@@ -18,10 +18,9 @@ import {
  *   2. rewrites ALL marketing texts for OUR product (Claude, in the market's
  *      local language) using the same universal-extract + DOM-replacer
  *      technique as /api/landing/swipe,
- *   3. swipes the page IMAGES: Claude vision understands each image and
- *      writes a generation prompt → GPT Image 2 (fal.ai) recreates it for our
- *      product; competitor PRODUCT SHOTS are replaced with the generated
- *      product mockup instead,
+ *   3. INTERNAL restyle (ChatGPT quality): same template skeleton, new visual
+ *      world — full theme CSS, every photo recreated (GPT Image 2), packshots
+ *      swapped to our product, copy baked into the HTML. Not a hex/script patch.
  *   4. saves the swiped HTML into page_html + updates the funnel_pages row
  *      so the result is visible in the Clone/Swipe section.
  *
@@ -785,7 +784,7 @@ function hexToRgbCsv(hex: string): string {
   return `${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}`;
 }
 
-function applyPalette(html: string, spec: RestyleSpec): string {
+function remapOldColors(html: string, spec: RestyleSpec): string {
   let out = html;
   const pairs = spec.palette.filter((p) => normHex(p.from) && normHex(p.to) && normHex(p.from) !== normHex(p.to));
   for (const { from, to } of pairs) {
@@ -805,18 +804,66 @@ function applyPalette(html: string, spec: RestyleSpec): string {
       out = out.split(short.toUpperCase()).join(b);
     }
   }
-  const css = `<style data-chimera-palette>
-:root{--chimera-primary:${spec.primary};--chimera-secondary:${spec.secondary};--chimera-accent:${spec.accent};--chimera-bg:${spec.background};--chimera-ink:${spec.ink};}
+  return out;
+}
+
+/** Full visual theme on the existing template — not a hex patch. */
+function applyTheme(html: string, spec: RestyleSpec): string {
+  let out = remapOldColors(html, spec);
+  const css = `<style data-chimera-theme>
+:root,html{
+  --chimera-primary:${spec.primary};--chimera-secondary:${spec.secondary};--chimera-accent:${spec.accent};
+  --chimera-bg:${spec.background};--chimera-ink:${spec.ink};
+  --primary:${spec.primary};--color-primary:${spec.primary};--brand:${spec.primary};--brand-color:${spec.primary};
+  --bs-primary:${spec.primary};--theme-color:${spec.primary};--main-color:${spec.primary};
+  --secondary:${spec.secondary};--color-secondary:${spec.secondary};--accent:${spec.accent};
+  --background:${spec.background};--bg:${spec.background};--surface:${spec.background};
+  --text:${spec.ink};--ink:${spec.ink};--foreground:${spec.ink};
+}
 html,body{background:${spec.background} !important;color:${spec.ink} !important;}
-h1,h2,h3,h4,h5{color:${spec.primary} !important;}
+h1,h2,h3,h4,h5,h6{color:${spec.primary} !important;}
+p,li,td,th,label,span,div{color:inherit;}
 a{color:${spec.accent} !important;}
-button,input[type=submit],.btn,[class*="btn"],[class*="cta"],[class*="CTA"]{background:${spec.primary} !important;border-color:${spec.primary} !important;color:#fff !important;}
-header,[class*="hero"],[class*="Hero"],[class*="banner"]{background:${spec.secondary} !important;}
+button,input[type=submit],input[type=button],.btn,[class*="btn"],[class*="Btn"],[class*="cta"],[class*="CTA"],[class*="button"]{
+  background:${spec.primary} !important;border-color:${spec.primary} !important;color:#fff !important;
+}
+header,nav,[class*="header"],[class*="Header"],[class*="navbar"],[class*="nav-"]{
+  background:${spec.secondary} !important;color:#fff !important;
+}
+[class*="hero"],[class*="Hero"],[class*="banner"],[class*="Banner"],[class*="jumbo"]{
+  background:${spec.secondary} !important;color:#fff !important;
+}
+[class*="hero"] h1,[class*="Hero"] h1,[class*="banner"] h1,[class*="hero"] p,[class*="Hero"] p{color:#fff !important;}
+section,[class*="section"],[class*="block"],[class*="wrapper"]{background-color:transparent;}
+footer,[class*="footer"],[class*="Footer"]{background:${spec.secondary} !important;color:#fff !important;}
+[class*="card"],[class*="Card"],[class*="tile"],[class*="panel"]{
+  background:#fff !important;border-color:${spec.accent} !important;
+}
+input,select,textarea{border-color:${spec.primary} !important;accent-color:${spec.primary} !important;}
+::selection{background:${spec.accent};color:${spec.ink};}
 </style>`;
-  out = out.replace(/<style\b[^>]*\bdata-chimera-palette\b[^>]*>[\s\S]*?<\/style>/gi, '');
+  out = out.replace(/<style\b[^>]*\bdata-chimera-(?:theme|palette)\b[^>]*>[\s\S]*?<\/style>/gi, '');
   if (out.includes('</head>')) out = out.replace('</head>', `${css}</head>`);
   else out = css + out;
   return out;
+}
+
+function fallbackRestyleSpec(ctx: SwipeCtx, oldHex: string[]): RestyleSpec {
+  const news = ['#c45c12', '#7a1f1a', '#e8b84a', '#2d4a3e', '#8b3a1a'];
+  const palette = oldHex
+    .filter((h) => h !== '#ffffff' && h !== '#000000' && h !== '#fff' && h !== '#000')
+    .slice(0, 12)
+    .map((from, i) => ({ from, to: news[i % news.length] }));
+  return {
+    primary: '#c45c12',
+    secondary: '#7a1f1a',
+    accent: '#e8b84a',
+    background: '#fff8f2',
+    ink: '#1a120c',
+    avatar: `One consistent on-brand customer for ${ctx.productName}, same face and age in every lifestyle photo`,
+    stylePrefix: `Premium commercial photography for ${ctx.productName}: warm saffron and burgundy world, shallow depth of field, consistent lighting and casting`,
+    palette,
+  };
 }
 
 function parseRestyleSpec(raw: string): RestyleSpec | null {
@@ -873,10 +920,10 @@ Design a full restyle so the competitor page becomes our product the way a desig
     const raw = visual
       ? await callClaudeVision(system, user, visual, 1200)
       : await callClaudeText(system, user, 1200, 60_000);
-    return parseRestyleSpec(raw);
+    return parseRestyleSpec(raw) || fallbackRestyleSpec(ctx, colors);
   } catch (e) {
     console.warn('[swipe] restyle spec failed:', (e as Error).message);
-    return null;
+    return fallbackRestyleSpec(ctx, colors);
   }
 }
 
@@ -986,9 +1033,15 @@ Surrounding page copy: ${img.context || '(none)'}`;
     } catch (e) {
       console.warn('[swipe] image analysis failed:', (e as Error).message);
     }
-    if (!analysis) continue;
+    if (!analysis) {
+      analysis = {
+        productShot: /product|pack|bottle|jar|box|mockup/i.test(`${img.alt} ${img.context}`),
+        format: 'lifestyle',
+        prompt: `Recreate this landing-page visual for ${ctx.productName}. Alt: ${img.alt || 'none'}. Scene: ${img.context.slice(0, 220) || 'product hero'}.`,
+      };
+    }
 
-    await touchPage(sb, page.funnelPageId, `Photo ${start + processed}/${images.length} — analyzing…`);
+    await touchPage(sb, page.funnelPageId, `Photo ${start + processed}/${images.length} — generating…`);
     if (analysis.productShot && ctx.mainImageUrl) {
       out = replaceImageSrc(out, img.src, ctx.mainImageUrl);
       productSwaps++;
@@ -1001,15 +1054,16 @@ Surrounding page copy: ${img.context || '(none)'}`;
     const prompt = spec
       ? `${spec.stylePrefix}. Same consistent look across the landing. Casting: ${spec.avatar}. Product: ${ctx.productName}. ${analysis.prompt}`
       : analysis.prompt;
-    const falUrl = await falGenerateImageUrl(IMG_MODEL_T2I, {
+    const falInput = {
       prompt: prompt.slice(0, 1800),
       image_size: falImageSize(img),
-      quality: restyle && generated < 3 ? 'high' : 'medium',
+      quality: restyle ? 'high' : 'medium',
       num_images: 1,
       output_format: 'png',
-    });
-    await touchPage(sb, page.funnelPageId, `Photo ${start + processed}/${images.length} — generating…`);
-    if (!falUrl) continue;
+    };
+    let falUrl = await falGenerateImageUrl(IMG_MODEL_T2I, falInput);
+    if (!falUrl) falUrl = await falGenerateImageUrl(IMG_MODEL_T2I, falInput);
+    if (!falUrl) throw new Error(`GPT Image failed on photo ${start + processed}/${images.length}`);
     const stored = await storeGeneratedImage(sb, ctx.projectId, falUrl, generated);
     const finalUrl = stored || falUrl;
     out = replaceImageSrc(out, img.src, finalUrl);
@@ -1137,9 +1191,10 @@ CRITICAL RULES:
     }
 
     if (ctx.imageMode === 'internal') {
-      await touchPage(sb, page.funnelPageId, `${replacements}/${textsCount} texts rewritten — choosing palette…`);
+      await touchPage(sb, page.funnelPageId, `${replacements}/${textsCount} texts rewritten — building new visual world…`);
       if (!ctx.restyle) ctx.restyle = await buildRestyleSpec(originalHtml, ctx);
-      if (ctx.restyle) html = applyPalette(html, ctx.restyle);
+      if (!ctx.restyle) ctx.restyle = fallbackRestyleSpec(ctx, topPageHex(originalHtml));
+      html = applyTheme(html, ctx.restyle);
     }
 
     await persistHtml(sb, page.funnelPageId, 'cloned', originalHtml, ctx.ownerUserId);
@@ -1172,15 +1227,8 @@ CRITICAL RULES:
   await persistHtml(sb, page.funnelPageId, 'swiped', html, ctx.ownerUserId);
 
   let done = ctx.imageMode === 'affiliate' || imgRes.remaining <= 0 || budget.imagesLeft <= 0;
-  if (
-    ctx.imageMode === 'internal'
-    && !resume
-    && replacements === 0
-    && imgRes.generated === 0
-    && imgRes.productSwaps === 0
-    && imgRes.placed === 0
-  ) {
-    throw new Error('Swipe wrote nothing — source HTML empty or image generation failed. Retry Chimera Internal.');
+  if (ctx.imageMode === 'internal' && !resume && !ctx.restyle) {
+    throw new Error('Internal restyle has no visual theme. Retry.');
   }
   if (
     ctx.imageMode === 'internal'
@@ -1190,7 +1238,7 @@ CRITICAL RULES:
     && imgRes.productSwaps === 0
     && !resume
   ) {
-    throw new Error(`Found ${imgRes.total} photos but regenerated 0 (FAL_KEY / GPT Image). Retry the swipe.`);
+    throw new Error(`Found ${imgRes.total} photos but regenerated 0. This is not a restyle — retry.`);
   }
   const nextOffset = imageOffset + (imgRes.processed || 0);
   const now = new Date().toISOString();
@@ -1198,7 +1246,7 @@ CRITICAL RULES:
     (resume ? `photo batch ${imageOffset + 1}–${nextOffset}` : `${replacements}/${textsCount} texts rewritten`) +
     `${imgRes.placed ? `, ${imgRes.placed} landing images placed (affiliate)` : ''}` +
     `${imgRes.videos ? `, ${imgRes.videos} landing videos placed` : ''}` +
-    `${!resume && ctx.restyle ? ', palette restyled' : ''}` +
+    `${!resume && ctx.restyle ? ', new visual theme' : ''}` +
     `${imgRes.generated ? `, ${imgRes.generated} images regenerated` : ''}` +
     `${imgRes.productSwaps ? `, ${imgRes.productSwaps} product shots replaced` : ''}` +
     `${!done && imgRes.total ? ` (${nextOffset}/${imgRes.total} photos)` : ''}`;
