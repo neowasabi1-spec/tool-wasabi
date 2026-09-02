@@ -419,7 +419,9 @@ export function CreativesTab({ projectId }: { projectId: string }) {
                       className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
                   ) : item.media_type === "video" && item.file_path ? (
                     <>
-                      <video src={getUploadUrl(item.file_path)} preload="metadata" muted playsInline
+                      {/* #t=0.1 forces the browser to decode and paint the first
+                          frame — without it many browsers leave the box black. */}
+                      <video src={`${getUploadUrl(item.file_path)}#t=0.1`} preload="metadata" muted playsInline
                         className="w-full h-full object-cover" />
                       <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                         <div className="w-10 h-10 rounded-full bg-black/50 flex items-center justify-center">
