@@ -136,3 +136,41 @@ export function isStandaloneTemplatePage(
   }
   return true;
 }
+
+const UPSELL_RE = /upsell|downsell|\boto\b|bump/i;
+
+/** Same multi-step / merged-walk list as Templates → Funnel, shaped for pickers. */
+export function pickerFunnelsFromArchive(
+  rows: Array<WalkMergeable & { project_id?: string | null }>,
+  projectId?: string,
+): Array<{
+  id: string;
+  name: string;
+  totalSteps: number;
+  upsells: number;
+  products: number;
+  isProject: boolean;
+  created_at: string;
+}> {
+  return mergeWalkFunnels(rows)
+    .filter((row) => row.section !== 'page')
+    .map((row) => {
+      const raw = Array.isArray(row.steps) ? (row.steps as Record<string, unknown>[]) : [];
+      const steps = dedupeStepsByUrl(raw);
+      const upsells = steps.filter((s) =>
+        UPSELL_RE.test(String(s?.page_type || s?.step_type || '')),
+      ).length;
+      const totalSteps = Math.max(steps.length, archiveStepCount({ ...row, steps }));
+      return {
+        id: row.id,
+        name: row.name || 'Funnel',
+        totalSteps,
+        upsells,
+        products: 1 + upsells,
+        isProject: !!(projectId && row.project_id === projectId),
+        created_at: row.created_at,
+      };
+    })
+    .filter((f) => f.totalSteps >= 2)
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+}
