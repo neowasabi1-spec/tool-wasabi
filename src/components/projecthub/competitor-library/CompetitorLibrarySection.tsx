@@ -17,7 +17,6 @@ import {
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
-import { FunnelMonitoringSection } from "./FunnelMonitoringSection";
 import { getUploadUrl } from "@/lib/projecthub-storage";
 import { getSupabaseBrowser } from "@/lib/supabase-browser";
 import { BUILD_LANGUAGES, LANGUAGE_OTHER } from "@/lib/video-languages";
@@ -3664,16 +3663,13 @@ function SectorOverview({ projectId, onOpenBrand }: { projectId: string; onOpenB
 }
 
 // ── MAIN EXPORT ──
-type Tab = "overview" | "ads" | "landings" | "shots" | "footage" | "generated" | "funnel";
+type Tab = "overview" | "ads" | "landings" | "shots";
 
 const LIBRARY_TABS = [
   { id: "overview" as Tab, label: "Overview", icon: Gauge },
   { id: "ads" as Tab, label: "Ads Library", icon: BarChart2 },
   { id: "landings" as Tab, label: "Landings", icon: LayoutTemplate },
   { id: "shots" as Tab, label: "Shots", icon: Film },
-  { id: "footage" as Tab, label: "My Footage", icon: Upload },
-  { id: "generated" as Tab, label: "New Creatives", icon: Sparkles },
-  { id: "funnel" as Tab, label: "Funnel Monitoring", icon: TrendingUp },
 ] as const;
 
 export function CompetitorLibrarySection({ projectId }: { projectId: string }) {
@@ -3725,10 +3721,6 @@ export function CompetitorLibrarySection({ projectId }: { projectId: string }) {
 
       {tab === "shots" && <ShotsLibraryView projectId={projectId} />}
 
-      {tab === "footage" && <MyFootageView projectId={projectId} />}
-
-      {tab === "generated" && <GeneratedVideosView projectId={projectId} />}
-
       {tab === "ads" && (
         <div className="space-y-4">
           <div className="flex items-center gap-1 border border-border rounded-lg p-0.5 bg-muted/30 w-fit">
@@ -3744,7 +3736,6 @@ export function CompetitorLibrarySection({ projectId }: { projectId: string }) {
             : <AllCreativesView projectId={projectId} />}
         </div>
       )}
-      {tab === "funnel" && <FunnelMonitoringSection projectId={projectId} />}
     </div>
   );
 }
