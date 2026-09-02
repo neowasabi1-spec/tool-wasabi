@@ -46,6 +46,7 @@ export async function POST(req: NextRequest) {
     ? (body.funnelStepIndexes as unknown[]).map((n) => Number(n)).filter((n) => Number.isFinite(n))
     : funnelSteps.map((s) => s.index);
   const requestedProjectId = body.projectId ? String(body.projectId) : '';
+  const imageMode = body.imageMode === 'affiliate' ? 'affiliate' : 'internal';
 
   if (!product && !requestedProjectId) {
     return NextResponse.json(
@@ -97,6 +98,7 @@ export async function POST(req: NextRequest) {
     funnelId: funnelId || undefined,
     funnelStepIndexes: funnelStepIndexes.length ? funnelStepIndexes : undefined,
     funnelSteps: funnelSteps.length ? funnelSteps : undefined,
+    imageMode,
   };
 
   // ── Create the job row ──

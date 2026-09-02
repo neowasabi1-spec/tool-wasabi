@@ -10,6 +10,7 @@ import {
   ChevronDown, ChevronRight, RefreshCw, Sparkles,
 } from 'lucide-react';
 import { ChimeraFunnelPicker, type ChimeraFunnelPick } from '@/components/projecthub/autopilot/ChimeraFunnelPicker';
+import { ChimeraImageModeToggle, type ChimeraImageMode } from '@/components/projecthub/autopilot/ChimeraImageModeToggle';
 
 const EMPTY_FUNNEL: ChimeraFunnelPick = { funnelId: '', steps: [] };
 
@@ -50,6 +51,7 @@ export function AutopilotSection({
   const [market, setMarket] = useState('');
   const [description, setDescription] = useState('');
   const [funnelPick, setFunnelPick] = useState<ChimeraFunnelPick>(EMPTY_FUNNEL);
+  const [imageMode, setImageMode] = useState<ChimeraImageMode>('internal');
   const [launching, setLaunching] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -121,6 +123,7 @@ export function AutopilotSection({
           funnelId: funnelPick.steps.length ? funnelPick.funnelId || undefined : undefined,
           funnelSteps: funnelPick.steps.length ? funnelPick.steps : undefined,
           funnelStepIndexes: funnelPick.steps.length ? funnelPick.steps.map((s) => s.index) : undefined,
+          imageMode,
         }),
       });
       const data = await res.json();
@@ -185,6 +188,11 @@ export function AutopilotSection({
         <ChimeraFunnelPicker
           value={funnelPick}
           onChange={setFunnelPick}
+          disabled={running || launching}
+        />
+        <ChimeraImageModeToggle
+          value={imageMode}
+          onChange={setImageMode}
           disabled={running || launching}
         />
         <div className="space-y-1.5">

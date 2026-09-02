@@ -25,6 +25,7 @@ import {
 import { classifyFile } from '@/lib/section-routing';
 import ImportCheckpointModal from '@/components/projects/ImportCheckpointModal';
 import { ChimeraFunnelPicker, type ChimeraFunnelPick } from '@/components/projecthub/autopilot/ChimeraFunnelPicker';
+import { ChimeraImageModeToggle, type ChimeraImageMode } from '@/components/projecthub/autopilot/ChimeraImageModeToggle';
 
 const EMPTY_CHIMERA_FUNNEL: ChimeraFunnelPick = { funnelId: '', steps: [] };
 
@@ -1154,6 +1155,7 @@ export default function ProjectsPage() {
   const [apMarket, setApMarket] = useState('');
   const [apDesc, setApDesc] = useState('');
   const [apFunnelPick, setApFunnelPick] = useState<ChimeraFunnelPick>(EMPTY_CHIMERA_FUNNEL);
+  const [apImageMode, setApImageMode] = useState<ChimeraImageMode>('internal');
   const [apLaunching, setApLaunching] = useState(false);
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
@@ -1385,6 +1387,7 @@ export default function ProjectsPage() {
           funnelId: apFunnelPick.steps.length ? apFunnelPick.funnelId || undefined : undefined,
           funnelSteps: apFunnelPick.steps.length ? apFunnelPick.steps : undefined,
           funnelStepIndexes: apFunnelPick.steps.length ? apFunnelPick.steps.map((s) => s.index) : undefined,
+          imageMode: apImageMode,
         }),
       });
       const data = await res.json();
@@ -1589,6 +1592,13 @@ export default function ProjectsPage() {
                 selectClassName="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-slate-900 text-sm focus:outline-none focus:border-violet-500 disabled:opacity-50"
               />
             </div>
+            <div className="mt-3">
+              <ChimeraImageModeToggle
+                value={apImageMode}
+                onChange={setApImageMode}
+                disabled={apLaunching}
+              />
+            </div>
             <textarea
               value={apDesc}
               onChange={e => setApDesc(e.target.value)}
@@ -1615,6 +1625,7 @@ export default function ProjectsPage() {
                   setApMarket('');
                   setApDesc('');
                   setApFunnelPick(EMPTY_CHIMERA_FUNNEL);
+                  setApImageMode('internal');
                 }}
                 disabled={apLaunching}
                 className="px-3 py-2 text-slate-500 hover:text-slate-900 text-sm rounded-lg transition-colors"

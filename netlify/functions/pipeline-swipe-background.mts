@@ -1,5 +1,10 @@
 import { createClient } from '@supabase/supabase-js';
 import { extractAllTextsUniversal } from '../../src/lib/universal-text-extractor';
+import {
+  extractLandingMediaForProject,
+  listLandingMedia,
+  type LandingMediaItem,
+} from '../../src/lib/landing-media';
 
 /**
  * Background function (up to 15 min) that performs the Chimera Protocol
@@ -59,6 +64,10 @@ interface SwipeCtx {
   productContext: string;
   market: string;
   mainImageUrl: string | null;
+  imageMode: 'affiliate' | 'internal';
+  landingStills: LandingMediaItem[];
+  landingVideos: LandingMediaItem[];
+  mediaCursor: { still: number; video: number };
 }
 
 // ---------------------------------------------------------------------------
@@ -625,6 +634,55 @@ function replaceImageSrc(html: string, oldSrc: string, newUrl: string): string {
   return out;
 }
 
+function takeMedia(list: LandingMediaItem[], cursor: { n: number }, count: number): LandingMediaItem[] {
+  const slice = list.slice(cursor.n, cursor.n + count);
+  cursor.n += slice.length;
+  return slice;
+}
+
+function collectVideos(html: string): Array<{ src: string }> {
+  const out: Array<{ src: string }> = [];
+  const seen = new Set<string>();
+  const re = /<video\b[^>]*>[\s\S]*?<\/video>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html)) !== null) {
+    const src = m[0].match(/\bsrc\s*=\s*["']([^"']+)["']/i)?.[1] || '';
+    if (!src || src.startsWith('data:') || seen.has(src)) continue;
+    seen.add(src);
+    out.push({ src });
+  }
+  const srcRe = /<(?:source|video)\b[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*>/gi;
+  while ((m = srcRe.exec(html)) !== null) {
+    const src = m[1];
+    if (!src || src.startsWith('data:') || seen.has(src)) continue;
+    if (!/\.(mp4|webm|mov|m4v)(\?|#|$)/i.test(src) && !/<video/i.test(m[0])) continue;
+    seen.add(src);
+    out.push({ src });
+  }
+  return out.slice(0, 6);
+}
+
+function applyAffiliateMedia(
+  html: string,
+  stills: LandingMediaItem[],
+  videos: LandingMediaItem[],
+): { html: string; placed: number; videos: number } {
+  let out = html;
+  let placed = 0;
+  let vids = 0;
+  const images = collectImages(out, '');
+  for (let i = 0; i < images.length && i < stills.length; i++) {
+    out = replaceImageSrc(out, images[i].src, stills[i].storedUrl);
+    placed++;
+  }
+  const vtags = collectVideos(out);
+  for (let i = 0; i < vtags.length && i < videos.length; i++) {
+    out = replaceImageSrc(out, vtags[i].src, videos[i].storedUrl);
+    vids++;
+  }
+  return { html: out, placed, videos: vids };
+}
+
 async function swipeImages(
   sb: SupabaseClient,
   html: string,
@@ -632,6 +690,7 @@ async function swipeImages(
   page: SwipePage,
   budget: { imagesLeft: number },
   deadline: number,
+  sourceStills: LandingMediaItem[],
 ): Promise<{ html: string; generated: number; productSwaps: number; analyzed: number }> {
   let out = html;
   let generated = 0;
@@ -654,7 +713,8 @@ Set "product_shot": true ONLY when the image is essentially a packshot/hero of t
   for (const img of images) {
     if (budget.imagesLeft <= 0) break;
     if (Date.now() > deadline - 60_000) break;
-    const absSrc = absolutizeSrc(img.src, page.sourceUrl);
+    const source = sourceStills[images.indexOf(img)];
+    const absSrc = source?.storedUrl || absolutizeSrc(img.src, page.sourceUrl);
 
     let analysis: ImageAnalysis | null = null;
     try {
@@ -751,11 +811,24 @@ CRITICAL RULES:
     changes = applied.changes;
   }
 
-  // 3) IMAGE swipe (GPT Image 2 + product mockup for product shots).
-  let imgRes = { html, generated: 0, productSwaps: 0, analyzed: 0 };
+  // 3) IMAGES — from Competitor Library → Image landings, placed into THIS
+  //    template-funnel page (not the competitor funnel).
+  //    affiliate = same files; internal = swipe those assets onto our product.
+  let imgRes = { html, generated: 0, productSwaps: 0, analyzed: 0, placed: 0, videos: 0 };
   try {
-    imgRes = await swipeImages(sb, html, ctx, page, budget, deadline);
-    html = imgRes.html;
+    const stills = takeMedia(ctx.landingStills, { n: ctx.mediaCursor.still }, MAX_IMAGES_PER_PAGE);
+    ctx.mediaCursor.still += stills.length;
+    const videos = takeMedia(ctx.landingVideos, { n: ctx.mediaCursor.video }, 4);
+    ctx.mediaCursor.video += videos.length;
+
+    if (ctx.imageMode === 'affiliate' && (stills.length || videos.length)) {
+      const applied = applyAffiliateMedia(html, stills, videos);
+      html = applied.html;
+      imgRes = { html, generated: 0, productSwaps: 0, analyzed: 0, placed: applied.placed, videos: applied.videos };
+    } else {
+      imgRes = { ...(await swipeImages(sb, html, ctx, page, budget, deadline, stills)), placed: 0, videos: 0 };
+      html = imgRes.html;
+    }
   } catch (e) {
     console.warn('[swipe] image swipe failed:', (e as Error).message);
   }
@@ -774,6 +847,8 @@ CRITICAL RULES:
 
   const summary =
     `${replacements}/${texts.length} texts rewritten` +
+    `${imgRes.placed ? `, ${imgRes.placed} landing images placed (affiliate)` : ''}` +
+    `${imgRes.videos ? `, ${imgRes.videos} landing videos placed` : ''}` +
     `${imgRes.generated ? `, ${imgRes.generated} images regenerated (GPT Image 2)` : ''}` +
     `${imgRes.productSwaps ? `, ${imgRes.productSwaps} product shots replaced with the product mockup` : ''}`;
 
@@ -823,6 +898,7 @@ export default async (req: Request) => {
   const projectId = String(body.projectId || '');
   const market = String(body.market || '');
   const mainImageUrl = typeof body.mainImageUrl === 'string' && body.mainImageUrl ? body.mainImageUrl : null;
+  const imageMode = body.imageMode === 'affiliate' ? 'affiliate' : 'internal';
   const pages = (Array.isArray(body.pages) ? body.pages : []) as SwipePage[];
   if (!projectId || !pages.length) return new Response('missing projectId/pages', { status: 200 });
 
@@ -859,9 +935,31 @@ export default async (req: Request) => {
   if (project?.description) parts.push(`DESCRIPTION:\n${String(project.description).slice(0, 2000)}`);
   if (brief) parts.push(`MARKETING BRIEF:\n${brief.slice(0, 6000)}`);
   if (research) parts.push(`MARKET RESEARCH (extract):\n${research.slice(0, 3000)}`);
-  const ctx: SwipeCtx = { projectId, productName, productContext: parts.join('\n\n'), market, mainImageUrl };
+  let landingItems = await listLandingMedia(sb, projectId);
+  if (!landingItems.length) {
+    try {
+      await extractLandingMediaForProject(sb, projectId);
+      landingItems = await listLandingMedia(sb, projectId);
+    } catch (e) {
+      log('landing media extract:', (e as Error).message);
+    }
+  }
+  const landingStills = landingItems.filter((m) => m.kind === 'image' || m.kind === 'gif');
+  const landingVideos = landingItems.filter((m) => m.kind === 'video');
 
-  log(`swiping ${pages.length} page(s), market="${market || 'auto'}", mockup=${mainImageUrl ? 'yes' : 'no'}`);
+  const ctx: SwipeCtx = {
+    projectId,
+    productName,
+    productContext: parts.join('\n\n'),
+    market,
+    mainImageUrl,
+    imageMode,
+    landingStills,
+    landingVideos,
+    mediaCursor: { still: 0, video: 0 },
+  };
+
+  log(`swiping ${pages.length} page(s), market="${market || 'auto'}", mode=${imageMode}, landingMedia=${landingItems.length}, mockup=${mainImageUrl ? 'yes' : 'no'}`);
 
   const deadline = startedAt + GLOBAL_BUDGET_MS;
   const budget = { imagesLeft: MAX_IMAGES_TOTAL };

@@ -103,6 +103,13 @@ export interface PipelineInput {
     pageId?: string;
     htmlUrl?: string;
   }>;
+  /**
+   * How Chimera puts Competitor Library → Image landings into the
+   * selected template funnel:
+   *   affiliate — same files, unchanged
+   *   internal  — swipe those assets onto this project's product
+   */
+  imageMode?: 'affiliate' | 'internal';
 }
 
 export interface PipelineStepState {

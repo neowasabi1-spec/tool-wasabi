@@ -46,6 +46,7 @@ interface PipelineInput {
     pageId?: string;
     htmlUrl?: string;
   }>;
+  imageMode?: 'affiliate' | 'internal';
 }
 
 interface StepState {
@@ -1617,7 +1618,14 @@ async function runSwipe(supabase: SupabaseClient, projectId: string, input: Pipe
     await fetch(`${base}/.netlify/functions/pipeline-swipe-background`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ projectId, secret, market: marketGeo(input), mainImageUrl, pages }),
+      body: JSON.stringify({
+        projectId,
+        secret,
+        market: marketGeo(input),
+        mainImageUrl,
+        imageMode: input.imageMode === 'affiliate' ? 'affiliate' : 'internal',
+        pages,
+      }),
       signal: AbortSignal.timeout(8_000),
     });
   } catch (e) {

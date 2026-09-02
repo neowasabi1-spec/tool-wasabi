@@ -8,7 +8,7 @@ import {
   BarChart2, Calendar, Globe, X, RefreshCw, Image as ImageIcon,
   Video, Bookmark, CheckSquare, Square, TrendingUp, Download, Copy, Check,
   Settings, Zap, FileText, Eye, LayoutTemplate, Repeat, Star, Flame,
-  Scissors, Film, Sparkles, DollarSign, Eraser, Folder, Activity, Users, Gauge,
+  Scissors, Film, Sparkles, DollarSign, Eraser, Folder, Activity, Users, Gauge, Loader2,
 } from "lucide-react";
 import {
   AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
@@ -3662,13 +3662,152 @@ function SectorOverview({ projectId, onOpenBrand }: { projectId: string; onOpenB
   );
 }
 
+// ── IMAGE LANDINGS — media ripped from saved competitor landings ──
+type LandingMedia = {
+  id: number | string;
+  kind: "image" | "gif" | "video";
+  sourceUrl: string;
+  storedUrl: string;
+  name: string;
+};
+
+function ImageLandingsView({ projectId }: { projectId: string }) {
+  const { toast } = useToast();
+  const [items, setItems] = useState<LandingMedia[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [extracting, setExtracting] = useState(false);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/landing-media`);
+      if (r.ok) setItems(await r.json());
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => { load(); }, [projectId]);
+
+  const extract = async () => {
+    setExtracting(true);
+    try {
+      const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/landing-media`, { method: "POST" });
+      const data = await r.json().catch(() => null);
+      if (!r.ok) throw new Error(data?.error || `HTTP ${r.status}`);
+      if (Array.isArray(data?.items)) setItems(data.items);
+      else await load();
+      toast({
+        title: data?.saved
+          ? `Downloaded ${data.saved} file${data.saved === 1 ? "" : "s"} from competitor landings`
+          : "No new media — landings already extracted or empty",
+      });
+    } catch (e) {
+      toast({ title: (e as Error).message || "Extract failed", variant: "destructive" });
+    } finally {
+      setExtracting(false);
+    }
+  };
+
+  const del = async (m: LandingMedia) => {
+    setItems((p) => p.filter((x) => x.id !== m.id));
+    await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/landing-media/${m.id}`, { method: "DELETE" });
+  };
+
+  const images = items.filter((m) => m.kind === "image" || m.kind === "gif");
+  const videos = items.filter((m) => m.kind === "video");
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <h3 className="text-lg font-bold text-foreground">Image landings</h3>
+          <p className="text-sm text-muted-foreground max-w-2xl">
+            Images, GIFs and videos downloaded from this project&apos;s competitor landings.
+            Chimera puts them into the <b>template funnel you pick</b> — Affiliate keeps them identical,
+            Internal swipes them onto your product.
+          </p>
+        </div>
+        <Button onClick={extract} disabled={extracting} className="gap-2">
+          {extracting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+          {extracting ? "Downloading…" : items.length ? "Re-scan landings" : "Download from landings"}
+        </Button>
+      </div>
+
+      {loading ? (
+        <p className="text-sm text-muted-foreground py-12 text-center">Loading…</p>
+      ) : items.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-border py-16 text-center">
+          <ImageIcon className="w-10 h-10 text-muted-foreground mx-auto mb-3" />
+          <p className="text-sm font-semibold text-foreground mb-1">No landing media yet</p>
+          <p className="text-sm text-muted-foreground max-w-md mx-auto">
+            Save competitor landings first, then download their images / GIFs / videos here.
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-6">
+          {images.length > 0 && (
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">
+                Images & GIFs ({images.length})
+              </p>
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+                {images.map((m) => (
+                  <div key={m.id} className="group relative rounded-xl border border-border overflow-hidden bg-muted/30">
+                    <img src={m.storedUrl} alt={m.name} className="w-full h-36 object-cover" />
+                    {m.kind === "gif" && (
+                      <span className="absolute top-2 left-2 text-[10px] font-bold uppercase bg-black/70 text-white px-1.5 py-0.5 rounded">
+                        GIF
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => del(m)}
+                      className="absolute top-2 right-2 p-1 rounded-md bg-white/90 text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-red-600"
+                      title="Remove"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {videos.length > 0 && (
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">
+                Videos ({videos.length})
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                {videos.map((m) => (
+                  <div key={m.id} className="group relative rounded-xl border border-border overflow-hidden bg-black">
+                    <video src={m.storedUrl} controls className="w-full h-44 object-contain bg-black" />
+                    <button
+                      type="button"
+                      onClick={() => del(m)}
+                      className="absolute top-2 right-2 p-1 rounded-md bg-white/90 text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-red-600"
+                      title="Remove"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── MAIN EXPORT ──
-type Tab = "overview" | "ads" | "landings" | "shots";
+type Tab = "overview" | "ads" | "landings" | "landingImages" | "shots";
 
 const LIBRARY_TABS = [
   { id: "overview" as Tab, label: "Overview", icon: Gauge },
   { id: "ads" as Tab, label: "Ads Library", icon: BarChart2 },
   { id: "landings" as Tab, label: "Landings", icon: LayoutTemplate },
+  { id: "landingImages" as Tab, label: "Image landings", icon: ImageIcon },
   { id: "shots" as Tab, label: "Shots", icon: Film },
 ] as const;
 
@@ -3718,6 +3857,8 @@ export function CompetitorLibrarySection({ projectId }: { projectId: string }) {
       )}
 
       {tab === "landings" && <CompetitorLandingsView projectId={projectId} />}
+
+      {tab === "landingImages" && <ImageLandingsView projectId={projectId} />}
 
       {tab === "shots" && <ShotsLibraryView projectId={projectId} />}
 
