@@ -9,6 +9,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import {
   derivedProductBriefSections,
   legacyFilesForProject,
+  mergeProjectFiles,
 } from '@/lib/projecthub-legacy';
 import { canAccessProject } from '@/lib/auth/project-access';
 
@@ -48,7 +49,7 @@ export async function GET(
     .order('created_at', { ascending: false });
 
   const virtualFiles = legacyFilesForProject(projectRow);
-  const allFiles = [...(realFiles || []), ...virtualFiles];
+  const allFiles = mergeProjectFiles(realFiles || [], virtualFiles);
 
   const sections = derivedProductBriefSections(projectRow);
   const productBriefSectionsString = JSON.stringify(sections);

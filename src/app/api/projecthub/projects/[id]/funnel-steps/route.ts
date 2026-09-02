@@ -80,6 +80,17 @@ export async function GET(
   const { deny } = await checkProjectAccess(req, params.id);
   if (deny) return deny;
 
+  await supabaseAdmin
+    .from('funnel_steps')
+    .delete()
+    .eq('project_id', params.id)
+    .eq('flow_name', 'Chimera Protocol');
+  await supabaseAdmin
+    .from('funnel_steps')
+    .delete()
+    .eq('project_id', params.id)
+    .ilike('page_name', '%Chimera Protocol%');
+
   const { data, error } = await supabaseAdmin
     .from('funnel_steps')
     .select('*')

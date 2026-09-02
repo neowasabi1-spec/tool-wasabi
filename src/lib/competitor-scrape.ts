@@ -16,6 +16,7 @@ import { adExistsByExternalId, insertCompetitorAd, ensureBrand } from '@/lib/com
 import { transcribeVideo } from '@/lib/transcribe';
 import { absolutizeUrlsInHtml } from '@/lib/spa-rescue';
 import { isOnNiche } from '@/lib/competitor-relevance';
+import { shortApifyWebhookUrl } from '@/lib/discovery-lexicon';
 
 // Download cap for a single creative. Generous so even long VSL-style videos
 // get stored permanently (the Supabase bucket file-size limit must allow it).
@@ -81,17 +82,15 @@ export async function startBrandScrape(
   const base = siteBaseUrl();
   if (!base) return { ok: false, error: 'Site base URL not configured (env URL)' };
 
-  const params = new URLSearchParams({
-    projectId: brand.project_id,
-    brandId: String(brand.id),
-  });
-  const secret = webhookSecret();
-  if (secret) params.set('secret', secret);
-
   const res = await startAdsLibraryRun({
     adsLibraryUrl: brand.ads_library_url,
     count: brand.scrape_count || 20,
-    webhookUrl: `${base}/api/apify/webhook?${params.toString()}`,
+    webhookUrl: shortApifyWebhookUrl({
+      base,
+      projectId: brand.project_id,
+      brandId: brand.id,
+      secret: webhookSecret(),
+    }),
   });
 
   if (res.ok) {

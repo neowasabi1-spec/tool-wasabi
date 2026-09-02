@@ -180,6 +180,32 @@ export function legacyFilesForProject(
   return out;
 }
 
+function normFileName(name: string | undefined): string {
+  return String(name || '').trim().toLowerCase();
+}
+
+/** Merge storage files + virtual JSONB files. Drop virtual rows that already
+ *  exist as a real upload (same name, or a Chimera/Autopilot doc of that type)
+ *  so General Brief never lists the same document twice. */
+export function mergeProjectFiles<T extends { file_type?: string; original_name?: string }>(
+  real: T[],
+  virtual: T[],
+): T[] {
+  const realNames = new Set(real.map((f) => `${f.file_type}|${normFileName(f.original_name)}`));
+  const realTypes = new Set(real.map((f) => f.file_type));
+  const keptVirtual = virtual.filter((v) => {
+    if (realNames.has(`${v.file_type}|${normFileName(v.original_name)}`)) return false;
+    if (
+      /chimera protocol|autopilot/i.test(String(v.original_name || ''))
+      && realTypes.has(v.file_type)
+    ) {
+      return false;
+    }
+    return true;
+  });
+  return [...real, ...keptVirtual];
+}
+
 /** Compute the union of:
  *   - sections explicitly persisted on the project (`product_brief_sections` JSON)
  *   - sections we can derive from non-empty legacy columns

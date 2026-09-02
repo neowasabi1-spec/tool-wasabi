@@ -1,6 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { getCoreKnowledge, getKnowledgeForTask } from '../../src/knowledge/copywriting';
-import { encodeLexiconParam, parseDiscoveryLexicon } from '../../src/lib/competitor-relevance';
+import { parseDiscoveryLexicon } from '../../src/lib/competitor-relevance';
+import { saveDiscoveryLexicon, shortApifyWebhookUrl } from '../../src/lib/discovery-lexicon';
 
 /**
  * Background function (up to 15 min) that RUNS the Project Autopilot pipeline
@@ -455,22 +456,10 @@ async function fetchTemplateReference(url: string): Promise<string> {
   } catch { return ''; }
 }
 
-/** Insert a funnel_steps row so the output is visible in the ProjectHub
- *  Funnel tab (which renders result_content, HTML included). */
-async function createFunnelStep(supabase: SupabaseClient, projectId: string, opts: {
-  stepNumber: number; pageName: string; stepType: string; resultContent: string; flowName?: string;
-}) {
-  const { error } = await supabase.from('funnel_steps').insert({
-    project_id: projectId,
-    step_number: opts.stepNumber,
-    page_name: opts.pageName,
-    step_type: opts.stepType,
-    status: 'ready',
-    auto_gen: true,
-    flow_name: opts.flowName || 'Chimera Protocol',
-    result_content: opts.resultContent,
-  });
-  if (error) throw new Error(`Failed to save funnel step: ${error.message}`);
+/** Funnel Builder is only for real Clone/Swipe steps — never Chimera docs. */
+async function clearChimeraFunnelJunk(supabase: SupabaseClient, projectId: string): Promise<void> {
+  await supabase.from('funnel_steps').delete().eq('project_id', projectId).eq('flow_name', 'Chimera Protocol');
+  await supabase.from('funnel_steps').delete().eq('project_id', projectId).ilike('page_name', '%Chimera Protocol%');
 }
 
 // ---------------------------------------------------------------------------
@@ -1097,16 +1086,14 @@ CRITICAL RULES:
     };
   }
   const secret = process.env.APIFY_WEBHOOK_SECRET || process.env.CRON_SECRET || '';
+  try {
+    await saveDiscoveryLexicon(supabase, projectId, includeTerms, excludeTerms);
+  } catch (e) {
+    console.warn('[pipeline] discovery lexicon:', (e as Error).message);
+  }
 
-  // Build a discovery webhook URL (no brandId → ingestion creates one brand
-  // per advertiser found, "divided by page").
-  const webhookFor = (platform: string): string => {
-    const params = new URLSearchParams({ projectId, platform });
-    if (secret) params.set('secret', secret);
-    if (includeTerms.length) params.set('include', encodeLexiconParam(includeTerms));
-    if (excludeTerms.length) params.set('exclude', encodeLexiconParam(excludeTerms));
-    return `${base}/api/apify/webhook?${params.toString()}`;
-  };
+  const webhookFor = (platform: string): string =>
+    shortApifyWebhookUrl({ base, projectId, platform, secret });
 
   // 2) Fire the scrapes across all three networks.
   const runs: string[] = [];
@@ -1115,9 +1102,7 @@ CRITICAL RULES:
   // Meta / Facebook — pasted library URL is a chosen competitor: keep every
   // ad (no include/exclude). Keyword searches stay filtered.
   if (link && isMetaAdLibrary(link)) {
-    const params = new URLSearchParams({ projectId, platform: 'meta' });
-    if (secret) params.set('secret', secret);
-    const run = await startApifyAdsRun(link, 25, `${base}/api/apify/webhook?${params.toString()}`);
+    const run = await startApifyAdsRun(link, 25, webhookFor('meta'));
     if (run.ok) { started.push({ platform: 'meta', keyword: '(link)', runId: run.runId! }); }
     else runs.push(`Meta(link): ${run.error}`);
   }
@@ -1209,18 +1194,8 @@ Build the prioritized Angle Matrix now, best angle first.`;
   // Persist for machine consumption (the ads step reads it back) + a downloadable doc.
   const fileSaved = await saveSectionFile(supabase, projectId, 'angles', 'Angle Matrix', content);
 
-  // Human-visible artifact in the Funnel tab.
-  try {
-    await createFunnelStep(supabase, projectId, {
-      stepNumber: 80,
-      pageName: 'Angle Matrix (Chimera Protocol)',
-      stepType: 'angle',
-      resultContent: angleMatrixToHtml(content, angles),
-    });
-  } catch { /* non-fatal */ }
-
   return {
-    summary: `${angles.length || 6} angles prioritized (Angle Matrix)${fileSaved ? ' — saved as a document + visible in the Funnel tab.' : ' — visible in the Funnel tab.'}`,
+    summary: `${angles.length || 6} angles prioritized (Angle Matrix)${fileSaved ? ' — saved as a document.' : '.'}`,
     output: content,
   };
 }
@@ -1303,18 +1278,9 @@ Write the 9 platform-ready ads now.`;
     if (!error) saved = rows.length;
   }
 
-  try {
-    await createFunnelStep(supabase, projectId, {
-      stepNumber: 90,
-      pageName: 'Ads — Meta / TikTok / Google (Chimera Protocol)',
-      stepType: 'ads',
-      resultContent: adsToHtml(raw, ads),
-    });
-  } catch { /* non-fatal */ }
-
   const angleCount = new Set(ads.map((a) => a.angle)).size;
   return {
-    summary: `${ads.length || 9} platform-ready ads across ${angleCount || 3} angles (Meta/TikTok/Google)${saved ? ` — saved to Creative (${saved}) + visible in the Funnel tab.` : ' — visible in the Funnel tab.'}`,
+    summary: `${ads.length || 9} platform-ready ads across ${angleCount || 3} angles (Meta/TikTok/Google)${saved ? ` — saved to Creative (${saved}).` : '.'}`,
     output: raw,
   };
 }
@@ -1444,85 +1410,18 @@ Scrivi la landing completa basandoti su brief e ricerca di mercato forniti nel c
     images.note = 'Affiliate: mockup skipped — competitor landing photos are used as-is.';
   }
 
-  // Make the generated product images visible as a gallery in the Funnel tab.
-  if (images.images.length > 0) {
-    try {
-      const cards = images.images.map((im) => `
-        <figure style="margin:0;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden;background:#fff">
-          <img src="${im.url}" alt="${esc(im.name)}" style="width:100%;height:auto;display:block" />
-          <figcaption style="padding:8px 10px;font-size:12px;color:#111827"><strong>${esc(im.role)}</strong> — ${esc(im.name)}</figcaption>
-        </figure>`).join('');
-      const gallery = `<div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:900px;margin:0 auto;padding:8px">
-        <h1 style="font-size:20px;margin:0 0 4px">Product images (Chimera Protocol)</h1>
-        <p style="color:#6b7280;margin:0 0 12px">${images.saved} product images${funnel ? ` for funnel "${esc(funnel.funnelName)}"` : ''}.</p>
-        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px">${cards}</div>
-      </div>`;
-      await createFunnelStep(supabase, projectId, {
-        stepNumber: 2,
-        pageName: 'Product Images (Chimera Protocol)',
-        stepType: 'assets',
-        resultContent: gallery,
-      });
-    } catch { /* non-fatal */ }
-  }
-
-  if (skipMockup) {
-    const funnelNote = funnel
-      ? `Funnel "${funnel.funnelName}" → ${funnel.total} products (1 main + ${funnel.upsells} upsells). `
-      : 'No funnel selected → main product only. ';
-    return {
-      summary: `${funnelNote}Landing copy saved. Affiliate skipped the HTML mockup.${uploadedUrl ? ' Uploaded product photo stored.' : ''}`.trim(),
-      output: content,
-    };
-  }
-
-  // Build a real, visible HTML landing MOCKUP from the copy, optionally using
-  // a chosen funnel template as a design reference (fetched via Jina, no
-  // headless browser). Saved as a funnel step → visible/previewable in the
-  // Funnel tab.
-  // Design reference for the landing mockup. One funnel now drives everything:
-  // if no explicit templateUrl was passed, imitate the SELECTED funnel's main
-  // page — via its URL (fetched through Jina) or, offline, its saved HTML.
-  let templateRef = await fetchTemplateReference((input.templateUrl || '').trim());
-  if (!templateRef && funnel) {
-    if (funnel.templateUrl) templateRef = await fetchTemplateReference(funnel.templateUrl);
-    if (!templateRef && funnel.templateHtml) templateRef = funnel.templateHtml.slice(0, 12_000);
-  }
-  let mockupSaved = false;
-  try {
-    const mockupInstructions = `Sei un web designer + copywriter direct response.
-Genera UNA landing page COMPLETA in HTML STANDALONE (un solo file), pronta da aprire nel browser.
-${marketDirective(input)}
-Requisiti tecnici:
-- HTML5 completo con <style> inline nel <head> (nessuna risorsa esterna, nessun JS necessario).
-- Design moderno, mobile-first, responsive, con sezioni: hero, problema/agitazione, meccanismo unico, soluzione, come funziona, prove/testimonianze (placeholder realistici), offerta+garanzia, FAQ, CTA finale.
-- Usa il COPY fornito qui sotto (adattalo, non inventare claim medici/legali non supportati).
-- Bottoni CTA ben visibili. Palette coerente col prodotto.
-${images.mainImageUrl ? `- Usa QUESTA immagine reale del prodotto nell'hero e dove serve: <img src="${images.mainImageUrl}" alt="${esc(productName)}">. Non usare altri placeholder immagine per il prodotto principale.` : ''}
-${templateRef ? '- Usa lo STILE/STRUTTURA della pagina di riferimento fornita come ispirazione (layout, ordine sezioni, tono), ma con contenuti del nostro prodotto.' : ''}
-Rispondi SOLO con l'HTML, senza spiegazioni e senza \`\`\`.`;
-
-    const mockupUser = `COPY DELLA LANDING (da usare):\n\n${content}\n\n${images.mainImageUrl ? `IMMAGINE PRODOTTO PRINCIPALE (usa questo URL nell'hero): ${images.mainImageUrl}\n\n` : ''}${templateRef ? `PAGINA DI RIFERIMENTO (stile/struttura da imitare):\n\n${templateRef}` : ''}`;
-    let mockup = await callClaude({ task: 'pdp', instructions: mockupInstructions, userMessage: mockupUser, maxTokens: 8000 });
-    mockup = mockup.replace(/^```html\s*/i, '').replace(/```\s*$/i, '').trim();
-    if (mockup.toLowerCase().includes('<html') || mockup.toLowerCase().includes('<!doctype')) {
-      await createFunnelStep(supabase, projectId, {
-        stepNumber: 1,
-        pageName: 'Landing (Chimera Protocol)',
-        stepType: 'landing',
-        resultContent: mockup,
-      });
-      mockupSaved = true;
-    }
-  } catch { /* non-fatal: copy is already saved */ }
-
   const funnelNote = funnel
     ? `Funnel "${funnel.funnelName}" → ${funnel.total} products (1 main + ${funnel.upsells} upsells). `
     : 'No funnel selected → main product only. ';
   const imgNote = images.note || (images.saved ? `${images.saved}/${images.total} product images generated.` : '');
+  const extra = skipMockup
+    ? ' Landing copy saved. Affiliate skipped the invented mockup.'
+    : uploadedUrl
+      ? ' Landing copy saved. Using the uploaded product photo.'
+      : ' Landing copy saved.';
 
   return {
-    summary: `${funnelNote}${imgNote}${mockupSaved ? 'HTML mockup visible in the Funnel tab.' : 'Landing copy saved to the Funnel section.'}`.trim(),
+    summary: `${funnelNote}${imgNote}${extra}`.trim(),
     output: content,
   };
 }
@@ -1736,6 +1635,8 @@ export default async (req: Request) => {
   const persistSteps = async (patch: Record<string, unknown> = {}) => {
     await supabase.from('pipeline_jobs').update({ steps, ...patch }).eq('id', jobId);
   };
+
+  try { await clearChimeraFunnelJunk(supabase, projectId); } catch { /* leftover docs in Funnel Builder */ }
 
   for (const key of orderedKeys) {
     // Cancellation check.

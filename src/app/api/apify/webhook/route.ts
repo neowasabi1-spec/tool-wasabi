@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { ingestDataset, webhookSecret } from '@/lib/competitor-scrape';
 import type { AdPlatform } from '@/lib/apify';
 import { decodeLexiconParam } from '@/lib/competitor-relevance';
+import { loadDiscoveryLexicon, webhookKeyMatches } from '@/lib/discovery-lexicon';
+import { supabaseAdmin } from '@/lib/supabase-admin';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -25,13 +27,13 @@ function parsePlatform(v: string | null): AdPlatform {
  */
 export async function POST(req: NextRequest) {
   const url = new URL(req.url);
-  const projectId = url.searchParams.get('projectId') || '';
-  const brandId = Number(url.searchParams.get('brandId') || '0');
-  const platform = parsePlatform(url.searchParams.get('platform'));
-  const provided = url.searchParams.get('secret') || '';
+  const projectId = url.searchParams.get('p') || url.searchParams.get('projectId') || '';
+  const brandId = Number(url.searchParams.get('b') || url.searchParams.get('brandId') || '0');
+  const platform = parsePlatform(url.searchParams.get('t') || url.searchParams.get('platform'));
+  const provided = url.searchParams.get('k') || url.searchParams.get('secret') || '';
 
   const expected = webhookSecret();
-  if (expected && provided !== expected) {
+  if (expected && !webhookKeyMatches(provided, expected)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
   if (!projectId) {
@@ -51,13 +53,21 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, ignored: 'no dataset' });
   }
 
+  let includeTerms = decodeLexiconParam(url.searchParams.get('include'));
+  let excludeTerms = decodeLexiconParam(url.searchParams.get('exclude'));
+  if (!includeTerms.length && !excludeTerms.length) {
+    const stored = await loadDiscoveryLexicon(supabaseAdmin, projectId);
+    includeTerms = stored.include;
+    excludeTerms = stored.exclude;
+  }
+
   const result = await ingestDataset({
     projectId,
     brandId: brandId > 0 ? brandId : undefined,
     datasetId,
     platform,
-    includeTerms: decodeLexiconParam(url.searchParams.get('include')),
-    excludeTerms: decodeLexiconParam(url.searchParams.get('exclude')),
+    includeTerms,
+    excludeTerms,
   });
   return NextResponse.json({ ok: true, platform, ...result });
 }
