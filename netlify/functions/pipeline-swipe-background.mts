@@ -152,7 +152,12 @@ async function callClaudeVision(
 function falKey(): string { return process.env.FAL_KEY || process.env.FAL_AI_API_KEY || ''; }
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-async function falGenerateImageUrl(endpoint: string, input: Record<string, unknown>, timeoutMs = 180_000): Promise<string | null> {
+async function falGenerateImageUrl(
+  endpoint: string,
+  input: Record<string, unknown>,
+  timeoutMs = 180_000,
+  onTick?: () => Promise<void>,
+): Promise<string | null> {
   const key = falKey();
   if (!key) return null;
   try {
@@ -162,12 +167,13 @@ async function falGenerateImageUrl(endpoint: string, input: Record<string, unkno
       body: JSON.stringify(input),
       signal: AbortSignal.timeout(30_000),
     });
-    if (!sub.ok) { console.warn('[swipe] fal submit', sub.status, (await sub.text()).slice(0, 200)); return null; }
+    if (!sub.ok) { console.warn('[swipe] fal submit', endpoint, sub.status, (await sub.text()).slice(0, 200)); return null; }
     const s = await sub.json() as { status_url?: string; response_url?: string };
     if (!s.status_url || !s.response_url) return null;
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       await sleep(3_000);
+      if (onTick) await onTick().catch(() => undefined);
       const st = await fetch(s.status_url, { headers: { Authorization: `Key ${key}` }, cache: 'no-store' });
       if (!st.ok) continue;
       const sj = await st.json() as { status?: string; error?: string };
@@ -177,11 +183,12 @@ async function falGenerateImageUrl(endpoint: string, input: Record<string, unkno
         const result = await rr.json() as { images?: Array<{ url?: string }> };
         return result?.images?.[0]?.url || null;
       }
-      if (sj.status === 'ERROR') { console.warn('[swipe] fal job error', sj.error); return null; }
+      if (sj.status === 'ERROR') { console.warn('[swipe] fal job error', endpoint, sj.error); return null; }
     }
+    console.warn('[swipe] fal timed out', endpoint);
     return null;
   } catch (e) {
-    console.warn('[swipe] fal threw:', (e as Error).message);
+    console.warn('[swipe] fal threw:', endpoint, (e as Error).message);
     return null;
   }
 }
@@ -304,17 +311,25 @@ async function inlineExternalStyles(html: string, sourceUrl: string): Promise<st
     links.push({ full: m[0], href });
   }
   let out = html;
-  for (const l of links.slice(0, 10)) {
+  let inlined = 0;
+  const MAX_INLINE = 400_000;
+  for (const l of links.slice(0, 8)) {
+    if (inlined >= MAX_INLINE) break;
     const abs = absolutizeSrc(l.href, sourceUrl);
     if (!abs) continue;
     try {
-      const res = await fetch(abs, { signal: AbortSignal.timeout(12_000) });
+      const res = await fetch(abs, {
+        signal: AbortSignal.timeout(12_000),
+        headers: { 'user-agent': 'Mozilla/5.0 (compatible; WasabiRestyle/1.0)' },
+      });
       if (!res.ok) continue;
       let css = await res.text();
       if (!css || css.length < 20) continue;
-      if (css.length > 800_000) css = css.slice(0, 800_000);
+      const room = MAX_INLINE - inlined;
+      if (css.length > room) css = css.slice(0, room);
       css = rewriteCssUrls(css, abs);
       out = out.split(l.full).join(`<style data-chimera-inlined="${escAttr(abs)}">\n${css}\n</style>`);
+      inlined += css.length;
     } catch {
       /* keep the original link */
     }
@@ -718,16 +733,56 @@ function absolutizeSrc(src: string, sourceUrl: string): string {
 
 const VISION_MEDIA_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
 
-async function downloadForVision(url: string): Promise<{ mediaType: string; b64: string } | null> {
+async function downloadImageBuf(url: string): Promise<{ mediaType: string; buf: Buffer } | null> {
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(12_000) });
+    const res = await fetch(url, {
+      signal: AbortSignal.timeout(15_000),
+      headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36' },
+    });
     if (!res.ok) return null;
     const ct = (res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
     if (!VISION_MEDIA_TYPES.has(ct)) return null;
     const buf = Buffer.from(await res.arrayBuffer());
-    if (buf.length < 2_000 || buf.length > 4_500_000) return null;
-    return { mediaType: ct, b64: buf.toString('base64') };
+    if (buf.length < 1_000 || buf.length > 8_000_000) return null;
+    return { mediaType: ct, buf };
   } catch {
+    return null;
+  }
+}
+
+async function downloadForVision(url: string): Promise<{ mediaType: string; b64: string } | null> {
+  const got = await downloadImageBuf(url);
+  if (!got) return null;
+  if (got.buf.length > 4_500_000) return null;
+  return { mediaType: got.mediaType, b64: got.buf.toString('base64') };
+}
+
+/** Re-host a competitor photo on our public bucket so fal can fetch it.
+ *  Their CDNs usually block fal's crawler — that's why I2I was dying on photo 1. */
+async function hostImageForFal(
+  sb: SupabaseClient,
+  projectId: string,
+  url: string,
+  idx: number,
+): Promise<string | null> {
+  const got = await downloadImageBuf(url);
+  if (!got) return null;
+  try {
+    await ensureBucket(sb);
+    const ext = /jpeg|jpg/.test(got.mediaType) ? 'jpg' : /webp/.test(got.mediaType) ? 'webp' : 'png';
+    const key = `${projectId}/swipe_src/${Date.now()}_${idx}.${ext}`;
+    const { error } = await sb.storage.from(PROJECT_FILES_BUCKET).upload(key, got.buf, {
+      contentType: got.mediaType,
+      upsert: false,
+    });
+    if (error) {
+      console.warn('[swipe] host src failed:', error.message);
+      return null;
+    }
+    const { data: pub } = sb.storage.from(PROJECT_FILES_BUCKET).getPublicUrl(key);
+    return pub?.publicUrl || null;
+  } catch (e) {
+    console.warn('[swipe] host src threw:', (e as Error).message);
     return null;
   }
 }
@@ -1091,6 +1146,7 @@ async function swipeImages(
   let processed = 0;
 
   const restyle = ctx.imageMode === 'internal';
+  if (restyle && !falKey()) throw new Error('FAL_KEY is not configured on the swipe worker.');
   const images = collectImages(html, page.sourceUrl, restyle);
   const start = Math.max(0, opts.startOffset || 0);
   const cap = opts.maxThisBatch && opts.maxThisBatch > 0 ? opts.maxThisBatch : images.length;
@@ -1159,18 +1215,26 @@ Surrounding page copy: ${img.context || '(none)'}`;
       ? `Keep the EXACT composition, camera angle, crop and layout of image 1. Restyle the entire visual world: ${spec.stylePrefix}. Casting: ${spec.avatar}. Replace any competitor product with ${ctx.productName}. ${analysis.prompt}`
       : `Keep the EXACT composition of image 1. Recreate it for ${ctx.productName}. ${analysis.prompt}`;
     const sourceRef = absSrc && /^https?:\/\//i.test(absSrc) ? absSrc : '';
-    const refs = [sourceRef, ctx.mainImageUrl].filter((u): u is string => !!u && /^https?:\/\//i.test(u));
+    const hosted = sourceRef
+      ? (await hostImageForFal(sb, ctx.projectId, sourceRef, start + processed)) || ''
+      : '';
+    const refs = [hosted, ctx.mainImageUrl].filter((u): u is string => !!u && /^https?:\/\//i.test(u));
     const quality = restyle ? 'high' : 'medium';
     const common = { prompt: prompt.slice(0, 1800), num_images: 1, output_format: 'png', quality };
+    const tick = () => touchPage(sb, page.funnelPageId, `Photo ${start + processed}/${images.length} — generating…`);
     let falUrl: string | null = null;
-    if (restyle && sourceRef) {
-      falUrl = await falGenerateImageUrl(IMG_MODEL_I2I, { ...common, image_urls: refs, image_size: 'auto' }, 240_000);
-      if (!falUrl) falUrl = await falGenerateImageUrl(IMG_MODEL_I2I, { ...common, image_urls: refs, image_size: 'auto' }, 240_000);
+    if (restyle && hosted && Date.now() < deadline - 50_000) {
+      falUrl = await falGenerateImageUrl(IMG_MODEL_I2I, { ...common, image_urls: refs, image_size: 'auto' }, 120_000, tick);
+    }
+    if (!falUrl && Date.now() < deadline - 40_000) {
+      falUrl = await falGenerateImageUrl(IMG_MODEL_T2I, { ...common, image_size: falImageSize(img) }, 150_000, tick);
+      if (!falUrl) falUrl = await falGenerateImageUrl(IMG_MODEL_T2I, { ...common, image_size: falImageSize(img) }, 150_000, tick);
     }
     if (!falUrl) {
-      falUrl = await falGenerateImageUrl(IMG_MODEL_T2I, { ...common, image_size: falImageSize(img) }, 240_000);
+      console.warn(`[swipe] photo ${start + processed}/${images.length} failed — skipping`);
+      await touchPage(sb, page.funnelPageId, `Photo ${start + processed}/${images.length} failed — next…`);
+      continue;
     }
-    if (!falUrl) throw new Error(`GPT Image failed on photo ${start + processed}/${images.length}`);
     const stored = await storeGeneratedImage(sb, ctx.projectId, falUrl, generated);
     const finalUrl = stored || falUrl;
     out = replaceImageSrc(out, img.src, finalUrl);
@@ -1343,13 +1407,11 @@ CRITICAL RULES:
   }
   if (
     ctx.imageMode === 'internal'
-    && done
-    && imgRes.total > 0
+    && imgRes.processed > 0
     && imgRes.generated === 0
     && imgRes.productSwaps === 0
-    && !resume
   ) {
-    throw new Error(`Found ${imgRes.total} photos but regenerated 0. This is not a restyle — retry.`);
+    throw new Error(`GPT Image failed on ${imgRes.processed} photos this batch. Retry the restyle.`);
   }
   const nextOffset = imageOffset + (imgRes.processed || 0);
   const now = new Date().toISOString();
