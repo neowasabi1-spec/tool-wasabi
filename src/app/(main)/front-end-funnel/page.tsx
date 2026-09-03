@@ -70,6 +70,7 @@ import * as XLSX from 'xlsx';
 import VisualHtmlEditor from '@/components/VisualHtmlEditor';
 import { bakeDynamicComments } from '@/lib/bake-dynamic-comments';
 import { saveHtmlBlob } from '@/lib/html-blob-store';
+import { runVisualRestyle } from '@/lib/restyle-visual-client';
 import {
   buildTranslateContext,
   type ExtractedText,
@@ -4892,10 +4893,11 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
         }
 
         setCloneProgress(null);
-        const rewrittenHtml = rewriteData.html;
+        let rewrittenHtml = rewriteData.html;
+        let visualNote = '';
 
         await updateFunnelPage(pageId, {
-          swipeStatus: 'completed',
+          swipeStatus: currentPage?.productId ? 'in_progress' : 'completed',
           swipeResult: `Rewrite OK (${rewriteData.replacements}/${rewriteData.totalTexts} texts) [${rewriteData.provider || 'claude'}]`,
           swipedData: {
             html: rewrittenHtml,
@@ -4906,6 +4908,54 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
             processingTime: 0,
             methodUsed: rewriteData.provider || 'claude-rewrite',
             changesMade: [`${rewriteData.replacements} texts rewritten out of ${rewriteData.totalTexts}`],
+            swipedAt: new Date(),
+            ...(rewriteData.jobId ? { jobId: rewriteData.jobId } : {}),
+          },
+        });
+        void saveHtmlBlob(pageId, 'swipedData', rewrittenHtml);
+
+        if (currentPage?.productId && cloneConfig.productName) {
+          try {
+            const visual = await runVisualRestyle({
+              html: rewrittenHtml,
+              productName: cloneConfig.productName,
+              brief: cloneConfig.brief,
+              research: cloneConfig.marketResearch,
+              description: cloneConfig.productDescription,
+              projectId: currentPage.productId,
+              onProgress: (message, html) => {
+                setCloneProgress({
+                  phase: 'processing',
+                  totalTexts: rewriteData.totalTexts || 0,
+                  processedTexts: rewriteData.replacements || 0,
+                  message,
+                });
+                if (html) rewrittenHtml = html;
+              },
+            });
+            rewrittenHtml = visual.html;
+            visualNote = ` · ${visual.replaced}/${visual.total} media`;
+          } catch (e) {
+            pushSwipeLog('error', `Visual restyle: ${(e as Error).message} — copy is saved`, pageName);
+          }
+          setCloneProgress(null);
+        }
+
+        await updateFunnelPage(pageId, {
+          swipeStatus: 'completed',
+          swipeResult: `Rewrite OK (${rewriteData.replacements}/${rewriteData.totalTexts} texts)${visualNote}`,
+          swipedData: {
+            html: rewrittenHtml,
+            originalTitle: pageName,
+            newTitle: `Rewrite: ${pageName}`,
+            originalLength: rewriteData.originalLength || htmlToRewrite.length,
+            newLength: rewrittenHtml.length,
+            processingTime: 0,
+            methodUsed: visualNote ? 'clone-swipe+visual' : (rewriteData.provider || 'claude-rewrite'),
+            changesMade: [
+              `${rewriteData.replacements} texts rewritten out of ${rewriteData.totalTexts}`,
+              visualNote.trim(),
+            ].filter(Boolean),
             swipedAt: new Date(),
             ...(rewriteData.jobId ? { jobId: rewriteData.jobId } : {}),
           },
