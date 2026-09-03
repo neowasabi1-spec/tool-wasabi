@@ -3,13 +3,21 @@ import { extractAllTextsUniversal } from '../../src/lib/universal-text-extractor
 import {
   extractLandingMediaForProject,
   listLandingMedia,
-  mediaBelongsToPage,
+  pickOfferLandingMedia,
   matchLandingMediaToSlots,
   sectionFromNearbyHtml,
   type LandingMediaItem,
   type LandingSection,
+  downloadedLandingMedia,
 } from '../../src/lib/landing-media';
 import { extractSectionContent } from '../../src/lib/project-sections';
+import {
+  applyPaintedMedia,
+  collectRestyleSlots,
+  injectRestyleMediaScript,
+  replaceMediaUrl,
+  type PaintedMedia,
+} from '../../src/lib/restyle-slots';
 
 /**
  * Background function (up to 15 min) that performs the Chimera Protocol
@@ -1321,22 +1329,33 @@ function applyAffiliateMedia(
   stills: LandingMediaItem[],
   videos: LandingMediaItem[],
   used: Set<string>,
+  pageUrl = '',
 ): { html: string; placed: number; videos: number } {
   let out = html;
+  const slots = collectRestyleSlots(out, 24, pageUrl);
+  const imgSlots = slots.filter((s) => s.kind !== 'video');
+  const videoSlots = slots.filter((s) => s.kind === 'video');
+  const paints: PaintedMedia[] = [];
   let placed = 0;
   let vids = 0;
-  const images = collectImages(out, '');
-  for (const { slot, item } of matchLandingMediaToSlots(images, stills, used)) {
-    if (!item) continue;
-    out = replaceImageSrc(out, slot.src, item.storedUrl);
+  for (const { slot, item } of matchLandingMediaToSlots(imgSlots, stills, used)) {
+    if (!item?.storedUrl) continue;
+    if (typeof slot.domIndex === 'number') {
+      paints.push({ tag: slot.domTag === 'video' ? 'video' : 'img', index: slot.domIndex, url: item.storedUrl });
+    }
+    out = replaceMediaUrl(out, slot.src, item.storedUrl, pageUrl);
     placed++;
   }
-  const vtags = collectVideos(out);
-  for (const { slot, item } of matchLandingMediaToSlots(vtags, videos, used)) {
-    if (!item) continue;
-    out = replaceImageSrc(out, slot.src, item.storedUrl);
+  for (const { slot, item } of matchLandingMediaToSlots(videoSlots, videos, used)) {
+    if (!item?.storedUrl) continue;
+    if (typeof slot.domIndex === 'number') {
+      paints.push({ tag: 'video', index: slot.domIndex, url: item.storedUrl });
+    }
+    out = replaceMediaUrl(out, slot.src, item.storedUrl, pageUrl);
     vids++;
   }
+  if (paints.length) out = applyPaintedMedia(out, paints);
+  if (paints.length) out = injectRestyleMediaScript(out, paints);
   return { html: out, placed, videos: vids };
 }
 
@@ -1735,11 +1754,14 @@ CRITICAL RULES:
   const photosNeedOwnRun = ctx.imageMode === 'internal' && !resume && photoMinutesLeft < 200_000;
   try {
     if (ctx.imageMode === 'affiliate') {
-      // Keep THIS offer's photos only. Do not paint other products onto the page.
-      const stills = ctx.landingStills.filter((m) => mediaBelongsToPage(m, html, page.sourceUrl || ''));
-      const videos = ctx.landingVideos.filter((m) => mediaBelongsToPage(m, html, page.sourceUrl || ''));
+      const offer = pickOfferLandingMedia(
+        [...ctx.landingStills, ...ctx.landingVideos],
+        ctx.productName,
+      );
+      const stills = offer.filter((m) => m.kind === 'image' || m.kind === 'gif');
+      const videos = offer.filter((m) => m.kind === 'video');
       if (stills.length || videos.length) {
-        const applied = applyAffiliateMedia(html, stills, videos, ctx.mediaUsed);
+        const applied = applyAffiliateMedia(html, stills, videos, ctx.mediaUsed, page.sourceUrl || '');
         html = applied.html;
         imgRes = { html, generated: 0, productSwaps: 0, analyzed: 0, placed: applied.placed, videos: applied.videos, remaining: 0, total: 0, processed: 0 };
       }
@@ -1873,11 +1895,11 @@ export default async (req: Request) => {
   if (brief) parts.push(`BRIEF (use this as the primary source of truth for tone, positioning and value props):\n${brief}`);
   if (research) parts.push(`MARKET RESEARCH:\n${research}`);
   log(`context brief=${brief.length}c research=${research.length}c desc=${description.length}c`);
-  let landingItems = await listLandingMedia(sb, projectId);
+  let landingItems = downloadedLandingMedia(await listLandingMedia(sb, projectId));
   if (!landingItems.length) {
     try {
       await extractLandingMediaForProject(sb, projectId);
-      landingItems = await listLandingMedia(sb, projectId);
+      landingItems = downloadedLandingMedia(await listLandingMedia(sb, projectId));
     } catch (e) {
       log('landing media extract:', (e as Error).message);
     }

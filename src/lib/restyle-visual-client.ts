@@ -10,7 +10,7 @@ import {
 import {
   isLandingSection,
   matchLandingMediaToSlots,
-  mediaBelongsToPage,
+  pickOfferLandingMedia,
   type LandingMediaItem,
   type LandingSection,
 } from '@/lib/landing-media';
@@ -40,7 +40,7 @@ export async function runVisualRestyle(opts: {
   let html = applyPalette(opts.html, palette0);
   opts.onProgress?.('Palette on — loading competitor landing photos…', html);
 
-  const slots = collectRestyleSlots(opts.html, 24, opts.pageUrl || '');
+  const slots = collectRestyleSlots(html, 24, opts.pageUrl || '');
   if (!slots.length) {
     return { html, replaced: 0, total: 0, failed: 0, error: 'No photos/GIFs/videos on the page' };
   }
@@ -56,10 +56,7 @@ export async function runVisualRestyle(opts: {
     library = [];
   }
 
-  const fromThisOfferNow = (rows: LandingMediaItem[]) =>
-    rows.filter((m) => m.storedUrl && mediaBelongsToPage(m, opts.html, opts.pageUrl || ''));
-
-  let fromThisOffer = fromThisOfferNow(library);
+  let fromThisOffer = pickOfferLandingMedia(library, opts.productName);
   if (!fromThisOffer.length && opts.html) {
     try {
       const post = await fetch(`/api/projecthub/projects/${opts.projectId}/landing-media`, {
@@ -68,14 +65,17 @@ export async function runVisualRestyle(opts: {
         body: JSON.stringify({ html: opts.html, pageUrl: opts.pageUrl || '' }),
       });
       const data = (await post.json().catch(() => ({}))) as { items?: LandingMediaItem[] };
-      fromThisOffer = fromThisOfferNow(Array.isArray(data.items) ? data.items : []);
+      fromThisOffer = pickOfferLandingMedia(
+        Array.isArray(data.items) ? data.items : [],
+        opts.productName,
+      );
     } catch {
       /* keep empty */
     }
   }
 
   const alreadyOnPage = new Set(slots.map((s) => s.src));
-  const usable = fromThisOffer.filter((m) => !alreadyOnPage.has(m.sourceUrl));
+  const usable = fromThisOffer.filter((m) => m.storedUrl !== m.sourceUrl && !alreadyOnPage.has(m.storedUrl));
   const pool = usable.length ? usable : fromThisOffer;
   const stills = pool.filter((m) => m.kind === 'image' || m.kind === 'gif');
   const videos = pool.filter((m) => m.kind === 'video');
@@ -86,7 +86,7 @@ export async function runVisualRestyle(opts: {
       replaced: 0,
       total: slots.length,
       failed: slots.length,
-      error: 'No photos from this offer landing. Other products are not mixed in.',
+      error: 'No downloaded offer photos to place. Open Image landings first.',
     };
   }
 
