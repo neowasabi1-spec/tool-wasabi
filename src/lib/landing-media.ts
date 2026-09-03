@@ -58,34 +58,62 @@ export type LandingMediaItem = {
 
 const SECTION_RULES: Array<{ section: LandingSection; re: RegExp }> = [
   { section: 'hero', re: /\b(hero|banner|jumbotron|masthead|above[-_ ]?fold|first[-_ ]?screen|splash)\b/i },
-  { section: 'testimonials', re: /\b(testimonial|reviews?|rating|stars?|customer[-_ ]?(said|love)|ugc)\b/i },
-  { section: 'ingredients', re: /\b(ingredient|formula|composition|what'?s inside|actives?)\b/i },
+  { section: 'testimonials', re: /\b(testimonial|reviewer|ugc|customer[-_ ]?(said|love|photo|face)|headshot)\b/i },
+  { section: 'ingredients', re: /\b(ingredient|formula|composition|what'?s inside|actives?|ginger|zenzero|turmeric|curcuma|cinnamon|cannella|extract|botanic|herb|root|seed|leaf|vitamin|mineral|collagen)\b/i },
   { section: 'mechanism', re: /\b(how[-_ ]?it[-_ ]?works|mechanism|science|why[-_ ]?it|process|steps?)\b/i },
   { section: 'comparison', re: /\b(compar|versus|\bvs\b|before[-_ ]?after|beforeafter|split[-_ ]?frame)\b/i },
   { section: 'guarantee', re: /\b(guarantee|refund|money[-_ ]?back|risk[-_ ]?free|warranty)\b/i },
   { section: 'faq', re: /\b(faq|questions?|answers?)\b/i },
   { section: 'offer', re: /\b(offer|checkout|buy[-_ ]?now|add[-_ ]?to[-_ ]?cart|price|bundle|order|cta|call[-_ ]?to[-_ ]?action)\b/i },
   { section: 'benefits', re: /\b(benefit|feature|advantage|results?|transform)\b/i },
-  { section: 'product', re: /\b(product|packshot|bottle|jar|box|device|mockup|packaging)\b/i },
+  { section: 'product', re: /\b(product|packshot|bottle|jar|box|device|mockup|packaging|pouch|sachet|tub)\b/i },
   { section: 'lifestyle', re: /\b(lifestyle|people|woman|man|using|in[-_ ]?use|portrait)\b/i },
   { section: 'video', re: /\b(video|vsl|wistia|vimeo|youtube|player)\b/i },
 ];
 
-const RELATED_SECTIONS: Record<LandingSection, LandingSection[]> = {
-  hero: ['product', 'lifestyle', 'video'],
-  product: ['hero', 'lifestyle', 'offer'],
-  lifestyle: ['product', 'hero', 'testimonials'],
-  mechanism: ['benefits', 'product'],
-  benefits: ['mechanism', 'product'],
-  ingredients: ['product', 'mechanism'],
-  testimonials: ['lifestyle', 'guarantee'],
-  comparison: ['product', 'benefits'],
-  offer: ['product', 'hero', 'guarantee'],
-  guarantee: ['offer', 'testimonials'],
-  faq: ['guarantee', 'offer'],
-  video: ['hero', 'product'],
-  other: [],
-};
+/** Filename / URL wins over nearby “reviews” copy — ginger.jpg is an ingredient. */
+const SUBJECT_RULES: Array<{ section: LandingSection; re: RegExp }> = [
+  { section: 'ingredients', re: /ginger|zenzero|turmeric|curcuma|cinnamon|cannella|ingredient|botanic|herb|vitamin|mineral|collagen/i },
+  { section: 'testimonials', re: /testimonial|reviewer|ugc[-_ ]?(photo|img)|customer[-_ ]?(photo|face|avatar)|headshot|portrait[-_ ]?review/i },
+  { section: 'product', re: /packshot|bottle|jar|pouch|sachet|tub|stick[-_ ]?pack|product[-_ ]?(shot|photo|img)|mockup/i },
+  { section: 'comparison', re: /before[-_ ]?after|beforeafter/i },
+  { section: 'guarantee', re: /guarantee|money[-_ ]?back|badge[-_ ]?seal/i },
+];
+
+const PRODUCT_FAMILY: LandingSection[] = ['hero', 'product', 'lifestyle', 'offer'];
+
+/** Ginger stays ingredients. A face stays testimonials. No leftover dump. */
+export function rolesCompatible(photo: LandingSection, slot: LandingSection): boolean {
+  if (photo === slot) return true;
+  if (photo === 'other' || slot === 'other') return false;
+  if (photo === 'ingredients') return slot === 'ingredients' || slot === 'mechanism';
+  if (slot === 'ingredients') return photo === 'ingredients';
+  if (photo === 'testimonials' || slot === 'testimonials') return false;
+  if (photo === 'faq' || slot === 'faq') return false;
+  if (photo === 'guarantee' || slot === 'guarantee') return photo === slot;
+  if (photo === 'comparison' || slot === 'comparison') {
+    return photo === slot || (photo === 'product' && slot === 'comparison');
+  }
+  if (photo === 'video' || slot === 'video') return photo === 'video' && slot === 'video';
+  return PRODUCT_FAMILY.includes(photo) && PRODUCT_FAMILY.includes(slot);
+}
+
+export function resolveMediaRole(parts: {
+  sourceUrl?: string;
+  name?: string;
+  section?: string;
+  alt?: string;
+  src?: string;
+}): LandingSection {
+  const hay = fold([parts.sourceUrl, parts.name, parts.alt, parts.src].filter(Boolean).join(' '));
+  for (const rule of SUBJECT_RULES) {
+    if (rule.re.test(hay)) return rule.section;
+  }
+  if (parts.section && isLandingSection(parts.section) && parts.section !== 'other') {
+    return parts.section;
+  }
+  return inferLandingSection(hay);
+}
 
 export function hostOfUrl(url: string): string {
   try {
@@ -168,6 +196,9 @@ export function inferLandingSection(
   opts?: { positionRatio?: number; kind?: LandingMediaKind },
 ): LandingSection {
   const text = String(blob || '').slice(0, 4000);
+  for (const rule of SUBJECT_RULES) {
+    if (rule.re.test(text)) return rule.section;
+  }
   if (opts?.kind === 'video') {
     const hit = SECTION_RULES.find((r) => r.section !== 'video' && r.re.test(text));
     return hit?.section || 'video';
@@ -204,18 +235,15 @@ export function sectionFromNearbyHtml(
     .replace(/<style[\s\S]*?<\/style>/gi, ' ')
     .replace(/<[^>]+>/g, ' ');
   const ratio = html.length ? index / html.length : 0;
-  return inferLandingSection(`${ids} ${headings} ${alt} ${text}`, { positionRatio: ratio, kind: opts?.kind });
+  const url = tag.match(/\b(?:src|data-src|poster)\s*=\s*["']([^"']+)["']/i)?.[1] || '';
+  return resolveMediaRole({
+    sourceUrl: url,
+    alt,
+    section: inferLandingSection(`${ids} ${headings} ${alt} ${text} ${url}`, { positionRatio: ratio, kind: opts?.kind }),
+  });
 }
 
-const CONTENT_SECTIONS: LandingSection[] = [
-  'hero', 'product', 'lifestyle', 'mechanism', 'benefits', 'offer', 'comparison',
-];
-
-function isContentSection(s: LandingSection): boolean {
-  return CONTENT_SECTIONS.includes(s) || s === 'other';
-}
-
-/** Same role as on the offer landing: hero→hero, product→product, in landing order. */
+/** Place a photo only where that subject belongs. Empty slot beats a wrong photo. */
 export function matchLandingMediaToSlots<S extends { section: LandingSection; src?: string; alt?: string }>(
   slots: S[],
   media: LandingMediaItem[],
@@ -223,36 +251,21 @@ export function matchLandingMediaToSlots<S extends { section: LandingSection; sr
 ): Array<{ slot: S; item: LandingMediaItem | null }> {
   const pool = sortLandingMediaAsOnPage(
     media.filter((m) => !used.has(String(m.id)) && !isDecorativeMedia(m.sourceUrl, m.name, m.storedUrl)),
-  );
-  const take = (pred: (m: LandingMediaItem) => boolean): LandingMediaItem | null => {
-    const found = pool.find((m) => !used.has(String(m.id)) && pred(m));
+  ).map((m) => ({ m, role: resolveMediaRole(m) }));
+  const take = (pred: (row: { m: LandingMediaItem; role: LandingSection }) => boolean): LandingMediaItem | null => {
+    const found = pool.find((row) => !used.has(String(row.m.id)) && pred(row));
     if (!found) return null;
-    used.add(String(found.id));
-    return found;
+    used.add(String(found.m.id));
+    return found.m;
   };
-  const out: Array<{ slot: S; item: LandingMediaItem | null }> = slots.map((slot) => {
+  return slots.map((slot) => {
     if (isDecorativeMedia(slot.src, slot.alt)) return { slot, item: null };
-    const exact =
-      slot.section !== 'other'
-        ? take((m) => m.section === slot.section && m.section !== 'other')
-        : null;
-    return { slot, item: exact };
+    const slotRole = resolveMediaRole({ src: slot.src, alt: slot.alt, section: slot.section });
+    const exact = take((row) => row.role === slotRole && slotRole !== 'other');
+    if (exact) return { slot, item: exact };
+    const family = take((row) => rolesCompatible(row.role, slotRole));
+    return { slot, item: family };
   });
-  for (const row of out) {
-    if (row.item) continue;
-    if (isDecorativeMedia(row.slot.src, row.slot.alt)) continue;
-    const related = RELATED_SECTIONS[row.slot.section] || [];
-    row.item = take((m) => related.includes(m.section));
-  }
-  // Only leftover CONTENT slots get leftover content photos — never dump
-  // a testimonial into the hero or a packshot onto a star rating.
-  for (const row of out) {
-    if (row.item) continue;
-    if (!isContentSection(row.slot.section)) continue;
-    if (isDecorativeMedia(row.slot.src, row.slot.alt)) continue;
-    row.item = take((m) => isContentSection(m.section));
-  }
-  return out;
 }
 
 function landingMediaOrderKey(
