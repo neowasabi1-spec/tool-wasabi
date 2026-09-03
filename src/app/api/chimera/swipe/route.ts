@@ -95,6 +95,7 @@ export async function POST(req: NextRequest) {
     .filter(Boolean)
     .slice(0, 20);
   const imageMode = body.imageMode === 'affiliate' ? 'affiliate' : 'internal';
+  const skipTexts = body.skipTexts === true;
   if (!pageIds.length) {
     return NextResponse.json({ error: 'pageIds required' }, { status: 400 });
   }
@@ -136,7 +137,9 @@ export async function POST(req: NextRequest) {
   });
 
   const mainImageUrl = await loadMainProductImageUrl(projectId);
-  const queued = 'Clone/Swipe rewrite queued, then colors + photos…';
+  const queued = skipTexts
+    ? 'Palette + photos/gifs/videos on Clone/Swipe copy…'
+    : 'Clone/Swipe rewrite queued, then colors + photos…';
   await supabaseAdmin
     .from('funnel_pages')
     .update({ swipe_status: 'in_progress', swipe_result: queued })
@@ -159,6 +162,7 @@ export async function POST(req: NextRequest) {
         market: '',
         mainImageUrl,
         imageMode,
+        skipTexts,
         pages,
       }),
       signal: AbortSignal.timeout(8_000),

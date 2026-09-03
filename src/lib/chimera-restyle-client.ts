@@ -10,6 +10,7 @@ export async function startChimeraRestyle(opts: {
   pageIds: string[];
   projectId: string;
   imageMode?: 'internal' | 'affiliate';
+  skipTexts?: boolean;
 }): Promise<{ ok: boolean; error?: string; photo?: boolean }> {
   const res = await fetch('/api/chimera/swipe', {
     method: 'POST',
@@ -18,6 +19,7 @@ export async function startChimeraRestyle(opts: {
       pageIds: opts.pageIds,
       projectId: opts.projectId,
       imageMode: opts.imageMode || 'internal',
+      skipTexts: opts.skipTexts === true,
     }),
   });
   const data = (await res.json().catch(() => ({}))) as { error?: string; photo?: boolean };
@@ -55,7 +57,7 @@ export async function pollChimeraRestyle(opts: {
         lastById.set(p.id, key);
         opts.onProgress?.(p);
       }
-      if (!startedAt && /texts rewritten|palette restyled|photo batch|images regenerated|landing images placed/i.test(p.swipeResult || '')) {
+      if (!startedAt && /texts rewritten|palette|photo|gif|video|visual world|Clone\/Swipe/i.test(p.swipeResult || '')) {
         startedAt = Date.now();
       }
     }
@@ -81,12 +83,14 @@ export async function loadSwipedHtml(pageId: string): Promise<string> {
 export async function runChimeraInternalSwipe(opts: {
   pageIds: string[];
   projectId: string;
+  skipTexts?: boolean;
   onProgress?: (page: ChimeraSwipePageStatus) => void;
 }): Promise<{ ok: boolean; htmlUrl?: string; summary?: string; error?: string; pages?: ChimeraSwipePageStatus[] }> {
   const started = await startChimeraRestyle({
     pageIds: opts.pageIds,
     projectId: opts.projectId,
     imageMode: 'internal',
+    skipTexts: opts.skipTexts === true,
   });
   if (!started.ok) return { ok: false, error: started.error };
 

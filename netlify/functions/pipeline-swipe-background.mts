@@ -102,6 +102,7 @@ interface SwipeCtx {
   mediaUsed: Set<string>;
   restyle: RestyleSpec | null;
   ownerUserId: string | null;
+  skipTexts: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -1338,6 +1339,62 @@ function applyAffiliateMedia(
   return { html: out, placed, videos: vids };
 }
 
+/** Internal restyle: unique poster per <video>, swap src with our landing
+ *  videos when we have them. GPT Image cannot invent a new MP4 — a new
+ *  poster + optional src swap is what actually changes the clip on the page. */
+async function restyleVideos(
+  sb: SupabaseClient,
+  html: string,
+  ctx: SwipeCtx,
+  page: SwipePage,
+  budget: { imagesLeft: number },
+  deadline: number,
+): Promise<{ html: string; posters: number; swapped: number }> {
+  let out = html;
+  let posters = 0;
+  let swapped = 0;
+  const slots = collectVideos(out);
+  if (!slots.length) return { html: out, posters, swapped };
+
+  for (let i = 0; i < slots.length; i++) {
+    if (budget.imagesLeft <= 0 || Date.now() > deadline - 50_000) break;
+    const slot = slots[i];
+    const lookFor = slot.src;
+    const unusedVid = ctx.landingVideos.find((v) => v.storedUrl && !ctx.mediaUsed.has(v.storedUrl));
+    if (unusedVid) {
+      out = replaceImageSrc(out, lookFor, unusedVid.storedUrl);
+      ctx.mediaUsed.add(unusedVid.storedUrl);
+      swapped++;
+    }
+    const spec = ctx.restyle;
+    const prompt = spec
+      ? `Unique video poster ${i + 1}/${slots.length} for a ${slot.section} clip. ${spec.stylePrefix}. Casting: ${spec.avatar}. Product: ${ctx.productName}. Cinematic still, no competitor brands.`
+      : `Unique cinematic still ${i + 1} for ${ctx.productName} (${slot.section}). No competitor brands.`;
+    const falUrl = await falGenerateImageUrl(
+      IMG_MODEL_T2I,
+      { num_images: 1, output_format: 'png', quality: 'medium', prompt: prompt.slice(0, 1800), image_size: 'landscape_16_9' },
+      90_000,
+      () => touchPage(sb, page.funnelPageId, `Video ${i + 1}/${slots.length} — new poster…`),
+    );
+    if (!falUrl) continue;
+    const stored = await storeGeneratedImage(sb, ctx.projectId, falUrl, 800 + i) || falUrl;
+    const needle = unusedVid?.storedUrl || lookFor;
+    const blockRe = /<video\b[\s\S]*?<\/video>/gi;
+    out = out.replace(blockRe, (block) => {
+      if (!block.includes(needle) && !block.includes(lookFor)) return block;
+      if (/\bposter\s*=/i.test(block)) {
+        posters++;
+        return block.replace(/(\bposter\s*=\s*["'])([^"']+)(["'])/i, `$1${stored}$3`);
+      }
+      posters++;
+      return block.replace(/<video\b/i, `<video poster="${stored}"`);
+    });
+    budget.imagesLeft--;
+    await persistHtml(sb, page.funnelPageId, 'swiped', out, ctx.ownerUserId);
+  }
+  return { html: out, posters, swapped };
+}
+
 async function swipeImages(
   sb: SupabaseClient,
   html: string,
@@ -1410,33 +1467,31 @@ Surrounding page copy: ${img.context || '(none)'}`;
     }
 
     await touchPage(sb, page.funnelPageId, `Photo ${start + processed}/${images.length} — generating…`);
-    if (analysis.productShot && ctx.mainImageUrl) {
-      out = replaceImageSrc(out, img.src, ctx.mainImageUrl);
-      productSwaps++;
-      budget.imagesLeft--;
-      await persistHtml(sb, page.funnelPageId, 'swiped', out, ctx.ownerUserId);
-      await touchPage(sb, page.funnelPageId, `Photo ${start + processed}/${images.length} — product shot replaced`);
-      continue;
-    }
+    // Never stamp the same product photo on every packshot — that made
+    // the whole page look like one repeated image. Use it only as a
+    // reference for I2I so each slot stays a unique frame.
+    if (analysis.productShot && ctx.mainImageUrl) productSwaps++;
 
+    const isGif = /\.gif(\?|#|$)/i.test(img.src) || /gif/i.test(img.alt);
     const sourceRef = absSrc && /^https?:\/\//i.test(absSrc) ? absSrc : '';
-    const hosted = sourceRef
+    const hosted = !isGif && sourceRef
       ? (await hostImageForFal(sb, ctx.projectId, sourceRef, start + processed)) || ''
       : '';
-    const refs = [hosted, ctx.mainImageUrl].filter((u): u is string => {
+    const refs = [hosted, analysis.productShot ? ctx.mainImageUrl : null].filter((u): u is string => {
       if (!u) return false;
       return /^https?:\/\//i.test(u) || u.startsWith('data:image/');
     });
+    const slotHint = `Unique frame ${start + processed + 1}/${images.length} (${img.section || 'section'}, ${isGif ? 'GIF' : analysis.format}). Do NOT reuse a previous composition.`;
     const i2iPrompt = spec
-      ? `Keep the EXACT composition, camera angle, crop and layout of image 1. Restyle the entire visual world: ${spec.stylePrefix}. Casting: ${spec.avatar}. Replace any competitor product with ${ctx.productName}. ${analysis.prompt}`
-      : `Keep the EXACT composition of image 1. Recreate it for ${ctx.productName}. ${analysis.prompt}`;
+      ? `${slotHint} Keep the EXACT composition, camera angle, crop and layout of image 1. Restyle the entire visual world: ${spec.stylePrefix}. Casting: ${spec.avatar}. Replace any competitor product with ${ctx.productName}. ${analysis.prompt}`
+      : `${slotHint} Keep the EXACT composition of image 1. Recreate it for ${ctx.productName}. ${analysis.prompt}`;
     const t2iPrompt = spec
-      ? `${spec.stylePrefix}. Casting: ${spec.avatar}. ${analysis.prompt} Product: ${ctx.productName}.`
-      : analysis.prompt;
+      ? `${slotHint} ${spec.stylePrefix}. Casting: ${spec.avatar}. ${analysis.prompt} Product: ${ctx.productName}.`
+      : `${slotHint} ${analysis.prompt}`;
     const tick = () => touchPage(sb, page.funnelPageId, `Photo ${start + processed}/${images.length} — generating…`);
     const common = { num_images: 1, output_format: 'png', quality: 'medium' as const };
     let falUrl: string | null = null;
-    if (restyle && refs.length && Date.now() < deadline - 70_000) {
+    if (restyle && !isGif && refs.length && Date.now() < deadline - 70_000) {
       falUrl = await falGenerateImageUrl(
         IMG_MODEL_I2I,
         { ...common, prompt: i2iPrompt.slice(0, 1800), image_urls: refs, image_size: 'auto' },
@@ -1573,6 +1628,22 @@ async function processPage(
     originalHtml = await loadSavedHtml(sb, page.funnelPageId, 'cloned');
     if (!html) throw new Error('resume failed: swiped HTML missing');
     originalTitle = originalHtml.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || page.name;
+  } else if (ctx.skipTexts) {
+    html = await loadSavedHtml(sb, page.funnelPageId, 'swiped');
+    originalHtml = await loadSavedHtml(sb, page.funnelPageId, 'cloned');
+    if (!html) throw new Error('Clone/Swipe rewrite missing — run Rewrite first');
+    originalTitle = html.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || page.name;
+    newTitle = originalTitle;
+    replacements = (html.match(/"from"\s*:/g) || []).length;
+    textsCount = replacements;
+    if (ctx.imageMode === 'internal') {
+      await touchPage(sb, page.funnelPageId, 'Clone/Swipe copy loaded — palette + photos/gifs/videos…');
+      if (!ctx.restyle) ctx.restyle = await buildRestyleSpec(originalHtml || html, ctx);
+      if (!ctx.restyle) ctx.restyle = fallbackRestyleSpec(ctx, topPageHex(originalHtml || html));
+      html = applyTheme(html, ctx.restyle);
+    }
+    await persistHtml(sb, page.funnelPageId, 'swiped', html, ctx.ownerUserId);
+    await touchPage(sb, page.funnelPageId, 'Editing photos, GIFs and videos…');
   } else {
     html = await loadSourceHtml(sb, page);
     if (!html) throw new Error('no source HTML (saved snapshot missing and live fetch failed)');
@@ -1679,6 +1750,11 @@ CRITICAL RULES:
       });
       html = batch.html;
       imgRes = { ...batch, placed: 0, videos: 0 };
+      if (batch.remaining <= 0 && ctx.imageMode === 'internal' && Date.now() < deadline - 50_000) {
+        const vids = await restyleVideos(sb, html, ctx, page, budget, deadline);
+        html = vids.html;
+        imgRes.videos = vids.swapped + vids.posters;
+      }
     }
   } catch (e) {
     console.warn('[swipe] image swipe failed:', (e as Error).message);
@@ -1820,6 +1896,7 @@ export default async (req: Request) => {
     mediaUsed: new Set<string>(incomingUsed),
     restyle: incomingRestyle && incomingRestyle.stylePrefix ? incomingRestyle : null,
     ownerUserId: typeof project?.owner_user_id === 'string' ? project.owner_user_id : null,
+    skipTexts: body.skipTexts === true,
   };
 
   log(`batch ${pages.length} page(s) offset=${imageOffset} market="${market || 'auto'}" mode=${imageMode} landingMedia=${landingItems.length} photo=${mainImageUrl ? 'yes' : 'no'}`);
@@ -1881,6 +1958,7 @@ export default async (req: Request) => {
             market,
             mainImageUrl,
             imageMode,
+            skipTexts: ctx.skipTexts,
             pages: nextPages,
             imageOffset: nextOffset,
             restyle: ctx.restyle,
