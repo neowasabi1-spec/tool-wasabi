@@ -1049,12 +1049,12 @@ async function runCompetitor(supabase: SupabaseClient, projectId: string, input:
   //    the ad libraries surface foreign (US/English) brands.
   const geo = (input.market || input.language || '').trim() || country;
   const kwInstructions = `You are a media buyer doing competitor research for the ${geo} market.
-Find LOCAL competitors' ads for THIS exact product — not the whole category.
+Find OTHER brands and affiliates selling the SAME OFFER TYPE — similar product form, mechanism and promise. A winning offer has many advertisers. Do NOT search only our brand name.
 
 Output EXACTLY this format (no extra text):
 
 SEARCH
-<3 phrases, one per line>
+<4 phrases, one per line>
 
 INCLUDE
 <8-12 short phrases that MUST appear in a relevant ad>
@@ -1063,10 +1063,11 @@ EXCLUDE
 <8-12 off-niche traps this search often pulls>
 
 CRITICAL RULES:
-- SEARCH phrases MUST be 2-4 words (never a single word). Combine product FORM + outcome, the way a local advertiser writes copy. Examples: "caffè dimagrante", "slim coffee", "Kaffee abnehmen" — NOT "caffè", NOT "dimagrire", NOT "coffee", NOT "weight loss".
+- SEARCH phrases MUST be 2-4 words (never a single word). Combine product FORM + outcome the way local affiliates write copy. Examples: "caffè dimagrante", "slim coffee", "konjac jelly", "appetite gummy" — NOT our brand, NOT a single generic word.
+- Write 4 DIFFERENT searches so we cover the category (form, mechanism, slang, outcome) — not 4 rewrites of one phrase.
 - Write SEARCH + INCLUDE in the LOCAL LANGUAGE of ${geo}. Add the English product-form phrase only if locals also advertise in English.
-- INCLUDE = product form + problem + distinctive ingredients/mechanism (enough to recognize a real competitor ad).
-- EXCLUDE = adjacent junk the loose libraries return (shops, machines, generic retail, other health verticals, jobs, SaaS).
+- INCLUDE = category signals (form + problem + mechanism/ingredients). Never our brand name.
+- EXCLUDE = shops, machines, generic retail, other health verticals, jobs, SaaS.
 - Do NOT output brand or company names.
 - NEVER output generic platform/tech terms (shopify, ecommerce, dropshipping).`;
   const kwUser = `Product: ${productName}\nMarket: ${input.market || country}\n${input.description ? `Description: ${input.description}\n` : ''}${link ? `Competitor link: ${link}\n` : ''}\nGive SEARCH / INCLUDE / EXCLUDE now.`;
@@ -1108,15 +1109,15 @@ CRITICAL RULES:
   }
   for (const kw of searchTerms) {
     const metaUrl = fbAdLibrarySearchUrl(kw, country);
-    const run = await startApifyAdsRun(metaUrl, 12, webhookFor('meta'));
+    const run = await startApifyAdsRun(metaUrl, 20, webhookFor('meta'));
     if (run.ok) started.push({ platform: 'meta', keyword: kw, runId: run.runId! });
     else runs.push(`Meta(${kw}): ${run.error}`);
 
-    const tk = await startApifyTiktokRun(kw, country, 12, webhookFor('tiktok'));
+    const tk = await startApifyTiktokRun(kw, country, 20, webhookFor('tiktok'));
     if (tk.ok) started.push({ platform: 'tiktok', keyword: kw, runId: tk.runId! });
     else runs.push(`TikTok(${kw}): ${tk.error}`);
 
-    const gg = await startApifyGoogleRun(kw, country, 12, webhookFor('google'));
+    const gg = await startApifyGoogleRun(kw, country, 20, webhookFor('google'));
     if (gg.ok) started.push({ platform: 'google', keyword: kw, runId: gg.runId! });
     else runs.push(`Google(${kw}): ${gg.error}`);
   }

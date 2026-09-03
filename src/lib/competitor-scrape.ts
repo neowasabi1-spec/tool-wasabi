@@ -131,20 +131,20 @@ function isRealLandingUrl(url: string | undefined): boolean {
 
 /** Best-effort plain fetch of a landing page's HTML (fallback when the
  *  headless browser is unavailable or fails). */
-async function fetchLandingHtml(url: string): Promise<string> {
+async function fetchLandingHtml(url: string): Promise<{ html: string; finalUrl: string }> {
   try {
     const resp = await fetch(url, {
       signal: AbortSignal.timeout(12_000),
       redirect: 'follow',
       headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36' },
     });
-    if (!resp.ok) return '';
+    if (!resp.ok) return { html: '', finalUrl: url };
     const ct = resp.headers.get('content-type') || '';
-    if (!/text\/html/i.test(ct)) return '';
+    if (!/text\/html/i.test(ct)) return { html: '', finalUrl: resp.url || url };
     const text = await resp.text();
-    return text.slice(0, 3_000_000);
+    return { html: text.slice(0, 3_000_000), finalUrl: resp.url || url };
   } catch {
-    return '';
+    return { html: '', finalUrl: url };
   }
 }
 
@@ -179,7 +179,7 @@ export async function saveCompetitorLandings(
   urls: string[],
   platformLabel = '',
 ): Promise<number> {
-  const MAX = 8;
+  const MAX = 16;
   const { data: existingRows } = await supabaseAdmin
     .from('archived_funnels')
     .select('id, steps')
@@ -197,21 +197,23 @@ export async function saveCompetitorLandings(
     if (saved >= MAX) break;
     if (existing.has(url)) continue;
 
-    let html = await fetchLandingHtml(url);
+    const fetched = await fetchLandingHtml(url);
+    let html = fetched.html;
+    const pageUrl = fetched.finalUrl || url;
     if (!html || html.length < 200) continue;
-    try { html = absolutizeUrlsInHtml(html, url); } catch { /* keep raw */ }
+    try { html = absolutizeUrlsInHtml(html, pageUrl); } catch { /* keep raw */ }
     html = html.slice(0, 3_000_000);
 
     let name = 'Competitor landing';
-    try { name = new URL(url).hostname.replace(/^www\./, ''); } catch { /* keep default */ }
+    try { name = new URL(pageUrl).hostname.replace(/^www\./, ''); } catch { /* keep default */ }
     if (platformLabel) name = `${name} (${platformLabel})`;
 
     const step = {
       step_index: 1, name, page_type: 'landing', category: '', template_name: '',
-      product_name: '', url_to_swipe: url, prompt: '', feedback: '',
+      product_name: '', url_to_swipe: pageUrl, prompt: '', feedback: '',
       swipe_status: 'completed', swipe_result: '', swiped_data: null,
       cloned_data: {
-        html, title: name, source_url: url, method_used: 'apify',
+        html, title: name, source_url: pageUrl, method_used: 'apify',
         cloned_at: new Date().toISOString(), category: '', tags: [] as string[],
       },
     };
@@ -231,11 +233,12 @@ export async function saveCompetitorLandings(
 
     saved++;
     existing.add(url);
+    existing.add(pageUrl);
     try {
       await extractLandingMediaFromHtml(supabaseAdmin, {
         projectId,
         html,
-        pageUrl: url,
+        pageUrl,
         limit: 16,
       });
     } catch (e) {

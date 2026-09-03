@@ -399,30 +399,111 @@ async function fetchAssetOnce(
   return { buf, contentType };
 }
 
+const finalUrlCache = new Map<string, string>();
+
+/** Tracking links (go.trkscaling.com, etc.) 302 to the real advertorial.
+ *  Relative images must be resolved against THAT final URL, not the tracker. */
+export async function resolveFinalPageUrl(url: string): Promise<string> {
+  const raw = String(url || '').trim();
+  if (!/^https?:\/\//i.test(raw)) return raw;
+  const cached = finalUrlCache.get(raw);
+  if (cached) return cached;
+  try {
+    const res = await fetch(raw, {
+      redirect: 'follow',
+      signal: AbortSignal.timeout(12_000),
+      headers: {
+        Accept: 'text/html,image/*,*/*',
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+      },
+    });
+    const final = res.url || raw;
+    finalUrlCache.set(raw, final);
+    return final;
+  } catch {
+    finalUrlCache.set(raw, raw);
+    return raw;
+  }
+}
+
+export function pageDirectory(url: string): string {
+  try {
+    const u = new URL(url);
+    let path = u.pathname || '/';
+    if (!path.endsWith('/')) {
+      path = /\.[a-z0-9]{2,5}$/i.test(path) ? path.replace(/\/[^/]+$/, '/') : `${path}/`;
+    }
+    return `${u.origin}${path}`;
+  } catch {
+    return url;
+  }
+}
+
+function assetUrlCandidates(url: string, pageUrl: string, finalUrl: string): string[] {
+  const out = [url];
+  try {
+    const asset = new URL(url);
+    const bases = [finalUrl, pageUrl].filter(Boolean);
+    for (const base of bases) {
+      const dir = pageDirectory(base);
+      out.push(new URL(asset.pathname.replace(/^\//, '') + asset.search, dir).href);
+      const file = asset.pathname.split('/').filter(Boolean).pop();
+      if (file) out.push(new URL(file + asset.search, dir).href);
+    }
+  } catch {
+    /* keep original */
+  }
+  return [...new Set(out.filter(Boolean))];
+}
+
+/** Re-point tracker-absolutized assets onto the real landing after redirect. */
+export function rewriteAssetsOntoPage(html: string, fromUrl: string, toUrl: string): string {
+  if (!html || !fromUrl || !toUrl || fromUrl === toUrl) return html;
+  let fromOrigin = '';
+  try { fromOrigin = new URL(fromUrl).origin; } catch { return html; }
+  const dir = pageDirectory(toUrl);
+  return html.replace(/https?:\/\/[^\s"'<>)]+/gi, (abs) => {
+    try {
+      const u = new URL(abs);
+      if (u.origin !== fromOrigin) return abs;
+      return new URL(u.pathname.replace(/^\//, '') + u.search, dir).href;
+    } catch {
+      return abs;
+    }
+  });
+}
+
 async function downloadAsset(
   url: string,
   kind: LandingMediaKind,
   pageUrl = '',
 ): Promise<{ buf: Buffer; contentType: string } | null> {
-  const origin = (() => {
-    try { return new URL(pageUrl || url).origin + '/'; } catch { return ''; }
-  })();
+  const finalPage = pageUrl ? await resolveFinalPageUrl(pageUrl) : pageUrl;
+  const candidates = pageUrl ? assetUrlCandidates(url, pageUrl, finalPage) : [url];
+  const referers = [finalPage, pageUrl, url]
+    .map((u) => {
+      try { return new URL(u).origin + '/'; } catch { return ''; }
+    })
+    .filter(Boolean);
   const base: Record<string, string> = {
     Accept: kind === 'video' ? 'video/*,*/*;q=0.8' : 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
     'User-Agent':
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
     'Accept-Language': 'en-US,en;q=0.9',
   };
-  const attempts: Array<Record<string, string>> = [
-    { ...base, ...(origin ? { Referer: origin, Origin: origin.replace(/\/$/, '') } : {}) },
-    base,
-  ];
-  for (const headers of attempts) {
-    try {
-      const hit = await fetchAssetOnce(url, kind, headers);
-      if (hit) return hit;
-    } catch {
-      /* try next header set */
+  for (const candidate of candidates) {
+    const headersList: Array<Record<string, string>> = [
+      ...referers.map((referer) => ({ ...base, Referer: referer, Origin: referer.replace(/\/$/, '') })),
+      base,
+    ];
+    for (const headers of headersList) {
+      try {
+        const hit = await fetchAssetOnce(candidate, kind, headers);
+        if (hit) return hit;
+      } catch {
+        /* try next */
+      }
     }
   }
   return null;
@@ -460,11 +541,23 @@ export async function extractLandingMediaFromHtml(
   },
 ): Promise<LandingExtractStats> {
   const empty: LandingExtractStats = { saved: 0, skipped: 0, found: 0, downloadFailed: 0, uploadFailed: 0 };
-  const assets = collectLandingAssetUrls(args.html, args.pageUrl);
+  let html = args.html;
+  let pageUrl = args.pageUrl;
+  if (pageUrl) {
+    const finalUrl = await resolveFinalPageUrl(pageUrl);
+    if (finalUrl && finalUrl !== pageUrl) {
+      html = rewriteAssetsOntoPage(html, pageUrl, finalUrl);
+      pageUrl = finalUrl;
+    }
+  }
+  const assets = collectLandingAssetUrls(html, pageUrl);
   empty.found = assets.length;
   if (!assets.length) return empty;
   const existing = await listLandingMedia(sb, args.projectId);
   const have = new Map(existing.map((e) => [e.sourceUrl, e]));
+  const haveByFile = new Map(
+    existing.map((e) => [e.sourceUrl.split('/').pop()?.split('?')[0] || '', e]),
+  );
   const cap = Math.min(args.limit || MAX_PER_PAGE, MAX_PER_PAGE);
   const ownerUserId = await resolveOwnerUserId(sb, args.projectId, args.ownerUserId);
   await ensureBucket(sb);
@@ -474,7 +567,8 @@ export async function extractLandingMediaFromHtml(
   let uploadFailed = 0;
 
   for (const a of assets) {
-    const prev = have.get(a.url);
+    const fileName = a.url.split('/').pop()?.split('?')[0] || '';
+    const prev = have.get(a.url) || (fileName ? haveByFile.get(fileName) : undefined);
     const prevIsFile = prev && prev.filePath && !isRemoteUrl(prev.filePath);
     if (prevIsFile) {
       if (a.section !== 'other' && prev.section === 'other') {
@@ -488,7 +582,7 @@ export async function extractLandingMediaFromHtml(
       continue;
     }
     if (existing.length + saved >= MAX_PER_RUN || saved >= cap) break;
-    const dl = await downloadAsset(a.url, a.kind, args.pageUrl);
+    const dl = await downloadAsset(a.url, a.kind, pageUrl);
     if (!dl) {
       downloadFailed++;
       skipped++;
@@ -514,7 +608,10 @@ export async function extractLandingMediaFromHtml(
     };
     if (ownerUserId) row.owner_user_id = ownerUserId;
     if (prev) {
-      const { error } = await sb.from('project_files').update({ file_path: key }).eq('id', prev.id);
+      const { error } = await sb.from('project_files').update({
+        file_path: key,
+        original_name: encodeName(a.kind, a.section, a.url),
+      }).eq('id', prev.id);
       if (error) {
         await sb.storage.from(BUCKET).remove([key]).catch(() => undefined);
         uploadFailed++;

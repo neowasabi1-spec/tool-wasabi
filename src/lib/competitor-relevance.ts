@@ -69,7 +69,7 @@ export function seedPhrasesFromProduct(product: string): string[] {
   return out.filter(isSpecificKeyword);
 }
 
-export function pickSearchTerms(candidates: string[], product: string, max = 2): string[] {
+export function pickSearchTerms(candidates: string[], product: string, max = 4): string[] {
   const specific = candidates.filter(isSpecificKeyword);
   const seeds = seedPhrasesFromProduct(product);
   const merged: string[] = [];
@@ -107,10 +107,10 @@ export function parseDiscoveryLexicon(raw: string, product: string): DiscoveryLe
   const search = parseTermList(hasSections ? section('SEARCH') : text);
   const include = parseTermList(section('INCLUDE'));
   const exclude = parseTermList(section('EXCLUDE'));
-  const picked = pickSearchTerms(search, product, 2);
-  const includeMerged = parseTermList(
-    [...picked, ...include, ...seedPhrasesFromProduct(product)].join('\n'),
-  ).slice(0, 16);
+  const picked = pickSearchTerms(search, product, 4);
+  // Do NOT require our brand name in the ad copy — that collapses discovery
+  // to a single advertiser. INCLUDE stays category/mechanism signals.
+  const includeMerged = parseTermList([...picked, ...include].join('\n')).slice(0, 16);
   const excludeMerged = parseTermList([...ALWAYS_EXCLUDE, ...exclude].join('\n')).slice(0, 20);
   return { search: picked, include: includeMerged, exclude: excludeMerged };
 }
