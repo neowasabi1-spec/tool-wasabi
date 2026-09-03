@@ -1205,6 +1205,20 @@ export default function FrontEndFunnel() {
 
   const [showVisualEditor, setShowVisualEditor] = useState(false);
 
+  // Preview modal (z-50) and VisualHtmlEditor (z-60) are both full-screen.
+  // Never keep them both open — swipe used to reopen preview on top of an
+  // editor that was still mounted, so the user saw two editors.
+  const openVisualEditor = () => {
+    setShowVisualEditor(true);
+    setHtmlPreviewModal((prev) => (prev.isOpen ? { ...prev, isOpen: false } : prev));
+  };
+  const closeVisualEditor = () => {
+    setShowVisualEditor(false);
+    setHtmlPreviewModal((prev) => (
+      prev.html || prev.iframeSrc ? { ...prev, isOpen: true } : prev
+    ));
+  };
+
   // Custom page type creation inline
   const [newTypeForPageId, setNewTypeForPageId] = useState<string | null>(null);
   const [newTypeName, setNewTypeName] = useState('');
@@ -2860,6 +2874,7 @@ export default function FrontEndFunnel() {
         }, 5000);
 
         const page = (funnelPagesRef.current || []).find(p => p.id === pageId);
+        setShowVisualEditor(false);
         setHtmlPreviewModal({
           isOpen: true,
           title: page?.name || 'Swipe Result',
@@ -4091,6 +4106,7 @@ export default function FrontEndFunnel() {
         // rare cases where it works (and the user wants pixel-perfect).
         // isUploadedClone still feeds sourceUrl below.
         setClonedPreviewMode('snapshot');
+        setShowVisualEditor(false);
         setHtmlPreviewModal({
           isOpen: true,
           title: data.jsRendered ? `⚠️ Clone (JS-rendered): ${pageName}` : `Clone: ${pageName}`,
@@ -4987,6 +5003,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
 
         if (!silent) {
           setPreviewTab('preview');
+          setShowVisualEditor(false);
           setHtmlPreviewModal({
             isOpen: true,
             title: `Rewrite: ${pageName}`,
@@ -5158,6 +5175,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
         void saveHtmlBlob(pageId, 'swipedData', translatedHtml);
 
         if (!silent) {
+          setShowVisualEditor(false);
           setHtmlPreviewModal({
             isOpen: true,
             title: newTitle,
@@ -5906,6 +5924,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                         <div className="mt-2 flex gap-2">
                           <button
                             onClick={() => {
+                              setShowVisualEditor(false);
                               setHtmlPreviewModal({
                                 isOpen: true,
                                 title: page?.name || 'Result',
@@ -6594,6 +6613,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                   const got = await fetchHtmlIfNeeded(page.swipedData, 'swipedData');
                                   if (!got) return;
                                   setPreviewTab('preview');
+                                  setShowVisualEditor(false);
                                   setHtmlPreviewModal({
                                     isOpen: true,
                                     title: page.swipedData.newTitle || page.name,
@@ -6625,6 +6645,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                   setPreviewViewport('desktop');
                                   setPreviewTab('preview');
                                   setClonedPreviewMode('snapshot');
+                                  setShowVisualEditor(false);
                                   setHtmlPreviewModal({
                                     isOpen: true,
                                     title: page.clonedData!.title || page.name,
@@ -7065,7 +7086,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
       )}
 
       {/* HTML Preview Modal */}
-      {htmlPreviewModal.isOpen && (
+      {htmlPreviewModal.isOpen && !showVisualEditor && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-1">
           <div className="bg-white rounded-xl shadow-2xl w-[98vw] h-[98vh] overflow-hidden flex flex-col">
             {/* Modal Header */}
@@ -7168,7 +7189,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                 </button>
                 {htmlPreviewModal.html && (
                   <button
-                    onClick={() => setShowVisualEditor(true)}
+                    onClick={openVisualEditor}
                     className="px-4 py-2 text-sm font-medium text-amber-600 hover:text-amber-700 flex items-center gap-1.5 border-b-2 border-transparent hover:border-amber-400 transition-colors"
                   >
                     <Paintbrush className="w-3.5 h-3.5" />
@@ -8209,7 +8230,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
             <div className="px-6 py-4 border-t border-gray-200 bg-gray-50 flex justify-end gap-2 flex-wrap">
               {htmlPreviewModal.html && (
                 <button
-                  onClick={() => setShowVisualEditor(true)}
+                  onClick={openVisualEditor}
                   className="px-4 py-2 bg-amber-500 text-white rounded-lg hover:bg-amber-600 transition-colors flex items-center gap-2 mr-auto"
                 >
                   <Paintbrush className="w-4 h-4" />
@@ -9216,7 +9237,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
             setSaveTarget('project');
             setShowSaveModal(true);
           }}
-          onClose={() => setShowVisualEditor(false)}
+          onClose={closeVisualEditor}
         />
         );
       })()}
