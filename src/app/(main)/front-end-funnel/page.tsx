@@ -83,9 +83,12 @@ import {
 // version in preview / edit / download / deploy. Compare timestamps so every
 // consumer always operates on the latest version the user produced.
 function freshestHtmlTarget(
-  page: { swipedData?: unknown; clonedData?: unknown } | null | undefined,
+  page: { swipedData?: unknown; clonedData?: unknown; swipeStatus?: string } | null | undefined,
 ): 'swipedData' | 'clonedData' {
   if (!page) return 'clonedData';
+  if ((page.swipeStatus === 'completed' || page.swipeStatus === 'in_progress') && page.swipedData) {
+    return 'swipedData';
+  }
   const toMs = (v: unknown) => (v ? (new Date(v as string).getTime() || 0) : 0);
   const ts = (b: unknown) => {
     const o = (b || {}) as { editedAt?: unknown; swipedAt?: unknown; cloned_at?: unknown; clonedAt?: unknown };
@@ -3729,9 +3732,8 @@ export default function FrontEndFunnel() {
     const ok = await confirmDialog({
       title: `Swipe All — ${eligible.length} pages`,
       message:
-        `Internal restyle: new palette, rewritten copy, every photo regenerated ` +
-        `(GPT Image 2). Same layout as the competitor. Several minutes per page ` +
-        `(photos run in batches).`,
+        `Clone/Swipe rewrite (same text engine as Rewrite), then new palette ` +
+        `and every photo (GPT Image 2). Same layout. Several minutes per page.`,
       confirmText: 'Start restyle',
     });
     if (!ok) return;
@@ -3770,7 +3772,7 @@ export default function FrontEndFunnel() {
           ? { ...s, currentIndex: 1, currentPageName: label, currentStep: 'rewriting', batchInfo: `${group.length} pages` }
           : s
       );
-        pushSwipeLog('info', `Internal restyle — ${group.length} page(s) for ${label}`, label);
+        pushSwipeLog('info', `Chimera via Clone/Swipe — ${group.length} page(s) for ${label}`, label);
       for (const page of group) {
         updateFunnelPage(page.id, { swipeStatus: 'in_progress', swipeResult: 'Internal restyle queued…' });
       }
@@ -3796,7 +3798,7 @@ export default function FrontEndFunnel() {
       });
       if (restyled.ok) {
         for (const page of group) {
-          const htmlUrl = `/api/funnel-html?pageId=${encodeURIComponent(page.id)}&kind=swiped&variant=desktop&inert=1&v=${Date.now()}`;
+          const htmlUrl = `/api/funnel-html?pageId=${encodeURIComponent(page.id)}&kind=swiped&variant=desktop&v=${Date.now()}`;
           updateFunnelPage(page.id, {
             swipeStatus: 'completed',
             swipeResult: restyled.summary || 'Internal restyle completed',
@@ -3821,7 +3823,7 @@ export default function FrontEndFunnel() {
         const msg = restyled.error || 'Restyle failed';
         for (const page of group) {
           if ((restyled.pages || []).find((p) => p.id === page.id)?.swipeStatus === 'failed') {
-            const htmlUrl = `/api/funnel-html?pageId=${encodeURIComponent(page.id)}&kind=swiped&variant=desktop&inert=1&v=${Date.now()}`;
+            const htmlUrl = `/api/funnel-html?pageId=${encodeURIComponent(page.id)}&kind=swiped&variant=desktop&v=${Date.now()}`;
             updateFunnelPage(page.id, {
               swipeStatus: 'failed',
               swipeResult: msg,
@@ -4153,18 +4155,18 @@ export default function FrontEndFunnel() {
         });
 
       } else if (mode === 'rewrite' && currentPage?.productId) {
-        // Full Internal restyle (palette + every photo) — not the old text-only path.
+        // Chimera = Clone/Swipe texts + palette + photos (one automatic run).
         setCloneProgress({
           phase: 'processing',
           totalTexts: 0,
           processedTexts: 0,
-          message: 'Internal restyle: new palette + every photo…',
+          message: 'Clone/Swipe rewrite, then palette + photos…',
         });
         updateFunnelPage(pageId, {
           swipeStatus: 'in_progress',
-          swipeResult: 'Internal restyle queued — new palette + every photo…',
+          swipeResult: 'Clone/Swipe rewrite queued, then colors + photos…',
         });
-        pushSwipeLog('info', 'Internal restyle started (colors + all photos)', pageName);
+        pushSwipeLog('info', 'Chimera started via Clone/Swipe (texts + colors + photos)', pageName);
         const restyled = await runChimeraInternalSwipe({
           pageIds: [pageId],
           projectId: currentPage.productId,
@@ -4187,7 +4189,7 @@ export default function FrontEndFunnel() {
           },
         });
         const restyleUrl = restyled.htmlUrl
-          || `/api/funnel-html?pageId=${encodeURIComponent(pageId)}&kind=swiped&variant=desktop&inert=1&v=${Date.now()}`;
+          || `/api/funnel-html?pageId=${encodeURIComponent(pageId)}&kind=swiped&variant=desktop&v=${Date.now()}`;
         if (!restyled.ok) {
           updateFunnelPage(pageId, {
             swipeStatus: 'failed',
@@ -8892,7 +8894,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                       </div>
                     ) : (
                       <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
-                        Same layout. New palette, rewritten copy, every photo regenerated for your product (Internal restyle). Takes several minutes — photos run in batches.
+                        Same layout. Clone/Swipe rewrites the copy, then Chimera changes the palette and regenerates every photo. Several minutes — photos run in batches.
                       </div>
                     );
                   })()}
@@ -9122,7 +9124,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                   const isQ = mp && isQuizPage(mp);
                   return isQ
                     ? <><Sparkles className="w-4 h-4" /> Quiz Rewrite (keep JS)</>
-                    : <><Wand2 className="w-4 h-4" /> Restyle (colors + photos)</>;
+                    : <><Wand2 className="w-4 h-4" /> Rewrite + restyle</>;
                 })()}
                 {cloneMode === 'translate' && <><Globe className="w-4 h-4" /> Translate</>}
               </button>

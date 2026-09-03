@@ -97,7 +97,7 @@ export async function runChimeraInternalSwipe(opts: {
     });
     const failed = pages.find((p) => p.swipeStatus === 'failed');
     const htmlUrl = opts.pageIds.length === 1
-      ? `/api/funnel-html?pageId=${encodeURIComponent(opts.pageIds[0])}&kind=swiped&variant=desktop&inert=1&v=${Date.now()}`
+      ? `/api/funnel-html?pageId=${encodeURIComponent(opts.pageIds[0])}&kind=swiped&variant=desktop&v=${Date.now()}`
       : '';
     if (failed) return { ok: false, error: failed.swipeResult || 'Restyle failed', pages, htmlUrl };
     const summary = pages.map((p) => p.swipeResult).filter(Boolean).join(' · ')

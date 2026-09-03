@@ -136,7 +136,7 @@ export async function POST(req: NextRequest) {
   });
 
   const mainImageUrl = await loadMainProductImageUrl(projectId);
-  const queued = 'Internal restyle queued — new palette + every photo…';
+  const queued = 'Clone/Swipe rewrite queued, then colors + photos…';
   await supabaseAdmin
     .from('funnel_pages')
     .update({ swipe_status: 'in_progress', swipe_result: queued })

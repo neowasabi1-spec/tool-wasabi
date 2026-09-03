@@ -15,9 +15,10 @@ import {
  * step it
  *   1. loads the competitor step's saved HTML (page_html written by the
  *      extension's funnel walk) or fetches the live URL,
- *   2. rewrites ALL marketing texts for OUR product (Claude, in the market's
- *      local language) using the same universal-extract + DOM-replacer
- *      technique as /api/landing/swipe,
+ *   2. rewrites ALL marketing texts by CALLING /api/landing/swipe
+ *      (the Clone/Swipe engine — extract + Claude + data-swipe-replacer).
+ *      Chimera does not invent its own copy path. If the API is unreachable
+ *      it falls back to the same applyRewrites script that landing/swipe uses.
  *   3. INTERNAL restyle (ChatGPT quality): same template skeleton, new visual
  *      world — inlined template CSS remapped, theme tokens, every photo edited
  *      via GPT Image 2 image-to-image (keeps composition), packshots swapped
@@ -159,7 +160,10 @@ async function falGenerateImageUrl(
   onTick?: () => Promise<void>,
 ): Promise<string | null> {
   const key = falKey();
-  if (!key) return null;
+  if (!key) {
+    console.warn('[swipe] fal: FAL_KEY missing');
+    return null;
+  }
   try {
     const sub = await fetch(`https://queue.fal.run/${endpoint}`, {
       method: 'POST',
@@ -167,18 +171,32 @@ async function falGenerateImageUrl(
       body: JSON.stringify(input),
       signal: AbortSignal.timeout(30_000),
     });
-    if (!sub.ok) { console.warn('[swipe] fal submit', endpoint, sub.status, (await sub.text()).slice(0, 200)); return null; }
-    const s = await sub.json() as { status_url?: string; response_url?: string };
-    if (!s.status_url || !s.response_url) return null;
+    if (!sub.ok) {
+      console.warn('[swipe] fal submit', endpoint, sub.status, (await sub.text()).slice(0, 300));
+      return null;
+    }
+    const s = await sub.json() as {
+      request_id?: string;
+      status_url?: string;
+      response_url?: string;
+    };
+    const statusUrl = s.status_url
+      || (s.request_id ? `https://queue.fal.run/${endpoint}/requests/${s.request_id}/status` : '');
+    const responseUrl = s.response_url
+      || (s.request_id ? `https://queue.fal.run/${endpoint}/requests/${s.request_id}` : '');
+    if (!statusUrl || !responseUrl) {
+      console.warn('[swipe] fal submit missing urls', endpoint, JSON.stringify(s).slice(0, 200));
+      return null;
+    }
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       await sleep(3_000);
       if (onTick) await onTick().catch(() => undefined);
-      const st = await fetch(s.status_url, { headers: { Authorization: `Key ${key}` }, cache: 'no-store' });
+      const st = await fetch(statusUrl, { headers: { Authorization: `Key ${key}` }, cache: 'no-store' });
       if (!st.ok) continue;
       const sj = await st.json() as { status?: string; error?: string };
       if (sj.status === 'COMPLETED') {
-        const rr = await fetch(s.response_url, { headers: { Authorization: `Key ${key}` }, cache: 'no-store' });
+        const rr = await fetch(responseUrl, { headers: { Authorization: `Key ${key}` }, cache: 'no-store' });
         if (!rr.ok) return null;
         const result = await rr.json() as { images?: Array<{ url?: string }> };
         return result?.images?.[0]?.url || null;
@@ -382,6 +400,70 @@ function classifyContext(ctx: string): { kind: SwipeText['kind']; attr?: string;
   return null;
 }
 
+/** Ask Clone/Swipe (`/api/landing/swipe`) to rewrite copy. That is the
+ *  engine that already worked — Chimera only orchestrates it, then adds
+ *  palette + photos on the HTML it returns (incl. data-swipe-replacer). */
+function guessSwipeLanguage(html: string, market: string): string {
+  if (market) {
+    const m = market.toLowerCase();
+    if (/german|deutsch|\bde\b|germany/.test(m)) return 'de';
+    if (/french|fran[cç]ais|\bfr\b|france/.test(m)) return 'fr';
+    if (/spanish|espa[nñ]ol|\bes\b|spain/.test(m)) return 'es';
+    if (/italian|itali|\bit\b/.test(m)) return 'it';
+    if (/english|\ben\b|uk|usa|united/.test(m)) return 'en';
+  }
+  const text = html.replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<[^>]+>/g, ' ').slice(0, 12_000);
+  const it = (text.match(/\b(che|non|della|perché|sono|anche|più|questo|questa)\b/gi) || []).length;
+  const en = (text.match(/\b(the|and|with|your|this|that|from|have)\b/gi) || []).length;
+  return it > en + 3 ? 'it' : 'en';
+}
+
+async function runCloneSwipeApi(
+  html: string,
+  ctx: SwipeCtx,
+): Promise<{ html: string; replacements: number; totalTexts: number; newTitle: string } | null> {
+  const base = siteBaseUrl();
+  if (!base || html.length > 1_800_000) return null;
+  try {
+    const res = await fetch(`${base}/api/landing/swipe`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        html,
+        product: {
+          name: ctx.productName,
+          description: ctx.productContext.slice(0, 8000),
+          marketing_brief: ctx.productContext.slice(0, 8000),
+        },
+        tone: 'professional',
+        language: guessSwipeLanguage(html, ctx.market),
+      }),
+      signal: AbortSignal.timeout(280_000),
+    });
+    if (!res.ok) {
+      console.warn('[swipe] /api/landing/swipe HTTP', res.status, await res.text().then((t) => t.slice(0, 200)).catch(() => ''));
+      return null;
+    }
+    const data = await res.json() as {
+      success?: boolean;
+      html?: string;
+      replacements?: number;
+      totalTexts?: number;
+      new_title?: string;
+    };
+    if (!data.success || !data.html) return null;
+    return {
+      html: data.html,
+      replacements: data.replacements || 0,
+      totalTexts: data.totalTexts || 0,
+      newTitle: data.new_title || '',
+    };
+  } catch (e) {
+    console.warn('[swipe] /api/landing/swipe failed:', (e as Error).message);
+    return null;
+  }
+}
+
 function collectSwipeTexts(html: string): SwipeText[] {
   const universal = extractAllTextsUniversal(html);
   const seen = new Map<string, SwipeText>();
@@ -486,6 +568,23 @@ function escHtml(s: string): string { return s.replace(/&/g, '&amp;').replace(/<
 /** Apply rewrites: server-side <title>/<meta>, plus the injected DOM-replacer
  *  script (whitespace-tolerant) for body texts + attributes — the exact
  *  technique /api/landing/swipe uses, so results render identically. */
+function bakeOnePair(haystack: string, from: string, to: string): string {
+  let out = haystack;
+  if (out.includes(from)) out = out.split(from).join(to);
+  const escFrom = escHtml(from);
+  if (escFrom !== from && out.includes(escFrom)) out = out.split(escFrom).join(escHtml(to));
+  if (from.length >= 8) {
+    try {
+      const rx = new RegExp(escRxLiteral(from).replace(/ +/g, '\\s+'), 'g');
+      if (rx.test(out)) {
+        rx.lastIndex = 0;
+        out = out.replace(rx, () => to);
+      }
+    } catch { /* skip */ }
+  }
+  return out;
+}
+
 function bakePairsIntoHtml(
   html: string,
   pairs: Array<{ from: string; to: string; attr?: string }>,
@@ -496,22 +595,21 @@ function bakePairsIntoHtml(
   if (!sorted.length) return html;
   const parts = html.split(/(<script\b[\s\S]*?<\/script>|<style\b[\s\S]*?<\/style>)/gi);
   return parts.map((part) => {
-    if (/^<(script|style)\b/i.test(part)) return part;
-    let out = part;
-    for (const p of sorted) {
-      if (out.includes(p.from)) out = out.split(p.from).join(p.to);
-      const escFrom = escHtml(p.from);
-      if (escFrom !== p.from && out.includes(escFrom)) out = out.split(escFrom).join(escHtml(p.to));
-      if (p.from.length >= 8) {
-        try {
-          const rx = new RegExp(escRxLiteral(p.from).replace(/ +/g, '\\s+'), 'g');
-          if (rx.test(out)) {
-            rx.lastIndex = 0;
-            out = out.replace(rx, () => p.to);
-          }
-        } catch { /* skip bad regex */ }
+    if (/^<style\b/i.test(part)) return part;
+    if (/^<script\b/i.test(part)) {
+      if (/data-swipe-replacer/i.test(part)) return part;
+      let out = part;
+      for (const p of sorted) {
+        if (p.from.length < 12) continue;
+        out = bakeOnePair(out, p.from, p.to);
+        const jsonFrom = JSON.stringify(p.from).slice(1, -1);
+        const jsonTo = JSON.stringify(p.to).slice(1, -1);
+        if (jsonFrom !== p.from && out.includes(jsonFrom)) out = out.split(jsonFrom).join(jsonTo);
       }
+      return out;
     }
+    let out = part;
+    for (const p of sorted) out = bakeOnePair(out, p.from, p.to);
     return out;
   }).join('');
 }
@@ -609,6 +707,49 @@ function applyRewrites(
     var ntt = tryReplace(tt);
     if(ntt !== tt) titleEl.textContent = ntt;
   }
+  function run(){
+    try{ applyAll(); }catch(e){}
+  }
+  function applyAll(){
+    var elems = document.body ? document.body.querySelectorAll(blockSel) : [];
+    for(var k=0;k<elems.length;k++){
+      var el = elems[k];
+      if(el.querySelector(blockSel)) continue;
+      var fullNorm = normWS(el.textContent);
+      if(!fullNorm) continue;
+      for(var p2=0;p2<prepared.length;p2++){
+        var pp = prepared[p2];
+        if(pp.attr) continue;
+        if(fullNorm === pp.norm){ el.textContent = pp.to; break; }
+      }
+    }
+    if(document.body) walkText(document.body);
+    for(var a=0;a<prepared.length;a++){
+      var pa = prepared[a];
+      if(!pa.attr) continue;
+      var els = document.querySelectorAll('['+pa.attr+']');
+      for(var j=0;j<els.length;j++){
+        var v = els[j].getAttribute(pa.attr);
+        if(!v) continue;
+        var nv = v;
+        if(v.indexOf(pa.from)!==-1){ nv = v.split(pa.from).join(pa.to); }
+        else if(pa.rx && pa.rx.test(v)){ pa.rx.lastIndex = 0; nv = v.replace(pa.rx, pa.to); }
+        if(nv !== v) els[j].setAttribute(pa.attr, nv);
+      }
+    }
+    var titleEl = document.querySelector('title');
+    if(titleEl){
+      var tt = titleEl.textContent;
+      var ntt = tryReplace(tt);
+      if(ntt !== tt) titleEl.textContent = ntt;
+    }
+  }
+  run();
+  document.addEventListener('DOMContentLoaded', run);
+  window.addEventListener('load', run);
+  setTimeout(run, 200);
+  setTimeout(run, 800);
+  setTimeout(run, 2000);
 })();
 <\/script>`;
 
@@ -640,9 +781,14 @@ function applyRewrites(
     if (mp.from !== escAttr(mp.from)) html = replaceMetaContent(html, mp.from, mp.to);
   }
 
-  // Bake copy into the HTML so preview works without JavaScript (the
-  // watch popup sandboxes scripts; a script-only swipe looks unchanged).
+  const beforeBake = html;
   html = bakePairsIntoHtml(html, replacementPairs);
+  let bakedHits = 0;
+  for (const p of replacementPairs) {
+    if (p.attr) continue;
+    if (beforeBake.includes(p.from) || beforeBake.includes(escHtml(p.from))) bakedHits++;
+    else if (p.to && html.includes(p.to) && !beforeBake.includes(p.to)) bakedHits++;
+  }
 
   // Idempotency: strip any previous swipe-replacer before injecting ours.
   html = html.replace(/<script\b[^>]*\bdata-swipe-replacer\b[^>]*>[\s\S]*?<\/script>/gi, '');
@@ -653,7 +799,12 @@ function applyRewrites(
   }
 
   const newTitle = titlePairs[0]?.to || replacementPairs.find((p) => !p.attr)?.to || '';
+  // Same counter as /api/landing/swipe: pairs handed to the DOM-replacer,
+  // not "how many exact-string bakes hit raw HTML" (that under-counts and
+  // made the UI say "rewritten" while preview looked unchanged if the
+  // script was stripped).
   const replacements = replacementPairs.length + titlePairs.length + metaPairs.length;
+  void bakedHits;
   const changes = replacementPairs.slice(0, 40).map((p) => ({ from: p.from.slice(0, 50), to: p.to.slice(0, 50) }));
   return { html, replacements, newTitle, changes };
 }
@@ -714,6 +865,21 @@ function collectImages(html: string, sourceUrl: string, restyle = false): PageIm
     out.push({ src, alt, width, height, position: m.index, context, section });
     if (out.length >= 40) break;
   }
+  const posterRe = /<video\b[^>]*\bposter\s*=\s*["']([^"']+)["'][^>]*>/gi;
+  while ((m = posterRe.exec(html)) !== null && out.length < 40) {
+    const src = m[1];
+    if (!src || src.startsWith('data:') || seen.has(src)) continue;
+    seen.add(src);
+    out.push({
+      src,
+      alt: 'video poster',
+      width: 0,
+      height: 0,
+      position: m.index,
+      context: 'video poster',
+      section: sectionFromNearbyHtml(html, m.index, m[0]),
+    });
+  }
   const bgRe = /background-image\s*:\s*url\((['"]?)([^'")]+)\1\)/gi;
   let bm: RegExpExecArray | null;
   while ((bm = bgRe.exec(html)) !== null && out.length < 40) {
@@ -746,6 +912,15 @@ function absolutizeSrc(src: string, sourceUrl: string): string {
 
 const VISION_MEDIA_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
 
+function sniffImageType(buf: Buffer, declared: string): string {
+  if (VISION_MEDIA_TYPES.has(declared)) return declared;
+  if (buf[0] === 0x89 && buf[1] === 0x50) return 'image/png';
+  if (buf[0] === 0xff && buf[1] === 0xd8) return 'image/jpeg';
+  if (buf[0] === 0x47 && buf[1] === 0x49) return 'image/gif';
+  if (buf[0] === 0x52 && buf[1] === 0x49 && buf[8] === 0x57) return 'image/webp';
+  return '';
+}
+
 async function downloadImageBuf(url: string): Promise<{ mediaType: string; buf: Buffer } | null> {
   try {
     const res = await fetch(url, {
@@ -753,11 +928,12 @@ async function downloadImageBuf(url: string): Promise<{ mediaType: string; buf: 
       headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36' },
     });
     if (!res.ok) return null;
-    const ct = (res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
-    if (!VISION_MEDIA_TYPES.has(ct)) return null;
+    const declared = (res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
     const buf = Buffer.from(await res.arrayBuffer());
     if (buf.length < 1_000 || buf.length > 8_000_000) return null;
-    return { mediaType: ct, buf };
+    const mediaType = sniffImageType(buf, declared);
+    if (!mediaType) return null;
+    return { mediaType, buf };
   } catch {
     return null;
   }
@@ -790,13 +966,17 @@ async function hostImageForFal(
     });
     if (error) {
       console.warn('[swipe] host src failed:', error.message);
-      return null;
+      return got.buf.length <= 1_400_000
+        ? `data:${got.mediaType};base64,${got.buf.toString('base64')}`
+        : null;
     }
     const { data: pub } = sb.storage.from(PROJECT_FILES_BUCKET).getPublicUrl(key);
     return pub?.publicUrl || null;
   } catch (e) {
     console.warn('[swipe] host src threw:', (e as Error).message);
-    return null;
+    return got.buf.length <= 1_400_000
+      ? `data:${got.mediaType};base64,${got.buf.toString('base64')}`
+      : null;
   }
 }
 
@@ -941,7 +1121,12 @@ function rewriteRootTokens(html: string, spec: RestyleSpec): string {
  *  overrides framework utilities (Tailwind/Bootstrap class names) that never
  *  contain a hex to replace. */
 function applyTheme(html: string, spec: RestyleSpec): string {
-  let out = remapOldColors(html, spec);
+  const held: string[] = [];
+  let out = html.replace(/<script\b[^>]*\bdata-swipe-replacer\b[^>]*>[\s\S]*?<\/script>/gi, (m) => {
+    held.push(m);
+    return `<!--CHIMERA_SWIPE_SCRIPT_${held.length - 1}-->`;
+  });
+  out = remapOldColors(out, spec);
   out = rewriteRootTokens(out, spec);
   const css = `<style data-chimera-theme>
 :root,html{
@@ -967,6 +1152,7 @@ input,select,textarea{border-color:${spec.primary} !important;accent-color:${spe
   out = out.replace(/<style\b[^>]*\bdata-chimera-(?:theme|palette)\b[^>]*>[\s\S]*?<\/style>/gi, '');
   if (out.includes('</head>')) out = out.replace('</head>', `${css}</head>`);
   else out = css + out;
+  held.forEach((s, i) => { out = out.replace(`<!--CHIMERA_SWIPE_SCRIPT_${i}-->`, () => s); });
   return out;
 }
 
@@ -1223,28 +1409,42 @@ Surrounding page copy: ${img.context || '(none)'}`;
       continue;
     }
 
-    const prompt = spec
-      ? `Keep the EXACT composition, camera angle, crop and layout of image 1. Restyle the entire visual world: ${spec.stylePrefix}. Casting: ${spec.avatar}. Replace any competitor product with ${ctx.productName}. ${analysis.prompt}`
-      : `Keep the EXACT composition of image 1. Recreate it for ${ctx.productName}. ${analysis.prompt}`;
     const sourceRef = absSrc && /^https?:\/\//i.test(absSrc) ? absSrc : '';
     const hosted = sourceRef
       ? (await hostImageForFal(sb, ctx.projectId, sourceRef, start + processed)) || ''
       : '';
-    const refs = [hosted, ctx.mainImageUrl].filter((u): u is string => !!u && /^https?:\/\//i.test(u));
-    const quality = restyle ? 'high' : 'medium';
-    const common = { prompt: prompt.slice(0, 1800), num_images: 1, output_format: 'png', quality };
+    const refs = [hosted, ctx.mainImageUrl].filter((u): u is string => {
+      if (!u) return false;
+      return /^https?:\/\//i.test(u) || u.startsWith('data:image/');
+    });
+    const i2iPrompt = spec
+      ? `Keep the EXACT composition, camera angle, crop and layout of image 1. Restyle the entire visual world: ${spec.stylePrefix}. Casting: ${spec.avatar}. Replace any competitor product with ${ctx.productName}. ${analysis.prompt}`
+      : `Keep the EXACT composition of image 1. Recreate it for ${ctx.productName}. ${analysis.prompt}`;
+    const t2iPrompt = spec
+      ? `${spec.stylePrefix}. Casting: ${spec.avatar}. ${analysis.prompt} Product: ${ctx.productName}.`
+      : analysis.prompt;
     const tick = () => touchPage(sb, page.funnelPageId, `Photo ${start + processed}/${images.length} — generating…`);
+    const common = { num_images: 1, output_format: 'png', quality: 'medium' as const };
     let falUrl: string | null = null;
-    if (restyle && hosted && Date.now() < deadline - 50_000) {
-      falUrl = await falGenerateImageUrl(IMG_MODEL_I2I, { ...common, image_urls: refs, image_size: 'auto' }, 120_000, tick);
+    if (restyle && refs.length && Date.now() < deadline - 70_000) {
+      falUrl = await falGenerateImageUrl(
+        IMG_MODEL_I2I,
+        { ...common, prompt: i2iPrompt.slice(0, 1800), image_urls: refs, image_size: 'auto' },
+        90_000,
+        tick,
+      );
     }
-    if (!falUrl && Date.now() < deadline - 40_000) {
-      falUrl = await falGenerateImageUrl(IMG_MODEL_T2I, { ...common, image_size: falImageSize(img) }, 150_000, tick);
-      if (!falUrl) falUrl = await falGenerateImageUrl(IMG_MODEL_T2I, { ...common, image_size: falImageSize(img) }, 150_000, tick);
+    if (!falUrl && Date.now() < deadline - 50_000) {
+      falUrl = await falGenerateImageUrl(
+        IMG_MODEL_T2I,
+        { ...common, prompt: t2iPrompt.slice(0, 1800), image_size: falImageSize(img) },
+        120_000,
+        tick,
+      );
     }
     if (!falUrl) {
-      console.warn(`[swipe] photo ${start + processed}/${images.length} failed — skipping`);
-      await touchPage(sb, page.funnelPageId, `Photo ${start + processed}/${images.length} failed — next…`);
+      console.warn(`[swipe] photo ${start + processed}/${images.length} failed`);
+      await touchPage(sb, page.funnelPageId, `Photo ${start + processed}/${images.length} failed — generating next…`);
       continue;
     }
     const stored = await storeGeneratedImage(sb, ctx.projectId, falUrl, generated);
@@ -1375,13 +1575,32 @@ async function processPage(
     originalTitle = originalHtml.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || '';
     await persistHtml(sb, page.funnelPageId, 'cloned', originalHtml, ctx.ownerUserId);
 
-    const texts = collectSwipeTexts(originalHtml);
-    textsCount = texts.length;
-    await touchPage(sb, page.funnelPageId, textsCount
-      ? `Rewriting ${textsCount} texts…`
-      : 'No texts found — restyling photos…');
-    if (texts.length) {
-      const system = `You are a world-class direct-response copywriter. You rewrite competitor-style marketing texts to sell ONLY one specific product, without changing HTML structure downstream.
+    // Texts = Clone/Swipe. Chimera does not replace that engine.
+    if (/data-swipe-replacer/i.test(originalHtml)) {
+      html = originalHtml;
+      replacements = (originalHtml.match(/"from"\s*:/g) || []).length;
+      textsCount = replacements;
+      newTitle = originalHtml.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || '';
+      await touchPage(sb, page.funnelPageId, 'Clone/Swipe copy already on the page — colors + photos next…');
+      await persistHtml(sb, page.funnelPageId, 'swiped', html, ctx.ownerUserId);
+    } else {
+      await touchPage(sb, page.funnelPageId, 'Clone/Swipe rewrite (same engine as Rewrite)…');
+      const viaApi = await runCloneSwipeApi(originalHtml, ctx);
+      if (viaApi) {
+        html = viaApi.html;
+        replacements = viaApi.replacements;
+        textsCount = viaApi.totalTexts;
+        newTitle = viaApi.newTitle;
+        await persistHtml(sb, page.funnelPageId, 'swiped', html, ctx.ownerUserId);
+        await touchPage(sb, page.funnelPageId, `Clone/Swipe: ${replacements}/${textsCount} texts rewritten…`);
+      } else {
+        const texts = collectSwipeTexts(originalHtml);
+        textsCount = texts.length;
+        await touchPage(sb, page.funnelPageId, textsCount
+          ? `Clone/Swipe API busy — rewriting ${textsCount} texts locally…`
+          : 'No texts found — restyling photos…');
+        if (texts.length) {
+          const system = `You are a world-class direct-response copywriter. You rewrite competitor-style marketing texts to sell ONLY one specific product, without changing HTML structure downstream.
 
 PRODUCT NAME: ${ctx.productName}
 
@@ -1396,22 +1615,24 @@ CRITICAL RULES:
 3. Plain text ONLY in rewritten strings — no HTML, no markdown.
 4. Legal/compliance texts: rewrite only where safe; keep mandatory disclosures.
 5. Every batch MUST return one {"id","rewritten"} object per supplied id.`;
-      const textDeadline = Math.min(deadline, Date.now() + 180_000);
-      let persistChain = Promise.resolve();
-      const persistDraft = (rewrites: Map<number, string>) => {
-        persistChain = persistChain.then(async () => {
-          const applied = applyRewrites(originalHtml, texts, rewrites);
-          html = applied.html;
-          replacements = applied.replacements;
-          newTitle = applied.newTitle;
-          changes = applied.changes;
-          await persistHtml(sb, page.funnelPageId, 'swiped', html, ctx.ownerUserId);
-          await touchPage(sb, page.funnelPageId, `${replacements}/${textsCount} texts now on the page…`);
-        });
-        return persistChain;
-      };
-      const rewrites = await rewriteAllTexts(system, texts, textDeadline, persistDraft);
-      await persistDraft(rewrites);
+          const textDeadline = Math.min(deadline, Date.now() + 180_000);
+          let persistChain = Promise.resolve();
+          const persistDraft = (rewrites: Map<number, string>) => {
+            persistChain = persistChain.then(async () => {
+              const applied = applyRewrites(originalHtml, texts, rewrites);
+              html = applied.html;
+              replacements = applied.replacements;
+              newTitle = applied.newTitle;
+              changes = applied.changes;
+              await persistHtml(sb, page.funnelPageId, 'swiped', html, ctx.ownerUserId);
+              await touchPage(sb, page.funnelPageId, `${replacements}/${textsCount} texts now on the page…`);
+            });
+            return persistChain;
+          };
+          const rewrites = await rewriteAllTexts(system, texts, textDeadline, persistDraft);
+          await persistDraft(rewrites);
+        }
+      }
     }
 
     if (ctx.imageMode === 'internal') {
@@ -1428,6 +1649,8 @@ CRITICAL RULES:
   }
 
   let imgRes = { html, generated: 0, productSwaps: 0, analyzed: 0, placed: 0, videos: 0, remaining: 0, total: 0, processed: 0 };
+  const photoMinutesLeft = deadline - Date.now();
+  const photosNeedOwnRun = ctx.imageMode === 'internal' && !resume && photoMinutesLeft < 200_000;
   try {
     if (ctx.imageMode === 'affiliate') {
       if (ctx.landingStills.length || ctx.landingVideos.length) {
@@ -1435,6 +1658,10 @@ CRITICAL RULES:
         html = applied.html;
         imgRes = { html, generated: 0, productSwaps: 0, analyzed: 0, placed: applied.placed, videos: applied.videos, remaining: 0, total: 0, processed: 0 };
       }
+    } else if (photosNeedOwnRun) {
+      const n = collectImages(html, page.sourceUrl, true).length;
+      imgRes = { html, generated: 0, productSwaps: 0, analyzed: 0, placed: 0, videos: 0, remaining: n, total: n, processed: 0 };
+      await touchPage(sb, page.funnelPageId, `${replacements}/${textsCount} texts ready — starting photos next…`);
     } else {
       const batch = await swipeImages(sb, html, ctx, page, budget, deadline, ctx.landingStills, {
         startOffset: imageOffset,
@@ -1445,19 +1672,14 @@ CRITICAL RULES:
     }
   } catch (e) {
     console.warn('[swipe] image swipe failed:', (e as Error).message);
+    const n = collectImages(html, page.sourceUrl, true).length;
+    imgRes.remaining = Math.max(imgRes.remaining, n - imageOffset);
+    imgRes.total = n;
   }
 
   await persistHtml(sb, page.funnelPageId, 'swiped', html, ctx.ownerUserId);
 
   let done = ctx.imageMode === 'affiliate' || imgRes.remaining <= 0 || budget.imagesLeft <= 0;
-  if (
-    ctx.imageMode === 'internal'
-    && imgRes.processed > 0
-    && imgRes.generated === 0
-    && imgRes.productSwaps === 0
-  ) {
-    done = true;
-  }
   const nextOffset = imageOffset + (imgRes.processed || 0);
   const now = new Date().toISOString();
   const summary =
