@@ -71,6 +71,7 @@ import VisualHtmlEditor from '@/components/VisualHtmlEditor';
 import { bakeDynamicComments } from '@/lib/bake-dynamic-comments';
 import { saveHtmlBlob } from '@/lib/html-blob-store';
 import { runVisualRestyle } from '@/lib/restyle-visual-client';
+import { applyPalette, fallbackPalette } from '@/lib/restyle-slots';
 import {
   buildTranslateContext,
   type ExtractedText,
@@ -4895,9 +4896,17 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
         setCloneProgress(null);
         let rewrittenHtml = rewriteData.html;
         let visualNote = '';
+        const projectForVisual = (projects || []).find((p) => p.id === currentPage?.productId);
+        const visualName = (cloneConfig.productName || projectForVisual?.name || '').trim();
+        if (visualName) {
+          rewrittenHtml = applyPalette(
+            rewrittenHtml,
+            fallbackPalette(visualName, `${cloneConfig.brief || ''} ${cloneConfig.productDescription || ''}`),
+          );
+        }
 
         await updateFunnelPage(pageId, {
-          swipeStatus: currentPage?.productId ? 'in_progress' : 'completed',
+          swipeStatus: visualName ? 'in_progress' : 'completed',
           swipeResult: `Rewrite OK (${rewriteData.replacements}/${rewriteData.totalTexts} texts) [${rewriteData.provider || 'claude'}]`,
           swipedData: {
             html: rewrittenHtml,
@@ -4914,15 +4923,16 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
         });
         void saveHtmlBlob(pageId, 'swipedData', rewrittenHtml);
 
-        if (currentPage?.productId && cloneConfig.productName) {
+        if (visualName) {
+          pushSwipeLog('info', 'Palette on — generating photos/GIFs/videos…', pageName);
           try {
             const visual = await runVisualRestyle({
               html: rewrittenHtml,
-              productName: cloneConfig.productName,
-              brief: cloneConfig.brief,
-              research: cloneConfig.marketResearch,
-              description: cloneConfig.productDescription,
-              projectId: currentPage.productId,
+              productName: visualName,
+              brief: cloneConfig.brief || getProjectBriefText(projectForVisual),
+              research: cloneConfig.marketResearch || extractSectionContent(projectForVisual?.marketResearch),
+              description: cloneConfig.productDescription || projectForVisual?.description || '',
+              projectId: currentPage?.productId,
               onProgress: (message, html) => {
                 setCloneProgress({
                   phase: 'processing',
@@ -4935,10 +4945,19 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
             });
             rewrittenHtml = visual.html;
             visualNote = ` · ${visual.replaced}/${visual.total} media`;
+            pushSwipeLog(
+              visual.replaced ? 'success' : 'error',
+              visual.replaced
+                ? `Visual: ${visual.replaced}/${visual.total} media replaced`
+                : `Visual: 0/${visual.total} media generated — palette kept`,
+              pageName,
+            );
           } catch (e) {
-            pushSwipeLog('error', `Visual restyle: ${(e as Error).message} — copy is saved`, pageName);
+            pushSwipeLog('error', `Visual restyle: ${(e as Error).message} — copy + palette saved`, pageName);
           }
           setCloneProgress(null);
+        } else {
+          pushSwipeLog('error', 'No product name — skipped palette and photos', pageName);
         }
 
         await updateFunnelPage(pageId, {

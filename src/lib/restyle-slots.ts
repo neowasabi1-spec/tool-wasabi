@@ -58,6 +58,8 @@ export function collectRestyleSlots(html: string, max = 20): RestyleSlot[] {
     const src =
       tag.match(/\bsrc\s*=\s*["']([^"']+)["']/i)?.[1]
       || tag.match(/\bdata-src\s*=\s*["']([^"']+)["']/i)?.[1]
+      || tag.match(/\bdata-lazy-src\s*=\s*["']([^"']+)["']/i)?.[1]
+      || tag.match(/\bdata-original\s*=\s*["']([^"']+)["']/i)?.[1]
       || '';
     const alt = tag.match(/\balt\s*=\s*["']([^"']*)["']/i)?.[1] || '';
     const w = Number.parseInt(tag.match(/\bwidth\s*=\s*["']?(\d+)/i)?.[1] || '0', 10);
@@ -79,6 +81,12 @@ export function collectRestyleSlots(html: string, max = 20): RestyleSlot[] {
     const ctx = nearby(html, m.index, block.length);
     if (src) add(src, 'video', ctx.slice(0, 80), 'video', 0, 0);
     else if (poster) add(poster, 'image', 'video poster', 'video', 0, 0);
+  }
+
+  const bgRe = /background-image\s*:\s*url\(\s*['"]?([^'")]+)['"]?\s*\)/gi;
+  let bm: RegExpExecArray | null;
+  while ((bm = bgRe.exec(html)) !== null && out.length < max) {
+    add(bm[1], /\.gif(\?|#|$)/i.test(bm[1]) ? 'gif' : 'image', 'background', 'hero', 0, 0);
   }
 
   return out;
@@ -125,25 +133,61 @@ function outsideScripts(html: string, fn: (h: string) => string): string {
   return out;
 }
 
+function collectCssHex(css: string): string[] {
+  const counts = new Map<string, number>();
+  const re = /#([0-9a-f]{3}|[0-9a-f]{6})\b/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(css)) !== null) {
+    let h = m[0].toLowerCase();
+    if (h.length === 4) h = `#${h[1]}${h[1]}${h[2]}${h[2]}${h[3]}${h[3]}`;
+    if (/^#([0-9a-f])\1{5}$/i.test(h)) continue;
+    counts.set(h, (counts.get(h) || 0) + 1);
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([h]) => h);
+}
+
+function remapHexInCss(css: string, from: string[], to: string[]): string {
+  let out = css;
+  from.forEach((hex, i) => {
+    const next = to[i] || to[0];
+    if (!hex || hex === next) return;
+    const rx = new RegExp(hex.replace('#', '#?'), 'gi');
+    out = out.replace(new RegExp(hex, 'gi'), next);
+    void rx;
+  });
+  return out;
+}
+
 export function applyPalette(html: string, p: {
   primary: string; secondary: string; accent: string; background: string; ink: string;
 }): string {
+  const neu = [p.primary, p.secondary, p.accent, p.background, p.ink, p.primary, p.secondary, p.accent];
   return outsideScripts(html, (raw) => {
-  const css = `<style data-chimera-theme>
+    let out = raw.replace(/<style\b[\s\S]*?<\/style>/gi, (block) => {
+      const old = collectCssHex(block);
+      return remapHexInCss(block, old, neu);
+    });
+    out = out.replace(/\bstyle\s*=\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/gi, (full) => {
+      const old = collectCssHex(full);
+      return remapHexInCss(full, old, neu);
+    });
+    const css = `<style data-chimera-theme>
 :root,html{
-  --primary:${p.primary};--brand:${p.primary};--bs-primary:${p.primary};
+  --primary:${p.primary};--color-primary:${p.primary};--brand:${p.primary};--bs-primary:${p.primary};
   --secondary:${p.secondary};--accent:${p.accent};
-  --background:${p.background};--text:${p.ink};--ink:${p.ink};
+  --background:${p.background};--bg:${p.background};--text:${p.ink};--ink:${p.ink};
 }
 html,body{background:${p.background} !important;color:${p.ink} !important;}
 a{color:${p.accent};}
-button,input[type=submit],.btn,[class*="btn-primary"],[class*="cta"]{
+button,input[type=submit],input[type=button],.btn,[class*="btn-primary"],[class*="cta"],[class*="CTA"]{
   background:${p.primary} !important;border-color:${p.primary} !important;color:#fff !important;
 }
+header,nav,[class*="navbar"],[class*="hero"],[class*="Hero"]{background:${p.secondary} !important;}
+footer,[class*="footer"]{background:${p.secondary} !important;color:#fff !important;}
 </style>`;
-  let out = raw.replace(/<style\b[^>]*\bdata-chimera-theme\b[^>]*>[\s\S]*?<\/style>/gi, '');
-  if (out.includes('</head>')) out = out.replace('</head>', `${css}</head>`);
-  else out = css + out;
-  return out;
+    out = out.replace(/<style\b[^>]*\bdata-chimera-theme\b[^>]*>[\s\S]*?<\/style>/gi, '');
+    if (out.includes('</head>')) out = out.replace('</head>', `${css}</head>`);
+    else out = css + out;
+    return out;
   });
 }

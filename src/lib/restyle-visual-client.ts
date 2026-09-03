@@ -153,7 +153,7 @@ export async function runVisualRestyle(opts: {
       } else {
         still = await generateMedia({
           mode: 'text2image',
-          model: 'gpt-image-2',
+          model: 'nano-banana-2',
           prompt: unique.slice(0, 1800),
           size: slot.aspect,
         });
