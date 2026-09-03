@@ -12,9 +12,17 @@ export const maxDuration = 120;
 
 export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
   const { id } = params;
-  const { allowed } = await canAccessProject(req, id);
+  const { allowed, ctx } = await canAccessProject(req, id);
   if (!allowed) return NextResponse.json({ error: 'Not found' }, { status: 404 });
-  const items = await listLandingMedia(supabaseAdmin, id);
+  let items = await listLandingMedia(supabaseAdmin, id);
+  if (!items.length) {
+    try {
+      await extractLandingMediaForProject(supabaseAdmin, id, ctx.userId);
+      items = await listLandingMedia(supabaseAdmin, id);
+    } catch (e) {
+      console.warn('[landing-media] auto-extract:', (e as Error).message);
+    }
+  }
   return NextResponse.json(items);
 }
 

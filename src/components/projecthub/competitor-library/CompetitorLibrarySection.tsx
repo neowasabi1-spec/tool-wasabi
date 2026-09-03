@@ -2137,6 +2137,7 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
     try {
       const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/landings`);
       if (r.ok) setLandings(await r.json());
+      void fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/landing-media`);
     } finally { setLoading(false); }
   };
   useEffect(() => { load(); }, [projectId]);
@@ -3724,25 +3725,27 @@ function ImageLandingsView({ projectId }: { projectId: string }) {
         <div>
           <h3 className="text-lg font-bold text-foreground">Image landings</h3>
           <p className="text-sm text-muted-foreground max-w-2xl">
-            Images, GIFs and videos downloaded from this project&apos;s competitor landings,
+            Images, GIFs and videos pulled automatically from this project&apos;s competitor landings,
             tagged with the section they came from (hero, product, testimonials…).
-            Chimera puts each one back in the matching block of the funnel you pick.
+            Swipe places each one in the matching block of the funnel.
           </p>
         </div>
-        <Button onClick={extract} disabled={extracting} className="gap-2">
-          {extracting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
-          {extracting ? "Downloading…" : items.length ? "Re-scan landings" : "Download from landings"}
-        </Button>
+        {items.length > 0 && (
+          <Button onClick={extract} disabled={extracting} variant="outline" className="gap-2">
+            {extracting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+            {extracting ? "Updating…" : "Re-scan"}
+          </Button>
+        )}
       </div>
 
       {loading ? (
-        <p className="text-sm text-muted-foreground py-12 text-center">Loading…</p>
+        <p className="text-sm text-muted-foreground py-12 text-center">Loading photos from saved landings…</p>
       ) : items.length === 0 ? (
         <div className="rounded-xl border border-dashed border-border py-16 text-center">
           <ImageIcon className="w-10 h-10 text-muted-foreground mx-auto mb-3" />
           <p className="text-sm font-semibold text-foreground mb-1">No landing media yet</p>
           <p className="text-sm text-muted-foreground max-w-md mx-auto">
-            Save competitor landings first, then download their images / GIFs / videos here.
+            Save competitor landings to this project — photos, GIFs and videos are stored here by themselves.
           </p>
         </div>
       ) : (
