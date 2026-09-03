@@ -4,112 +4,33 @@ import {
   collectRestyleSlots,
   fallbackPalette,
   injectRestyleMediaScript,
+  replaceMediaUrl,
   type PaintedMedia,
 } from '@/lib/restyle-slots';
+import {
+  isLandingSection,
+  matchLandingMediaToSlots,
+  type LandingMediaItem,
+  type LandingSection,
+} from '@/lib/landing-media';
 
-type Gen = {
-  status?: string;
-  url?: string;
-  error?: string;
-  requestId?: string;
-  statusUrl?: string;
-  responseUrl?: string;
-  modelKey?: string;
-};
+type LandingMediaResponse = LandingMediaItem[] | { items?: LandingMediaItem[]; error?: string };
 
-async function generateMedia(body: Record<string, unknown>): Promise<string> {
-  const chain: Record<string, unknown>[] = [body];
-  if (body.mode === 'text2image') {
-    if (body.model !== 'flux-schnell') chain.push({ ...body, model: 'flux-schnell' });
-    if (body.model !== 'nano-banana-2') chain.push({ ...body, model: 'nano-banana-2' });
-  } else if (body.mode === 'image2image') {
-    if (body.model !== 'nano-banana-2-edit') chain.push({ ...body, model: 'nano-banana-2-edit' });
-    chain.push({
-      mode: 'text2image',
-      model: 'nano-banana-2',
-      prompt: body.prompt,
-      size: body.size,
-    });
-    chain.push({
-      mode: 'text2image',
-      model: 'flux-schnell',
-      prompt: body.prompt,
-      size: body.size,
-    });
-  }
-  let last: Error | null = null;
-  for (const attempt of chain) {
-    try {
-      return await generateMediaOnce(attempt);
-    } catch (e) {
-      last = e as Error;
-    }
-  }
-  throw last || new Error('Generation failed');
+async function loadLandingLibrary(projectId: string): Promise<LandingMediaItem[]> {
+  const get = await fetch(`/api/projecthub/projects/${projectId}/landing-media`);
+  const first = (await get.json().catch(() => [])) as LandingMediaResponse;
+  let items = Array.isArray(first) ? first : first.items || [];
+  if (items.length) return items;
+
+  const post = await fetch(`/api/projecthub/projects/${projectId}/landing-media`, { method: 'POST' });
+  const extracted = (await post.json().catch(() => ({}))) as LandingMediaResponse & { error?: string };
+  if (!post.ok) throw new Error(extracted.error || `Landing library HTTP ${post.status}`);
+  items = Array.isArray(extracted) ? extracted : extracted.items || [];
+  return items;
 }
 
-async function generateMediaOnce(body: Record<string, unknown>): Promise<string> {
-  const submit = await fetch('/api/generate-image', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  let data = (await submit.json().catch(() => ({}))) as Gen;
-  if (!submit.ok || data.status === 'error') {
-    throw new Error(data.error || `generate HTTP ${submit.status}`);
-  }
-  const deadline = Date.now() + 4 * 60_000;
-  while (data.status === 'pending' && data.requestId) {
-    if (Date.now() > deadline) throw new Error('Generation timed out');
-    await new Promise((r) => setTimeout(r, 1500));
-    const poll = await fetch('/api/generate-image', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        action: 'poll',
-        requestId: data.requestId,
-        statusUrl: data.statusUrl,
-        responseUrl: data.responseUrl,
-        modelKey: data.modelKey,
-      }),
-    });
-    const next = (await poll.json().catch(() => ({}))) as Gen;
-    if (next.status === 'error') throw new Error(next.error || 'poll failed');
-    data = { ...data, ...next };
-  }
-  if (data.status !== 'completed' || !data.url) {
-    throw new Error(data.error || 'No media URL');
-  }
-  return data.url;
-}
-
-export type VisualSlot = {
-  id: number;
-  src: string;
-  kind: 'image' | 'gif' | 'video';
-  role?: string;
-  prompt: string;
-  aspect: string;
-  domTag?: 'img' | 'video';
-  domIndex?: number;
-};
-
-const DEFAULT_ROLES = [
-  'hero', 'product', 'lifestyle', 'lifestyle',
-  'testimonial', 'ingredient', 'lifestyle', 'offer',
-];
-
-function defaultSlots(productName: string): VisualSlot[] {
-  return DEFAULT_ROLES.map((role, i) => ({
-    id: i,
-    src: '',
-    kind: 'image' as const,
-    role,
-    prompt: `Unique ${role} photograph for ${productName}. Premium commercial lighting. No competitor brands.`,
-    aspect: role === 'hero' ? '16:9' : '4:3',
-    domTag: 'img' as const,
-    domIndex: i,
-  }));
+function asSection(raw: string): LandingSection {
+  return isLandingSection(raw) ? raw : 'other';
 }
 
 export async function runVisualRestyle(opts: {
@@ -122,164 +43,90 @@ export async function runVisualRestyle(opts: {
   pageUrl?: string;
   onProgress?: (message: string, html?: string) => void;
 }): Promise<{ html: string; replaced: number; total: number; failed: number; error?: string }> {
-  const pageUrl = opts.pageUrl || '';
-  const found = collectRestyleSlots(opts.html, 20, pageUrl);
-  const slots = found.length ? found : [];
   const palette0 = fallbackPalette(opts.productName, `${opts.brief || ''} ${opts.description || ''}`);
   let html = applyPalette(opts.html, palette0);
+  opts.onProgress?.('Palette on — loading competitor landing photos…', html);
+
+  const slots = collectRestyleSlots(opts.html, 24, opts.pageUrl || '');
+  if (!slots.length) {
+    return { html, replaced: 0, total: 0, failed: 0, error: 'No photos/GIFs/videos on the page' };
+  }
+
+  if (!opts.projectId) {
+    return { html, replaced: 0, total: slots.length, failed: slots.length, error: 'No project — cannot load landing photos' };
+  }
+
+  let library: LandingMediaItem[] = [];
+  try {
+    library = await loadLandingLibrary(opts.projectId);
+  } catch (e) {
+    return { html, replaced: 0, total: slots.length, failed: slots.length, error: (e as Error).message };
+  }
+
+  const alreadyOnPage = new Set(slots.map((s) => s.src));
+  const usable = library.filter((m) => m.storedUrl && !alreadyOnPage.has(m.sourceUrl));
+  const pool = usable.length ? usable : library.filter((m) => m.storedUrl);
+  const stills = pool.filter((m) => m.kind === 'image' || m.kind === 'gif');
+  const videos = pool.filter((m) => m.kind === 'video');
+
+  if (!stills.length && !videos.length) {
+    return {
+      html,
+      replaced: 0,
+      total: slots.length,
+      failed: slots.length,
+      error: 'No photos in the project landing library. Save competitor landings first.',
+    };
+  }
+
   opts.onProgress?.(
-    found.length
-      ? `Palette applied — ${found.length} media to generate…`
-      : 'Palette applied — no <img> found, generating a default photo pack…',
+    `Library: ${stills.length} photos / ${videos.length} videos — placing on the page…`,
     html,
   );
 
-  let workSlots: VisualSlot[] = [];
-  let productUrl = '';
-  let world = '';
-  let avatar = '';
+  const used = new Set<string>();
+  const imgSlots = slots
+    .filter((s) => s.kind !== 'video')
+    .map((s) => ({ ...s, section: asSection(s.section) }));
+  const videoSlots = slots
+    .filter((s) => s.kind === 'video')
+    .map((s) => ({ ...s, section: asSection(s.section || 'video') }));
 
-  if (slots.length) {
-    opts.onProgress?.('Planning unique prompts for every photo/GIF/video…');
-    const planRes = await fetch('/api/restyle-visual/plan', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        slots,
-        productName: opts.productName,
-        brief: opts.brief,
-        research: opts.research,
-        description: opts.description,
-        projectId: opts.projectId,
-      }),
-    });
-    const plan = (await planRes.json().catch(() => ({}))) as {
-      error?: string;
-      productImageUrl?: string | null;
-      palette?: {
-        primary: string; secondary: string; accent: string; background: string; ink: string;
-        world?: string; avatar?: string;
-      };
-      slots?: VisualSlot[];
-    };
-    productUrl = plan.productImageUrl || '';
-    world = plan.palette?.world || '';
-    avatar = plan.palette?.avatar || '';
-    workSlots = (plan.slots || []).map((s, i) => ({
-      ...s,
-      src: s.src || slots[i]?.src || '',
-      domTag: s.domTag || slots[i]?.domTag,
-      domIndex: s.domIndex ?? slots[i]?.domIndex,
-    }));
-    if (planRes.ok && plan.palette) {
-      html = applyPalette(html, plan.palette);
-    }
-  }
-
-  if (!workSlots.length) {
-    workSlots = slots.length
-      ? slots.map((s) => ({
-          id: s.id,
-          src: s.src,
-          kind: s.kind,
-          role: s.section,
-          prompt: `Unique ${s.kind} for ${opts.productName}, ${s.section} section. ${s.alt || ''}`.trim(),
-          aspect: s.kind === 'video' ? '16:9' : '4:3',
-          domTag: s.domTag,
-          domIndex: s.domIndex,
-        }))
-      : defaultSlots(opts.productName);
-    opts.onProgress?.(`Generating ${workSlots.length} media…`, html);
-  } else {
-    opts.onProgress?.(`World ready — generating ${workSlots.length} unique media…`, html);
-  }
-
-  let replaced = 0;
-  let failed = 0;
-  let firstError = '';
   const paints: PaintedMedia[] = [];
-  let nextImg = 0;
-  let nextVideo = 0;
+  let replaced = 0;
 
-  for (let i = 0; i < workSlots.length; i++) {
-    const slot = workSlots[i];
-    const n = `${i + 1}/${workSlots.length}`;
-    opts.onProgress?.(`${slot.kind} ${n} (${slot.role || slot.kind})…`, html);
-    const unique = `${slot.prompt}\nUNIQUE FRAME ${slot.id + 1}: ${world} ${avatar}. Do not repeat any previous composition. Product: ${opts.productName}.`;
-    try {
-      const sourceUrl = /^https?:\/\//i.test(slot.src) ? slot.src : '';
-      const isProduct = /product|pack|hero-product/i.test(slot.role || '');
-      let still: string;
-      if (isProduct && productUrl) {
-        still = await generateMedia({
-          mode: 'image2image',
-          model: 'nano-banana-2-edit',
-          prompt: unique.slice(0, 1800),
-          imageUrl: productUrl,
-          size: slot.aspect,
-        });
-      } else if (sourceUrl && slot.kind !== 'video') {
-        still = await generateMedia({
-          mode: 'image2image',
-          model: 'nano-banana-2-edit',
-          prompt: unique.slice(0, 1800),
-          imageUrl: sourceUrl,
-          size: slot.aspect,
-        });
-      } else {
-        still = await generateMedia({
-          mode: 'text2image',
-          model: 'nano-banana-2',
-          prompt: unique.slice(0, 1800),
-          size: slot.aspect,
-        });
-      }
-      let finalUrl = still;
-      if (slot.kind === 'video') {
-        opts.onProgress?.(`Video ${n} — animating the still…`, html);
-        try {
-          finalUrl = await generateMedia({
-            mode: 'image2video',
-            model: 'seedance-2',
-            prompt: unique.slice(0, 800),
-            imageUrl: still,
-            duration: 5,
-          });
-        } catch {
-          finalUrl = still;
-        }
-      }
-      const tag: 'img' | 'video' = slot.kind === 'video' || slot.domTag === 'video' ? 'video' : 'img';
-      const index = typeof slot.domIndex === 'number' ? slot.domIndex : (tag === 'video' ? nextVideo : nextImg);
-      if (tag === 'video') nextVideo = Math.max(nextVideo, index + 1);
-      else nextImg = Math.max(nextImg, index + 1);
-      paints.push({
-        tag,
-        index,
-        url: finalUrl,
-        poster: slot.kind === 'video' ? still : undefined,
-      });
-      html = applyPaintedMedia(html, paints);
-      replaced++;
-      opts.onProgress?.(`${n} painted on ${tag}[${index}]`, html);
-    } catch (e) {
-      failed++;
-      const msg = (e as Error).message || 'generate failed';
-      if (!firstError) firstError = msg;
-      opts.onProgress?.(`${n} failed: ${msg} — keeping original`, html);
+  for (const { slot, item } of matchLandingMediaToSlots(imgSlots, stills, used)) {
+    if (!item?.storedUrl) continue;
+    if (typeof slot.domIndex === 'number') {
+      paints.push({ tag: slot.domTag === 'video' ? 'video' : 'img', index: slot.domIndex, url: item.storedUrl });
     }
+    html = replaceMediaUrl(html, slot.src, item.storedUrl, opts.pageUrl);
+    replaced++;
+  }
+  for (const { slot, item } of matchLandingMediaToSlots(videoSlots, videos, used)) {
+    if (!item?.storedUrl) continue;
+    if (typeof slot.domIndex === 'number') {
+      paints.push({ tag: 'video', index: slot.domIndex, url: item.storedUrl });
+    }
+    html = replaceMediaUrl(html, slot.src, item.storedUrl, opts.pageUrl);
+    replaced++;
   }
 
-  if (paints.length) {
-    html = injectRestyleMediaScript(html, paints);
-    opts.onProgress?.(`Media script on — ${paints.length} photos bound`, html);
-  }
+  if (paints.length) html = applyPaintedMedia(html, paints);
+  if (paints.length) html = injectRestyleMediaScript(html, paints);
+
+  opts.onProgress?.(
+    replaced
+      ? `Placed ${replaced} competitor landing photos`
+      : 'Library loaded but no slot matched',
+    html,
+  );
 
   return {
     html,
     replaced,
-    total: workSlots.length,
-    failed,
-    error: replaced ? undefined : (firstError || 'No media replaced'),
+    total: slots.length,
+    failed: Math.max(0, slots.length - replaced),
+    error: replaced ? undefined : 'Landing photos did not match any slot on the page',
   };
 }

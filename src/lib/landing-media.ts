@@ -290,8 +290,9 @@ function decodeName(name: string): { kind: LandingMediaKind; section: LandingSec
 }
 
 function publicUrl(sb: Sb, path: string): string {
+  if (/^https?:\/\//i.test(path)) return path;
   const { data } = sb.storage.from(BUCKET).getPublicUrl(path);
-  return data?.publicUrl || '';
+  return data?.publicUrl || path;
 }
 
 export async function listLandingMedia(sb: Sb, projectId: string): Promise<LandingMediaItem[]> {
@@ -323,15 +324,18 @@ async function downloadAsset(
 ): Promise<{ buf: Buffer; contentType: string } | null> {
   try {
     const res = await fetch(url, {
-      signal: AbortSignal.timeout(18_000),
-      headers: { Accept: kind === 'video' ? 'video/*,*/*' : 'image/*,*/*' },
+      signal: AbortSignal.timeout(12_000),
+      headers: {
+        Accept: kind === 'video' ? 'video/*,*/*' : 'image/*,*/*',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+      },
     });
     if (!res.ok) return null;
     const ct = (res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
     if (kind !== 'video' && ct && !ct.startsWith('image/') && !ct.includes('octet-stream')) return null;
     if (kind === 'video' && ct.startsWith('text/')) return null;
     const buf = Buffer.from(await res.arrayBuffer());
-    if (buf.length < 800 || buf.length > MAX_BYTES[kind]) return null;
+    if (buf.length < 200 || buf.length > MAX_BYTES[kind]) return null;
     return { buf, contentType: ct || (kind === 'video' ? 'video/mp4' : kind === 'gif' ? 'image/gif' : 'image/jpeg') };
   } catch {
     return null;
@@ -353,14 +357,34 @@ function extFor(kind: LandingMediaKind, ct: string, url: string): string {
 /** Download one landing's assets into the project's Image landings library. */
 export async function extractLandingMediaFromHtml(
   sb: Sb,
-  args: { projectId: string; html: string; pageUrl: string; ownerUserId?: string | null },
+  args: {
+    projectId: string;
+    html: string;
+    pageUrl: string;
+    ownerUserId?: string | null;
+    limit?: number;
+  },
 ): Promise<{ saved: number; skipped: number }> {
   const assets = collectLandingAssetUrls(args.html, args.pageUrl);
   if (!assets.length) return { saved: 0, skipped: 0 };
   const existing = await listLandingMedia(sb, args.projectId);
   const have = new Map(existing.map((e) => [e.sourceUrl, e]));
+  const cap = Math.min(args.limit || MAX_PER_PAGE, MAX_PER_PAGE);
   let saved = 0;
   let skipped = 0;
+
+  const insertRow = async (filePath: string, a: (typeof assets)[number]) => {
+    const row: Record<string, unknown> = {
+      project_id: args.projectId,
+      file_type: LANDING_MEDIA_TYPE,
+      file_path: filePath,
+      original_name: encodeName(a.kind, a.section, a.url),
+    };
+    if (args.ownerUserId) row.owner_user_id = args.ownerUserId;
+    const { error: insErr } = await sb.from('project_files').insert(row);
+    return !insErr;
+  };
+
   for (const a of assets) {
     const prev = have.get(a.url);
     if (prev) {
@@ -374,32 +398,20 @@ export async function extractLandingMediaFromHtml(
       skipped++;
       continue;
     }
-    if (existing.length + saved >= MAX_PER_RUN) break;
+    if (existing.length + saved >= MAX_PER_RUN || saved >= cap) break;
     const dl = await downloadAsset(a.url, a.kind);
-    if (!dl) {
-      skipped++;
-      continue;
+    let filePath = a.url;
+    if (dl) {
+      const ext = extFor(a.kind, dl.contentType, a.url);
+      const key = `${args.projectId}/${LANDING_MEDIA_TYPE}/${Date.now()}_${saved}_${Math.random().toString(36).slice(2, 8)}.${ext}`;
+      const { error: upErr } = await sb.storage.from(BUCKET).upload(key, dl.buf, {
+        contentType: dl.contentType,
+        upsert: false,
+      });
+      if (!upErr) filePath = key;
     }
-    const ext = extFor(a.kind, dl.contentType, a.url);
-    const key = `${args.projectId}/${LANDING_MEDIA_TYPE}/${Date.now()}_${saved}_${Math.random().toString(36).slice(2, 8)}.${ext}`;
-    const { error: upErr } = await sb.storage.from(BUCKET).upload(key, dl.buf, {
-      contentType: dl.contentType,
-      upsert: false,
-    });
-    if (upErr) {
-      skipped++;
-      continue;
-    }
-    const row: Record<string, unknown> = {
-      project_id: args.projectId,
-      file_type: LANDING_MEDIA_TYPE,
-      file_path: key,
-      original_name: encodeName(a.kind, a.section, a.url),
-    };
-    if (args.ownerUserId) row.owner_user_id = args.ownerUserId;
-    const { error: insErr } = await sb.from('project_files').insert(row);
-    if (insErr) {
-      await sb.storage.from(BUCKET).remove([key]).catch(() => undefined);
+    const ok = await insertRow(filePath, a);
+    if (!ok) {
       skipped++;
       continue;
     }
@@ -408,8 +420,8 @@ export async function extractLandingMediaFromHtml(
       kind: a.kind,
       section: a.section,
       sourceUrl: a.url,
-      storedUrl: '',
-      filePath: key,
+      storedUrl: filePath,
+      filePath,
       name: a.kind,
     });
     saved++;
@@ -441,8 +453,8 @@ export async function extractLandingMediaForProject(
           ? (step.cloned_data as Record<string, unknown>)
           : {};
       const pageUrl = String(step.url_to_swipe || cloned.source_url || '');
-      let html = typeof cloned.html === 'string' ? cloned.html : '';
-      if (!html && pageId) {
+      let html = '';
+      if (pageId) {
         const { data: ph } = await sb
           .from('page_html')
           .select('html')
@@ -452,6 +464,7 @@ export async function extractLandingMediaForProject(
           .maybeSingle();
         html = typeof ph?.html === 'string' ? ph.html : '';
       }
+      if (!html && typeof cloned.html === 'string') html = cloned.html;
       if (!html) continue;
       pages++;
       const r = await extractLandingMediaFromHtml(sb, {

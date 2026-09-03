@@ -15,6 +15,7 @@ import {
 import { adExistsByExternalId, insertCompetitorAd, ensureBrand } from '@/lib/competitor-ads';
 import { transcribeVideo } from '@/lib/transcribe';
 import { absolutizeUrlsInHtml } from '@/lib/spa-rescue';
+import { extractLandingMediaFromHtml } from '@/lib/landing-media';
 import { isOnNiche } from '@/lib/competitor-relevance';
 import { shortApifyWebhookUrl } from '@/lib/discovery-lexicon';
 
@@ -230,6 +231,16 @@ export async function saveCompetitorLandings(
 
     saved++;
     existing.add(url);
+    try {
+      await extractLandingMediaFromHtml(supabaseAdmin, {
+        projectId,
+        html,
+        pageUrl: url,
+        limit: 16,
+      });
+    } catch (e) {
+      console.warn('[saveCompetitorLandings] landing media:', (e as Error).message);
+    }
   }
 
   // Hand off screenshot rendering to the background function (best-effort).

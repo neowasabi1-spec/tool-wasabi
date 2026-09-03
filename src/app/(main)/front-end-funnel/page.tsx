@@ -4924,7 +4924,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
         void saveHtmlBlob(pageId, 'swipedData', rewrittenHtml);
 
         if (visualName) {
-          pushSwipeLog('info', 'Palette on — generating photos/GIFs/videos…', pageName);
+          pushSwipeLog('info', 'Palette on — placing competitor landing photos…', pageName);
           try {
             const visual = await runVisualRestyle({
               html: rewrittenHtml,
