@@ -96,8 +96,8 @@ export async function runChimeraInternalSwipe(opts: {
       onProgress: opts.onProgress,
     });
     const failed = pages.find((p) => p.swipeStatus === 'failed');
-    if (failed) return { ok: false, error: failed.swipeResult || 'Restyle failed', pages };
     const html = opts.pageIds.length === 1 ? await loadSwipedHtml(opts.pageIds[0]) : '';
+    if (failed) return { ok: false, error: failed.swipeResult || 'Restyle failed', pages, html };
     const summary = pages.map((p) => p.swipeResult).filter(Boolean).join(' · ')
       || 'Internal restyle completed';
     return { ok: true, html, summary, pages };

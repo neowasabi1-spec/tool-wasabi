@@ -3849,7 +3849,25 @@ export default function FrontEndFunnel() {
         const msg = restyled.error || 'Restyle failed';
         for (const page of group) {
           if ((restyled.pages || []).find((p) => p.id === page.id)?.swipeStatus === 'failed') {
-            updateFunnelPage(page.id, { swipeStatus: 'failed', swipeResult: msg });
+            const partial = await loadSwipedHtml(page.id);
+            updateFunnelPage(page.id, {
+              swipeStatus: 'failed',
+              swipeResult: msg,
+              ...(partial ? {
+                swipedData: {
+                  html: partial,
+                  originalTitle: page.name,
+                  newTitle: `Restyle: ${page.name}`,
+                  originalLength: 0,
+                  newLength: partial.length,
+                  processingTime: 0,
+                  methodUsed: 'chimera-internal-restyle',
+                  changesMade: [msg],
+                  swipedAt: new Date(),
+                },
+              } : {}),
+            });
+            if (partial) void saveHtmlBlob(page.id, 'swipedData', partial);
           }
           setSwipeAllJob((s) =>
             s ? { ...s, errors: [...s.errors, { pageId: page.id, pageName: page.name, message: msg }] } : s
@@ -4198,7 +4216,39 @@ export default function FrontEndFunnel() {
             );
           },
         });
-        if (!restyled.ok) throw new Error(restyled.error || 'Restyle failed');
+        if (!restyled.ok) {
+          const partial = restyled.html || (await loadSwipedHtml(pageId));
+          if (partial) {
+            updateFunnelPage(pageId, {
+              swipeStatus: 'failed',
+              swipeResult: restyled.error || 'Restyle failed',
+              swipedData: {
+                html: partial,
+                originalTitle: pageName,
+                newTitle: `Restyle: ${pageName}`,
+                originalLength: 0,
+                newLength: partial.length,
+                processingTime: 0,
+                methodUsed: 'chimera-internal-restyle',
+                changesMade: [restyled.error || 'partial restyle'],
+                swipedAt: new Date(),
+              },
+            });
+            void saveHtmlBlob(pageId, 'swipedData', partial);
+            setHtmlPreviewModal({
+              isOpen: true,
+              title: `Restyle (partial): ${pageName}`,
+              html: partial,
+              mobileHtml: '',
+              iframeSrc: '',
+              metadata: { method: 'chimera-internal-restyle', length: partial.length, duration: 0 },
+              pageId,
+              sourceType: 'swiped',
+              sourceUrl: url,
+            });
+          }
+          throw new Error(restyled.error || 'Restyle failed');
+        }
         const rewrittenHtml = restyled.html || (await loadSwipedHtml(pageId));
         if (!rewrittenHtml) throw new Error('Restyle finished but HTML is empty. Retry Swipe.');
         setCloneProgress(null);

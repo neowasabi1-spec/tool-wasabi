@@ -422,6 +422,7 @@ async function rewriteAllTexts(
   systemPrompt: string,
   texts: SwipeText[],
   deadline: number,
+  onProgress?: (rewrites: Map<number, string>) => Promise<void>,
 ): Promise<Map<number, string>> {
   const items = texts.map((t, i) => ({ id: i, text: t.original }));
   const result = new Map<number, string>();
@@ -454,7 +455,10 @@ Output shape: [{"id": number, "rewritten": "..."}, ...] — include EVERY id (an
         if (Date.now() > deadline) return;
         const idx = cursor++;
         if (idx >= pool.length) return;
-        try { await runBatch(pool[idx], labelOf(idx)); }
+        try {
+          await runBatch(pool[idx], labelOf(idx));
+          if (onProgress && result.size) await onProgress(result);
+        }
         catch (e) { console.warn('[swipe] batch failed:', (e as Error).message); }
       }
     };
@@ -498,6 +502,15 @@ function bakePairsIntoHtml(
       if (out.includes(p.from)) out = out.split(p.from).join(p.to);
       const escFrom = escHtml(p.from);
       if (escFrom !== p.from && out.includes(escFrom)) out = out.split(escFrom).join(escHtml(p.to));
+      if (p.from.length >= 8) {
+        try {
+          const rx = new RegExp(escRxLiteral(p.from).replace(/ +/g, '\\s+'), 'g');
+          if (rx.test(out)) {
+            rx.lastIndex = 0;
+            out = out.replace(rx, () => p.to);
+          }
+        } catch { /* skip bad regex */ }
+      }
     }
     return out;
   }).join('');
@@ -1296,6 +1309,33 @@ async function persistHtml(
   if (error) throw new Error(`saving ${kind} HTML failed: ${error.message}`);
 }
 
+async function markFailed(
+  sb: SupabaseClient,
+  pageId: string,
+  msg: string,
+): Promise<void> {
+  const html = await loadSavedHtml(sb, pageId, 'swiped');
+  const now = new Date().toISOString();
+  const patch: Record<string, unknown> = {
+    swipe_status: 'failed',
+    swipe_result: html
+      ? `${msg.slice(0, 220)} — copy is saved, open preview.`
+      : msg.slice(0, 400),
+  };
+  if (html) {
+    patch.swiped_data = {
+      htmlUrl: funnelHtmlUrl(pageId, 'swiped'),
+      htmlSkipped: true,
+      htmlLength: html.length,
+      swipedAt: now,
+      methodUsed: 'chimera-protocol-auto-swipe',
+      newTitle: html.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || '',
+    };
+  }
+  await sb.from('funnel_pages').update(patch).eq('id', pageId)
+    .then(() => undefined, () => undefined);
+}
+
 async function processPage(
   sb: SupabaseClient,
   ctx: SwipeCtx,
@@ -1334,6 +1374,7 @@ async function processPage(
     }
     originalHtml = html;
     originalTitle = originalHtml.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || '';
+    await persistHtml(sb, page.funnelPageId, 'cloned', originalHtml, ctx.ownerUserId);
 
     const texts = collectSwipeTexts(originalHtml);
     textsCount = texts.length;
@@ -1357,12 +1398,21 @@ CRITICAL RULES:
 4. Legal/compliance texts: rewrite only where safe; keep mandatory disclosures.
 5. Every batch MUST return one {"id","rewritten"} object per supplied id.`;
       const textDeadline = Math.min(deadline, Date.now() + 180_000);
-      const rewrites = await rewriteAllTexts(system, texts, textDeadline);
-      const applied = applyRewrites(originalHtml, texts, rewrites);
-      html = applied.html;
-      replacements = applied.replacements;
-      newTitle = applied.newTitle;
-      changes = applied.changes;
+      let persistChain = Promise.resolve();
+      const persistDraft = (rewrites: Map<number, string>) => {
+        persistChain = persistChain.then(async () => {
+          const applied = applyRewrites(originalHtml, texts, rewrites);
+          html = applied.html;
+          replacements = applied.replacements;
+          newTitle = applied.newTitle;
+          changes = applied.changes;
+          await persistHtml(sb, page.funnelPageId, 'swiped', html, ctx.ownerUserId);
+          await touchPage(sb, page.funnelPageId, `${replacements}/${textsCount} texts now on the page…`);
+        });
+        return persistChain;
+      };
+      const rewrites = await rewriteAllTexts(system, texts, textDeadline, persistDraft);
+      await persistDraft(rewrites);
     }
 
     if (ctx.imageMode === 'internal') {
@@ -1564,9 +1614,7 @@ export default async (req: Request) => {
         catch (e) {
           const msg = (e as Error).message?.slice(0, 400) || 'swipe error';
           log(`✘ ${p.name}: ${msg}`);
-          await sb.from('funnel_pages').update({ swipe_status: 'failed', swipe_result: msg })
-            .eq('id', p.funnelPageId)
-            .then(() => undefined, () => undefined);
+          await markFailed(sb, p.funnelPageId, msg);
         }
       }
       nextPages = [];
@@ -1583,9 +1631,7 @@ export default async (req: Request) => {
   } catch (e) {
     const msg = (e as Error).message?.slice(0, 400) || 'swipe error';
     log(`✘ ${page.name}: ${msg}`);
-    await sb.from('funnel_pages').update({ swipe_status: 'failed', swipe_result: msg })
-      .eq('id', page.funnelPageId)
-      .then(() => undefined, () => undefined);
+    await markFailed(sb, page.funnelPageId, msg);
     nextPages = pages.slice(1);
     nextOffset = 0;
   }
