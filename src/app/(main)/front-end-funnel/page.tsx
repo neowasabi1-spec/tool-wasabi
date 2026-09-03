@@ -1205,18 +1205,14 @@ export default function FrontEndFunnel() {
 
   const [showVisualEditor, setShowVisualEditor] = useState(false);
 
-  // Preview modal (z-50) and VisualHtmlEditor (z-60) are both full-screen.
-  // Never keep them both open — swipe used to reopen preview on top of an
-  // editor that was still mounted, so the user saw two editors.
+  // After swipe we close the editor so only the preview opens. Do NOT
+  // unmount the preview when opening the editor — tearing down that
+  // iframe and parsing the same HTML again freezes the tab.
   const openVisualEditor = () => {
     setShowVisualEditor(true);
-    setHtmlPreviewModal((prev) => (prev.isOpen ? { ...prev, isOpen: false } : prev));
   };
   const closeVisualEditor = () => {
     setShowVisualEditor(false);
-    setHtmlPreviewModal((prev) => (
-      prev.html || prev.iframeSrc ? { ...prev, isOpen: true } : prev
-    ));
   };
 
   // Custom page type creation inline
@@ -7086,8 +7082,8 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
       )}
 
       {/* HTML Preview Modal */}
-      {htmlPreviewModal.isOpen && !showVisualEditor && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-1">
+      {htmlPreviewModal.isOpen && (
+        <div className={`fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-1 ${showVisualEditor ? 'invisible pointer-events-none' : ''}`}>
           <div className="bg-white rounded-xl shadow-2xl w-[98vw] h-[98vh] overflow-hidden flex flex-col">
             {/* Modal Header */}
             <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between bg-gradient-to-r from-blue-600 to-cyan-600">
