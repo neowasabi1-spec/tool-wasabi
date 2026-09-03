@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { canAccessProject } from '@/lib/auth/project-access';
 import {
+  downloadedLandingMedia,
   extractLandingMediaForProject,
   listLandingMedia,
 } from '@/lib/landing-media';
@@ -14,11 +15,13 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   const { id } = params;
   const { allowed, ctx } = await canAccessProject(req, id);
   if (!allowed) return NextResponse.json({ error: 'Not found' }, { status: 404 });
-  let items = await listLandingMedia(supabaseAdmin, id);
-  if (!items.length) {
+  const all = await listLandingMedia(supabaseAdmin, id);
+  let items = downloadedLandingMedia(all);
+  const needsDownload = !all.length || all.some((m) => !m.storedUrl);
+  if (needsDownload) {
     try {
       await extractLandingMediaForProject(supabaseAdmin, id, ctx.userId);
-      items = await listLandingMedia(supabaseAdmin, id);
+      items = downloadedLandingMedia(await listLandingMedia(supabaseAdmin, id));
     } catch (e) {
       console.warn('[landing-media] auto-extract:', (e as Error).message);
     }
@@ -32,7 +35,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   if (!allowed) return NextResponse.json({ error: 'Not found' }, { status: 404 });
   try {
     const result = await extractLandingMediaForProject(supabaseAdmin, id, ctx.userId);
-    const items = await listLandingMedia(supabaseAdmin, id);
+    const items = downloadedLandingMedia(await listLandingMedia(supabaseAdmin, id));
     return NextResponse.json({ ...result, items });
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message || 'Extract failed' }, { status: 500 });

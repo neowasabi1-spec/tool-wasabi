@@ -289,10 +289,13 @@ function decodeName(name: string): { kind: LandingMediaKind; section: LandingSec
   return { kind: classifyLandingAsset(name) || 'image', section: 'other', sourceUrl: name };
 }
 
-function publicUrl(sb: Sb, path: string): string {
-  if (/^https?:\/\//i.test(path)) return path;
-  const { data } = sb.storage.from(BUCKET).getPublicUrl(path);
-  return data?.publicUrl || path;
+function isRemoteUrl(path: string): boolean {
+  return /^https?:\/\//i.test(path) || path.startsWith('//');
+}
+
+function displayUrl(path: string): string {
+  if (!path || isRemoteUrl(path)) return '';
+  return `/api/projecthub/file-proxy?path=${encodeURIComponent(path)}`;
 }
 
 export async function listLandingMedia(sb: Sb, projectId: string): Promise<LandingMediaItem[]> {
@@ -303,40 +306,67 @@ export async function listLandingMedia(sb: Sb, projectId: string): Promise<Landi
     .eq('file_type', LANDING_MEDIA_TYPE)
     .order('created_at', { ascending: true });
   if (error || !data) return [];
-  return (data as Array<{ id: number | string; file_path: string; original_name: string }>).map((row) => {
-    const meta = decodeName(row.original_name || '');
-    const storedUrl = publicUrl(sb, row.file_path);
-    return {
-      id: row.id,
-      kind: meta.kind,
-      section: meta.section,
-      sourceUrl: meta.sourceUrl,
-      storedUrl,
-      filePath: row.file_path,
-      name: meta.sourceUrl.split('/').pop()?.split('?')[0] || meta.kind,
-    };
-  });
+  return (data as Array<{ id: number | string; file_path: string; original_name: string }>)
+    .map((row) => {
+      const meta = decodeName(row.original_name || '');
+      return {
+        id: row.id,
+        kind: meta.kind,
+        section: meta.section,
+        sourceUrl: meta.sourceUrl,
+        storedUrl: displayUrl(row.file_path),
+        filePath: row.file_path,
+        name: meta.sourceUrl.split('/').pop()?.split('?')[0] || meta.kind,
+      };
+    })
+}
+
+/** Only rows that have a real downloaded file (not a leftover source URL). */
+export function downloadedLandingMedia(items: LandingMediaItem[]): LandingMediaItem[] {
+  return items.filter((row) => !!row.storedUrl);
+}
+
+function sniffContentType(buf: Buffer, fallback: string): string {
+  if (buf.length < 12) return fallback;
+  if (buf[0] === 0xff && buf[1] === 0xd8) return 'image/jpeg';
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return 'image/png';
+  if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) return 'image/gif';
+  if (buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46 && buf.toString('ascii', 8, 12) === 'WEBP') {
+    return 'image/webp';
+  }
+  if (buf[4] === 0x66 && buf[5] === 0x74 && buf[6] === 0x79 && buf[7] === 0x70) return 'video/mp4';
+  return fallback;
 }
 
 async function downloadAsset(
   url: string,
   kind: LandingMediaKind,
+  pageUrl = '',
 ): Promise<{ buf: Buffer; contentType: string } | null> {
   try {
+    const referer = pageUrl || (() => {
+      try { return new URL(url).origin + '/'; } catch { return ''; }
+    })();
     const res = await fetch(url, {
-      signal: AbortSignal.timeout(12_000),
+      redirect: 'follow',
+      signal: AbortSignal.timeout(kind === 'video' ? 25_000 : 15_000),
       headers: {
-        Accept: kind === 'video' ? 'video/*,*/*' : 'image/*,*/*',
+        Accept: kind === 'video' ? 'video/*,*/*' : 'image/avif,image/webp,image/*,*/*',
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        ...(referer ? { Referer: referer } : {}),
       },
     });
     if (!res.ok) return null;
-    const ct = (res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
-    if (kind !== 'video' && ct && !ct.startsWith('image/') && !ct.includes('octet-stream')) return null;
-    if (kind === 'video' && ct.startsWith('text/')) return null;
+    const headerCt = (res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
     const buf = Buffer.from(await res.arrayBuffer());
     if (buf.length < 200 || buf.length > MAX_BYTES[kind]) return null;
-    return { buf, contentType: ct || (kind === 'video' ? 'video/mp4' : kind === 'gif' ? 'image/gif' : 'image/jpeg') };
+    const contentType = sniffContentType(
+      buf,
+      headerCt || (kind === 'video' ? 'video/mp4' : kind === 'gif' ? 'image/gif' : 'image/jpeg'),
+    );
+    if (kind === 'video' && !contentType.startsWith('video/') && !contentType.includes('octet-stream')) return null;
+    if (kind !== 'video' && !contentType.startsWith('image/') && !contentType.includes('octet-stream')) return null;
+    return { buf, contentType };
   } catch {
     return null;
   }
@@ -373,21 +403,10 @@ export async function extractLandingMediaFromHtml(
   let saved = 0;
   let skipped = 0;
 
-  const insertRow = async (filePath: string, a: (typeof assets)[number]) => {
-    const row: Record<string, unknown> = {
-      project_id: args.projectId,
-      file_type: LANDING_MEDIA_TYPE,
-      file_path: filePath,
-      original_name: encodeName(a.kind, a.section, a.url),
-    };
-    if (args.ownerUserId) row.owner_user_id = args.ownerUserId;
-    const { error: insErr } = await sb.from('project_files').insert(row);
-    return !insErr;
-  };
-
   for (const a of assets) {
     const prev = have.get(a.url);
-    if (prev) {
+    const prevIsFile = prev && prev.filePath && !isRemoteUrl(prev.filePath);
+    if (prevIsFile) {
       if (a.section !== 'other' && prev.section === 'other') {
         await sb
           .from('project_files')
@@ -399,31 +418,54 @@ export async function extractLandingMediaFromHtml(
       continue;
     }
     if (existing.length + saved >= MAX_PER_RUN || saved >= cap) break;
-    const dl = await downloadAsset(a.url, a.kind);
-    let filePath = a.url;
-    if (dl) {
-      const ext = extFor(a.kind, dl.contentType, a.url);
-      const key = `${args.projectId}/${LANDING_MEDIA_TYPE}/${Date.now()}_${saved}_${Math.random().toString(36).slice(2, 8)}.${ext}`;
-      const { error: upErr } = await sb.storage.from(BUCKET).upload(key, dl.buf, {
-        contentType: dl.contentType,
-        upsert: false,
-      });
-      if (!upErr) filePath = key;
-    }
-    const ok = await insertRow(filePath, a);
-    if (!ok) {
+    const dl = await downloadAsset(a.url, a.kind, args.pageUrl);
+    if (!dl) {
       skipped++;
       continue;
     }
-    have.set(a.url, {
-      id: `new-${saved}`,
-      kind: a.kind,
-      section: a.section,
-      sourceUrl: a.url,
-      storedUrl: filePath,
-      filePath,
-      name: a.kind,
+    const ext = extFor(a.kind, dl.contentType, a.url);
+    const key = `${args.projectId}/${LANDING_MEDIA_TYPE}/${Date.now()}_${saved}_${Math.random().toString(36).slice(2, 8)}.${ext}`;
+    const { error: upErr } = await sb.storage.from(BUCKET).upload(key, dl.buf, {
+      contentType: dl.contentType,
+      upsert: false,
     });
+    if (upErr) {
+      skipped++;
+      continue;
+    }
+    const row: Record<string, unknown> = {
+      project_id: args.projectId,
+      file_type: LANDING_MEDIA_TYPE,
+      file_path: key,
+      original_name: encodeName(a.kind, a.section, a.url),
+    };
+    if (args.ownerUserId) row.owner_user_id = args.ownerUserId;
+    if (prev) {
+      const { error } = await sb.from('project_files').update({ file_path: key }).eq('id', prev.id);
+      if (error) {
+        await sb.storage.from(BUCKET).remove([key]).catch(() => undefined);
+        skipped++;
+        continue;
+      }
+      prev.filePath = key;
+      prev.storedUrl = displayUrl(key);
+    } else {
+      const { error: insErr } = await sb.from('project_files').insert(row);
+      if (insErr) {
+        await sb.storage.from(BUCKET).remove([key]).catch(() => undefined);
+        skipped++;
+        continue;
+      }
+      have.set(a.url, {
+        id: `new-${saved}`,
+        kind: a.kind,
+        section: a.section,
+        sourceUrl: a.url,
+        storedUrl: displayUrl(key),
+        filePath: key,
+        name: a.kind,
+      });
+    }
     saved++;
   }
   return { saved, skipped };
