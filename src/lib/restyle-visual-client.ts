@@ -1,9 +1,10 @@
 import {
+  applyPaintedMedia,
   applyPalette,
   collectRestyleSlots,
   fallbackPalette,
   injectRestyleMediaScript,
-  replaceMediaUrl,
+  type PaintedMedia,
 } from '@/lib/restyle-slots';
 
 type Gen = {
@@ -89,7 +90,27 @@ export type VisualSlot = {
   role?: string;
   prompt: string;
   aspect: string;
+  domTag?: 'img' | 'video';
+  domIndex?: number;
 };
+
+const DEFAULT_ROLES = [
+  'hero', 'product', 'lifestyle', 'lifestyle',
+  'testimonial', 'ingredient', 'lifestyle', 'offer',
+];
+
+function defaultSlots(productName: string): VisualSlot[] {
+  return DEFAULT_ROLES.map((role, i) => ({
+    id: i,
+    src: '',
+    kind: 'image' as const,
+    role,
+    prompt: `Unique ${role} photograph for ${productName}. Premium commercial lighting. No competitor brands.`,
+    aspect: role === 'hero' ? '16:9' : '4:3',
+    domTag: 'img' as const,
+    domIndex: i,
+  }));
+}
 
 export async function runVisualRestyle(opts: {
   html: string;
@@ -102,73 +123,107 @@ export async function runVisualRestyle(opts: {
   onProgress?: (message: string, html?: string) => void;
 }): Promise<{ html: string; replaced: number; total: number; failed: number; error?: string }> {
   const pageUrl = opts.pageUrl || '';
-  const slots = collectRestyleSlots(opts.html, 20, pageUrl);
+  const found = collectRestyleSlots(opts.html, 20, pageUrl);
+  const slots = found.length ? found : [];
   const palette0 = fallbackPalette(opts.productName, `${opts.brief || ''} ${opts.description || ''}`);
   let html = applyPalette(opts.html, palette0);
-  opts.onProgress?.(`Palette applied — ${slots.length} media to generate…`, html);
+  opts.onProgress?.(
+    found.length
+      ? `Palette applied — ${found.length} media to generate…`
+      : 'Palette applied — no <img> found, generating a default photo pack…',
+    html,
+  );
 
-  opts.onProgress?.('Planning unique prompts for every photo/GIF/video…');
-  const planRes = await fetch('/api/restyle-visual/plan', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      slots,
-      productName: opts.productName,
-      brief: opts.brief,
-      research: opts.research,
-      description: opts.description,
-      projectId: opts.projectId,
-    }),
-  });
-  const plan = (await planRes.json().catch(() => ({}))) as {
-    error?: string;
-    productImageUrl?: string | null;
-    palette?: {
-      primary: string; secondary: string; accent: string; background: string; ink: string;
-      world?: string; avatar?: string;
+  let workSlots: VisualSlot[] = [];
+  let productUrl = '';
+  let world = '';
+  let avatar = '';
+
+  if (slots.length) {
+    opts.onProgress?.('Planning unique prompts for every photo/GIF/video…');
+    const planRes = await fetch('/api/restyle-visual/plan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        slots,
+        productName: opts.productName,
+        brief: opts.brief,
+        research: opts.research,
+        description: opts.description,
+        projectId: opts.projectId,
+      }),
+    });
+    const plan = (await planRes.json().catch(() => ({}))) as {
+      error?: string;
+      productImageUrl?: string | null;
+      palette?: {
+        primary: string; secondary: string; accent: string; background: string; ink: string;
+        world?: string; avatar?: string;
+      };
+      slots?: VisualSlot[];
     };
-    slots?: VisualSlot[];
-  };
-  let workSlots: VisualSlot[] = plan.slots || [];
-  if (!planRes.ok || !workSlots.length) {
-    workSlots = slots.map((s) => ({
-      id: s.id,
-      src: s.src,
-      kind: s.kind,
-      role: s.section,
-      prompt: `Unique ${s.kind} for ${opts.productName}, ${s.section} section. ${s.alt || ''}`.trim(),
-      aspect: s.kind === 'video' ? '16:9' : '4:3',
+    productUrl = plan.productImageUrl || '';
+    world = plan.palette?.world || '';
+    avatar = plan.palette?.avatar || '';
+    workSlots = (plan.slots || []).map((s, i) => ({
+      ...s,
+      src: s.src || slots[i]?.src || '',
+      domTag: s.domTag || slots[i]?.domTag,
+      domIndex: s.domIndex ?? slots[i]?.domIndex,
     }));
-    opts.onProgress?.(`Plan skipped — generating ${workSlots.length} media with fallback prompts…`, html);
-  } else if (plan.palette) {
-    html = applyPalette(html, plan.palette);
-    opts.onProgress?.(`World ready — generating ${workSlots.length} unique media…`, html);
+    if (planRes.ok && plan.palette) {
+      html = applyPalette(html, plan.palette);
+    }
   }
 
   if (!workSlots.length) {
-    return { html, replaced: 0, total: 0, failed: 0, error: 'No photos/GIFs/videos found in the page HTML' };
+    workSlots = slots.length
+      ? slots.map((s) => ({
+          id: s.id,
+          src: s.src,
+          kind: s.kind,
+          role: s.section,
+          prompt: `Unique ${s.kind} for ${opts.productName}, ${s.section} section. ${s.alt || ''}`.trim(),
+          aspect: s.kind === 'video' ? '16:9' : '4:3',
+          domTag: s.domTag,
+          domIndex: s.domIndex,
+        }))
+      : defaultSlots(opts.productName);
+    opts.onProgress?.(`Generating ${workSlots.length} media…`, html);
+  } else {
+    opts.onProgress?.(`World ready — generating ${workSlots.length} unique media…`, html);
   }
 
   let replaced = 0;
   let failed = 0;
   let firstError = '';
-  const productUrl = plan.productImageUrl || '';
-  const pairs: Array<{ from: string; to: string }> = [];
+  const paints: PaintedMedia[] = [];
+  let nextImg = 0;
+  let nextVideo = 0;
 
   for (let i = 0; i < workSlots.length; i++) {
     const slot = workSlots[i];
     const n = `${i + 1}/${workSlots.length}`;
     opts.onProgress?.(`${slot.kind} ${n} (${slot.role || slot.kind})…`, html);
-    const unique = `${slot.prompt}\nUNIQUE FRAME ${slot.id + 1}: ${plan.palette?.world || ''} ${plan.palette?.avatar || ''}. Do not repeat any previous composition. Product: ${opts.productName}.`;
+    const unique = `${slot.prompt}\nUNIQUE FRAME ${slot.id + 1}: ${world} ${avatar}. Do not repeat any previous composition. Product: ${opts.productName}.`;
     try {
+      const sourceUrl = /^https?:\/\//i.test(slot.src) ? slot.src : '';
       const isProduct = /product|pack|hero-product/i.test(slot.role || '');
       let still: string;
       if (isProduct && productUrl) {
         still = await generateMedia({
           mode: 'image2image',
-          model: 'gpt-image-2-edit',
+          model: 'nano-banana-2-edit',
           prompt: unique.slice(0, 1800),
           imageUrl: productUrl,
+          size: slot.aspect,
+        });
+      } else if (sourceUrl && slot.kind !== 'video') {
+        still = await generateMedia({
+          mode: 'image2image',
+          model: 'nano-banana-2-edit',
+          prompt: unique.slice(0, 1800),
+          imageUrl: sourceUrl,
           size: slot.aspect,
         });
       } else {
@@ -194,19 +249,19 @@ export async function runVisualRestyle(opts: {
           finalUrl = still;
         }
       }
-      html = replaceMediaUrl(html, slot.src, finalUrl, pageUrl);
-      if (slot.kind === 'video' && still) {
-        html = html.replace(/<video\b[\s\S]*?<\/video>/gi, (block) => {
-          if (!block.includes(finalUrl) && !block.includes(still)) return block;
-          if (/\bposter\s*=/i.test(block)) {
-            return block.replace(/(\bposter\s*=\s*["'])([^"']+)(["'])/i, `$1${still}$3`);
-          }
-          return block.replace(/<video\b/i, `<video poster="${still}"`);
-        });
-      }
-      pairs.push({ from: slot.src, to: finalUrl });
+      const tag: 'img' | 'video' = slot.kind === 'video' || slot.domTag === 'video' ? 'video' : 'img';
+      const index = typeof slot.domIndex === 'number' ? slot.domIndex : (tag === 'video' ? nextVideo : nextImg);
+      if (tag === 'video') nextVideo = Math.max(nextVideo, index + 1);
+      else nextImg = Math.max(nextImg, index + 1);
+      paints.push({
+        tag,
+        index,
+        url: finalUrl,
+        poster: slot.kind === 'video' ? still : undefined,
+      });
+      html = applyPaintedMedia(html, paints);
       replaced++;
-      opts.onProgress?.(`${n} replaced`, html);
+      opts.onProgress?.(`${n} painted on ${tag}[${index}]`, html);
     } catch (e) {
       failed++;
       const msg = (e as Error).message || 'generate failed';
@@ -215,9 +270,9 @@ export async function runVisualRestyle(opts: {
     }
   }
 
-  if (pairs.length) {
-    html = injectRestyleMediaScript(html, pairs, pageUrl);
-    opts.onProgress?.(`Media script on — ${pairs.length} photos bound`, html);
+  if (paints.length) {
+    html = injectRestyleMediaScript(html, paints);
+    opts.onProgress?.(`Media script on — ${paints.length} photos bound`, html);
   }
 
   return {

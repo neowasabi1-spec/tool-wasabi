@@ -10,7 +10,26 @@ export interface RestyleSlot {
   section: string;
   width: number;
   height: number;
+  /** nth <img> or <video> in the document — used to paint the new file on that tag. */
+  domTag?: 'img' | 'video';
+  domIndex?: number;
 }
+
+export type PaintedMedia = {
+  tag: 'img' | 'video';
+  index: number;
+  url: string;
+  poster?: string;
+};
+
+const LAZY_ATTRS = [
+  'srcset', 'data-src', 'data-original', 'data-original-src', 'data-orig-src',
+  'data-lazy-src', 'data-lazy', 'data-lazyload', 'data-lazy-load', 'data-url',
+  'data-image-src', 'data-image', 'data-thumb', 'data-cfsrc', 'data-cmplz-src',
+  'data-wf-src', 'data-echo', 'data-defer-src', 'data-hi-res-src', 'data-actual',
+  'data-srcfallback', 'data-srcset', 'data-lazy-srcset', 'data-cfsrcset',
+  'data-cmplz-srcset', 'data-wf-srcset',
+];
 
 const JUNK =
   /favicon|sprite|pixel|1x1|tracking|doubleclick|visa|mastercard|amex|paypal|klarna|apple-?pay|loader|spinner|spacer|logo\.svg|google-analytics|facebook\.com\/tr|hotjar|trustpilot|woff2?|placeholder|blank\.|lqip/i;
@@ -97,7 +116,15 @@ function pickImgSrc(tag: string): string {
 export function collectRestyleSlots(html: string, max = 20, _pageUrl = ''): RestyleSlot[] {
   const out: RestyleSlot[] = [];
   const seen = new Set<string>();
-  const add = (raw: string, kind: RestyleKind | null, alt: string, section: string, w: number, h: number) => {
+  const add = (
+    raw: string,
+    kind: RestyleKind | null,
+    alt: string,
+    section: string,
+    w: number,
+    h: number,
+    dom?: { tag: 'img' | 'video'; index: number },
+  ) => {
     const src = decodeEntities(String(raw || '').trim());
     if (!src || isPlaceholder(src) || seen.has(src)) return;
     if (JUNK.test(src) || JUNK.test(alt)) return;
@@ -105,32 +132,46 @@ export function collectRestyleSlots(html: string, max = 20, _pageUrl = ''): Rest
     const useKind = kind || resolved;
     if (!useKind) return;
     seen.add(src);
-    out.push({ id: out.length, src, kind: useKind, alt, section, width: w, height: h });
+    out.push({
+      id: out.length,
+      src,
+      kind: useKind,
+      alt,
+      section,
+      width: w,
+      height: h,
+      domTag: dom?.tag,
+      domIndex: dom?.index,
+    });
   };
 
   const imgRe = /<img\b[^>]*>/gi;
   let m: RegExpExecArray | null;
-  while ((m = imgRe.exec(html)) !== null && out.length < max) {
+  let imgIndex = 0;
+  while ((m = imgRe.exec(html)) !== null) {
     const tag = m[0];
     const src = pickImgSrc(tag);
     const alt = tag.match(/\balt\s*=\s*["']([^"']*)["']/i)?.[1] || '';
     const w = Number.parseInt(tag.match(/\bwidth\s*=\s*["']?(\d+)/i)?.[1] || '0', 10);
     const h = Number.parseInt(tag.match(/\bheight\s*=\s*["']?(\d+)/i)?.[1] || '0', 10);
-    if (!src) continue;
-    const ctx = nearby(html, m.index, tag.length);
-    add(src, /\.gif(\?|#|$)/i.test(src) ? 'gif' : 'image', alt || ctx.slice(0, 80), guessSection(`${alt} ${ctx}`), w, h);
-  }
-
-  const sourceRe = /<(?:source|image)\b[^>]*>/gi;
-  while ((m = sourceRe.exec(html)) !== null && out.length < max) {
-    const tag = m[0];
-    const src = pickImgSrc(tag) || decodeEntities(tag.match(/\bhref\s*=\s*["']([^"']+)["']/i)?.[1] || '');
-    if (!src) continue;
-    add(src, classifySrc(src), 'source', guessSection(nearby(html, m.index, tag.length)), 0, 0);
+    if (src && out.length < max) {
+      const ctx = nearby(html, m.index, tag.length);
+      add(
+        src,
+        /\.gif(\?|#|$)/i.test(src) ? 'gif' : 'image',
+        alt || ctx.slice(0, 80),
+        guessSection(`${alt} ${ctx}`),
+        w,
+        h,
+        { tag: 'img', index: imgIndex },
+      );
+    }
+    imgIndex++;
   }
 
   const videoRe = /<video\b[\s\S]*?<\/video>/gi;
-  while ((m = videoRe.exec(html)) !== null && out.length < max) {
+  let videoIndex = 0;
+  while ((m = videoRe.exec(html)) !== null) {
     const block = m[0];
     const src =
       block.match(/\bsrc\s*=\s*["']([^"']+\.(?:mp4|webm|mov|m4v)[^"']*)["']/i)?.[1]
@@ -139,9 +180,14 @@ export function collectRestyleSlots(html: string, max = 20, _pageUrl = ''): Rest
       || '';
     const poster = block.match(/\bposter\s*=\s*["']([^"']+)["']/i)?.[1] || '';
     const ctx = nearby(html, m.index, block.length);
-    if (src) add(decodeEntities(src), 'video', ctx.slice(0, 80), 'video', 0, 0);
-    else if (poster) add(decodeEntities(poster), 'image', 'video poster', 'video', 0, 0);
+    if (out.length < max) {
+      if (src) add(decodeEntities(src), 'video', ctx.slice(0, 80), 'video', 0, 0, { tag: 'video', index: videoIndex });
+      else if (poster) add(decodeEntities(poster), 'image', 'video poster', 'video', 0, 0, { tag: 'video', index: videoIndex });
+    }
+    videoIndex++;
   }
+
+  if (out.length >= max) return out;
 
   const bgRe = /background(?:-image)?\s*:\s*url\(\s*['"]?([^'")]+)['"]?\s*\)/gi;
   let bm: RegExpExecArray | null;
@@ -155,7 +201,6 @@ export function collectRestyleSlots(html: string, max = 20, _pageUrl = ''): Rest
     add(content, 'image', 'og:image', 'hero', 0, 0);
   }
 
-  // SPA / Shopify JSON: photos live in <script> and hydrate over the markup.
   const scriptRe = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
   let sm: RegExpExecArray | null;
   while ((sm = scriptRe.exec(html)) !== null && out.length < max) {
@@ -173,6 +218,52 @@ export function collectRestyleSlots(html: string, max = 20, _pageUrl = ''): Rest
   }
 
   return out;
+}
+
+const LAZY_ATTR_RE = new RegExp(
+  `\\s+(?:${LAZY_ATTRS.join('|')})\\s*=\\s*("[^"]*"|'[^']*'|[^\\s>]+)`,
+  'gi',
+);
+
+/** Set src on a media tag and drop every lazy-load attr (same as VisualHtmlEditor). */
+export function paintMediaTag(tag: string, url: string, extra?: { poster?: string }): string {
+  LAZY_ATTR_RE.lastIndex = 0;
+  let t = tag.replace(LAZY_ATTR_RE, '');
+  if (/\bsrc\s*=/i.test(t)) {
+    t = t.replace(/\bsrc\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/i, `src="${url}"`);
+  } else if (/^<video\b/i.test(t)) {
+    t = t.replace(/<video\b/i, `<video src="${url}"`);
+  } else {
+    t = t.replace(/<(img|source|image)\b/i, `<$1 src="${url}"`);
+  }
+  if (extra?.poster && /^<video\b/i.test(t)) {
+    if (/\bposter\s*=/i.test(t)) {
+      t = t.replace(/\bposter\s*=\s*("[^"]*"|'[^']*')/i, `poster="${extra.poster}"`);
+    } else {
+      t = t.replace(/<video\b/i, `<video poster="${extra.poster}"`);
+    }
+  }
+  return t;
+}
+
+/** Paint generated files onto the nth <img>/<video> — do not rely on old URL matching. */
+export function applyPaintedMedia(html: string, paints: PaintedMedia[]): string {
+  if (!paints.length) return html;
+  return outsideSwipeReplacer(html, (raw) => {
+    let out = raw;
+    for (const tagName of ['img', 'video'] as const) {
+      const list = paints.filter((p) => p.tag === tagName);
+      if (!list.length) continue;
+      let n = 0;
+      const re = new RegExp(`<${tagName}\\b[^>]*>`, 'gi');
+      out = out.replace(re, (tag) => {
+        const p = list.find((x) => x.index === n);
+        n += 1;
+        return p ? paintMediaTag(tag, p.url, { poster: p.poster }) : tag;
+      });
+    }
+    return out;
+  });
 }
 
 /** Every spelling the same photo URL can have in saved HTML. */
@@ -215,74 +306,83 @@ export function replaceMediaUrl(html: string, from: string, to: string, pageUrl 
   });
 }
 
-/** Same idea as Clone/Swipe texts: a DOM script that survives SPA hydration. */
-export function injectRestyleMediaScript(
-  html: string,
-  pairs: Array<{ from: string; to: string }>,
-  pageUrl = '',
-): string {
-  const clean = pairs.filter((p) => p.from && p.to && p.from !== p.to);
+/** Same idea as Clone/Swipe texts: paint by index so SPA hydration cannot restore old src. */
+export function injectRestyleMediaScript(html: string, paints: PaintedMedia[]): string {
+  const clean = paints.filter((p) => p.url && (p.tag === 'img' || p.tag === 'video') && p.index >= 0);
   if (!clean.length) return html;
-  const expanded: Array<{ from: string; to: string }> = [];
-  const seen = new Set<string>();
-  for (const p of clean) {
-    for (const from of mediaUrlVariants(p.from, pageUrl)) {
-      if (seen.has(from)) continue;
-      seen.add(from);
-      expanded.push({ from, to: p.to });
-    }
-  }
-  const pairsJson = JSON.stringify(expanded)
+  const json = JSON.stringify(clean)
     .replace(/<\/(script|style)/gi, '<\\/$1')
     .replace(/<!--/g, '<\\!--')
     .replace(/\u2028/g, '\\u2028')
     .replace(/\u2029/g, '\\u2029');
+  const lazyJson = JSON.stringify(LAZY_ATTRS);
   const script = `<script data-restyle-media>
 (function(){
-  var pairs = ${pairsJson};
-  var ATTRS = ['src','poster','data-src','data-lazy-src','data-original','data-bg','data-image','href'];
-  function swap(u){
-    if(!u) return u;
-    for(var i=0;i<pairs.length;i++){
-      if(u===pairs[i].from) return pairs[i].to;
-    }
-    for(var j=0;j<pairs.length;j++){
-      if(u.indexOf(pairs[j].from)!==-1) return u.split(pairs[j].from).join(pairs[j].to);
-    }
-    return u;
-  }
-  function patch(el){
-    if(!el || !el.getAttribute) return;
-    for(var a=0;a<ATTRS.length;a++){
-      var v=el.getAttribute(ATTRS[a]);
-      if(!v) continue;
-      var n=swap(v);
-      if(n!==v) el.setAttribute(ATTRS[a], n);
-    }
-    if(el.removeAttribute){
-      el.removeAttribute('srcset');
-      el.removeAttribute('data-srcset');
-    }
-    if(el.style && el.style.backgroundImage){
-      var bg=el.style.backgroundImage;
-      var nb=swap(bg);
-      if(nb!==bg) el.style.backgroundImage=nb;
+  var paints = ${json};
+  var LAZY = ${lazyJson};
+  function strip(el){
+    if(!el||!el.removeAttribute) return;
+    for(var i=0;i<LAZY.length;i++) el.removeAttribute(LAZY[i]);
+    if(el.parentElement && el.parentElement.tagName==='PICTURE'){
+      var srcs=el.parentElement.querySelectorAll('source');
+      for(var s=0;s<srcs.length;s++) srcs[s].remove();
     }
   }
-  function scan(){
-    var nodes=document.querySelectorAll('img,video,source,image,[style*="background"]');
-    for(var i=0;i<nodes.length;i++) patch(nodes[i]);
+  function paint(el, url, poster){
+    if(!el||!url) return;
+    try{ el.setAttribute('src', url); }catch(e){}
+    try{ el.src = url; }catch(e2){}
+    if(poster){ try{ el.setAttribute('poster', poster); el.poster=poster; }catch(e3){} }
+    strip(el);
+    el.setAttribute('data-restyled','1');
+    if((el.tagName||'')==='VIDEO'){
+      el.muted=true; el.playsInline=true; el.loop=true; el.autoplay=true;
+    }
   }
-  function boot(){ scan(); }
-  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', boot);
-  else boot();
-  setTimeout(scan, 50);
-  setTimeout(scan, 400);
-  setTimeout(scan, 1500);
+  function tooSmall(el){
+    try{
+      var r=el.getBoundingClientRect();
+      if(r.width>0 && r.height>0 && (r.width<32||r.height<32)) return true;
+    }catch(e){}
+    return false;
+  }
+  function apply(){
+    var imgs=document.querySelectorAll('img');
+    var videos=document.querySelectorAll('video');
+    var extras=[];
+    for(var i=0;i<paints.length;i++){
+      var p=paints[i];
+      var el=p.tag==='video'?videos[p.index]:imgs[p.index];
+      if(!el){ extras.push(p); continue; }
+      paint(el, p.url, p.poster);
+    }
+    var ei=0;
+    for(var k=0;k<imgs.length && ei<extras.length;k++){
+      if(imgs[k].getAttribute('data-restyled')) continue;
+      if(tooSmall(imgs[k])) continue;
+      paint(imgs[k], extras[ei].url, extras[ei].poster);
+      ei++;
+    }
+    var bgs=document.querySelectorAll('[style*="background"]');
+    for(var b=0;b<bgs.length && ei<extras.length;b++){
+      if(bgs[b].getAttribute('data-restyled')) continue;
+      try{
+        bgs[b].style.setProperty('background-image','url("'+extras[ei].url+'")','important');
+        bgs[b].setAttribute('data-restyled','1');
+        ei++;
+      }catch(e4){}
+    }
+  }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', apply);
+  else apply();
+  setTimeout(apply, 50);
+  setTimeout(apply, 400);
+  setTimeout(apply, 1500);
+  setTimeout(apply, 4000);
   if(window.MutationObserver && document.documentElement){
-    var obs=new MutationObserver(scan);
-    obs.observe(document.documentElement,{childList:true,subtree:true,attributes:true,attributeFilter:ATTRS.concat(['srcset','style'])});
-    setTimeout(function(){ obs.disconnect(); }, 20000);
+    var obs=new MutationObserver(apply);
+    obs.observe(document.documentElement,{childList:true,subtree:true,attributes:true,attributeFilter:['src','srcset','poster','style']});
+    setTimeout(function(){ obs.disconnect(); }, 25000);
   }
 })();
 <\/script>`;
