@@ -114,7 +114,7 @@ export function extractReinjectableScripts(html: string): string[] {
     if (/\bsrc\s*=/.test(attrs)) continue; // inline only
     const body = m[2] || '';
     if (!body.trim()) continue;
-    if (/data-fallback|data-swipe-replacer|data-editor/i.test(attrs)) continue;
+    if (/data-fallback|data-swipe-replacer|data-restyle-media|data-editor/i.test(attrs)) continue;
     if (TRACKING_ONLY.test(body) && !DOM_MUTATION.test(body)) continue;
     out.push(m[0]);
   }

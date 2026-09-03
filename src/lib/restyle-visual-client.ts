@@ -1,4 +1,10 @@
-import { applyPalette, collectRestyleSlots, fallbackPalette, replaceMediaUrl } from '@/lib/restyle-slots';
+import {
+  applyPalette,
+  collectRestyleSlots,
+  fallbackPalette,
+  injectRestyleMediaScript,
+  replaceMediaUrl,
+} from '@/lib/restyle-slots';
 
 type Gen = {
   status?: string;
@@ -11,23 +17,34 @@ type Gen = {
 };
 
 async function generateMedia(body: Record<string, unknown>): Promise<string> {
-  try {
-    return await generateMediaOnce(body);
-  } catch (first) {
-    const mode = body.mode;
-    if (mode === 'text2image' && body.model !== 'nano-banana-2') {
-      return generateMediaOnce({ ...body, model: 'nano-banana-2' });
-    }
-    if (mode === 'image2image') {
-      return generateMediaOnce({
-        mode: 'text2image',
-        model: 'nano-banana-2',
-        prompt: body.prompt,
-        size: body.size,
-      });
-    }
-    throw first;
+  const chain: Record<string, unknown>[] = [body];
+  if (body.mode === 'text2image') {
+    if (body.model !== 'flux-schnell') chain.push({ ...body, model: 'flux-schnell' });
+    if (body.model !== 'nano-banana-2') chain.push({ ...body, model: 'nano-banana-2' });
+  } else if (body.mode === 'image2image') {
+    if (body.model !== 'nano-banana-2-edit') chain.push({ ...body, model: 'nano-banana-2-edit' });
+    chain.push({
+      mode: 'text2image',
+      model: 'nano-banana-2',
+      prompt: body.prompt,
+      size: body.size,
+    });
+    chain.push({
+      mode: 'text2image',
+      model: 'flux-schnell',
+      prompt: body.prompt,
+      size: body.size,
+    });
   }
+  let last: Error | null = null;
+  for (const attempt of chain) {
+    try {
+      return await generateMediaOnce(attempt);
+    } catch (e) {
+      last = e as Error;
+    }
+  }
+  throw last || new Error('Generation failed');
 }
 
 async function generateMediaOnce(body: Record<string, unknown>): Promise<string> {
@@ -81,9 +98,11 @@ export async function runVisualRestyle(opts: {
   research?: string;
   description?: string;
   projectId?: string;
+  pageUrl?: string;
   onProgress?: (message: string, html?: string) => void;
-}): Promise<{ html: string; replaced: number; total: number; failed: number }> {
-  const slots = collectRestyleSlots(opts.html, 20);
+}): Promise<{ html: string; replaced: number; total: number; failed: number; error?: string }> {
+  const pageUrl = opts.pageUrl || '';
+  const slots = collectRestyleSlots(opts.html, 20, pageUrl);
   const palette0 = fallbackPalette(opts.productName, `${opts.brief || ''} ${opts.description || ''}`);
   let html = applyPalette(opts.html, palette0);
   opts.onProgress?.(`Palette applied — ${slots.length} media to generate…`, html);
@@ -127,16 +146,18 @@ export async function runVisualRestyle(opts: {
   }
 
   if (!workSlots.length) {
-    return { html, replaced: 0, total: 0, failed: 0 };
+    return { html, replaced: 0, total: 0, failed: 0, error: 'No photos/GIFs/videos found in the page HTML' };
   }
 
   let replaced = 0;
   let failed = 0;
+  let firstError = '';
   const productUrl = plan.productImageUrl || '';
+  const pairs: Array<{ from: string; to: string }> = [];
 
   for (let i = 0; i < workSlots.length; i++) {
     const slot = workSlots[i];
-    const n = `${i + 1}/${plan.slots.length}`;
+    const n = `${i + 1}/${workSlots.length}`;
     opts.onProgress?.(`${slot.kind} ${n} (${slot.role || slot.kind})…`, html);
     const unique = `${slot.prompt}\nUNIQUE FRAME ${slot.id + 1}: ${plan.palette?.world || ''} ${plan.palette?.avatar || ''}. Do not repeat any previous composition. Product: ${opts.productName}.`;
     try {
@@ -173,7 +194,7 @@ export async function runVisualRestyle(opts: {
           finalUrl = still;
         }
       }
-      html = replaceMediaUrl(html, slot.src, finalUrl);
+      html = replaceMediaUrl(html, slot.src, finalUrl, pageUrl);
       if (slot.kind === 'video' && still) {
         html = html.replace(/<video\b[\s\S]*?<\/video>/gi, (block) => {
           if (!block.includes(finalUrl) && !block.includes(still)) return block;
@@ -183,13 +204,27 @@ export async function runVisualRestyle(opts: {
           return block.replace(/<video\b/i, `<video poster="${still}"`);
         });
       }
+      pairs.push({ from: slot.src, to: finalUrl });
       replaced++;
       opts.onProgress?.(`${n} replaced`, html);
     } catch (e) {
       failed++;
-      opts.onProgress?.(`${n} failed: ${(e as Error).message} — keeping original`, html);
+      const msg = (e as Error).message || 'generate failed';
+      if (!firstError) firstError = msg;
+      opts.onProgress?.(`${n} failed: ${msg} — keeping original`, html);
     }
   }
 
-  return { html, replaced, total: plan.slots.length, failed };
+  if (pairs.length) {
+    html = injectRestyleMediaScript(html, pairs, pageUrl);
+    opts.onProgress?.(`Media script on — ${pairs.length} photos bound`, html);
+  }
+
+  return {
+    html,
+    replaced,
+    total: workSlots.length,
+    failed,
+    error: replaced ? undefined : (firstError || 'No media replaced'),
+  };
 }

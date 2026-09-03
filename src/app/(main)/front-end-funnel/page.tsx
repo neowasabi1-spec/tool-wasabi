@@ -4933,6 +4933,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
               research: cloneConfig.marketResearch || extractSectionContent(projectForVisual?.marketResearch),
               description: cloneConfig.productDescription || projectForVisual?.description || '',
               projectId: currentPage?.productId,
+              pageUrl: url,
               onProgress: (message, html) => {
                 setCloneProgress({
                   phase: 'processing',
@@ -4940,7 +4941,10 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                   processedTexts: rewriteData.replacements || 0,
                   message,
                 });
-                if (html) rewrittenHtml = html;
+                if (html) {
+                  rewrittenHtml = html;
+                  void saveHtmlBlob(pageId, 'swipedData', html);
+                }
               },
             });
             rewrittenHtml = visual.html;
@@ -4949,7 +4953,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
               visual.replaced ? 'success' : 'error',
               visual.replaced
                 ? `Visual: ${visual.replaced}/${visual.total} media replaced`
-                : `Visual: 0/${visual.total} media generated — palette kept`,
+                : `Visual: 0/${visual.total} media generated — palette kept${visual.error ? ` (${visual.error})` : ''}`,
               pageName,
             );
           } catch (e) {
