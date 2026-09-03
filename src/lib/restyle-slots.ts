@@ -330,6 +330,7 @@ export function injectRestyleMediaScript(html: string, paints: PaintedMedia[]): 
   }
   function paint(el, url, poster){
     if(!el||!url) return;
+    if(el.getAttribute('data-restyled')==='1' && (el.getAttribute('src')||el.src)===url) return;
     try{ el.setAttribute('src', url); }catch(e){}
     try{ el.src = url; }catch(e2){}
     if(poster){ try{ el.setAttribute('poster', poster); el.poster=poster; }catch(e3){} }
@@ -346,7 +347,11 @@ export function injectRestyleMediaScript(html: string, paints: PaintedMedia[]): 
     }catch(e){}
     return false;
   }
+  var painting=false;
   function apply(){
+    if(painting) return;
+    painting=true;
+    try{
     var imgs=document.querySelectorAll('img');
     var videos=document.querySelectorAll('video');
     var extras=[];
@@ -372,6 +377,7 @@ export function injectRestyleMediaScript(html: string, paints: PaintedMedia[]): 
         ei++;
       }catch(e4){}
     }
+    }finally{ painting=false; }
   }
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', apply);
   else apply();

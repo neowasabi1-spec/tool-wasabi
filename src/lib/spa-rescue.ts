@@ -377,9 +377,6 @@ export function stripNonCarouselScripts(html: string): string {
   return html.replace(
     /<script\b([^>]*)>([\s\S]*?)<\/script>/gi,
     (full, attrs: string, body: string) => {
-      if (/\bdata-restyle-media\b/i.test(attrs) || /\bdata-restyle-media\b/i.test(full)) {
-        return full;
-      }
       // External script: look at src=
       const srcMatch = attrs.match(/\bsrc\s*=\s*["']([^"']+)["']/i);
       if (srcMatch) {

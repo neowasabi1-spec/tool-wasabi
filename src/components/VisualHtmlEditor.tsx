@@ -222,6 +222,7 @@ type EditorMode = 'visual' | 'code' | 'preview';
 
 const EDITOR_SCRIPT = `
 (function(){
+  try{window.parent.postMessage({type:'editor-ready'},'*');}catch(e){}
   var sel=null,hover=null,editing=false,editEl=null;
   var HS='2px dashed rgba(59,130,246,0.4)',SS='2px solid #3b82f6',ES='2px solid #f59e0b';
 
@@ -1429,11 +1430,10 @@ const EDITOR_SCRIPT = `
      popolano dinamicamente le slide via inline-script (rimosso) o
      via lazy-loader; un secondo init a 400/1200ms cattura anche
      quei casi. _bindCarousel e' idempotente (guard track.__wbCar). */
+  window.parent.postMessage({type:'editor-ready'},'*');
   _initCarousels();
   setTimeout(_initCarousels,400);
   setTimeout(_initCarousels,1200);
-
-  window.parent.postMessage({type:'editor-ready'},'*');
 })();
 `;
 
@@ -1679,6 +1679,9 @@ function prepareEditorHtml(html: string, sourceUrl?: string): string {
   // identico al sito originale, sia in editor che in preview.
   // (vedi stripNonCarouselScripts in src/lib/spa-rescue.ts)
   clean = stripNonCarouselScripts(clean);
+  // Preview-only: this observer rewrites img src in a loop and blocks the
+  // editor iframe so "editor-ready" never fires (stuck on Loading editor…).
+  clean = clean.replace(/<script\b[^>]*\bdata-restyle-media\b[^>]*>[\s\S]*?<\/script>/gi, '');
   // Toglie anche noscript: contengono spesso pixel di tracking che
   // diventano visibili se i loro <script> wrapper sono spariti.
   clean = clean.replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, '');
@@ -4813,16 +4816,16 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   // e setSwitchingMode (riga ~2580+), altrimenti TDZ -> "Cannot access
   // 'lc' before initialization" in produzione (Next.js minified bundle).
   useEffect(() => {
-    if (editorReady || switchingViewport || restoringHistory) return;
+    if (editorReady) return;
     const t = setTimeout(() => {
-      console.warn('[VisualHtmlEditor] editor-ready timeout (8s) — forcing ready');
+      console.warn('[VisualHtmlEditor] editor-ready timeout — forcing ready');
       setEditorReady(true);
       setSwitchingViewport(false);
       setSwitchingMode(false);
       setRestoringHistory(false);
-    }, 8000);
+    }, 1500);
     return () => clearTimeout(t);
-  }, [editorReady, switchingViewport, restoringHistory, iframeVersion]);
+  }, [editorReady, iframeVersion]);
 
   return (
     <div className="fixed inset-0 z-[60] flex flex-col bg-white">
@@ -5136,6 +5139,11 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                 ref={iframeRef}
                 key={`${editorViewport}-${iframeVersion}`}
                 srcDoc={stableSrcDoc}
+                onLoad={() => {
+                  setEditorReady(true);
+                  setSwitchingViewport(false);
+                  setRestoringHistory(false);
+                }}
                 className={`h-full border-0 transition-all duration-300 ${
                   editorViewport === 'mobile'
                     ? 'w-[390px] border-x-2 border-gray-300 shadow-2xl'
