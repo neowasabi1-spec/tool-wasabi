@@ -20,7 +20,7 @@ import {
 import { getUploadUrl } from "@/lib/projecthub-storage";
 import { getSupabaseBrowser } from "@/lib/supabase-browser";
 import { BUILD_LANGUAGES, LANGUAGE_OTHER } from "@/lib/video-languages";
-import { LANDING_SECTION_LABEL, type LandingSection } from "@/lib/landing-media";
+import { hostOfUrl, LANDING_SECTION_LABEL, type LandingSection } from "@/lib/landing-media";
 import { fillLandingLibrary, landingFillError } from "@/lib/landing-media-client";
 
 const BASE_URL = "";
@@ -3742,6 +3742,15 @@ function ImageLandingsView({ projectId }: { projectId: string }) {
 
   const images = items.filter((m) => m.kind === "image" || m.kind === "gif");
   const videos = items.filter((m) => m.kind === "video");
+  const byHost = (rows: LandingMedia[]) => {
+    const map = new Map<string, LandingMedia[]>();
+    for (const m of rows) {
+      const host = hostOfUrl(m.sourceUrl) || "other";
+      if (!map.has(host)) map.set(host, []);
+      map.get(host)!.push(m);
+    }
+    return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  };
 
   return (
     <div className="space-y-4">
@@ -3749,9 +3758,8 @@ function ImageLandingsView({ projectId }: { projectId: string }) {
         <div>
           <h3 className="text-lg font-bold text-foreground">Image landings</h3>
           <p className="text-sm text-muted-foreground max-w-2xl">
-            Images, GIFs and videos pulled automatically from this project&apos;s competitor landings,
-            tagged with the section they came from (hero, product, testimonials…).
-            Swipe places each one in the matching block of the funnel.
+            Photos from each saved offer landing, grouped by site.
+            Affiliate swipe keeps each page&apos;s own photos — other products are not mixed in.
           </p>
         </div>
         {items.length > 0 && (
@@ -3781,29 +3789,33 @@ function ImageLandingsView({ projectId }: { projectId: string }) {
       ) : (
         <div className="space-y-6">
           {images.length > 0 && (
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">
-                Images & GIFs ({images.length})
-              </p>
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
-                {images.map((m) => (
-                  <div key={m.id} className="group relative rounded-xl border border-border overflow-hidden bg-muted/30">
-                    <img src={m.storedUrl} alt={m.name} className="w-full h-36 object-cover" />
-                    <span className="absolute top-2 left-2 text-[10px] font-bold uppercase bg-black/70 text-white px-1.5 py-0.5 rounded">
-                      {m.kind === "gif" ? "GIF · " : ""}
-                      {LANDING_SECTION_LABEL[m.section || "other"]}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => del(m)}
-                      className="absolute top-2 right-2 p-1 rounded-md bg-white/90 text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-red-600"
-                      title="Remove"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+            <div className="space-y-5">
+              {byHost(images).map(([host, rows]) => (
+                <div key={host}>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">
+                    {host} · {rows.length} photo{rows.length === 1 ? "" : "s"}
+                  </p>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+                    {rows.map((m) => (
+                      <div key={m.id} className="group relative rounded-xl border border-border overflow-hidden bg-muted/30">
+                        <img src={m.storedUrl} alt={m.name} className="w-full h-36 object-cover" />
+                        <span className="absolute top-2 left-2 text-[10px] font-bold uppercase bg-black/70 text-white px-1.5 py-0.5 rounded">
+                          {m.kind === "gif" ? "GIF · " : ""}
+                          {LANDING_SECTION_LABEL[m.section || "other"]}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => del(m)}
+                          className="absolute top-2 right-2 p-1 rounded-md bg-white/90 text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-red-600"
+                          title="Remove"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
+                </div>
+              ))}
             </div>
           )}
           {videos.length > 0 && (

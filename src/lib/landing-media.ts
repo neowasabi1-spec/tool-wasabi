@@ -85,6 +85,36 @@ const RELATED_SECTIONS: Record<LandingSection, LandingSection[]> = {
   other: [],
 };
 
+export function hostOfUrl(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '').toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+const JUNK_LANDING_HOSTS = /^(google\.com|google\.[a-z.]+|facebook\.com|fb\.com|instagram\.com|tiktok\.com|youtube\.com|youtu\.be|x\.com|twitter\.com|bing\.com)$/i;
+
+export function isJunkLandingHost(url: string): boolean {
+  const host = hostOfUrl(url);
+  return !host || JUNK_LANDING_HOSTS.test(host);
+}
+
+/** True when this file came from the same offer page (not another product). */
+export function mediaBelongsToPage(
+  item: { sourceUrl: string; name?: string },
+  html: string,
+  pageUrl = '',
+): boolean {
+  if (item.sourceUrl && html.includes(item.sourceUrl)) return true;
+  const pageHost = hostOfUrl(pageUrl);
+  const srcHost = hostOfUrl(item.sourceUrl);
+  if (pageHost && srcHost && pageHost === srcHost) return true;
+  const file = (item.name || item.sourceUrl.split('/').pop()?.split('?')[0] || '').trim();
+  if (file && file.length > 4 && html.includes(file)) return true;
+  return false;
+}
+
 export function isLandingSection(v: string): v is LandingSection {
   return (LANDING_SECTIONS as readonly string[]).includes(v);
 }

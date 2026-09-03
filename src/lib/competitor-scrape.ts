@@ -15,7 +15,7 @@ import {
 import { adExistsByExternalId, insertCompetitorAd, ensureBrand } from '@/lib/competitor-ads';
 import { transcribeVideo } from '@/lib/transcribe';
 import { absolutizeUrlsInHtml } from '@/lib/spa-rescue';
-import { extractLandingMediaFromHtml } from '@/lib/landing-media';
+import { extractLandingMediaFromHtml, isJunkLandingHost } from '@/lib/landing-media';
 import { isOnNiche } from '@/lib/competitor-relevance';
 import { shortApifyWebhookUrl } from '@/lib/discovery-lexicon';
 
@@ -196,6 +196,7 @@ export async function saveCompetitorLandings(
   for (const url of urls) {
     if (saved >= MAX) break;
     if (existing.has(url)) continue;
+    if (isJunkLandingHost(url)) continue;
 
     const fetched = await fetchLandingHtml(url);
     let html = fetched.html;

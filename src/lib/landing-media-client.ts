@@ -9,6 +9,7 @@
 
 import {
   collectLandingAssetUrls,
+  isJunkLandingHost,
   type LandingMediaItem,
 } from '@/lib/landing-media';
 
@@ -79,6 +80,7 @@ async function fillLandingLibraryOnce(
 
   let items: LandingMediaItem[] = [];
   for (const landing of landings.slice(0, 12)) {
+    if (isJunkLandingHost(landing.url || '')) continue;
     if (!landing.html_url) continue;
     const htmlRes = await fetch(landing.html_url);
     if (!htmlRes.ok) continue;
@@ -105,6 +107,7 @@ async function fillLandingLibraryOnce(
 
   // Browser download fallback — works when the CDN allows CORS from this origin.
   for (const landing of landings.slice(0, 8)) {
+    if (isJunkLandingHost(landing.url || '')) continue;
     if (!landing.html_url) continue;
     const htmlRes = await fetch(landing.html_url);
     if (!htmlRes.ok) continue;

@@ -10,6 +10,7 @@ import {
 import {
   isLandingSection,
   matchLandingMediaToSlots,
+  mediaBelongsToPage,
   type LandingMediaItem,
   type LandingSection,
 } from '@/lib/landing-media';
@@ -51,13 +52,31 @@ export async function runVisualRestyle(opts: {
   let library: LandingMediaItem[] = [];
   try {
     library = await loadLandingLibrary(opts.projectId);
-  } catch (e) {
-    return { html, replaced: 0, total: slots.length, failed: slots.length, error: (e as Error).message };
+  } catch {
+    library = [];
+  }
+
+  const fromThisOfferNow = (rows: LandingMediaItem[]) =>
+    rows.filter((m) => m.storedUrl && mediaBelongsToPage(m, opts.html, opts.pageUrl || ''));
+
+  let fromThisOffer = fromThisOfferNow(library);
+  if (!fromThisOffer.length && opts.html) {
+    try {
+      const post = await fetch(`/api/projecthub/projects/${opts.projectId}/landing-media`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ html: opts.html, pageUrl: opts.pageUrl || '' }),
+      });
+      const data = (await post.json().catch(() => ({}))) as { items?: LandingMediaItem[] };
+      fromThisOffer = fromThisOfferNow(Array.isArray(data.items) ? data.items : []);
+    } catch {
+      /* keep empty */
+    }
   }
 
   const alreadyOnPage = new Set(slots.map((s) => s.src));
-  const usable = library.filter((m) => m.storedUrl && !alreadyOnPage.has(m.sourceUrl));
-  const pool = usable.length ? usable : library.filter((m) => m.storedUrl);
+  const usable = fromThisOffer.filter((m) => !alreadyOnPage.has(m.sourceUrl));
+  const pool = usable.length ? usable : fromThisOffer;
   const stills = pool.filter((m) => m.kind === 'image' || m.kind === 'gif');
   const videos = pool.filter((m) => m.kind === 'video');
 
@@ -67,7 +86,7 @@ export async function runVisualRestyle(opts: {
       replaced: 0,
       total: slots.length,
       failed: slots.length,
-      error: 'No photos in the project landing library. Save competitor landings first.',
+      error: 'No photos from this offer landing. Other products are not mixed in.',
     };
   }
 

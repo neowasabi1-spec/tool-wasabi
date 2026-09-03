@@ -1037,6 +1037,16 @@ Genera il brief completo. Basati fortemente sulla RICERCA DI MERCATO fornita nel
 
 async function runCompetitor(supabase: SupabaseClient, projectId: string, input: PipelineInput): Promise<StepResult> {
   const link = (input.competitorLink || '').trim();
+  if (input.imageMode === 'affiliate') {
+    return {
+      summary: 'Affiliate: other products are not scraped. Photos stay on this offer’s own landings.',
+      output: [
+        'Affiliate mode does not search Meta/TikTok/Google for other brands.',
+        'Mixing Lean Habit / Numae / Inno Shred photos onto this offer is disabled.',
+        link ? `Offer reference: ${link}` : 'Save this offer’s landings with the extension (or pick the funnel). Those photos are the only ones used.',
+      ].join('\n'),
+    };
+  }
   const project = await loadProject(supabase, projectId);
   const research = sectionContentFrom(project.market_research);
   const brief = typeof project.brief === 'string' && project.brief.trim() ? (project.brief as string) : sectionContentFrom(project.brief);
@@ -1049,7 +1059,7 @@ async function runCompetitor(supabase: SupabaseClient, projectId: string, input:
   //    the ad libraries surface foreign (US/English) brands.
   const geo = (input.market || input.language || '').trim() || country;
   const kwInstructions = `You are a media buyer doing competitor research for the ${geo} market.
-Find OTHER brands and affiliates selling the SAME OFFER TYPE — similar product form, mechanism and promise. A winning offer has many advertisers. Do NOT search only our brand name.
+Find LOCAL competitors' ads for THIS product line — not unrelated shops.
 
 Output EXACTLY this format (no extra text):
 

@@ -3,6 +3,7 @@ import { extractAllTextsUniversal } from '../../src/lib/universal-text-extractor
 import {
   extractLandingMediaForProject,
   listLandingMedia,
+  mediaBelongsToPage,
   matchLandingMediaToSlots,
   sectionFromNearbyHtml,
   type LandingMediaItem,
@@ -1734,8 +1735,11 @@ CRITICAL RULES:
   const photosNeedOwnRun = ctx.imageMode === 'internal' && !resume && photoMinutesLeft < 200_000;
   try {
     if (ctx.imageMode === 'affiliate') {
-      if (ctx.landingStills.length || ctx.landingVideos.length) {
-        const applied = applyAffiliateMedia(html, ctx.landingStills, ctx.landingVideos, ctx.mediaUsed);
+      // Keep THIS offer's photos only. Do not paint other products onto the page.
+      const stills = ctx.landingStills.filter((m) => mediaBelongsToPage(m, html, page.sourceUrl || ''));
+      const videos = ctx.landingVideos.filter((m) => mediaBelongsToPage(m, html, page.sourceUrl || ''));
+      if (stills.length || videos.length) {
+        const applied = applyAffiliateMedia(html, stills, videos, ctx.mediaUsed);
         html = applied.html;
         imgRes = { html, generated: 0, productSwaps: 0, analyzed: 0, placed: applied.placed, videos: applied.videos, remaining: 0, total: 0, processed: 0 };
       }
