@@ -8,6 +8,7 @@ import {
   type LandingMediaItem,
   type LandingSection,
 } from '../../src/lib/landing-media';
+import { extractSectionContent } from '../../src/lib/project-sections';
 
 /**
  * Background function (up to 15 min) that performs the Chimera Protocol
@@ -83,10 +84,16 @@ interface RestyleSpec {
   palette: Array<{ from: string; to: string }>;
 }
 
+/** Same per-field cap Clone/Swipe uses when enqueueing rewrite context. */
+const DOC_CAP = 80_000;
+
 interface SwipeCtx {
   projectId: string;
   productName: string;
   productContext: string;
+  description: string;
+  brief: string;
+  research: string;
   market: string;
   mainImageUrl: string | null;
   imageMode: 'affiliate' | 'internal';
@@ -432,8 +439,11 @@ async function runCloneSwipeApi(
         html,
         product: {
           name: ctx.productName,
-          description: ctx.productContext.slice(0, 8000),
-          marketing_brief: ctx.productContext.slice(0, 8000),
+          description: ctx.description,
+          marketing_brief: ctx.brief,
+          market_research: ctx.research,
+          project_brief: ctx.brief,
+          geo_market: ctx.market || undefined,
         },
         tone: 'professional',
         language: guessSwipeLanguage(html, ctx.market),
@@ -1753,35 +1763,36 @@ export default async (req: Request) => {
       : 'Worker picked up — restyle running…')));
 
   // Product context: name + description + brief + research from the project.
-  const { data: project } = await sb
+  let { data: project, error: projectErr } = await sb
     .from('projects')
-    .select('name, description, brief, market_research, owner_user_id')
+    .select('name, description, brief, brief_files, market_research, owner_user_id, domain')
     .eq('id', projectId)
     .single();
-  const sectionText = (val: unknown): string => {
-    if (val == null) return '';
-    if (typeof val === 'string') {
-      const t = val.trim();
-      if (t.startsWith('{')) {
-        try {
-          const p = JSON.parse(t) as Record<string, unknown>;
-          if (typeof p.content === 'string') return p.content;
-        } catch { /* plain string */ }
-      }
-      return val;
-    }
-    if (typeof val === 'object' && typeof (val as Record<string, unknown>).content === 'string') {
-      return (val as Record<string, unknown>).content as string;
-    }
-    return '';
-  };
+  if (projectErr && /brief_files/i.test(projectErr.message || '')) {
+    const retry = await sb
+      .from('projects')
+      .select('name, description, brief, market_research, owner_user_id, domain')
+      .eq('id', projectId)
+      .single();
+    project = retry.data;
+  }
+  const cap = (s: string, n = DOC_CAP) => (s.length > n ? s.slice(0, n) : s);
   const productName = String(project?.name || 'Our product');
-  const brief = sectionText(project?.brief);
-  const research = sectionText(project?.market_research);
+  const description = String(project?.description || '').trim();
+  // Same as Clone/Swipe getProjectBriefText: prefer brief_files blob, else brief TEXT.
+  const briefFromFiles = extractSectionContent(
+    (project as { brief_files?: unknown } | null)?.brief_files,
+  ).trim();
+  const briefFromCol = extractSectionContent(project?.brief).trim();
+  const brief = cap(briefFromFiles || briefFromCol);
+  const research = cap(extractSectionContent(project?.market_research).trim());
   const parts: string[] = [];
-  if (project?.description) parts.push(`DESCRIPTION:\n${String(project.description).slice(0, 2000)}`);
-  if (brief) parts.push(`MARKETING BRIEF:\n${brief.slice(0, 6000)}`);
-  if (research) parts.push(`MARKET RESEARCH (extract):\n${research.slice(0, 3000)}`);
+  if (project?.name) parts.push(`PROJECT: ${project.name}`);
+  if (project?.domain) parts.push(`DOMAIN: ${String(project.domain)}`);
+  if (description) parts.push(`DESCRIPTION:\n${description}`);
+  if (brief) parts.push(`BRIEF (use this as the primary source of truth for tone, positioning and value props):\n${brief}`);
+  if (research) parts.push(`MARKET RESEARCH:\n${research}`);
+  log(`context brief=${brief.length}c research=${research.length}c desc=${description.length}c`);
   let landingItems = await listLandingMedia(sb, projectId);
   if (!landingItems.length) {
     try {
@@ -1798,6 +1809,9 @@ export default async (req: Request) => {
     projectId,
     productName,
     productContext: parts.join('\n\n'),
+    description,
+    brief,
+    research,
     market,
     mainImageUrl,
     imageMode,
