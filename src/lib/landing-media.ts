@@ -82,19 +82,29 @@ const SUBJECT_RULES: Array<{ section: LandingSection; re: RegExp }> = [
 
 const PRODUCT_FAMILY: LandingSection[] = ['hero', 'product', 'lifestyle', 'offer'];
 
-/** Ginger stays ingredients. A face stays testimonials. No leftover dump. */
+function roleClash(photo: LandingSection, slot: LandingSection): boolean {
+  if (photo === 'ingredients' && (slot === 'testimonials' || slot === 'faq')) return true;
+  if (slot === 'ingredients' && (photo === 'testimonials' || photo === 'faq')) return true;
+  if (photo === 'testimonials' && (slot === 'ingredients' || slot === 'product' || slot === 'offer')) return true;
+  return false;
+}
+
+/** Ginger stays ingredients. A face stays testimonials. Unlabeled landing photos can fill product/hero. */
 export function rolesCompatible(photo: LandingSection, slot: LandingSection): boolean {
+  if (roleClash(photo, slot)) return false;
   if (photo === slot) return true;
-  if (photo === 'other' || slot === 'other') return false;
   if (photo === 'ingredients') return slot === 'ingredients' || slot === 'mechanism';
   if (slot === 'ingredients') return photo === 'ingredients';
-  if (photo === 'testimonials' || slot === 'testimonials') return false;
+  if (slot === 'testimonials') return photo === 'testimonials' || photo === 'lifestyle';
+  if (photo === 'testimonials') return slot === 'testimonials' || slot === 'lifestyle';
   if (photo === 'faq' || slot === 'faq') return false;
   if (photo === 'guarantee' || slot === 'guarantee') return photo === slot;
   if (photo === 'comparison' || slot === 'comparison') {
     return photo === slot || (photo === 'product' && slot === 'comparison');
   }
   if (photo === 'video' || slot === 'video') return photo === 'video' && slot === 'video';
+  if (photo === 'other') return PRODUCT_FAMILY.includes(slot) || slot === 'other' || slot === 'benefits' || slot === 'mechanism';
+  if (slot === 'other') return PRODUCT_FAMILY.includes(photo) || photo === 'other' || photo === 'benefits' || photo === 'mechanism';
   return PRODUCT_FAMILY.includes(photo) && PRODUCT_FAMILY.includes(slot);
 }
 
@@ -243,28 +253,44 @@ export function sectionFromNearbyHtml(
   });
 }
 
-/** Place a photo only where that subject belongs. Empty slot beats a wrong photo. */
+/** Always replace the funnel photo. Prefer the right subject; reuse if needed. Never ginger in reviews. */
 export function matchLandingMediaToSlots<S extends { section: LandingSection; src?: string; alt?: string }>(
   slots: S[],
   media: LandingMediaItem[],
   used: Set<string>,
 ): Array<{ slot: S; item: LandingMediaItem | null }> {
   const pool = sortLandingMediaAsOnPage(
-    media.filter((m) => !used.has(String(m.id)) && !isDecorativeMedia(m.sourceUrl, m.name, m.storedUrl)),
+    media.filter((m) => !isDecorativeMedia(m.sourceUrl, m.name, m.storedUrl)),
   ).map((m) => ({ m, role: resolveMediaRole(m) }));
-  const take = (pred: (row: { m: LandingMediaItem; role: LandingSection }) => boolean): LandingMediaItem | null => {
+  if (!pool.length) return slots.map((slot) => ({ slot, item: null }));
+
+  let cursor = 0;
+  const takeFresh = (pred: (row: { m: LandingMediaItem; role: LandingSection }) => boolean): LandingMediaItem | null => {
     const found = pool.find((row) => !used.has(String(row.m.id)) && pred(row));
     if (!found) return null;
     used.add(String(found.m.id));
     return found.m;
   };
+  const takeCycle = (pred: (row: { m: LandingMediaItem; role: LandingSection }) => boolean): LandingMediaItem | null => {
+    const matches = pool.filter(pred);
+    if (!matches.length) return null;
+    const row = matches[cursor % matches.length];
+    cursor += 1;
+    used.add(String(row.m.id));
+    return row.m;
+  };
+
   return slots.map((slot) => {
     if (isDecorativeMedia(slot.src, slot.alt)) return { slot, item: null };
     const slotRole = resolveMediaRole({ src: slot.src, alt: slot.alt, section: slot.section });
-    const exact = take((row) => row.role === slotRole && slotRole !== 'other');
-    if (exact) return { slot, item: exact };
-    const family = take((row) => rolesCompatible(row.role, slotRole));
-    return { slot, item: family };
+    const item =
+      takeFresh((row) => row.role === slotRole && slotRole !== 'other')
+      || takeFresh((row) => rolesCompatible(row.role, slotRole))
+      || takeCycle((row) => row.role === slotRole && slotRole !== 'other')
+      || takeCycle((row) => rolesCompatible(row.role, slotRole))
+      || takeFresh((row) => !roleClash(row.role, slotRole))
+      || takeCycle((row) => !roleClash(row.role, slotRole));
+    return { slot, item };
   });
 }
 
