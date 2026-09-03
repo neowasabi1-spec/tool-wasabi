@@ -2,7 +2,6 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { Loader2, X, Paintbrush, CheckCircle, XCircle, Eye } from 'lucide-react';
-import { loadSwipedHtml } from '@/lib/chimera-restyle-client';
 
 export type RestyleWatchSibling = {
   id: string;
@@ -10,9 +9,19 @@ export type RestyleWatchSibling = {
   swipeStatus: string;
 };
 
+function previewUrl(pageId: string, kind: 'swiped' | 'cloned', bust: string): string {
+  return (
+    `/api/funnel-html?pageId=${encodeURIComponent(pageId)}` +
+    `&kind=${kind}&variant=desktop&inert=1&v=${encodeURIComponent(bust)}`
+  );
+}
+
 /**
  * Live reconstruction popup. Closing it does NOT stop the worker —
  * it only hides this window. Reopen from the eye on an In Progress row.
+ *
+ * The iframe is inert (no scripts) and loaded via URL — we never pull
+ * megabytes of HTML into React. That was freezing the browser.
  */
 export function RestyleWatchModal({
   open,
@@ -31,23 +40,34 @@ export function RestyleWatchModal({
   onStatus?: (pageId: string, swipeStatus: string, swipeResult: string) => void;
   onClose: () => void;
 }) {
-  const [html, setHtml] = useState('');
-  const [htmlSig, setHtmlSig] = useState('');
   const [result, setResult] = useState('');
   const [status, setStatus] = useState('in_progress');
+  const [frameSrc, setFrameSrc] = useState('');
   const [updatedAt, setUpdatedAt] = useState<number | null>(null);
-  const lastSig = useRef('');
+  const lastToken = useRef('');
+  const debounceRef = useRef<number | null>(null);
   const onStatusRef = useRef(onStatus);
   onStatusRef.current = onStatus;
 
   useEffect(() => {
     if (!open || !pageId) return;
     let cancelled = false;
-    setHtml('');
-    setHtmlSig('');
     setResult('Waiting for the first draft…');
     setStatus('in_progress');
-    lastSig.current = '';
+    setFrameSrc(previewUrl(pageId, 'cloned', `open-${Date.now()}`));
+    lastToken.current = '';
+
+    const show = (kind: 'swiped' | 'cloned', token: string) => {
+      if (token === lastToken.current) return;
+      lastToken.current = token;
+      const src = previewUrl(pageId, kind, token);
+      if (debounceRef.current) window.clearTimeout(debounceRef.current);
+      debounceRef.current = window.setTimeout(() => {
+        if (cancelled) return;
+        setFrameSrc(src);
+        setUpdatedAt(Date.now());
+      }, 800);
+    };
 
     const tick = async () => {
       try {
@@ -56,36 +76,30 @@ export function RestyleWatchModal({
           pages?: Array<{ swipeStatus?: string; swipeResult?: string }>;
         };
         const row = stData.pages?.[0];
-        if (!cancelled && row) {
-          setStatus(row.swipeStatus || 'in_progress');
-          if (row.swipeResult) setResult(row.swipeResult);
-          if (row.swipeStatus) onStatusRef.current?.(pageId, row.swipeStatus, row.swipeResult || '');
-        }
-        const nextHtml = await loadSwipedHtml(pageId);
-        if (cancelled || !nextHtml) return;
-        const sig = `${nextHtml.length}:${nextHtml.slice(80, 120)}:${nextHtml.slice(-80)}`;
-        if (sig === lastSig.current) return;
-        lastSig.current = sig;
-        setHtml(nextHtml);
-        setHtmlSig(sig);
-        setUpdatedAt(Date.now());
+        if (cancelled || !row) return;
+        setStatus(row.swipeStatus || 'in_progress');
+        if (row.swipeResult) setResult(row.swipeResult);
+        if (row.swipeStatus) onStatusRef.current?.(pageId, row.swipeStatus, row.swipeResult || '');
+        const progressed = /texts|theme|photo|palette|visual|rewritten|replaced|editing|product shot/i
+          .test(row.swipeResult || '');
+        show(progressed ? 'swiped' : 'cloned', `${row.swipeStatus}|${row.swipeResult || ''}`);
       } catch {
         /* keep last frame */
       }
     };
 
     void tick();
-    const id = window.setInterval(tick, 4000);
+    const id = window.setInterval(tick, 5000);
     return () => {
       cancelled = true;
       window.clearInterval(id);
+      if (debounceRef.current) window.clearTimeout(debounceRef.current);
     };
   }, [open, pageId]);
 
   if (!open) return null;
 
   const running = status === 'in_progress' || status === 'pending';
-  const failed = status === 'failed';
   const done = status === 'completed';
 
   return (
@@ -113,9 +127,8 @@ export function RestyleWatchModal({
               {result || 'Internal restyle running in the background…'}
             </p>
             <p className="mt-0.5 text-[11px] text-gray-400">
-              Close anytime — the restyle keeps going. Reopen with the eye on the row.
-              {updatedAt ? ` · preview ${Math.max(0, Math.round((Date.now() - updatedAt) / 1000))}s ago` : ''}
-              {html ? ` · ${(html.length / 1024).toFixed(0)} KB` : ''}
+              Close anytime — the restyle keeps going. Preview is static (no page scripts).
+              {updatedAt ? ` · refreshed ${Math.max(0, Math.round((Date.now() - updatedAt) / 1000))}s ago` : ''}
             </p>
           </div>
           <button
@@ -152,20 +165,21 @@ export function RestyleWatchModal({
         )}
 
         <div className="relative flex-1 bg-gray-100 min-h-0">
-          {!html && (
+          {!frameSrc && (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-gray-500">
               <Eye className="w-8 h-8 text-violet-300" />
               <p className="text-sm">Waiting for the first rebuilt HTML…</p>
               <p className="text-xs text-gray-400">Texts + palette land first, then photos in batches.</p>
             </div>
           )}
-          <iframe
-            key={htmlSig || 'empty'}
-            title={`Restyle preview ${pageName}`}
-            className={`w-full h-full bg-white ${html ? '' : 'invisible'}`}
-            sandbox="allow-scripts allow-same-origin allow-popups"
-            srcDoc={html || undefined}
-          />
+          {frameSrc ? (
+            <iframe
+              title={`Restyle preview ${pageName}`}
+              className="w-full h-full bg-white"
+              sandbox=""
+              src={frameSrc}
+            />
+          ) : null}
         </div>
       </div>
     </div>

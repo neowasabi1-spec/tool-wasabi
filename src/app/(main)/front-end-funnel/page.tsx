@@ -70,7 +70,7 @@ import * as XLSX from 'xlsx';
 import VisualHtmlEditor from '@/components/VisualHtmlEditor';
 import { bakeDynamicComments } from '@/lib/bake-dynamic-comments';
 import { saveHtmlBlob } from '@/lib/html-blob-store';
-import { runChimeraInternalSwipe, loadSwipedHtml } from '@/lib/chimera-restyle-client';
+import { runChimeraInternalSwipe } from '@/lib/chimera-restyle-client';
 import { RestyleWatchModal } from '@/components/RestyleWatchModal';
 import {
   buildTranslateContext,
@@ -3823,25 +3823,24 @@ export default function FrontEndFunnel() {
       });
       if (restyled.ok) {
         for (const page of group) {
-          const html = await loadSwipedHtml(page.id);
-          if (html) {
-            updateFunnelPage(page.id, {
-              swipeStatus: 'completed',
-              swipeResult: restyled.summary || 'Internal restyle completed',
-              swipedData: {
-                html,
-                originalTitle: page.name,
-                newTitle: `Restyle: ${page.name}`,
-                originalLength: 0,
-                newLength: html.length,
-                processingTime: 0,
-                methodUsed: 'chimera-internal-restyle',
-                changesMade: [restyled.summary || 'restyle'],
-                swipedAt: new Date(),
-              },
-            });
-            void saveHtmlBlob(page.id, 'swipedData', html);
-          }
+          const htmlUrl = `/api/funnel-html?pageId=${encodeURIComponent(page.id)}&kind=swiped&variant=desktop&inert=1&v=${Date.now()}`;
+          updateFunnelPage(page.id, {
+            swipeStatus: 'completed',
+            swipeResult: restyled.summary || 'Internal restyle completed',
+            swipedData: {
+              html: '',
+              htmlUrl,
+              htmlSkipped: true,
+              originalTitle: page.name,
+              newTitle: `Restyle: ${page.name}`,
+              originalLength: 0,
+              newLength: 0,
+              processingTime: 0,
+              methodUsed: 'chimera-internal-restyle',
+              changesMade: [restyled.summary || 'restyle'],
+              swipedAt: new Date(),
+            },
+          });
           setSwipeAllJob((s) => (s ? { ...s, completed: s.completed + 1 } : s));
         }
         pushSwipeLog('success', `✓ Restyle done — ${group.length} page(s)`, label);
@@ -3849,25 +3848,24 @@ export default function FrontEndFunnel() {
         const msg = restyled.error || 'Restyle failed';
         for (const page of group) {
           if ((restyled.pages || []).find((p) => p.id === page.id)?.swipeStatus === 'failed') {
-            const partial = await loadSwipedHtml(page.id);
+            const htmlUrl = `/api/funnel-html?pageId=${encodeURIComponent(page.id)}&kind=swiped&variant=desktop&inert=1&v=${Date.now()}`;
             updateFunnelPage(page.id, {
               swipeStatus: 'failed',
               swipeResult: msg,
-              ...(partial ? {
-                swipedData: {
-                  html: partial,
-                  originalTitle: page.name,
-                  newTitle: `Restyle: ${page.name}`,
-                  originalLength: 0,
-                  newLength: partial.length,
-                  processingTime: 0,
-                  methodUsed: 'chimera-internal-restyle',
-                  changesMade: [msg],
-                  swipedAt: new Date(),
-                },
-              } : {}),
+              swipedData: {
+                html: '',
+                htmlUrl,
+                htmlSkipped: true,
+                originalTitle: page.name,
+                newTitle: `Restyle: ${page.name}`,
+                originalLength: 0,
+                newLength: 0,
+                processingTime: 0,
+                methodUsed: 'chimera-internal-restyle',
+                changesMade: [msg],
+                swipedAt: new Date(),
+              },
             });
-            if (partial) void saveHtmlBlob(page.id, 'swipedData', partial);
           }
           setSwipeAllJob((s) =>
             s ? { ...s, errors: [...s.errors, { pageId: page.id, pageName: page.name, message: msg }] } : s
@@ -4216,67 +4214,66 @@ export default function FrontEndFunnel() {
             );
           },
         });
+        const restyleUrl = restyled.htmlUrl
+          || `/api/funnel-html?pageId=${encodeURIComponent(pageId)}&kind=swiped&variant=desktop&inert=1&v=${Date.now()}`;
         if (!restyled.ok) {
-          const partial = restyled.html || (await loadSwipedHtml(pageId));
-          if (partial) {
-            updateFunnelPage(pageId, {
-              swipeStatus: 'failed',
-              swipeResult: restyled.error || 'Restyle failed',
-              swipedData: {
-                html: partial,
-                originalTitle: pageName,
-                newTitle: `Restyle: ${pageName}`,
-                originalLength: 0,
-                newLength: partial.length,
-                processingTime: 0,
-                methodUsed: 'chimera-internal-restyle',
-                changesMade: [restyled.error || 'partial restyle'],
-                swipedAt: new Date(),
-              },
-            });
-            void saveHtmlBlob(pageId, 'swipedData', partial);
-            setHtmlPreviewModal({
-              isOpen: true,
-              title: `Restyle (partial): ${pageName}`,
-              html: partial,
-              mobileHtml: '',
-              iframeSrc: '',
-              metadata: { method: 'chimera-internal-restyle', length: partial.length, duration: 0 },
-              pageId,
-              sourceType: 'swiped',
-              sourceUrl: url,
-            });
-          }
+          updateFunnelPage(pageId, {
+            swipeStatus: 'failed',
+            swipeResult: restyled.error || 'Restyle failed',
+            swipedData: {
+              html: '',
+              htmlUrl: restyleUrl,
+              htmlSkipped: true,
+              originalTitle: pageName,
+              newTitle: `Restyle: ${pageName}`,
+              originalLength: 0,
+              newLength: 0,
+              processingTime: 0,
+              methodUsed: 'chimera-internal-restyle',
+              changesMade: [restyled.error || 'partial restyle'],
+              swipedAt: new Date(),
+            },
+          });
+          setHtmlPreviewModal({
+            isOpen: true,
+            title: `Restyle (partial): ${pageName}`,
+            html: '',
+            mobileHtml: '',
+            iframeSrc: restyleUrl,
+            metadata: { method: 'chimera-internal-restyle', length: 0, duration: 0 },
+            pageId,
+            sourceType: 'swiped',
+            sourceUrl: url,
+          });
           throw new Error(restyled.error || 'Restyle failed');
         }
-        const rewrittenHtml = restyled.html || (await loadSwipedHtml(pageId));
-        if (!rewrittenHtml) throw new Error('Restyle finished but HTML is empty. Retry Swipe.');
         setCloneProgress(null);
         updateFunnelPage(pageId, {
           swipeStatus: 'completed',
           swipeResult: restyled.summary || 'Internal restyle completed',
           swipedData: {
-            html: rewrittenHtml,
+            html: '',
+            htmlUrl: restyleUrl,
+            htmlSkipped: true,
             originalTitle: pageName,
             newTitle: `Restyle: ${pageName}`,
             originalLength: 0,
-            newLength: rewrittenHtml.length,
+            newLength: 0,
             processingTime: 0,
             methodUsed: 'chimera-internal-restyle',
             changesMade: [restyled.summary || 'palette + photos'],
             swipedAt: new Date(),
           },
         });
-        void saveHtmlBlob(pageId, 'swipedData', rewrittenHtml);
         if (!silent && !restyleWatch.open) {
           setPreviewTab('preview');
           setHtmlPreviewModal({
             isOpen: true,
             title: `Restyle: ${pageName}`,
-            html: rewrittenHtml,
+            html: '',
             mobileHtml: '',
-            iframeSrc: '',
-            metadata: { method: 'chimera-internal-restyle', length: rewrittenHtml.length, duration: 0 },
+            iframeSrc: restyleUrl,
+            metadata: { method: 'chimera-internal-restyle', length: 0, duration: 0 },
             pageId,
             sourceType: 'swiped',
             sourceUrl: url,

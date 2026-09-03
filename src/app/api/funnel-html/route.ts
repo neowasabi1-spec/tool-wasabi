@@ -102,7 +102,16 @@ export async function GET(req: NextRequest) {
     return new NextResponse('', { status: 404 });
   }
 
-  return new NextResponse(data.html as string, {
+  let html = data.html as string;
+  if (sp.get('inert') === '1') {
+    html = html
+      .replace(/<script\b[\s\S]*?<\/script>/gi, '')
+      .replace(/<script\b[^>]*\/?>/gi, '')
+      .replace(/\s+on[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+      .replace(/<meta[^>]+http-equiv=["']?refresh["'][^>]*>/gi, '');
+  }
+
+  return new NextResponse(html, {
     status: 200,
     headers: {
       'content-type': 'text/html; charset=utf-8',

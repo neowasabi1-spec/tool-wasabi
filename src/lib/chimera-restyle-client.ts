@@ -82,7 +82,7 @@ export async function runChimeraInternalSwipe(opts: {
   pageIds: string[];
   projectId: string;
   onProgress?: (page: ChimeraSwipePageStatus) => void;
-}): Promise<{ ok: boolean; html?: string; summary?: string; error?: string; pages?: ChimeraSwipePageStatus[] }> {
+}): Promise<{ ok: boolean; htmlUrl?: string; summary?: string; error?: string; pages?: ChimeraSwipePageStatus[] }> {
   const started = await startChimeraRestyle({
     pageIds: opts.pageIds,
     projectId: opts.projectId,
@@ -96,11 +96,13 @@ export async function runChimeraInternalSwipe(opts: {
       onProgress: opts.onProgress,
     });
     const failed = pages.find((p) => p.swipeStatus === 'failed');
-    const html = opts.pageIds.length === 1 ? await loadSwipedHtml(opts.pageIds[0]) : '';
-    if (failed) return { ok: false, error: failed.swipeResult || 'Restyle failed', pages, html };
+    const htmlUrl = opts.pageIds.length === 1
+      ? `/api/funnel-html?pageId=${encodeURIComponent(opts.pageIds[0])}&kind=swiped&variant=desktop&inert=1&v=${Date.now()}`
+      : '';
+    if (failed) return { ok: false, error: failed.swipeResult || 'Restyle failed', pages, htmlUrl };
     const summary = pages.map((p) => p.swipeResult).filter(Boolean).join(' · ')
       || 'Internal restyle completed';
-    return { ok: true, html, summary, pages };
+    return { ok: true, htmlUrl, summary, pages };
   } catch (e) {
     return { ok: false, error: (e as Error).message };
   }
