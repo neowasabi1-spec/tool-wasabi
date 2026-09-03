@@ -70,7 +70,6 @@ import * as XLSX from 'xlsx';
 import VisualHtmlEditor from '@/components/VisualHtmlEditor';
 import { bakeDynamicComments } from '@/lib/bake-dynamic-comments';
 import { saveHtmlBlob } from '@/lib/html-blob-store';
-import { runChimeraInternalSwipe, loadSwipedHtml } from '@/lib/chimera-restyle-client';
 import {
   buildTranslateContext,
   type ExtractedText,
@@ -3732,9 +3731,10 @@ export default function FrontEndFunnel() {
     const ok = await confirmDialog({
       title: `Swipe All — ${eligible.length} pages`,
       message:
-        `Clone/Swipe rewrite (same text engine as Rewrite), then new palette ` +
-        `and every photo (GPT Image 2). Same layout. Several minutes per page.`,
-      confirmText: 'Start restyle',
+        `They will be rewritten in sequence with Clone/Swipe (brief + market research), ` +
+        `same as Rewrite. Estimated time: ${Math.max(1, Math.round(eligible.length * 1.2))}-` +
+        `${Math.max(2, Math.round(eligible.length * 2.5))} minutes.`,
+      confirmText: 'Swipe All',
     });
     if (!ok) return;
 
@@ -3797,7 +3797,7 @@ export default function FrontEndFunnel() {
       const result = await handleCloneRef.current?.({ silent: true });
       if (result?.ok) {
         setSwipeAllJob((s) => (s ? { ...s, completed: s.completed + 1 } : s));
-        pushSwipeLog('success', `\u2713 Clone/Swipe + media done`, pageName);
+        pushSwipeLog('success', `\u2713 Clone/Swipe rewrite done`, pageName);
       } else {
         const msg = result?.error || 'Rewrite failed';
         setSwipeAllJob((s) =>
@@ -4892,7 +4892,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
         }
 
         setCloneProgress(null);
-        let rewrittenHtml = rewriteData.html;
+        const rewrittenHtml = rewriteData.html;
 
         await updateFunnelPage(pageId, {
           swipeStatus: 'completed',
@@ -4911,45 +4911,6 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
           },
         });
         void saveHtmlBlob(pageId, 'swipedData', rewrittenHtml);
-
-        if (currentPage?.productId) {
-          setCloneProgress({
-            phase: 'processing',
-            totalTexts: rewriteData.totalTexts || 0,
-            processedTexts: rewriteData.replacements || 0,
-            message: 'Clone/Swipe done — palette + photos/gifs/videos…',
-          });
-          pushSwipeLog('info', 'Clone/Swipe copy saved — restyling media…', pageName);
-          const restyled = await runChimeraInternalSwipe({
-            pageIds: [pageId],
-            projectId: currentPage.productId,
-            skipTexts: true,
-            onProgress: (st) => {
-              setCloneProgress({
-                phase: 'processing',
-                totalTexts: rewriteData.totalTexts || 0,
-                processedTexts: rewriteData.replacements || 0,
-                message: st.swipeResult || 'Restyling media…',
-              });
-              updateFunnelPage(pageId, {
-                swipeStatus: (st.swipeStatus as 'in_progress' | 'completed' | 'failed') || 'in_progress',
-                swipeResult: st.swipeResult,
-              });
-              pushSwipeLog(
-                st.swipeStatus === 'failed' ? 'error' : st.swipeStatus === 'completed' ? 'success' : 'progress',
-                st.swipeResult || st.swipeStatus,
-                pageName,
-              );
-            },
-          });
-          if (!restyled.ok) {
-            pushSwipeLog('error', restyled.error || 'Media restyle failed — copy is saved', pageName);
-          } else {
-            const latest = await loadSwipedHtml(pageId);
-            if (latest) rewrittenHtml = latest;
-          }
-          setCloneProgress(null);
-        }
 
         if (!silent) {
           setPreviewTab('preview');
@@ -8805,7 +8766,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                       </div>
                     ) : (
                       <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
-                        Clone/Swipe rewrites every text (brief + market research). Then palette, photos, GIFs and video posters — each image unique.
+                        Same layout. All visible copy is rewritten for your product using the project brief and market research.
                       </div>
                     );
                   })()}
