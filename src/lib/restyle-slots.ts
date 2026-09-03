@@ -1,3 +1,5 @@
+import { inferLandingSection, isDecorativeMedia } from '@/lib/landing-media';
+
 /** Collect replaceable media on a landing page. Does not touch text. */
 
 export type RestyleKind = 'image' | 'gif' | 'video';
@@ -84,16 +86,11 @@ function nearby(html: string, index: number, tagLen: number): string {
     .slice(0, 220);
 }
 
-function guessSection(text: string): string {
-  const t = text.toLowerCase();
-  if (/hero|headline|above the fold/.test(t)) return 'hero';
-  if (/testimonial|review|customer/.test(t)) return 'testimonials';
-  if (/ingredient|formula|what's inside/.test(t)) return 'ingredients';
-  if (/guarantee|refund/.test(t)) return 'guarantee';
-  if (/faq|question/.test(t)) return 'faq';
-  if (/before|after|compar/.test(t)) return 'comparison';
-  if (/pack|bottle|jar|product/.test(t)) return 'product';
-  return 'lifestyle';
+function slotSection(text: string, index: number, htmlLen: number, kind?: RestyleKind): string {
+  return inferLandingSection(text, {
+    positionRatio: htmlLen ? index / htmlLen : 0,
+    kind: kind === 'gif' ? 'image' : kind,
+  });
 }
 
 function pickImgSrc(tag: string): string {
@@ -127,7 +124,7 @@ export function collectRestyleSlots(html: string, max = 20, _pageUrl = ''): Rest
   ) => {
     const src = decodeEntities(String(raw || '').trim());
     if (!src || isPlaceholder(src) || seen.has(src)) return;
-    if (JUNK.test(src) || JUNK.test(alt)) return;
+    if (JUNK.test(src) || JUNK.test(alt) || isDecorativeMedia(src, alt)) return;
     const resolved = classifySrc(src);
     const useKind = kind || resolved;
     if (!useKind) return;
@@ -154,13 +151,18 @@ export function collectRestyleSlots(html: string, max = 20, _pageUrl = ''): Rest
     const alt = tag.match(/\balt\s*=\s*["']([^"']*)["']/i)?.[1] || '';
     const w = Number.parseInt(tag.match(/\bwidth\s*=\s*["']?(\d+)/i)?.[1] || '0', 10);
     const h = Number.parseInt(tag.match(/\bheight\s*=\s*["']?(\d+)/i)?.[1] || '0', 10);
-    if (src && out.length < max) {
+    const cls = tag.match(/\bclass\s*=\s*["']([^"']+)["']/i)?.[1] || '';
+    if (w > 0 && h > 0 && w < 72 && h < 72) {
+      imgIndex++;
+      continue;
+    }
+    if (src && out.length < max && !isDecorativeMedia(src, alt, cls, tag.slice(0, 200))) {
       const ctx = nearby(html, m.index, tag.length);
       add(
         src,
         /\.gif(\?|#|$)/i.test(src) ? 'gif' : 'image',
         alt || ctx.slice(0, 80),
-        guessSection(`${alt} ${ctx}`),
+        slotSection(`${alt} ${cls} ${ctx}`, m.index, html.length, /\.gif(\?|#|$)/i.test(src) ? 'gif' : 'image'),
         w,
         h,
         { tag: 'img', index: imgIndex },
@@ -192,29 +194,15 @@ export function collectRestyleSlots(html: string, max = 20, _pageUrl = ''): Rest
   const bgRe = /background(?:-image)?\s*:\s*url\(\s*['"]?([^'")]+)['"]?\s*\)/gi;
   let bm: RegExpExecArray | null;
   while ((bm = bgRe.exec(html)) !== null && out.length < max) {
-    add(bm[1], classifySrc(bm[1]), 'background', 'hero', 0, 0);
-  }
-
-  const metaRe = /<meta\b[^>]*(?:property|name)\s*=\s*["'](?:og:image|twitter:image)["'][^>]*>/gi;
-  while ((m = metaRe.exec(html)) !== null && out.length < max) {
-    const content = m[0].match(/\bcontent\s*=\s*["']([^"']+)["']/i)?.[1] || '';
-    add(content, 'image', 'og:image', 'hero', 0, 0);
-  }
-
-  const scriptRe = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
-  let sm: RegExpExecArray | null;
-  while ((sm = scriptRe.exec(html)) !== null && out.length < max) {
-    const attrs = sm[1] || '';
-    if (/data-swipe-replacer|data-restyle-media|data-chimera/i.test(attrs)) continue;
-    const body = sm[2] || '';
-    const urlRe = /https?:\/\/[^\s"'\\<>]{12,400}/gi;
-    let um: RegExpExecArray | null;
-    while ((um = urlRe.exec(body)) !== null && out.length < max) {
-      const raw = um[0].replace(/\\+\//g, '/').replace(/[,;)}\]]+$/, '');
-      const kind = classifySrc(raw);
-      if (!kind) continue;
-      add(raw, kind, 'embedded', guessSection(nearby(html, sm.index, 80)), 0, 0);
-    }
+    if (isDecorativeMedia(bm[1])) continue;
+    add(
+      bm[1],
+      classifySrc(bm[1]),
+      'background',
+      slotSection('hero banner background', bm.index, html.length, 'image'),
+      0,
+      0,
+    );
   }
 
   return out;

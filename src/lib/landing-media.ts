@@ -97,6 +97,14 @@ export function hostOfUrl(url: string): string {
 
 const JUNK_LANDING_HOSTS = /^(google\.com|google\.[a-z.]+|facebook\.com|fb\.com|instagram\.com|tiktok\.com|youtube\.com|youtu\.be|x\.com|twitter\.com|bing\.com)$/i;
 
+/** Icons, stars, payment marks — not product photos. */
+export const DECORATIVE_MEDIA =
+  /logo|icon|favicon|sprite|pixel|1x1|tracking|analytics|badge|seal|award|star[s]?|rating|payment|visa|mastercard|amex|paypal|klarna|apple-?pay|g-?pay|emoji|loader|spinner|spacer|blank\.|placeholder|trustpilot|cookie|checkmark|greentick|arrow|play-btn|close-btn|hamburger|social|whatsapp|pinterest/i;
+
+export function isDecorativeMedia(...parts: Array<string | undefined | null>): boolean {
+  return parts.some((p) => !!p && DECORATIVE_MEDIA.test(p));
+}
+
 export function isJunkLandingHost(url: string): boolean {
   const host = hostOfUrl(url);
   return !host || JUNK_LANDING_HOSTS.test(host);
@@ -199,19 +207,31 @@ export function sectionFromNearbyHtml(
   return inferLandingSection(`${ids} ${headings} ${alt} ${text}`, { positionRatio: ratio, kind: opts?.kind });
 }
 
-/** Pair target slots with source media: same section first, then related, then leftovers. */
-export function matchLandingMediaToSlots<S extends { section: LandingSection }>(
+const CONTENT_SECTIONS: LandingSection[] = [
+  'hero', 'product', 'lifestyle', 'mechanism', 'benefits', 'offer', 'comparison',
+];
+
+function isContentSection(s: LandingSection): boolean {
+  return CONTENT_SECTIONS.includes(s) || s === 'other';
+}
+
+/** Same role as on the offer landing: hero→hero, product→product, in landing order. */
+export function matchLandingMediaToSlots<S extends { section: LandingSection; src?: string; alt?: string }>(
   slots: S[],
   media: LandingMediaItem[],
   used: Set<string>,
 ): Array<{ slot: S; item: LandingMediaItem | null }> {
+  const pool = sortLandingMediaAsOnPage(
+    media.filter((m) => !used.has(String(m.id)) && !isDecorativeMedia(m.sourceUrl, m.name, m.storedUrl)),
+  );
   const take = (pred: (m: LandingMediaItem) => boolean): LandingMediaItem | null => {
-    const found = media.find((m) => !used.has(String(m.id)) && pred(m));
+    const found = pool.find((m) => !used.has(String(m.id)) && pred(m));
     if (!found) return null;
     used.add(String(found.id));
     return found;
   };
   const out: Array<{ slot: S; item: LandingMediaItem | null }> = slots.map((slot) => {
+    if (isDecorativeMedia(slot.src, slot.alt)) return { slot, item: null };
     const exact =
       slot.section !== 'other'
         ? take((m) => m.section === slot.section && m.section !== 'other')
@@ -220,12 +240,17 @@ export function matchLandingMediaToSlots<S extends { section: LandingSection }>(
   });
   for (const row of out) {
     if (row.item) continue;
+    if (isDecorativeMedia(row.slot.src, row.slot.alt)) continue;
     const related = RELATED_SECTIONS[row.slot.section] || [];
     row.item = take((m) => related.includes(m.section));
   }
+  // Only leftover CONTENT slots get leftover content photos — never dump
+  // a testimonial into the hero or a packshot onto a star rating.
   for (const row of out) {
     if (row.item) continue;
-    row.item = take(() => true);
+    if (!isContentSection(row.slot.section)) continue;
+    if (isDecorativeMedia(row.slot.src, row.slot.alt)) continue;
+    row.item = take((m) => isContentSection(m.section));
   }
   return out;
 }
@@ -318,8 +343,7 @@ const MAX_BYTES: Record<LandingMediaKind, number> = {
   video: 22_000_000,
 };
 
-const JUNK_RE =
-  /logo|icon|favicon|sprite|pixel|1x1|tracking|analytics|doubleclick|facebook\.com\/tr|google-analytics|hotjar|badge|payment|visa|mastercard|amex|paypal|klarna|apple-?pay|g-?pay|emoji|loader|spinner|spacer|blank\.|placeholder|trustpilot|cookie/i;
+const JUNK_RE = DECORATIVE_MEDIA;
 
 function absolutize(src: string, pageUrl: string): string {
   const s = String(src || '').trim();

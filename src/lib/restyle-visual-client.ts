@@ -9,7 +9,7 @@ import {
 } from '@/lib/restyle-slots';
 import {
   isLandingSection,
-  matchLandingMediaInOrder,
+  matchLandingMediaToSlots,
   pickOfferLandingMedia,
   type LandingMediaItem,
   type LandingSection,
@@ -112,7 +112,7 @@ export async function runVisualRestyle(opts: {
   const paints: PaintedMedia[] = [];
   let replaced = 0;
 
-  for (const { slot, item } of matchLandingMediaInOrder(imgSlots, stills, used)) {
+  for (const { slot, item } of matchLandingMediaToSlots(imgSlots, stills, used)) {
     if (!item?.storedUrl) continue;
     const url = pinStoredUrl(item.storedUrl);
     if (typeof slot.domIndex === 'number') {
@@ -121,7 +121,7 @@ export async function runVisualRestyle(opts: {
     html = replaceMediaUrl(html, slot.src, url, opts.pageUrl);
     replaced++;
   }
-  for (const { slot, item } of matchLandingMediaInOrder(videoSlots, videos, used)) {
+  for (const { slot, item } of matchLandingMediaToSlots(videoSlots, videos, used)) {
     if (!item?.storedUrl) continue;
     const url = pinStoredUrl(item.storedUrl);
     if (typeof slot.domIndex === 'number') {

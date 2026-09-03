@@ -4,8 +4,8 @@ import {
   extractLandingMediaForProject,
   listLandingMedia,
   pickOfferLandingMedia,
-  matchLandingMediaInOrder,
   matchLandingMediaToSlots,
+  isLandingSection,
   sectionFromNearbyHtml,
   type LandingMediaItem,
   type LandingSection,
@@ -1333,13 +1333,19 @@ function applyAffiliateMedia(
   pageUrl = '',
 ): { html: string; placed: number; videos: number } {
   let out = html;
+  const asSection = (raw: string): LandingSection =>
+    isLandingSection(raw) ? raw : 'other';
   const slots = collectRestyleSlots(out, 24, pageUrl);
-  const imgSlots = slots.filter((s) => s.kind !== 'video');
-  const videoSlots = slots.filter((s) => s.kind === 'video');
+  const imgSlots = slots
+    .filter((s) => s.kind !== 'video')
+    .map((s) => ({ ...s, section: asSection(s.section) }));
+  const videoSlots = slots
+    .filter((s) => s.kind === 'video')
+    .map((s) => ({ ...s, section: asSection(s.section || 'video') }));
   const paints: PaintedMedia[] = [];
   let placed = 0;
   let vids = 0;
-  for (const { slot, item } of matchLandingMediaInOrder(imgSlots, stills, used)) {
+  for (const { slot, item } of matchLandingMediaToSlots(imgSlots, stills, used)) {
     if (!item?.storedUrl) continue;
     if (typeof slot.domIndex === 'number') {
       paints.push({ tag: slot.domTag === 'video' ? 'video' : 'img', index: slot.domIndex, url: item.storedUrl });
@@ -1347,7 +1353,7 @@ function applyAffiliateMedia(
     out = replaceMediaUrl(out, slot.src, item.storedUrl, pageUrl);
     placed++;
   }
-  for (const { slot, item } of matchLandingMediaInOrder(videoSlots, videos, used)) {
+  for (const { slot, item } of matchLandingMediaToSlots(videoSlots, videos, used)) {
     if (!item?.storedUrl) continue;
     if (typeof slot.domIndex === 'number') {
       paints.push({ tag: 'video', index: slot.domIndex, url: item.storedUrl });
