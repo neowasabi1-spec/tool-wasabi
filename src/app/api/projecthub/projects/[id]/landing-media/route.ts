@@ -65,6 +65,7 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
     const sectionRaw = String(fd.get('section') || 'other');
     const section = isLandingSection(sectionRaw) ? sectionRaw : 'other';
     const buf = Buffer.from(await file.arrayBuffer());
+    const posRaw = Number(fd.get('position'));
     const item = await ingestLandingMediaBytes(supabaseAdmin, {
       projectId: id,
       buf,
@@ -72,6 +73,7 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
       sourceUrl: sourceUrl || file.name,
       kind,
       section,
+      position: Number.isFinite(posRaw) ? posRaw : undefined,
       ownerUserId: ctx.userId,
     });
     if (!item) return NextResponse.json({ error: 'Could not store file' }, { status: 500 });

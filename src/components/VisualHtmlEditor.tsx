@@ -1471,11 +1471,40 @@ export const REVEAL_VISIBILITY_CSS = `
  * about:srcdoc / dominio dell'editor → 404 → immagine rotta che collassa.
  * Estratto da prepareEditorHtml così può essere riusato dalla Preview mode.
  */
+const APP_API_PATH = /^\/api\/(projecthub|funnel-html)\b/i;
+
+function isAppApiPath(val: string): boolean {
+  const t = String(val || '').trim();
+  if (APP_API_PATH.test(t)) return true;
+  try {
+    return APP_API_PATH.test(new URL(t).pathname);
+  } catch {
+    return false;
+  }
+}
+
 export function absolutizeClonedUrls(html: string, sourceUrl?: string): string {
   let clean = html;
-  if (!sourceUrl) return clean;
+  if (!sourceUrl) {
+    if (typeof window === 'undefined') return clean;
+    return clean.replace(
+      /(["'(=])(\/api\/(?:projecthub|funnel-html)[^"'\s)]*)/gi,
+      (_full, pre, path) => `${pre}${window.location.origin}${path}`,
+    );
+  }
   try {
     const sourceOrigin = new URL(sourceUrl).origin;
+    const editorOrigin = typeof window !== 'undefined' ? window.location.origin : '';
+    const pinAppUrl = (url: string): string => {
+      const t = String(url || '').trim();
+      if (!t || !editorOrigin) return t;
+      if (APP_API_PATH.test(t)) return `${editorOrigin}${t}`;
+      try {
+        const u = new URL(t);
+        if (APP_API_PATH.test(u.pathname)) return `${editorOrigin}${u.pathname}${u.search}${u.hash}`;
+      } catch { /* keep */ }
+      return t;
+    };
     const baseHrefVal = sourceOrigin + '/';
     const baseMatch = clean.match(/<base\b[^>]*?\bhref\s*=\s*(["'])([^"']*)\1/i);
     if (!baseMatch) {
@@ -1506,13 +1535,15 @@ export function absolutizeClonedUrls(html: string, sourceUrl?: string): string {
     // rewrite all'origin sorgente. Capita quando la pipeline di clone
     // più vecchia non assolutizzava le URL relative e il save successivo
     // ha "congelato" la risoluzione contro window.location.origin.
-    if (typeof window !== 'undefined') {
-      const editorOrigin = window.location.origin;
-      if (editorOrigin && editorOrigin !== sourceOrigin) {
-        const escaped = editorOrigin.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const reAttr = new RegExp(`(["'(])${escaped}(?=\\/|["'\\s)])`, 'gi');
-        clean = clean.replace(reAttr, `$1${sourceOrigin}`);
-      }
+    if (editorOrigin && editorOrigin !== sourceOrigin) {
+      const escaped = editorOrigin.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const reAttr = new RegExp(`(["'(])${escaped}(\\/(?!api\\/(?:projecthub|funnel-html))[^"']*)`, 'gi');
+      clean = clean.replace(reAttr, (_full, q, path) => `${q}${sourceOrigin}${path}`);
+      const escapedSrc = sourceOrigin.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      clean = clean.replace(
+        new RegExp(`${escapedSrc}(\\/api\\/(?:projecthub|funnel-html)[^"'\\s)]*)`, 'gi'),
+        `${editorOrigin}$1`,
+      );
     }
 
     // ASSOLUTIZZA URL ROOT-RELATIVE (es. src="/brain_waves.png",
@@ -1536,6 +1567,7 @@ export function absolutizeClonedUrls(html: string, sourceUrl?: string): string {
       'gi',
     );
     clean = clean.replace(singleRe, (_full, attr, q, val) => {
+      if (isAppApiPath(val)) return ` ${attr}=${q}${pinAppUrl(val)}${q}`;
       return ` ${attr}=${q}${sourceOrigin}${val}${q}`;
     });
 
@@ -1552,8 +1584,11 @@ export function absolutizeClonedUrls(html: string, sourceUrl?: string): string {
         const url = parts[0];
         const rest = parts.slice(1);
         if (url.startsWith('/') && !url.startsWith('//')) {
+          if (isAppApiPath(url)) return [pinAppUrl(url), ...rest].join(' ');
           return [sourceOrigin + url, ...rest].join(' ');
         }
+        const pinned = pinAppUrl(url);
+        if (pinned !== url) return [pinned, ...rest].join(' ');
         return part;
       }).join(', ');
       return ` ${attr}=${q}${fixed}${q}`;
@@ -1563,8 +1598,15 @@ export function absolutizeClonedUrls(html: string, sourceUrl?: string): string {
     // Catch url(/foo.png), url('/foo.png'), url("/foo.png")
     const urlInStyleRe = /url\(\s*(['"]?)(\/[^)'"\s][^)'"]*)\1\s*\)/g;
     clean = clean.replace(urlInStyleRe, (_full, q, val) => {
+      if (isAppApiPath(val)) return `url(${q}${pinAppUrl(val)}${q})`;
       return `url(${q}${sourceOrigin}${val}${q})`;
     });
+    if (editorOrigin) {
+      clean = clean.replace(
+        /(["'(=])(\/api\/(?:projecthub|funnel-html)[^"'\s)]*)/gi,
+        (_full, pre, path) => `${pre}${editorOrigin}${path}`,
+      );
+    }
   } catch { /* sourceUrl invalido — skip */ }
   return clean;
 }
@@ -1729,6 +1771,11 @@ function prepareEditorHtml(html: string, sourceUrl?: string): string {
       // il src nuovo con quello vecchio → l'immagine torna a prima.
       const existingSrc = getAttr(a, 'src');
       const srcIsReal = !!existingSrc && !isPlaceholderSrc(existingSrc);
+      if (existingSrc && /\/api\/projecthub\/file-proxy/i.test(existingSrc)) {
+        for (const n of [...LAZY_SRC_ATTRS, ...LAZY_SRCSET_ATTRS, 'srcset']) {
+          a = a.replace(new RegExp(`\\s${n}\\s*=\\s*(?:"[^"]*"|'[^']*'|[^\\s>]+)`, 'i'), '');
+        }
+      }
       const lazySrc = pickAttr(a, LAZY_SRC_ATTRS);
       if (lazySrc && !srcIsReal) a = setAttr(a, 'src', lazySrc);
       const lazySrcset = pickAttr(a, LAZY_SRCSET_ATTRS);

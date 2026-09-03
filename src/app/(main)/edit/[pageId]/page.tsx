@@ -27,9 +27,14 @@ function EditSavedPageInner() {
     let cancelled = false;
     (async () => {
       try {
-        const res = await authFetch(
-          `/api/funnel-html?pageId=${encodeURIComponent(pageId)}&kind=cloned&variant=desktop&v=${Date.now()}`,
+        const swiped = await authFetch(
+          `/api/funnel-html?pageId=${encodeURIComponent(pageId)}&kind=swiped&variant=desktop&v=${Date.now()}`,
         );
+        const res = swiped.ok
+          ? swiped
+          : await authFetch(
+              `/api/funnel-html?pageId=${encodeURIComponent(pageId)}&kind=cloned&variant=desktop&v=${Date.now()}`,
+            );
         if (res.status === 404) {
           if (!cancelled) setError('No saved HTML found for this page.');
           return;

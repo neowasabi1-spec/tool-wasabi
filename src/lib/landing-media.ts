@@ -52,6 +52,8 @@ export type LandingMediaItem = {
   storedUrl: string;
   filePath: string;
   name: string;
+  /** Character offset on the source landing HTML — first photo = first slot. */
+  position?: number;
 };
 
 const SECTION_RULES: Array<{ section: LandingSection; re: RegExp }> = [
@@ -145,7 +147,7 @@ export function pickOfferLandingMedia<T extends { storedUrl: string; sourceUrl: 
   });
   const best = Math.max(...scored.map((s) => s.score));
   const picked = scored.filter((s) => s.score >= Math.max(4, best - 3)).map((s) => s.m);
-  return picked.length >= 3 ? picked : downloaded;
+  return sortLandingMediaAsOnPage(picked.length >= 3 ? picked : downloaded);
 }
 
 export function isLandingSection(v: string): v is LandingSection {
@@ -210,7 +212,10 @@ export function matchLandingMediaToSlots<S extends { section: LandingSection }>(
     return found;
   };
   const out: Array<{ slot: S; item: LandingMediaItem | null }> = slots.map((slot) => {
-    const exact = take((m) => m.section === slot.section);
+    const exact =
+      slot.section !== 'other'
+        ? take((m) => m.section === slot.section && m.section !== 'other')
+        : null;
     return { slot, item: exact };
   });
   for (const row of out) {
@@ -223,6 +228,52 @@ export function matchLandingMediaToSlots<S extends { section: LandingSection }>(
     row.item = take(() => true);
   }
   return out;
+}
+
+function landingMediaOrderKey(
+  m: { sourceUrl: string; name?: string; position?: number },
+  html = '',
+): number {
+  if (typeof m.position === 'number' && Number.isFinite(m.position)) return m.position;
+  if (!html) return 1e15;
+  if (m.sourceUrl) {
+    const exact = html.indexOf(m.sourceUrl);
+    if (exact >= 0) return exact;
+    const path = m.sourceUrl.split('?')[0];
+    if (path.length > 12) {
+      const atPath = html.indexOf(path);
+      if (atPath >= 0) return atPath;
+    }
+  }
+  const file = (m.name || m.sourceUrl.split('/').pop()?.split('?')[0] || '').trim();
+  if (file.length > 4) {
+    const atFile = html.indexOf(file);
+    if (atFile >= 0) return atFile;
+  }
+  return 1e15;
+}
+
+/** Keep library order identical to the offer landing, not download time. */
+export function sortLandingMediaAsOnPage<T extends { sourceUrl: string; name?: string; position?: number }>(
+  items: T[],
+  html = '',
+): T[] {
+  if (items.length < 2) return items;
+  return [...items].sort((a, b) => landingMediaOrderKey(a, html) - landingMediaOrderKey(b, html));
+}
+
+/** Same order as the landing: 1st photo → 1st slot, 2nd → 2nd. No section scramble. */
+export function matchLandingMediaInOrder<S>(
+  slots: S[],
+  media: LandingMediaItem[],
+  used: Set<string>,
+): Array<{ slot: S; item: LandingMediaItem | null }> {
+  const unused = sortLandingMediaAsOnPage(media.filter((m) => !used.has(String(m.id))));
+  return slots.map((slot, i) => {
+    const item = unused[i] || null;
+    if (item) used.add(String(item.id));
+    return { slot, item };
+  });
 }
 
 type Sb = {
@@ -361,16 +412,35 @@ export function collectLandingAssetUrls(
   return out.sort((a, b) => a.position - b.position).slice(0, MAX_PER_PAGE);
 }
 
-function encodeName(kind: LandingMediaKind, section: LandingSection, sourceUrl: string): string {
-  return `${kind}|${section}|${sourceUrl}`.slice(0, 500);
+function encodeName(
+  kind: LandingMediaKind,
+  section: LandingSection,
+  sourceUrl: string,
+  position?: number,
+): string {
+  const pos = typeof position === 'number' && Number.isFinite(position) ? Math.max(0, Math.round(position)) : '';
+  return `${kind}|${section}|${pos === '' ? '' : `${pos}|`}${sourceUrl}`.slice(0, 500);
 }
 
 function isKind(v: string): v is LandingMediaKind {
   return v === 'image' || v === 'gif' || v === 'video';
 }
 
-function decodeName(name: string): { kind: LandingMediaKind; section: LandingSection; sourceUrl: string } {
+function decodeName(name: string): {
+  kind: LandingMediaKind;
+  section: LandingSection;
+  sourceUrl: string;
+  position?: number;
+} {
   const parts = String(name || '').split('|');
+  if (parts.length >= 4 && isKind(parts[0]) && isLandingSection(parts[1]) && /^\d+$/.test(parts[2])) {
+    return {
+      kind: parts[0],
+      section: parts[1],
+      position: Number(parts[2]),
+      sourceUrl: parts.slice(3).join('|'),
+    };
+  }
   if (parts.length >= 3 && isKind(parts[0]) && isLandingSection(parts[1])) {
     return { kind: parts[0], section: parts[1], sourceUrl: parts.slice(2).join('|') };
   }
@@ -397,7 +467,7 @@ export async function listLandingMedia(sb: Sb, projectId: string): Promise<Landi
     .eq('file_type', LANDING_MEDIA_TYPE)
     .order('created_at', { ascending: true });
   if (error || !data) return [];
-  return (data as Array<{ id: number | string; file_path: string; original_name: string }>)
+  const rows = (data as Array<{ id: number | string; file_path: string; original_name: string }>)
     .map((row) => {
       const meta = decodeName(row.original_name || '');
       return {
@@ -408,8 +478,10 @@ export async function listLandingMedia(sb: Sb, projectId: string): Promise<Landi
         storedUrl: displayUrl(row.file_path),
         filePath: row.file_path,
         name: meta.sourceUrl.split('/').pop()?.split('?')[0] || meta.kind,
+        position: meta.position,
       };
-    })
+    });
+  return sortLandingMediaAsOnPage(rows);
 }
 
 /** Only rows that have a real downloaded file (not a leftover source URL). */
@@ -637,7 +709,7 @@ export async function extractLandingMediaFromHtml(
       if (a.section !== 'other' && prev.section === 'other') {
         await sb
           .from('project_files')
-          .update({ original_name: encodeName(a.kind, a.section, a.url) })
+          .update({ original_name: encodeName(a.kind, a.section, a.url, a.position) })
           .eq('id', prev.id);
         prev.section = a.section;
       }
@@ -667,13 +739,13 @@ export async function extractLandingMediaFromHtml(
       project_id: args.projectId,
       file_type: LANDING_MEDIA_TYPE,
       file_path: key,
-      original_name: encodeName(a.kind, a.section, a.url),
+      original_name: encodeName(a.kind, a.section, a.url, a.position),
     };
     if (ownerUserId) row.owner_user_id = ownerUserId;
     if (prev) {
       const { error } = await sb.from('project_files').update({
         file_path: key,
-        original_name: encodeName(a.kind, a.section, a.url),
+        original_name: encodeName(a.kind, a.section, a.url, a.position),
       }).eq('id', prev.id);
       if (error) {
         await sb.storage.from(BUCKET).remove([key]).catch(() => undefined);
@@ -717,6 +789,7 @@ export async function ingestLandingMediaBytes(
     sourceUrl: string;
     kind: LandingMediaKind;
     section: LandingSection;
+    position?: number;
     ownerUserId?: string | null;
   },
 ): Promise<LandingMediaItem | null> {
@@ -736,7 +809,7 @@ export async function ingestLandingMediaBytes(
     console.warn('[landing-media] ingest upload failed:', upErr.message);
     return null;
   }
-  const original_name = encodeName(args.kind, args.section, args.sourceUrl);
+  const original_name = encodeName(args.kind, args.section, args.sourceUrl, args.position);
   if (prev) {
     const { error } = await sb.from('project_files').update({ file_path: key, original_name }).eq('id', prev.id);
     if (error) {

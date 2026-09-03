@@ -4,6 +4,7 @@ import {
   extractLandingMediaForProject,
   listLandingMedia,
   pickOfferLandingMedia,
+  matchLandingMediaInOrder,
   matchLandingMediaToSlots,
   sectionFromNearbyHtml,
   type LandingMediaItem,
@@ -1338,7 +1339,7 @@ function applyAffiliateMedia(
   const paints: PaintedMedia[] = [];
   let placed = 0;
   let vids = 0;
-  for (const { slot, item } of matchLandingMediaToSlots(imgSlots, stills, used)) {
+  for (const { slot, item } of matchLandingMediaInOrder(imgSlots, stills, used)) {
     if (!item?.storedUrl) continue;
     if (typeof slot.domIndex === 'number') {
       paints.push({ tag: slot.domTag === 'video' ? 'video' : 'img', index: slot.domIndex, url: item.storedUrl });
@@ -1346,7 +1347,7 @@ function applyAffiliateMedia(
     out = replaceMediaUrl(out, slot.src, item.storedUrl, pageUrl);
     placed++;
   }
-  for (const { slot, item } of matchLandingMediaToSlots(videoSlots, videos, used)) {
+  for (const { slot, item } of matchLandingMediaInOrder(videoSlots, videos, used)) {
     if (!item?.storedUrl) continue;
     if (typeof slot.domIndex === 'number') {
       paints.push({ tag: 'video', index: slot.domIndex, url: item.storedUrl });

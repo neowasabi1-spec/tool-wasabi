@@ -9,12 +9,18 @@ import {
 } from '@/lib/restyle-slots';
 import {
   isLandingSection,
-  matchLandingMediaToSlots,
+  matchLandingMediaInOrder,
   pickOfferLandingMedia,
   type LandingMediaItem,
   type LandingSection,
 } from '@/lib/landing-media';
 import { fillLandingLibrary, landingFillError } from '@/lib/landing-media-client';
+
+function pinStoredUrl(url: string): string {
+  const t = String(url || '').trim();
+  if (!t || /^https?:\/\//i.test(t) || typeof window === 'undefined') return t;
+  return t.startsWith('/') ? `${window.location.origin}${t}` : t;
+}
 
 async function loadLandingLibrary(projectId: string): Promise<LandingMediaItem[]> {
   const filled = await fillLandingLibrary(projectId);
@@ -106,20 +112,22 @@ export async function runVisualRestyle(opts: {
   const paints: PaintedMedia[] = [];
   let replaced = 0;
 
-  for (const { slot, item } of matchLandingMediaToSlots(imgSlots, stills, used)) {
+  for (const { slot, item } of matchLandingMediaInOrder(imgSlots, stills, used)) {
     if (!item?.storedUrl) continue;
+    const url = pinStoredUrl(item.storedUrl);
     if (typeof slot.domIndex === 'number') {
-      paints.push({ tag: slot.domTag === 'video' ? 'video' : 'img', index: slot.domIndex, url: item.storedUrl });
+      paints.push({ tag: slot.domTag === 'video' ? 'video' : 'img', index: slot.domIndex, url });
     }
-    html = replaceMediaUrl(html, slot.src, item.storedUrl, opts.pageUrl);
+    html = replaceMediaUrl(html, slot.src, url, opts.pageUrl);
     replaced++;
   }
-  for (const { slot, item } of matchLandingMediaToSlots(videoSlots, videos, used)) {
+  for (const { slot, item } of matchLandingMediaInOrder(videoSlots, videos, used)) {
     if (!item?.storedUrl) continue;
+    const url = pinStoredUrl(item.storedUrl);
     if (typeof slot.domIndex === 'number') {
-      paints.push({ tag: 'video', index: slot.domIndex, url: item.storedUrl });
+      paints.push({ tag: 'video', index: slot.domIndex, url });
     }
-    html = replaceMediaUrl(html, slot.src, item.storedUrl, opts.pageUrl);
+    html = replaceMediaUrl(html, slot.src, url, opts.pageUrl);
     replaced++;
   }
 

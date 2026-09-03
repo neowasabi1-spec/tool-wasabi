@@ -10,6 +10,7 @@
 import {
   collectLandingAssetUrls,
   isJunkLandingHost,
+  sortLandingMediaAsOnPage,
   type LandingMediaItem,
 } from '@/lib/landing-media';
 
@@ -38,6 +39,33 @@ async function listItems(projectId: string): Promise<LandingMediaItem[]> {
   const r = await fetch(`/api/projecthub/projects/${projectId}/landing-media`);
   if (!r.ok) return [];
   return asItems(await r.json().catch(() => []));
+}
+
+async function firstOfferLandingHtml(projectId: string): Promise<string> {
+  const lr = await fetch(`/api/projecthub/projects/${projectId}/landings`);
+  const landings = (lr.ok ? await lr.json().catch(() => []) : []) as LandingRow[];
+  if (!Array.isArray(landings)) return '';
+  for (const landing of landings.slice(0, 8)) {
+    if (isJunkLandingHost(landing.url || '')) continue;
+    if (!landing.html_url) continue;
+    const htmlRes = await fetch(landing.html_url);
+    if (!htmlRes.ok) continue;
+    const html = await htmlRes.text();
+    if (html.length > 30) return html;
+  }
+  return '';
+}
+
+async function orderAgainstFirstLanding(
+  projectId: string,
+  items: LandingMediaItem[],
+): Promise<LandingMediaItem[]> {
+  try {
+    const html = await firstOfferLandingHtml(projectId);
+    return sortLandingMediaAsOnPage(items, html);
+  } catch {
+    return sortLandingMediaAsOnPage(items);
+  }
 }
 
 const inflight = new Map<string, Promise<LandingFillResult>>();
@@ -69,7 +97,9 @@ async function fillLandingLibraryOnce(
 
   if (!opts?.force) {
     const existing = await listItems(projectId);
-    if (existing.length) return { ...empty, items: existing };
+    if (existing.length) {
+      return { ...empty, items: await orderAgainstFirstLanding(projectId, existing) };
+    }
   }
 
   const lr = await fetch(`/api/projecthub/projects/${projectId}/landings`);
@@ -100,7 +130,7 @@ async function fillLandingLibraryOnce(
     empty.downloadFailed += Number(data.downloadFailed || 0);
     empty.uploadFailed += Number(data.uploadFailed || 0);
     const next = asItems(data);
-    if (next.length) items = next;
+    if (next.length) items = sortLandingMediaAsOnPage(next, html);
   }
 
   if (items.length) return { ...empty, items };
@@ -125,6 +155,7 @@ async function fillLandingLibraryOnce(
         fd.append('sourceUrl', asset.url);
         fd.append('kind', asset.kind);
         fd.append('section', asset.section);
+        fd.append('position', String(asset.position));
         const put = await fetch(`/api/projecthub/projects/${projectId}/landing-media`, {
           method: 'PUT',
           body: fd,
@@ -133,7 +164,7 @@ async function fillLandingLibraryOnce(
         if (put.ok) {
           empty.saved += Number(data.saved || 1);
           const next = asItems(data);
-          if (next.length) items = next;
+          if (next.length) items = sortLandingMediaAsOnPage(next, html);
         }
       } catch {
         /* CORS or network — skip */
