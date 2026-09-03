@@ -9,13 +9,19 @@ import { inferPageType, isUpsellType, isDownsellType } from '@/lib/server/page-t
 import { canonPageUrl, dedupeStepsByUrl, stepSourceUrl } from '@/lib/archive-placement';
 import { extractLandingMediaFromHtml } from '@/lib/landing-media';
 
-async function saveLandingMedia(projectId: string | null, html: string, pageUrl: string) {
+async function saveLandingMedia(
+  projectId: string | null,
+  html: string,
+  pageUrl: string,
+  ownerUserId?: string | null,
+) {
   if (!projectId || !html) return;
   try {
     await extractLandingMediaFromHtml(supabaseAdmin, {
       projectId,
       html,
       pageUrl,
+      ownerUserId,
       limit: 16,
     });
   } catch (e) {
@@ -313,7 +319,7 @@ export async function POST(req: NextRequest) {
             ...(projectId ? { project_id: projectId } : {}),
           })
           .eq('id', existingId);
-        await saveLandingMedia(projectId, html, url);
+        await saveLandingMedia(projectId, html, url, userId);
         return NextResponse.json({
           success: true,
           funnelId: existingId,
@@ -351,7 +357,7 @@ export async function POST(req: NextRequest) {
         { status: 500 },
       );
     }
-    await saveLandingMedia(projectId, html, url);
+    await saveLandingMedia(projectId, html, url, userId);
     return NextResponse.json({
       success: true,
       funnelId: createdFolder.id,
@@ -468,7 +474,7 @@ export async function POST(req: NextRequest) {
 
   const editorUrl = `/edit/${pageId}?src=${encodeURIComponent(url)}&title=${encodeURIComponent(name)}`;
 
-  await saveLandingMedia(projectId, html, url);
+  await saveLandingMedia(projectId, html, url, userId);
   return NextResponse.json({
     success: true,
     pageId,

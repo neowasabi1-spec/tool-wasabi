@@ -13,20 +13,12 @@ import {
   type LandingMediaItem,
   type LandingSection,
 } from '@/lib/landing-media';
-
-type LandingMediaResponse = LandingMediaItem[] | { items?: LandingMediaItem[]; error?: string };
+import { fillLandingLibrary, landingFillError } from '@/lib/landing-media-client';
 
 async function loadLandingLibrary(projectId: string): Promise<LandingMediaItem[]> {
-  const get = await fetch(`/api/projecthub/projects/${projectId}/landing-media`);
-  const first = (await get.json().catch(() => [])) as LandingMediaResponse;
-  let items = Array.isArray(first) ? first : first.items || [];
-  if (items.length) return items;
-
-  const post = await fetch(`/api/projecthub/projects/${projectId}/landing-media`, { method: 'POST' });
-  const extracted = (await post.json().catch(() => ({}))) as LandingMediaResponse & { error?: string };
-  if (!post.ok) throw new Error(extracted.error || `Landing library HTTP ${post.status}`);
-  items = Array.isArray(extracted) ? extracted : extracted.items || [];
-  return items;
+  const filled = await fillLandingLibrary(projectId);
+  if (filled.items.length) return filled.items;
+  throw new Error(landingFillError(filled) || 'No photos in the project landing library');
 }
 
 function asSection(raw: string): LandingSection {

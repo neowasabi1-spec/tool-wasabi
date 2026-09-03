@@ -21,6 +21,7 @@ import { getUploadUrl } from "@/lib/projecthub-storage";
 import { getSupabaseBrowser } from "@/lib/supabase-browser";
 import { BUILD_LANGUAGES, LANGUAGE_OTHER } from "@/lib/video-languages";
 import { LANDING_SECTION_LABEL, type LandingSection } from "@/lib/landing-media";
+import { fillLandingLibrary, landingFillError } from "@/lib/landing-media-client";
 
 const BASE_URL = "";
 
@@ -2137,7 +2138,7 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
     try {
       const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/landings`);
       if (r.ok) setLandings(await r.json());
-      void fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/landing-media`);
+      void fillLandingLibrary(projectId);
     } finally { setLoading(false); }
   };
   useEffect(() => { load(); }, [projectId]);
@@ -3679,13 +3680,33 @@ function ImageLandingsView({ projectId }: { projectId: string }) {
   const [items, setItems] = useState<LandingMedia[]>([]);
   const [loading, setLoading] = useState(true);
   const [extracting, setExtracting] = useState(false);
+  const [emptyReason, setEmptyReason] = useState("");
 
-  const load = async () => {
+  const load = async (force = false) => {
     setLoading(true);
+    setEmptyReason("");
     try {
+      if (force) {
+        setExtracting(true);
+        const filled = await fillLandingLibrary(projectId);
+        setItems(filled.items as LandingMedia[]);
+        if (!filled.items.length) setEmptyReason(landingFillError(filled) || "");
+        return;
+      }
       const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/landing-media`);
-      if (r.ok) setItems(await r.json());
+      const listed = r.ok ? await r.json() : [];
+      if (Array.isArray(listed) && listed.length) {
+        setItems(listed);
+        return;
+      }
+      setExtracting(true);
+      const filled = await fillLandingLibrary(projectId);
+      setItems(filled.items as LandingMedia[]);
+      if (!filled.items.length) setEmptyReason(landingFillError(filled) || "");
+    } catch (e) {
+      setEmptyReason((e as Error).message || "Download failed");
     } finally {
+      setExtracting(false);
       setLoading(false);
     }
   };
@@ -3694,16 +3715,19 @@ function ImageLandingsView({ projectId }: { projectId: string }) {
   const extract = async () => {
     setExtracting(true);
     try {
-      const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/landing-media`, { method: "POST" });
-      const data = await r.json().catch(() => null);
-      if (!r.ok) throw new Error(data?.error || `HTTP ${r.status}`);
-      if (Array.isArray(data?.items)) setItems(data.items);
-      else await load();
-      toast({
-        title: data?.saved
-          ? `Downloaded ${data.saved} file${data.saved === 1 ? "" : "s"} from competitor landings`
-          : "No new media — landings already extracted or empty",
-      });
+      const filled = await fillLandingLibrary(projectId, { force: true });
+      setItems(filled.items as LandingMedia[]);
+      if (filled.items.length) {
+        toast({
+          title: filled.saved
+            ? `Downloaded ${filled.saved} file${filled.saved === 1 ? "" : "s"} from competitor landings`
+            : "Landing photos are already in the library",
+        });
+      } else {
+        const reason = landingFillError(filled) || "No photos downloaded";
+        setEmptyReason(reason);
+        toast({ title: reason, variant: "destructive" });
+      }
     } catch (e) {
       toast({ title: (e as Error).message || "Extract failed", variant: "destructive" });
     } finally {
@@ -3738,15 +3762,21 @@ function ImageLandingsView({ projectId }: { projectId: string }) {
         )}
       </div>
 
-      {loading ? (
-        <p className="text-sm text-muted-foreground py-12 text-center">Loading photos from saved landings…</p>
+      {(loading || extracting) && items.length === 0 ? (
+        <p className="text-sm text-muted-foreground py-12 text-center">
+          {extracting ? "Downloading photos from saved landings…" : "Loading photos from saved landings…"}
+        </p>
       ) : items.length === 0 ? (
         <div className="rounded-xl border border-dashed border-border py-16 text-center">
           <ImageIcon className="w-10 h-10 text-muted-foreground mx-auto mb-3" />
           <p className="text-sm font-semibold text-foreground mb-1">No landing media yet</p>
           <p className="text-sm text-muted-foreground max-w-md mx-auto">
-            Save competitor landings to this project — photos, GIFs and videos are stored here by themselves.
+            {emptyReason || "Save competitor landings to this project — photos, GIFs and videos are stored here by themselves."}
           </p>
+          <Button onClick={extract} disabled={extracting} variant="outline" className="mt-4 gap-2">
+            {extracting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+            {extracting ? "Downloading…" : "Retry download"}
+          </Button>
         </div>
       ) : (
         <div className="space-y-6">
@@ -3822,6 +3852,7 @@ export function CompetitorLibrarySection({ projectId }: { projectId: string }) {
   const [tab, setTab] = useState<Tab>("overview");
   const [selected, setSelected] = useState<CompetitorWithStats | null>(null);
   const [adsView, setAdsView] = useState<"by" | "all">("by");
+  useEffect(() => { void fillLandingLibrary(projectId); }, [projectId]);
 
   // If viewing a competitor detail, stay in ads view regardless
   if (selected) {
