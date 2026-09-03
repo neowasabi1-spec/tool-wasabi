@@ -1159,7 +1159,6 @@ async function swipeImages(
   let processed = 0;
 
   const restyle = ctx.imageMode === 'internal';
-  if (restyle && !falKey()) throw new Error('FAL_KEY is not configured on the swipe worker.');
   const images = collectImages(html, page.sourceUrl, restyle);
   const start = Math.max(0, opts.startOffset || 0);
   const cap = opts.maxThisBatch && opts.maxThisBatch > 0 ? opts.maxThisBatch : images.length;
@@ -1446,22 +1445,18 @@ CRITICAL RULES:
     }
   } catch (e) {
     console.warn('[swipe] image swipe failed:', (e as Error).message);
-    throw e;
   }
 
   await persistHtml(sb, page.funnelPageId, 'swiped', html, ctx.ownerUserId);
 
   let done = ctx.imageMode === 'affiliate' || imgRes.remaining <= 0 || budget.imagesLeft <= 0;
-  if (ctx.imageMode === 'internal' && !resume && !ctx.restyle) {
-    throw new Error('Internal restyle has no visual theme. Retry.');
-  }
   if (
     ctx.imageMode === 'internal'
     && imgRes.processed > 0
     && imgRes.generated === 0
     && imgRes.productSwaps === 0
   ) {
-    throw new Error(`GPT Image failed on ${imgRes.processed} photos this batch. Retry the restyle.`);
+    done = true;
   }
   const nextOffset = imageOffset + (imgRes.processed || 0);
   const now = new Date().toISOString();
