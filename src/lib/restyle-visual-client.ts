@@ -4,6 +4,7 @@ import {
   collectRestyleSlots,
   fallbackPalette,
   injectRestyleMediaScript,
+  libraryFileLabel,
   sealPaintedHtml,
   type PaintedMedia,
 } from '@/lib/restyle-slots';
@@ -11,8 +12,14 @@ import {
   pickOfferLandingMedia,
   type LandingMediaItem,
 } from '@/lib/landing-media';
-import { libraryFileLabel, type PlaceAssignment } from '@/lib/restyle-place';
 import { fillLandingLibrary, landingFillError } from '@/lib/landing-media-client';
+
+type PlaceAssignment = {
+  slotId: number;
+  mediaId: string | null;
+  generate: boolean;
+  prompt: string;
+};
 
 function pinStoredUrl(url: string): string {
   const t = String(url || '').trim();

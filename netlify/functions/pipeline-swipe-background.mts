@@ -16,10 +16,11 @@ import {
   applyPaintedMedia,
   collectRestyleSlots,
   injectRestyleMediaScript,
+  libraryFileLabel,
   sealPaintedHtml,
   type PaintedMedia,
 } from '../../src/lib/restyle-slots';
-import { libraryFileLabel, placeMediaWithAi } from '../../src/lib/restyle-place';
+import { placeMediaWithAi } from '../../src/lib/restyle-place';
 
 /**
  * Background function (up to 15 min) that performs the Chimera Protocol

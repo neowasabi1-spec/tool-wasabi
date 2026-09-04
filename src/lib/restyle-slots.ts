@@ -26,6 +26,13 @@ export type PaintedMedia = {
   poster?: string;
 };
 
+/** Safe for the browser bundle — do not import restyle-place from client code. */
+export function libraryFileLabel(item: { name?: string; sourceUrl?: string; storedUrl?: string }): string {
+  const fromName = String(item.name || '').split('|').pop() || '';
+  const fromUrl = String(item.sourceUrl || item.storedUrl || '').split('/').pop()?.split('?')[0] || '';
+  return (fromName || fromUrl || '').slice(0, 160);
+}
+
 const LAZY_ATTRS = [
   'srcset', 'sizes', 'data-src', 'data-original', 'data-original-src', 'data-orig-src',
   'data-lazy-src', 'data-lazy', 'data-lazyload', 'data-lazy-load', 'data-url',

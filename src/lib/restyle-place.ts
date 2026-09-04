@@ -1,5 +1,7 @@
 import { requireAnthropicKey } from '@/lib/anthropic-key';
 
+/** Server-only. Do not import this file from client components — it uses sharp. */
+
 /** The model looks at each current image, then reads nearby copy. */
 
 export type PlaceSlotIn = {
@@ -215,10 +217,4 @@ async function callClaudeVision(system: string, content: ContentPart[]): Promise
   const text = (data.content || []).filter((c) => c.type === 'text').map((c) => c.text || '').join('');
   if (!text.trim()) throw new Error('Place returned empty');
   return text;
-}
-
-export function libraryFileLabel(item: { name?: string; sourceUrl?: string; storedUrl?: string }): string {
-  const fromName = String(item.name || '').split('|').pop() || '';
-  const fromUrl = String(item.sourceUrl || item.storedUrl || '').split('/').pop()?.split('?')[0] || '';
-  return (fromName || fromUrl || '').slice(0, 160);
 }
