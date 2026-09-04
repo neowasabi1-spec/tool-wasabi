@@ -1,11 +1,12 @@
 import { requireAnthropicKey } from '@/lib/anthropic-key';
 
-/** AI reads nearby copy and decides what each slot should show. No product keyword lists. */
+/** The model looks at each current image, then reads nearby copy. */
 
 export type PlaceSlotIn = {
   id: number;
   kind: string;
   context: string;
+  src?: string;
   width?: number;
   height?: number;
 };
@@ -24,56 +25,132 @@ export type PlaceAssignment = {
   prompt: string;
 };
 
+type ContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } };
+
 export async function placeMediaWithAi(args: {
   productName: string;
   brief?: string;
   description?: string;
+  pageUrl?: string;
   slots: PlaceSlotIn[];
   library: PlaceLibIn[];
 }): Promise<PlaceAssignment[]> {
-  const slots = args.slots.slice(0, 40);
+  const slots = args.slots.slice(0, 24);
   const library = args.library.slice(0, 60);
   if (!slots.length) return [];
 
-  const system = `You place images on a marketing landing page for "${args.productName}".
-${args.description ? `Product: ${args.description.slice(0, 800)}\n` : ''}${args.brief ? `Brief: ${args.brief.slice(0, 1200)}\n` : ''}
-For EVERY slot, read the nearby copy and decide what the picture must depict. The copy is the source of truth — not the current image, not leftover template art.
+  const seen = await loadSlotImages(slots, args.pageUrl || '');
 
-Then pick ONE:
-- mediaId = a library id ONLY if that file's name/url clearly matches the same subject as the copy.
-- generate = true + a full English image prompt if nothing in the library is that subject.
+  const system = `You are looking at the CURRENT images on a landing page for "${args.productName}".
+${args.description ? `Product: ${args.description.slice(0, 600)}\n` : ''}${args.brief ? `Brief: ${args.brief.slice(0, 800)}\n` : ''}
+For each slot you are shown the picture that is already there, plus the text around it.
 
-Rules:
-- Understand the sentence next to the slot. Show that idea: a role, an object, a place, a process, a feeling — whatever the copy is actually about.
-- Stars, ratings, checkmarks, ticks, payment marks, and table icons are UI chrome. For those: mediaId null, generate false. Never put a photo there.
-- Do not drop a leftover photo just because it is unused. A mismatch is worse than generating.
-- Filenames are often random hashes. If you cannot tell what a library file is, do not pick it.
-- Small images (under ~200px) next to a name/title are usually that person. Large images illustrate the paragraph topic, not a caption from another block.
-- Reuse the same library id on several slots only when the subject is truly the same.
-- At most 8 slots with generate=true (the worst mismatches). Other mismatches: generate false, mediaId null (leave the current image).
-- Prompts: describe the scene, no HTML, no competitor brand names, no text painted in the image.
+LOOK at the picture first.
+- If it is UI chrome (stars, rating bars, checkmarks, ticks, logos, arrows, payment marks, bullets) → skip it. Do not replace it.
+- If it is a real photograph or illustration → decide what SHOULD be there from the nearby copy (a doctor if the copy is about a doctor, an object if the copy is about an object, and so on). Then either pick a library id whose file clearly matches that subject, or generate=true with an English image prompt.
+
+Never put a photo on stars or ticks. Never pick a library file just because it is unused. At most 8 generate=true. If unsure, skip.
 
 Return STRICT JSON only:
-{"slots":[{"id":0,"mediaId":"12-or-null","generate":false,"prompt":""}]}
-One object per input id. mediaId is a library id string or null.`;
+{"slots":[{"id":0,"skip":true,"mediaId":null,"generate":false,"prompt":""}]}
+One object per input id.`;
 
-  const user = JSON.stringify({
-    slots: slots.map((s) => ({
-      id: s.id,
-      kind: s.kind,
-      copy: s.context.slice(0, 280),
-      size: s.width && s.height ? `${s.width}x${s.height}` : 'unknown',
-    })),
-    library: library.map((m) => ({
-      id: m.id,
-      kind: m.kind,
-      name: m.name.slice(0, 80),
-      file: m.file.slice(0, 120),
-    })),
-  });
+  const content: ContentPart[] = [
+    {
+      type: 'text',
+      text: `Library files:\n${JSON.stringify(library.map((m) => ({
+        id: m.id,
+        kind: m.kind,
+        name: m.name.slice(0, 80),
+        file: m.file.slice(0, 120),
+      })))}\n\nSlots follow. Look at each image.`,
+    },
+  ];
 
-  const raw = await callClaude(system, user);
+  for (const s of slots) {
+    content.push({
+      type: 'text',
+      text: `SLOT ${s.id} (${s.kind}${s.width && s.height ? `, ${s.width}x${s.height}` : ''})\nNearby copy: ${s.context.slice(0, 220) || '(none)'}`,
+    });
+    const img = seen.get(s.id);
+    if (img) {
+      content.push({
+        type: 'image',
+        source: { type: 'base64', media_type: img.mime, data: img.data },
+      });
+    } else {
+      content.push({ type: 'text', text: '(no preview — skip unless you are sure this is a content photo)' });
+    }
+  }
+
+  const raw = await callClaudeVision(system, content);
   return parseAssignments(raw, slots, new Set(library.map((m) => m.id)));
+}
+
+async function loadSlotImages(
+  slots: PlaceSlotIn[],
+  pageUrl: string,
+): Promise<Map<number, { mime: string; data: string }>> {
+  const out = new Map<number, { mime: string; data: string }>();
+  const jobs = slots.map(async (s) => {
+    const url = absolutize(s.src || '', pageUrl);
+    if (!url || !/^https?:\/\//i.test(url)) return;
+    const got = await fetchPreview(url);
+    if (got) out.set(s.id, got);
+  });
+  await Promise.all(jobs);
+  return out;
+}
+
+function absolutize(src: string, pageUrl: string): string {
+  const t = String(src || '').trim();
+  if (!t) return '';
+  if (/^https?:\/\//i.test(t)) return t;
+  if (t.startsWith('//')) return `https:${t}`;
+  if (!pageUrl) return '';
+  try {
+    return new URL(t, pageUrl).href;
+  } catch {
+    return '';
+  }
+}
+
+async function fetchPreview(url: string): Promise<{ mime: string; data: string } | null> {
+  try {
+    const res = await fetch(url, {
+      headers: {
+        accept: 'image/*,*/*',
+        'user-agent': 'Mozilla/5.0 (compatible; WasabiPreview/1.0)',
+      },
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (!res.ok) return null;
+    const rawMime = (res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+    if (rawMime && !rawMime.startsWith('image/')) return null;
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length < 40 || buf.length > 6_000_000) return null;
+    return shrinkPreview(buf, rawMime || 'image/jpeg');
+  } catch {
+    return null;
+  }
+}
+
+async function shrinkPreview(buf: Buffer, mime: string): Promise<{ mime: string; data: string } | null> {
+  try {
+    const sharp = (await import('sharp')).default;
+    const data = await sharp(buf)
+      .rotate()
+      .resize({ width: 512, height: 512, fit: 'inside', withoutEnlargement: true })
+      .jpeg({ quality: 62 })
+      .toBuffer();
+    return { mime: 'image/jpeg', data: data.toString('base64') };
+  } catch {
+    if (buf.length > 350_000) return null;
+    const ok = /^image\/(jpeg|png|gif|webp)$/.test(mime) ? mime : 'image/jpeg';
+    return { mime: ok, data: buf.toString('base64') };
+  }
 }
 
 function parseAssignments(
@@ -85,7 +162,9 @@ function parseAssignments(
   const a = c.indexOf('{');
   const b = c.lastIndexOf('}');
   if (a >= 0 && b > a) c = c.slice(a, b + 1);
-  let parsed: { slots?: Array<{ id?: number; mediaId?: string | null; generate?: boolean; prompt?: string }> };
+  let parsed: {
+    slots?: Array<{ id?: number; skip?: boolean; mediaId?: string | null; generate?: boolean; prompt?: string }>;
+  };
   try {
     parsed = JSON.parse(c);
   } catch {
@@ -95,6 +174,7 @@ function parseAssignments(
   let generates = 0;
   return slots.map((s) => {
     const row = byId.get(s.id);
+    if (row?.skip) return { slotId: s.id, mediaId: null, generate: false, prompt: '' };
     const mediaId = row?.mediaId != null && row.mediaId !== '' && row.mediaId !== 'null'
       ? String(row.mediaId)
       : null;
@@ -113,7 +193,7 @@ function parseAssignments(
   });
 }
 
-async function callClaude(system: string, user: string): Promise<string> {
+async function callClaudeVision(system: string, content: ContentPart[]): Promise<string> {
   const key = requireAnthropicKey();
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -126,11 +206,11 @@ async function callClaude(system: string, user: string): Promise<string> {
       model: 'claude-sonnet-4-6',
       max_tokens: 4000,
       system,
-      messages: [{ role: 'user', content: user }],
+      messages: [{ role: 'user', content }],
     }),
-    signal: AbortSignal.timeout(45_000),
+    signal: AbortSignal.timeout(55_000),
   });
-  if (!res.ok) throw new Error(`Place HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  if (!res.ok) throw new Error(`Place HTTP ${res.status}: ${(await res.text()).slice(0, 240)}`);
   const data = (await res.json()) as { content?: Array<{ type?: string; text?: string }> };
   const text = (data.content || []).filter((c) => c.type === 'text').map((c) => c.text || '').join('');
   if (!text.trim()) throw new Error('Place returned empty');

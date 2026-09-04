@@ -10,6 +10,7 @@ export async function POST(req: NextRequest) {
     productName?: string;
     brief?: string;
     description?: string;
+    pageUrl?: string;
     slots?: PlaceSlotIn[];
     library?: PlaceLibIn[];
   };
@@ -24,6 +25,7 @@ export async function POST(req: NextRequest) {
       productName,
       brief: body.brief,
       description: body.description,
+      pageUrl: body.pageUrl,
       slots,
       library,
     });

@@ -40,16 +40,9 @@ const FILE_PROXY_RE = /\/api\/projecthub\/file-proxy/i;
 const JUNK =
   /favicon|sprite|pixel|1x1|tracking|doubleclick|visa|mastercard|amex|paypal|klarna|apple-?pay|loader|spinner|spacer|logo\.svg|google-analytics|facebook\.com\/tr|hotjar|trustpilot|woff2?|placeholder|blank\.|lqip|star[s]?|rating|check(?:mark)?|tick|spunta/i;
 
-/** Stars, ticks, payment marks — chrome, not a photo slot. */
-const UI_CHROME_COPY =
-  /\b(\d(?:[.,]\d)?\s*(?:\/|out of|su)\s*5|stars?|stell[ae]|rating|recensioni?|checkmark|check[-_ ]?(?:mark|icon)|green[-_]?tick|tick(?:mark)?|spunta|compar(?:e|ison)|versus|\bvs\b)\b/i;
-
-function stylePx(tag: string, prop: 'width' | 'height'): number {
-  const m = tag.match(new RegExp(`${prop}\\s*:\\s*(\\d+)`, 'i'));
-  return m ? Number.parseInt(m[1], 10) : 0;
-}
-
 function isUiChrome(
+  _html: string,
+  _index: number,
   src: string,
   alt: string,
   cls: string,
@@ -60,13 +53,17 @@ function isUiChrome(
 ): boolean {
   if (isDecorativeMedia(src, alt, cls, tag.slice(0, 240), ctx)) return true;
   if (JUNK.test(src) || JUNK.test(alt) || JUNK.test(cls)) return true;
-  const sw = w || stylePx(tag, 'width');
-  const sh = h || stylePx(tag, 'height');
-  if (sw > 0 && sh > 0 && sw < 80 && sh < 80) return true;
-  const hay = `${alt} ${cls} ${src} ${ctx}`;
-  if (sw > 0 && sh > 0 && sw < 140 && sh < 140 && UI_CHROME_COPY.test(hay)) return true;
-  if ((sw === 0 || sh === 0) && UI_CHROME_COPY.test(hay)) return true;
+  if (w > 0 && h > 0 && w < 20 && h < 20) return true;
   return false;
+}
+
+function isChromePaintTag(tag: string): boolean {
+  const w = Number.parseInt(tag.match(/\bwidth\s*=\s*["']?(\d+)/i)?.[1] || '0', 10);
+  const h = Number.parseInt(tag.match(/\bheight\s*=\s*["']?(\d+)/i)?.[1] || '0', 10);
+  const cls = tag.match(/\bclass\s*=\s*["']([^"']+)/i)?.[1] || '';
+  const src = tag.match(/\bsrc\s*=\s*["']([^"']+)/i)?.[1] || '';
+  if (JUNK.test(cls) || JUNK.test(src) || isDecorativeMedia(src, cls)) return true;
+  return w > 0 && h > 0 && w < 20 && h < 20;
 }
 
 function decodeEntities(s: string): string {
@@ -198,7 +195,7 @@ export function collectRestyleSlots(html: string, max = 40, _pageUrl = ''): Rest
     const h = Number.parseInt(tag.match(/\bheight\s*=\s*["']?(\d+)/i)?.[1] || '0', 10);
     const cls = tag.match(/\bclass\s*=\s*["']([^"']+)["']/i)?.[1] || '';
     const ctx = nearby(html, m.index, tag.length);
-    if (isUiChrome(src, alt, cls, tag, ctx, w, h)) {
+    if (isUiChrome(html, m.index, src, alt, cls, tag, ctx, w, h)) {
       imgIndex++;
       continue;
     }
@@ -233,22 +230,6 @@ export function collectRestyleSlots(html: string, max = 40, _pageUrl = ''): Rest
       else if (poster) add(decodeEntities(poster), 'image', 'video poster', 'video', 0, 0, { tag: 'video', index: videoIndex });
     }
     videoIndex++;
-  }
-
-  if (out.length >= max) return out;
-
-  const bgRe = /background(?:-image)?\s*:\s*url\(\s*['"]?([^'")]+)['"]?\s*\)/gi;
-  let bm: RegExpExecArray | null;
-  while ((bm = bgRe.exec(html)) !== null && out.length < max) {
-    if (isDecorativeMedia(bm[1])) continue;
-    add(
-      bm[1],
-      classifySrc(bm[1]),
-      'background',
-      slotSection('hero banner background', bm.index, html.length, 'image'),
-      0,
-      0,
-    );
   }
 
   return out;
@@ -345,7 +326,8 @@ export function applyPaintedMedia(html: string, paints: PaintedMedia[]): string 
       out = out.replace(/<img\b[^>]*>/gi, (tag) => {
         const p = imgs.find((x) => x.index === n);
         n += 1;
-        return p ? paintMediaTag(tag, p.url, { poster: p.poster }) : tag;
+        if (!p || isChromePaintTag(tag)) return tag;
+        return paintMediaTag(tag, p.url, { poster: p.poster });
       });
     }
     const videos = paints.filter((p) => p.tag === 'video');
@@ -398,7 +380,7 @@ export function replaceMediaUrl(html: string, from: string, to: string, pageUrl 
       (n, v) => n + (v.length > 8 ? raw.split(v).length - 1 : 0),
       0,
     );
-    if (repeats >= 4) return raw;
+    if (repeats >= 2) return raw;
     let next = raw;
     for (const v of mediaUrlVariants(from, pageUrl)) {
       if (next.includes(v)) next = next.split(v).join(to);
@@ -453,8 +435,16 @@ export function injectRestyleMediaScript(html: string, paints: PaintedMedia[]): 
       node=node.parentElement;
     }
   }
+  function isChromeEl(el){
+    try{
+      var r=el.getBoundingClientRect();
+      if(r.width>0 && r.height>0 && r.width<20 && r.height<20) return true;
+    }catch(eC){}
+    return false;
+  }
   function paint(el, url, poster){
     if(!el||!url) return;
+    if(isChromeEl(el)) return;
     if(el.getAttribute('data-restyled')==='1' && (el.getAttribute('src')||el.src)===url){
       clearUnder(el);
       return;

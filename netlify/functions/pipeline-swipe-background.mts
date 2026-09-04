@@ -16,7 +16,6 @@ import {
   applyPaintedMedia,
   collectRestyleSlots,
   injectRestyleMediaScript,
-  replaceMediaUrl,
   sealPaintedHtml,
   type PaintedMedia,
 } from '../../src/lib/restyle-slots';
@@ -1343,10 +1342,12 @@ async function applyAffiliateMedia(
   try {
     assignments = await placeMediaWithAi({
       productName,
+      pageUrl,
       slots: slots.map((s) => ({
         id: s.id,
         kind: s.kind,
         context: s.context || s.alt || '',
+        src: s.src,
         width: s.width,
         height: s.height,
       })),
@@ -1368,14 +1369,12 @@ async function applyAffiliateMedia(
     const item = plan?.mediaId ? byId.get(plan.mediaId) : null;
     if (!item?.storedUrl) continue;
     used.add(String(item.id));
-    if (typeof slot.domIndex === 'number') {
-      paints.push({
-        tag: slot.domTag === 'video' || slot.kind === 'video' ? 'video' : 'img',
-        index: slot.domIndex,
-        url: item.storedUrl,
-      });
-    }
-    out = replaceMediaUrl(out, slot.src, item.storedUrl, pageUrl);
+    if (typeof slot.domIndex !== 'number') continue;
+    paints.push({
+      tag: slot.domTag === 'video' || slot.kind === 'video' ? 'video' : 'img',
+      index: slot.domIndex,
+      url: item.storedUrl,
+    });
     if (slot.kind === 'video') vids++;
     else placed++;
   }

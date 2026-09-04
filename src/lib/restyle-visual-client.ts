@@ -4,7 +4,6 @@ import {
   collectRestyleSlots,
   fallbackPalette,
   injectRestyleMediaScript,
-  replaceMediaUrl,
   sealPaintedHtml,
   type PaintedMedia,
 } from '@/lib/restyle-slots';
@@ -91,7 +90,7 @@ export async function runVisualRestyle(opts: {
     };
   }
 
-  opts.onProgress?.('AI is reading each block of copy to choose or create the photo…', html);
+  opts.onProgress?.('AI is looking at each image on the page…', html);
 
   const byId = new Map(pool.map((m) => [String(m.id), m]));
   let assignments: PlaceAssignment[] = [];
@@ -103,10 +102,12 @@ export async function runVisualRestyle(opts: {
         productName: opts.productName,
         brief: opts.brief,
         description: opts.description,
+        pageUrl: opts.pageUrl || '',
         slots: slots.map((s) => ({
           id: s.id,
           kind: s.kind,
           context: s.context || s.alt || '',
+          src: s.src,
           width: s.width,
           height: s.height,
         })),
@@ -151,14 +152,12 @@ export async function runVisualRestyle(opts: {
       }
     }
     if (!url) continue;
-    if (typeof slot.domIndex === 'number') {
-      paints.push({
-        tag: slot.domTag === 'video' || slot.kind === 'video' ? 'video' : 'img',
-        index: slot.domIndex,
-        url,
-      });
-    }
-    html = replaceMediaUrl(html, slot.src, url, opts.pageUrl);
+    if (typeof slot.domIndex !== 'number') continue;
+    paints.push({
+      tag: slot.domTag === 'video' || slot.kind === 'video' ? 'video' : 'img',
+      index: slot.domIndex,
+      url,
+    });
     replaced++;
   }
 
