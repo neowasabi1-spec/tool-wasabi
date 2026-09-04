@@ -185,7 +185,7 @@ const JUNK_LANDING_HOSTS = /^(google\.com|google\.[a-z.]+|facebook\.com|fb\.com|
 
 /** Icons, stars, payment marks — not product photos. */
 export const DECORATIVE_MEDIA =
-  /logo|icon|favicon|sprite|pixel|1x1|tracking|analytics|badge|seal|award|star[s]?|rating|payment|visa|mastercard|amex|paypal|klarna|apple-?pay|g-?pay|emoji|loader|spinner|spacer|blank\.|placeholder|trustpilot|cookie|checkmark|greentick|arrow|play-btn|close-btn|hamburger|social|whatsapp|pinterest/i;
+  /logo|icon|favicon|sprite|pixel|1x1|tracking|analytics|badge|seal|award|star[s]?|rating|payment|visa|mastercard|amex|paypal|klarna|apple-?pay|g-?pay|emoji|loader|spinner|spacer|blank\.|placeholder|trustpilot|cookie|check(?:mark|-?icon)?|green[-_]?tick|tick(?:mark)?|spunta|compare[-_]?icon|arrow|play-btn|close-btn|hamburger|social|whatsapp|pinterest/i;
 
 export function isDecorativeMedia(...parts: Array<string | undefined | null>): boolean {
   return parts.some((p) => !!p && DECORATIVE_MEDIA.test(p));

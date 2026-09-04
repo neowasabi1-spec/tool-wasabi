@@ -38,7 +38,36 @@ const LAZY_ATTRS = [
 const FILE_PROXY_RE = /\/api\/projecthub\/file-proxy/i;
 
 const JUNK =
-  /favicon|sprite|pixel|1x1|tracking|doubleclick|visa|mastercard|amex|paypal|klarna|apple-?pay|loader|spinner|spacer|logo\.svg|google-analytics|facebook\.com\/tr|hotjar|trustpilot|woff2?|placeholder|blank\.|lqip/i;
+  /favicon|sprite|pixel|1x1|tracking|doubleclick|visa|mastercard|amex|paypal|klarna|apple-?pay|loader|spinner|spacer|logo\.svg|google-analytics|facebook\.com\/tr|hotjar|trustpilot|woff2?|placeholder|blank\.|lqip|star[s]?|rating|check(?:mark)?|tick|spunta/i;
+
+/** Stars, ticks, payment marks — chrome, not a photo slot. */
+const UI_CHROME_COPY =
+  /\b(\d(?:[.,]\d)?\s*(?:\/|out of|su)\s*5|stars?|stell[ae]|rating|recensioni?|checkmark|check[-_ ]?(?:mark|icon)|green[-_]?tick|tick(?:mark)?|spunta|compar(?:e|ison)|versus|\bvs\b)\b/i;
+
+function stylePx(tag: string, prop: 'width' | 'height'): number {
+  const m = tag.match(new RegExp(`${prop}\\s*:\\s*(\\d+)`, 'i'));
+  return m ? Number.parseInt(m[1], 10) : 0;
+}
+
+function isUiChrome(
+  src: string,
+  alt: string,
+  cls: string,
+  tag: string,
+  ctx: string,
+  w: number,
+  h: number,
+): boolean {
+  if (isDecorativeMedia(src, alt, cls, tag.slice(0, 240), ctx)) return true;
+  if (JUNK.test(src) || JUNK.test(alt) || JUNK.test(cls)) return true;
+  const sw = w || stylePx(tag, 'width');
+  const sh = h || stylePx(tag, 'height');
+  if (sw > 0 && sh > 0 && sw < 80 && sh < 80) return true;
+  const hay = `${alt} ${cls} ${src} ${ctx}`;
+  if (sw > 0 && sh > 0 && sw < 140 && sh < 140 && UI_CHROME_COPY.test(hay)) return true;
+  if ((sw === 0 || sh === 0) && UI_CHROME_COPY.test(hay)) return true;
+  return false;
+}
 
 function decodeEntities(s: string): string {
   return s
@@ -169,12 +198,11 @@ export function collectRestyleSlots(html: string, max = 40, _pageUrl = ''): Rest
     const h = Number.parseInt(tag.match(/\bheight\s*=\s*["']?(\d+)/i)?.[1] || '0', 10);
     const cls = tag.match(/\bclass\s*=\s*["']([^"']+)["']/i)?.[1] || '';
     const ctx = nearby(html, m.index, tag.length);
-    const hasCopy = `${alt} ${ctx}`.replace(/\s+/g, ' ').trim().length >= 24;
-    if (w > 0 && h > 0 && w < 72 && h < 72 && !hasCopy) {
+    if (isUiChrome(src, alt, cls, tag, ctx, w, h)) {
       imgIndex++;
       continue;
     }
-    if (src && out.length < max && !isDecorativeMedia(src, alt, cls, tag.slice(0, 200))) {
+    if (src && out.length < max) {
       const kind: RestyleKind = /\.gif(\?|#|$)/i.test(src) ? 'gif' : 'image';
       add(
         src,
@@ -366,6 +394,11 @@ export function mediaUrlVariants(from: string, pageUrl = ''): string[] {
 export function replaceMediaUrl(html: string, from: string, to: string, pageUrl = ''): string {
   if (!from || !to || from === to) return html;
   return outsideSwipeReplacer(html, (raw) => {
+    const repeats = mediaUrlVariants(from, pageUrl).reduce(
+      (n, v) => n + (v.length > 8 ? raw.split(v).length - 1 : 0),
+      0,
+    );
+    if (repeats >= 4) return raw;
     let next = raw;
     for (const v of mediaUrlVariants(from, pageUrl)) {
       if (next.includes(v)) next = next.split(v).join(to);
@@ -440,13 +473,6 @@ export function injectRestyleMediaScript(html: string, paints: PaintedMedia[]): 
       el.muted=true; el.playsInline=true; el.loop=true; el.autoplay=true;
     }
   }
-  function tooSmall(el){
-    try{
-      var r=el.getBoundingClientRect();
-      if(r.width>0 && r.height>0 && (r.width<32||r.height<32)) return true;
-    }catch(e){}
-    return false;
-  }
   var painting=false;
   function apply(){
     if(painting) return;
@@ -454,29 +480,11 @@ export function injectRestyleMediaScript(html: string, paints: PaintedMedia[]): 
     try{
     var imgs=document.querySelectorAll('img');
     var videos=document.querySelectorAll('video');
-    var extras=[];
     for(var i=0;i<paints.length;i++){
       var p=paints[i];
       var el=p.tag==='video'?videos[p.index]:imgs[p.index];
-      if(!el){ extras.push(p); continue; }
+      if(!el) continue;
       paint(el, p.url, p.poster);
-    }
-    var ei=0;
-    for(var k=0;k<imgs.length && ei<extras.length;k++){
-      if(imgs[k].getAttribute('data-restyled')) continue;
-      if(tooSmall(imgs[k])) continue;
-      paint(imgs[k], extras[ei].url, extras[ei].poster);
-      ei++;
-    }
-    var bgs=document.querySelectorAll('[style*="background"]');
-    for(var b=0;b<bgs.length && ei<extras.length;b++){
-      if(bgs[b].getAttribute('data-restyled')) continue;
-      if(bgs[b].querySelector && bgs[b].querySelector('img,video,picture')) continue;
-      try{
-        bgs[b].style.setProperty('background-image','url("'+extras[ei].url+'")','important');
-        bgs[b].setAttribute('data-restyled','1');
-        ei++;
-      }catch(e4){}
     }
     }finally{ painting=false; }
   }

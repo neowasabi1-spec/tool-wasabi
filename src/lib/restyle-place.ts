@@ -45,6 +45,7 @@ Then pick ONE:
 
 Rules:
 - Understand the sentence next to the slot. Show that idea: a role, an object, a place, a process, a feeling — whatever the copy is actually about.
+- Stars, ratings, checkmarks, ticks, payment marks, and table icons are UI chrome. For those: mediaId null, generate false. Never put a photo there.
 - Do not drop a leftover photo just because it is unused. A mismatch is worse than generating.
 - Filenames are often random hashes. If you cannot tell what a library file is, do not pick it.
 - Small images (under ~200px) next to a name/title are usually that person. Large images illustrate the paragraph topic, not a caption from another block.
