@@ -1805,6 +1805,17 @@ function prepareEditorHtml(html: string, sourceUrl?: string): string {
       return `<${tag}${a}>`;
     });
 
+    // file-proxy img already replaced the photo — leftover <source>/srcset
+    // would paint the old template image on top of (or under) the new one.
+    clean = clean.replace(/<picture\b[\s\S]*?<\/picture>/gi, (pic) => {
+      if (!/\/api\/projecthub\/file-proxy/i.test(pic)) return pic;
+      return pic.replace(/<source\b[^>]*>/gi, '');
+    });
+    clean = clean.replace(/<video\b[\s\S]*?<\/video>/gi, (block) => {
+      if (!/\/api\/projecthub\/file-proxy/i.test(block)) return block;
+      return block.replace(/<source\b[^>]*>/gi, '');
+    });
+
     // Background images con data-bg / data-background / data-bgset:
     // promuovi a inline style background-image. Se l'elemento ha gia'
     // un background-image inline ma e' un placeholder data: URI o un
@@ -1818,6 +1829,7 @@ function prepareEditorHtml(html: string, sourceUrl?: string): string {
         const url = rawUrl.split(',')[0]?.trim().split(/\s+/)[0] || rawUrl;
         if (!url || isPlaceholderSrc(url)) return full;
         const styleMatch = attrs.match(/\sstyle\s*=\s*(["'])([^"']*)\1/i);
+        if (styleMatch && /background-image\s*:\s*none/i.test(styleMatch[2])) return full;
         const existingBg = styleMatch ? (styleMatch[2].match(/background-image\s*:\s*url\(([^)]+)\)/i)?.[1] || '').replace(/^["']|["']$/g, '') : '';
         if (existingBg && !isPlaceholderSrc(existingBg)) return full;
         const inject = `background-image:url('${url.replace(/'/g, "\\'")}');background-size:cover;background-position:center;`;

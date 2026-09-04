@@ -23,6 +23,7 @@ export const LANDING_SECTIONS = [
   'guarantee',
   'faq',
   'video',
+  'author',
   'other',
 ] as const;
 
@@ -41,6 +42,7 @@ export const LANDING_SECTION_LABEL: Record<LandingSection, string> = {
   guarantee: 'Guarantee',
   faq: 'FAQ',
   video: 'Video',
+  author: 'Author',
   other: 'Other',
 };
 
@@ -56,11 +58,16 @@ export type LandingMediaItem = {
   position?: number;
 };
 
+/** Writer / dietitian / byline — not a random lifestyle woman nearby. */
+export const AUTHOR_HINT =
+  /writer|author|dietitian|dietician|byline|reviewed\s*(?:&|and)?\s*approved|registered[-_ ]?dietitian|expert[-_ ]?(photo|bio|headshot)|editor[-_ ]?(bio|photo)|avatar|headshot/i;
+
 const SECTION_RULES: Array<{ section: LandingSection; re: RegExp }> = [
   { section: 'hero', re: /\b(hero|banner|jumbotron|masthead|above[-_ ]?fold|first[-_ ]?screen|splash)\b/i },
-  { section: 'testimonials', re: /\b(testimonial|reviewer|ugc|customer[-_ ]?(said|love|photo|face)|headshot)\b/i },
+  { section: 'author', re: AUTHOR_HINT },
+  { section: 'testimonials', re: /\b(testimonial|reviewer|ugc|customer[-_ ]?(said|love|photo|face))\b/i },
   { section: 'ingredients', re: /\b(ingredient|formula|composition|what'?s inside|actives?|ginger|zenzero|turmeric|curcuma|cinnamon|cannella|extract|botanic|herb|root|seed|leaf|vitamin|mineral|collagen)\b/i },
-  { section: 'mechanism', re: /\b(how[-_ ]?it[-_ ]?works|mechanism|science|why[-_ ]?it|process|steps?)\b/i },
+  { section: 'mechanism', re: /\b(how[-_ ]?it[-_ ]?works|mechanism|science|why[-_ ]?it|process|steps?|system|sistema|schema|protocol|funziona|digest|intestin|gut|metabol|pathway|diagram|illustrat)\b/i },
   { section: 'comparison', re: /\b(compar|versus|\bvs\b|before[-_ ]?after|beforeafter|split[-_ ]?frame)\b/i },
   { section: 'guarantee', re: /\b(guarantee|refund|money[-_ ]?back|risk[-_ ]?free|warranty)\b/i },
   { section: 'faq', re: /\b(faq|questions?|answers?)\b/i },
@@ -73,7 +80,9 @@ const SECTION_RULES: Array<{ section: LandingSection; re: RegExp }> = [
 
 /** Filename / URL wins over nearby “reviews” copy — ginger.jpg is an ingredient. */
 const SUBJECT_RULES: Array<{ section: LandingSection; re: RegExp }> = [
+  { section: 'mechanism', re: /diagram|illustrat|anatomy|digestive|intestin|infographic|schema|system[-_ ]?(diagram|graphic)|how[-_ ]?it[-_ ]?works|medical[-_ ]?(art|diagram)/i },
   { section: 'ingredients', re: /ginger|zenzero|turmeric|curcuma|cinnamon|cannella|ingredient|botanic|herb|vitamin|mineral|collagen/i },
+  { section: 'author', re: AUTHOR_HINT },
   { section: 'testimonials', re: /testimonial|reviewer|ugc[-_ ]?(photo|img)|customer[-_ ]?(photo|face|avatar)|headshot|portrait[-_ ]?review/i },
   { section: 'product', re: /packshot|bottle|jar|pouch|sachet|tub|stick[-_ ]?pack|product[-_ ]?(shot|photo|img)|mockup/i },
   { section: 'comparison', re: /before[-_ ]?after|beforeafter/i },
@@ -82,10 +91,45 @@ const SUBJECT_RULES: Array<{ section: LandingSection; re: RegExp }> = [
 
 const PRODUCT_FAMILY: LandingSection[] = ['hero', 'product', 'lifestyle', 'offer'];
 
+export const PEOPLE_HINT =
+  /woman|women|man|men|person|people|face|portrait|avatar|headshot|customer|reviewer|lifestyle|girl|boy|lady|couple|selfie/i;
+
+export const ILLUSTRATION_HINT =
+  /illustrat|diagram|infographic|anatomy|digestive|intestin|stomach|organ|scheme|schema|chart|drawing|vector|medical[-_ ]?(art|diagram)|graphic|cross[-_ ]?section|cutaway|render/i;
+
+export const CONCEPT_HINT =
+  /\b(system|sistema|mechanism|how it works|come funziona|science|process|pathway|diagram|illustrat|gut|digest|intestin|metabol|schema|funziona|protocol|metodo|formula visual)\b/i;
+
+export type VisualNeed = 'people' | 'illustration' | 'product' | 'ingredient' | 'any';
+
+export function mediaLooksLikePeople(...parts: Array<string | undefined | null>): boolean {
+  return parts.some((p) => !!p && PEOPLE_HINT.test(p));
+}
+
+export function mediaLooksLikeIllustration(...parts: Array<string | undefined | null>): boolean {
+  return parts.some((p) => !!p && ILLUSTRATION_HINT.test(p));
+}
+
+export function slotVisualNeed(slot: { section?: string; alt?: string; src?: string }): VisualNeed {
+  const hay = `${slot.section || ''} ${slot.alt || ''} ${slot.src || ''}`;
+  if (CONCEPT_HINT.test(hay) || slot.section === 'mechanism') return 'illustration';
+  if (slot.section === 'ingredients' || /ginger|ingredient|formula/i.test(hay)) return 'ingredient';
+  if (slot.section === 'product' || slot.section === 'offer') return 'product';
+  if (slot.section === 'author' || slot.section === 'testimonials' || slot.section === 'lifestyle') return 'people';
+  return 'any';
+}
+
 function roleClash(photo: LandingSection, slot: LandingSection): boolean {
-  if (photo === 'ingredients' && (slot === 'testimonials' || slot === 'faq')) return true;
-  if (slot === 'ingredients' && (photo === 'testimonials' || photo === 'faq')) return true;
-  if (photo === 'testimonials' && (slot === 'ingredients' || slot === 'product' || slot === 'offer')) return true;
+  if (photo === 'ingredients' && (slot === 'testimonials' || slot === 'faq' || slot === 'author')) return true;
+  if (slot === 'ingredients' && (photo === 'testimonials' || photo === 'faq' || photo === 'author')) return true;
+  if (photo === 'testimonials' && (slot === 'ingredients' || slot === 'product' || slot === 'offer' || slot === 'author')) return true;
+  if (slot === 'author' && photo !== 'author' && photo !== 'testimonials') return true;
+  if (photo === 'author' && slot !== 'author') return true;
+  if ((photo === 'lifestyle' || photo === 'testimonials' || photo === 'author')
+    && (slot === 'mechanism' || slot === 'ingredients' || slot === 'product' || slot === 'comparison')) {
+    return true;
+  }
+  if (photo === 'mechanism' && (slot === 'testimonials' || slot === 'author' || slot === 'lifestyle')) return true;
   return false;
 }
 
@@ -95,6 +139,8 @@ export function rolesCompatible(photo: LandingSection, slot: LandingSection): bo
   if (photo === slot) return true;
   if (photo === 'ingredients') return slot === 'ingredients' || slot === 'mechanism';
   if (slot === 'ingredients') return photo === 'ingredients';
+  if (slot === 'author') return photo === 'author' || photo === 'testimonials';
+  if (photo === 'author') return slot === 'author';
   if (slot === 'testimonials') return photo === 'testimonials' || photo === 'lifestyle';
   if (photo === 'testimonials') return slot === 'testimonials' || slot === 'lifestyle';
   if (photo === 'faq' || slot === 'faq') return false;
@@ -103,8 +149,10 @@ export function rolesCompatible(photo: LandingSection, slot: LandingSection): bo
     return photo === slot || (photo === 'product' && slot === 'comparison');
   }
   if (photo === 'video' || slot === 'video') return photo === 'video' && slot === 'video';
-  if (photo === 'other') return PRODUCT_FAMILY.includes(slot) || slot === 'other' || slot === 'benefits' || slot === 'mechanism';
-  if (slot === 'other') return PRODUCT_FAMILY.includes(photo) || photo === 'other' || photo === 'benefits' || photo === 'mechanism';
+  if (slot === 'mechanism') return photo === 'mechanism';
+  if (photo === 'mechanism') return slot === 'mechanism' || slot === 'benefits';
+  if (photo === 'other') return PRODUCT_FAMILY.includes(slot) || slot === 'other' || slot === 'benefits';
+  if (slot === 'other') return PRODUCT_FAMILY.includes(photo) || photo === 'other' || photo === 'benefits';
   return PRODUCT_FAMILY.includes(photo) && PRODUCT_FAMILY.includes(slot);
 }
 
@@ -240,16 +288,34 @@ export function sectionFromNearbyHtml(
     .map((m) => m[1].replace(/<[^>]+>/g, ' '))
     .join(' ');
   const alt = tag.match(/\balt\s*=\s*["']([^"']*)["']/i)?.[1] || '';
+  const cls = tag.match(/\bclass\s*=\s*["']([^"']+)["']/i)?.[1] || '';
+  const w = Number.parseInt(tag.match(/\bwidth\s*=\s*["']?(\d+)/i)?.[1] || '0', 10);
+  const h = Number.parseInt(tag.match(/\bheight\s*=\s*["']?(\d+)/i)?.[1] || '0', 10);
   const text = chunk
     .replace(/<script[\s\S]*?<\/script>/gi, ' ')
     .replace(/<style[\s\S]*?<\/style>/gi, ' ')
     .replace(/<[^>]+>/g, ' ');
   const ratio = html.length ? index / html.length : 0;
   const url = tag.match(/\b(?:src|data-src|poster)\s*=\s*["']([^"']+)["']/i)?.[1] || '';
+  if (AUTHOR_HINT.test(`${alt} ${cls} ${tag}`)) {
+    return resolveMediaRole({ sourceUrl: url, alt, section: 'author' });
+  }
+  const inferred = inferLandingSection(`${ids} ${headings} ${alt} ${text} ${url}`, {
+    positionRatio: ratio,
+    kind: opts?.kind,
+  });
+  const large = (w > 220 && h > 220) || w > 360 || h > 360;
+  if (inferred === 'author' && large) {
+    return resolveMediaRole({
+      sourceUrl: url,
+      alt,
+      section: inferLandingSection(`${ids} ${alt} ${url}`, { positionRatio: ratio, kind: opts?.kind }),
+    });
+  }
   return resolveMediaRole({
     sourceUrl: url,
     alt,
-    section: inferLandingSection(`${ids} ${headings} ${alt} ${text} ${url}`, { positionRatio: ratio, kind: opts?.kind }),
+    section: inferred,
   });
 }
 
@@ -283,13 +349,27 @@ export function matchLandingMediaToSlots<S extends { section: LandingSection; sr
   return slots.map((slot) => {
     if (isDecorativeMedia(slot.src, slot.alt)) return { slot, item: null };
     const slotRole = resolveMediaRole({ src: slot.src, alt: slot.alt, section: slot.section });
+    const need = slotVisualNeed({ section: slotRole, alt: slot.alt, src: slot.src });
+    const hay = (row: { m: LandingMediaItem; role: LandingSection }) =>
+      `${row.role} ${row.m.name || ''} ${row.m.sourceUrl || ''} ${row.m.storedUrl || ''}`;
+    const isPeople = (row: { m: LandingMediaItem; role: LandingSection }) =>
+      row.role === 'lifestyle' || row.role === 'testimonials' || row.role === 'author'
+      || mediaLooksLikePeople(hay(row));
+    const isArt = (row: { m: LandingMediaItem; role: LandingSection }) =>
+      row.role === 'mechanism' || mediaLooksLikeIllustration(hay(row));
+    if (need === 'illustration') {
+      const item =
+        takeFresh((row) => isArt(row) && !isPeople(row))
+        || takeCycle((row) => isArt(row) && !isPeople(row));
+      return { slot, item };
+    }
     const item =
-      takeFresh((row) => row.role === slotRole && slotRole !== 'other')
-      || takeFresh((row) => rolesCompatible(row.role, slotRole))
-      || takeCycle((row) => row.role === slotRole && slotRole !== 'other')
-      || takeCycle((row) => rolesCompatible(row.role, slotRole))
-      || takeFresh((row) => !roleClash(row.role, slotRole))
-      || takeCycle((row) => !roleClash(row.role, slotRole));
+      takeFresh((row) => row.role === slotRole && slotRole !== 'other' && !(need !== 'people' && isPeople(row)))
+      || takeFresh((row) => rolesCompatible(row.role, slotRole) && !(need !== 'people' && isPeople(row)))
+      || takeCycle((row) => row.role === slotRole && slotRole !== 'other' && !(need !== 'people' && isPeople(row)))
+      || takeCycle((row) => rolesCompatible(row.role, slotRole) && !(need !== 'people' && isPeople(row)))
+      || takeFresh((row) => !roleClash(row.role, slotRole) && !(need !== 'people' && isPeople(row)))
+      || takeCycle((row) => !roleClash(row.role, slotRole) && !(need !== 'people' && isPeople(row)));
     return { slot, item };
   });
 }

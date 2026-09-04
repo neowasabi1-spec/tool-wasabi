@@ -25,8 +25,8 @@ export async function POST(req: NextRequest) {
   }
 
   const slots = Array.isArray(body.slots) && body.slots.length
-    ? body.slots.slice(0, 20)
-    : collectRestyleSlots(String(body.html || ''), 20);
+    ? body.slots.slice(0, 40)
+    : collectRestyleSlots(String(body.html || ''), 40);
   if (!slots.length) {
     return NextResponse.json({ error: 'No photos/GIFs/videos found on the page' }, { status: 400 });
   }

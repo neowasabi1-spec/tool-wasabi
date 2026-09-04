@@ -17,8 +17,10 @@ import {
   collectRestyleSlots,
   injectRestyleMediaScript,
   replaceMediaUrl,
+  sealPaintedHtml,
   type PaintedMedia,
 } from '../../src/lib/restyle-slots';
+import { libraryFileLabel, placeMediaWithAi } from '../../src/lib/restyle-place';
 
 /**
  * Background function (up to 15 min) that performs the Chimera Protocol
@@ -1325,43 +1327,60 @@ function collectVideos(html: string): Array<{ src: string; section: LandingSecti
   return out.slice(0, 6);
 }
 
-function applyAffiliateMedia(
+async function applyAffiliateMedia(
   html: string,
   stills: LandingMediaItem[],
   videos: LandingMediaItem[],
   used: Set<string>,
   pageUrl = '',
-): { html: string; placed: number; videos: number } {
+  productName = '',
+): Promise<{ html: string; placed: number; videos: number }> {
   let out = html;
-  const asSection = (raw: string): LandingSection =>
-    isLandingSection(raw) ? raw : 'other';
-  const slots = collectRestyleSlots(out, 24, pageUrl);
-  const imgSlots = slots
-    .filter((s) => s.kind !== 'video')
-    .map((s) => ({ ...s, section: asSection(s.section) }));
-  const videoSlots = slots
-    .filter((s) => s.kind === 'video')
-    .map((s) => ({ ...s, section: asSection(s.section || 'video') }));
+  const slots = collectRestyleSlots(out, 40, pageUrl);
+  const pool = [...stills, ...videos];
+  const byId = new Map(pool.map((m) => [String(m.id), m]));
+  let assignments: Awaited<ReturnType<typeof placeMediaWithAi>> = [];
+  try {
+    assignments = await placeMediaWithAi({
+      productName,
+      slots: slots.map((s) => ({
+        id: s.id,
+        kind: s.kind,
+        context: s.context || s.alt || '',
+        width: s.width,
+        height: s.height,
+      })),
+      library: pool.map((m) => ({
+        id: String(m.id),
+        kind: m.kind,
+        name: m.name || '',
+        file: libraryFileLabel(m),
+      })),
+    });
+  } catch {
+    assignments = [];
+  }
   const paints: PaintedMedia[] = [];
   let placed = 0;
   let vids = 0;
-  for (const { slot, item } of matchLandingMediaToSlots(imgSlots, stills, used)) {
+  for (const slot of slots) {
+    const plan = assignments.find((a) => a.slotId === slot.id);
+    const item = plan?.mediaId ? byId.get(plan.mediaId) : null;
     if (!item?.storedUrl) continue;
+    used.add(String(item.id));
     if (typeof slot.domIndex === 'number') {
-      paints.push({ tag: slot.domTag === 'video' ? 'video' : 'img', index: slot.domIndex, url: item.storedUrl });
+      paints.push({
+        tag: slot.domTag === 'video' || slot.kind === 'video' ? 'video' : 'img',
+        index: slot.domIndex,
+        url: item.storedUrl,
+      });
     }
     out = replaceMediaUrl(out, slot.src, item.storedUrl, pageUrl);
-    placed++;
-  }
-  for (const { slot, item } of matchLandingMediaToSlots(videoSlots, videos, used)) {
-    if (!item?.storedUrl) continue;
-    if (typeof slot.domIndex === 'number') {
-      paints.push({ tag: 'video', index: slot.domIndex, url: item.storedUrl });
-    }
-    out = replaceMediaUrl(out, slot.src, item.storedUrl, pageUrl);
-    vids++;
+    if (slot.kind === 'video') vids++;
+    else placed++;
   }
   if (paints.length) out = applyPaintedMedia(out, paints);
+  out = sealPaintedHtml(out);
   if (paints.length) out = injectRestyleMediaScript(out, paints);
   return { html: out, placed, videos: vids };
 }
@@ -1768,7 +1787,7 @@ CRITICAL RULES:
       const stills = offer.filter((m) => m.kind === 'image' || m.kind === 'gif');
       const videos = offer.filter((m) => m.kind === 'video');
       if (stills.length || videos.length) {
-        const applied = applyAffiliateMedia(html, stills, videos, ctx.mediaUsed, page.sourceUrl || '');
+        const applied = await applyAffiliateMedia(html, stills, videos, ctx.mediaUsed, page.sourceUrl || '', ctx.productName);
         html = applied.html;
         imgRes = { html, generated: 0, productSwaps: 0, analyzed: 0, placed: applied.placed, videos: applied.videos, remaining: 0, total: 0, processed: 0 };
       }
