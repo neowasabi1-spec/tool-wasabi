@@ -11,12 +11,14 @@ import {
   getDatasetItems,
   mapperForPlatform,
   type AdPlatform,
+  type MappedAd,
 } from '@/lib/apify';
 import { adExistsByExternalId, insertCompetitorAd, ensureBrand } from '@/lib/competitor-ads';
 import { transcribeVideo } from '@/lib/transcribe';
 import { absolutizeUrlsInHtml } from '@/lib/spa-rescue';
 import { extractLandingMediaFromHtml, isJunkLandingHost } from '@/lib/landing-media';
 import { isOnNiche } from '@/lib/competitor-relevance';
+import { hostOf, judgeAdvertisers, type AdvertiserCard, type ProductProfile } from '@/lib/competitor-judge';
 import { shortApifyWebhookUrl } from '@/lib/discovery-lexicon';
 
 // Download cap for a single creative. Generous so even long VSL-style videos
@@ -112,6 +114,35 @@ const NOISE_TERMS = /\b(shopify|whatchimp|manychat|klaviyo|mailchimp|hubspot|sal
 function isRealAdvertiser(name: string | undefined): boolean {
   if (!name) return false;
   return !NOISE_TERMS.test(name);
+}
+
+/** Advertiser identity for grouping: page name, else landing host. */
+function advertiserKey(m: MappedAd): string {
+  const name = (m.pageName || '').trim().toLowerCase();
+  return name || hostOf(m.landingUrl) || '(unknown)';
+}
+
+/** One card per advertiser with a few readable ad texts for the model. */
+function advertiserCards(items: Array<MappedAd | null>): AdvertiserCard[] {
+  const byKey = new Map<string, AdvertiserCard>();
+  for (const m of items) {
+    if (!m) continue;
+    const id = advertiserKey(m);
+    let card = byKey.get(id);
+    if (!card) {
+      card = { id, name: (m.pageName || '').trim() || hostOf(m.landingUrl) || 'Unknown', samples: [], landingHost: '' };
+      byKey.set(id, card);
+    }
+    if (!card.landingHost) card.landingHost = hostOf(m.landingUrl);
+    const text = [m.headline, m.hook, m.bodyText]
+      .map((s) => String(s || '').replace(/\s+/g, ' ').trim())
+      .filter(Boolean)
+      .join(' — ');
+    if (text && card.samples.length < 4 && !card.samples.some((s) => s.slice(0, 80) === text.slice(0, 80))) {
+      card.samples.push(text);
+    }
+  }
+  return [...byKey.values()];
 }
 
 /** True for a real advertiser destination (not a social/ad-platform host,
@@ -286,7 +317,9 @@ export async function ingestDataset(opts: {
   brandId?: number;
   datasetId: string;
   platform?: AdPlatform;
-  /** Discovery-only: keep creatives that mention the product, drop the rest. */
+  /** Discovery-only: the product the model judges competitors against. */
+  product?: ProductProfile | null;
+  /** Discovery-only fallback when the model cannot be asked: keyword include/exclude. */
   includeTerms?: string[];
   excludeTerms?: string[];
 }): Promise<{ added: number; skipped: number; failed: number; brands: number; landings: number }> {
@@ -295,7 +328,7 @@ export async function ingestDataset(opts: {
   const fixedBrandId = opts.brandId && opts.brandId > 0 ? opts.brandId : 0;
   const includeTerms = opts.includeTerms || [];
   const excludeTerms = opts.excludeTerms || [];
-  const discoveryFilter = !fixedBrandId && includeTerms.length > 0;
+  const discovery = !fixedBrandId;
   const map = mapperForPlatform(platform);
   const items = await getDatasetItems(datasetId);
   const startedAt = Date.now();
@@ -309,14 +342,30 @@ export async function ingestDataset(opts: {
 
   const platformLabel = platform === 'tiktok' ? 'TikTok' : platform === 'google' ? 'Google' : '';
 
-  for (const raw of items) {
-    const mapped = map(raw);
+  const mappedItems = items.map((raw) => map(raw));
+
+  // Discovery: the model reads every advertiser's copy once and says whether
+  // it competes with our product. Keyword include/exclude is only the fallback
+  // when the model cannot be asked.
+  let keep: ((m: MappedAd) => boolean) | null = null;
+  if (discovery && opts.product?.name) {
+    try {
+      const verdicts = await judgeAdvertisers(opts.product, advertiserCards(mappedItems));
+      keep = (m) => verdicts.get(advertiserKey(m))?.competitor === true;
+      const yes = [...verdicts.values()].filter((v) => v.competitor).length;
+      console.log(`[ingestDataset] ${platform}: model kept ${yes}/${verdicts.size} advertisers for "${opts.product.name}"`);
+    } catch (e) {
+      console.warn('[ingestDataset] competitor judge failed, keyword fallback:', (e as Error).message);
+    }
+  }
+  if (!keep && discovery && includeTerms.length > 0) {
+    keep = (m) => isOnNiche([m.pageName, m.headline, m.hook, m.bodyText, m.landingUrl], includeTerms, excludeTerms);
+  }
+
+  for (const mapped of mappedItems) {
     if (!mapped) { failed++; continue; }
 
-    const nicheParts = [
-      mapped.pageName, mapped.headline, mapped.hook, mapped.bodyText, mapped.landingUrl,
-    ];
-    if (discoveryFilter && !isOnNiche(nicheParts, includeTerms, excludeTerms)) {
+    if (keep && !keep(mapped)) {
       skipped++;
       continue;
     }

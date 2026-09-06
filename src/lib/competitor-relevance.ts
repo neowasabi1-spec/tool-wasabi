@@ -1,21 +1,14 @@
 /**
- * Keep Chimera competitor discovery on-niche.
+ * Competitor discovery search terms.
  *
- * Meta/TikTok/Google keyword search is loose: a term like "caffè" or
- * "weight loss" returns coffee shops, machines, gyms, SaaS. We only search
- * multi-word product phrases, and at ingest we drop creatives whose copy /
- * landing does not mention the product (or mentions a known off-niche trap).
+ * Search is deliberately WIDE (many multi-word phrases); relevance is decided
+ * by the model reading each advertiser's ads (competitor-judge). The keyword
+ * include/exclude here is only the fallback when the model cannot be asked.
  */
-
-const WEAK_SINGLE =
-  /^(coffee|caff[eè]|dieta?|health|salute|wellness|beauty|bellezza|vitamin[ae]?|supplement|integratore|dimagri\w*|weight|loss|slim|booster|offer|sale|promo|natural|organic|online|shop|product|best|top)$/i;
 
 const ALWAYS_EXCLUDE = [
   'shopify', 'amazon', 'temu', 'shein', 'aliexpress', 'ebay',
-  'coffee shop', 'coffee machine', 'espresso machine', 'macchina caffè',
-  'macchina del caffè', 'barista', 'cafeteria', 'kaffeemaschine',
-  'restaurant', 'hiring', 'we are hiring', 'karriere', 'recrut',
-  'dropshipping', 'print on demand', 'make money online',
+  'hiring', 'we are hiring', 'dropshipping', 'print on demand', 'make money online',
 ];
 
 export function fold(s: string): string {
@@ -42,14 +35,11 @@ export function parseTermList(raw: string, sep = /[\n,|]+/): string[] {
   return out;
 }
 
-/** A search query that will not dump the whole ad library. */
+/** A search query that will not dump the whole ad library: two or more words. */
 export function isSpecificKeyword(k: string): boolean {
   const t = k.trim();
   if (t.length < 8) return false;
-  const words = t.split(/\s+/).filter(Boolean);
-  if (words.length < 2) return false;
-  if (words.length === 1 && WEAK_SINGLE.test(words[0])) return false;
-  return true;
+  return t.split(/\s+/).filter(Boolean).length >= 2;
 }
 
 /** Bigrams from the product name after a brand prefix ("Wellaray — Slim Coffee"). */
@@ -69,7 +59,7 @@ export function seedPhrasesFromProduct(product: string): string[] {
   return out.filter(isSpecificKeyword);
 }
 
-export function pickSearchTerms(candidates: string[], product: string, max = 4): string[] {
+export function pickSearchTerms(candidates: string[], product: string, max = 8): string[] {
   const specific = candidates.filter(isSpecificKeyword);
   const seeds = seedPhrasesFromProduct(product);
   const merged: string[] = [];
@@ -107,7 +97,7 @@ export function parseDiscoveryLexicon(raw: string, product: string): DiscoveryLe
   const search = parseTermList(hasSections ? section('SEARCH') : text);
   const include = parseTermList(section('INCLUDE'));
   const exclude = parseTermList(section('EXCLUDE'));
-  const picked = pickSearchTerms(search, product, 4);
+  const picked = pickSearchTerms(search, product, 8);
   // Do NOT require our brand name in the ad copy — that collapses discovery
   // to a single advertiser. INCLUDE stays category/mechanism signals.
   const includeMerged = parseTermList([...picked, ...include].join('\n')).slice(0, 16);

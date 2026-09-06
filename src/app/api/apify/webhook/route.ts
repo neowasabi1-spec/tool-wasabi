@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { ingestDataset, webhookSecret } from '@/lib/competitor-scrape';
 import type { AdPlatform } from '@/lib/apify';
 import { decodeLexiconParam } from '@/lib/competitor-relevance';
+import type { ProductProfile } from '@/lib/competitor-judge';
 import { loadDiscoveryLexicon, webhookKeyMatches } from '@/lib/discovery-lexicon';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 
@@ -13,6 +14,25 @@ export const maxDuration = 300;
 
 function parsePlatform(v: string | null): AdPlatform {
   return v === 'tiktok' || v === 'google' ? v : 'meta';
+}
+
+/** Older projects have no stored profile: describe the product from the project row. */
+async function productFromProject(projectId: string): Promise<ProductProfile | null> {
+  try {
+    const { data } = await supabaseAdmin
+      .from('projects')
+      .select('name, description, brief')
+      .eq('id', projectId)
+      .maybeSingle();
+    const row = (data || {}) as { name?: string; description?: string | null; brief?: unknown };
+    const name = String(row.name || '').trim();
+    if (!name) return null;
+    const brief = typeof row.brief === 'string' ? row.brief : '';
+    const description = String(row.description || '').trim() || brief.replace(/\s+/g, ' ').slice(0, 900);
+    return { name, description };
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -55,10 +75,14 @@ export async function POST(req: NextRequest) {
 
   let includeTerms = decodeLexiconParam(url.searchParams.get('include'));
   let excludeTerms = decodeLexiconParam(url.searchParams.get('exclude'));
-  if (!includeTerms.length && !excludeTerms.length) {
+  let product: ProductProfile | null = null;
+  if (brandId <= 0) {
     const stored = await loadDiscoveryLexicon(supabaseAdmin, projectId);
-    includeTerms = stored.include;
-    excludeTerms = stored.exclude;
+    if (!includeTerms.length && !excludeTerms.length) {
+      includeTerms = stored.include;
+      excludeTerms = stored.exclude;
+    }
+    product = stored.product || (await productFromProject(projectId));
   }
 
   const result = await ingestDataset({
@@ -66,6 +90,7 @@ export async function POST(req: NextRequest) {
     brandId: brandId > 0 ? brandId : undefined,
     datasetId,
     platform,
+    product,
     includeTerms,
     excludeTerms,
   });

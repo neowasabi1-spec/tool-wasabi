@@ -9,14 +9,17 @@ export function lexiconObjectKey(projectId: string): string {
   return `${projectId}/chimera/discovery-lexicon.json`;
 }
 
+export type StoredProductProfile = { name: string; description?: string; market?: string };
+
 export async function saveDiscoveryLexicon(
   sb: { storage: { from: (b: string) => { upload: Function; remove: Function } } },
   projectId: string,
   include: string[],
   exclude: string[],
+  product?: StoredProductProfile,
 ): Promise<void> {
   const key = lexiconObjectKey(projectId);
-  const body = JSON.stringify({ include, exclude, savedAt: new Date().toISOString() });
+  const body = JSON.stringify({ include, exclude, product: product || null, savedAt: new Date().toISOString() });
   const bucket = sb.storage.from(BUCKET);
   await bucket.remove([key]).catch(() => {});
   const { error } = await bucket.upload(key, Buffer.from(body, 'utf-8'), {
@@ -29,18 +32,23 @@ export async function saveDiscoveryLexicon(
 export async function loadDiscoveryLexicon(
   sb: { storage: { from: (b: string) => { download: Function } } },
   projectId: string,
-): Promise<{ include: string[]; exclude: string[] }> {
+): Promise<{ include: string[]; exclude: string[]; product: StoredProductProfile | null }> {
   const { data, error } = await sb.storage.from(BUCKET).download(lexiconObjectKey(projectId));
-  if (error || !data) return { include: [], exclude: [] };
+  if (error || !data) return { include: [], exclude: [], product: null };
   try {
     const text = await (data as Blob).text();
-    const obj = JSON.parse(text) as { include?: unknown; exclude?: unknown };
+    const obj = JSON.parse(text) as { include?: unknown; exclude?: unknown; product?: unknown };
+    const p = obj.product && typeof obj.product === 'object' ? (obj.product as Record<string, unknown>) : null;
+    const product = p && typeof p.name === 'string' && p.name.trim()
+      ? { name: p.name, description: typeof p.description === 'string' ? p.description : '', market: typeof p.market === 'string' ? p.market : '' }
+      : null;
     return {
       include: Array.isArray(obj.include) ? obj.include.map(String) : [],
       exclude: Array.isArray(obj.exclude) ? obj.exclude.map(String) : [],
+      product,
     };
   } catch {
-    return { include: [], exclude: [] };
+    return { include: [], exclude: [], product: null };
   }
 }
 

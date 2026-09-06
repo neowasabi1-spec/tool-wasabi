@@ -1058,30 +1058,33 @@ async function runCompetitor(supabase: SupabaseClient, projectId: string, input:
   //    TikTok and Google. These MUST be in the target market's language, otherwise
   //    the ad libraries surface foreign (US/English) brands.
   const geo = (input.market || input.language || '').trim() || country;
+  // Cast a WIDE net here: every phrase a buyer or an affiliate would use for
+  // this kind of product. Relevance is decided afterwards by the model reading
+  // each advertiser's ads (competitor-judge), not by these words.
   const kwInstructions = `You are a media buyer doing competitor research for the ${geo} market.
-Find LOCAL competitors' ads for THIS product line — not unrelated shops.
+Goal: surface EVERY advertiser selling the same kind of product as ours — all brands, formats, clones and affiliates. Missing a competitor is worse than a noisy search; irrelevant advertisers are removed later by a reader that looks at each ad.
 
 Output EXACTLY this format (no extra text):
 
 SEARCH
-<4 phrases, one per line>
+<10 phrases, one per line>
 
 INCLUDE
-<8-12 short phrases that MUST appear in a relevant ad>
+<8-12 short category phrases>
 
 EXCLUDE
-<8-12 off-niche traps this search often pulls>
+<6-10 off-niche traps this search often pulls>
 
 CRITICAL RULES:
-- SEARCH phrases MUST be 2-4 words (never a single word). Combine product FORM + outcome the way local affiliates write copy. Examples: "caffè dimagrante", "slim coffee", "konjac jelly", "appetite gummy" — NOT our brand, NOT a single generic word.
-- Write 4 DIFFERENT searches so we cover the category (form, mechanism, slang, outcome) — not 4 rewrites of one phrase.
-- Write SEARCH + INCLUDE in the LOCAL LANGUAGE of ${geo}. Add the English product-form phrase only if locals also advertise in English.
+- SEARCH phrases MUST be 2-4 words (never a single word). Cover the category from every side: product form, key ingredient/mechanism, the problem it solves, the outcome promised, how buyers nickname it, how affiliates headline it. Examples of the STYLE: "caffè dimagrante", "slim coffee", "konjac jelly", "appetite gummy" — NOT our brand, NOT a single generic word.
+- 10 genuinely DIFFERENT searches — not rewrites of one phrase.
+- Write in the LOCAL LANGUAGE of ${geo}; add the English phrases too when locals also see English ads.
 - INCLUDE = category signals (form + problem + mechanism/ingredients). Never our brand name.
-- EXCLUDE = shops, machines, generic retail, other health verticals, jobs, SaaS.
+- EXCLUDE = shops, machines, generic retail, other verticals, jobs, SaaS.
 - Do NOT output brand or company names.
 - NEVER output generic platform/tech terms (shopify, ecommerce, dropshipping).`;
   const kwUser = `Product: ${productName}\nMarket: ${input.market || country}\n${input.description ? `Description: ${input.description}\n` : ''}${link ? `Competitor link: ${link}\n` : ''}\nGive SEARCH / INCLUDE / EXCLUDE now.`;
-  const kwRaw = await callClaude({ task: 'ad', instructions: kwInstructions, brief, marketResearch: research, userMessage: kwUser, maxTokens: 500 });
+  const kwRaw = await callClaude({ task: 'ad', instructions: kwInstructions, brief, marketResearch: research, userMessage: kwUser, maxTokens: 700 });
 
   const lexicon = parseDiscoveryLexicon(kwRaw, productName);
   const searchTerms = lexicon.search;
@@ -1098,7 +1101,14 @@ CRITICAL RULES:
   }
   const secret = process.env.APIFY_WEBHOOK_SECRET || process.env.CRON_SECRET || '';
   try {
-    await saveDiscoveryLexicon(supabase, projectId, includeTerms, excludeTerms);
+    const descr = (input.description || '').trim()
+      || String(project.description || '').trim()
+      || brief.replace(/\s+/g, ' ').slice(0, 900);
+    await saveDiscoveryLexicon(supabase, projectId, includeTerms, excludeTerms, {
+      name: productName,
+      description: descr.slice(0, 900),
+      market: input.market || country,
+    });
   } catch (e) {
     console.warn('[pipeline] discovery lexicon:', (e as Error).message);
   }
@@ -1117,17 +1127,20 @@ CRITICAL RULES:
     if (run.ok) { started.push({ platform: 'meta', keyword: '(link)', runId: run.runId! }); }
     else runs.push(`Meta(link): ${run.error}`);
   }
+  // Wide: many phrases × more ads per phrase. The webhook's model judge
+  // keeps only advertisers that actually compete with the product.
+  const PER_SEARCH = 40;
   for (const kw of searchTerms) {
     const metaUrl = fbAdLibrarySearchUrl(kw, country);
-    const run = await startApifyAdsRun(metaUrl, 20, webhookFor('meta'));
+    const run = await startApifyAdsRun(metaUrl, PER_SEARCH, webhookFor('meta'));
     if (run.ok) started.push({ platform: 'meta', keyword: kw, runId: run.runId! });
     else runs.push(`Meta(${kw}): ${run.error}`);
 
-    const tk = await startApifyTiktokRun(kw, country, 20, webhookFor('tiktok'));
+    const tk = await startApifyTiktokRun(kw, country, PER_SEARCH, webhookFor('tiktok'));
     if (tk.ok) started.push({ platform: 'tiktok', keyword: kw, runId: tk.runId! });
     else runs.push(`TikTok(${kw}): ${tk.error}`);
 
-    const gg = await startApifyGoogleRun(kw, country, 20, webhookFor('google'));
+    const gg = await startApifyGoogleRun(kw, country, PER_SEARCH, webhookFor('google'));
     if (gg.ok) started.push({ platform: 'google', keyword: kw, runId: gg.runId! });
     else runs.push(`Google(${kw}): ${gg.error}`);
   }
@@ -1139,9 +1152,8 @@ CRITICAL RULES:
       : `Competitor research: no runs started. ${runs.join(' | ')}`;
 
   const output = [
-    `Search keywords: ${searchTerms.join(', ')}`,
-    includeTerms.length ? `Keep ads mentioning: ${includeTerms.join(', ')}` : '',
-    excludeTerms.length ? `Drop off-niche: ${excludeTerms.slice(0, 8).join(', ')}` : '',
+    `Search keywords (${searchTerms.length}): ${searchTerms.join(', ')}`,
+    'Relevance: the model reads each advertiser’s ads and keeps only real competitors of this product.',
     started.length ? `\nStarted runs:\n${started.map((s) => `- ${s.platform} · "${s.keyword}" · run ${s.runId}`).join('\n')}` : '',
     runs.length ? `\nErrors:\n${runs.map((r) => `- ${r}`).join('\n')}` : '',
   ].filter(Boolean).join('\n');
