@@ -353,10 +353,18 @@ export async function ingestDataset(opts: {
   // it competes with our product. Keyword include/exclude is only the fallback
   // when the model cannot be asked.
   let keep: ((m: MappedAd) => boolean) | null = null;
+  const byKeywords = (m: MappedAd) =>
+    isOnNiche([m.pageName, m.headline, m.hook, m.bodyText, m.landingUrl], includeTerms, excludeTerms);
   if (discovery && opts.product?.name) {
     try {
       const verdicts = await judgeAdvertisers(opts.product, advertiserCards(mappedItems));
-      keep = (m) => verdicts.get(advertiserKey(m))?.competitor === true;
+      // Model verdict when it answered for this advertiser; keyword check only
+      // for the ones it did not (a failed batch), never a blanket reject.
+      keep = (m) => {
+        const v = verdicts.get(advertiserKey(m));
+        if (v) return v.competitor;
+        return includeTerms.length ? byKeywords(m) : true;
+      };
       const yes = [...verdicts.values()].filter((v) => v.competitor).length;
       console.log(`[ingestDataset] ${platform}: model kept ${yes}/${verdicts.size} advertisers for "${opts.product.name}"`);
     } catch (e) {
@@ -364,7 +372,7 @@ export async function ingestDataset(opts: {
     }
   }
   if (!keep && discovery && includeTerms.length > 0) {
-    keep = (m) => isOnNiche([m.pageName, m.headline, m.hook, m.bodyText, m.landingUrl], includeTerms, excludeTerms);
+    keep = byKeywords;
   }
 
   for (const mapped of mappedItems) {

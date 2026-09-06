@@ -7,6 +7,7 @@
  * without dragging in coffee shops, SaaS and marketplaces.
  */
 import { getAnthropicKey } from '@/lib/anthropic-key';
+import { sliceWellFormed, wellFormed } from '@/lib/well-formed';
 
 export type ProductProfile = {
   name: string;
@@ -39,8 +40,15 @@ export async function judgeAdvertisers(
   const batches: AdvertiserCard[][] = [];
   for (let i = 0; i < cards.length; i += BATCH) batches.push(cards.slice(i, i + BATCH));
 
-  const results = await Promise.all(batches.map((b) => judgeBatch(key, product, b)));
-  for (const r of results) for (const v of r) out.set(v.id, v);
+  // One failing batch must not throw away the verdicts of the others: cards
+  // the model never answered for are simply absent and the caller falls back.
+  const results = await Promise.allSettled(batches.map((b) => judgeBatch(key, product, b)));
+  let failed = 0;
+  for (const r of results) {
+    if (r.status === 'fulfilled') for (const v of r.value) out.set(v.id, v);
+    else { failed++; console.warn('[competitor-judge] batch failed:', (r.reason as Error)?.message); }
+  }
+  if (failed && failed === results.length) throw new Error('every judge batch failed');
   return out;
 }
 
@@ -64,16 +72,16 @@ One object per input id.`;
   const user = JSON.stringify(
     cards.map((c) => ({
       id: c.id,
-      name: c.name.slice(0, 80),
+      name: sliceWellFormed(c.name, 80),
       landing: c.landingHost || '',
-      ads: c.samples.slice(0, 4).map((s) => s.slice(0, 260)),
+      ads: c.samples.slice(0, 4).map((s) => sliceWellFormed(s, 260)),
     })),
   );
 
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
-    body: JSON.stringify({ model: MODEL, max_tokens: 3000, system, messages: [{ role: 'user', content: user }] }),
+    body: JSON.stringify({ model: MODEL, max_tokens: 3000, system: wellFormed(system), messages: [{ role: 'user', content: wellFormed(user) }] }),
     signal: AbortSignal.timeout(45_000),
   });
   if (!res.ok) throw new Error(`judge HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);

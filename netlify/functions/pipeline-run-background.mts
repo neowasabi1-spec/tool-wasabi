@@ -3,6 +3,7 @@ import { getCoreKnowledge, getKnowledgeForTask } from '../../src/knowledge/copyw
 import { parseDiscoveryLexicon } from '../../src/lib/competitor-relevance';
 import { saveDiscoveryLexicon, shortApifyWebhookUrl } from '../../src/lib/discovery-lexicon';
 import { extractLandingMediaFromUrl, listLandingMedia } from '../../src/lib/landing-media';
+import { wellFormed } from '../../src/lib/well-formed';
 
 /**
  * Background function (up to 15 min) that RUNS the Project Autopilot pipeline
@@ -148,16 +149,16 @@ async function callClaude(opts: ClaudeOpts): Promise<string> {
   try { core = getCoreKnowledge().trim(); } catch { core = ''; }
   try { tier2 = getKnowledgeForTask((opts.task || 'general') as never).trim(); } catch { tier2 = ''; }
 
-  const tier1 = [opts.instructions.trim(), core].filter(Boolean).join('\n\n---\n\n');
+  const tier1 = wellFormed([opts.instructions.trim(), core].filter(Boolean).join('\n\n---\n\n'));
   system.push({ type: 'text', text: tier1, cache_control: { type: 'ephemeral' } });
-  if (tier2) system.push({ type: 'text', text: tier2, cache_control: { type: 'ephemeral' } });
+  if (tier2) system.push({ type: 'text', text: wellFormed(tier2), cache_control: { type: 'ephemeral' } });
 
   // User message with brief + research prefixed.
   const sections: string[] = [];
   if (opts.brief?.trim()) sections.push('# PRODUCT BRIEF', '', opts.brief.trim());
   if (opts.marketResearch?.trim()) sections.push('# MARKET RESEARCH', '', opts.marketResearch.trim());
   sections.push('# REQUEST', '', opts.userMessage);
-  const userContent = sections.join('\n\n');
+  const userContent = wellFormed(sections.join('\n\n'));
 
   const res = await fetch(ANTHROPIC_URL, {
     method: 'POST',

@@ -23,6 +23,7 @@ import {
   type PaintedMedia,
 } from '../../src/lib/restyle-slots';
 import { placeMediaWithAi } from '../../src/lib/restyle-place';
+import { wellFormed } from '../../src/lib/well-formed';
 
 /**
  * Background function (up to 15 min) that performs the Chimera Protocol
@@ -136,8 +137,8 @@ async function callClaudeText(system: string, user: string, maxTokens: number, t
     body: JSON.stringify({
       model: MODEL,
       max_tokens: maxTokens,
-      system,
-      messages: [{ role: 'user', content: user }],
+      system: wellFormed(system),
+      messages: [{ role: 'user', content: wellFormed(user) }],
     }),
     signal: AbortSignal.timeout(timeoutMs),
   });
@@ -156,11 +157,11 @@ async function callClaudeVision(
   if (image) {
     content.push({ type: 'image', source: { type: 'base64', media_type: image.mediaType, data: image.b64 } });
   }
-  content.push({ type: 'text', text: userText });
+  content.push({ type: 'text', text: wellFormed(userText) });
   const res = await fetch(ANTHROPIC_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-api-key': anthropicKey(), 'anthropic-version': ANTHROPIC_VERSION },
-    body: JSON.stringify({ model: MODEL, max_tokens: maxTokens, system, messages: [{ role: 'user', content }] }),
+    body: JSON.stringify({ model: MODEL, max_tokens: maxTokens, system: wellFormed(system), messages: [{ role: 'user', content }] }),
     signal: AbortSignal.timeout(90_000),
   });
   if (!res.ok) throw new Error(`Anthropic ${res.status}: ${(await res.text()).slice(0, 300)}`);
