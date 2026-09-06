@@ -9,7 +9,14 @@ export function lexiconObjectKey(projectId: string): string {
   return `${projectId}/chimera/discovery-lexicon.json`;
 }
 
-export type StoredProductProfile = { name: string; description?: string; market?: string };
+export type StoredProductProfile = {
+  name: string;
+  description?: string;
+  market?: string;
+  /** Affiliate run: the library holds the promoted offer's photos only —
+   *  competitor landings are saved for research but their media is not pulled in. */
+  affiliate?: boolean;
+};
 
 export async function saveDiscoveryLexicon(
   sb: { storage: { from: (b: string) => { upload: Function; remove: Function } } },
@@ -40,7 +47,12 @@ export async function loadDiscoveryLexicon(
     const obj = JSON.parse(text) as { include?: unknown; exclude?: unknown; product?: unknown };
     const p = obj.product && typeof obj.product === 'object' ? (obj.product as Record<string, unknown>) : null;
     const product = p && typeof p.name === 'string' && p.name.trim()
-      ? { name: p.name, description: typeof p.description === 'string' ? p.description : '', market: typeof p.market === 'string' ? p.market : '' }
+      ? {
+          name: p.name,
+          description: typeof p.description === 'string' ? p.description : '',
+          market: typeof p.market === 'string' ? p.market : '',
+          affiliate: p.affiliate === true,
+        }
       : null;
     return {
       include: Array.isArray(obj.include) ? obj.include.map(String) : [],

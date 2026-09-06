@@ -2,6 +2,7 @@ import { createClient } from '@supabase/supabase-js';
 import { extractAllTextsUniversal } from '../../src/lib/universal-text-extractor';
 import {
   extractLandingMediaForProject,
+  extractLandingMediaFromUrl,
   listLandingMedia,
   pickOfferLandingMedia,
   matchLandingMediaToSlots,
@@ -393,10 +394,14 @@ const SAFE_TEXT_PREFIXES = [
   'tag:button', 'tag:a', 'tag:label', 'tag:figcaption',
   'tag:blockquote', 'tag:summary', 'tag:legend', 'tag:option',
   'tag:span', 'tag:strong', 'tag:em', 'tag:b', 'tag:i', 'tag:u',
-  'tag:small', 'tag:mark', 'tag:cite', 'tag:q',
+  'tag:small', 'tag:mark', 'tag:cite', 'tag:q', 'tag:abbr',
+  'tag:div', 'tag:section', 'tag:article', 'tag:header', 'tag:footer', 'tag:main', 'tag:aside',
   'mixed:p', 'mixed:div', 'mixed:li', 'mixed:td', 'mixed:th',
   'mixed:h1', 'mixed:h2', 'mixed:h3', 'mixed:h4', 'mixed:h5', 'mixed:h6',
   'mixed:span', 'mixed:strong', 'mixed:em', 'mixed:a', 'mixed:b', 'mixed:i',
+  'mixed:button', 'mixed:header', 'mixed:footer', 'mixed:section', 'mixed:article',
+  'mixed:nav', 'mixed:aside', 'mixed:main', 'mixed:figcaption', 'mixed:caption',
+  'mixed:summary', 'mixed:label', 'mixed:blockquote', 'mixed:dt', 'mixed:dd',
 ];
 const SAFE_ATTRS = new Set(['alt', 'title', 'placeholder', 'aria-label', 'value']);
 
@@ -689,11 +694,19 @@ function applyRewrites(
     }
     return out;
   }
-  var blockSel = 'h1,h2,h3,h4,h5,h6,p,li,td,th,dt,dd,button,a,label,figcaption,blockquote,summary,legend,span,strong,em,b,i';
+  var blockSel = 'h1,h2,h3,h4,h5,h6,p,li,td,th,dt,dd,button,a,label,figcaption,blockquote,summary,legend,span,strong,em,b,i,div';
+  var containerSel = 'h1,h2,h3,h4,h5,h6,p,li,td,th,dt,dd,ul,ol,table,div,section,article,header,footer,nav,aside,main,form,blockquote,figure';
+  var mediaSel = 'img,video,picture,svg,iframe,input,select,textarea';
+  var keepSel = 'a,button,' + mediaSel;
+  function leafParagraph(el){
+    if(el.querySelector(containerSel)) return false;
+    if(el.querySelector(el.tagName==='A'||el.tagName==='BUTTON' ? mediaSel : keepSel)) return false;
+    return true;
+  }
   var elems = document.body ? document.body.querySelectorAll(blockSel) : [];
   for(var k=0;k<elems.length;k++){
     var el = elems[k];
-    if(el.querySelector(blockSel)) continue;
+    if(!leafParagraph(el)) continue;
     var fullNorm = normWS(el.textContent);
     if(!fullNorm) continue;
     for(var p2=0;p2<prepared.length;p2++){
@@ -738,7 +751,7 @@ function applyRewrites(
     var elems = document.body ? document.body.querySelectorAll(blockSel) : [];
     for(var k=0;k<elems.length;k++){
       var el = elems[k];
-      if(el.querySelector(blockSel)) continue;
+      if(!leafParagraph(el)) continue;
       var fullNorm = normWS(el.textContent);
       if(!fullNorm) continue;
       for(var p2=0;p2<prepared.length;p2++){
@@ -1894,6 +1907,17 @@ export default async (req: Request) => {
   if (research) parts.push(`MARKET RESEARCH:\n${research}`);
   log(`context brief=${brief.length}c research=${research.length}c desc=${description.length}c`);
   let landingItems = downloadedLandingMedia(await listLandingMedia(sb, projectId));
+  const offerUrl = typeof body.offerUrl === 'string' ? body.offerUrl.trim() : '';
+  if (!landingItems.length && imageMode === 'affiliate' && /^https?:\/\//i.test(offerUrl)) {
+    // Affiliate: the funnel must carry the promoted offer's own photos.
+    try {
+      const r = await extractLandingMediaFromUrl(sb, { projectId, url: offerUrl, limit: 40 });
+      log(`offer media from ${r.finalUrl}: found=${r.found} saved=${r.saved}`);
+      landingItems = downloadedLandingMedia(await listLandingMedia(sb, projectId));
+    } catch (e) {
+      log('offer media extract:', (e as Error).message);
+    }
+  }
   if (!landingItems.length) {
     try {
       await extractLandingMediaForProject(sb, projectId);

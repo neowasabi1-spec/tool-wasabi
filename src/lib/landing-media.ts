@@ -972,6 +972,48 @@ export async function ingestLandingMediaBytes(
   };
 }
 
+/**
+ * Fetch a landing page (offer link, tracker links followed) and pull its
+ * photos/videos into the project's library. Used in affiliate mode, where the
+ * only photos allowed on the funnel are the promoted offer's own.
+ */
+export async function extractLandingMediaFromUrl(
+  sb: Sb,
+  args: { projectId: string; url: string; ownerUserId?: string | null; limit?: number },
+): Promise<LandingExtractStats & { finalUrl: string }> {
+  const empty = { saved: 0, skipped: 0, found: 0, downloadFailed: 0, uploadFailed: 0, finalUrl: args.url };
+  const url = String(args.url || '').trim();
+  if (!/^https?:\/\//i.test(url)) return empty;
+  let html = '';
+  let finalUrl = url;
+  try {
+    const res = await fetch(url, {
+      redirect: 'follow',
+      signal: AbortSignal.timeout(20_000),
+      headers: {
+        Accept: 'text/html,application/xhtml+xml,*/*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+      },
+    });
+    finalUrl = res.url || url;
+    finalUrlCache.set(url, finalUrl);
+    html = res.ok ? await res.text() : '';
+  } catch {
+    return empty;
+  }
+  if (!html || html.length < 200) return { ...empty, finalUrl };
+  const stats = await extractLandingMediaFromHtml(sb, {
+    projectId: args.projectId,
+    html,
+    pageUrl: finalUrl,
+    ownerUserId: args.ownerUserId,
+    limit: args.limit,
+  });
+  return { ...stats, finalUrl };
+}
+
 /** Walk every competitor landing saved on the project and fill Image landings. */
 export async function extractLandingMediaForProject(
   sb: Sb,

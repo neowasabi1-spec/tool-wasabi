@@ -209,7 +209,9 @@ export async function saveCompetitorLandings(
   projectId: string,
   urls: string[],
   platformLabel = '',
+  opts: { collectMedia?: boolean } = {},
 ): Promise<number> {
+  const collectMedia = opts.collectMedia !== false;
   const MAX = 16;
   const { data: existingRows } = await supabaseAdmin
     .from('archived_funnels')
@@ -266,6 +268,7 @@ export async function saveCompetitorLandings(
     saved++;
     existing.add(url);
     existing.add(pageUrl);
+    if (!collectMedia) continue; // affiliate: another brand's photos never enter the offer library
     try {
       await extractLandingMediaFromHtml(supabaseAdmin, {
         projectId,
@@ -322,6 +325,8 @@ export async function ingestDataset(opts: {
   /** Discovery-only fallback when the model cannot be asked: keyword include/exclude. */
   includeTerms?: string[];
   excludeTerms?: string[];
+  /** False in affiliate runs: competitor landings are saved, their photos are not pulled into the library. */
+  collectMedia?: boolean;
 }): Promise<{ added: number; skipped: number; failed: number; brands: number; landings: number }> {
   const { projectId, datasetId } = opts;
   const platform: AdPlatform = opts.platform || 'meta';
@@ -456,7 +461,9 @@ export async function ingestDataset(opts: {
   // Best-effort: save discovered competitor landing pages into the project.
   let landings = 0;
   if (landingUrls.size) {
-    landings = await saveCompetitorLandings(projectId, [...landingUrls], platformLabel).catch(() => 0);
+    landings = await saveCompetitorLandings(projectId, [...landingUrls], platformLabel, {
+      collectMedia: opts.collectMedia !== false,
+    }).catch(() => 0);
   }
 
   return { added, skipped, failed, brands: touchedBrands.size, landings };

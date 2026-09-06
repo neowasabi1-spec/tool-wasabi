@@ -76,6 +76,7 @@ export async function POST(req: NextRequest) {
   let includeTerms = decodeLexiconParam(url.searchParams.get('include'));
   let excludeTerms = decodeLexiconParam(url.searchParams.get('exclude'));
   let product: ProductProfile | null = null;
+  let collectMedia = true;
   if (brandId <= 0) {
     const stored = await loadDiscoveryLexicon(supabaseAdmin, projectId);
     if (!includeTerms.length && !excludeTerms.length) {
@@ -83,6 +84,8 @@ export async function POST(req: NextRequest) {
       excludeTerms = stored.exclude;
     }
     product = stored.product || (await productFromProject(projectId));
+    // Affiliate runs: the library is the promoted offer's photos only.
+    collectMedia = !stored.product?.affiliate;
   }
 
   const result = await ingestDataset({
@@ -93,6 +96,7 @@ export async function POST(req: NextRequest) {
     product,
     includeTerms,
     excludeTerms,
+    collectMedia,
   });
   return NextResponse.json({ ok: true, platform, ...result });
 }

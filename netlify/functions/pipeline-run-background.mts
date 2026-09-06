@@ -2,6 +2,7 @@ import { createClient } from '@supabase/supabase-js';
 import { getCoreKnowledge, getKnowledgeForTask } from '../../src/knowledge/copywriting';
 import { parseDiscoveryLexicon } from '../../src/lib/competitor-relevance';
 import { saveDiscoveryLexicon, shortApifyWebhookUrl } from '../../src/lib/discovery-lexicon';
+import { extractLandingMediaFromUrl, listLandingMedia } from '../../src/lib/landing-media';
 
 /**
  * Background function (up to 15 min) that RUNS the Project Autopilot pipeline
@@ -954,7 +955,7 @@ Output clean markdown with EXACTLY these sections and sub-sections:
 
   const userMessage = `Product: ${productName}
 ${input.description ? `\nProvided description:\n${input.description}` : ''}
-${input.competitorLink ? `\nReference competitor link: ${input.competitorLink}` : ''}
+${input.competitorLink ? (input.imageMode === 'affiliate' ? `\nOffer page we promote (our product's own sales page): ${cleanOfferUrl(input.competitorLink)}` : `\nReference competitor link: ${input.competitorLink}`) : ''}
 
 Generate the FULL, deep RMBC-style unified research document for this product. Be exhaustive — this must be the definitive research dossier, not a summary.`;
 
@@ -1035,18 +1036,40 @@ Genera il brief completo. Basati fortemente sulla RICERCA DI MERCATO fornita nel
   };
 }
 
+/** Offer links carry click ids: show/store the page, not the tracker noise. */
+function cleanOfferUrl(raw: string): string {
+  try {
+    const u = new URL(raw);
+    return `${u.origin}${u.pathname}`;
+  } catch {
+    return raw;
+  }
+}
+
+/**
+ * Affiliate runs: the funnel must show the promoted offer's own photos. Pull
+ * them from the offer link into the project library before anything else.
+ */
+async function loadOfferMedia(
+  supabase: SupabaseClient,
+  projectId: string,
+  link: string,
+): Promise<string> {
+  if (!link) return 'No offer link — photos come from the landings saved on this project.';
+  try {
+    const before = (await listLandingMedia(supabase, projectId)).filter((m) => m.storedUrl).length;
+    const r = await extractLandingMediaFromUrl(supabase, { projectId, url: link, limit: 40 });
+    const after = (await listLandingMedia(supabase, projectId)).filter((m) => m.storedUrl).length;
+    return `Offer page ${cleanOfferUrl(r.finalUrl)}: ${r.found} media found, ${r.saved} new saved (library now ${after} files${before ? `, was ${before}` : ''}).`;
+  } catch (e) {
+    return `Offer page media: ${(e as Error).message}`;
+  }
+}
+
 async function runCompetitor(supabase: SupabaseClient, projectId: string, input: PipelineInput): Promise<StepResult> {
   const link = (input.competitorLink || '').trim();
-  if (input.imageMode === 'affiliate') {
-    return {
-      summary: 'Affiliate: other products are not scraped. Photos stay on this offer’s own landings.',
-      output: [
-        'Affiliate mode does not search Meta/TikTok/Google for other brands.',
-        'Mixing Lean Habit / Numae / Inno Shred photos onto this offer is disabled.',
-        link ? `Offer reference: ${link}` : 'Save this offer’s landings with the extension (or pick the funnel). Those photos are the only ones used.',
-      ].join('\n'),
-    };
-  }
+  const affiliate = input.imageMode === 'affiliate';
+  const offerNote = affiliate ? await loadOfferMedia(supabase, projectId, link) : '';
   const project = await loadProject(supabase, projectId);
   const research = sectionContentFrom(project.market_research);
   const brief = typeof project.brief === 'string' && project.brief.trim() ? (project.brief as string) : sectionContentFrom(project.brief);
@@ -1083,7 +1106,12 @@ CRITICAL RULES:
 - EXCLUDE = shops, machines, generic retail, other verticals, jobs, SaaS.
 - Do NOT output brand or company names.
 - NEVER output generic platform/tech terms (shopify, ecommerce, dropshipping).`;
-  const kwUser = `Product: ${productName}\nMarket: ${input.market || country}\n${input.description ? `Description: ${input.description}\n` : ''}${link ? `Competitor link: ${link}\n` : ''}\nGive SEARCH / INCLUDE / EXCLUDE now.`;
+  const linkLine = link
+    ? affiliate
+      ? `Offer page we promote (this IS our product): ${cleanOfferUrl(link)}\n`
+      : `Competitor link: ${link}\n`
+    : '';
+  const kwUser = `Product: ${productName}\nMarket: ${input.market || country}\n${input.description ? `Description: ${input.description}\n` : ''}${linkLine}\nGive SEARCH / INCLUDE / EXCLUDE now.`;
   const kwRaw = await callClaude({ task: 'ad', instructions: kwInstructions, brief, marketResearch: research, userMessage: kwUser, maxTokens: 700 });
 
   const lexicon = parseDiscoveryLexicon(kwRaw, productName);
@@ -1096,7 +1124,7 @@ CRITICAL RULES:
   if (!token || !base) {
     return {
       summary: !token ? 'Competitor keywords generated (Apify not configured: APIFY_KEY missing).' : 'Competitor keywords generated (URL env missing).',
-      output: `Search keywords:\n- ${searchTerms.join('\n- ')}\nInclude:\n- ${includeTerms.join('\n- ')}`,
+      output: `${offerNote ? `${offerNote}\n\n` : ''}Search keywords:\n- ${searchTerms.join('\n- ')}\nInclude:\n- ${includeTerms.join('\n- ')}`,
     };
   }
   const secret = process.env.APIFY_WEBHOOK_SECRET || process.env.CRON_SECRET || '';
@@ -1108,6 +1136,7 @@ CRITICAL RULES:
       name: productName,
       description: descr.slice(0, 900),
       market: input.market || country,
+      affiliate,
     });
   } catch (e) {
     console.warn('[pipeline] discovery lexicon:', (e as Error).message);
@@ -1152,6 +1181,8 @@ CRITICAL RULES:
       : `Competitor research: no runs started. ${runs.join(' | ')}`;
 
   const output = [
+    offerNote,
+    affiliate ? 'Affiliate: competitor ads and landings are saved for research; their photos stay out of this offer’s library.' : '',
     `Search keywords (${searchTerms.length}): ${searchTerms.join(', ')}`,
     'Relevance: the model reads each advertiser’s ads and keeps only real competitors of this product.',
     started.length ? `\nStarted runs:\n${started.map((s) => `- ${s.platform} · "${s.keyword}" · run ${s.runId}`).join('\n')}` : '',
@@ -1615,6 +1646,7 @@ async function runSwipe(supabase: SupabaseClient, projectId: string, input: Pipe
         market: marketGeo(input),
         mainImageUrl,
         imageMode: input.imageMode === 'affiliate' ? 'affiliate' : 'internal',
+        offerUrl: input.imageMode === 'affiliate' ? (input.competitorLink || '').trim() : '',
         pages,
       }),
       signal: AbortSignal.timeout(8_000),

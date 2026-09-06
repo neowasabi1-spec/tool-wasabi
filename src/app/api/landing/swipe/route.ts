@@ -58,9 +58,16 @@ const SAFE_TAG_PREFIXES = [
   'tag:blockquote', 'tag:summary', 'tag:legend', 'tag:option',
   'tag:span', 'tag:strong', 'tag:em', 'tag:b', 'tag:i', 'tag:u',
   'tag:small', 'tag:mark', 'tag:cite', 'tag:q', 'tag:abbr',
+  // Plain <div> copy: page builders (Funnelish, Nooro-style landers) put most
+  // of the sales copy in <div data-text="text">. Without this, half the page
+  // was silently never rewritten. Priority 7 so semantic tags still win the cap.
+  'tag:div', 'tag:section', 'tag:article', 'tag:header', 'tag:footer', 'tag:main', 'tag:aside',
   'mixed:p', 'mixed:div', 'mixed:li', 'mixed:td', 'mixed:th',
   'mixed:h1', 'mixed:h2', 'mixed:h3', 'mixed:h4', 'mixed:h5', 'mixed:h6',
   'mixed:span', 'mixed:strong', 'mixed:em', 'mixed:a', 'mixed:b', 'mixed:i',
+  'mixed:button', 'mixed:header', 'mixed:footer', 'mixed:section', 'mixed:article',
+  'mixed:nav', 'mixed:aside', 'mixed:main', 'mixed:figcaption', 'mixed:caption',
+  'mixed:summary', 'mixed:label', 'mixed:blockquote', 'mixed:dt', 'mixed:dd',
   'attr:alt', 'attr:title', 'attr:placeholder', 'attr:aria-label', 'attr:value',
 ];
 
@@ -689,11 +696,20 @@ CRITICAL RULES:
   // Pass 1 — replace at the element level when full normalized textContent
   // matches one of our normalized "from" strings. This handles texts that
   // were split across inline children (<p>This <strong>is</strong> nice</p>).
-  var blockSel = 'h1,h2,h3,h4,h5,h6,p,li,td,th,dt,dd,button,a,label,figcaption,blockquote,summary,legend,span,strong,em,b,i';
+  // Candidates include <div>: page builders put whole paragraphs in divs.
+  // "Container" = has BLOCK children; inline formatting (<b>, <span>, <br>)
+  // must not disqualify, that is exactly the split-text case this pass fixes.
+  // Elements holding links/buttons/media are left to the text-node pass so
+  // el.textContent never wipes a CTA or an image.
+  var blockSel = 'h1,h2,h3,h4,h5,h6,p,li,td,th,dt,dd,button,a,label,figcaption,blockquote,summary,legend,span,strong,em,b,i,div';
+  var containerSel = 'h1,h2,h3,h4,h5,h6,p,li,td,th,dt,dd,ul,ol,table,div,section,article,header,footer,nav,aside,main,form,blockquote,figure';
+  var mediaSel = 'img,video,picture,svg,iframe,input,select,textarea';
+  var keepSel = 'a,button,' + mediaSel;
   var elems = document.body ? document.body.querySelectorAll(blockSel) : [];
   for(var k=0;k<elems.length;k++){
     var el = elems[k];
-    if(el.querySelector(blockSel)) continue; // skip containers, only leaf-ish blocks
+    if(el.querySelector(containerSel)) continue; // has block children: not a leaf paragraph
+    if(el.querySelector(el.tagName==='A'||el.tagName==='BUTTON' ? mediaSel : keepSel)) continue;
     var fullNorm = normWS(el.textContent);
     if(!fullNorm) continue;
     for(var p2=0;p2<prepared.length;p2++){
