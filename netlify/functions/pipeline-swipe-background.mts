@@ -17,6 +17,7 @@ import {
   collectRestyleSlots,
   injectRestyleMediaScript,
   libraryFileLabel,
+  paintFor,
   sealPaintedHtml,
   type PaintedMedia,
 } from '../../src/lib/restyle-slots';
@@ -1179,48 +1180,13 @@ input,select,textarea{border-color:${spec.primary} !important;accent-color:${spe
   return out;
 }
 
+/** Neutral fallback only — the real colour world is designed by the model in buildRestyleSpec. */
 function productWorldGuess(ctx: SwipeCtx): {
   primary: string; secondary: string; accent: string; background: string; ink: string; world: string;
 } {
-  const blob = `${ctx.productName} ${ctx.productContext}`.toLowerCase();
-  if (/nad|nmn|purple|viola|violet|resveratrol/.test(blob)) {
-    return {
-      primary: '#6b21a8', secondary: '#3b0764', accent: '#c084fc',
-      background: '#faf5ff', ink: '#1e1033',
-      world: 'deep violet and amethyst clinical luxury, cool studio light',
-    };
-  }
-  if (/collagen|collagene|berry|mirtillo|cherry|pomegranate|melograno/.test(blob)) {
-    return {
-      primary: '#b42318', secondary: '#7a1b14', accent: '#f97066',
-      background: '#fff7f6', ink: '#1f100e',
-      world: 'rich crimson and berry, warm editorial light',
-    };
-  }
-  if (/saffron|zafferano|turmeric|curcuma|gold|oro/.test(blob)) {
-    return {
-      primary: '#c45c12', secondary: '#7a1f1a', accent: '#e8b84a',
-      background: '#fff8f2', ink: '#1a120c',
-      world: 'warm saffron and burgundy, golden hour commercial light',
-    };
-  }
-  if (/matcha|chlorophyll|spirulina|green tea|tè verde/.test(blob)) {
-    return {
-      primary: '#2f6b3a', secondary: '#1a3d24', accent: '#8fbf6a',
-      background: '#f4faf4', ink: '#122016',
-      world: 'fresh botanical greens, daylight kitchen',
-    };
-  }
-  if (/marine|omega|blue|blu|iodine/.test(blob)) {
-    return {
-      primary: '#1d4ed8', secondary: '#1e3a5f', accent: '#38bdf8',
-      background: '#f0f7ff', ink: '#0b1c2c',
-      world: 'oceanic navy and ice blue, clean clinical daylight',
-    };
-  }
   return {
-    primary: '#c45c12', secondary: '#3f2a1d', accent: '#d4a017',
-    background: '#faf7f2', ink: '#1a1410',
+    primary: '#1f2937', secondary: '#111827', accent: '#374151',
+    background: '#ffffff', ink: '#111111',
     world: `premium commercial photography matching ${ctx.productName}`,
   };
 }
@@ -1328,6 +1294,7 @@ function collectVideos(html: string): Array<{ src: string; section: LandingSecti
 }
 
 async function applyAffiliateMedia(
+  sb: SupabaseClient,
   html: string,
   stills: LandingMediaItem[],
   videos: LandingMediaItem[],
@@ -1339,6 +1306,11 @@ async function applyAffiliateMedia(
   const slots = collectRestyleSlots(out, 40, pageUrl);
   const pool = [...stills, ...videos];
   const byId = new Map(pool.map((m) => [String(m.id), m]));
+  const previewOf = (m: LandingMediaItem): string => {
+    const path = String(m.filePath || '').trim();
+    if (!path || /^https?:\/\//i.test(path)) return '';
+    return sb.storage.from(PROJECT_FILES_BUCKET).getPublicUrl(path).data?.publicUrl || '';
+  };
   let assignments: Awaited<ReturnType<typeof placeMediaWithAi>> = [];
   try {
     assignments = await placeMediaWithAi({
@@ -1349,6 +1321,7 @@ async function applyAffiliateMedia(
         kind: s.kind,
         context: s.context || s.alt || '',
         src: s.src,
+        poster: s.poster,
         width: s.width,
         height: s.height,
       })),
@@ -1357,9 +1330,11 @@ async function applyAffiliateMedia(
         kind: m.kind,
         name: m.name || '',
         file: libraryFileLabel(m),
+        previewUrl: previewOf(m),
       })),
     });
-  } catch {
+  } catch (e) {
+    console.warn('[swipe] affiliate place failed:', (e as Error).message);
     assignments = [];
   }
   const paints: PaintedMedia[] = [];
@@ -1369,14 +1344,11 @@ async function applyAffiliateMedia(
     const plan = assignments.find((a) => a.slotId === slot.id);
     const item = plan?.mediaId ? byId.get(plan.mediaId) : null;
     if (!item?.storedUrl) continue;
+    const paint = paintFor(slot, item.storedUrl, item.kind);
+    if (!paint) continue;
     used.add(String(item.id));
-    if (typeof slot.domIndex !== 'number') continue;
-    paints.push({
-      tag: slot.domTag === 'video' || slot.kind === 'video' ? 'video' : 'img',
-      index: slot.domIndex,
-      url: item.storedUrl,
-    });
-    if (slot.kind === 'video') vids++;
+    paints.push(paint);
+    if (paint.tag === 'video') vids++;
     else placed++;
   }
   if (paints.length) out = applyPaintedMedia(out, paints);
@@ -1787,7 +1759,7 @@ CRITICAL RULES:
       const stills = offer.filter((m) => m.kind === 'image' || m.kind === 'gif');
       const videos = offer.filter((m) => m.kind === 'video');
       if (stills.length || videos.length) {
-        const applied = await applyAffiliateMedia(html, stills, videos, ctx.mediaUsed, page.sourceUrl || '', ctx.productName);
+        const applied = await applyAffiliateMedia(sb, html, stills, videos, ctx.mediaUsed, page.sourceUrl || '', ctx.productName);
         html = applied.html;
         imgRes = { html, generated: 0, productSwaps: 0, analyzed: 0, placed: applied.placed, videos: applied.videos, remaining: 0, total: 0, processed: 0 };
       }

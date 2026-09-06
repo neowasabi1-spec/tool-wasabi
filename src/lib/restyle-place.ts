@@ -9,6 +9,8 @@ export type PlaceSlotIn = {
   kind: string;
   context: string;
   src?: string;
+  /** For video slots: the poster frame, which is what can be previewed. */
+  poster?: string;
   width?: number;
   height?: number;
 };
@@ -18,6 +20,8 @@ export type PlaceLibIn = {
   kind: string;
   name: string;
   file: string;
+  /** Absolute URL the server can fetch to show the model a thumbnail. */
+  previewUrl?: string;
 };
 
 export type PlaceAssignment = {
@@ -39,11 +43,14 @@ export async function placeMediaWithAi(args: {
   slots: PlaceSlotIn[];
   library: PlaceLibIn[];
 }): Promise<PlaceAssignment[]> {
-  const slots = args.slots.slice(0, 24);
+  const slots = args.slots.slice(0, 60);
   const library = args.library.slice(0, 60);
   if (!slots.length) return [];
 
-  const seen = await loadSlotImages(slots, args.pageUrl || '');
+  const [seen, libSeen] = await Promise.all([
+    loadSlotImages(slots, args.pageUrl || ''),
+    loadLibraryThumbs(library),
+  ]);
 
   const system = `You are looking at the CURRENT images on a landing page for "${args.productName}".
 ${args.description ? `Product: ${args.description.slice(0, 600)}\n` : ''}${args.brief ? `Brief: ${args.brief.slice(0, 800)}\n` : ''}
@@ -52,43 +59,70 @@ For each slot you are shown the picture that is already there, plus the text aro
 LOOK at the picture first.
 - If it is UI chrome (stars, rating bars, checkmarks, ticks, logos, arrows, payment marks, bullets) → skip it. Do not replace it.
 - If it is a real photograph or illustration → decide what SHOULD be there from the nearby copy (a doctor if the copy is about a doctor, an object if the copy is about an object, and so on). Then either pick a library id whose file clearly matches that subject, or generate=true with an English image prompt.
+- VIDEO slots: you see the poster frame when there is one, otherwise only the copy. These are content clips, never chrome. Pick a library video if one fits; otherwise pick the best matching still photo (it will be shown as a slowly animated still) or generate=true. Do not skip a video slot unless the copy gives you nothing to go on.
 
-Never put a photo on stars or ticks. Never pick a library file just because it is unused. At most 8 generate=true. If unsure, skip.
+The library is this offer's own photos: prefer them over generating. Never put a photo on stars or ticks. Never pick a library file just because it is unused; the same file may be reused only when the copy really asks for the same subject. At most 8 generate=true. If unsure about an image slot, skip.
 
 Return STRICT JSON only:
 {"slots":[{"id":0,"skip":true,"mediaId":null,"generate":false,"prompt":""}]}
 One object per input id.`;
 
-  const content: ContentPart[] = [
-    {
-      type: 'text',
-      text: `Library files:\n${JSON.stringify(library.map((m) => ({
-        id: m.id,
-        kind: m.kind,
-        name: m.name.slice(0, 80),
-        file: m.file.slice(0, 120),
-      })))}\n\nSlots follow. Look at each image.`,
-    },
+  const libraryContent: ContentPart[] = [
+    { type: 'text', text: `LIBRARY — this offer's own files (${library.length}). Look at each one so you know what it shows:` },
   ];
-
-  for (const s of slots) {
-    content.push({
+  for (const m of library) {
+    const thumb = libSeen.get(m.id);
+    libraryContent.push({
       type: 'text',
-      text: `SLOT ${s.id} (${s.kind}${s.width && s.height ? `, ${s.width}x${s.height}` : ''})\nNearby copy: ${s.context.slice(0, 220) || '(none)'}`,
+      text: `LIBRARY id=${m.id} (${m.kind})${thumb ? '' : ` file: ${m.file.slice(0, 100) || m.name.slice(0, 80) || '(no preview)'}`}`,
     });
-    const img = seen.get(s.id);
-    if (img) {
-      content.push({
-        type: 'image',
-        source: { type: 'base64', media_type: img.mime, data: img.data },
-      });
-    } else {
-      content.push({ type: 'text', text: '(no preview — skip unless you are sure this is a content photo)' });
+    if (thumb) {
+      libraryContent.push({ type: 'image', source: { type: 'base64', media_type: thumb.mime, data: thumb.data } });
     }
   }
 
-  const raw = await callClaudeVision(system, content);
-  return parseAssignments(raw, slots, new Set(library.map((m) => m.id)));
+  // One request can carry ~100 images: the library plus a batch of slots.
+  const perBatch = Math.max(8, Math.min(24, 90 - libSeen.size));
+  const batches: PlaceSlotIn[][] = [];
+  for (let i = 0; i < slots.length; i += perBatch) batches.push(slots.slice(i, i + perBatch));
+  const libIds = new Set(library.map((m) => m.id));
+
+  const results = await Promise.all(
+    batches.map(async (batch) => {
+      const content: ContentPart[] = [
+        ...libraryContent,
+        { type: 'text', text: `SLOTS follow (${batch.length}) — the images currently on the page. Look at each one.` },
+      ];
+      for (const s of batch) {
+        content.push({
+          type: 'text',
+          text: `SLOT ${s.id} (${s.kind}${s.width && s.height ? `, ${s.width}x${s.height}` : ''})\nNearby copy: ${s.context.slice(0, 220) || '(none)'}`,
+        });
+        const img = seen.get(s.id);
+        if (img) {
+          content.push({ type: 'image', source: { type: 'base64', media_type: img.mime, data: img.data } });
+        } else if (s.kind === 'video') {
+          content.push({ type: 'text', text: '(video clip, no poster to preview — choose from the copy)' });
+        } else {
+          content.push({ type: 'text', text: '(no preview — skip unless you are sure this is a content photo)' });
+        }
+      }
+      try {
+        const raw = await callClaudeVision(system, content);
+        return parseAssignments(raw, batch, libIds);
+      } catch (e) {
+        if (batches.length === 1) throw e;
+        return batch.map((s) => ({ slotId: s.id, mediaId: null, generate: false, prompt: '' }));
+      }
+    }),
+  );
+
+  let generates = 0;
+  return results.flat().map((a) => {
+    if (!a.generate) return a;
+    generates += 1;
+    return generates <= 8 ? a : { ...a, generate: false, prompt: '' };
+  });
 }
 
 async function loadSlotImages(
@@ -97,10 +131,26 @@ async function loadSlotImages(
 ): Promise<Map<number, { mime: string; data: string }>> {
   const out = new Map<number, { mime: string; data: string }>();
   const jobs = slots.map(async (s) => {
-    const url = absolutize(s.src || '', pageUrl);
+    const previewSrc = s.kind === 'video' ? s.poster || '' : s.src || '';
+    const url = absolutize(previewSrc, pageUrl);
     if (!url || !/^https?:\/\//i.test(url)) return;
     const got = await fetchPreview(url);
     if (got) out.set(s.id, got);
+  });
+  await Promise.all(jobs);
+  return out;
+}
+
+async function loadLibraryThumbs(
+  library: PlaceLibIn[],
+): Promise<Map<string, { mime: string; data: string }>> {
+  const out = new Map<string, { mime: string; data: string }>();
+  const jobs = library.map(async (m) => {
+    if (m.kind === 'video') return;
+    const url = String(m.previewUrl || '').trim();
+    if (!/^https?:\/\//i.test(url)) return;
+    const got = await fetchPreview(url, 256);
+    if (got) out.set(m.id, got);
   });
   await Promise.all(jobs);
   return out;
@@ -119,7 +169,7 @@ function absolutize(src: string, pageUrl: string): string {
   }
 }
 
-async function fetchPreview(url: string): Promise<{ mime: string; data: string } | null> {
+export async function fetchPreview(url: string, size = 512): Promise<{ mime: string; data: string } | null> {
   try {
     const res = await fetch(url, {
       headers: {
@@ -133,18 +183,18 @@ async function fetchPreview(url: string): Promise<{ mime: string; data: string }
     if (rawMime && !rawMime.startsWith('image/')) return null;
     const buf = Buffer.from(await res.arrayBuffer());
     if (buf.length < 40 || buf.length > 6_000_000) return null;
-    return shrinkPreview(buf, rawMime || 'image/jpeg');
+    return shrinkPreview(buf, rawMime || 'image/jpeg', size);
   } catch {
     return null;
   }
 }
 
-async function shrinkPreview(buf: Buffer, mime: string): Promise<{ mime: string; data: string } | null> {
+async function shrinkPreview(buf: Buffer, mime: string, size: number): Promise<{ mime: string; data: string } | null> {
   try {
     const sharp = (await import('sharp')).default;
     const data = await sharp(buf)
       .rotate()
-      .resize({ width: 512, height: 512, fit: 'inside', withoutEnlargement: true })
+      .resize({ width: size, height: size, fit: 'inside', withoutEnlargement: true })
       .jpeg({ quality: 62 })
       .toBuffer();
     return { mime: 'image/jpeg', data: data.toString('base64') };

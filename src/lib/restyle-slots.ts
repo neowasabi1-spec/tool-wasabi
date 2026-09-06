@@ -17,6 +17,8 @@ export interface RestyleSlot {
   /** nth <img> or <video> in the document — used to paint the new file on that tag. */
   domTag?: 'img' | 'video';
   domIndex?: number;
+  /** Poster of a <video> slot — what the model can look at when the clip itself is not previewable. */
+  poster?: string;
 }
 
 export type PaintedMedia = {
@@ -24,7 +26,26 @@ export type PaintedMedia = {
   index: number;
   url: string;
   poster?: string;
+  /** `url` is a still photo that replaces a <video>: shown as poster and slowly animated. */
+  motion?: boolean;
 };
+
+/**
+ * Decide how a chosen file lands on a slot. A photo chosen for a <video>
+ * slot becomes an animated still (there is no way to invent a clip); a video
+ * never lands on an <img>.
+ */
+export function paintFor(
+  slot: Pick<RestyleSlot, 'domTag' | 'domIndex'>,
+  url: string,
+  fileKind: string,
+): PaintedMedia | null {
+  if (!url || typeof slot.domIndex !== 'number') return null;
+  const videoSlot = slot.domTag === 'video';
+  if (videoSlot && fileKind !== 'video') return { tag: 'video', index: slot.domIndex, url, motion: true };
+  if (!videoSlot && fileKind === 'video') return null;
+  return { tag: videoSlot ? 'video' : 'img', index: slot.domIndex, url };
+}
 
 /** Safe for the browser bundle — do not import restyle-place from client code. */
 export function libraryFileLabel(item: { name?: string; sourceUrl?: string; storedUrl?: string }): string {
@@ -47,18 +68,14 @@ const FILE_PROXY_RE = /\/api\/projecthub\/file-proxy/i;
 const JUNK =
   /favicon|sprite|pixel|1x1|tracking|doubleclick|visa|mastercard|amex|paypal|klarna|apple-?pay|loader|spinner|spacer|logo\.svg|google-analytics|facebook\.com\/tr|hotjar|trustpilot|woff2?|placeholder|blank\.|lqip|star[s]?|rating|check(?:mark)?|tick|spunta/i;
 
-function isUiChrome(
-  _html: string,
-  _index: number,
-  src: string,
-  alt: string,
-  cls: string,
-  tag: string,
-  ctx: string,
-  w: number,
-  h: number,
-): boolean {
-  if (isDecorativeMedia(src, alt, cls, tag.slice(0, 240), ctx)) return true;
+/**
+ * Only what the tag itself says about the file (name, class, size). The copy
+ * around a photo is never used to drop it — a portrait next to "5 stars" is
+ * still a portrait. Stars and ticks are recognised by the model looking at
+ * the picture.
+ */
+function isUiChrome(src: string, alt: string, cls: string, w: number, h: number): boolean {
+  if (isDecorativeMedia(src, alt, cls)) return true;
   if (JUNK.test(src) || JUNK.test(alt) || JUNK.test(cls)) return true;
   if (w > 0 && h > 0 && w < 20 && h < 20) return true;
   return false;
@@ -110,14 +127,24 @@ function classifySrc(src: string): RestyleKind | null {
   return null;
 }
 
+/** Readable copy around a tag: no half-cut tags, no CSS/JS spilling in from a window edge. */
 function nearby(html: string, index: number, tagLen: number): string {
-  const from = Math.max(0, index - 500);
-  const to = Math.min(html.length, index + tagLen + 500);
-  return html
-    .slice(from, to)
+  const from = Math.max(0, index - 900);
+  const to = Math.min(html.length, index + tagLen + 900);
+  let s = html.slice(from, to);
+  const firstGt = s.indexOf('>');
+  const firstLt = s.indexOf('<');
+  if (firstGt >= 0 && (firstLt < 0 || firstGt < firstLt)) s = s.slice(firstGt + 1);
+  const lastLt = s.lastIndexOf('<');
+  if (lastLt > s.lastIndexOf('>')) s = s.slice(0, lastLt);
+  s = s.replace(/^[\s\S]*?<\/(?:style|script)>/i, (m) => (/<(?:style|script)\b/i.test(m) ? m : ' '));
+  s = s.replace(/<(?:style|script)\b[\s\S]*$/i, (m) => (/<\/(?:style|script)>/i.test(m) ? m : ' '));
+  return s
     .replace(/<script[\s\S]*?<\/script>/gi, ' ')
     .replace(/<style[\s\S]*?<\/style>/gi, ' ')
     .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 360);
@@ -165,6 +192,7 @@ export function collectRestyleSlots(html: string, max = 40, _pageUrl = ''): Rest
     raw: string,
     kind: RestyleKind | null,
     alt: string,
+    context: string,
     section: string,
     w: number,
     h: number,
@@ -172,7 +200,6 @@ export function collectRestyleSlots(html: string, max = 40, _pageUrl = ''): Rest
   ) => {
     const src = decodeEntities(String(raw || '').trim());
     if (!src || isPlaceholder(src) || seen.has(src)) return;
-    if (JUNK.test(src) || JUNK.test(alt) || isDecorativeMedia(src, alt)) return;
     const resolved = classifySrc(src);
     const useKind = kind || resolved;
     if (!useKind) return;
@@ -185,44 +212,17 @@ export function collectRestyleSlots(html: string, max = 40, _pageUrl = ''): Rest
       section,
       width: w,
       height: h,
-      context: alt,
+      context: (alt ? `${alt} ${context}` : context).slice(0, 280),
       domTag: dom?.tag,
       domIndex: dom?.index,
     });
   };
 
-  const imgRe = /<img\b[^>]*>/gi;
-  let m: RegExpExecArray | null;
-  let imgIndex = 0;
-  while ((m = imgRe.exec(html)) !== null) {
-    const tag = m[0];
-    const src = pickImgSrc(tag);
-    const alt = tag.match(/\balt\s*=\s*["']([^"']*)["']/i)?.[1] || '';
-    const w = Number.parseInt(tag.match(/\bwidth\s*=\s*["']?(\d+)/i)?.[1] || '0', 10);
-    const h = Number.parseInt(tag.match(/\bheight\s*=\s*["']?(\d+)/i)?.[1] || '0', 10);
-    const cls = tag.match(/\bclass\s*=\s*["']([^"']+)["']/i)?.[1] || '';
-    const ctx = nearby(html, m.index, tag.length);
-    if (isUiChrome(html, m.index, src, alt, cls, tag, ctx, w, h)) {
-      imgIndex++;
-      continue;
-    }
-    if (src && out.length < max) {
-      const kind: RestyleKind = /\.gif(\?|#|$)/i.test(src) ? 'gif' : 'image';
-      add(
-        src,
-        kind,
-        (alt ? `${alt} ${ctx}` : ctx).slice(0, 280),
-        imgSection(alt, cls, ctx, m.index, html.length, kind),
-        w,
-        h,
-        { tag: 'img', index: imgIndex },
-      );
-    }
-    imgIndex++;
-  }
-
+  // Videos first: there are few and the cap must never push them out.
   const videoRe = /<video\b[\s\S]*?<\/video>/gi;
+  let m: RegExpExecArray | null;
   let videoIndex = 0;
+  const videoAt: number[] = [];
   while ((m = videoRe.exec(html)) !== null) {
     const block = m[0];
     const src =
@@ -233,13 +233,59 @@ export function collectRestyleSlots(html: string, max = 40, _pageUrl = ''): Rest
     const poster = block.match(/\bposter\s*=\s*["']([^"']+)["']/i)?.[1] || '';
     const ctx = nearby(html, m.index, block.length);
     if (out.length < max) {
-      if (src) add(decodeEntities(src), 'video', ctx.slice(0, 80), 'video', 0, 0, { tag: 'video', index: videoIndex });
-      else if (poster) add(decodeEntities(poster), 'image', 'video poster', 'video', 0, 0, { tag: 'video', index: videoIndex });
+      const dom = { tag: 'video' as const, index: videoIndex };
+      const before = out.length;
+      if (src) add(decodeEntities(src), 'video', '', ctx, 'video', 0, 0, dom);
+      else if (poster) add(decodeEntities(poster), 'video', 'video poster', ctx, 'video', 0, 0, dom);
+      if (out.length > before) {
+        if (poster) out[out.length - 1].poster = decodeEntities(poster);
+        videoAt.push(m.index);
+      }
     }
     videoIndex++;
   }
 
-  return out;
+  const imgRe = /<img\b[^>]*>/gi;
+  let imgIndex = 0;
+  const imgAt: number[] = [];
+  const imgStart = out.length;
+  while ((m = imgRe.exec(html)) !== null) {
+    const tag = m[0];
+    const src = pickImgSrc(tag);
+    const alt = tag.match(/\balt\s*=\s*["']([^"']*)["']/i)?.[1] || '';
+    const w = Number.parseInt(tag.match(/\bwidth\s*=\s*["']?(\d+)/i)?.[1] || '0', 10);
+    const h = Number.parseInt(tag.match(/\bheight\s*=\s*["']?(\d+)/i)?.[1] || '0', 10);
+    const cls = tag.match(/\bclass\s*=\s*["']([^"']+)["']/i)?.[1] || '';
+    const ctx = nearby(html, m.index, tag.length);
+    if (isUiChrome(src, alt, cls, w, h)) {
+      imgIndex++;
+      continue;
+    }
+    if (src && out.length < max) {
+      const kind: RestyleKind = /\.gif(\?|#|$)/i.test(src) ? 'gif' : 'image';
+      const before = out.length;
+      add(
+        src,
+        kind,
+        alt,
+        ctx,
+        imgSection(alt, cls, ctx, m.index, html.length, kind),
+        w,
+        h,
+        { tag: 'img', index: imgIndex },
+      );
+      if (out.length > before) imgAt.push(m.index);
+    }
+    imgIndex++;
+  }
+
+  // Back to document order so the model reads the page top to bottom.
+  const at = [...videoAt, ...imgAt];
+  const ordered = out
+    .map((slot, i) => ({ slot, at: at[i] ?? (i < imgStart ? -1 : Number.MAX_SAFE_INTEGER) }))
+    .sort((a, b) => a.at - b.at)
+    .map(({ slot }, i) => ({ ...slot, id: i }));
+  return ordered;
 }
 
 const LAZY_ATTR_RE = new RegExp(
@@ -344,6 +390,7 @@ export function applyPaintedMedia(html: string, paints: PaintedMedia[]): string 
         const p = videos.find((x) => x.index === n);
         n += 1;
         if (!p) return block;
+        if (p.motion) return motionStillFromVideo(block, p.url);
         const open = block.match(/^<video\b[^>]*>/i)?.[0] || block;
         const painted = paintMediaTag(open.replace(/\/\s*>$/, '>'), p.url, { poster: p.poster });
         if (!/<\/video>/i.test(block)) return painted.endsWith('>') ? painted : `${painted}>`;
@@ -354,7 +401,44 @@ export function applyPaintedMedia(html: string, paints: PaintedMedia[]): string 
     }
     return out;
   });
-  return sealPaintedHtml(sealed);
+  const withCss = paints.some((p) => p.motion) ? ensureMotionCss(sealed) : sealed;
+  return sealPaintedHtml(withCss);
+}
+
+const MOTION_STYLE =
+  'object-fit:cover;max-width:100%;animation:restyleMotion 18s ease-in-out infinite alternate;transform-origin:50% 50%;will-change:transform';
+
+/** Keyframes for animated stills — one copy per document. */
+export function ensureMotionCss(html: string): string {
+  if (/data-restyle-motion-css/i.test(html)) return html;
+  const css = '<style data-restyle-motion-css>@keyframes restyleMotion{from{transform:scale(1) translate(0,0)}to{transform:scale(1.08) translate(-1.5%,1%)}}[data-restyle-motion-wrap]{overflow:hidden;display:block;max-width:100%;line-height:0}</style>';
+  if (/<\/head>/i.test(html)) return html.replace(/<\/head>/i, `${css}</head>`);
+  return css + html;
+}
+
+/**
+ * Keep the <video> element (so nth-video indexes stay valid) but make it show
+ * a still: poster = our photo, no sources, slow zoom/pan. Wrapped so the zoom
+ * cannot bleed outside the original box.
+ */
+function motionStillFromVideo(block: string, url: string): string {
+  let open = (block.match(/^<video\b[^>]*>/i)?.[0] || '<video>').replace(/\/\s*>$/, '>');
+  LAZY_ATTR_RE.lastIndex = 0;
+  open = open
+    .replace(LAZY_ATTR_RE, '')
+    .replace(/\s+(?:src|poster|autoplay|loop|controls|preload)\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+    .replace(/\s+(?:autoplay|loop|controls)(?=[\s>])/gi, '')
+    .replace(/<video\b/i, `<video poster="${url}" preload="none" muted playsinline data-restyle-motion="1"`);
+  if (/\bstyle\s*=/i.test(open)) {
+    open = open.replace(/\bstyle\s*=\s*(["'])([\s\S]*?)\1/i, (_f, q: string, css: string) => {
+      let next = String(css || '').trim();
+      if (next && !next.endsWith(';')) next += ';';
+      return `style=${q}${next}${MOTION_STYLE}${q}`;
+    });
+  } else {
+    open = open.replace(/<video\b/i, `<video style="${MOTION_STYLE}"`);
+  }
+  return `<div data-restyle-motion-wrap="1">${open}</video></div>`;
 }
 
 /** Every spelling the same photo URL can have in saved HTML. */
@@ -449,6 +533,25 @@ export function injectRestyleMediaScript(html: string, paints: PaintedMedia[]): 
     }catch(eC){}
     return false;
   }
+  function motion(el, url){
+    if(!el||!url) return;
+    if(el.getAttribute('data-restyle-motion')==='1' && el.getAttribute('poster')===url){ clearUnder(el); return; }
+    try{ el.removeAttribute('src'); el.removeAttribute('autoplay'); el.removeAttribute('loop'); el.removeAttribute('controls'); }catch(e0){}
+    var vs=el.querySelectorAll('source');
+    for(var s=0;s<vs.length;s++) vs[s].remove();
+    strip(el);
+    try{ el.setAttribute('poster', url); el.poster=url; el.preload='none'; el.muted=true; }catch(e1){}
+    try{ el.pause(); }catch(e2){}
+    try{
+      el.style.objectFit='cover';
+      if(!el.style.maxWidth) el.style.maxWidth='100%';
+      if(!el.style.animation) el.style.animation='restyleMotion 18s ease-in-out infinite alternate';
+      el.style.transformOrigin='50% 50%';
+    }catch(e3){}
+    el.setAttribute('data-restyle-motion','1');
+    el.setAttribute('data-restyled','1');
+    clearUnder(el);
+  }
   function paint(el, url, poster){
     if(!el||!url) return;
     if(isChromeEl(el)) return;
@@ -481,7 +584,8 @@ export function injectRestyleMediaScript(html: string, paints: PaintedMedia[]): 
       var p=paints[i];
       var el=p.tag==='video'?videos[p.index]:imgs[p.index];
       if(!el) continue;
-      paint(el, p.url, p.poster);
+      if(p.motion) motion(el, p.url);
+      else paint(el, p.url, p.poster);
     }
     }finally{ painting=false; }
   }
@@ -499,6 +603,7 @@ export function injectRestyleMediaScript(html: string, paints: PaintedMedia[]): 
 })();
 <\/script>`;
   let out = html.replace(/<script\b[^>]*\bdata-restyle-media\b[^>]*>[\s\S]*?<\/script>/gi, '');
+  if (clean.some((p) => p.motion)) out = ensureMotionCss(out);
   if (/<\/body>/i.test(out)) out = out.replace(/<\/body>/i, (m) => script + m);
   else out += script;
   return out;
@@ -515,23 +620,63 @@ function outsideSwipeReplacer(html: string, fn: (h: string) => string): string {
   return out;
 }
 
-export function fallbackPalette(productName: string, brief = ''): {
+export type Palette = {
   primary: string; secondary: string; accent: string; background: string; ink: string;
-} {
-  const blob = `${productName} ${brief}`.toLowerCase();
-  if (/nad|nmn|purple|viola|violet/.test(blob)) {
-    return { primary: '#6b21a8', secondary: '#3b0764', accent: '#7c3aed', background: '#ffffff', ink: '#111111' };
+};
+
+export type PaletteMap = Array<{ from: string; to: string }>;
+
+/**
+ * Neutral palette used only when the AI palette call fails. No product
+ * guessing here: the real palette is designed by the model from the product.
+ */
+export function fallbackPalette(_productName = '', _brief = ''): Palette {
+  return { primary: '#1f2937', secondary: '#111827', accent: '#374151', background: '#ffffff', ink: '#111111' };
+}
+
+/**
+ * The page's brand colours: saturated hexes that are neither near-black nor
+ * near-white, most used first. This is what the model is asked to remap.
+ */
+export function topSaturatedHex(html: string, limit = 14): string[] {
+  const counts = new Map<string, number>();
+  const body = html.replace(/<script\b[\s\S]*?<\/script>/gi, ' ');
+  for (const m of body.matchAll(/#([0-9a-f]{6}|[0-9a-f]{3})\b/gi)) {
+    const c = parseCssColor(m[0]);
+    if (!c) continue;
+    const L = luminance(c);
+    if (!isSaturated(c) || L < 0.04 || L > 0.93) continue;
+    const key = normalizeHex(m[0]);
+    counts.set(key, (counts.get(key) || 0) + 1);
   }
-  if (/collagen|collagene|berry|cherry|pomegranate|melograno/.test(blob)) {
-    return { primary: '#b42318', secondary: '#7a1b14', accent: '#c2410c', background: '#ffffff', ink: '#111111' };
-  }
-  if (/saffron|zafferano|turmeric|curcuma|gold|oro/.test(blob)) {
-    return { primary: '#c45c12', secondary: '#3f2a1d', accent: '#b45309', background: '#ffffff', ink: '#111111' };
-  }
-  if (/matcha|chlorophyll|green tea|tè verde/.test(blob)) {
-    return { primary: '#2f6b3a', secondary: '#1a3d24', accent: '#3f7a4a', background: '#ffffff', ink: '#111111' };
-  }
-  return { primary: '#c45c12', secondary: '#3f2a1d', accent: '#b45309', background: '#ffffff', ink: '#111111' };
+  return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, limit).map(([k]) => k);
+}
+
+export function normalizeHex(raw: string): string {
+  const s = String(raw || '').trim().toLowerCase();
+  const m = s.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/);
+  if (!m) return '';
+  const h = m[1].length === 3 ? m[1].split('').map((ch) => ch + ch).join('') : m[1];
+  return `#${h}`;
+}
+
+/** Swap brand hexes for the new ones, everywhere except inside <script>. */
+function remapBrandColors(html: string, map: PaletteMap): string {
+  const pairs = map
+    .map((p) => ({ from: normalizeHex(p.from), to: normalizeHex(p.to) }))
+    .filter((p) => p.from && p.to && p.from !== p.to)
+    .filter((p) => {
+      const c = parseCssColor(p.from);
+      if (!c) return false;
+      const L = luminance(c);
+      return isSaturated(c) && L >= 0.04 && L <= 0.93;
+    });
+  if (!pairs.length) return html;
+  const lookup = new Map(pairs.map((p) => [p.from, p.to]));
+  return html.replace(/#([0-9a-f]{6}|[0-9a-f]{3})\b/gi, (hex) => {
+    const to = lookup.get(normalizeHex(hex));
+    return to || hex;
+  });
 }
 
 /** Never rewrite <script> (Clone/Swipe replacer lives there). */
@@ -703,14 +848,12 @@ export function ensureReadableText(html: string): string {
   return out;
 }
 
-export function applyPalette(html: string, p: {
-  primary: string; secondary: string; accent: string; background: string; ink: string;
-}): string {
+export function applyPalette(html: string, p: Palette, map: PaletteMap = []): string {
   const ink = '#111111';
   const wash = '#f3efe4';
   const navInk = readableOn(parseCssColor(p.secondary) || { r: 63, g: 42, b: 29 });
   return outsideScripts(html, (raw) => {
-    let out = ensureReadableText(raw);
+    let out = ensureReadableText(remapBrandColors(raw, map));
     const css = `<style data-chimera-theme>
 :root,html{
   --text:${ink};--ink:${ink};--color-text:${ink};--text-color:${ink};--body-color:${ink};

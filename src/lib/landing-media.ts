@@ -173,6 +173,13 @@ export function resolveMediaRole(parts: {
   return inferLandingSection(hay);
 }
 
+function fold(s: string): string {
+  return String(s || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '');
+}
+
 export function hostOfUrl(url: string): string {
   try {
     return new URL(url).hostname.replace(/^www\./, '').toLowerCase();
@@ -211,37 +218,18 @@ export function mediaBelongsToPage(
   return false;
 }
 
-const OFFER_HOST_HINT = /hinuki|readwellness|trkscaling|jelly.?stick|fnel\.ai/i;
-
-function fold(s: string): string {
-  return String(s || '')
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/\p{M}/gu, '');
-}
-
 /**
- * Photos to paint onto the funnel: downloaded files from THIS offer,
- * not Google and not a mashup of every other brand in the library.
+ * Photos to paint onto the funnel: every downloaded file in the project's
+ * landing library. The library belongs to one offer by construction; which
+ * file fits which slot is decided by the model looking at the images, not by
+ * matching hosts or product names here.
  */
 export function pickOfferLandingMedia<T extends { storedUrl: string; sourceUrl: string; name?: string }>(
   items: T[],
-  productName = '',
+  _productName = '',
 ): T[] {
   const downloaded = items.filter((m) => m.storedUrl && !isJunkLandingHost(m.sourceUrl));
-  if (downloaded.length <= 1) return downloaded;
-  const product = fold(productName).replace(/[^a-z0-9]+/g, ' ').trim();
-  const tokens = product.split(/\s+/).filter((t) => t.length >= 5);
-  const scored = downloaded.map((m) => {
-    const hay = fold(`${m.sourceUrl} ${m.name || ''}`);
-    let score = 1;
-    if (OFFER_HOST_HINT.test(m.sourceUrl)) score += 8;
-    for (const t of tokens) if (hay.includes(t)) score += 3;
-    return { m, score };
-  });
-  const best = Math.max(...scored.map((s) => s.score));
-  const picked = scored.filter((s) => s.score >= Math.max(4, best - 3)).map((s) => s.m);
-  return sortLandingMediaAsOnPage(picked.length >= 3 ? picked : downloaded);
+  return sortLandingMediaAsOnPage(downloaded);
 }
 
 export function isLandingSection(v: string): v is LandingSection {

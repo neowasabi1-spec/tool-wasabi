@@ -5,8 +5,12 @@ import {
   fallbackPalette,
   injectRestyleMediaScript,
   libraryFileLabel,
+  paintFor,
   sealPaintedHtml,
+  topSaturatedHex,
   type PaintedMedia,
+  type Palette,
+  type PaletteMap,
 } from '@/lib/restyle-slots';
 import {
   pickOfferLandingMedia,
@@ -27,6 +31,36 @@ function pinStoredUrl(url: string): string {
   return t.startsWith('/') ? `${window.location.origin}${t}` : t;
 }
 
+async function designPalette(opts: {
+  html: string;
+  productName: string;
+  brief?: string;
+  description?: string;
+  projectId?: string;
+}): Promise<{ palette: Palette; map: PaletteMap; fromAi: boolean }> {
+  const colors = topSaturatedHex(opts.html);
+  try {
+    const res = await fetch('/api/restyle-visual/palette', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        productName: opts.productName,
+        brief: opts.brief,
+        description: opts.description,
+        projectId: opts.projectId,
+        colors,
+      }),
+    });
+    const data = (await res.json().catch(() => ({}))) as { palette?: Palette; map?: PaletteMap };
+    if (res.ok && data.palette?.primary) {
+      return { palette: data.palette, map: Array.isArray(data.map) ? data.map : [], fromAi: true };
+    }
+  } catch {
+    /* fall through */
+  }
+  return { palette: fallbackPalette(), map: [], fromAi: false };
+}
+
 async function loadLandingLibrary(projectId: string): Promise<LandingMediaItem[]> {
   const filled = await fillLandingLibrary(projectId);
   if (filled.items.length) return filled.items;
@@ -43,9 +77,13 @@ export async function runVisualRestyle(opts: {
   pageUrl?: string;
   onProgress?: (message: string, html?: string) => void;
 }): Promise<{ html: string; replaced: number; total: number; failed: number; error?: string }> {
-  const palette0 = fallbackPalette(opts.productName, `${opts.brief || ''} ${opts.description || ''}`);
-  let html = applyPalette(opts.html, palette0);
-  opts.onProgress?.('Palette on — reading the page copy to place photos…', html);
+  opts.onProgress?.('AI is designing the colour palette from the product…');
+  const designed = await designPalette(opts);
+  let html = applyPalette(opts.html, designed.palette, designed.map);
+  opts.onProgress?.(
+    designed.fromAi ? 'Palette on — collecting the photos on the page…' : 'Neutral palette (AI palette failed) — collecting photos…',
+    html,
+  );
 
   const slots = collectRestyleSlots(html, 40, opts.pageUrl || '');
   if (!slots.length) {
@@ -115,6 +153,7 @@ export async function runVisualRestyle(opts: {
           kind: s.kind,
           context: s.context || s.alt || '',
           src: s.src,
+          poster: s.poster,
           width: s.width,
           height: s.height,
         })),
@@ -123,6 +162,7 @@ export async function runVisualRestyle(opts: {
           kind: m.kind,
           name: m.name || '',
           file: libraryFileLabel(m),
+          filePath: m.filePath || '',
         })),
       }),
     });
@@ -138,8 +178,11 @@ export async function runVisualRestyle(opts: {
   for (const slot of slots) {
     const plan = assignments.find((a) => a.slotId === slot.id);
     let url = '';
+    let fileKind = 'image';
     if (plan?.mediaId && byId.get(plan.mediaId)?.storedUrl) {
-      url = pinStoredUrl(byId.get(plan.mediaId)!.storedUrl);
+      const item = byId.get(plan.mediaId)!;
+      url = pinStoredUrl(item.storedUrl);
+      fileKind = item.kind;
     } else if (plan?.generate && plan.prompt) {
       try {
         const made = await fetch('/api/restyle-visual/concept', {
@@ -158,13 +201,9 @@ export async function runVisualRestyle(opts: {
         /* leave the current image */
       }
     }
-    if (!url) continue;
-    if (typeof slot.domIndex !== 'number') continue;
-    paints.push({
-      tag: slot.domTag === 'video' || slot.kind === 'video' ? 'video' : 'img',
-      index: slot.domIndex,
-      url,
-    });
+    const paint = paintFor(slot, url, fileKind);
+    if (!paint) continue;
+    paints.push(paint);
     replaced++;
   }
 
