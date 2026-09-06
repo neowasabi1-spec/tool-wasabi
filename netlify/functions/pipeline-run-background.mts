@@ -1201,6 +1201,7 @@ CRITICAL RULES:
       market: input.market || country,
       affiliate,
       hosts: offer.hosts,
+      offerUrl: affiliate && link ? cleanOfferUrl(link) : undefined,
     });
   } catch (e) {
     console.warn('[pipeline] discovery lexicon:', (e as Error).message);

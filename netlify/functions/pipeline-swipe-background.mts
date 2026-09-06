@@ -3,7 +3,9 @@ import { extractAllTextsUniversal } from '../../src/lib/universal-text-extractor
 import {
   extractLandingMediaForProject,
   extractLandingMediaFromUrl,
+  hostOfUrl,
   listLandingMedia,
+  mediaFromPage,
   pickOfferLandingMedia,
   matchLandingMediaToSlots,
   isLandingSection,
@@ -12,6 +14,7 @@ import {
   type LandingSection,
   downloadedLandingMedia,
 } from '../../src/lib/landing-media';
+import { loadDiscoveryLexicon } from '../../src/lib/discovery-lexicon';
 import { extractSectionContent } from '../../src/lib/project-sections';
 import {
   applyPaintedMedia,
@@ -1908,18 +1911,37 @@ export default async (req: Request) => {
   if (research) parts.push(`MARKET RESEARCH:\n${research}`);
   log(`context brief=${brief.length}c research=${research.length}c desc=${description.length}c`);
   let landingItems = downloadedLandingMedia(await listLandingMedia(sb, projectId));
-  const offerUrl = typeof body.offerUrl === 'string' ? body.offerUrl.trim() : '';
-  if (!landingItems.length && imageMode === 'affiliate' && /^https?:\/\//i.test(offerUrl)) {
-    // Affiliate: the funnel must carry the promoted offer's own photos.
-    try {
-      const r = await extractLandingMediaFromUrl(sb, { projectId, url: offerUrl, limit: 40 });
-      log(`offer media from ${r.finalUrl}: found=${r.found} saved=${r.saved}`);
-      landingItems = downloadedLandingMedia(await listLandingMedia(sb, projectId));
-    } catch (e) {
-      log('offer media extract:', (e as Error).message);
-    }
+  let offerUrl = typeof body.offerUrl === 'string' ? body.offerUrl.trim() : '';
+  if (imageMode === 'affiliate' && !offerUrl) {
+    // Manual swipe from Clone/Swipe: reuse the offer Chimera researched for this project.
+    offerUrl = (await loadDiscoveryLexicon(sb, projectId).catch(() => null))?.product?.offerUrl || '';
   }
-  if (!landingItems.length) {
+  if (imageMode === 'affiliate') {
+    // Affiliate: ONLY the promoted offer's own photos. The project library is
+    // shared with competitor research and other landings, so it is filtered
+    // down to the assets that actually sit on the offer page.
+    const all = landingItems;
+    let own: typeof all = [];
+    if (/^https?:\/\//i.test(offerUrl)) {
+      try {
+        const r = await extractLandingMediaFromUrl(sb, { projectId, url: offerUrl, limit: 40 });
+        log(`offer media from ${r.finalUrl}: found=${r.found} saved=${r.saved}`);
+        own = mediaFromPage(downloadedLandingMedia(await listLandingMedia(sb, projectId)), r.sourceUrls);
+        if (!own.length) {
+          // Page fetch blocked or empty: fall back to files hosted on the offer's own domains.
+          const hosts = new Set([hostOfUrl(offerUrl), hostOfUrl(r.finalUrl)].filter(Boolean));
+          own = all.filter((m) => hosts.has(hostOfUrl(m.sourceUrl)));
+        }
+      } catch (e) {
+        log('offer media extract:', (e as Error).message);
+      }
+    } else {
+      log('affiliate without offer link: library photos are not used (they may belong to other products)');
+    }
+    log(`affiliate library: ${own.length} of ${all.length} files belong to the offer`);
+    landingItems = own;
+  }
+  if (!landingItems.length && imageMode !== 'affiliate') {
     try {
       await extractLandingMediaForProject(sb, projectId);
       landingItems = downloadedLandingMedia(await listLandingMedia(sb, projectId));

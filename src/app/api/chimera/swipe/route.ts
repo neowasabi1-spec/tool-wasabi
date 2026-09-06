@@ -162,6 +162,7 @@ export async function POST(req: NextRequest) {
         market: '',
         mainImageUrl,
         imageMode,
+        offerUrl: typeof body.offerUrl === 'string' ? body.offerUrl.trim() : '',
         skipTexts,
         pages,
       }),

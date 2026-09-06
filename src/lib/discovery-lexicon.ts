@@ -18,6 +18,8 @@ export type StoredProductProfile = {
   affiliate?: boolean;
   /** Affiliate: the domains the offer lives on (tracker + final landing). */
   hosts?: string[];
+  /** Affiliate: the offer page itself (tracking params stripped). */
+  offerUrl?: string;
 };
 
 export async function saveDiscoveryLexicon(
@@ -55,6 +57,7 @@ export async function loadDiscoveryLexicon(
           market: typeof p.market === 'string' ? p.market : '',
           affiliate: p.affiliate === true,
           hosts: Array.isArray(p.hosts) ? p.hosts.map(String).filter(Boolean) : [],
+          offerUrl: typeof p.offerUrl === 'string' ? p.offerUrl : '',
         }
       : null;
     return {

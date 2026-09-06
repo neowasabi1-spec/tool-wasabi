@@ -793,7 +793,18 @@ export type LandingExtractStats = {
   found: number;
   downloadFailed: number;
   uploadFailed: number;
+  /** Every asset URL seen on this page (saved now or already in the library):
+   *  lets a caller pick out of the shared library exactly this page's media. */
+  sourceUrls: string[];
 };
+
+/** Library rows that came from the given page assets (by URL, or by file name
+ *  when the CDN re-signs URLs between visits). */
+export function mediaFromPage<T extends { sourceUrl: string }>(items: T[], pageAssetUrls: string[]): T[] {
+  const urls = new Set(pageAssetUrls);
+  const files = new Set(pageAssetUrls.map((u) => u.split('/').pop()?.split('?')[0] || '').filter((f) => f.length > 6));
+  return items.filter((m) => urls.has(m.sourceUrl) || files.has(m.sourceUrl.split('/').pop()?.split('?')[0] || ''));
+}
 
 /** Download one landing's assets into the project's Image landings library. */
 export async function extractLandingMediaFromHtml(
@@ -806,7 +817,7 @@ export async function extractLandingMediaFromHtml(
     limit?: number;
   },
 ): Promise<LandingExtractStats> {
-  const empty: LandingExtractStats = { saved: 0, skipped: 0, found: 0, downloadFailed: 0, uploadFailed: 0 };
+  const empty: LandingExtractStats = { saved: 0, skipped: 0, found: 0, downloadFailed: 0, uploadFailed: 0, sourceUrls: [] };
   let html = args.html;
   let pageUrl = args.pageUrl;
   if (pageUrl) {
@@ -818,6 +829,7 @@ export async function extractLandingMediaFromHtml(
   }
   const assets = collectLandingAssetUrls(html, pageUrl);
   empty.found = assets.length;
+  empty.sourceUrls = assets.map((a) => a.url);
   if (!assets.length) return empty;
   const existing = await listLandingMedia(sb, args.projectId);
   const have = new Map(existing.map((e) => [e.sourceUrl, e]));
@@ -907,7 +919,7 @@ export async function extractLandingMediaFromHtml(
     }
     saved++;
   }
-  return { saved, skipped, found: assets.length, downloadFailed, uploadFailed };
+  return { saved, skipped, found: assets.length, downloadFailed, uploadFailed, sourceUrls: assets.map((a) => a.url) };
 }
 
 /** Persist a file the browser already downloaded (CORS-ok CDN, or extension). */
@@ -981,7 +993,7 @@ export async function extractLandingMediaFromUrl(
   sb: Sb,
   args: { projectId: string; url: string; ownerUserId?: string | null; limit?: number },
 ): Promise<LandingExtractStats & { finalUrl: string; html: string }> {
-  const empty = { saved: 0, skipped: 0, found: 0, downloadFailed: 0, uploadFailed: 0, finalUrl: args.url, html: '' };
+  const empty = { saved: 0, skipped: 0, found: 0, downloadFailed: 0, uploadFailed: 0, sourceUrls: [] as string[], finalUrl: args.url, html: '' };
   const url = String(args.url || '').trim();
   if (!/^https?:\/\//i.test(url)) return empty;
   let html = '';
@@ -1074,6 +1086,7 @@ export async function extractLandingMediaForProject(
     found: 0,
     downloadFailed: 0,
     uploadFailed: 0,
+    sourceUrls: [],
     pages: 0,
   };
   const owner = await resolveOwnerUserId(sb, projectId, ownerUserId);
@@ -1118,6 +1131,7 @@ export async function extractLandingMediaForProject(
       totals.found += r.found;
       totals.downloadFailed += r.downloadFailed;
       totals.uploadFailed += r.uploadFailed;
+      totals.sourceUrls.push(...r.sourceUrls);
       if (totals.saved >= MAX_PER_RUN) return totals;
     }
   }
