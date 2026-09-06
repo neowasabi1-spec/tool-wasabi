@@ -16,6 +16,8 @@ export type StoredProductProfile = {
   /** Affiliate run: the library holds the promoted offer's photos only —
    *  competitor landings are saved for research but their media is not pulled in. */
   affiliate?: boolean;
+  /** Affiliate: the domains the offer lives on (tracker + final landing). */
+  hosts?: string[];
 };
 
 export async function saveDiscoveryLexicon(
@@ -52,6 +54,7 @@ export async function loadDiscoveryLexicon(
           description: typeof p.description === 'string' ? p.description : '',
           market: typeof p.market === 'string' ? p.market : '',
           affiliate: p.affiliate === true,
+          hosts: Array.isArray(p.hosts) ? p.hosts.map(String).filter(Boolean) : [],
         }
       : null;
     return {

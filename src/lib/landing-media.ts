@@ -980,8 +980,8 @@ export async function ingestLandingMediaBytes(
 export async function extractLandingMediaFromUrl(
   sb: Sb,
   args: { projectId: string; url: string; ownerUserId?: string | null; limit?: number },
-): Promise<LandingExtractStats & { finalUrl: string }> {
-  const empty = { saved: 0, skipped: 0, found: 0, downloadFailed: 0, uploadFailed: 0, finalUrl: args.url };
+): Promise<LandingExtractStats & { finalUrl: string; html: string }> {
+  const empty = { saved: 0, skipped: 0, found: 0, downloadFailed: 0, uploadFailed: 0, finalUrl: args.url, html: '' };
   const url = String(args.url || '').trim();
   if (!/^https?:\/\//i.test(url)) return empty;
   let html = '';
@@ -1003,7 +1003,7 @@ export async function extractLandingMediaFromUrl(
   } catch {
     return empty;
   }
-  if (!html || html.length < 200) return { ...empty, finalUrl };
+  if (!html || html.length < 200) return { ...empty, finalUrl, html };
   const stats = await extractLandingMediaFromHtml(sb, {
     projectId: args.projectId,
     html,
@@ -1011,7 +1011,49 @@ export async function extractLandingMediaFromUrl(
     ownerUserId: args.ownerUserId,
     limit: args.limit,
   });
-  return { ...stats, finalUrl };
+  return { ...stats, finalUrl, html };
+}
+
+/**
+ * What the offer page calls itself: title, og/site name, brand, first
+ * headline, plus the hosts it lives on. This is what "the exact product"
+ * means when an affiliate looks for everyone else running the same offer.
+ */
+export function offerIdentityFromHtml(html: string, urls: string[]): { names: string[]; hosts: string[]; blurb: string } {
+  const pick = (re: RegExp) => (html.match(re)?.[1] || '').replace(/\s+/g, ' ').trim();
+  const decode = (s: string) => s.replace(/&amp;/g, '&').replace(/&#39;|&apos;/g, "'").replace(/&quot;/g, '"').replace(/&nbsp;/g, ' ');
+  const title = decode(pick(/<title[^>]*>([^<]{2,200})<\/title>/i));
+  const ogTitle = decode(pick(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']{2,200})["']/i) || pick(/<meta[^>]+content=["']([^"']{2,200})["'][^>]+property=["']og:title["']/i));
+  const siteName = decode(pick(/<meta[^>]+property=["']og:site_name["'][^>]+content=["']([^"']{2,120})["']/i) || pick(/<meta[^>]+content=["']([^"']{2,120})["'][^>]+property=["']og:site_name["']/i));
+  const appName = decode(pick(/<meta[^>]+name=["']application-name["'][^>]+content=["']([^"']{2,120})["']/i));
+  const desc = decode(pick(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']{2,400})["']/i));
+  const h1 = decode(pick(/<h1[^>]*>([\s\S]{2,300}?)<\/h1>/i).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim());
+  const brandJsonLd = decode(pick(/"brand"\s*:\s*\{[^}]*"name"\s*:\s*"([^"]{2,80})"/i) || pick(/"brand"\s*:\s*"([^"]{2,80})"/i));
+  const productJsonLd = decode(pick(/"@type"\s*:\s*"Product"[\s\S]{0,400}?"name"\s*:\s*"([^"]{2,120})"/i));
+  const hosts = new Set<string>();
+  for (const u of urls) {
+    const h = hostOfUrl(u);
+    if (h) hosts.add(h);
+  }
+  // Pre-landers/advertorials send the buyer to the brand's own checkout: the
+  // domain the CTAs point to is the product as much as the page itself.
+  const SOCIAL = /(^|\.)(facebook|fb|instagram|tiktok|twitter|x|youtube|google|googleapis|gstatic|pinterest|linkedin|apple|microsoft|amazon|amazonaws|cloudfront|cloudflare|shopify|shopifycdn|wixstatic|squarespace|w3|schema|jsdelivr|unpkg|jquery|fonts|typekit|hotjar|clarity|klaviyo|trustpilot|paypal|stripe|vimeo|wistia|gravatar|wordpress|wp)\.(com|net|org|io|ms|co|me)$/i;
+  const outbound = new Map<string, number>();
+  const linkRe = /<a\b[^>]*\bhref=["']([^"'#]+)["']/gi;
+  let lm: RegExpExecArray | null;
+  while ((lm = linkRe.exec(html))) {
+    const h = hostOfUrl(lm[1]);
+    if (!h || hosts.has(h) || SOCIAL.test(h)) continue;
+    outbound.set(h, (outbound.get(h) || 0) + 1);
+  }
+  const top = [...outbound.entries()].sort((a, b) => b[1] - a[1]);
+  // Keep the domains that carry the page's CTAs, not every stray footer link.
+  for (const [h, n] of top.slice(0, 3)) if (n >= 2 || top.length === 1) hosts.add(h);
+  const names = [...new Set([siteName, appName, brandJsonLd, productJsonLd, ogTitle, title].map((s) => s.trim()).filter((s) => s.length >= 2))];
+  const blurb = [title && `Title: ${title}`, siteName && `Site: ${siteName}`, brandJsonLd && `Brand: ${brandJsonLd}`, productJsonLd && `Product: ${productJsonLd}`, h1 && `Headline: ${h1}`, desc && `Description: ${desc}`]
+    .filter(Boolean)
+    .join('\n');
+  return { names, hosts: [...hosts], blurb };
 }
 
 /** Walk every competitor landing saved on the project and fill Image landings. */

@@ -1,8 +1,8 @@
 import { createClient } from '@supabase/supabase-js';
 import { getCoreKnowledge, getKnowledgeForTask } from '../../src/knowledge/copywriting';
-import { parseDiscoveryLexicon } from '../../src/lib/competitor-relevance';
+import { fold, parseDiscoveryLexicon, parseTermList } from '../../src/lib/competitor-relevance';
 import { saveDiscoveryLexicon, shortApifyWebhookUrl } from '../../src/lib/discovery-lexicon';
-import { extractLandingMediaFromUrl, listLandingMedia } from '../../src/lib/landing-media';
+import { extractLandingMediaFromUrl, listLandingMedia, offerIdentityFromHtml } from '../../src/lib/landing-media';
 import { wellFormed } from '../../src/lib/well-formed';
 
 /**
@@ -1051,26 +1051,56 @@ function cleanOfferUrl(raw: string): string {
  * Affiliate runs: the funnel must show the promoted offer's own photos. Pull
  * them from the offer link into the project library before anything else.
  */
+type OfferInfo = { note: string; names: string[]; hosts: string[]; blurb: string };
+
 async function loadOfferMedia(
   supabase: SupabaseClient,
   projectId: string,
   link: string,
-): Promise<string> {
-  if (!link) return 'No offer link — photos come from the landings saved on this project.';
+): Promise<OfferInfo> {
+  const none: OfferInfo = { note: 'No offer link — photos come from the landings saved on this project.', names: [], hosts: [], blurb: '' };
+  if (!link) return none;
   try {
     const before = (await listLandingMedia(supabase, projectId)).filter((m) => m.storedUrl).length;
     const r = await extractLandingMediaFromUrl(supabase, { projectId, url: link, limit: 40 });
     const after = (await listLandingMedia(supabase, projectId)).filter((m) => m.storedUrl).length;
-    return `Offer page ${cleanOfferUrl(r.finalUrl)}: ${r.found} media found, ${r.saved} new saved (library now ${after} files${before ? `, was ${before}` : ''}).`;
+    const id = offerIdentityFromHtml(r.html, [link, r.finalUrl]);
+    return {
+      note: `Offer page ${cleanOfferUrl(r.finalUrl)}: ${r.found} media found, ${r.saved} new saved (library now ${after} files${before ? `, was ${before}` : ''}).`,
+      ...id,
+    };
   } catch (e) {
-    return `Offer page media: ${(e as Error).message}`;
+    return { ...none, note: `Offer page media: ${(e as Error).message}` };
   }
+}
+
+/** Affiliate: the search is the PRODUCT itself — its names, not its category. */
+function affiliateSearchTerms(claudeTerms: string[], offer: OfferInfo, productName: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const push = (t: string) => {
+    const s = String(t || '').replace(/\s+/g, ' ').trim();
+    if (s.length < 3 || s.length > 60) return;
+    const key = fold(s);
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    out.push(s);
+  };
+  push(productName);
+  for (const t of claudeTerms) push(t);
+  for (const n of offer.names) push(n);
+  // Domain names show up in ad link text; a cheap extra net for other affiliates.
+  for (const h of offer.hosts) push(h);
+  return out.slice(0, 12);
 }
 
 async function runCompetitor(supabase: SupabaseClient, projectId: string, input: PipelineInput): Promise<StepResult> {
   const link = (input.competitorLink || '').trim();
   const affiliate = input.imageMode === 'affiliate';
-  const offerNote = affiliate ? await loadOfferMedia(supabase, projectId, link) : '';
+  const offer: OfferInfo = affiliate
+    ? await loadOfferMedia(supabase, projectId, link)
+    : { note: '', names: [], hosts: [], blurb: '' };
+  const offerNote = offer.note;
   const project = await loadProject(supabase, projectId);
   const research = sectionContentFrom(project.market_research);
   const brief = typeof project.brief === 'string' && project.brief.trim() ? (project.brief as string) : sectionContentFrom(project.brief);
@@ -1085,7 +1115,26 @@ async function runCompetitor(supabase: SupabaseClient, projectId: string, input:
   // Cast a WIDE net here: every phrase a buyer or an affiliate would use for
   // this kind of product. Relevance is decided afterwards by the model reading
   // each advertiser's ads (competitor-judge), not by these words.
-  const kwInstructions = `You are a media buyer doing competitor research for the ${geo} market.
+  const kwInstructions = affiliate
+    ? `You are an AFFILIATE media buyer. We promote an existing offer (OUR PRODUCT below) and want EVERY advertiser running THIS EXACT product on Meta / TikTok / Google — the brand itself and the other affiliates — to study their ads. Ad libraries search the ad text, so the searches are the strings an ad for this product would contain.
+
+Output EXACTLY this format (no extra text):
+
+SEARCH
+<8-12 strings, one per line>
+
+INCLUDE
+<the same names, one per line>
+
+EXCLUDE
+<leave empty>
+
+CRITICAL RULES:
+- First SEARCH line = the bare brand name alone (the single word buyers know it by), then the product name alone.
+- SEARCH = exact product name, brand name, brand + product, spelling/spacing variants an advertiser might use ("JellyStick", "Jelly-Stick"), the product name as locals in ${geo} would write it, the offer/advertorial name from the page title, and "<product> review" / "<product> reviews" in the local language.
+- NEVER category phrases ("fiber supplement", "appetite jelly", "slimming coffee") — those pull OTHER products, which we do not want.
+- No generic words, no competitor brands.`
+    : `You are a media buyer doing competitor research for the ${geo} market.
 Goal: surface EVERY advertiser selling the same kind of product as ours — all brands, formats, clones and affiliates. Missing a competitor is worse than a noisy search; irrelevant advertisers are removed later by a reader that looks at each ad.
 
 Output EXACTLY this format (no extra text):
@@ -1109,16 +1158,27 @@ CRITICAL RULES:
 - NEVER output generic platform/tech terms (shopify, ecommerce, dropshipping).`;
   const linkLine = link
     ? affiliate
-      ? `Offer page we promote (this IS our product): ${cleanOfferUrl(link)}\n`
+      ? `Offer page we promote (this IS our product): ${cleanOfferUrl(link)}\n${offer.blurb ? `What the offer page says about itself:\n${offer.blurb}\n` : ''}`
       : `Competitor link: ${link}\n`
     : '';
   const kwUser = `Product: ${productName}\nMarket: ${input.market || country}\n${input.description ? `Description: ${input.description}\n` : ''}${linkLine}\nGive SEARCH / INCLUDE / EXCLUDE now.`;
   const kwRaw = await callClaude({ task: 'ad', instructions: kwInstructions, brief, marketResearch: research, userMessage: kwUser, maxTokens: 700 });
 
-  const lexicon = parseDiscoveryLexicon(kwRaw, productName);
-  const searchTerms = lexicon.search;
-  const includeTerms = lexicon.include;
-  const excludeTerms = lexicon.exclude;
+  let searchTerms: string[];
+  let includeTerms: string[];
+  let excludeTerms: string[];
+  if (affiliate) {
+    // Names, not categories: single-word brand names must survive here.
+    const rawSearch = parseTermList(kwRaw.match(/SEARCH\s*:?\s*\n([\s\S]*?)(?=\n\s*(?:INCLUDE|EXCLUDE)\s*:?\s*\n|$)/i)?.[1] || kwRaw);
+    searchTerms = affiliateSearchTerms(rawSearch, offer, productName);
+    includeTerms = searchTerms.filter((t) => !offer.hosts.includes(t));
+    excludeTerms = [];
+  } else {
+    const lexicon = parseDiscoveryLexicon(kwRaw, productName);
+    searchTerms = lexicon.search;
+    includeTerms = lexicon.include;
+    excludeTerms = lexicon.exclude;
+  }
 
   const base = siteBaseUrl();
   const token = process.env.APIFY_KEY || process.env.APIFY_TOKEN || process.env.APIFY_API_TOKEN || '';
@@ -1135,9 +1195,12 @@ CRITICAL RULES:
       || brief.replace(/\s+/g, ' ').slice(0, 900);
     await saveDiscoveryLexicon(supabase, projectId, includeTerms, excludeTerms, {
       name: productName,
-      description: descr.slice(0, 900),
+      description: affiliate && offer.blurb
+        ? `${descr.slice(0, 500)}\n\nOFFER PAGE (${cleanOfferUrl(link)}):\n${offer.blurb}`.slice(0, 1200)
+        : descr.slice(0, 900),
       market: input.market || country,
       affiliate,
+      hosts: offer.hosts,
     });
   } catch (e) {
     console.warn('[pipeline] discovery lexicon:', (e as Error).message);
@@ -1183,9 +1246,12 @@ CRITICAL RULES:
 
   const output = [
     offerNote,
-    affiliate ? 'Affiliate: competitor ads and landings are saved for research; their photos stay out of this offer’s library.' : '',
+    affiliate ? 'Affiliate: looking for everyone running THIS exact product (brand + other affiliates). Other products in the category are dropped. Competitor photos stay out of this offer’s library.' : '',
+    affiliate && offer.hosts.length ? `Offer domains: ${offer.hosts.join(', ')}` : '',
     `Search keywords (${searchTerms.length}): ${searchTerms.join(', ')}`,
-    'Relevance: the model reads each advertiser’s ads and keeps only real competitors of this product.',
+    affiliate
+      ? 'Relevance: the model keeps an advertiser only when its ad names this product (or lands on the offer domain).'
+      : 'Relevance: the model reads each advertiser’s ads and keeps only real competitors of this product.',
     started.length ? `\nStarted runs:\n${started.map((s) => `- ${s.platform} · "${s.keyword}" · run ${s.runId}`).join('\n')}` : '',
     runs.length ? `\nErrors:\n${runs.map((r) => `- ${r}`).join('\n')}` : '',
   ].filter(Boolean).join('\n');

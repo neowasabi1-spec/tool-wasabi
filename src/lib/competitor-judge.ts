@@ -13,6 +13,11 @@ export type ProductProfile = {
   name: string;
   description?: string;
   market?: string;
+  /** Affiliate: we promote an existing offer. A competitor is then anyone
+   *  running THAT SAME product (brand + other affiliates), not the category. */
+  affiliate?: boolean;
+  /** Affiliate: domains the offer lives on; ads landing there are the product. */
+  hosts?: string[];
 };
 
 export type AdvertiserCard = {
@@ -37,8 +42,19 @@ export async function judgeAdvertisers(
   const key = getAnthropicKey();
   if (!key) throw new Error('ANTHROPIC_API_KEY is not configured');
 
+  // Affiliate: an ad that lands on the offer's own domain IS the product —
+  // no model call needed for those.
+  const hosts = new Set((product.hosts || []).map((h) => h.toLowerCase().replace(/^www\./, '')).filter(Boolean));
+  const pending: AdvertiserCard[] = [];
+  for (const c of cards) {
+    const lh = (c.landingHost || '').toLowerCase().replace(/^www\./, '');
+    if (product.affiliate && lh && hosts.has(lh)) out.set(c.id, { id: c.id, competitor: true, why: 'lands on the offer domain' });
+    else pending.push(c);
+  }
+  if (!pending.length) return out;
+
   const batches: AdvertiserCard[][] = [];
-  for (let i = 0; i < cards.length; i += BATCH) batches.push(cards.slice(i, i + BATCH));
+  for (let i = 0; i < pending.length; i += BATCH) batches.push(pending.slice(i, i + BATCH));
 
   // One failing batch must not throw away the verdicts of the others: cards
   // the model never answered for are simply absent and the caller falls back.
@@ -53,11 +69,27 @@ export async function judgeAdvertisers(
 }
 
 async function judgeBatch(key: string, product: ProductProfile, cards: AdvertiserCard[]): Promise<Verdict[]> {
-  const system = `You are a media buyer building the competitor set for OUR product.
+  const head = `OUR PRODUCT: ${product.name}
+${product.description ? `WHAT IT IS: ${product.description.slice(0, 1200)}\n` : ''}${product.market ? `MARKET: ${product.market}\n` : ''}${product.hosts?.length ? `OFFER DOMAINS: ${product.hosts.join(', ')}\n` : ''}
+You get a list of advertisers found by keyword search on ad libraries, each with samples of their ad copy and their landing domain.`;
 
-OUR PRODUCT: ${product.name}
-${product.description ? `WHAT IT IS: ${product.description.slice(0, 900)}\n` : ''}${product.market ? `MARKET: ${product.market}\n` : ''}
-You get a list of advertisers found by keyword search on ad libraries, each with samples of their ad copy and their landing domain.
+  const system = product.affiliate
+    ? `You are a media buyer working as an AFFILIATE: we promote an existing offer, and we want every advertiser running THAT SAME product — the brand itself and the other affiliates — to study their ads.
+
+${head}
+
+An advertiser is a COMPETITOR only when the ad sells EXACTLY this product: the same product/brand name (any spelling, spacing, casing or translation of it), a nickname clearly used for it, or a landing on one of the offer domains. Other affiliates' pre-landers and advertorials for this product count.
+
+NOT a competitor: a different product, even the same kind (another jelly stick, another fiber supplement, another brand with the same promise), shops/marketplaces, tools, media, unrelated categories, and ads with no readable offer.
+
+Decide from the product actually named or shown in the copy. If the copy never identifies this specific product, say competitor=false.
+
+Return STRICT JSON only:
+{"advertisers":[{"id":"...","competitor":true,"why":"<=12 words"}]}
+One object per input id.`
+    : `You are a media buyer building the competitor set for OUR product.
+
+${head}
 
 An advertiser is a COMPETITOR when a person about to buy our product could buy theirs instead: same kind of product, solving the same problem for the same buyer — including different brands, different formats of the same solution, and clones/affiliates of it. Keep them even if their copy uses other words than ours.
 
