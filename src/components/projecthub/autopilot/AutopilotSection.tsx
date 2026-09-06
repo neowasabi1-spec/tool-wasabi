@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -61,6 +62,22 @@ export function AutopilotSection({
   const [history, setHistory] = useState<Job[]>([]);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const router = useRouter();
+
+  // When the funnel swipe step STARTS (seen going pending → running while we
+  // watch), move to Clone/Swipe: that's where the pages being rewritten live.
+  // Only on the transition, so reopening a project mid-run doesn't yank the user away.
+  const swipeSeenRef = useRef<{ jobId: string; status: StepStatus | null } | null>(null);
+  const followSwipe = useCallback((data: Job) => {
+    const swipe = data.steps?.find((s) => s.key === 'swipe');
+    const now: StepStatus | null = swipe ? swipe.status : null;
+    const prev = swipeSeenRef.current;
+    const sameJob = prev?.jobId === data.id;
+    if (sameJob && prev?.status && prev.status !== 'running' && now === 'running') {
+      router.push('/front-end-funnel');
+    }
+    swipeSeenRef.current = { jobId: data.id, status: now };
+  }, [router]);
 
   // ── Polling of the active job ──
   const pollJob = useCallback(async (jobId: string) => {
@@ -69,13 +86,14 @@ export function AutopilotSection({
       if (!res.ok) return;
       const data: Job = await res.json();
       setJob(data);
+      followSwipe(data);
       if (!ACTIVE(data.status)) {
         if (pollRef.current) clearInterval(pollRef.current);
         pollRef.current = null;
         loadHistory();
       }
     } catch { /* ignore transient */ }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [followSwipe]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const startPolling = useCallback((jobId: string) => {
     if (pollRef.current) clearInterval(pollRef.current);
