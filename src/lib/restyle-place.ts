@@ -42,26 +42,51 @@ export async function placeMediaWithAi(args: {
   pageUrl?: string;
   slots: PlaceSlotIn[];
   library: PlaceLibIn[];
+  /** The page was built for ANOTHER product and is being turned into ours:
+   *  every picture of the old product must go, library reuse is expected. */
+  convert?: boolean;
+  /** False when the caller cannot render generate=true (affiliate: real offer photos only). */
+  canGenerate?: boolean;
 }): Promise<PlaceAssignment[]> {
-  const slots = args.slots.slice(0, 60);
+  const slots = args.slots.slice(0, 100);
   const library = args.library.slice(0, 60);
   if (!slots.length) return [];
+  const canGenerate = args.canGenerate !== false;
 
   const [seen, libSeen] = await Promise.all([
     loadSlotImages(slots, args.pageUrl || ''),
     loadLibraryThumbs(library),
   ]);
 
-  const system = `You are looking at the CURRENT images on a landing page for "${args.productName}".
-${args.description ? `Product: ${args.description.slice(0, 600)}\n` : ''}${args.brief ? `Brief: ${args.brief.slice(0, 800)}\n` : ''}
-For each slot you are shown the picture that is already there, plus the text around it.
+  const head = `${args.description ? `Product: ${args.description.slice(0, 600)}\n` : ''}${args.brief ? `Brief: ${args.brief.slice(0, 800)}\n` : ''}
+For each slot you are shown the picture that is already there, plus the text around it.`;
+  const genRule = canGenerate
+    ? 'When no library file fits, generate=true with an English image prompt (at most 8).'
+    : 'Image generation is NOT available here: never answer generate=true. When nothing fits perfectly, pick the closest library file anyway.';
+
+  const system = args.convert
+    ? `This landing page was built for a DIFFERENT product. It is being converted to sell "${args.productName}", and the copy is being rewritten for it.
+${head}
+
+LOOK at the picture first.
+- UI chrome (stars, rating bars, checkmarks, ticks, logos, arrows, payment marks, bullets, flags) → skip it.
+- Any picture that shows the OLD product — the item itself, its box, its app screen, hands or feet using it, before/after of its results, its brand name — MUST be replaced. Leaving one on the page is the worst possible outcome, far worse than an imperfect match. Pick the library file that fits the nearby copy best; the library is small, so the same file being used in several slots is expected and fine. If unsure whether a photo shows the old product, replace it.
+- A photo with NO product in it (a doctor portrait, a landscape, a smiling person, a generic ingredient) may stay only when it still fits the new copy; otherwise replace it too.
+- VIDEO slots: you see the poster frame when there is one, otherwise only the copy. These clips show the old product in use: replace every one. Pick a library video if one fits, otherwise the best matching still photo (it is shown as a slowly animated still).
+${genRule}
+
+Return STRICT JSON only:
+{"slots":[{"id":0,"skip":true,"mediaId":null,"generate":false,"prompt":""}]}
+One object per input id.`
+    : `You are looking at the CURRENT images on a landing page for "${args.productName}".
+${head}
 
 LOOK at the picture first.
 - If it is UI chrome (stars, rating bars, checkmarks, ticks, logos, arrows, payment marks, bullets) → skip it. Do not replace it.
 - If it is a real photograph or illustration → decide what SHOULD be there from the nearby copy (a doctor if the copy is about a doctor, an object if the copy is about an object, and so on). Then either pick a library id whose file clearly matches that subject, or generate=true with an English image prompt.
 - VIDEO slots: you see the poster frame when there is one, otherwise only the copy. These are content clips, never chrome. Pick a library video if one fits; otherwise pick the best matching still photo (it will be shown as a slowly animated still) or generate=true. Do not skip a video slot unless the copy gives you nothing to go on.
 
-The library is this offer's own photos: prefer them over generating. Never put a photo on stars or ticks. Never pick a library file just because it is unused; the same file may be reused only when the copy really asks for the same subject. At most 8 generate=true. If unsure about an image slot, skip.
+The library is this offer's own photos: prefer them over generating. Never put a photo on stars or ticks. Never pick a library file just because it is unused; the same file may be reused only when the copy really asks for the same subject. ${genRule} If unsure about an image slot, skip.
 
 Return STRICT JSON only:
 {"slots":[{"id":0,"skip":true,"mediaId":null,"generate":false,"prompt":""}]}
@@ -104,7 +129,12 @@ One object per input id.`;
         } else if (s.kind === 'video') {
           content.push({ type: 'text', text: '(video clip, no poster to preview — choose from the copy)' });
         } else {
-          content.push({ type: 'text', text: '(no preview — skip unless you are sure this is a content photo)' });
+          content.push({
+            type: 'text',
+            text: args.convert
+              ? '(no preview — judge from the copy: if it reads like a product/demo/result picture, replace it)'
+              : '(no preview — skip unless you are sure this is a content photo)',
+          });
         }
       }
       try {
@@ -121,7 +151,7 @@ One object per input id.`;
   return results.flat().map((a) => {
     if (!a.generate) return a;
     generates += 1;
-    return generates <= 8 ? a : { ...a, generate: false, prompt: '' };
+    return canGenerate && generates <= 8 ? a : { ...a, generate: false, prompt: '' };
   });
 }
 

@@ -1320,7 +1320,9 @@ async function applyAffiliateMedia(
   productName = '',
 ): Promise<{ html: string; placed: number; videos: number }> {
   let out = html;
-  const slots = collectRestyleSlots(out, 40, pageUrl);
+  // The whole page: a long advertorial has 100+ media tags and every product
+  // shot after the first 40 would otherwise stay the competitor's.
+  const slots = collectRestyleSlots(out, 100, pageUrl);
   const pool = [...stills, ...videos];
   const byId = new Map(pool.map((m) => [String(m.id), m]));
   const previewOf = (m: LandingMediaItem): string => {
@@ -1333,6 +1335,10 @@ async function applyAffiliateMedia(
     assignments = await placeMediaWithAi({
       productName,
       pageUrl,
+      // A competitor's page becomes this offer's page: every old-product
+      // picture goes; only the offer's own photos are available (no generation).
+      convert: true,
+      canGenerate: false,
       slots: slots.map((s) => ({
         id: s.id,
         kind: s.kind,

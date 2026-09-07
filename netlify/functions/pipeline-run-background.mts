@@ -415,7 +415,7 @@ async function startApifyRun(actor: string, input: Record<string, unknown>, webh
 async function startApifyTiktokRun(keyword: string, country: string, count: number, webhookUrl: string): Promise<{ ok: boolean; runId?: string; error?: string }> {
   const actor = process.env.APIFY_TIKTOK_ADS_ACTOR || 'aiscraperdev~tiktok-ads-library-scraper';
   const n = Math.min(Math.max(count || 20, 1), 200);
-  const region = (country || '').trim() || 'all';
+  const region = (country || '').trim().replace(/^ALL$/i, '') || 'all';
   const input: Record<string, unknown> = {
     searchQuery: keyword, query: keyword, keyword,
     // 'ad_library' is keyword-filtered (verified advertisers, EU/UK/TR) →
@@ -430,7 +430,7 @@ async function startApifyTiktokRun(keyword: string, country: string, count: numb
 async function startApifyGoogleRun(keyword: string, region: string, count: number, webhookUrl: string): Promise<{ ok: boolean; runId?: string; error?: string }> {
   const actor = process.env.APIFY_GOOGLE_ADS_ACTOR || 'jaybird~google-ads-transparency-scraper';
   const n = Math.min(Math.max(count || 20, 1), 200);
-  const reg = (region || '').trim() || 'anywhere';
+  const reg = (region || '').trim().replace(/^ALL$/i, '') || 'anywhere';
   const input: Record<string, unknown> = {
     queries: [keyword], searchQuery: keyword, searchTargets: [keyword],
     region: reg, regions: [reg], dateRangePreset: 'LAST_30_DAYS',
@@ -1105,13 +1105,17 @@ async function runCompetitor(supabase: SupabaseClient, projectId: string, input:
   const research = sectionContentFrom(project.market_research);
   const brief = typeof project.brief === 'string' && project.brief.trim() ? (project.brief as string) : sectionContentFrom(project.brief);
   const productName = (project.name as string) || input.product || '';
-  const country = countryFromMarket(input);
+  // Affiliate: the product name is the filter, so search the ad libraries
+  // WORLDWIDE — the brand and its affiliates run wherever the offer converts,
+  // and a guessed country (default IT) simply returns "Ads not found".
+  const marketGiven = (input.market || input.language || '').trim();
+  const country = affiliate ? 'ALL' : countryFromMarket(input);
 
   // 1) Ask Claude for the best AD-LIBRARY SEARCH KEYWORDS for this product —
   //    the terms a media buyer would type to surface LOCAL competitors on Meta,
   //    TikTok and Google. These MUST be in the target market's language, otherwise
   //    the ad libraries surface foreign (US/English) brands.
-  const geo = (input.market || input.language || '').trim() || country;
+  const geo = marketGiven || (affiliate ? 'the offer page’s own market (its language tells you which)' : country);
   // Cast a WIDE net here: every phrase a buyer or an affiliate would use for
   // this kind of product. Relevance is decided afterwards by the model reading
   // each advertiser's ads (competitor-judge), not by these words.
@@ -1131,7 +1135,7 @@ EXCLUDE
 
 CRITICAL RULES:
 - First SEARCH line = the bare brand name alone (the single word buyers know it by), then the product name alone.
-- SEARCH = exact product name, brand name, brand + product, spelling/spacing variants an advertiser might use ("JellyStick", "Jelly-Stick"), the product name as locals in ${geo} would write it, the offer/advertorial name from the page title, and "<product> review" / "<product> reviews" in the local language.
+- SEARCH = exact product name, brand name, brand + product, spelling/spacing variants an advertiser might use ("JellyStick", "Jelly-Stick"), the offer/advertorial name from the page title, and "<product> review" / "<product> reviews" in the language of ${geo}. Do not translate the product name into other languages: names are searched as-is, worldwide.
 - NEVER category phrases ("fiber supplement", "appetite jelly", "slimming coffee") — those pull OTHER products, which we do not want.
 - No generic words, no competitor brands.`
     : `You are a media buyer doing competitor research for the ${geo} market.
@@ -1161,7 +1165,7 @@ CRITICAL RULES:
       ? `Offer page we promote (this IS our product): ${cleanOfferUrl(link)}\n${offer.blurb ? `What the offer page says about itself:\n${offer.blurb}\n` : ''}`
       : `Competitor link: ${link}\n`
     : '';
-  const kwUser = `Product: ${productName}\nMarket: ${input.market || country}\n${input.description ? `Description: ${input.description}\n` : ''}${linkLine}\nGive SEARCH / INCLUDE / EXCLUDE now.`;
+  const kwUser = `Product: ${productName}\nMarket: ${marketGiven || (affiliate ? 'worldwide (wherever this offer is advertised)' : country)}\n${input.description ? `Description: ${input.description}\n` : ''}${linkLine}\nGive SEARCH / INCLUDE / EXCLUDE now.`;
   const kwRaw = await callClaude({ task: 'ad', instructions: kwInstructions, brief, marketResearch: research, userMessage: kwUser, maxTokens: 700 });
 
   let searchTerms: string[];
@@ -1198,7 +1202,7 @@ CRITICAL RULES:
       description: affiliate && offer.blurb
         ? `${descr.slice(0, 500)}\n\nOFFER PAGE (${cleanOfferUrl(link)}):\n${offer.blurb}`.slice(0, 1200)
         : descr.slice(0, 900),
-      market: input.market || country,
+      market: marketGiven || (affiliate ? 'worldwide' : country),
       affiliate,
       hosts: offer.hosts,
       offerUrl: affiliate && link ? cleanOfferUrl(link) : undefined,
@@ -1249,6 +1253,7 @@ CRITICAL RULES:
     offerNote,
     affiliate ? 'Affiliate: looking for everyone running THIS exact product (brand + other affiliates). Other products in the category are dropped. Competitor photos stay out of this offer’s library.' : '',
     affiliate && offer.hosts.length ? `Offer domains: ${offer.hosts.join(', ')}` : '',
+    `Ad libraries searched ${country === 'ALL' ? 'worldwide (all countries)' : `in ${country}`}.`,
     `Search keywords (${searchTerms.length}): ${searchTerms.join(', ')}`,
     affiliate
       ? 'Relevance: the model keeps an advertiser only when its ad names this product (or lands on the offer domain).'

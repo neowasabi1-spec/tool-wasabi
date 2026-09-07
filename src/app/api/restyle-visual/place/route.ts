@@ -46,6 +46,8 @@ export async function POST(req: NextRequest) {
       pageUrl: body.pageUrl,
       slots,
       library,
+      // Restyle turns a cloned competitor page into ours: old-product pictures go.
+      convert: true,
     });
     return NextResponse.json({ assignments });
   } catch (e) {
