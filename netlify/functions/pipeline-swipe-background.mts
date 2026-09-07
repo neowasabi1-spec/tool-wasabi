@@ -27,6 +27,7 @@ import {
 } from '../../src/lib/restyle-slots';
 import { placeMediaWithAi } from '../../src/lib/restyle-place';
 import { wellFormed } from '../../src/lib/well-formed';
+import { fetchPageText } from '../../src/lib/page-text';
 import { batchKeepingGroups, buildSwipePlan, orderAndLinkFragments, planRules } from '../../src/lib/swipe-plan';
 
 /**
@@ -111,6 +112,8 @@ interface SwipeCtx {
   productName: string;
   productContext: string;
   description: string;
+  /** Affiliate: readable text of the offer page — the product's real facts. */
+  offerPage: string;
   brief: string;
   research: string;
   market: string;
@@ -466,9 +469,9 @@ async function runCloneSwipeApi(
         product: {
           name: ctx.productName,
           description: ctx.description,
+          offer_page: ctx.offerPage || undefined,
           marketing_brief: ctx.brief,
           market_research: ctx.research,
-          project_brief: ctx.brief,
           geo_market: ctx.market || undefined,
         },
         tone: 'professional',
@@ -624,8 +627,14 @@ function bakePairsIntoHtml(
   html: string,
   pairs: Array<{ from: string; to: string; attr?: string }>,
 ): string {
-  const sorted = pairs
-    .filter((p) => !p.attr && p.from && p.to && p.from !== p.to && p.from.length >= 2)
+  const usable = pairs.filter((p) => !p.attr && p.from && p.to && p.from !== p.to && p.from.length >= 2);
+  // Never bake an inline FRAGMENT (a pair whose text sits inside another
+  // pair's text, e.g. the <u> piece of a headline): baking it first changes the
+  // parent's textContent, so the DOM replacer can no longer match the parent
+  // and the headline stays half old / half new. Fragments are left to the DOM
+  // pass, where the parent element is replaced as a whole.
+  const sorted = usable
+    .filter((p) => !usable.some((o) => o !== p && o.from.length > p.from.length && o.from.includes(p.from)))
     .sort((a, b) => b.from.length - a.from.length);
   if (!sorted.length) return html;
   const parts = html.split(/(<script\b[\s\S]*?<\/script>|<style\b[\s\S]*?<\/style>)/gi);
@@ -684,10 +693,13 @@ function applyRewrites(
   var pairs = ${pairsJson};
   function escRx(s){return s.replace(/[.*+?^\${}()|[\\]\\\\]/g,'\\\\$&');}
   function normWS(s){return (s||'').replace(/\\s+/g,' ').trim();}
+  // Whitespace-free key: the extractor puts a space where an inline tag was
+  // (15-Min<u>Electric</u> → "15-Min Electric") while textContent has none.
+  function keyOf(s){return (s||'').replace(/\\s+/g,'');}
   var prepared = pairs.map(function(p){
     var fn = normWS(p.from);
-    return { from: p.from, to: p.to, attr: p.attr, norm: fn,
-      rx: fn ? new RegExp(escRx(fn).replace(/ /g,'\\\\s+'),'g') : null };
+    return { from: p.from, to: p.to, attr: p.attr, norm: fn, key: keyOf(fn),
+      rx: fn ? new RegExp(escRx(fn).replace(/ /g,'\\\\s*'),'g') : null };
   }).filter(function(p){return p.norm && p.norm.length>=2;});
   function tryReplace(text){
     if(!text) return text;
@@ -718,7 +730,7 @@ function applyRewrites(
     for(var p2=0;p2<prepared.length;p2++){
       var pp = prepared[p2];
       if(pp.attr) continue;
-      if(fullNorm === pp.norm){ el.textContent = pp.to; break; }
+      if(fullNorm === pp.norm || keyOf(fullNorm) === pp.key){ el.textContent = pp.to; break; }
     }
   }
   function walkText(node){
@@ -763,7 +775,7 @@ function applyRewrites(
       for(var p2=0;p2<prepared.length;p2++){
         var pp = prepared[p2];
         if(pp.attr) continue;
-        if(fullNorm === pp.norm){ el.textContent = pp.to; break; }
+        if(fullNorm === pp.norm || keyOf(fullNorm) === pp.key){ el.textContent = pp.to; break; }
       }
     }
     if(document.body) walkText(document.body);
@@ -1919,19 +1931,29 @@ export default async (req: Request) => {
   const briefFromCol = extractSectionContent(project?.brief).trim();
   const brief = cap(briefFromFiles || briefFromCol);
   const research = cap(extractSectionContent(project?.market_research).trim());
-  const parts: string[] = [];
-  if (project?.name) parts.push(`PROJECT: ${project.name}`);
-  if (project?.domain) parts.push(`DOMAIN: ${String(project.domain)}`);
-  if (description) parts.push(`DESCRIPTION:\n${description}`);
-  if (brief) parts.push(`BRIEF (use this as the primary source of truth for tone, positioning and value props):\n${brief}`);
-  if (research) parts.push(`MARKET RESEARCH:\n${research}`);
-  log(`context brief=${brief.length}c research=${research.length}c desc=${description.length}c`);
   let landingItems = downloadedLandingMedia(await listLandingMedia(sb, projectId));
   let offerUrl = typeof body.offerUrl === 'string' ? body.offerUrl.trim() : '';
   if (imageMode === 'affiliate' && !offerUrl) {
     // Manual swipe from Clone/Swipe: reuse the offer Chimera researched for this project.
     offerUrl = (await loadDiscoveryLexicon(sb, projectId).catch(() => null))?.product?.offerUrl || '';
   }
+  // Affiliate: the offer page IS the product. Its real text (name, ingredients,
+  // mechanism, dosage, price, guarantee) goes to the copywriter ahead of the
+  // brief, so the rewrite cannot drift into an invented product.
+  let offerPage = '';
+  if (imageMode === 'affiliate' && /^https?:\/\//i.test(offerUrl)) {
+    const page = await fetchPageText(offerUrl, { max: 14_000 }).catch(() => null);
+    offerPage = page?.text || '';
+    log(`offer page text: ${offerPage.length}c via ${page?.via || 'none'}`);
+  }
+  const parts: string[] = [];
+  if (project?.name) parts.push(`PROJECT: ${project.name}`);
+  if (project?.domain) parts.push(`DOMAIN: ${String(project.domain)}`);
+  if (description) parts.push(`DESCRIPTION:\n${description}`);
+  if (offerPage) parts.push(`OFFER PAGE WE PROMOTE (this IS our product — real name, ingredients, mechanism, dosage, price, guarantee, claims; use these facts verbatim, never invent a different product):\n"""\n${offerPage}\n"""`);
+  if (brief) parts.push(`BRIEF (use this as the primary source of truth for tone, positioning and value props):\n${brief}`);
+  if (research) parts.push(`MARKET RESEARCH:\n${research}`);
+  log(`context offer=${offerPage.length}c brief=${brief.length}c research=${research.length}c desc=${description.length}c`);
   if (imageMode === 'affiliate') {
     // Affiliate: ONLY the promoted offer's own photos. The project library is
     // shared with competitor research and other landings, so it is filtered
@@ -1973,6 +1995,7 @@ export default async (req: Request) => {
     productName,
     productContext: parts.join('\n\n'),
     description,
+    offerPage,
     brief,
     research,
     market,

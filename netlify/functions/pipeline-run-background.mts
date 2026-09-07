@@ -3,6 +3,7 @@ import { getCoreKnowledge, getKnowledgeForTask } from '../../src/knowledge/copyw
 import { fold, parseDiscoveryLexicon, parseTermList } from '../../src/lib/competitor-relevance';
 import { saveDiscoveryLexicon, shortApifyWebhookUrl } from '../../src/lib/discovery-lexicon';
 import { extractLandingMediaFromUrl, listLandingMedia, offerIdentityFromHtml } from '../../src/lib/landing-media';
+import { fetchPageText, pageTextBlock } from '../../src/lib/page-text';
 import { wellFormed } from '../../src/lib/well-formed';
 
 /**
@@ -444,18 +445,29 @@ function siteBaseUrl(): string {
   return (process.env.URL || process.env.DEPLOY_PRIME_URL || process.env.NEXT_PUBLIC_SITE_URL || '').replace(/\/$/, '');
 }
 
-/** Fetch a template/landing page's readable content via Jina Reader (plain
- *  fetch, no headless browser). Best-effort; returns '' on failure. */
-async function fetchTemplateReference(url: string): Promise<string> {
-  if (!url) return '';
-  try {
-    const headers: Record<string, string> = { 'X-Return-Format': 'text' };
-    if (process.env.JINA_API_KEY) headers.Authorization = `Bearer ${process.env.JINA_API_KEY}`;
-    const resp = await fetch(`https://r.jina.ai/${url}`, { headers, signal: AbortSignal.timeout(45_000) });
-    if (!resp.ok) return '';
-    const text = await resp.text();
-    return text.slice(0, 12_000);
-  } catch { return ''; }
+/**
+ * The link the user gave (offer page in affiliate mode, reference competitor
+ * otherwise) as readable text + a prompt block. The model cannot browse: if we
+ * only pass the URL it writes "I could not retrieve the page" and invents the
+ * product (name, mechanism, ingredients). Every doc step must get the real text.
+ */
+async function linkContext(input: PipelineInput): Promise<{ block: string; note: string }> {
+  const raw = (input.competitorLink || '').trim();
+  if (!/^https?:\/\//i.test(raw)) return { block: '', note: '' };
+  const affiliate = input.imageMode === 'affiliate';
+  const page = await fetchPageText(raw, { max: 30_000 });
+  if (!page.text) {
+    return {
+      block: affiliate
+        ? `Offer page we promote: ${cleanOfferUrl(raw)} (page text could not be fetched — state clearly which product facts are unknown; do NOT invent a product name, ingredients or mechanism).`
+        : `Reference competitor link: ${raw} (page text could not be fetched).`,
+      note: 'page text unavailable',
+    };
+  }
+  const block = affiliate
+    ? pageTextBlock('OFFER PAGE WE PROMOTE (this IS our product — its real name, ingredients, mechanism, dosage, price, guarantee and claims are below)', page)
+    : pageTextBlock('REFERENCE COMPETITOR PAGE', page);
+  return { block, note: `${page.text.length}c via ${page.via}` };
 }
 
 /** Funnel Builder is only for real Clone/Swipe steps — never Chimera docs. */
@@ -954,10 +966,12 @@ Output clean markdown with EXACTLY these sections and sub-sections:
 # 11. COPY DIRECTION SUMMARY
 - The recommended lead type, tone, and the single most important thing the copy must do. A 3–5 sentence brief-of-the-brief.`;
 
+  const link = await linkContext(input);
+  const affiliate = input.imageMode === 'affiliate';
   const userMessage = `Product: ${productName}
 ${input.description ? `\nProvided description:\n${input.description}` : ''}
-${input.competitorLink ? (input.imageMode === 'affiliate' ? `\nOffer page we promote (our product's own sales page): ${cleanOfferUrl(input.competitorLink)}` : `\nReference competitor link: ${input.competitorLink}`) : ''}
-
+${link.block ? `\n${link.block}\n` : ''}
+${affiliate && link.block ? `\nAFFILIATE OFFER: we sell EXACTLY the product on the offer page above. Its name, format, ingredients, mechanism, dosage, price, guarantee and compliance wording are FACTS to use verbatim — do not rename the product, do not invent ingredients or a different mechanism. Build the research around this real product; competitors are OTHER brands selling the same kind of product.\n` : ''}
 Generate the FULL, deep RMBC-style unified research document for this product. Be exhaustive — this must be the definitive research dossier, not a summary.`;
 
   const content = await callClaude({ task: 'vsl', instructions, userMessage, maxTokens: 16000 });
@@ -975,10 +989,11 @@ Generate the FULL, deep RMBC-style unified research document for this product. B
   // Also save as a real file so it SHOWS in the "Market Research" section of the UI.
   const fileSaved = await saveSectionFile(supabase, projectId, 'market_research', 'Market Research (RMBC)', content);
 
+  const grounded = link.note && link.note !== 'page text unavailable' ? ` Grounded on the ${affiliate ? 'offer' : 'reference'} page text (${link.note}).` : link.note ? ' WARNING: the link page text could not be fetched.' : '';
   return {
-    summary: fileSaved
+    summary: (fileSaved
       ? 'RMBC market research generated — saved as a document in the Market Research section.'
-      : 'RMBC market research generated and saved (file mirror failed; content is in the project).',
+      : 'RMBC market research generated and saved (file mirror failed; content is in the project).') + grounded,
     output: content,
   };
 }
@@ -1011,10 +1026,13 @@ Struttura richiesta:
 **PROVA & VERIFICA**
 **ANGOLI ADS SUGGERITI** (3-5)`;
 
+  const link = await linkContext(input);
+  const affiliate = input.imageMode === 'affiliate';
   const userMessage = `Prodotto: ${productName}
 ${input.description ? `\nDescrizione fornita:\n${input.description}` : ''}
-
-Genera il brief completo. Basati fortemente sulla RICERCA DI MERCATO fornita nel contesto.`;
+${link.block ? `\n${link.block}\n` : ''}
+${affiliate && link.block ? `\nOFFERTA IN AFFILIAZIONE: il prodotto è ESATTAMENTE quello della pagina offerta qui sopra. Nome, formato, ingredienti, meccanismo, dosaggio, prezzo, garanzia e claim sono FATTI da riprendere così come sono — non rinominare il prodotto, non inventare ingredienti o un meccanismo diverso.\n` : ''}
+Genera il brief completo. Basati fortemente sulla RICERCA DI MERCATO fornita nel contesto${link.block ? ' e sul testo della pagina' : ''}.`;
 
   const content = await callClaude({ task: 'vsl', instructions, marketResearch: research, userMessage, maxTokens: 4096 });
   if (!content) throw new Error('Brief returned empty output');

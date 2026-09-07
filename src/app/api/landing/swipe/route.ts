@@ -27,6 +27,8 @@ interface ProductInfo {
   characteristics?: string[] | null;
   geo_market?: string | null;
   supplier?: string | null;
+  /** Affiliate: readable text of the offer page — the product's REAL facts */
+  offer_page?: string;
   /** Long-form positioning / strategist output — injected into swipe prompt */
   marketing_brief?: string;
   /** Freeform angles, objections, proofs, swipe notes */
@@ -323,6 +325,9 @@ function buildProductContextMarkdown(product: ProductInfo): string {
   if (product.cta_url) lines.push(`CTA URL: ${product.cta_url}`);
   if (product.target_audience) lines.push(`Target audience: ${product.target_audience}`);
   if (product.social_proof) lines.push(`Social proof notes: ${product.social_proof}`);
+  if (product.offer_page?.trim()) {
+    lines.push(`OFFER PAGE WE PROMOTE (this IS our product — real name, ingredients, mechanism, dosage, price, guarantee, claims; use these facts verbatim, never invent a different product):\n"""\n${product.offer_page.trim()}\n"""`);
+  }
   if (product.marketing_brief?.trim()) {
     lines.push(`MARKETING BRIEF / POSITIONING:\n${product.marketing_brief.trim()}`);
   }

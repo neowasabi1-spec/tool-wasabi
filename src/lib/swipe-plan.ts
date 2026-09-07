@@ -67,8 +67,8 @@ LANGUAGE: the output language for all copy.`;
   const user = `OUR PRODUCT: ${input.productName}
 OUTPUT LANGUAGE: ${input.language}
 
-PRODUCT CONTEXT (source of truth; never invent medical/legal claims beyond it):
-${wellFormed(input.productContext).slice(0, 14_000) || '(no context — derive from the product name only, flag every assumption)'}
+PRODUCT CONTEXT (source of truth; never invent medical/legal claims beyond it. If it contains an OFFER PAGE block, that page IS the product: its name, ingredients, mechanism, dosage, price and guarantee override anything else, including the brief):
+${wellFormed(input.productContext).slice(0, 40_000) || '(no context — derive from the product name only, flag every assumption)'}
 
 ORIGINAL PAGE, in reading order (each line is one piece of copy; [H1]/[H2]… are headings):
 ${wellFormed(outline)}
