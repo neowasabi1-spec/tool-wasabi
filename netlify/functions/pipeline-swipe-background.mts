@@ -27,6 +27,7 @@ import {
 } from '../../src/lib/restyle-slots';
 import { placeMediaWithAi } from '../../src/lib/restyle-place';
 import { wellFormed } from '../../src/lib/well-formed';
+import { batchKeepingGroups, buildSwipePlan, orderAndLinkFragments, planRules } from '../../src/lib/swipe-plan';
 
 /**
  * Background function (up to 15 min) that performs the Chimera Protocol
@@ -403,13 +404,15 @@ const SAFE_TEXT_PREFIXES = [
   'mixed:p', 'mixed:div', 'mixed:li', 'mixed:td', 'mixed:th',
   'mixed:h1', 'mixed:h2', 'mixed:h3', 'mixed:h4', 'mixed:h5', 'mixed:h6',
   'mixed:span', 'mixed:strong', 'mixed:em', 'mixed:a', 'mixed:b', 'mixed:i',
-  'mixed:button', 'mixed:header', 'mixed:footer', 'mixed:section', 'mixed:article',
-  'mixed:nav', 'mixed:aside', 'mixed:main', 'mixed:figcaption', 'mixed:caption',
+  // Not mixed:section/header/footer/article/main/nav/aside: the extractor's
+  // regex stops at the first closing tag → a blob of a whole region that no
+  // element ever equals (wasted rewrite, never applied).
+  'mixed:button', 'mixed:figcaption', 'mixed:caption',
   'mixed:summary', 'mixed:label', 'mixed:blockquote', 'mixed:dt', 'mixed:dd',
 ];
 const SAFE_ATTRS = new Set(['alt', 'title', 'placeholder', 'aria-label', 'value']);
 
-interface SwipeText { original: string; kind: 'title' | 'meta' | 'attr' | 'text'; attr?: string; prio: number; }
+interface SwipeText { original: string; kind: 'title' | 'meta' | 'attr' | 'text'; attr?: string; prio: number; position?: number; }
 
 function classifyContext(ctx: string): { kind: SwipeText['kind']; attr?: string; prio: number } | null {
   if (ctx === 'title') return { kind: 'title', prio: 0 };
@@ -514,7 +517,7 @@ function collectSwipeTexts(html: string): SwipeText[] {
       if (cls.prio < existing.prio) { existing.kind = cls.kind; existing.attr = cls.attr; existing.prio = cls.prio; }
       continue;
     }
-    const entry: SwipeText = { original: t, kind: cls.kind, attr: cls.attr, prio: cls.prio };
+    const entry: SwipeText = { original: t, kind: cls.kind, attr: cls.attr, prio: cls.prio, position: u.position };
     seen.set(t, entry);
     out.push(entry);
   }
@@ -539,17 +542,19 @@ async function rewriteAllTexts(
   deadline: number,
   onProgress?: (rewrites: Map<number, string>) => Promise<void>,
 ): Promise<Map<number, string>> {
-  const items = texts.map((t, i) => ({ id: i, text: t.original }));
+  // Page order, inline fragments linked to their paragraph (same batch, one unit).
+  const items = orderAndLinkFragments(texts.map((t, i) => ({ id: i, text: t.original, position: t.position })));
   const result = new Map<number, string>();
   const byId = new Map(items.map((t) => [t.id, t.text]));
 
-  const runBatch = async (batch: Array<{ id: number; text: string }>, label: string) => {
+  const runBatch = async (batch: Array<{ id: number; text: string; partOf?: number }>, label: string) => {
+    const payload = batch.map((b) => (b.partOf != null ? { id: b.id, text: b.text, partOf: b.partOf } : { id: b.id, text: b.text }));
     const user = `${label}: return exactly one JSON object per input id (${batch.length} items). Never skip an id.
 
-Rewrite these texts so they sell ONLY the described product. Keep the same conversational energy (headlines stay headlines, CTAs stay CTAs). Plain text only in "rewritten" — no HTML or markdown.
+Rewrite these texts so they sell ONLY the described product, following the SWIPE PLAN. The items are consecutive pieces of the page in reading order: keep them coherent with each other. Keep the same conversational energy (headlines stay headlines, CTAs stay CTAs). Plain text only in "rewritten" — no HTML or markdown.
 
 Input:
-${JSON.stringify(batch, null, 2)}
+${JSON.stringify(payload, null, 2)}
 
 Output shape: [{"id": number, "rewritten": "..."}, ...] — include EVERY id (any order ok).`;
     const raw = await callClaudeText(systemPrompt, user, 8000, 120_000);
@@ -563,7 +568,7 @@ Output shape: [{"id": number, "rewritten": "..."}, ...] — include EVERY id (an
     }
   };
 
-  const runPool = async (pool: Array<Array<{ id: number; text: string }>>, labelOf: (i: number) => string) => {
+  const runPool = async (pool: Array<Array<{ id: number; text: string; partOf?: number }>>, labelOf: (i: number) => string) => {
     let cursor = 0;
     const worker = async () => {
       for (;;) {
@@ -580,16 +585,13 @@ Output shape: [{"id": number, "rewritten": "..."}, ...] — include EVERY id (an
     await Promise.all(Array.from({ length: Math.min(BATCH_CONCURRENCY, pool.length) }, worker));
   };
 
-  const batches: Array<Array<{ id: number; text: string }>> = [];
-  for (let i = 0; i < items.length; i += BATCH_SIZE) batches.push(items.slice(i, i + BATCH_SIZE));
+  const batches = batchKeepingGroups(items, BATCH_SIZE);
   await runPool(batches, (i) => `Batch ${i + 1} of ${batches.length}`);
 
   // One gap-fill sweep for ids missed by failed batches.
   const missing = items.filter((t) => !result.has(t.id));
   if (missing.length && Date.now() < deadline) {
-    const gaps: Array<Array<{ id: number; text: string }>> = [];
-    for (let i = 0; i < missing.length; i += BATCH_SIZE) gaps.push(missing.slice(i, i + BATCH_SIZE));
-    await runPool(gaps, () => 'GAP-FILL — every id mandatory');
+    await runPool(batchKeepingGroups(missing, BATCH_SIZE), () => 'GAP-FILL — every id mandatory');
   }
   return result;
 }
@@ -1722,17 +1724,25 @@ async function processPage(
           ? `Clone/Swipe API busy — rewriting ${textsCount} texts locally…`
           : 'No texts found — restyling photos…');
         if (texts.length) {
-          const system = `You are a world-class direct-response copywriter. You rewrite competitor-style marketing texts to sell ONLY one specific product, without changing HTML structure downstream.
+          const outLang = ctx.market ? `the local language of this target market: ${ctx.market} (e.g. German for Germany, Italian for Italy)` : 'the same language as the original text';
+          const plan = await buildSwipePlan({
+            productName: ctx.productName,
+            productContext: ctx.productContext || '',
+            texts: [...texts].sort((a, b) => (a.position ?? 0) - (b.position ?? 0)).map((t) => ({ text: t.original })),
+            language: outLang,
+            timeoutMs: 50_000,
+          });
+          const system = `You are a world-class direct-response copywriter doing a SWIPE: a proven competitor page is the template (same sections, same persuasion sequence, same energy) and you re-author every piece of copy so it sells ONLY one specific product — ours — without changing HTML structure downstream.
 
 PRODUCT NAME: ${ctx.productName}
 
 FULL PRODUCT CONTEXT (source of truth for facts, angles, benefits, proofs, objections; never invent medical/legal claims):
 ${ctx.productContext || `(minimal data — derive from the product name: ${ctx.productName})`}
 
-OUTPUT LANGUAGE FOR ALL REWRITES: ${ctx.market ? `the local language of this target market: ${ctx.market} (e.g. German for Germany, Italian for Italy)` : 'the same language as the original text'}
-
+OUTPUT LANGUAGE FOR ALL REWRITES: ${outLang}
+${planRules(plan)}
 CRITICAL RULES:
-1. Treat each input line as discrete visible copy — rewrite it completely for OUR product whenever it is substantive marketing text.
+1. Treat each input line as discrete visible copy — rewrite it completely for OUR product whenever it is substantive marketing text. Nothing of the old product may survive: not its name, body part, condition, technology, unit ("device", "session") or its narrator's credentials.
 2. Keep the same conversational energy (headline stays headline, CTA stays CTA). Length is free.
 3. Plain text ONLY in rewritten strings — no HTML, no markdown.
 4. Legal/compliance texts: rewrite only where safe; keep mandatory disclosures.

@@ -7,6 +7,7 @@ import {
   injectNoReferrerAndEagerLoading,
 } from '@/lib/spa-rescue';
 import { normalizeSwipeModel, SWIPE_MODEL_DEFAULT } from '@/lib/swipe-models';
+import { batchKeepingGroups, buildSwipePlan, orderAndLinkFragments, planRules } from '@/lib/swipe-plan';
 
 export const maxDuration = 300;
 
@@ -65,8 +66,10 @@ const SAFE_TAG_PREFIXES = [
   'mixed:p', 'mixed:div', 'mixed:li', 'mixed:td', 'mixed:th',
   'mixed:h1', 'mixed:h2', 'mixed:h3', 'mixed:h4', 'mixed:h5', 'mixed:h6',
   'mixed:span', 'mixed:strong', 'mixed:em', 'mixed:a', 'mixed:b', 'mixed:i',
-  'mixed:button', 'mixed:header', 'mixed:footer', 'mixed:section', 'mixed:article',
-  'mixed:nav', 'mixed:aside', 'mixed:main', 'mixed:figcaption', 'mixed:caption',
+  // NOT mixed:section/header/footer/article/main/nav/aside: the extractor's
+  // "mixed" regex stops at the first closing tag, so those give a blob of a
+  // whole region's text that no element ever equals — wasted rewrites.
+  'mixed:button', 'mixed:figcaption', 'mixed:caption',
   'mixed:summary', 'mixed:label', 'mixed:blockquote', 'mixed:dt', 'mixed:dd',
   'attr:alt', 'attr:title', 'attr:placeholder', 'attr:aria-label', 'attr:value',
 ];
@@ -350,19 +353,23 @@ function prependDocumentTitle(texts: ExtractedText[], html: string): ExtractedTe
   return [{ original: raw, tag: 'title', position: minPos - 1 }, ...texts];
 }
 
+type SwipeItem = { id: number; text: string; tag: string; position?: number; partOf?: number };
+
 async function anthropicRewriteBatch(
   systemPrompt: string,
-  batch: Array<{ id: number; text: string; tag: string }>,
+  batch: SwipeItem[],
   passLabel: string,
   model: string = SWIPE_MODEL_DEFAULT,
 ): Promise<Array<{ id: number; rewritten: string }>> {
   if (batch.length === 0) return [];
+  // Items travel in page order, so the batch reads like a section of the page.
+  const payload = batch.map((b) => (b.partOf != null ? { id: b.id, text: b.text, tag: b.tag, partOf: b.partOf } : { id: b.id, text: b.text, tag: b.tag }));
   const userPrompt = `${passLabel}: You MUST return exactly one JSON object per input id (${batch.length} items). Never skip an id.
 
-Rewrite these texts so they sell ONLY the described product. LENGTH IS FREE — rewrite at whatever length serves the message best (don't pad, don't truncate to match the original word count). Keep the same conversational energy (headlines stay headlines, CTAs stay CTAs). Plain text only in "rewritten" — no HTML or markdown.
+Rewrite these texts so they sell ONLY the described product, following the SWIPE PLAN. The items are consecutive pieces of the page in reading order: keep them coherent with each other (a heading and the paragraph under it tell one story). LENGTH IS FREE — rewrite at whatever length serves the message best (don't pad, don't truncate to match the original word count). Keep the same conversational energy (headlines stay headlines, CTAs stay CTAs). Plain text only in "rewritten" — no HTML or markdown.
 
 Input:
-${JSON.stringify(batch, null, 2)}
+${JSON.stringify(payload, null, 2)}
 
 Output shape: [{"id": number, "rewritten": "..."}, ...] — include EVERY id listed above (any order ok).`;
 
@@ -385,7 +392,7 @@ const SWIPE_BATCH_CONCURRENCY = Math.max(
 
 async function collectAllRewrites(
   systemPrompt: string,
-  textsForAi: Array<{ id: number; text: string; tag: string }>,
+  textsForAi: SwipeItem[],
   // Optional external sink so the caller can still apply whatever was collected
   // if the overall AI budget times out mid-run (partial > nothing).
   sink?: Map<number, string>,
@@ -404,10 +411,8 @@ async function collectAllRewrites(
     }
   };
 
-  const batches: Array<Array<{ id: number; text: string; tag: string }>> = [];
-  for (let i = 0; i < textsForAi.length; i += SWIPE_TEXT_BATCH_SIZE) {
-    batches.push(textsForAi.slice(i, i + SWIPE_TEXT_BATCH_SIZE));
-  }
+  // Page order, and a paragraph never split from its inline fragments.
+  const batches: SwipeItem[][] = batchKeepingGroups(textsForAi, SWIPE_TEXT_BATCH_SIZE);
   const totalBatches = batches.length;
 
   // First pass — concurrency-limited worker pool. A single batch failure is
@@ -445,10 +450,7 @@ async function collectAllRewrites(
     if (missing.length === 0) break;
     console.log(`[swipe] fill sweep ${sweep + 1}: ${missing.length} texts still outstanding`);
 
-    const gapBatches: Array<Array<{ id: number; text: string; tag: string }>> = [];
-    for (let j = 0; j < missing.length; j += SWIPE_TEXT_BATCH_SIZE) {
-      gapBatches.push(missing.slice(j, j + SWIPE_TEXT_BATCH_SIZE));
-    }
+    const gapBatches: SwipeItem[][] = batchKeepingGroups(missing, SWIPE_TEXT_BATCH_SIZE);
     let gapCursor = 0;
     const runGapWorker = async () => {
       for (;;) {
@@ -549,13 +551,32 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'No text found in page' }, { status: 400 });
     }
 
-    const textsForAi = texts.map((t, i) => ({ id: i, text: t.original, tag: t.tag }));
+    // Page order + inline fragments linked to their paragraph: batches read
+    // like sections of the page and a bold piece is rewritten with its sentence.
+    const textsForAi: SwipeItem[] = orderAndLinkFragments(
+      texts.map((t, i) => ({ id: i, text: t.original, tag: t.tag, position: t.position })),
+    );
     const productCtx = buildProductContextMarkdown(product);
 
     const lang = language || 'it';
+    const langLabel = lang === 'it' ? 'Italian' : lang === 'en' ? 'English' : lang;
     const toneStr = tone || 'professional';
 
-    const systemPrompt = `You are a world-class direct-response copywriter. You rewrite competitor-style marketing texts to sell ONE specific product/offering without changing HTML structure downstream.
+    // One plan for the whole page (narrator, root cause, mechanism name,
+    // benefit mapping, what never carries over) — every batch follows it.
+    const planStarted = Date.now();
+    const plan = await buildSwipePlan({
+      productName: product.name,
+      productContext: productCtx,
+      texts: textsForAi.map((t) => ({ text: t.text, tag: t.tag })),
+      language: langLabel,
+      model: swipeModel,
+      timeoutMs: 55_000,
+    });
+    const planMs = Date.now() - planStarted;
+    console.log(`[swipe] plan ${plan ? `ready (${plan.length} chars)` : 'unavailable — batches run without it'} in ${planMs}ms`);
+
+    const systemPrompt = `You are a world-class direct-response copywriter doing a SWIPE: a proven competitor page is the template (same sections, same persuasion sequence, same energy) and you re-author every piece of copy so the page sells ONE specific product — ours — without changing HTML structure downstream.
 
 PRODUCT NAME: ${product.name}
 
@@ -563,14 +584,14 @@ FULL PRODUCT CONTEXT (use this everywhere you need facts, angles, benefits, proo
 ${productCtx || `(minimal catalog data — derive only from product name: ${product.name})`}
 
 TONE: ${toneStr}
-OUTPUT LANGUAGE FOR REWRITES: ${lang === 'it' ? 'Italian' : lang === 'en' ? 'English' : lang}
-
+OUTPUT LANGUAGE FOR REWRITES: ${langLabel}
+${planRules(plan)}
 CRITICAL RULES:
-1. Treat each input line as discrete visible copy — rewrite it completely for OUR product/offering whenever it is substantive marketing text.
+1. Treat each input line as discrete visible copy — rewrite it completely for OUR product/offering whenever it is substantive marketing text. Nothing of the old product may survive: not its name, its body part, its condition, its technology, its unit ("device", "session"), its narrator's credentials.
 2. Keep the same conversational energy/medium (a headline stays a headline, a CTA stays a CTA, body copy stays body copy). LENGTH IS FREE: rewrite at whatever length actually sells the message — don't pad or truncate to match the original word count.
 3. Plain text ONLY in rewritten strings — NO HTML, markdown, or JSON escapes beyond normal string characters.
 4. Legal/compliance texts: rewrite only where safe; preserve mandatory disclosures when uncertainty exists.
-5. Every batch MUST return one {"id","rewritten"} object per supplied id — never omit ids.
+5. Every batch MUST return one {"id","rewritten"} object per supplied id — never omit ids. Labels that are product-neutral (dates, "Customer Reviews", "5 Star", author bylines you keep) may be returned unchanged.
 `;
 
     // Shared sink so a budget timeout still lets us apply what was collected so
@@ -581,9 +602,10 @@ CRITICAL RULES:
       console.log(`[swipe] Anthropic batched swipe, texts=${texts.length}, batch=${SWIPE_TEXT_BATCH_SIZE}, concurrency=${SWIPE_BATCH_CONCURRENCY}, model=${swipeModel}`);
       // Hard wall: 240s for the whole AI loop. Netlify functions die at 300s,
       // we leave 60s for response building, server-side meta/title rewrite, etc.
+      // The plan call already spent part of the function's 300s.
       const aiBudgetMs = Math.max(
         60_000,
-        Math.min(280_000, Number.parseInt(process.env.SWIPE_AI_BUDGET_MS || '240000', 10) || 240_000),
+        Math.min(280_000, Number.parseInt(process.env.SWIPE_AI_BUDGET_MS || '240000', 10) || 240_000) - planMs,
       );
       const timeoutPromise = new Promise<never>((_, reject) => {
         setTimeout(() => reject(new Error(`AI budget exceeded (${aiBudgetMs}ms)`)), aiBudgetMs);
