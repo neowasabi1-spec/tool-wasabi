@@ -518,26 +518,76 @@ async function clonePageHtml(url: string): Promise<string> {
 const absolutizeUrls = absolutizeUrlsInHtml;
 const fixMediaLoading = injectNoReferrerAndEagerLoading;
 
+/**
+ * The swipe takes minutes (plan + Opus batches). Netlify's proxy closes any
+ * response that sends no bytes for ~30s ("Inactivity Timeout", HTTP 504) —
+ * `maxDuration = 300` alone does not help. So the JSON is streamed: a space
+ * every few seconds while the work runs (leading whitespace is legal JSON),
+ * then the whole payload. Errors after this point travel in the body as
+ * `{ success:false, error }` — every caller already checks `success`/`html`.
+ */
+function streamJson(job: () => Promise<Record<string, unknown>>): Response {
+  const enc = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const beat = setInterval(() => {
+        try { controller.enqueue(enc.encode(' ')); } catch { /* closed */ }
+      }, 4_000);
+      job()
+        .then((out) => controller.enqueue(enc.encode(JSON.stringify(out))))
+        .catch((e: unknown) => {
+          console.error('Swipe error:', e);
+          controller.enqueue(enc.encode(JSON.stringify({ success: false, error: e instanceof Error ? e.message : 'Error during swipe' })));
+        })
+        .finally(() => { clearInterval(beat); try { controller.close(); } catch { /* closed */ } });
+    },
+  });
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'X-Accel-Buffering': 'no',
+    },
+  });
+}
+
 export async function POST(request: NextRequest) {
+  let body: Record<string, unknown>;
   try {
-    const body = await request.json();
-    const { source_url, html: providedHtml, product, tone, language, model: modelRaw } = body as {
-      source_url?: string;
-      html?: string;
-      product: ProductInfo;
-      tone?: string;
-      language?: string;
-      model?: string;
-    };
-    const swipeModel = normalizeSwipeModel(modelRaw);
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: 'invalid JSON body' }, { status: 400 });
+  }
+  const { source_url, html: providedHtml, product, tone, language, model: modelRaw } = body as {
+    source_url?: string;
+    html?: string;
+    product: ProductInfo;
+    tone?: string;
+    language?: string;
+    model?: string;
+  };
+  const swipeModel = normalizeSwipeModel(modelRaw);
 
-    if (!source_url && !providedHtml) {
-      return NextResponse.json({ error: 'source_url or html required' }, { status: 400 });
-    }
-    if (!product?.name) {
-      return NextResponse.json({ error: 'product.name required' }, { status: 400 });
-    }
+  if (!source_url && !providedHtml) {
+    return NextResponse.json({ error: 'source_url or html required' }, { status: 400 });
+  }
+  if (!product?.name) {
+    return NextResponse.json({ error: 'product.name required' }, { status: 400 });
+  }
 
+  return streamJson(() => runSwipe({ source_url, providedHtml, product, tone, language, swipeModel }));
+}
+
+async function runSwipe(args: {
+  source_url?: string;
+  providedHtml?: string;
+  product: ProductInfo;
+  tone?: string;
+  language?: string;
+  swipeModel: string;
+}): Promise<Record<string, unknown>> {
+  const { source_url, providedHtml, product, tone, language, swipeModel } = args;
     let originalHtml: string;
     if (providedHtml) {
       originalHtml = source_url ? absolutizeUrls(providedHtml, source_url) : providedHtml;
@@ -546,14 +596,14 @@ export async function POST(request: NextRequest) {
     }
     originalHtml = fixMediaLoading(originalHtml);
     if (originalHtml.length < 50) {
-      return NextResponse.json({ error: 'HTML too short' }, { status: 400 });
+      return { success: false, error: 'HTML too short' };
     }
 
     let texts = extractTextsFromHtml(originalHtml);
     texts = prependDocumentTitle(texts, originalHtml);
 
     if (texts.length === 0) {
-      return NextResponse.json({ error: 'No text found in page' }, { status: 400 });
+      return { success: false, error: 'No text found in page' };
     }
 
     // Page order + inline fragments linked to their paragraph: batches read
@@ -624,12 +674,10 @@ CRITICAL RULES:
       // Only give up entirely when we have NOTHING. If some batches landed
       // before the budget/error, apply them — a partly-swiped page beats a 502.
       if (idToRewrite.size === 0) {
-        return NextResponse.json(
-          {
-            error: `Anthropic failed: ${anthropicErr instanceof Error ? anthropicErr.message : 'Unknown'}`,
-          },
-          { status: 502 },
-        );
+        return {
+          success: false,
+          error: `Anthropic failed: ${anthropicErr instanceof Error ? anthropicErr.message : 'Unknown'}`,
+        };
       }
       console.warn(`[swipe] applying ${idToRewrite.size} partial rewrites after: ${anthropicErr instanceof Error ? anthropicErr.message : 'Unknown'}`);
     }
@@ -693,6 +741,10 @@ CRITICAL RULES:
   var pairs = ${pairsJson};
   function escRx(s){return s.replace(/[.*+?^\${}()|[\\]\\\\]/g,'\\\\$&');}
   function normWS(s){return (s||'').replace(/\\s+/g,' ').trim();}
+  // Whitespace-free key: the extractor puts a space where an inline tag was
+  // (<b>, <u>) while textContent may have none, so a headline with an
+  // underlined piece would never match on the normalized form alone.
+  function keyOf(s){return (s||'').replace(/\\s+/g,'');}
   // Pre-compute a normalized form + tolerant regex for every pair so we can
   // match even when whitespace (newlines, double spaces, &nbsp;) differs.
   var prepared = pairs.map(function(p){
@@ -702,6 +754,7 @@ CRITICAL RULES:
       to: p.to,
       attr: p.attr,
       norm: fn,
+      key: keyOf(fn),
       rx: fn ? new RegExp(escRx(fn).replace(/ /g,'\\\\s+'),'g') : null
     };
   }).filter(function(p){return p.norm && p.norm.length>=2;});
@@ -742,7 +795,7 @@ CRITICAL RULES:
     for(var p2=0;p2<prepared.length;p2++){
       var pp = prepared[p2];
       if(pp.attr) continue;
-      if(fullNorm === pp.norm){
+      if(fullNorm === pp.norm || keyOf(fullNorm) === pp.key){
         el.textContent = pp.to;
         break;
       }
@@ -904,7 +957,7 @@ CRITICAL RULES:
     const totalReplacements =
       replacementPairs.length + serverSideTitlePairs.length + serverSideMetaPairs.length;
 
-    return NextResponse.json({
+    return {
       success: true,
       html: resultHtml,
       original_title: originalHtml.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1] || '',
@@ -921,12 +974,5 @@ CRITICAL RULES:
       provider: usedProvider,
       method_used: 'universal-extract+dom-replacement-batched',
       changes_made: replacementPairs.map((p) => ({ from: p.from.substring(0, 50), to: p.to.substring(0, 50) })),
-    });
-  } catch (error) {
-    console.error('Swipe error:', error);
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Error during swipe' },
-      { status: 500 },
-    );
-  }
+    };
 }
