@@ -47,6 +47,22 @@ async function productFromProject(projectId: string): Promise<ProductProfile | n
  */
 export async function POST(req: NextRequest) {
   const url = new URL(req.url);
+
+  // Netlify kills this synchronous route after ~26s — far less than a deep
+  // dataset needs. Hand the payload to the background function (15 min) and
+  // ack Apify at once. Kept for runs registered with the old webhook URL.
+  const base = (process.env.URL || process.env.DEPLOY_PRIME_URL || process.env.NEXT_PUBLIC_SITE_URL || '').replace(/\/$/, '');
+  if (base && !url.searchParams.get('direct')) {
+    const rawBody = await req.text().catch(() => '');
+    const target = `${base}/.netlify/functions/apify-ingest-background?${url.searchParams.toString()}`;
+    try {
+      const resp = await fetch(target, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: rawBody, signal: AbortSignal.timeout(8_000) });
+      return NextResponse.json({ ok: true, forwarded: resp.status });
+    } catch (e) {
+      console.warn('[apify/webhook] forward failed, ingesting inline:', (e as Error).message);
+      req = new NextRequest(req.url, { method: 'POST', headers: req.headers, body: rawBody });
+    }
+  }
   const projectId = url.searchParams.get('p') || url.searchParams.get('projectId') || '';
   const brandId = Number(url.searchParams.get('b') || url.searchParams.get('brandId') || '0');
   const platform = parsePlatform(url.searchParams.get('t') || url.searchParams.get('platform'));

@@ -86,7 +86,10 @@ export function shortApifyWebhookUrl(opts: {
   if (opts.brandId != null && String(opts.brandId)) params.set('b', String(opts.brandId));
   const key = (opts.secret || '').trim();
   if (key) params.set('k', key.slice(0, 12));
-  return `${opts.base.replace(/\/$/, '')}/api/apify/webhook?${params.toString()}`;
+  // Background function (15 min), not the Next route: a synchronous Netlify
+  // function is killed after ~26s, which is less than one dataset of 400 ads
+  // takes to judge + download — every big run was silently lost.
+  return `${opts.base.replace(/\/$/, '')}/.netlify/functions/apify-ingest-background?${params.toString()}`;
 }
 
 export function webhookKeyMatches(provided: string, expected: string): boolean {

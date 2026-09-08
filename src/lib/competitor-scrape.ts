@@ -25,9 +25,6 @@ import { htmlToReadableText } from '@/lib/page-text';
 // Download cap for a single creative. Generous so even long VSL-style videos
 // get stored permanently (the Supabase bucket file-size limit must allow it).
 const MAX_MEDIA_BYTES = 300 * 1024 * 1024;
-// Overall transcription budget for the whole run (webhook can run up to 300s).
-const TRANSCRIBE_BUDGET_MS = 180_000;
-
 export interface Brand {
   id: number;
   project_id: string;
@@ -156,6 +153,7 @@ async function enrichCardsWithLandings(
   cards: AdvertiserCard[],
   items: Array<MappedAd | null>,
   htmlCache: Map<string, { html: string; finalUrl: string }>,
+  maxMs = 45_000,
 ): Promise<void> {
   const urlByCard = new Map<string, string>();
   for (const m of items) {
@@ -163,10 +161,10 @@ async function enrichCardsWithLandings(
     const id = advertiserKey(m);
     if (!urlByCard.has(id)) urlByCard.set(id, m.landingUrl as string);
   }
-  const targets = cards.filter((c) => urlByCard.has(c.id)).slice(0, 80);
+  const targets = cards.filter((c) => urlByCard.has(c.id)).slice(0, 200);
   if (!targets.length) return;
 
-  const deadline = Date.now() + 45_000;
+  const deadline = Date.now() + maxMs;
   let cursor = 0;
   const worker = async () => {
     while (cursor < targets.length && Date.now() < deadline) {
@@ -376,6 +374,8 @@ export async function ingestDataset(opts: {
   excludeTerms?: string[];
   /** False in affiliate runs: competitor landings are saved, their photos are not pulled into the library. */
   collectMedia?: boolean;
+  /** Wall-clock budget for the whole ingestion (default fits a 300s function). */
+  budgetMs?: number;
 }): Promise<{ added: number; skipped: number; failed: number; brands: number; landings: number }> {
   const { projectId, datasetId } = opts;
   const platform: AdPlatform = opts.platform || 'meta';
@@ -387,10 +387,12 @@ export async function ingestDataset(opts: {
   // Deep searches return hundreds of ads per run; read them all.
   const items = await getDatasetItems(datasetId, 1000);
   const startedAt = Date.now();
-  // The webhook has 300s. Downloads stop at this mark so brands, ads and
-  // landings are always written before Netlify kills the function.
-  const DOWNLOAD_BUDGET_MS = 200_000;
-  const HARD_DEADLINE = startedAt + 265_000;
+  // Downloads stop before the budget ends so brands, ads and landings are
+  // always written before the function is killed.
+  const budget = Math.max(60_000, opts.budgetMs || 265_000);
+  const DOWNLOAD_BUDGET_MS = Math.round(budget * 0.75);
+  const TRANSCRIBE_BUDGET_MS = Math.round(budget * 0.65);
+  const HARD_DEADLINE = startedAt + budget;
   let added = 0, skipped = 0, failed = 0;
 
   // Discovery-mode caches so we resolve each advertiser's brand only once.
@@ -415,7 +417,7 @@ export async function ingestDataset(opts: {
       const cards = advertiserCards(mappedItems);
       // Affiliates keep the brand out of the ad and name it on the pre-lander:
       // the judge must read the landing page, not just the ad copy.
-      await enrichCardsWithLandings(cards, mappedItems, htmlCache);
+      await enrichCardsWithLandings(cards, mappedItems, htmlCache, Math.min(150_000, Math.round(budget * 0.15)));
       const verdicts = await judgeAdvertisers(opts.product, cards);
       // Model verdict when it answered for this advertiser; keyword check only
       // for the ones it did not (a failed batch), never a blanket reject.
