@@ -20,6 +20,7 @@ import { extractLandingMediaFromHtml, isJunkLandingHost } from '@/lib/landing-me
 import { isOnNiche } from '@/lib/competitor-relevance';
 import { hostOf, judgeAdvertisers, type AdvertiserCard, type ProductProfile } from '@/lib/competitor-judge';
 import { shortApifyWebhookUrl } from '@/lib/discovery-lexicon';
+import { htmlToReadableText } from '@/lib/page-text';
 
 // Download cap for a single creative. Generous so even long VSL-style videos
 // get stored permanently (the Supabase bucket file-size limit must allow it).
@@ -145,6 +146,52 @@ function advertiserCards(items: Array<MappedAd | null>): AdvertiserCard[] {
   return [...byKey.values()];
 }
 
+/**
+ * Give the judge the advertiser's LANDING PAGE, not just the ad: affiliates
+ * usually keep the brand out of the ad text and name it (and link the offer
+ * checkout) only on their pre-lander. One page per advertiser, fetched in
+ * parallel with a tight budget; the HTML is cached for saveCompetitorLandings.
+ */
+async function enrichCardsWithLandings(
+  cards: AdvertiserCard[],
+  items: Array<MappedAd | null>,
+  htmlCache: Map<string, { html: string; finalUrl: string }>,
+): Promise<void> {
+  const urlByCard = new Map<string, string>();
+  for (const m of items) {
+    if (!m || !isRealLandingUrl(m.landingUrl) || isJunkLandingHost(m.landingUrl as string)) continue;
+    const id = advertiserKey(m);
+    if (!urlByCard.has(id)) urlByCard.set(id, m.landingUrl as string);
+  }
+  const targets = cards.filter((c) => urlByCard.has(c.id)).slice(0, 80);
+  if (!targets.length) return;
+
+  const deadline = Date.now() + 45_000;
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < targets.length && Date.now() < deadline) {
+      const card = targets[cursor++];
+      const url = urlByCard.get(card.id) as string;
+      const fetched = htmlCache.get(url) || (await fetchLandingHtml(url));
+      if (!fetched.html) continue;
+      htmlCache.set(url, fetched);
+      const text = htmlToReadableText(fetched.html, 1_500).replace(/\s+/g, ' ').trim();
+      const title = (fetched.html.match(/<title[^>]*>([^<]{2,200})<\/title>/i)?.[1] || '').replace(/\s+/g, ' ').trim();
+      card.landingText = [title && `Title: ${title}`, text].filter(Boolean).join(' | ').slice(0, 1_500);
+      // Outbound hosts: where the page's CTAs send the buyer.
+      const links = new Set<string>();
+      const re = /<a\b[^>]*\bhref=["'](https?:\/\/[^"'#\s]+)["']/gi;
+      let lm: RegExpExecArray | null;
+      while ((lm = re.exec(fetched.html)) && links.size < 40) {
+        const h = hostOf(lm[1]);
+        if (h && h !== hostOf(fetched.finalUrl)) links.add(h);
+      }
+      card.landingLinks = [...links];
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(8, targets.length) }, worker));
+}
+
 /** True for a real advertiser destination (not a social/ad-platform host,
  *  jobs/careers page, or known platform/agency domain). */
 function isRealLandingUrl(url: string | undefined): boolean {
@@ -209,10 +256,11 @@ export async function saveCompetitorLandings(
   projectId: string,
   urls: string[],
   platformLabel = '',
-  opts: { collectMedia?: boolean } = {},
+  opts: { collectMedia?: boolean; htmlCache?: Map<string, { html: string; finalUrl: string }>; deadline?: number } = {},
 ): Promise<number> {
   const collectMedia = opts.collectMedia !== false;
-  const MAX = 16;
+  const MAX = 30;
+  const deadline = opts.deadline || Number.POSITIVE_INFINITY;
   const { data: existingRows } = await supabaseAdmin
     .from('archived_funnels')
     .select('id, steps')
@@ -228,10 +276,11 @@ export async function saveCompetitorLandings(
   let saved = 0;
   for (const url of urls) {
     if (saved >= MAX) break;
+    if (Date.now() > deadline) break;
     if (existing.has(url)) continue;
     if (isJunkLandingHost(url)) continue;
 
-    const fetched = await fetchLandingHtml(url);
+    const fetched = opts.htmlCache?.get(url) || (await fetchLandingHtml(url));
     let html = fetched.html;
     const pageUrl = fetched.finalUrl || url;
     if (!html || html.length < 200) continue;
@@ -335,9 +384,13 @@ export async function ingestDataset(opts: {
   const excludeTerms = opts.excludeTerms || [];
   const discovery = !fixedBrandId;
   const map = mapperForPlatform(platform);
-  const items = await getDatasetItems(datasetId);
+  // Deep searches return hundreds of ads per run; read them all.
+  const items = await getDatasetItems(datasetId, 1000);
   const startedAt = Date.now();
-  const DOWNLOAD_BUDGET_MS = 240_000;
+  // The webhook has 300s. Downloads stop at this mark so brands, ads and
+  // landings are always written before Netlify kills the function.
+  const DOWNLOAD_BUDGET_MS = 200_000;
+  const HARD_DEADLINE = startedAt + 265_000;
   let added = 0, skipped = 0, failed = 0;
 
   // Discovery-mode caches so we resolve each advertiser's brand only once.
@@ -355,9 +408,15 @@ export async function ingestDataset(opts: {
   let keep: ((m: MappedAd) => boolean) | null = null;
   const byKeywords = (m: MappedAd) =>
     isOnNiche([m.pageName, m.headline, m.hook, m.bodyText, m.landingUrl], includeTerms, excludeTerms);
+  // Landing pages fetched for the judge are reused when saving landings.
+  const htmlCache = new Map<string, { html: string; finalUrl: string }>();
   if (discovery && opts.product?.name) {
     try {
-      const verdicts = await judgeAdvertisers(opts.product, advertiserCards(mappedItems));
+      const cards = advertiserCards(mappedItems);
+      // Affiliates keep the brand out of the ad and name it on the pre-lander:
+      // the judge must read the landing page, not just the ad copy.
+      await enrichCardsWithLandings(cards, mappedItems, htmlCache);
+      const verdicts = await judgeAdvertisers(opts.product, cards);
       // Model verdict when it answered for this advertiser; keyword check only
       // for the ones it did not (a failed batch), never a blanket reject.
       keep = (m) => {
@@ -375,6 +434,12 @@ export async function ingestDataset(opts: {
     keep = byKeywords;
   }
 
+  // Pass 1 — decide what to store. Ads are grouped per advertiser: the goal is
+  // the ADVERTISER SET, so one page running 300 variants yields one brand with
+  // a handful of creatives, and the download time goes to the next advertiser.
+  const PER_ADVERTISER = 12;
+  const perAdvertiser = new Map<string, number>();
+  const queue: Array<{ mapped: MappedAd; brandName: string }> = [];
   for (const mapped of mappedItems) {
     if (!mapped) { failed++; continue; }
 
@@ -391,72 +456,88 @@ export async function ingestDataset(opts: {
     }
     if (!mapped.mediaUrl) { continue; } // text-only ad → landing captured, no creative
 
-    // Resolve the brand this creative belongs to.
-    let brandId = fixedBrandId;
-    if (!brandId) {
+    let brandName = '';
+    if (!fixedBrandId) {
       const advertiser = (mapped.pageName || '').trim() || `${platformLabel || 'Unknown'} advertiser`;
       if (!isRealAdvertiser(advertiser)) { skipped++; continue; } // drop platform/agency noise
       // Tag with platform so the same brand name from different networks stays
       // grouped per advertiser but is still traceable to its source.
-      const brandName = platformLabel ? `${advertiser} (${platformLabel})` : advertiser;
-      const cached = brandCache.get(brandName);
-      if (cached) brandId = cached;
-      else {
-        const resolved = await ensureBrand(projectId, brandName);
-        if (!resolved) { failed++; continue; }
-        brandId = resolved;
-        brandCache.set(brandName, resolved);
-      }
+      brandName = platformLabel ? `${advertiser} (${platformLabel})` : advertiser;
+      const n = perAdvertiser.get(brandName) || 0;
+      if (discovery && n >= PER_ADVERTISER) { skipped++; continue; }
+      perAdvertiser.set(brandName, n + 1);
     }
-    touchedBrands.add(brandId);
-
-    if (mapped.externalId && (await adExistsByExternalId(brandId, mapped.externalId))) {
-      skipped++;
-      continue;
-    }
-
-    const withinBudget = Date.now() - startedAt < DOWNLOAD_BUDGET_MS;
-    const dl = withinBudget ? await downloadMedia(mapped.mediaUrl) : null;
-    const contentType =
-      dl?.contentType || (mapped.mediaType === 'video' ? 'video/mp4' : 'image/jpeg');
-
-    let bodyText = mapped.bodyText;
-    const AUTO_TRANSCRIBE_MAX = 18 * 1024 * 1024;
-    if (
-      mapped.mediaType === 'video' &&
-      dl?.buffer &&
-      dl.buffer.length <= AUTO_TRANSCRIBE_MAX &&
-      Date.now() - startedAt < TRANSCRIBE_BUDGET_MS
-    ) {
-      const remaining = TRANSCRIBE_BUDGET_MS - (Date.now() - startedAt);
-      const transcript = await transcribeVideo(dl.buffer, contentType, remaining).catch(() => '');
-      if (transcript) bodyText = `${bodyText ? bodyText + '\n\n' : ''}${transcript}`.slice(0, 4000);
-    }
-
-    const res = await insertCompetitorAd({
-      projectId,
-      brandId,
-      buffer: dl?.buffer || null,
-      contentType,
-      remoteUrl: mapped.mediaUrl,
-      externalId: mapped.externalId,
-      source: 'apify',
-      adStartedAt: mapped.adStartedAt || undefined,
-      adActive: mapped.adActive,
-      adVariants: mapped.adVariants,
-      spend: mapped.spend || undefined,
-      impressions: mapped.impressions || undefined,
-      reach: mapped.reach,
-      meta: {
-        name: mapped.headline || mapped.pageName,
-        headline: mapped.headline,
-        hook: mapped.hook,
-        body_text: bodyText,
-      },
-    });
-    if (res.ok) added++;
-    else failed++;
+    queue.push({ mapped, brandName });
   }
+
+  // Resolve brands once, sequentially (ensureBrand is find-or-create: running
+  // it concurrently for the same name would create duplicates).
+  for (const { brandName } of queue) {
+    if (fixedBrandId || !brandName || brandCache.has(brandName)) continue;
+    const resolved = await ensureBrand(projectId, brandName);
+    if (resolved) brandCache.set(brandName, resolved);
+  }
+
+  // Pass 2 — download + insert with a small worker pool (sequential downloads
+  // of 300 creatives do not fit the webhook budget).
+  const AUTO_TRANSCRIBE_MAX = 18 * 1024 * 1024;
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < queue.length) {
+      const { mapped, brandName } = queue[cursor++];
+      if (Date.now() > HARD_DEADLINE) { skipped++; continue; }
+      const brandId = fixedBrandId || brandCache.get(brandName) || 0;
+      if (!brandId) { failed++; continue; }
+      touchedBrands.add(brandId);
+
+      if (mapped.externalId && (await adExistsByExternalId(brandId, mapped.externalId))) {
+        skipped++;
+        continue;
+      }
+
+      const withinBudget = Date.now() - startedAt < DOWNLOAD_BUDGET_MS;
+      const dl = withinBudget ? await downloadMedia(mapped.mediaUrl) : null;
+      const contentType =
+        dl?.contentType || (mapped.mediaType === 'video' ? 'video/mp4' : 'image/jpeg');
+
+      let bodyText = mapped.bodyText;
+      if (
+        mapped.mediaType === 'video' &&
+        dl?.buffer &&
+        dl.buffer.length <= AUTO_TRANSCRIBE_MAX &&
+        Date.now() - startedAt < TRANSCRIBE_BUDGET_MS
+      ) {
+        const remaining = TRANSCRIBE_BUDGET_MS - (Date.now() - startedAt);
+        const transcript = await transcribeVideo(dl.buffer, contentType, remaining).catch(() => '');
+        if (transcript) bodyText = `${bodyText ? bodyText + '\n\n' : ''}${transcript}`.slice(0, 4000);
+      }
+
+      const res = await insertCompetitorAd({
+        projectId,
+        brandId,
+        buffer: dl?.buffer || null,
+        contentType,
+        remoteUrl: mapped.mediaUrl,
+        externalId: mapped.externalId,
+        source: 'apify',
+        adStartedAt: mapped.adStartedAt || undefined,
+        adActive: mapped.adActive,
+        adVariants: mapped.adVariants,
+        spend: mapped.spend || undefined,
+        impressions: mapped.impressions || undefined,
+        reach: mapped.reach,
+        meta: {
+          name: mapped.headline || mapped.pageName,
+          headline: mapped.headline,
+          hook: mapped.hook,
+          body_text: bodyText,
+        },
+      });
+      if (res.ok) added++;
+      else failed++;
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(5, Math.max(1, queue.length)) }, worker));
 
   // Mark touched brands as scraped so the "new" badge + cron behave.
   const now = new Date().toISOString();
@@ -471,6 +552,8 @@ export async function ingestDataset(opts: {
   if (landingUrls.size) {
     landings = await saveCompetitorLandings(projectId, [...landingUrls], platformLabel, {
       collectMedia: opts.collectMedia !== false,
+      htmlCache,
+      deadline: HARD_DEADLINE + 20_000,
     }).catch(() => 0);
   }
 

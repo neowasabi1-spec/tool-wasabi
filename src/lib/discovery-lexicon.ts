@@ -20,6 +20,8 @@ export type StoredProductProfile = {
   hosts?: string[];
   /** Affiliate: the offer page itself (tracking params stripped). */
   offerUrl?: string;
+  /** Affiliate: the names the offer calls itself (brand, product, advertorial title). */
+  names?: string[];
 };
 
 export async function saveDiscoveryLexicon(
@@ -58,6 +60,7 @@ export async function loadDiscoveryLexicon(
           affiliate: p.affiliate === true,
           hosts: Array.isArray(p.hosts) ? p.hosts.map(String).filter(Boolean) : [],
           offerUrl: typeof p.offerUrl === 'string' ? p.offerUrl : '',
+          names: Array.isArray(p.names) ? p.names.map(String).filter(Boolean) : [],
         }
       : null;
     return {

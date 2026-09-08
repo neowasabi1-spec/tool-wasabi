@@ -18,6 +18,8 @@ export type ProductProfile = {
   affiliate?: boolean;
   /** Affiliate: domains the offer lives on; ads landing there are the product. */
   hosts?: string[];
+  /** Affiliate: the names the offer goes by (brand, product, advertorial title). */
+  names?: string[];
 };
 
 export type AdvertiserCard = {
@@ -26,7 +28,29 @@ export type AdvertiserCard = {
   /** Up to a few ad texts (headline / hook / body) — the model reads these. */
   samples: string[];
   landingHost?: string;
+  /** Readable excerpt of the advertiser's landing page (title, h1, first copy). */
+  landingText?: string;
+  /** Outbound hosts the landing page links to (affiliate pre-landers link to the offer). */
+  landingLinks?: string[];
 };
+
+const normHost = (h: string) => h.toLowerCase().replace(/^www\./, '');
+
+/** Names worth matching literally: 4+ chars, not a generic word. */
+function matchableNames(product: ProductProfile): string[] {
+  const names = [product.name, ...(product.names || [])].map((n) => String(n || '').trim()).filter((n) => n.length >= 4);
+  return [...new Set(names.map((n) => n.toLowerCase()))];
+}
+
+/** Does the text name the product? Case/spacing/hyphen-insensitive ("JellyStick" = "Jelly Stick"). */
+export function mentionsProduct(text: string, names: string[]): string {
+  const hay = text.toLowerCase().replace(/[\s\-_.]+/g, '');
+  for (const n of names) {
+    const needle = n.replace(/[\s\-_.]+/g, '');
+    if (needle.length >= 4 && hay.includes(needle)) return n;
+  }
+  return '';
+}
 
 export type Verdict = { id: string; competitor: boolean; why: string };
 
@@ -42,13 +66,18 @@ export async function judgeAdvertisers(
   const key = getAnthropicKey();
   if (!key) throw new Error('ANTHROPIC_API_KEY is not configured');
 
-  // Affiliate: an ad that lands on the offer's own domain IS the product —
-  // no model call needed for those.
-  const hosts = new Set((product.hosts || []).map((h) => h.toLowerCase().replace(/^www\./, '')).filter(Boolean));
+  // Affiliate: domain evidence needs no model call — the ad lands on the
+  // offer's own domain, or its pre-lander links out to it. A NAME match is
+  // only a hint for the model (the product name may be a generic phrase that
+  // other brands use too), never a verdict on its own.
+  const hosts = new Set((product.hosts || []).map(normHost).filter(Boolean));
   const pending: AdvertiserCard[] = [];
   for (const c of cards) {
-    const lh = (c.landingHost || '').toLowerCase().replace(/^www\./, '');
-    if (product.affiliate && lh && hosts.has(lh)) out.set(c.id, { id: c.id, competitor: true, why: 'lands on the offer domain' });
+    if (!product.affiliate) { pending.push(c); continue; }
+    const lh = normHost(c.landingHost || '');
+    const linksToOffer = (c.landingLinks || []).map(normHost).some((h) => hosts.has(h));
+    if (lh && hosts.has(lh)) out.set(c.id, { id: c.id, competitor: true, why: 'lands on the offer domain' });
+    else if (linksToOffer) out.set(c.id, { id: c.id, competitor: true, why: 'pre-lander links to the offer domain' });
     else pending.push(c);
   }
   if (!pending.length) return out;
@@ -70,19 +99,19 @@ export async function judgeAdvertisers(
 
 async function judgeBatch(key: string, product: ProductProfile, cards: AdvertiserCard[]): Promise<Verdict[]> {
   const head = `OUR PRODUCT: ${product.name}
-${product.description ? `WHAT IT IS: ${product.description.slice(0, 1200)}\n` : ''}${product.market ? `MARKET: ${product.market}\n` : ''}${product.hosts?.length ? `OFFER DOMAINS: ${product.hosts.join(', ')}\n` : ''}
-You get a list of advertisers found by keyword search on ad libraries, each with samples of their ad copy and their landing domain.`;
+${product.description ? `WHAT IT IS: ${product.description.slice(0, 1200)}\n` : ''}${product.market ? `MARKET: ${product.market}\n` : ''}${product.hosts?.length ? `OFFER DOMAINS: ${product.hosts.join(', ')}\n` : ''}${product.names?.length ? `NAMES THE OFFER GOES BY: ${product.names.join(', ')}\n` : ''}
+You get a list of advertisers found by keyword search on ad libraries, each with samples of their ad copy, their landing domain and (when we could fetch it) an excerpt of the landing page they send clicks to.`;
 
   const system = product.affiliate
     ? `You are a media buyer working as an AFFILIATE: we promote an existing offer, and we want every advertiser running THAT SAME product — the brand itself and the other affiliates — to study their ads.
 
 ${head}
 
-An advertiser is a COMPETITOR only when the ad sells EXACTLY this product: the same product/brand name (any spelling, spacing, casing or translation of it), a nickname clearly used for it, or a landing on one of the offer domains. Other affiliates' pre-landers and advertorials for this product count.
+An advertiser is a COMPETITOR only when it sells EXACTLY this product: the same product/brand name (any spelling, spacing, casing or translation of it), a nickname clearly used for it, or a landing on one of the offer domains. Other affiliates' pre-landers and advertorials for this product count — affiliates often keep the brand out of the AD and name it only on the LANDING PAGE, so read the landing excerpt as carefully as the ad copy.
 
-NOT a competitor: a different product, even the same kind (another jelly stick, another fiber supplement, another brand with the same promise), shops/marketplaces, tools, media, unrelated categories, and ads with no readable offer.
+NOT a competitor: a different product, even the same kind (another product of the same format, another brand with the same promise), shops/marketplaces, tools, media, unrelated categories, and ads with no readable offer.
 
-Decide from the product actually named or shown in the copy. If the copy never identifies this specific product, say competitor=false.
+Decide from the product actually named or shown in the copy or on the landing page. If neither identifies this specific product, say competitor=false.
 
 Return STRICT JSON only:
 {"advertisers":[{"id":"...","competitor":true,"why":"<=12 words"}]}
@@ -95,19 +124,25 @@ An advertiser is a COMPETITOR when a person about to buy our product could buy t
 
 NOT a competitor: shops or marketplaces selling everything, tools/SaaS/agencies/courses, jobs, media/news, charities, unrelated categories that merely share a keyword (e.g. a coffee machine when we sell a slimming coffee; a gym when we sell a supplement), and ads with no readable offer at all.
 
-Judge from what the copy actually sells. When the copy is empty or unreadable, say competitor=false.
+Judge from what the copy — and the landing page excerpt, when present — actually sells. When both are empty or unreadable, say competitor=false.
 
 Return STRICT JSON only:
 {"advertisers":[{"id":"...","competitor":true,"why":"<=12 words"}]}
 One object per input id.`;
 
+  const names = matchableNames(product);
   const user = JSON.stringify(
-    cards.map((c) => ({
-      id: c.id,
-      name: sliceWellFormed(c.name, 80),
-      landing: c.landingHost || '',
-      ads: c.samples.slice(0, 4).map((s) => sliceWellFormed(s, 260)),
-    })),
+    cards.map((c) => {
+      const named = product.affiliate ? mentionsProduct(`${c.samples.join(' ')} ${c.landingText || ''}`, names) : '';
+      return {
+        id: c.id,
+        name: sliceWellFormed(c.name, 80),
+        landing: c.landingHost || '',
+        ads: c.samples.slice(0, 4).map((s) => sliceWellFormed(s, 260)),
+        ...(c.landingText ? { landing_page: sliceWellFormed(c.landingText, 600) } : {}),
+        ...(named ? { mentions_our_name: named } : {}),
+      };
+    }),
   );
 
   const res = await fetch('https://api.anthropic.com/v1/messages', {

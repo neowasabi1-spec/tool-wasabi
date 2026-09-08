@@ -366,7 +366,7 @@ async function startApifyAdsRun(adsLibraryUrl: string, count: number, webhookUrl
   const token = process.env.APIFY_KEY || process.env.APIFY_TOKEN || process.env.APIFY_API_TOKEN || '';
   if (!token) return { ok: false, error: 'APIFY_KEY not configured' };
   const actor = process.env.APIFY_FB_ADS_ACTOR || 'curious_coder~facebook-ads-library-scraper';
-  const n = Math.min(Math.max(count || 20, 1), 200);
+  const n = Math.min(Math.max(count || 20, 1), 1000);
   const input: Record<string, unknown> = {
     urls: [{ url: adsLibraryUrl, method: 'GET' }],
     startUrls: [{ url: adsLibraryUrl }],
@@ -416,7 +416,7 @@ async function startApifyRun(actor: string, input: Record<string, unknown>, webh
 /** Start a TikTok Ad Library / Creative Center keyword run. */
 async function startApifyTiktokRun(keyword: string, country: string, count: number, webhookUrl: string): Promise<{ ok: boolean; runId?: string; error?: string }> {
   const actor = process.env.APIFY_TIKTOK_ADS_ACTOR || 'aiscraperdev~tiktok-ads-library-scraper';
-  const n = Math.min(Math.max(count || 20, 1), 200);
+  const n = Math.min(Math.max(count || 20, 1), 1000);
   const region = (country || '').trim().replace(/^ALL$/i, '') || 'all';
   const input: Record<string, unknown> = {
     searchQuery: keyword, query: keyword, keyword,
@@ -431,13 +431,13 @@ async function startApifyTiktokRun(keyword: string, country: string, count: numb
 /** Start a Google Ads Transparency Center keyword run. */
 async function startApifyGoogleRun(keyword: string, region: string, count: number, webhookUrl: string): Promise<{ ok: boolean; runId?: string; error?: string }> {
   const actor = process.env.APIFY_GOOGLE_ADS_ACTOR || 'jaybird~google-ads-transparency-scraper';
-  const n = Math.min(Math.max(count || 20, 1), 200);
+  const n = Math.min(Math.max(count || 20, 1), 1000);
   const reg = (region || '').trim().replace(/^ALL$/i, '') || 'anywhere';
   const input: Record<string, unknown> = {
     queries: [keyword], searchQuery: keyword, searchTargets: [keyword],
     region: reg, regions: [reg], dateRangePreset: 'LAST_30_DAYS',
     adFormat: 'ALL', enrichLandingPages: true, scrapeDetails: true,
-    maxResults: n, maxAdsPerTarget: n, maxAdvertisersPerKeyword: 8,
+    maxResults: n, maxAdsPerTarget: n, maxAdvertisersPerKeyword: 40,
   };
   return startApifyRun(actor, input, webhookUrl);
 }
@@ -1277,6 +1277,7 @@ CRITICAL RULES:
       affiliate,
       hosts: offer.hosts,
       offerUrl: affiliate && link ? cleanOfferUrl(link) : undefined,
+      names: affiliate ? [productName, ...offer.names].filter(Boolean) : undefined,
     });
   } catch (e) {
     console.warn('[pipeline] discovery lexicon:', (e as Error).message);
@@ -1296,20 +1297,26 @@ CRITICAL RULES:
     if (run.ok) { started.push({ platform: 'meta', keyword: '(link)', runId: run.runId! }); }
     else runs.push(`Meta(link): ${run.error}`);
   }
-  // Wide: many phrases × more ads per phrase. The webhook's model judge
-  // keeps only advertisers that actually compete with the product.
-  const PER_SEARCH = 40;
+  // DEPTH is what finds advertisers: a product with 1500 active ads spread
+  // over dozens of pages/affiliates cannot be covered by 40 ads per search —
+  // one page alone runs 40 variants. The exact-name searches (affiliate) go
+  // deep; the webhook groups ads per advertiser and the model judge keeps
+  // only the ones that actually run this product.
+  const DEEP = 400;   // affiliate: brand / product-name searches
+  const WIDE = 100;   // category phrases, host names, TikTok, Google
+  const deepTerms = new Set(affiliate ? searchTerms.filter((t) => !offer.hosts.includes(t)).slice(0, 3) : []);
   for (const kw of searchTerms) {
+    const metaCount = deepTerms.has(kw) ? DEEP : WIDE;
     const metaUrl = fbAdLibrarySearchUrl(kw, country);
-    const run = await startApifyAdsRun(metaUrl, PER_SEARCH, webhookFor('meta'));
+    const run = await startApifyAdsRun(metaUrl, metaCount, webhookFor('meta'));
     if (run.ok) started.push({ platform: 'meta', keyword: kw, runId: run.runId! });
     else runs.push(`Meta(${kw}): ${run.error}`);
 
-    const tk = await startApifyTiktokRun(kw, country, PER_SEARCH, webhookFor('tiktok'));
+    const tk = await startApifyTiktokRun(kw, country, WIDE, webhookFor('tiktok'));
     if (tk.ok) started.push({ platform: 'tiktok', keyword: kw, runId: tk.runId! });
     else runs.push(`TikTok(${kw}): ${tk.error}`);
 
-    const gg = await startApifyGoogleRun(kw, country, PER_SEARCH, webhookFor('google'));
+    const gg = await startApifyGoogleRun(kw, country, WIDE, webhookFor('google'));
     if (gg.ok) started.push({ platform: 'google', keyword: kw, runId: gg.runId! });
     else runs.push(`Google(${kw}): ${gg.error}`);
   }
