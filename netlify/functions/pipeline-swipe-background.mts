@@ -1294,8 +1294,10 @@ async function applyAffiliateMedia(
   used: Set<string>,
   pageUrl = '',
   productName = '',
-): Promise<{ html: string; placed: number; videos: number }> {
+  opts: { projectId?: string; description?: string; brief?: string; deadline?: number; onTick?: () => Promise<void> } = {},
+): Promise<{ html: string; placed: number; videos: number; generated: number }> {
   let out = html;
+  const canGenerate = !!falKey();
   // The whole page: a long advertorial has 100+ media tags and every product
   // shot after the first 40 would otherwise stay the competitor's.
   const slots = collectRestyleSlots(out, 100, pageUrl);
@@ -1310,11 +1312,15 @@ async function applyAffiliateMedia(
   try {
     assignments = await placeMediaWithAi({
       productName,
+      description: opts.description,
+      brief: opts.brief,
       pageUrl,
       // A competitor's page becomes this offer's page: every old-product
-      // picture goes; only the offer's own photos are available (no generation).
+      // picture goes. Product shots come from the offer's own photos only;
+      // illustrations (the problem, a person, a diagram) may be generated
+      // when the library has nothing that shows what the new copy says.
       convert: true,
-      canGenerate: false,
+      canGenerate,
       slots: slots.map((s) => ({
         id: s.id,
         kind: s.kind,
@@ -1339,21 +1345,56 @@ async function applyAffiliateMedia(
   const paints: PaintedMedia[] = [];
   let placed = 0;
   let vids = 0;
+  let generated = 0;
+  const NO_PRODUCT = 'Illustration only: do NOT show any product, packaging, sachet, stick, box, label or brand text. No text, no watermark. Photorealistic editorial style.';
+  const deadline = opts.deadline || Number.POSITIVE_INFINITY;
+  const genQueue: Array<{ slot: (typeof slots)[number]; prompt: string }> = [];
   for (const slot of slots) {
     const plan = assignments.find((a) => a.slotId === slot.id);
     const item = plan?.mediaId ? byId.get(plan.mediaId) : null;
-    if (!item?.storedUrl) continue;
-    const paint = paintFor(slot, item.storedUrl, item.kind);
-    if (!paint) continue;
-    used.add(String(item.id));
-    paints.push(paint);
-    if (paint.tag === 'video') vids++;
-    else placed++;
+    if (item?.storedUrl) {
+      const paint = paintFor(slot, item.storedUrl, item.kind);
+      if (!paint) continue;
+      used.add(String(item.id));
+      paints.push(paint);
+      if (paint.tag === 'video') vids++;
+      else placed++;
+    } else if (plan?.generate && plan.prompt && canGenerate) {
+      genQueue.push({ slot, prompt: plan.prompt });
+    }
   }
+  // Illustrations the library cannot provide, a few at a time.
+  const GEN_CONCURRENCY = 3;
+  let gi = 0;
+  const genWorker = async () => {
+    while (gi < genQueue.length) {
+      const { slot, prompt } = genQueue[gi++];
+      if (Date.now() > deadline - 60_000) return;
+      const size = slot.width && slot.height
+        ? (slot.width / slot.height >= 1.4 ? 'landscape_4_3' : slot.width / slot.height <= 0.75 ? 'portrait_4_3' : 'square_hd')
+        : 'landscape_4_3';
+      const falUrl = await falGenerateImageUrl(
+        IMG_MODEL_T2I,
+        { num_images: 1, output_format: 'png', quality: 'medium', prompt: `${prompt.slice(0, 1400)}\n\n${NO_PRODUCT}`, image_size: size },
+        120_000,
+        opts.onTick,
+      );
+      if (!falUrl) continue;
+      const stored = opts.projectId ? (await storeGeneratedImage(sb, opts.projectId, falUrl, 900 + gi)) || falUrl : falUrl;
+      const paint = paintFor(slot, stored, 'image');
+      if (!paint) continue;
+      paints.push(paint);
+      generated++;
+      if (paint.tag === 'video') vids++; else placed++;
+    }
+  };
+  if (genQueue.length) await Promise.all(Array.from({ length: Math.min(GEN_CONCURRENCY, genQueue.length) }, genWorker));
+  if (!canGenerate && assignments.some((a) => a.generate)) console.warn('[swipe] affiliate: illustrations requested but FAL_KEY missing');
+
   if (paints.length) out = applyPaintedMedia(out, paints);
   out = sealPaintedHtml(out);
   if (paints.length) out = injectRestyleMediaScript(out, paints);
-  return { html: out, placed, videos: vids };
+  return { html: out, placed, videos: vids, generated };
 }
 
 /** Internal restyle: unique poster per <video>, swap src with our landing
@@ -1764,9 +1805,15 @@ CRITICAL RULES:
       const stills = offer.filter((m) => m.kind === 'image' || m.kind === 'gif');
       const videos = offer.filter((m) => m.kind === 'video');
       if (stills.length || videos.length) {
-        const applied = await applyAffiliateMedia(sb, html, stills, videos, ctx.mediaUsed, page.sourceUrl || '', ctx.productName);
+        const applied = await applyAffiliateMedia(sb, html, stills, videos, ctx.mediaUsed, page.sourceUrl || '', ctx.productName, {
+          projectId: ctx.projectId,
+          description: [ctx.description, ctx.offerPage].filter(Boolean).join('\n').slice(0, 1200),
+          brief: ctx.brief,
+          deadline,
+          onTick: () => touchPage(sb, page.funnelPageId, `${replacements}/${textsCount} texts rewritten — illustrating the new copy…`),
+        });
         html = applied.html;
-        imgRes = { html, generated: 0, productSwaps: 0, analyzed: 0, placed: applied.placed, videos: applied.videos, remaining: 0, total: 0, processed: 0 };
+        imgRes = { html, generated: applied.generated, productSwaps: 0, analyzed: 0, placed: applied.placed, videos: applied.videos, remaining: 0, total: 0, processed: 0 };
       }
     } else if (photosNeedOwnRun) {
       const n = collectImages(html, page.sourceUrl, true).length;

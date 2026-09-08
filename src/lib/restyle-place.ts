@@ -61,7 +61,9 @@ export async function placeMediaWithAi(args: {
   const head = `${args.description ? `Product: ${args.description.slice(0, 600)}\n` : ''}${args.brief ? `Brief: ${args.brief.slice(0, 800)}\n` : ''}
 For each slot you are shown the picture that is already there, plus the text around it.`;
   const genRule = canGenerate
-    ? 'When no library file fits, generate=true with an English image prompt (at most 8).'
+    ? (args.convert
+      ? `When no library file shows the subject the copy asks for, generate=true with an English image prompt (at most 8 per page). GENERATE ONLY ILLUSTRATIONS — the problem moment, a person in the situation the copy describes, a comparison, a diagram, an ingredient, a lifestyle scene. NEVER generate the product itself (its stick, sachet, box, label, logo, hands holding it): product shots come from the library only. A photo that contradicts the copy (fruit under "look at this image of the 9pm pantry raid") is a failure — generate instead.`
+      : 'When no library file fits, generate=true with an English image prompt (at most 8).')
     : 'Image generation is NOT available here: never answer generate=true. When nothing fits perfectly, pick the closest library file anyway.';
 
   const system = args.convert
@@ -70,7 +72,7 @@ ${head}
 
 LOOK at the picture first.
 - UI chrome (stars, rating bars, checkmarks, ticks, logos, arrows, payment marks, bullets, flags) → skip it.
-- Any picture that shows the OLD product — the item itself, its box, its app screen, hands or feet using it, before/after of its results, its brand name — MUST be replaced. Leaving one on the page is the worst possible outcome, far worse than an imperfect match. Pick the library file that fits the nearby copy best; the library is small, so the same file being used in several slots is expected and fine. If unsure whether a photo shows the old product, replace it.
+- Any picture that shows the OLD product — the item itself, its box, its app screen, hands or feet using it, before/after of its results, its brand name — MUST be replaced. Leaving one on the page is the worst possible outcome. Read the REWRITTEN copy around the slot and decide what the picture should now show: a product shot where the copy presents/sells the product (library), an illustration of the situation where the copy tells a story or explains a mechanism. Pick a library file only when it really shows that subject; the library is small, so the same product file in several product slots is expected and fine. If unsure whether a photo shows the old product, replace it.
 - A photo with NO product in it (a doctor portrait, a landscape, a smiling person, a generic ingredient) may stay only when it still fits the new copy; otherwise replace it too.
 - VIDEO slots: you see the poster frame when there is one, otherwise only the copy. These clips show the old product in use: replace every one. Pick a library video if one fits, otherwise the best matching still photo (it is shown as a slowly animated still).
 ${genRule}
