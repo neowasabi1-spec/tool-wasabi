@@ -66,7 +66,7 @@ const GLOBAL_BUDGET_MS = 8 * 60_000;
 const IMAGE_BATCH = 4;
 const MAX_TEXTS = 350;
 const BATCH_SIZE = 30;
-const BATCH_CONCURRENCY = 3;
+const BATCH_CONCURRENCY = 4;
 const MAX_IMAGES_PER_PAGE = 5;
 const MAX_IMAGES_TOTAL = 18;
 const MAX_IMAGES_PER_PAGE_RESTYLE = 40;
@@ -436,73 +436,6 @@ function classifyContext(ctx: string): { kind: SwipeText['kind']; attr?: string;
   return null;
 }
 
-/** Ask Clone/Swipe (`/api/landing/swipe`) to rewrite copy. That is the
- *  engine that already worked — Chimera only orchestrates it, then adds
- *  palette + photos on the HTML it returns (incl. data-swipe-replacer). */
-function guessSwipeLanguage(html: string, market: string): string {
-  if (market) {
-    const m = market.toLowerCase();
-    if (/german|deutsch|\bde\b|germany/.test(m)) return 'de';
-    if (/french|fran[cç]ais|\bfr\b|france/.test(m)) return 'fr';
-    if (/spanish|espa[nñ]ol|\bes\b|spain/.test(m)) return 'es';
-    if (/italian|itali|\bit\b/.test(m)) return 'it';
-    if (/english|\ben\b|uk|usa|united/.test(m)) return 'en';
-  }
-  const text = html.replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<[^>]+>/g, ' ').slice(0, 12_000);
-  const it = (text.match(/\b(che|non|della|perché|sono|anche|più|questo|questa)\b/gi) || []).length;
-  const en = (text.match(/\b(the|and|with|your|this|that|from|have)\b/gi) || []).length;
-  return it > en + 3 ? 'it' : 'en';
-}
-
-async function runCloneSwipeApi(
-  html: string,
-  ctx: SwipeCtx,
-): Promise<{ html: string; replacements: number; totalTexts: number; newTitle: string } | null> {
-  const base = siteBaseUrl();
-  if (!base || html.length > 1_800_000) return null;
-  try {
-    const res = await fetch(`${base}/api/landing/swipe`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        html,
-        product: {
-          name: ctx.productName,
-          description: ctx.description,
-          offer_page: ctx.offerPage || undefined,
-          marketing_brief: ctx.brief,
-          market_research: ctx.research,
-          geo_market: ctx.market || undefined,
-        },
-        tone: 'professional',
-        language: guessSwipeLanguage(html, ctx.market),
-      }),
-      signal: AbortSignal.timeout(280_000),
-    });
-    if (!res.ok) {
-      console.warn('[swipe] /api/landing/swipe HTTP', res.status, await res.text().then((t) => t.slice(0, 200)).catch(() => ''));
-      return null;
-    }
-    const data = await res.json() as {
-      success?: boolean;
-      html?: string;
-      replacements?: number;
-      totalTexts?: number;
-      new_title?: string;
-    };
-    if (!data.success || !data.html) return null;
-    return {
-      html: data.html,
-      replacements: data.replacements || 0,
-      totalTexts: data.totalTexts || 0,
-      newTitle: data.new_title || '',
-    };
-  } catch (e) {
-    console.warn('[swipe] /api/landing/swipe failed:', (e as Error).message);
-    return null;
-  }
-}
-
 function collectSwipeTexts(html: string): SwipeText[] {
   const universal = extractAllTextsUniversal(html);
   const seen = new Map<string, SwipeText>();
@@ -511,7 +444,9 @@ function collectSwipeTexts(html: string): SwipeText[] {
     const cls = classifyContext(u.context);
     if (!cls) continue;
     const t = u.text;
-    if (t.length < 2 || t.length > 4000) continue;
+    // 1–2 letter pieces ("IO", "PR": letters of an animated word) are not copy
+    // and, once rewritten, corrupt every word they appear in.
+    if (t.trim().length < 3 || t.length > 4000) continue;
     if (!/[a-zA-ZÀ-ÿ]/.test(t)) continue;
     if (t.startsWith('http://') || t.startsWith('https://')) continue;
     if (t.includes('{') && t.includes('}') && /[=:]\s*function|=>/.test(t)) continue;
@@ -608,6 +543,12 @@ function escHtml(s: string): string { return s.replace(/&/g, '&amp;').replace(/<
  *  technique /api/landing/swipe uses, so results render identically. */
 function bakeOnePair(haystack: string, from: string, to: string): string {
   let out = haystack;
+  if (from.length < 12) {
+    // Short text: only as the WHOLE content of an element (">NOW<"), never as
+    // a substring — that would rewrite the letters inside unrelated words.
+    const rx = new RegExp(`(>\\s*)${escRxLiteral(from)}(\\s*<)`, 'g');
+    return out.replace(rx, (_m, a, b) => `${a}${escHtml(to)}${b}`);
+  }
   if (out.includes(from)) out = out.split(from).join(to);
   const escFrom = escHtml(from);
   if (escFrom !== from && out.includes(escFrom)) out = out.split(escFrom).join(escHtml(to));
@@ -707,6 +648,12 @@ function applyRewrites(
     for(var i=0;i<prepared.length;i++){
       var p = prepared[i];
       if(p.attr) continue;
+      // Short pairs ("NOW", "IO") only replace a whole text node: as
+      // substrings they would mangle every word containing those letters.
+      if(p.norm.length<12){
+        if(normWS(out)===p.norm) return p.to;
+        continue;
+      }
       if(out.indexOf(p.from)!==-1){ out = out.split(p.from).join(p.to); }
       else if(p.rx && p.rx.test(out)){ p.rx.lastIndex = 0; out = out.replace(p.rx, p.to); }
     }
@@ -1720,20 +1667,15 @@ async function processPage(
       await touchPage(sb, page.funnelPageId, 'Clone/Swipe copy already on the page — colors + photos next…');
       await persistHtml(sb, page.funnelPageId, 'swiped', html, ctx.ownerUserId);
     } else {
-      await touchPage(sb, page.funnelPageId, 'Clone/Swipe rewrite (same engine as Rewrite)…');
-      const viaApi = await runCloneSwipeApi(originalHtml, ctx);
-      if (viaApi) {
-        html = viaApi.html;
-        replacements = viaApi.replacements;
-        textsCount = viaApi.totalTexts;
-        newTitle = viaApi.newTitle;
-        await persistHtml(sb, page.funnelPageId, 'swiped', html, ctx.ownerUserId);
-        await touchPage(sb, page.funnelPageId, `Clone/Swipe: ${replacements}/${textsCount} texts rewritten…`);
-      } else {
+      // The rewrite runs HERE, in the background function (15-min budget).
+      // /api/landing/swipe is a synchronous Netlify function: it is killed at
+      // ~26s whatever maxDuration says, so a full page can never come back
+      // from it — calling it only burned 30-40s per page before falling back.
+      {
         const texts = collectSwipeTexts(originalHtml);
         textsCount = texts.length;
         await touchPage(sb, page.funnelPageId, textsCount
-          ? `Clone/Swipe API busy — rewriting ${textsCount} texts locally…`
+          ? `Rewriting ${textsCount} texts…`
           : 'No texts found — restyling photos…');
         if (texts.length) {
           const outLang = ctx.market ? `the local language of this target market: ${ctx.market} (e.g. German for Germany, Italian for Italy)` : 'the same language as the original text';
@@ -1759,7 +1701,10 @@ CRITICAL RULES:
 3. Plain text ONLY in rewritten strings — no HTML, no markdown.
 4. Legal/compliance texts: rewrite only where safe; keep mandatory disclosures.
 5. Every batch MUST return one {"id","rewritten"} object per supplied id.`;
-          const textDeadline = Math.min(deadline, Date.now() + 180_000);
+          // One page per invocation (see the chaining below), so the texts
+          // can take most of the budget: 345 Opus-rewritten texts need
+          // ~4-5 min. 180s used to leave half the page in the old product.
+          const textDeadline = Math.min(deadline - 75_000, Date.now() + 6 * 60_000);
           let persistChain = Promise.resolve();
           const persistDraft = (rewrites: Map<number, string>) => {
             persistChain = persistChain.then(async () => {
@@ -1930,7 +1875,9 @@ export default async (req: Request) => {
   ).trim();
   const briefFromCol = extractSectionContent(project?.brief).trim();
   const brief = cap(briefFromFiles || briefFromCol);
-  const research = cap(extractSectionContent(project?.market_research).trim());
+  // Research is re-sent with EVERY rewrite batch (12+ per page): 30k chars is
+  // plenty for angles/objections and keeps each Opus call fast.
+  const research = cap(extractSectionContent(project?.market_research).trim(), 30_000);
   let landingItems = downloadedLandingMedia(await listLandingMedia(sb, projectId));
   let offerUrl = typeof body.offerUrl === 'string' ? body.offerUrl.trim() : '';
   if (imageMode === 'affiliate' && !offerUrl) {
@@ -2026,25 +1973,15 @@ export default async (req: Request) => {
   };
 
   try {
-    if (imageMode === 'affiliate') {
-      for (const p of pages) {
-        try { await runOne(p, 0); }
-        catch (e) {
-          const msg = (e as Error).message?.slice(0, 400) || 'swipe error';
-          log(`✘ ${p.name}: ${msg}`);
-          await markFailed(sb, p.funnelPageId, msg);
-        }
-      }
-      nextPages = [];
+    // One page per invocation in every mode: each page gets the whole budget
+    // for its texts, the rest of the funnel is chained below. (Affiliate used
+    // to loop all pages in one run — three pages shared 8 minutes.)
+    const result = await runOne(page, imageOffset);
+    if (result.done) {
+      nextPages = pages.slice(1);
       nextOffset = 0;
     } else {
-      const result = await runOne(page, imageOffset);
-      if (result.done) {
-        nextPages = pages.slice(1);
-        nextOffset = 0;
-      } else {
-        nextOffset = result.nextOffset;
-      }
+      nextOffset = result.nextOffset;
     }
   } catch (e) {
     const msg = (e as Error).message?.slice(0, 400) || 'swipe error';

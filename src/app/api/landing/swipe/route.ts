@@ -519,39 +519,12 @@ const absolutizeUrls = absolutizeUrlsInHtml;
 const fixMediaLoading = injectNoReferrerAndEagerLoading;
 
 /**
- * The swipe takes minutes (plan + Opus batches). Netlify's proxy closes any
- * response that sends no bytes for ~30s ("Inactivity Timeout", HTTP 504) —
- * `maxDuration = 300` alone does not help. So the JSON is streamed: a space
- * every few seconds while the work runs (leading whitespace is legal JSON),
- * then the whole payload. Errors after this point travel in the body as
- * `{ success:false, error }` — every caller already checks `success`/`html`.
+ * NOTE: on Netlify a synchronous function is killed after ~26s no matter what
+ * `maxDuration` says (verified: the response dies even while streaming
+ * heartbeats). A full-page swipe takes minutes, so this route only completes
+ * for small pages. Chimera does NOT call it — the background worker
+ * (pipeline-swipe-background) runs the same engine with a 15-minute budget.
  */
-function streamJson(job: () => Promise<Record<string, unknown>>): Response {
-  const enc = new TextEncoder();
-  const stream = new ReadableStream<Uint8Array>({
-    start(controller) {
-      const beat = setInterval(() => {
-        try { controller.enqueue(enc.encode(' ')); } catch { /* closed */ }
-      }, 4_000);
-      job()
-        .then((out) => controller.enqueue(enc.encode(JSON.stringify(out))))
-        .catch((e: unknown) => {
-          console.error('Swipe error:', e);
-          controller.enqueue(enc.encode(JSON.stringify({ success: false, error: e instanceof Error ? e.message : 'Error during swipe' })));
-        })
-        .finally(() => { clearInterval(beat); try { controller.close(); } catch { /* closed */ } });
-    },
-  });
-  return new Response(stream, {
-    status: 200,
-    headers: {
-      'Content-Type': 'application/json; charset=utf-8',
-      'Cache-Control': 'no-store',
-      'X-Accel-Buffering': 'no',
-    },
-  });
-}
-
 export async function POST(request: NextRequest) {
   let body: Record<string, unknown>;
   try {
@@ -576,7 +549,21 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'product.name required' }, { status: 400 });
   }
 
-  return streamJson(() => runSwipe({ source_url, providedHtml, product, tone, language, swipeModel }));
+  try {
+    const out = await runSwipe({ source_url, providedHtml, product, tone, language, swipeModel });
+    if (out.success === false) {
+      const msg = String(out.error || '');
+      const status = /^Anthropic failed/.test(msg) ? 502 : 400;
+      return NextResponse.json({ error: msg }, { status });
+    }
+    return NextResponse.json(out);
+  } catch (error) {
+    console.error('Swipe error:', error);
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : 'Error during swipe' },
+      { status: 500 },
+    );
+  }
 }
 
 async function runSwipe(args: {
@@ -764,6 +751,12 @@ CRITICAL RULES:
     for(var i=0;i<prepared.length;i++){
       var p = prepared[i];
       if(p.attr) continue;
+      // Short pairs ("NOW", "IO") only replace a whole text node: as
+      // substrings they would mangle every word containing those letters.
+      if(p.norm.length<12){
+        if(normWS(out)===p.norm) return p.to;
+        continue;
+      }
       if(out.indexOf(p.from)!==-1){
         out = out.split(p.from).join(p.to);
       } else if(p.rx && p.rx.test(out)){
