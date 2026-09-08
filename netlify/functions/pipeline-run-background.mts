@@ -1,7 +1,8 @@
 import { createClient } from '@supabase/supabase-js';
 import { getCoreKnowledge, getKnowledgeForTask } from '../../src/knowledge/copywriting';
 import { fold, parseDiscoveryLexicon, parseTermList } from '../../src/lib/competitor-relevance';
-import { saveDiscoveryLexicon, shortApifyWebhookUrl } from '../../src/lib/discovery-lexicon';
+import { loadDiscoveryLexicon, saveDiscoveryLexicon, shortApifyWebhookUrl } from '../../src/lib/discovery-lexicon';
+import { parseSectionData } from '../../src/lib/project-sections';
 import { extractLandingMediaFromUrl, listLandingMedia, offerIdentityFromHtml } from '../../src/lib/landing-media';
 import { fetchPageText, pageTextBlock } from '../../src/lib/page-text';
 import { wellFormed } from '../../src/lib/well-formed';
@@ -451,8 +452,50 @@ function siteBaseUrl(): string {
  * only pass the URL it writes "I could not retrieve the page" and invents the
  * product (name, mechanism, ingredients). Every doc step must get the real text.
  */
-async function linkContext(input: PipelineInput): Promise<{ block: string; note: string }> {
-  const raw = (input.competitorLink || '').trim();
+/**
+ * The offer link is not mandatory in the launcher: when it is missing, reuse
+ * the one Chimera already researched for this project (saved in the discovery
+ * lexicon by a previous affiliate run) instead of working blind.
+ */
+async function resolveOfferLink(supabase: SupabaseClient, projectId: string, input: PipelineInput): Promise<string> {
+  const given = (input.competitorLink || '').trim();
+  if (/^https?:\/\//i.test(given)) return given;
+  if (input.imageMode !== 'affiliate') return given;
+  const stored = await loadDiscoveryLexicon(supabase, projectId).catch(() => null);
+  const url = stored?.product?.offerUrl || '';
+  if (url) console.log(`[pipeline] no offer link given — reusing the project's stored offer ${url}`);
+  return url;
+}
+
+/**
+ * Everything the USER put on the project (description, uploaded brief /
+ * research files) — never Chimera's own previous output, which would feed the
+ * model its own guesses. Uploaded materials are facts; they go in every doc.
+ */
+function userSources(project: Record<string, unknown>): string {
+  const parts: string[] = [];
+  const desc = String(project.description || '').trim();
+  if (desc) parts.push(`PROJECT DESCRIPTION (written by the team):\n${desc}`);
+  const ours = /^(Chimera Protocol|Autopilot)\b/i;
+  for (const [label, val] of [['UPLOADED BRIEF FILE', project.brief_files], ['UPLOADED BRIEF FILE', project.brief], ['UPLOADED RESEARCH FILE', project.market_research]] as Array<[string, unknown]>) {
+    const files = parseSectionData(val).files.filter((f) => f.content?.trim() && !ours.test(f.name || ''));
+    for (const f of files) parts.push(`${label} "${f.name}":\n${f.content.trim().slice(0, 40_000)}`);
+    if (label === 'UPLOADED BRIEF FILE' && typeof val === 'string' && val.trim() && !val.trim().startsWith('{') && !/^# PRODUCT RESEARCH BRIEF/.test(val.trim())) {
+      parts.push(`PROJECT BRIEF TEXT:\n${val.trim().slice(0, 40_000)}`);
+    }
+  }
+  return parts.join('\n\n');
+}
+
+/** Hard rule shared by research + brief: facts come from sources, period. */
+const NO_INVENTION_RULE = `PRODUCT FACTS — NON-NEGOTIABLE:
+- Product facts (exact name, format, ingredients/components, mechanism, dosage/usage, price, guarantee, certifications, spokesperson credentials, studies) may ONLY come from the sources provided (offer page text, uploaded files, description).
+- If a fact is not in the sources, write "(unknown — not in sources)" and keep that part of the copy at category level. NEVER present an ingredient list, a percentage, a study or a named technology as if it were real.
+- A memorable NAME for a mechanism is allowed only as copy (label it "(coined)") and must not imply ingredients or science that are not in the sources.
+- Marked inferences about the MARKET (audience, competitors, prices in the category) are fine; inventions about OUR PRODUCT are not.`;
+
+async function linkContext(supabase: SupabaseClient, projectId: string, input: PipelineInput): Promise<{ block: string; note: string }> {
+  const raw = await resolveOfferLink(supabase, projectId, input);
   if (!/^https?:\/\//i.test(raw)) return { block: '', note: '' };
   const affiliate = input.imageMode === 'affiliate';
   const page = await fetchPageText(raw, { max: 30_000 });
@@ -810,7 +853,7 @@ interface StepResult { summary: string; output: string; }
 async function loadProject(supabase: SupabaseClient, projectId: string) {
   const { data, error } = await supabase
     .from('projects')
-    .select('id, name, description, domain, market_research, brief, front_end, funnel, owner_user_id')
+    .select('id, name, description, domain, market_research, brief, brief_files, front_end, funnel, owner_user_id')
     .eq('id', projectId)
     .single();
   if (error || !data) throw new Error(`Cannot load project ${projectId}: ${error?.message || 'not found'}`);
@@ -913,6 +956,8 @@ DEPTH REQUIREMENTS (this is the difference between amateur and pro research — 
 - Apply your knowledge base frameworks EXPLICITLY and by name where useful: Schwartz (5 Awareness Levels + 5 Sophistication Stages), Georgi Big Ideas & Unique Mechanism, Tony Flores root-cause/identity mechanisms, Evaldo's core-emotion logic, Sugarman psychological triggers, Bencivenga proof.
 - Be concrete and specific to THIS product/market — never generic filler. Use the reference competitor and category to ground every claim.
 - Where you infer rather than know, label it "(inference)". Where a real citation/study would be needed, label it "(needs source)".
+
+${NO_INVENTION_RULE}
 - Write realistic Voice-of-Customer quotes as if mined from reviews/forums/Reddit/Amazon/Trustpilot for this geography.
 
 Output clean markdown with EXACTLY these sections and sub-sections:
@@ -966,11 +1011,14 @@ Output clean markdown with EXACTLY these sections and sub-sections:
 # 11. COPY DIRECTION SUMMARY
 - The recommended lead type, tone, and the single most important thing the copy must do. A 3–5 sentence brief-of-the-brief.`;
 
-  const link = await linkContext(input);
+  const link = await linkContext(supabase, projectId, input);
   const affiliate = input.imageMode === 'affiliate';
+  const sources = userSources(project);
   const userMessage = `Product: ${productName}
 ${input.description ? `\nProvided description:\n${input.description}` : ''}
+${sources ? `\n${sources}\n` : ''}
 ${link.block ? `\n${link.block}\n` : ''}
+${!link.block && !sources && !input.description ? `\nNO SOURCES about the product were provided (no offer page, no uploaded files, no description). Research the MARKET around "${productName}" thoroughly, but keep every product-specific section at category level and mark unknown facts "(unknown — not in sources)". Do not invent what the product contains or how it works.\n` : ''}
 ${affiliate && link.block ? `\nAFFILIATE OFFER: we sell EXACTLY the product on the offer page above. Its name, format, ingredients, mechanism, dosage, price, guarantee and compliance wording are FACTS to use verbatim — do not rename the product, do not invent ingredients or a different mechanism. Build the research around this real product; competitors are OTHER brands selling the same kind of product.\n` : ''}
 Generate the FULL, deep RMBC-style unified research document for this product. Be exhaustive — this must be the definitive research dossier, not a summary.`;
 
@@ -1024,12 +1072,17 @@ Struttura richiesta:
 **UNIQUE MECHANISM PREVIEW (UMP)** (discovery, trigger, spiegazione, prova)
 **SPIEGAZIONE SOLUZIONE** (3 principi)
 **PROVA & VERIFICA**
-**ANGOLI ADS SUGGERITI** (3-5)`;
+**ANGOLI ADS SUGGERITI** (3-5)
 
-  const link = await linkContext(input);
+${NO_INVENTION_RULE}
+La RICERCA DI MERCATO nel contesto può contenere parti marcate "(inference)" o "(unknown — not in sources)": non trasformarle in fatti.`;
+
+  const link = await linkContext(supabase, projectId, input);
   const affiliate = input.imageMode === 'affiliate';
+  const sources = userSources(project);
   const userMessage = `Prodotto: ${productName}
 ${input.description ? `\nDescrizione fornita:\n${input.description}` : ''}
+${sources ? `\n${sources}\n` : ''}
 ${link.block ? `\n${link.block}\n` : ''}
 ${affiliate && link.block ? `\nOFFERTA IN AFFILIAZIONE: il prodotto è ESATTAMENTE quello della pagina offerta qui sopra. Nome, formato, ingredienti, meccanismo, dosaggio, prezzo, garanzia e claim sono FATTI da riprendere così come sono — non rinominare il prodotto, non inventare ingredienti o un meccanismo diverso.\n` : ''}
 Genera il brief completo. Basati fortemente sulla RICERCA DI MERCATO fornita nel contesto${link.block ? ' e sul testo della pagina' : ''}.`;
@@ -1113,7 +1166,7 @@ function affiliateSearchTerms(claudeTerms: string[], offer: OfferInfo, productNa
 }
 
 async function runCompetitor(supabase: SupabaseClient, projectId: string, input: PipelineInput): Promise<StepResult> {
-  const link = (input.competitorLink || '').trim();
+  const link = await resolveOfferLink(supabase, projectId, input);
   const affiliate = input.imageMode === 'affiliate';
   const offer: OfferInfo = affiliate
     ? await loadOfferMedia(supabase, projectId, link)
@@ -1727,6 +1780,7 @@ async function runSwipe(supabase: SupabaseClient, projectId: string, input: Pipe
   const base = siteBaseUrl();
   if (!base) throw new Error('Site base URL missing — cannot start the swipe worker');
   const secret = process.env.APIFY_WEBHOOK_SECRET || process.env.CRON_SECRET || '';
+  const offerUrl = input.imageMode === 'affiliate' ? await resolveOfferLink(supabase, projectId, input) : '';
   try {
     await fetch(`${base}/.netlify/functions/pipeline-swipe-background`, {
       method: 'POST',
@@ -1737,7 +1791,7 @@ async function runSwipe(supabase: SupabaseClient, projectId: string, input: Pipe
         market: marketGeo(input),
         mainImageUrl,
         imageMode: input.imageMode === 'affiliate' ? 'affiliate' : 'internal',
-        offerUrl: input.imageMode === 'affiliate' ? (input.competitorLink || '').trim() : '',
+        offerUrl,
         pages,
       }),
       signal: AbortSignal.timeout(8_000),
