@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { extractAllTextsUniversal } from '../../src/lib/universal-text-extractor';
+import { extractTextsDom } from '../../src/lib/dom-text-extractor';
 import {
   extractLandingMediaForProject,
   extractLandingMediaFromUrl,
@@ -64,7 +65,9 @@ const PROJECT_FILES_BUCKET = 'project-files';
 
 const GLOBAL_BUDGET_MS = 8 * 60_000;
 const IMAGE_BATCH = 4;
-const MAX_TEXTS = 350;
+// The DOM extractor emits a sentence AND its inline pieces; a long lander is
+// 400–700 units. 350 silently dropped the bottom half of the page.
+const MAX_TEXTS = 900;
 const BATCH_SIZE = 30;
 const BATCH_CONCURRENCY = 4;
 const MAX_IMAGES_PER_PAGE = 5;
@@ -437,10 +440,15 @@ function classifyContext(ctx: string): { kind: SwipeText['kind']; attr?: string;
 }
 
 function collectSwipeTexts(html: string): SwipeText[] {
-  const universal = extractAllTextsUniversal(html);
+  // Visible copy from a real DOM walk: the regex extractor's lazy "mixed"
+  // match skips every nested div after the first match, so on page-builder
+  // markup most paragraphs were never collected — and never rewritten. The
+  // regex pass stays for <meta> and attributes only.
+  const dom = extractTextsDom(html);
+  const universal = extractAllTextsUniversal(html).filter((u) => u.context.startsWith('meta:') || u.context.startsWith('attr:'));
   const seen = new Map<string, SwipeText>();
   const out: SwipeText[] = [];
-  for (const u of universal) {
+  for (const u of [...dom, ...universal]) {
     const cls = classifyContext(u.context);
     if (!cls) continue;
     const t = u.text;
@@ -574,8 +582,15 @@ function bakePairsIntoHtml(
   // parent's textContent, so the DOM replacer can no longer match the parent
   // and the headline stays half old / half new. Fragments are left to the DOM
   // pass, where the parent element is replaced as a whole.
+  // …unless no parent can be baked at all (a sentence split across
+  // "<b>Name</b> rest of sentence" never appears contiguously in the HTML):
+  // then the pieces ARE the only server-side unit, so bake them.
+  const inHtml = (s: string) => html.includes(s) || html.includes(escHtml(s));
   const sorted = usable
-    .filter((p) => !usable.some((o) => o !== p && o.from.length > p.from.length && o.from.includes(p.from)))
+    .filter((p) => {
+      const parents = usable.filter((o) => o !== p && o.from.length > p.from.length && o.from.includes(p.from));
+      return !parents.length || !parents.some((o) => inHtml(o.from));
+    })
     .sort((a, b) => b.from.length - a.from.length);
   if (!sorted.length) return html;
   const parts = html.split(/(<script\b[\s\S]*?<\/script>|<style\b[\s\S]*?<\/style>)/gi);

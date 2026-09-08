@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAnthropicKey } from '@/lib/anthropic-key';
 import { extractAllTextsUniversal } from '@/lib/universal-text-extractor';
+import { extractTextsDom } from '@/lib/dom-text-extractor';
 import { fetchHtmlSmart } from '@/lib/fetch-html-smart';
 import {
   absolutizeUrlsInHtml,
@@ -114,10 +115,14 @@ function priorityOf(tag: string): number {
 function extractTextsFromHtml(html: string): ExtractedText[] {
   // Usiamo l'estrattore v2 ("universal") e mappiamo nel formato locale,
   // con dedupe-by-text e cap di sicurezza.
-  const universal = extractAllTextsUniversal(html);
+  // Visible copy comes from a real DOM walk (the regex extractor skips every
+  // nested div after a lazy match — most of a page-builder page). The regex
+  // pass is kept only for <meta> and attributes.
+  const dom = extractTextsDom(html);
+  const universal = extractAllTextsUniversal(html).filter((u) => u.context === 'meta:content' || u.context.startsWith('attr:'));
   const collected: ExtractedText[] = [];
   const seen = new Map<string, ExtractedText>();
-  for (const u of universal) {
+  for (const u of [...dom, ...universal]) {
     if (!isSafeContext(u.context)) continue;
     // Cap 4000 (era 800): allineato a worker-lib/build-prompts.js.
     if (u.text.length < 2 || u.text.length > 4000) continue;
