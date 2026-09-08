@@ -48,7 +48,7 @@ async function productFromProject(projectId: string): Promise<ProductProfile | n
 export async function POST(req: NextRequest) {
   const url = new URL(req.url);
 
-  // Netlify kills this synchronous route after ~26s — far less than a deep
+  // Netlify caps synchronous routes at 60s (hard, every plan) — far less than a deep
   // dataset needs. Hand the payload to the background function (15 min) and
   // ack Apify at once. Kept for runs registered with the old webhook URL.
   const base = (process.env.URL || process.env.DEPLOY_PRIME_URL || process.env.NEXT_PUBLIC_SITE_URL || '').replace(/\/$/, '');

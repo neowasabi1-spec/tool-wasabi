@@ -1,8 +1,9 @@
 /**
  * Apify run webhook → competitor ingestion, as a BACKGROUND function.
  *
- * Why not the Next route (/api/apify/webhook)? Netlify kills synchronous
- * functions after ~26s regardless of `maxDuration`/toml timeout. Judging a
+ * Why not the Next route (/api/apify/webhook)? Netlify caps synchronous
+ * functions at 60s on every plan (not configurable — `maxDuration`/toml
+ * timeout are ignored, see docs.netlify.com/build/functions/configuration). Judging a
  * dataset of 400 ads (landing fetch + model + downloads) takes minutes, so
  * every deep search was dying before writing a single brand — the library
  * showed only the 2–4 advertisers from tiny datasets. Background functions
