@@ -116,6 +116,12 @@ async function htmlToScreenshot(html: string, cacheKey: string): Promise<string 
     renderHtml = injectInteractivityRescue(html);
   } catch { /* fallback: HTML grezzo */ }
 
+  if (!/<meta[^>]+name=["']viewport["']/i.test(renderHtml)) {
+    renderHtml = /<head([^>]*)>/i.test(renderHtml)
+      ? renderHtml.replace(/<head([^>]*)>/i, `<head$1><meta name="viewport" content="width=390, initial-scale=1">`)
+      : `<head><meta name="viewport" content="width=390, initial-scale=1"></head>${renderHtml}`;
+  }
+
   // Anti-taint sanitisation. html2canvas refuses to read pixels from a
   // canvas that has been "tainted" by cross-origin content drawn
   // without proper CORS headers, so a single image from a CDN that
@@ -167,7 +173,7 @@ async function htmlToScreenshot(html: string, cacheKey: string): Promise<string 
 
   return new Promise((resolve) => {
     const iframe = document.createElement('iframe');
-    iframe.style.cssText = 'position:fixed;left:-9999px;top:0;width:1280px;height:900px;border:none;visibility:hidden';
+    iframe.style.cssText = 'position:fixed;left:-9999px;top:0;width:390px;height:2800px;border:none;visibility:hidden';
     iframe.sandbox.add('allow-same-origin');
     iframe.sandbox.add('allow-scripts');
     iframe.srcdoc = renderHtml;
@@ -177,10 +183,18 @@ async function htmlToScreenshot(html: string, cacheKey: string): Promise<string 
         // Il rescue fa retry fino a ~1600ms per le SPA che popolano il DOM
         // via script differiti: aspettiamo abbastanza da catturarle rese.
         await new Promise(r => setTimeout(r, 1900));
+        const MOBILE_W = 390;
         const html2canvas = (await import('html2canvas')).default;
         const body = iframe.contentDocument?.body;
+        const docEl = iframe.contentDocument?.documentElement;
         if (!body) { document.body.removeChild(iframe); resolve(null); return; }
-        const canvas = await html2canvas(body, { width: 1280, height: 900, scale: 0.3, useCORS: true, allowTaint: true, logging: false });
+        // Capture enough page height for the hover-scroll preview (not just the first fold).
+        const pageH = Math.min(
+          Math.max(body.scrollHeight || 0, docEl?.scrollHeight || 0, 844),
+          4000,
+        );
+        iframe.style.height = `${pageH}px`;
+        const canvas = await html2canvas(body, { width: MOBILE_W, height: pageH, windowWidth: MOBILE_W, windowHeight: pageH, scale: 1, useCORS: true, allowTaint: true, logging: false });
         const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
         document.body.removeChild(iframe);
         // Only cache real renders. Persisting a blank dataURL is the
@@ -203,7 +217,7 @@ async function htmlToScreenshot(html: string, cacheKey: string): Promise<string 
   });
 }
 
-function PageThumbnail({ url, alt, height = '180px', savedHtml, savedHtmlUrl }: { url: string; alt: string; height?: string; savedHtml?: string | null; savedHtmlUrl?: string | null }) {
+function PageThumbnail({ url, alt, height = '180px', savedHtml, savedHtmlUrl, scroll }: { url: string; alt: string; height?: string; savedHtml?: string | null; savedHtmlUrl?: string | null; scroll?: boolean }) {
   const [imgSrc, setImgSrc] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   // Bumped to force a fresh render (skip cache) when the user clicks
@@ -219,10 +233,10 @@ function PageThumbnail({ url, alt, height = '180px', savedHtml, savedHtmlUrl }: 
     setLoading(true);
 
     const cacheKey = savedHtml
-      ? `h_${savedHtml.length}_${savedHtml.substring(0, 100)}`
+      ? `m1_h_${savedHtml.length}_${savedHtml.substring(0, 100)}`
       : savedHtmlUrl
-        ? `hu_${savedHtmlUrl.replace(/[&?]v=\d+/, '')}`
-        : `u_${url}`;
+        ? `m1_hu_${savedHtmlUrl.replace(/[&?]v=\d+/, '')}`
+        : `m1_u_${url}`;
     // Force-regenerate: skip both in-memory and localStorage caches,
     // and evict whatever blank/corrupt entry was there. The next
     // capture will run from scratch and store a fresh one if it
@@ -295,15 +309,24 @@ function PageThumbnail({ url, alt, height = '180px', savedHtml, savedHtmlUrl }: 
   }, [url, savedHtml, savedHtmlUrl, regenNonce]);
 
   return (
-    <div ref={containerRef} className="relative w-full overflow-hidden bg-gray-50" style={{ height }}>
+    <div
+      ref={containerRef}
+      className={`relative w-full overflow-hidden bg-gray-50 ${scroll ? 'min-h-full' : ''}`}
+      style={scroll ? undefined : { height }}
+    >
       {imgSrc ? (
-        <img src={imgSrc} alt={alt} className="w-full h-full object-cover object-top" />
+        <img
+          src={imgSrc}
+          alt={alt}
+          draggable={false}
+          className={scroll ? 'block w-full h-auto' : 'w-full h-full object-cover object-top'}
+        />
       ) : loading ? (
-        <div className="w-full h-full flex items-center justify-center">
+        <div className={`w-full flex items-center justify-center ${scroll ? 'absolute inset-0' : 'h-full'}`}>
           <div className="w-6 h-6 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
         </div>
       ) : (
-        <div className="w-full h-full flex flex-col items-center justify-center bg-gray-100 gap-2">
+        <div className={`w-full flex flex-col items-center justify-center bg-gray-100 gap-2 ${scroll ? 'absolute inset-0' : 'h-full'}`}>
           <span className="text-gray-400 text-xs">No preview</span>
           {(savedHtml || savedHtmlUrl || url) && (
             <button
@@ -318,6 +341,62 @@ function PageThumbnail({ url, alt, height = '180px', savedHtml, savedHtmlUrl }: 
       )}
     </div>
   );
+}
+
+/** Portrait frame: on hover, the full-page shot scrolls up so you can see the rest without opening it. */
+function HoverScrollViewport({ children }: { children: React.ReactNode }) {
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  const startScroll = (wrap: HTMLDivElement) => {
+    const img = wrap.querySelector('img');
+    if (!img) return;
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    const overflow = Math.max(0, img.offsetHeight - wrap.clientHeight);
+    if (overflow <= 12) return;
+    const seconds = Math.min(14, Math.max(2.4, overflow / 140));
+    img.style.transition = `transform ${seconds}s linear`;
+    img.style.transform = `translateY(-${overflow}px)`;
+  };
+
+  const stopScroll = (wrap: HTMLDivElement) => {
+    const img = wrap.querySelector('img');
+    if (!img) return;
+    img.style.transition = 'transform 0.55s ease-out';
+    img.style.transform = 'translateY(0)';
+  };
+
+  useEffect(() => {
+    const wrap = wrapRef.current;
+    if (!wrap) return;
+    const onImgLoad = () => {
+      if (wrap.matches(':hover')) startScroll(wrap);
+    };
+    wrap.addEventListener('load', onImgLoad, true);
+    return () => wrap.removeEventListener('load', onImgLoad, true);
+  }, []);
+
+  return (
+    <div
+      ref={wrapRef}
+      className="relative w-full aspect-[9/16] overflow-hidden bg-gray-50"
+      onMouseEnter={(e) => startScroll(e.currentTarget)}
+      onMouseLeave={(e) => stopScroll(e.currentTarget)}
+    >
+      {children}
+    </div>
+  );
+}
+
+type ClonedShots = {
+  html?: string;
+  htmlUrl?: string | null;
+  screenshotDesktopUrl?: string | null;
+  screenshotMobileUrl?: string | null;
+  category?: string;
+};
+
+function cardShotUrl(cd?: ClonedShots | null): string | null {
+  return cd?.screenshotMobileUrl || cd?.screenshotDesktopUrl || null;
 }
 
 type TypeFolderPage = {
@@ -355,19 +434,19 @@ function TypeFolderPageCard({
 }) {
   return (
     <div
-      className={`group bg-white rounded-2xl border overflow-hidden hover:shadow-xl hover:-translate-y-0.5 transition-all cursor-pointer ${
+      className={`group bg-white rounded-2xl border overflow-hidden hover:shadow-xl transition-shadow cursor-pointer ${
         selected ? 'border-green-400 ring-2 ring-green-200' : 'border-gray-200 hover:border-indigo-300'
       }`}
       onClick={onToggle}
     >
-      <div className="relative w-full h-[170px] overflow-hidden bg-gray-50">
+      <HoverScrollViewport>
         {page.screenshotUrl
-          ? <img src={page.screenshotUrl} alt={page.name} className="w-full h-full object-cover object-top" />
+          ? <img src={page.screenshotUrl} alt={page.name} draggable={false} className="block w-full h-auto" />
           : (page.savedHtml || page.savedHtmlUrl)
-            ? <PageThumbnail url="" savedHtml={page.savedHtml} savedHtmlUrl={page.savedHtmlUrl} alt={page.name} height="170px" />
+            ? <PageThumbnail url="" savedHtml={page.savedHtml} savedHtmlUrl={page.savedHtmlUrl} alt={page.name} scroll />
             : page.url_to_swipe && /^https?:\/\/.+\..+/.test(page.url_to_swipe)
-              ? <PageThumbnail url={page.url_to_swipe} alt={page.name} height="170px" />
-              : <div className="w-full h-full flex items-center justify-center text-gray-300"><FileCode className="w-8 h-8" /></div>
+              ? <PageThumbnail url={page.url_to_swipe} alt={page.name} scroll />
+              : <div className="absolute inset-0 flex items-center justify-center text-gray-300"><FileCode className="w-8 h-8" /></div>
         }
         <button
           type="button"
@@ -379,7 +458,7 @@ function TypeFolderPageCard({
             ? <CheckSquare className="w-5 h-5 text-green-600" />
             : <Square className="w-5 h-5 text-gray-400" />}
         </button>
-        <div className="absolute inset-x-0 bottom-0 flex items-center justify-end gap-2 p-2 bg-gradient-to-t from-black/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity">
+        <div className="absolute inset-x-0 bottom-0 z-10 flex items-center justify-end gap-2 p-2 bg-gradient-to-t from-black/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none [&>button]:pointer-events-auto">
           {(page.savedHtml || page.savedHtmlUrl || page.url_to_swipe) && (
             <button
               onClick={(e) => { e.stopPropagation(); onPreview(); }}
@@ -406,7 +485,7 @@ function TypeFolderPageCard({
             <Trash2 className="w-4 h-4" />
           </button>
         </div>
-      </div>
+      </HoverScrollViewport>
       <div className="p-3">
         <p className="font-semibold text-sm text-gray-900 truncate">{page.name}</p>
         {page.category && <p className="text-[10px] text-indigo-500 truncate">{page.category}</p>}
@@ -446,6 +525,8 @@ export default function TemplatesPage() {
   const [isImporting, setIsImporting] = useState(false);
   const [bundleName, setBundleName] = useState('');
   const [savingBundle, setSavingBundle] = useState(false);
+  const [saveFunnelOpen, setSaveFunnelOpen] = useState(false);
+  const funnelNameRef = useRef<HTMLInputElement>(null);
   const selectedStepProducts = useMemo(
     () => countProductsFromSteps(selectedPages),
     [selectedPages],
@@ -692,16 +773,19 @@ export default function TemplatesPage() {
       .map(({ p }) => p);
   }, []);
 
-  const resolveBundleName = () =>
-    bundleName.trim() || archiveSearch.trim() || `Funnel ${new Date().toLocaleDateString('en-GB')}`;
-
   const handleSaveAsFunnel = async () => {
+    const name = bundleName.trim();
     if (selectedPages.length === 0) return;
+    if (!name) {
+      toast.error('Give the funnel a name');
+      funnelNameRef.current?.focus();
+      return;
+    }
     setSavingBundle(true);
     try {
       const ordered = sortSelectedForFunnel(selectedPages);
       const created = await assembleArchiveFromPages(
-        resolveBundleName(),
+        name,
         ordered.map((p) => ({
           funnelId: p.funnel_id || '',
           name: p.name,
@@ -711,6 +795,7 @@ export default function TemplatesPage() {
       );
       setSelectedPages([]);
       setBundleName('');
+      setSaveFunnelOpen(false);
       toast.success(`Saved “${created.name}” as a funnel (${ordered.length} steps)`);
       setMainView('funnels');
     } catch (e) {
@@ -719,6 +804,12 @@ export default function TemplatesPage() {
       setSavingBundle(false);
     }
   };
+
+  useEffect(() => {
+    if (!saveFunnelOpen) return;
+    const t = window.setTimeout(() => funnelNameRef.current?.focus(), 50);
+    return () => window.clearTimeout(t);
+  }, [saveFunnelOpen]);
 
   const handleSaveAsTemplates = async () => {
     if (selectedPages.length === 0) return;
@@ -764,7 +855,7 @@ export default function TemplatesPage() {
     const all = archivedFunnels || [];
     all.forEach((f: ArchivedFunnel) => {
       if (!isStandaloneTemplatePage(f, all)) return;
-      const steps = (f.steps as { step_index: number; name: string; page_type: string; url_to_swipe: string; prompt: string; template_name: string; product_name: string; swipe_status: string; category?: string; cloned_data?: { category?: string; html?: string; htmlUrl?: string | null; screenshotDesktopUrl?: string | null }; swiped_data?: { html?: string; htmlUrl?: string | null } }[]) || [];
+      const steps = (f.steps as { step_index: number; name: string; page_type: string; url_to_swipe: string; prompt: string; template_name: string; product_name: string; swipe_status: string; category?: string; cloned_data?: ClonedShots; swiped_data?: { html?: string; htmlUrl?: string | null } }[]) || [];
       steps.forEach((s) => {
         const t = normalizeArchiveType(s.page_type, knownCustomTypes);
         if (!map[t]) map[t] = [];
@@ -780,7 +871,7 @@ export default function TemplatesPage() {
           category: s.category || s.cloned_data?.category || '',
           savedHtml: s.swiped_data?.html || s.cloned_data?.html || null,
           savedHtmlUrl: s.swiped_data?.htmlUrl || s.cloned_data?.htmlUrl || null,
-          screenshotUrl: s.cloned_data?.screenshotDesktopUrl || null,
+          screenshotUrl: cardShotUrl(s.cloned_data),
         });
       });
     });
@@ -1518,7 +1609,7 @@ export default function TemplatesPage() {
               displayFunnels.map((funnel) => {
                 const isMerged = Boolean((funnel as { __merged?: boolean }).__merged);
                 const memberIds = (funnel as { __memberIds?: string[] }).__memberIds || [];
-                const steps = (funnel.steps as { step_index: number; name: string; page_type: string; url_to_swipe: string; prompt: string; template_name: string; product_name: string; swipe_status: string; feedback: string; cloned_data?: { html?: string; htmlUrl?: string | null; screenshotDesktopUrl?: string | null } | null; swiped_data?: { html?: string; htmlUrl?: string | null } | null }[]) || [];
+                const steps = (funnel.steps as { step_index: number; name: string; page_type: string; url_to_swipe: string; prompt: string; template_name: string; product_name: string; swipe_status: string; feedback: string; cloned_data?: ClonedShots | null; swiped_data?: { html?: string; htmlUrl?: string | null } | null }[]) || [];
                 const isExpanded = expandedFunnelIds.includes(funnel.id);
                 const allSelected = isFunnelFullySelected(funnel);
                 return (
@@ -1626,7 +1717,7 @@ export default function TemplatesPage() {
                             const checked = isPageSelected(sp);
                             const stepHtml = s.swiped_data?.html || s.cloned_data?.html || null;
                             const stepHtmlUrl = s.swiped_data?.htmlUrl || s.cloned_data?.htmlUrl || null;
-                            const stepShot = s.cloned_data?.screenshotDesktopUrl || null;
+                            const stepShot = cardShotUrl(s.cloned_data);
                             return (
                               <div
                                 key={i}
@@ -1655,27 +1746,27 @@ export default function TemplatesPage() {
                                   checked ? 'border-green-400 ring-2 ring-green-200 shadow-md' : 'border-gray-200 hover:shadow-lg hover:border-blue-300'
                                 } ${walkDragOver?.folderId === funnel.id && walkDragOver?.idx === i ? 'ring-2 ring-indigo-400 border-indigo-400' : ''}`}
                               >
-                                <div className="relative w-full h-[180px] overflow-hidden bg-gray-50">
+                                <HoverScrollViewport>
                                   {(() => {
                                     // The extension already stores a REAL screenshot per step: use it
                                     // directly (one <img>) instead of re-rendering the page client-side.
                                     if (stepShot) {
-                                      return <img src={stepShot} alt={s.name} className="w-full h-full object-cover object-top" />;
+                                      return <img src={stepShot} alt={s.name} draggable={false} className="block w-full h-auto" />;
                                     }
                                     const isRealUrl = s.url_to_swipe && /^https?:\/\/.+\..+/.test(s.url_to_swipe);
                                     if (stepHtml || stepHtmlUrl || isRealUrl) {
-                                      return <PageThumbnail url={s.url_to_swipe} alt={s.name} savedHtml={stepHtml} savedHtmlUrl={stepHtmlUrl} />;
+                                      return <PageThumbnail url={s.url_to_swipe} alt={s.name} savedHtml={stepHtml} savedHtmlUrl={stepHtmlUrl} scroll />;
                                     }
                                     const hue = (i * 47 + 200) % 360;
                                     return (
-                                      <div className="w-full h-full flex flex-col items-center justify-center p-4 text-center" style={{ background: `linear-gradient(135deg, hsl(${hue}, 50%, 55%), hsl(${(hue + 40) % 360}, 55%, 45%))` }}>
+                                      <div className="absolute inset-0 flex flex-col items-center justify-center p-4 text-center" style={{ background: `linear-gradient(135deg, hsl(${hue}, 50%, 55%), hsl(${(hue + 40) % 360}, 55%, 45%))` }}>
                                         <span className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center text-white font-bold text-lg mb-2">{s.step_index}</span>
                                         <span className="text-white/90 text-xs font-medium line-clamp-2 leading-relaxed">{s.name}</span>
                                         <span className="mt-1 px-2 py-0.5 bg-white/20 rounded-full text-[9px] text-white/80 font-medium">{getPageTypeLabel(s.page_type)}</span>
                                       </div>
                                     );
                                   })()}
-                                  <div className="absolute top-2 left-2" onClick={(e) => { e.stopPropagation(); togglePage(sp); }}>
+                                  <div className="absolute top-2 left-2 z-10" onClick={(e) => { e.stopPropagation(); togglePage(sp); }}>
                                     {checked
                                       ? <CheckSquare className="w-5 h-5 text-green-600 drop-shadow cursor-pointer" />
                                       : <Square className="w-5 h-5 text-white/70 drop-shadow group-hover:text-white cursor-pointer" />
@@ -1740,7 +1831,7 @@ export default function TemplatesPage() {
                                       <Trash2 className="w-3.5 h-3.5" />
                                     </button>
                                   )}
-                                </div>
+                                </HoverScrollViewport>
                                 <div className="p-3">
                                   <div className="flex items-center gap-2 mb-1.5">
                                     <span className="text-xs font-bold text-gray-400 bg-gray-100 rounded-full w-5 h-5 flex items-center justify-center">{s.step_index}</span>
@@ -2962,6 +3053,52 @@ export default function TemplatesPage() {
         </>}
       </div>
 
+      {saveFunnelOpen && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={() => !savingBundle && setSaveFunnelOpen(false)}>
+          <div
+            className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-lg font-semibold text-gray-900 mb-1">Name this funnel</h3>
+            <p className="text-sm text-gray-500 mb-4">
+              {selectedPages.length} page{selectedPages.length === 1 ? '' : 's'} will be saved as one funnel.
+            </p>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">Funnel name</label>
+            <input
+              ref={funnelNameRef}
+              type="text"
+              value={bundleName}
+              onChange={(e) => setBundleName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') { e.preventDefault(); handleSaveAsFunnel(); }
+                if (e.key === 'Escape' && !savingBundle) setSaveFunnelOpen(false);
+              }}
+              placeholder="e.g. Competitor X — full funnel"
+              className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
+            />
+            <div className="mt-5 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setSaveFunnelOpen(false)}
+                disabled={savingBundle}
+                className="px-4 py-2 text-sm text-gray-600 hover:text-gray-900"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveAsFunnel}
+                disabled={savingBundle || !bundleName.trim()}
+                className="inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm font-semibold rounded-xl hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {savingBundle ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                Save funnel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Page Preview Modal — Desktop + Mobile side by side */}
       {pagePreview?.isOpen && (
         <div className="fixed inset-0 bg-black/85 flex flex-col z-50" onClick={() => setPagePreview(null)}>
@@ -3151,19 +3288,15 @@ export default function TemplatesPage() {
 
                 {mainView === 'byType' && (
                   <>
-                    <input
-                      type="text"
-                      value={bundleName}
-                      onChange={(e) => setBundleName(e.target.value)}
-                      placeholder={archiveSearch.trim() ? `Name (default: ${archiveSearch.trim()})` : 'Name this funnel / template'}
-                      className="bg-gray-800 text-white border border-gray-700 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none min-w-[180px] max-w-[240px]"
-                    />
                     <button
-                      onClick={handleSaveAsFunnel}
+                      onClick={() => {
+                        if (!bundleName.trim() && archiveSearch.trim()) setBundleName(archiveSearch.trim());
+                        setSaveFunnelOpen(true);
+                      }}
                       disabled={savingBundle}
                       className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium rounded-xl transition-colors"
                     >
-                      {savingBundle ? <Loader2 className="w-4 h-4 animate-spin" /> : <FolderOpen className="w-4 h-4" />}
+                      <FolderOpen className="w-4 h-4" />
                       Save as Funnel
                     </button>
                     <button
