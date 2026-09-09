@@ -143,6 +143,58 @@ export function isUpsellPageType(pageType: string): boolean {
   return UPSELL_RE.test(pageType || '');
 }
 
+/** One Chimera product per selected funnel: the first non-upsell step is
+ *  the main offer, then one product per upsell/downsell/OTO. Checkout and
+ *  thank-you do not add extra products. */
+export type ChimeraProductSlot = {
+  key: string;
+  role: 'main' | 'upsell';
+  pageType: string;
+  stepName: string;
+  stepIndex: number;
+};
+
+export function productsFromSelectedSteps(
+  steps: Array<{ index?: number; name?: string; pageType?: string; page_type?: string; isUpsell?: boolean }>,
+): ChimeraProductSlot[] {
+  const sorted = [...steps].sort((a, b) => (Number(a.index) || 0) - (Number(b.index) || 0));
+  const slots: ChimeraProductSlot[] = [];
+  let hasMain = false;
+  let upsellN = 0;
+  for (const s of sorted) {
+    const pageType = String(s.pageType || s.page_type || '');
+    const isUp = s.isUpsell ?? isUpsellPageType(pageType);
+    const name = String(s.name || '').trim();
+    const stepIndex = Number.isFinite(Number(s.index)) ? Number(s.index) : slots.length;
+    if (isUp) {
+      upsellN += 1;
+      slots.push({
+        key: `upsell-${stepIndex}-${upsellN}`,
+        role: 'upsell',
+        pageType,
+        stepName: name,
+        stepIndex,
+      });
+    } else if (!hasMain) {
+      hasMain = true;
+      slots.push({
+        key: 'main',
+        role: 'main',
+        pageType: pageType || 'landing',
+        stepName: name,
+        stepIndex,
+      });
+    }
+  }
+  if (!slots.length) {
+    slots.push({ key: 'main', role: 'main', pageType: 'landing', stepName: '', stepIndex: 0 });
+  }
+  return slots.sort((a, b) => {
+    if (a.role !== b.role) return a.role === 'main' ? -1 : 1;
+    return a.stepIndex - b.stepIndex;
+  });
+}
+
 /** 1 main (if any non-upsell step) + one product per selected upsell/OTO. */
 export function countProductsFromSteps(
   steps: Array<{ pageType?: string; page_type?: string; isUpsell?: boolean }>,

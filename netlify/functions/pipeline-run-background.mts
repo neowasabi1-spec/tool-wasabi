@@ -56,6 +56,7 @@ interface PipelineInput {
   imageMode?: 'affiliate' | 'internal';
   productImageUrl?: string;
   price?: string;
+  productPrices?: Array<{ role: 'main' | 'upsell'; pageType?: string; stepName?: string; price: string }>;
 }
 
 interface StepState {
@@ -1811,9 +1812,21 @@ export default async (req: Request) => {
 
   const projectId = job.project_id as string;
   const input = (job.input || {}) as PipelineInput;
-  if (input.price?.trim()) {
-    const priceLine = `PRODUCT PRICE (use this exact price — do not invent another): ${input.price.trim()}`;
-    input.description = [input.description?.trim(), priceLine].filter(Boolean).join('\n');
+  const priceLines = Array.isArray(input.productPrices)
+    ? input.productPrices
+      .filter((p) => String(p.price || '').trim())
+      .map((p) => {
+        const who = p.role === 'main'
+          ? 'MAIN PRODUCT'
+          : String(p.stepName || p.pageType || 'UPSELL').trim();
+        return `${who} PRICE (use this exact price on that step — do not invent another): ${String(p.price).trim()}`;
+      })
+    : [];
+  if (!priceLines.length && input.price?.trim()) {
+    priceLines.push(`PRODUCT PRICE (use this exact price — do not invent another): ${input.price.trim()}`);
+  }
+  if (priceLines.length) {
+    input.description = [input.description?.trim(), priceLines.join('\n')].filter(Boolean).join('\n');
   }
   const steps: StepState[] = Array.isArray(job.steps) ? (job.steps as StepState[]) : [];
   const orderedKeys: string[] = steps.length > 0 ? steps.map((s) => s.key) : [...STEP_ORDER];

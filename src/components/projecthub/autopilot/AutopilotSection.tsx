@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -13,6 +13,8 @@ import {
 import { ChimeraFunnelPicker, type ChimeraFunnelPick } from '@/components/projecthub/autopilot/ChimeraFunnelPicker';
 import { ChimeraImageModeToggle, type ChimeraImageMode } from '@/components/projecthub/autopilot/ChimeraImageModeToggle';
 import { ChimeraProductPhoto } from '@/components/projecthub/autopilot/ChimeraProductPhoto';
+import { ChimeraProductPrices } from '@/components/projecthub/autopilot/ChimeraProductPrices';
+import { productsFromSelectedSteps } from '@/lib/archive-placement';
 
 const EMPTY_FUNNEL: ChimeraFunnelPick = { funnelId: '', steps: [] };
 
@@ -55,7 +57,7 @@ export function AutopilotSection({
   const [funnelPick, setFunnelPick] = useState<ChimeraFunnelPick>(EMPTY_FUNNEL);
   const [imageMode, setImageMode] = useState<ChimeraImageMode>('internal');
   const [productImageUrl, setProductImageUrl] = useState('');
-  const [price, setPrice] = useState('');
+  const [prices, setPrices] = useState<Record<string, string>>({});
   const [launching, setLaunching] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -124,10 +126,22 @@ export function AutopilotSection({
     };
   }, [loadHistory]);
 
+  const productSlots = useMemo(
+    () => productsFromSelectedSteps(funnelPick.steps),
+    [funnelPick.steps],
+  );
+
   const launch = async () => {
     setError(null);
     if (!product.trim()) {
       setError('Enter at least the product name.');
+      return;
+    }
+    const missing = productSlots.filter((s) => !String(prices[s.key] || '').trim());
+    if (missing.length) {
+      setError(`Enter a price for: ${missing.map((s) => (
+        s.role === 'main' ? 'main product' : (s.stepName || s.pageType || 'upsell')
+      )).join(', ')}.`);
       return;
     }
     setLaunching(true);
@@ -146,7 +160,12 @@ export function AutopilotSection({
           funnelStepIndexes: funnelPick.steps.length ? funnelPick.steps.map((s) => s.index) : undefined,
           imageMode,
           productImageUrl: productImageUrl || undefined,
-          price: price.trim() || undefined,
+          productPrices: productSlots.map((s) => ({
+            role: s.role,
+            pageType: s.pageType,
+            stepName: s.stepName || undefined,
+            price: String(prices[s.key] || '').trim(),
+          })),
         }),
       });
       const data = await res.json();
@@ -213,6 +232,13 @@ export function AutopilotSection({
           onChange={setFunnelPick}
           disabled={running || launching}
         />
+        <ChimeraProductPrices
+          slots={productSlots}
+          productName={product}
+          values={prices}
+          onChange={(key, value) => setPrices((prev) => ({ ...prev, [key]: value }))}
+          disabled={running || launching}
+        />
         <ChimeraImageModeToggle
           value={imageMode}
           onChange={setImageMode}
@@ -225,19 +251,6 @@ export function AutopilotSection({
           onChange={setProductImageUrl}
           disabled={running || launching}
         />
-        <div className="space-y-1.5">
-          <Label htmlFor="ap-price">Product price</Label>
-          <Input
-            id="ap-price"
-            value={price}
-            onChange={(e) => setPrice(e.target.value)}
-            placeholder="e.g. $49 · €39.90 · 3 for $99"
-            disabled={running || launching}
-          />
-          <p className="text-[11px] text-muted-foreground">
-            Used in research, brief and Clone/Swipe. Per-step prices on Product Brief tabs override this.
-          </p>
-        </div>
         <div className="space-y-1.5">
           <Label htmlFor="ap-desc">Description / notes (optional)</Label>
           <Textarea

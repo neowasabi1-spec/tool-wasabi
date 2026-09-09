@@ -213,25 +213,78 @@ export async function patchProductBriefSection(
   if (error) console.warn('[step-offer] patch section failed:', error.message);
 }
 
+export type ProductPriceInput = {
+  role: 'main' | 'upsell';
+  pageType: string;
+  stepName?: string;
+  price: string;
+};
+
+function uniqueSectionId(base: string, existing: ProductBriefSection[]): string {
+  if (!existing.some((s) => s.id === base)) return base;
+  let n = 2;
+  while (existing.some((s) => s.id === `${base}_${n}`)) n += 1;
+  return `${base}_${n}`;
+}
+
+/** Write Chimera launch prices onto Product Brief tabs so swipe finds them
+ *  by page type (frontend = main, pb_upsell_1, …). */
+export async function upsertProductPrices(
+  sb: SupabaseClient,
+  projectId: string,
+  prices: ProductPriceInput[],
+): Promise<void> {
+  if (!projectId || !prices.length) return;
+  const { data: project } = await sb
+    .from('projects')
+    .select('product_brief_sections, brief, brief_files, market_research, front_end, back_end, compliance_funnel, funnel')
+    .eq('id', projectId)
+    .single();
+  let sections = derivedProductBriefSections((project || {}) as Record<string, unknown>);
+
+  for (const p of prices) {
+    const amount = String(p.price || '').trim();
+    if (!amount) continue;
+    if (p.role === 'main') {
+      const hasFrontend = sections.some((s) => s.id === 'pb_frontend');
+      if (hasFrontend) {
+        sections = sections.map((s) =>
+          s.id === 'pb_frontend'
+            ? { ...s, price: amount, pageType: s.pageType || p.pageType || 'landing' }
+            : s,
+        );
+      } else {
+        sections = [{ id: 'pb_frontend', label: 'Frontend', pageType: p.pageType || 'landing', price: amount }, ...sections];
+      }
+      continue;
+    }
+    const want = normalizeArchiveType(p.pageType);
+    const found = sections.find((s) => s.pageType && normalizeArchiveType(s.pageType) === want && s.id !== 'pb_frontend');
+    if (found) {
+      sections = sections.map((s) => (s.id === found.id ? { ...s, price: amount } : s));
+    } else {
+      const id = uniqueSectionId(`pb_${want || 'upsell'}`, sections);
+      const label = String(p.stepName || p.pageType || 'Upsell').trim() || 'Upsell';
+      sections.push({
+        id,
+        label,
+        pageType: want !== 'altro' ? want : (p.pageType || 'upsell_1'),
+        price: amount,
+      });
+    }
+  }
+
+  const { error } = await sb
+    .from('projects')
+    .update({ product_brief_sections: JSON.stringify(sections) })
+    .eq('id', projectId);
+  if (error) console.warn('[step-offer] upsert product prices failed:', error.message);
+}
+
 export async function upsertFrontendPrice(
   sb: SupabaseClient,
   projectId: string,
   price: string,
 ): Promise<void> {
-  const t = String(price || '').trim();
-  if (!projectId || !t) return;
-  const { data: project } = await sb
-    .from('projects')
-    .select('product_brief_sections')
-    .eq('id', projectId)
-    .single();
-  const sections = derivedProductBriefSections((project || {}) as Record<string, unknown>);
-  const hasFrontend = sections.some((s) => s.id === 'pb_frontend');
-  const next = hasFrontend
-    ? sections.map((s) => (s.id === 'pb_frontend' ? { ...s, price: t } : s))
-    : [{ id: 'pb_frontend', label: 'Frontend', price: t }, ...sections];
-  await sb
-    .from('projects')
-    .update({ product_brief_sections: JSON.stringify(next) })
-    .eq('id', projectId);
+  await upsertProductPrices(sb, projectId, [{ role: 'main', pageType: 'landing', price }]);
 }

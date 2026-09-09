@@ -3,7 +3,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getUserAccessContext } from '@/lib/auth/get-current-user';
 import { listAccessibleProjectIds } from '@/lib/auth/project-access';
 import { buildInitialSteps, type PipelineInput } from '@/lib/pipeline/types';
-import { upsertFrontendPrice } from '@/lib/step-offer';
+import { upsertProductPrices, type ProductPriceInput } from '@/lib/step-offer';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,6 +23,24 @@ export async function POST(req: NextRequest) {
   const competitorLink = body.competitorLink ? String(body.competitorLink).trim() : '';
   const description = body.description ? String(body.description).trim() : '';
   const price = body.price ? String(body.price).trim() : '';
+  const rawPrices = Array.isArray(body.productPrices) ? body.productPrices : [];
+  const productPrices: ProductPriceInput[] = rawPrices
+    .map((raw) => {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+      const p = raw as Record<string, unknown>;
+      const amount = String(p.price || '').trim();
+      if (!amount) return null;
+      return {
+        role: p.role === 'upsell' ? 'upsell' as const : 'main' as const,
+        pageType: String(p.pageType || p.page_type || ''),
+        stepName: p.stepName ? String(p.stepName) : undefined,
+        price: amount,
+      };
+    })
+    .filter((p): p is ProductPriceInput => !!p);
+  if (!productPrices.length && price) {
+    productPrices.push({ role: 'main', pageType: 'landing', price });
+  }
   const market = body.market ? String(body.market).trim() : '';
   const language = body.language ? String(body.language).trim() : '';
   const templateUrl = body.templateUrl ? String(body.templateUrl).trim() : '';
@@ -93,9 +111,9 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  if (price) {
-    await upsertFrontendPrice(supabaseAdmin, projectId, price).catch((e) => {
-      console.warn('[pipeline] persist frontend price:', (e as Error).message);
+  if (productPrices.length) {
+    await upsertProductPrices(supabaseAdmin, projectId, productPrices).catch((e) => {
+      console.warn('[pipeline] persist product prices:', (e as Error).message);
     });
   }
 
@@ -111,7 +129,8 @@ export async function POST(req: NextRequest) {
     funnelSteps: funnelSteps.length ? funnelSteps : undefined,
     imageMode,
     productImageUrl,
-    price: price || undefined,
+    price: productPrices.find((p) => p.role === 'main')?.price || price || undefined,
+    productPrices: productPrices.length ? productPrices : undefined,
   };
 
   // ── Create the job row ──

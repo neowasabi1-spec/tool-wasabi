@@ -113,9 +113,15 @@ export interface PipelineInput {
   imageMode?: 'affiliate' | 'internal';
   /** Public URL of a user-uploaded packshot. When set, skip inventing one. */
   productImageUrl?: string;
-  /** Main-product price (free text). Written onto the Frontend Product Brief
-   *  tab and injected into research/brief/swipe so copy never invents one. */
+  /** Main-product price (free text). Back-compat when productPrices is empty. */
   price?: string;
+  /** One price per product Chimera will create (main + each upsell). */
+  productPrices?: Array<{
+    role: 'main' | 'upsell';
+    pageType: string;
+    stepName?: string;
+    price: string;
+  }>;
 }
 
 export interface PipelineStepState {
