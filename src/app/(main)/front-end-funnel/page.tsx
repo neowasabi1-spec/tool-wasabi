@@ -10,6 +10,15 @@ import { useStore } from '@/store/useStore';
 import { fetchAffiliateSavedFunnels } from '@/lib/supabase-operations';
 import { supabase } from '@/lib/supabase';
 import { extractSectionContent, type SectionData } from '@/lib/project-sections';
+import {
+  CHECKOUT_MODE_OPTIONS,
+  DEFAULT_CHECKOUT_MODE,
+  checkoutModeOption,
+  checkoutPromptAddendum,
+  isCheckoutPageType,
+  normalizeCheckoutMode,
+  type CheckoutMode,
+} from '@/lib/checkout-modes';
 import { injectInteractivityRescue } from '@/lib/spa-rescue';
 import { SWIPE_MODEL_OPTIONS, SWIPE_MODEL_DEFAULT, normalizeSwipeModel } from '@/lib/swipe-models';
 import SwipeDebugModal, {
@@ -99,6 +108,17 @@ function freshestHtmlTarget(
   if (page.clonedData && !page.swipedData) return 'clonedData';
   if (!page.swipedData && !page.clonedData) return 'clonedData';
   return ts(page.swipedData) >= ts(page.clonedData) ? 'swipedData' : 'clonedData';
+}
+
+/** Checkout flavour actually in force for a row.
+ *  A page that is not a checkout type is ALWAYS 'standard', even if the field
+ *  was set while it briefly was one — so the WasabiCRM rules can never leak
+ *  onto a landing/advertorial. Undefined → 'standard' → prompts unchanged. */
+function effectiveCheckoutMode(
+  page?: { pageType?: string; checkoutMode?: CheckoutMode } | null,
+): CheckoutMode {
+  if (!page || !isCheckoutPageType(page.pageType)) return DEFAULT_CHECKOUT_MODE;
+  return normalizeCheckoutMode(page.checkoutMode);
 }
 
 // Helper: sanitize cloned HTML and rewrite ALL relative URLs to absolute using the original domain
@@ -3538,6 +3558,10 @@ export default function FrontEndFunnel() {
           // (stesso briefStr ×3) → body inutilmente +N MB → 500 a ~6MB.
         };
 
+        // Per-row checkout flavour: pages inside one Swipe All can differ.
+        const pageCheckoutMode = effectiveCheckoutMode(page);
+        const pageCheckoutRules = checkoutPromptAddendum(pageCheckoutMode);
+
         // Knowledge per QUESTA pagina: libreria globale + brief del
         // project specifico. Cosi' Neo/Morfeo ricevono sia le tecniche
         // dell'utente sia il context-specific del prodotto.
@@ -3583,6 +3607,9 @@ export default function FrontEndFunnel() {
               tone: 'professional',
               language: '',
               knowledge: pageKnowledge,
+              ...(pageCheckoutRules
+                ? { checkoutMode: pageCheckoutMode, checkoutRules: pageCheckoutRules }
+                : {}),
             }),
             targetAgent,
           }),
@@ -4280,6 +4307,16 @@ export default function FrontEndFunnel() {
             language: cloneConfig.language || '',
             knowledge: rowKnowledge,
           };
+          // Checkout rules resolved HERE and shipped as text: the worker keeps
+          // no copy, so src/lib/checkout-modes.ts stays the only source of
+          // truth. Standard checkout → addendum '' → fields omitted → payload
+          // identical to what it was before this feature.
+          const singleCheckoutMode = effectiveCheckoutMode(currentPage);
+          const singleCheckoutRules = checkoutPromptAddendum(singleCheckoutMode);
+          if (singleCheckoutRules) {
+            swipePayload.checkoutMode = singleCheckoutMode;
+            swipePayload.checkoutRules = singleCheckoutRules;
+          }
           // Manda l'html in cache solo se sotto il cap: se è enorme lo
           // omettiamo e il worker rifà il fetch via Playwright da sourceUrl
           // (altrimenti html + brief + MR sforano i ~6MB di Netlify → 500).
@@ -4518,6 +4555,9 @@ export default function FrontEndFunnel() {
           const cloneProject = (projects || []).find((pr) => pr.id === currentPage?.productId);
           const cloneRoutingPayload = {
             pageType: currentPage?.pageType || 'other',
+            // 'wasabi' makes the proxy prepend the WasabiCRM checkout rules to
+            // system_kb; 'standard' leaves the prompt exactly as it was.
+            checkoutMode: effectiveCheckoutMode(currentPage),
             brief_files: cloneProject?.briefData?.files ?? [],
             brief_notes: cloneProject?.briefData?.notes ?? '',
             research_files: cloneProject?.marketResearchData?.files ?? [],
@@ -6351,6 +6391,34 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                               <option value="__new__">+ New Type...</option>
                             </select>
                           </div>
+                        )}
+
+                        {/* Checkout flavour — shown only for checkout page
+                            types. "Standard" is the default and behaves exactly
+                            as before; "WasabiCRM" makes every AI rewrite/edit of
+                            this page carry the data-wc-* / template / script
+                            rules so the Whop payment runtime keeps working. */}
+                        {isCheckoutPageType(page.pageType) && (
+                          <select
+                            value={effectiveCheckoutMode(page)}
+                            onChange={(e) =>
+                              updateFunnelPage(page.id, {
+                                checkoutMode: normalizeCheckoutMode(e.target.value),
+                              })
+                            }
+                            title={checkoutModeOption(effectiveCheckoutMode(page)).description}
+                            className={`mt-1 w-full text-[11px] rounded border px-1 py-0.5 ${
+                              effectiveCheckoutMode(page) === 'wasabi'
+                                ? 'border-emerald-400 bg-emerald-50 text-emerald-800 font-semibold'
+                                : 'border-slate-200 bg-white text-slate-500'
+                            }`}
+                          >
+                            {CHECKOUT_MODE_OPTIONS.map((o) => (
+                              <option key={o.value} value={o.value}>
+                                {o.shortLabel}
+                              </option>
+                            ))}
+                          </select>
                         )}
                       </td>
 
@@ -9217,6 +9285,9 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
             imageUrl: (Array.isArray(p.logo) && p.logo[0]?.url) || '',
           }))}
           currentProductId={editorPage?.productId || ''}
+          // WasabiCRM checkout → the editor's AI (full page + selected element)
+          // gets the data-wc-* / <template> / <script> rules.
+          checkoutMode={effectiveCheckoutMode(editorPage)}
           // Assegna (e ricorda) il prodotto scelto sulla pagina, così lo swipe
           // funziona anche dopo. Best-effort: non blocca la UI.
           onProductChange={(productId) => {

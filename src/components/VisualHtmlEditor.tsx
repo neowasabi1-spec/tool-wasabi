@@ -12,7 +12,7 @@ import {
   Smartphone, Monitor, Upload, Film, Paperclip,
   BookmarkPlus, Library, Tag, Clock, FileCode, Search,
   BookOpen, ArrowDownToLine, Eye as EyeIcon,
-  Link2, Link2Off, ChevronDown,
+  Link2, Link2Off, ChevronDown, ShieldCheck,
   // Icona del pulsante "Tracking" nella toolbar — apre il popup per
   // inserire uno snippet (es. Meta Pixel, GA, tracker custom) che
   // viene piazzato subito dopo il tag <head>.
@@ -23,6 +23,12 @@ import { createClient } from '@supabase/supabase-js';
 import { recolorPage } from '@/lib/recolor-page';
 import { useStore } from '@/store/useStore';
 import { extractSectionContent } from '@/lib/project-sections';
+import {
+  CHECKOUT_MODE_OPTIONS,
+  checkoutModeOption,
+  normalizeCheckoutMode,
+  type CheckoutMode,
+} from '@/lib/checkout-modes';
 import { stripNonCarouselScripts } from '@/lib/spa-rescue';
 
 /* ── Direct browser → Supabase Storage upload (bypasses Vercel 4.5MB body limit) ── */
@@ -202,6 +208,12 @@ interface VisualHtmlEditorProps {
     /** stepIndex dello step attualmente in modifica (per evidenziarlo). */
     currentIndex?: number;
   };
+  /** Checkout flavour della pagina aperta. Con 'wasabi' le due AI dell'editor
+   *  (modifica pagina intera e modifica elemento selezionato) ricevono le
+   *  regole WasabiCRM: niente <script> toccati, niente attributi data-wc-*
+   *  rimossi, niente <template> cancellati, niente prezzi hardcodati dove c'e'
+   *  un data-wc-bind. Assente / 'standard' → prompt identici a prima. */
+  checkoutMode?: CheckoutMode;
 }
 
 /* ─────────── Brand Colors ─────────── */
@@ -2585,7 +2597,7 @@ function BgGradientEditor({
 
 /* ─────────── Component ─────────── */
 
-export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSave, onSaveToProject, onClose, pageTitle, productContext, sourceUrl, availableProducts, currentProductId, onProductChange, quizNav }: VisualHtmlEditorProps) {
+export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSave, onSaveToProject, onClose, pageTitle, productContext, sourceUrl, availableProducts, currentProductId, onProductChange, quizNav, checkoutMode }: VisualHtmlEditorProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [mode, setMode] = useState<EditorMode>('visual');
   const [selectedElement, setSelectedElement] = useState<ElementInfo | null>(null);
@@ -2600,6 +2612,18 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   // attivo, modificare un lato applica lo stesso valore a tutti e 4.
   const [paddingLinked, setPaddingLinked] = useState(false);
   const [marginLinked, setMarginLinked] = useState(false);
+
+  // Checkout flavour della pagina. Arriva dalla riga del funnel (prop) ma resta
+  // modificabile qui: l'editor si apre anche da /edit/<id> e da Clone Landing,
+  // dove quella riga non c'e'. Il default e' sempre quello della prop, quindi
+  // 'standard' → prompt AI identici a prima di questa feature.
+  const [activeCheckoutMode, setActiveCheckoutMode] = useState<CheckoutMode>(
+    normalizeCheckoutMode(checkoutMode),
+  );
+  useEffect(() => {
+    setActiveCheckoutMode(normalizeCheckoutMode(checkoutMode));
+  }, [checkoutMode]);
+  const isWasabiCheckout = activeCheckoutMode === 'wasabi';
 
   const [currentHtml, setCurrentHtml] = useState(initialHtml);
   // Ref sempre aggiornato a currentHtml: usato da handleSave per leggere
@@ -4250,6 +4274,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
           html: editorViewport === 'mobile' && mobileHtml ? mobileHtml : currentHtml,
           prompt: aiEditPrompt,
           model: aiEditModel,
+          checkoutMode: activeCheckoutMode,
         }),
       });
 
@@ -4320,7 +4345,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
       setAiEditRunning(false);
       setAiEditProgress(null);
     }
-  }, [aiEditPrompt, aiEditModel, aiEditRunning, currentHtml, pushUndo]);
+  }, [aiEditPrompt, aiEditModel, aiEditRunning, activeCheckoutMode, currentHtml, pushUndo]);
 
   const handleAiEditUndo = useCallback(() => {
     if (aiEditHistory.length === 0) return;
@@ -4565,6 +4590,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
         body: JSON.stringify({
           elementHtml: elementHtml || undefined,
           instruction,
+          checkoutMode: activeCheckoutMode,
         }),
       });
       // Parsing robusto: in caso di timeout del gateway (Netlify/Vercel
@@ -4618,7 +4644,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     } finally {
       setElAiLoading(false);
     }
-  }, [elAiInput, elAiLoading, selectedElement, sendToIframe, currentHtml, pushUndo]);
+  }, [elAiInput, elAiLoading, activeCheckoutMode, selectedElement, sendToIframe, currentHtml, pushUndo]);
 
   useEffect(() => {
     elAiChatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -7517,6 +7543,40 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                   <X className="h-4 w-4" />
                 </button>
               </div>
+            </div>
+
+            {/* Checkout flavour. Standard = the prompt the editor has always
+                used. WasabiCRM = same prompt plus the binding data-wc-* /
+                template / script rules, so the AI cannot break Whop payments. */}
+            <div className="px-4 py-2 border-b border-slate-800/50">
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] text-slate-500 shrink-0">Checkout:</span>
+                <div className="flex items-center gap-1 bg-slate-800/60 rounded-lg p-0.5">
+                  {CHECKOUT_MODE_OPTIONS.map((o) => (
+                    <button
+                      key={o.value}
+                      onClick={() => setActiveCheckoutMode(o.value)}
+                      disabled={aiEditRunning}
+                      title={o.description}
+                      className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold transition-all disabled:opacity-40 ${
+                        activeCheckoutMode === o.value
+                          ? o.value === 'wasabi'
+                            ? 'bg-gradient-to-r from-emerald-500 to-teal-500 text-white shadow-md'
+                            : 'bg-slate-700 text-slate-100 shadow-md'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      {o.value === 'wasabi' && <ShieldCheck className="h-3 w-3" />}
+                      {o.shortLabel}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {isWasabiCheckout && (
+                <p className="mt-1.5 text-[11px] leading-relaxed text-emerald-300/90">
+                  {checkoutModeOption('wasabi').description}
+                </p>
+              )}
             </div>
 
             {/* Quick Presets */}

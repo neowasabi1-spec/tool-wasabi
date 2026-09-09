@@ -376,6 +376,35 @@ function sanitizeFunnelPagePayload<T extends Partial<FunnelPageInsert | FunnelPa
   return out as T;
 }
 
+// Columns on `funnel_pages` that arrived in a later migration and may not
+// exist yet on a given deploy. When Postgres rejects the write because one of
+// them is missing we drop it and retry, so the rest of the row still saves.
+//   angle         → supabase-migration-funnel-pages-angle.sql
+//   checkout_mode → supabase-migration-funnel-pages-checkout-mode.sql
+const OPTIONAL_FUNNEL_PAGE_COLUMNS = ['angle', 'checkout_mode'] as const;
+
+const OPTIONAL_COLUMN_MIGRATION: Record<string, string> = {
+  angle: 'supabase-migration-funnel-pages-angle.sql',
+  checkout_mode: 'supabase-migration-funnel-pages-checkout-mode.sql',
+};
+
+/** The optional column this error is complaining about, if any. */
+function missingOptionalColumn<T extends Record<string, unknown>>(
+  err: unknown,
+  payload: T,
+): string | null {
+  for (const column of OPTIONAL_FUNNEL_PAGE_COLUMNS) {
+    if (column in payload && isMissingColumnError(err, column)) return column;
+  }
+  return null;
+}
+
+function withoutColumn<T extends Record<string, unknown>>(payload: T, column: string): T {
+  const rest = { ...payload };
+  delete rest[column];
+  return rest;
+}
+
 // True when the supabase error is a "column does not exist" failure for the
 // given column name. Used to retry without optional new columns whose
 // migration may not have been applied yet (e.g. `angle`).
@@ -403,16 +432,20 @@ export async function createFunnelPage(page: FunnelPageInsert): Promise<FunnelPa
     .select()
     .single();
 
-  // Retry without `angle` if the column hasn't been migrated yet
-  // (supabase-migration-funnel-pages-angle.sql). The rest of the row
-  // still gets created so the user isn't blocked.
-  if (error && isMissingColumnError(error, 'angle') && 'angle' in safePage) {
-    console.warn('[funnel_pages] `angle` column missing — run supabase-migration-funnel-pages-angle.sql to enable persistence');
-    const { angle: _omit, ...rest } = safePage as FunnelPageInsert & { angle?: unknown };
-    void _omit;
+  // Retry without any optional column whose migration hasn't been applied
+  // yet. The rest of the row still gets created so the user isn't blocked.
+  // Loops because a deploy can be behind on more than one migration.
+  let insertPayload = safePage as FunnelPageInsert & Record<string, unknown>;
+  for (let i = 0; i < OPTIONAL_FUNNEL_PAGE_COLUMNS.length && error; i++) {
+    const column = missingOptionalColumn(error, insertPayload);
+    if (!column) break;
+    console.warn(
+      `[funnel_pages] \`${column}\` column missing — run ${OPTIONAL_COLUMN_MIGRATION[column]} to enable persistence`,
+    );
+    insertPayload = withoutColumn(insertPayload, column);
     const retry = await supabase
       .from('funnel_pages')
-      .insert(rest)
+      .insert(insertPayload)
       .select()
       .single();
     data = retry.data;
@@ -441,13 +474,17 @@ export async function updateFunnelPage(id: string, updates: FunnelPageUpdate): P
     .select()
     .single();
 
-  if (error && isMissingColumnError(error, 'angle') && 'angle' in safeUpdates) {
-    console.warn('[funnel_pages] `angle` column missing — run supabase-migration-funnel-pages-angle.sql to enable persistence');
-    const { angle: _omit, ...rest } = safeUpdates as FunnelPageUpdate & { angle?: unknown };
-    void _omit;
+  let updatePayload = safeUpdates as FunnelPageUpdate & Record<string, unknown>;
+  for (let i = 0; i < OPTIONAL_FUNNEL_PAGE_COLUMNS.length && error; i++) {
+    const column = missingOptionalColumn(error, updatePayload);
+    if (!column) break;
+    console.warn(
+      `[funnel_pages] \`${column}\` column missing — run ${OPTIONAL_COLUMN_MIGRATION[column]} to enable persistence`,
+    );
+    updatePayload = withoutColumn(updatePayload, column);
     const retry = await supabase
       .from('funnel_pages')
-      .update(rest)
+      .update(updatePayload)
       .eq('id', id)
       .select()
       .single();

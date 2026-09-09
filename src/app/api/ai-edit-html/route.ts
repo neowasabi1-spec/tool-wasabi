@@ -1,5 +1,6 @@
 import { NextRequest } from 'next/server';
 import Anthropic from '@anthropic-ai/sdk';
+import { withCheckoutRules, type CheckoutMode } from '@/lib/checkout-modes';
 
 export const maxDuration = 300;
 export const dynamic = 'force-dynamic';
@@ -10,6 +11,10 @@ interface EditRequest {
   html: string;
   prompt: string;
   model: AIModel;
+  /** 'wasabi' appends the WasabiCRM checkout rules to the system prompt so the
+   *  model can't strip data-wc-* attributes, <template> blueprints or the
+   *  payment <script>. Omitted / 'standard' → the prompt is unchanged. */
+  checkoutMode?: CheckoutMode;
 }
 
 const CHUNK_SYSTEM_PROMPT = `You are an expert front-end developer and brand designer.
@@ -129,6 +134,7 @@ function splitHtmlIntoChunks(html: string): { chunks: string[]; boundaries: numb
 async function editWithClaude(
   html: string,
   prompt: string,
+  systemPrompt: string,
   onChunk: (data: Record<string, unknown>) => void
 ): Promise<string> {
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -143,7 +149,7 @@ async function editWithClaude(
     const response = await anthropic.messages.create({
       model: 'claude-opus-4-8',
       max_tokens: 16000,
-      system: CHUNK_SYSTEM_PROMPT,
+      system: systemPrompt,
       messages: [
         {
           role: 'user',
@@ -172,7 +178,7 @@ async function editWithClaude(
   const headResponse = await anthropic.messages.create({
     model: 'claude-opus-4-8',
     max_tokens: 8000,
-    system: CHUNK_SYSTEM_PROMPT,
+    system: systemPrompt,
     messages: [
       {
         role: 'user',
@@ -197,7 +203,7 @@ async function editWithClaude(
     const response = await anthropic.messages.create({
       model: 'claude-opus-4-8',
       max_tokens: 16000,
-      system: CHUNK_SYSTEM_PROMPT,
+      system: systemPrompt,
       messages: [
         {
           role: 'user',
@@ -219,6 +225,7 @@ async function editWithClaude(
 async function editWithGemini(
   html: string,
   prompt: string,
+  systemPrompt: string,
   onChunk: (data: Record<string, unknown>) => void
 ): Promise<string> {
   const apiKey = (process.env.GOOGLE_GEMINI_API_KEY ?? '').trim();
@@ -234,7 +241,7 @@ async function editWithGemini(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        systemInstruction: { parts: [{ text: CHUNK_SYSTEM_PROMPT }] },
+        systemInstruction: { parts: [{ text: systemPrompt }] },
         contents: [{ role: 'user', parts: [{ text: userContent }] }],
         generationConfig: {
           maxOutputTokens: 65536,
@@ -307,7 +314,11 @@ function cleanAiOutput(text: string): string {
 export async function POST(request: NextRequest) {
   try {
     const body: EditRequest = await request.json();
-    const { html, prompt, model = 'claude' } = body;
+    const { html, prompt, model = 'claude', checkoutMode } = body;
+
+    // Standard checkout (and every non-checkout page) keeps the original
+    // system prompt byte for byte — the rules are only appended for 'wasabi'.
+    const systemPrompt = withCheckoutRules(CHUNK_SYSTEM_PROMPT, checkoutMode);
 
     if (!html || !prompt) {
       return new Response(
@@ -324,14 +335,19 @@ export async function POST(request: NextRequest) {
         };
 
         try {
-          send({ type: 'start', model, htmlLength: html.length });
+          send({
+            type: 'start',
+            model,
+            htmlLength: html.length,
+            checkoutMode: checkoutMode || 'standard',
+          });
 
           let resultHtml: string;
 
           if (model === 'gemini') {
-            resultHtml = await editWithGemini(html, prompt, send);
+            resultHtml = await editWithGemini(html, prompt, systemPrompt, send);
           } else {
-            resultHtml = await editWithClaude(html, prompt, send);
+            resultHtml = await editWithClaude(html, prompt, systemPrompt, send);
           }
 
           send({ type: 'result', html: resultHtml });

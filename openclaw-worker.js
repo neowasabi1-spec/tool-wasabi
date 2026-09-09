@@ -1943,6 +1943,20 @@ async function processMessage(msg) {
             log(`  · swipe_landing_local: static knowledge iniettata (${STATIC_EXTRA_CONTEXT.content.length} chars)`);
           }
 
+          // (a2) Checkout rules — vincoli della pagina, NON knowledge di copy.
+          //      Il tool risolve `checkoutMode` in testo e ce lo manda gia'
+          //      pronto (`job.checkoutRules`): cosi' le regole WasabiCRM
+          //      vivono in UN SOLO posto (src/lib/checkout-modes.ts) e il
+          //      worker non ha una seconda copia da tenere allineata.
+          //      Checkout standard / pagina non-checkout → campo assente →
+          //      il system prompt resta identico a prima.
+          if (typeof job.checkoutRules === 'string' && job.checkoutRules.trim()) {
+            enrichedSystemPrompt = `${enrichedSystemPrompt}\n\n${job.checkoutRules.trim()}`;
+            log(
+              `  · swipe_landing_local: checkout rules iniettate (${job.checkoutMode || 'wasabi'}, ${job.checkoutRules.length} chars)`,
+            );
+          }
+
           // (b) Live agent primer — chiediamo all'AGENTE locale (NON un
           //     semplice LLM: Neo/Morfeo hanno archivi prodotti, RAG
           //     interna, knowledge base proprietaria, skill specifiche

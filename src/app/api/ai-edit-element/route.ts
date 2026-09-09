@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Anthropic from '@anthropic-ai/sdk';
+import { withCheckoutRules } from '@/lib/checkout-modes';
 
 export const maxDuration = 120;
 export const dynamic = 'force-dynamic';
@@ -69,7 +70,7 @@ function isPageLevelRequest(instruction: string): boolean {
 
 export async function POST(request: NextRequest) {
   try {
-    const { elementHtml, fullHtml, instruction } = await request.json();
+    const { elementHtml, fullHtml, instruction, checkoutMode } = await request.json();
 
     if (!instruction) {
       return NextResponse.json({ error: 'instruction is required' }, { status: 400 });
@@ -83,11 +84,17 @@ export async function POST(request: NextRequest) {
     const anthropic = new Anthropic({ apiKey });
     const isPageLevel = isPageLevelRequest(instruction) || !elementHtml;
 
+    // On a WasabiCRM checkout the payment runtime binds to data-wc-* markup,
+    // so both the element rewriter and the page-level inserter get the rules.
+    // For a standard checkout (and every other page) the prompts are unchanged.
+    const elementSystem = withCheckoutRules(ELEMENT_SYSTEM, checkoutMode);
+    const pageSystem = withCheckoutRules(PAGE_SYSTEM, checkoutMode);
+
     if (isPageLevel) {
       const response = await anthropic.messages.create({
         model: 'claude-opus-4-8',
         max_tokens: 4096,
-        system: PAGE_SYSTEM,
+        system: pageSystem,
         messages: [{ role: 'user', content: instruction }],
       });
 
@@ -115,7 +122,7 @@ export async function POST(request: NextRequest) {
       const response = await anthropic.messages.create({
         model: 'claude-opus-4-8',
         max_tokens: 8192,
-        system: ELEMENT_SYSTEM,
+        system: elementSystem,
         messages: [{
           role: 'user',
           content: `Selected HTML element:\n\n${elementHtml}\n\nInstruction: ${instruction}`,

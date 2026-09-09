@@ -16,8 +16,15 @@ import type {
 import * as supabaseOps from '@/lib/supabase-operations';
 import { parseSectionData, type SectionData } from '@/lib/project-sections';
 import { authFetch } from '@/lib/auth/client-fetch';
+import { normalizeCheckoutMode, type CheckoutMode } from '@/lib/checkout-modes';
 
 const SWIPE_API_URL = '/api/landing/swipe';
+
+/** Keep "never chosen" distinct from an explicit 'standard' so we don't write
+ *  a value to rows the user never touched. Both behave identically downstream. */
+function normalizeCheckoutModeOrUndefined(raw: unknown): CheckoutMode | undefined {
+  return raw === null || raw === undefined || raw === '' ? undefined : normalizeCheckoutMode(raw);
+}
 
 // Helper to convert database types to app types
 interface AppProduct {
@@ -96,6 +103,8 @@ interface AppFunnelPage {
   urlToSwipe: string;
   angle?: string;
   prompt?: string;
+  /** Checkout flavour for checkout-type steps. Undefined = 'standard'. */
+  checkoutMode?: CheckoutMode;
   swipeStatus: SwipeStatus;
   swipeResult?: string;
   feedback?: string;
@@ -455,6 +464,12 @@ function dbFunnelPageToApp(p: FunnelPage): AppFunnelPage {
     // missing on rows from older deploys.
     angle: (p as Record<string, unknown>).angle as string | undefined,
     prompt: (p as Record<string, unknown>).prompt as string | undefined,
+    // Same defensive read as `angle`: the column arrives with
+    // supabase-migration-funnel-pages-checkout-mode.sql and is absent on
+    // older deploys. Undefined behaves as 'standard' everywhere.
+    checkoutMode: normalizeCheckoutModeOrUndefined(
+      (p as Record<string, unknown>).checkout_mode,
+    ),
     swipeStatus: p.swipe_status,
     swipeResult: p.swipe_result || undefined,
     feedback: (p as Record<string, unknown>).feedback as string | undefined,
@@ -1103,6 +1118,7 @@ export const useStore = create<Store>()((set, get) => ({
         url_to_swipe: page.urlToSwipe,
         angle: page.angle,
         prompt: page.prompt,
+        checkout_mode: page.checkoutMode,
         swipe_status: page.swipeStatus,
         swipe_result: page.swipeResult,
         feedback: page.feedback,
@@ -1185,6 +1201,7 @@ export const useStore = create<Store>()((set, get) => ({
         url_to_swipe: page.urlToSwipe,
         angle: page.angle,
         prompt: page.prompt,
+        checkout_mode: page.checkoutMode,
         swipe_status: page.swipeStatus,
         swipe_result: page.swipeResult,
         feedback: page.feedback,

@@ -132,6 +132,10 @@ export interface Database {
           url_to_swipe: string;
           angle: string | null;
           prompt: string | null;
+          /** 'standard' | 'wasabi' — only meaningful for checkout page types.
+           *  Nullable because the column arrived in a later migration
+           *  (supabase-migration-funnel-pages-checkout-mode.sql). */
+          checkout_mode: string | null;
           swipe_status: SwipeStatus;
           swipe_result: string | null;
           feedback: string | null;
@@ -153,6 +157,7 @@ export interface Database {
           url_to_swipe: string;
           angle?: string | null;
           prompt?: string | null;
+          checkout_mode?: string | null;
           swipe_status?: SwipeStatus;
           swipe_result?: string | null;
           feedback?: string | null;
@@ -174,6 +179,7 @@ export interface Database {
           url_to_swipe?: string;
           angle?: string | null;
           prompt?: string | null;
+          checkout_mode?: string | null;
           swipe_status?: SwipeStatus;
           swipe_result?: string | null;
           feedback?: string | null;

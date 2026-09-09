@@ -8,6 +8,7 @@ import {
   injectNoReferrerAndEagerLoading,
 } from '@/lib/spa-rescue';
 import { normalizeSwipeModel, SWIPE_MODEL_DEFAULT } from '@/lib/swipe-models';
+import { withCheckoutRules, type CheckoutMode } from '@/lib/checkout-modes';
 import { batchKeepingGroups, buildSwipePlan, orderAndLinkFragments, planRules } from '@/lib/swipe-plan';
 
 export const maxDuration = 300;
@@ -537,13 +538,23 @@ export async function POST(request: NextRequest) {
   } catch {
     return NextResponse.json({ error: 'invalid JSON body' }, { status: 400 });
   }
-  const { source_url, html: providedHtml, product, tone, language, model: modelRaw } = body as {
+  const {
+    source_url,
+    html: providedHtml,
+    product,
+    tone,
+    language,
+    model: modelRaw,
+    checkoutMode,
+  } = body as {
     source_url?: string;
     html?: string;
     product: ProductInfo;
     tone?: string;
     language?: string;
     model?: string;
+    /** 'wasabi' on a WasabiCRM checkout; omitted/'standard' everywhere else. */
+    checkoutMode?: CheckoutMode;
   };
   const swipeModel = normalizeSwipeModel(modelRaw);
 
@@ -555,7 +566,7 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const out = await runSwipe({ source_url, providedHtml, product, tone, language, swipeModel });
+    const out = await runSwipe({ source_url, providedHtml, product, tone, language, swipeModel, checkoutMode });
     if (out.success === false) {
       const msg = String(out.error || '');
       const status = /^Anthropic failed/.test(msg) ? 502 : 400;
@@ -578,8 +589,9 @@ async function runSwipe(args: {
   tone?: string;
   language?: string;
   swipeModel: string;
+  checkoutMode?: CheckoutMode;
 }): Promise<Record<string, unknown>> {
-  const { source_url, providedHtml, product, tone, language, swipeModel } = args;
+  const { source_url, providedHtml, product, tone, language, swipeModel, checkoutMode } = args;
     let originalHtml: string;
     if (providedHtml) {
       originalHtml = source_url ? absolutizeUrls(providedHtml, source_url) : providedHtml;
@@ -641,6 +653,12 @@ CRITICAL RULES:
 5. Every batch MUST return one {"id","rewritten"} object per supplied id — never omit ids. Labels that are product-neutral (dates, "Customer Reviews", "5 Star", author bylines you keep) may be returned unchanged.
 `;
 
+    // WasabiCRM checkout: the copy rewriter must not hardcode prices/product
+    // names that the payment runtime supplies at page load, and must not
+    // invent discount/urgency copy there is no data behind. No-op for a
+    // standard checkout and for every other page type.
+    const systemPromptForBatches = withCheckoutRules(systemPrompt, checkoutMode);
+
     // Shared sink so a budget timeout still lets us apply what was collected so
     // far. On a big page (many batches) a mid-run timeout used to discard
     // EVERYTHING and return 502 ("non riscrive nulla"); now partial > nothing.
@@ -658,7 +676,7 @@ CRITICAL RULES:
         setTimeout(() => reject(new Error(`AI budget exceeded (${aiBudgetMs}ms)`)), aiBudgetMs);
       });
       await Promise.race([
-        collectAllRewrites(systemPrompt, textsForAi, idToRewrite, swipeModel),
+        collectAllRewrites(systemPromptForBatches, textsForAi, idToRewrite, swipeModel),
         timeoutPromise,
       ]);
     } catch (anthropicErr) {

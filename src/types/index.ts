@@ -1,5 +1,9 @@
-export type TemplateType = 
-  | 'advertorial' 
+import type { CheckoutMode } from '@/lib/checkout-modes';
+
+export type { CheckoutMode };
+
+export type TemplateType =
+  | 'advertorial'
   | 'checkout' 
   | 'oto_1' 
   | 'oto_2' 
@@ -223,6 +227,10 @@ export interface FunnelPage {
   urlToSwipe: string;
   angle?: string; // Marketing angle for this step (e.g. "fear-of-loss", "social proof")
   prompt?: string; // Custom prompt for AI analysis
+  /** Checkout flavour, only shown/used when `pageType` is a checkout type.
+   *  Undefined / 'standard' = pre-existing behaviour; 'wasabi' makes every AI
+   *  rewrite/edit of this page carry the WasabiCRM rules (src/lib/checkout-modes.ts). */
+  checkoutMode?: CheckoutMode;
   swipeStatus: SwipeStatus;
   swipeResult?: string;
   feedback?: string; // User feedback after swipe

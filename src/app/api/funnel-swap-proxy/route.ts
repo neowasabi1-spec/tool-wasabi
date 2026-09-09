@@ -7,6 +7,7 @@ import {
 } from '@/lib/section-routing';
 import type { SectionFile } from '@/lib/project-sections';
 import { isSpaShell, rescueViaJina } from '@/lib/spa-rescue';
+import { checkoutPromptAddendum, normalizeCheckoutMode } from '@/lib/checkout-modes';
 
 export const maxDuration = 300;
 export const dynamic = 'force-dynamic';
@@ -76,6 +77,10 @@ function asFiles(val: unknown): SectionFile[] {
  *   - research_notes      : string
  *   - brief               : string  — legacy fallback (no routing)
  *   - market_research     : string  — legacy fallback (no routing)
+ *   - checkoutMode        : 'standard' | 'wasabi' — 'wasabi' prepends the
+ *                           WasabiCRM checkout rules to `system_kb` (the Edge
+ *                           Function already ships that field to Claude as a
+ *                           cached system block). 'standard' changes nothing.
  */
 export async function POST(request: NextRequest) {
   // Outer try/catch: any uncaught throw inside this handler used to bubble
@@ -136,6 +141,9 @@ async function handlePost(request: NextRequest) {
   delete enrichedBody.brief_notes;
   delete enrichedBody.research_files;
   delete enrichedBody.research_notes;
+  // `checkoutMode` is resolved here into `system_kb`; the Edge Function has no
+  // use for the raw flag.
+  delete enrichedBody.checkoutMode;
 
   // ─── SPA rescue (defence in depth) ────────────────────────────────────────
   // The Edge Function expects `renderedHtml` to be the JS-rendered page
@@ -186,6 +194,22 @@ async function handlePost(request: NextRequest) {
     if (!enrichedBody.system_kb) {
       const kb = getKbForTask(task);
       if (kb) enrichedBody.system_kb = kb;
+    }
+
+    // 1b) WasabiCRM checkout rules. The Edge Function forwards `system_kb`
+    //     verbatim as a cached system block, so prepending here is enough —
+    //     no Edge Function redeploy needed. The rules go FIRST because they
+    //     are binding constraints that outrank copywriting guidance.
+    //     Standard checkout / any other page → addendum is '' → `system_kb`
+    //     is left exactly as it was before this feature.
+    const checkoutMode = normalizeCheckoutMode(body.checkoutMode);
+    const checkoutRules = checkoutPromptAddendum(checkoutMode);
+    if (checkoutRules) {
+      const existingKb = typeof enrichedBody.system_kb === 'string' ? enrichedBody.system_kb : '';
+      enrichedBody.system_kb = existingKb ? `${checkoutRules}\n\n${existingKb}` : checkoutRules;
+      console.log(
+        `[funnel-swap-proxy] checkoutMode=${checkoutMode} pageType=${pageType} — WasabiCRM rules prepended to system_kb (+${checkoutRules.length} chars)`,
+      );
     }
 
     // 2) Brief routing (when the client sent a structured payload).
