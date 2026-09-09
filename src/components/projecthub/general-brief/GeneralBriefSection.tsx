@@ -1,12 +1,27 @@
+'use client';
+
 import { useState, useRef, useEffect, useCallback } from "react";
+import { useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
-import { getGetProjectQueryKey, getGetProjectStatsQueryKey, getListProjectsQueryKey } from "@/lib/projecthub-api";
+import {
+  getGetProjectQueryKey,
+  getGetProjectStatsQueryKey,
+  getListProjectsQueryKey,
+  getListFunnelStepsQueryKey,
+} from "@/lib/projecthub-api";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
-import { Upload, FileText, Image, Download, X, Pencil, Check, FolderOpen, Plus, Trash2 } from "lucide-react";
+import {
+  Upload, FileText, Image, Download, X, Pencil, Check, FolderOpen, Plus, Trash2,
+  LayoutTemplate, Save, Loader2, ExternalLink,
+} from "lucide-react";
 import { getUploadUrl } from "@/lib/projecthub-storage";
+import { useStore } from "@/store/useStore";
+import { humanizePageTypeSlug, type PageType } from "@/types";
+import type { ProductBriefSection } from "@/lib/projecthub-legacy";
+import { AddStepDialog, type PickedStepTemplate } from "./AddStepDialog";
 
 const BASE_URL = "";
 
@@ -17,8 +32,6 @@ type ProjectFile = {
   original_name: string;
   created_at: string;
 };
-
-type ProductBriefSection = { id: string; label: string };
 
 const STEP_COLORS = [
   "bg-violet-500 text-white",
@@ -283,15 +296,19 @@ function GeneralBriefTabContent({ projectId, files, projectName }: {
 }
 
 // ─── PRODUCT BRIEF TAB CONTENT ───
-function ProductBriefTabContent({ section, stepIdx, projectId, files }: {
+function ProductBriefTabContent({ section, stepIdx, projectId, files, onPickTemplate }: {
   section: ProductBriefSection;
   stepIdx: number;
   projectId: string;
   files: ProjectFile[];
+  onPickTemplate: () => void;
 }) {
   const queryClient = useQueryClient();
   const [lightbox, setLightbox] = useState<{ src: string; alt: string } | null>(null);
   const stepColor = STEP_COLORS[stepIdx % STEP_COLORS.length];
+  const typeLabel = section.pageType
+    ? (humanizePageTypeSlug(section.pageType) || section.label)
+    : section.label;
 
   const briefFiles = files.filter(f => f.file_type === section.id);
   const mockupFiles = files.filter(f => f.file_type === `img_${section.id}`);
@@ -308,10 +325,61 @@ function ProductBriefTabContent({ section, stepIdx, projectId, files }: {
   return (
     <div className="space-y-6">
       {/* Step badge */}
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 flex-wrap">
         <span className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold ${stepColor}`}>
-          Product {stepIdx + 1} — {section.label}
+          Product {stepIdx + 1} — {typeLabel}
         </span>
+        {!section.pageType && (
+          <span className="text-xs text-muted-foreground">No category yet — pick one below</span>
+        )}
+      </div>
+
+      {/* Template for this step */}
+      <div className="bg-card border border-border rounded-xl p-5 space-y-3">
+        <div className="flex items-center justify-between">
+          <h3 className="font-semibold text-sm flex items-center gap-2">
+            <LayoutTemplate className="w-4 h-4 text-primary" /> Template
+          </h3>
+          <Button size="sm" variant="outline" className="gap-1.5" onClick={onPickTemplate}>
+            {section.templateUrl || !section.pageType ? 'Change' : 'Choose template'}
+          </Button>
+        </div>
+        {section.templateUrl ? (
+          <div className="flex items-start gap-3">
+            {section.templateScreenshotUrl ? (
+              <img
+                src={section.templateScreenshotUrl}
+                alt={section.templateName || 'Template'}
+                className="w-16 h-28 object-cover object-top rounded-md border border-border bg-muted"
+              />
+            ) : (
+              <div className="w-16 h-28 rounded-md border border-dashed border-border bg-muted flex items-center justify-center">
+                <LayoutTemplate className="w-5 h-5 text-muted-foreground/40" />
+              </div>
+            )}
+            <div className="min-w-0">
+              <p className="text-sm font-medium truncate">{section.templateName || 'Selected template'}</p>
+              {section.templateFunnelName && (
+                <p className="text-xs text-muted-foreground truncate">{section.templateFunnelName}</p>
+              )}
+              <a
+                href={section.templateUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-[11px] text-primary hover:underline mt-1"
+              >
+                <ExternalLink className="w-3 h-3" />
+                Open source
+              </a>
+            </div>
+          </div>
+        ) : (
+          <div className="border-2 border-dashed border-border rounded-lg p-6 text-center">
+            <LayoutTemplate className="w-7 h-7 text-muted-foreground/30 mx-auto mb-2" />
+            <p className="text-sm text-muted-foreground italic">No template selected for this step</p>
+            <p className="text-xs text-muted-foreground/60 mt-1">Templates come from the Templates section, by category</p>
+          </div>
+        )}
       </div>
 
       {/* Brief Documents */}
@@ -378,14 +446,45 @@ function ProductBriefTabContent({ section, stepIdx, projectId, files }: {
   );
 }
 
-// ─── MAIN EXPORT ───
-export function GeneralBriefSection({ projectId, files, projectName }: {
+function uniqueStepLabel(base: string, existing: ProductBriefSection[], ignoreId?: string): string {
+  const labels = new Set(
+    existing.filter((s) => s.id !== ignoreId).map((s) => s.label.toLowerCase()),
+  );
+  if (!labels.has(base.toLowerCase())) return base;
+  let n = 2;
+  while (labels.has(`${base} ${n}`.toLowerCase())) n += 1;
+  return `${base} ${n}`;
+}
+
+function applyPickedTemplate(
+  section: ProductBriefSection,
+  pageType: string,
+  label: string,
+  template: PickedStepTemplate | null,
+): ProductBriefSection {
+  return {
+    ...section,
+    label,
+    pageType,
+    templateName: template?.name,
+    templateUrl: template?.url,
+    templateFunnelName: template?.funnelName,
+    templateFunnelId: template?.funnelId,
+    templateScreenshotUrl: template?.screenshotUrl || undefined,
+  };
+}
+
+export function GeneralBriefSection({ projectId, files, projectName, onGoToFunnel }: {
   projectId: string;
   files: ProjectFile[];
   projectName: string;
+  onGoToFunnel?: () => void;
 }) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const router = useRouter();
+  const addFunnelPage = useStore((s) => s.addFunnelPage);
+  const funnelPages = useStore((s) => s.funnelPages);
 
   const [activeTab, setActiveTab] = useState<"general" | string>("general");
   const [pbSections, setPbSections] = useState<ProductBriefSection[]>([{ id: "pb_frontend", label: "Frontend" }]);
@@ -393,6 +492,10 @@ export function GeneralBriefSection({ projectId, files, projectName }: {
   // Inline rename state for the active product brief tab
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
+  const [addOpen, setAddOpen] = useState(false);
+  const [templateForId, setTemplateForId] = useState<string | null>(null);
+  const pickerTargetRef = useRef<string | null>(null);
+  const [savingFunnel, setSavingFunnel] = useState(false);
 
   // Load sections
   useEffect(() => {
@@ -441,19 +544,127 @@ export function GeneralBriefSection({ projectId, files, projectName }: {
     });
   }, [projectId]);
 
-  const addSection = () => {
-    const otoNumbers = pbSections
-      .map(s => { const m = s.label.match(/^OTO(\d+)$/i); return m ? Number(m[1]) : 0; })
-      .filter(n => n > 0);
-    const nextOto = otoNumbers.length > 0 ? Math.max(...otoNumbers) + 1 : 2;
-    const newSection: ProductBriefSection = {
-      id: `pb_oto${nextOto}_${Date.now()}`,
-      label: `OTO${nextOto}`,
-    };
+  const confirmNewStep = (pageType: string, typeLabel: string, template: PickedStepTemplate | null) => {
+    const isDefaultFrontend =
+      pbSections.length === 1 &&
+      pbSections[0].id === "pb_frontend" &&
+      !pbSections[0].pageType;
+
+    if (isDefaultFrontend) {
+      const label = uniqueStepLabel(typeLabel, []);
+      const updated = [applyPickedTemplate(pbSections[0], pageType, label, template)];
+      setPbSections(updated);
+      saveSections(updated);
+      setActiveTab(updated[0].id);
+      return;
+    }
+
+    const label = uniqueStepLabel(typeLabel, pbSections);
+    const newSection = applyPickedTemplate(
+      { id: `pb_${pageType}_${Date.now()}`, label },
+      pageType,
+      label,
+      template,
+    );
     const updated = [...pbSections, newSection];
     setPbSections(updated);
     saveSections(updated);
     setActiveTab(newSection.id);
+  };
+
+  const confirmTemplateForSection = (sectionId: string, pageType: string, typeLabel: string, template: PickedStepTemplate | null) => {
+    const target = pbSections.find((s) => s.id === sectionId);
+    if (!target) return;
+    // Same type + no new template: keep the one already attached.
+    if (!template && target.pageType === pageType) return;
+    const keepLabel = target.pageType === pageType ? target.label : uniqueStepLabel(typeLabel, pbSections, sectionId);
+    const updated = pbSections.map((s) =>
+      s.id === sectionId ? applyPickedTemplate(s, pageType, keepLabel, template) : s,
+    );
+    setPbSections(updated);
+    saveSections(updated);
+  };
+
+  const saveToFunnelAndSwipe = async () => {
+    const steps = pbSections.filter((s) => s.pageType);
+    if (steps.length === 0) {
+      toast({
+        title: "No steps to save",
+        description: "Add at least one step with a category (Landing, Upsell, OTO…).",
+        variant: "destructive",
+      });
+      return;
+    }
+    setSavingFunnel(true);
+    try {
+      const existingRes = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/funnel-steps`);
+      const existingSteps: Array<{ url?: string; step_type?: string; step_number?: number }> =
+        existingRes.ok ? await existingRes.json() : [];
+      const existingKeys = new Set(
+        existingSteps.map((s) => `${(s.step_type || "").toLowerCase()}::${(s.url || "").trim()}`),
+      );
+      const maxNum = existingSteps.reduce((m, s) => Math.max(m, s.step_number || 0), 0);
+
+      const toInsert = steps
+        .filter((s) => !existingKeys.has(`${humanizePageTypeSlug(s.pageType!).toLowerCase()}::${(s.templateUrl || "").trim()}`))
+        .map((s, i) => ({
+          step_number: maxNum + i + 1,
+          page_name: s.templateName || s.label,
+          step_type: humanizePageTypeSlug(s.pageType!) || s.label,
+          template_name: s.templateName || "",
+          url: s.templateUrl || "",
+        }));
+
+      if (toInsert.length > 0) {
+        const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/funnel-steps`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ steps: toInsert }),
+        });
+        if (!r.ok) {
+          const err = await r.json().catch(() => ({}));
+          throw new Error((err as { error?: string }).error || `Funnel save failed (${r.status})`);
+        }
+        queryClient.invalidateQueries({ queryKey: getListFunnelStepsQueryKey(projectId) });
+      }
+
+      const existingSwipeUrls = new Set(
+        funnelPages
+          .filter((p) => p.productId === projectId)
+          .map((p) => (p.urlToSwipe || "").trim())
+          .filter(Boolean),
+      );
+
+      let swipeAdded = 0;
+      for (const s of steps) {
+        const url = (s.templateUrl || "").trim();
+        if (!url || existingSwipeUrls.has(url)) continue;
+        await addFunnelPage({
+          name: s.templateName || s.label,
+          pageType: s.pageType as PageType,
+          productId: projectId,
+          urlToSwipe: url,
+          prompt: "",
+          swipeStatus: "pending",
+          feedback: "",
+        });
+        existingSwipeUrls.add(url);
+        swipeAdded += 1;
+      }
+
+      toast({
+        title: "Steps saved",
+        description: `${toInsert.length} in Funnel, ${swipeAdded} in Clone/Swipe (project already set). Run swipe from Clone/Swipe as usual.`,
+      });
+    } catch (e) {
+      toast({
+        title: "Could not save steps",
+        description: e instanceof Error ? e.message : "Unknown error",
+        variant: "destructive",
+      });
+    } finally {
+      setSavingFunnel(false);
+    }
   };
 
   const renameSection = (id: string, label: string) => {
@@ -568,13 +779,33 @@ export function GeneralBriefSection({ projectId, files, projectName }: {
           );
         })}
 
-        {/* Add tab button */}
+        {/* Add tab button — opens category + template picker */}
         <button
-          onClick={addSection}
+          onClick={() => { pickerTargetRef.current = null; setTemplateForId(null); setAddOpen(true); }}
           className="flex items-center gap-1.5 px-3 py-2.5 text-xs font-semibold text-muted-foreground hover:text-primary hover:bg-primary/5 rounded-t-lg transition-all whitespace-nowrap border-b-2 border-transparent -mb-px">
           <Plus className="w-3.5 h-3.5" />
           Add
         </button>
+
+        <div className="ml-auto flex items-center gap-2 pb-1 flex-shrink-0">
+          <Button
+            size="sm"
+            className="gap-1.5"
+            onClick={saveToFunnelAndSwipe}
+            disabled={savingFunnel}
+          >
+            {savingFunnel ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+            Save to Funnel & Clone/Swipe
+          </Button>
+          {onGoToFunnel && (
+            <Button size="sm" variant="ghost" className="text-xs" onClick={onGoToFunnel}>
+              Funnel
+            </Button>
+          )}
+          <Button size="sm" variant="ghost" className="text-xs" onClick={() => router.push("/front-end-funnel")}>
+            Clone/Swipe
+          </Button>
+        </div>
       </div>
 
       {/* ── TAB CONTENT ── */}
@@ -589,9 +820,21 @@ export function GeneralBriefSection({ projectId, files, projectName }: {
             stepIdx={idx}
             projectId={projectId}
             files={files}
+            onPickTemplate={() => { pickerTargetRef.current = section.id; setTemplateForId(section.id); setAddOpen(true); }}
           />
         ) : null
       )}
+
+      <AddStepDialog
+        open={addOpen}
+        initialPageType={templateForId ? pbSections.find((s) => s.id === templateForId)?.pageType : undefined}
+        onClose={() => { setAddOpen(false); setTemplateForId(null); }}
+        onConfirm={(pageType, label, template) => {
+          const targetId = pickerTargetRef.current;
+          if (targetId) confirmTemplateForSection(targetId, pageType, label, template);
+          else confirmNewStep(pageType, label, template);
+        }}
+      />
     </div>
   );
 }

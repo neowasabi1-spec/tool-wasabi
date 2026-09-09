@@ -213,19 +213,50 @@ export function mergeProjectFiles<T extends { file_type?: string; original_name?
  *  Always guarantees a `pb_frontend` (Frontend) tab since the General Brief
  *  UI ships it as the default. Order is preserved: stored first (user's
  *  preferred order/labels), then any extras that aren't already covered. */
+export type ProductBriefSection = {
+  id: string;
+  label: string;
+  pageType?: string;
+  templateName?: string;
+  templateUrl?: string;
+  templateFunnelName?: string;
+  templateFunnelId?: string;
+  templateScreenshotUrl?: string;
+};
+
+function optionalStr(v: unknown): string | undefined {
+  return typeof v === 'string' && v.trim() ? v : undefined;
+}
+
+function parseStoredSection(s: Record<string, unknown>): ProductBriefSection {
+  return {
+    id: String(s.id),
+    label: String(s.label || s.id),
+    pageType: optionalStr(s.pageType),
+    templateName: optionalStr(s.templateName),
+    templateUrl: optionalStr(s.templateUrl),
+    templateFunnelName: optionalStr(s.templateFunnelName),
+    templateFunnelId: optionalStr(s.templateFunnelId),
+    templateScreenshotUrl: optionalStr(s.templateScreenshotUrl),
+  };
+}
+
 export function derivedProductBriefSections(
   project: Record<string, unknown>,
-): { id: string; label: string }[] {
-  let stored: { id: string; label: string }[] = [{ id: 'pb_frontend', label: 'Frontend' }];
+): ProductBriefSection[] {
+  let stored: ProductBriefSection[] = [{ id: 'pb_frontend', label: 'Frontend' }];
   const raw = project.product_brief_sections;
-  if (typeof raw === 'string' && raw.trim().startsWith('[')) {
+  const fromArray = (parsed: unknown[]): ProductBriefSection[] =>
+    parsed
+      .filter((s) => s && typeof s === 'object' && typeof (s as { id?: unknown }).id === 'string')
+      .map((s) => parseStoredSection(s as Record<string, unknown>));
+
+  if (Array.isArray(raw) && raw.length > 0) {
+    stored = fromArray(raw);
+  } else if (typeof raw === 'string' && raw.trim().startsWith('[')) {
     try {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        stored = parsed
-          .filter((s) => s && typeof s === 'object' && typeof s.id === 'string')
-          .map((s) => ({ id: String(s.id), label: String(s.label || s.id) }));
-      }
+      if (Array.isArray(parsed) && parsed.length > 0) stored = fromArray(parsed);
     } catch {
       /* fall through to default */
     }
@@ -240,7 +271,7 @@ export function derivedProductBriefSections(
     );
   };
 
-  const derived: { id: string; label: string }[] = [{ id: 'pb_frontend', label: 'Frontend' }];
+  const derived: ProductBriefSection[] = [{ id: 'pb_frontend', label: 'Frontend' }];
   if (sectionHasContent('back_end')) derived.push({ id: 'pb_backend', label: 'Backend' });
   if (sectionHasContent('compliance_funnel')) derived.push({ id: 'pb_compliance', label: 'Compliance' });
   if (sectionHasContent('funnel')) derived.push({ id: 'pb_funnel', label: 'Funnel' });

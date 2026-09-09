@@ -185,6 +185,7 @@ export function ProjectDetailContent({ projectId }: { projectId: string }) {
                 projectId={projectId}
                 files={files}
                 projectName={project.name ?? ''}
+                onGoToFunnel={() => setActiveSection('funnel')}
               />
             )}
             {activeSection === 'funnel' && (
