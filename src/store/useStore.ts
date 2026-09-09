@@ -1274,6 +1274,25 @@ export const useStore = create<Store>()((set, get) => ({
         p.id === id ? { ...p, ...page } : p
       ),
     }));
+
+    // Mirror the checkout flavour BEFORE the Supabase round-trip, and outside
+    // the try/catch, because it must not depend on that write succeeding.
+    // Observed in production: the funnel_pages UPDATE can come back
+    // PGRST116 ("the result contains 0 rows") — the row isn't writable by the
+    // current session — which throws, hits the catch below and reverts the
+    // whole row. Anything mirrored after the await would never run. The
+    // sidecar and localStorage only need the page id, so they are written
+    // here and survive whatever the row write does.
+    if (page.checkoutMode !== undefined) {
+      const mode = normalizeCheckoutMode(page.checkoutMode);
+      writeLocalCheckoutMode(id, mode);
+      mirrorCheckoutModeToServer(
+        id,
+        mode,
+        get().funnelPages.map((p) => p.id),
+      );
+    }
+
     try {
       // ── HTML PERSISTENCE (cross-session, cross-device) ──────────────
       // Prima del save Supabase: se i blob cloned/swiped/extracted hanno
@@ -1386,25 +1405,19 @@ export const useStore = create<Store>()((set, get) => ({
           };
         }),
       }));
-
-      // Mirror to the schema-free stores so the choice also survives a
-      // reload. Only when the caller actually set it — an unrelated update
-      // (renaming a step, attaching html) must not touch the sidecar.
-      if (page.checkoutMode !== undefined) {
-        const mode = normalizeCheckoutMode(page.checkoutMode);
-        writeLocalCheckoutMode(id, mode);
-        mirrorCheckoutModeToServer(
-          id,
-          mode,
-          get().funnelPages.map((p) => p.id),
-        );
-      }
     } catch (error) {
-      // Revert on failure
+      // Revert on failure — but keep an explicitly chosen checkoutMode. It is
+      // already persisted in the sidecar/localStorage above, so reverting it
+      // here would put the dropdown out of sync with what actually survives a
+      // reload. Every other field goes back to its previous value as before.
       if (prev) {
+        const restored =
+          page.checkoutMode !== undefined
+            ? { ...prev, checkoutMode: normalizeCheckoutMode(page.checkoutMode) }
+            : prev;
         set((state) => ({
           funnelPages: state.funnelPages.map((p) =>
-            p.id === id ? prev : p
+            p.id === id ? restored : p
           ),
         }));
       }

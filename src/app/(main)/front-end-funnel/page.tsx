@@ -6430,11 +6430,20 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                         {isCheckoutPageType(page.pageType) && (
                           <select
                             value={effectiveCheckoutMode(page)}
-                            onChange={(e) =>
-                              updateFunnelPage(page.id, {
+                            onChange={(e) => {
+                              // Swallow the rejection: updateFunnelPage still
+                              // throws when the funnel_pages row write fails
+                              // (missing column, or PGRST116 when the row
+                              // isn't writable by this session). The choice is
+                              // already mirrored to the sidecar/localStorage
+                              // before that write, so the selector is correct
+                              // either way — this just keeps a known,
+                              // handled failure out of the console as an
+                              // unhandled promise rejection.
+                              void updateFunnelPage(page.id, {
                                 checkoutMode: normalizeCheckoutMode(e.target.value),
-                              })
-                            }
+                              }).catch(() => {});
+                            }}
                             title={checkoutModeOption(effectiveCheckoutMode(page)).description}
                             className={`mt-1 w-full text-[11px] rounded border px-1 py-0.5 ${
                               effectiveCheckoutMode(page) === 'wasabi'
