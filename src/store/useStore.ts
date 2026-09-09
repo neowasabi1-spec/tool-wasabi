@@ -1,7 +1,7 @@
 'use client';
 
 import { create } from 'zustand';
-import { SwipeApiResponse } from '@/types';
+import { SwipeApiResponse, slugifyPageTypeLabel } from '@/types';
 import type {
   Product,
   Project,
@@ -15,6 +15,7 @@ import type {
 } from '@/types/database';
 import * as supabaseOps from '@/lib/supabase-operations';
 import { parseSectionData, type SectionData } from '@/lib/project-sections';
+import { authFetch } from '@/lib/auth/client-fetch';
 
 const SWIPE_API_URL = '/api/landing/swipe';
 
@@ -510,8 +511,9 @@ interface Store {
   updateProject: (id: string, project: Partial<AppProject>) => Promise<void>;
   deleteProject: (id: string) => Promise<void>;
 
-  // Custom page types (per Templates)
+  // Custom page types (per Templates + extension)
   customPageTypes: { value: string; label: string }[];
+  loadCustomPageTypes: () => Promise<void>;
   addCustomPageType: (label: string) => void;
   deleteCustomPageType: (value: string) => void;
 
@@ -615,6 +617,8 @@ export const useStore = create<Store>()((set, get) => ({
         isLoading: false,
         isInitialized: true,
       });
+
+      void get().loadCustomPageTypes();
 
       // ── HTML REHYDRATE ────────────────────────────────────────────────
       // `stripHtmlFromJsonb` rimuove l'HTML > 50KB da swiped_data /
@@ -1035,10 +1039,28 @@ export const useStore = create<Store>()((set, get) => ({
     }
   },
 
-  // Custom page types (in-memory, per Templates)
+  // Custom page types — persisted in archive_page_types (shared with the extension)
   customPageTypes: [],
+  loadCustomPageTypes: async () => {
+    try {
+      const res = await authFetch('/api/extension/page-types');
+      if (!res.ok) return;
+      const d = await res.json();
+      const types = Array.isArray(d.types) ? d.types : [];
+      set({
+        customPageTypes: types
+          .map((t: { value?: string; label?: string }) => ({
+            value: String(t.value || ''),
+            label: String(t.label || t.value || ''),
+          }))
+          .filter((t: { value: string }) => t.value),
+      });
+    } catch {
+      /* table / route may not exist yet */
+    }
+  },
   addCustomPageType: (label) => {
-    const value = label.toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '');
+    const value = slugifyPageTypeLabel(label);
     if (!value) return;
     set((s) => {
       if (s.customPageTypes.some((ct) => ct.value === value)) return s;
@@ -1046,11 +1068,19 @@ export const useStore = create<Store>()((set, get) => ({
         customPageTypes: [...s.customPageTypes, { value, label }],
       };
     });
+    void authFetch('/api/extension/page-types', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: label, value }),
+    }).catch(() => {});
   },
   deleteCustomPageType: (value) => {
     set((s) => ({
       customPageTypes: s.customPageTypes.filter((ct) => ct.value !== value),
     }));
+    void authFetch(`/api/extension/page-types?value=${encodeURIComponent(value)}`, {
+      method: 'DELETE',
+    }).catch(() => {});
   },
 
   // Front End Funnel Pages

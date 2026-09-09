@@ -17,6 +17,8 @@ const els = {
   newCategory: $('newCategory'),
   typeField: $('typeField'),
   folder: $('folder'),
+  addTypeBtn: $('addTypeBtn'),
+  newType: $('newType'),
   tagsField: $('tagsField'),
   tags: $('tags'),
   tagSuggestions: $('tagSuggestions'),
@@ -294,6 +296,56 @@ async function savePage(token, body) {
   return data;
 }
 
+function slugifyType(label) {
+  return String(label || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_')
+    .replace(/[^a-z0-9_]/g, '')
+    .replace(/_+/g, '_')
+    .replace(/^_|_$/g, '')
+    .slice(0, 60);
+}
+
+function showNewTypeInput() {
+  if (!els.newType) return;
+  els.newType.classList.remove('hidden');
+  els.newType.focus();
+}
+
+function commitNewType() {
+  if (!els.newType) return;
+  const label = els.newType.value.trim();
+  if (!label) return;
+  const value = slugifyType(label);
+  if (!value) return;
+  let found = false;
+  for (const opt of els.folder.options) {
+    if (opt.value === value) {
+      opt.selected = true;
+      found = true;
+      break;
+    }
+  }
+  if (!found) {
+    const opt = document.createElement('option');
+    opt.value = value;
+    opt.textContent = label;
+    opt.selected = true;
+    els.folder.appendChild(opt);
+  }
+  els.newType.value = '';
+  els.newType.classList.add('hidden');
+}
+
+function resolveSavePageType() {
+  const typed = (els.newType && els.newType.value.trim()) || '';
+  if (typed) {
+    return { pageType: slugifyType(typed) || 'landing', pageTypeLabel: typed };
+  }
+  return { pageType: els.folder.value || 'landing', pageTypeLabel: undefined };
+}
+
 function domainOf(url) {
   try {
     return new URL(url).hostname.replace(/^www\./, '');
@@ -339,8 +391,9 @@ async function onSave() {
 
     setStatus(`<span class="spinner"></span>Saving to ${toProject ? 'project' : 'archive'}…`);
     const tags = els.tags.value.split(',').map((t) => t.trim()).filter(Boolean);
-    // A freshly typed category wins over the dropdown selection.
+    // A freshly typed category / type wins over the dropdown selection.
     const category = (els.newCategory.value.trim() || els.category.value || '').slice(0, 60);
+    const { pageType, pageTypeLabel } = resolveSavePageType();
     const body = {
       url: page.url,
       title: page.title,
@@ -348,7 +401,8 @@ async function onSave() {
       html: page.html,
       screenshotDesktopPath: screenshotPaths.desktop || null,
       screenshotMobilePath: screenshotPaths.mobile || null,
-      pageType: els.folder.value || 'landing',
+      pageType,
+      pageTypeLabel,
       category,
       tags,
       projectId: projectId || null,
@@ -584,5 +638,30 @@ async function resumeFunnelWalkIfRunning() {
 
 els.save.addEventListener('click', onSave);
 els.openTool.addEventListener('click', () => chrome.tabs.create({ url: TOOL }));
+if (els.addTypeBtn) {
+  els.addTypeBtn.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!els.newType) return;
+    if (els.newType.classList.contains('hidden')) {
+      showNewTypeInput();
+      return;
+    }
+    if (els.newType.value.trim()) commitNewType();
+    else els.newType.focus();
+  });
+}
+if (els.newType) {
+  els.newType.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      commitNewType();
+    }
+    if (e.key === 'Escape') {
+      els.newType.value = '';
+      els.newType.classList.add('hidden');
+    }
+  });
+}
 document.addEventListener('DOMContentLoaded', init);
 init();

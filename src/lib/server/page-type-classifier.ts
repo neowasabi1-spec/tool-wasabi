@@ -24,6 +24,7 @@ export interface ClassifyInput {
 }
 
 const cap = (n: number, max: number) => Math.min(Math.max(n, 1), max);
+const UPSELL_MAX = 12;
 
 /** Strip tags and collapse whitespace so text regexes work on prose. */
 function htmlToText(html: string): string {
@@ -55,12 +56,12 @@ export function inferPageType(input: ClassifyInput): string {
   const upsellPath = /\/(upsell|oto\d*|one[-_]?time|special[-_]?offer|post[-_]?purchase|upgrade|addon|bump)(\/|$|[-_?.])/;
   const upsellText = /(your order (is|'s) not complete|order not complete|do not close this (window|page)|one[- ]time offer|add (this )?to (my|your) order|upgrade your order|wait[!¡].{0,80}(order|offer)|exclusive one[- ]time)/;
   if (upsellPath.test(path) || upsellText.test(text) || upsellText.test(title)) {
-    return `upsell_${cap(upsellsSeen + 1, 3)}`;
+    return `upsell_${cap(upsellsSeen + 1, UPSELL_MAX)}`;
   }
   const downsellPath = /\/(downsell|ds\d+)(\/|$|[-_?.])/;
   const downsellText = /(last chance|before you go.{0,60}(offer|discount)|final offer|are you sure.{0,40}(deal|offer))/;
   if (downsellPath.test(path) || downsellText.test(text)) {
-    return `downsell_${cap(downsellsSeen + 1, 3)}`;
+    return `downsell_${cap(downsellsSeen + 1, UPSELL_MAX)}`;
   }
 
   // ── Thank-you / order confirmation ──
@@ -109,5 +110,5 @@ export function inferPageType(input: ClassifyInput): string {
 }
 
 /** Is this type one of the numbered upsell values? */
-export const isUpsellType = (t: string) => /^upsell_\d$/.test(t);
-export const isDownsellType = (t: string) => /^downsell_\d$/.test(t);
+export const isUpsellType = (t: string) => /^upsell_\d+$/.test(t);
+export const isDownsellType = (t: string) => /^downsell_\d+$/.test(t);

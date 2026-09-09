@@ -4,7 +4,7 @@ import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import Header from '@/components/Header';
 import { useStore } from '@/store/useStore';
-import { BUILT_IN_PAGE_TYPE_OPTIONS, PAGE_TYPE_CATEGORIES, PageType, PageTypeOption, TemplateCategory, TEMPLATE_CATEGORY_OPTIONS, TemplateViewFormat, TEMPLATE_VIEW_FORMAT_OPTIONS, LIBRARY_TEMPLATES, normalizeArchiveType } from '@/types';
+import { BUILT_IN_PAGE_TYPE_OPTIONS, PAGE_TYPE_CATEGORIES, PageType, PageTypeOption, TemplateCategory, TEMPLATE_CATEGORY_OPTIONS, TemplateViewFormat, TEMPLATE_VIEW_FORMAT_OPTIONS, LIBRARY_TEMPLATES, normalizeArchiveType, humanizePageTypeSlug } from '@/types';
 import type { ArchivedFunnel } from '@/types/database';
 import { Plus, Trash2, Edit2, Save, X, FileCode, ExternalLink, Tag, Filter, Eye, EyeOff, Maximize2, Layers, HelpCircle, FolderPlus, Settings, Monitor, Smartphone, BookOpen, ChevronDown, ChevronRight, ChevronLeft, FolderOpen, Archive, CheckSquare, Square, Package, Sparkles, Send, Loader2, MessageCircle, Search, Download, Swords, Lock } from 'lucide-react';
 import CachedScreenshot from '@/components/CachedScreenshot';
@@ -320,7 +320,7 @@ function PageThumbnail({ url, alt, height = '180px', savedHtml, savedHtmlUrl }: 
 }
 
 export default function TemplatesPage() {
-  const { templates, addTemplate, updateTemplate, deleteTemplate, customPageTypes, addCustomPageType, deleteCustomPageType, archivedFunnels, archivedFunnelsLoaded, archivedFunnelsError, archivedFunnelsLoading, loadArchivedFunnels, deleteArchivedFunnel, deleteArchivedFunnelStep, setArchivedFunnelValchiriaFlag, reorderArchivedWalkSteps, reclassifyArchivedFunnelSteps, products, addFunnelPage, funnelPages, deleteFunnelPage } = useStore();
+  const { templates, addTemplate, updateTemplate, deleteTemplate, customPageTypes, addCustomPageType, deleteCustomPageType, loadCustomPageTypes, archivedFunnels, archivedFunnelsLoaded, archivedFunnelsError, archivedFunnelsLoading, loadArchivedFunnels, deleteArchivedFunnel, deleteArchivedFunnelStep, setArchivedFunnelValchiriaFlag, reorderArchivedWalkSteps, reclassifyArchivedFunnelSteps, products, addFunnelPage, funnelPages, deleteFunnelPage } = useStore();
   const [valchiriaTogglingId, setValchiriaTogglingId] = useState<string | null>(null);
   const router = useRouter();
   
@@ -564,6 +564,11 @@ export default function TemplatesPage() {
     }
   }, [mainView, archivedFunnelsLoaded, loadArchivedFunnels]);
 
+  const knownCustomTypes = useMemo(
+    () => (customPageTypes || []).map((ct) => ct.value),
+    [customPageTypes],
+  );
+
   const pagesByType = useMemo(() => {
     const map: Record<string, { funnel_name: string; funnel_id: string; name: string; url_to_swipe: string; prompt: string; template_name: string; product_name: string; swipe_status: string; category: string; savedHtml: string | null; savedHtmlUrl: string | null; screenshotUrl: string | null }[]> = {};
     const all = archivedFunnels || [];
@@ -571,7 +576,7 @@ export default function TemplatesPage() {
       if (!isStandaloneTemplatePage(f, all)) return;
       const steps = (f.steps as { step_index: number; name: string; page_type: string; url_to_swipe: string; prompt: string; template_name: string; product_name: string; swipe_status: string; category?: string; cloned_data?: { category?: string; html?: string; htmlUrl?: string | null; screenshotDesktopUrl?: string | null }; swiped_data?: { html?: string; htmlUrl?: string | null } }[]) || [];
       steps.forEach((s) => {
-        const t = normalizeArchiveType(s.page_type);
+        const t = normalizeArchiveType(s.page_type, knownCustomTypes);
         if (!map[t]) map[t] = [];
         map[t].push({
           funnel_name: f.name,
@@ -590,12 +595,13 @@ export default function TemplatesPage() {
       });
     });
     return map;
-  }, [archivedFunnels]);
+  }, [archivedFunnels, knownCustomTypes]);
 
   const getPageTypeLabel = (value: string): string => {
     if (value === 'altro') return 'Altro';
-    const opt = BUILT_IN_PAGE_TYPE_OPTIONS.find(o => o.value === value);
-    return opt?.label || value;
+    const opt = BUILT_IN_PAGE_TYPE_OPTIONS.find(o => o.value === value)
+      || (customPageTypes || []).find(o => o.value === value);
+    return opt?.label || humanizePageTypeSlug(value);
   };
 
   // AI Analysis state (funnels)
@@ -816,6 +822,8 @@ export default function TemplatesPage() {
   const [selectedCategory, setSelectedCategory] = useState('');
   const [addingCategory, setAddingCategory] = useState(false);
   const [newCategory, setNewCategory] = useState('');
+  const [addingType, setAddingType] = useState(false);
+  const [newTypeFolder, setNewTypeFolder] = useState('');
   // Which type "folder" is currently opened (null = show the folder grid).
   const [openType, setOpenType] = useState<string | null>(null);
 
@@ -830,8 +838,11 @@ export default function TemplatesPage() {
   }, []);
 
   useEffect(() => {
-    if (mainView === 'byType') loadCategories();
-  }, [mainView, loadCategories]);
+    if (mainView === 'byType') {
+      loadCategories();
+      void loadCustomPageTypes();
+    }
+  }, [mainView, loadCategories, loadCustomPageTypes]);
 
   const addCategory = useCallback(async () => {
     const name = newCategory.trim();
@@ -851,6 +862,14 @@ export default function TemplatesPage() {
     setNewCategory('');
     setAddingCategory(false);
   }, [newCategory]);
+
+  const addTypeFolder = useCallback(() => {
+    const name = newTypeFolder.trim();
+    if (!name) return;
+    addCustomPageType(name);
+    setNewTypeFolder('');
+    setAddingType(false);
+  }, [newTypeFolder, addCustomPageType]);
 
   const deleteCategory = useCallback(async (name: string) => {
     try {
@@ -1072,6 +1091,16 @@ export default function TemplatesPage() {
     }));
     return [...BUILT_IN_PAGE_TYPE_OPTIONS, ...customOptions];
   }, [customPageTypes]);
+
+  const typeFolderOptions: PageTypeOption[] = useMemo(() => {
+    const seen = new Set(allPageTypeOptions.map((o) => o.value));
+    const extras: PageTypeOption[] = [];
+    for (const t of Object.keys(pagesByType)) {
+      if (t === 'altro' || seen.has(t)) continue;
+      extras.push({ value: t, label: humanizePageTypeSlug(t), category: 'custom' });
+    }
+    return [...allPageTypeOptions, ...extras];
+  }, [allPageTypeOptions, pagesByType]);
 
   // Group page types by category for select dropdown
   const groupedPageTypes = useMemo(() => {
@@ -1723,7 +1752,7 @@ export default function TemplatesPage() {
             {/* Folder grid, or the opened folder's pages */}
             {openType === null ? (
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
-                {BUILT_IN_PAGE_TYPE_OPTIONS.map((opt) => {
+                {typeFolderOptions.map((opt) => {
                   const typeValue = opt.value;
                   const allPages = filteredPagesByType[typeValue] || [];
                   const count = selectedCategory
@@ -1748,9 +1777,40 @@ export default function TemplatesPage() {
                     </button>
                   );
                 })}
+                {addingType ? (
+                  <div className="bg-white rounded-2xl border border-dashed border-indigo-300 shadow-sm p-5 flex flex-col gap-3">
+                    <input
+                      autoFocus
+                      type="text"
+                      value={newTypeFolder}
+                      onChange={(e) => setNewTypeFolder(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') { e.preventDefault(); addTypeFolder(); }
+                        if (e.key === 'Escape') { setAddingType(false); setNewTypeFolder(''); }
+                      }}
+                      placeholder="E.g. Upsell 4"
+                      className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
+                    />
+                    <div className="flex items-center gap-2">
+                      <button onClick={addTypeFolder} className="px-3 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors">Add folder</button>
+                      <button onClick={() => { setAddingType(false); setNewTypeFolder(''); }} className="p-2 text-gray-400 hover:text-gray-600"><X className="w-4 h-4" /></button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => setAddingType(true)}
+                    className="group bg-white rounded-2xl border border-dashed border-gray-300 shadow-sm p-5 flex flex-col items-start gap-3 hover:border-indigo-400 hover:shadow-lg hover:-translate-y-0.5 transition-all text-left"
+                  >
+                    <span className="inline-flex items-center justify-center w-11 h-11 rounded-xl bg-gray-50 text-gray-400 group-hover:bg-indigo-50 group-hover:text-indigo-600 transition-colors">
+                      <Plus className="w-5 h-5" />
+                    </span>
+                    <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-600">New type</span>
+                    <span className="text-[11px] text-gray-400">Add a folder (e.g. Upsell 4)</span>
+                  </button>
+                )}
               </div>
             ) : (() => {
-              const opt = BUILT_IN_PAGE_TYPE_OPTIONS.find((o) => o.value === openType);
+              const opt = typeFolderOptions.find((o) => o.value === openType);
               const allPages = filteredPagesByType[openType] || [];
               const pages = selectedCategory
                 ? allPages.filter((p) => (p.category || '') === selectedCategory)

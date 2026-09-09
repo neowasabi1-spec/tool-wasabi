@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getCurrentUserId } from '@/lib/auth/get-current-user';
 import { PAGE_TYPE_OPTIONS } from '@/types';
+import { listArchivePageTypes } from '@/lib/archive-page-types';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -21,7 +22,11 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const folders = PAGE_TYPE_OPTIONS.map((o) => ({ id: o.value, name: o.label }));
+  const customTypes = await listArchivePageTypes(userId);
+  const folders = [
+    ...PAGE_TYPE_OPTIONS.map((o) => ({ id: o.value, name: o.label })),
+    ...customTypes.map((t) => ({ id: t.value, name: t.label })),
+  ];
 
   // Tag suggestions from the user's projects (best-effort).
   const tagSet = new Set<string>();

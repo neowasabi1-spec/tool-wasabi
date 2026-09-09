@@ -51,12 +51,16 @@
         </div>
       </label>
 
-      <label class="field" id="typeField">
+      <div class="field" id="typeField">
         <span>Type</span>
-        <select id="folder">
-          <option value="landing">Landing Page</option>
-        </select>
-      </label>
+        <div class="row-inline type-row">
+          <select id="folder">
+            <option value="landing">Landing Page</option>
+          </select>
+          <button type="button" id="addTypeBtn" class="plus-btn" title="Add type">+</button>
+        </div>
+        <input id="newType" type="text" class="hidden" placeholder="Name (e.g. Upsell 4)" />
+      </div>
 
       <label class="field" id="tagsField">
         <span>Tags <em class="muted">(comma separated)</em></span>

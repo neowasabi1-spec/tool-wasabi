@@ -348,10 +348,44 @@ const PAGE_TYPE_SYNONYMS: Record<string, string> = {
   downsell_3: 'downsell_3', 'downsell 3': 'downsell_3', downsell3: 'downsell_3',
 };
 
-export function normalizeArchiveType(raw: string | null | undefined): string {
+/** Turn a user-typed type name ("Upsell 4") into a stable slug (`upsell_4`). */
+export function slugifyPageTypeLabel(label: string): string {
+  return String(label || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_')
+    .replace(/[^a-z0-9_]/g, '')
+    .replace(/_+/g, '_')
+    .replace(/^_|_$/g, '')
+    .slice(0, 60);
+}
+
+/** Display label for a slug; built-ins keep their canonical names. */
+export function humanizePageTypeSlug(value: string): string {
+  const key = String(value || '').trim();
+  if (!key) return '';
+  const builtIn = BUILT_IN_PAGE_TYPE_OPTIONS.find((o) => o.value === key);
+  if (builtIn) return builtIn.label;
+  return key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+export function normalizeArchiveType(
+  raw: string | null | undefined,
+  extraKnown?: Iterable<string>,
+): string {
   const key = String(raw || '').trim().toLowerCase();
   if (!key) return 'altro';
-  return PAGE_TYPE_SYNONYMS[key] || 'altro';
+  if (PAGE_TYPE_SYNONYMS[key]) return PAGE_TYPE_SYNONYMS[key];
+  const slug = slugifyPageTypeLabel(key);
+  if (PAGE_TYPE_SYNONYMS[slug]) return PAGE_TYPE_SYNONYMS[slug];
+  // Numbered post-purchase steps beyond the built-in 1–3 (Upsell 4, …).
+  if (/^(upsell|downsell)_\d+$/.test(slug)) return slug;
+  if (extraKnown) {
+    for (const v of extraKnown) {
+      if (v === slug || String(v).toLowerCase() === key) return slug;
+    }
+  }
+  return 'altro';
 }
 
 export const POST_PURCHASE_TYPE_OPTIONS: { value: PostPurchasePage['type']; label: string }[] = [

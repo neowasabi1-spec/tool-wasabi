@@ -4,8 +4,8 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getCurrentUserId } from '@/lib/auth/get-current-user';
 import { canAccessProject } from '@/lib/auth/project-access';
 import { absolutizeUrlsInHtml } from '@/lib/spa-rescue';
-import { PAGE_TYPE_OPTIONS } from '@/types';
 import { inferPageType, isUpsellType, isDownsellType } from '@/lib/server/page-type-classifier';
+import { resolvePageType, upsertArchivePageType } from '@/lib/archive-page-types';
 import { canonPageUrl, dedupeStepsByUrl, stepSourceUrl } from '@/lib/archive-placement';
 import { extractLandingMediaFromHtml } from '@/lib/landing-media';
 
@@ -58,6 +58,7 @@ interface SaveBody {
   screenshotDesktopPath?: string;
   screenshotMobilePath?: string;
   pageType?: string;
+  pageTypeLabel?: string;
   folderId?: string | null; // legacy — treated as pageType if pageType absent
   category?: string;
   tags?: string[];
@@ -71,8 +72,6 @@ interface SaveBody {
   funnelName?: string; // folder name (usually the funnel domain)
   stepIndex?: number;
 }
-
-const VALID_TYPES = new Set(PAGE_TYPE_OPTIONS.map((o) => o.value as string));
 
 function decodeDataUrl(input: string): { buffer: Buffer; contentType: string } | null {
   const m = input.match(/^data:(image\/[a-z0-9.+-]+);base64,(.*)$/i);
@@ -151,8 +150,9 @@ export async function POST(req: NextRequest) {
     ? body.tags.map((t) => String(t).trim()).filter(Boolean).slice(0, 30)
     : [];
 
-  const requestedType = String(body.pageType || body.folderId || 'landing');
-  const pageType = VALID_TYPES.has(requestedType) ? requestedType : 'landing';
+  const requestedType = String(body.pageType || body.folderId || '').trim();
+  const resolvedType = resolvePageType(requestedType || 'landing', body.pageTypeLabel);
+  const pageType = resolvedType.value;
   const category = String(body.category || '').trim().slice(0, 60);
 
   // During a funnel walk the popup does not ask a type per step, so the
@@ -160,7 +160,15 @@ export async function POST(req: NextRequest) {
   // thank-you pages all landed in the "Landing Page" folder. When the type
   // is missing/default we infer the real one from URL + title + HTML.
   // An explicit non-landing choice from the user is always respected.
-  const typeWasExplicit = VALID_TYPES.has(requestedType) && requestedType !== 'landing';
+  const typeWasExplicit = Boolean(requestedType) && requestedType !== 'landing';
+
+  if (resolvedType.isCustom) {
+    try {
+      await upsertArchivePageType(userId, resolvedType.value, resolvedType.label);
+    } catch {
+      /* table may not exist yet */
+    }
+  }
 
   // Optionally link the saved page to a project (Competitor Landings). Only
   // honored when the user actually has access to that project.
