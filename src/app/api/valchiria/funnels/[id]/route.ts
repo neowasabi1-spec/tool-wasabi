@@ -30,6 +30,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getUserAccessContext } from '@/lib/auth/get-current-user';
+import { slugifyPageTypeLabel } from '@/types';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -39,6 +40,10 @@ interface PatchBody {
   show_in_valchiria?: boolean;
   share_with_users?: boolean;
   in_my_valchiria?: boolean;
+  page_type?: string;
+  step_index?: number;
+  url?: string;
+  name?: string;
 }
 
 /**
@@ -130,6 +135,48 @@ export async function PATCH(
     }
 
     const body = (await req.json().catch(() => ({}))) as PatchBody;
+    const ctx = await getUserAccessContext(req);
+    if (!ctx.userId) {
+      return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+    }
+
+    const requestedType = typeof body.page_type === 'string' ? slugifyPageTypeLabel(body.page_type) : '';
+    if (requestedType) {
+      const { data: row, error: lookupErr } = await supabaseAdmin
+        .from('archived_funnels')
+        .select('owner_user_id, project_id, steps')
+        .eq('id', id)
+        .maybeSingle();
+      if (lookupErr) throw lookupErr;
+      if (!row) return NextResponse.json({ error: 'not_found' }, { status: 404 });
+      const isCommonLibrary = row.project_id == null;
+      if (!isCommonLibrary && row.owner_user_id !== ctx.userId && !ctx.isMaster) {
+        return NextResponse.json({ error: 'forbidden' }, { status: 403 });
+      }
+      const steps = Array.isArray(row.steps) ? (row.steps as Array<Record<string, unknown>>) : [];
+      if (steps.length === 0) {
+        return NextResponse.json({ error: 'no_steps' }, { status: 400 });
+      }
+      let idx = typeof body.step_index === 'number' && Number.isInteger(body.step_index) ? body.step_index : -1;
+      if (idx < 0 || idx >= steps.length) {
+        const url = String(body.url || '').trim();
+        const name = String(body.name || '').trim();
+        idx = steps.findIndex((s) => {
+          const stepUrl = String(s.url_to_swipe || (s.cloned_data as { source_url?: string } | undefined)?.source_url || '');
+          const stepName = String(s.name || '');
+          return (url && stepUrl && stepUrl === url) || (name && stepName === name);
+        });
+        if (idx < 0) idx = 0;
+      }
+      const next = steps.map((s, i) => (i === idx ? { ...s, page_type: requestedType } : s));
+      const { error: updErr } = await supabaseAdmin
+        .from('archived_funnels')
+        .update({ steps: next })
+        .eq('id', id);
+      if (updErr) throw updErr;
+      return NextResponse.json({ success: true, id, page_type: requestedType, step_index: idx });
+    }
+
     const hasShow = typeof body.show_in_valchiria === 'boolean';
     const hasShare = typeof body.share_with_users === 'boolean';
     const hasMine = typeof body.in_my_valchiria === 'boolean';
@@ -142,14 +189,6 @@ export async function PATCH(
         },
         { status: 400 },
       );
-    }
-
-    const ctx = await getUserAccessContext(req);
-
-    // Auth: refuse anonymous/no-JWT writes outright so the worker can
-    // never accidentally promote rows.
-    if (!ctx.userId) {
-      return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
     }
 
     // Only the master can flip the shared-library switch.

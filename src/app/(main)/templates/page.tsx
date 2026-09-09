@@ -336,18 +336,22 @@ function TypeFolderPageCard({
   page,
   pageType,
   selected,
+  typeOptions,
   onToggle,
   onPreview,
   onSwipe,
   onDelete,
+  onMove,
 }: {
   page: TypeFolderPage;
   pageType: string;
   selected: boolean;
+  typeOptions: { value: string; label: string }[];
   onToggle: () => void;
   onPreview: () => void;
   onSwipe: () => void;
   onDelete: () => void;
+  onMove: (pageType: string) => void;
 }) {
   return (
     <div
@@ -407,13 +411,28 @@ function TypeFolderPageCard({
         <p className="font-semibold text-sm text-gray-900 truncate">{page.name}</p>
         {page.category && <p className="text-[10px] text-indigo-500 truncate">{page.category}</p>}
         <p className="text-[10px] text-gray-400 truncate">from: {page.funnel_name}</p>
+        <select
+          value={pageType}
+          onClick={(e) => e.stopPropagation()}
+          onChange={(e) => {
+            e.stopPropagation();
+            const v = e.target.value;
+            if (v && v !== pageType) onMove(v);
+          }}
+          className="mt-2 w-full px-2 py-1.5 border border-gray-200 rounded-lg text-xs bg-white text-gray-700 focus:ring-2 focus:ring-indigo-500 outline-none"
+          title="Move to another folder"
+        >
+          {typeOptions.map((opt) => (
+            <option key={opt.value} value={opt.value}>{opt.label}</option>
+          ))}
+        </select>
       </div>
     </div>
   );
 }
 
 export default function TemplatesPage() {
-  const { templates, addTemplate, updateTemplate, deleteTemplate, customPageTypes, addCustomPageType, deleteCustomPageType, loadCustomPageTypes, archivedFunnels, archivedFunnelsLoaded, archivedFunnelsError, archivedFunnelsLoading, loadArchivedFunnels, deleteArchivedFunnel, deleteArchivedFunnelStep, setArchivedFunnelValchiriaFlag, reorderArchivedWalkSteps, reclassifyArchivedFunnelSteps, assembleArchiveFromPages, products, addFunnelPage, funnelPages, deleteFunnelPage } = useStore();
+  const { templates, addTemplate, updateTemplate, deleteTemplate, customPageTypes, addCustomPageType, deleteCustomPageType, loadCustomPageTypes, archivedFunnels, archivedFunnelsLoaded, archivedFunnelsError, archivedFunnelsLoading, loadArchivedFunnels, deleteArchivedFunnel, deleteArchivedFunnelStep, setArchivedFunnelValchiriaFlag, reorderArchivedWalkSteps, assembleArchiveFromPages, moveArchivedPageType, products, addFunnelPage, funnelPages, deleteFunnelPage } = useStore();
   const [valchiriaTogglingId, setValchiriaTogglingId] = useState<string | null>(null);
   const router = useRouter();
   
@@ -477,54 +496,34 @@ export default function TemplatesPage() {
     }
   };
 
-  // "Fix types" (Pages view): re-infer the page type of EVERY saved step
-  // across all own funnels/folders. One API call per funnel so the
-  // upsell_1/2/3 numbering stays scoped to its own funnel.
-  const [fixingTypes, setFixingTypes] = useState(false);
-  const fixAllPageTypes = async () => {
-    if (fixingTypes) return;
-    setFixingTypes(true);
-    try {
-      // Rebuild the walk-folder grouping from the FULL list (not the
-      // search-filtered one): single-step own rows named "<domain> — Step N"
-      // form one ordered group per domain; everything else goes alone.
-      const WALK_STEP_RE = /^(.*\S)\s+—\s+Step\s+(\d+)$/i;
-      const stepNumOf = (name: string) => {
-        const mm = name.match(/Step\s+(\d+)/i);
-        return mm ? parseInt(mm[1], 10) : 0;
-      };
-      const walkGroups = new Map<string, ArchivedFunnel[]>();
-      const loneRows: ArchivedFunnel[] = [];
-      for (const f of archivedFunnels || []) {
-        if (f.isShared) continue;
-        const m = f.name.match(WALK_STEP_RE);
-        const steps = (f.steps as unknown[]) || [];
-        if (m && steps.length <= 1) {
-          const key = m[1].trim();
-          walkGroups.set(key, [...(walkGroups.get(key) || []), f]);
-        } else {
-          loneRows.push(f);
-        }
-      }
-      const groups: string[][] = [];
-      walkGroups.forEach((rows) => {
-        groups.push([...rows].sort((a, b) => stepNumOf(a.name) - stepNumOf(b.name)).map((r) => r.id));
-      });
-      for (const f of loneRows) groups.push([f.id]);
+  const [movingPages, setMovingPages] = useState(false);
+  const [bulkMoveTo, setBulkMoveTo] = useState('');
 
-      let changed = 0;
-      let failed = 0;
-      for (const ids of groups) {
-        try {
-          changed += await reclassifyArchivedFunnelSteps(ids);
-        } catch {
-          failed++;
-        }
+  const handleMovePage = async (funnelId: string, name: string, url: string, pageType: string) => {
+    if (!funnelId || !pageType) return;
+    try {
+      await moveArchivedPageType(funnelId, pageType, { name, url });
+      toast.success('Moved');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Move failed');
+    }
+  };
+
+  const handleMoveSelected = async (pageType: string) => {
+    if (!pageType || selectedPages.length === 0) return;
+    setMovingPages(true);
+    try {
+      for (const p of selectedPages) {
+        if (!p.funnel_id) continue;
+        await moveArchivedPageType(p.funnel_id, pageType, { name: p.name, url: p.url_to_swipe });
       }
-      if (failed > 0) toast.error(`${failed} funnels could not be reclassified`);
-      toast.success(changed > 0 ? `${changed} page types fixed` : 'Page types already correct');
+      setSelectedPages([]);
+      setBulkMoveTo('');
+      toast.success(`Moved ${selectedPages.length} page${selectedPages.length === 1 ? '' : 's'}`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Move failed');
     } finally {
-      setFixingTypes(false);
+      setMovingPages(false);
     }
   };
 
@@ -1474,16 +1473,6 @@ export default function TemplatesPage() {
             </div>
           )}
 
-          {mainView === 'byType' && (
-            <button
-              onClick={fixAllPageTypes}
-              disabled={fixingTypes}
-              title="Auto-detect the correct type of every saved page (advertorial, checkout, upsell…) and move it to the right folder"
-              className="inline-flex items-center gap-2 px-4 py-2.5 bg-indigo-600 text-white rounded-xl text-sm font-semibold hover:bg-indigo-700 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
-            >
-              {fixingTypes ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-              {fixingTypes ? 'Fixing types…' : 'Fix types'}
-            </button>
           )}
         </div>
 
@@ -2001,6 +1990,7 @@ export default function TemplatesPage() {
                                   page={p}
                                   pageType={opt.value}
                                   selected={isPageSelected(sp)}
+                                  typeOptions={typeFolderOptions}
                                   onToggle={() => togglePage(sp)}
                                   onPreview={() => setPagePreview({ isOpen: true, url: p.url_to_swipe, name: p.name, pageType: opt.value, savedHtml: p.savedHtml, savedHtmlUrl: p.savedHtmlUrl })}
                                   onSwipe={() => router.push(`/front-end-funnel?swipe_url=${encodeURIComponent(p.url_to_swipe)}&swipe_name=${encodeURIComponent(p.name)}&swipe_type=${encodeURIComponent(opt.value)}`)}
@@ -2019,6 +2009,7 @@ export default function TemplatesPage() {
                                       toast.error('Delete failed');
                                     }
                                   }}
+                                  onMove={(t) => handleMovePage(p.funnel_id, p.name, p.url_to_swipe, t)}
                                 />
                               );
                             })}
@@ -2132,6 +2123,7 @@ export default function TemplatesPage() {
                             page={p}
                             pageType={openType}
                             selected={isPageSelected(sp)}
+                            typeOptions={typeFolderOptions}
                             onToggle={() => togglePage(sp)}
                             onPreview={() => setPagePreview({ isOpen: true, url: p.url_to_swipe, name: p.name, pageType: openType, savedHtml: p.savedHtml, savedHtmlUrl: p.savedHtmlUrl })}
                             onSwipe={() => router.push(`/front-end-funnel?swipe_url=${encodeURIComponent(p.url_to_swipe)}&swipe_name=${encodeURIComponent(p.name)}&swipe_type=${encodeURIComponent(openType)}`)}
@@ -2150,6 +2142,7 @@ export default function TemplatesPage() {
                                 toast.error('Delete failed');
                               }
                             }}
+                            onMove={(t) => handleMovePage(p.funnel_id, p.name, p.url_to_swipe, t)}
                           />
                         );
                       })}
@@ -3181,6 +3174,22 @@ export default function TemplatesPage() {
                       <FileCode className="w-4 h-4" />
                       Save as Template
                     </button>
+                    <div className="h-6 w-px bg-gray-700" />
+                    <select
+                      value={bulkMoveTo}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setBulkMoveTo(v);
+                        if (v) handleMoveSelected(v);
+                      }}
+                      disabled={movingPages}
+                      className="bg-gray-800 text-white border border-gray-700 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none min-w-[160px]"
+                    >
+                      <option value="">Move to folder…</option>
+                      {typeFolderOptions.map((opt) => (
+                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                      ))}
+                    </select>
                     <div className="h-6 w-px bg-gray-700" />
                   </>
                 )}

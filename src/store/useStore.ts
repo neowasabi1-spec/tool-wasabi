@@ -581,6 +581,12 @@ interface Store {
    *  names server-side. Optimistic: the in-memory rows are renamed first
    *  so the folder re-sorts instantly. */
   reorderArchivedWalkSteps: (orderedIds: string[]) => Promise<void>;
+  /** Move a saved archive page to another By Type folder (user-chosen). */
+  moveArchivedPageType: (
+    id: string,
+    pageType: string,
+    match?: { name?: string; url?: string },
+  ) => Promise<void>;
   /** Re-infer the page_type of the given archived rows' steps (in funnel
    *  order) server-side, then mirror the result in memory. Fixes walks
    *  where every step was saved as 'landing'. */
@@ -1834,6 +1840,49 @@ export const useStore = create<Store>()((set, get) => ({
       }
     } catch (error) {
       console.error('Error reordering walk steps:', error);
+      set({ archivedFunnels: previous });
+      throw error;
+    }
+  },
+
+  moveArchivedPageType: async (id, pageType, match) => {
+    const nextType = String(pageType || '').trim();
+    if (!id || !nextType) return;
+    const previous = get().archivedFunnels;
+    set((state) => ({
+      archivedFunnels: state.archivedFunnels.map((f) => {
+        if (f.id !== id || !Array.isArray(f.steps)) return f;
+        const steps = f.steps as Array<Record<string, unknown>>;
+        let idx = 0;
+        if (match?.url || match?.name) {
+          const found = steps.findIndex((s) => {
+            const url = String(s.url_to_swipe || (s.cloned_data as { source_url?: string } | undefined)?.source_url || '');
+            const n = String(s.name || '');
+            return (match.url && url === match.url) || (match.name && n === match.name);
+          });
+          if (found >= 0) idx = found;
+        }
+        return {
+          ...f,
+          steps: steps.map((s, i) => (i === idx ? { ...s, page_type: nextType } : s)) as typeof f.steps,
+        };
+      }),
+    }));
+    try {
+      const res = await fetch(`/api/valchiria/funnels/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          page_type: nextType,
+          url: match?.url || undefined,
+          name: match?.name || undefined,
+        }),
+      });
+      if (!res.ok) {
+        const txt = await res.text().catch(() => '');
+        throw new Error(`HTTP ${res.status} ${txt}`);
+      }
+    } catch (error) {
       set({ archivedFunnels: previous });
       throw error;
     }
