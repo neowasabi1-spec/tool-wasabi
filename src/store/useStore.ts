@@ -26,6 +26,67 @@ function normalizeCheckoutModeOrUndefined(raw: unknown): CheckoutMode | undefine
   return raw === null || raw === undefined || raw === '' ? undefined : normalizeCheckoutMode(raw);
 }
 
+// ── checkout_mode persistence fallback ────────────────────────────────────
+// When supabase-migration-funnel-pages-checkout-mode.sql hasn't been applied,
+// the write to `funnel_pages.checkout_mode` is rejected, supabase-operations
+// retries without the column, and the value comes back undefined — the
+// selector snaps back to "Standard". Where the operator can't run the
+// migration, we mirror the choice to two places that need no schema change:
+//
+//   /api/checkout-mode  server sidecar in the existing `settings` table —
+//                       survives reload AND is shared across browsers/users
+//   localStorage        instant, offline, per-browser last resort
+//
+// The real column always takes precedence, so this all becomes inert the
+// moment the migration lands. See src/lib/checkout-mode-fallback.ts.
+const CHECKOUT_MODE_LS_KEY = 'funnel-page-checkout-modes';
+
+function readLocalCheckoutModes(): Record<string, CheckoutMode> {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = window.localStorage.getItem(CHECKOUT_MODE_LS_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const out: Record<string, CheckoutMode> = {};
+    for (const [id, v] of Object.entries(parsed)) {
+      if (normalizeCheckoutMode(v) === 'wasabi') out[id] = 'wasabi';
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function writeLocalCheckoutMode(pageId: string, mode: CheckoutMode): void {
+  if (typeof window === 'undefined' || !pageId) return;
+  try {
+    const all = readLocalCheckoutModes();
+    if (mode === 'wasabi') all[pageId] = 'wasabi';
+    else delete all[pageId];
+    window.localStorage.setItem(CHECKOUT_MODE_LS_KEY, JSON.stringify(all));
+  } catch {
+    /* quota / private mode — the server sidecar still has it */
+  }
+}
+
+/** Mirror to the server sidecar. Fire-and-forget: never blocks or throws. */
+function mirrorCheckoutModeToServer(
+  pageId: string,
+  mode: CheckoutMode,
+  knownPageIds: string[],
+): void {
+  if (!pageId) return;
+  try {
+    void authFetch('/api/checkout-mode', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pageId, checkoutMode: mode, knownPageIds }),
+    }).catch(() => {});
+  } catch {
+    /* ignore */
+  }
+}
+
 // Helper to convert database types to app types
 interface AppProduct {
   id: string;
@@ -529,6 +590,8 @@ interface Store {
   // Custom page types (per Templates + extension)
   customPageTypes: { value: string; label: string }[];
   loadCustomPageTypes: () => Promise<void>;
+  /** Merge the checkout_mode sidecar over rows the DB column couldn't fill. */
+  hydrateCheckoutModes: () => Promise<void>;
   addCustomPageType: (label: string) => void;
   deleteCustomPageType: (value: string) => void;
 
@@ -634,6 +697,19 @@ export const useStore = create<Store>()((set, get) => ({
       );
 
       const appFunnelPages = funnelPages.map(dbFunnelPageToApp);
+
+      // Fill in checkoutMode for rows where the column gave us nothing —
+      // either it doesn't exist yet or the row predates it. localStorage is
+      // synchronous so it lands before first paint; the server sidecar is
+      // merged a moment later by hydrateCheckoutModes(). A row that DID come
+      // back with a value from the column is never overwritten.
+      const localModes = readLocalCheckoutModes();
+      for (const p of appFunnelPages) {
+        if (p.checkoutMode === undefined && localModes[p.id]) {
+          p.checkoutMode = localModes[p.id];
+        }
+      }
+
       set({
         products: products.map(dbProductToApp),
         projects: projects.map(dbProjectToApp),
@@ -645,6 +721,7 @@ export const useStore = create<Store>()((set, get) => ({
       });
 
       void get().loadCustomPageTypes();
+      void get().hydrateCheckoutModes();
 
       // ── HTML REHYDRATE ────────────────────────────────────────────────
       // `stripHtmlFromJsonb` rimuove l'HTML > 50KB da swiped_data /
@@ -1085,6 +1162,33 @@ export const useStore = create<Store>()((set, get) => ({
       /* table / route may not exist yet */
     }
   },
+  hydrateCheckoutModes: async () => {
+    // Merge the server sidecar over rows the column couldn't populate.
+    // No-op once the migration is applied: the route reports columnExists and
+    // we leave every row alone.
+    try {
+      const res = await authFetch('/api/checkout-mode');
+      if (!res.ok) return;
+      const data = (await res.json()) as {
+        columnExists?: boolean;
+        modes?: Record<string, string>;
+      };
+      if (data.columnExists) return;
+
+      const modes = data.modes || {};
+      if (Object.keys(modes).length === 0) return;
+
+      set((state) => ({
+        funnelPages: state.funnelPages.map((p) =>
+          p.checkoutMode === undefined && modes[p.id]
+            ? { ...p, checkoutMode: normalizeCheckoutMode(modes[p.id]) }
+            : p,
+        ),
+      }));
+    } catch {
+      /* sidecar unavailable — localStorage already applied what it had */
+    }
+  },
   addCustomPageType: (label) => {
     const value = slugifyPageTypeLabel(label);
     if (!value) return;
@@ -1140,8 +1244,21 @@ export const useStore = create<Store>()((set, get) => ({
         extracted_data: page.extractedData as unknown as Record<string, unknown>,
       } as Parameters<typeof supabaseOps.createFunnelPage>[0]);
       
+      // Same merge rule as updateFunnelPage: if the column isn't there the
+      // created row comes back without it, so keep what the caller asked for.
+      const createdApp = dbFunnelPageToApp(created);
+      if (createdApp.checkoutMode === undefined && page.checkoutMode !== undefined) {
+        createdApp.checkoutMode = normalizeCheckoutMode(page.checkoutMode);
+      }
+      if (createdApp.checkoutMode !== undefined) {
+        writeLocalCheckoutMode(createdApp.id, createdApp.checkoutMode);
+        mirrorCheckoutModeToServer(createdApp.id, createdApp.checkoutMode, [
+          ...get().funnelPages.map((p) => p.id),
+          createdApp.id,
+        ]);
+      }
       set((state) => ({
-        funnelPages: [...state.funnelPages, dbFunnelPageToApp(created)],
+        funnelPages: [...state.funnelPages, createdApp],
       }));
     } catch (error) {
       console.error('Error adding funnel page:', error);
@@ -1258,9 +1375,30 @@ export const useStore = create<Store>()((set, get) => ({
             clonedData: mergeJsonbWithLocalHtml(fromDb.clonedData, p.clonedData),
             swipedData: mergeJsonbWithLocalHtml(fromDb.swipedData, p.swipedData),
             extractedData: mergeJsonbWithLocalHtml(fromDb.extractedData, p.extractedData),
+            // Same "merge, don't replace" rule as the html blobs above. When
+            // funnel_pages.checkout_mode doesn't exist, supabase-operations
+            // retried the write without it, so `updated` comes back with no
+            // checkout_mode and fromDb.checkoutMode is undefined — which used
+            // to clobber the value the user had just picked and snap the
+            // selector back to "Standard". Keep what we have unless the DB
+            // actually told us something.
+            checkoutMode: fromDb.checkoutMode ?? p.checkoutMode,
           };
         }),
       }));
+
+      // Mirror to the schema-free stores so the choice also survives a
+      // reload. Only when the caller actually set it — an unrelated update
+      // (renaming a step, attaching html) must not touch the sidecar.
+      if (page.checkoutMode !== undefined) {
+        const mode = normalizeCheckoutMode(page.checkoutMode);
+        writeLocalCheckoutMode(id, mode);
+        mirrorCheckoutModeToServer(
+          id,
+          mode,
+          get().funnelPages.map((p) => p.id),
+        );
+      }
     } catch (error) {
       // Revert on failure
       if (prev) {
