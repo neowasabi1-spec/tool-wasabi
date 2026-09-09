@@ -30,6 +30,7 @@ import { placeMediaWithAi } from '../../src/lib/restyle-place';
 import { wellFormed } from '../../src/lib/well-formed';
 import { fetchPageText } from '../../src/lib/page-text';
 import { batchKeepingGroups, buildSwipePlan, orderAndLinkFragments, planRules } from '../../src/lib/swipe-plan';
+import { bakePairsDom } from '../../src/lib/swipe-bake';
 import { openaiGenerateImage, openaiImageKey } from '../../src/lib/openai-image';
 
 /**
@@ -69,8 +70,8 @@ const IMAGE_BATCH = 4;
 // The DOM extractor emits a sentence AND its inline pieces; a long lander is
 // 400–700 units. 350 silently dropped the bottom half of the page.
 const MAX_TEXTS = 900;
-const BATCH_SIZE = 30;
-const BATCH_CONCURRENCY = 4;
+const BATCH_SIZE = 12;
+const BATCH_CONCURRENCY = 3;
 const MAX_IMAGES_PER_PAGE = 5;
 const MAX_IMAGES_TOTAL = 18;
 const MAX_IMAGES_PER_PAGE_RESTYLE = 40;
@@ -432,6 +433,51 @@ function collectSwipeTexts(html: string): SwipeText[] {
   return out;
 }
 
+function coerceRewriteId(v: unknown): number | null {
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  if (typeof v === 'string' && /^\d+$/.test(v.trim())) return Number(v.trim());
+  return null;
+}
+
+/** Recover rewrites even when Claude truncates the JSON array (max_tokens). */
+function parseRewriteArray(raw: string): Array<{ id: number; rewritten: string }> {
+  const out: Array<{ id: number; rewritten: string }> = [];
+  const push = (id: unknown, rewritten: unknown) => {
+    const n = coerceRewriteId(id);
+    if (n == null || rewritten == null) return;
+    const t = String(rewritten).trim();
+    if (t) out.push({ id: n, rewritten: t });
+  };
+  try {
+    const parsed = JSON.parse(cleanJsonArray(raw)) as unknown;
+    if (Array.isArray(parsed)) {
+      for (const row of parsed) {
+        if (row && typeof row === 'object') {
+          const r = row as { id?: unknown; rewritten?: unknown };
+          push(r.id, r.rewritten);
+        }
+      }
+      if (out.length) return out;
+    }
+  } catch { /* truncated or wrapped */ }
+  const rx = /\{\s*"id"\s*:\s*("?\d+"?)\s*,\s*"rewritten"\s*:\s*"((?:\\.|[^"\\])*)"/g;
+  let m: RegExpExecArray | null;
+  while ((m = rx.exec(raw))) {
+    try {
+      const idRaw = m[1].startsWith('"') ? JSON.parse(m[1]) : m[1];
+      push(idRaw, JSON.parse(`"${m[2]}"`));
+    } catch { /* skip broken object */ }
+  }
+  return out;
+}
+
+function chunkBatch<T>(batch: T[], max = 12): T[][] {
+  if (batch.length <= max) return [batch];
+  const chunks: T[][] = [];
+  for (let i = 0; i < batch.length; i += max) chunks.push(batch.slice(i, i + max));
+  return chunks;
+}
+
 function cleanJsonArray(text: string): string {
   let c = text.trim().replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/i, '');
   const s = c.indexOf('[');
@@ -446,30 +492,46 @@ async function rewriteAllTexts(
   deadline: number,
   onProgress?: (rewrites: Map<number, string>) => Promise<void>,
 ): Promise<Map<number, string>> {
-  // Page order, inline fragments linked to their paragraph (same batch, one unit).
   const items = orderAndLinkFragments(texts.map((t, i) => ({ id: i, text: t.original, position: t.position })));
   const result = new Map<number, string>();
   const byId = new Map(items.map((t) => [t.id, t.text]));
 
-  const runBatch = async (batch: Array<{ id: number; text: string; partOf?: number }>, label: string) => {
+  const runBatch = async (
+    batch: Array<{ id: number; text: string; partOf?: number }>,
+    label: string,
+    attempt = 0,
+  ) => {
+    if (!batch.length || Date.now() > deadline) return;
     const payload = batch.map((b) => (b.partOf != null ? { id: b.id, text: b.text, partOf: b.partOf } : { id: b.id, text: b.text }));
     const user = `${label}: return exactly one JSON object per input id (${batch.length} items). Never skip an id.
 
-Rewrite these texts so they sell ONLY the described product, following the SWIPE PLAN. The items are consecutive pieces of the page in reading order: keep them coherent with each other. Keep the same conversational energy (headlines stay headlines, CTAs stay CTAs). Plain text only in "rewritten" — no HTML or markdown.
+Rewrite EVERY line so it sells ONLY our product. Do not echo the original — if it mentions the old product, condition, body part, device, or brand, it MUST change. Keep headlines as headlines and CTAs as CTAs. Plain text only in "rewritten" — no HTML or markdown.
+The only lines you may leave almost unchanged are payment-logo names, "©" copyright, and cookie/privacy legal that does not name the old product.
 
 Input:
 ${JSON.stringify(payload, null, 2)}
 
 Output shape: [{"id": number, "rewritten": "..."}, ...] — include EVERY id (any order ok).`;
-    const raw = await callClaudeText(systemPrompt, user, 8000, 120_000);
-    const parsed = JSON.parse(cleanJsonArray(raw)) as Array<{ id: number; rewritten: string }>;
-    if (!Array.isArray(parsed)) throw new Error('batch: expected JSON array');
+    const raw = await callClaudeText(systemPrompt, user, 16_000, 150_000);
+    const parsed = parseRewriteArray(raw);
     for (const rw of parsed) {
-      if (typeof rw.id !== 'number' || rw.rewritten == null) continue;
-      const trimmed = String(rw.rewritten).trim();
+      const trimmed = rw.rewritten.trim();
       if (!trimmed || trimmed === byId.get(rw.id)) continue;
       result.set(rw.id, trimmed);
     }
+    const missed = batch.filter((b) => !result.has(b.id));
+    if (!missed.length) return;
+    if (attempt >= 2) {
+      console.warn(`[swipe] ${label}: still missing ${missed.length}/${batch.length} after retries`);
+      return;
+    }
+    if (missed.length > 6 && attempt === 0) {
+      for (const chunk of chunkBatch(missed, 6)) {
+        await runBatch(chunk, `${label} split`, attempt + 1);
+      }
+      return;
+    }
+    await runBatch(missed, `${label} retry`, attempt + 1);
   };
 
   const runPool = async (pool: Array<Array<{ id: number; text: string; partOf?: number }>>, labelOf: (i: number) => string) => {
@@ -482,20 +544,26 @@ Output shape: [{"id": number, "rewritten": "..."}, ...] — include EVERY id (an
         try {
           await runBatch(pool[idx], labelOf(idx));
           if (onProgress && result.size) await onProgress(result);
+        } catch (e) {
+          console.warn('[swipe] batch failed:', (e as Error).message);
+          const leftover = pool[idx].filter((b) => !result.has(b.id));
+          if (leftover.length && Date.now() < deadline) {
+            try { await runBatch(leftover, `${labelOf(idx)} after-fail`, 1); } catch { /* next gap-fill */ }
+          }
         }
-        catch (e) { console.warn('[swipe] batch failed:', (e as Error).message); }
       }
     };
     await Promise.all(Array.from({ length: Math.min(BATCH_CONCURRENCY, pool.length) }, worker));
   };
 
-  const batches = batchKeepingGroups(items, BATCH_SIZE);
+  const batches = batchKeepingGroups(items, BATCH_SIZE).flatMap((b) => chunkBatch(b, 16));
   await runPool(batches, (i) => `Batch ${i + 1} of ${batches.length}`);
 
-  // One gap-fill sweep for ids missed by failed batches.
-  const missing = items.filter((t) => !result.has(t.id));
-  if (missing.length && Date.now() < deadline) {
-    await runPool(batchKeepingGroups(missing, BATCH_SIZE), () => 'GAP-FILL — every id mandatory');
+  for (let round = 0; round < 3; round++) {
+    const missing = items.filter((t) => !result.has(t.id));
+    if (!missing.length || Date.now() > deadline) break;
+    console.warn(`[swipe] gap-fill ${round + 1}: ${missing.length}/${items.length} still original`);
+    await runPool(batchKeepingGroups(missing, 8).flatMap((b) => chunkBatch(b, 8)), () => `GAP-FILL ${round + 1}`);
   }
   return result;
 }
@@ -757,7 +825,13 @@ function applyRewrites(
   }
 
   const beforeBake = html;
-  html = bakePairsIntoHtml(html, replacementPairs);
+  try {
+    const baked = bakePairsDom(html, replacementPairs);
+    html = baked.html;
+  } catch (e) {
+    console.warn('[swipe] DOM bake failed, string bake:', (e as Error).message);
+    html = bakePairsIntoHtml(html, replacementPairs);
+  }
   let bakedHits = 0;
   for (const p of replacementPairs) {
     if (p.attr) continue;
@@ -1733,12 +1807,12 @@ CRITICAL RULES:
 1. Treat each input line as discrete visible copy — rewrite it completely for OUR product whenever it is substantive marketing text. Nothing of the old product may survive: not its name, body part, condition, technology, unit ("device", "session") or its narrator's credentials.
 2. Keep the same conversational energy (headline stays headline, CTA stays CTA). Length is free.
 3. Plain text ONLY in rewritten strings — no HTML, no markdown.
-4. Legal/compliance texts: rewrite only where safe; keep mandatory disclosures.
-5. Every batch MUST return one {"id","rewritten"} object per supplied id.`;
+4. Rewrite EVERY marketing/product/CTA/headline/body line. Do not leave the old product's words. Only payment-logo names, copyright lines, and cookie/privacy legal that does not name the old product may stay close to the original.
+5. Every batch MUST return one {"id","rewritten"} object per supplied id. Never echo the original string for a line that names the old product.`;
           // One page per invocation (see the chaining below), so the texts
           // can take most of the budget: 345 Opus-rewritten texts need
           // ~4-5 min. 180s used to leave half the page in the old product.
-          const textDeadline = Math.min(deadline - 75_000, Date.now() + 6 * 60_000);
+          const textDeadline = Math.min(deadline - 40_000, Date.now() + 7 * 60_000);
           let persistChain = Promise.resolve();
           const persistDraft = (rewrites: Map<number, string>) => {
             persistChain = persistChain.then(async () => {
@@ -1753,6 +1827,7 @@ CRITICAL RULES:
             return persistChain;
           };
           const rewrites = await rewriteAllTexts(system, texts, textDeadline, persistDraft);
+          console.warn(`[swipe] ${page.name}: ${rewrites.size}/${texts.length} texts got a new string`);
           await persistDraft(rewrites);
         }
       }

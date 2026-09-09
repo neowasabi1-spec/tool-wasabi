@@ -413,12 +413,13 @@ async function collectAllRewrites(
   const byId = new Map(textsForAi.map((t) => [t.id, t.text]));
   const applyRewrites = (rewrites: Array<{ id: number; rewritten: string }>) => {
     for (const rw of rewrites) {
-      if (typeof rw.id !== 'number' || rw.rewritten === undefined || rw.rewritten === null) continue;
+      const id = typeof rw.id === 'number' ? rw.id : Number(rw.id);
+      if (!Number.isFinite(id) || rw.rewritten === undefined || rw.rewritten === null) continue;
       const trimmed = String(rw.rewritten).trim();
       if (!trimmed) continue;
-      const originalText = byId.get(rw.id);
+      const originalText = byId.get(id);
       if (originalText && trimmed === originalText) continue;
-      effective.set(rw.id, trimmed);
+      effective.set(id, trimmed);
     }
   };
 

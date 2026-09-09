@@ -47,34 +47,41 @@ export async function placeMediaWithAi(args: {
   convert?: boolean;
   /** False when the caller cannot render generate=true (affiliate: real offer photos only). */
   canGenerate?: boolean;
+  /** The page-level swipe plan (narrator, root cause, mechanism, promised outcome): what the rewritten copy is about. */
+  story?: string;
+  /** Cap on generate=true assignments for the page (default 8). */
+  maxGenerate?: number;
 }): Promise<PlaceAssignment[]> {
   const slots = args.slots.slice(0, 100);
   const library = args.library.slice(0, 60);
   if (!slots.length) return [];
   const canGenerate = args.canGenerate !== false;
+  const maxGenerate = Math.max(0, args.maxGenerate ?? 8);
 
   const [seen, libSeen] = await Promise.all([
     loadSlotImages(slots, args.pageUrl || ''),
     loadLibraryThumbs(library),
   ]);
 
-  const head = `${args.description ? `Product: ${args.description.slice(0, 600)}\n` : ''}${args.brief ? `Brief: ${args.brief.slice(0, 800)}\n` : ''}
+  const head = `${args.description ? `PRODUCT (what it is, who it is for, what it does):\n${args.description.slice(0, 1500)}\n` : ''}${args.brief ? `BRIEF:\n${args.brief.slice(0, 1200)}\n` : ''}${args.story ? `THE STORY THE REWRITTEN PAGE TELLS (every picture must serve this):\n${args.story.slice(0, 2500)}\n` : ''}
 For each slot you are shown the picture that is already there, plus the text around it.`;
+  const promptGuide = `HOW TO WRITE AN IMAGE PROMPT (the "prompt" field, English, 40-90 words): describe ONE concrete scene that shows what the copy MEANS for the reader — the problem they live with, the moment the copy describes, or the result they want (the person, what they are doing and feeling, the setting, light, camera). Illustrate the OUTCOME or the SITUATION, never the act of consuming anything: no one swallowing, taking or holding pills, capsules, tablets, medication, syringes or supplements, no pharmacy or clinic imagery, unless the copy is literally about that. Example — copy about losing weight: a woman noticing her jeans are loose, a light satisfied dinner, a smiling step onto a scale; NOT a woman taking a pill. No product, no packaging, no text, no logos in the scene.`;
   const genRule = canGenerate
     ? (args.convert
-      ? `When no library file shows the subject the copy asks for, generate=true with an English image prompt (at most 8 per page). GENERATE ONLY ILLUSTRATIONS — the problem moment, a person in the situation the copy describes, a comparison, a diagram, an ingredient, a lifestyle scene. NEVER generate the product itself (its stick, sachet, box, label, logo, hands holding it): product shots come from the library only. A photo that contradicts the copy (fruit under "look at this image of the 9pm pantry raid") is a failure — generate instead.`
-      : 'When no library file fits, generate=true with an English image prompt (at most 8).')
+      ? `WHEN TO GENERATE: for every slot whose copy tells a story, describes a moment, explains a mechanism, shows a person, a comparison, an ingredient or a lifestyle scene, answer generate=true with an image prompt — UNLESS a library file genuinely shows that exact subject. Up to ${maxGenerate} per page: spend them on the slots the reader looks at most (hero, problem, mechanism, results, testimonials), in page order. Library files are the offer's OWN photos (the product, its packaging, real customers if any): use them for slots whose copy presents or sells the product; do NOT drop the same product photo into story slots just to fill them — a product photo under "this is what 9pm hunger feels like" is a failure, generate instead. NEVER generate the product itself (its stick, sachet, box, label, logo, hands holding it).
+${promptGuide}`
+      : `When no library file fits, generate=true with an English image prompt (up to ${maxGenerate}).\n${promptGuide}`)
     : 'Image generation is NOT available here: never answer generate=true. When nothing fits perfectly, pick the closest library file anyway.';
 
   const system = args.convert
-    ? `This landing page was built for a DIFFERENT product. It is being converted to sell "${args.productName}", and the copy is being rewritten for it.
+    ? `This landing page was built for a DIFFERENT product. It is being converted to sell "${args.productName}", and the copy has been rewritten for it.
 ${head}
 
 LOOK at the picture first.
 - UI chrome (stars, rating bars, checkmarks, ticks, logos, arrows, payment marks, bullets, flags) → skip it.
-- Any picture that shows the OLD product — the item itself, its box, its app screen, hands or feet using it, before/after of its results, its brand name — MUST be replaced. Leaving one on the page is the worst possible outcome. Read the REWRITTEN copy around the slot and decide what the picture should now show: a product shot where the copy presents/sells the product (library), an illustration of the situation where the copy tells a story or explains a mechanism. Pick a library file only when it really shows that subject; the library is small, so the same product file in several product slots is expected and fine. If unsure whether a photo shows the old product, replace it.
+- Any picture that shows the OLD product — the item itself, its box, its app screen, hands or feet using it, before/after of its results, its brand name — MUST be replaced. Leaving one on the page is the worst possible outcome. Read the REWRITTEN copy around the slot and decide what the picture should now show: a product shot (library) where the copy presents/sells the product; an illustration of the situation (generate) where the copy tells a story, describes a problem, a result or a mechanism. Pick a library file only when it really shows that subject. If unsure whether a photo shows the old product, replace it.
 - A photo with NO product in it (a doctor portrait, a landscape, a smiling person, a generic ingredient) may stay only when it still fits the new copy; otherwise replace it too.
-- VIDEO slots: you see the poster frame when there is one, otherwise only the copy. These clips show the old product in use: replace every one. Pick a library video if one fits, otherwise the best matching still photo (it is shown as a slowly animated still).
+- VIDEO slots: you see the poster frame when there is one, otherwise only the copy. These clips show the old product in use: replace every one. Pick a library video if one fits, otherwise generate an illustration or pick the best matching still photo (it is shown as a slowly animated still).
 ${genRule}
 
 Return STRICT JSON only:
@@ -123,7 +130,7 @@ One object per input id.`;
       for (const s of batch) {
         content.push({
           type: 'text',
-          text: `SLOT ${s.id} (${s.kind}${s.width && s.height ? `, ${s.width}x${s.height}` : ''})\nNearby copy: ${s.context.slice(0, 220) || '(none)'}`,
+          text: `SLOT ${s.id} (${s.kind}${s.width && s.height ? `, ${s.width}x${s.height}` : ''})\nNearby copy: ${s.context.slice(0, 500) || '(none)'}`,
         });
         const img = seen.get(s.id);
         if (img) {
@@ -153,7 +160,7 @@ One object per input id.`;
   return results.flat().map((a) => {
     if (!a.generate) return a;
     generates += 1;
-    return canGenerate && generates <= 8 ? a : { ...a, generate: false, prompt: '' };
+    return canGenerate && generates <= maxGenerate ? a : { ...a, generate: false, prompt: '' };
   });
 }
 
@@ -255,7 +262,8 @@ function parseAssignments(
     return slots.map((s) => ({ slotId: s.id, mediaId: null, generate: false, prompt: '' }));
   }
   const byId = new Map((parsed.slots || []).map((row) => [Number(row.id), row]));
-  let generates = 0;
+  // The page-level cap is applied by the caller after all batches are merged
+  // (a per-batch cap silently dropped illustrations in the later batches).
   return slots.map((s) => {
     const row = byId.get(s.id);
     if (row?.skip) return { slotId: s.id, mediaId: null, generate: false, prompt: '' };
@@ -263,11 +271,7 @@ function parseAssignments(
       ? String(row.mediaId)
       : null;
     const known = mediaId && libIds.has(mediaId) ? mediaId : null;
-    let generate = !known && !!row?.generate && !!(row.prompt || '').trim();
-    if (generate) {
-      generates += 1;
-      if (generates > 8) generate = false;
-    }
+    const generate = !known && !!row?.generate && !!(row.prompt || '').trim();
     return {
       slotId: s.id,
       mediaId: known,

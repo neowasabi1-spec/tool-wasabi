@@ -147,7 +147,7 @@ function nearby(html: string, index: number, tagLen: number): string {
     .replace(/&amp;/g, '&')
     .replace(/\s+/g, ' ')
     .trim()
-    .slice(0, 360);
+    .slice(0, 600);
 }
 
 function slotSection(text: string, index: number, htmlLen: number, kind?: RestyleKind): string {
@@ -212,7 +212,7 @@ export function collectRestyleSlots(html: string, max = 40, _pageUrl = ''): Rest
       section,
       width: w,
       height: h,
-      context: (alt ? `${alt} ${context}` : context).slice(0, 280),
+      context: (alt ? `${alt} ${context}` : context).slice(0, 520),
       domTag: dom?.tag,
       domIndex: dom?.index,
     });
