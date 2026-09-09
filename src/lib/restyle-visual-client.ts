@@ -37,6 +37,7 @@ async function designPalette(opts: {
   brief?: string;
   description?: string;
   projectId?: string;
+  productImageUrl?: string;
 }): Promise<{ palette: Palette; map: PaletteMap; fromAi: boolean }> {
   const colors = topSaturatedHex(opts.html);
   try {
@@ -48,6 +49,7 @@ async function designPalette(opts: {
         brief: opts.brief,
         description: opts.description,
         projectId: opts.projectId,
+        productImageUrl: opts.productImageUrl || undefined,
         colors,
       }),
     });
@@ -75,6 +77,8 @@ export async function runVisualRestyle(opts: {
   description?: string;
   projectId?: string;
   pageUrl?: string;
+  productImageUrl?: string;
+  extraImageUrls?: string[];
   onProgress?: (message: string, html?: string) => void;
 }): Promise<{ html: string; replaced: number; total: number; failed: number; error?: string }> {
   opts.onProgress?.('AI is designing the colour palette from the product…');
@@ -118,9 +122,26 @@ export async function runVisualRestyle(opts: {
       /* keep empty */
     }
   }
+  const extraStills: LandingMediaItem[] = (opts.extraImageUrls || [])
+    .filter((u) => /^https?:\/\//i.test(u))
+    .map((url, i) => ({
+      id: `step-mock-${i}`,
+      kind: 'image' as const,
+      section: i === 0 ? 'product' : 'lifestyle',
+      sourceUrl: url,
+      storedUrl: url,
+      filePath: '',
+      name: `step-mock-${i}`,
+      position: i,
+    }));
+  if (extraStills.length) fromThisOffer = [...extraStills, ...fromThisOffer];
 
   const alreadyOnPage = new Set(slots.map((s) => s.src));
-  const usable = fromThisOffer.filter((m) => m.storedUrl !== m.sourceUrl && !alreadyOnPage.has(m.storedUrl));
+  const usable = fromThisOffer.filter((m) => {
+    if (alreadyOnPage.has(m.storedUrl)) return false;
+    if (String(m.id).startsWith('step-mock-')) return true;
+    return m.storedUrl !== m.sourceUrl;
+  });
   const pool = usable.length ? usable : fromThisOffer;
   const stills = pool.filter((m) => m.kind === 'image' || m.kind === 'gif');
   const videos = pool.filter((m) => m.kind === 'video');

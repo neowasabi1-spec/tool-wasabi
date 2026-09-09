@@ -8,6 +8,7 @@ import {
   buildSectionContent,
   type SectionFile,
 } from '@/lib/project-sections';
+import { patchProductBriefSection } from '@/lib/step-offer';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -254,6 +255,13 @@ export async function POST(
   // Awaited so the response is consistent (UI invalidates queries right after
   // POST resolves, and we want getProjectBriefText to see the new content).
   await mirrorToLegacyColumn(projectId, fileType, extracted);
+
+  if (fileType.startsWith('pb_') && extracted.some((u) => u.text.trim())) {
+    const joined = extracted.map((u) => u.text.trim()).filter(Boolean).join('\n\n');
+    if (joined) {
+      await patchProductBriefSection(supabaseAdmin, projectId, fileType, { briefText: joined });
+    }
+  }
 
   // If EVERY file failed return 500 with details so the UI can show a real
   // error instead of a misleading "File caricato!" toast. Partial successes

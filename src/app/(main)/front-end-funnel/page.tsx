@@ -80,7 +80,6 @@ import VisualHtmlEditor from '@/components/VisualHtmlEditor';
 import { bakeDynamicComments } from '@/lib/bake-dynamic-comments';
 import { saveHtmlBlob } from '@/lib/html-blob-store';
 import { runVisualRestyle } from '@/lib/restyle-visual-client';
-import { applyPalette, fallbackPalette } from '@/lib/restyle-slots';
 import {
   buildTranslateContext,
   type ExtractedText,
@@ -3986,6 +3985,33 @@ export default function FrontEndFunnel() {
     if (!silent) resetSwipeLog();
 
     const currentPage = (funnelPages || []).find(p => p.id === pageId);
+
+    let swipeBrief = cloneConfig.brief;
+    let swipeDesc = cloneConfig.productDescription;
+    let swipeImage = '';
+    let swipeImages: string[] = [];
+    if (currentPage?.productId) {
+      try {
+        const qs = new URLSearchParams({
+          pageType: currentPage.pageType || '',
+          name: currentPage.name || '',
+        });
+        const offerRes = await fetch(`/api/projecthub/projects/${currentPage.productId}/step-offer?${qs}`);
+        if (offerRes.ok) {
+          const offer = await offerRes.json() as { brief?: string; price?: string; imageUrl?: string; imageUrls?: string[] };
+          if (offer.brief) swipeBrief = offer.brief;
+          if (offer.price) {
+            swipeDesc = [swipeDesc, `PRODUCT PRICE (use this exact price in every offer, bundle and checkout line — do not invent another): ${offer.price}`]
+              .filter(Boolean)
+              .join('\n\n');
+          }
+          if (offer.imageUrl) swipeImage = String(offer.imageUrl);
+          if (Array.isArray(offer.imageUrls)) swipeImages = offer.imageUrls.filter((u): u is string => typeof u === 'string');
+        }
+      } catch {
+        /* keep project-level brief */
+      }
+    }
     // Riconoscimento quiz: privilegia l'URL del modal (che è quello effettivo
     // in fase di clone). currentPage.urlToSwipe potrebbe non essere popolato
     // per pagine importate da altre fonti, e senza il flag quiz `keepScripts`
@@ -4256,11 +4282,11 @@ export default function FrontEndFunnel() {
           // così finiscono nel system prompt del rewrite.
           // Cap dei campi-documento (limite body Netlify ~6MB; il worker li
           // tronca comunque a ~35K → nessuna perdita reale).
-          const rowBriefCapped = capDoc(cloneConfig.brief || cloneConfig.customPrompt || '');
+          const rowBriefCapped = capDoc(swipeBrief || cloneConfig.customPrompt || '');
           const rowMrCapped = capDoc(cloneConfig.marketResearch || '');
           const productPayloadForRow = {
             name: cloneConfig.productName,
-            description: capDoc(cloneConfig.productDescription || '') || '',
+            description: capDoc(swipeDesc || '') || '',
             marketing_brief: rowBriefCapped,
             market_research: rowMrCapped,
           };
@@ -4510,7 +4536,7 @@ export default function FrontEndFunnel() {
           rewriteData = await rewriteWithOpenClawFromBrowser({
             html: htmlToRewrite,
             productName: cloneConfig.productName,
-            productDescription: cloneConfig.productDescription,
+            productDescription: swipeDesc,
             customPrompt: cloneConfig.customPrompt || undefined,
             targetAgent: targetAgentForRewrite,
             onProgress: (done, total) => setCloneProgress({ phase: 'processing', totalTexts: total, processedTexts: done, message: `Rewriting via OpenClaw (${done}/${total} batches)...` }),
@@ -4537,7 +4563,7 @@ export default function FrontEndFunnel() {
           // Brief inviato alla function = productDescription + (customPrompt come knowledge swipe).
           // La function legge anche framework / target / customPrompt separatamente.
           const briefParts: string[] = [];
-          if (cloneConfig.productDescription?.trim()) briefParts.push(cloneConfig.productDescription.trim());
+          if (swipeDesc?.trim()) briefParts.push(swipeDesc.trim());
           if (cloneConfig.customPrompt?.trim()) {
             briefParts.push(`KNOWLEDGE COPYWRITING / ISTRUZIONI SWIPE:\n${cloneConfig.customPrompt.trim()}`);
           }
@@ -4579,7 +4605,7 @@ export default function FrontEndFunnel() {
               targetLanguage: cloneConfig.language || detectPageLanguage(sourceUrlForSwap, htmlToRewrite),
               userId: DEFAULT_USER_ID,
               renderedHtml: htmlToRewrite,
-              brief: cloneConfig.brief || undefined,
+              brief: swipeBrief || undefined,
               market_research: cloneConfig.marketResearch || undefined,
               model: claudeModelRef.current,
               ...cloneRoutingPayload,
@@ -4631,7 +4657,7 @@ export default function FrontEndFunnel() {
                   // in the cloning_jobs row). Forwarding them on every batch is
                   // cheap (~10KB) and keeps the rewrite consistent across
                   // batches of the same job.
-                  brief: cloneConfig.brief || undefined,
+                  brief: swipeBrief || undefined,
                   market_research: cloneConfig.marketResearch || undefined,
                   model: claudeModelRef.current,
                   ...cloneRoutingPayload,
@@ -4950,12 +4976,6 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
         let visualNote = '';
         const projectForVisual = (projects || []).find((p) => p.id === currentPage?.productId);
         const visualName = (cloneConfig.productName || projectForVisual?.name || '').trim();
-        if (visualName) {
-          rewrittenHtml = applyPalette(
-            rewrittenHtml,
-            fallbackPalette(visualName, `${cloneConfig.brief || ''} ${cloneConfig.productDescription || ''}`),
-          );
-        }
 
         await updateFunnelPage(pageId, {
           swipeStatus: visualName ? 'in_progress' : 'completed',
@@ -4981,11 +5001,13 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
             const visual = await runVisualRestyle({
               html: rewrittenHtml,
               productName: visualName,
-              brief: cloneConfig.brief || getProjectBriefText(projectForVisual),
+              brief: swipeBrief || getProjectBriefText(projectForVisual),
               research: cloneConfig.marketResearch || extractSectionContent(projectForVisual?.marketResearch),
-              description: cloneConfig.productDescription || projectForVisual?.description || '',
+              description: swipeDesc || projectForVisual?.description || '',
               projectId: currentPage?.productId,
               pageUrl: url,
+              productImageUrl: swipeImage || undefined,
+              extraImageUrls: swipeImages.length ? swipeImages : undefined,
               onProgress: (message, html) => {
                 setCloneProgress({
                   phase: 'processing',

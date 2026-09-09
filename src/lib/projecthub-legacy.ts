@@ -222,6 +222,10 @@ export type ProductBriefSection = {
   templateFunnelName?: string;
   templateFunnelId?: string;
   templateScreenshotUrl?: string;
+  /** Offer price for this step (free text: "$49", "€39.90", "3 for $99"). */
+  price?: string;
+  /** Extracted / pasted brief text for this step (Clone/Swipe source of truth). */
+  briefText?: string;
 };
 
 function optionalStr(v: unknown): string | undefined {
@@ -238,6 +242,8 @@ function parseStoredSection(s: Record<string, unknown>): ProductBriefSection {
     templateFunnelName: optionalStr(s.templateFunnelName),
     templateFunnelId: optionalStr(s.templateFunnelId),
     templateScreenshotUrl: optionalStr(s.templateScreenshotUrl),
+    price: optionalStr(s.price),
+    briefText: optionalStr(s.briefText),
   };
 }
 

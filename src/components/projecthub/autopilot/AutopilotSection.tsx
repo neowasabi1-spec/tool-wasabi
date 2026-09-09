@@ -55,6 +55,7 @@ export function AutopilotSection({
   const [funnelPick, setFunnelPick] = useState<ChimeraFunnelPick>(EMPTY_FUNNEL);
   const [imageMode, setImageMode] = useState<ChimeraImageMode>('internal');
   const [productImageUrl, setProductImageUrl] = useState('');
+  const [price, setPrice] = useState('');
   const [launching, setLaunching] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -145,6 +146,7 @@ export function AutopilotSection({
           funnelStepIndexes: funnelPick.steps.length ? funnelPick.steps.map((s) => s.index) : undefined,
           imageMode,
           productImageUrl: productImageUrl || undefined,
+          price: price.trim() || undefined,
         }),
       });
       const data = await res.json();
@@ -224,12 +226,25 @@ export function AutopilotSection({
           disabled={running || launching}
         />
         <div className="space-y-1.5">
+          <Label htmlFor="ap-price">Product price</Label>
+          <Input
+            id="ap-price"
+            value={price}
+            onChange={(e) => setPrice(e.target.value)}
+            placeholder="e.g. $49 · €39.90 · 3 for $99"
+            disabled={running || launching}
+          />
+          <p className="text-[11px] text-muted-foreground">
+            Used in research, brief and Clone/Swipe. Per-step prices on Product Brief tabs override this.
+          </p>
+        </div>
+        <div className="space-y-1.5">
           <Label htmlFor="ap-desc">Description / notes (optional)</Label>
           <Textarea
             id="ap-desc"
             value={description}
             onChange={(e) => setDescription(e.target.value)}
-            placeholder="Ingredients, benefits, price, target audience, tone of voice..."
+            placeholder="Ingredients, benefits, target audience, tone of voice..."
             rows={3}
             disabled={running || launching}
           />

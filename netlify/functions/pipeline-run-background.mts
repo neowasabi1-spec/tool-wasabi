@@ -54,6 +54,7 @@ interface PipelineInput {
   }>;
   imageMode?: 'affiliate' | 'internal';
   productImageUrl?: string;
+  price?: string;
 }
 
 interface StepState {
@@ -1813,6 +1814,10 @@ export default async (req: Request) => {
 
   const projectId = job.project_id as string;
   const input = (job.input || {}) as PipelineInput;
+  if (input.price?.trim()) {
+    const priceLine = `PRODUCT PRICE (use this exact price — do not invent another): ${input.price.trim()}`;
+    input.description = [input.description?.trim(), priceLine].filter(Boolean).join('\n');
+  }
   const steps: StepState[] = Array.isArray(job.steps) ? (job.steps as StepState[]) : [];
   const orderedKeys: string[] = steps.length > 0 ? steps.map((s) => s.key) : [...STEP_ORDER];
 

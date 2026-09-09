@@ -113,6 +113,9 @@ export interface PipelineInput {
   imageMode?: 'affiliate' | 'internal';
   /** Public URL of a user-uploaded packshot. When set, skip inventing one. */
   productImageUrl?: string;
+  /** Main-product price (free text). Written onto the Frontend Product Brief
+   *  tab and injected into research/brief/swipe so copy never invents one. */
+  price?: string;
 }
 
 export interface PipelineStepState {

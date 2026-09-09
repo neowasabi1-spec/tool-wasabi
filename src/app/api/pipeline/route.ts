@@ -3,6 +3,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getUserAccessContext } from '@/lib/auth/get-current-user';
 import { listAccessibleProjectIds } from '@/lib/auth/project-access';
 import { buildInitialSteps, type PipelineInput } from '@/lib/pipeline/types';
+import { upsertFrontendPrice } from '@/lib/step-offer';
 
 export const dynamic = 'force-dynamic';
 
@@ -21,6 +22,7 @@ export async function POST(req: NextRequest) {
   const product = String(body.product || '').trim();
   const competitorLink = body.competitorLink ? String(body.competitorLink).trim() : '';
   const description = body.description ? String(body.description).trim() : '';
+  const price = body.price ? String(body.price).trim() : '';
   const market = body.market ? String(body.market).trim() : '';
   const language = body.language ? String(body.language).trim() : '';
   const templateUrl = body.templateUrl ? String(body.templateUrl).trim() : '';
@@ -91,6 +93,12 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  if (price) {
+    await upsertFrontendPrice(supabaseAdmin, projectId, price).catch((e) => {
+      console.warn('[pipeline] persist frontend price:', (e as Error).message);
+    });
+  }
+
   const input: PipelineInput = {
     product: product || '',
     competitorLink: competitorLink || undefined,
@@ -103,6 +111,7 @@ export async function POST(req: NextRequest) {
     funnelSteps: funnelSteps.length ? funnelSteps : undefined,
     imageMode,
     productImageUrl,
+    price: price || undefined,
   };
 
   // ── Create the job row ──

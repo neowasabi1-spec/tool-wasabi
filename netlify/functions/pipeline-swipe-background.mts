@@ -28,6 +28,7 @@ import {
 } from '../../src/lib/restyle-slots';
 import { placeMediaWithAi } from '../../src/lib/restyle-place';
 import { wellFormed } from '../../src/lib/well-formed';
+import { loadStepOffer, knownPriceBlock, stepOfferToMediaItems } from '../../src/lib/step-offer';
 import { fetchPageText } from '../../src/lib/page-text';
 import { batchKeepingGroups, buildSwipePlan, orderAndLinkFragments, planRules } from '../../src/lib/swipe-plan';
 import { bakePairsDom } from '../../src/lib/swipe-bake';
@@ -1197,13 +1198,14 @@ function applyTheme(html: string, spec: RestyleSpec): string {
   --text:${spec.ink};--ink:${spec.ink};--foreground:${spec.ink};
 }
 html,body{background:${spec.background} !important;color:${spec.ink} !important;}
+h1,h2,h3,h4{color:${spec.secondary} !important;}
 a{color:${spec.accent};}
-button,input[type=submit],input[type=button],.btn,[class*="btn-primary"],[class*="cta"],[class*="CTA"]{
+button,input[type=submit],input[type=button],.btn,[class*="btn-primary"],[class*="cta"],[class*="CTA"],[class*="order-now"],[class*="OrderNow"]{
   background:${spec.primary} !important;border-color:${spec.primary} !important;color:#fff !important;
 }
-header,nav,[class*="navbar"]{background:${spec.secondary} !important;}
-[class*="hero"],[class*="Hero"],[class*="banner"],[class*="Banner"]{background:${spec.secondary} !important;}
+header,nav,[class*="navbar"]{background:${spec.background} !important;}
 footer,[class*="footer"],[class*="Footer"]{background:${spec.secondary} !important;color:#fff !important;}
+footer *,[class*="footer"] *,[class*="Footer"] *{color:#fff !important;}
 input,select,textarea{border-color:${spec.primary} !important;accent-color:${spec.primary} !important;}
 ::selection{background:${spec.accent};color:#fff;}
 </style>`;
@@ -1275,7 +1277,8 @@ function parseRestyleSpec(raw: string): RestyleSpec | null {
 
 async function buildRestyleSpec(html: string, ctx: SwipeCtx): Promise<RestyleSpec | null> {
   const colors = topPageHex(html);
-  const system = `You are an art director restyling a competitor landing into OUR product — same layout, new visual world (ChatGPT swipe quality).
+  const system = `You are an art director restyling a competitor landing into OUR product — same layout, new visual world like a premium DTC jelly/skincare lander.
+The colour world IS the packshot. If the stick is saffron/burgundy, the page is cream + burgundy bands + gold CTA. If NAD+ purple, light lilac hero + deep purple bands + blue CTA. If collagen rose, blush pink + burgundy. Never a generic gray/black theme.
 Return STRICT JSON only:
 {
   "primary":"#rrggbb",
@@ -1287,7 +1290,12 @@ Return STRICT JSON only:
   "stylePrefix":"20-40 words: photography style + color world + product look, prepended to every image prompt",
   "palette":[{"from":"#old","to":"#new"}, ...]
 }
-Map EVERY supplied old hex that is a brand/section color (not #fff/#000 unless they are accent fills). New palette must match OUR product (flavor, category, mood). If a product photo is attached, take primary/secondary/accent FROM that photo. No competitor brand names.`;
+Map EVERY supplied old hex that is a brand/section color (not #fff/#000 unless they are accent fills).
+- primary = strongest pack colour, for CTAs (readable with white text).
+- secondary = darker sibling of the pack for icon strips and footer.
+- accent = supporting highlight from the pack (gold, berry, etc).
+- background = very light tint of the pack colour (never pure gray, never generic white if the pack has a hue).
+If a product photo is attached, take primary/secondary/accent FROM that photo. No competitor brand names.`;
   const user = `OUR PRODUCT: ${ctx.productName}
 ${ctx.productContext ? `CONTEXT:\n${ctx.productContext.slice(0, 2500)}` : ''}
 ${ctx.mainImageUrl ? 'A photo of OUR real product is attached — extract its actual colors and use them as the new palette.' : 'No product photo — invent a coherent palette for this product.'}
@@ -1707,6 +1715,35 @@ async function markFailed(
     .then(() => undefined, () => undefined);
 }
 
+async function bindStepOffer(
+  sb: SupabaseClient,
+  ctx: SwipeCtx,
+  page: SwipePage,
+): Promise<SwipeCtx> {
+  const offer = await loadStepOffer(sb, ctx.projectId, page.type, page.name);
+  console.log(`[swipe] step ${page.name} (${page.type}): price=${offer.price || 'none'} photo=${offer.imageUrl ? 'yes' : 'no'} brief=${offer.brief.length}c`);
+  const next: SwipeCtx = {
+    ...ctx,
+    restyle: null,
+    landingStills: [...ctx.landingStills],
+  };
+  if (offer.brief) next.brief = offer.brief;
+  if (ctx.imageMode !== 'affiliate') {
+    if (offer.imageUrl) next.mainImageUrl = offer.imageUrl;
+    const mockups = stepOfferToMediaItems(offer);
+    if (mockups.length) next.landingStills = [...mockups, ...ctx.landingStills];
+  }
+  const extras: string[] = [];
+  if (offer.price) extras.push(knownPriceBlock(offer.price));
+  if (offer.brief && offer.brief !== ctx.brief) {
+    extras.push(`STEP BRIEF (this page's product — source of truth):\n${offer.brief.slice(0, DOC_CAP)}`);
+  }
+  if (extras.length) {
+    next.productContext = [ctx.productContext, extras.join('\n\n')].filter(Boolean).join('\n\n');
+  }
+  return next;
+}
+
 async function processPage(
   sb: SupabaseClient,
   ctx: SwipeCtx,
@@ -1808,7 +1845,8 @@ CRITICAL RULES:
 2. Keep the same conversational energy (headline stays headline, CTA stays CTA). Length is free.
 3. Plain text ONLY in rewritten strings — no HTML, no markdown.
 4. Rewrite EVERY marketing/product/CTA/headline/body line. Do not leave the old product's words. Only payment-logo names, copyright lines, and cookie/privacy legal that does not name the old product may stay close to the original.
-5. Every batch MUST return one {"id","rewritten"} object per supplied id. Never echo the original string for a line that names the old product.`;
+5. Every batch MUST return one {"id","rewritten"} object per supplied id. Never echo the original string for a line that names the old product.
+6. If PRODUCT PRICE is in the context, use that exact price everywhere a price/offer/checkout line appears. Never invent a different price.`;
           // One page per invocation (see the chaining below), so the texts
           // can take most of the budget: 345 Opus-rewritten texts need
           // ~4-5 min. 180s used to leave half the page in the old product.
@@ -2087,7 +2125,13 @@ export default async (req: Request) => {
   let nextOffset = imageOffset;
 
   const runOne = async (p: SwipePage, offset: number): Promise<PageBatchResult> => {
-    const result = await processPage(sb, ctx, p, budget, deadline, offset);
+    const pageCtx = await bindStepOffer(sb, ctx, p);
+    if (offset > 0 && incomingRestyle && incomingRestyle.stylePrefix) {
+      pageCtx.restyle = incomingRestyle;
+    }
+    const result = await processPage(sb, pageCtx, p, budget, deadline, offset);
+    ctx.restyle = pageCtx.restyle;
+    ctx.mediaUsed = pageCtx.mediaUsed;
     log(`✔ ${p.name}: ${result.summary}`);
     return result;
   };
@@ -2128,7 +2172,7 @@ export default async (req: Request) => {
             skipTexts: ctx.skipTexts,
             pages: nextPages,
             imageOffset: nextOffset,
-            restyle: ctx.restyle,
+            restyle: nextOffset > 0 ? ctx.restyle : null,
             imagesLeft: budget.imagesLeft,
             mediaUsed: [...ctx.mediaUsed],
           }),

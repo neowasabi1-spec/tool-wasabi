@@ -15,7 +15,7 @@ import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import {
   Upload, FileText, Image, Download, X, Pencil, Check, FolderOpen, Plus, Trash2,
-  LayoutTemplate, Save, Loader2, ExternalLink,
+  LayoutTemplate, Save, Loader2, ExternalLink, DollarSign,
 } from "lucide-react";
 import { getUploadUrl } from "@/lib/projecthub-storage";
 import { useStore } from "@/store/useStore";
@@ -296,19 +296,25 @@ function GeneralBriefTabContent({ projectId, files, projectName }: {
 }
 
 // ─── PRODUCT BRIEF TAB CONTENT ───
-function ProductBriefTabContent({ section, stepIdx, projectId, files, onPickTemplate }: {
+function ProductBriefTabContent({ section, stepIdx, projectId, files, onPickTemplate, onPriceChange }: {
   section: ProductBriefSection;
   stepIdx: number;
   projectId: string;
   files: ProjectFile[];
   onPickTemplate: () => void;
+  onPriceChange: (price: string) => void;
 }) {
   const queryClient = useQueryClient();
   const [lightbox, setLightbox] = useState<{ src: string; alt: string } | null>(null);
+  const [priceDraft, setPriceDraft] = useState(section.price || "");
   const stepColor = STEP_COLORS[stepIdx % STEP_COLORS.length];
   const typeLabel = section.pageType
     ? (humanizePageTypeSlug(section.pageType) || section.label)
     : section.label;
+
+  useEffect(() => {
+    setPriceDraft(section.price || "");
+  }, [section.id, section.price]);
 
   const briefFiles = files.filter(f => f.file_type === section.id);
   const mockupFiles = files.filter(f => f.file_type === `img_${section.id}`);
@@ -332,6 +338,25 @@ function ProductBriefTabContent({ section, stepIdx, projectId, files, onPickTemp
         {!section.pageType && (
           <span className="text-xs text-muted-foreground">No category yet — pick one below</span>
         )}
+      </div>
+
+      {/* Price — Clone/Swipe uses this exact string, never invents one */}
+      <div className="bg-card border border-border rounded-xl p-5 space-y-2">
+        <h3 className="font-semibold text-sm flex items-center gap-2">
+          <DollarSign className="w-4 h-4 text-primary" /> Product price
+        </h3>
+        <Input
+          value={priceDraft}
+          onChange={(e) => setPriceDraft(e.target.value)}
+          onBlur={() => {
+            const t = priceDraft.trim();
+            if (t !== (section.price || "")) onPriceChange(t);
+          }}
+          placeholder="e.g. $49 · €39.90 · 3 sticks for $99"
+        />
+        <p className="text-[11px] text-muted-foreground">
+          Clone/Swipe will print this price on the page. Leave empty only if the template has no offer.
+        </p>
       </div>
 
       {/* Template for this step */}
@@ -644,7 +669,9 @@ export function GeneralBriefSection({ projectId, files, projectName, onGoToFunne
           pageType: s.pageType as PageType,
           productId: projectId,
           urlToSwipe: url,
-          prompt: "",
+          prompt: s.price
+            ? `PRODUCT PRICE (use this exact price in copy, do not invent another): ${s.price}`
+            : "",
           swipeStatus: "pending",
           feedback: "",
         });
@@ -821,6 +848,11 @@ export function GeneralBriefSection({ projectId, files, projectName, onGoToFunne
             projectId={projectId}
             files={files}
             onPickTemplate={() => { pickerTargetRef.current = section.id; setTemplateForId(section.id); setAddOpen(true); }}
+            onPriceChange={(price) => {
+              const updated = pbSections.map((s) => s.id === section.id ? { ...s, price } : s);
+              setPbSections(updated);
+              saveSections(updated);
+            }}
           />
         ) : null
       )}

@@ -850,38 +850,46 @@ export function ensureReadableText(html: string): string {
 
 export function applyPalette(html: string, p: Palette, map: PaletteMap = []): string {
   const ink = '#111111';
-  const wash = '#f3efe4';
+  const wash = lightTintHex(p.primary, 0.14);
+  const parsedBg = parseCssColor(p.background);
+  const background = !parsedBg || luminance(parsedBg) > 0.93 ? lightTintHex(p.primary, 0.10) : p.background;
   const navInk = readableOn(parseCssColor(p.secondary) || { r: 63, g: 42, b: 29 });
+  const heading = p.secondary || ink;
   return outsideScripts(html, (raw) => {
     let out = ensureReadableText(remapBrandColors(raw, map));
     const css = `<style data-chimera-theme>
 :root,html{
   --text:${ink};--ink:${ink};--color-text:${ink};--text-color:${ink};--body-color:${ink};
-  --heading-color:${ink};--bs-body-color:${ink};--font-color:${ink};
-  --primary:${ink};--color-primary:${ink};--brand:${ink};--bs-primary:${ink};--accent:${ink};
-  --background:${p.background};--bg:${p.background};
+  --primary:${p.primary};--color-primary:${p.primary};--brand:${p.primary};--bs-primary:${p.primary};
+  --secondary:${p.secondary};--color-secondary:${p.secondary};
+  --accent:${p.accent};--brand-color:${p.primary};
+  --background:${background};--bg:${background};--surface:${background};
+  --heading-color:${heading};
   --highlight:${wash};--marker:${wash};
 }
-html,body{background:${p.background} !important;color:${ink} !important;}
-html body,html body p,html body li,html body td,html body th,html body span,html body div,
-html body font,html body label,html body small,html body em,html body i,html body u,
-html body strong,html body b,html body a,html body h1,html body h2,html body h3,
-html body h4,html body h5,html body h6,html body blockquote,html body figcaption{
-  color:${ink} !important;
-}
+html,body{background:${background} !important;color:${ink} !important;}
+html body h1,html body h2,html body h3,html body h4{color:${heading} !important;}
 mark{color:${ink} !important;background:${wash} !important;}
-button,input[type=submit],input[type=button],.btn,[class*="btn-primary"],[class*="cta"],[class*="CTA"]{
+button,input[type=submit],input[type=button],.btn,[class*="btn-primary"],[class*="cta"],[class*="CTA"],[class*="order-now"],[class*="OrderNow"]{
   background:${p.primary} !important;border-color:${p.primary} !important;color:#fff !important;
 }
 button *,[class*="btn"] *,[class*="cta"] *,[class*="CTA"] *{color:#fff !important;}
-nav,[class*="navbar"],footer,[class*="footer"]{
+header,nav,[class*="navbar"]{background:${background} !important;}
+footer,[class*="footer"],[class*="Footer"]{
   background:${p.secondary} !important;color:${navInk} !important;
 }
-nav *,footer *,[class*="navbar"] *,[class*="footer"] *{color:${navInk} !important;}
+footer *,[class*="footer"] *,[class*="Footer"] *{color:${navInk} !important;}
 </style>`;
     out = out.replace(/<style\b[^>]*\bdata-chimera-theme\b[^>]*>[\s\S]*?<\/style>/gi, '');
     if (out.includes('</head>')) out = out.replace('</head>', `${css}</head>`);
     else out = css + out;
     return out;
   });
+}
+
+function lightTintHex(hex: string, mix = 0.10): string {
+  const c = parseCssColor(hex);
+  if (!c) return '#fff8f5';
+  const ch = (n: number) => Math.round(n * mix + 255 * (1 - mix)).toString(16).padStart(2, '0');
+  return `#${ch(c.r)}${ch(c.g)}${ch(c.b)}`;
 }

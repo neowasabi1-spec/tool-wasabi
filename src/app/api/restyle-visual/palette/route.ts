@@ -77,15 +77,16 @@ async function designPalette(args: {
   colors: string[];
   productImageUrl: string;
 }): Promise<{ palette: Palette; map: PaletteMap }> {
-  const system = `You are an art director. A competitor landing page is being turned into a page for OUR product "${args.productName}". Same layout, our colour world.
+  const system = `You are an art director. A competitor landing page is being turned into a page for OUR product "${args.productName}". Same layout. The colour world IS the packshot — like premium DTC jelly/skincare landers (saffron/burgundy, NAD+ purple, collagen rose, pomegranate green).
 ${args.description ? `Product: ${args.description}\n` : ''}${args.brief ? `Brief: ${args.brief}\n` : ''}
 Rules:
-- Body copy stays black; you only design brand colours (buttons, section fills, accents, nav/footer).
-- primary = main CTA colour, strong and readable with white text on it.
-- secondary = dark tone for nav/footer.
-- accent = one supporting colour.
-- background = page background (white or a very light tint).
+- Body copy stays black on light areas; dark product-coloured bands keep white text.
+- primary = strongest pack colour, for CTAs (readable with white text).
+- secondary = darker sibling of the pack for icon strips and footer.
+- accent = supporting highlight from the pack (gold, berry, leaf…).
+- background = a very light tint of the pack colour (never generic gray).
 - "map": for EVERY old hex listed, give the new hex it should become so the page reads as ours. Keep light tints light and dark tones dark (same role, our hue). Do not map to pure black or pure white.
+If a product photo is attached, take primary/secondary/accent FROM that photo.
 Return STRICT JSON only:
 {"primary":"#rrggbb","secondary":"#rrggbb","accent":"#rrggbb","background":"#rrggbb","map":[{"from":"#old","to":"#new"}]}`;
 
