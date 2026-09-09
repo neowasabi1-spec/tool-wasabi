@@ -20,6 +20,7 @@ interface SelectedPage {
   url_to_swipe: string;
   prompt: string;
   funnel_name: string;
+  funnel_id?: string;
 }
 
 interface StagedImport extends SelectedPage {
@@ -319,8 +320,100 @@ function PageThumbnail({ url, alt, height = '180px', savedHtml, savedHtmlUrl }: 
   );
 }
 
+type TypeFolderPage = {
+  funnel_name: string;
+  funnel_id: string;
+  name: string;
+  url_to_swipe: string;
+  prompt: string;
+  category: string;
+  savedHtml: string | null;
+  savedHtmlUrl: string | null;
+  screenshotUrl: string | null;
+};
+
+function TypeFolderPageCard({
+  page,
+  pageType,
+  selected,
+  onToggle,
+  onPreview,
+  onSwipe,
+  onDelete,
+}: {
+  page: TypeFolderPage;
+  pageType: string;
+  selected: boolean;
+  onToggle: () => void;
+  onPreview: () => void;
+  onSwipe: () => void;
+  onDelete: () => void;
+}) {
+  return (
+    <div
+      className={`group bg-white rounded-2xl border overflow-hidden hover:shadow-xl hover:-translate-y-0.5 transition-all cursor-pointer ${
+        selected ? 'border-green-400 ring-2 ring-green-200' : 'border-gray-200 hover:border-indigo-300'
+      }`}
+      onClick={onToggle}
+    >
+      <div className="relative w-full h-[170px] overflow-hidden bg-gray-50">
+        {page.screenshotUrl
+          ? <img src={page.screenshotUrl} alt={page.name} className="w-full h-full object-cover object-top" />
+          : (page.savedHtml || page.savedHtmlUrl)
+            ? <PageThumbnail url="" savedHtml={page.savedHtml} savedHtmlUrl={page.savedHtmlUrl} alt={page.name} height="170px" />
+            : page.url_to_swipe && /^https?:\/\/.+\..+/.test(page.url_to_swipe)
+              ? <PageThumbnail url={page.url_to_swipe} alt={page.name} height="170px" />
+              : <div className="w-full h-full flex items-center justify-center text-gray-300"><FileCode className="w-8 h-8" /></div>
+        }
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onToggle(); }}
+          className="absolute top-2 left-2 z-10 p-1 rounded-md bg-white/90 shadow"
+          title={selected ? 'Deselect' : 'Select'}
+        >
+          {selected
+            ? <CheckSquare className="w-5 h-5 text-green-600" />
+            : <Square className="w-5 h-5 text-gray-400" />}
+        </button>
+        <div className="absolute inset-x-0 bottom-0 flex items-center justify-end gap-2 p-2 bg-gradient-to-t from-black/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity">
+          {(page.savedHtml || page.savedHtmlUrl || page.url_to_swipe) && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onPreview(); }}
+              className="p-2 bg-white/90 rounded-lg text-gray-700 hover:text-indigo-600 shadow"
+              title="Preview"
+            >
+              <Eye className="w-4 h-4" />
+            </button>
+          )}
+          {page.url_to_swipe && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onSwipe(); }}
+              className="p-2 bg-indigo-600 rounded-lg text-white hover:bg-indigo-700 shadow"
+              title="Use as template (Clone / Swipe)"
+            >
+              <Swords className="w-4 h-4" />
+            </button>
+          )}
+          <button
+            onClick={(e) => { e.stopPropagation(); onDelete(); }}
+            className="p-2 bg-white/90 rounded-lg text-gray-700 hover:text-red-600 shadow"
+            title="Delete"
+          >
+            <Trash2 className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+      <div className="p-3">
+        <p className="font-semibold text-sm text-gray-900 truncate">{page.name}</p>
+        {page.category && <p className="text-[10px] text-indigo-500 truncate">{page.category}</p>}
+        <p className="text-[10px] text-gray-400 truncate">from: {page.funnel_name}</p>
+      </div>
+    </div>
+  );
+}
+
 export default function TemplatesPage() {
-  const { templates, addTemplate, updateTemplate, deleteTemplate, customPageTypes, addCustomPageType, deleteCustomPageType, loadCustomPageTypes, archivedFunnels, archivedFunnelsLoaded, archivedFunnelsError, archivedFunnelsLoading, loadArchivedFunnels, deleteArchivedFunnel, deleteArchivedFunnelStep, setArchivedFunnelValchiriaFlag, reorderArchivedWalkSteps, reclassifyArchivedFunnelSteps, products, addFunnelPage, funnelPages, deleteFunnelPage } = useStore();
+  const { templates, addTemplate, updateTemplate, deleteTemplate, customPageTypes, addCustomPageType, deleteCustomPageType, loadCustomPageTypes, archivedFunnels, archivedFunnelsLoaded, archivedFunnelsError, archivedFunnelsLoading, loadArchivedFunnels, deleteArchivedFunnel, deleteArchivedFunnelStep, setArchivedFunnelValchiriaFlag, reorderArchivedWalkSteps, reclassifyArchivedFunnelSteps, assembleArchiveFromPages, products, addFunnelPage, funnelPages, deleteFunnelPage } = useStore();
   const [valchiriaTogglingId, setValchiriaTogglingId] = useState<string | null>(null);
   const router = useRouter();
   
@@ -332,6 +425,8 @@ export default function TemplatesPage() {
   const [selectedPages, setSelectedPages] = useState<SelectedPage[]>([]);
   const [selectedProductId, setSelectedProductId] = useState<string>('');
   const [isImporting, setIsImporting] = useState(false);
+  const [bundleName, setBundleName] = useState('');
+  const [savingBundle, setSavingBundle] = useState(false);
   const selectedStepProducts = useMemo(
     () => countProductsFromSteps(selectedPages),
     [selectedPages],
@@ -433,17 +528,44 @@ export default function TemplatesPage() {
     }
   };
 
+  const pageKey = (page: { funnel_name: string; name: string; url_to_swipe: string; funnel_id?: string }) =>
+    `${page.funnel_id || page.funnel_name}::${page.name}::${page.url_to_swipe}`;
+
+  const asSelected = (
+    p: { funnel_name: string; funnel_id: string; name: string; url_to_swipe: string; prompt: string },
+    pageType: string,
+  ): SelectedPage => ({
+    name: p.name,
+    page_type: pageType,
+    url_to_swipe: p.url_to_swipe,
+    prompt: p.prompt,
+    funnel_name: p.funnel_name,
+    funnel_id: p.funnel_id,
+  });
+
+  const toggleTypePages = (pages: SelectedPage[]) => {
+    const allOn = pages.length > 0 && pages.every((p) => isPageSelected(p));
+    if (allOn) {
+      const keys = new Set(pages.map(pageKey));
+      setSelectedPages((prev) => prev.filter((p) => !keys.has(pageKey(p))));
+    } else {
+      setSelectedPages((prev) => {
+        const have = new Set(prev.map(pageKey));
+        return [...prev, ...pages.filter((p) => !have.has(pageKey(p)))];
+      });
+    }
+  };
+
   const togglePage = useCallback((page: SelectedPage) => {
     setSelectedPages(prev => {
-      const key = `${page.funnel_name}::${page.name}::${page.url_to_swipe}`;
-      const exists = prev.some(p => `${p.funnel_name}::${p.name}::${p.url_to_swipe}` === key);
-      return exists ? prev.filter(p => `${p.funnel_name}::${p.name}::${p.url_to_swipe}` !== key) : [...prev, page];
+      const key = pageKey(page);
+      const exists = prev.some(p => pageKey(p) === key);
+      return exists ? prev.filter(p => pageKey(p) !== key) : [...prev, page];
     });
   }, []);
 
-  const isPageSelected = useCallback((page: { funnel_name: string; name: string; url_to_swipe: string }) => {
-    const key = `${page.funnel_name}::${page.name}::${page.url_to_swipe}`;
-    return selectedPages.some(p => `${p.funnel_name}::${p.name}::${p.url_to_swipe}` === key);
+  const isPageSelected = useCallback((page: { funnel_name: string; name: string; url_to_swipe: string; funnel_id?: string }) => {
+    return selectedPages.some(p => pageKey(p) === pageKey(page));
   }, [selectedPages]);
 
   const toggleFunnel = useCallback((funnel: ArchivedFunnel) => {
@@ -556,6 +678,75 @@ export default function TemplatesPage() {
 
   const removeStagedImport = (index: number) => {
     setStagedImports(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const sortSelectedForFunnel = useCallback((pages: SelectedPage[]) => {
+    const rank = new Map(BUILT_IN_PAGE_TYPE_OPTIONS.map((o, i) => [o.value as string, i]));
+    return pages
+      .map((p, i) => ({ p, i }))
+      .sort((a, b) => {
+        const ia = rank.get(a.p.page_type) ?? 500 + a.i;
+        const ib = rank.get(b.p.page_type) ?? 500 + b.i;
+        if (ia !== ib) return ia - ib;
+        return a.i - b.i;
+      })
+      .map(({ p }) => p);
+  }, []);
+
+  const resolveBundleName = () =>
+    bundleName.trim() || archiveSearch.trim() || `Funnel ${new Date().toLocaleDateString('en-GB')}`;
+
+  const handleSaveAsFunnel = async () => {
+    if (selectedPages.length === 0) return;
+    setSavingBundle(true);
+    try {
+      const ordered = sortSelectedForFunnel(selectedPages);
+      const created = await assembleArchiveFromPages(
+        resolveBundleName(),
+        ordered.map((p) => ({
+          funnelId: p.funnel_id || '',
+          name: p.name,
+          url: p.url_to_swipe,
+          pageType: p.page_type,
+        })),
+      );
+      setSelectedPages([]);
+      setBundleName('');
+      toast.success(`Saved “${created.name}” as a funnel (${ordered.length} steps)`);
+      setMainView('funnels');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Could not save funnel');
+    } finally {
+      setSavingBundle(false);
+    }
+  };
+
+  const handleSaveAsTemplates = async () => {
+    if (selectedPages.length === 0) return;
+    setSavingBundle(true);
+    try {
+      const tag = (bundleName.trim() || archiveSearch.trim() || 'archive').toLowerCase().slice(0, 40);
+      for (const page of selectedPages) {
+        await addTemplate({
+          name: page.name,
+          sourceUrl: page.url_to_swipe || '',
+          pageType: (page.page_type || 'landing') as PageType,
+          category: 'standard',
+          viewFormat: 'desktop',
+          tags: tag ? [tag] : [],
+          description: page.funnel_name ? `From ${page.funnel_name}` : undefined,
+        });
+      }
+      const n = selectedPages.length;
+      setSelectedPages([]);
+      setBundleName('');
+      toast.success(`Saved ${n} page${n === 1 ? '' : 's'} to Templates`);
+      setMainView('templates');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Could not save templates');
+    } finally {
+      setSavingBundle(false);
+    }
   };
 
   useEffect(() => {
@@ -971,6 +1162,7 @@ export default function TemplatesPage() {
       const filtered = pages.filter(p =>
         p.name.toLowerCase().includes(q) ||
         p.funnel_name.toLowerCase().includes(q) ||
+        (p.category || '').toLowerCase().includes(q) ||
         getPageTypeLabel(type).toLowerCase().includes(q)
       );
       if (filtered.length > 0) result[type] = filtered;
@@ -1271,7 +1463,7 @@ export default function TemplatesPage() {
                 type="text"
                 value={archiveSearch}
                 onChange={(e) => setArchiveSearch(e.target.value)}
-                placeholder="Search funnels, pages, types..."
+                placeholder="Search a name across folders…"
                 className="w-full pl-10 pr-4 py-2.5 bg-white border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
               />
               {archiveSearch && (
@@ -1749,8 +1941,95 @@ export default function TemplatesPage() {
               )}
             </div>
 
-            {/* Folder grid, or the opened folder's pages */}
-            {openType === null ? (
+            {/* Folder grid, search hits across folders, or one opened folder */}
+            {archiveSearch.trim() ? (
+              (() => {
+                const groups = typeFolderOptions
+                  .map((opt) => {
+                    const allPages = filteredPagesByType[opt.value] || [];
+                    const pages = selectedCategory
+                      ? allPages.filter((p) => (p.category || '') === selectedCategory)
+                      : allPages;
+                    return { opt, pages };
+                  })
+                  .filter((g) => g.pages.length > 0);
+                const allHits = groups.flatMap((g) => g.pages.map((p) => asSelected(p, g.opt.value)));
+                if (groups.length === 0) {
+                  return (
+                    <div className="bg-white rounded-xl border border-gray-200 p-12 text-center">
+                      <Search className="w-10 h-10 text-gray-300 mx-auto mb-3" />
+                      <p className="text-gray-500">No pages match “{archiveSearch.trim()}”.</p>
+                    </div>
+                  );
+                }
+                return (
+                  <div className="space-y-8">
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <p className="text-sm text-gray-600">
+                        <span className="font-semibold">{allHits.length}</span> page{allHits.length === 1 ? '' : 's'} in {groups.length} folder{groups.length === 1 ? '' : 's'}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => toggleTypePages(allHits)}
+                        className="text-sm text-indigo-600 hover:text-indigo-800 font-medium"
+                      >
+                        {allHits.every((p) => isPageSelected(p)) ? 'Deselect all' : 'Select all matching'}
+                      </button>
+                    </div>
+                    {groups.map(({ opt, pages }) => {
+                      const colorClass = PAGE_TYPE_CATEGORIES.find((c) => c.value === opt.category)?.color || 'bg-gray-100 text-gray-700';
+                      const selectedHere = pages.map((p) => asSelected(p, opt.value));
+                      return (
+                        <section key={opt.value} className="space-y-3">
+                          <div className="flex items-center gap-3">
+                            <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${colorClass}`}>{opt.label}</span>
+                            <span className="text-sm text-gray-400">{pages.length}</span>
+                            <button
+                              type="button"
+                              onClick={() => toggleTypePages(selectedHere)}
+                              className="ml-auto text-xs text-indigo-600 hover:text-indigo-800"
+                            >
+                              {selectedHere.every((p) => isPageSelected(p)) ? 'Deselect folder' : 'Select folder'}
+                            </button>
+                          </div>
+                          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+                            {pages.map((p, i) => {
+                              const sp = asSelected(p, opt.value);
+                              return (
+                                <TypeFolderPageCard
+                                  key={`${p.funnel_id}-${i}`}
+                                  page={p}
+                                  pageType={opt.value}
+                                  selected={isPageSelected(sp)}
+                                  onToggle={() => togglePage(sp)}
+                                  onPreview={() => setPagePreview({ isOpen: true, url: p.url_to_swipe, name: p.name, pageType: opt.value, savedHtml: p.savedHtml, savedHtmlUrl: p.savedHtmlUrl })}
+                                  onSwipe={() => router.push(`/front-end-funnel?swipe_url=${encodeURIComponent(p.url_to_swipe)}&swipe_name=${encodeURIComponent(p.name)}&swipe_type=${encodeURIComponent(opt.value)}`)}
+                                  onDelete={async () => {
+                                    const ok = await confirmDialog({
+                                      title: 'Delete page',
+                                      message: `Do you want to delete "${p.name}"? This action cannot be undone.`,
+                                      confirmText: 'Delete',
+                                      danger: true,
+                                    });
+                                    if (!ok) return;
+                                    try {
+                                      await deleteArchivedFunnel(p.funnel_id);
+                                      toast.success('Page deleted');
+                                    } catch {
+                                      toast.error('Delete failed');
+                                    }
+                                  }}
+                                />
+                              );
+                            })}
+                          </div>
+                        </section>
+                      );
+                    })}
+                  </div>
+                );
+              })()
+            ) : openType === null ? (
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
                 {typeFolderOptions.map((opt) => {
                   const typeValue = opt.value;
@@ -1817,6 +2096,7 @@ export default function TemplatesPage() {
                 : allPages;
               const catInfo = PAGE_TYPE_CATEGORIES.find((c) => c.value === opt?.category);
               const colorClass = catInfo?.color || 'bg-gray-100 text-gray-700';
+              const selectedHere = pages.map((p) => asSelected(p, openType));
               return (
                 <div className="space-y-4">
                   <div className="flex items-center gap-3 flex-wrap">
@@ -1826,6 +2106,15 @@ export default function TemplatesPage() {
                     <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${colorClass}`}>{opt?.label || openType}</span>
                     <span className="text-sm text-gray-400">{pages.length} {pages.length === 1 ? 'page' : 'pages'}</span>
                     {selectedCategory && <span className="text-xs text-indigo-500">· {selectedCategory}</span>}
+                    {pages.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => toggleTypePages(selectedHere)}
+                        className="ml-auto text-sm text-indigo-600 hover:text-indigo-800 font-medium"
+                      >
+                        {selectedHere.every((p) => isPageSelected(p)) ? 'Deselect all' : 'Select all in folder'}
+                      </button>
+                    )}
                   </div>
 
                   {pages.length === 0 ? (
@@ -1835,66 +2124,35 @@ export default function TemplatesPage() {
                     </div>
                   ) : (
                     <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
-                      {pages.map((p, i) => (
-                        <div key={i} className="group bg-white rounded-2xl border border-gray-200 overflow-hidden hover:shadow-xl hover:border-indigo-300 hover:-translate-y-0.5 transition-all">
-                          <div className="relative w-full h-[170px] overflow-hidden bg-gray-50">
-                            {p.screenshotUrl
-                              ? <img src={p.screenshotUrl} alt={p.name} className="w-full h-full object-cover object-top" />
-                              : (p.savedHtml || p.savedHtmlUrl)
-                                ? <PageThumbnail url="" savedHtml={p.savedHtml} savedHtmlUrl={p.savedHtmlUrl} alt={p.name} height="170px" />
-                                : p.url_to_swipe && /^https?:\/\/.+\..+/.test(p.url_to_swipe)
-                                  ? <PageThumbnail url={p.url_to_swipe} alt={p.name} height="170px" />
-                                  : <div className="w-full h-full flex items-center justify-center text-gray-300"><FileCode className="w-8 h-8" /></div>
-                            }
-                            <div className="absolute inset-x-0 bottom-0 flex items-center justify-end gap-2 p-2 bg-gradient-to-t from-black/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity">
-                              {(p.savedHtml || p.savedHtmlUrl || p.url_to_swipe) && (
-                                <button
-                                  onClick={() => setPagePreview({ isOpen: true, url: p.url_to_swipe, name: p.name, pageType: openType, savedHtml: p.savedHtml, savedHtmlUrl: p.savedHtmlUrl })}
-                                  className="p-2 bg-white/90 rounded-lg text-gray-700 hover:text-indigo-600 shadow"
-                                  title="Preview"
-                                >
-                                  <Eye className="w-4 h-4" />
-                                </button>
-                              )}
-                              {p.url_to_swipe && (
-                                <button
-                                  onClick={() => router.push(`/front-end-funnel?swipe_url=${encodeURIComponent(p.url_to_swipe)}&swipe_name=${encodeURIComponent(p.name)}&swipe_type=${encodeURIComponent(openType)}`)}
-                                  className="p-2 bg-indigo-600 rounded-lg text-white hover:bg-indigo-700 shadow"
-                                  title="Use as template (Clone / Swipe)"
-                                >
-                                  <Swords className="w-4 h-4" />
-                                </button>
-                              )}
-                              <button
-                                onClick={async () => {
-                                  const ok = await confirmDialog({
-                                    title: 'Delete page',
-                                    message: `Do you want to delete "${p.name}"? This action cannot be undone.`,
-                                    confirmText: 'Delete',
-                                    danger: true,
-                                  });
-                                  if (!ok) return;
-                                  try {
-                                    await deleteArchivedFunnel(p.funnel_id);
-                                    toast.success('Page deleted');
-                                  } catch {
-                                    toast.error('Delete failed');
-                                  }
-                                }}
-                                className="p-2 bg-white/90 rounded-lg text-gray-700 hover:text-red-600 shadow"
-                                title="Delete"
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
-                            </div>
-                          </div>
-                          <div className="p-3">
-                            <p className="font-semibold text-sm text-gray-900 truncate">{p.name}</p>
-                            {p.category && <p className="text-[10px] text-indigo-500 truncate">{p.category}</p>}
-                            <p className="text-[10px] text-gray-400 truncate">from: {p.funnel_name}</p>
-                          </div>
-                        </div>
-                      ))}
+                      {pages.map((p, i) => {
+                        const sp = asSelected(p, openType);
+                        return (
+                          <TypeFolderPageCard
+                            key={`${p.funnel_id}-${i}`}
+                            page={p}
+                            pageType={openType}
+                            selected={isPageSelected(sp)}
+                            onToggle={() => togglePage(sp)}
+                            onPreview={() => setPagePreview({ isOpen: true, url: p.url_to_swipe, name: p.name, pageType: openType, savedHtml: p.savedHtml, savedHtmlUrl: p.savedHtmlUrl })}
+                            onSwipe={() => router.push(`/front-end-funnel?swipe_url=${encodeURIComponent(p.url_to_swipe)}&swipe_name=${encodeURIComponent(p.name)}&swipe_type=${encodeURIComponent(openType)}`)}
+                            onDelete={async () => {
+                              const ok = await confirmDialog({
+                                title: 'Delete page',
+                                message: `Do you want to delete "${p.name}"? This action cannot be undone.`,
+                                confirmText: 'Delete',
+                                danger: true,
+                              });
+                              if (!ok) return;
+                              try {
+                                await deleteArchivedFunnel(p.funnel_id);
+                                toast.success('Page deleted');
+                              } catch {
+                                toast.error('Delete failed');
+                              }
+                            }}
+                          />
+                        );
+                      })}
                     </div>
                   )}
                 </div>
@@ -2897,6 +3155,35 @@ export default function TemplatesPage() {
                 </div>
 
                 <div className="flex-1" />
+
+                {mainView === 'byType' && (
+                  <>
+                    <input
+                      type="text"
+                      value={bundleName}
+                      onChange={(e) => setBundleName(e.target.value)}
+                      placeholder={archiveSearch.trim() ? `Name (default: ${archiveSearch.trim()})` : 'Name this funnel / template'}
+                      className="bg-gray-800 text-white border border-gray-700 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none min-w-[180px] max-w-[240px]"
+                    />
+                    <button
+                      onClick={handleSaveAsFunnel}
+                      disabled={savingBundle}
+                      className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium rounded-xl transition-colors"
+                    >
+                      {savingBundle ? <Loader2 className="w-4 h-4 animate-spin" /> : <FolderOpen className="w-4 h-4" />}
+                      Save as Funnel
+                    </button>
+                    <button
+                      onClick={handleSaveAsTemplates}
+                      disabled={savingBundle}
+                      className="flex items-center gap-2 px-4 py-2 bg-white/10 hover:bg-white/20 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium rounded-xl transition-colors border border-white/20"
+                    >
+                      <FileCode className="w-4 h-4" />
+                      Save as Template
+                    </button>
+                    <div className="h-6 w-px bg-gray-700" />
+                  </>
+                )}
 
                 <button
                   onClick={() => setSelectedPages([])}

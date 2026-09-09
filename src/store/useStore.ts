@@ -559,6 +559,11 @@ interface Store {
    *  Used by the "Retry" button in the empty state. */
   loadArchivedFunnels: (force?: boolean) => Promise<void>;
   saveCurrentFunnelAsArchive: (name: string, section?: string, pageIds?: string[]) => Promise<void>;
+  /** Copy selected archive pages (from By Type folders) into one new funnel. */
+  assembleArchiveFromPages: (
+    name: string,
+    pages: { funnelId: string; name: string; url: string; pageType: string }[],
+  ) => Promise<ArchivedFunnel>;
   deleteArchivedFunnel: (id: string) => Promise<void>;
   /** Delete a single step from a multi-step archived funnel. Removes the whole
    *  row if it was its last step. Server-side (service role) so it works
@@ -1674,6 +1679,40 @@ export const useStore = create<Store>()((set, get) => ({
       console.error('Error saving funnel to archive:', error);
       throw error;
     }
+  },
+
+  assembleArchiveFromPages: async (name, pages) => {
+    const label = String(name || '').trim();
+    if (!label) throw new Error('Name is required');
+    if (!pages.length) throw new Error('Select at least one page');
+    const all = get().archivedFunnels || [];
+    const steps = pages.map((item, idx) => {
+      const src = all.find((f) => f.id === item.funnelId);
+      const srcSteps = Array.isArray(src?.steps) ? (src!.steps as Record<string, unknown>[]) : [];
+      const match =
+        srcSteps.find((s) => {
+          const url = String(s.url_to_swipe || (s.cloned_data as { source_url?: string } | undefined)?.source_url || '');
+          const n = String(s.name || '');
+          return (item.url && url && url === item.url) || (item.name && n === item.name);
+        }) || srcSteps[0] || {};
+      return {
+        ...match,
+        step_index: idx + 1,
+        name: item.name || String(match.name || `Step ${idx + 1}`),
+        page_type: item.pageType || String(match.page_type || 'landing'),
+        url_to_swipe: item.url || String(match.url_to_swipe || ''),
+      };
+    });
+    const created = await supabaseOps.createArchivedFunnel({
+      name: label.slice(0, 120),
+      total_steps: steps.length,
+      steps: steps as unknown as import('@/types/database').Json,
+      section: 'funnel',
+    });
+    set((state) => ({
+      archivedFunnels: [created, ...state.archivedFunnels],
+    }));
+    return created;
   },
 
   deleteArchivedFunnel: async (id: string) => {
