@@ -6,6 +6,7 @@ import { parseSectionData } from '../../src/lib/project-sections';
 import { extractLandingMediaFromUrl, listLandingMedia, offerIdentityFromHtml } from '../../src/lib/landing-media';
 import { fetchPageText, pageTextBlock } from '../../src/lib/page-text';
 import { wellFormed } from '../../src/lib/well-formed';
+import { openaiGenerateImage, openaiImageKey } from '../../src/lib/openai-image';
 
 /**
  * Background function (up to 15 min) that RUNS the Project Autopilot pipeline
@@ -187,65 +188,38 @@ async function callClaude(opts: ClaudeOpts): Promise<string> {
 }
 
 // ---------------------------------------------------------------------------
-// Image generation via fal.ai — GPT Image 2 (ChatGPT Image 2), the same model
-// the app's /api/generate-image route uses (FAL_KEY). text2image for the main
-// product, image2image (edit) for upsells so they share the brand look.
+// Image generation via ChatGPT (OpenAI Images API, gpt-image-2).
+// text2image for the main product, image2image (edit) for upsells so they
+// share the brand look. Requires OPENAI_API_KEY.
 // ---------------------------------------------------------------------------
-
-const IMG_MODEL_T2I = process.env.PIPELINE_IMAGE_MODEL || 'openai/gpt-image-2';
-const IMG_MODEL_I2I = `${IMG_MODEL_T2I}/edit`;
 
 interface GenImage { data: Buffer; mimeType: string; }
 
-function falKey(): string { return process.env.FAL_KEY || process.env.FAL_AI_API_KEY || ''; }
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-
-/** Submit a fal.ai image job and poll until it completes; returns the image
- *  URL fal hosts, or null on any failure. Runs inside the 15-min background
- *  budget, so an internal poll loop is fine (no Netlify 10s wall here). */
-async function falGenerateImageUrl(
-  endpoint: string,
+async function generateImageUrl(
+  kind: 't2i' | 'i2i',
   input: Record<string, unknown>,
   timeoutMs = 240_000,
 ): Promise<string | null> {
-  const key = falKey();
-  if (!key) return null;
-  try {
-    const sub = await fetch(`https://queue.fal.run/${endpoint}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Key ${key}` },
-      body: JSON.stringify(input),
-      signal: AbortSignal.timeout(30_000),
-    });
-    if (!sub.ok) { console.warn('[pipeline] fal submit', sub.status, (await sub.text()).slice(0, 300)); return null; }
-    const s = await sub.json() as { status_url?: string; response_url?: string };
-    if (!s.status_url || !s.response_url) return null;
-
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      await sleep(3_000);
-      const st = await fetch(s.status_url, { headers: { Authorization: `Key ${key}` }, cache: 'no-store' });
-      if (!st.ok) continue;
-      const sj = await st.json() as { status?: string; error?: string };
-      if (sj.status === 'COMPLETED') {
-        const rr = await fetch(s.response_url, { headers: { Authorization: `Key ${key}` }, cache: 'no-store' });
-        if (!rr.ok) return null;
-        const result = await rr.json() as { images?: Array<{ url?: string }> };
-        return result?.images?.[0]?.url || null;
-      }
-      if (sj.status === 'ERROR') { console.warn('[pipeline] fal job error', sj.error); return null; }
-    }
-    console.warn('[pipeline] fal job timed out');
-    return null;
-  } catch (e) {
-    console.warn('[pipeline] fal image threw:', (e as Error).message);
-    return null;
-  }
+  const urls = Array.isArray(input.image_urls) ? (input.image_urls as string[]) : [];
+  return openaiGenerateImage({
+    prompt: String(input.prompt || ''),
+    imageUrls: kind === 'i2i' || urls.length ? urls : undefined,
+    size: String(input.image_size || '1024x1024'),
+    quality: String(input.quality || 'medium'),
+    timeoutMs,
+  });
 }
 
-/** Download a generated image URL into a Buffer for permanent storage. */
+/** Download a generated image URL (or data URL) into a Buffer for storage. */
 async function downloadImage(url: string): Promise<GenImage | null> {
   try {
+    if (url.startsWith('data:')) {
+      const m = url.match(/^data:([^;]+);base64,(.+)$/);
+      if (!m) return null;
+      const buf = Buffer.from(m[2], 'base64');
+      if (buf.length < 100) return null;
+      return { data: buf, mimeType: m[1] || 'image/png' };
+    }
     const res = await fetch(url, { signal: AbortSignal.timeout(60_000) });
     if (!res.ok) return null;
     const mimeType = res.headers.get('content-type') || 'image/png';
@@ -771,8 +745,8 @@ async function generateProductImages(
   const upsellCount = funnel ? funnel.upsells : 0;
   const images: Array<{ name: string; url: string; role: string }> = [];
 
-  if (!falKey()) {
-    return { saved: 0, total: 1 + upsellCount, note: 'image generation skipped: FAL_KEY not configured.', mainImageUrl: null, images };
+  if (!openaiImageKey()) {
+    return { saved: 0, total: 1 + upsellCount, note: 'image generation skipped: OPENAI_API_KEY not configured.', mainImageUrl: null, images };
   }
 
   const specRaw = await callClaude({
@@ -791,18 +765,16 @@ The "upsells" array MUST contain EXACTLY ${upsellCount} items${upsellCount === 0
 
   let saved = 0;
   let mainImageUrl: string | null = null;
-  let mainRefUrl: string | null = null; // a public URL fal can fetch for edits
+  let mainRefUrl: string | null = null;
 
-  const mainFalUrl = await falGenerateImageUrl(IMG_MODEL_T2I, {
+  const mainUrl = await generateImageUrl('t2i', {
     prompt: buildPackshotPrompt(spec.main.imagePrompt),
     image_size: 'square_hd',
     quality: 'medium',
-    num_images: 1,
-    output_format: 'png',
   });
-  if (mainFalUrl) {
-    mainRefUrl = mainFalUrl;
-    const dl = await downloadImage(mainFalUrl);
+  if (mainUrl) {
+    mainRefUrl = mainUrl;
+    const dl = await downloadImage(mainUrl);
     if (dl) {
       const stored = await saveProductImage(supabase, projectId, `Product — ${spec.main.name}`, dl);
       if (stored) { mainImageUrl = stored; mainRefUrl = stored; saved++; images.push({ name: spec.main.name, url: stored, role: 'Main product' }); }
@@ -813,28 +785,22 @@ The "upsells" array MUST contain EXACTLY ${upsellCount} items${upsellCount === 0
   for (const up of spec.upsells) {
     upIdx++;
     const prompt = `${buildPackshotPrompt(up.imagePrompt)} It belongs to the SAME product family/brand as the reference image — keep the same palette, packaging style and branding.`;
-    // If we have the main image, do an image2image edit so the upsell matches;
-    // otherwise fall back to a text2image with a strong "same line" prompt.
-    const upFalUrl = mainRefUrl
-      ? await falGenerateImageUrl(IMG_MODEL_I2I, {
+    const upUrl = mainRefUrl
+      ? await generateImageUrl('i2i', {
           prompt,
           image_urls: [mainRefUrl],
           image_size: 'auto',
           quality: 'medium',
-          num_images: 1,
-          output_format: 'png',
         })
-      : await falGenerateImageUrl(IMG_MODEL_T2I, {
+      : await generateImageUrl('t2i', {
           prompt,
           image_size: 'square_hd',
           quality: 'medium',
-          num_images: 1,
-          output_format: 'png',
         });
-    if (upFalUrl) {
-      const dl = await downloadImage(upFalUrl);
+    if (upUrl) {
+      const dl = await downloadImage(upUrl);
       const stored = dl ? await saveProductImage(supabase, projectId, `Upsell ${upIdx} — ${up.name}`, dl) : null;
-      const finalUrl = stored || upFalUrl;
+      const finalUrl = stored || upUrl;
       saved++;
       images.push({ name: up.name, url: finalUrl, role: `Upsell ${upIdx}` });
     }

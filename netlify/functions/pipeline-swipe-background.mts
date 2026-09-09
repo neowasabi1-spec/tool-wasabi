@@ -30,6 +30,7 @@ import { placeMediaWithAi } from '../../src/lib/restyle-place';
 import { wellFormed } from '../../src/lib/well-formed';
 import { fetchPageText } from '../../src/lib/page-text';
 import { batchKeepingGroups, buildSwipePlan, orderAndLinkFragments, planRules } from '../../src/lib/swipe-plan';
+import { openaiGenerateImage, openaiImageKey } from '../../src/lib/openai-image';
 
 /**
  * Background function (up to 15 min) that performs the Chimera Protocol
@@ -59,8 +60,8 @@ import { batchKeepingGroups, buildSwipePlan, orderAndLinkFragments, planRules } 
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
 const MODEL = process.env.PIPELINE_SWIPE_MODEL || 'claude-opus-4-8';
-const IMG_MODEL_T2I = process.env.PIPELINE_IMAGE_MODEL || 'openai/gpt-image-2';
-const IMG_MODEL_I2I = `${IMG_MODEL_T2I}/edit`;
+const IMG_MODEL_T2I = 't2i';
+const IMG_MODEL_I2I = 'i2i';
 const PROJECT_FILES_BUCKET = 'project-files';
 
 const GLOBAL_BUDGET_MS = 8 * 60_000;
@@ -180,68 +181,25 @@ async function callClaudeVision(
 }
 
 // ---------------------------------------------------------------------------
-// fal.ai — GPT Image 2 (same queue API as pipeline-run-background)
+// ChatGPT Images (OpenAI /v1/images) — not fal
 // ---------------------------------------------------------------------------
 
-function falKey(): string { return process.env.FAL_KEY || process.env.FAL_AI_API_KEY || ''; }
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-
-async function falGenerateImageUrl(
+async function generateImageUrl(
   endpoint: string,
   input: Record<string, unknown>,
   timeoutMs = 180_000,
   onTick?: () => Promise<void>,
 ): Promise<string | null> {
-  const key = falKey();
-  if (!key) {
-    console.warn('[swipe] fal: FAL_KEY missing');
-    return null;
-  }
-  try {
-    const sub = await fetch(`https://queue.fal.run/${endpoint}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Key ${key}` },
-      body: JSON.stringify(input),
-      signal: AbortSignal.timeout(30_000),
-    });
-    if (!sub.ok) {
-      console.warn('[swipe] fal submit', endpoint, sub.status, (await sub.text()).slice(0, 300));
-      return null;
-    }
-    const s = await sub.json() as {
-      request_id?: string;
-      status_url?: string;
-      response_url?: string;
-    };
-    const statusUrl = s.status_url
-      || (s.request_id ? `https://queue.fal.run/${endpoint}/requests/${s.request_id}/status` : '');
-    const responseUrl = s.response_url
-      || (s.request_id ? `https://queue.fal.run/${endpoint}/requests/${s.request_id}` : '');
-    if (!statusUrl || !responseUrl) {
-      console.warn('[swipe] fal submit missing urls', endpoint, JSON.stringify(s).slice(0, 200));
-      return null;
-    }
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      await sleep(3_000);
-      if (onTick) await onTick().catch(() => undefined);
-      const st = await fetch(statusUrl, { headers: { Authorization: `Key ${key}` }, cache: 'no-store' });
-      if (!st.ok) continue;
-      const sj = await st.json() as { status?: string; error?: string };
-      if (sj.status === 'COMPLETED') {
-        const rr = await fetch(responseUrl, { headers: { Authorization: `Key ${key}` }, cache: 'no-store' });
-        if (!rr.ok) return null;
-        const result = await rr.json() as { images?: Array<{ url?: string }> };
-        return result?.images?.[0]?.url || null;
-      }
-      if (sj.status === 'ERROR') { console.warn('[swipe] fal job error', endpoint, sj.error); return null; }
-    }
-    console.warn('[swipe] fal timed out', endpoint);
-    return null;
-  } catch (e) {
-    console.warn('[swipe] fal threw:', endpoint, (e as Error).message);
-    return null;
-  }
+  const urls = Array.isArray(input.image_urls) ? (input.image_urls as string[]) : [];
+  const isEdit = endpoint === IMG_MODEL_I2I || urls.length > 0;
+  return openaiGenerateImage({
+    prompt: String(input.prompt || ''),
+    imageUrls: isEdit ? urls : undefined,
+    size: String(input.image_size || 'auto'),
+    quality: String(input.quality || 'medium'),
+    timeoutMs,
+    onTick,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -963,8 +921,8 @@ async function downloadForVision(url: string): Promise<{ mediaType: string; b64:
   return { mediaType: got.mediaType, b64: got.buf.toString('base64') };
 }
 
-/** Re-host a competitor photo on our public bucket so fal can fetch it.
- *  Their CDNs usually block fal's crawler — that's why I2I was dying on photo 1. */
+/** Re-host a competitor photo on our public bucket so ChatGPT can fetch it.
+ *  Their CDNs often block image-edit crawlers — that's why I2I was dying on photo 1. */
 async function hostImageForFal(
   sb: SupabaseClient,
   projectId: string,
@@ -1037,13 +995,22 @@ async function ensureBucket(sb: SupabaseClient): Promise<void> {
   _bucketEnsured = true;
 }
 
-async function storeGeneratedImage(sb: SupabaseClient, projectId: string, falUrl: string, idx: number): Promise<string | null> {
+async function storeGeneratedImage(sb: SupabaseClient, projectId: string, src: string, idx: number): Promise<string | null> {
   try {
-    const res = await fetch(falUrl, { signal: AbortSignal.timeout(60_000) });
-    if (!res.ok) return null;
-    const buf = Buffer.from(await res.arrayBuffer());
+    let buf: Buffer;
+    let ct = 'image/png';
+    if (src.startsWith('data:')) {
+      const m = src.match(/^data:([^;]+);base64,(.+)$/);
+      if (!m) return null;
+      ct = m[1] || 'image/png';
+      buf = Buffer.from(m[2], 'base64');
+    } else {
+      const res = await fetch(src, { signal: AbortSignal.timeout(60_000) });
+      if (!res.ok) return null;
+      buf = Buffer.from(await res.arrayBuffer());
+      ct = res.headers.get('content-type') || 'image/png';
+    }
     if (buf.length < 100) return null;
-    const ct = res.headers.get('content-type') || 'image/png';
     const ext = /jpeg|jpg/.test(ct) ? 'jpg' : /webp/.test(ct) ? 'webp' : 'png';
     await ensureBucket(sb);
     const key = `${projectId}/swipe_image/${Date.now()}_${idx}.${ext}`;
@@ -1294,10 +1261,14 @@ async function applyAffiliateMedia(
   used: Set<string>,
   pageUrl = '',
   productName = '',
-  opts: { projectId?: string; description?: string; brief?: string; deadline?: number; onTick?: () => Promise<void> } = {},
+  opts: { projectId?: string; description?: string; brief?: string; story?: string; deadline?: number; onTick?: () => Promise<void> } = {},
 ): Promise<{ html: string; placed: number; videos: number; generated: number }> {
   let out = html;
-  const canGenerate = !!falKey();
+  const canGenerate = !!openaiImageKey();
+  // Illustrations are the page's story in pictures: one per section the reader
+  // actually looks at. 8 was too few for a long advertorial, so the model was
+  // filling story slots with the same product photo.
+  const MAX_GENERATE = 18;
   // The whole page: a long advertorial has 100+ media tags and every product
   // shot after the first 40 would otherwise stay the competitor's.
   const slots = collectRestyleSlots(out, 100, pageUrl);
@@ -1321,10 +1292,14 @@ async function applyAffiliateMedia(
       // when the library has nothing that shows what the new copy says.
       convert: true,
       canGenerate,
+      story: opts.story,
+      maxGenerate: MAX_GENERATE,
       slots: slots.map((s) => ({
         id: s.id,
         kind: s.kind,
-        context: s.context || s.alt || '',
+        // The alt text describes the OLD product's picture ("woman taking her
+        // capsule"): keep only the rewritten copy around the slot.
+        context: (s.alt && (s.context || '').startsWith(s.alt) ? (s.context || '').slice(s.alt.length) : s.context || '').trim(),
         src: s.src,
         poster: s.poster,
         width: s.width,
@@ -1346,7 +1321,7 @@ async function applyAffiliateMedia(
   let placed = 0;
   let vids = 0;
   let generated = 0;
-  const NO_PRODUCT = 'Illustration only: do NOT show any product, packaging, sachet, stick, box, label or brand text. No text, no watermark. Photorealistic editorial style.';
+  const NO_PRODUCT = 'Illustration only, photorealistic editorial style. Show the situation or the outcome described above — never the act of consuming anything: no pills, capsules, tablets, medication, syringes or supplements, nobody swallowing or holding them. Do NOT show any product, packaging, sachet, stick, box, label or brand text. No text, no watermark.';
   const deadline = opts.deadline || Number.POSITIVE_INFINITY;
   const genQueue: Array<{ slot: (typeof slots)[number]; prompt: string }> = [];
   for (const slot of slots) {
@@ -1373,7 +1348,7 @@ async function applyAffiliateMedia(
       const size = slot.width && slot.height
         ? (slot.width / slot.height >= 1.4 ? 'landscape_4_3' : slot.width / slot.height <= 0.75 ? 'portrait_4_3' : 'square_hd')
         : 'landscape_4_3';
-      const falUrl = await falGenerateImageUrl(
+      const falUrl = await generateImageUrl(
         IMG_MODEL_T2I,
         { num_images: 1, output_format: 'png', quality: 'medium', prompt: `${prompt.slice(0, 1400)}\n\n${NO_PRODUCT}`, image_size: size },
         120_000,
@@ -1389,7 +1364,7 @@ async function applyAffiliateMedia(
     }
   };
   if (genQueue.length) await Promise.all(Array.from({ length: Math.min(GEN_CONCURRENCY, genQueue.length) }, genWorker));
-  if (!canGenerate && assignments.some((a) => a.generate)) console.warn('[swipe] affiliate: illustrations requested but FAL_KEY missing');
+  if (!canGenerate && assignments.some((a) => a.generate)) console.warn('[swipe] affiliate: illustrations requested but OPENAI_API_KEY missing');
 
   if (paints.length) out = applyPaintedMedia(out, paints);
   out = sealPaintedHtml(out);
@@ -1428,7 +1403,7 @@ async function restyleVideos(
     const prompt = spec
       ? `Unique video poster ${i + 1}/${slots.length} for a ${slot.section} clip. ${spec.stylePrefix}. Casting: ${spec.avatar}. Product: ${ctx.productName}. Cinematic still, no competitor brands.`
       : `Unique cinematic still ${i + 1} for ${ctx.productName} (${slot.section}). No competitor brands.`;
-    const falUrl = await falGenerateImageUrl(
+    const falUrl = await generateImageUrl(
       IMG_MODEL_T2I,
       { num_images: 1, output_format: 'png', quality: 'medium', prompt: prompt.slice(0, 1800), image_size: 'landscape_16_9' },
       90_000,
@@ -1550,7 +1525,7 @@ Surrounding page copy: ${img.context || '(none)'}`;
     const common = { num_images: 1, output_format: 'png', quality: 'medium' as const };
     let falUrl: string | null = null;
     if (restyle && !isGif && refs.length && Date.now() < deadline - 70_000) {
-      falUrl = await falGenerateImageUrl(
+      falUrl = await generateImageUrl(
         IMG_MODEL_I2I,
         { ...common, prompt: i2iPrompt.slice(0, 1800), image_urls: refs, image_size: 'auto' },
         90_000,
@@ -1558,7 +1533,7 @@ Surrounding page copy: ${img.context || '(none)'}`;
       );
     }
     if (!falUrl && Date.now() < deadline - 50_000) {
-      falUrl = await falGenerateImageUrl(
+      falUrl = await generateImageUrl(
         IMG_MODEL_T2I,
         { ...common, prompt: t2iPrompt.slice(0, 1800), image_size: falImageSize(img) },
         120_000,
@@ -1676,6 +1651,8 @@ async function processPage(
   let textsCount = 0;
   let newTitle = '';
   let changes: Array<{ from: string; to: string }> = [];
+  /** Page-level swipe plan: what the rewritten copy is about — the illustrations follow it. */
+  let swipeStory = '';
 
   await touchPage(sb, page.funnelPageId, resume
     ? `Worker running — photo batch from ${imageOffset + 1}…`
@@ -1742,6 +1719,7 @@ async function processPage(
             language: outLang,
             timeoutMs: 50_000,
           });
+          swipeStory = plan;
           const system = `You are a world-class direct-response copywriter doing a SWIPE: a proven competitor page is the template (same sections, same persuasion sequence, same energy) and you re-author every piece of copy so it sells ONLY one specific product — ours — without changing HTML structure downstream.
 
 PRODUCT NAME: ${ctx.productName}
@@ -1804,16 +1782,21 @@ CRITICAL RULES:
       );
       const stills = offer.filter((m) => m.kind === 'image' || m.kind === 'gif');
       const videos = offer.filter((m) => m.kind === 'video');
-      if (stills.length || videos.length) {
+      // An empty offer library is not a reason to leave the competitor's
+      // pictures on the page: the illustrations get generated from the copy.
+      if (stills.length || videos.length || openaiImageKey()) {
         const applied = await applyAffiliateMedia(sb, html, stills, videos, ctx.mediaUsed, page.sourceUrl || '', ctx.productName, {
           projectId: ctx.projectId,
-          description: [ctx.description, ctx.offerPage].filter(Boolean).join('\n').slice(0, 1200),
+          description: [ctx.description, ctx.offerPage].filter(Boolean).join('\n').slice(0, 1500),
           brief: ctx.brief,
+          story: swipeStory,
           deadline,
           onTick: () => touchPage(sb, page.funnelPageId, `${replacements}/${textsCount} texts rewritten — illustrating the new copy…`),
         });
         html = applied.html;
         imgRes = { html, generated: applied.generated, productSwaps: 0, analyzed: 0, placed: applied.placed, videos: applied.videos, remaining: 0, total: 0, processed: 0 };
+      } else {
+        console.warn('[swipe] affiliate: no offer media and no OPENAI_API_KEY — pictures left as they are');
       }
     } else if (photosNeedOwnRun) {
       const n = collectImages(html, page.sourceUrl, true).length;
