@@ -1,4 +1,5 @@
 import { supabase } from './supabase';
+import { slugifyPageTypeLabel } from '@/types';
 import type {
   Product,
   ProductInsert,
@@ -184,32 +185,56 @@ export async function fetchTemplates(): Promise<SwipeTemplate[]> {
 }
 
 export async function createTemplate(template: SwipeTemplateInsert): Promise<SwipeTemplate> {
-  const { data, error } = await supabase
+  const requested = sanitizePageTypeForDb(template.page_type);
+  let payload: SwipeTemplateInsert = { ...template, page_type: requested };
+  let { data, error } = await supabase
     .from('swipe_templates')
-    .insert(template)
+    .insert(payload)
     .select()
     .single();
-  
+
+  if (error && isPageTypeEnumError(error)) {
+    payload = { ...payload, page_type: legacyEnumPageType(requested) };
+    const retry = await supabase.from('swipe_templates').insert(payload).select().single();
+    data = retry.data;
+    error = retry.error;
+    if (!error && data) return withRequestedPageType(data, requested);
+  }
+
   if (error) {
     console.error('Error creating template:', error);
     throw error;
   }
-  return data;
+  return data!;
 }
 
 export async function updateTemplate(id: string, updates: SwipeTemplateUpdate): Promise<SwipeTemplate> {
-  const { data, error } = await supabase
+  const requested =
+    updates.page_type !== undefined ? sanitizePageTypeForDb(updates.page_type) : undefined;
+  let payload: SwipeTemplateUpdate = {
+    ...updates,
+    ...(requested !== undefined ? { page_type: requested } : {}),
+  };
+  let { data, error } = await supabase
     .from('swipe_templates')
-    .update(updates)
+    .update(payload)
     .eq('id', id)
     .select()
     .single();
-  
+
+  if (error && requested !== undefined && isPageTypeEnumError(error)) {
+    payload = { ...payload, page_type: legacyEnumPageType(requested) };
+    const retry = await supabase.from('swipe_templates').update(payload).eq('id', id).select().single();
+    data = retry.data;
+    error = retry.error;
+    if (!error && data) return withRequestedPageType(data, requested);
+  }
+
   if (error) {
     console.error('Error updating template:', error);
     throw error;
   }
-  return data;
+  return requested !== undefined && data ? withRequestedPageType(data, requested) : data!;
 }
 
 export async function deleteTemplate(id: string): Promise<void> {
@@ -262,16 +287,14 @@ export async function fetchFunnelPages(): Promise<FunnelPage[]> {
 // =====================================================
 // PAGE TYPE SANITIZATION
 // =====================================================
-// The Supabase enum `page_type` only allows 8 values, but the app's PageType
-// union (src/types/index.ts BuiltInPageType) has 32+ values plus arbitrary
-// custom strings. Inserting an unsupported value causes Postgres error 22P02:
-// `invalid input value for enum page_type: "vsl"`.
-//
-// Until we extend the DB enum (see supabase-migration-page-type-enum.sql) we
-// must MAP every app PageType to one of the 8 valid DB values before any
-// insert/update on funnel_pages.
+// Clone/Swipe TYPE used to collapse everything outside the original 8-value
+// enum (`landing`, `checkout`, `product_page`, …) to `altro`. The native
+// <select> has no `altro` option, so the browser displayed the first option
+// (Bridge Page). Persist the slug the user picked; if the column is still an
+// enum and Postgres rejects it (22P02), retry with a legacy fallback but keep
+// the requested type on the returned row so the UI does not jump.
 
-const VALID_DB_PAGE_TYPES = new Set<PageType>([
+const LEGACY_ENUM_PAGE_TYPES = new Set<string>([
   '5_reasons_listicle',
   'quiz_funnel',
   'landing',
@@ -282,8 +305,7 @@ const VALID_DB_PAGE_TYPES = new Set<PageType>([
   'altro',
 ]);
 
-const PAGE_TYPE_FALLBACK: Record<string, PageType> = {
-  // Pre-sell / top-of-funnel grouped under advertorial
+const PAGE_TYPE_ENUM_FALLBACK: Record<string, string> = {
   listicle: '5_reasons_listicle',
   '5_reasons_listicle': '5_reasons_listicle',
   native_ad: 'advertorial',
@@ -292,47 +314,69 @@ const PAGE_TYPE_FALLBACK: Record<string, PageType> = {
   article: 'advertorial',
   content_page: 'advertorial',
   review: 'advertorial',
-  // Video / webinar / bridge → landing
   vsl: 'landing',
   webinar: 'landing',
   bridge_page: 'landing',
-  // Landing & opt-in → landing
   landing: 'landing',
   opt_in: 'landing',
   squeeze_page: 'landing',
   lead_magnet: 'landing',
-  // Quiz family
+  quiz: 'quiz_funnel',
   quiz_funnel: 'quiz_funnel',
   survey: 'quiz_funnel',
   assessment: 'quiz_funnel',
-  // Sales pages → product_page
+  lst: 'product_page',
+  tsl: 'product_page',
   sales_letter: 'product_page',
   product_page: 'product_page',
   offer_page: 'product_page',
-  // Checkout family
   checkout: 'checkout',
   order_confirmation: 'checkout',
-  // Post-purchase has no dedicated DB enum value → altro
   thank_you: 'altro',
   upsell: 'altro',
+  upsell_1: 'altro',
+  upsell_2: 'altro',
+  upsell_3: 'altro',
   downsell: 'altro',
+  downsell_1: 'altro',
+  downsell_2: 'altro',
+  downsell_3: 'altro',
   oto: 'altro',
   membership: 'altro',
-  // Compliance → safe_page
   safe_page: 'safe_page',
   privacy: 'safe_page',
   terms: 'safe_page',
   disclaimer: 'safe_page',
-  // Other
   other: 'altro',
   altro: 'altro',
 };
 
 export function sanitizePageTypeForDb(value: PageType | undefined | null): PageType {
-  if (!value) return 'landing';
-  if (VALID_DB_PAGE_TYPES.has(value as PageType)) return value as PageType;
-  const mapped = PAGE_TYPE_FALLBACK[String(value).toLowerCase()];
-  return mapped ?? 'altro';
+  const raw = String(value || '').trim();
+  if (!raw) return 'landing';
+  const slug = slugifyPageTypeLabel(raw) || raw;
+  return (slug || 'landing') as PageType;
+}
+
+function legacyEnumPageType(value: PageType | undefined | null): PageType {
+  const slug = String(sanitizePageTypeForDb(value) || '').toLowerCase();
+  if (LEGACY_ENUM_PAGE_TYPES.has(slug)) return slug as PageType;
+  const mapped = PAGE_TYPE_ENUM_FALLBACK[slug];
+  return (mapped || 'altro') as PageType;
+}
+
+function isPageTypeEnumError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const code = String((err as { code?: unknown }).code || '');
+  const msg = String((err as { message?: unknown }).message || '');
+  return code === '22P02' || /invalid input value for enum page_type/i.test(msg);
+}
+
+function withRequestedPageType<T extends { page_type?: PageType | string | null }>(
+  row: T,
+  requested: PageType,
+): T {
+  return { ...row, page_type: requested };
 }
 
 // Postgres `statement_timeout` for the Supabase `anon` role is 3s by default.
@@ -421,9 +465,10 @@ function isMissingColumnError(err: unknown, column: string): boolean {
 }
 
 export async function createFunnelPage(page: FunnelPageInsert): Promise<FunnelPage> {
+  const requested = sanitizePageTypeForDb(page.page_type);
   const safePage: FunnelPageInsert = {
     ...sanitizeFunnelPagePayload(page),
-    page_type: sanitizePageTypeForDb(page.page_type),
+    page_type: requested,
   };
 
   let { data, error } = await supabase
@@ -452,6 +497,24 @@ export async function createFunnelPage(page: FunnelPageInsert): Promise<FunnelPa
     error = retry.error;
   }
 
+  if (error && isPageTypeEnumError(error)) {
+    const fallback = legacyEnumPageType(requested);
+    console.warn(
+      `[funnel_pages] enum rejected page_type="${requested}" — retrying as "${fallback}". Run supabase-migration-page-type-text.sql`,
+    );
+    insertPayload = { ...insertPayload, page_type: fallback };
+    const retry = await supabase
+      .from('funnel_pages')
+      .insert(insertPayload)
+      .select()
+      .single();
+    data = retry.data;
+    error = retry.error;
+    if (!error && data) {
+      return withRequestedPageType(data, requested);
+    }
+  }
+
   if (error) {
     console.error('Error creating funnel page:', error, '\nOriginal page_type:', page.page_type, '→ sanitized:', safePage.page_type);
     throw error;
@@ -460,11 +523,11 @@ export async function createFunnelPage(page: FunnelPageInsert): Promise<FunnelPa
 }
 
 export async function updateFunnelPage(id: string, updates: FunnelPageUpdate): Promise<FunnelPage> {
+  const requested =
+    updates.page_type !== undefined ? sanitizePageTypeForDb(updates.page_type) : undefined;
   const safeUpdates: FunnelPageUpdate = {
     ...sanitizeFunnelPagePayload(updates),
-    ...(updates.page_type !== undefined
-      ? { page_type: sanitizePageTypeForDb(updates.page_type) }
-      : {}),
+    ...(requested !== undefined ? { page_type: requested } : {}),
   };
 
   let { data, error } = await supabase
@@ -492,11 +555,32 @@ export async function updateFunnelPage(id: string, updates: FunnelPageUpdate): P
     error = retry.error;
   }
 
+  if (error && requested !== undefined && isPageTypeEnumError(error)) {
+    const fallback = legacyEnumPageType(requested);
+    console.warn(
+      `[funnel_pages] enum rejected page_type="${requested}" — retrying as "${fallback}". Run supabase-migration-page-type-text.sql`,
+    );
+    updatePayload = { ...updatePayload, page_type: fallback };
+    const retry = await supabase
+      .from('funnel_pages')
+      .update(updatePayload)
+      .eq('id', id)
+      .select()
+      .single();
+    data = retry.data;
+    error = retry.error;
+    if (!error && data) {
+      return withRequestedPageType(data, requested);
+    }
+  }
+
   if (error) {
     console.error('Error updating funnel page:', error);
     throw error;
   }
-  return data!;
+  return requested !== undefined && data
+    ? withRequestedPageType(data, requested)
+    : data!;
 }
 
 export async function deleteFunnelPage(id: string): Promise<void> {

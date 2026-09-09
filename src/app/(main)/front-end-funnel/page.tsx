@@ -6375,6 +6375,13 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                 }
                               }}
                             >
+                              {page.pageType &&
+                                page.pageType !== '__new__' &&
+                                !allPageTypeOptions.some((o) => o.value === page.pageType) && (
+                                <option value={page.pageType}>
+                                  {getPageTypeLabel(page.pageType)}
+                                </option>
+                              )}
                               {PAGE_TYPE_CATEGORIES.map((category) => {
                                 const categoryOptions = groupedPageTypes[category.value] || [];
                                 if (categoryOptions.length === 0) return null;
@@ -6437,6 +6444,10 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                           className="truncate"
                         >
                           <option value="">Template...</option>
+                          {page.templateId &&
+                            !(templates || []).some((t) => t.id === page.templateId) && (
+                            <option value={page.templateId}>Saved template</option>
+                          )}
                           {(templates || []).filter(t => (t.category || 'standard') === 'standard').length > 0 && (
                             <optgroup label="📄 Standard Templates">
                               {(templates || [])

@@ -1252,6 +1252,9 @@ export const useStore = create<Store>()((set, get) => ({
           const fromDb = dbFunnelPageToApp(updated);
           return {
             ...fromDb,
+            // Keep the TYPE the user picked when the DB enum still
+            // collapses unknown slugs (otherwise the <select> jumps to Bridge).
+            pageType: page.pageType ?? fromDb.pageType,
             clonedData: mergeJsonbWithLocalHtml(fromDb.clonedData, p.clonedData),
             swipedData: mergeJsonbWithLocalHtml(fromDb.swipedData, p.swipedData),
             extractedData: mergeJsonbWithLocalHtml(fromDb.extractedData, p.extractedData),
