@@ -7,6 +7,7 @@ import { extractLandingMediaFromUrl, listLandingMedia, offerIdentityFromHtml } f
 import { fetchPageText, pageTextBlock } from '../../src/lib/page-text';
 import { wellFormed } from '../../src/lib/well-formed';
 import { openaiGenerateImage, openaiImageKey } from '../../src/lib/openai-image';
+import { normalizeArchiveType } from '../../src/types';
 
 /**
  * Background function (up to 15 min) that RUNS the Project Autopilot pipeline
@@ -1605,17 +1606,13 @@ Scrivi la landing completa basandoti su brief e ricerca di mercato forniti nel c
 // background function with its own 15-minute budget.
 // ---------------------------------------------------------------------------
 
-/** Map an archived step's page/step type onto a funnel_pages-valid page_type
- *  (mirrors sanitizePageTypeForDb's whitelist). */
+/** Keep the funnel step's real type (upsell_1, downsell, checkout, …)
+ *  so Clone/Swipe can attach that step's packshot and price. */
 function swipePageType(raw: string): string {
-  const t = raw.toLowerCase();
-  if (/checkout/.test(t)) return 'checkout';
-  if (/quiz/.test(t)) return 'quiz_funnel';
-  if (/listicle/.test(t)) return '5_reasons_listicle';
-  if (/advertorial|article|blog|review|content/.test(t)) return 'advertorial';
-  if (/product/.test(t)) return 'product_page';
-  if (/landing|sales|vsl|presell|opt|lead|squeeze|bridge|webinar/.test(t)) return 'landing';
-  return 'altro';
+  const t = normalizeArchiveType(raw);
+  if (t && t !== 'altro') return t;
+  const slug = String(raw || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+  return slug || 'landing';
 }
 
 /** Latest generated MAIN product image (the mockup from the landing step) —
@@ -1723,7 +1720,7 @@ async function runSwipe(supabase: SupabaseClient, projectId: string, input: Pipe
         name,
         page_type: pageType,
         project_id: projectId,
-        product_id: null,
+        product_id: projectId,
         url_to_swipe: url,
         prompt: '',
         swipe_status: 'in_progress',
