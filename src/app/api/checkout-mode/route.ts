@@ -15,14 +15,19 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { normalizeCheckoutMode } from '@/lib/checkout-modes';
-import { columnExists, readAllModes, writeMode } from '@/lib/checkout-mode-fallback';
+import { columnExists, readAllModesDetailed, writeMode } from '@/lib/checkout-mode-fallback';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
   try {
-    const [hasColumn, modes] = await Promise.all([columnExists(), readAllModes()]);
-    return NextResponse.json({ columnExists: hasColumn, modes });
+    const [hasColumn, read] = await Promise.all([columnExists(), readAllModesDetailed()]);
+    return NextResponse.json({
+      columnExists: hasColumn,
+      modes: read.modes,
+      // Surfaced so a broken sidecar is diagnosable instead of looking empty.
+      ...(read.error ? { sidecarError: read.error } : {}),
+    });
   } catch (err) {
     console.error('[api/checkout-mode] GET failed:', err);
     // Degrade to "nothing is wasabi" rather than surfacing an error.

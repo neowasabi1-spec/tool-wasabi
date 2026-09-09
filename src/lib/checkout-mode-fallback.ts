@@ -15,7 +15,9 @@
  * though every AI path downstream is wired and working.
  *
  * So we keep a sidecar copy in the pre-existing `settings` key/value table
- * (key TEXT PRIMARY KEY, value TEXT) under a single JSON row:
+ * under a single JSON row. Note that on this project `key` carries NO unique
+ * or primary-key constraint, so writes are select-then-update/insert rather
+ * than an upsert — see writeMode():
  *
  *     key   = 'funnel_page_checkout_modes'
  *     value = {"<funnel_page_id>": "wasabi", ...}
@@ -69,25 +71,32 @@ function coerceMap(raw: unknown): CheckoutModeMap {
  * degrade to "everything is standard", never to an error the operator sees.
  */
 export async function readAllModes(): Promise<CheckoutModeMap> {
+  return (await readAllModesDetailed()).modes;
+}
+
+/** Same read, but keeps the failure reason so the route can report it. */
+export async function readAllModesDetailed(): Promise<{
+  modes: CheckoutModeMap;
+  error?: string;
+}> {
   try {
     const admin = getSupabaseAdmin();
     const { data, error } = await admin
       .from('settings')
       .select('value')
       .eq('key', CHECKOUT_MODE_SETTINGS_KEY)
-      .maybeSingle();
+      .limit(1);
 
     if (error) {
       console.warn('[checkout-mode-fallback] read failed:', error.message);
-      return {};
+      return { modes: {}, error: error.message };
     }
-    return coerceMap(data?.value);
+    const row = Array.isArray(data) && data.length > 0 ? data[0] : null;
+    return { modes: coerceMap(row?.value) };
   } catch (err) {
-    console.warn(
-      '[checkout-mode-fallback] read threw:',
-      err instanceof Error ? err.message : String(err),
-    );
-    return {};
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn('[checkout-mode-fallback] read threw:', msg);
+    return { modes: {}, error: msg };
   }
 }
 
@@ -122,18 +131,43 @@ export async function writeMode(
       }
     }
 
-    const { error } = await admin.from('settings').upsert(
-      {
-        key: CHECKOUT_MODE_SETTINGS_KEY,
-        value: JSON.stringify(current),
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: 'key' },
-    );
+    // Deliberately NOT an upsert with onConflict:'key'. The `settings` table
+    // on this project has no unique/PK constraint on `key`, so PostgREST
+    // rejects it with "there is no unique or exclusion constraint matching
+    // the ON CONFLICT specification". Select-then-update/insert needs no
+    // constraint and works whatever shape the table happens to be in.
+    const payload = {
+      key: CHECKOUT_MODE_SETTINGS_KEY,
+      value: JSON.stringify(current),
+      updated_at: new Date().toISOString(),
+    };
+
+    const { data: existing, error: readErr } = await admin
+      .from('settings')
+      .select('key')
+      .eq('key', CHECKOUT_MODE_SETTINGS_KEY)
+      .limit(1);
+
+    if (readErr) {
+      console.warn('[checkout-mode-fallback] pre-read failed:', readErr.message);
+      return { ok: false, error: readErr.message };
+    }
+
+    const { error } = existing && existing.length > 0
+      ? await admin.from('settings').update(payload).eq('key', CHECKOUT_MODE_SETTINGS_KEY)
+      : await admin.from('settings').insert(payload);
 
     if (error) {
-      console.warn('[checkout-mode-fallback] write failed:', error.message);
-      return { ok: false, error: error.message };
+      // `updated_at` may not exist on every deployment's `settings` table.
+      // Retry with just key+value before giving up.
+      const retryPayload = { key: CHECKOUT_MODE_SETTINGS_KEY, value: payload.value };
+      const retry = existing && existing.length > 0
+        ? await admin.from('settings').update(retryPayload).eq('key', CHECKOUT_MODE_SETTINGS_KEY)
+        : await admin.from('settings').insert(retryPayload);
+      if (retry.error) {
+        console.warn('[checkout-mode-fallback] write failed:', retry.error.message);
+        return { ok: false, error: retry.error.message };
+      }
     }
 
     console.log(
