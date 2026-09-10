@@ -50,7 +50,7 @@ export async function GET(req: NextRequest) {
     if (row.swipe_status !== 'in_progress') continue;
     const age = Date.now() - new Date(String(row.updated_at || 0)).getTime();
     const result = String(row.swipe_result || '');
-    const alive = /worker picked up|restyle running|continuing photos|texts rewritten|visual world|photo \d/i.test(result);
+    const alive = /worker picked up|restyle running|continuing photos|texts rewritten|Rewriting|Copy rewritten|visual world|photo \d|ChatGPT|Waiting for copy|In queue|rewriting copy|Batch |step \d/i.test(result);
     const waiting = /rewrite queued|restyle queued/i.test(result) && !alive;
     const stale = (!alive && waiting && age > STALE_QUEUED_MS) || (!alive && age > STALE_ANY_MS);
     if (!stale) continue;
@@ -141,7 +141,7 @@ export async function POST(req: NextRequest) {
   const mainImageUrl = await loadMainProductImageUrl(projectId);
   const queued = skipTexts
     ? 'Palette + photos/gifs/videos on Clone/Swipe copy…'
-    : 'Clone/Swipe rewrite queued, then colors + photos…';
+    : 'In queue — copy first on every step, then ChatGPT photos.';
   await supabaseAdmin
     .from('funnel_pages')
     .update({ swipe_status: 'in_progress', swipe_result: queued })
@@ -166,6 +166,7 @@ export async function POST(req: NextRequest) {
         imageMode,
         offerUrl: typeof body.offerUrl === 'string' ? body.offerUrl.trim() : '',
         skipTexts,
+        phase: skipTexts ? 'photos' : 'texts',
         pages,
       }),
       signal: AbortSignal.timeout(12_000),

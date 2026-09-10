@@ -65,7 +65,7 @@ export const PIPELINE_STEPS: PipelineStepDef[] = [
     key: 'swipe',
     label: 'Funnel swipe (Clone/Swipe)',
     description:
-      'Loads the selected funnel steps into Clone/Swipe, rewrites texts, restyles the palette, and regenerates every photo for our product (Internal) or places competitor landing media as-is (Affiliate).',
+      'Rewrites copy on every funnel step first, then ChatGPT photos from step 1. Affiliate places competitor landing media as-is.',
   },
 ];
 

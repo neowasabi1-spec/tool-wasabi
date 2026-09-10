@@ -42,18 +42,11 @@ import { openaiGenerateImage, openaiImageKey } from '../../src/lib/openai-image'
  * Background function (up to 15 min) that performs the Chimera Protocol
  * FUNNEL SWIPE: for every Clone/Swipe page created by the pipeline's `swipe`
  * step it
- *   1. loads the competitor step's saved HTML (page_html written by the
- *      extension's funnel walk) or fetches the live URL,
- *   2. rewrites ALL marketing texts by CALLING /api/landing/swipe
- *      (the Clone/Swipe engine — extract + Claude + data-swipe-replacer).
- *      Chimera does not invent its own copy path. If the API is unreachable
- *      it falls back to the same applyRewrites script that landing/swipe uses.
- *   3. INTERNAL restyle (ChatGPT quality): same template skeleton, new visual
- *      world — inlined template CSS remapped, theme tokens, every photo edited
- *      via GPT Image 2 image-to-image (keeps composition), packshots swapped
- *      to our product, copy baked into the HTML.
- *   4. saves the swiped HTML into page_html + updates the funnel_pages row
- *      so the result is visible in the Clone/Swipe section.
+ *   1. loads the competitor step's saved HTML,
+ *   2. pass 1: rewrites copy on every funnel step (no photos yet),
+ *   3. pass 2: ChatGPT Images (OpenAI gpt-image, no Gemini) from step 1,
+ *   4. INTERNAL restyle applies palette + photos on pass 2 only,
+ *   5. saves swiped HTML so Clone/Swipe can preview after copy, then after photos.
  *
  * Decoupled from pipeline-run-background. Image restyle is split into short
  * batches (a few photos each). When a batch finishes the worker re-invokes
@@ -137,6 +130,9 @@ interface SwipeCtx {
   restyle: RestyleSpec | null;
   ownerUserId: string | null;
   skipTexts: boolean;
+  phase: 'texts' | 'photos';
+  pageIndex: number;
+  pageCount: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -222,6 +218,7 @@ async function generateImageUrl(
     quality: String(input.quality || 'medium'),
     timeoutMs,
     onTick,
+    openaiOnly: true,
   });
 }
 
@@ -513,6 +510,7 @@ async function rewriteAllTexts(
   texts: SwipeText[],
   deadline: number,
   onProgress?: (rewrites: Map<number, string>) => Promise<void>,
+  onBatch?: (label: string) => Promise<void>,
 ): Promise<Map<number, string>> {
   const items = orderAndLinkFragments(texts.map((t, i) => ({ id: i, text: t.original, position: t.position })));
   const result = new Map<number, string>();
@@ -524,6 +522,7 @@ async function rewriteAllTexts(
     attempt = 0,
   ) => {
     if (!batch.length || Date.now() > deadline) return;
+    await onBatch?.(label);
     const payload = batch.map((b) => (b.partOf != null ? { id: b.id, text: b.text, partOf: b.partOf } : { id: b.id, text: b.text }));
     const user = `${label}: return exactly one JSON object per input id (${batch.length} items). Never skip an id.
 
@@ -1606,7 +1605,7 @@ Set "product_shot": true for a packshot/hero of a standalone product (bottle, ja
       productSwaps++;
       budget.imagesLeft--;
       await persistHtml(sb, page.funnelPageId, 'swiped', out, ctx.ownerUserId);
-      await touchPage(sb, page.funnelPageId, `Photo ${start + processed}/${images.length} — packshot placed`);
+      await touchPage(sb, page.funnelPageId, `Step ${ctx.pageIndex + 1}/${ctx.pageCount}: packshot placed (${start + processed}/${images.length})`);
       continue;
     }
 
@@ -1633,7 +1632,7 @@ Surrounding page copy: ${img.context || '(none)'}`;
       };
     }
 
-    await touchPage(sb, page.funnelPageId, `Photo ${start + processed}/${images.length} — generating…`);
+      await touchPage(sb, page.funnelPageId, `Step ${ctx.pageIndex + 1}/${ctx.pageCount}: ChatGPT photo ${start + processed}/${images.length}…`);
 
     const looksLifestyle = /lifestyle|portrait|people|person|woman|man|face|ugc|testimonial/i.test(analysis.format)
       || img.section === 'lifestyle'
@@ -1651,7 +1650,7 @@ Surrounding page copy: ${img.context || '(none)'}`;
       productSwaps++;
       budget.imagesLeft--;
       await persistHtml(sb, page.funnelPageId, 'swiped', out, ctx.ownerUserId);
-      await touchPage(sb, page.funnelPageId, `Photo ${start + processed}/${images.length} — packshot placed`);
+      await touchPage(sb, page.funnelPageId, `Step ${ctx.pageIndex + 1}/${ctx.pageCount}: packshot placed (${start + processed}/${images.length})`);
       continue;
     }
 
@@ -1676,7 +1675,7 @@ Surrounding page copy: ${img.context || '(none)'}`;
     const t2iPrompt = spec
       ? `${slotHint} ${spec.stylePrefix}. Casting: ${spec.avatar}. ${analysis.prompt} Product: ${ctx.productName}.${packshot ? ' The product must match our packshot packaging exactly.' : ''}`
       : `${slotHint} ${analysis.prompt}`;
-    const tick = () => touchPage(sb, page.funnelPageId, `Photo ${start + processed}/${images.length} — generating…`);
+    const tick = () => touchPage(sb, page.funnelPageId, `Step ${ctx.pageIndex + 1}/${ctx.pageCount}: ChatGPT photo ${start + processed}/${images.length}…`);
     const common = { num_images: 1, output_format: 'png', quality: 'medium' as const };
     let falUrl: string | null = null;
     if (restyle && !isGif && hosted && Date.now() < deadline - 70_000) {
@@ -1697,7 +1696,7 @@ Surrounding page copy: ${img.context || '(none)'}`;
     }
     if (!falUrl) {
       console.warn(`[swipe] photo ${start + processed}/${images.length} failed`);
-      await touchPage(sb, page.funnelPageId, `Photo ${start + processed}/${images.length} failed — generating next…`);
+      await touchPage(sb, page.funnelPageId, `Step ${ctx.pageIndex + 1}/${ctx.pageCount}: ChatGPT photo ${start + processed}/${images.length} failed — next…`);
       continue;
     }
     const stored = await storeGeneratedImage(sb, ctx.projectId, falUrl, generated);
@@ -1706,7 +1705,7 @@ Surrounding page copy: ${img.context || '(none)'}`;
     generated++;
     budget.imagesLeft--;
     await persistHtml(sb, page.funnelPageId, 'swiped', out, ctx.ownerUserId);
-    await touchPage(sb, page.funnelPageId, `Photo ${start + processed}/${images.length} replaced`);
+    await touchPage(sb, page.funnelPageId, `Step ${ctx.pageIndex + 1}/${ctx.pageCount}: ChatGPT photo ${start + processed}/${images.length} replaced`);
   }
 
   return {
@@ -1856,13 +1855,13 @@ async function processPage(
     replacements = (html.match(/"from"\s*:/g) || []).length;
     textsCount = replacements;
     if (ctx.imageMode === 'internal') {
-      await touchPage(sb, page.funnelPageId, 'Clone/Swipe copy loaded — palette + photos/gifs/videos…');
+      await touchPage(sb, page.funnelPageId, `Step ${ctx.pageIndex + 1}/${ctx.pageCount}: copy loaded — ChatGPT photos…`);
       if (!ctx.restyle) ctx.restyle = await buildRestyleSpec(originalHtml || html, ctx);
       if (!ctx.restyle) ctx.restyle = fallbackRestyleSpec(ctx, topPageHex(originalHtml || html));
       html = applyTheme(html, ctx.restyle);
     }
     await persistHtml(sb, page.funnelPageId, 'swiped', html, ctx.ownerUserId);
-    await touchPage(sb, page.funnelPageId, 'Editing photos, GIFs and videos…');
+    await touchPage(sb, page.funnelPageId, `Step ${ctx.pageIndex + 1}/${ctx.pageCount}: ChatGPT photos…`);
   } else {
     html = await loadSourceHtml(sb, page);
     if (!html) throw new Error('no source HTML (saved snapshot missing and live fetch failed)');
@@ -1881,7 +1880,9 @@ async function processPage(
       replacements = (originalHtml.match(/"from"\s*:/g) || []).length;
       textsCount = replacements;
       newTitle = originalHtml.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || '';
-      await touchPage(sb, page.funnelPageId, 'Clone/Swipe copy already on the page — colors + photos next…');
+      await touchPage(sb, page.funnelPageId, ctx.phase === 'texts'
+        ? `Step ${ctx.pageIndex + 1}/${ctx.pageCount}: copy already on the page — next step's texts`
+        : 'Clone/Swipe copy already on the page — ChatGPT photos next…');
       await persistHtml(sb, page.funnelPageId, 'swiped', html, ctx.ownerUserId);
     } else {
       // The rewrite runs HERE, in the background function (15-min budget).
@@ -1892,8 +1893,8 @@ async function processPage(
         const texts = collectSwipeTexts(originalHtml);
         textsCount = texts.length;
         await touchPage(sb, page.funnelPageId, textsCount
-          ? `Rewriting ${textsCount} texts…`
-          : 'No texts found — restyling photos…');
+          ? `Step ${ctx.pageIndex + 1}/${ctx.pageCount}: rewriting ${textsCount} texts…`
+          : `Step ${ctx.pageIndex + 1}/${ctx.pageCount}: no texts — copy pass done`);
         if (texts.length) {
           const outLang = ctx.market ? `the local language of this target market: ${ctx.market} (e.g. German for Germany, Italian for Italy)` : 'the same language as the original text';
           const compactCtx = swipeBatchContext(ctx);
@@ -1934,18 +1935,25 @@ CRITICAL RULES:
               newTitle = applied.newTitle;
               changes = applied.changes;
               await persistHtml(sb, page.funnelPageId, 'swiped', html, ctx.ownerUserId);
-              await touchPage(sb, page.funnelPageId, `${replacements}/${textsCount} texts now on the page…`);
+              await touchPage(sb, page.funnelPageId, `Step ${ctx.pageIndex + 1}/${ctx.pageCount}: ${replacements}/${textsCount} texts now on the page…`);
             });
             return persistChain;
           };
-          const rewrites = await rewriteAllTexts(system, texts, textDeadline, persistDraft);
+          const rewrites = await rewriteAllTexts(
+            system,
+            texts,
+            textDeadline,
+            persistDraft,
+            (label) => touchPage(sb, page.funnelPageId, `Step ${ctx.pageIndex + 1}/${ctx.pageCount}: ${label}…`),
+          );
           console.warn(`[swipe] ${page.name}: ${rewrites.size}/${texts.length} texts got a new string`);
           await persistDraft(rewrites);
         }
       }
     }
 
-    if (ctx.imageMode === 'internal') {
+    // Palette + photos wait for pass 2 so every step's copy is visible first.
+    if (ctx.imageMode === 'internal' && ctx.phase !== 'texts') {
       await touchPage(sb, page.funnelPageId, `${replacements}/${textsCount} texts rewritten — building new visual world…`);
       if (!ctx.restyle) ctx.restyle = await buildRestyleSpec(originalHtml, ctx);
       if (!ctx.restyle) ctx.restyle = fallbackRestyleSpec(ctx, topPageHex(originalHtml));
@@ -1954,15 +1962,22 @@ CRITICAL RULES:
 
     await persistHtml(sb, page.funnelPageId, 'cloned', originalHtml, ctx.ownerUserId);
     await persistHtml(sb, page.funnelPageId, 'swiped', html, ctx.ownerUserId);
-    await touchPage(sb, page.funnelPageId,
-      `${replacements}/${textsCount} texts rewritten${ctx.restyle ? ', new visual world' : ''} — editing photos…`);
+    await touchPage(sb, page.funnelPageId, ctx.phase === 'texts'
+      ? `Step ${ctx.pageIndex + 1}/${ctx.pageCount}: ${replacements}/${textsCount} texts rewritten — copy pass continues`
+      : `${replacements}/${textsCount} texts rewritten${ctx.restyle ? ', new visual world' : ''} — ChatGPT photos…`);
   }
 
   let imgRes = { html, generated: 0, productSwaps: 0, analyzed: 0, placed: 0, videos: 0, remaining: 0, total: 0, processed: 0 };
+  const textsPass = ctx.phase === 'texts';
   const photoMinutesLeft = deadline - Date.now();
-  const photosNeedOwnRun = ctx.imageMode === 'internal' && !resume && photoMinutesLeft < 200_000;
+  const photosNeedOwnRun = !textsPass && ctx.imageMode === 'internal' && !resume && photoMinutesLeft < 200_000;
   try {
-    if (ctx.imageMode === 'affiliate') {
+    if (textsPass) {
+      imgRes = { html, generated: 0, productSwaps: 0, analyzed: 0, placed: 0, videos: 0, remaining: 0, total: 0, processed: 0 };
+      await touchPage(sb, page.funnelPageId, `Step ${ctx.pageIndex + 1}/${ctx.pageCount}: copy rewritten — next step's texts, then ChatGPT photos from step 1`);
+    } else if (ctx.imageMode === 'internal' && !openaiImageKey()) {
+      throw new Error('OPENAI_API_KEY missing — Clone/Swipe photos use ChatGPT Images only.');
+    } else if (ctx.imageMode === 'affiliate') {
       const offer = pickOfferLandingMedia(
         [...ctx.landingStills, ...ctx.landingVideos],
         ctx.productName,
@@ -2011,21 +2026,26 @@ CRITICAL RULES:
 
   await persistHtml(sb, page.funnelPageId, 'swiped', html, ctx.ownerUserId);
 
-  let done = ctx.imageMode === 'affiliate' || imgRes.remaining <= 0 || budget.imagesLeft <= 0;
+  const textsPassDone = ctx.phase === 'texts';
+  let done = textsPassDone || ctx.imageMode === 'affiliate' || imgRes.remaining <= 0 || budget.imagesLeft <= 0;
   const nextOffset = imageOffset + (imgRes.processed || 0);
   const now = new Date().toISOString();
-  const summary =
-    (resume ? `photo batch ${imageOffset + 1}–${nextOffset}` : `${replacements}/${textsCount} texts rewritten`) +
+  const step = `step ${ctx.pageIndex + 1}/${ctx.pageCount}`;
+  const summary = textsPassDone
+    ? `${replacements}/${textsCount} texts rewritten (${step})`
+    : `${resume ? `ChatGPT photos ${imageOffset + 1}–${nextOffset}` : `${replacements}/${textsCount} texts rewritten`} (${step})` +
     `${imgRes.placed ? `, ${imgRes.placed} landing images placed (affiliate)` : ''}` +
     `${imgRes.videos ? `, ${imgRes.videos} landing videos placed` : ''}` +
     `${!resume && ctx.restyle ? ', new visual theme' : ''}` +
-    `${imgRes.generated ? `, ${imgRes.generated} images regenerated` : ''}` +
+    `${imgRes.generated ? `, ${imgRes.generated} ChatGPT images` : ''}` +
     `${imgRes.productSwaps ? `, ${imgRes.productSwaps} product shots replaced` : ''}` +
     `${!done && imgRes.total ? ` (${nextOffset}/${imgRes.total} photos)` : ''}`;
 
   const { error: updErr } = await sb.from('funnel_pages').update({
-    swipe_status: done ? 'completed' : 'in_progress',
-    swipe_result: done ? summary : `${summary} — continuing photos…`,
+    swipe_status: textsPassDone ? 'in_progress' : (done ? 'completed' : 'in_progress'),
+    swipe_result: textsPassDone
+      ? `${summary}. Photos start after every step's copy.`
+      : (done ? summary : `${summary} — continuing ChatGPT photos…`),
     cloned_data: {
       htmlUrl: funnelHtmlUrl(page.funnelPageId, 'cloned'),
       title: originalTitle || page.name,
@@ -2072,17 +2092,28 @@ export default async (req: Request) => {
   const mainImageUrl = typeof body.mainImageUrl === 'string' && body.mainImageUrl ? body.mainImageUrl : null;
   const imageMode = body.imageMode === 'affiliate' ? 'affiliate' : 'internal';
   const pages = (Array.isArray(body.pages) ? body.pages : []) as SwipePage[];
+  const allPages = (Array.isArray(body.allPages) && (body.allPages as SwipePage[]).length)
+    ? body.allPages as SwipePage[]
+    : pages;
+  const pageIndex = Math.min(Math.max(0, Number(body.pageIndex) || 0), Math.max(0, allPages.length - 1));
+  const phase: 'texts' | 'photos' = body.phase === 'photos' || body.skipTexts === true ? 'photos' : 'texts';
   const imageOffset = Math.max(0, Number(body.imageOffset) || 0);
   const incomingRestyle = body.restyle && typeof body.restyle === 'object' ? (body.restyle as RestyleSpec) : null;
   const incomingUsed = Array.isArray(body.mediaUsed) ? (body.mediaUsed as unknown[]).map(String) : [];
-  if (!projectId || !pages.length) return new Response('missing projectId/pages', { status: 200 });
+  if (!projectId || !allPages.length) return new Response('missing projectId/pages', { status: 200 });
 
   const log = (...a: unknown[]) => console.log(`[swipe ${projectId}]`, ...a);
   const sb = getSupabase();
-  await Promise.all(pages.map((p) =>
-    touchPage(sb, p.funnelPageId, imageOffset > 0
-      ? `Worker picked up — photos from ${imageOffset + 1}…`
-      : 'Worker picked up — restyle running…')));
+  const page = allPages[pageIndex];
+  await touchPage(sb, page.funnelPageId, phase === 'photos'
+    ? (imageOffset > 0
+      ? `Step ${pageIndex + 1}/${allPages.length}: ChatGPT photos from ${imageOffset + 1}…`
+      : `Copy is done — ChatGPT photos on step ${pageIndex + 1}/${allPages.length}…`)
+    : `Step ${pageIndex + 1}/${allPages.length}: rewriting copy…`);
+  if (phase === 'texts' && pageIndex === 0) {
+    await Promise.all(allPages.slice(1).map((p, i) =>
+      touchPage(sb, p.funnelPageId, `Waiting for copy (step ${i + 2}/${allPages.length})…`)));
+  }
 
   // Product context: name + description + brief + research from the project.
   let { data: project, error: projectErr } = await sb
@@ -2185,23 +2216,27 @@ export default async (req: Request) => {
     mediaUsed: new Set<string>(incomingUsed),
     restyle: incomingRestyle && incomingRestyle.stylePrefix ? incomingRestyle : null,
     ownerUserId: typeof project?.owner_user_id === 'string' ? project.owner_user_id : null,
-    skipTexts: body.skipTexts === true,
+    skipTexts: phase === 'photos',
+    phase,
+    pageIndex,
+    pageCount: allPages.length,
   };
 
-  log(`batch ${pages.length} page(s) offset=${imageOffset} market="${market || 'auto'}" mode=${imageMode} landingMedia=${landingItems.length} photo=${mainImageUrl ? 'yes' : 'no'}`);
+  log(`phase=${phase} step ${pageIndex + 1}/${allPages.length} offset=${imageOffset} mode=${imageMode} photo=${mainImageUrl ? 'yes' : 'no'}`);
 
   const deadline = startedAt + GLOBAL_BUDGET_MS;
   const defaultBudget = imageMode === 'internal' ? MAX_IMAGES_TOTAL_RESTYLE : MAX_IMAGES_TOTAL;
   const budget = { imagesLeft: Number.isFinite(Number(body.imagesLeft)) ? Number(body.imagesLeft) : defaultBudget };
 
-  const page = pages[0];
-  let nextPages = pages;
+  let nextPhase: 'texts' | 'photos' = phase;
+  let nextIndex = pageIndex;
   let nextOffset = imageOffset;
-  let nextSkipTexts = false;
+  let chainMore = false;
 
   const runOne = async (p: SwipePage, offset: number): Promise<PageBatchResult> => {
     const pageCtx = await bindStepOffer(sb, ctx, p);
-    if (incomingRestyle && incomingRestyle.stylePrefix && (offset > 0 || ctx.skipTexts)) {
+    // Same-page photo batches keep the restyle. A new step must not reuse the previous one.
+    if (incomingRestyle && incomingRestyle.stylePrefix && offset > 0) {
       pageCtx.restyle = incomingRestyle;
     }
     const result = await processPage(sb, pageCtx, p, budget, deadline, offset);
@@ -2212,28 +2247,55 @@ export default async (req: Request) => {
   };
 
   try {
-    // One page per invocation in every mode: each page gets the whole budget
-    // for its texts, the rest of the funnel is chained below. (Affiliate used
-    // to loop all pages in one run — three pages shared 8 minutes.)
     const result = await runOne(page, imageOffset);
-    if (result.done) {
-      nextPages = pages.slice(1);
-      nextOffset = 0;
-      nextSkipTexts = false;
-    } else {
+    if (phase === 'texts') {
+      if (pageIndex + 1 < allPages.length) {
+        nextPhase = 'texts';
+        nextIndex = pageIndex + 1;
+        nextOffset = 0;
+        chainMore = true;
+      } else {
+        nextPhase = 'photos';
+        nextIndex = 0;
+        nextOffset = 0;
+        chainMore = true;
+      }
+    } else if (!result.done) {
+      nextPhase = 'photos';
+      nextIndex = pageIndex;
       nextOffset = result.nextOffset;
-      nextSkipTexts = true;
+      chainMore = true;
+    } else if (pageIndex + 1 < allPages.length) {
+      nextPhase = 'photos';
+      nextIndex = pageIndex + 1;
+      nextOffset = 0;
+      chainMore = true;
     }
   } catch (e) {
     const msg = (e as Error).message?.slice(0, 400) || 'swipe error';
     log(`✘ ${page.name}: ${msg}`);
     await markFailed(sb, page.funnelPageId, msg);
-    nextPages = pages.slice(1);
-    nextOffset = 0;
-    nextSkipTexts = false;
+    if (phase === 'texts') {
+      if (pageIndex + 1 < allPages.length) {
+        nextPhase = 'texts';
+        nextIndex = pageIndex + 1;
+        nextOffset = 0;
+        chainMore = true;
+      } else {
+        nextPhase = 'photos';
+        nextIndex = 0;
+        nextOffset = 0;
+        chainMore = true;
+      }
+    } else if (pageIndex + 1 < allPages.length) {
+      nextPhase = 'photos';
+      nextIndex = pageIndex + 1;
+      nextOffset = 0;
+      chainMore = true;
+    }
   }
 
-  if (nextPages.length && Date.now() < deadline) {
+  if (chainMore && Date.now() < deadline) {
     const base = siteBaseUrl();
     const secretOut = process.env.APIFY_WEBHOOK_SECRET || process.env.CRON_SECRET || '';
     if (base) {
@@ -2247,16 +2309,19 @@ export default async (req: Request) => {
             market,
             mainImageUrl,
             imageMode,
-            skipTexts: nextSkipTexts,
-            pages: nextPages,
+            phase: nextPhase,
+            skipTexts: nextPhase === 'photos',
+            allPages,
+            pages: allPages,
+            pageIndex: nextIndex,
             imageOffset: nextOffset,
-            restyle: nextSkipTexts ? ctx.restyle : null,
+            restyle: nextPhase === 'photos' && nextIndex === pageIndex ? ctx.restyle : null,
             imagesLeft: budget.imagesLeft,
             mediaUsed: [...ctx.mediaUsed],
           }),
           signal: AbortSignal.timeout(12_000),
         });
-        log(`chained next batch: ${nextPages.length} page(s) offset=${nextOffset} skipTexts=${nextSkipTexts} HTTP ${res.status}`);
+        log(`chained ${nextPhase} step ${nextIndex + 1}/${allPages.length} offset=${nextOffset} HTTP ${res.status}`);
         if (!res.ok && res.status !== 202) {
           log('chain HTTP', res.status, (await res.text().catch(() => '')).slice(0, 200));
         }
@@ -2268,10 +2333,11 @@ export default async (req: Request) => {
     }
   }
 
-  log(`batch done in ${Math.round((Date.now() - startedAt) / 1000)}s, left=${nextPages.length}`);
+  log(`batch done in ${Math.round((Date.now() - startedAt) / 1000)}s phase=${phase} step=${pageIndex + 1}/${allPages.length}`);
   return new Response(JSON.stringify({
     ok: true,
-    remaining: nextPages.length,
+    remaining: chainMore ? allPages.length - nextIndex : 0,
     imageOffset: nextOffset,
+    phase: nextPhase,
   }), { status: 200 });
 };

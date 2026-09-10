@@ -1921,7 +1921,7 @@ async function runSwipe(supabase: SupabaseClient, projectId: string, input: Pipe
         url_to_swipe: url,
         prompt: '',
         swipe_status: 'in_progress',
-        swipe_result: 'Clone/Swipe rewrite queued, then colors + photos…',
+        swipe_result: 'In queue — copy first on every step, then ChatGPT photos.',
         ...(ownerUserId ? { owner_user_id: ownerUserId } : {}),
         cloned_data: htmlUrl
           ? { htmlUrl, title: name, htmlSkipped: true, source_url: url }
@@ -1986,6 +1986,7 @@ async function runSwipe(supabase: SupabaseClient, projectId: string, input: Pipe
       mainImageUrl,
       imageMode: input.imageMode === 'affiliate' ? 'affiliate' : 'internal',
       offerUrl,
+      phase: 'texts',
       pages,
     });
     if (!kicked.ok) {
@@ -2020,7 +2021,7 @@ async function runSwipe(supabase: SupabaseClient, projectId: string, input: Pipe
   }
 
   return {
-    summary: `${pages.length} funnel steps loaded into Clone/Swipe — swipe runs in photo batches (never one 15-min block)${mainImageUrl ? (uploaded ? ' · product shots use the uploaded photo' : ' · product shots use the generated mockup') : ''}.`,
+    summary: `${pages.length} funnel steps loaded into Clone/Swipe — copy on every step first, then ChatGPT photos from step 1${mainImageUrl ? (uploaded ? ' · packshots use the uploaded photo' : ' · packshots use the generated mockup') : ''}.`,
     output: pages.map((p, i) => `${i + 1}. ${p.name}${p.sourceUrl ? ` — ${p.sourceUrl}` : ''}`).join('\n'),
   };
 }

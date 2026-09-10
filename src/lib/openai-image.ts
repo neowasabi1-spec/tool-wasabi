@@ -226,8 +226,7 @@ async function geminiGenerateImage(
 }
 
 /** Text-to-image, or image-to-image when imageUrls is set. Returns a data URL (or http URL).
- *  Tries OpenAI Images, then Gemini (Netlify AI Gateway) so packshots still
- *  generate when gpt-image is unavailable. */
+ *  Tries OpenAI Images first. Gemini is a fallback for packshots unless openaiOnly. */
 export async function openaiGenerateImage(opts: {
   prompt: string;
   imageUrls?: string[];
@@ -235,6 +234,8 @@ export async function openaiGenerateImage(opts: {
   quality?: string;
   timeoutMs?: number;
   onTick?: () => Promise<void>;
+  /** Clone/Swipe photos: ChatGPT only — no Gemini fallback. */
+  openaiOnly?: boolean;
 }): Promise<string | null> {
   lastImageErr = '';
   const prompt = (opts.prompt || '').trim();
@@ -263,9 +264,15 @@ export async function openaiGenerateImage(opts: {
     } else {
       setImageErr('OPENAI_API_KEY missing');
     }
-    const gemini = await geminiGenerateImage(prompt, refs, timeoutMs);
-    if (gemini) return gemini;
-    if (!lastImageErr) setImageErr('image generation returned empty (OpenAI + Gemini)');
+    if (!opts.openaiOnly) {
+      const gemini = await geminiGenerateImage(prompt, refs, timeoutMs);
+      if (gemini) return gemini;
+    }
+    if (!lastImageErr) {
+      setImageErr(opts.openaiOnly
+        ? 'ChatGPT image generation returned empty'
+        : 'image generation returned empty (OpenAI + Gemini)');
+    }
     return null;
   } catch (e) {
     setImageErr((e as Error).message);
