@@ -18,7 +18,7 @@ const steps = [
   { key: 'brief', label: 'Product brief', status: 'completed' },
   { key: 'competitor', label: 'Competitor research', status: 'pending' },
   { key: 'ads', label: 'Angles & Ads', status: 'skipped' },
-  { key: 'landing', label: 'Landing + mockup', status: 'skipped' },
+  { key: 'landing', label: 'Product mockups', status: 'skipped' },
 ];
 
 (async () => {

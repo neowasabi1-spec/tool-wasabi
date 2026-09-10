@@ -57,9 +57,9 @@ export const PIPELINE_STEPS: PipelineStepDef[] = [
   },
   {
     key: 'landing',
-    label: 'Landing + mockup',
+    label: 'Product mockups',
     description:
-      'Landing copy. Internal invents a product mockup unless you uploaded a photo; Affiliate skips the mockup.',
+      'Internal invents packshots for the main product and every upsell in the funnel. Affiliate skips this. Page copy is written later in Funnel swipe.',
   },
   {
     key: 'swipe',

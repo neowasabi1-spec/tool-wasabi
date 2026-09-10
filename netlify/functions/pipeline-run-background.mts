@@ -1663,40 +1663,10 @@ async function runLanding(supabase: SupabaseClient, projectId: string, input: Pi
   const brief = typeof project.brief === 'string' && project.brief.trim() ? (project.brief as string) : sectionContentFrom(project.brief);
   const productName = (project.name as string) || input.product || '';
 
-  // Read the SELECTED funnel to know how many products to make (1 main + one
-  // per upsell/downsell page). The number comes from the funnel, not a guess.
+  // Clone/Swipe rewrites the competitor pages from brief + research.
+  // This step only invents packshots — the markdown landing copy was unused.
   const funnel = await loadFunnelProducts(supabase, input);
 
-  const instructions = `Sei un copywriter di landing page direct response.
-Scrivi la STRUTTURA + COPY completo di una landing page ad alta conversione per questo prodotto.
-${marketDirective(input)}
-Usa markdown con una sezione per blocco:
-## Hero (headline + subheadline + CTA)
-## Problema / Agitazione
-## Meccanismo unico (perché fallisce il resto)
-## Soluzione / Prodotto
-## Come funziona (step)
-## Prove & testimonianze (struttura)
-## Offerta & garanzia
-## FAQ
-## CTA finale
-Il copy deve essere pronto all'uso, coerente con brief e ricerca. Sii specifico, niente placeholder generici.`;
-
-  const userMessage = `Prodotto: ${productName}
-Scrivi la landing completa basandoti su brief e ricerca di mercato forniti nel contesto.`;
-
-  const content = await callClaude({ task: 'pdp', instructions, brief, marketResearch: research, userMessage, maxTokens: 4096 });
-  if (!content) throw new Error('Landing returned empty output');
-
-  const { error } = await supabase
-    .from('projects')
-    .update({ funnel: toSectionBlob('AI — Landing copy', content) })
-    .eq('id', projectId);
-  if (error) throw new Error(`Failed to save funnel: ${error.message}`);
-
-  // Internal: optional uploaded photo is ONLY the main packshot. Chimera
-  // still invents every other product the selected funnel needs.
-  // Affiliate never invents a mockup.
   const uploadedUrl = typeof input.productImageUrl === 'string' && /^https?:\/\//i.test(input.productImageUrl)
     ? input.productImageUrl
     : null;
@@ -1722,14 +1692,14 @@ Scrivi la landing completa basandoti su brief e ricerca di mercato forniti nel c
     : 'No funnel selected → main product only. ';
   const imgNote = images.note || (images.saved ? `${images.saved}/${images.total} product images generated.` : '');
   const extra = skipMockup
-    ? ' Landing copy saved. Affiliate skipped the invented mockup.'
+    ? ' Affiliate skipped the invented mockup.'
     : uploadedUrl
-      ? ' Landing copy saved. Your photo is the main packshot; Chimera invented the rest.'
-      : ' Landing copy saved.';
+      ? ' Your photo is the main packshot; Chimera invented the rest.'
+      : '';
 
   return {
     summary: `${funnelNote}${imgNote}${extra}`.trim(),
-    output: content,
+    output: images.images.map((im) => `${im.role}: ${im.name}`).join('\n'),
   };
 }
 

@@ -188,7 +188,7 @@ export function AutopilotSection({
         </h2>
         <p className="text-sm text-muted-foreground">
           Give it the product, market, competitor and (optionally) a funnel. The tool automatically runs
-          market research → brief → <strong>Facebook ad research</strong> → angles/ads → <strong>landing + HTML mockup</strong>,
+          market research → brief → <strong>Facebook ad research</strong> → angles/ads → <strong>product mockups</strong> → Clone/Swipe,
           saving everything into this project (Competitor Library, Funnel, Brief).
         </p>
       </div>
