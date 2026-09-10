@@ -59,7 +59,7 @@ export const PIPELINE_STEPS: PipelineStepDef[] = [
     key: 'landing',
     label: 'Product mockups',
     description:
-      'Internal invents packshots for the main product and every upsell in the funnel. Affiliate skips this. Page copy is written later in Funnel swipe.',
+      'Internal: ChatGPT Images packshots for the main product and every upsell. Affiliate skips this. Page copy is written later in Funnel swipe.',
   },
   {
     key: 'swipe',

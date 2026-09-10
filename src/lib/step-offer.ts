@@ -10,7 +10,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { derivedProductBriefSections, type ProductBriefSection } from './projecthub-legacy';
 import { extractSectionContent } from './project-sections';
-import { normalizeArchiveType } from '../types';
+import { humanizePageTypeSlug, normalizeArchiveType } from '../types';
 import type { LandingMediaItem } from './landing-media';
 
 const PROJECT_FILES_BUCKET = 'project-files';
@@ -264,7 +264,7 @@ export async function upsertProductPrices(
       sections = sections.map((s) => (s.id === found.id ? { ...s, price: amount } : s));
     } else {
       const id = uniqueSectionId(`pb_${want || 'upsell'}`, sections);
-      const label = String(p.stepName || p.pageType || 'Upsell').trim() || 'Upsell';
+      const label = humanizePageTypeSlug(want) || `Upsell ${sections.filter((s) => s.id !== 'pb_frontend').length + 1}`;
       sections.push({
         id,
         label,

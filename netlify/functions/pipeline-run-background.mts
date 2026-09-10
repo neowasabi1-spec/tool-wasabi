@@ -6,7 +6,7 @@ import { parseSectionData } from '../../src/lib/project-sections';
 import { extractLandingMediaFromUrl, listLandingMedia, offerIdentityFromHtml } from '../../src/lib/landing-media';
 import { fetchPageText, pageTextBlock } from '../../src/lib/page-text';
 import { wellFormed } from '../../src/lib/well-formed';
-import { openaiGenerateImage, lastImageGenError } from '../../src/lib/openai-image';
+import { openaiGenerateImage, lastImageGenError, openaiImageKey } from '../../src/lib/openai-image';
 
 /**
  * Background function (up to 15 min) that RUNS the Project Autopilot pipeline
@@ -211,6 +211,7 @@ async function generateImageUrl(
     size: String(input.image_size || '1024x1024'),
     quality: String(input.quality || 'medium'),
     timeoutMs,
+    openaiOnly: true,
   });
 }
 
@@ -749,41 +750,68 @@ async function loadFunnelProducts(supabase: SupabaseClient, input: PipelineInput
   }
 }
 
-interface ProductSpec { main: { name: string; imagePrompt: string }; upsells: Array<{ name: string; relation: string; imagePrompt: string }>; }
+const UPSELL_LOOK = [
+  'a 3-unit multi-pack / carton of the same product',
+  'a premium or larger-size version of the same product',
+  'a complementary refill or accessory in the same packaging family',
+];
 
-/** Parse the strict-JSON product line from Claude, tolerating code fences and
- *  padding/truncating the upsell list to the exact count the funnel requires. */
-function parseProductSpec(raw: string, upsellCount: number, fallbackName: string): ProductSpec {
-  let main = { name: fallbackName, imagePrompt: `${fallbackName} product packshot` };
-  let upsells: Array<{ name: string; relation: string; imagePrompt: string }> = [];
-  try {
-    const jsonStr = raw.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '').trim();
-    const start = jsonStr.indexOf('{');
-    const end = jsonStr.lastIndexOf('}');
-    const obj = JSON.parse(start >= 0 && end > start ? jsonStr.slice(start, end + 1) : jsonStr);
-    if (obj?.main?.name) main = { name: String(obj.main.name).slice(0, 120), imagePrompt: String(obj.main.imagePrompt || main.imagePrompt).slice(0, 800) };
-    if (Array.isArray(obj?.upsells)) {
-      upsells = obj.upsells.slice(0, upsellCount).map((u: Record<string, unknown>) => ({
-        name: String(u?.name || 'Upsell').slice(0, 120),
-        relation: String(u?.relation || '').slice(0, 200),
-        imagePrompt: String(u?.imagePrompt || `${main.name} related product packshot`).slice(0, 800),
-      }));
-    }
-  } catch { /* fall back to main-only */ }
-  // Pad if the model under-delivered, so we always try to fill every upsell slot.
-  while (upsells.length < upsellCount) {
-    const n = upsells.length + 1;
-    upsells.push({ name: `${main.name} — Upsell ${n}`, relation: 'related bundle/refill', imagePrompt: `${main.name} related product packshot, variant ${n}` });
-  }
-  return { main, upsells };
-}
-
-/** Wrap an image prompt in consistent ecommerce packshot styling. */
-function buildPackshotPrompt(core: string): string {
-  return `Photorealistic ecommerce product packshot. ${core}. Centered product on a clean seamless light studio background, soft natural shadow, crisp high-detail lighting, no people, no added text or logos beyond the product's own label, square framing, high resolution.`;
+/** ChatGPT Images prompt — no Claude. Label is always our product name. */
+function buildPackshotPrompt(opts: {
+  brandName: string;
+  skuName: string;
+  look: string;
+  productHint?: string;
+  forbidden?: string[];
+}): string {
+  const brand = (opts.brandName || 'our product').trim();
+  const sku = (opts.skuName || brand).trim();
+  const hint = (opts.productHint || '').trim().slice(0, 320);
+  const ban = (opts.forbidden || []).slice(0, 8).join(', ');
+  return [
+    `Photorealistic ecommerce product packshot of OUR product "${brand}".`,
+    opts.look,
+    hint ? `What it is: ${hint}` : '',
+    `The printed label on the packaging MUST read "${sku}" (or "${brand}").`,
+    ban ? `Never print these competitor / swipe-template names: ${ban}.` : 'Do not print any competitor brand, website, or funnel-template name.',
+    'Centered product on a clean seamless light studio background, soft natural shadow, crisp high-detail lighting, no people, no extra logos, square framing, high resolution.',
+  ].filter(Boolean).join(' ');
 }
 
 type PackSlot = { role: 'main' | 'upsell'; pageType: string; name: string };
+
+/** Template page titles / funnel name — never print these on our packshots. */
+function templateNameBanList(funnel: FunnelProducts | null, input: PipelineInput, productName: string): string[] {
+  const brand = productName.trim().toLowerCase();
+  const out: string[] = [];
+  const push = (raw: string) => {
+    const t = String(raw || '').trim();
+    if (t.length < 4) return;
+    if (brand && t.toLowerCase() === brand) return;
+    out.push(t);
+  };
+  if (funnel?.funnelName) push(funnel.funnelName);
+  for (const p of funnel?.pages || []) push(p.name);
+  for (const s of input.funnelSteps || []) push(s.name);
+  for (const p of input.productPrices || []) {
+    if (p.stepName) push(p.stepName);
+  }
+  return [...new Set(out)];
+}
+
+function escRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function scrubForbiddenNames(text: string, forbidden: string[], replacement: string): string {
+  let out = String(text || '');
+  const sorted = [...forbidden].sort((a, b) => b.length - a.length);
+  for (const f of sorted) {
+    if (f.length < 4) continue;
+    out = out.replace(new RegExp(escRe(f), 'gi'), replacement);
+  }
+  return out.replace(/\s{2,}/g, ' ').trim();
+}
 
 function packSlotsFromInput(
   input: PipelineInput,
@@ -792,11 +820,16 @@ function packSlotsFromInput(
 ): PackSlot[] {
   const prices = Array.isArray(input.productPrices) ? input.productPrices : [];
   if (prices.length) {
-    return prices.map((p, i) => ({
-      role: p.role === 'upsell' ? 'upsell' as const : 'main' as const,
-      pageType: String(p.pageType || (p.role === 'upsell' ? `upsell_${i}` : 'landing')),
-      name: String(p.stepName || (p.role === 'main' ? productName : `Upsell ${i}`)).slice(0, 120),
-    }));
+    let upN = 0;
+    return prices.map((p) => {
+      const isUp = p.role === 'upsell';
+      if (isUp) upN += 1;
+      return {
+        role: isUp ? 'upsell' as const : 'main' as const,
+        pageType: String(p.pageType || (isUp ? `upsell_${upN}` : 'landing')),
+        name: isUp ? `${productName} — Upsell ${upN}` : productName,
+      };
+    });
   }
   const slots: PackSlot[] = [];
   let hasMain = false;
@@ -804,10 +837,10 @@ function packSlotsFromInput(
   for (const p of funnel?.pages || []) {
     if (UPSELL_PAGE_RE.test(p.type)) {
       n += 1;
-      slots.push({ role: 'upsell', pageType: p.type || `upsell_${n}`, name: p.name || `Upsell ${n}` });
+      slots.push({ role: 'upsell', pageType: p.type || `upsell_${n}`, name: `${productName} — Upsell ${n}` });
     } else if (!hasMain) {
       hasMain = true;
-      slots.push({ role: 'main', pageType: p.type || 'landing', name: p.name || productName });
+      slots.push({ role: 'main', pageType: p.type || 'landing', name: productName });
     }
   }
   if (!slots.some((s) => s.role === 'main')) {
@@ -821,7 +854,7 @@ function mockupFileType(slot: PackSlot): string {
   return `img_pb_${swipePageType(slot.pageType || 'upsell_1')}`;
 }
 
-/** Generate the product line images (main + correlated upsells).
+/** Generate the product line images with ChatGPT Images only (no Claude, no Gemini).
  *  Optional uploaded photo = main packshot only; Chimera still invents
  *  every other product the funnel needs. */
 async function generateProductImages(
@@ -829,8 +862,6 @@ async function generateProductImages(
   projectId: string,
   input: PipelineInput,
   funnel: FunnelProducts | null,
-  research: string,
-  brief: string,
   productName: string,
   seedMainUrl: string | null,
 ): Promise<{ saved: number; total: number; note: string; mainImageUrl: string | null; images: Array<{ name: string; url: string; role: string }> }> {
@@ -840,20 +871,21 @@ async function generateProductImages(
   const images: Array<{ name: string; url: string; role: string }> = [];
   const { data: projOwner } = await supabase.from('projects').select('owner_user_id').eq('id', projectId).maybeSingle();
   const ownerUserId = typeof projOwner?.owner_user_id === 'string' ? projOwner.owner_user_id : null;
-
-  const specRaw = await callClaude({
-    task: 'general',
-    instructions: `You are a product designer + ecommerce merchandiser. Define a coherent PRODUCT LINE for a sales funnel: the MAIN product and EXACTLY ${upsellCount} UPSELL products that are directly RELATED to the main (same brand world — e.g. multi-pack/bulk, complementary accessory, refill, premium/bundle version). For EACH product write a photorealistic packshot image prompt describing the physical product, packaging and colors, consistent across the whole line.
-Return STRICT JSON ONLY, no prose, no code fences:
-{"main":{"name":"...","imagePrompt":"..."},"upsells":[{"name":"...","relation":"...","imagePrompt":"..."}]}
-The "upsells" array MUST contain EXACTLY ${upsellCount} items${upsellCount === 0 ? ' (an empty array)' : ''}.`,
-    brief,
-    marketResearch: research,
-    userMessage: `Main product: ${productName}\n${input.description ? `Description: ${input.description}\n` : ''}Market: ${marketGeo(input) || 'infer from product'}\nReturn the product line as JSON with exactly ${upsellCount} upsells.`,
-    maxTokens: 2000,
-  });
-
-  const spec = parseProductSpec(specRaw, upsellCount, productName);
+  const forbidden = templateNameBanList(funnel, input, productName);
+  if (!openaiImageKey()) {
+    return {
+      saved: 0,
+      total: 1 + upsellCount,
+      note: 'OPENAI_API_KEY missing — product mockups use ChatGPT Images only.',
+      mainImageUrl: null,
+      images,
+    };
+  }
+  const productHint = scrubForbiddenNames(
+    String(input.description || '').replace(/PRICE \(use this exact[\s\S]*/gi, '').trim(),
+    forbidden,
+    productName,
+  ).slice(0, 320);
 
   let saved = 0;
   let mainImageUrl: string | null = null;
@@ -866,19 +898,25 @@ The "upsells" array MUST contain EXACTLY ${upsellCount} items${upsellCount === 0
   };
 
   if (seedMainUrl) {
-    const stored = await persist(`Product — ${spec.main.name}`, seedMainUrl, ['img_pb_frontend']);
+    const stored = await persist(`Product — ${productName}`, seedMainUrl, ['img_pb_frontend']);
     if (stored) {
       mainImageUrl = stored;
       mainRefUrl = stored;
       saved += 1;
-      images.push({ name: spec.main.name, url: stored, role: 'Main product' });
+      images.push({ name: productName, url: stored, role: 'Main product' });
     } else {
       mainImageUrl = seedMainUrl;
       mainRefUrl = seedMainUrl;
     }
   } else {
     const mainUrl = await generateImageUrl('t2i', {
-      prompt: buildPackshotPrompt(spec.main.imagePrompt),
+      prompt: buildPackshotPrompt({
+        brandName: productName,
+        skuName: productName,
+        look: 'Single retail unit of the flagship product (bottle, jar, box or device as fits the product).',
+        productHint,
+        forbidden,
+      }),
       image_size: 'square_hd',
       quality: 'medium',
     });
@@ -886,17 +924,17 @@ The "upsells" array MUST contain EXACTLY ${upsellCount} items${upsellCount === 0
       return {
         saved: 0,
         total: 1 + upsellCount,
-        note: lastImageGenError() || 'main packshot generation returned empty',
+        note: lastImageGenError() || 'ChatGPT main packshot returned empty',
         mainImageUrl: null,
         images,
       };
     }
-    const stored = await persist(`Product — ${spec.main.name}`, mainUrl, ['img_pb_frontend']);
+    const stored = await persist(`Product — ${productName}`, mainUrl, ['img_pb_frontend']);
     if (!stored) {
       return {
         saved: 0,
         total: 1 + upsellCount,
-        note: `main packshot generated but not saved to the project (${lastImageGenError() || 'storage/insert failed'})`,
+        note: `ChatGPT main packshot generated but not saved (${lastImageGenError() || 'storage/insert failed'})`,
         mainImageUrl: null,
         images,
       };
@@ -904,14 +942,20 @@ The "upsells" array MUST contain EXACTLY ${upsellCount} items${upsellCount === 0
     mainImageUrl = stored;
     mainRefUrl = stored;
     saved += 1;
-    images.push({ name: spec.main.name, url: stored, role: 'Main product' });
+    images.push({ name: productName, url: stored, role: 'Main product' });
   }
 
-  let upIdx = 0;
-  for (const up of spec.upsells) {
-    upIdx++;
-    const slot = upsellSlots[upIdx - 1] || { role: 'upsell' as const, pageType: `upsell_${upIdx}`, name: up.name };
-    const prompt = `${buildPackshotPrompt(up.imagePrompt)} It belongs to the SAME product family/brand as the reference image — keep the same palette, packaging style and branding.`;
+  for (let upIdx = 1; upIdx <= upsellCount; upIdx++) {
+    const slot = upsellSlots[upIdx - 1];
+    const skuName = `${productName} — Upsell ${upIdx}`;
+    const look = UPSELL_LOOK[(upIdx - 1) % UPSELL_LOOK.length];
+    const prompt = `${buildPackshotPrompt({
+      brandName: productName,
+      skuName,
+      look,
+      productHint,
+      forbidden,
+    })} Same brand family as the reference packshot (palette, packaging style). Different SKU of "${productName}", not the swipe-template competitor.`;
     const upUrl = mainRefUrl
       ? await generateImageUrl('i2i', {
           prompt,
@@ -925,25 +969,25 @@ The "upsells" array MUST contain EXACTLY ${upsellCount} items${upsellCount === 0
           quality: 'medium',
         });
     if (!upUrl) {
-      console.warn('[pipeline] upsell packshot empty:', lastImageGenError());
+      console.warn('[pipeline] ChatGPT upsell packshot empty:', lastImageGenError());
       continue;
     }
-    const stored = await persist(`Upsell ${upIdx} — ${up.name}`, upUrl, [mockupFileType(slot)]);
+    const stored = await persist(`Upsell ${upIdx} — ${productName}`, upUrl, [mockupFileType(slot)]);
     if (!stored) {
-      console.warn('[pipeline] upsell packshot not saved:', lastImageGenError());
+      console.warn('[pipeline] ChatGPT upsell packshot not saved:', lastImageGenError());
       continue;
     }
     saved += 1;
-    images.push({ name: up.name, url: stored, role: `Upsell ${upIdx}` });
+    images.push({ name: skuName, url: stored, role: `Upsell ${upIdx}` });
   }
 
-  const total = 1 + spec.upsells.length;
+  const total = 1 + upsellCount;
   const missing = total - saved;
   const err = lastImageGenError();
   return {
     saved,
     total,
-    note: `${saved}/${total} product mockups saved.${missing ? ` ${missing} failed${err ? ` (${err})` : ''}.` : ''}`,
+    note: `${saved}/${total} ChatGPT product mockups saved.${missing ? ` ${missing} failed${err ? ` (${err})` : ''}.` : ''}`,
     mainImageUrl,
     images,
   };
@@ -1659,8 +1703,6 @@ function adsToHtml(raw: string, ads: PlatformAd[]): string {
 
 async function runLanding(supabase: SupabaseClient, projectId: string, input: PipelineInput): Promise<StepResult> {
   const project = await loadProject(supabase, projectId);
-  const research = sectionContentFrom(project.market_research);
-  const brief = typeof project.brief === 'string' && project.brief.trim() ? (project.brief as string) : sectionContentFrom(project.brief);
   const productName = (project.name as string) || input.product || '';
 
   // Clone/Swipe rewrites the competitor pages from brief + research.
@@ -1678,7 +1720,7 @@ async function runLanding(supabase: SupabaseClient, projectId: string, input: Pi
     images.note = 'Affiliate: mockup skipped — competitor landing photos are used as-is.';
   } else {
     images = await generateProductImages(
-      supabase, projectId, input, funnel, research, brief, productName, uploadedUrl,
+      supabase, projectId, input, funnel, productName, uploadedUrl,
     );
     if (!images.saved) {
       throw new Error(
@@ -2058,13 +2100,14 @@ export default async (req: Request) => {
 
   const projectId = job.project_id as string;
   const input = (job.input || {}) as PipelineInput;
+  let upPriceN = 0;
   const priceLines = Array.isArray(input.productPrices)
     ? input.productPrices
       .filter((p) => String(p.price || '').trim())
       .map((p) => {
         const who = p.role === 'main'
           ? 'MAIN PRODUCT'
-          : String(p.stepName || p.pageType || 'UPSELL').trim();
+          : `UPSELL ${++upPriceN} (${swipePageType(String(p.pageType || 'upsell_1'))})`;
         return `${who} PRICE (use this exact price on that step — do not invent another): ${String(p.price).trim()}`;
       })
     : [];
