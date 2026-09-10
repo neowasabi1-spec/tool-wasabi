@@ -162,8 +162,8 @@ async function callClaudeText(system: string, user: string, maxTokens: number, t
     signal: AbortSignal.timeout(timeoutMs),
   });
   if (!res.ok) throw new Error(`Anthropic ${res.status}: ${(await res.text()).slice(0, 300)}`);
-  const data = await res.json();
-  return (data.content?.[0]?.text ?? '').trim();
+  const data = await res.json() as { content?: Array<{ type?: string; text?: string }> };
+  return (data.content || []).filter((c) => c.type === 'text' || c.text).map((c) => c.text || '').join('').trim();
 }
 
 async function callClaudeVision(
@@ -189,8 +189,8 @@ async function callClaudeVision(
     signal: AbortSignal.timeout(90_000),
   });
   if (!res.ok) throw new Error(`Anthropic ${res.status}: ${(await res.text()).slice(0, 300)}`);
-  const data = await res.json();
-  return (data.content?.[0]?.text ?? '').trim();
+  const data = await res.json() as { content?: Array<{ type?: string; text?: string }> };
+  return (data.content || []).filter((c) => c.type === 'text' || c.text).map((c) => c.text || '').join('').trim();
 }
 
 /** Compact facts for every rewrite/vision batch — not the 80k brief dump. */
@@ -2197,10 +2197,11 @@ export default async (req: Request) => {
   const page = pages[0];
   let nextPages = pages;
   let nextOffset = imageOffset;
+  let nextSkipTexts = false;
 
   const runOne = async (p: SwipePage, offset: number): Promise<PageBatchResult> => {
     const pageCtx = await bindStepOffer(sb, ctx, p);
-    if (offset > 0 && incomingRestyle && incomingRestyle.stylePrefix) {
+    if (incomingRestyle && incomingRestyle.stylePrefix && (offset > 0 || ctx.skipTexts)) {
       pageCtx.restyle = incomingRestyle;
     }
     const result = await processPage(sb, pageCtx, p, budget, deadline, offset);
@@ -2218,8 +2219,10 @@ export default async (req: Request) => {
     if (result.done) {
       nextPages = pages.slice(1);
       nextOffset = 0;
+      nextSkipTexts = false;
     } else {
       nextOffset = result.nextOffset;
+      nextSkipTexts = true;
     }
   } catch (e) {
     const msg = (e as Error).message?.slice(0, 400) || 'swipe error';
@@ -2227,6 +2230,7 @@ export default async (req: Request) => {
     await markFailed(sb, page.funnelPageId, msg);
     nextPages = pages.slice(1);
     nextOffset = 0;
+    nextSkipTexts = false;
   }
 
   if (nextPages.length && Date.now() < deadline) {
@@ -2243,16 +2247,16 @@ export default async (req: Request) => {
             market,
             mainImageUrl,
             imageMode,
-            skipTexts: ctx.skipTexts,
+            skipTexts: nextSkipTexts,
             pages: nextPages,
             imageOffset: nextOffset,
-            restyle: nextOffset > 0 ? ctx.restyle : null,
+            restyle: nextSkipTexts ? ctx.restyle : null,
             imagesLeft: budget.imagesLeft,
             mediaUsed: [...ctx.mediaUsed],
           }),
           signal: AbortSignal.timeout(12_000),
         });
-        log(`chained next batch: ${nextPages.length} page(s) offset=${nextOffset} HTTP ${res.status}`);
+        log(`chained next batch: ${nextPages.length} page(s) offset=${nextOffset} skipTexts=${nextSkipTexts} HTTP ${res.status}`);
         if (!res.ok && res.status !== 202) {
           log('chain HTTP', res.status, (await res.text().catch(() => '')).slice(0, 200));
         }
