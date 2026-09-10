@@ -6,7 +6,7 @@ import { parseSectionData } from '../../src/lib/project-sections';
 import { extractLandingMediaFromUrl, listLandingMedia, offerIdentityFromHtml } from '../../src/lib/landing-media';
 import { fetchPageText, pageTextBlock } from '../../src/lib/page-text';
 import { wellFormed } from '../../src/lib/well-formed';
-import { openaiGenerateImage, openaiImageKey } from '../../src/lib/openai-image';
+import { openaiGenerateImage, lastImageGenError } from '../../src/lib/openai-image';
 
 /**
  * Background function (up to 15 min) that RUNS the Project Autopilot pipeline
@@ -588,6 +588,7 @@ async function saveProductImage(
   label: string,
   img: GenImage,
   extraTypes: string[] = [],
+  ownerUserId: string | null = null,
 ): Promise<string | null> {
   try {
     await ensureProjectFilesBucket(supabase);
@@ -605,6 +606,7 @@ async function saveProductImage(
         file_type,
         file_path: objectKey,
         original_name: `${safe}.${ext}`,
+        ...(ownerUserId ? { owner_user_id: ownerUserId } : {}),
       });
       if (insErr) {
         console.warn('[pipeline] product_files insert failed:', file_type, insErr.message);
@@ -762,9 +764,47 @@ function buildPackshotPrompt(core: string): string {
   return `Photorealistic ecommerce product packshot. ${core}. Centered product on a clean seamless light studio background, soft natural shadow, crisp high-detail lighting, no people, no added text or logos beyond the product's own label, square framing, high resolution.`;
 }
 
-/** Generate the product line images (main + correlated upsells). Main is
- *  text-to-image; each upsell is image-to-image off the main so the whole line
- *  shares one brand look. Best-effort: returns counts + a human note. */
+type PackSlot = { role: 'main' | 'upsell'; pageType: string; name: string };
+
+function packSlotsFromInput(
+  input: PipelineInput,
+  funnel: FunnelProducts | null,
+  productName: string,
+): PackSlot[] {
+  const prices = Array.isArray(input.productPrices) ? input.productPrices : [];
+  if (prices.length) {
+    return prices.map((p, i) => ({
+      role: p.role === 'upsell' ? 'upsell' as const : 'main' as const,
+      pageType: String(p.pageType || (p.role === 'upsell' ? `upsell_${i}` : 'landing')),
+      name: String(p.stepName || (p.role === 'main' ? productName : `Upsell ${i}`)).slice(0, 120),
+    }));
+  }
+  const slots: PackSlot[] = [];
+  let hasMain = false;
+  let n = 0;
+  for (const p of funnel?.pages || []) {
+    if (UPSELL_PAGE_RE.test(p.type)) {
+      n += 1;
+      slots.push({ role: 'upsell', pageType: p.type || `upsell_${n}`, name: p.name || `Upsell ${n}` });
+    } else if (!hasMain) {
+      hasMain = true;
+      slots.push({ role: 'main', pageType: p.type || 'landing', name: p.name || productName });
+    }
+  }
+  if (!slots.some((s) => s.role === 'main')) {
+    slots.unshift({ role: 'main', pageType: 'landing', name: productName });
+  }
+  return slots;
+}
+
+function mockupFileType(slot: PackSlot): string {
+  if (slot.role === 'main') return 'img_pb_frontend';
+  return `img_pb_${swipePageType(slot.pageType || 'upsell_1')}`;
+}
+
+/** Generate the product line images (main + correlated upsells).
+ *  Optional uploaded photo = main packshot only; Chimera still invents
+ *  every other product the funnel needs. */
 async function generateProductImages(
   supabase: SupabaseClient,
   projectId: string,
@@ -773,13 +813,14 @@ async function generateProductImages(
   research: string,
   brief: string,
   productName: string,
+  seedMainUrl: string | null,
 ): Promise<{ saved: number; total: number; note: string; mainImageUrl: string | null; images: Array<{ name: string; url: string; role: string }> }> {
-  const upsellCount = funnel ? funnel.upsells : 0;
+  const slots = packSlotsFromInput(input, funnel, productName);
+  const upsellSlots = slots.filter((s) => s.role === 'upsell');
+  const upsellCount = upsellSlots.length;
   const images: Array<{ name: string; url: string; role: string }> = [];
-
-  if (!openaiImageKey()) {
-    return { saved: 0, total: 1 + upsellCount, note: 'image generation skipped: OPENAI_API_KEY not configured.', mainImageUrl: null, images };
-  }
+  const { data: projOwner } = await supabase.from('projects').select('owner_user_id').eq('id', projectId).maybeSingle();
+  const ownerUserId = typeof projOwner?.owner_user_id === 'string' ? projOwner.owner_user_id : null;
 
   const specRaw = await callClaude({
     task: 'general',
@@ -797,25 +838,60 @@ The "upsells" array MUST contain EXACTLY ${upsellCount} items${upsellCount === 0
 
   let saved = 0;
   let mainImageUrl: string | null = null;
-  let mainRefUrl: string | null = null;
+  let mainRefUrl: string | null = seedMainUrl;
 
-  const mainUrl = await generateImageUrl('t2i', {
-    prompt: buildPackshotPrompt(spec.main.imagePrompt),
-    image_size: 'square_hd',
-    quality: 'medium',
-  });
-  if (mainUrl) {
-    mainRefUrl = mainUrl;
-    const dl = await downloadImage(mainUrl);
-    if (dl) {
-      const stored = await saveProductImage(supabase, projectId, `Product — ${spec.main.name}`, dl, ['img_pb_frontend']);
-      if (stored) { mainImageUrl = stored; mainRefUrl = stored; saved++; images.push({ name: spec.main.name, url: stored, role: 'Main product' }); }
+  const persist = async (label: string, url: string, extraTypes: string[]): Promise<string | null> => {
+    const dl = await downloadImage(url);
+    if (!dl) return null;
+    return saveProductImage(supabase, projectId, label, dl, extraTypes, ownerUserId);
+  };
+
+  if (seedMainUrl) {
+    const stored = await persist(`Product — ${spec.main.name}`, seedMainUrl, ['img_pb_frontend']);
+    if (stored) {
+      mainImageUrl = stored;
+      mainRefUrl = stored;
+      saved += 1;
+      images.push({ name: spec.main.name, url: stored, role: 'Main product' });
+    } else {
+      mainImageUrl = seedMainUrl;
+      mainRefUrl = seedMainUrl;
     }
+  } else {
+    const mainUrl = await generateImageUrl('t2i', {
+      prompt: buildPackshotPrompt(spec.main.imagePrompt),
+      image_size: 'square_hd',
+      quality: 'medium',
+    });
+    if (!mainUrl) {
+      return {
+        saved: 0,
+        total: 1 + upsellCount,
+        note: lastImageGenError() || 'main packshot generation returned empty',
+        mainImageUrl: null,
+        images,
+      };
+    }
+    const stored = await persist(`Product — ${spec.main.name}`, mainUrl, ['img_pb_frontend']);
+    if (!stored) {
+      return {
+        saved: 0,
+        total: 1 + upsellCount,
+        note: `main packshot generated but not saved to the project (${lastImageGenError() || 'storage/insert failed'})`,
+        mainImageUrl: null,
+        images,
+      };
+    }
+    mainImageUrl = stored;
+    mainRefUrl = stored;
+    saved += 1;
+    images.push({ name: spec.main.name, url: stored, role: 'Main product' });
   }
 
   let upIdx = 0;
   for (const up of spec.upsells) {
     upIdx++;
+    const slot = upsellSlots[upIdx - 1] || { role: 'upsell' as const, pageType: `upsell_${upIdx}`, name: up.name };
     const prompt = `${buildPackshotPrompt(up.imagePrompt)} It belongs to the SAME product family/brand as the reference image — keep the same palette, packaging style and branding.`;
     const upUrl = mainRefUrl
       ? await generateImageUrl('i2i', {
@@ -829,23 +905,29 @@ The "upsells" array MUST contain EXACTLY ${upsellCount} items${upsellCount === 0
           image_size: 'square_hd',
           quality: 'medium',
         });
-    if (upUrl) {
-      const dl = await downloadImage(upUrl);
-      const stored = dl ? await saveProductImage(
-        supabase,
-        projectId,
-        `Upsell ${upIdx} — ${up.name}`,
-        dl,
-        [`img_pb_${swipePageType((funnel?.pages || []).filter((p) => UPSELL_PAGE_RE.test(p.type))[upIdx - 1]?.type || `upsell_${upIdx}`)}`],
-      ) : null;
-      const finalUrl = stored || upUrl;
-      saved++;
-      images.push({ name: up.name, url: finalUrl, role: `Upsell ${upIdx}` });
+    if (!upUrl) {
+      console.warn('[pipeline] upsell packshot empty:', lastImageGenError());
+      continue;
     }
+    const stored = await persist(`Upsell ${upIdx} — ${up.name}`, upUrl, [mockupFileType(slot)]);
+    if (!stored) {
+      console.warn('[pipeline] upsell packshot not saved:', lastImageGenError());
+      continue;
+    }
+    saved += 1;
+    images.push({ name: up.name, url: stored, role: `Upsell ${upIdx}` });
   }
 
   const total = 1 + spec.upsells.length;
-  return { saved, total, note: `${saved}/${total} product images generated.`, mainImageUrl, images };
+  const missing = total - saved;
+  const err = lastImageGenError();
+  return {
+    saved,
+    total,
+    note: `${saved}/${total} product mockups saved.${missing ? ` ${missing} failed${err ? ` (${err})` : ''}.` : ''}`,
+    mainImageUrl,
+    images,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1593,8 +1675,9 @@ Scrivi la landing completa basandoti su brief e ricerca di mercato forniti nel c
     .eq('id', projectId);
   if (error) throw new Error(`Failed to save funnel: ${error.message}`);
 
-  // Product photo: uploaded packshot wins. Affiliate never invents a mockup.
-  // Internal without a photo invents one (and upsells) as before.
+  // Internal: optional uploaded photo is ONLY the main packshot. Chimera
+  // still invents every other product the selected funnel needs.
+  // Affiliate never invents a mockup.
   const uploadedUrl = typeof input.productImageUrl === 'string' && /^https?:\/\//i.test(input.productImageUrl)
     ? input.productImageUrl
     : null;
@@ -1602,26 +1685,17 @@ Scrivi la landing completa basandoti su brief e ricerca di mercato forniti nel c
   let images: { saved: number; total: number; note: string; mainImageUrl: string | null; images: Array<{ name: string; url: string; role: string }> } =
     { saved: 0, total: 1, note: '', mainImageUrl: uploadedUrl, images: [] };
 
-  if (uploadedUrl) {
-    images = {
-      saved: 1,
-      total: 1,
-      note: 'Using the uploaded product photo.',
-      mainImageUrl: uploadedUrl,
-      images: [{ name: productName, url: uploadedUrl, role: 'Main product' }],
-    };
-    try { await adoptUploadedProductImage(supabase, projectId, uploadedUrl, productName); } catch { /* already on project */ }
-  } else if (!skipMockup) {
-    try {
-      images = await generateProductImages(supabase, projectId, input, funnel, research, brief, productName);
-    } catch (e) { images.note = `image gen error: ${(e as Error).message}`; }
+  if (skipMockup) {
+    images.note = 'Affiliate: mockup skipped — competitor landing photos are used as-is.';
+  } else {
+    images = await generateProductImages(
+      supabase, projectId, input, funnel, research, brief, productName, uploadedUrl,
+    );
     if (!images.saved) {
       throw new Error(
-        images.note || 'Internal mode generated 0 product mockups. Check OPENAI_API_KEY and retry.',
+        images.note || lastImageGenError() || 'Internal mode generated 0 product mockups.',
       );
     }
-  } else {
-    images.note = 'Affiliate: mockup skipped — competitor landing photos are used as-is.';
   }
 
   const funnelNote = funnel
@@ -1631,7 +1705,7 @@ Scrivi la landing completa basandoti su brief e ricerca di mercato forniti nel c
   const extra = skipMockup
     ? ' Landing copy saved. Affiliate skipped the invented mockup.'
     : uploadedUrl
-      ? ' Landing copy saved. Using the uploaded product photo.'
+      ? ' Landing copy saved. Your photo is the main packshot; Chimera invented the rest.'
       : ' Landing copy saved.';
 
   return {

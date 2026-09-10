@@ -24,10 +24,10 @@ export function ChimeraProductPhoto({
   const [error, setError] = useState<string | null>(null);
 
   const hint = value
-    ? 'This packshot and its colors will be used on the landing.'
+    ? 'This photo is the MAIN packshot. Chimera still invents the other products from the funnel.'
     : imageMode === 'affiliate'
       ? 'No photo: Affiliate keeps competitor images. Mockup is skipped.'
-      : 'No photo: Internal invents a product mockup from the brief.';
+      : 'No photo: Internal invents a packshot for every product in the funnel you picked.';
 
   const upload = async (file: File) => {
     setError(null);
