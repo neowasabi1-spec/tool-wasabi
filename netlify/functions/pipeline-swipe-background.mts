@@ -19,14 +19,18 @@ import { loadDiscoveryLexicon } from '../../src/lib/discovery-lexicon';
 import { extractSectionContent } from '../../src/lib/project-sections';
 import {
   applyPaintedMedia,
+  applyPalette,
   collectRestyleSlots,
+  expandPaletteMap,
   injectRestyleMediaScript,
   libraryFileLabel,
   paintFor,
   sealPaintedHtml,
+  topSaturatedHex,
   type PaintedMedia,
+  type Palette,
 } from '../../src/lib/restyle-slots';
-import { placeMediaWithAi } from '../../src/lib/restyle-place';
+import { fetchPreview, placeMediaWithAi, samplePackshotPalette } from '../../src/lib/restyle-place';
 import { wellFormed } from '../../src/lib/well-formed';
 import { loadStepOffer, knownPriceBlock, stepOfferToMediaItems } from '../../src/lib/step-offer';
 import { fetchPageText } from '../../src/lib/page-text';
@@ -1107,6 +1111,13 @@ function replaceImageSrc(html: string, oldSrc: string, newUrl: string): string {
   return out;
 }
 
+function usableImageUrl(url?: string | null): string {
+  const t = String(url || '').trim();
+  if (!t) return '';
+  if (/^https?:\/\//i.test(t) || t.startsWith('data:image/')) return t;
+  return '';
+}
+
 function normHex(raw: string): string {
   let h = raw.replace('#', '').toLowerCase();
   if (h.length === 3) h = h.split('').map((c) => c + c).join('');
@@ -1176,60 +1187,50 @@ function rewriteRootTokens(html: string, spec: RestyleSpec): string {
   });
 }
 
-/** Same template skeleton, new brand tokens — remaps the inlined CSS then
- *  overrides framework utilities (Tailwind/Bootstrap class names) that never
- *  contain a hex to replace. */
+/** Same path as manual Clone/Swipe restyle: packshot palette + full hex map. */
 function applyTheme(html: string, spec: RestyleSpec): string {
   const held: string[] = [];
   let out = html.replace(/<script\b[^>]*\bdata-swipe-replacer\b[^>]*>[\s\S]*?<\/script>/gi, (m) => {
     held.push(m);
     return `<!--CHIMERA_SWIPE_SCRIPT_${held.length - 1}-->`;
   });
+  const p: Palette = {
+    primary: spec.primary,
+    secondary: spec.secondary,
+    accent: spec.accent,
+    background: spec.background,
+    ink: spec.ink || '#111111',
+  };
+  spec.palette = expandPaletteMap(topSaturatedHex(out, 16), p, spec.palette);
+  out = applyPalette(out, p, spec.palette);
   out = remapOldColors(out, spec);
   out = rewriteRootTokens(out, spec);
-  const css = `<style data-chimera-theme>
-:root,html{
-  --chimera-primary:${spec.primary};--chimera-secondary:${spec.secondary};--chimera-accent:${spec.accent};
-  --chimera-bg:${spec.background};--chimera-ink:${spec.ink};
-  --primary:${spec.primary};--color-primary:${spec.primary};--brand:${spec.primary};--brand-color:${spec.primary};
-  --bs-primary:${spec.primary};--theme-color:${spec.primary};--main-color:${spec.primary};
-  --secondary:${spec.secondary};--color-secondary:${spec.secondary};--accent:${spec.accent};
-  --background:${spec.background};--bg:${spec.background};--surface:${spec.background};
-  --text:${spec.ink};--ink:${spec.ink};--foreground:${spec.ink};
-}
-html,body{background:${spec.background} !important;color:${spec.ink} !important;}
-h1,h2,h3,h4{color:${spec.secondary} !important;}
-a{color:${spec.accent};}
-button,input[type=submit],input[type=button],.btn,[class*="btn-primary"],[class*="cta"],[class*="CTA"],[class*="order-now"],[class*="OrderNow"]{
-  background:${spec.primary} !important;border-color:${spec.primary} !important;color:#fff !important;
-}
-header,nav,[class*="navbar"]{background:${spec.background} !important;}
-footer,[class*="footer"],[class*="Footer"]{background:${spec.secondary} !important;color:#fff !important;}
-footer *,[class*="footer"] *,[class*="Footer"] *{color:#fff !important;}
-input,select,textarea{border-color:${spec.primary} !important;accent-color:${spec.primary} !important;}
-::selection{background:${spec.accent};color:#fff;}
-</style>`;
-  out = out.replace(/<style\b[^>]*\bdata-chimera-(?:theme|palette)\b[^>]*>[\s\S]*?<\/style>/gi, '');
-  if (out.includes('</head>')) out = out.replace('</head>', `${css}</head>`);
-  else out = css + out;
   held.forEach((s, i) => { out = out.replace(`<!--CHIMERA_SWIPE_SCRIPT_${i}-->`, () => s); });
   return out;
 }
 
-/** Neutral fallback only — the real colour world is designed by the model in buildRestyleSpec. */
-function productWorldGuess(ctx: SwipeCtx): {
-  primary: string; secondary: string; accent: string; background: string; ink: string; world: string;
-} {
-  return {
-    primary: '#1f2937', secondary: '#111827', accent: '#374151',
-    background: '#ffffff', ink: '#111111',
-    world: `premium commercial photography matching ${ctx.productName}`,
-  };
+function isGrayishHex(hex: string): boolean {
+  const h = normHex(hex);
+  if (!h) return true;
+  const r = Number.parseInt(h.slice(1, 3), 16);
+  const g = Number.parseInt(h.slice(3, 5), 16);
+  const b = Number.parseInt(h.slice(5, 7), 16);
+  return Math.max(r, g, b) - Math.min(r, g, b) < 24;
 }
 
-function fallbackRestyleSpec(ctx: SwipeCtx, oldHex: string[]): RestyleSpec {
-  const g = productWorldGuess(ctx);
-  const news = [g.primary, g.secondary, g.accent, g.ink, g.primary];
+function fallbackRestyleSpec(
+  ctx: SwipeCtx,
+  oldHex: string[],
+  sampled?: { primary: string; secondary: string; accent: string; background: string } | null,
+): RestyleSpec {
+  const g = sampled
+    ? { ...sampled, ink: '#111111', world: `colour world from the packshot (${sampled.primary} / ${sampled.secondary})` }
+    : {
+      primary: '#c45c12', secondary: '#7a1f1a', accent: '#e8b84a',
+      background: '#fff8f2', ink: '#111111',
+      world: `warm premium DTC photography matching ${ctx.productName}`,
+    };
+  const news = [g.primary, g.secondary, g.accent, g.primary, g.secondary];
   const palette = oldHex
     .filter((h) => h !== '#ffffff' && h !== '#000000' && h !== '#fff' && h !== '#000')
     .slice(0, 12)
@@ -1241,7 +1242,7 @@ function fallbackRestyleSpec(ctx: SwipeCtx, oldHex: string[]): RestyleSpec {
     background: g.background,
     ink: g.ink,
     avatar: `One consistent on-brand customer for ${ctx.productName}, same face, age and styling in every lifestyle photo`,
-    stylePrefix: `Premium commercial photography for ${ctx.productName}: ${g.world}, shallow depth of field, consistent lighting and casting`,
+    stylePrefix: `Premium commercial photography for ${ctx.productName}: ${g.world}. Show THIS exact packaging in every product appearance, shallow depth of field, consistent lighting and casting`,
     palette,
   };
 }
@@ -1276,7 +1277,8 @@ function parseRestyleSpec(raw: string): RestyleSpec | null {
 }
 
 async function buildRestyleSpec(html: string, ctx: SwipeCtx): Promise<RestyleSpec | null> {
-  const colors = topPageHex(html);
+  const colors = topSaturatedHex(html, 16);
+  const sampled = ctx.mainImageUrl ? await samplePackshotPalette(ctx.mainImageUrl) : null;
   const system = `You are an art director restyling a competitor landing into OUR product — same layout, new visual world like a premium DTC jelly/skincare lander.
 The colour world IS the packshot. If the stick is saffron/burgundy, the page is cream + burgundy bands + gold CTA. If NAD+ purple, light lilac hero + deep purple bands + blue CTA. If collagen rose, blush pink + burgundy. Never a generic gray/black theme.
 Return STRICT JSON only:
@@ -1298,18 +1300,27 @@ Map EVERY supplied old hex that is a brand/section color (not #fff/#000 unless t
 If a product photo is attached, take primary/secondary/accent FROM that photo. No competitor brand names.`;
   const user = `OUR PRODUCT: ${ctx.productName}
 ${ctx.productContext ? `CONTEXT:\n${ctx.productContext.slice(0, 2500)}` : ''}
-${ctx.mainImageUrl ? 'A photo of OUR real product is attached — extract its actual colors and use them as the new palette.' : 'No product photo — invent a coherent palette for this product.'}
+${ctx.mainImageUrl ? 'A photo of OUR real product is attached — extract its actual colors and use them as the new palette. The page must look like this packshot (same hue family).' : 'No product photo — invent a coherent palette for this product.'}
 OLD PAGE HEX COLORS (most used first): ${colors.join(', ') || '(none found)'}
 Design a full restyle so the competitor page becomes our product the way a designer would: new palette, same grid.`;
   try {
-    const visual = ctx.mainImageUrl ? await downloadForVision(ctx.mainImageUrl) : null;
+    let visual: { mediaType: string; b64: string } | null = null;
+    if (ctx.mainImageUrl) {
+      const preview = await fetchPreview(ctx.mainImageUrl, 512);
+      if (preview) visual = { mediaType: preview.mime, b64: preview.data };
+      else visual = await downloadForVision(ctx.mainImageUrl);
+    }
     const raw = visual
       ? await callClaudeVision(system, user, visual, 1200)
       : await callClaudeText(system, user, 1200, 60_000);
-    return parseRestyleSpec(raw) || fallbackRestyleSpec(ctx, colors);
+    let spec = parseRestyleSpec(raw);
+    if (spec && isGrayishHex(spec.primary) && sampled) spec = null;
+    if (!spec) return fallbackRestyleSpec(ctx, colors, sampled);
+    if (sampled && isGrayishHex(spec.background)) spec.background = sampled.background;
+    return spec;
   } catch (e) {
     console.warn('[swipe] restyle spec failed:', (e as Error).message);
-    return fallbackRestyleSpec(ctx, colors);
+    return fallbackRestyleSpec(ctx, colors, sampled);
   }
 }
 
@@ -1539,6 +1550,11 @@ async function swipeImages(
   );
 
   const spec = ctx.restyle;
+  const packshot = usableImageUrl(ctx.mainImageUrl);
+  const ourMockups = sourceStills
+    .filter((m) => String(m.id).startsWith('step-mock-') && usableImageUrl(m.storedUrl))
+    .map((m) => m.storedUrl);
+  const packList = ourMockups.length ? ourMockups : (packshot ? [packshot] : []);
   const system = `You are a senior direct-response creative director. The generator will EDIT the original photo (image-to-image): same composition, new visual world for OUR product.
 
 Detect the FORMAT (before/after split-frame, product hero/packshot, lifestyle, ingredient close-up, mechanism diagram, infographic, testimonial portrait, press clipping, UGC, comparison). Never default to a before/after unless the original truly is one. No competitor brand names.
@@ -1551,7 +1567,7 @@ ${spec ? `VISUAL WORLD (must match every image): ${spec.stylePrefix}\nCASTING (s
 Return STRICT JSON only:
 {"product_shot": true|false, "format": "...", "prompt": "..."}
 "prompt" = edit instructions: keep framing/crop/layout, restyle into our world, put OUR product where theirs was.
-Set "product_shot": true ONLY for a packshot/hero of the competitor's own product (bottle, jar, box, device) — we will drop in OUR real product photo.`;
+Set "product_shot": true for a packshot/hero of a standalone product (bottle, jar, box, pouch, device, pouch on white/studio) — we will drop in OUR real mockup, not generate a new one.`;
 
   for (const img of slice) {
     if (budget.imagesLeft <= 0) break;
@@ -1574,39 +1590,61 @@ Surrounding page copy: ${img.context || '(none)'}`;
       console.warn('[swipe] image analysis failed:', (e as Error).message);
     }
     if (!analysis) {
+      const packish = img.section === 'product' || /product|pack|bottle|jar|box|mockup/i.test(`${img.alt} ${img.context}`);
       analysis = {
-        productShot: /product|pack|bottle|jar|box|mockup/i.test(`${img.alt} ${img.context}`),
-        format: 'lifestyle',
+        productShot: packish,
+        format: packish ? 'packshot' : 'lifestyle',
         prompt: `Recreate this landing-page visual for ${ctx.productName}. Alt: ${img.alt || 'none'}. Scene: ${img.context.slice(0, 220) || 'product hero'}.`,
       };
     }
 
     await touchPage(sb, page.funnelPageId, `Photo ${start + processed}/${images.length} — generating…`);
-    // Never stamp the same product photo on every packshot — that made
-    // the whole page look like one repeated image. Use it only as a
-    // reference for I2I so each slot stays a unique frame.
-    if (analysis.productShot && ctx.mainImageUrl) productSwaps++;
+
+    const looksLifestyle = /lifestyle|portrait|people|person|woman|man|face|ugc|testimonial/i.test(analysis.format)
+      || img.section === 'lifestyle'
+      || img.section === 'testimonials'
+      || img.section === 'author';
+    const dropPackshot = restyle && packList.length > 0 && !looksLifestyle && (
+      analysis.productShot
+      || img.section === 'product'
+      || /packshot|product.?shot|bottle|jar|box|pouch|sachet/i.test(`${img.alt} ${analysis.format}`)
+    );
+    if (dropPackshot) {
+      const mock = packList[(start + processed - 1) % packList.length];
+      out = replaceImageSrc(out, img.src, mock);
+      generated++;
+      productSwaps++;
+      budget.imagesLeft--;
+      await persistHtml(sb, page.funnelPageId, 'swiped', out, ctx.ownerUserId);
+      await touchPage(sb, page.funnelPageId, `Photo ${start + processed}/${images.length} — packshot placed`);
+      continue;
+    }
 
     const isGif = /\.gif(\?|#|$)/i.test(img.src) || /gif/i.test(img.alt);
     const sourceRef = absSrc && /^https?:\/\//i.test(absSrc) ? absSrc : '';
     const hosted = !isGif && sourceRef
       ? (await hostImageForFal(sb, ctx.projectId, sourceRef, start + processed)) || ''
       : '';
-    const refs = [hosted, analysis.productShot ? ctx.mainImageUrl : null].filter((u): u is string => {
+    const refs = [hosted, packshot].filter((u): u is string => {
       if (!u) return false;
       return /^https?:\/\//i.test(u) || u.startsWith('data:image/');
     });
     const slotHint = `Unique frame ${start + processed + 1}/${images.length} (${img.section || 'section'}, ${isGif ? 'GIF' : analysis.format}). Do NOT reuse a previous composition.`;
+    const packIdentity = packshot && refs.includes(packshot) && hosted
+      ? ' Image 2 is OUR real product mockup. Any product in the scene MUST be that exact packaging (same bottle/box/label/colors). Do not invent a different product.'
+      : packshot
+        ? ' The product must match our packshot packaging exactly (same bottle/box/label/colors). Do not invent a different product.'
+        : '';
     const i2iPrompt = spec
-      ? `${slotHint} Keep the EXACT composition, camera angle, crop and layout of image 1. Restyle the entire visual world: ${spec.stylePrefix}. Casting: ${spec.avatar}. Replace any competitor product with ${ctx.productName}. ${analysis.prompt}`
-      : `${slotHint} Keep the EXACT composition of image 1. Recreate it for ${ctx.productName}. ${analysis.prompt}`;
+      ? `${slotHint} Keep the EXACT composition, camera angle, crop and layout of image 1.${packIdentity} Restyle the entire visual world: ${spec.stylePrefix}. Casting: ${spec.avatar}. Replace any competitor product with ${ctx.productName}. ${analysis.prompt}`
+      : `${slotHint} Keep the EXACT composition of image 1.${packIdentity} Recreate it for ${ctx.productName}. ${analysis.prompt}`;
     const t2iPrompt = spec
-      ? `${slotHint} ${spec.stylePrefix}. Casting: ${spec.avatar}. ${analysis.prompt} Product: ${ctx.productName}.`
+      ? `${slotHint} ${spec.stylePrefix}. Casting: ${spec.avatar}. ${analysis.prompt} Product: ${ctx.productName}.${packshot ? ' The product must match our packshot packaging exactly.' : ''}`
       : `${slotHint} ${analysis.prompt}`;
     const tick = () => touchPage(sb, page.funnelPageId, `Photo ${start + processed}/${images.length} — generating…`);
     const common = { num_images: 1, output_format: 'png', quality: 'medium' as const };
     let falUrl: string | null = null;
-    if (restyle && !isGif && refs.length && Date.now() < deadline - 70_000) {
+    if (restyle && !isGif && hosted && Date.now() < deadline - 70_000) {
       falUrl = await generateImageUrl(
         IMG_MODEL_I2I,
         { ...common, prompt: i2iPrompt.slice(0, 1800), image_urls: refs, image_size: 'auto' },

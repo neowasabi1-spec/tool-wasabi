@@ -2,6 +2,7 @@ import {
   applyPaintedMedia,
   applyPalette,
   collectRestyleSlots,
+  expandPaletteMap,
   fallbackPalette,
   injectRestyleMediaScript,
   libraryFileLabel,
@@ -83,7 +84,8 @@ export async function runVisualRestyle(opts: {
 }): Promise<{ html: string; replaced: number; total: number; failed: number; error?: string }> {
   opts.onProgress?.('AI is designing the colour palette from the product…');
   const designed = await designPalette(opts);
-  let html = applyPalette(opts.html, designed.palette, designed.map);
+  const map = expandPaletteMap(topSaturatedHex(opts.html), designed.palette, designed.map);
+  let html = applyPalette(opts.html, designed.palette, map);
   opts.onProgress?.(
     designed.fromAi ? 'Palette on — collecting the photos on the page…' : 'Neutral palette (AI palette failed) — collecting photos…',
     html,

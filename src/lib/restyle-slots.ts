@@ -893,3 +893,37 @@ function lightTintHex(hex: string, mix = 0.10): string {
   const ch = (n: number) => Math.round(n * mix + 255 * (1 - mix)).toString(16).padStart(2, '0');
   return `#${ch(c.r)}${ch(c.g)}${ch(c.b)}`;
 }
+
+/**
+ * Claude often returns only a few from→to pairs. Fill every leftover
+ * saturated page hex so competitor brand colours actually become ours:
+ * light → pack wash, dark → secondary, mid → primary.
+ */
+export function expandPaletteMap(oldHex: string[], p: Palette, existing: PaletteMap = []): PaletteMap {
+  const out: PaletteMap = [];
+  const seen = new Set<string>();
+  for (const pair of existing) {
+    const from = normalizeHex(pair.from);
+    const to = normalizeHex(pair.to);
+    if (!from || !to || from === to || seen.has(from)) continue;
+    seen.add(from);
+    out.push({ from, to });
+  }
+  for (const raw of oldHex) {
+    const from = normalizeHex(raw);
+    if (!from || seen.has(from)) continue;
+    const c = parseCssColor(from);
+    if (!c) continue;
+    const L = luminance(c);
+    if (L < 0.04 || L > 0.93) continue;
+    let to = p.primary;
+    if (L > 0.78) to = p.background || lightTintHex(p.primary, 0.10);
+    else if (L < 0.18) to = p.secondary;
+    else if (L > 0.52) to = lightTintHex(p.primary, 0.42);
+    const toN = normalizeHex(to);
+    if (!toN || from === toN) continue;
+    seen.add(from);
+    out.push({ from, to: toN });
+  }
+  return out;
+}

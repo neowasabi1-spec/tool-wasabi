@@ -208,19 +208,67 @@ function absolutize(src: string, pageUrl: string): string {
   }
 }
 
+/** Dominant packshot colours when vision/palette JSON is missing. Never gray. */
+export async function samplePackshotPalette(url: string): Promise<{
+  primary: string; secondary: string; accent: string; background: string;
+} | null> {
+  try {
+    let buf: Buffer;
+    if (/^data:image\//i.test(url)) {
+      const m = url.match(/^data:image\/[a-zA-Z0-9.+-]+;base64,([\s\S]+)$/);
+      if (!m) return null;
+      buf = Buffer.from(m[1], 'base64');
+    } else {
+      const res = await fetch(url, {
+        headers: {
+          accept: 'image/*,*/*',
+          'user-agent': 'Mozilla/5.0 (compatible; WasabiPreview/1.0)',
+        },
+        signal: AbortSignal.timeout(8_000),
+      });
+      if (!res.ok) return null;
+      buf = Buffer.from(await res.arrayBuffer());
+    }
+    if (buf.length < 40 || buf.length > 8_000_000) return null;
+    const sharp = (await import('sharp')).default;
+    const { dominant } = await sharp(buf).resize(80, 80, { fit: 'inside' }).stats();
+    const { r, g, b } = dominant;
+    if (Math.max(r, g, b) - Math.min(r, g, b) < 16) return null;
+    const hex = (rr: number, gg: number, bb: number) =>
+      `#${[rr, gg, bb].map((n) => Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, '0')).join('')}`;
+    return {
+      primary: hex(r, g, b),
+      secondary: hex(r * 0.42, g * 0.38, b * 0.40),
+      accent: hex(Math.min(255, r * 1.12), Math.min(255, g * 0.92), Math.min(255, b * 0.62)),
+      background: hex(r * 0.10 + 255 * 0.90, g * 0.10 + 255 * 0.90, b * 0.10 + 255 * 0.90),
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function fetchPreview(url: string, size = 512): Promise<{ mime: string; data: string } | null> {
   try {
-    const res = await fetch(url, {
-      headers: {
-        accept: 'image/*,*/*',
-        'user-agent': 'Mozilla/5.0 (compatible; WasabiPreview/1.0)',
-      },
-      signal: AbortSignal.timeout(8_000),
-    });
-    if (!res.ok) return null;
-    const rawMime = (res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
-    if (rawMime && !rawMime.startsWith('image/')) return null;
-    const buf = Buffer.from(await res.arrayBuffer());
+    let buf: Buffer;
+    let rawMime = 'image/jpeg';
+    if (/^data:image\//i.test(url)) {
+      const m = url.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,([\s\S]+)$/);
+      if (!m) return null;
+      rawMime = m[1];
+      buf = Buffer.from(m[2], 'base64');
+    } else {
+      const res = await fetch(url, {
+        headers: {
+          accept: 'image/*,*/*',
+          'user-agent': 'Mozilla/5.0 (compatible; WasabiPreview/1.0)',
+        },
+        signal: AbortSignal.timeout(8_000),
+      });
+      if (!res.ok) return null;
+      rawMime = (res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+      if (rawMime && !rawMime.startsWith('image/')) return null;
+      buf = Buffer.from(await res.arrayBuffer());
+    }
     if (buf.length < 40 || buf.length > 6_000_000) return null;
     return shrinkPreview(buf, rawMime || 'image/jpeg', size);
   } catch {

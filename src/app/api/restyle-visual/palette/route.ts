@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAnthropicKey } from '@/lib/anthropic-key';
 import { fetchPreview } from '@/lib/restyle-place';
-import { normalizeHex, type Palette, type PaletteMap } from '@/lib/restyle-slots';
+import { expandPaletteMap, normalizeHex, type Palette, type PaletteMap } from '@/lib/restyle-slots';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 
 export const dynamic = 'force-dynamic';
@@ -146,5 +146,5 @@ function parsePalette(raw: string, oldColors: string[]): { palette: Palette; map
   const map: PaletteMap = (Array.isArray(obj.map) ? (obj.map as Array<Record<string, unknown>>) : [])
     .map((p) => ({ from: hex(p.from), to: hex(p.to) }))
     .filter((p) => p.from && p.to && known.has(p.from));
-  return { palette, map };
+  return { palette, map: expandPaletteMap(oldColors, palette, map) };
 }
