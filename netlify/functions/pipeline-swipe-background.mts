@@ -65,7 +65,7 @@ import { openaiGenerateImage, openaiImageKey } from '../../src/lib/openai-image'
 
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
-const MODEL = process.env.PIPELINE_SWIPE_MODEL || 'claude-opus-4-8';
+const MODEL = process.env.PIPELINE_SWIPE_MODEL || 'claude-sonnet-4-6';
 const IMG_MODEL_T2I = 't2i';
 const IMG_MODEL_I2I = 'i2i';
 const PROJECT_FILES_BUCKET = 'project-files';
@@ -75,7 +75,7 @@ const IMAGE_BATCH = 4;
 // The DOM extractor emits a sentence AND its inline pieces; a long lander is
 // 400–700 units. 350 silently dropped the bottom half of the page.
 const MAX_TEXTS = 900;
-const BATCH_SIZE = 12;
+const BATCH_SIZE = 24;
 const BATCH_CONCURRENCY = 3;
 const MAX_IMAGES_PER_PAGE = 5;
 const MAX_IMAGES_TOTAL = 18;
@@ -116,6 +116,8 @@ interface RestyleSpec {
 
 /** Same per-field cap Clone/Swipe uses when enqueueing rewrite context. */
 const DOC_CAP = 80_000;
+/** Rewrite/vision batches get a slice of this — not the full 80k brief. */
+const BATCH_CONTEXT_CAP = 18_000;
 
 interface SwipeCtx {
   projectId: string;
@@ -154,7 +156,7 @@ async function callClaudeText(system: string, user: string, maxTokens: number, t
     body: JSON.stringify({
       model: MODEL,
       max_tokens: maxTokens,
-      system: wellFormed(system),
+      system: [{ type: 'text', text: wellFormed(system), cache_control: { type: 'ephemeral' } }],
       messages: [{ role: 'user', content: wellFormed(user) }],
     }),
     signal: AbortSignal.timeout(timeoutMs),
@@ -178,12 +180,27 @@ async function callClaudeVision(
   const res = await fetch(ANTHROPIC_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-api-key': anthropicKey(), 'anthropic-version': ANTHROPIC_VERSION },
-    body: JSON.stringify({ model: MODEL, max_tokens: maxTokens, system: wellFormed(system), messages: [{ role: 'user', content }] }),
+    body: JSON.stringify({
+      model: MODEL,
+      max_tokens: maxTokens,
+      system: [{ type: 'text', text: wellFormed(system), cache_control: { type: 'ephemeral' } }],
+      messages: [{ role: 'user', content }],
+    }),
     signal: AbortSignal.timeout(90_000),
   });
   if (!res.ok) throw new Error(`Anthropic ${res.status}: ${(await res.text()).slice(0, 300)}`);
   const data = await res.json();
   return (data.content?.[0]?.text ?? '').trim();
+}
+
+/** Compact facts for every rewrite/vision batch — not the 80k brief dump. */
+function swipeBatchContext(ctx: SwipeCtx): string {
+  const parts: string[] = [];
+  if (ctx.offerPage) parts.push(`OFFER PAGE:\n${ctx.offerPage.slice(0, 6_000)}`);
+  if (ctx.brief) parts.push(`BRIEF:\n${ctx.brief.slice(0, 8_000)}`);
+  if (ctx.research) parts.push(`RESEARCH:\n${ctx.research.slice(0, 6_000)}`);
+  const joined = parts.join('\n\n').trim();
+  return (joined || ctx.productContext || ctx.productName).slice(0, BATCH_CONTEXT_CAP);
 }
 
 // ---------------------------------------------------------------------------
@@ -1555,12 +1572,13 @@ async function swipeImages(
     .filter((m) => String(m.id).startsWith('step-mock-') && usableImageUrl(m.storedUrl))
     .map((m) => m.storedUrl);
   const packList = ourMockups.length ? ourMockups : (packshot ? [packshot] : []);
+  const compactCtx = swipeBatchContext(ctx);
   const system = `You are a senior direct-response creative director. The generator will EDIT the original photo (image-to-image): same composition, new visual world for OUR product.
 
 Detect the FORMAT (before/after split-frame, product hero/packshot, lifestyle, ingredient close-up, mechanism diagram, infographic, testimonial portrait, press clipping, UGC, comparison). Never default to a before/after unless the original truly is one. No competitor brand names.
 
 OUR PRODUCT: ${ctx.productName}
-${ctx.productContext ? `PRODUCT CONTEXT:\n${ctx.productContext.slice(0, 3000)}` : ''}
+${compactCtx ? `PRODUCT CONTEXT:\n${compactCtx}` : ''}
 ${ctx.market ? `TARGET MARKET: ${ctx.market} — any text painted inside the image MUST be in this market's local language.` : ''}
 ${spec ? `VISUAL WORLD (must match every image): ${spec.stylePrefix}\nCASTING (same person in every lifestyle shot): ${spec.avatar}\nPALETTE: ${spec.primary} / ${spec.secondary} / ${spec.accent}` : ''}
 
@@ -1576,9 +1594,26 @@ Set "product_shot": true for a packshot/hero of a standalone product (bottle, ja
     const source = sourceBySrc.get(img.src);
     const absSrc = source?.storedUrl || absolutizeSrc(img.src, page.sourceUrl);
 
+    const looksLifestyleSection = img.section === 'lifestyle'
+      || img.section === 'testimonials'
+      || img.section === 'author';
+    const packishHeuristic = img.section === 'product'
+      || /packshot|product.?shot|bottle|jar|box|pouch|sachet|mockup/i.test(`${img.alt} ${img.context}`);
+    if (restyle && packList.length > 0 && !looksLifestyleSection && packishHeuristic) {
+      const mock = packList[(start + processed - 1) % packList.length];
+      out = replaceImageSrc(out, img.src, mock);
+      generated++;
+      productSwaps++;
+      budget.imagesLeft--;
+      await persistHtml(sb, page.funnelPageId, 'swiped', out, ctx.ownerUserId);
+      await touchPage(sb, page.funnelPageId, `Photo ${start + processed}/${images.length} — packshot placed`);
+      continue;
+    }
+
     let analysis: ImageAnalysis | null = null;
     try {
-      const visual = absSrc ? await downloadForVision(absSrc) : null;
+      const preview = absSrc ? await fetchPreview(absSrc, 384) : null;
+      const visual = preview ? { mediaType: preview.mime, b64: preview.data } : null;
       const user = `Analyze this landing-page image and produce the swipe JSON.
 ${visual ? '' : '(The image file was not downloadable — infer the format from the metadata below.)'}
 ALT text: ${img.alt || '(none)'}
@@ -1774,7 +1809,7 @@ async function bindStepOffer(
   const extras: string[] = [];
   if (offer.price) extras.push(knownPriceBlock(offer.price));
   if (offer.brief && offer.brief !== ctx.brief) {
-    extras.push(`STEP BRIEF (this page's product — source of truth):\n${offer.brief.slice(0, DOC_CAP)}`);
+    extras.push(`STEP BRIEF (this page's product — source of truth):\n${offer.brief.slice(0, 8_000)}`);
   }
   if (extras.length) {
     next.productContext = [ctx.productContext, extras.join('\n\n')].filter(Boolean).join('\n\n');
@@ -1861,9 +1896,10 @@ async function processPage(
           : 'No texts found — restyling photos…');
         if (texts.length) {
           const outLang = ctx.market ? `the local language of this target market: ${ctx.market} (e.g. German for Germany, Italian for Italy)` : 'the same language as the original text';
+          const compactCtx = swipeBatchContext(ctx);
           const plan = await buildSwipePlan({
             productName: ctx.productName,
-            productContext: ctx.productContext || '',
+            productContext: compactCtx,
             texts: [...texts].sort((a, b) => (a.position ?? 0) - (b.position ?? 0)).map((t) => ({ text: t.original })),
             language: outLang,
             timeoutMs: 50_000,
@@ -1874,7 +1910,7 @@ async function processPage(
 PRODUCT NAME: ${ctx.productName}
 
 FULL PRODUCT CONTEXT (source of truth for facts, angles, benefits, proofs, objections; never invent medical/legal claims):
-${ctx.productContext || `(minimal data — derive from the product name: ${ctx.productName})`}
+${compactCtx || `(minimal data — derive from the product name: ${ctx.productName})`}
 
 OUTPUT LANGUAGE FOR ALL REWRITES: ${outLang}
 ${planRules(plan)}

@@ -13,11 +13,11 @@ export interface SwipeModelOption {
   hint: string;
 }
 
-export const SWIPE_MODEL_DEFAULT = 'claude-opus-4-8';
+export const SWIPE_MODEL_DEFAULT = 'claude-sonnet-4-6';
 
 export const SWIPE_MODEL_OPTIONS: SwipeModelOption[] = [
-  { id: 'claude-opus-4-8', label: 'Opus 4.8', hint: 'Max qualità · lento · $15/$75' },
   { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', hint: 'Veloce · consigliato · $3/$15' },
+  { id: 'claude-opus-4-8', label: 'Opus 4.8', hint: 'Max qualità · lento · $15/$75' },
   { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5', hint: 'Velocissimo · economico · $0.80/$4' },
 ];
 
