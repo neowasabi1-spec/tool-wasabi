@@ -8,10 +8,10 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { derivedProductBriefSections, type ProductBriefSection } from '@/lib/projecthub-legacy';
-import { extractSectionContent } from '@/lib/project-sections';
-import { normalizeArchiveType } from '@/types';
-import type { LandingMediaItem } from '@/lib/landing-media';
+import { derivedProductBriefSections, type ProductBriefSection } from './projecthub-legacy';
+import { extractSectionContent } from './project-sections';
+import { normalizeArchiveType } from '../types';
+import type { LandingMediaItem } from './landing-media';
 
 const PROJECT_FILES_BUCKET = 'project-files';
 

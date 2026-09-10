@@ -68,6 +68,7 @@
 # chiamate funzione→funzione a ~26s). Le servono i file della Knowledge Base
 # di copywriting a runtime, quindi li includiamo nel bundle.
 [functions."pipeline-run-background"]
+  timeout = 900
   included_files = ["src/knowledge/copywriting/raw/**"]
 
 [functions."pipeline-swipe-background"]

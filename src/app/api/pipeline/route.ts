@@ -226,12 +226,31 @@ async function triggerPipelineBackground(req: NextRequest, jobId: string): Promi
     process.env.DEPLOY_PRIME_URL ||
     req.nextUrl.origin;
   try {
-    await fetch(`${origin.replace(/\/$/, '')}/.netlify/functions/pipeline-run-background`, {
+    const res = await fetch(`${origin.replace(/\/$/, '')}/.netlify/functions/pipeline-run-background`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ jobId }),
     });
+    if (!res.ok && res.status !== 202) {
+      const body = await res.text().catch(() => '');
+      console.warn('[pipeline] background trigger HTTP', res.status, body.slice(0, 300));
+      await supabaseAdmin
+        .from('pipeline_jobs')
+        .update({
+          status: 'failed',
+          error: `Could not start Chimera worker (${res.status}). ${body.slice(0, 200)}`.trim(),
+        })
+        .eq('id', jobId);
+    }
   } catch (e) {
     console.warn('[pipeline] background trigger failed:', (e as Error).message);
+    await supabaseAdmin
+      .from('pipeline_jobs')
+      .update({
+        status: 'failed',
+        error: `Could not start Chimera worker: ${(e as Error).message}`.slice(0, 500),
+      })
+      .eq('id', jobId)
+      .catch(() => undefined);
   }
 }

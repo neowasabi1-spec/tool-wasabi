@@ -7,7 +7,6 @@ import { extractLandingMediaFromUrl, listLandingMedia, offerIdentityFromHtml } f
 import { fetchPageText, pageTextBlock } from '../../src/lib/page-text';
 import { wellFormed } from '../../src/lib/well-formed';
 import { openaiGenerateImage, openaiImageKey } from '../../src/lib/openai-image';
-import { normalizeArchiveType } from '../../src/types';
 
 /**
  * Background function (up to 15 min) that RUNS the Project Autopilot pipeline
@@ -24,6 +23,8 @@ import { normalizeArchiveType } from '../../src/types';
 
 const STEP_ORDER = ['market_research', 'brief', 'competitor', 'angle', 'ads', 'landing', 'swipe'] as const;
 type StepKey = (typeof STEP_ORDER)[number];
+/** If Facebook research / ads fail, still build mockups + Clone/Swipe. */
+const OPTIONAL_STEPS = new Set<StepKey>(['competitor', 'angle', 'ads']);
 
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
@@ -579,12 +580,14 @@ async function saveSectionFile(
 // ---------------------------------------------------------------------------
 
 /** Upload a generated product image into the project-files bucket + register a
- *  `project_files` row (file_type product_image). Returns the public URL. */
+ *  `project_files` row (file_type product_image, plus optional Product Brief
+ *  mockup types so the tab actually shows the packshot). Returns the public URL. */
 async function saveProductImage(
   supabase: SupabaseClient,
   projectId: string,
   label: string,
   img: GenImage,
+  extraTypes: string[] = [],
 ): Promise<string | null> {
   try {
     await ensureProjectFilesBucket(supabase);
@@ -595,16 +598,21 @@ async function saveProductImage(
       .from(PROJECT_FILES_BUCKET)
       .upload(objectKey, img.data, { contentType: img.mimeType, upsert: false });
     if (upErr) { console.warn('[pipeline] product image upload failed:', upErr.message); return null; }
-    const { error: insErr } = await supabase.from('project_files').insert({
-      project_id: projectId,
-      file_type: 'product_image',
-      file_path: objectKey,
-      original_name: `${safe}.${ext}`,
-    });
-    if (insErr) {
-      console.warn('[pipeline] product_files insert failed:', insErr.message);
-      await supabase.storage.from(PROJECT_FILES_BUCKET).remove([objectKey]).catch(() => {});
-      return null;
+    const types = ['product_image', ...extraTypes.filter(Boolean)];
+    for (const file_type of types) {
+      const { error: insErr } = await supabase.from('project_files').insert({
+        project_id: projectId,
+        file_type,
+        file_path: objectKey,
+        original_name: `${safe}.${ext}`,
+      });
+      if (insErr) {
+        console.warn('[pipeline] product_files insert failed:', file_type, insErr.message);
+        if (file_type === 'product_image') {
+          await supabase.storage.from(PROJECT_FILES_BUCKET).remove([objectKey]).catch(() => {});
+          return null;
+        }
+      }
     }
     const { data: pub } = supabase.storage.from(PROJECT_FILES_BUCKET).getPublicUrl(objectKey);
     return pub?.publicUrl || null;
@@ -631,6 +639,27 @@ interface FunnelProducts {
  *  Everything comes from the funnel's own steps — never guessed. Null when no
  *  funnel is selected. */
 const UPSELL_PAGE_RE = /upsell|downsell|\boto\b|bump/i;
+
+/** Keep the funnel step's real type (upsell_1, downsell, checkout, …).
+ *  Local helper — do not import src/types (Netlify functions cannot resolve `@/`). */
+function swipePageType(raw: string): string {
+  const t = String(raw || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+  if (!t) return 'landing';
+  const numbered = t.match(/^(upsell|downsell)_?(\d+)$/);
+  if (numbered) return `${numbered[1]}_${numbered[2]}`;
+  if (t === 'upsell' || t === 'oto' || t === 'oto_1') return 'upsell_1';
+  if (t === 'oto_2') return 'upsell_2';
+  if (t === 'oto_3') return 'upsell_3';
+  if (/downsell/.test(t)) return 'downsell';
+  if (/checkout/.test(t)) return 'checkout';
+  if (/quiz/.test(t)) return 'quiz_funnel';
+  if (/listicle/.test(t)) return '5_reasons_listicle';
+  if (/advertorial|article|blog|review/.test(t)) return 'advertorial';
+  if (/bridge/.test(t)) return 'bridge_page';
+  if (/\bvsl\b/.test(t)) return 'vsl';
+  if (/landing|sales|presell|opt|lead|squeeze|webinar/.test(t)) return 'landing';
+  return t;
+}
 
 function selectedArchiveSteps(input: PipelineInput, dbSteps: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
   if (Array.isArray(input.funnelSteps) && input.funnelSteps.length) {
@@ -779,7 +808,7 @@ The "upsells" array MUST contain EXACTLY ${upsellCount} items${upsellCount === 0
     mainRefUrl = mainUrl;
     const dl = await downloadImage(mainUrl);
     if (dl) {
-      const stored = await saveProductImage(supabase, projectId, `Product — ${spec.main.name}`, dl);
+      const stored = await saveProductImage(supabase, projectId, `Product — ${spec.main.name}`, dl, ['img_pb_frontend']);
       if (stored) { mainImageUrl = stored; mainRefUrl = stored; saved++; images.push({ name: spec.main.name, url: stored, role: 'Main product' }); }
     }
   }
@@ -802,7 +831,13 @@ The "upsells" array MUST contain EXACTLY ${upsellCount} items${upsellCount === 0
         });
     if (upUrl) {
       const dl = await downloadImage(upUrl);
-      const stored = dl ? await saveProductImage(supabase, projectId, `Upsell ${upIdx} — ${up.name}`, dl) : null;
+      const stored = dl ? await saveProductImage(
+        supabase,
+        projectId,
+        `Upsell ${upIdx} — ${up.name}`,
+        dl,
+        [`img_pb_${swipePageType((funnel?.pages || []).filter((p) => UPSELL_PAGE_RE.test(p.type))[upIdx - 1]?.type || `upsell_${upIdx}`)}`],
+      ) : null;
       const finalUrl = stored || upUrl;
       saved++;
       images.push({ name: up.name, url: finalUrl, role: `Upsell ${upIdx}` });
@@ -1580,6 +1615,11 @@ Scrivi la landing completa basandoti su brief e ricerca di mercato forniti nel c
     try {
       images = await generateProductImages(supabase, projectId, input, funnel, research, brief, productName);
     } catch (e) { images.note = `image gen error: ${(e as Error).message}`; }
+    if (!images.saved) {
+      throw new Error(
+        images.note || 'Internal mode generated 0 product mockups. Check OPENAI_API_KEY and retry.',
+      );
+    }
   } else {
     images.note = 'Affiliate: mockup skipped — competitor landing photos are used as-is.';
   }
@@ -1606,15 +1646,6 @@ Scrivi la landing completa basandoti su brief e ricerca di mercato forniti nel c
 // + GPT Image 2 image regeneration + product-mockup swap) to a dedicated
 // background function with its own 15-minute budget.
 // ---------------------------------------------------------------------------
-
-/** Keep the funnel step's real type (upsell_1, downsell, checkout, …)
- *  so Clone/Swipe can attach that step's packshot and price. */
-function swipePageType(raw: string): string {
-  const t = normalizeArchiveType(raw);
-  if (t && t !== 'altro') return t;
-  const slug = String(raw || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
-  return slug || 'landing';
-}
 
 /** Latest generated MAIN product image (the mockup from the landing step) —
  *  used by the swipe worker wherever the competitor page shows THEIR product. */
@@ -1702,7 +1733,7 @@ async function runSwipe(supabase: SupabaseClient, projectId: string, input: Pipe
   // One Clone/Swipe page per funnel step, in order. The worker fills
   // cloned/swiped HTML afterwards; status starts as in_progress so the UI
   // shows the swipe as running as soon as the pages appear.
-  const pages: Array<{ funnelPageId: string; sourcePageId: string; sourceUrl: string; name: string; type: string }> = [];
+  const pages: Array<{ funnelPageId: string; sourcePageId: string; sourceUrl: string; name: string; type: string; htmlUrl?: string }> = [];
   const usable = steps.slice(0, MAX_SWIPE_STEPS);
   for (let i = 0; i < usable.length; i++) {
     const s = usable[i] || {};
@@ -1746,6 +1777,29 @@ async function runSwipe(supabase: SupabaseClient, projectId: string, input: Pipe
     });
   }
   if (!pages.length) throw new Error('Could not create any Clone/Swipe pages for the funnel');
+
+  try {
+    const stepRows = usable.map((s, i) => {
+      const rawType = String(s.page_type || s.step_type || 'landing');
+      const stepName = String(s.name || `Step ${i + 1}`).slice(0, 80);
+      return {
+        project_id: projectId,
+        step_number: i + 1,
+        page_name: stepName,
+        step_type: swipePageType(rawType),
+        template_name: stepName,
+        url: String(s.url_to_swipe || s.url || ''),
+        flow_name: funnelName.slice(0, 80),
+        product: String(input.product || funnelName).slice(0, 120),
+        status: 'pending',
+        ...(ownerUserId ? { owner_user_id: ownerUserId } : {}),
+      };
+    });
+    const { error: stepErr } = await supabase.from('funnel_steps').insert(stepRows);
+    if (stepErr) console.warn('[pipeline] funnel_steps insert:', stepErr.message);
+  } catch (e) {
+    console.warn('[pipeline] funnel_steps insert threw:', (e as Error).message);
+  }
 
   // Hand off to the dedicated background worker (own 15-min budget). It
   // answers 202 immediately, so a short timeout is enough to enqueue it.
@@ -1870,6 +1924,11 @@ export default async (req: Request) => {
     } catch (e) {
       const msg = (e as Error).message?.slice(0, 1000) || 'Errore step';
       steps[idx] = { ...steps[idx], status: 'failed', error: msg, finishedAt: new Date().toISOString() };
+      if (OPTIONAL_STEPS.has(key as StepKey)) {
+        await persistSteps({ status: 'running', current_step: key, error: null });
+        log('step', key, '→ failed (continuing):', msg);
+        continue;
+      }
       await persistSteps({ status: 'failed', current_step: key, error: `Step ${key}: ${msg}`.slice(0, 1000) });
       log('step', key, '→ failed:', msg);
       return new Response('failed', { status: 200 });
