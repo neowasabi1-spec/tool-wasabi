@@ -44,15 +44,17 @@ export async function GET(req: NextRequest) {
 
   const ctx = await getUserAccessContext(req);
   const rows = data || [];
-  const STALE_QUEUED_MS = 2 * 60_000;
-  const STALE_ANY_MS = 12 * 60_000;
+  const STALE_QUEUED_MS = 10 * 60_000;
+  const STALE_ANY_MS = 50 * 60_000;
   for (const row of rows) {
     if (row.swipe_status !== 'in_progress') continue;
     const age = Date.now() - new Date(String(row.updated_at || 0)).getTime();
-    const queued = /restyle queued/i.test(String(row.swipe_result || ''));
-    const stale = (queued && age > STALE_QUEUED_MS) || age > STALE_ANY_MS;
+    const result = String(row.swipe_result || '');
+    const alive = /worker picked up|restyle running|continuing photos|texts rewritten|visual world|photo \d/i.test(result);
+    const waiting = /rewrite queued|restyle queued/i.test(result) && !alive;
+    const stale = (!alive && waiting && age > STALE_QUEUED_MS) || (!alive && age > STALE_ANY_MS);
     if (!stale) continue;
-    const msg = queued
+    const msg = waiting
       ? 'Restyle stalled — worker never started. Click Restyle again.'
       : 'Restyle stalled — worker stopped mid-run. Click Restyle again.';
     await supabaseAdmin
@@ -166,11 +168,25 @@ export async function POST(req: NextRequest) {
         skipTexts,
         pages,
       }),
-      signal: AbortSignal.timeout(8_000),
+      signal: AbortSignal.timeout(12_000),
+    }).then(async (res) => {
+      if (!res.ok && res.status !== 202) {
+        const text = await res.text().catch(() => '');
+        throw new Error(`HTTP ${res.status} ${text.slice(0, 200)}`);
+      }
     });
   } catch (e) {
-    // Background functions ACK with 202; a timeout here is usually fine.
-    console.warn('[chimera swipe] trigger:', (e as Error).message);
+    const msg = (e as Error).message || '';
+    if (/abort|timeout/i.test(msg)) {
+      console.warn('[chimera swipe] trigger timeout (worker may still be running):', msg);
+    } else {
+      console.warn('[chimera swipe] trigger:', msg);
+      await supabaseAdmin
+        .from('funnel_pages')
+        .update({ swipe_status: 'failed', swipe_result: `Swipe worker did not start: ${msg}`.slice(0, 400) })
+        .in('id', pages.map((p) => p.funnelPageId));
+      return NextResponse.json({ error: `Swipe worker did not start: ${msg}` }, { status: 502 });
+    }
   }
 
   return NextResponse.json({

@@ -1,4 +1,4 @@
-import { requireAnthropicKey } from '@/lib/anthropic-key';
+import { requireAnthropicKey } from './anthropic-key';
 
 /** Server-only. Do not import this file from client components — it uses sharp. */
 

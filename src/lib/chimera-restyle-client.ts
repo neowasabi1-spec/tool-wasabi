@@ -57,7 +57,7 @@ export async function pollChimeraRestyle(opts: {
         lastById.set(p.id, key);
         opts.onProgress?.(p);
       }
-      if (!startedAt && /texts rewritten|palette|photo|gif|video|visual world|Clone\/Swipe/i.test(p.swipeResult || '')) {
+      if (!startedAt && /texts rewritten|palette|photo|gif|video|visual world|Clone\/Swipe|Worker picked up|restyle running|continuing photos/i.test(p.swipeResult || '')) {
         startedAt = Date.now();
       }
     }

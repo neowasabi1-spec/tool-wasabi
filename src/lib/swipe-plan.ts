@@ -8,8 +8,8 @@
  * bold fragments that no longer fit their own sentence. The plan is written
  * once, from the whole page, and injected into every batch.
  */
-import { requireAnthropicKey } from '@/lib/anthropic-key';
-import { wellFormed } from '@/lib/well-formed';
+import { requireAnthropicKey } from './anthropic-key';
+import { wellFormed } from './well-formed';
 
 export type SwipePlanInput = {
   productName: string;

@@ -1951,7 +1951,7 @@ CRITICAL RULES:
 
   const { error: updErr } = await sb.from('funnel_pages').update({
     swipe_status: done ? 'completed' : 'in_progress',
-    swipe_result: done ? summary : `${summary} — next batch queued`,
+    swipe_result: done ? summary : `${summary} — continuing photos…`,
     cloned_data: {
       htmlUrl: funnelHtmlUrl(page.funnelPageId, 'cloned'),
       title: originalTitle || page.name,
@@ -2160,7 +2160,7 @@ export default async (req: Request) => {
     const secretOut = process.env.APIFY_WEBHOOK_SECRET || process.env.CRON_SECRET || '';
     if (base) {
       try {
-        await fetch(`${base}/.netlify/functions/pipeline-swipe-background`, {
+        const res = await fetch(`${base}/.netlify/functions/pipeline-swipe-background`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -2176,9 +2176,12 @@ export default async (req: Request) => {
             imagesLeft: budget.imagesLeft,
             mediaUsed: [...ctx.mediaUsed],
           }),
-          signal: AbortSignal.timeout(8_000),
+          signal: AbortSignal.timeout(12_000),
         });
-        log(`chained next batch: ${nextPages.length} page(s) offset=${nextOffset}`);
+        log(`chained next batch: ${nextPages.length} page(s) offset=${nextOffset} HTTP ${res.status}`);
+        if (!res.ok && res.status !== 202) {
+          log('chain HTTP', res.status, (await res.text().catch(() => '')).slice(0, 200));
+        }
       } catch (e) {
         log('chain trigger:', (e as Error).message);
       }

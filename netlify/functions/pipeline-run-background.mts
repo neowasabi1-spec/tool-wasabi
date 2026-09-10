@@ -424,6 +424,25 @@ function siteBaseUrl(): string {
   return (process.env.URL || process.env.DEPLOY_PRIME_URL || process.env.NEXT_PUBLIC_SITE_URL || '').replace(/\/$/, '');
 }
 
+async function enqueueSwipeWorker(
+  origin: string,
+  payload: Record<string, unknown>,
+): Promise<{ ok: boolean; status: number; text: string }> {
+  const url = `${origin.replace(/\/$/, '')}/.netlify/functions/pipeline-swipe-background`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(12_000),
+  });
+  const text = await res.text().catch(() => '');
+  return {
+    ok: res.status === 202 || res.ok,
+    status: res.status,
+    text: text.slice(0, 300),
+  };
+}
+
 /**
  * The link the user gave (offer page in affiliate mode, reference competitor
  * otherwise) as readable text + a prompt block. The model cannot browse: if we
@@ -1932,6 +1951,7 @@ async function runSwipe(supabase: SupabaseClient, projectId: string, input: Pipe
         url_to_swipe: url,
         prompt: '',
         swipe_status: 'in_progress',
+        swipe_result: 'Clone/Swipe rewrite queued, then colors + photos…',
         ...(ownerUserId ? { owner_user_id: ownerUserId } : {}),
         cloned_data: htmlUrl
           ? { htmlUrl, title: name, htmlSkipped: true, source_url: url }
@@ -1989,24 +2009,44 @@ async function runSwipe(supabase: SupabaseClient, projectId: string, input: Pipe
   const secret = process.env.APIFY_WEBHOOK_SECRET || process.env.CRON_SECRET || '';
   const offerUrl = input.imageMode === 'affiliate' ? await resolveOfferLink(supabase, projectId, input) : '';
   try {
-    await fetch(`${base}/.netlify/functions/pipeline-swipe-background`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        projectId,
-        secret,
-        market: marketGeo(input),
-        mainImageUrl,
-        imageMode: input.imageMode === 'affiliate' ? 'affiliate' : 'internal',
-        offerUrl,
-        pages,
-      }),
-      signal: AbortSignal.timeout(8_000),
+    const kicked = await enqueueSwipeWorker(base, {
+      projectId,
+      secret,
+      market: marketGeo(input),
+      mainImageUrl,
+      imageMode: input.imageMode === 'affiliate' ? 'affiliate' : 'internal',
+      offerUrl,
+      pages,
     });
+    if (!kicked.ok) {
+      const msg = `Swipe worker did not start (HTTP ${kicked.status}). ${kicked.text}`.trim();
+      for (const p of pages) {
+        await supabase.from('funnel_pages').update({
+          swipe_status: 'failed',
+          swipe_result: msg.slice(0, 400),
+        }).eq('id', p.funnelPageId);
+      }
+      throw new Error(msg);
+    }
   } catch (e) {
-    // Background functions ACK with 202 before running; a timeout here does
-    // not necessarily mean the worker was not queued. Log and continue.
-    console.warn('[pipeline] swipe worker trigger:', (e as Error).message);
+    const msg = (e as Error).message || '';
+    // Background functions ACK 202 then keep running; a hung socket/timeout
+    // after enqueue is not proof the worker is dead.
+    if (/abort|timeout/i.test(msg)) {
+      console.warn('[pipeline] swipe worker trigger timeout (worker may still be running):', msg);
+    } else if (!/did not start/i.test(msg)) {
+      console.warn('[pipeline] swipe worker trigger:', msg);
+      const fail = `Could not start the swipe worker: ${msg}`.slice(0, 400);
+      for (const p of pages) {
+        await supabase.from('funnel_pages').update({
+          swipe_status: 'failed',
+          swipe_result: fail,
+        }).eq('id', p.funnelPageId);
+      }
+      throw new Error(fail);
+    } else {
+      throw e;
+    }
   }
 
   return {

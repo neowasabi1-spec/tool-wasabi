@@ -1,4 +1,4 @@
-import type { CheckoutMode } from '@/lib/checkout-modes';
+import type { CheckoutMode } from '../lib/checkout-modes';
 
 export type { CheckoutMode };
 

@@ -2011,10 +2011,12 @@ export default function FrontEndFunnel() {
   useEffect(() => {
     const stuck = (funnelPages || []).filter((p) => {
       if (p.swipeStatus !== 'in_progress') return false;
-      if (!/queued/i.test(p.swipeResult || '')) return false;
+      const result = p.swipeResult || '';
+      if (/worker picked up|restyle running|continuing photos|texts rewritten|visual world/i.test(result)) return false;
+      if (!/rewrite queued|restyle queued/i.test(result)) return false;
       if (unstickSentRef.current.has(p.id)) return false;
       const age = Date.now() - new Date(p.updatedAt).getTime();
-      return Number.isFinite(age) && age > 90_000;
+      return Number.isFinite(age) && age > 10 * 60_000;
     });
     if (!stuck.length) return;
     for (const p of stuck) unstickSentRef.current.add(p.id);

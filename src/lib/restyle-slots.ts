@@ -1,4 +1,4 @@
-import { inferLandingSection, isDecorativeMedia } from '@/lib/landing-media';
+import { inferLandingSection, isDecorativeMedia } from './landing-media';
 
 /** Collect replaceable media on a landing page. Does not touch text. */
 
