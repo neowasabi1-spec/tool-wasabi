@@ -46,11 +46,30 @@ export async function GET(req: NextRequest) {
   const rows = data || [];
   const STALE_QUEUED_MS = 10 * 60_000;
   const STALE_ANY_MS = 50 * 60_000;
+  const PHOTOS_RUNNING = /ChatGPT photo|Copy is done — ChatGPT|copy loaded — ChatGPT|starting ChatGPT photos/i;
+  const COPY_DONE = /texts rewritten|copy rewritten|Photos start after|copy pass continues/i;
+  const inProgress = rows.filter((r) => r.swipe_status === 'in_progress');
+  const anyPhotos = inProgress.some((r) => PHOTOS_RUNNING.test(String(r.swipe_result || '')));
+  const copySitting = inProgress.length > 0
+    && !anyPhotos
+    && inProgress.every((r) => COPY_DONE.test(String(r.swipe_result || '')))
+    && inProgress.every((r) => Date.now() - new Date(String(r.updated_at || 0)).getTime() > 90_000);
+  if (copySitting) {
+    const projectId = String(inProgress[0].project_id || inProgress[0].product_id || '');
+    if (projectId) {
+      await kickChimeraPhotos(req, projectId, inProgress.map((r) => String(r.id)));
+      for (const row of rows) {
+        if (row.swipe_status === 'in_progress') {
+          row.swipe_result = 'Copy done — starting ChatGPT photos…';
+        }
+      }
+    }
+  }
   for (const row of rows) {
     if (row.swipe_status !== 'in_progress') continue;
     const age = Date.now() - new Date(String(row.updated_at || 0)).getTime();
     const result = String(row.swipe_result || '');
-    const alive = /worker picked up|restyle running|continuing photos|texts rewritten|Rewriting|Copy rewritten|visual world|photo \d|ChatGPT|Waiting for copy|In queue|rewriting copy|Batch |step \d/i.test(result);
+    const alive = /worker picked up|restyle running|continuing photos|texts rewritten|Rewriting|Copy rewritten|visual world|photo \d|ChatGPT|Waiting for copy|In queue|rewriting copy|Batch |step \d|starting ChatGPT/i.test(result);
     const waiting = /rewrite queued|restyle queued/i.test(result) && !alive;
     const stale = (!alive && waiting && age > STALE_QUEUED_MS) || (!alive && age > STALE_ANY_MS);
     if (!stale) continue;
@@ -236,6 +255,63 @@ async function unstickPages(req: NextRequest, body: Record<string, unknown>) {
     out.push({ id: row.id, swipeStatus: 'failed', swipeResult: msg });
   }
   return NextResponse.json({ ok: true, pages: out });
+}
+
+async function kickChimeraPhotos(req: NextRequest, projectId: string, pageIds: string[]): Promise<void> {
+  if (!pageIds.length) return;
+  const { data: rows } = await supabaseAdmin
+    .from('funnel_pages')
+    .select('id, name, page_type, url_to_swipe, cloned_data')
+    .in('id', pageIds);
+  if (!rows?.length) return;
+  const pages: SwipePage[] = rows.map((r) => {
+    const cloned = (r.cloned_data && typeof r.cloned_data === 'object'
+      ? r.cloned_data
+      : {}) as Record<string, unknown>;
+    return {
+      funnelPageId: r.id as string,
+      sourcePageId: r.id as string,
+      sourceUrl: String(r.url_to_swipe || ''),
+      name: String(r.name || 'Step'),
+      type: String(r.page_type || 'landing'),
+      htmlUrl: typeof cloned.htmlUrl === 'string' ? cloned.htmlUrl : '',
+    };
+  });
+  pages.sort((a, b) => pageIds.indexOf(a.funnelPageId) - pageIds.indexOf(b.funnelPageId));
+  await supabaseAdmin
+    .from('funnel_pages')
+    .update({ swipe_status: 'in_progress', swipe_result: 'Copy done — starting ChatGPT photos…' })
+    .in('id', pages.map((p) => p.funnelPageId));
+  const origin = (
+    process.env.URL
+    || process.env.DEPLOY_PRIME_URL
+    || req.nextUrl.origin
+  ).replace(/\/$/, '');
+  const secret = process.env.APIFY_WEBHOOK_SECRET || process.env.CRON_SECRET || '';
+  const mainImageUrl = await loadMainProductImageUrl(projectId);
+  try {
+    const res = await fetch(`${origin}/.netlify/functions/pipeline-swipe-background`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        projectId,
+        secret,
+        market: '',
+        mainImageUrl,
+        imageMode: 'internal',
+        skipTexts: true,
+        phase: 'photos',
+        pages,
+      }),
+      signal: AbortSignal.timeout(12_000),
+    });
+    if (!res.ok && res.status !== 202) {
+      console.warn('[chimera swipe] photo kick HTTP', res.status, (await res.text().catch(() => '')).slice(0, 200));
+    }
+  } catch (e) {
+    const msg = (e as Error).message || '';
+    if (!/abort|timeout/i.test(msg)) console.warn('[chimera swipe] photo kick:', msg);
+  }
 }
 
 async function loadMainProductImageUrl(projectId: string): Promise<string | null> {

@@ -1856,8 +1856,11 @@ async function processPage(
     textsCount = replacements;
     if (ctx.imageMode === 'internal') {
       await touchPage(sb, page.funnelPageId, `Step ${ctx.pageIndex + 1}/${ctx.pageCount}: copy loaded — ChatGPT photos…`);
-      if (!ctx.restyle) ctx.restyle = await buildRestyleSpec(originalHtml || html, ctx);
-      if (!ctx.restyle) ctx.restyle = fallbackRestyleSpec(ctx, topPageHex(originalHtml || html));
+      // Palette from the packshot only — do not wait on Claude vision or photos never start.
+      if (!ctx.restyle) {
+        const sampled = ctx.mainImageUrl ? await samplePackshotPalette(ctx.mainImageUrl) : null;
+        ctx.restyle = fallbackRestyleSpec(ctx, topPageHex(originalHtml || html), sampled);
+      }
       html = applyTheme(html, ctx.restyle);
     }
     await persistHtml(sb, page.funnelPageId, 'swiped', html, ctx.ownerUserId);
@@ -1969,8 +1972,6 @@ CRITICAL RULES:
 
   let imgRes = { html, generated: 0, productSwaps: 0, analyzed: 0, placed: 0, videos: 0, remaining: 0, total: 0, processed: 0 };
   const textsPass = ctx.phase === 'texts';
-  const photoMinutesLeft = deadline - Date.now();
-  const photosNeedOwnRun = !textsPass && ctx.imageMode === 'internal' && !resume && photoMinutesLeft < 200_000;
   try {
     if (textsPass) {
       imgRes = { html, generated: 0, productSwaps: 0, analyzed: 0, placed: 0, videos: 0, remaining: 0, total: 0, processed: 0 };
@@ -2000,10 +2001,6 @@ CRITICAL RULES:
       } else {
         console.warn('[swipe] affiliate: no offer media and no OPENAI_API_KEY — pictures left as they are');
       }
-    } else if (photosNeedOwnRun) {
-      const n = collectImages(html, page.sourceUrl, true).length;
-      imgRes = { html, generated: 0, productSwaps: 0, analyzed: 0, placed: 0, videos: 0, remaining: n, total: n, processed: 0 };
-      await touchPage(sb, page.funnelPageId, `${replacements}/${textsCount} texts ready — starting photos next…`);
     } else {
       const batch = await swipeImages(sb, html, ctx, page, budget, deadline, ctx.landingStills, {
         startOffset: imageOffset,
@@ -2295,38 +2292,49 @@ export default async (req: Request) => {
     }
   }
 
-  if (chainMore && Date.now() < deadline) {
+  if (chainMore) {
+    if (nextPhase === 'photos' && phase === 'texts') {
+      await Promise.all(allPages.map((p, i) =>
+        touchPage(sb, p.funnelPageId, `Copy done — starting ChatGPT photos (step ${i + 1}/${allPages.length})…`)));
+    }
     const base = siteBaseUrl();
     const secretOut = process.env.APIFY_WEBHOOK_SECRET || process.env.CRON_SECRET || '';
     if (base) {
-      try {
-        const res = await fetch(`${base}/.netlify/functions/pipeline-swipe-background`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            projectId,
-            secret: secretOut,
-            market,
-            mainImageUrl,
-            imageMode,
-            phase: nextPhase,
-            skipTexts: nextPhase === 'photos',
-            allPages,
-            pages: allPages,
-            pageIndex: nextIndex,
-            imageOffset: nextOffset,
-            restyle: nextPhase === 'photos' && nextIndex === pageIndex ? ctx.restyle : null,
-            imagesLeft: budget.imagesLeft,
-            mediaUsed: [...ctx.mediaUsed],
-          }),
-          signal: AbortSignal.timeout(12_000),
-        });
-        log(`chained ${nextPhase} step ${nextIndex + 1}/${allPages.length} offset=${nextOffset} HTTP ${res.status}`);
-        if (!res.ok && res.status !== 202) {
-          log('chain HTTP', res.status, (await res.text().catch(() => '')).slice(0, 200));
+      const payload = {
+        projectId,
+        secret: secretOut,
+        market,
+        mainImageUrl,
+        imageMode,
+        offerUrl: typeof body.offerUrl === 'string' ? body.offerUrl : '',
+        phase: nextPhase,
+        skipTexts: nextPhase === 'photos',
+        allPages,
+        pages: allPages,
+        pageIndex: nextIndex,
+        imageOffset: nextOffset,
+        restyle: nextPhase === 'photos' && nextIndex === pageIndex ? ctx.restyle : null,
+        imagesLeft: budget.imagesLeft,
+        mediaUsed: [...ctx.mediaUsed],
+      };
+      let chained = false;
+      for (let attempt = 0; attempt < 2 && !chained; attempt++) {
+        try {
+          const res = await fetch(`${base}/.netlify/functions/pipeline-swipe-background`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+            signal: AbortSignal.timeout(12_000),
+          });
+          log(`chained ${nextPhase} step ${nextIndex + 1}/${allPages.length} offset=${nextOffset} HTTP ${res.status}`);
+          if (res.ok || res.status === 202) chained = true;
+          else log('chain HTTP', res.status, (await res.text().catch(() => '')).slice(0, 200));
+        } catch (e) {
+          log('chain trigger:', (e as Error).message);
         }
-      } catch (e) {
-        log('chain trigger:', (e as Error).message);
+      }
+      if (!chained) {
+        log('chain failed — photos/copy will sit until Clone/Swipe poll restarts them');
       }
     } else {
       log('cannot chain — site URL missing');

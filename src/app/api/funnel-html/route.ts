@@ -83,13 +83,23 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'pageId e kind obbligatori' }, { status: 400 });
   }
 
-  const { data, error } = await supabaseAdmin
-    .from('page_html')
-    .select('html')
-    .eq('page_id', pageId)
-    .eq('kind', kind)
-    .eq('variant', variant)
-    .maybeSingle();
+  const load = async (v: string) =>
+    supabaseAdmin
+      .from('page_html')
+      .select('html')
+      .eq('page_id', pageId)
+      .eq('kind', kind)
+      .eq('variant', v)
+      .maybeSingle();
+
+  let { data, error } = await load(variant);
+  // Chimera / Clone-Swipe persist desktop only. Mobile preview uses that HTML
+  // (the template is already responsive) instead of a hard 404.
+  if (!error && !data?.html && variant === 'mobile') {
+    const fallback = await load('desktop');
+    data = fallback.data;
+    error = fallback.error;
+  }
 
   if (error) {
     if (isMissingTable(error.message)) {
