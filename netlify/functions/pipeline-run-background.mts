@@ -1698,6 +1698,108 @@ async function adoptUploadedProductImage(
 
 const MAX_SWIPE_STEPS = 8;
 
+const LEGACY_PAGE_TYPES = new Set([
+  '5_reasons_listicle',
+  'quiz_funnel',
+  'landing',
+  'product_page',
+  'safe_page',
+  'checkout',
+  'advertorial',
+  'altro',
+]);
+
+function legacyPageType(raw: string): string {
+  const t = swipePageType(raw);
+  if (LEGACY_PAGE_TYPES.has(t)) return t;
+  if (/quiz/.test(t)) return 'quiz_funnel';
+  if (/listicle/.test(t)) return '5_reasons_listicle';
+  if (/advertorial|article|blog|review/.test(t)) return 'advertorial';
+  if (/checkout/.test(t)) return 'checkout';
+  if (/landing|vsl|bridge|opt|sales|presell/.test(t)) return 'landing';
+  return 'altro';
+}
+
+function insertErrText(error: { message?: string; code?: string; details?: string } | null): string {
+  if (!error) return '';
+  return [error.code, error.message, error.details].filter(Boolean).join(' — ');
+}
+
+/** products.id for the rare case product_id is still NOT NULL. */
+async function ensureChimeraProductId(
+  supabase: SupabaseClient,
+  productName: string,
+  ownerUserId: string | null,
+): Promise<string | null> {
+  const name = (productName || 'Chimera').slice(0, 120);
+  const { data: existing } = await supabase.from('products').select('id').eq('name', name).limit(1).maybeSingle();
+  if (existing?.id) return String(existing.id);
+  const { data: created, error } = await supabase
+    .from('products')
+    .insert({
+      name,
+      description: '',
+      price: 0,
+      benefits: [],
+      cta_text: 'Buy Now',
+      cta_url: '',
+      brand_name: '',
+      ...(ownerUserId ? { owner_user_id: ownerUserId } : {}),
+    })
+    .select('id')
+    .single();
+  if (error) {
+    console.warn('[pipeline] ensure product:', error.message);
+    return null;
+  }
+  return created?.id ? String(created.id) : null;
+}
+
+/** Clone/Swipe is keyed by project_id. product_id is a FK to products — never
+ *  put the project UUID there (that is why Chimera created 0 pages). */
+async function insertCloneSwipePage(
+  supabase: SupabaseClient,
+  row: Record<string, unknown>,
+  productName: string,
+  ownerUserId: string | null,
+): Promise<{ id: string | null; error: string }> {
+  const attempts: Record<string, unknown>[] = [
+    { ...row, product_id: null },
+    { ...row, product_id: null, page_type: legacyPageType(String(row.page_type || 'landing')) },
+  ];
+  let last = '';
+  for (const attempt of attempts) {
+    const { data, error } = await supabase.from('funnel_pages').insert(attempt).select('id').single();
+    if (data?.id) return { id: String(data.id), error: '' };
+    last = insertErrText(error);
+    console.warn('[pipeline] swipe page insert failed:', last);
+  }
+  if (/product_id/i.test(last) && /null|23502|23503|foreign key/i.test(last)) {
+    const productId = await ensureChimeraProductId(supabase, productName, ownerUserId);
+    if (productId) {
+      for (const attempt of attempts) {
+        const { data, error } = await supabase
+          .from('funnel_pages')
+          .insert({ ...attempt, product_id: productId })
+          .select('id')
+          .single();
+        if (data?.id) return { id: String(data.id), error: '' };
+        last = insertErrText(error);
+        console.warn('[pipeline] swipe page insert failed:', last);
+      }
+    }
+  }
+  if (/owner_user_id/i.test(last)) {
+    const stripped = { ...attempts[0] };
+    delete stripped.owner_user_id;
+    const { data, error } = await supabase.from('funnel_pages').insert(stripped).select('id').single();
+    if (data?.id) return { id: String(data.id), error: '' };
+    last = insertErrText(error);
+    console.warn('[pipeline] swipe page insert failed:', last);
+  }
+  return { id: null, error: last };
+}
+
 async function runSwipe(supabase: SupabaseClient, projectId: string, input: PipelineInput): Promise<StepResult> {
   if (!input.funnelId && !(input.funnelSteps && input.funnelSteps.length)) {
     return { summary: 'No funnel selected in the launcher — Clone/Swipe step skipped.', output: '' };
@@ -1735,6 +1837,7 @@ async function runSwipe(supabase: SupabaseClient, projectId: string, input: Pipe
   // shows the swipe as running as soon as the pages appear.
   const pages: Array<{ funnelPageId: string; sourcePageId: string; sourceUrl: string; name: string; type: string; htmlUrl?: string }> = [];
   const usable = steps.slice(0, MAX_SWIPE_STEPS);
+  let lastInsertError = '';
   for (let i = 0; i < usable.length; i++) {
     const s = usable[i] || {};
     const rawType = String(s.page_type || s.step_type || 'landing');
@@ -1746,13 +1849,12 @@ async function runSwipe(supabase: SupabaseClient, projectId: string, input: Pipe
     const name = `${funnelName} — Step ${i + 1}${stepName ? `: ${stepName}` : ''}`.slice(0, 120);
 
     const htmlUrl = typeof cloned.htmlUrl === 'string' ? cloned.htmlUrl : '';
-    const { data: created, error } = await supabase
-      .from('funnel_pages')
-      .insert({
+    const created = await insertCloneSwipePage(
+      supabase,
+      {
         name,
         page_type: pageType,
         project_id: projectId,
-        product_id: projectId,
         url_to_swipe: url,
         prompt: '',
         swipe_status: 'in_progress',
@@ -1760,15 +1862,16 @@ async function runSwipe(supabase: SupabaseClient, projectId: string, input: Pipe
         cloned_data: htmlUrl
           ? { htmlUrl, title: name, htmlSkipped: true, source_url: url }
           : null,
-      })
-      .select('id')
-      .single();
-    if (error || !created) {
-      console.warn('[pipeline] swipe page insert failed:', error?.message);
+      },
+      String(input.product || funnelName),
+      ownerUserId,
+    );
+    if (!created.id) {
+      lastInsertError = created.error;
       continue;
     }
     pages.push({
-      funnelPageId: created.id as string,
+      funnelPageId: created.id,
       sourcePageId,
       sourceUrl: url,
       name,
@@ -1776,7 +1879,11 @@ async function runSwipe(supabase: SupabaseClient, projectId: string, input: Pipe
       htmlUrl,
     });
   }
-  if (!pages.length) throw new Error('Could not create any Clone/Swipe pages for the funnel');
+  if (!pages.length) {
+    throw new Error(
+      `Could not create any Clone/Swipe pages for the funnel${lastInsertError ? `: ${lastInsertError}` : ''}`,
+    );
+  }
 
   try {
     const stepRows = usable.map((s, i) => {
