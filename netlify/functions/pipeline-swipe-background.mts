@@ -63,8 +63,9 @@ const IMG_MODEL_T2I = 't2i';
 const IMG_MODEL_I2I = 'i2i';
 const PROJECT_FILES_BUCKET = 'project-files';
 
-const GLOBAL_BUDGET_MS = 8 * 60_000;
-const IMAGE_BATCH = 4;
+/** Netlify background = 15 min. Leave ~2 min for persist + chain. */
+const GLOBAL_BUDGET_MS = 13 * 60_000;
+const IMAGE_BATCH = 3;
 // The DOM extractor emits a sentence AND its inline pieces; a long lander is
 // 400–700 units. 350 silently dropped the bottom half of the page.
 const MAX_TEXTS = 900;
@@ -236,7 +237,20 @@ async function loadSavedHtml(sb: SupabaseClient, pageId: string, kind: 'cloned' 
       .eq('kind', kind)
       .eq('variant', 'desktop')
       .maybeSingle();
-    return typeof data?.html === 'string' ? data.html : '';
+    const html = typeof data?.html === 'string' ? data.html : '';
+    if (html.length > 500) return html;
+    if (kind === 'swiped') {
+      const cloned = await sb
+        .from('page_html')
+        .select('html')
+        .eq('page_id', pageId)
+        .eq('kind', 'cloned')
+        .eq('variant', 'desktop')
+        .maybeSingle();
+      const fallback = typeof cloned.data?.html === 'string' ? cloned.data.html : '';
+      if (fallback.length > 500) return fallback;
+    }
+    return html;
   } catch {
     return '';
   }
@@ -1614,7 +1628,17 @@ async function swipeImages(
     const tick = () => touchPage(sb, page.funnelPageId, `Step ${ctx.pageIndex + 1}/${ctx.pageCount}: ChatGPT photo ${start + processed}/${images.length}…`);
     const common = { num_images: 1, output_format: 'png', quality: 'medium' as const };
     let falUrl: string | null = null;
-    if (thisStepPack && copyLooksProduct && Date.now() < deadline - 70_000) {
+    // Text-to-image first. Image-to-image from the packshot is slow and used
+    // to stall the whole landing batch before a single photo landed.
+    if (Date.now() < deadline - 50_000) {
+      falUrl = await generateImageUrl(
+        IMG_MODEL_T2I,
+        { ...common, prompt, image_size: falImageSize(img) },
+        90_000,
+        tick,
+      );
+    }
+    if (!falUrl && thisStepPack && copyLooksProduct && Date.now() < deadline - 70_000) {
       falUrl = await generateImageUrl(
         IMG_MODEL_I2I,
         {
@@ -1624,14 +1648,6 @@ async function swipeImages(
           image_size: 'auto',
         },
         90_000,
-        tick,
-      );
-    }
-    if (!falUrl && Date.now() < deadline - 50_000) {
-      falUrl = await generateImageUrl(
-        IMG_MODEL_T2I,
-        { ...common, prompt, image_size: falImageSize(img) },
-        120_000,
         tick,
       );
     }
@@ -2173,6 +2189,7 @@ export default async (req: Request) => {
   let nextIndex = pageIndex;
   let nextOffset = imageOffset;
   let chainMore = false;
+  let startedPhotosHere = false;
 
   const runOne = async (p: SwipePage, offset: number): Promise<PageBatchResult> => {
     const pageCtx = await bindStepOffer(sb, ctx, p);
@@ -2200,6 +2217,26 @@ export default async (req: Request) => {
         nextIndex = 0;
         nextOffset = 0;
         chainMore = true;
+        // Function-to-function chain often never starts. If this invocation
+        // still has budget, generate the first photo batch here.
+        if (imageMode !== 'affiliate' && Date.now() < deadline - 150_000) {
+          startedPhotosHere = true;
+          ctx.skipTexts = true;
+          ctx.phase = 'photos';
+          ctx.pageIndex = 0;
+          ctx.restyle = null;
+          await touchPage(sb, allPages[0].funnelPageId, `Copy is done — ChatGPT photos on step 1/${allPages.length}…`);
+          log('last copy page done — starting ChatGPT photos in this invocation');
+          const photoResult = await runOne(allPages[0], 0);
+          if (!photoResult.done) {
+            nextOffset = photoResult.nextOffset;
+          } else if (allPages.length > 1) {
+            nextIndex = 1;
+            nextOffset = 0;
+          } else {
+            chainMore = false;
+          }
+        }
       }
     } else if (!result.done) {
       nextPhase = 'photos';
@@ -2237,9 +2274,11 @@ export default async (req: Request) => {
   }
 
   if (chainMore) {
-    if (nextPhase === 'photos' && phase === 'texts') {
+    const waitingPhotos = nextPhase === 'photos' && phase === 'texts' && !startedPhotosHere;
+    if (waitingPhotos) {
       await Promise.all(allPages.map((p, i) =>
-        touchPage(sb, p.funnelPageId, `Copy done — starting ChatGPT photos (step ${i + 1}/${allPages.length})…`)));
+        touchPage(sb, p.funnelPageId,
+          `Copy done — waiting for ChatGPT photos (step ${i + 1}/${allPages.length})…`)));
     }
     const base = siteBaseUrl();
     const secretOut = process.env.APIFY_WEBHOOK_SECRET || process.env.CRON_SECRET || '';
@@ -2278,10 +2317,20 @@ export default async (req: Request) => {
         }
       }
       if (!chained) {
-        log('chain failed — photos/copy will sit until Clone/Swipe poll restarts them');
+        log('chain failed — Clone/Swipe poll will restart photos/copy');
+        if (nextPhase === 'photos' && !startedPhotosHere) {
+          await Promise.all(allPages.map((p, i) =>
+            touchPage(sb, p.funnelPageId,
+              `Copy done — waiting for ChatGPT photos (step ${i + 1}/${allPages.length})…`)));
+        }
       }
     } else {
       log('cannot chain — site URL missing');
+      if (nextPhase === 'photos' && !startedPhotosHere) {
+        await Promise.all(allPages.map((p, i) =>
+          touchPage(sb, p.funnelPageId,
+            `Copy done — waiting for ChatGPT photos (step ${i + 1}/${allPages.length})…`)));
+      }
     }
   }
 

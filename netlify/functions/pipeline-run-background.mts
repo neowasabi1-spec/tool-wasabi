@@ -2177,6 +2177,7 @@ async function runSwipe(supabase: SupabaseClient, projectId: string, input: Pipe
       offerUrl,
       phase: 'texts',
       pages,
+      allPages: pages,
     });
     if (!kicked.ok) {
       const msg = `Swipe worker did not start (HTTP ${kicked.status}). ${kicked.text}`.trim();

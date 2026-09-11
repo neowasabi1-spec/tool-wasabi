@@ -46,15 +46,27 @@ export async function GET(req: NextRequest) {
   const rows = data || [];
   const STALE_QUEUED_MS = 10 * 60_000;
   const STALE_ANY_MS = 50 * 60_000;
-  const PHOTOS_RUNNING = /ChatGPT photo|Copy is done — ChatGPT|copy loaded — ChatGPT|starting ChatGPT photos/i;
-  const COPY_DONE = /texts rewritten|copy rewritten|Photos start after|copy pass continues/i;
+  const PHOTOS_LIVE = /ChatGPT photo \d|copy loaded — ChatGPT photos|illustrating the new copy/i;
+  const COPY_DONE = /texts rewritten|texts now on the page|copy rewritten|Photos start after|copy pass continues|waiting for ChatGPT|Copy done/i;
+  const COPY_STILL = /Waiting for copy|rewriting \d+ texts|rewriting copy/i;
   const inProgress = rows.filter((r) => r.swipe_status === 'in_progress');
-  const anyPhotos = inProgress.some((r) => PHOTOS_RUNNING.test(String(r.swipe_result || '')));
-  const copySitting = inProgress.length > 0
-    && !anyPhotos
-    && inProgress.every((r) => COPY_DONE.test(String(r.swipe_result || '')))
-    && inProgress.every((r) => Date.now() - new Date(String(r.updated_at || 0)).getTime() > 90_000);
-  if (copySitting) {
+  const ageOf = (r: { updated_at?: string | null }) =>
+    Date.now() - new Date(String(r.updated_at || 0)).getTime();
+  const anyPhotosLive = inProgress.some((r) =>
+    PHOTOS_LIVE.test(String(r.swipe_result || '')) && ageOf(r) < 180_000);
+  const recentlyKicked = inProgress.some((r) =>
+    /starting ChatGPT photos|waiting for ChatGPT photos/i.test(String(r.swipe_result || ''))
+    && ageOf(r) < 45_000);
+  const stillCopying = inProgress.some((r) => {
+    const result = String(r.swipe_result || '');
+    return COPY_STILL.test(result) && !COPY_DONE.test(result);
+  });
+  const copyFinished = inProgress.length > 0
+    && !stillCopying
+    && inProgress.some((r) => COPY_DONE.test(String(r.swipe_result || '')));
+  const sittingIdle = inProgress.length > 0
+    && inProgress.every((r) => ageOf(r) > 45_000);
+  if (copyFinished && !anyPhotosLive && !recentlyKicked && sittingIdle) {
     const projectId = String(inProgress[0].project_id || inProgress[0].product_id || '');
     if (projectId) {
       await kickChimeraPhotos(req, projectId, inProgress.map((r) => String(r.id)));
@@ -187,6 +199,7 @@ export async function POST(req: NextRequest) {
         skipTexts,
         phase: skipTexts ? 'photos' : 'texts',
         pages,
+        allPages: pages,
       }),
       signal: AbortSignal.timeout(12_000),
     }).then(async (res) => {
@@ -302,6 +315,7 @@ async function kickChimeraPhotos(req: NextRequest, projectId: string, pageIds: s
         skipTexts: true,
         phase: 'photos',
         pages,
+        allPages: pages,
       }),
       signal: AbortSignal.timeout(12_000),
     });
