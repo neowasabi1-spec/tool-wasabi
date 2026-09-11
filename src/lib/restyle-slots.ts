@@ -63,7 +63,8 @@ const LAZY_ATTRS = [
   'data-cmplz-srcset', 'data-wf-srcset',
 ];
 
-const FILE_PROXY_RE = /\/api\/projecthub\/file-proxy/i;
+const FILE_PROXY_RE = /\/api\/projecthub\/file-proxy|\/storage\/v1\/object\/public\/project-files/i;
+const PAINTED_TAG_RE = /data-restyled|\/api\/projecthub\/file-proxy|\/storage\/v1\/object\/public\/project-files/i;
 
 const JUNK =
   /favicon|sprite|pixel|1x1|tracking|doubleclick|visa|mastercard|amex|paypal|klarna|apple-?pay|loader|spinner|spacer|logo\.svg|google-analytics|facebook\.com\/tr|hotjar|trustpilot|woff2?|placeholder|blank\.|lqip|star[s]?|rating|check(?:mark)?|tick|spunta/i;
@@ -325,6 +326,9 @@ export function paintMediaTag(tag: string, url: string, extra?: { poster?: strin
       t = t.replace(/<video\b/i, `<video poster="${extra.poster}"`);
     }
   }
+  if (!/\bdata-restyled\s*=/i.test(t)) {
+    t = t.replace(/<(img|video)\b/i, `<$1 data-restyled="1"`);
+  }
   return mergeObjectFit(t);
 }
 
@@ -333,15 +337,15 @@ export function sealPaintedHtml(html: string): string {
   return outsideSwipeReplacer(html, (raw) => {
     let out = raw;
     out = out.replace(/<picture\b[\s\S]*?<\/picture>/gi, (pic) => {
-      if (!FILE_PROXY_RE.test(pic)) return pic;
+      if (!PAINTED_TAG_RE.test(pic)) return pic;
       return pic.replace(/<source\b[^>]*>/gi, '');
     });
     out = out.replace(/<video\b[\s\S]*?<\/video>/gi, (block) => {
-      if (!FILE_PROXY_RE.test(block)) return block;
+      if (!PAINTED_TAG_RE.test(block)) return block;
       return block.replace(/<source\b[^>]*>/gi, '');
     });
     out = out.replace(/<(img|video|source)\b[^>]*>/gi, (tag) => {
-      if (!FILE_PROXY_RE.test(tag)) return tag;
+      if (!PAINTED_TAG_RE.test(tag)) return tag;
       return tag
         .replace(/\s+srcset\s*=\s*("[^"]*"|'[^']*')/gi, '')
         .replace(/\s+sizes\s*=\s*("[^"]*"|'[^']*')/gi, '')
@@ -350,8 +354,8 @@ export function sealPaintedHtml(html: string): string {
     out = out.replace(
       /<([a-z][a-z0-9-]*)\b([^>]*\bstyle\s*=\s*["'][^"']*background(?:-image)?\s*:\s*url\([^)]+\)[^"']*["'][^>]*)>(\s*<(?:img|video)\b[^>]*>)/gi,
       (full, tag: string, attrs: string, child: string) => {
-        if (!FILE_PROXY_RE.test(child)) return full;
-        if (FILE_PROXY_RE.test(attrs) && !/background(?:-image)?\s*:\s*url\((?!['"]?[^)]*file-proxy)/i.test(attrs)) {
+        if (!PAINTED_TAG_RE.test(child)) return full;
+        if (FILE_PROXY_RE.test(attrs) && !/background(?:-image)?\s*:\s*url\((?!['"]?[^)]*(?:file-proxy|project-files))/i.test(attrs)) {
           return full;
         }
         const newAttrs = attrs
@@ -485,6 +489,20 @@ export function replaceMediaUrl(html: string, from: string, to: string, pageUrl 
     });
     return next;
   });
+}
+
+/** Paints already injected so later batches merge instead of wiping them. */
+export function readRestylePaints(html: string): PaintedMedia[] {
+  const m = html.match(/data-restyle-media[\s\S]*?var paints = (\[[\s\S]*?\]);\s*var LAZY/i);
+  if (!m) return [];
+  try {
+    const arr = JSON.parse(m[1]) as PaintedMedia[];
+    return Array.isArray(arr)
+      ? arr.filter((p) => p && p.url && (p.tag === 'img' || p.tag === 'video') && typeof p.index === 'number')
+      : [];
+  } catch {
+    return [];
+  }
 }
 
 /** Same idea as Clone/Swipe texts: paint by index so SPA hydration cannot restore old src. */

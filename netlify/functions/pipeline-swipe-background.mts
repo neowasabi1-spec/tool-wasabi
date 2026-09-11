@@ -25,6 +25,8 @@ import {
   injectRestyleMediaScript,
   libraryFileLabel,
   paintFor,
+  readRestylePaints,
+  replaceMediaUrl,
   sealPaintedHtml,
   topSaturatedHex,
   type PaintedMedia,
@@ -1099,7 +1101,7 @@ function parseImageAnalysis(raw: string): ImageAnalysis | null {
   }
 }
 
-function falImageSize(img: PageImage): string {
+function falImageSize(img: { width?: number; height?: number }): string {
   if (img.width && img.height) {
     const ratio = img.width / img.height;
     if (ratio >= 1.4) return 'landscape_4_3';
@@ -1565,27 +1567,61 @@ async function restyleVideos(
   return { html: out, posters, swapped };
 }
 
-function promptFromNearbyCopy(ctx: SwipeCtx, img: PageImage): string {
+function slotLooksProduct(ctx: SwipeCtx, slot: { alt?: string; context?: string; section?: string }): boolean {
+  const blob = `${slot.alt || ''} ${slot.context || ''}`;
+  const section = slot.section || '';
+  const name = ctx.productName.trim();
+  if (name.length > 3 && blob.toLowerCase().includes(name.toLowerCase())) return true;
+  if (/^(product|offer)$/i.test(section)) return true;
+  return /product|packshot|packaging|mockup|bottle|jar|box|pouch|sachet|stick|device|flacone|barattolo|confezione|prodotto|offerta|acquista|buy now|order now/i
+    .test(blob);
+}
+
+function slotLooksLifestyle(slot: { alt?: string; context?: string }): boolean {
+  return /person|woman|man|people|hands?|face|skin|before|after|doctor|couple|lifestyle|donna|uomo|mani|viso|pelle|prima|dopo|cliente/i
+    .test(`${slot.alt || ''} ${slot.context || ''}`);
+}
+
+function promptFromNearbyCopy(ctx: SwipeCtx, img: { alt?: string; above?: string; below?: string; context?: string; section?: string }, productShot: boolean): string {
   const spec = ctx.restyle;
+  const copy = [img.above, img.below, img.context].filter(Boolean).join('\n');
   return `Photorealistic image for a sales page selling "${ctx.productName}".
-Illustrate the copy that sits next to this image — not a random product shot, not a reused packshot from another funnel step.
+Illustrate the copy next to this image.
 
-COPY ABOVE THE IMAGE:
-${img.above || '(none)'}
-
-COPY BELOW THE IMAGE:
-${img.below || '(none)'}
+NEARBY COPY:
+${copy || '(none)'}
 
 ALT TEXT: ${img.alt || '(none)'}
 PAGE SECTION: ${img.section || 'unknown'}
 
 Rules:
-- The picture MUST match what that copy is talking about (a problem, a result, a person, a mechanism, a comparison, or the product itself).
-- Show "${ctx.productName}" packaging only if the nearby copy is about the product or the offer. Otherwise show the scene the copy describes.
-- Do not invent a competitor brand. Do not drop a generic bottle on white unless the copy is a product shot.
+- The picture MUST match what that copy is talking about.
+${productShot
+    ? `- This is a PRODUCT shot. Show OUR real "${ctx.productName}" packaging from the attached mockup — same container, label, colors. Do not invent a different bottle or a competitor pack.`
+    : `- This is a scene/illustration. Show the situation the copy describes. Do not invent a different product. If our product appears, it must match the "${ctx.productName}" mockup (same pack, same colors).`}
+- Do not invent a competitor brand.
 ${spec ? `Visual world: ${spec.stylePrefix}. Palette ${spec.primary} / ${spec.secondary} / ${spec.accent}.` : ''}
 ${ctx.market ? `Any text painted in the image must be in the local language of ${ctx.market}.` : 'Little or no text in the image except a product label if the product is shown.'}
 No watermark.`.slice(0, 1800);
+}
+
+function collectCssBackgrounds(html: string, already: Set<string>): Array<{ src: string; context: string; section: string }> {
+  const out: Array<{ src: string; context: string; section: string }> = [];
+  const bgRe = /background-image\s*:\s*url\((['"]?)([^'")]+)\1\)/gi;
+  let bm: RegExpExecArray | null;
+  while ((bm = bgRe.exec(html)) !== null && out.length < 12) {
+    const src = bm[2];
+    if (!src || src.startsWith('data:') || /\.svg(\?|#|$)/i.test(src) || already.has(src)) continue;
+    if (IMG_JUNK_RE.test(src)) continue;
+    already.add(src);
+    const near = nearbyCopy(html, bm.index, bm[0].length);
+    out.push({
+      src,
+      context: near.combined.slice(0, 400),
+      section: sectionFromNearbyHtml(html, bm.index, bm[0]),
+    });
+  }
+  return out;
 }
 
 async function swipeImages(
@@ -1604,8 +1640,21 @@ async function swipeImages(
   const analyzed = 0;
   let processed = 0;
 
-  const restyle = ctx.imageMode === 'internal';
-  const images = collectImages(html, page.sourceUrl, restyle);
+  const restyleSlots = collectRestyleSlots(html, MAX_IMAGES_PER_PAGE_RESTYLE, page.sourceUrl);
+  const seenSrc = new Set(restyleSlots.map((s) => s.src));
+  const cssBgs = collectCssBackgrounds(html, seenSrc).map((b, i) => ({
+    id: 900 + i,
+    src: b.src,
+    kind: 'image' as const,
+    alt: '',
+    section: b.section,
+    width: 0,
+    height: 0,
+    context: b.context,
+    domTag: undefined as 'img' | 'video' | undefined,
+    domIndex: undefined as number | undefined,
+  }));
+  const images = [...restyleSlots, ...cssBgs];
   const start = Math.max(0, opts.startOffset || 0);
   const cap = opts.maxThisBatch && opts.maxThisBatch > 0 ? opts.maxThisBatch : images.length;
   const slice = images.slice(start, start + cap);
@@ -1615,35 +1664,30 @@ async function swipeImages(
 
   const thisStepPack = usableImageUrl(ctx.mainImageUrl)
     || usableImageUrl(sourceStills.find((m) => String(m.id).startsWith('step-mock-'))?.storedUrl);
+  const paints: PaintedMedia[] = readRestylePaints(out);
 
-  for (const img of slice) {
+  for (const slot of slice) {
     if (budget.imagesLeft <= 0) break;
     if (Date.now() > deadline - 45_000) break;
     processed++;
     await touchPage(sb, page.funnelPageId, `Step ${ctx.pageIndex + 1}/${ctx.pageCount}: ChatGPT photo ${start + processed}/${images.length} from nearby copy…`);
 
-    const prompt = promptFromNearbyCopy(ctx, img);
-    const copyLooksProduct = /product|packshot|bottle|jar|box|pouch|sachet|offer|buy now|order|price|bundle|packaging|mockup/i
-      .test(`${img.alt} ${img.above} ${img.below} ${img.section}`);
+    const productShot = slotLooksProduct(ctx, slot);
+    const lifestyle = slotLooksLifestyle(slot);
+    const prompt = promptFromNearbyCopy(ctx, { alt: slot.alt, context: slot.context, section: slot.section }, productShot);
     const tick = () => touchPage(sb, page.funnelPageId, `Step ${ctx.pageIndex + 1}/${ctx.pageCount}: ChatGPT photo ${start + processed}/${images.length}…`);
     const common = { num_images: 1, output_format: 'png', quality: 'medium' as const };
     let falUrl: string | null = null;
-    // Text-to-image first. Image-to-image from the packshot is slow and used
-    // to stall the whole landing batch before a single photo landed.
-    if (Date.now() < deadline - 50_000) {
-      falUrl = await generateImageUrl(
-        IMG_MODEL_T2I,
-        { ...common, prompt, image_size: falImageSize(img) },
-        90_000,
-        tick,
-      );
-    }
-    if (!falUrl && thisStepPack && copyLooksProduct && Date.now() < deadline - 70_000) {
+
+    if (productShot && thisStepPack && !lifestyle) {
+      // Pure packshot slot: put THIS step's mockup in, do not invent another bottle.
+      falUrl = thisStepPack;
+    } else if (productShot && thisStepPack && Date.now() < deadline - 70_000) {
       falUrl = await generateImageUrl(
         IMG_MODEL_I2I,
         {
           ...common,
-          prompt: `${prompt} Image 1 is THIS step's real product mockup. If the copy is about the product, show that exact packaging — not a different SKU from another step.`,
+          prompt: `${prompt} Image 1 is THIS step's real product mockup. Keep that exact packaging if the product appears.`,
           image_urls: [thisStepPack],
           image_size: 'auto',
         },
@@ -1651,16 +1695,35 @@ async function swipeImages(
         tick,
       );
     }
+    if (!falUrl && Date.now() < deadline - 50_000) {
+      falUrl = await generateImageUrl(
+        IMG_MODEL_T2I,
+        { ...common, prompt, image_size: falImageSize(slot) },
+        90_000,
+        tick,
+      );
+    }
+    if (!falUrl && productShot && thisStepPack) falUrl = thisStepPack;
     if (!falUrl) {
       console.warn(`[swipe] photo ${start + processed}/${images.length} failed (copy-driven)`);
       await touchPage(sb, page.funnelPageId, `Step ${ctx.pageIndex + 1}/${ctx.pageCount}: ChatGPT photo ${start + processed}/${images.length} failed — next…`);
       continue;
     }
-    const stored = await storeGeneratedImage(sb, ctx.projectId, falUrl, generated);
+    const stored = falUrl === thisStepPack ? falUrl : (await storeGeneratedImage(sb, ctx.projectId, falUrl, generated)) || falUrl;
     const finalUrl = stored || falUrl;
-    out = replaceImageSrc(out, img.src, finalUrl);
+    const paint = paintFor(slot, finalUrl, slot.kind === 'video' ? 'video' : 'image');
+    if (paint) {
+      const rest = paints.filter((p) => !(p.tag === paint.tag && p.index === paint.index));
+      paints.length = 0;
+      paints.push(...rest, paint);
+      out = applyPaintedMedia(out, [paint]);
+    } else {
+      out = replaceMediaUrl(out, slot.src, finalUrl, page.sourceUrl);
+    }
+    out = sealPaintedHtml(out);
+    if (paints.length) out = injectRestyleMediaScript(out, paints);
     generated++;
-    if (copyLooksProduct) productSwaps++;
+    if (productShot) productSwaps++;
     budget.imagesLeft--;
     await persistHtml(sb, page.funnelPageId, 'swiped', out, ctx.ownerUserId);
     await touchPage(sb, page.funnelPageId, `Step ${ctx.pageIndex + 1}/${ctx.pageCount}: ChatGPT photo ${start + processed}/${images.length} replaced`);
