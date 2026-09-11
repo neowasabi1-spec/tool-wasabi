@@ -193,8 +193,8 @@ async function callClaude(opts: ClaudeOpts): Promise<string> {
 
 // ---------------------------------------------------------------------------
 // Image generation via ChatGPT (OpenAI Images API, gpt-image-2).
-// text2image for the main product, image2image (edit) for upsells so they
-// share the brand look. Requires OPENAI_API_KEY.
+// Every SKU is text-to-image. Do NOT image-to-image the master packshot
+// for upsells — that copies the same bottle onto every step.
 // ---------------------------------------------------------------------------
 
 interface GenImage { data: Buffer; mimeType: string; }
@@ -750,11 +750,111 @@ async function loadFunnelProducts(supabase: SupabaseClient, input: PipelineInput
   }
 }
 
-const UPSELL_LOOK = [
-  'a 3-unit multi-pack / carton of the same product',
-  'a premium or larger-size version of the same product',
-  'a complementary refill or accessory in the same packaging family',
+async function callChatGPTJson(system: string, user: string): Promise<string> {
+  const key = openaiImageKey();
+  if (!key) throw new Error('OPENAI_API_KEY missing');
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: process.env.PIPELINE_MOCKUP_TEXT_MODEL || 'gpt-4o-mini',
+      temperature: 0.8,
+      response_format: { type: 'json_object' },
+      messages: [
+        { role: 'system', content: system.slice(0, 12_000) },
+        { role: 'user', content: user.slice(0, 10_000) },
+      ],
+    }),
+    signal: AbortSignal.timeout(60_000),
+  });
+  if (!res.ok) throw new Error(`ChatGPT ${res.status}: ${(await res.text()).slice(0, 280)}`);
+  const data = await res.json() as { choices?: Array<{ message?: { content?: string } }> };
+  return String(data.choices?.[0]?.message?.content || '').trim();
+}
+
+interface ProductSpec {
+  main: { name: string; imagePrompt: string };
+  upsells: Array<{ name: string; relation: string; form: string; imagePrompt: string }>;
+}
+
+function parseProductSpec(raw: string, upsellCount: number, fallbackName: string): ProductSpec {
+  let main = { name: fallbackName, imagePrompt: `${fallbackName} single retail unit packshot, one bottle/jar/box` };
+  let upsells: ProductSpec['upsells'] = [];
+  try {
+    const jsonStr = raw.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '').trim();
+    const start = jsonStr.indexOf('{');
+    const end = jsonStr.lastIndexOf('}');
+    const obj = JSON.parse(start >= 0 && end > start ? jsonStr.slice(start, end + 1) : jsonStr);
+    if (obj?.main?.name) {
+      main = {
+        name: String(obj.main.name).slice(0, 120),
+        imagePrompt: String(obj.main.imagePrompt || main.imagePrompt).slice(0, 900),
+      };
+    }
+    if (Array.isArray(obj?.upsells)) {
+      upsells = obj.upsells.slice(0, upsellCount).map((u: Record<string, unknown>) => ({
+        name: String(u?.name || 'Upsell').slice(0, 120),
+        relation: String(u?.relation || '').slice(0, 200),
+        form: String(u?.form || '').slice(0, 200),
+        imagePrompt: String(u?.imagePrompt || '').slice(0, 900),
+      }));
+    }
+  } catch { /* pad below */ }
+  const ladder = DISTINCT_UPSELL_FORMS;
+  while (upsells.length < upsellCount) {
+    const n = upsells.length + 1;
+    const form = ladder[(n - 1) % ladder.length];
+    upsells.push({
+      name: `${fallbackName} — ${form.label}`,
+      relation: form.relation,
+      form: form.form,
+      imagePrompt: form.prompt(fallbackName),
+    });
+  }
+  return { main, upsells };
+}
+
+const DISTINCT_UPSELL_FORMS = [
+  {
+    label: '3-pack carton',
+    relation: 'volume / more units',
+    form: 'cardboard carton holding 3 units',
+    prompt: (n: string) => `A cardboard retail CARTON of "${n}" containing THREE units side by side. The silhouette is a BOX, not a single bottle. Window or printed product art on the carton. Label reads "${n}".`,
+  },
+  {
+    label: 'travel sachets',
+    relation: 'different format',
+    form: 'pouch of stick packs / sachets',
+    prompt: (n: string) => `A stand-up POUCH filled with individual stick-packs or sachets of "${n}". Completely different silhouette from a bottle — a pouch/bag. Label reads "${n}".`,
+  },
+  {
+    label: 'jar / tub',
+    relation: 'different container',
+    form: 'wide jar or tub',
+    prompt: (n: string) => `A wide round JAR or TUB of "${n}" with a screw lid. Short wide silhouette, not a tall bottle. Label reads "${n}".`,
+  },
+  {
+    label: 'dropper / pump',
+    relation: 'companion SKU',
+    form: 'glass dropper or pump bottle',
+    prompt: (n: string) => `A small glass DROPPER or pump bottle of "${n}" (serum/topical companion). Slim glass, rubber bulb or pump — not the flagship pack. Label reads "${n}".`,
+  },
+  {
+    label: 'bulk tub',
+    relation: 'value size',
+    form: 'large family-size tub',
+    prompt: (n: string) => `An oversized family-size TUB of "${n}", much larger than a single retail unit. Label reads "${n}".`,
+  },
 ];
+
+type PackSlot = { role: 'main' | 'upsell'; pageType: string; name: string };
+
+function upsellFormHint(slot: PackSlot, index: number): string {
+  const t = `${slot.pageType} ${slot.name}`;
+  if (/downsell/i.test(t)) return 'downsell: cheaper/smaller ALTERNATE format (sachets or travel size), not the same bottle';
+  if (/bump/i.test(t)) return 'order bump: tiny add-on (sachet packet or mini jar)';
+  return DISTINCT_UPSELL_FORMS[(index - 1) % DISTINCT_UPSELL_FORMS.length].form;
+}
 
 /** ChatGPT Images prompt — no Claude. Label is always our product name. */
 function buildPackshotPrompt(opts: {
@@ -763,6 +863,7 @@ function buildPackshotPrompt(opts: {
   look: string;
   productHint?: string;
   forbidden?: string[];
+  distinct?: boolean;
 }): string {
   const brand = (opts.brandName || 'our product').trim();
   const sku = (opts.skuName || brand).trim();
@@ -771,14 +872,15 @@ function buildPackshotPrompt(opts: {
   return [
     `Photorealistic ecommerce product packshot of OUR product "${brand}".`,
     opts.look,
+    opts.distinct
+      ? `THIS SKU is a DIFFERENT physical product from the flagship single unit. Unique container and silhouette (${opts.look}). Do NOT generate the same bottle/jar photographed again, not even from another angle.`
+      : 'Single flagship retail unit (one bottle, jar, box or device as fits the product).',
     hint ? `What it is: ${hint}` : '',
     `The printed label on the packaging MUST read "${sku}" (or "${brand}").`,
     ban ? `Never print these competitor / swipe-template names: ${ban}.` : 'Do not print any competitor brand, website, or funnel-template name.',
     'Centered product on a clean seamless light studio background, soft natural shadow, crisp high-detail lighting, no people, no extra logos, square framing, high resolution.',
   ].filter(Boolean).join(' ');
 }
-
-type PackSlot = { role: 'main' | 'upsell'; pageType: string; name: string };
 
 /** Template page titles / funnel name — never print these on our packshots. */
 function templateNameBanList(funnel: FunnelProducts | null, input: PipelineInput, productName: string): string[] {
@@ -854,9 +956,10 @@ function mockupFileType(slot: PackSlot): string {
   return `img_pb_${swipePageType(slot.pageType || 'upsell_1')}`;
 }
 
-/** Generate the product line images with ChatGPT Images only (no Claude, no Gemini).
- *  Optional uploaded photo = main packshot only; Chimera still invents
- *  every other product the funnel needs. */
+/** Generate the product line with ChatGPT only (no Claude, no Gemini).
+ *  Invent 1 main + one RELATED but physically distinct SKU per upsell.
+ *  Optional uploaded photo = main only. Every other SKU is text-to-image
+ *  from a unique silhouette — never image-to-image from the master. */
 async function generateProductImages(
   supabase: SupabaseClient,
   projectId: string,
@@ -869,8 +972,12 @@ async function generateProductImages(
   const upsellSlots = slots.filter((s) => s.role === 'upsell');
   const upsellCount = upsellSlots.length;
   const images: Array<{ name: string; url: string; role: string }> = [];
-  const { data: projOwner } = await supabase.from('projects').select('owner_user_id').eq('id', projectId).maybeSingle();
-  const ownerUserId = typeof projOwner?.owner_user_id === 'string' ? projOwner.owner_user_id : null;
+  const { data: proj } = await supabase
+    .from('projects')
+    .select('owner_user_id, brief, market_research, description')
+    .eq('id', projectId)
+    .maybeSingle();
+  const ownerUserId = typeof proj?.owner_user_id === 'string' ? proj.owner_user_id : null;
   const forbidden = templateNameBanList(funnel, input, productName);
   if (!openaiImageKey()) {
     return {
@@ -882,14 +989,58 @@ async function generateProductImages(
     };
   }
   const productHint = scrubForbiddenNames(
-    String(input.description || '').replace(/PRICE \(use this exact[\s\S]*/gi, '').trim(),
+    String(input.description || proj?.description || '').replace(/PRICE \(use this exact[\s\S]*/gi, '').trim(),
     forbidden,
     productName,
   ).slice(0, 320);
+  const brief = scrubForbiddenNames(sectionContentFrom(proj?.brief), forbidden, productName).slice(0, 3500);
+  const research = scrubForbiddenNames(sectionContentFrom(proj?.market_research), forbidden, productName).slice(0, 2200);
+
+  let spec: ProductSpec = parseProductSpec('', upsellCount, productName);
+  try {
+    const slotHints = upsellSlots.map((s, i) => {
+      const n = i + 1;
+      return `${n}. ${s.pageType} — invent a SKU whose physical form is: ${upsellFormHint(s, n)}`;
+    }).join('\n');
+    const specRaw = await callChatGPTJson(
+      `You are an ecommerce merchandiser. Invent a coherent PRODUCT LINE for a sales funnel.
+Same brand world. The printed brand on EVERY label is exactly "${productName}".
+Related means a DIFFERENT physical product that belongs on the same shelf: multi-pack carton, different format (jar vs bottle, stick packs, sachets), complementary accessory, bulk tub.
+NEVER the same bottle/jar photographed again, not even from another angle, not a recaptioned copy of the main.
+Each upsell MUST have a unique container and silhouette vs the main AND vs the other upsells.
+Do not use competitor or swipe-template names.`,
+      `Brand: ${productName}
+What it is: ${productHint || productName}
+BRIEF:
+${brief || '(none)'}
+RESEARCH:
+${research || '(none)'}
+Funnel needs 1 MAIN + exactly ${upsellCount} related SKUs:
+${slotHints || '(main only)'}
+Forbidden names (never print): ${forbidden.slice(0, 10).join(', ') || 'none'}
+
+Return JSON:
+{"main":{"name":"...","imagePrompt":"photorealistic packshot of the flagship single unit..."},"upsells":[{"name":"...","relation":"why related","form":"physical container/silhouette","imagePrompt":"..."}]}
+imagePrompt for each upsell must name the container (carton / pouch / jar / dropper / tub) and say it is NOT the flagship single unit.`,
+    );
+    spec = parseProductSpec(specRaw, upsellCount, productName);
+  } catch (e) {
+    console.warn('[pipeline] product-line JSON failed, using distinct-form ladder:', (e as Error).message);
+  }
+  spec.main.name = productName;
+  spec.main.imagePrompt = scrubForbiddenNames(spec.main.imagePrompt, forbidden, productName);
+  spec.upsells = spec.upsells.map((u, i) => {
+    const fallback = DISTINCT_UPSELL_FORMS[(i) % DISTINCT_UPSELL_FORMS.length];
+    return {
+      name: `${productName} — ${u.form || fallback.label}`,
+      relation: u.relation || fallback.relation,
+      form: u.form || fallback.form,
+      imagePrompt: scrubForbiddenNames(u.imagePrompt || fallback.prompt(productName), forbidden, productName),
+    };
+  });
 
   let saved = 0;
   let mainImageUrl: string | null = null;
-  let mainRefUrl: string | null = seedMainUrl;
 
   const persist = async (label: string, url: string, extraTypes: string[]): Promise<string | null> => {
     const dl = await downloadImage(url);
@@ -901,19 +1052,17 @@ async function generateProductImages(
     const stored = await persist(`Product — ${productName}`, seedMainUrl, ['img_pb_frontend']);
     if (stored) {
       mainImageUrl = stored;
-      mainRefUrl = stored;
       saved += 1;
       images.push({ name: productName, url: stored, role: 'Main product' });
     } else {
       mainImageUrl = seedMainUrl;
-      mainRefUrl = seedMainUrl;
     }
   } else {
     const mainUrl = await generateImageUrl('t2i', {
       prompt: buildPackshotPrompt({
         brandName: productName,
         skuName: productName,
-        look: 'Single retail unit of the flagship product (bottle, jar, box or device as fits the product).',
+        look: spec.main.imagePrompt || 'Single retail unit of the flagship product (bottle, jar, box or device as fits the product).',
         productHint,
         forbidden,
       }),
@@ -940,34 +1089,32 @@ async function generateProductImages(
       };
     }
     mainImageUrl = stored;
-    mainRefUrl = stored;
     saved += 1;
     images.push({ name: productName, url: stored, role: 'Main product' });
   }
 
   for (let upIdx = 1; upIdx <= upsellCount; upIdx++) {
     const slot = upsellSlots[upIdx - 1];
+    const sku = spec.upsells[upIdx - 1];
+    const ladder = DISTINCT_UPSELL_FORMS[(upIdx - 1) % DISTINCT_UPSELL_FORMS.length];
+    const look = [sku?.form || ladder.form, sku?.imagePrompt || ladder.prompt(productName)]
+      .filter(Boolean)
+      .join('. ');
     const skuName = `${productName} — Upsell ${upIdx}`;
-    const look = UPSELL_LOOK[(upIdx - 1) % UPSELL_LOOK.length];
-    const prompt = `${buildPackshotPrompt({
+    const prompt = buildPackshotPrompt({
       brandName: productName,
-      skuName,
+      skuName: productName,
       look,
       productHint,
       forbidden,
-    })} Same brand family as the reference packshot (palette, packaging style). Different SKU of "${productName}", not the swipe-template competitor.`;
-    const upUrl = mainRefUrl
-      ? await generateImageUrl('i2i', {
-          prompt,
-          image_urls: [mainRefUrl],
-          image_size: 'auto',
-          quality: 'medium',
-        })
-      : await generateImageUrl('t2i', {
-          prompt,
-          image_size: 'square_hd',
-          quality: 'medium',
-        });
+      distinct: true,
+    });
+    // Always text-to-image. Image-to-image from the master copies the same bottle.
+    const upUrl = await generateImageUrl('t2i', {
+      prompt,
+      image_size: 'square_hd',
+      quality: 'medium',
+    });
     if (!upUrl) {
       console.warn('[pipeline] ChatGPT upsell packshot empty:', lastImageGenError());
       continue;
@@ -987,7 +1134,7 @@ async function generateProductImages(
   return {
     saved,
     total,
-    note: `${saved}/${total} ChatGPT product mockups saved.${missing ? ` ${missing} failed${err ? ` (${err})` : ''}.` : ''}`,
+    note: `${saved}/${total} ChatGPT product mockups saved (distinct SKUs, t2i).${missing ? ` ${missing} failed${err ? ` (${err})` : ''}.` : ''}`,
     mainImageUrl,
     images,
   };

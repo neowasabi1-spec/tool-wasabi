@@ -893,7 +893,24 @@ interface PageImage {
   height: number;
   position: number;
   context: string;
+  above: string;
+  below: string;
   section: LandingSection;
+}
+
+function stripHtmlToCopy(s: string): string {
+  return s
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function nearbyCopy(html: string, index: number, tagLen: number): { above: string; below: string; combined: string } {
+  const above = stripHtmlToCopy(html.slice(Math.max(0, index - 1400), index)).slice(-520);
+  const below = stripHtmlToCopy(html.slice(index + tagLen, index + tagLen + 1400)).slice(0, 520);
+  return { above, below, combined: [above, below].filter(Boolean).join(' | ') };
 }
 
 function collectImages(html: string, sourceUrl: string, restyle = false): PageImage[] {
@@ -921,18 +938,9 @@ function collectImages(html: string, sourceUrl: string, restyle = false): PageIm
     if ((width && width < minPx) || (height && height < minPx)) continue;
     if (seen.has(src)) continue;
     seen.add(src);
-    // Nearby text gives the vision model the section's message.
-    const from = Math.max(0, m.index - 700);
-    const to = Math.min(html.length, m.index + tag.length + 700);
-    const context = html.slice(from, to)
-      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .slice(0, 400);
+    const near = nearbyCopy(html, m.index, tag.length);
     const section = sectionFromNearbyHtml(html, m.index, tag);
-    out.push({ src, alt, width, height, position: m.index, context, section });
+    out.push({ src, alt, width, height, position: m.index, context: near.combined.slice(0, 400), above: near.above, below: near.below, section });
     if (out.length >= 40) break;
   }
   const posterRe = /<video\b[^>]*\bposter\s*=\s*["']([^"']+)["'][^>]*>/gi;
@@ -940,13 +948,16 @@ function collectImages(html: string, sourceUrl: string, restyle = false): PageIm
     const src = m[1];
     if (!src || src.startsWith('data:') || seen.has(src)) continue;
     seen.add(src);
+    const near = nearbyCopy(html, m.index, m[0].length);
     out.push({
       src,
       alt: 'video poster',
       width: 0,
       height: 0,
       position: m.index,
-      context: 'video poster',
+      context: near.combined.slice(0, 400) || 'video poster',
+      above: near.above,
+      below: near.below,
       section: sectionFromNearbyHtml(html, m.index, m[0]),
     });
   }
@@ -957,13 +968,16 @@ function collectImages(html: string, sourceUrl: string, restyle = false): PageIm
     if (!src || src.startsWith('data:') || /\.svg(\?|#|$)/i.test(src) || seen.has(src)) continue;
     if (IMG_JUNK_RE.test(src)) continue;
     seen.add(src);
+    const near = nearbyCopy(html, bm.index, bm[0].length);
     out.push({
       src,
       alt: '',
       width: 0,
       height: 0,
       position: bm.index,
-      context: '',
+      context: near.combined.slice(0, 400),
+      above: near.above,
+      below: near.below,
       section: sectionFromNearbyHtml(html, bm.index, bm[0]),
     });
   }
@@ -1537,6 +1551,29 @@ async function restyleVideos(
   return { html: out, posters, swapped };
 }
 
+function promptFromNearbyCopy(ctx: SwipeCtx, img: PageImage): string {
+  const spec = ctx.restyle;
+  return `Photorealistic image for a sales page selling "${ctx.productName}".
+Illustrate the copy that sits next to this image — not a random product shot, not a reused packshot from another funnel step.
+
+COPY ABOVE THE IMAGE:
+${img.above || '(none)'}
+
+COPY BELOW THE IMAGE:
+${img.below || '(none)'}
+
+ALT TEXT: ${img.alt || '(none)'}
+PAGE SECTION: ${img.section || 'unknown'}
+
+Rules:
+- The picture MUST match what that copy is talking about (a problem, a result, a person, a mechanism, a comparison, or the product itself).
+- Show "${ctx.productName}" packaging only if the nearby copy is about the product or the offer. Otherwise show the scene the copy describes.
+- Do not invent a competitor brand. Do not drop a generic bottle on white unless the copy is a product shot.
+${spec ? `Visual world: ${spec.stylePrefix}. Palette ${spec.primary} / ${spec.secondary} / ${spec.accent}.` : ''}
+${ctx.market ? `Any text painted in the image must be in the local language of ${ctx.market}.` : 'Little or no text in the image except a product label if the product is shown.'}
+No watermark.`.slice(0, 1800);
+}
+
 async function swipeImages(
   sb: SupabaseClient,
   html: string,
@@ -1550,7 +1587,7 @@ async function swipeImages(
   let out = html;
   let generated = 0;
   let productSwaps = 0;
-  let analyzed = 0;
+  const analyzed = 0;
   let processed = 0;
 
   const restyle = ctx.imageMode === 'internal';
@@ -1561,127 +1598,31 @@ async function swipeImages(
   if (!images.length || !slice.length) {
     return { html: out, generated, productSwaps, analyzed, processed: 0, remaining: Math.max(0, images.length - start), total: images.length };
   }
-  const sourceBySrc = new Map(
-    matchLandingMediaToSlots(images, sourceStills, ctx.mediaUsed).map((p) => [p.slot.src, p.item]),
-  );
 
-  const spec = ctx.restyle;
-  const packshot = usableImageUrl(ctx.mainImageUrl);
-  const ourMockups = sourceStills
-    .filter((m) => String(m.id).startsWith('step-mock-') && usableImageUrl(m.storedUrl))
-    .map((m) => m.storedUrl);
-  const packList = ourMockups.length ? ourMockups : (packshot ? [packshot] : []);
-  const compactCtx = swipeBatchContext(ctx);
-  const system = `You are a senior direct-response creative director. The generator will EDIT the original photo (image-to-image): same composition, new visual world for OUR product.
-
-Detect the FORMAT (before/after split-frame, product hero/packshot, lifestyle, ingredient close-up, mechanism diagram, infographic, testimonial portrait, press clipping, UGC, comparison). Never default to a before/after unless the original truly is one. No competitor brand names.
-
-OUR PRODUCT: ${ctx.productName}
-${compactCtx ? `PRODUCT CONTEXT:\n${compactCtx}` : ''}
-${ctx.market ? `TARGET MARKET: ${ctx.market} — any text painted inside the image MUST be in this market's local language.` : ''}
-${spec ? `VISUAL WORLD (must match every image): ${spec.stylePrefix}\nCASTING (same person in every lifestyle shot): ${spec.avatar}\nPALETTE: ${spec.primary} / ${spec.secondary} / ${spec.accent}` : ''}
-
-Return STRICT JSON only:
-{"product_shot": true|false, "format": "...", "prompt": "..."}
-"prompt" = edit instructions: keep framing/crop/layout, restyle into our world, put OUR product where theirs was.
-Set "product_shot": true for a packshot/hero of a standalone product (bottle, jar, box, pouch, device, pouch on white/studio) — we will drop in OUR real mockup, not generate a new one.`;
+  const thisStepPack = usableImageUrl(ctx.mainImageUrl)
+    || usableImageUrl(sourceStills.find((m) => String(m.id).startsWith('step-mock-'))?.storedUrl);
 
   for (const img of slice) {
     if (budget.imagesLeft <= 0) break;
     if (Date.now() > deadline - 45_000) break;
     processed++;
-    const source = sourceBySrc.get(img.src);
-    const absSrc = source?.storedUrl || absolutizeSrc(img.src, page.sourceUrl);
+    await touchPage(sb, page.funnelPageId, `Step ${ctx.pageIndex + 1}/${ctx.pageCount}: ChatGPT photo ${start + processed}/${images.length} from nearby copy…`);
 
-    const looksLifestyleSection = img.section === 'lifestyle'
-      || img.section === 'testimonials'
-      || img.section === 'author';
-    const packishHeuristic = img.section === 'product'
-      || /packshot|product.?shot|bottle|jar|box|pouch|sachet|mockup/i.test(`${img.alt} ${img.context}`);
-    if (restyle && packList.length > 0 && !looksLifestyleSection && packishHeuristic) {
-      const mock = packList[(start + processed - 1) % packList.length];
-      out = replaceImageSrc(out, img.src, mock);
-      generated++;
-      productSwaps++;
-      budget.imagesLeft--;
-      await persistHtml(sb, page.funnelPageId, 'swiped', out, ctx.ownerUserId);
-      await touchPage(sb, page.funnelPageId, `Step ${ctx.pageIndex + 1}/${ctx.pageCount}: packshot placed (${start + processed}/${images.length})`);
-      continue;
-    }
-
-    let analysis: ImageAnalysis | null = null;
-    try {
-      const preview = absSrc ? await fetchPreview(absSrc, 384) : null;
-      const visual = preview ? { mediaType: preview.mime, b64: preview.data } : null;
-      const user = `Analyze this landing-page image and produce the swipe JSON.
-${visual ? '' : '(The image file was not downloadable — infer the format from the metadata below.)'}
-ALT text: ${img.alt || '(none)'}
-Surrounding page copy: ${img.context || '(none)'}`;
-      const raw = await callClaudeVision(system, user, visual, 800);
-      analysis = parseImageAnalysis(raw);
-      analyzed++;
-    } catch (e) {
-      console.warn('[swipe] image analysis failed:', (e as Error).message);
-    }
-    if (!analysis) {
-      const packish = img.section === 'product' || /product|pack|bottle|jar|box|mockup/i.test(`${img.alt} ${img.context}`);
-      analysis = {
-        productShot: packish,
-        format: packish ? 'packshot' : 'lifestyle',
-        prompt: `Recreate this landing-page visual for ${ctx.productName}. Alt: ${img.alt || 'none'}. Scene: ${img.context.slice(0, 220) || 'product hero'}.`,
-      };
-    }
-
-      await touchPage(sb, page.funnelPageId, `Step ${ctx.pageIndex + 1}/${ctx.pageCount}: ChatGPT photo ${start + processed}/${images.length}…`);
-
-    const looksLifestyle = /lifestyle|portrait|people|person|woman|man|face|ugc|testimonial/i.test(analysis.format)
-      || img.section === 'lifestyle'
-      || img.section === 'testimonials'
-      || img.section === 'author';
-    const dropPackshot = restyle && packList.length > 0 && !looksLifestyle && (
-      analysis.productShot
-      || img.section === 'product'
-      || /packshot|product.?shot|bottle|jar|box|pouch|sachet/i.test(`${img.alt} ${analysis.format}`)
-    );
-    if (dropPackshot) {
-      const mock = packList[(start + processed - 1) % packList.length];
-      out = replaceImageSrc(out, img.src, mock);
-      generated++;
-      productSwaps++;
-      budget.imagesLeft--;
-      await persistHtml(sb, page.funnelPageId, 'swiped', out, ctx.ownerUserId);
-      await touchPage(sb, page.funnelPageId, `Step ${ctx.pageIndex + 1}/${ctx.pageCount}: packshot placed (${start + processed}/${images.length})`);
-      continue;
-    }
-
-    const isGif = /\.gif(\?|#|$)/i.test(img.src) || /gif/i.test(img.alt);
-    const sourceRef = absSrc && /^https?:\/\//i.test(absSrc) ? absSrc : '';
-    const hosted = !isGif && sourceRef
-      ? (await hostImageForFal(sb, ctx.projectId, sourceRef, start + processed)) || ''
-      : '';
-    const refs = [hosted, packshot].filter((u): u is string => {
-      if (!u) return false;
-      return /^https?:\/\//i.test(u) || u.startsWith('data:image/');
-    });
-    const slotHint = `Unique frame ${start + processed + 1}/${images.length} (${img.section || 'section'}, ${isGif ? 'GIF' : analysis.format}). Do NOT reuse a previous composition.`;
-    const packIdentity = packshot && refs.includes(packshot) && hosted
-      ? ' Image 2 is OUR real product mockup. Any product in the scene MUST be that exact packaging (same bottle/box/label/colors). Do not invent a different product.'
-      : packshot
-        ? ' The product must match our packshot packaging exactly (same bottle/box/label/colors). Do not invent a different product.'
-        : '';
-    const i2iPrompt = spec
-      ? `${slotHint} Keep the EXACT composition, camera angle, crop and layout of image 1.${packIdentity} Restyle the entire visual world: ${spec.stylePrefix}. Casting: ${spec.avatar}. Replace any competitor product with ${ctx.productName}. ${analysis.prompt}`
-      : `${slotHint} Keep the EXACT composition of image 1.${packIdentity} Recreate it for ${ctx.productName}. ${analysis.prompt}`;
-    const t2iPrompt = spec
-      ? `${slotHint} ${spec.stylePrefix}. Casting: ${spec.avatar}. ${analysis.prompt} Product: ${ctx.productName}.${packshot ? ' The product must match our packshot packaging exactly.' : ''}`
-      : `${slotHint} ${analysis.prompt}`;
+    const prompt = promptFromNearbyCopy(ctx, img);
+    const copyLooksProduct = /product|packshot|bottle|jar|box|pouch|sachet|offer|buy now|order|price|bundle|packaging|mockup/i
+      .test(`${img.alt} ${img.above} ${img.below} ${img.section}`);
     const tick = () => touchPage(sb, page.funnelPageId, `Step ${ctx.pageIndex + 1}/${ctx.pageCount}: ChatGPT photo ${start + processed}/${images.length}…`);
     const common = { num_images: 1, output_format: 'png', quality: 'medium' as const };
     let falUrl: string | null = null;
-    if (restyle && !isGif && hosted && Date.now() < deadline - 70_000) {
+    if (thisStepPack && copyLooksProduct && Date.now() < deadline - 70_000) {
       falUrl = await generateImageUrl(
         IMG_MODEL_I2I,
-        { ...common, prompt: i2iPrompt.slice(0, 1800), image_urls: refs, image_size: 'auto' },
+        {
+          ...common,
+          prompt: `${prompt} Image 1 is THIS step's real product mockup. If the copy is about the product, show that exact packaging — not a different SKU from another step.`,
+          image_urls: [thisStepPack],
+          image_size: 'auto',
+        },
         90_000,
         tick,
       );
@@ -1689,13 +1630,13 @@ Surrounding page copy: ${img.context || '(none)'}`;
     if (!falUrl && Date.now() < deadline - 50_000) {
       falUrl = await generateImageUrl(
         IMG_MODEL_T2I,
-        { ...common, prompt: t2iPrompt.slice(0, 1800), image_size: falImageSize(img) },
+        { ...common, prompt, image_size: falImageSize(img) },
         120_000,
         tick,
       );
     }
     if (!falUrl) {
-      console.warn(`[swipe] photo ${start + processed}/${images.length} failed`);
+      console.warn(`[swipe] photo ${start + processed}/${images.length} failed (copy-driven)`);
       await touchPage(sb, page.funnelPageId, `Step ${ctx.pageIndex + 1}/${ctx.pageCount}: ChatGPT photo ${start + processed}/${images.length} failed — next…`);
       continue;
     }
@@ -1703,6 +1644,7 @@ Surrounding page copy: ${img.context || '(none)'}`;
     const finalUrl = stored || falUrl;
     out = replaceImageSrc(out, img.src, finalUrl);
     generated++;
+    if (copyLooksProduct) productSwaps++;
     budget.imagesLeft--;
     await persistHtml(sb, page.funnelPageId, 'swiped', out, ctx.ownerUserId);
     await touchPage(sb, page.funnelPageId, `Step ${ctx.pageIndex + 1}/${ctx.pageCount}: ChatGPT photo ${start + processed}/${images.length} replaced`);
@@ -1801,9 +1743,11 @@ async function bindStepOffer(
   };
   if (offer.brief) next.brief = offer.brief;
   if (ctx.imageMode !== 'affiliate') {
-    if (offer.imageUrl) next.mainImageUrl = offer.imageUrl;
-    const mockups = stepOfferToMediaItems(offer);
-    if (mockups.length) next.landingStills = [...mockups, ...ctx.landingStills];
+    // This step's packshot only. Never fall back to the landing/master photo
+    // on an upsell — that is how Upsell 3 ended up with step-1 product shots.
+    const landing = /landing|advertorial|vsl|bridge|pre_?sell|opt|quiz|lead|squeeze|sales|front/i.test(page.type);
+    next.mainImageUrl = offer.imageUrl || (landing ? ctx.mainImageUrl : null);
+    next.landingStills = stepOfferToMediaItems(offer);
   }
   const extras: string[] = [];
   if (offer.price) extras.push(knownPriceBlock(offer.price));

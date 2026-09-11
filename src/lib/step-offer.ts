@@ -50,12 +50,14 @@ function isLandingish(pageType: string): boolean {
   return t === 'altro' || LANDINGISH.test(t);
 }
 
-function nameMatchesPage(originalName: string, pageType: string): boolean {
+function nameMatchesPage(originalName: string, pageType: string, pageName = ''): boolean {
   const want = normalizeArchiveType(pageType);
   const n = String(originalName || '');
   const numbered = want.match(/^(upsell|downsell)_(\d+)$/);
   if (numbered) return new RegExp(`${numbered[1]}\\s*${numbered[2]}\\b`, 'i').test(n);
-  if (/downsell/.test(want)) return /downsell/i.test(n);
+  const fromLabel = `${pageName} ${pageType}`.match(/(upsell|downsell)\s*(\d+)/i);
+  if (fromLabel) return new RegExp(`${fromLabel[1]}\\s*${fromLabel[2]}\\b`, 'i').test(n);
+  if (/downsell/.test(want) || /downsell/i.test(pageName)) return /downsell/i.test(n);
   if (/bump/.test(want)) return /bump/i.test(n);
   if (/oto/.test(want)) return /\boto\b|one[-_ ]?time/i.test(n);
   if (isLandingish(pageType)) return !/upsell|downsell|\boto\b/i.test(n);
@@ -131,7 +133,7 @@ export async function loadStepOffer(
     ? files.filter((f) => f.file_type === `img_${section.id}` && f.file_path)
     : [];
   const namedPackshots = files.filter(
-    (f) => f.file_type === 'product_image' && nameMatchesPage(f.original_name || '', pageType),
+    (f) => f.file_type === 'product_image' && nameMatchesPage(f.original_name || '', pageType, pageName),
   );
   const ugc = files.filter((f) => f.file_type === 'ugc' && f.file_path);
   const mainPackshots = files.filter(
