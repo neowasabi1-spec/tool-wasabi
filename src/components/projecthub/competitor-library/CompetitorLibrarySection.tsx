@@ -2124,8 +2124,8 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
   const [saveOpen, setSaveOpen] = useState(false);
   const [savingTpl, setSavingTpl] = useState(false);
   const [saveQueue, setSaveQueue] = useState<Landing[]>([]);
-  const [tplNames, setTplNames] = useState<Record<string, string>>({});
-  const [tplTypes, setTplTypes] = useState<Record<string, string>>({});
+  const [tplName, setTplName] = useState("");
+  const [tplType, setTplType] = useState("landing");
   const [tplCategory, setTplCategory] = useState("");
   const [tplTags, setTplTags] = useState<string[]>([]);
   const [tagDraft, setTagDraft] = useState("");
@@ -2172,17 +2172,13 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
       return;
     }
     const sharedCat = unique.map((l) => l.category).find(isNicheCategory) || "";
-    const defaultName = (l: Landing) => {
-      const walk = /^(.*\S)\s+—\s+Step\s+\d+$/i.exec(l.name || "");
-      if (walk) {
-        const typeLabel = PAGE_TYPE_OPTIONS.find((o) => o.value === l.page_type)?.label || l.page_type || "Page";
-        return `${walk[1].trim()} · ${typeLabel}`;
-      }
-      return l.name || hostOf(l.url) || "Page";
-    };
+    const hosts = [...new Set(unique.map((l) => hostOf(l.url) || "").filter(Boolean))];
+    const defaultName = hosts.length === 1
+      ? hosts[0]
+      : unique[0]?.name || hostOf(unique[0]?.url || "") || "Page";
     setSaveQueue(unique);
-    setTplNames(Object.fromEntries(unique.map((l) => [l.id, defaultName(l)])));
-    setTplTypes(Object.fromEntries(unique.map((l) => [l.id, l.page_type || "landing"])));
+    setTplName(defaultName);
+    setTplType(unique[0]?.page_type || "landing");
     setTplCategory(sharedCat);
     setTplTags([...new Set(unique.flatMap((l) => l.tags || []).filter(Boolean))]);
     setTagDraft("");
@@ -2223,9 +2219,9 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
   };
 
   const saveToTemplates = async () => {
-    const nameMissing = saveQueue.some((l) => !String(tplNames[l.id] || "").trim());
-    if (nameMissing) {
-      toast({ title: "Every page needs a name", variant: "destructive" });
+    const baseName = tplName.trim();
+    if (!baseName) {
+      toast({ title: "Name is required", variant: "destructive" });
       return;
     }
     if (!tplCategory.trim() || !isNicheCategory(tplCategory)) {
@@ -2242,12 +2238,12 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          items: saveQueue.map((l) => ({
+          items: saveQueue.map((l, i) => ({
             id: l.id,
-            name: String(tplNames[l.id] || "").trim(),
+            name: saveQueue.length === 1 ? baseName : `${baseName} · ${i + 1}`,
             category: tplCategory.trim(),
             tags: tplTags,
-            page_type: tplTypes[l.id] || l.page_type || "landing",
+            page_type: tplType || l.page_type || "landing",
           })),
         }),
       });
@@ -2717,38 +2713,32 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
                 className="h-9 text-sm mt-1.5" />
             </div>
 
-            <div className="space-y-3 max-h-64 overflow-y-auto pr-1">
-              {saveQueue.map((l) => {
-                const extraTypes = tplTypes[l.id] && !PAGE_TYPE_OPTIONS.some((o) => o.value === tplTypes[l.id])
-                  ? [{ value: tplTypes[l.id], label: tplTypes[l.id] }]
-                  : [];
-                return (
-                  <div key={l.id} className="rounded-lg border border-border p-3 space-y-2">
-                    <p className="text-[10px] text-muted-foreground truncate">{hostOf(l.url) || l.name}</p>
-                    <div>
-                      <label className="text-[11px] font-semibold">Name *</label>
-                      <Input
-                        value={tplNames[l.id] || ""}
-                        onChange={(e) => setTplNames((p) => ({ ...p, [l.id]: e.target.value }))}
-                        className="h-9 text-sm mt-0.5" />
-                    </div>
-                    <div>
-                      <label className="text-[11px] font-semibold">Page type</label>
-                      <select
-                        value={tplTypes[l.id] || "landing"}
-                        onChange={(e) => setTplTypes((p) => ({ ...p, [l.id]: e.target.value }))}
-                        className="w-full h-9 mt-0.5 rounded-md border border-input bg-background px-3 text-sm">
-                        {PAGE_TYPE_OPTIONS.map((o) => (
-                          <option key={o.value} value={o.value}>{o.label}</option>
-                        ))}
-                        {extraTypes.map((o) => (
-                          <option key={o.value} value={o.value}>{o.label}</option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-                );
-              })}
+            <div>
+              <label className="text-xs font-semibold">Name *</label>
+              <Input
+                value={tplName}
+                onChange={(e) => setTplName(e.target.value)}
+                className="h-9 text-sm mt-1" />
+              {saveQueue.length > 1 && (
+                <p className="text-[11px] text-muted-foreground mt-1">
+                  Saving {saveQueue.length} pages as {tplName.trim() || "this name"} · 1, · 2, …
+                </p>
+              )}
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold">Page type</label>
+              <select
+                value={tplType}
+                onChange={(e) => setTplType(e.target.value)}
+                className="w-full h-9 mt-1 rounded-md border border-input bg-background px-3 text-sm">
+                {PAGE_TYPE_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+                {tplType && !PAGE_TYPE_OPTIONS.some((o) => o.value === tplType) && (
+                  <option value={tplType}>{tplType}</option>
+                )}
+              </select>
             </div>
           </div>
 
