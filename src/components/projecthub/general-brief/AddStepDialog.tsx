@@ -76,6 +76,7 @@ export function AddStepDialog({ open, onClose, initialPageType, onConfirm }: Pro
         prompt: '',
         page_type: type,
         screenshotUrl: t.previewImage || null,
+        htmlUrl: null,
       });
       map[type] = list;
     }

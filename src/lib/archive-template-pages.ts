@@ -18,6 +18,7 @@ export type ArchiveTemplatePage = {
   prompt: string;
   page_type: string;
   screenshotUrl: string | null;
+  htmlUrl: string | null;
 };
 
 function cardShotUrl(cd?: ClonedShots | null): string | null {
@@ -52,6 +53,10 @@ export function listArchivePagesByType(
         prompt: s.prompt || '',
         page_type: t,
         screenshotUrl: cardShotUrl(s.cloned_data),
+        htmlUrl:
+          s.cloned_data?.htmlUrl ||
+          s.swiped_data?.htmlUrl ||
+          `/api/funnel-html?pageId=${encodeURIComponent(f.id)}&kind=cloned&variant=desktop`,
       });
     }
   }

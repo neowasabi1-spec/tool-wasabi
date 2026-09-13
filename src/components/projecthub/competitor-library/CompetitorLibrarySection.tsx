@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo, type ReactNode } from "react";
+import { useState, useRef, useEffect, useMemo, type MouseEvent, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
@@ -9,15 +9,18 @@ import {
   Video, Bookmark, CheckSquare, Square, TrendingUp, Download, Copy, Check,
   Settings, Zap, FileText, Eye, LayoutTemplate, Repeat, Star, Flame,
   Scissors, Film, Sparkles, DollarSign, Eraser, Folder, Activity, Users, Gauge, Loader2,
+  Tag,
 } from "lucide-react";
 import {
   AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle,
+  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
 import { getUploadUrl } from "@/lib/projecthub-storage";
+import { authFetch } from "@/lib/auth/client-fetch";
+import { PAGE_TYPE_OPTIONS } from "@/types";
 import { getSupabaseBrowser } from "@/lib/supabase-browser";
 import { BUILD_LANGUAGES, LANGUAGE_OTHER } from "@/lib/video-languages";
 import { hostOfUrl, LANDING_SECTION_LABEL, type LandingSection } from "@/lib/landing-media";
@@ -2053,6 +2056,12 @@ function hostOf(url: string) {
   try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return url; }
 }
 
+/** Funnel folders store the domain in `category` — that is not a niche. */
+function isNicheCategory(s: string) {
+  const t = (s || "").trim();
+  return !!t && (/\s/.test(t) || !/\.[a-z]{2,}$/i.test(t));
+}
+
 // Live thumbnail rendered from the SAVED HTML (page_html mirror). Used when a
 // landing has no stored screenshot (e.g. rows recovered after the archive
 // wipe): the saved page itself — full CSS, images, layout — becomes the
@@ -2111,6 +2120,153 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
   const [search, setSearch] = useState("");
   const [preview, setPreview] = useState<Landing | null>(null);
   const [openFolder, setOpenFolder] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [saveOpen, setSaveOpen] = useState(false);
+  const [savingTpl, setSavingTpl] = useState(false);
+  const [saveQueue, setSaveQueue] = useState<Landing[]>([]);
+  const [tplNames, setTplNames] = useState<Record<string, string>>({});
+  const [tplTypes, setTplTypes] = useState<Record<string, string>>({});
+  const [tplCategory, setTplCategory] = useState("");
+  const [tplTags, setTplTags] = useState<string[]>([]);
+  const [tagDraft, setTagDraft] = useState("");
+  const [categories, setCategories] = useState<string[]>([]);
+  const [newCat, setNewCat] = useState("");
+  const [addingCat, setAddingCat] = useState(false);
+
+  const toggleSelect = (id: string, e?: MouseEvent) => {
+    e?.stopPropagation();
+    setSelected((p) => {
+      const n = new Set(p);
+      n.has(id) ? n.delete(id) : n.add(id);
+      return n;
+    });
+  };
+
+  const toggleIds = (ids: string[]) => {
+    setSelected((p) => {
+      const n = new Set(p);
+      const allOn = ids.length > 0 && ids.every((id) => n.has(id));
+      if (allOn) ids.forEach((id) => n.delete(id));
+      else ids.forEach((id) => n.add(id));
+      return n;
+    });
+  };
+
+  const loadCategories = async () => {
+    try {
+      const r = await authFetch("/api/extension/categories");
+      if (!r.ok) return;
+      const d = await r.json();
+      setCategories(Array.isArray(d.categories) ? d.categories : []);
+    } catch { /* ignore */ }
+  };
+
+  const openSaveDialog = (items: Landing[]) => {
+    const unique = items.filter((l, i, arr) => arr.findIndex((x) => x.id === l.id) === i);
+    if (!unique.length) {
+      toast({ title: "Select at least one landing", variant: "destructive" });
+      return;
+    }
+    if (unique.length > 20) {
+      toast({ title: "Save at most 20 pages at a time", variant: "destructive" });
+      return;
+    }
+    const sharedCat = unique.map((l) => l.category).find(isNicheCategory) || "";
+    const defaultName = (l: Landing) => {
+      const walk = /^(.*\S)\s+—\s+Step\s+\d+$/i.exec(l.name || "");
+      if (walk) {
+        const typeLabel = PAGE_TYPE_OPTIONS.find((o) => o.value === l.page_type)?.label || l.page_type || "Page";
+        return `${walk[1].trim()} · ${typeLabel}`;
+      }
+      return l.name || hostOf(l.url) || "Page";
+    };
+    setSaveQueue(unique);
+    setTplNames(Object.fromEntries(unique.map((l) => [l.id, defaultName(l)])));
+    setTplTypes(Object.fromEntries(unique.map((l) => [l.id, l.page_type || "landing"])));
+    setTplCategory(sharedCat);
+    setTplTags([...new Set(unique.flatMap((l) => l.tags || []).filter(Boolean))]);
+    setTagDraft("");
+    setNewCat("");
+    setAddingCat(false);
+    setSaveOpen(true);
+    setPreview(null);
+    void loadCategories();
+  };
+
+  const addTag = (raw: string) => {
+    const t = raw.trim().replace(/,$/, "");
+    if (!t) return;
+    setTplTags((p) => (p.includes(t) ? p : [...p, t].slice(0, 30)));
+    setTagDraft("");
+  };
+
+  const createCategory = async () => {
+    const name = newCat.trim();
+    if (!name || !isNicheCategory(name)) {
+      toast({ title: "Enter a niche (not a domain)", variant: "destructive" });
+      return;
+    }
+    try {
+      const r = await authFetch("/api/extension/categories", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      if (r.ok) {
+        const d = await r.json();
+        setCategories(Array.isArray(d.categories) ? d.categories : [...categories, name]);
+        setTplCategory(name);
+      }
+    } catch { /* ignore */ }
+    setNewCat("");
+    setAddingCat(false);
+  };
+
+  const saveToTemplates = async () => {
+    const nameMissing = saveQueue.some((l) => !String(tplNames[l.id] || "").trim());
+    if (nameMissing) {
+      toast({ title: "Every page needs a name", variant: "destructive" });
+      return;
+    }
+    if (!tplCategory.trim() || !isNicheCategory(tplCategory)) {
+      toast({ title: "Category is required", variant: "destructive" });
+      return;
+    }
+    if (!tplTags.length) {
+      toast({ title: "Add at least one tag", variant: "destructive" });
+      return;
+    }
+    setSavingTpl(true);
+    try {
+      const r = await authFetch(`${BASE_URL}/api/projecthub/projects/${projectId}/landings/save-to-templates`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          items: saveQueue.map((l) => ({
+            id: l.id,
+            name: String(tplNames[l.id] || "").trim(),
+            category: tplCategory.trim(),
+            tags: tplTags,
+            page_type: tplTypes[l.id] || l.page_type || "landing",
+          })),
+        }),
+      });
+      const body = await r.json().catch(() => ({})) as { error?: string; saved?: number };
+      if (!r.ok) {
+        toast({ title: body.error || "Could not save to Templates", variant: "destructive" });
+        return;
+      }
+      const n = Number(body.saved) || saveQueue.length;
+      setSelected(new Set());
+      setSaveOpen(false);
+      setPreview(null);
+      toast({ title: `${n} page${n === 1 ? "" : "s"} saved to Templates → Pages` });
+    } catch {
+      toast({ title: "Save error", variant: "destructive" });
+    } finally {
+      setSavingTpl(false);
+    }
+  };
 
   // Add this landing as a swipe step in Clone/Swipe (front-end-funnel), then go there.
   const cloneSwipe = (l: Landing) => {
@@ -2199,17 +2355,22 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
     }))
     .sort((a, b) => a.name.localeCompare(b.name));
   const openItems = openFolder ? (folders.find(f => f.name === openFolder)?.items || []) : [];
+  const selectable = openFolder ? openItems : filtered;
+  const allSelected = selectable.length > 0 && selectable.every(l => selected.has(l.id));
 
   // A single landing/step card — masonry style: domain header on top, then the
   // FULL-length screenshot (capped, with a soft fade), like a swipe-file board.
   const card = (l: Landing) => {
     const host = hostOf(l.url);
+    const isSelected = selected.has(l.id);
     return (
       <div key={l.id}
         onClick={() => setPreview(l)}
         role="button" tabIndex={0}
         onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setPreview(l); } }}
-        className="group relative bg-card border border-border rounded-2xl overflow-hidden hover:border-primary/40 hover:shadow-lg transition-all cursor-pointer">
+        className={`group relative bg-card border-2 rounded-2xl overflow-hidden hover:shadow-lg transition-all cursor-pointer ${
+          isSelected ? "border-primary shadow-[0_0_0_3px_rgba(34,197,94,0.2)]" : "border-border hover:border-primary/40"
+        }`}>
         {/* Domain header */}
         <div className="flex items-center gap-2 px-3 py-2.5 border-b border-border/60">
           {host ? (
@@ -2232,6 +2393,20 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
               <Globe className="w-10 h-10 text-slate-400" />
             </div>
           )}
+          <button
+            type="button"
+            onClick={(e) => toggleSelect(l.id, e)}
+            className={`absolute top-2 left-2 z-10 w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all
+              ${isSelected
+                ? "bg-primary border-primary shadow-md"
+                : "bg-white/80 border-white/60 shadow-sm hover:border-primary/60 hover:bg-white"}`}
+            title={isSelected ? "Deselect" : "Select"}>
+            {isSelected && (
+              <svg className="w-3 h-3 text-white" viewBox="0 0 12 12" fill="none">
+                <path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            )}
+          </button>
           <span className="absolute bottom-2 right-2 flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-slate-900/60 backdrop-blur-sm text-white opacity-0 group-hover:opacity-100 transition-opacity">
             <Eye className="w-3 h-3" /> Preview
           </span>
@@ -2262,6 +2437,32 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
           <Input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search landings..." className="pl-8 h-9 text-sm" />
         </div>
       </div>
+
+      {filtered.length > 0 && (
+        <div className="flex items-center gap-3 bg-muted/30 border border-border rounded-xl px-4 py-2.5">
+          <label className="flex items-center gap-2 cursor-pointer select-none" onClick={() => toggleIds(selectable.map(l => l.id))}>
+            {allSelected
+              ? <CheckSquare className="w-4 h-4 text-primary" />
+              : <Square className="w-4 h-4 text-muted-foreground" />}
+            <span className="text-xs font-medium text-foreground">
+              {allSelected ? "Deselect all" : openFolder ? "Select all steps" : "Select all"}
+            </span>
+          </label>
+          {selected.size > 0 && (
+            <span className="text-xs text-muted-foreground border-l border-border pl-3">{selected.size} selected</span>
+          )}
+          {selected.size > 0 && (
+            <div className="ml-auto flex items-center gap-2">
+              <Button size="sm" onClick={() => openSaveDialog(landings.filter(l => selected.has(l.id)))}
+                disabled={savingTpl} className="gap-1.5 h-8 text-xs px-3">
+                {savingTpl
+                  ? <><RefreshCw className="w-3 h-3 animate-spin" /> Saving...</>
+                  : <><Bookmark className="w-3.5 h-3.5" /> Save to Templates</>}
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
 
       {loading ? (
         <div className="py-16 text-center text-sm text-muted-foreground">Loading...</div>
@@ -2297,6 +2498,10 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
               className="ml-auto inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 transition-colors">
               <Repeat className="w-3.5 h-3.5" /> Swipe all steps
             </button>
+            <button type="button" onClick={() => openSaveDialog(openItems)}
+              className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg border border-border text-foreground hover:bg-muted transition-colors">
+              <Bookmark className="w-3.5 h-3.5" /> Save funnel to Templates
+            </button>
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
             {openItems.map(card)}
@@ -2307,12 +2512,17 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
           {folders.map(f => {
             const cover = f.items[0];
             const host = hostOf(cover?.url || "");
+            const ids = f.items.map(i => i.id);
+            const allOn = ids.length > 0 && ids.every(id => selected.has(id));
+            const someOn = !allOn && ids.some(id => selected.has(id));
             return (
               <div key={f.name}
                 onClick={() => setOpenFolder(f.name)}
                 role="button" tabIndex={0}
                 onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpenFolder(f.name); } }}
-                className="group relative bg-card border border-border rounded-2xl overflow-hidden hover:border-primary/40 hover:shadow-lg transition-all cursor-pointer">
+                className={`group relative bg-card border-2 rounded-2xl overflow-hidden hover:shadow-lg transition-all cursor-pointer ${
+                  allOn ? "border-primary shadow-[0_0_0_3px_rgba(34,197,94,0.2)]" : someOn ? "border-primary/50" : "border-border hover:border-primary/40"
+                }`}>
                 {/* Domain header */}
                 <div className="flex items-center gap-2 px-3 py-2.5 border-b border-border/60">
                   {host ? (
@@ -2335,6 +2545,22 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
                       <Globe className="w-10 h-10 text-slate-400" />
                     </div>
                   )}
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); toggleIds(ids); }}
+                    className={`absolute top-2 left-2 z-10 w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all
+                      ${allOn || someOn
+                        ? "bg-primary border-primary shadow-md"
+                        : "bg-white/80 border-white/60 shadow-sm hover:border-primary/60 hover:bg-white"}`}
+                    title={allOn ? "Deselect funnel" : "Select all steps"}>
+                    {allOn ? (
+                      <svg className="w-3 h-3 text-white" viewBox="0 0 12 12" fill="none">
+                        <path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    ) : someOn ? (
+                      <span className="w-2.5 h-0.5 rounded-full bg-white" />
+                    ) : null}
+                  </button>
                   <span className="absolute bottom-2 right-2 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-primary/85 backdrop-blur-sm text-primary-foreground">
                     {f.items.length} step{f.items.length === 1 ? "" : "s"}
                   </span>
@@ -2406,6 +2632,10 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
                 className="flex items-center gap-1.5 border border-border text-foreground text-xs font-semibold py-2 px-3 rounded-lg hover:bg-muted transition-colors">
                 <Repeat className="w-3.5 h-3.5" /> Clone / Swipe
               </button>
+              <button onClick={() => openSaveDialog([preview])}
+                className="flex items-center gap-1.5 border border-border text-foreground text-xs font-semibold py-2 px-3 rounded-lg hover:bg-muted transition-colors">
+                <Bookmark className="w-3.5 h-3.5" /> Save to Templates
+              </button>
               <a href={preview.html_url} target="_blank" rel="noopener noreferrer"
                 className="flex items-center gap-1.5 border border-border text-foreground text-xs font-semibold py-2 px-3 rounded-lg hover:bg-muted transition-colors">
                 <Eye className="w-3.5 h-3.5" /> View HTML
@@ -2420,6 +2650,118 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
           </div>
         </div>
       )}
+
+      <Dialog open={saveOpen} onOpenChange={setSaveOpen}>
+        <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Save to Templates → Pages</DialogTitle>
+            <DialogDescription>
+              Name, category and at least one tag are required. The original stays in Competitor Landings.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <div>
+              <label className="text-xs font-semibold text-foreground">Category *</label>
+              <div className="flex gap-2 mt-1">
+                <select
+                  value={tplCategory}
+                  onChange={(e) => {
+                    if (e.target.value === "__new__") { setAddingCat(true); return; }
+                    setTplCategory(e.target.value);
+                  }}
+                  className="flex-1 h-9 rounded-md border border-input bg-background px-3 text-sm">
+                  <option value="">Select a niche…</option>
+                  {categories.map((c) => (
+                    <option key={c} value={c}>{c}</option>
+                  ))}
+                  {tplCategory && !categories.includes(tplCategory) && (
+                    <option value={tplCategory}>{tplCategory}</option>
+                  )}
+                  <option value="__new__">+ New category</option>
+                </select>
+              </div>
+              {addingCat && (
+                <div className="flex gap-2 mt-2">
+                  <Input value={newCat} onChange={(e) => setNewCat(e.target.value)}
+                    placeholder="e.g. Weight loss" className="h-9 text-sm"
+                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void createCategory(); } }} />
+                  <Button type="button" size="sm" className="h-9" onClick={() => void createCategory()}>Add</Button>
+                  <Button type="button" size="sm" variant="ghost" className="h-9" onClick={() => setAddingCat(false)}>Cancel</Button>
+                </div>
+              )}
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold text-foreground flex items-center gap-1">
+                <Tag className="w-3 h-3" /> Tags * <span className="font-normal text-muted-foreground">(at least one)</span>
+              </label>
+              <div className="flex flex-wrap gap-1.5 mt-1.5">
+                {tplTags.map((t) => (
+                  <span key={t} className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full bg-primary/10 text-primary">
+                    {t}
+                    <button type="button" onClick={() => setTplTags((p) => p.filter((x) => x !== t))} className="hover:text-destructive">
+                      <X className="w-3 h-3" />
+                    </button>
+                  </span>
+                ))}
+              </div>
+              <Input
+                value={tagDraft}
+                onChange={(e) => setTagDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === ",") { e.preventDefault(); addTag(tagDraft); }
+                }}
+                onBlur={() => addTag(tagDraft)}
+                placeholder="Type a tag and press Enter"
+                className="h-9 text-sm mt-1.5" />
+            </div>
+
+            <div className="space-y-3 max-h-64 overflow-y-auto pr-1">
+              {saveQueue.map((l) => {
+                const extraTypes = tplTypes[l.id] && !PAGE_TYPE_OPTIONS.some((o) => o.value === tplTypes[l.id])
+                  ? [{ value: tplTypes[l.id], label: tplTypes[l.id] }]
+                  : [];
+                return (
+                  <div key={l.id} className="rounded-lg border border-border p-3 space-y-2">
+                    <p className="text-[10px] text-muted-foreground truncate">{hostOf(l.url) || l.name}</p>
+                    <div>
+                      <label className="text-[11px] font-semibold">Name *</label>
+                      <Input
+                        value={tplNames[l.id] || ""}
+                        onChange={(e) => setTplNames((p) => ({ ...p, [l.id]: e.target.value }))}
+                        className="h-9 text-sm mt-0.5" />
+                    </div>
+                    <div>
+                      <label className="text-[11px] font-semibold">Page type</label>
+                      <select
+                        value={tplTypes[l.id] || "landing"}
+                        onChange={(e) => setTplTypes((p) => ({ ...p, [l.id]: e.target.value }))}
+                        className="w-full h-9 mt-0.5 rounded-md border border-input bg-background px-3 text-sm">
+                        {PAGE_TYPE_OPTIONS.map((o) => (
+                          <option key={o.value} value={o.value}>{o.label}</option>
+                        ))}
+                        {extraTypes.map((o) => (
+                          <option key={o.value} value={o.value}>{o.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setSaveOpen(false)} disabled={savingTpl}>Cancel</Button>
+            <Button type="button" onClick={() => void saveToTemplates()} disabled={savingTpl} className="gap-1.5">
+              {savingTpl
+                ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Saving…</>
+                : <><Bookmark className="w-3.5 h-3.5" /> Save {saveQueue.length} page{saveQueue.length === 1 ? "" : "s"}</>}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

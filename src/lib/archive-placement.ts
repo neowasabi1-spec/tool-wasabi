@@ -124,6 +124,9 @@ export function isStandaloneTemplatePage(
   // DB default for `section` is 'funnel' on every historical row — do not
   // treat that as "this is a funnel". Only multi-step / walk folders leave Pages.
   if (archiveStepCount(f) > 1) return false;
+  // Explicit Templates → Pages copies (e.g. from Competitor Landings) must
+  // stay in Pages even when the name looks like "<domain> — Step N".
+  if (f.section === 'page') return true;
   const m = f.name.match(WALK_STEP_RE);
   if (m && !f.isShared) {
     const key = m[1].trim();

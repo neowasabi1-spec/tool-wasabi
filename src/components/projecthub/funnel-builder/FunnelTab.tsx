@@ -1,3 +1,5 @@
+'use client';
+
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import {
   useListFunnelSteps,
@@ -18,6 +20,9 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { confirmDialog } from "@/components/ui/confirm";
+import { useStore } from "@/store/useStore";
+import { listArchivePagesByType, type ArchiveTemplatePage } from "@/lib/archive-template-pages";
+import { humanizePageTypeSlug, normalizeArchiveType } from "@/types";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -63,6 +68,7 @@ import {
   Monitor,
   Smartphone,
   Loader2,
+  LayoutTemplate,
 } from "lucide-react";
 
 type FunnelStep = {
@@ -74,6 +80,7 @@ type FunnelStep = {
   url: string;
   html_file_path: string | null;
   html_original_name: string | null;
+  template_name?: string | null;
   target: string;
   angle: string;
   prompt_notes: string;
@@ -676,6 +683,140 @@ function FunnelLibraryDialog({
   );
 }
 
+function archiveKeysForStepType(stepType: string, extraKnown: string[]): string[] {
+  const t = normalizeArchiveType(stepType, extraKnown);
+  if (t === "altro") return [t];
+  if (/^upsell(_\d+)?$/.test(t) || t === "upsell_1") {
+    return ["upsell_1", "upsell_2", "upsell_3", t].filter((v, i, a) => a.indexOf(v) === i);
+  }
+  if (/^downsell(_\d+)?$/.test(t) || t === "downsell_1") {
+    return ["downsell_1", "downsell_2", "downsell_3", t].filter((v, i, a) => a.indexOf(v) === i);
+  }
+  return [t];
+}
+
+function TemplatePickerDialog({
+  open,
+  stepType,
+  onClose,
+  onPick,
+}: {
+  open: boolean;
+  stepType: string;
+  onClose: () => void;
+  onPick: (page: ArchiveTemplatePage) => void;
+}) {
+  const {
+    archivedFunnels,
+    archivedFunnelsLoaded,
+    archivedFunnelsLoading,
+    loadArchivedFunnels,
+    customPageTypes,
+    loadCustomPageTypes,
+    templates,
+  } = useStore();
+  const [search, setSearch] = useState("");
+
+  useEffect(() => {
+    if (!open) return;
+    setSearch("");
+    void loadArchivedFunnels();
+    void loadCustomPageTypes();
+  }, [open, loadArchivedFunnels, loadCustomPageTypes]);
+
+  const knownCustomTypes = useMemo(
+    () => (customPageTypes || []).map((ct) => ct.value),
+    [customPageTypes],
+  );
+
+  const pages = useMemo(() => {
+    const map = listArchivePagesByType(archivedFunnels || [], knownCustomTypes);
+    for (const t of templates || []) {
+      const type = normalizeArchiveType(t.pageType, knownCustomTypes);
+      const url = t.sourceUrl || "";
+      if (!url) continue;
+      const list = map[type] || [];
+      if (list.some((p) => p.url_to_swipe === url)) continue;
+      list.push({
+        funnel_name: "Templates",
+        funnel_id: t.id,
+        name: t.name,
+        url_to_swipe: url,
+        prompt: "",
+        page_type: type,
+        screenshotUrl: t.previewImage || null,
+        htmlUrl: null,
+      });
+      map[type] = list;
+    }
+    const keys = archiveKeysForStepType(stepType, knownCustomTypes);
+    const out: ArchiveTemplatePage[] = [];
+    for (const k of keys) {
+      for (const p of map[k] || []) out.push(p);
+    }
+    const q = search.trim().toLowerCase();
+    if (!q) return out;
+    return out.filter((p) =>
+      `${p.name} ${p.funnel_name} ${p.url_to_swipe}`.toLowerCase().includes(q),
+    );
+  }, [archivedFunnels, knownCustomTypes, templates, stepType, search]);
+
+  const typeLabel = humanizePageTypeSlug(normalizeArchiveType(stepType, knownCustomTypes)) || stepType;
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => { if (!v) onClose(); }}>
+      <DialogContent className="max-w-3xl max-h-[88vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Templates — {typeLabel}</DialogTitle>
+        </DialogHeader>
+        <div className="relative">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+          <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search templates…" className="pl-8 h-9 text-sm" />
+        </div>
+        {archivedFunnelsLoading && !archivedFunnelsLoaded ? (
+          <div className="py-16 text-center text-sm text-muted-foreground">
+            <Loader2 className="w-5 h-5 animate-spin mx-auto mb-2" />
+            Loading templates…
+          </div>
+        ) : pages.length === 0 ? (
+          <div className="py-12 text-center border-2 border-dashed border-border rounded-xl">
+            <LayoutTemplate className="w-8 h-8 text-muted-foreground/40 mx-auto mb-2" />
+            <p className="text-sm font-medium">No templates for {stepType || typeLabel}</p>
+            <p className="text-xs text-muted-foreground mt-1">
+              Save pages of this type in Templates → Pages, then pick them here.
+            </p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+            {pages.map((p) => (
+              <button
+                key={`${p.funnel_id}::${p.url_to_swipe}::${p.name}`}
+                type="button"
+                onClick={() => onPick(p)}
+                className="group rounded-xl border border-border bg-card overflow-hidden text-left hover:border-primary/50 hover:shadow-md transition-all"
+              >
+                <div className="aspect-[9/16] bg-muted overflow-hidden">
+                  {p.screenshotUrl ? (
+                    <img src={p.screenshotUrl} alt={p.name} className="w-full h-full object-cover object-top group-hover:scale-[1.02] transition-transform" />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center text-muted-foreground/40">
+                      <LayoutTemplate className="w-8 h-8" />
+                    </div>
+                  )}
+                </div>
+                <div className="p-2.5">
+                  <p className="text-xs font-medium truncate">{p.name}</p>
+                  <p className="text-[10px] text-muted-foreground truncate">{p.funnel_name}</p>
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function UrlOrHtmlCell({
   step,
   projectId,
@@ -691,44 +832,60 @@ function UrlOrHtmlCell({
   const fileRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [removing, setRemoving] = useState(false);
+  const [tplOpen, setTplOpen] = useState(false);
+  const [applyingTpl, setApplyingTpl] = useState(false);
 
-  const hasHtml = !!step.html_file_path;
+  const hasHtmlFile = !!step.html_file_path;
+  const hasHtml = hasHtmlFile || !!step.html_original_name || !!(step.result_content && step.result_content.length > 30);
   const htmlUrl = `${BASE_URL}/api/projecthub/projects/${projectId}/funnel-steps/${step.id}/html`;
 
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  const applyHtml = async (html: string, fileName: string) => {
     setUploading(true);
-    const form = new FormData();
-    form.append("html", file);
     try {
-      const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/funnel-steps/${step.id}/upload-html`, {
-        method: "POST",
-        body: form,
+      const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/funnel-steps/${step.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ result_content: html, html_original_name: fileName }),
       });
       if (r.ok) {
         const updated = await r.json() as FunnelStep;
         onStepUpdate(updated);
-        toast({ title: "HTML uploaded!", description: file.name });
+        toast({ title: "HTML loaded", description: fileName });
       } else {
-        const err = await r.json();
-        toast({ title: "Upload error", description: err.error, variant: "destructive" });
+        const err = await r.json().catch(() => ({})) as { error?: string };
+        toast({ title: "Could not save HTML", description: err.error, variant: "destructive" });
       }
     } catch {
       toast({ title: "Network error", variant: "destructive" });
     } finally {
       setUploading(false);
-      if (fileRef.current) fileRef.current.value = "";
     }
+  };
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const text = await file.text();
+    if (!text || text.trim().length < 20) {
+      toast({ title: "That file does not look like HTML", variant: "destructive" });
+      if (fileRef.current) fileRef.current.value = "";
+      return;
+    }
+    await applyHtml(text, file.name);
+    if (fileRef.current) fileRef.current.value = "";
   };
 
   const handleRemoveHtml = async () => {
     setRemoving(true);
     try {
-      const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/funnel-steps/${step.id}/html`, { method: "DELETE" });
+      const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/funnel-steps/${step.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ result_content: "", html_file_path: "", html_original_name: "" }),
+      });
       if (r.ok) {
         const updated = await r.json() as FunnelStep;
-        onStepUpdate(updated);
+        onStepUpdate({ ...updated, html_file_path: null, html_original_name: null, result_content: null });
         toast({ title: "HTML removed" });
       }
     } catch {
@@ -738,55 +895,102 @@ function UrlOrHtmlCell({
     }
   };
 
+  const pickTemplate = async (page: ArchiveTemplatePage) => {
+    setTplOpen(false);
+    setApplyingTpl(true);
+    const url = page.url_to_swipe || "";
+    const fileName = `${page.name.replace(/[^\w.-]+/g, "-").slice(0, 60)}.html`;
+    const patch: Record<string, string> = { url, template_name: page.name };
+    try {
+      const src = page.htmlUrl;
+      if (src) {
+        const r = await fetch(src);
+        const html = r.ok ? await r.text() : "";
+        if (html && html.length > 30 && !/^\{/.test(html.trim())) {
+          patch.result_content = html;
+          patch.html_original_name = fileName;
+        }
+      }
+      onPatch(patch);
+      toast({
+        title: patch.result_content ? "Template loaded" : "Template URL set",
+        description: page.name,
+      });
+    } catch {
+      onPatch(patch);
+      toast({ title: "Template URL set", description: page.name });
+    } finally {
+      setApplyingTpl(false);
+    }
+  };
+
   return (
-    <div className="flex items-center gap-1 min-w-0">
-      {hasHtml ? (
-        /* HTML file mode */
-        <div className="flex items-center gap-1 min-w-0 flex-1">
-          <FileCode className="w-3 h-3 text-blue-500 flex-shrink-0" />
-          <span className="text-[10px] text-blue-700 truncate max-w-[90px]" title={step.html_original_name ?? "file.html"}>
-            {step.html_original_name ?? "file.html"}
-          </span>
-          <a
-            href={htmlUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            title="HTML preview"
-            className="text-blue-500 hover:text-blue-700 flex-shrink-0"
-          >
-            <ExternalLink className="w-3 h-3" />
+    <div className="flex flex-col gap-0.5 min-w-0">
+      <div className="flex items-center gap-1 min-w-0">
+        <InlineEdit value={step.url} onChange={v => onPatch({ url: v })} placeholder="https://…" className="flex-1 min-w-0" />
+        {step.url && (
+          <a href={step.url} target="_blank" rel="noopener noreferrer" className="text-muted-foreground hover:text-primary transition-colors flex-shrink-0">
+            <Globe className="w-3 h-3" />
           </a>
-          <button
-            onClick={handleRemoveHtml}
-            disabled={removing}
-            title="Remove HTML"
-            className="p-0.5 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors flex-shrink-0"
-          >
-            {removing ? <RefreshCw className="w-2.5 h-2.5 animate-spin" /> : <X className="w-2.5 h-2.5" />}
-          </button>
-        </div>
-      ) : (
-        /* URL text mode */
-        <>
-          <InlineEdit value={step.url} onChange={v => onPatch({ url: v })} placeholder="https://..." className="flex-1 min-w-0" />
-          {step.url && (
-            <a href={step.url} target="_blank" rel="noopener noreferrer" className="text-muted-foreground hover:text-primary transition-colors flex-shrink-0">
-              <Globe className="w-3 h-3" />
-            </a>
+        )}
+        <button
+          type="button"
+          onClick={() => fileRef.current?.click()}
+          disabled={uploading}
+          title="Upload HTML file"
+          className="p-0.5 rounded hover:bg-blue-50 text-muted-foreground hover:text-blue-600 transition-colors flex-shrink-0"
+        >
+          {uploading ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Upload className="w-3 h-3" />}
+        </button>
+        <button
+          type="button"
+          onClick={() => setTplOpen(true)}
+          disabled={applyingTpl}
+          title={`Pick a ${step.step_type || "page"} template`}
+          className="p-0.5 rounded hover:bg-primary/10 text-muted-foreground hover:text-primary transition-colors flex-shrink-0"
+        >
+          {applyingTpl ? <RefreshCw className="w-3 h-3 animate-spin" /> : <LayoutTemplate className="w-3 h-3" />}
+        </button>
+        <input ref={fileRef} type="file" accept=".html,.htm,text/html" className="hidden" onChange={handleFileChange} />
+      </div>
+
+      {(hasHtml || step.template_name) && (
+        <div className="flex items-center gap-1 min-w-0">
+          {step.template_name && (
+            <span className="inline-flex items-center gap-0.5 text-[9px] font-medium px-1.5 py-0.5 rounded bg-primary/10 text-primary truncate max-w-[110px]" title={step.template_name}>
+              <LayoutTemplate className="w-2.5 h-2.5 flex-shrink-0" />
+              {step.template_name}
+            </span>
           )}
-        </>
+          {hasHtml && (
+            <span className="inline-flex items-center gap-0.5 text-[9px] font-medium px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 min-w-0">
+              <FileCode className="w-2.5 h-2.5 flex-shrink-0" />
+              <span className="truncate max-w-[80px]">{step.html_original_name || "page.html"}</span>
+              {hasHtmlFile && (
+                <a href={htmlUrl} target="_blank" rel="noopener noreferrer" title="HTML preview" className="text-blue-500 hover:text-blue-700 flex-shrink-0">
+                  <ExternalLink className="w-2.5 h-2.5" />
+                </a>
+              )}
+              <button
+                type="button"
+                onClick={handleRemoveHtml}
+                disabled={removing}
+                title="Remove HTML"
+                className="hover:text-destructive flex-shrink-0"
+              >
+                {removing ? <RefreshCw className="w-2.5 h-2.5 animate-spin" /> : <X className="w-2.5 h-2.5" />}
+              </button>
+            </span>
+          )}
+        </div>
       )}
 
-      {/* Upload HTML button — always visible */}
-      <button
-        onClick={() => fileRef.current?.click()}
-        disabled={uploading}
-        title={hasHtml ? "Replace HTML file" : "Upload HTML file"}
-        className="p-0.5 rounded hover:bg-blue-50 text-muted-foreground hover:text-blue-600 transition-colors flex-shrink-0"
-      >
-        {uploading ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Upload className="w-3 h-3" />}
-      </button>
-      <input ref={fileRef} type="file" accept=".html,.htm,text/html" className="hidden" onChange={handleFileChange} />
+      <TemplatePickerDialog
+        open={tplOpen}
+        stepType={step.step_type || "Landing Page"}
+        onClose={() => setTplOpen(false)}
+        onPick={(p) => { void pickTemplate(p); }}
+      />
     </div>
   );
 }
@@ -1297,7 +1501,7 @@ export function FunnelTab({ projectId }: { projectId: string }) {
           <table className="w-full text-xs border-collapse min-w-[1400px]">
             <thead>
               <tr className="bg-muted/60 border-b border-border">
-                {["#", "Page", "Type", "URL", "Target", "Angle", "Prompt / Notes", "Auto-gen", "Fidelity", "Product", "Status", "Result", "Feedback", "Actions"].map(h => (
+                {["#", "Page", "Type", "URL / HTML / Template", "Target", "Angle", "Prompt / Notes", "Auto-gen", "Fidelity", "Product", "Status", "Result", "Feedback", "Actions"].map(h => (
                   <th key={h} className="text-left px-3 py-2 font-semibold text-muted-foreground text-[10px] uppercase tracking-wider whitespace-nowrap border-r border-border/50 last:border-r-0">
                     {h}
                   </th>
@@ -1419,7 +1623,7 @@ export function FunnelTab({ projectId }: { projectId: string }) {
                     </td>
 
                     {/* URL / HTML */}
-                    <td className="px-2 py-1 border-r border-border/50 min-w-[180px] max-w-[220px]">
+                    <td className="px-2 py-1 border-r border-border/50 min-w-[240px] max-w-[280px]">
                       <UrlOrHtmlCell
                         step={step}
                         projectId={projectId}
