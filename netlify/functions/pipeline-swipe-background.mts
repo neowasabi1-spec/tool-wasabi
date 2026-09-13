@@ -1568,21 +1568,23 @@ async function restyleVideos(
 }
 
 function slotLooksProduct(ctx: SwipeCtx, slot: { alt?: string; context?: string; section?: string }): boolean {
-  const blob = `${slot.alt || ''} ${slot.context || ''}`;
+  const blob = `${slot.alt || ''} ${slot.context || ''} ${slot.section || ''}`;
   const section = slot.section || '';
   const name = ctx.productName.trim();
   if (name.length > 3 && blob.toLowerCase().includes(name.toLowerCase())) return true;
-  if (/^(product|offer)$/i.test(section)) return true;
-  return /product|packshot|packaging|mockup|bottle|jar|box|pouch|sachet|stick|device|flacone|barattolo|confezione|prodotto|offerta|acquista|buy now|order now/i
+  if (/^(product|offer|hero|cta|checkout)$/i.test(section)) return true;
+  return /product|packshot|packaging|mockup|bottle|jar|box|pouch|sachet|stick|device|flacone|barattolo|confezione|prodotto|offerta|acquista|buy now|order now|pack\b|sku/i
     .test(blob);
 }
 
 function slotLooksLifestyle(slot: { alt?: string; context?: string }): boolean {
-  return /person|woman|man|people|hands?|face|skin|before|after|doctor|couple|lifestyle|donna|uomo|mani|viso|pelle|prima|dopo|cliente/i
+  // Person as the SUBJECT of the photo. Product copy that mentions skin/health
+  // ("per la tua pelle") must NOT skip the mockup.
+  return /\b(person|people|couple|testimonial|portrait|selfie|before[\s-]?after|prima[\s/-]?dopo|cliente reale|real customer|holding (the )?product|close[- ]?up of (a )?(face|woman|man)|foto (di )?(una )?donna|foto (di )?(un )?uomo|woman('s)? face|man's face)\b/i
     .test(`${slot.alt || ''} ${slot.context || ''}`);
 }
 
-function promptFromNearbyCopy(ctx: SwipeCtx, img: { alt?: string; above?: string; below?: string; context?: string; section?: string }, productShot: boolean): string {
+function promptFromNearbyCopy(ctx: SwipeCtx, img: { alt?: string; above?: string; below?: string; context?: string; section?: string }, productShot: boolean, hasMockup: boolean): string {
   const spec = ctx.restyle;
   const copy = [img.above, img.below, img.context].filter(Boolean).join('\n');
   return `Photorealistic image for a sales page selling "${ctx.productName}".
@@ -1596,9 +1598,10 @@ PAGE SECTION: ${img.section || 'unknown'}
 
 Rules:
 - The picture MUST match what that copy is talking about.
+${hasMockup ? `- Image 1 is OUR real product mockup. Same container, label artwork, colors, cap and silhouette. Never redesign it, never swap in a generic or competitor pack.` : ''}
 ${productShot
-    ? `- This is a PRODUCT shot. Show OUR real "${ctx.productName}" packaging from the attached mockup — same container, label, colors. Do not invent a different bottle or a competitor pack.`
-    : `- This is a scene/illustration. Show the situation the copy describes. Do not invent a different product. If our product appears, it must match the "${ctx.productName}" mockup (same pack, same colors).`}
+    ? `- This slot shows THE PRODUCT. The pack in the photo must be that exact mockup.`
+    : `- If a product appears, it MUST be that exact mockup. If the copy is not about the product, show the scene and do not invent another product.`}
 - Do not invent a competitor brand.
 ${spec ? `Visual world: ${spec.stylePrefix}. Palette ${spec.primary} / ${spec.secondary} / ${spec.accent}.` : ''}
 ${ctx.market ? `Any text painted in the image must be in the local language of ${ctx.market}.` : 'Little or no text in the image except a product label if the product is shown.'}
@@ -1663,7 +1666,11 @@ async function swipeImages(
   }
 
   const thisStepPack = usableImageUrl(ctx.mainImageUrl)
-    || usableImageUrl(sourceStills.find((m) => String(m.id).startsWith('step-mock-'))?.storedUrl);
+    || usableImageUrl(sourceStills.find((m) => String(m.id).startsWith('step-mock-'))?.storedUrl)
+    || usableImageUrl(sourceStills.find((m) => m.section === 'product')?.storedUrl);
+  if (!thisStepPack) {
+    console.warn(`[swipe] step ${page.name}: no mockup for this page — product photos will be invented`);
+  }
   const paints: PaintedMedia[] = readRestylePaints(out);
 
   for (const slot of slice) {
@@ -1674,22 +1681,28 @@ async function swipeImages(
 
     const productShot = slotLooksProduct(ctx, slot);
     const lifestyle = slotLooksLifestyle(slot);
-    const prompt = promptFromNearbyCopy(ctx, { alt: slot.alt, context: slot.context, section: slot.section }, productShot);
+    const packshotSlot = Boolean(thisStepPack) && productShot && !lifestyle;
+    const prompt = promptFromNearbyCopy(
+      ctx,
+      { alt: slot.alt, context: slot.context, section: slot.section },
+      productShot,
+      Boolean(thisStepPack),
+    );
     const tick = () => touchPage(sb, page.funnelPageId, `Step ${ctx.pageIndex + 1}/${ctx.pageCount}: ChatGPT photo ${start + processed}/${images.length}…`);
     const common = { num_images: 1, output_format: 'png', quality: 'medium' as const };
     let falUrl: string | null = null;
 
-    if (productShot && thisStepPack && !lifestyle) {
-      // Pure packshot slot: put THIS step's mockup in, do not invent another bottle.
+    if (packshotSlot) {
+      // Product slot: drop THIS step's mockup. Do not let ChatGPT invent another bottle.
       falUrl = thisStepPack;
-    } else if (productShot && thisStepPack && Date.now() < deadline - 70_000) {
+    } else if (thisStepPack && Date.now() < deadline - 50_000) {
       falUrl = await generateImageUrl(
         IMG_MODEL_I2I,
         {
           ...common,
-          prompt: `${prompt} Image 1 is THIS step's real product mockup. Keep that exact packaging if the product appears.`,
+          prompt: `${prompt} Composite Image 1 (the real mockup) into this scene. Keep that pack pixel-recognizable — same container, label, colors. Do not draw a different product.`,
           image_urls: [thisStepPack],
-          image_size: 'auto',
+          image_size: falImageSize(slot),
         },
         90_000,
         tick,
@@ -1698,12 +1711,17 @@ async function swipeImages(
     if (!falUrl && Date.now() < deadline - 50_000) {
       falUrl = await generateImageUrl(
         IMG_MODEL_T2I,
-        { ...common, prompt, image_size: falImageSize(slot) },
+        {
+          ...common,
+          prompt,
+          image_size: falImageSize(slot),
+          ...(thisStepPack ? { image_urls: [thisStepPack] } : {}),
+        },
         90_000,
         tick,
       );
     }
-    if (!falUrl && productShot && thisStepPack) falUrl = thisStepPack;
+    if (!falUrl && thisStepPack && (productShot || packshotSlot)) falUrl = thisStepPack;
     if (!falUrl) {
       console.warn(`[swipe] photo ${start + processed}/${images.length} failed (copy-driven)`);
       await touchPage(sb, page.funnelPageId, `Step ${ctx.pageIndex + 1}/${ctx.pageCount}: ChatGPT photo ${start + processed}/${images.length} failed — next…`);

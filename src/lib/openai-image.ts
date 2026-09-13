@@ -106,6 +106,7 @@ async function openaiEdit(
   quality: string,
   timeoutMs: number,
 ): Promise<string | null> {
+  const fidelity = /gpt-image-1(\.5)?$/i.test(model) ? { input_fidelity: 'high' as const } : {};
   const jsonRes = await fetch('https://api.openai.com/v1/images/edits', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
@@ -116,6 +117,7 @@ async function openaiEdit(
       n: 1,
       size,
       quality,
+      ...fidelity,
     }),
     signal: AbortSignal.timeout(timeoutMs),
   });
@@ -129,6 +131,7 @@ async function openaiEdit(
   form.append('n', '1');
   form.append('size', size);
   form.append('quality', quality);
+  if (/gpt-image-1(\.5)?$/i.test(model)) form.append('input_fidelity', 'high');
   let attached = 0;
   for (let i = 0; i < refs.length; i++) {
     const blob = await blobFromRef(refs[i]);

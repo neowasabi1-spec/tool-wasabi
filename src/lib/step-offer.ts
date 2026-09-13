@@ -52,10 +52,10 @@ function isLandingish(pageType: string): boolean {
 
 function nameMatchesPage(originalName: string, pageType: string, pageName = ''): boolean {
   const want = normalizeArchiveType(pageType);
-  const n = String(originalName || '');
+  const n = String(originalName || '').replace(/[_-]+/g, ' ');
   const numbered = want.match(/^(upsell|downsell)_(\d+)$/);
   if (numbered) return new RegExp(`${numbered[1]}\\s*${numbered[2]}\\b`, 'i').test(n);
-  const fromLabel = `${pageName} ${pageType}`.match(/(upsell|downsell)\s*(\d+)/i);
+  const fromLabel = `${pageName} ${pageType}`.replace(/[_-]+/g, ' ').match(/(upsell|downsell)\s*(\d+)/i);
   if (fromLabel) return new RegExp(`${fromLabel[1]}\\s*${fromLabel[2]}\\b`, 'i').test(n);
   if (/downsell/.test(want) || /downsell/i.test(pageName)) return /downsell/i.test(n);
   if (/bump/.test(want)) return /bump/i.test(n);
@@ -148,6 +148,17 @@ export async function loadStepOffer(
     }
   };
   push(mockups);
+  if (!imageUrls.length) {
+    const wantType = `img_pb_${normalizeArchiveType(pageType)}`;
+    push(files.filter((f) => f.file_type === wantType && f.file_path));
+  }
+  if (!imageUrls.length) {
+    const numbered = `${pageType} ${pageName}`.replace(/[_-]+/g, ' ').match(/(upsell|downsell)\s*(\d+)/i);
+    if (numbered) {
+      const typed = `img_pb_${numbered[1].toLowerCase()}_${numbered[2]}`;
+      push(files.filter((f) => f.file_type === typed && f.file_path));
+    }
+  }
   if (!imageUrls.length) push(namedPackshots);
   if (!imageUrls.length && isLandingish(pageType)) {
     push(ugc);
