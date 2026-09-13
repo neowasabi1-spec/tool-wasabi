@@ -2107,6 +2107,7 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
   const router = useRouter();
   const [landings, setLandings] = useState<Landing[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [search, setSearch] = useState("");
   const [preview, setPreview] = useState<Landing | null>(null);
   const [openFolder, setOpenFolder] = useState<string | null>(null);
@@ -2135,9 +2136,17 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
 
   const load = async () => {
     setLoading(true);
+    setLoadError("");
     try {
       const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/landings`);
-      if (r.ok) setLandings(await r.json());
+      if (!r.ok) {
+        const body = await r.json().catch(() => ({})) as { error?: string };
+        setLandings([]);
+        setLoadError(body.error || `Could not load landings (${r.status})`);
+      } else {
+        const data = await r.json();
+        setLandings(Array.isArray(data) ? data : []);
+      }
       void fillLandingLibrary(projectId);
     } finally { setLoading(false); }
   };
@@ -2256,6 +2265,16 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
 
       {loading ? (
         <div className="py-16 text-center text-sm text-muted-foreground">Loading...</div>
+      ) : loadError ? (
+        <div className="py-20 text-center border-2 border-dashed border-border rounded-2xl">
+          <LayoutTemplate className="w-12 h-12 text-muted-foreground/30 mx-auto mb-3" />
+          <p className="text-sm font-semibold text-foreground mb-1">Could not load competitor landings</p>
+          <p className="text-xs text-muted-foreground max-w-md mx-auto mb-3">{loadError}</p>
+          <button type="button" onClick={() => void load()}
+            className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90">
+            Retry
+          </button>
+        </div>
       ) : filtered.length === 0 ? (
         <div className="py-20 text-center border-2 border-dashed border-border rounded-2xl">
           <LayoutTemplate className="w-12 h-12 text-muted-foreground/30 mx-auto mb-3" />

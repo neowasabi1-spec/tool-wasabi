@@ -26,7 +26,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
       .eq('project_id', id),
     supabaseAdmin
       .from('archived_funnels')
-      .select('id, name, steps, created_at')
+      .select('id, name, total_steps, created_at')
       .eq('project_id', id),
     supabaseAdmin
       .from('creative_templates')
@@ -110,11 +110,11 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   }
 
   // ── funnels / landings ──
-  type FunnelRow = { id: number; name: string; steps: unknown; created_at: string };
+  type FunnelRow = { id: number; name: string; total_steps?: number | null; created_at: string };
   const funnelRows = ((funnelsQ.data || []) as FunnelRow[]).map(f => ({
     id: f.id,
     name: f.name,
-    steps: Array.isArray(f.steps) ? f.steps.length : 1,
+    steps: Math.max(1, Number(f.total_steps) || 1),
     created_at: f.created_at,
   }));
   const multiStep = funnelRows.filter(f => f.steps > 1);

@@ -1074,12 +1074,11 @@ export async function extractLandingMediaForProject(
   projectId: string,
   ownerUserId?: string | null,
 ): Promise<LandingExtractStats & { pages: number }> {
-  const { data: rows } = await sb
-    .from('archived_funnels')
-    .select('id, steps')
-    .eq('project_id', projectId)
-    .order('created_at', { ascending: false })
-    .limit(80);
+  const rpc = await sb.rpc('slim_archived_funnels', { p_project_id: projectId, p_limit: 80 });
+  const rows: Array<{ id: string; steps?: unknown }> = !rpc.error && Array.isArray(rpc.data)
+    ? (rpc.data as Array<{ id: string; steps?: unknown }>)
+    : ((await sb.from('archived_funnels').select('id').eq('project_id', projectId).order('created_at', { ascending: false }).limit(80)).data
+      || []) as Array<{ id: string }>;
   const totals: LandingExtractStats & { pages: number } = {
     saved: 0,
     skipped: 0,
@@ -1091,7 +1090,8 @@ export async function extractLandingMediaForProject(
   };
   const owner = await resolveOwnerUserId(sb, projectId, ownerUserId);
   for (const row of rows || []) {
-    const steps = Array.isArray(row.steps) ? (row.steps as Array<Record<string, unknown>>) : [];
+    const parsed = Array.isArray(row.steps) ? (row.steps as Array<Record<string, unknown>>) : [];
+    const steps = parsed.length ? parsed : [{ page_id: row.id, cloned_data: {} }];
     for (const step of steps) {
       const cloned =
         step.cloned_data && typeof step.cloned_data === 'object'

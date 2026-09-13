@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabaseAdmin } from '@/lib/supabase-admin';
 import { canAccessProject } from '@/lib/auth/project-access';
 import { getUserAccessContext } from '@/lib/auth/get-current-user';
 import { pickerFunnelsFromArchive } from '@/lib/archive-placement';
+import { loadSlimArchivedFunnels } from '@/lib/slim-archived-funnels';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -30,8 +30,6 @@ interface ArchiveRow {
   created_at: string;
   section?: string | null;
 }
-
-const SELECT_COLS = 'id, name, steps, total_steps, project_id, created_at, section';
 
 function slimSteps(steps: unknown): ArchiveStep[] {
   if (!Array.isArray(steps)) return [];
@@ -63,28 +61,15 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   // not the project owner. Project-owned funnels are extra, only if allowed.
   const { allowed } = await canAccessProject(req, id);
 
-  const libraryQ = supabaseAdmin
-    .from('archived_funnels')
-    .select(SELECT_COLS)
-    .is('project_id', null)
-    .order('created_at', { ascending: false })
-    .limit(1000);
-
-  const projectQ = allowed
-    ? supabaseAdmin
-        .from('archived_funnels')
-        .select(SELECT_COLS)
-        .eq('project_id', id)
-        .order('created_at', { ascending: false })
-        .limit(400)
-    : Promise.resolve({ data: [] as ArchiveRow[], error: null });
-
-  const [libRes, projRes] = await Promise.all([libraryQ, projectQ]);
-  if (libRes.error) return NextResponse.json({ error: libRes.error.message }, { status: 500 });
-  if (projRes.error) return NextResponse.json({ error: projRes.error.message }, { status: 500 });
+  const [libRes, projRes] = await Promise.all([
+    loadSlimArchivedFunnels(null, 1000),
+    allowed ? loadSlimArchivedFunnels(id, 400) : Promise.resolve({ rows: [], error: null as string | null }),
+  ]);
+  if (libRes.error) return NextResponse.json({ error: libRes.error }, { status: 500 });
+  if (projRes.error) return NextResponse.json({ error: projRes.error }, { status: 500 });
 
   const byId = new Map<string, ArchiveRow>();
-  for (const row of [...(libRes.data || []), ...(projRes.data || [])] as ArchiveRow[]) {
+  for (const row of [...libRes.rows, ...projRes.rows]) {
     if (!byId.has(row.id)) byId.set(row.id, { ...row, steps: slimSteps(row.steps) });
   }
 
