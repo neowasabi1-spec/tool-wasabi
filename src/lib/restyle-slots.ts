@@ -128,27 +128,22 @@ function classifySrc(src: string): RestyleKind | null {
   return null;
 }
 
-/** Readable copy around a tag: no half-cut tags, no CSS/JS spilling in from a window edge. */
-function nearby(html: string, index: number, tagLen: number): string {
-  const from = Math.max(0, index - 900);
-  const to = Math.min(html.length, index + tagLen + 900);
-  let s = html.slice(from, to);
-  const firstGt = s.indexOf('>');
-  const firstLt = s.indexOf('<');
-  if (firstGt >= 0 && (firstLt < 0 || firstGt < firstLt)) s = s.slice(firstGt + 1);
-  const lastLt = s.lastIndexOf('<');
-  if (lastLt > s.lastIndexOf('>')) s = s.slice(0, lastLt);
-  s = s.replace(/^[\s\S]*?<\/(?:style|script)>/i, (m) => (/<(?:style|script)\b/i.test(m) ? m : ' '));
-  s = s.replace(/<(?:style|script)\b[\s\S]*$/i, (m) => (/<\/(?:style|script)>/i.test(m) ? m : ' '));
-  return s
+function stripNearbyHtml(raw: string): string {
+  return raw
     .replace(/<script[\s\S]*?<\/script>/gi, ' ')
     .replace(/<style[\s\S]*?<\/style>/gi, ' ')
     .replace(/<[^>]+>/g, ' ')
     .replace(/&nbsp;/g, ' ')
     .replace(/&amp;/g, '&')
     .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 600);
+    .trim();
+}
+
+/** Copy above AND below the tag — 2x/3x/6x labels usually sit under the photo. */
+function nearby(html: string, index: number, tagLen: number): string {
+  const above = stripNearbyHtml(html.slice(Math.max(0, index - 700), index)).slice(-320);
+  const below = stripNearbyHtml(html.slice(index + tagLen, Math.min(html.length, index + tagLen + 800))).slice(0, 380);
+  return [above, below].filter(Boolean).join(' ').slice(0, 700);
 }
 
 function slotSection(text: string, index: number, htmlLen: number, kind?: RestyleKind): string {
@@ -200,11 +195,15 @@ export function collectRestyleSlots(html: string, max = 40, _pageUrl = ''): Rest
     dom?: { tag: 'img' | 'video'; index: number },
   ) => {
     const src = decodeEntities(String(raw || '').trim());
-    if (!src || isPlaceholder(src) || seen.has(src)) return;
+    if (!src || isPlaceholder(src)) return;
+    // Same file URL can sit on 2x / 3x / 6x cards. Each tag is its own slot
+    // so we can paint a different pack count from the copy under that photo.
+    const key = dom ? `${dom.tag}:${dom.index}` : `anon:${src}:${out.length}`;
+    if (seen.has(key)) return;
     const resolved = classifySrc(src);
     const useKind = kind || resolved;
     if (!useKind) return;
-    seen.add(src);
+    seen.add(key);
     out.push({
       id: out.length,
       src,
@@ -213,7 +212,7 @@ export function collectRestyleSlots(html: string, max = 40, _pageUrl = ''): Rest
       section,
       width: w,
       height: h,
-      context: (alt ? `${alt} ${context}` : context).slice(0, 520),
+      context: (alt ? `${alt} ${context}` : context).slice(0, 700),
       domTag: dom?.tag,
       domIndex: dom?.index,
     });

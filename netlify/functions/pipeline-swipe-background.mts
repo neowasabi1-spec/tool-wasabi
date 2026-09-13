@@ -75,8 +75,8 @@ const BATCH_SIZE = 24;
 const BATCH_CONCURRENCY = 3;
 const MAX_IMAGES_PER_PAGE = 5;
 const MAX_IMAGES_TOTAL = 18;
-const MAX_IMAGES_PER_PAGE_RESTYLE = 40;
-const MAX_IMAGES_TOTAL_RESTYLE = 80;
+const MAX_IMAGES_PER_PAGE_RESTYLE = 64;
+const MAX_IMAGES_TOTAL_RESTYLE = 120;
 
 function siteBaseUrl(): string {
   return (process.env.URL || process.env.DEPLOY_PRIME_URL || process.env.NEXT_PUBLIC_SITE_URL || '').replace(/\/$/, '');
@@ -1567,10 +1567,54 @@ async function restyleVideos(
   return { html: out, posters, swapped };
 }
 
+const PACK_WORDS =
+  'pack|packs|bottles?|jars?|boxes|box|units?|bottiglie|flacone|flaconi|confezioni|confezione|pezzi|barattoli|barattolo|unità|unita';
+
+function qtyHits(text: string, weight: number): Array<{ n: number; w: number }> {
+  const t = String(text || '').replace(/[_-]+/g, ' ');
+  const scored: Array<{ n: number; w: number }> = [];
+  const add = (n: number, w: number) => {
+    if (n >= 2 && n <= 12) scored.push({ n, w });
+  };
+  const hasPackLang = new RegExp(PACK_WORDS, 'i').test(t)
+    || /offer|offerta|bundle|sku|pacco|kit/i.test(t);
+
+  for (const m of t.matchAll(/\b([2-9]|1[0-2])\s*[x×]\b/gi)) {
+    const n = Number(m[1]);
+    if (hasPackLang || n === 2 || n === 3 || n === 4 || n === 5 || n === 6) add(n, weight);
+  }
+  for (const m of t.matchAll(/\bx\s*([2-9]|1[0-2])\b/gi)) {
+    const n = Number(m[1]);
+    if (hasPackLang || n === 2 || n === 3 || n === 4 || n === 5 || n === 6) add(n, weight);
+  }
+  const nPack = new RegExp(`\\b([2-9]|1[0-2])\\s*(?:-\\s*)?(?:${PACK_WORDS})\\b`, 'gi');
+  for (const m of t.matchAll(nPack)) add(Number(m[1]), weight + 1);
+  for (const m of t.matchAll(/\b(?:pack|set|bundle|pacco|kit|offerta)\s*(?:of|da|di|from)?\s*([2-9]|1[0-2])\b/gi)) {
+    add(Number(m[1]), weight);
+  }
+  if (/\b(due|two)\b/i.test(t) && new RegExp(PACK_WORDS, 'i').test(t)) add(2, weight);
+  if (/\b(tre|three)\b/i.test(t) && new RegExp(PACK_WORDS, 'i').test(t)) add(3, weight);
+  if (/\b(sei|six)\b/i.test(t) && new RegExp(PACK_WORDS, 'i').test(t)) add(6, weight);
+  return scored;
+}
+
+/** How many units the nearby offer copy is selling. 1 = single pack.
+ *  Copy under the photo (2x / 3 bottles) outranks copy from the previous card. */
+function packQtyFromCopy(blob: string): number {
+  const t = String(blob || '').replace(/[_-]+/g, ' ');
+  if (!t.trim()) return 1;
+  const scored = [...qtyHits(t.slice(-280), 5), ...qtyHits(t, 1)];
+  if (!scored.length) return 1;
+  const best = new Map<number, number>();
+  for (const { n, w } of scored) best.set(n, (best.get(n) || 0) + w);
+  return [...best.entries()].sort((a, b) => b[1] - a[1] || b[0] - a[0])[0][0];
+}
+
 function slotLooksProduct(ctx: SwipeCtx, slot: { alt?: string; context?: string; section?: string }): boolean {
   const blob = `${slot.alt || ''} ${slot.context || ''} ${slot.section || ''}`;
   const section = slot.section || '';
   const name = ctx.productName.trim();
+  if (packQtyFromCopy(blob) >= 2) return true;
   if (name.length > 3 && blob.toLowerCase().includes(name.toLowerCase())) return true;
   if (/^(product|offer|hero|cta|checkout)$/i.test(section)) return true;
   return /product|packshot|packaging|mockup|bottle|jar|box|pouch|sachet|stick|device|flacone|barattolo|confezione|prodotto|offerta|acquista|buy now|order now|pack\b|sku/i
@@ -1584,9 +1628,20 @@ function slotLooksLifestyle(slot: { alt?: string; context?: string }): boolean {
     .test(`${slot.alt || ''} ${slot.context || ''}`);
 }
 
-function promptFromNearbyCopy(ctx: SwipeCtx, img: { alt?: string; above?: string; below?: string; context?: string; section?: string }, productShot: boolean, hasMockup: boolean): string {
+function promptFromNearbyCopy(
+  ctx: SwipeCtx,
+  img: { alt?: string; above?: string; below?: string; context?: string; section?: string },
+  productShot: boolean,
+  hasMockup: boolean,
+  qty: number,
+): string {
   const spec = ctx.restyle;
   const copy = [img.above, img.below, img.context].filter(Boolean).join('\n');
+  const packLine = qty >= 2
+    ? `- This slot is a ${qty}x offer. Show exactly ${qty} units of the mockup (row or cluster). Not 1 bottle. Not a different count.`
+    : productShot
+      ? `- This slot shows THE PRODUCT. One unit of that exact mockup.`
+      : `- If a product appears, it MUST be that exact mockup. If the copy is not about the product, show the scene and do not invent another product.`;
   return `Photorealistic image for a sales page selling "${ctx.productName}".
 Illustrate the copy next to this image.
 
@@ -1595,13 +1650,12 @@ ${copy || '(none)'}
 
 ALT TEXT: ${img.alt || '(none)'}
 PAGE SECTION: ${img.section || 'unknown'}
+PACK COUNT FROM COPY: ${qty}
 
 Rules:
-- The picture MUST match what that copy is talking about.
+- The picture MUST match what that copy is talking about. Read the offer: 2x / 3x / 6x means that many packs.
 ${hasMockup ? `- Image 1 is OUR real product mockup. Same container, label artwork, colors, cap and silhouette. Never redesign it, never swap in a generic or competitor pack.` : ''}
-${productShot
-    ? `- This slot shows THE PRODUCT. The pack in the photo must be that exact mockup.`
-    : `- If a product appears, it MUST be that exact mockup. If the copy is not about the product, show the scene and do not invent another product.`}
+${packLine}
 - Do not invent a competitor brand.
 ${spec ? `Visual world: ${spec.stylePrefix}. Palette ${spec.primary} / ${spec.secondary} / ${spec.accent}.` : ''}
 ${ctx.market ? `Any text painted in the image must be in the local language of ${ctx.market}.` : 'Little or no text in the image except a product label if the product is shown.'}
@@ -1672,6 +1726,7 @@ async function swipeImages(
     console.warn(`[swipe] step ${page.name}: no mockup for this page — product photos will be invented`);
   }
   const paints: PaintedMedia[] = readRestylePaints(out);
+  const reuse = new Map<string, string>();
 
   for (const slot of slice) {
     if (budget.imagesLeft <= 0) break;
@@ -1679,28 +1734,33 @@ async function swipeImages(
     processed++;
     await touchPage(sb, page.funnelPageId, `Step ${ctx.pageIndex + 1}/${ctx.pageCount}: ChatGPT photo ${start + processed}/${images.length} from nearby copy…`);
 
+    const qty = packQtyFromCopy(`${slot.alt || ''} ${slot.context || ''} ${slot.section || ''}`);
     const productShot = slotLooksProduct(ctx, slot);
     const lifestyle = slotLooksLifestyle(slot);
-    const packshotSlot = Boolean(thisStepPack) && productShot && !lifestyle;
+    const packshotSlot = Boolean(thisStepPack) && productShot && !lifestyle && qty <= 1;
+    const intentKey = `${qty}|${productShot ? 'p' : 's'}|${lifestyle ? 'life' : 'pack'}|${(slot.context || '').slice(0, 160).toLowerCase()}`;
     const prompt = promptFromNearbyCopy(
       ctx,
       { alt: slot.alt, context: slot.context, section: slot.section },
       productShot,
       Boolean(thisStepPack),
+      qty,
     );
     const tick = () => touchPage(sb, page.funnelPageId, `Step ${ctx.pageIndex + 1}/${ctx.pageCount}: ChatGPT photo ${start + processed}/${images.length}…`);
     const common = { num_images: 1, output_format: 'png', quality: 'medium' as const };
-    let falUrl: string | null = null;
+    let falUrl: string | null = reuse.get(intentKey) || null;
 
-    if (packshotSlot) {
-      // Product slot: drop THIS step's mockup. Do not let ChatGPT invent another bottle.
+    if (!falUrl && packshotSlot) {
       falUrl = thisStepPack;
-    } else if (thisStepPack && Date.now() < deadline - 50_000) {
+    } else if (!falUrl && thisStepPack && Date.now() < deadline - 50_000) {
+      const packPrompt = qty >= 2
+        ? `${prompt} Image 1 is the real mockup. Show exactly ${qty} of that pack together as a ${qty}x offer photo (neat row or cluster). Every unit identical to Image 1. Do not show only one. Do not change the count.`
+        : `${prompt} Composite Image 1 (the real mockup) into this scene. Keep that pack pixel-recognizable — same container, label, colors. Do not draw a different product.`;
       falUrl = await generateImageUrl(
         IMG_MODEL_I2I,
         {
           ...common,
-          prompt: `${prompt} Composite Image 1 (the real mockup) into this scene. Keep that pack pixel-recognizable — same container, label, colors. Do not draw a different product.`,
+          prompt: packPrompt,
           image_urls: [thisStepPack],
           image_size: falImageSize(slot),
         },
@@ -1721,14 +1781,18 @@ async function swipeImages(
         tick,
       );
     }
-    if (!falUrl && thisStepPack && (productShot || packshotSlot)) falUrl = thisStepPack;
+    // Never drop a single pack onto a 2x/3x/6x slot.
+    if (!falUrl && thisStepPack && productShot && qty <= 1) falUrl = thisStepPack;
     if (!falUrl) {
       console.warn(`[swipe] photo ${start + processed}/${images.length} failed (copy-driven)`);
       await touchPage(sb, page.funnelPageId, `Step ${ctx.pageIndex + 1}/${ctx.pageCount}: ChatGPT photo ${start + processed}/${images.length} failed — next…`);
       continue;
     }
-    const stored = falUrl === thisStepPack ? falUrl : (await storeGeneratedImage(sb, ctx.projectId, falUrl, generated)) || falUrl;
+    const alreadyOurs = falUrl === thisStepPack || /project-files|file-proxy/i.test(falUrl);
+    const stored = alreadyOurs ? falUrl : (await storeGeneratedImage(sb, ctx.projectId, falUrl, generated)) || falUrl;
     const finalUrl = stored || falUrl;
+    reuse.set(intentKey, finalUrl);
+    if (qty >= 2) console.log(`[swipe] ${page.name}: slot qty=${qty}x section=${slot.section || '?'}`);
     const paint = paintFor(slot, finalUrl, slot.kind === 'video' ? 'video' : 'image');
     if (paint) {
       const rest = paints.filter((p) => !(p.tag === paint.tag && p.index === paint.index));
