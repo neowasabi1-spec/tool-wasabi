@@ -15,6 +15,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { persistPageHtml } from '../page-html-persist';
 
 const THRESHOLD = 50 * 1024; // keep parity with the client-side HTML_STORAGE_THRESHOLD
 
@@ -49,20 +50,16 @@ export async function offloadFunnelBlobHtml(
     const val = typeof out[field] === 'string' ? (out[field] as string) : '';
     if (val.length <= THRESHOLD) continue;
 
-    const { error } = await sb.from('page_html').upsert(
-      {
-        page_id: pageId,
-        kind,
+    try {
+      await persistPageHtml(sb, {
+        pageId,
+        kind: kind as 'cloned' | 'swiped' | 'extracted',
         variant,
         html: val,
-        owner_user_id: ownerUserId ?? null,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: 'page_id,kind,variant' },
-    );
-    if (error) {
-      // Mirror failed → keep the inline copy rather than losing the HTML.
-      console.warn(`[funnel-html-offload] page_html upsert failed (${pageId}/${kind}/${variant}): ${error.message}`);
+        ownerUserId,
+      });
+    } catch (e) {
+      console.warn(`[funnel-html-offload] persist failed (${pageId}/${kind}/${variant}): ${(e as Error).message}`);
       continue;
     }
     out[`${field}Length`] = val.length;

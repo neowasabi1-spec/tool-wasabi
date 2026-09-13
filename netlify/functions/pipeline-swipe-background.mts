@@ -39,6 +39,7 @@ import { fetchPageText } from '../../src/lib/page-text';
 import { batchKeepingGroups, buildSwipePlan, orderAndLinkFragments, planRules } from '../../src/lib/swipe-plan';
 import { bakePairsDom } from '../../src/lib/swipe-bake';
 import { openaiGenerateImage, openaiImageKey } from '../../src/lib/openai-image';
+import { persistPageHtml, readPageHtml } from '../../src/lib/page-html-persist';
 
 /**
  * Background function (up to 15 min) that performs the Chimera Protocol
@@ -232,24 +233,10 @@ async function generateImageUrl(
 async function loadSavedHtml(sb: SupabaseClient, pageId: string, kind: 'cloned' | 'swiped' = 'cloned'): Promise<string> {
   if (!pageId) return '';
   try {
-    const { data } = await sb
-      .from('page_html')
-      .select('html')
-      .eq('page_id', pageId)
-      .eq('kind', kind)
-      .eq('variant', 'desktop')
-      .maybeSingle();
-    const html = typeof data?.html === 'string' ? data.html : '';
+    const html = await readPageHtml(sb, pageId, kind, 'desktop');
     if (html.length > 500) return html;
     if (kind === 'swiped') {
-      const cloned = await sb
-        .from('page_html')
-        .select('html')
-        .eq('page_id', pageId)
-        .eq('kind', 'cloned')
-        .eq('variant', 'desktop')
-        .maybeSingle();
-      const fallback = typeof cloned.data?.html === 'string' ? cloned.data.html : '';
+      const fallback = await readPageHtml(sb, pageId, 'cloned', 'desktop');
       if (fallback.length > 500) return fallback;
     }
     return html;
@@ -1562,7 +1549,6 @@ async function restyleVideos(
       return block.replace(/<video\b/i, `<video poster="${stored}"`);
     });
     budget.imagesLeft--;
-    await persistHtml(sb, page.funnelPageId, 'swiped', out, ctx.ownerUserId);
   }
   return { html: out, posters, swapped };
 }
@@ -1824,7 +1810,6 @@ async function swipeImages(
     generated++;
     if (productShot) productSwaps++;
     budget.imagesLeft--;
-    await persistHtml(sb, page.funnelPageId, 'swiped', out, ctx.ownerUserId);
     await touchPage(sb, page.funnelPageId, `Step ${ctx.pageIndex + 1}/${ctx.pageCount}: ChatGPT photo ${start + processed}/${images.length} replaced`);
   }
 
@@ -1892,16 +1877,7 @@ async function persistHtml(
   html: string,
   ownerUserId: string | null,
 ): Promise<void> {
-  const row: Record<string, unknown> = {
-    page_id: pageId,
-    kind,
-    variant: 'desktop',
-    html,
-    updated_at: new Date().toISOString(),
-  };
-  if (ownerUserId) row.owner_user_id = ownerUserId;
-  const { error } = await sb.from('page_html').upsert(row, { onConflict: 'page_id,kind,variant' });
-  if (error) throw new Error(`saving ${kind} HTML failed: ${error.message}`);
+  await persistPageHtml(sb, { pageId, kind, html, ownerUserId });
 }
 
 async function markFailed(

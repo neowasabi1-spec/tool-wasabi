@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getCurrentUserId } from '@/lib/auth/get-current-user';
+import { persistPageHtml, readPageHtml } from '@/lib/page-html-persist';
 
 export const dynamic = 'force-dynamic';
 
@@ -41,24 +42,20 @@ export async function POST(req: NextRequest) {
   // unauthenticated) we fall back to the DB trigger, which assigns the
   // master account.
   const userId = await getCurrentUserId(req);
-  const row: Record<string, unknown> = {
-    page_id: pageId,
-    kind,
-    variant,
-    html,
-    updated_at: new Date().toISOString(),
-  };
-  if (userId) row.owner_user_id = userId;
-
-  const { error } = await supabaseAdmin
-    .from('page_html')
-    .upsert(row, { onConflict: 'page_id,kind,variant' });
-
-  if (error) {
-    if (isMissingTable(error.message)) {
+  try {
+    await persistPageHtml(supabaseAdmin, {
+      pageId,
+      kind: kind as 'cloned' | 'swiped' | 'extracted',
+      variant,
+      html,
+      ownerUserId: userId,
+    });
+  } catch (e) {
+    const message = (e as Error).message || 'save failed';
+    if (isMissingTable(message)) {
       return NextResponse.json({ error: MIGRATION_HINT }, { status: 500 });
     }
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 
   const url =
@@ -83,36 +80,40 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'pageId e kind obbligatori' }, { status: 400 });
   }
 
-  const load = async (v: string) =>
-    supabaseAdmin
-      .from('page_html')
-      .select('html')
-      .eq('page_id', pageId)
-      .eq('kind', kind)
-      .eq('variant', v)
-      .maybeSingle();
+  const load = async (v: string) => {
+    try {
+      const html = await readPageHtml(
+        supabaseAdmin,
+        pageId,
+        kind as 'cloned' | 'swiped' | 'extracted',
+        v,
+      );
+      return { html, error: null as string | null };
+    } catch (e) {
+      return { html: '', error: (e as Error).message };
+    }
+  };
 
-  let { data, error } = await load(variant);
+  let { html, error } = await load(variant);
   // Chimera / Clone-Swipe persist desktop only. Mobile preview uses that HTML
   // (the template is already responsive) instead of a hard 404.
-  if (!error && !data?.html && variant === 'mobile') {
+  if (!error && !html && variant === 'mobile') {
     const fallback = await load('desktop');
-    data = fallback.data;
+    html = fallback.html;
     error = fallback.error;
   }
 
   if (error) {
-    if (isMissingTable(error.message)) {
+    if (isMissingTable(error)) {
       return NextResponse.json({ error: MIGRATION_HINT }, { status: 500 });
     }
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error }, { status: 500 });
   }
 
-  if (!data?.html) {
+  if (!html) {
     return new NextResponse('', { status: 404 });
   }
 
-  let html = data.html as string;
   if (sp.get('inert') === '1') {
     html = html
       .replace(/<script\b[\s\S]*?<\/script>/gi, '')
