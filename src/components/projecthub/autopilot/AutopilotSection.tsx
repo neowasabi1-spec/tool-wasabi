@@ -90,7 +90,14 @@ export function AutopilotSection({
       const data: Job = await res.json();
       setJob(data);
       followSwipe(data);
-      if (!ACTIVE(data.status)) {
+      const pid = (data as Job & { project_id?: string }).project_id || projectId;
+      let swipeBusy = false;
+      try {
+        const swipeRes = await fetch(`/api/chimera/swipe?projectId=${encodeURIComponent(pid)}`, { cache: 'no-store' });
+        const swipeData = await swipeRes.json().catch(() => ({})) as { pages?: Array<{ swipeStatus?: string }> };
+        swipeBusy = (swipeData.pages || []).some((p) => p.swipeStatus === 'in_progress');
+      } catch { /* keep going */ }
+      if (!ACTIVE(data.status) && !swipeBusy) {
         if (pollRef.current) clearInterval(pollRef.current);
         pollRef.current = null;
         loadHistory();

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { drainStalledSwipes } from '@/lib/chimera-swipe-resume';
 
 export const dynamic = 'force-dynamic';
 
@@ -17,6 +18,10 @@ export async function GET(
 
   if (error || !data) {
     return NextResponse.json({ error: `Job non trovato: ${error?.message}` }, { status: 404 });
+  }
+  if (data.project_id) {
+    try { await drainStalledSwipes({ projectId: String(data.project_id), maxProjects: 1 }); }
+    catch (e) { console.warn('[pipeline poll] swipe drain:', (e as Error).message); }
   }
   return NextResponse.json(data);
 }

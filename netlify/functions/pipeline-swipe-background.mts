@@ -1754,6 +1754,30 @@ interface PageBatchResult {
   nextOffset: number;
 }
 
+async function persistChimeraNext(
+  sb: SupabaseClient,
+  pages: SwipePage[],
+  next: {
+    phase: 'texts' | 'photos';
+    pageIndex: number;
+    imageOffset: number;
+    imageMode: string;
+    market: string;
+    projectId: string;
+    needsKick: boolean;
+  },
+): Promise<void> {
+  const ids = pages.map((p) => p.funnelPageId);
+  const blob = { ...next, allPageIds: ids, kickLock: null as string | null };
+  await Promise.all(pages.map(async (p) => {
+    const { data } = await sb.from('funnel_pages').select('swiped_data').eq('id', p.funnelPageId).maybeSingle();
+    const prev = (data?.swiped_data && typeof data.swiped_data === 'object' ? data.swiped_data : {}) as Record<string, unknown>;
+    await sb.from('funnel_pages').update({
+      swiped_data: { ...prev, chimeraNext: blob },
+    }).eq('id', p.funnelPageId);
+  }));
+}
+
 async function touchPage(sb: SupabaseClient, pageId: string, swipeResult: string): Promise<void> {
   await sb.from('funnel_pages').update({
     swipe_status: 'in_progress',
@@ -2073,6 +2097,7 @@ CRITICAL RULES:
       htmlSkipped: true,
       htmlLength: originalHtml.length || html.length,
       clonedAt: now,
+      chimeraRun: { market: ctx.market, imageMode: ctx.imageMode, projectId: ctx.projectId },
     },
     swiped_data: {
       htmlUrl: funnelHtmlUrl(page.funnelPageId, 'swiped'),
@@ -2124,6 +2149,9 @@ export default async (req: Request) => {
 
   const log = (...a: unknown[]) => console.log(`[swipe ${projectId}]`, ...a);
   const sb = getSupabase();
+  await persistChimeraNext(sb, allPages, {
+    phase, pageIndex, imageOffset, imageMode, market, projectId, needsKick: false,
+  });
   const page = allPages[pageIndex];
   await touchPage(sb, page.funnelPageId, phase === 'photos'
     ? (imageOffset > 0
@@ -2337,64 +2365,19 @@ export default async (req: Request) => {
   }
 
   if (chainMore) {
-    const waitingPhotos = nextPhase === 'photos' && phase === 'texts' && !startedPhotosHere;
-    if (waitingPhotos) {
-      await Promise.all(allPages.map((p, i) =>
-        touchPage(sb, p.funnelPageId,
-          `Copy done — waiting for ChatGPT photos (step ${i + 1}/${allPages.length})…`)));
-    }
-    const base = siteBaseUrl();
-    const secretOut = process.env.APIFY_WEBHOOK_SECRET || process.env.CRON_SECRET || '';
-    if (base) {
-      const payload = {
-        projectId,
-        secret: secretOut,
-        market,
-        mainImageUrl,
-        imageMode,
-        offerUrl: typeof body.offerUrl === 'string' ? body.offerUrl : '',
-        phase: nextPhase,
-        skipTexts: nextPhase === 'photos',
-        allPages,
-        pages: allPages,
-        pageIndex: nextIndex,
-        imageOffset: nextOffset,
-        restyle: nextPhase === 'photos' && nextIndex === pageIndex ? ctx.restyle : null,
-        imagesLeft: budget.imagesLeft,
-        mediaUsed: [...ctx.mediaUsed],
-      };
-      let chained = false;
-      for (let attempt = 0; attempt < 2 && !chained; attempt++) {
-        try {
-          const res = await fetch(`${base}/.netlify/functions/pipeline-swipe-background`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
-            signal: AbortSignal.timeout(12_000),
-          });
-          log(`chained ${nextPhase} step ${nextIndex + 1}/${allPages.length} offset=${nextOffset} HTTP ${res.status}`);
-          if (res.ok || res.status === 202) chained = true;
-          else log('chain HTTP', res.status, (await res.text().catch(() => '')).slice(0, 200));
-        } catch (e) {
-          log('chain trigger:', (e as Error).message);
-        }
-      }
-      if (!chained) {
-        log('chain failed — Clone/Swipe poll will restart photos/copy');
-        if (nextPhase === 'photos' && !startedPhotosHere) {
-          await Promise.all(allPages.map((p, i) =>
-            touchPage(sb, p.funnelPageId,
-              `Copy done — waiting for ChatGPT photos (step ${i + 1}/${allPages.length})…`)));
-        }
-      }
-    } else {
-      log('cannot chain — site URL missing');
-      if (nextPhase === 'photos' && !startedPhotosHere) {
-        await Promise.all(allPages.map((p, i) =>
-          touchPage(sb, p.funnelPageId,
-            `Copy done — waiting for ChatGPT photos (step ${i + 1}/${allPages.length})…`)));
-      }
-    }
+    await persistChimeraNext(sb, allPages, {
+      phase: nextPhase,
+      pageIndex: nextIndex,
+      imageOffset: nextOffset,
+      imageMode,
+      market,
+      projectId,
+      needsKick: true,
+    });
+    const qPage = allPages[nextIndex] || page;
+    await touchPage(sb, qPage.funnelPageId,
+      `Queued ${nextPhase} step ${nextIndex + 1}/${allPages.length}${nextOffset ? ` from photo ${nextOffset + 1}` : ''}…`);
+    log(`queued ${nextPhase} step ${nextIndex + 1}/${allPages.length} offset=${nextOffset} — browser/cron will start it`);
   }
 
   log(`batch done in ${Math.round((Date.now() - startedAt) / 1000)}s phase=${phase} step=${pageIndex + 1}/${allPages.length}`);

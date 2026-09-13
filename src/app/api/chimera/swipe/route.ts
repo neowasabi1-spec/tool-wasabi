@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getUserAccessContext } from '@/lib/auth/get-current-user';
 import { canAccessProject } from '@/lib/auth/project-access';
+import { drainStalledSwipes } from '@/lib/chimera-swipe-resume';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -27,11 +28,30 @@ type SwipePage = {
  * Poll swipe_status / swipe_result for those rows.
  */
 export async function GET(req: NextRequest) {
-  const ids = String(req.nextUrl.searchParams.get('ids') || '')
+  const drainAll = req.nextUrl.searchParams.get('drain') === '1';
+  const projectIdQ = String(req.nextUrl.searchParams.get('projectId') || '').trim();
+  let ids = String(req.nextUrl.searchParams.get('ids') || '')
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean)
     .slice(0, 40);
+  if (!ids.length && projectIdQ) {
+    const { data: projPages } = await supabaseAdmin
+      .from('funnel_pages')
+      .select('id')
+      .eq('project_id', projectIdQ)
+      .eq('swipe_status', 'in_progress')
+      .limit(40);
+    ids = (projPages || []).map((r) => String(r.id));
+  }
+  if (!ids.length && drainAll) {
+    try {
+      const out = await drainStalledSwipes({ maxProjects: 4 });
+      return NextResponse.json({ ok: true, ...out, pages: [] });
+    } catch (e) {
+      return NextResponse.json({ error: (e as Error).message }, { status: 500 });
+    }
+  }
   if (!ids.length) {
     return NextResponse.json({ error: 'ids required' }, { status: 400 });
   }
@@ -46,42 +66,21 @@ export async function GET(req: NextRequest) {
   const rows = data || [];
   const STALE_QUEUED_MS = 10 * 60_000;
   const STALE_ANY_MS = 50 * 60_000;
-  const PHOTOS_LIVE = /ChatGPT photo \d|copy loaded — ChatGPT photos|illustrating the new copy/i;
-  const COPY_DONE = /texts rewritten|texts now on the page|copy rewritten|Photos start after|copy pass continues|waiting for ChatGPT|Copy done/i;
-  const COPY_STILL = /Waiting for copy|rewriting \d+ texts|rewriting copy/i;
-  const inProgress = rows.filter((r) => r.swipe_status === 'in_progress');
-  const ageOf = (r: { updated_at?: string | null }) =>
-    Date.now() - new Date(String(r.updated_at || 0)).getTime();
-  const anyPhotosLive = inProgress.some((r) =>
-    PHOTOS_LIVE.test(String(r.swipe_result || '')) && ageOf(r) < 180_000);
-  const recentlyKicked = inProgress.some((r) =>
-    /starting ChatGPT photos|waiting for ChatGPT photos/i.test(String(r.swipe_result || ''))
-    && ageOf(r) < 45_000);
-  const stillCopying = inProgress.some((r) => {
-    const result = String(r.swipe_result || '');
-    return COPY_STILL.test(result) && !COPY_DONE.test(result);
-  });
-  const copyFinished = inProgress.length > 0
-    && !stillCopying
-    && inProgress.some((r) => COPY_DONE.test(String(r.swipe_result || '')));
-  const sittingIdle = inProgress.length > 0
-    && inProgress.every((r) => ageOf(r) > 45_000);
-  if (copyFinished && !anyPhotosLive && !recentlyKicked && sittingIdle) {
-    const projectId = String(inProgress[0].project_id || inProgress[0].product_id || '');
-    if (projectId) {
-      await kickChimeraPhotos(req, projectId, inProgress.map((r) => String(r.id)));
-      for (const row of rows) {
-        if (row.swipe_status === 'in_progress') {
-          row.swipe_result = 'Copy done — starting ChatGPT photos…';
-        }
-      }
-    }
+  try {
+    await drainStalledSwipes({ pageIds: ids, maxProjects: 2 });
+  } catch (e) {
+    console.warn('[chimera swipe] drain:', (e as Error).message);
   }
-  for (const row of rows) {
+  const { data: fresh } = await supabaseAdmin
+    .from('funnel_pages')
+    .select('id, swipe_status, swipe_result, project_id, product_id, owner_user_id, updated_at')
+    .in('id', ids);
+  const live = fresh || rows;
+  for (const row of live) {
     if (row.swipe_status !== 'in_progress') continue;
     const age = Date.now() - new Date(String(row.updated_at || 0)).getTime();
     const result = String(row.swipe_result || '');
-    const alive = /worker picked up|restyle running|continuing photos|texts rewritten|Rewriting|Copy rewritten|visual world|photo \d|ChatGPT|Waiting for copy|In queue|rewriting copy|Batch |step \d|starting ChatGPT/i.test(result);
+    const alive = /worker picked up|restyle running|continuing photos|texts rewritten|Rewriting|Copy rewritten|visual world|photo \d|ChatGPT|Waiting for copy|In queue|rewriting copy|Batch |step \d|starting ChatGPT|Resuming /i.test(result);
     const waiting = /rewrite queued|restyle queued/i.test(result) && !alive;
     const stale = (!alive && waiting && age > STALE_QUEUED_MS) || (!alive && age > STALE_ANY_MS);
     if (!stale) continue;
@@ -96,7 +95,7 @@ export async function GET(req: NextRequest) {
     row.swipe_result = msg;
   }
   if (ctx.userId && !ctx.isMaster) {
-    for (const row of rows) {
+    for (const row of live) {
       const projectId = String(row.project_id || row.product_id || '');
       if (projectId) {
         const { allowed } = await canAccessProject(req, projectId);
@@ -110,7 +109,7 @@ export async function GET(req: NextRequest) {
   }
 
   return NextResponse.json({
-    pages: rows.map((r) => ({
+    pages: live.map((r) => ({
       id: r.id,
       swipeStatus: r.swipe_status || 'pending',
       swipeResult: r.swipe_result || '',

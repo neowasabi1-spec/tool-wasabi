@@ -1986,6 +1986,12 @@ export default function FrontEndFunnel() {
   const inProgressIds = (funnelPages || []).filter((p) => p.swipeStatus === 'in_progress').map((p) => p.id);
   const inProgressKey = inProgressIds.join(',');
   useEffect(() => {
+    const tick = () => { void fetch('/api/chimera/swipe?drain=1', { cache: 'no-store' }); };
+    tick();
+    const drainT = window.setInterval(tick, 5000);
+    return () => window.clearInterval(drainT);
+  }, []);
+  useEffect(() => {
     if (!inProgressKey) return;
     const ids = inProgressKey.split(',').filter(Boolean);
     let cancelled = false;
