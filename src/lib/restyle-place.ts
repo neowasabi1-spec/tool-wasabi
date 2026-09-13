@@ -68,7 +68,7 @@ For each slot you are shown the picture that is already there, plus the text aro
   const promptGuide = `HOW TO WRITE AN IMAGE PROMPT (the "prompt" field, English, 40-90 words): describe ONE concrete scene that shows what the copy MEANS for the reader — the problem they live with, the moment the copy describes, or the result they want (the person, what they are doing and feeling, the setting, light, camera). Illustrate the OUTCOME or the SITUATION, never the act of consuming anything: no one swallowing, taking or holding pills, capsules, tablets, medication, syringes or supplements, no pharmacy or clinic imagery, unless the copy is literally about that. Example — copy about losing weight: a woman noticing her jeans are loose, a light satisfied dinner, a smiling step onto a scale; NOT a woman taking a pill. No product, no packaging, no text, no logos in the scene.`;
   const genRule = canGenerate
     ? (args.convert
-      ? `WHEN TO GENERATE: for every slot whose copy tells a story, describes a moment, explains a mechanism, shows a person, a comparison, an ingredient or a lifestyle scene, answer generate=true with an image prompt — UNLESS a library file genuinely shows that exact subject. Up to ${maxGenerate} per page: spend them on the slots the reader looks at most (hero, problem, mechanism, results, testimonials), in page order. Library files are the offer's OWN photos (the product, its packaging, real customers if any): use them for slots whose copy presents or sells the product; do NOT drop the same product photo into story slots just to fill them — a product photo under "this is what 9pm hunger feels like" is a failure, generate instead. NEVER generate the product itself (its stick, sachet, box, label, logo, hands holding it).
+      ? `WHEN TO GENERATE: for every slot whose copy tells a story, describes a moment, explains a mechanism, shows a person, a comparison, an ingredient or a lifestyle scene, answer generate=true with an image prompt — UNLESS a library file genuinely shows that exact subject. Up to ${maxGenerate} per page: spend them on the slots the reader looks at most (hero, problem, mechanism, results, testimonials), in page order. Library files labelled USER-UPLOADED PRODUCT MOCKUP / step-mock-* ARE the real product the user loaded — use those ids for every product / pack / box / stick / sachet shot. NEVER generate the product itself (its stick, sachet, box, label, logo, hands holding it) and NEVER invent a new colorway (yellow, purple, red, cartoon mascot) — if the copy sells the product, pick the uploaded mockup id. do NOT drop the same product photo into story slots just to fill them — a product photo under "this is what 9pm hunger feels like" is a failure, generate instead (and in that prompt write "no product in frame").
 ${promptGuide}`
       : `When no library file fits, generate=true with an English image prompt (up to ${maxGenerate}).\n${promptGuide}`)
     : 'Image generation is NOT available here: never answer generate=true. When nothing fits perfectly, pick the closest library file anyway.';
@@ -108,7 +108,11 @@ One object per input id.`;
     const thumb = libSeen.get(m.id);
     libraryContent.push({
       type: 'text',
-      text: `LIBRARY id=${m.id} (${m.kind})${thumb ? '' : ` file: ${m.file.slice(0, 100) || m.name.slice(0, 80) || '(no preview)'}`}`,
+      text: `LIBRARY id=${m.id} (${m.kind})${thumb ? '' : ` file: ${m.file.slice(0, 100) || m.name.slice(0, 80) || '(no preview)'}`}${
+        /step-mock|USER-UPLOADED PRODUCT MOCKUP/i.test(`${m.id} ${m.name}`)
+          ? ' ← THIS IS THE USER-UPLOADED PRODUCT MOCKUP. Use this id for every product/pack shot. Do not generate a different colored pack.'
+          : ''
+      }`,
     });
     if (thumb) {
       libraryContent.push({ type: 'image', source: { type: 'base64', media_type: thumb.mime, data: thumb.data } });

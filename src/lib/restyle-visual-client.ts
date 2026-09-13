@@ -32,6 +32,41 @@ function pinStoredUrl(url: string): string {
   return t.startsWith('/') ? `${window.location.origin}${t}` : t;
 }
 
+function httpImageUrls(...groups: Array<string | string[] | undefined>): string[] {
+  const out: string[] = [];
+  for (const g of groups) {
+    const list = Array.isArray(g) ? g : [g];
+    for (const u of list) {
+      const t = String(u || '').trim();
+      if (/^https?:\/\//i.test(t) && !out.includes(t)) out.push(t);
+    }
+  }
+  return out;
+}
+
+function looksLikeProductScene(text: string): boolean {
+  return /product|packshot|packaging|mockup|bottle|jar|box|pouch|sachet|stick|device|flacone|barattolo|confezione|prodotto|pack\b|sku|label|holding (the )?product/i
+    .test(String(text || ''));
+}
+
+function packQtyFromText(text: string): number {
+  const t = String(text || '').replace(/[_-]+/g, ' ');
+  const m = t.match(/\b([2-9]|1[0-2])\s*[x×]\b/i)
+    || t.match(/\b([2-9]|1[0-2])\s*(?:pack|bottles?|jars?|boxes|sticks?|sachets?|units?)\b/i);
+  const n = m ? Number(m[1]) : 1;
+  return Number.isFinite(n) && n >= 2 ? n : 1;
+}
+
+function looksLikeLifestylePerson(text: string): boolean {
+  return /\b(person|people|woman|man|couple|testimonial|portrait|selfie|holding|face|lifestyle|before[\s-]?after)\b/i
+    .test(String(text || ''));
+}
+
+function firstMockup(pool: LandingMediaItem[]): LandingMediaItem | undefined {
+  return pool.find((m) => String(m.id).startsWith('step-mock-') && m.storedUrl)
+    || pool.find((m) => m.section === 'product' && m.storedUrl);
+}
+
 async function designPalette(opts: {
   html: string;
   productName: string;
@@ -80,6 +115,8 @@ export async function runVisualRestyle(opts: {
   pageUrl?: string;
   productImageUrl?: string;
   extraImageUrls?: string[];
+  pageType?: string;
+  pageName?: string;
   onProgress?: (message: string, html?: string) => void;
 }): Promise<{ html: string; replaced: number; total: number; failed: number; error?: string }> {
   opts.onProgress?.('AI is designing the colour palette from the product…');
@@ -124,24 +161,25 @@ export async function runVisualRestyle(opts: {
       /* keep empty */
     }
   }
-  const extraStills: LandingMediaItem[] = (opts.extraImageUrls || [])
-    .filter((u) => /^https?:\/\//i.test(u))
-    .map((url, i) => ({
-      id: `step-mock-${i}`,
-      kind: 'image' as const,
-      section: i === 0 ? 'product' : 'lifestyle',
-      sourceUrl: url,
-      storedUrl: url,
-      filePath: '',
-      name: `step-mock-${i}`,
-      position: i,
-    }));
+  const mockupUrls = httpImageUrls(opts.productImageUrl, opts.extraImageUrls);
+  const extraStills: LandingMediaItem[] = mockupUrls.map((url, i) => ({
+    id: `step-mock-${i}`,
+    kind: 'image' as const,
+    section: i === 0 ? 'product' : 'lifestyle',
+    sourceUrl: url,
+    storedUrl: url,
+    filePath: '',
+    name: i === 0 ? 'USER-UPLOADED PRODUCT MOCKUP' : `step-mock-${i}`,
+    position: i,
+  }));
   if (extraStills.length) fromThisOffer = [...extraStills, ...fromThisOffer];
 
   const alreadyOnPage = new Set(slots.map((s) => s.src));
   const usable = fromThisOffer.filter((m) => {
-    if (alreadyOnPage.has(m.storedUrl)) return false;
+    // Keep the uploaded mockup even if it is already on one slot — every
+    // product shot on the page must reuse it, not invent a new colorway.
     if (String(m.id).startsWith('step-mock-')) return true;
+    if (alreadyOnPage.has(m.storedUrl)) return false;
     return m.storedUrl !== m.sourceUrl;
   });
   const pool = usable.length ? usable : fromThisOffer;
@@ -186,6 +224,7 @@ export async function runVisualRestyle(opts: {
           name: m.name || '',
           file: libraryFileLabel(m),
           filePath: m.filePath || '',
+          previewUrl: pinStoredUrl(m.storedUrl),
         })),
       }),
     });
@@ -197,6 +236,7 @@ export async function runVisualRestyle(opts: {
 
   const paints: PaintedMedia[] = [];
   let replaced = 0;
+  const mockup = firstMockup(pool);
 
   for (const slot of slots) {
     const plan = assignments.find((a) => a.slotId === slot.id);
@@ -207,21 +247,34 @@ export async function runVisualRestyle(opts: {
       url = pinStoredUrl(item.storedUrl);
       fileKind = item.kind;
     } else if (plan?.generate && plan.prompt) {
-      try {
-        const made = await fetch('/api/restyle-visual/concept', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            projectId: opts.projectId,
-            productName: opts.productName,
-            nearbyText: slot.context || slot.alt || '',
-            prompt: plan.prompt,
-          }),
-        });
-        const data = (await made.json().catch(() => ({}))) as { url?: string };
-        if (data.url) url = pinStoredUrl(data.url);
-      } catch {
-        /* leave the current image */
+      const nearby = `${slot.context || ''} ${slot.alt || ''} ${plan.prompt}`;
+      const qty = packQtyFromText(nearby);
+      const productScene = looksLikeProductScene(nearby);
+      if (mockup?.storedUrl && productScene && qty <= 1 && !looksLikeLifestylePerson(nearby)) {
+        url = pinStoredUrl(mockup.storedUrl);
+        fileKind = mockup.kind;
+      } else {
+        try {
+          const made = await fetch('/api/restyle-visual/concept', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              projectId: opts.projectId,
+              productName: opts.productName,
+              nearbyText: slot.context || slot.alt || '',
+              prompt: plan.prompt,
+              productImageUrl: mockup?.storedUrl || mockupUrls[0] || undefined,
+              extraImageUrls: mockupUrls.slice(1),
+              pageType: opts.pageType,
+              pageName: opts.pageName,
+            }),
+          });
+          const data = (await made.json().catch(() => ({}))) as { url?: string };
+          if (data.url) url = pinStoredUrl(data.url);
+          else if (mockup?.storedUrl && productScene) url = pinStoredUrl(mockup.storedUrl);
+        } catch {
+          if (mockup?.storedUrl && productScene) url = pinStoredUrl(mockup.storedUrl);
+        }
       }
     }
     const paint = paintFor(slot, url, fileKind);

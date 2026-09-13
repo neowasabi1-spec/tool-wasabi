@@ -8,11 +8,14 @@ export const maxDuration = 120;
 
 type LibInWithPath = PlaceLibIn & { filePath?: string };
 
-/** Storage path → URL the server can fetch, so the model sees each library file. */
+/** Storage path or public URL → URL the server can fetch, so the model sees each library file. */
 function previewUrlFor(item: LibInWithPath): string {
-  if (item.previewUrl && /^https?:\/\//i.test(item.previewUrl)) return item.previewUrl;
+  for (const raw of [item.previewUrl, item.filePath]) {
+    const t = String(raw || '').trim();
+    if (/^https?:\/\//i.test(t)) return t;
+  }
   const path = String(item.filePath || '').trim();
-  if (!path || /^https?:\/\//i.test(path)) return '';
+  if (!path) return '';
   const { data } = supabaseAdmin.storage.from('project-files').getPublicUrl(path);
   return data?.publicUrl || '';
 }

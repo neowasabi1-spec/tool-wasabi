@@ -50,35 +50,6 @@ function parseResult(json: unknown): string | null {
   return null;
 }
 
-function geminiKey(): string {
-  return (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '').trim();
-}
-
-function geminiBase(): string {
-  return (process.env.GOOGLE_GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com').replace(/\/$/, '');
-}
-
-function geminiImageModel(): string {
-  const raw = (process.env.PIPELINE_GEMINI_IMAGE_MODEL || 'gemini-2.5-flash-image').trim();
-  return raw || 'gemini-2.5-flash-image';
-}
-
-function parseGeminiImage(json: unknown): string | null {
-  const parts =
-    (json as { candidates?: Array<{ content?: { parts?: Array<Record<string, unknown>> } }> })
-      ?.candidates?.[0]?.content?.parts || [];
-  for (const p of parts) {
-    const inline = (p.inlineData || p.inline_data) as
-      | { data?: string; mimeType?: string; mime_type?: string }
-      | undefined;
-    if (inline?.data) {
-      const mime = inline.mimeType || inline.mime_type || 'image/png';
-      return `data:${mime};base64,${inline.data}`;
-    }
-  }
-  return null;
-}
-
 async function blobFromRef(url: string): Promise<Blob | null> {
   try {
     if (url.startsWith('data:')) {
@@ -106,7 +77,7 @@ async function openaiEdit(
   quality: string,
   timeoutMs: number,
 ): Promise<string | null> {
-  const fidelity = /gpt-image-1(\.5)?$/i.test(model) ? { input_fidelity: 'high' as const } : {};
+  const fidelity = /gpt-image/i.test(model) ? { input_fidelity: 'high' as const } : {};
   const jsonRes = await fetch('https://api.openai.com/v1/images/edits', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
@@ -131,7 +102,7 @@ async function openaiEdit(
   form.append('n', '1');
   form.append('size', size);
   form.append('quality', quality);
-  if (/gpt-image-1(\.5)?$/i.test(model)) form.append('input_fidelity', 'high');
+  if (/gpt-image/i.test(model)) form.append('input_fidelity', 'high');
   let attached = 0;
   for (let i = 0; i < refs.length; i++) {
     const blob = await blobFromRef(refs[i]);
@@ -184,52 +155,7 @@ async function openaiGenerateOnce(
   return parseResult(await res.json());
 }
 
-async function geminiGenerateImage(
-  prompt: string,
-  refs: string[],
-  timeoutMs: number,
-): Promise<string | null> {
-  const key = geminiKey();
-  if (!key) {
-    if (!lastImageErr) setImageErr('GEMINI_API_KEY missing');
-    return null;
-  }
-  const parts: Array<Record<string, unknown>> = [{ text: prompt.slice(0, 8_000) }];
-  for (const url of refs.slice(0, 3)) {
-    const blob = await blobFromRef(url);
-    if (!blob) continue;
-    const buf = Buffer.from(await blob.arrayBuffer());
-    if (buf.length < 100) continue;
-    parts.push({
-      inlineData: {
-        mimeType: (blob.type || 'image/png').split(';')[0],
-        data: buf.toString('base64'),
-      },
-    });
-  }
-  const model = geminiImageModel();
-  const res = await fetch(`${geminiBase()}/v1beta/models/${model}:generateContent`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${key}`,
-      'x-goog-api-key': key,
-    },
-    body: JSON.stringify({
-      contents: [{ role: 'user', parts }],
-      generationConfig: { responseModalities: ['TEXT', 'IMAGE'] },
-    }),
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  if (!res.ok) {
-    setImageErr(`Gemini ${model} ${res.status}: ${(await res.text()).slice(0, 280)}`);
-    return null;
-  }
-  return parseGeminiImage(await res.json());
-}
-
-/** Text-to-image, or image-to-image when imageUrls is set. Returns a data URL (or http URL).
- *  Tries OpenAI Images first. Gemini is a fallback for packshots unless openaiOnly. */
+/** Text-to-image, or image-to-image when imageUrls is set. ChatGPT Images only (gpt-image-2). */
 export async function openaiGenerateImage(opts: {
   prompt: string;
   imageUrls?: string[];
@@ -237,7 +163,7 @@ export async function openaiGenerateImage(opts: {
   quality?: string;
   timeoutMs?: number;
   onTick?: () => Promise<void>;
-  /** Clone/Swipe photos: ChatGPT only — no Gemini fallback. */
+  /** Kept for callers; Gemini/Flux are never used. */
   openaiOnly?: boolean;
 }): Promise<string | null> {
   lastImageErr = '';
@@ -254,28 +180,20 @@ export async function openaiGenerateImage(opts: {
   try {
     const refs = (opts.imageUrls || []).filter(Boolean).slice(0, 16);
     const openaiKey = openaiImageKey();
-    const models = Array.from(new Set([openaiImageModel(), 'gpt-image-1'].filter(Boolean)));
-    if (openaiKey) {
-      for (const model of models) {
-        try {
-          const url = await openaiGenerateOnce(openaiKey, model, prompt, refs, size, quality, timeoutMs);
-          if (url) return url;
-        } catch (e) {
-          setImageErr(`${model}: ${(e as Error).message}`);
-        }
-      }
-    } else {
+    if (!openaiKey) {
       setImageErr('OPENAI_API_KEY missing');
+      return null;
     }
-    if (!opts.openaiOnly) {
-      const gemini = await geminiGenerateImage(prompt, refs, timeoutMs);
-      if (gemini) return gemini;
+    const models = Array.from(new Set([openaiImageModel(), 'gpt-image-2'].filter(Boolean)));
+    for (const model of models) {
+      try {
+        const url = await openaiGenerateOnce(openaiKey, model, prompt, refs, size, quality, timeoutMs);
+        if (url) return url;
+      } catch (e) {
+        setImageErr(`${model}: ${(e as Error).message}`);
+      }
     }
-    if (!lastImageErr) {
-      setImageErr(opts.openaiOnly
-        ? 'ChatGPT image generation returned empty'
-        : 'image generation returned empty (OpenAI + Gemini)');
-    }
+    if (!lastImageErr) setImageErr('ChatGPT image generation returned empty');
     return null;
   } catch (e) {
     setImageErr((e as Error).message);

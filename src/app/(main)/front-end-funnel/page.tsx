@@ -5016,6 +5016,8 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
               pageUrl: url,
               productImageUrl: swipeImage || undefined,
               extraImageUrls: swipeImages.length ? swipeImages : undefined,
+              pageType: currentPage?.pageType || undefined,
+              pageName: currentPage?.name || pageName,
               onProgress: (message, html) => {
                 setCloneProgress({
                   phase: 'processing',

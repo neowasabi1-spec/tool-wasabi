@@ -7,6 +7,7 @@ import { extractLandingMediaFromUrl, listLandingMedia, offerIdentityFromHtml } f
 import { fetchPageText, pageTextBlock } from '../../src/lib/page-text';
 import { wellFormed } from '../../src/lib/well-formed';
 import { openaiGenerateImage, lastImageGenError, openaiImageKey } from '../../src/lib/openai-image';
+import { mockupFileTypesForStep } from '../../src/lib/step-offer';
 
 /**
  * Background function (up to 15 min) that RUNS the Project Autopilot pipeline
@@ -193,8 +194,8 @@ async function callClaude(opts: ClaudeOpts): Promise<string> {
 
 // ---------------------------------------------------------------------------
 // Image generation via ChatGPT (OpenAI Images API, gpt-image-2).
-// Every SKU is text-to-image. Do NOT image-to-image the master packshot
-// for upsells — that copies the same bottle onto every step.
+// When the user uploaded a mockup, every SKU photo is image-to-image from
+// that pack — never text-to-image a new yellow/purple/red colorway.
 // ---------------------------------------------------------------------------
 
 interface GenImage { data: Buffer; mimeType: string; }
@@ -953,13 +954,41 @@ function packSlotsFromInput(
 
 function mockupFileType(slot: PackSlot): string {
   if (slot.role === 'main') return 'img_pb_frontend';
-  return `img_pb_${swipePageType(slot.pageType || 'upsell_1')}`;
+  return mockupFileTypesForStep(slot.pageType || 'upsell_1', slot.name)[0] || `img_pb_${swipePageType(slot.pageType || 'upsell_1')}`;
+}
+
+function skuPackshotLabel(slot: PackSlot, productName: string, fallbackIdx: number): string {
+  const t = swipePageType(slot.pageType || '');
+  const n = t.match(/^(upsell|downsell)_(\d+)$/);
+  if (n) return `${n[1][0].toUpperCase()}${n[1].slice(1)} ${n[2]} — ${productName}`;
+  if (/downsell/.test(t)) return `Downsell 1 — ${productName}`;
+  return `Upsell ${fallbackIdx} — ${productName}`;
+}
+
+async function latestStepMockupUrl(
+  supabase: SupabaseClient,
+  projectId: string,
+  fileTypes: string[],
+): Promise<string | null> {
+  const types = [...new Set(fileTypes.filter(Boolean))];
+  if (!types.length) return null;
+  const { data } = await supabase
+    .from('project_files')
+    .select('file_path, created_at')
+    .eq('project_id', projectId)
+    .in('file_type', types)
+    .order('created_at', { ascending: false })
+    .limit(8);
+  const row = ((data || []) as Array<{ file_path?: string }>).find((r) => r.file_path);
+  if (!row?.file_path) return null;
+  if (/^https?:\/\//i.test(row.file_path)) return row.file_path;
+  return supabase.storage.from(PROJECT_FILES_BUCKET).getPublicUrl(row.file_path).data?.publicUrl || null;
 }
 
 /** Generate the product line with ChatGPT only (no Claude, no Gemini).
- *  Invent 1 main + one RELATED but physically distinct SKU per upsell.
- *  Optional uploaded photo = main only. Every other SKU is text-to-image
- *  from a unique silhouette — never image-to-image from the master. */
+ *  Invent 1 main + one RELATED but physically distinct SKU per upsell/downsell.
+ *  Optional uploaded photo = main only. Upsell/downsell mockups are their own
+ *  packshots — never a copy of the landing mockup. */
 async function generateProductImages(
   supabase: SupabaseClient,
   projectId: string,
@@ -1100,7 +1129,15 @@ imagePrompt for each upsell must name the container (carton / pouch / jar / drop
     const look = [sku?.form || ladder.form, sku?.imagePrompt || ladder.prompt(productName)]
       .filter(Boolean)
       .join('. ');
-    const skuName = `${productName} — Upsell ${upIdx}`;
+    const skuName = skuPackshotLabel(slot, productName, upIdx);
+    const extraTypes = [mockupFileType(slot), ...mockupFileTypesForStep(slot.pageType, slot.name)]
+      .filter((t, i, a) => t && t !== 'img_pb_frontend' && a.indexOf(t) === i);
+    const uploadedForStep = await latestStepMockupUrl(supabase, projectId, extraTypes);
+    if (uploadedForStep) {
+      saved += 1;
+      images.push({ name: skuName, url: uploadedForStep, role: /downsell/i.test(skuName) ? `Downsell` : `Upsell ${upIdx}` });
+      continue;
+    }
     const prompt = buildPackshotPrompt({
       brandName: productName,
       skuName: productName,
@@ -1109,7 +1146,7 @@ imagePrompt for each upsell must name the container (carton / pouch / jar / drop
       forbidden,
       distinct: true,
     });
-    // Always text-to-image. Image-to-image from the master copies the same bottle.
+    // Always text-to-image. Image-to-image from the master copies the landing pack onto every upsell.
     const upUrl = await generateImageUrl('t2i', {
       prompt,
       image_size: 'square_hd',
@@ -1119,7 +1156,7 @@ imagePrompt for each upsell must name the container (carton / pouch / jar / drop
       console.warn('[pipeline] ChatGPT upsell packshot empty:', lastImageGenError());
       continue;
     }
-    const stored = await persist(`Upsell ${upIdx} — ${productName}`, upUrl, [mockupFileType(slot)]);
+    const stored = await persist(skuName, upUrl, extraTypes);
     if (!stored) {
       console.warn('[pipeline] ChatGPT upsell packshot not saved:', lastImageGenError());
       continue;
@@ -1134,7 +1171,7 @@ imagePrompt for each upsell must name the container (carton / pouch / jar / drop
   return {
     saved,
     total,
-    note: `${saved}/${total} ChatGPT product mockups saved (distinct SKUs, t2i).${missing ? ` ${missing} failed${err ? ` (${err})` : ''}.` : ''}`,
+    note: `${saved}/${total} ChatGPT product mockups saved (main + distinct upsell/downsell SKUs).${missing ? ` ${missing} failed${err ? ` (${err})` : ''}.` : ''}`,
     mainImageUrl,
     images,
   };

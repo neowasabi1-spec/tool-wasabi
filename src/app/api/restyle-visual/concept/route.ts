@@ -1,19 +1,29 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { canAccessProject } from '@/lib/auth/project-access';
 import { ingestLandingMediaBytes } from '@/lib/landing-media';
+import { openaiGenerateImage } from '@/lib/openai-image';
+import { loadStepOffer } from '@/lib/step-offer';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
-export const maxDuration = 60;
+export const maxDuration = 120;
 
-/** Create an illustration that matches nearby landing copy — no people. */
+/**
+ * Landing illustration via ChatGPT Images. When the user uploaded a mockup,
+ * that photo is the only allowed product — never Gemini/Flux inventing a
+ * yellow/purple/red SKU from the product name.
+ */
 export async function POST(req: NextRequest) {
   const body = (await req.json().catch(() => ({}))) as {
     projectId?: string;
     productName?: string;
     nearbyText?: string;
     prompt?: string;
+    productImageUrl?: string;
+    extraImageUrls?: string[];
+    pageType?: string;
+    pageName?: string;
   };
   const projectId = String(body.projectId || '').trim();
   const productName = String(body.productName || '').trim();
@@ -25,22 +35,48 @@ export async function POST(req: NextRequest) {
   const { allowed } = await canAccessProject(req, projectId);
   if (!allowed) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
-  const prompt = asked || [
-    `Landing-page image for ${productName}.`,
-    nearby ? `Depict what this copy is about: "${nearby}".` : 'Depict the product idea, not a random stock scene.',
-    'Commercial quality, no text in the image, no logos, no competitor brands.',
+  const refs = await resolveMockupUrls(projectId, body);
+
+  const prompt = [
+    asked || [
+      `Landing-page image for ${productName}.`,
+      nearby ? `Depict what this copy is about: "${nearby}".` : 'Depict the situation the copy describes.',
+    ].filter(Boolean).join(' '),
+    refs.length
+      ? [
+          'Image 1 is the user-uploaded product mockup — the ONLY allowed product in this photo.',
+          'Keep that exact pack: same shape, colors, label artwork, branding and silhouette.',
+          'If Image 1 is a dark-green/gold box, every product in the frame stays that green/gold pack.',
+          'Never invent another SKU or colorway (no yellow, orange, purple, pink, red, grape, mango, or cartoon mascot pack) unless Image 1 actually looks like that.',
+          `The product name "${productName}" may be leftover competitor copy — ignore typical colors for that name. The mockup photo wins.`,
+          'Lifestyle/setting/people may change. If the scene does not need the product, do not add a different product.',
+        ].join(' ')
+      : 'Do not invent a retail pack, box, sachet or stick unless the copy is literally selling the product. No competitor brands.',
+    'Commercial quality, little or no extra text in the image.',
   ].filter(Boolean).join(' ');
 
-  const made = await generatePng(prompt);
+  const made = await openaiGenerateImage({
+    prompt,
+    imageUrls: refs.length ? refs : undefined,
+    size: '1536x1024',
+    quality: 'medium',
+    timeoutMs: 90_000,
+    openaiOnly: true,
+  });
   if (!made) {
     return NextResponse.json({ error: 'Could not create illustration' }, { status: 502 });
+  }
+
+  const bytes = await bytesFromImageUrl(made);
+  if (!bytes) {
+    return NextResponse.json({ error: 'Could not read generated image' }, { status: 502 });
   }
 
   const sourceUrl = `concept://generated/${slug(productName)}/${slug(asked || nearby).slice(0, 48) || 'slot'}`;
   const item = await ingestLandingMediaBytes(supabaseAdmin, {
     projectId,
-    buf: made.buf,
-    contentType: made.mime,
+    buf: bytes.buf,
+    contentType: bytes.mime,
     sourceUrl,
     kind: 'image',
     section: 'mechanism',
@@ -55,91 +91,51 @@ function slug(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 }
 
-async function generatePng(prompt: string): Promise<{ buf: Buffer; mime: string } | null> {
-  const gemini = await tryGemini(prompt);
-  if (gemini) return gemini;
-  return tryFal(prompt);
+function httpUrls(raw: unknown): string[] {
+  const list = Array.isArray(raw) ? raw : [raw];
+  const out: string[] = [];
+  for (const u of list) {
+    const t = String(u || '').trim();
+    if (/^https?:\/\//i.test(t) && !out.includes(t)) out.push(t);
+  }
+  return out;
 }
 
-async function tryGemini(prompt: string): Promise<{ buf: Buffer; mime: string } | null> {
-  const key = process.env.GEMINI_API_KEY || process.env.NETLIFY_AI_GATEWAY_KEY;
-  const base = (process.env.GOOGLE_GEMINI_BASE_URL || process.env.NETLIFY_AI_GATEWAY_BASE_URL || '')
-    .replace(/\/$/, '');
-  if (!key || !base) return null;
+async function resolveMockupUrls(
+  projectId: string,
+  body: { productImageUrl?: string; extraImageUrls?: string[]; pageType?: string; pageName?: string },
+): Promise<string[]> {
+  const refs = httpUrls([body.productImageUrl, ...(body.extraImageUrls || [])]).slice(0, 4);
+  if (refs.length) return refs;
   try {
-    const url = `${base}/v1beta/models/gemini-2.5-flash-image:generateContent`;
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${key}`,
-        'x-goog-api-key': key,
-      },
-      body: JSON.stringify({
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        generationConfig: { responseModalities: ['IMAGE', 'TEXT'] },
-      }),
-      signal: AbortSignal.timeout(45_000),
-    });
-    if (!res.ok) return null;
-    const data = (await res.json()) as {
-      candidates?: Array<{ content?: { parts?: Array<{ inlineData?: { mimeType?: string; data?: string } }> } }>;
-    };
-    const part = data.candidates?.[0]?.content?.parts?.find((p) => p.inlineData?.data);
-    if (!part?.inlineData?.data) return null;
-    const mime = part.inlineData.mimeType || 'image/png';
-    return { buf: Buffer.from(part.inlineData.data, 'base64'), mime };
+    const offer = await loadStepOffer(
+      supabaseAdmin,
+      projectId,
+      String(body.pageType || 'landing'),
+      String(body.pageName || ''),
+    );
+    return offer.imageUrls.filter((u) => /^https?:\/\//i.test(u)).slice(0, 4);
   } catch {
-    return null;
+    return [];
   }
 }
 
-async function tryFal(prompt: string): Promise<{ buf: Buffer; mime: string } | null> {
-  const key = process.env.FAL_KEY || process.env.FAL_AI_API_KEY;
-  if (!key) return null;
+async function bytesFromImageUrl(url: string): Promise<{ buf: Buffer; mime: string } | null> {
   try {
-    const submit = await fetch('https://queue.fal.run/fal-ai/flux/schnell', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Key ${key}` },
-      body: JSON.stringify({
-        prompt,
-        image_size: { width: 1024, height: 768 },
-        num_inference_steps: 4,
-        num_images: 1,
-        enable_safety_checker: true,
-      }),
-      signal: AbortSignal.timeout(20_000),
-    });
-    if (!submit.ok) return null;
-    const job = (await submit.json()) as { status_url?: string; response_url?: string };
-    if (!job.status_url || !job.response_url) return null;
-    for (let i = 0; i < 16; i++) {
-      await new Promise((r) => setTimeout(r, 800));
-      const st = await fetch(job.status_url, {
-        headers: { authorization: `Key ${key}` },
-        cache: 'no-store',
-        signal: AbortSignal.timeout(10_000),
-      });
-      if (!st.ok) continue;
-      const status = (await st.json()) as { status?: string };
-      if (status.status === 'ERROR') return null;
-      if (status.status !== 'COMPLETED') continue;
-      const done = await fetch(job.response_url, {
-        headers: { authorization: `Key ${key}` },
-        cache: 'no-store',
-        signal: AbortSignal.timeout(15_000),
-      });
-      if (!done.ok) return null;
-      const result = (await done.json()) as { images?: Array<{ url?: string }> };
-      const imageUrl = result.images?.[0]?.url;
-      if (!imageUrl) return null;
-      const bin = await fetch(imageUrl, { signal: AbortSignal.timeout(20_000) });
-      if (!bin.ok) return null;
-      const mime = bin.headers.get('content-type') || 'image/png';
-      return { buf: Buffer.from(await bin.arrayBuffer()), mime };
+    if (url.startsWith('data:')) {
+      const m = url.match(/^data:([^;]+);base64,(.+)$/);
+      if (!m) return null;
+      const buf = Buffer.from(m[2], 'base64');
+      if (buf.length < 80) return null;
+      return { buf, mime: m[1] || 'image/png' };
     }
+    const res = await fetch(url, { signal: AbortSignal.timeout(20_000) });
+    if (!res.ok) return null;
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length < 80) return null;
+    const mime = (res.headers.get('content-type') || 'image/png').split(';')[0];
+    return { buf, mime };
   } catch {
     return null;
   }
-  return null;
 }

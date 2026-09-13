@@ -1654,12 +1654,14 @@ PACK COUNT FROM COPY: ${qty}
 
 Rules:
 - The picture MUST match what that copy is talking about. Read the offer: 2x / 3x / 6x means that many packs.
-${hasMockup ? `- Image 1 is OUR real product mockup. Same container, label artwork, colors, cap and silhouette. Never redesign it, never swap in a generic or competitor pack.` : ''}
+${hasMockup ? `- Image 1 is the user-uploaded mockup — the ONLY allowed product. Same container, label artwork, colors, cap and silhouette.
+- If Image 1 is dark green/gold, every pack in the photo stays that green/gold pack. Never yellow, orange, purple, pink, red, grape, mango, or a cartoon stick unless Image 1 looks like that.
+- The product name in the copy may be leftover competitor text (e.g. "Jelly Stick"). Ignore typical colors for that name. The mockup photo wins.` : ''}
 ${packLine}
-- Do not invent a competitor brand.
+- Do not invent a competitor brand or a new SKU/colorway.
 ${spec ? `Visual world: ${spec.stylePrefix}. Palette ${spec.primary} / ${spec.secondary} / ${spec.accent}.` : ''}
 ${ctx.market ? `Any text painted in the image must be in the local language of ${ctx.market}.` : 'Little or no text in the image except a product label if the product is shown.'}
-No watermark.`.slice(0, 1800);
+No watermark.`.slice(0, 2200);
 }
 
 function collectCssBackgrounds(html: string, already: Set<string>): Array<{ src: string; context: string; section: string }> {
@@ -1754,8 +1756,8 @@ async function swipeImages(
       falUrl = thisStepPack;
     } else if (!falUrl && thisStepPack && Date.now() < deadline - 50_000) {
       const packPrompt = qty >= 2
-        ? `${prompt} Image 1 is the real mockup. Show exactly ${qty} of that pack together as a ${qty}x offer photo (neat row or cluster). Every unit identical to Image 1. Do not show only one. Do not change the count.`
-        : `${prompt} Composite Image 1 (the real mockup) into this scene. Keep that pack pixel-recognizable — same container, label, colors. Do not draw a different product.`;
+        ? `${prompt} Image 1 is the real mockup. Show exactly ${qty} of that pack together as a ${qty}x offer photo (neat row or cluster). Every unit identical to Image 1 — same colors and label. Do not show only one. Do not change the count. Do not invent a yellow/purple/red pack.`
+        : `${prompt} Composite Image 1 (the real mockup) into this scene. Keep that pack pixel-recognizable — same container, label, colors. Do not draw a different product or colorway.`;
       falUrl = await generateImageUrl(
         IMG_MODEL_I2I,
         {
@@ -1769,19 +1771,34 @@ async function swipeImages(
       );
     }
     if (!falUrl && Date.now() < deadline - 50_000) {
-      falUrl = await generateImageUrl(
-        IMG_MODEL_T2I,
-        {
-          ...common,
-          prompt,
-          image_size: falImageSize(slot),
-          ...(thisStepPack ? { image_urls: [thisStepPack] } : {}),
-        },
-        90_000,
-        tick,
-      );
+      // Never text-to-image a product when we have the mockup — that invents
+      // yellow/purple/red SKUs from the leftover competitor name.
+      if (thisStepPack) {
+        falUrl = await generateImageUrl(
+          IMG_MODEL_I2I,
+          {
+            ...common,
+            prompt: `${prompt} Image 1 is the real mockup. Keep that exact pack if a product appears.`,
+            image_urls: [thisStepPack],
+            image_size: falImageSize(slot),
+          },
+          90_000,
+          tick,
+        );
+      } else {
+        falUrl = await generateImageUrl(
+          IMG_MODEL_T2I,
+          {
+            ...common,
+            prompt,
+            image_size: falImageSize(slot),
+          },
+          90_000,
+          tick,
+        );
+      }
     }
-    // Never drop a single pack onto a 2x/3x/6x slot.
+    // Never drop a single pack onto a 2x/3x/6x slot. Never invent a pack.
     if (!falUrl && thisStepPack && productShot && qty <= 1) falUrl = thisStepPack;
     if (!falUrl) {
       console.warn(`[swipe] photo ${start + processed}/${images.length} failed (copy-driven)`);
@@ -1929,8 +1946,9 @@ async function bindStepOffer(
   if (offer.brief) next.brief = offer.brief;
   if (ctx.imageMode !== 'affiliate') {
     // This step's packshot only. Never fall back to the landing/master photo
-    // on an upsell — that is how Upsell 3 ended up with step-1 product shots.
-    const landing = /landing|advertorial|vsl|bridge|pre_?sell|opt|quiz|lead|squeeze|sales|front/i.test(page.type);
+    // on an upsell/downsell — those pages have their own generated mockup.
+    const landing = /landing|advertorial|vsl|bridge|pre_?sell|opt|quiz|lead|squeeze|sales|front/i.test(page.type)
+      && !/upsell|downsell|\boto\b|bump/i.test(`${page.type} ${page.name}`);
     next.mainImageUrl = offer.imageUrl || (landing ? ctx.mainImageUrl : null);
     next.landingStills = stepOfferToMediaItems(offer);
   }

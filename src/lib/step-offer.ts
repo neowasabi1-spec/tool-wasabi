@@ -45,13 +45,48 @@ export function knownPriceBlock(price: string | undefined | null): string {
   return `PRODUCT PRICE (use this exact price in every offer, bundle and checkout line — do not invent another): ${t}`;
 }
 
-function isLandingish(pageType: string): boolean {
-  const t = normalizeArchiveType(pageType);
+function isLandingish(pageType: string, pageName = ''): boolean {
+  const t = effectivePageType(pageType, pageName);
   return t === 'altro' || LANDINGISH.test(t);
 }
 
-function nameMatchesPage(originalName: string, pageType: string, pageName = ''): boolean {
+/** Turn "upsell", "Upsell 2", empty type + "Step 3: Downsell" into upsell_1 / downsell_1 / …. */
+export function effectivePageType(pageType: string, pageName = ''): string {
   const want = normalizeArchiveType(pageType);
+  if (want !== 'altro') return want;
+  const blob = `${pageType} ${pageName}`.replace(/[_-]+/g, ' ');
+  const numbered = blob.match(/\b(upsell|downsell|oto)\s*(\d+)\b/i);
+  if (numbered) {
+    const kind = /^oto$/i.test(numbered[1]) ? 'upsell' : numbered[1].toLowerCase();
+    return `${kind}_${numbered[2]}`;
+  }
+  if (/\bdownsell\b/i.test(blob)) return 'downsell_1';
+  if (/\b(upsell|oto)\b/i.test(blob)) return 'upsell_1';
+  return want;
+}
+
+/** Product Brief + Chimera file_type keys for this funnel step. */
+export function mockupFileTypesForStep(pageType: string, pageName = ''): string[] {
+  const want = effectivePageType(pageType, pageName);
+  const types: string[] = [];
+  const add = (t: string) => {
+    if (t && !types.includes(t)) types.push(t);
+  };
+  if (!want || want === 'altro' || LANDINGISH.test(want)) {
+    add('img_pb_frontend');
+    return types;
+  }
+  add(`img_pb_${want}`);
+  const m = want.match(/^(upsell|downsell)_(\d+)$/);
+  if (m) {
+    add(`img_pb_${m[1]}`);
+    add(`img_pb_${m[1]}_${m[2]}`);
+  }
+  return types;
+}
+
+function nameMatchesPage(originalName: string, pageType: string, pageName = ''): boolean {
+  const want = effectivePageType(pageType, pageName);
   const n = String(originalName || '').replace(/[_-]+/g, ' ');
   const numbered = want.match(/^(upsell|downsell)_(\d+)$/);
   if (numbered) return new RegExp(`${numbered[1]}\\s*${numbered[2]}\\b`, 'i').test(n);
@@ -60,7 +95,7 @@ function nameMatchesPage(originalName: string, pageType: string, pageName = ''):
   if (/downsell/.test(want) || /downsell/i.test(pageName)) return /downsell/i.test(n);
   if (/bump/.test(want)) return /bump/i.test(n);
   if (/oto/.test(want)) return /\boto\b|one[-_ ]?time/i.test(n);
-  if (isLandingish(pageType)) return !/upsell|downsell|\boto\b/i.test(n);
+  if (isLandingish(pageType, pageName)) return !/upsell|downsell|\boto\b/i.test(n);
   return false;
 }
 
@@ -70,8 +105,8 @@ function pickSection(
   pageName: string,
 ): ProductBriefSection | null {
   if (!sections.length) return null;
-  const want = normalizeArchiveType(pageType);
-  const byType = sections.find((s) => s.pageType && normalizeArchiveType(s.pageType) === want);
+  const want = effectivePageType(pageType, pageName);
+  const byType = sections.find((s) => s.pageType && effectivePageType(s.pageType, s.label) === want);
   if (byType) return byType;
 
   const numbered = want.match(/^(upsell|downsell)_(\d+)$/);
@@ -85,7 +120,7 @@ function pickSection(
   const fuzzy = sections.find((s) => s.label && blob.includes(s.label.toLowerCase()) && s.label.length > 3);
   if (fuzzy) return fuzzy;
 
-  if (isLandingish(pageType)) {
+  if (isLandingish(pageType, pageName)) {
     return sections.find((s) => s.id === 'pb_frontend') || sections[0] || null;
   }
   return null;
@@ -149,29 +184,22 @@ export async function loadStepOffer(
   };
   push(mockups);
   if (!imageUrls.length) {
-    const wantType = `img_pb_${normalizeArchiveType(pageType)}`;
-    push(files.filter((f) => f.file_type === wantType && f.file_path));
-  }
-  if (!imageUrls.length) {
-    const numbered = `${pageType} ${pageName}`.replace(/[_-]+/g, ' ').match(/(upsell|downsell)\s*(\d+)/i);
-    if (numbered) {
-      const typed = `img_pb_${numbered[1].toLowerCase()}_${numbered[2]}`;
-      push(files.filter((f) => f.file_type === typed && f.file_path));
-    }
+    const wantTypes = mockupFileTypesForStep(pageType, pageName);
+    push(files.filter((f) => wantTypes.includes(f.file_type) && f.file_path));
   }
   if (!imageUrls.length) push(namedPackshots);
-  if (!imageUrls.length && isLandingish(pageType)) {
+  if (!imageUrls.length && isLandingish(pageType, pageName)) {
     push(ugc);
     push(mainPackshots);
   }
 
   const fromSection = String(section?.briefText || '').trim();
   const brief = fromSection
-    || (section?.id === 'pb_frontend' || isLandingish(pageType) ? projectBrief : '')
+    || (section?.id === 'pb_frontend' || isLandingish(pageType, pageName) ? projectBrief : '')
     || '';
 
   const price = String(section?.price || '').trim()
-    || (isLandingish(pageType) ? String(frontend?.price || '').trim() : '')
+    || (isLandingish(pageType, pageName) ? String(frontend?.price || '').trim() : '')
     || '';
 
   return {
