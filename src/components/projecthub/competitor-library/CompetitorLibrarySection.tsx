@@ -2056,6 +2056,20 @@ function hostOf(url: string) {
   try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return url; }
 }
 
+function isShotUrl(u?: string | null) {
+  const s = String(u || "").trim();
+  if (!s || s === "null" || s === "undefined") return false;
+  if (s.startsWith("data:image/")) return true;
+  if (!/^https?:\/\//i.test(s)) return false;
+  if (/\/api\/funnel-html/i.test(s)) return false;
+  return true;
+}
+
+function htmlPreviewUrl(htmlUrl: string) {
+  if (!htmlUrl) return "";
+  return htmlUrl.includes("inert=") ? htmlUrl : `${htmlUrl}${htmlUrl.includes("?") ? "&" : "?"}inert=1`;
+}
+
 /** Funnel folders store the domain in `category` — that is not a niche. */
 function isNicheCategory(s: string) {
   const t = (s || "").trim();
@@ -2079,9 +2093,9 @@ function HtmlThumb({ htmlUrl, className = "" }: { htmlUrl: string; className?: s
       if (!entries[0]?.isIntersecting) return;
       obs.disconnect();
       setScale((el.clientWidth || 280) / 1280);
-      fetch(htmlUrl)
+      fetch(htmlPreviewUrl(htmlUrl) || htmlUrl)
         .then((r) => (r.ok ? r.text() : Promise.reject(new Error(String(r.status)))))
-        .then((t) => { if (t && t.length > 100) setHtml(t); else setFailed(true); })
+        .then((t) => { if (t && t.length > 100 && /<[a-z]/i.test(t)) setHtml(t); else setFailed(true); })
         .catch(() => setFailed(true));
     }, { rootMargin: "400px" });
     obs.observe(el);
@@ -2107,6 +2121,113 @@ function HtmlThumb({ htmlUrl, className = "" }: { htmlUrl: string; className?: s
             : <RefreshCw className="w-6 h-6 text-slate-300 animate-spin" />}
         </div>
       )}
+    </div>
+  );
+}
+
+function CardShot({ landing }: { landing: Landing }) {
+  const [useHtml, setUseHtml] = useState(!isShotUrl(landing.screenshot));
+  if (!useHtml && isShotUrl(landing.screenshot)) {
+    return (
+      <img
+        src={landing.screenshot}
+        alt={landing.name}
+        className="w-full h-full object-cover object-top group-hover:scale-[1.02] transition-transform"
+        onError={() => setUseHtml(true)}
+      />
+    );
+  }
+  if (landing.html_url) return <HtmlThumb htmlUrl={landing.html_url} className="w-full h-full" />;
+  return (
+    <div className="w-full h-full flex items-center justify-center bg-slate-100">
+      <Globe className="w-10 h-10 text-slate-400" />
+    </div>
+  );
+}
+
+function LandingLivePreview({ landing }: { landing: Landing }) {
+  const [html, setHtml] = useState<string | null>(null);
+  const [htmlFailed, setHtmlFailed] = useState(false);
+  const [shotFailed, setShotFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setHtml(null);
+    setHtmlFailed(false);
+    setShotFailed(false);
+    if (!landing.html_url) {
+      setHtmlFailed(true);
+      return;
+    }
+    fetch(htmlPreviewUrl(landing.html_url) || landing.html_url)
+      .then((r) => (r.ok ? r.text() : Promise.reject(new Error(String(r.status)))))
+      .then((t) => {
+        if (cancelled) return;
+        if (t && t.length > 100 && /<[a-z]/i.test(t)) setHtml(t);
+        else setHtmlFailed(true);
+      })
+      .catch(() => { if (!cancelled) setHtmlFailed(true); });
+    return () => { cancelled = true; };
+  }, [landing.id, landing.html_url]);
+
+  if (html) {
+    return (
+      <iframe
+        srcDoc={html}
+        title={landing.name}
+        sandbox="allow-scripts allow-same-origin"
+        className="w-full h-[65vh] rounded-lg border border-border bg-white"
+      />
+    );
+  }
+
+  if (!htmlFailed) {
+    return (
+      <div className="h-[65vh] flex items-center justify-center text-sm text-muted-foreground">
+        <RefreshCw className="w-5 h-5 animate-spin mr-2" /> Loading page…
+      </div>
+    );
+  }
+
+  const desktop = isShotUrl(landing.screenshot_desktop) ? landing.screenshot_desktop : "";
+  const mobile = isShotUrl(landing.screenshot_mobile) ? landing.screenshot_mobile : "";
+  const single = isShotUrl(landing.screenshot) ? landing.screenshot : "";
+  const showShots = !shotFailed && (desktop || mobile || single);
+
+  if (showShots) {
+    return (
+      <div className="flex flex-wrap gap-4 justify-center items-start">
+        {desktop || mobile ? (
+          <>
+            {desktop && (
+              <figure className="flex-1 min-w-[260px] max-w-full">
+                <figcaption className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1 text-center">Desktop</figcaption>
+                <img src={desktop} alt="Desktop screenshot"
+                  onError={() => setShotFailed(true)}
+                  className="w-full rounded-lg border border-border bg-white" />
+              </figure>
+            )}
+            {mobile && (
+              <figure className="w-40 shrink-0">
+                <figcaption className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1 text-center">Mobile</figcaption>
+                <img src={mobile} alt="Mobile screenshot"
+                  onError={() => setShotFailed(true)}
+                  className="w-full rounded-lg border border-border bg-white" />
+              </figure>
+            )}
+          </>
+        ) : (
+          <img src={single} alt={landing.name}
+            onError={() => setShotFailed(true)}
+            className="w-full rounded-lg border border-border bg-white" />
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="py-16 text-center text-sm text-muted-foreground">
+      No preview for this page. Try View HTML or open the original.
     </div>
   );
 }
@@ -2380,15 +2501,7 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
         </div>
         {/* Fixed-height screenshot — uniform cards */}
         <div className="relative w-full aspect-[3/4] overflow-hidden bg-slate-100">
-          {l.screenshot ? (
-            <img src={l.screenshot} alt={l.name} className="w-full h-full object-cover object-top group-hover:scale-[1.02] transition-transform" />
-          ) : l.html_url ? (
-            <HtmlThumb htmlUrl={l.html_url} className="w-full h-full" />
-          ) : (
-            <div className="w-full h-full flex items-center justify-center bg-slate-100">
-              <Globe className="w-10 h-10 text-slate-400" />
-            </div>
-          )}
+          <CardShot landing={l} />
           <button
             type="button"
             onClick={(e) => toggleSelect(l.id, e)}
@@ -2532,11 +2645,7 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
                 </div>
                 {/* Fixed-height cover screenshot — uniform cards */}
                 <div className="relative w-full aspect-[3/4] overflow-hidden bg-slate-100">
-                  {cover?.screenshot ? (
-                    <img src={cover.screenshot} alt={f.name} className="w-full h-full object-cover object-top group-hover:scale-[1.02] transition-transform" />
-                  ) : cover?.html_url ? (
-                    <HtmlThumb htmlUrl={cover.html_url} className="w-full h-full" />
-                  ) : (
+                  {cover ? <CardShot landing={cover} /> : (
                     <div className="w-full h-full flex items-center justify-center bg-slate-100">
                       <Globe className="w-10 h-10 text-slate-400" />
                     </div>
@@ -2588,35 +2697,7 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
             </div>
 
             <div className="p-4 overflow-y-auto flex-1 bg-muted/30">
-              {(preview.screenshot_desktop || preview.screenshot_mobile) ? (
-                <div className="flex flex-wrap gap-4 justify-center items-start">
-                  {preview.screenshot_desktop && (
-                    <figure className="flex-1 min-w-[260px] max-w-full">
-                      <figcaption className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1 text-center">Desktop</figcaption>
-                      <img src={preview.screenshot_desktop} alt="Desktop screenshot"
-                        className="w-full rounded-lg border border-border bg-white" />
-                    </figure>
-                  )}
-                  {preview.screenshot_mobile && (
-                    <figure className="w-40 shrink-0">
-                      <figcaption className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1 text-center">Mobile</figcaption>
-                      <img src={preview.screenshot_mobile} alt="Mobile screenshot"
-                        className="w-full rounded-lg border border-border bg-white" />
-                    </figure>
-                  )}
-                </div>
-              ) : preview.screenshot ? (
-                <img src={preview.screenshot} alt={preview.name}
-                  className="w-full rounded-lg border border-border bg-white" />
-              ) : preview.html_url ? (
-                // No screenshots stored — render the saved page itself (full
-                // HTML/CSS/JS from the page_html mirror) as a live preview.
-                <iframe src={preview.html_url} title={preview.name}
-                  sandbox="allow-scripts allow-same-origin"
-                  className="w-full h-[65vh] rounded-lg border border-border bg-white" />
-              ) : (
-                <div className="py-16 text-center text-sm text-muted-foreground">No screenshots saved for this page.</div>
-              )}
+              <LandingLivePreview landing={preview} />
             </div>
 
             <div className="flex items-center gap-2 p-4 border-t border-border flex-wrap">
