@@ -49,14 +49,6 @@ function looksLikeProductScene(text: string): boolean {
     .test(String(text || ''));
 }
 
-function packQtyFromText(text: string): number {
-  const t = String(text || '').replace(/[_-]+/g, ' ');
-  const m = t.match(/\b([2-9]|1[0-2])\s*[x×]\b/i)
-    || t.match(/\b([2-9]|1[0-2])\s*(?:pack|bottles?|jars?|boxes|sticks?|sachets?|units?)\b/i);
-  const n = m ? Number(m[1]) : 1;
-  return Number.isFinite(n) && n >= 2 ? n : 1;
-}
-
 function looksLikeLifestylePerson(text: string): boolean {
   return /\b(person|people|woman|man|couple|testimonial|portrait|selfie|holding|face|lifestyle|before[\s-]?after)\b/i
     .test(String(text || ''));
@@ -248,9 +240,8 @@ export async function runVisualRestyle(opts: {
       fileKind = item.kind;
     } else if (plan?.generate && plan.prompt) {
       const nearby = `${slot.context || ''} ${slot.alt || ''} ${plan.prompt}`;
-      const qty = packQtyFromText(nearby);
       const productScene = looksLikeProductScene(nearby);
-      if (mockup?.storedUrl && productScene && qty <= 1 && !looksLikeLifestylePerson(nearby)) {
+      if (mockup?.storedUrl && productScene && !looksLikeLifestylePerson(nearby)) {
         url = pinStoredUrl(mockup.storedUrl);
         fileKind = mockup.kind;
       } else {
@@ -262,9 +253,7 @@ export async function runVisualRestyle(opts: {
               projectId: opts.projectId,
               productName: opts.productName,
               nearbyText: slot.context || slot.alt || '',
-              prompt: plan.prompt,
-              productImageUrl: mockup?.storedUrl || mockupUrls[0] || undefined,
-              extraImageUrls: mockupUrls.slice(1),
+              prompt: `${plan.prompt} STRICT: no product or packaging in the frame.`,
               pageType: opts.pageType,
               pageName: opts.pageName,
             }),

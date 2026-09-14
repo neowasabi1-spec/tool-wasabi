@@ -50,16 +50,62 @@ function isLandingish(pageType: string, pageName = ''): boolean {
   return t === 'altro' || LANDINGISH.test(t);
 }
 
+const OFFER_STEP_RE = /\b(upsell|downsell|oto|bump)\b/i;
+
+/** Bare "upsell" on every post-purchase step must become upsell_1, upsell_2, … */
+export function numberSequentialOfferType(
+  pageType: string,
+  pageName: string,
+  fallbackN: number,
+  seen: Set<string>,
+): string {
+  const slug = String(pageType || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+  const blob = `${pageType} ${pageName}`.replace(/[_-]+/g, ' ');
+  const kind: 'upsell' | 'downsell' = /downsell/i.test(blob) ? 'downsell' : 'upsell';
+  const fromName = blob.match(/\b(upsell|downsell|oto)\s*(\d+)\b/i);
+  const fromSlug = slug.match(/^(upsell|downsell|oto)_(\d+)$/);
+  let n = fallbackN;
+  if (fromName) n = parseInt(fromName[2], 10) || fallbackN;
+  else if (fromSlug) n = parseInt(fromSlug[2], 10) || fallbackN;
+  let out = `${kind}_${n}`;
+  if (seen.has(out)) {
+    n = fallbackN;
+    out = `${kind}_${n}`;
+    while (seen.has(out)) {
+      n += 1;
+      out = `${kind}_${n}`;
+    }
+  }
+  seen.add(out);
+  return out;
+}
+
+export function numberPagesOfferTypes<T extends { type: string; name?: string }>(pages: T[]): T[] {
+  const seen = new Set<string>();
+  let upN = 0;
+  let downN = 0;
+  return pages.map((p) => {
+    const blob = `${p.type} ${p.name || ''}`.replace(/[_-]+/g, ' ');
+    if (!OFFER_STEP_RE.test(blob)) return p;
+    if (/downsell/i.test(blob)) {
+      downN += 1;
+      return { ...p, type: numberSequentialOfferType(p.type, p.name || '', downN, seen) };
+    }
+    upN += 1;
+    return { ...p, type: numberSequentialOfferType(p.type, p.name || '', upN, seen) };
+  });
+}
+
 /** Turn "upsell", "Upsell 2", empty type + "Step 3: Downsell" into upsell_1 / downsell_1 / …. */
 export function effectivePageType(pageType: string, pageName = ''): string {
-  const want = normalizeArchiveType(pageType);
-  if (want !== 'altro') return want;
   const blob = `${pageType} ${pageName}`.replace(/[_-]+/g, ' ');
   const numbered = blob.match(/\b(upsell|downsell|oto)\s*(\d+)\b/i);
   if (numbered) {
     const kind = /^oto$/i.test(numbered[1]) ? 'upsell' : numbered[1].toLowerCase();
     return `${kind}_${numbered[2]}`;
   }
+  const want = normalizeArchiveType(pageType);
+  if (want !== 'altro') return want;
   if (/\bdownsell\b/i.test(blob)) return 'downsell_1';
   if (/\b(upsell|oto)\b/i.test(blob)) return 'upsell_1';
   return want;
@@ -78,10 +124,9 @@ export function mockupFileTypesForStep(pageType: string, pageName = ''): string[
   }
   add(`img_pb_${want}`);
   const m = want.match(/^(upsell|downsell)_(\d+)$/);
-  if (m) {
-    add(`img_pb_${m[1]}`);
-    add(`img_pb_${m[1]}_${m[2]}`);
-  }
+  // Unnumbered img_pb_upsell is only a fallback for step 1 — otherwise
+  // Upsell 2/3 reuse Upsell 1's file and never get their own mockup.
+  if (m && m[2] === '1') add(`img_pb_${m[1]}`);
   return types;
 }
 

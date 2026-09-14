@@ -36,28 +36,23 @@ export async function POST(req: NextRequest) {
   if (!allowed) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
   const refs = await resolveMockupUrls(projectId, body);
+  const packAsk = /product|packshot|packaging|mockup|bottle|jar|box|pouch|sachet|stick|pack\b|confezione|prodotto|sku|holding (the )?product/i
+    .test(`${asked} ${nearby}`);
+  if (packAsk && refs.length) {
+    return NextResponse.json({ url: refs[0], id: 'step-mock' });
+  }
 
   const prompt = [
     asked || [
-      `Landing-page image for ${productName}.`,
-      nearby ? `Depict what this copy is about: "${nearby}".` : 'Depict the situation the copy describes.',
-    ].filter(Boolean).join(' '),
-    refs.length
-      ? [
-          'Image 1 is the user-uploaded product mockup — the ONLY allowed product in this photo.',
-          'Keep that exact pack: same shape, colors, label artwork, branding and silhouette.',
-          'If Image 1 is a dark-green/gold box, every product in the frame stays that green/gold pack.',
-          'Never invent another SKU or colorway (no yellow, orange, purple, pink, red, grape, mango, or cartoon mascot pack) unless Image 1 actually looks like that.',
-          `The product name "${productName}" may be leftover competitor copy — ignore typical colors for that name. The mockup photo wins.`,
-          'Lifestyle/setting/people may change. If the scene does not need the product, do not add a different product.',
-        ].join(' ')
-      : 'Do not invent a retail pack, box, sachet or stick unless the copy is literally selling the product. No competitor brands.',
-    'Commercial quality, little or no extra text in the image.',
+      nearby ? `Editorial photograph of this situation: "${nearby}".` : 'Editorial photograph of a real-life moment.',
+    ].join(' '),
+    'Photorealistic, commercial quality.',
+    'FORBIDDEN: any retail product, box, stick pack, sachet, pouch, bottle, jar, label, logo, brand name, or invented SKU. No Jelly Stick. No packaging in the frame.',
+    'Little or no text in the image.',
   ].filter(Boolean).join(' ');
 
   const made = await openaiGenerateImage({
     prompt,
-    imageUrls: refs.length ? refs : undefined,
     size: '1536x1024',
     quality: 'medium',
     timeoutMs: 90_000,

@@ -6,6 +6,8 @@
  *   1 step, not a walk-sibling → Templates → Pages
  */
 
+import { numberSequentialOfferType } from './step-offer';
+
 export function canonPageUrl(raw: string): string {
   const u = String(raw || '').trim();
   if (!u) return '';
@@ -164,6 +166,7 @@ export function productsFromSelectedSteps(
   const slots: ChimeraProductSlot[] = [];
   let hasMain = false;
   let upsellN = 0;
+  const seenOffer = new Set<string>();
   for (const s of sorted) {
     const pageType = String(s.pageType || s.page_type || '');
     const isUp = s.isUpsell ?? isUpsellPageType(pageType);
@@ -174,7 +177,7 @@ export function productsFromSelectedSteps(
       slots.push({
         key: `upsell-${stepIndex}-${upsellN}`,
         role: 'upsell',
-        pageType,
+        pageType: numberSequentialOfferType(pageType, name, upsellN, seenOffer),
         stepName: name,
         stepIndex,
       });

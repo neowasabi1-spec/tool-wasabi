@@ -7,7 +7,7 @@ import { extractLandingMediaFromUrl, listLandingMedia, offerIdentityFromHtml } f
 import { fetchPageText, pageTextBlock } from '../../src/lib/page-text';
 import { wellFormed } from '../../src/lib/well-formed';
 import { openaiGenerateImage, lastImageGenError, openaiImageKey } from '../../src/lib/openai-image';
-import { mockupFileTypesForStep } from '../../src/lib/step-offer';
+import { numberSequentialOfferType, numberPagesOfferTypes } from '../../src/lib/step-offer';
 
 /**
  * Background function (up to 15 min) that RUNS the Project Autopilot pipeline
@@ -922,39 +922,51 @@ function packSlotsFromInput(
   productName: string,
 ): PackSlot[] {
   const prices = Array.isArray(input.productPrices) ? input.productPrices : [];
-  if (prices.length) {
-    let upN = 0;
-    return prices.map((p) => {
-      const isUp = p.role === 'upsell';
-      if (isUp) upN += 1;
-      return {
-        role: isUp ? 'upsell' as const : 'main' as const,
-        pageType: String(p.pageType || (isUp ? `upsell_${upN}` : 'landing')),
-        name: isUp ? `${productName} — Upsell ${upN}` : productName,
-      };
-    });
-  }
-  const slots: PackSlot[] = [];
-  let hasMain = false;
-  let n = 0;
-  for (const p of funnel?.pages || []) {
-    if (UPSELL_PAGE_RE.test(p.type)) {
-      n += 1;
-      slots.push({ role: 'upsell', pageType: p.type || `upsell_${n}`, name: `${productName} — Upsell ${n}` });
-    } else if (!hasMain) {
-      hasMain = true;
-      slots.push({ role: 'main', pageType: p.type || 'landing', name: productName });
-    }
-  }
-  if (!slots.some((s) => s.role === 'main')) {
-    slots.unshift({ role: 'main', pageType: 'landing', name: productName });
-  }
-  return slots;
+  const raw: PackSlot[] = prices.length
+    ? (() => {
+        let upN = 0;
+        return prices.map((p) => {
+          const isUp = p.role === 'upsell';
+          if (isUp) upN += 1;
+          return {
+            role: isUp ? 'upsell' as const : 'main' as const,
+            pageType: String(p.pageType || (isUp ? `upsell_${upN}` : 'landing')),
+            name: isUp ? `${productName} — Upsell ${upN}` : productName,
+          };
+        });
+      })()
+    : (() => {
+        const slots: PackSlot[] = [];
+        let hasMain = false;
+        let n = 0;
+        for (const p of funnel?.pages || []) {
+          if (UPSELL_PAGE_RE.test(p.type)) {
+            n += 1;
+            slots.push({ role: 'upsell', pageType: p.type || `upsell_${n}`, name: `${productName} — Upsell ${n}` });
+          } else if (!hasMain) {
+            hasMain = true;
+            slots.push({ role: 'main', pageType: p.type || 'landing', name: productName });
+          }
+        }
+        if (!slots.some((s) => s.role === 'main')) {
+          slots.unshift({ role: 'main', pageType: 'landing', name: productName });
+        }
+        return slots;
+      })();
+
+  const seen = new Set<string>();
+  let upN = 0;
+  return raw.map((s) => {
+    if (s.role !== 'upsell') return s;
+    upN += 1;
+    const pageType = numberSequentialOfferType(s.pageType, s.name, upN, seen);
+    return { ...s, pageType, name: skuPackshotLabel({ ...s, pageType }, productName, upN) };
+  });
 }
 
 function mockupFileType(slot: PackSlot): string {
   if (slot.role === 'main') return 'img_pb_frontend';
-  return mockupFileTypesForStep(slot.pageType || 'upsell_1', slot.name)[0] || `img_pb_${swipePageType(slot.pageType || 'upsell_1')}`;
+  return `img_pb_${slot.pageType || `upsell_${1}`}`;
 }
 
 function skuPackshotLabel(slot: PackSlot, productName: string, fallbackIdx: number): string {
@@ -1122,21 +1134,18 @@ imagePrompt for each upsell must name the container (carton / pouch / jar / drop
     images.push({ name: productName, url: stored, role: 'Main product' });
   }
 
-  for (let upIdx = 1; upIdx <= upsellCount; upIdx++) {
-    const slot = upsellSlots[upIdx - 1];
-    const sku = spec.upsells[upIdx - 1];
-    const ladder = DISTINCT_UPSELL_FORMS[(upIdx - 1) % DISTINCT_UPSELL_FORMS.length];
+  const upRows = await Promise.all(upsellSlots.map(async (slot, i) => {
+    const upIdx = i + 1;
+    const sku = spec.upsells[i];
+    const ladder = DISTINCT_UPSELL_FORMS[i % DISTINCT_UPSELL_FORMS.length];
     const look = [sku?.form || ladder.form, sku?.imagePrompt || ladder.prompt(productName)]
       .filter(Boolean)
       .join('. ');
     const skuName = skuPackshotLabel(slot, productName, upIdx);
-    const extraTypes = [mockupFileType(slot), ...mockupFileTypesForStep(slot.pageType, slot.name)]
-      .filter((t, i, a) => t && t !== 'img_pb_frontend' && a.indexOf(t) === i);
-    const uploadedForStep = await latestStepMockupUrl(supabase, projectId, extraTypes);
+    const fileType = mockupFileType(slot);
+    const uploadedForStep = await latestStepMockupUrl(supabase, projectId, [fileType]);
     if (uploadedForStep) {
-      saved += 1;
-      images.push({ name: skuName, url: uploadedForStep, role: /downsell/i.test(skuName) ? `Downsell` : `Upsell ${upIdx}` });
-      continue;
+      return { name: skuName, url: uploadedForStep, role: `Upsell ${upIdx}` };
     }
     const prompt = buildPackshotPrompt({
       brandName: productName,
@@ -1146,25 +1155,36 @@ imagePrompt for each upsell must name the container (carton / pouch / jar / drop
       forbidden,
       distinct: true,
     });
-    // Always text-to-image. Image-to-image from the master copies the landing pack onto every upsell.
-    const upUrl = await generateImageUrl('t2i', {
-      prompt,
-      image_size: 'square_hd',
-      quality: 'medium',
-    });
-    if (!upUrl) {
-      console.warn('[pipeline] ChatGPT upsell packshot empty:', lastImageGenError());
-      continue;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const upUrl = await generateImageUrl('t2i', {
+        prompt,
+        image_size: 'square_hd',
+        quality: 'medium',
+      });
+      if (!upUrl) {
+        console.warn(`[pipeline] ChatGPT ${skuName} packshot empty (try ${attempt + 1}):`, lastImageGenError());
+        continue;
+      }
+      const stored = await persist(skuName, upUrl, [fileType]);
+      if (stored) return { name: skuName, url: stored, role: `Upsell ${upIdx}` };
+      console.warn(`[pipeline] ChatGPT ${skuName} packshot not saved:`, lastImageGenError());
     }
-    const stored = await persist(skuName, upUrl, extraTypes);
-    if (!stored) {
-      console.warn('[pipeline] ChatGPT upsell packshot not saved:', lastImageGenError());
-      continue;
-    }
+    return null;
+  }));
+  for (const row of upRows) {
+    if (!row) continue;
     saved += 1;
-    images.push({ name: skuName, url: stored, role: `Upsell ${upIdx}` });
+    images.push(row);
   }
 
+  const failed = upsellSlots
+    .map((s, i) => (upRows[i] ? null : skuPackshotLabel(s, productName, i + 1)))
+    .filter((n): n is string => Boolean(n));
+  if (failed.length) {
+    throw new Error(
+      `Missing mockups for ${failed.join(', ')}. ${lastImageGenError() || 'ChatGPT returned empty'}.`,
+    );
+  }
   const total = 1 + upsellCount;
   const missing = total - saved;
   const err = lastImageGenError();
@@ -2126,11 +2146,14 @@ async function runSwipe(supabase: SupabaseClient, projectId: string, input: Pipe
   // shows the swipe as running as soon as the pages appear.
   const pages: Array<{ funnelPageId: string; sourcePageId: string; sourceUrl: string; name: string; type: string; htmlUrl?: string }> = [];
   const usable = steps.slice(0, MAX_SWIPE_STEPS);
+  const numberedSteps = numberPagesOfferTypes(usable.map((s) => {
+    const rawType = String(s.page_type || s.step_type || 'landing');
+    return { type: swipePageType(rawType), name: String(s.name || '') };
+  }));
   let lastInsertError = '';
   for (let i = 0; i < usable.length; i++) {
     const s = usable[i] || {};
-    const rawType = String(s.page_type || s.step_type || 'landing');
-    const pageType = swipePageType(rawType);
+    const pageType = numberedSteps[i]?.type || swipePageType(String(s.page_type || s.step_type || 'landing'));
     const url = String(s.url_to_swipe || s.url || '');
     const cloned = (s.cloned_data && typeof s.cloned_data === 'object' ? s.cloned_data : {}) as Record<string, unknown>;
     const sourcePageId = String(s.page_id || ''); // page_html key written by the extension's funnel walk
@@ -2177,13 +2200,12 @@ async function runSwipe(supabase: SupabaseClient, projectId: string, input: Pipe
 
   try {
     const stepRows = usable.map((s, i) => {
-      const rawType = String(s.page_type || s.step_type || 'landing');
       const stepName = String(s.name || `Step ${i + 1}`).slice(0, 80);
       return {
         project_id: projectId,
         step_number: i + 1,
         page_name: stepName,
-        step_type: swipePageType(rawType),
+        step_type: numberedSteps[i]?.type || swipePageType(String(s.page_type || s.step_type || 'landing')),
         template_name: stepName,
         url: String(s.url_to_swipe || s.url || ''),
         flow_name: funnelName.slice(0, 80),

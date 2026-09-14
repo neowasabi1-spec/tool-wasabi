@@ -34,7 +34,7 @@ import {
 } from '../../src/lib/restyle-slots';
 import { fetchPreview, placeMediaWithAi, samplePackshotPalette } from '../../src/lib/restyle-place';
 import { wellFormed } from '../../src/lib/well-formed';
-import { loadStepOffer, knownPriceBlock, stepOfferToMediaItems } from '../../src/lib/step-offer';
+import { loadStepOffer, knownPriceBlock, stepOfferToMediaItems, numberPagesOfferTypes } from '../../src/lib/step-offer';
 import { fetchPageText } from '../../src/lib/page-text';
 import { batchKeepingGroups, buildSwipePlan, orderAndLinkFragments, planRules } from '../../src/lib/swipe-plan';
 import { bakePairsDom } from '../../src/lib/swipe-bake';
@@ -1107,6 +1107,23 @@ async function ensureBucket(sb: SupabaseClient): Promise<void> {
   _bucketEnsured = true;
 }
 
+async function storeGeneratedBuffer(
+  sb: SupabaseClient,
+  projectId: string,
+  buf: Buffer,
+  ct: string,
+  idx: number,
+): Promise<string | null> {
+  if (!buf || buf.length < 100) return null;
+  const ext = /jpeg|jpg/.test(ct) ? 'jpg' : /webp/.test(ct) ? 'webp' : 'png';
+  await ensureBucket(sb);
+  const key = `${projectId}/swipe_image/${Date.now()}_${idx}.${ext}`;
+  const { error } = await sb.storage.from(PROJECT_FILES_BUCKET).upload(key, buf, { contentType: ct, upsert: false });
+  if (error) { console.warn('[swipe] image upload failed:', error.message); return null; }
+  const { data: pub } = sb.storage.from(PROJECT_FILES_BUCKET).getPublicUrl(key);
+  return pub?.publicUrl || null;
+}
+
 async function storeGeneratedImage(sb: SupabaseClient, projectId: string, src: string, idx: number): Promise<string | null> {
   try {
     let buf: Buffer;
@@ -1122,16 +1139,52 @@ async function storeGeneratedImage(sb: SupabaseClient, projectId: string, src: s
       buf = Buffer.from(await res.arrayBuffer());
       ct = res.headers.get('content-type') || 'image/png';
     }
-    if (buf.length < 100) return null;
-    const ext = /jpeg|jpg/.test(ct) ? 'jpg' : /webp/.test(ct) ? 'webp' : 'png';
-    await ensureBucket(sb);
-    const key = `${projectId}/swipe_image/${Date.now()}_${idx}.${ext}`;
-    const { error } = await sb.storage.from(PROJECT_FILES_BUCKET).upload(key, buf, { contentType: ct, upsert: false });
-    if (error) { console.warn('[swipe] image upload failed:', error.message); return null; }
-    const { data: pub } = sb.storage.from(PROJECT_FILES_BUCKET).getPublicUrl(key);
-    return pub?.publicUrl || null;
+    return storeGeneratedBuffer(sb, projectId, buf, ct, idx);
   } catch {
     return null;
+  }
+}
+
+/** 2x/3x/6x = copies of THIS mockup, not a new SKU from ChatGPT. */
+async function tileMockup(
+  sb: SupabaseClient,
+  projectId: string,
+  mockupUrl: string,
+  qty: number,
+): Promise<string | null> {
+  const n = Math.max(2, Math.min(qty, 8));
+  try {
+    const res = await fetch(mockupUrl, { signal: AbortSignal.timeout(20_000) });
+    if (!res.ok) return mockupUrl;
+    const raw = Buffer.from(await res.arrayBuffer());
+    if (raw.length < 100) return mockupUrl;
+    const sharp = (await import('sharp')).default;
+    const unit = await sharp(raw).rotate().resize({ width: 720, height: 720, fit: 'inside' }).png().toBuffer();
+    const meta = await sharp(unit).metadata();
+    const w = meta.width || 720;
+    const h = meta.height || 720;
+    const gap = 28;
+    const cols = n <= 3 ? n : n <= 4 ? 2 : 3;
+    const rows = Math.ceil(n / cols);
+    const canvasW = cols * w + (cols + 1) * gap;
+    const canvasH = rows * h + (rows + 1) * gap;
+    const overlays = Array.from({ length: n }, (_, i) => ({
+      input: unit,
+      left: gap + (i % cols) * (w + gap),
+      top: gap + Math.floor(i / cols) * (h + gap),
+    }));
+    const out = await sharp({
+      create: {
+        width: canvasW,
+        height: canvasH,
+        channels: 4,
+        background: { r: 248, g: 244, b: 238, alpha: 1 },
+      },
+    }).composite(overlays).png().toBuffer();
+    return (await storeGeneratedBuffer(sb, projectId, out, 'image/png', 700 + n)) || mockupUrl;
+  } catch (e) {
+    console.warn('[swipe] tile mockup failed:', (e as Error).message);
+    return mockupUrl;
   }
 }
 
@@ -1614,40 +1667,21 @@ function slotLooksLifestyle(slot: { alt?: string; context?: string }): boolean {
     .test(`${slot.alt || ''} ${slot.context || ''}`);
 }
 
-function promptFromNearbyCopy(
+function scenePromptFromCopy(
   ctx: SwipeCtx,
-  img: { alt?: string; above?: string; below?: string; context?: string; section?: string },
-  productShot: boolean,
-  hasMockup: boolean,
-  qty: number,
+  img: { alt?: string; context?: string; section?: string },
 ): string {
   const spec = ctx.restyle;
-  const copy = [img.above, img.below, img.context].filter(Boolean).join('\n');
-  const packLine = qty >= 2
-    ? `- This slot is a ${qty}x offer. Show exactly ${qty} units of the mockup (row or cluster). Not 1 bottle. Not a different count.`
-    : productShot
-      ? `- This slot shows THE PRODUCT. One unit of that exact mockup.`
-      : `- If a product appears, it MUST be that exact mockup. If the copy is not about the product, show the scene and do not invent another product.`;
-  return `Photorealistic image for a sales page selling "${ctx.productName}".
-Illustrate the copy next to this image.
-
-NEARBY COPY:
-${copy || '(none)'}
-
-ALT TEXT: ${img.alt || '(none)'}
-PAGE SECTION: ${img.section || 'unknown'}
-PACK COUNT FROM COPY: ${qty}
-
-Rules:
-- The picture MUST match what that copy is talking about. Read the offer: 2x / 3x / 6x means that many packs.
-${hasMockup ? `- Image 1 is the user-uploaded mockup — the ONLY allowed product. Same container, label artwork, colors, cap and silhouette.
-- If Image 1 is dark green/gold, every pack in the photo stays that green/gold pack. Never yellow, orange, purple, pink, red, grape, mango, or a cartoon stick unless Image 1 looks like that.
-- The product name in the copy may be leftover competitor text (e.g. "Jelly Stick"). Ignore typical colors for that name. The mockup photo wins.` : ''}
-${packLine}
-- Do not invent a competitor brand or a new SKU/colorway.
-${spec ? `Visual world: ${spec.stylePrefix}. Palette ${spec.primary} / ${spec.secondary} / ${spec.accent}.` : ''}
-${ctx.market ? `Any text painted in the image must be in the local language of ${ctx.market}.` : 'Little or no text in the image except a product label if the product is shown.'}
-No watermark.`.slice(0, 2200);
+  const copy = [img.context].filter(Boolean).join('\n');
+  return `Photorealistic editorial photograph illustrating this situation from a sales page.
+NEARBY COPY: ${copy || '(none)'}
+ALT: ${img.alt || '(none)'}
+SECTION: ${img.section || 'unknown'}
+Show people, a setting, a feeling or a result — not a product.
+FORBIDDEN in the frame: any retail pack, box, stick pack, sachet, pouch, bottle, jar, label, logo, brand name, supplement, or invented SKU. Do not draw "Jelly Stick" or any other product. No packaging.
+${spec ? `Visual world: ${spec.stylePrefix}. Palette ${spec.primary} / ${spec.secondary}.` : ''}
+${ctx.market ? `Any text in the image must be in the local language of ${ctx.market}.` : 'Little or no text in the image.'}
+No watermark.`.slice(0, 1600);
 }
 
 function collectCssBackgrounds(html: string, already: Set<string>): Array<{ src: string; context: string; section: string }> {
@@ -1711,7 +1745,7 @@ async function swipeImages(
     || usableImageUrl(sourceStills.find((m) => String(m.id).startsWith('step-mock-'))?.storedUrl)
     || usableImageUrl(sourceStills.find((m) => m.section === 'product')?.storedUrl);
   if (!thisStepPack) {
-    console.warn(`[swipe] step ${page.name}: no mockup for this page — product photos will be invented`);
+    console.warn(`[swipe] step ${page.name}: no mockup for this page — product slots stay empty / scene-only`);
   }
   const paints: PaintedMedia[] = readRestylePaints(out);
   const reuse = new Map<string, string>();
@@ -1725,67 +1759,29 @@ async function swipeImages(
     const qty = packQtyFromCopy(`${slot.alt || ''} ${slot.context || ''} ${slot.section || ''}`);
     const productShot = slotLooksProduct(ctx, slot);
     const lifestyle = slotLooksLifestyle(slot);
-    const packshotSlot = Boolean(thisStepPack) && productShot && !lifestyle && qty <= 1;
     const intentKey = `${qty}|${productShot ? 'p' : 's'}|${lifestyle ? 'life' : 'pack'}|${(slot.context || '').slice(0, 160).toLowerCase()}`;
-    const prompt = promptFromNearbyCopy(
-      ctx,
-      { alt: slot.alt, context: slot.context, section: slot.section },
-      productShot,
-      Boolean(thisStepPack),
-      qty,
-    );
-    const tick = () => touchPage(sb, page.funnelPageId, `Step ${ctx.pageIndex + 1}/${ctx.pageCount}: ChatGPT photo ${start + processed}/${images.length}…`);
+    const tick = () => touchPage(sb, page.funnelPageId, `Step ${ctx.pageIndex + 1}/${ctx.pageCount}: photo ${start + processed}/${images.length}…`);
     const common = { num_images: 1, output_format: 'png', quality: 'medium' as const };
     let falUrl: string | null = reuse.get(intentKey) || null;
 
-    if (!falUrl && packshotSlot) {
-      falUrl = thisStepPack;
-    } else if (!falUrl && thisStepPack && Date.now() < deadline - 50_000) {
-      const packPrompt = qty >= 2
-        ? `${prompt} Image 1 is the real mockup. Show exactly ${qty} of that pack together as a ${qty}x offer photo (neat row or cluster). Every unit identical to Image 1 — same colors and label. Do not show only one. Do not change the count. Do not invent a yellow/purple/red pack.`
-        : `${prompt} Composite Image 1 (the real mockup) into this scene. Keep that pack pixel-recognizable — same container, label, colors. Do not draw a different product or colorway.`;
+    // ChatGPT cannot reprint a SKU. Product slots get the file. Scenes never include a pack.
+    if (!falUrl && thisStepPack && (productShot || qty >= 2) && !lifestyle) {
+      falUrl = qty >= 2
+        ? (await tileMockup(sb, ctx.projectId, thisStepPack, qty)) || thisStepPack
+        : thisStepPack;
+    } else if (!falUrl && Date.now() < deadline - 50_000) {
       falUrl = await generateImageUrl(
-        IMG_MODEL_I2I,
+        IMG_MODEL_T2I,
         {
           ...common,
-          prompt: packPrompt,
-          image_urls: [thisStepPack],
+          prompt: scenePromptFromCopy(ctx, { alt: slot.alt, context: slot.context, section: slot.section }),
           image_size: falImageSize(slot),
         },
         90_000,
         tick,
       );
     }
-    if (!falUrl && Date.now() < deadline - 50_000) {
-      // Never text-to-image a product when we have the mockup — that invents
-      // yellow/purple/red SKUs from the leftover competitor name.
-      if (thisStepPack) {
-        falUrl = await generateImageUrl(
-          IMG_MODEL_I2I,
-          {
-            ...common,
-            prompt: `${prompt} Image 1 is the real mockup. Keep that exact pack if a product appears.`,
-            image_urls: [thisStepPack],
-            image_size: falImageSize(slot),
-          },
-          90_000,
-          tick,
-        );
-      } else {
-        falUrl = await generateImageUrl(
-          IMG_MODEL_T2I,
-          {
-            ...common,
-            prompt,
-            image_size: falImageSize(slot),
-          },
-          90_000,
-          tick,
-        );
-      }
-    }
-    // Never drop a single pack onto a 2x/3x/6x slot. Never invent a pack.
-    if (!falUrl && thisStepPack && productShot && qty <= 1) falUrl = thisStepPack;
+    if (!falUrl && thisStepPack && productShot) falUrl = thisStepPack;
     if (!falUrl) {
       console.warn(`[swipe] photo ${start + processed}/${images.length} failed (copy-driven)`);
       await touchPage(sb, page.funnelPageId, `Step ${ctx.pageIndex + 1}/${ctx.pageCount}: ChatGPT photo ${start + processed}/${images.length} failed — next…`);
@@ -2213,9 +2209,11 @@ export default async (req: Request) => {
   const mainImageUrl = typeof body.mainImageUrl === 'string' && body.mainImageUrl ? body.mainImageUrl : null;
   const imageMode = body.imageMode === 'affiliate' ? 'affiliate' : 'internal';
   const pages = (Array.isArray(body.pages) ? body.pages : []) as SwipePage[];
-  const allPages = (Array.isArray(body.allPages) && (body.allPages as SwipePage[]).length)
-    ? body.allPages as SwipePage[]
-    : pages;
+  const allPages = numberPagesOfferTypes(
+    (Array.isArray(body.allPages) && (body.allPages as SwipePage[]).length)
+      ? body.allPages as SwipePage[]
+      : pages,
+  );
   const pageIndex = Math.min(Math.max(0, Number(body.pageIndex) || 0), Math.max(0, allPages.length - 1));
   const phase: 'texts' | 'photos' = body.phase === 'photos' || body.skipTexts === true ? 'photos' : 'texts';
   const imageOffset = Math.max(0, Number(body.imageOffset) || 0);
