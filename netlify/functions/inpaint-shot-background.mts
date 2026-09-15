@@ -19,7 +19,7 @@ import { captionMasks, writeMaskVideo, maskIsTrustworthy } from './_shared/capti
  *  2. If text is STILL there, its YOLO detector simply can't see it (stylized
  *     CTA graphics like "CLICK BELOW" are never detected). Florence-2 OCR then
  *     locates the exact text boxes per sampled frame and those boxes are erased
- *     with ffmpeg delogo, active only around the times where text was seen.
+ *     with neural inpainting of the letter pixels only.
  *
  * Requires the REPLICATE_API_TOKEN env var on Netlify.
  * Body: { shotId, projectId }
@@ -453,6 +453,44 @@ async function resolveMaskModel(token: string, log: (...a: unknown[]) => void): 
 }
 
 /**
+ * Paste reconstructed pixels ONLY where the mask is white. Never ship the
+ * remover's full frame: it smears a caption-wide strip that reads as a
+ * blurred fascia. If both composites fail, the caller retries / keeps original.
+ */
+async function compositeThroughMask(opts: {
+  srcFile: string; reconFile: string; maskFile: string; outFile: string;
+  W: number; H: number; log: (...a: unknown[]) => void; tag: string;
+}): Promise<boolean> {
+  const { srcFile, reconFile, maskFile, outFile, W, H, log, tag } = opts;
+  const scale = `[1:v]scale=${W}:${H},setsar=1[recon];` +
+    `[2:v]scale=${W}:${H}:flags=neighbor,format=gray[mk];`;
+  try {
+    await run(FFMPEG, [
+      '-y', '-i', srcFile, '-i', reconFile, '-i', maskFile,
+      '-filter_complex', `${scale}[0:v][recon][mk]maskedmerge[v]`,
+      '-map', '[v]', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '18',
+      '-preset', 'veryfast', '-movflags', '+faststart', '-an', outFile,
+    ]);
+    return true;
+  } catch (e) {
+    log(`${tag}: maskedmerge failed (${(e as Error).message})`);
+  }
+  try {
+    await run(FFMPEG, [
+      '-y', '-i', srcFile, '-i', reconFile, '-i', maskFile,
+      '-filter_complex',
+      `${scale}[recon][mk]alphamerge[reconA];[0:v][reconA]overlay=0:0:format=auto[v]`,
+      '-map', '[v]', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '18',
+      '-preset', 'veryfast', '-movflags', '+faststart', '-an', outFile,
+    ]);
+    return true;
+  } catch (e) {
+    log(`${tag}: mask composite failed (${(e as Error).message}) — not shipping a smeared frame`);
+    return false;
+  }
+}
+
+/**
  * Clean ONE clip (whole or a single window) with the mask-driven neural remover.
  * This is the piece that used to be all of maskDrivenClean; it's unchanged in
  * behaviour, just parameterised on a pre-resolved model so windows can reuse it.
@@ -498,14 +536,11 @@ async function miniMaxClip(opts: MaskOpts & { model: ModelInfo }): Promise<{ fil
   const input: Record<string, unknown> = { [videoField]: videoUrl, [maskField]: maskUrl };
   // These removers work on a block of frames, so a clip longer than the default
   // comes back truncated. Ask for this clip's real length and size.
-  // Dilation and steps matter more than they look: with the model's defaults the
-  // caption came back as a smear that still read as letters, because the repaint
-  // stopped right at the glyph edges and the fill had too few steps to invent
-  // plausible background. Growing the mask inside the model and giving it more
-  // steps is what turns the smear into clean footage.
+  // Grow the mask only a couple of pixels: 10 dilation iterations used to fuse
+  // the letters into a caption-wide strip and the output was a blurred fascia.
   const wanted: Record<string, number> = {
     fps: Math.round(fps), num_frames: frames, width: W, height: H,
-    mask_dilation_iterations: 10, num_inference_steps: 12,
+    mask_dilation_iterations: 2, num_inference_steps: 20,
     ...(tuning || {}),
   };
   for (const [name, value] of Object.entries(wanted)) {
@@ -531,16 +566,22 @@ async function miniMaxClip(opts: MaskOpts & { model: ModelInfo }): Promise<{ fil
 
   const dl = await fetch(url);
   if (!dl.ok) { note(`could not download the result (${dl.status})`); return null; }
-  const file = path.join(workDir, `mask-clean_${path.basename(maskKey)}.mp4`);
-  fs.writeFileSync(file, Buffer.from(await dl.arrayBuffer()));
+  const raw = path.join(workDir, `mask-raw_${path.basename(maskKey)}.mp4`);
+  fs.writeFileSync(raw, Buffer.from(await dl.arrayBuffer()));
 
   // A shorter result means frames were dropped somewhere; that is worse than a
   // visible caption, so it goes back to the fallback.
-  const outDur = await probeDuration(file);
-  if (outDur < dur - 0.2) {
+  const outDur = await probeDuration(raw);
+  const usable = await ensureDuration(raw, dur, workDir, `mask_${path.basename(maskKey)}`);
+  if (!usable) {
     note(`result is ${outDur.toFixed(2)}s of ${dur.toFixed(2)}s — kept the fallback instead`);
     return null;
   }
+  const file = path.join(workDir, `mask-clean_${path.basename(maskKey)}.mp4`);
+  const ok = await compositeThroughMask({
+    srcFile, reconFile: usable, maskFile, outFile: file, W, H, log, tag: 'minimax',
+  });
+  if (!ok) { note('could not composite reconstructed letter pixels'); return null; }
   return { file, srcRgb, frames, band: cm.band };
 }
 
@@ -680,7 +721,7 @@ async function textMaskReconstruct(opts: {
   const input: Record<string, unknown> = { [videoField]: videoUrl, [maskField]: maskUrl };
   const wanted: Record<string, number> = {
     fps: Math.round(fps), num_frames: frames, width: W, height: H,
-    mask_dilation_iterations: 6, num_inference_steps: 20,
+    mask_dilation_iterations: 2, num_inference_steps: 20,
   };
   for (const [name, value] of Object.entries(wanted)) {
     const spec = props[name];
@@ -710,34 +751,10 @@ async function textMaskReconstruct(opts: {
   // Composite: take the reconstruction ONLY where the mask marks text (alpha),
   // overlay it on the untouched original. Everything but the letters is source.
   const file = path.join(workDir, `textclean_${tag}.mp4`);
-  try {
-    await run(FFMPEG, [
-      '-y', '-i', srcFile, '-i', usable, '-i', maskFile,
-      '-filter_complex',
-      `[1:v]scale=${W}:${H},setsar=1[recon];` +
-      `[2:v]scale=${W}:${H}:flags=neighbor,format=gray[mk];` +
-      `[recon][mk]alphamerge[reconA];` +
-      `[0:v][reconA]overlay=0:0:format=auto[v]`,
-      '-map', '[v]', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '18',
-      '-preset', 'veryfast', '-movflags', '+faststart', '-an', file,
-    ]);
-  } catch (e) {
-    // alphamerge can fail on odd sizes; the model already reconstructed the
-    // masked letters in the full frame, so scale that output to source size.
-    log(`${tag}: text composite failed (${(e as Error).message}) — using reconstructed frame`);
-    try {
-      await run(FFMPEG, [
-        '-y', '-i', usable,
-        '-vf', `scale=${W}:${H}:flags=lanczos,setsar=1`,
-        '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '18',
-        '-preset', 'veryfast', '-movflags', '+faststart', '-an', file,
-      ]);
-    } catch (e2) {
-      log(`${tag}: reconstructed frame scale failed (${(e2 as Error).message})`);
-      return null;
-    }
-  }
-  return file;
+  const ok = await compositeThroughMask({
+    srcFile, reconFile: usable, maskFile, outFile: file, W, H, log, tag,
+  });
+  return ok ? file : null;
 }
 
 /** Cut [t0, t0+len) out of a clip, frame-accurate, re-encoded to H.264. */
@@ -784,8 +801,10 @@ async function detectorInpaintClip(opts: {
   W: number; H: number; dur: number;
   workDir: string; deadline: number; tag: string;
   log: (...a: unknown[]) => void;
+  srcFile?: string;
+  maskFile?: string | null;
 }): Promise<string | null> {
-  const { token, videoUrl, W, H, dur, workDir, deadline, tag, log } = opts;
+  const { token, videoUrl, W, H, dur, workDir, deadline, tag, log, srcFile, maskFile } = opts;
   let version: string;
   try {
     version = await resolveVersion(token, REPLICATE_MODEL);
@@ -800,7 +819,7 @@ async function detectorInpaintClip(opts: {
       method: 'hybrid',
       resolution: 'original',
       conf_threshold: 0.15,
-      margin: 15,
+      margin: 4,
       detection_interval: 1,
     }, deadline, log);
   } catch (e) {
@@ -828,9 +847,23 @@ async function detectorInpaintClip(opts: {
     ]);
   } catch (e) {
     log(`${tag}: detector scale failed (${(e as Error).message})`);
-    return usable;
+    return null;
   }
-  return file;
+  if (srcFile && maskFile) {
+    const composited = path.join(workDir, `detcomp_${tag}.mp4`);
+    const ok = await compositeThroughMask({
+      srcFile, reconFile: file, maskFile, outFile: composited, W, H, log, tag: `${tag}_det`,
+    });
+    if (!ok) {
+      log(`${tag}: detector output was a smear strip — discarded`);
+      return null;
+    }
+    return composited;
+  }
+  // No letter mask: the detector inpaints a box around each word, which is the
+  // blurred fascia. Don't ship that.
+  log(`${tag}: detector has no letter mask — not shipping a box smear`);
+  return null;
 }
 
 /**
@@ -1043,9 +1076,8 @@ export async function cleanClipFile(opts: {
   keyBase: string;       // prefix for temporary mask/pass uploads
   log: (...a: unknown[]) => void;
   jitterMs?: number;     // random pre-delay to spread parallel shot jobs (0 for one-offs)
-  // When the caption can't be reconstructed, ERASE its band (soft blur) instead
-  // of giving up. Shots leave a clip out of the pool (default); a whole video
-  // wants the text gone even if the patch is visible, so it sets this true.
+  // When the caption can't be reconstructed, do NOT blur a strip over it.
+  // Shots leave the clip out of the pool; whole-video callers retry neurally.
   eraseIfUnreadable?: boolean;
 }): Promise<CleanResult> {
   const {
@@ -1141,7 +1173,7 @@ export async function cleanClipFile(opts: {
         method: 'hybrid',
         resolution: 'original',
         conf_threshold: 0.15,
-        margin: 15,
+        margin: 4,
         detection_interval: 1,
       },
     });
@@ -1250,17 +1282,9 @@ export async function cleanClipFile(opts: {
         alignedWithSource = false;
         log(`stage 2a: dropped ${leftover.bad.length}/${leftover.frames} frame(s) still showing text`);
       } else {
-        const rect = toRect({ b: leftover.box, t0: 0, t1: dur + 1 }, W, H);
-        if (rect) {
-          const patched = path.join(workDir, 'clean2a.mp4');
-          await run(FFMPEG, [
-            '-y', '-i', outFile, '-filter_complex', buildEraseGraph([rect]),
-            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-an', patched,
-          ]);
-          fs.copyFileSync(patched, outFile);
-          note = `text on ${leftover.bad.length}/${leftover.frames} frames — area erased for the whole clip`;
-          log(`stage 2a: ${note}`);
-        }
+        unusable = true;
+        note = `caption survived on ${leftover.bad.length}/${leftover.frames} frames — not blurring a strip over it`;
+        log(`stage 2a: ${note}`);
       }
     } catch (e) {
       note = `frame cleanup skipped: ${(e as Error).message}`;
@@ -1319,13 +1343,9 @@ export async function cleanClipFile(opts: {
         .filter((r): r is Rect => !!r);
 
       if (rects.length) {
-        const finalFile = path.join(workDir, 'clean2.mp4');
-        await run(FFMPEG, [
-          '-y', '-i', outFile, '-filter_complex', buildEraseGraph(rects),
-          '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-an', finalFile,
-        ]);
-        fs.copyFileSync(finalFile, outFile);
-        log(`stage 2b: erased ${rects.length} text region(s)`);
+        unusable = true;
+        note = `OCR still sees ${rects.length} text region(s) — not blurring them`;
+        log(`stage 2b: ${note}`);
       } else if (!note) {
         note = 'no leftover text boxes located by OCR';
       }
@@ -1456,18 +1476,21 @@ async function cleanWholeAd(
     const segDur = dur / nseg;
 
     type WinState = { s: 'todo' | 'clean' | 'original' | 'failed'; key?: string; tries?: number };
-    type Progress = { src: string; nseg: number; runs: number; wins: WinState[] };
+    // v=2: letter-tight mask + composite through those pixels (no caption-bar smear).
+    type Progress = { src: string; nseg: number; runs: number; v?: number; wins: WinState[] };
+    const MASK_PROGRESS_V = 2;
     const progressKey = `${projectId}/ads-clean/${adId}_progress.json`;
     let prog: Progress | null = null;
     try {
       const { data } = await supabase.storage.from(BUCKET).download(progressKey);
       if (data) prog = JSON.parse(Buffer.from(await data.arrayBuffer()).toString('utf8')) as Progress;
     } catch { /* no previous progress */ }
-    if (!prog || prog.src !== (claimed.file_path as string) || prog.nseg !== nseg || !Array.isArray(prog.wins)) {
+    if (!prog || prog.src !== (claimed.file_path as string) || prog.nseg !== nseg || prog.v !== MASK_PROGRESS_V || !Array.isArray(prog.wins)) {
       prog = {
         src: claimed.file_path as string,
         nseg,
         runs: 0,
+        v: MASK_PROGRESS_V,
         wins: Array.from({ length: nseg }, () => ({ s: 'todo' as const, tries: 0 })),
       };
     }
@@ -1574,6 +1597,7 @@ async function cleanWholeAd(
       if (!rebuiltFile && winUrl) {
         rebuiltFile = await detectorInpaintClip({
           token, videoUrl: winUrl, W, H, dur: len, workDir, deadline, tag: `w${i}`, log,
+          srcFile: segFile, maskFile,
         });
         if (rebuiltFile) log(`window ${i}: detector reconstructed the caption pixels`);
       }
@@ -1898,7 +1922,7 @@ export default async (req: Request) => {
           method: 'hybrid',          // context-aware inpainting (best for complex backgrounds)
           resolution: 'original',
           conf_threshold: 0.15,      // default 0.25 misses line-end words (left "OUR"/"NUTES)" behind)
-          margin: 15,                // wider box so whole caption lines get erased
+          margin: 4,                 // tight box — a wide margin painted a blurred fascia
           detection_interval: 1,     // detect on every frame — clips are short
         },
       });
@@ -2004,19 +2028,11 @@ export default async (req: Request) => {
           alignedWithSource = false;
           log(`stage 2a: dropped ${leftover.bad.length}/${leftover.frames} frame(s) still showing text`);
         } else {
-          // Too many to freeze over — erase the caption area for the whole clip
-          // instead, constantly, so nothing flickers.
-          const rect = toRect({ b: leftover.box, t0: 0, t1: dur + 1 }, W, H);
-          if (rect) {
-            const patched = path.join(workDir, 'clean2a.mp4');
-            await run(FFMPEG, [
-              '-y', '-i', outFile, '-filter_complex', buildEraseGraph([rect]),
-              '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-an', patched,
-            ]);
-            fs.copyFileSync(patched, outFile);
-            note = `text on ${leftover.bad.length}/${leftover.frames} frames — area erased for the whole clip`;
-            log(`stage 2a: ${note}`);
-          }
+          // Too many leftover frames to freeze. Blurring the caption strip was
+          // rejected ("si vede la fascia") — leave the shot out of the pool.
+          unusable = true;
+          note = `caption survived on ${leftover.bad.length}/${leftover.frames} frames — shot left out of the pool`;
+          log(`stage 2a: ${note}`);
         }
       } catch (e) {
         note = `frame cleanup skipped: ${(e as Error).message}`;
@@ -2079,13 +2095,9 @@ export default async (req: Request) => {
           .filter((r): r is Rect => !!r);
 
         if (rects.length) {
-          const finalFile = path.join(workDir, 'clean2.mp4');
-          await run(FFMPEG, [
-            '-y', '-i', outFile, '-filter_complex', buildEraseGraph(rects),
-            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-an', finalFile,
-          ]);
-          fs.copyFileSync(finalFile, outFile);
-          log(`stage 2b: erased ${rects.length} text region(s)`);
+          unusable = true;
+          note = `OCR still sees ${rects.length} text region(s) — not blurring them`;
+          log(`stage 2b: ${note}`);
         } else if (!note) {
           note = 'no leftover text boxes located by OCR';
         }

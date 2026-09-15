@@ -17,7 +17,7 @@ import { run, FFMPEG } from './video';
  */
 
 const COLOR_TOL = 110;  // L1 distance from the caption colour that still counts
-const DILATE = 8;       // px grown around matches (antialiasing, outline, shadow)
+const DILATE = 8;       // scoring only: joins a line so we can tell text from scatter
 // Glyphs are judged after growing them sideways only. A caption is a horizontal
 // run of letters with whatever else is on screen sitting above or below it, so
 // growing wide joins the letters into one line while growing tall welds the line
@@ -27,6 +27,11 @@ const DILATE = 8;       // px grown around matches (antialiasing, outline, shado
 // stay separate blobs and only one word of the line survives the shape test.
 const SHAPE_DILATE_X = 8;
 const SHAPE_DILATE_Y = 2;
+// Pixels grown around kept glyphs in the MASK THE MODEL SEES. Bigger than this
+// and the letters fuse into a solid caption bar — MiniMax then repaints the
+// whole strip and the result is a visible blurred fascia, not reconstructed
+// letter pixels.
+const MASK_EDGE = 2;
 // Height ceilings for "this is a line of words", as a share of the frame: one
 // line on its own, and a whole caption block after the lines have been grown
 // together. Measured on these shots a single line runs about 7% and a two-line
@@ -399,20 +404,19 @@ function familyMask(
         if (outlined) hit[p] = 1;
       }
     }
-    // Judge the lightly grown glyphs, then grow only what was kept: the shape
-    // test sees separate text lines, and the mask handed to the remover still
-    // carries the margin it needs for outlines and antialiasing.
+    // Judge the lightly grown glyphs, then score a fatter copy. The mask handed
+    // to the remover stays tight to the letters: a full-line grow used to fuse
+    // them into a solid bar, and the model painted that bar as a blurred fascia.
     const shape = dilate(hit, w, h, y0, y1, SHAPE_DILATE_X, SHAPE_DILATE_Y);
     keepTextBlobs(shape, w, y0, y1, centre, LINE_TALLEST);
-    // Only what the shape test kept is grown into the mask the remover gets, so
-    // the extra margin never reaches back to the graphics that were excluded.
     const grown = dilate(shape, w, h, y0, y1, DILATE, DILATE);
     const kept = keepTextBlobs(grown, w, y0, y1, centre, BLOCK_TALLEST);
+    const tight = dilate(shape, w, h, y0, y1, MASK_EDGE, MASK_EDGE);
     // Captions often cover only part of a clip. Empty frames are fine — the mask
     // is simply blank there — so they must not drag the shape score down.
     if (kept.px) { rowConc += kept.fill; withText++; }
     perFrame.push(kept.px);
-    masks.push(grown);
+    masks.push(tight);
   }
 
   return {
@@ -425,8 +429,8 @@ function familyMask(
 
 /**
  * Encode the masks as a white-on-black video at the source resolution, which is
- * the shape the removers expect. Scaling up from the analysis resolution softens
- * edges, so the mask is grown again afterwards.
+ * the shape the removers expect. Nearest-neighbour scale keeps letter edges;
+ * extra ffmpeg dilation used to turn the line into a solid bar.
  */
 export async function writeMaskVideo(
   masks: Uint8Array[], w: number, h: number, fps: number,
@@ -443,7 +447,7 @@ export async function writeMaskVideo(
   await run(FFMPEG, [
     '-y', '-f', 'rawvideo', '-pix_fmt', 'gray', '-s', `${w}x${h}`, '-r', String(fps),
     '-i', raw,
-    '-vf', `scale=${outW}:${outH}:flags=neighbor,dilation,dilation,format=yuv420p`,
+    '-vf', `scale=${outW}:${outH}:flags=neighbor,format=yuv420p`,
     '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '8', out,
   ]);
   try { fs.rmSync(raw, { force: true }); } catch { /* ignore */ }
