@@ -13,9 +13,9 @@ export const maxDuration = 120;
 /**
  * Enqueue a video for one creative.
  *
- * mode 'localize' (the creative panel): keep the ORIGINAL video, swap in a
- *   translated voiceover + subtitles in the chosen language. Driven by the
- *   creative's own transcript. No shot pool involved.
+ * mode 'localize' (the creative panel): keep the cleaned footage when it
+ *   exists (else the original), swap in a voiceover + burned subtitles.
+ *   Copy is either the pasted `script` or the creative's transcript.
  * mode 'build' (legacy / compose): assemble a new video from the project's real
  *   shot pool, driven by the creative's script or a pasted copy.
  *
@@ -43,7 +43,7 @@ export async function POST(
 
   const { data: ad } = await supabaseAdmin
     .from('competitor_ads')
-    .select('id, rewritten_script, body_text, file_path, media_type')
+    .select('id, rewritten_script, body_text, file_path, media_type, clean_full_path')
     .eq('id', adIdNum)
     .eq('brand_id', brandIdNum)
     .eq('project_id', id)
@@ -52,18 +52,25 @@ export async function POST(
 
   const a = ad as {
     rewritten_script?: string; body_text?: string;
-    file_path?: string; media_type?: string;
+    file_path?: string; media_type?: string; clean_full_path?: string | null;
   };
 
-  // Localize dubs the original video, so it needs the actual video and its
-  // spoken transcript (not the rewritten-for-my-product script).
+  // Localize dubs the cleaned video when one exists, otherwise the original.
+  // Copy can be pasted (`script`) or fall back to the creative's transcript.
   if (mode === 'localize') {
-    if (a.media_type !== 'video' || !a.file_path) {
-      return NextResponse.json({ error: 'Localize needs the original video — this creative has none.' }, { status: 400 });
+    const sourcePath = String(a.clean_full_path || a.file_path || '').trim();
+    if (a.media_type !== 'video' || !sourcePath) {
+      return NextResponse.json({ error: 'Localize needs a video — this creative has none.' }, { status: 400 });
     }
     const transcript = String(a.body_text || a.rewritten_script || '').trim();
-    if (transcript.length < 20) {
-      return NextResponse.json({ error: 'No transcript yet. Click “Extract text” first.' }, { status: 400 });
+    const usingCustomCopy = customCopy.length >= 20;
+    const copy = usingCustomCopy ? customCopy : transcript;
+    if (copy.length < 20) {
+      return NextResponse.json({
+        error: usingCustomCopy
+          ? 'Paste a bit more copy (min ~20 chars).'
+          : 'No transcript yet. Click “Extract text” first, or paste your own copy below.',
+      }, { status: 400 });
     }
 
     const { data: active } = await supabaseAdmin
@@ -81,14 +88,14 @@ export async function POST(
       return NextResponse.json({ jobId: active.id, status: active.status, queued: false });
     }
 
-    const scenes = await splitScriptToScenes(transcript, language);
+    const scenes = await splitScriptToScenes(copy, language);
     if (scenes.length === 0) {
-      return NextResponse.json({ error: 'Could not split the transcript into lines' }, { status: 500 });
+      return NextResponse.json({ error: 'Could not split the copy into lines' }, { status: 500 });
     }
 
     const job = await insertBuildJob({
       project_id: id, brand_id: brandIdNum, ad_id: adIdNum,
-      voice, scenes, language: language || null, mode: 'localize', source_path: a.file_path,
+      voice, scenes, language: language || null, mode: 'localize', source_path: sourcePath,
     });
     if (!job) return NextResponse.json({ error: 'Failed to queue localize' }, { status: 500 });
 
@@ -99,6 +106,8 @@ export async function POST(
     return NextResponse.json({
       jobId: job.id, status: job.status, scenes: scenes.length,
       language: language || null, mode: 'localize', queued: true,
+      usedClean: Boolean(a.clean_full_path),
+      usedCustomCopy: usingCustomCopy,
     });
   }
 

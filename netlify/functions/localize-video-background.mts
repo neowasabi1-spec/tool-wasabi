@@ -8,9 +8,9 @@ import {
 
 /**
  * Background function that LOCALIZES an existing creative video: it keeps the
- * original footage, replaces the audio with a translated voiceover, and burns
- * our own subtitles in the target language. No shot pool — the visual is the
- * source video itself, looped or trimmed to the voiceover length.
+ * cleaned footage (or original if none), replaces the audio with a voiceover
+ * from the job's copy, and burns matching subtitles. No shot pool — the
+ * visual is the source video itself, looped or trimmed to the voiceover length.
  *
  * Triggered by the ads/[adId]/build-video route with mode 'localize'.
  * Body: { jobId, projectId, brandId, adId }

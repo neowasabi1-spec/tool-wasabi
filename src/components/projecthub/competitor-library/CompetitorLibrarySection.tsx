@@ -546,7 +546,7 @@ function ShotsGrid({
 // with player, download, transcript + copy, and delete. Reused by the
 // per-competitor view and the flat "All creatives" view.
 function CreativeDetailPanel({
-  ad, placeholderIndex, brandName, projectId, onClose, onSaveTemplate, onDelete, onTranscribed, onWinnerChange,
+  ad, placeholderIndex, brandName, projectId, onClose, onSaveTemplate, onDelete, onTranscribed, onWinnerChange, onOpenCreated,
 }: {
   ad: CompetitorAd;
   placeholderIndex: number;
@@ -557,6 +557,7 @@ function CreativeDetailPanel({
   onDelete: (id: number) => void;
   onTranscribed?: (adId: number, text: string) => void;
   onWinnerChange?: (adId: number, isWinner: boolean) => void;
+  onOpenCreated?: () => void;
 }) {
   const { toast } = useToast();
   const [copied, setCopied] = useState(false);
@@ -681,10 +682,14 @@ function CreativeDetailPanel({
   // otherwise it lives permanently in the "Created videos" tab, not pinned here.
   const [showInline, setShowInline] = useState(false);
   const [voice, setVoice] = useState("alloy");
-  // Localize the original video into another language: translated voiceover +
-  // subtitles over the same footage. Empty = keep the transcript's language.
+  // Localize the cleaned (or original) video: new voiceover + subtitles.
+  // Empty language = keep the copy's language. Copy is either the transcript
+  // or text pasted in this panel.
   const [buildLang, setBuildLang] = useState("");
   const [buildLangOther, setBuildLangOther] = useState("");
+  const [copyMode, setCopyMode] = useState<"original" | "custom">("original");
+  const [localizeCopy, setLocalizeCopy] = useState("");
+  useEffect(() => { setCopyMode("original"); setLocalizeCopy(""); }, [ad.id]);
   const [previewVoiceLoading, setPreviewVoiceLoading] = useState(false);
   const previewAudio = useRef<HTMLAudioElement | null>(null);
   const previewVoice = async (v: string) => {
@@ -729,27 +734,41 @@ function CreativeDetailPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ad.id]);
   const buildVideo = async () => {
+    const language = buildLang === LANGUAGE_OTHER ? buildLangOther.trim() : buildLang;
+    const custom = localizeCopy.trim();
+    if (copyMode === "custom" && custom.length < 20) {
+      toast({ title: "Paste a bit more copy (min ~20 chars)", variant: "destructive" });
+      return;
+    }
+    if (copyMode === "original" && text.trim().length < 20) {
+      toast({ title: "Extract the transcript first, or switch to My copy and paste one.", variant: "destructive" });
+      return;
+    }
     setBuildStatus("pending");
     setBuildError("");
     setShowInline(true);
-    const language = buildLang === LANGUAGE_OTHER ? buildLangOther.trim() : buildLang;
     try {
       const r = await fetch(`/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/${ad.id}/build-video`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: "localize", voice, language }),
+        body: JSON.stringify({
+          mode: "localize", voice, language,
+          ...(copyMode === "custom" ? { script: custom } : {}),
+        }),
       });
       const j = await r.json().catch(() => ({}));
       if (r.ok) {
         toast({
-          title: j.queued === false ? "Already building" : "Queued for build",
-          description: `${j.scenes || ""} scenes — real clean footage only.`,
+          title: j.queued === false ? "Already building" : "Voice + subtitles queued",
+          description: cleanPath
+            ? "Using the cleaned video. When it’s done you’ll find it in Created videos."
+            : "When it’s done you’ll find it in Created videos.",
         });
         if (!buildPoll.current) buildPoll.current = setInterval(loadBuildStatus, 5000);
       } else {
         setBuildStatus("");
-        toast({ title: j.error || "Could not start build", variant: "destructive" });
+        toast({ title: j.error || "Could not start localize", variant: "destructive" });
       }
-    } catch { setBuildStatus(""); toast({ title: "Could not start build", variant: "destructive" }); }
+    } catch { setBuildStatus(""); toast({ title: "Could not start localize", variant: "destructive" }); }
   };
   // A background function that dies without writing an outcome leaves the row
   // spinning forever, so there has to be a way out of it.
@@ -1011,8 +1030,37 @@ function CreativeDetailPanel({
                 <p className="text-[9px] text-muted-foreground uppercase tracking-widest font-semibold">Localize video (voiceover + subtitles)</p>
               </div>
               <p className="text-[10px] text-muted-foreground leading-snug">
-                Keeps the <b>original footage</b> and swaps in a translated voiceover + subtitles in the chosen language, from this creative’s transcript. To compose a brand-new video from your own copy, use the <b>Shots</b> tab. (Extract the transcript first; needs an OpenAI key for the voice.)
+                {cleanPath
+                  ? <>Uses the <b>cleaned video</b> above. Pick a language (e.g. German) and a voice, then either reuse the original transcript or paste your own copy. The result is saved in <b>Created videos</b>.</>
+                  : <>Clean the video above first so burned-in captions are gone — otherwise this dubs the original footage. Pick a language and a voice, reuse the transcript or paste copy. Saved in <b>Created videos</b>.</>}
               </p>
+              <div className="flex items-center gap-1 border border-border rounded-lg p-0.5 bg-muted/30 w-fit">
+                {([["original", "Original copy"], ["custom", "My copy"]] as const).map(([v, l]) => (
+                  <button
+                    key={v}
+                    type="button"
+                    onClick={() => {
+                      setCopyMode(v);
+                      if (v === "custom" && !localizeCopy.trim()) setLocalizeCopy(text || script || "");
+                    }}
+                    className={`px-2.5 py-1 text-[10px] rounded-md font-medium transition-colors ${copyMode === v ? "bg-white shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"}`}>
+                    {l}
+                  </button>
+                ))}
+              </div>
+              {copyMode === "original" ? (
+                text.trim().length >= 20
+                  ? <p className="text-[11px] text-muted-foreground leading-relaxed whitespace-pre-wrap max-h-24 overflow-y-auto pr-1 bg-muted/40 rounded-lg p-2">{text}</p>
+                  : <p className="text-[11px] text-amber-700">No transcript yet. Click “Extract text” above, or switch to <b>My copy</b> and paste one.</p>
+              ) : (
+                <textarea
+                  value={localizeCopy}
+                  onChange={(e) => setLocalizeCopy(e.target.value)}
+                  placeholder="Paste the copy for the new voiceover and subtitles…"
+                  rows={5}
+                  className="w-full text-xs rounded-md border border-border bg-background px-2.5 py-2 leading-relaxed resize-y min-h-[5rem]"
+                />
+              )}
               <div className="flex items-center gap-2">
                 <select
                   value={buildLang}
@@ -1091,8 +1139,13 @@ function CreativeDetailPanel({
                       </button>
                     </div>
                   </div>
-                  <p className="text-[10px] text-muted-foreground flex items-center gap-1">
+                  <p className="text-[10px] text-muted-foreground flex items-center gap-1 flex-wrap">
                     <Sparkles className="w-3 h-3 text-primary" /> Saved to the <b>Created videos</b> tab.
+                    {onOpenCreated && (
+                      <button type="button" onClick={onOpenCreated} className="font-semibold text-primary hover:underline">
+                        Open it
+                      </button>
+                    )}
                   </p>
                 </div>
               )}
@@ -1372,7 +1425,7 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
 }
 
 // ── COMPETITOR DETAIL VIEW ──
-function CompetitorDetail({ projectId, competitor, onBack }: { projectId: string; competitor: CompetitorWithStats; onBack: () => void }) {
+function CompetitorDetail({ projectId, competitor, onBack, onOpenCreated }: { projectId: string; competitor: CompetitorWithStats; onBack: () => void; onOpenCreated?: () => void }) {
   const { toast } = useToast();
   const [ads, setAds] = useState<CompetitorAd[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1806,6 +1859,7 @@ function CompetitorDetail({ projectId, competitor, onBack }: { projectId: string
           onDelete={(id) => { delAd(id); setDetailAd(null); }}
           onTranscribed={(adId, t) => setAds(p => p.map(a => a.id === adId ? { ...a, body_text: t } : a))}
           onWinnerChange={(adId, w) => setAds(p => p.map(a => a.id === adId ? { ...a, is_winner: w } : a))}
+          onOpenCreated={onOpenCreated}
         />
       )}
 
@@ -1885,7 +1939,7 @@ function CompetitorDetail({ projectId, competitor, onBack }: { projectId: string
 // ── ALL CREATIVES (flat) VIEW ──
 type CreativeWithBrand = CompetitorAd & { brand_name: string };
 
-function AllCreativesView({ projectId }: { projectId: string }) {
+function AllCreativesView({ projectId, onOpenCreated }: { projectId: string; onOpenCreated?: () => void }) {
   const { toast } = useToast();
   const [creatives, setCreatives] = useState<CreativeWithBrand[]>([]);
   const [loading, setLoading] = useState(true);
@@ -2030,6 +2084,7 @@ function AllCreativesView({ projectId }: { projectId: string }) {
           onDelete={() => { del(detailAd); setDetailAd(null); }}
           onTranscribed={(adId, t) => setCreatives(p => p.map(a => a.id === adId ? { ...a, body_text: t } : a))}
           onWinnerChange={(adId, w) => setCreatives(p => p.map(a => a.id === adId ? { ...a, is_winner: w } : a))}
+          onOpenCreated={onOpenCreated}
         />
       )}
     </div>
@@ -3369,7 +3424,7 @@ function GeneratedVideosView({ projectId }: { projectId: string }) {
         <div>
           <h3 className="text-lg font-bold text-foreground">Created videos</h3>
           <p className="text-sm text-muted-foreground mt-0.5">
-            Videos composed from your copy + real competitor footage. Make more with <b>Create video from copy</b> on the Shots tab.
+            Videos with new voiceover + subtitles, and videos composed from copy + real footage. Localize a cleaned ad from Ads Library, or make more with <b>Create video from copy</b> on the Shots tab.
           </p>
         </div>
         <Button variant="outline" size="sm" onClick={load} className="gap-1.5 h-8">
@@ -3384,7 +3439,7 @@ function GeneratedVideosView({ projectId }: { projectId: string }) {
           <Sparkles className="w-12 h-12 text-muted-foreground/30 mx-auto mb-3" />
           <p className="text-sm font-semibold text-foreground mb-1">No created videos yet</p>
           <p className="text-xs text-muted-foreground max-w-md mx-auto">
-            Go to the <b>Shots</b> tab, click <b>Create video from copy</b>, paste your script. When the build finishes, the file appears here — play or download it.
+            Go to an ad, clean the subtitles, then <b>Localize</b> with German (or any language) and a voice — or use the <b>Shots</b> tab → <b>Create video from copy</b>. When a build finishes, the file appears here.
           </p>
         </div>
       ) : (
@@ -3673,7 +3728,7 @@ function KpiCard({ children }: { children: ReactNode }) {
   return <div className="bg-card border border-border rounded-2xl p-4 flex flex-col">{children}</div>;
 }
 
-function SectorOverview({ projectId, onOpenBrand }: { projectId: string; onOpenBrand?: (b: CompetitorWithStats) => void }) {
+function SectorOverview({ projectId, onOpenBrand, onOpenCreated }: { projectId: string; onOpenBrand?: (b: CompetitorWithStats) => void; onOpenCreated?: () => void }) {
   const { toast } = useToast();
   const [brands, setBrands] = useState<CompetitorWithStats[]>([]);
   const [creatives, setCreatives] = useState<CreativeWithBrand[]>([]);
@@ -4057,6 +4112,7 @@ function SectorOverview({ projectId, onOpenBrand }: { projectId: string; onOpenB
           onDelete={() => { delAd(detailAd); setDetailAd(null); }}
           onTranscribed={(adId, t) => setCreatives(p => p.map(a => a.id === adId ? { ...a, body_text: t } : a))}
           onWinnerChange={(adId, w) => setCreatives(p => p.map(a => a.id === adId ? { ...a, is_winner: w } : a))}
+          onOpenCreated={onOpenCreated}
         />
       )}
     </div>
@@ -4382,7 +4438,7 @@ export function CompetitorLibrarySection({ projectId }: { projectId: string }) {
           ))}
         </div>
         {buildBanner}
-        <CompetitorDetail projectId={projectId} competitor={selected} onBack={() => setSelected(null)} />
+        <CompetitorDetail projectId={projectId} competitor={selected} onBack={() => setSelected(null)} onOpenCreated={() => { setTab("created"); setSelected(null); }} />
       </div>
     );
   }
@@ -4405,7 +4461,7 @@ export function CompetitorLibrarySection({ projectId }: { projectId: string }) {
       {buildBanner}
 
       {tab === "overview" && (
-        <SectorOverview projectId={projectId} onOpenBrand={(b) => { setTab("ads"); setSelected(b); }} />
+        <SectorOverview projectId={projectId} onOpenBrand={(b) => { setTab("ads"); setSelected(b); }} onOpenCreated={() => { setTab("created"); setSelected(null); }} />
       )}
 
       {tab === "landings" && <CompetitorLandingsView projectId={projectId} />}
@@ -4428,7 +4484,7 @@ export function CompetitorLibrarySection({ projectId }: { projectId: string }) {
           </div>
           {adsView === "by"
             ? <CompetitorList projectId={projectId} onSelect={setSelected} />
-            : <AllCreativesView projectId={projectId} />}
+            : <AllCreativesView projectId={projectId} onOpenCreated={() => { setTab("created"); setSelected(null); }} />}
         </div>
       )}
     </div>
