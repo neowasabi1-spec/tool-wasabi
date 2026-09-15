@@ -271,6 +271,29 @@ export function analyzeLeftoverText(
   };
 }
 
+/**
+ * Share of pixels that differ a lot between two clips. A caption inpaint
+ * changes a few percent (the letters). Replacing / stretching the whole frame
+ * lights up most of the picture — that's how YOLO "spaccava i frame".
+ */
+export function changedPixelCoverage(orig: Buffer, recon: Buffer, w: number, h: number): number {
+  const px = w * h;
+  const fsz = px * 3;
+  const frames = Math.min(Math.floor(orig.length / fsz), Math.floor(recon.length / fsz));
+  if (!frames || !px) return 1;
+  let changed = 0;
+  const total = frames * px;
+  for (let f = 0; f < frames; f++) {
+    for (let p = 0; p < px; p++) {
+      const i = f * fsz + p * 3;
+      const d = Math.abs(orig[i] - recon[i]) + Math.abs(orig[i + 1] - recon[i + 1]) +
+        Math.abs(orig[i + 2] - recon[i + 2]);
+      if (d > 90) changed++;
+    }
+  }
+  return changed / total;
+}
+
 /** Raw RGB frames of a clip, downscaled so the whole clip fits in memory. */
 async function rgbFrames(
   file: string, W: number, H: number, dur: number, fps: number, workDir: string,
@@ -479,13 +502,37 @@ async function compositeThroughMask(opts: {
     await run(FFMPEG, [
       '-y', '-i', srcFile, '-i', reconFile, '-i', maskFile,
       '-filter_complex',
-      `${scale}[recon][mk]alphamerge[reconA];[0:v][reconA]overlay=0:0:format=auto[v]`,
+      `${scale}[recon][mk]alphamerge[reconA];[0:v][reconA]overlay=0:0:format=auto:eof_action=pass:repeatlast=0[v]`,
       '-map', '[v]', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '18',
       '-preset', 'veryfast', '-movflags', '+faststart', '-an', outFile,
     ]);
     return true;
   } catch (e) {
     log(`${tag}: mask composite failed (${(e as Error).message}) — not shipping a smeared frame`);
+    return false;
+  }
+}
+
+/** Take reconstructed pixels only where they differ from the source. Base is always original frames. */
+async function compositeChangedPixels(opts: {
+  srcFile: string; reconFile: string; outFile: string;
+  W: number; H: number; log: (...a: unknown[]) => void; tag: string;
+}): Promise<boolean> {
+  const { srcFile, reconFile, outFile, W, H, log, tag } = opts;
+  try {
+    await run(FFMPEG, [
+      '-y', '-i', srcFile, '-i', reconFile,
+      '-filter_complex',
+      `[1:v]scale=${W}:${H}:flags=lanczos,setsar=1[r];` +
+      `[0:v][r]blend=all_mode=difference,format=gray,` +
+      `lut=y='if(gte(val\\,32),255,0)',dilation[mk];` +
+      `[0:v][r][mk]maskedmerge[v]`,
+      '-map', '[v]', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '18',
+      '-preset', 'veryfast', '-movflags', '+faststart', '-an', outFile,
+    ]);
+    return true;
+  } catch (e) {
+    log(`${tag}: changed-pixel composite failed (${(e as Error).message})`);
     return false;
   }
 }
@@ -791,18 +838,19 @@ async function ensureDuration(
 }
 
 /**
- * YOLO + context-aware inpainting (same neural remover the shots pipeline uses).
- * Used when MiniMax cannot reconstruct this window — still pixel reconstruction,
- * not a blur/delogo patch.
+ * YOLO finds burned-in text and inpaints those boxes. The original frames are
+ * the base: we never ship YOLO's re-encoded/stretched clip as the video.
  */
 async function detectorInpaintClip(opts: {
   token: string;
   videoUrl: string;
-  W: number; H: number; dur: number;
+  srcFile: string;
+  maskFile?: string | null;
+  W: number; H: number; fps: number; dur: number;
   workDir: string; deadline: number; tag: string;
   log: (...a: unknown[]) => void;
 }): Promise<string | null> {
-  const { token, videoUrl, W, H, dur, workDir, deadline, tag, log } = opts;
+  const { token, videoUrl, srcFile, maskFile, W, H, fps, dur, workDir, deadline, tag, log } = opts;
   let version: string;
   try {
     version = await resolveVersion(token, REPLICATE_MODEL);
@@ -830,27 +878,61 @@ async function detectorInpaintClip(opts: {
   if (!dl.ok) { log(`${tag}: could not download detector result (${dl.status})`); return null; }
   const raw = path.join(workDir, `detraw_${tag}.mp4`);
   fs.writeFileSync(raw, Buffer.from(await dl.arrayBuffer()));
-  const usable = await ensureDuration(raw, dur, workDir, `${tag}_det`);
-  if (!usable) {
-    log(`${tag}: detector truncated`);
+
+  const outDur = await probeDuration(raw);
+  if (outDur < dur - 0.3) {
+    log(`${tag}: detector truncated to ${outDur.toFixed(2)}s — not cloning frames`);
     return null;
   }
-  const file = path.join(workDir, `detclean_${tag}.mp4`);
+  const info = await ffprobeInfo(raw);
+  const ow = info.width || 0, oh = info.height || 0;
+  if (!ow || !oh) { log(`${tag}: detector output has no size`); return null; }
+  if (Math.abs(ow / oh - W / H) / (W / H) > 0.1) {
+    log(`${tag}: detector returned ${ow}x${oh} vs source ${W}x${H} — would smash frames`);
+    return null;
+  }
+
+  const scaled = path.join(workDir, `detscale_${tag}.mp4`);
   try {
     await run(FFMPEG, [
-      '-y', '-i', usable,
+      '-y', '-i', raw,
       '-vf', `scale=${W}:${H}:flags=lanczos,setsar=1`,
       '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '18',
-      '-preset', 'veryfast', '-movflags', '+faststart', '-an', file,
+      '-preset', 'veryfast', '-movflags', '+faststart', '-an', scaled,
     ]);
   } catch (e) {
     log(`${tag}: detector scale failed (${(e as Error).message})`);
     return null;
   }
-  // YOLO already detected the caption boxes and reconstructed those pixels.
-  // Compositing through our colour mask put the original letters back whenever
-  // that mask missed a glyph — which is how the video came back untouched.
-  return file;
+
+  try {
+    const a = await rgbFrames(srcFile, W, H, dur, fps, workDir);
+    const b = await rgbFrames(scaled, W, H, dur, fps, workDir);
+    const cov = changedPixelCoverage(a.buf, b.buf, a.w, a.h);
+    log(`${tag}: detector changed ${(cov * 100).toFixed(1)}% of pixels`);
+    if (cov > 0.16) {
+      log(`${tag}: detector rebuilt the whole frame — discarded`);
+      return null;
+    }
+    if (cov < 0.002) {
+      log(`${tag}: detector changed almost nothing`);
+      return null;
+    }
+  } catch (e) {
+    log(`${tag}: detector coverage check skipped (${(e as Error).message})`);
+  }
+
+  const file = path.join(workDir, `detclean_${tag}.mp4`);
+  if (maskFile) {
+    const ok = await compositeThroughMask({
+      srcFile, reconFile: scaled, maskFile, outFile: file, W, H, log, tag: `${tag}_det`,
+    });
+    return ok ? file : null;
+  }
+  const ok = await compositeChangedPixels({
+    srcFile, reconFile: scaled, outFile: file, W, H, log, tag: `${tag}_det`,
+  });
+  return ok ? file : null;
 }
 
 /**
@@ -1463,9 +1545,9 @@ async function cleanWholeAd(
     const segDur = dur / nseg;
 
     type WinState = { s: 'todo' | 'clean' | 'original' | 'failed'; key?: string; tries?: number };
-    // v=4: YOLO finds captions and reconstructs pixels; MiniMax refines leftovers.
+    // v=5: original frames stay; only letter pixels are reconstructed (no YOLO full-frame swap).
     type Progress = { src: string; nseg: number; runs: number; v?: number; wins: WinState[] };
-    const MASK_PROGRESS_V = 4;
+    const MASK_PROGRESS_V = 5;
     const progressKey = `${projectId}/ads-clean/${adId}_progress.json`;
     let prog: Progress | null = null;
     try {
@@ -1509,9 +1591,8 @@ async function cleanWholeAd(
     const doneCount = () => prog!.wins.filter((w) => w.s !== 'todo').length;
     log(`run ${prog.runs}: ${dur.toFixed(1)}s in ${nseg} window(s) of ~${segDur.toFixed(1)}s — ${doneCount()}/${nseg} already resolved`);
 
-    // Find burned-in captions, erase them, reconstruct those pixels.
-    // YOLO detects the text. MiniMax refines leftover glyphs when we have a
-    // letter mask. Never blur. Never ship the original if a remover produced a file.
+    // Original frames are the base. Find captions, reconstruct those pixels,
+    // paste them back. Never replace the window with a model's re-encoded clip.
     const fbModel = await resolveMaskModel(token, log);
 
     for (let i = 0; i < nseg; i++) {
@@ -1555,42 +1636,37 @@ async function cleanWholeAd(
 
       let rebuiltFile: string | null = null;
 
-      // 1) YOLO finds the subtitles and reconstructs those pixels.
-      if (winUrl) {
-        rebuiltFile = await detectorInpaintClip({
-          token, videoUrl: winUrl, W, H, dur: len, workDir, deadline, tag: `w${i}`, log,
-        });
-        if (rebuiltFile) log(`window ${i}: detected captions and reconstructed their pixels`);
-      }
-
-      // 2) MiniMax on leftover letter pixels (colour overlay YOLO may miss).
+      // 1) MiniMax reconstructs the letter pixels onto the original frames.
       if (maskFile && fbModel) {
         try {
-          let mmSrc = segFile;
-          let mmKey = segKey;
-          if (rebuiltFile) {
-            mmSrc = rebuiltFile;
-            mmKey = `${projectId}/ads-clean/${adId}_wyolo${i}_${Date.now()}.mp4`;
-            await uploadFile(supabase, mmKey, mmSrc, 'video/mp4');
-          }
-          const mm = await textMaskReconstruct({
-            supabase, token, model: fbModel, srcKey: mmKey, srcFile: mmSrc,
+          rebuiltFile = await textMaskReconstruct({
+            supabase, token, model: fbModel, srcKey: segKey, srcFile: segFile,
             maskFile, maskKey: `${projectId}/ads-clean/${adId}_wmask${i}_${Date.now()}.mp4`,
-            W, H, fps, dur: len, workDir, deadline, tag: `w${i}mm`, log,
+            W, H, fps, dur: len, workDir, deadline, tag: `w${i}`, log,
           });
-          if (mm && srcRgb) {
-            const outRgb = await rgbFrames(mm, W, H, len, fps, workDir);
+          if (rebuiltFile && srcRgb) {
+            const outRgb = await rgbFrames(rebuiltFile, W, H, len, fps, workDir);
             const lo = analyzeLeftoverText(srcRgb.buf, outRgb.buf, srcRgb.w, srcRgb.h, cmBand);
-            if (lo.maskPx >= 200) {
-              rebuiltFile = mm;
-              log(`window ${i}: MiniMax reconstructed leftover letter pixels`);
+            if (lo.maskPx < 200) {
+              log(`window ${i}: MiniMax changed almost nothing`);
+              rebuiltFile = null;
             } else {
-              log(`window ${i}: MiniMax changed almost nothing — keeping prior result`);
+              log(`window ${i}: reconstructed letter pixels onto original frames`);
             }
           }
         } catch (e) {
           log(`window ${i}: MiniMax failed (${(e as Error).message})`);
+          rebuiltFile = null;
         }
+      }
+
+      // 2) YOLO finds remaining captions; still pasted onto the original frames.
+      if (!rebuiltFile && winUrl) {
+        rebuiltFile = await detectorInpaintClip({
+          token, videoUrl: winUrl, srcFile: segFile, maskFile,
+          W, H, fps, dur: len, workDir, deadline, tag: `w${i}`, log,
+        });
+        if (rebuiltFile) log(`window ${i}: YOLO reconstructed caption pixels onto original frames`);
       }
 
       if (rebuiltFile) {
