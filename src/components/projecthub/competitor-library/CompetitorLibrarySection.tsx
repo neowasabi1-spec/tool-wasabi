@@ -678,7 +678,7 @@ function CreativeDetailPanel({
   const [buildError, setBuildError] = useState<string>("");
   const [buildVideos, setBuildVideos] = useState<{ id: number; file_path: string; thumb_path?: string | null; duration_sec: number }[]>([]);
   // Show the finished video inline only right after a build done in THIS session;
-  // otherwise it lives permanently in the "New Creatives" tab, not pinned here.
+  // otherwise it lives permanently in the "Created videos" tab, not pinned here.
   const [showInline, setShowInline] = useState(false);
   const [voice, setVoice] = useState("alloy");
   // Localize the original video into another language: translated voiceover +
@@ -1092,7 +1092,7 @@ function CreativeDetailPanel({
                     </div>
                   </div>
                   <p className="text-[10px] text-muted-foreground flex items-center gap-1">
-                    <Sparkles className="w-3 h-3 text-primary" /> Saved to the <b>New Creatives</b> tab.
+                    <Sparkles className="w-3 h-3 text-primary" /> Saved to the <b>Created videos</b> tab.
                   </p>
                 </div>
               )}
@@ -2840,7 +2840,12 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
 // Project-wide library of real-footage shots cut from every competitor video.
 // The mixing pool for recreating videos — filter to CLEAN shots (no burned-in
 // subtitles) and reuse them under a new script/voice.
-function ShotsLibraryView({ projectId }: { projectId: string }) {
+function ShotsLibraryView({
+  projectId, onBuildQueued,
+}: {
+  projectId: string;
+  onBuildQueued?: (brandId: number) => void;
+}) {
   const { toast } = useToast();
   const [shots, setShots] = useState<Shot[]>([]);
   const [brandNames, setBrandNames] = useState<Record<number, string>>({});
@@ -3083,7 +3088,7 @@ function ShotsLibraryView({ projectId }: { projectId: string }) {
           projectId={projectId}
           brands={brands}
           onClose={() => setShowCreate(false)}
-          onQueued={() => { setShowCreate(false); load(true); }}
+          onQueued={(brandId) => { setShowCreate(false); onBuildQueued?.(brandId); }}
         />
       )}
 
@@ -3168,7 +3173,7 @@ function CustomVideoModal({
   projectId: string;
   brands: { id: number; name: string }[];
   onClose: () => void;
-  onQueued: () => void;
+  onQueued: (brandId: number) => void;
 }) {
   const { toast } = useToast();
   const [brandId, setBrandId] = useState<number | "">(brands[0]?.id ?? "");
@@ -3179,20 +3184,11 @@ function CustomVideoModal({
   const [status, setStatus] = useState<string>("");
   const [previewLoading, setPreviewLoading] = useState(false);
   const previewAudio = useRef<HTMLAudioElement | null>(null);
-  const poll = useRef<ReturnType<typeof setInterval> | null>(null);
-  // Stop watching after this many 5s polls (~16 min) so the button never gets
-  // stuck on "Building…" forever if a background job dies without reporting back.
-  const pollCount = useRef(0);
-  const POLL_MAX = 200;
-
-  const stopWatching = () => {
-    if (poll.current) { clearInterval(poll.current); poll.current = null; }
-    setStatus("");
-  };
+  const alive = useRef(true);
 
   useEffect(() => () => {
+    alive.current = false;
     if (previewAudio.current) previewAudio.current.pause();
-    if (poll.current) clearInterval(poll.current);
   }, []);
 
   const previewVoice = async (v: string) => {
@@ -3207,34 +3203,6 @@ function CustomVideoModal({
       await audio.play();
     } catch { toast({ title: "Voice preview failed", variant: "destructive" }); }
     finally { setPreviewLoading(false); }
-  };
-
-  const pollStatus = (bid: number) => {
-    if (poll.current) clearInterval(poll.current);
-    pollCount.current = 0;
-    poll.current = setInterval(async () => {
-      pollCount.current += 1;
-      if (pollCount.current > POLL_MAX) {
-        stopWatching();
-        toast({ title: "Still building in the background", description: "Taking longer than usual — it’ll appear in New Creatives when done." });
-        onQueued();
-        return;
-      }
-      try {
-        const r = await fetch(`/api/projecthub/projects/${projectId}/competitor-library/${bid}/build-video`, { cache: "no-store" });
-        const j = await r.json().catch(() => ({}));
-        const s = j?.job?.status || "";
-        setStatus(s);
-        if (s === "done") {
-          if (poll.current) { clearInterval(poll.current); poll.current = null; }
-          toast({ title: "Custom video ready 🎬", description: "Saved to New Creatives." });
-          onQueued();
-        } else if (s === "error" || s === "canceled") {
-          if (poll.current) { clearInterval(poll.current); poll.current = null; }
-          toast({ title: "Build failed", description: String(j?.job?.error || "").slice(0, 160), variant: "destructive" });
-        }
-      } catch { /* keep polling */ }
-    }, 5000);
   };
 
   const build = async () => {
@@ -3254,13 +3222,14 @@ function CustomVideoModal({
       });
       const j = await r.json().catch(() => ({}));
       if (r.ok) {
-        toast({ title: "Queued for build", description: `${j.scenes || ""} scenes — real clean footage only.` });
-        pollStatus(Number(brandId));
-      } else {
+        toast({ title: "Building your video", description: "Progress stays on this page. When it’s ready you’ll find it in Created videos." });
+        onQueued(Number(brandId));
+      } else if (alive.current) {
         setStatus("");
         toast({ title: j.error || "Could not start build", variant: "destructive" });
       }
     } catch (e) {
+      if (!alive.current) return;
       setStatus("");
       const aborted = (e as Error).name === "AbortError";
       toast({ title: aborted ? "Start timed out — try again" : "Could not start build", variant: "destructive" });
@@ -3284,7 +3253,7 @@ function CustomVideoModal({
         </div>
         <div className="p-4 space-y-3">
           <p className="text-[11px] text-muted-foreground leading-snug">
-            Paste your copy and the builder auto-picks clips from <b>all your clean shots</b>, matched line-by-line to the script, then voices and subtitles them. Great for new angles or shipping the same footage to another geo/language.
+            Paste your copy and the builder auto-picks clips from <b>all your clean shots</b>, matched line-by-line to the script, then voices and subtitles them. The finished file lands in the <b>Created videos</b> tab.
           </p>
           <div>
             <p className="text-[9px] text-muted-foreground uppercase tracking-wider mb-1">Save under (folder)</p>
@@ -3348,17 +3317,9 @@ function CustomVideoModal({
               : <><Zap className="w-4 h-4" /> Build video</>}
           </Button>
           {building && (
-            <div className="mt-2 text-center space-y-1">
-              <p className="text-[10px] text-muted-foreground">
-                Runs on the server — you can keep working; it’ll appear in New Creatives when done.
-              </p>
-              <button
-                type="button"
-                onClick={() => { stopWatching(); toast({ title: "Stopped watching", description: "The build may still finish on the server and show up in New Creatives." }); }}
-                className="text-[10px] text-muted-foreground underline hover:text-foreground">
-                Stop watching
-              </button>
-            </div>
+            <p className="mt-2 text-center text-[10px] text-muted-foreground">
+              Splitting the copy into scenes — this can take a minute. You can close this window; a banner on the page will follow the build.
+            </p>
           )}
         </div>
       </div>
@@ -3373,8 +3334,8 @@ function GeneratedVideosView({ projectId }: { projectId: string }) {
   const [loading, setLoading] = useState(true);
   const [playing, setPlaying] = useState<GeneratedVideo | null>(null);
 
-  const load = async () => {
-    setLoading(true);
+  const load = async (quiet = false) => {
+    if (!quiet) setLoading(true);
     try {
       const [vr, br] = await Promise.all([
         fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/generated-videos`),
@@ -3386,10 +3347,15 @@ function GeneratedVideosView({ projectId }: { projectId: string }) {
       const map: Record<number, string> = {};
       for (const b of Array.isArray(bj) ? bj : []) map[b.id] = b.name;
       setBrandNames(map);
-    } catch { setVideos([]); }
-    finally { setLoading(false); }
+    } catch { if (!quiet) setVideos([]); }
+    finally { if (!quiet) setLoading(false); }
   };
-  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [projectId]);
+  useEffect(() => {
+    load();
+    const t = setInterval(() => load(true), 8000);
+    return () => clearInterval(t);
+    /* eslint-disable-next-line react-hooks/exhaustive-deps */
+  }, [projectId]);
 
   const remove = async (v: GeneratedVideo) => {
     setVideos((p) => p.filter((x) => x.id !== v.id));
@@ -3401,9 +3367,9 @@ function GeneratedVideosView({ projectId }: { projectId: string }) {
     <div className="space-y-4">
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
-          <h3 className="text-lg font-bold text-foreground">New creatives</h3>
+          <h3 className="text-lg font-bold text-foreground">Created videos</h3>
           <p className="text-sm text-muted-foreground mt-0.5">
-            Videos you recreated from real footage + AI b-roll. Open a competitor video and use <b>Recreate video</b> to make more.
+            Videos composed from your copy + real competitor footage. Make more with <b>Create video from copy</b> on the Shots tab.
           </p>
         </div>
         <Button variant="outline" size="sm" onClick={load} className="gap-1.5 h-8">
@@ -3416,9 +3382,9 @@ function GeneratedVideosView({ projectId }: { projectId: string }) {
       ) : videos.length === 0 ? (
         <div className="py-20 text-center border-2 border-dashed border-border rounded-2xl">
           <Sparkles className="w-12 h-12 text-muted-foreground/30 mx-auto mb-3" />
-          <p className="text-sm font-semibold text-foreground mb-1">No recreated videos yet</p>
+          <p className="text-sm font-semibold text-foreground mb-1">No created videos yet</p>
           <p className="text-xs text-muted-foreground max-w-md mx-auto">
-            Open a competitor video, generate your script, then click <b>Build video</b>. Finished videos land here.
+            Go to the <b>Shots</b> tab, click <b>Create video from copy</b>, paste your script. When the build finishes, the file appears here — play or download it.
           </p>
         </div>
       ) : (
@@ -4282,7 +4248,7 @@ function ImageLandingsView({ projectId }: { projectId: string }) {
 }
 
 // ── MAIN EXPORT ──
-type Tab = "overview" | "ads" | "landings" | "landingImages" | "shots";
+type Tab = "overview" | "ads" | "landings" | "landingImages" | "shots" | "created";
 
 const LIBRARY_TABS = [
   { id: "overview" as Tab, label: "Overview", icon: Gauge },
@@ -4290,13 +4256,114 @@ const LIBRARY_TABS = [
   { id: "landings" as Tab, label: "Landings", icon: LayoutTemplate },
   { id: "landingImages" as Tab, label: "Image landings", icon: ImageIcon },
   { id: "shots" as Tab, label: "Shots", icon: Film },
+  { id: "created" as Tab, label: "Created videos", icon: Sparkles },
 ] as const;
 
+const BUILD_WATCH_KEY = (projectId: string) => `ph-video-build:${projectId}`;
+
 export function CompetitorLibrarySection({ projectId }: { projectId: string }) {
+  const { toast } = useToast();
   const [tab, setTab] = useState<Tab>("overview");
   const [selected, setSelected] = useState<CompetitorWithStats | null>(null);
   const [adsView, setAdsView] = useState<"by" | "all">("by");
+  const [buildWatch, setBuildWatch] = useState<{ brandId: number; status: string; error?: string } | null>(null);
+  const buildPoll = useRef<ReturnType<typeof setInterval> | null>(null);
+  const buildPollCount = useRef(0);
   useEffect(() => { void fillLandingLibrary(projectId); }, [projectId]);
+
+  const stopBuildPoll = () => {
+    if (buildPoll.current) { clearInterval(buildPoll.current); buildPoll.current = null; }
+  };
+
+  const pollBuild = async (brandId: number) => {
+    try {
+      const r = await fetch(`/api/projecthub/projects/${projectId}/competitor-library/${brandId}/build-video`, { cache: "no-store" });
+      const j = await r.json().catch(() => ({}));
+      const s = String(j?.job?.status || "");
+      const err = String(j?.job?.error || "").replace(/\s+/g, " ").slice(0, 180);
+      if (s === "done") {
+        stopBuildPoll();
+        setBuildWatch({ brandId, status: "done" });
+        try { sessionStorage.removeItem(BUILD_WATCH_KEY(projectId)); } catch { /* ignore */ }
+        toast({ title: "Video ready", description: "Open the Created videos tab to watch or download it." });
+      } else if (s === "error" || s === "canceled") {
+        stopBuildPoll();
+        setBuildWatch({ brandId, status: s, error: err });
+        try { sessionStorage.removeItem(BUILD_WATCH_KEY(projectId)); } catch { /* ignore */ }
+        toast({ title: "Build failed", description: err || "The video could not be composed.", variant: "destructive" });
+      } else {
+        setBuildWatch({ brandId, status: s || "processing" });
+      }
+    } catch { /* keep polling */ }
+  };
+
+  const startWatching = (brandId: number) => {
+    setBuildWatch({ brandId, status: "pending" });
+    try {
+      sessionStorage.setItem(BUILD_WATCH_KEY(projectId), JSON.stringify({ brandId, t: Date.now() }));
+    } catch { /* ignore */ }
+    stopBuildPoll();
+    buildPollCount.current = 0;
+    void pollBuild(brandId);
+    buildPoll.current = setInterval(() => {
+      buildPollCount.current += 1;
+      if (buildPollCount.current > 200) {
+        stopBuildPoll();
+        toast({
+          title: "Still building",
+          description: "Taking longer than usual — check the Created videos tab in a few minutes.",
+        });
+        return;
+      }
+      void pollBuild(brandId);
+    }, 5000);
+  };
+
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem(BUILD_WATCH_KEY(projectId));
+      if (raw) {
+        const parsed = JSON.parse(raw) as { brandId?: number; t?: number };
+        if (parsed.brandId && Date.now() - (parsed.t || 0) < 20 * 60 * 1000) startWatching(parsed.brandId);
+        else sessionStorage.removeItem(BUILD_WATCH_KEY(projectId));
+      }
+    } catch { /* ignore */ }
+    return () => stopBuildPoll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]);
+
+  const busy = buildWatch?.status === "pending" || buildWatch?.status === "processing";
+  const buildBanner = buildWatch ? (
+    <div className={`rounded-lg border px-3 py-2 flex items-center justify-between gap-3 text-sm
+      ${buildWatch.status === "done" ? "bg-emerald-50 border-emerald-200 text-emerald-900"
+        : buildWatch.status === "error" || buildWatch.status === "canceled" ? "bg-red-50 border-red-200 text-red-800"
+        : "bg-amber-50 border-amber-200 text-amber-900"}`}>
+      <div className="flex items-center gap-2 min-w-0">
+        {busy && <RefreshCw className="w-4 h-4 animate-spin shrink-0" />}
+        {buildWatch.status === "done" && <Sparkles className="w-4 h-4 shrink-0" />}
+        <span className="leading-snug">
+          {busy && "Building your video from copy — this can take a few minutes."}
+          {buildWatch.status === "done" && "Video is ready. It’s saved in the Created videos tab."}
+          {(buildWatch.status === "error" || buildWatch.status === "canceled") && (
+            <>Build failed{buildWatch.error ? `: ${buildWatch.error}` : "."}</>
+          )}
+        </span>
+      </div>
+      <div className="flex items-center gap-2 shrink-0">
+        {buildWatch.status === "done" && (
+          <Button size="sm" className="h-7 text-xs" onClick={() => { setTab("created"); setSelected(null); }}>
+            Open Created videos
+          </Button>
+        )}
+        <button
+          type="button"
+          onClick={() => { setBuildWatch(null); stopBuildPoll(); }}
+          className="text-xs text-current/70 hover:text-current underline">
+          Dismiss
+        </button>
+      </div>
+    </div>
+  ) : null;
 
   // If viewing a competitor detail, stay in ads view regardless
   if (selected) {
@@ -4314,6 +4381,7 @@ export function CompetitorLibrarySection({ projectId }: { projectId: string }) {
             </button>
           ))}
         </div>
+        {buildBanner}
         <CompetitorDetail projectId={projectId} competitor={selected} onBack={() => setSelected(null)} />
       </div>
     );
@@ -4334,6 +4402,8 @@ export function CompetitorLibrarySection({ projectId }: { projectId: string }) {
         ))}
       </div>
 
+      {buildBanner}
+
       {tab === "overview" && (
         <SectorOverview projectId={projectId} onOpenBrand={(b) => { setTab("ads"); setSelected(b); }} />
       )}
@@ -4342,7 +4412,9 @@ export function CompetitorLibrarySection({ projectId }: { projectId: string }) {
 
       {tab === "landingImages" && <ImageLandingsView projectId={projectId} />}
 
-      {tab === "shots" && <ShotsLibraryView projectId={projectId} />}
+      {tab === "shots" && <ShotsLibraryView projectId={projectId} onBuildQueued={startWatching} />}
+
+      {tab === "created" && <GeneratedVideosView projectId={projectId} />}
 
       {tab === "ads" && (
         <div className="space-y-4">

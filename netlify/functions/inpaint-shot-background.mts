@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import {
   getSupabase, uploadFile, makeWorkDir, downloadSource, probeDuration,
-  run, FFMPEG, ffprobeInfo, cutClip, grabThumb, analyzeShot,
+  run, FFMPEG, ffprobeInfo, cutClip,
 } from './_shared/video';
 import { captionMasks, writeMaskVideo, maskIsTrustworthy } from './_shared/caption-mask';
 
@@ -338,7 +338,7 @@ export function clusterDetections(dets: Detection[], window: number): Cluster[] 
 
 type Rect = { x: number; y: number; w: number; h: number; t0: number; t1: number };
 
-function toRect(c: Cluster, W: number, H: number): Rect | null {
+export function toRect(c: Cluster, W: number, H: number): Rect | null {
   const pad = 0.015;
   const x = Math.max(2, Math.round((c.b.x0 - pad) * W) & ~1);
   const y = Math.max(2, Math.round((c.b.y0 - pad) * H) & ~1);
@@ -704,14 +704,15 @@ async function textMaskReconstruct(opts: {
   const raw = path.join(workDir, `textraw_${tag}.mp4`);
   fs.writeFileSync(raw, Buffer.from(await dl.arrayBuffer()));
   const outDur = await probeDuration(raw);
-  if (outDur < dur - 0.3) { log(`${tag}: inpaint truncated to ${outDur.toFixed(2)}s of ${dur.toFixed(2)}s`); return null; }
+  const usable = await ensureDuration(raw, dur, workDir, `${tag}_inpaint`);
+  if (!usable) { log(`${tag}: inpaint truncated to ${outDur.toFixed(2)}s of ${dur.toFixed(2)}s`); return null; }
 
   // Composite: take the reconstruction ONLY where the mask marks text (alpha),
   // overlay it on the untouched original. Everything but the letters is source.
   const file = path.join(workDir, `textclean_${tag}.mp4`);
   try {
     await run(FFMPEG, [
-      '-y', '-i', srcFile, '-i', raw, '-i', maskFile,
+      '-y', '-i', srcFile, '-i', usable, '-i', maskFile,
       '-filter_complex',
       `[1:v]scale=${W}:${H},setsar=1[recon];` +
       `[2:v]scale=${W}:${H}:flags=neighbor,format=gray[mk];` +
@@ -721,8 +722,20 @@ async function textMaskReconstruct(opts: {
       '-preset', 'veryfast', '-movflags', '+faststart', '-an', file,
     ]);
   } catch (e) {
-    log(`${tag}: text composite failed (${(e as Error).message}) — keeping original`);
-    return null;
+    // alphamerge can fail on odd sizes; the model already reconstructed the
+    // masked letters in the full frame, so scale that output to source size.
+    log(`${tag}: text composite failed (${(e as Error).message}) — using reconstructed frame`);
+    try {
+      await run(FFMPEG, [
+        '-y', '-i', usable,
+        '-vf', `scale=${W}:${H}:flags=lanczos,setsar=1`,
+        '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '18',
+        '-preset', 'veryfast', '-movflags', '+faststart', '-an', file,
+      ]);
+    } catch (e2) {
+      log(`${tag}: reconstructed frame scale failed (${(e2 as Error).message})`);
+      return null;
+    }
   }
   return file;
 }
@@ -733,6 +746,91 @@ async function cutWindow(src: string, t0: number, len: number, out: string): Pro
     '-y', '-i', src, '-ss', t0.toFixed(3), '-t', len.toFixed(3),
     '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18', '-an', out,
   ]);
+}
+
+/** If the remover dropped a few tail frames, clone the last one instead of discarding the clip. */
+export function shouldKeepRemoverOutput(got: number, want: number): 'keep' | 'pad' | 'discard' {
+  if (got >= want - 0.3) return 'keep';
+  if (got >= want * 0.75) return 'pad';
+  return 'discard';
+}
+
+async function ensureDuration(
+  file: string, wantDur: number, workDir: string, tag: string,
+): Promise<string | null> {
+  const got = await probeDuration(file);
+  const verdict = shouldKeepRemoverOutput(got, wantDur);
+  if (verdict === 'keep') return file;
+  if (verdict === 'discard') return null;
+  const padded = path.join(workDir, `pad_${tag}.mp4`);
+  const pad = Math.max(0.05, wantDur - got);
+  await run(FFMPEG, [
+    '-y', '-i', file,
+    '-vf', `tpad=stop_mode=clone:stop_duration=${pad.toFixed(3)}`,
+    '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '18', '-preset', 'veryfast', '-an',
+    padded,
+  ]);
+  return padded;
+}
+
+/**
+ * YOLO + context-aware inpainting (same neural remover the shots pipeline uses).
+ * Used when MiniMax cannot reconstruct this window — still pixel reconstruction,
+ * not a blur/delogo patch.
+ */
+async function detectorInpaintClip(opts: {
+  token: string;
+  videoUrl: string;
+  W: number; H: number; dur: number;
+  workDir: string; deadline: number; tag: string;
+  log: (...a: unknown[]) => void;
+}): Promise<string | null> {
+  const { token, videoUrl, W, H, dur, workDir, deadline, tag, log } = opts;
+  let version: string;
+  try {
+    version = await resolveVersion(token, REPLICATE_MODEL);
+  } catch (e) {
+    log(`${tag}: detector lookup failed (${(e as Error).message})`);
+    return null;
+  }
+  let output: unknown;
+  try {
+    output = await replicateRun(token, version, {
+      video: videoUrl,
+      method: 'hybrid',
+      resolution: 'original',
+      conf_threshold: 0.15,
+      margin: 15,
+      detection_interval: 1,
+    }, deadline, log);
+  } catch (e) {
+    log(`${tag}: detector inpaint failed (${(e as Error).message})`);
+    return null;
+  }
+  const url = extractOutputUrl(output);
+  if (!url) { log(`${tag}: detector returned no video`); return null; }
+  const dl = await fetch(url);
+  if (!dl.ok) { log(`${tag}: could not download detector result (${dl.status})`); return null; }
+  const raw = path.join(workDir, `detraw_${tag}.mp4`);
+  fs.writeFileSync(raw, Buffer.from(await dl.arrayBuffer()));
+  const usable = await ensureDuration(raw, dur, workDir, `${tag}_det`);
+  if (!usable) {
+    log(`${tag}: detector truncated`);
+    return null;
+  }
+  const file = path.join(workDir, `detclean_${tag}.mp4`);
+  try {
+    await run(FFMPEG, [
+      '-y', '-i', usable,
+      '-vf', `scale=${W}:${H}:flags=lanczos,setsar=1`,
+      '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '18',
+      '-preset', 'veryfast', '-movflags', '+faststart', '-an', file,
+    ]);
+  } catch (e) {
+    log(`${tag}: detector scale failed (${(e as Error).message})`);
+    return usable;
+  }
+  return file;
 }
 
 /**
@@ -1296,69 +1394,6 @@ export async function cleanClipFile(opts: {
   return { ok: true, outFile, note, band: resultBand };
 }
 
-/** Coarse band from a vision "top|center|bottom" region hint. */
-function regionToBand(region: string): { y0: number; y1: number } | null {
-  const r = (region || '').toLowerCase();
-  if (r.includes('top')) return { y0: 0.02, y1: 0.32 };
-  if (r.includes('center') || r.includes('centre') || r.includes('middle')) return { y0: 0.34, y1: 0.66 };
-  if (r.includes('bottom')) return { y0: 0.62, y1: 0.95 };
-  return null;
-}
-
-/**
- * Detect the caption band for the WHOLE video, up front and independently of
- * the per-window cleaning. This guarantees a band always exists so every window
- * can be neurally reconstructed — the earlier "learn it from a cleaned window"
- * approach left 0/7 when no window happened to expose a band. Order: colour
- * (fast, free) → vision (handles any position) → lower-third default.
- */
-async function detectCaptionBandWhole(
-  srcFile: string, W: number, H: number, fps: number, dur: number,
-  workDir: string, log: (...a: unknown[]) => void,
-): Promise<{ y0: number; y1: number } | null> {
-  // 1) Colour-based: learn the caption band from the whole clip.
-  try {
-    const rgb = await rgbFrames(srcFile, W, H, dur, fps, workDir);
-    const frames = Math.floor(rgb.buf.length / (rgb.w * rgb.h * 3));
-    const cm = captionMasks(rgb.buf, frames, rgb.w, rgb.h, null);
-    if (cm?.band) {
-      log(`band (colour): ${cm.band.y0.toFixed(2)}–${cm.band.y1.toFixed(2)}`);
-      return cm.band;
-    }
-  } catch (e) {
-    log(`band colour detect skipped: ${(e as Error).message}`);
-  }
-
-  // 2) Vision: sample a few frames, union the detected caption regions.
-  try {
-    let y0 = 1;
-    let y1 = 0;
-    let found = false;
-    for (const frac of [0.2, 0.45, 0.7, 0.9]) {
-      const thumb = path.join(workDir, `bandprobe_${Math.round(frac * 100)}.jpg`);
-      await grabThumb(srcFile, Math.min(Math.max(0, dur - 0.1), dur * frac), thumb);
-      const info = await analyzeShot(thumb);
-      if (!info.hasText) continue;
-      const band = regionToBand(info.region);
-      if (band) {
-        y0 = Math.min(y0, band.y0);
-        y1 = Math.max(y1, band.y1);
-        found = true;
-      }
-    }
-    if (found && y1 > y0) {
-      log(`band (vision): ${y0.toFixed(2)}–${y1.toFixed(2)}`);
-      return { y0, y1 };
-    }
-  } catch (e) {
-    log(`band vision detect skipped: ${(e as Error).message}`);
-  }
-
-  // 3) Default: lower third, where most UGC/news captions sit.
-  log('band: falling back to default lower-third');
-  return { y0: 0.6, y1: 0.93 };
-}
-
 /**
  * Remove burned-in subtitles from a WHOLE ad video (not a shot), keeping its
  * original audio. Reuses cleanClipFile so quality matches the shots pipeline,
@@ -1416,12 +1451,12 @@ async function cleanWholeAd(
     // then re-triggers itself. The final video is only assembled once EVERY
     // window is resolved — no half-cleaned results.
     const deadline = Date.now() + MAX_WAIT_MS;
-    const SEG_SEC = 2.6;
+    const SEG_SEC = 1.7;
     const nseg = Math.max(1, Math.ceil(dur / SEG_SEC));
     const segDur = dur / nseg;
 
     type WinState = { s: 'todo' | 'clean' | 'original' | 'failed'; key?: string; tries?: number };
-    type Progress = { src: string; nseg: number; runs: number; band?: { y0: number; y1: number } | null; wins: WinState[] };
+    type Progress = { src: string; nseg: number; runs: number; wins: WinState[] };
     const progressKey = `${projectId}/ads-clean/${adId}_progress.json`;
     let prog: Progress | null = null;
     try {
@@ -1437,13 +1472,14 @@ async function cleanWholeAd(
       };
     }
     // The ledger is KEPT after 'done' (every neural call costs money): a fresh
-    // request on a finished job only retries the windows that failed — cleaned
-    // and text-free windows are never paid for twice.
+    // request on a finished job retries windows that still have text — cleaned
+    // windows are never paid for twice. "original" is re-scanned because a
+    // previous run can miss overlay text that is still on screen.
     const MAX_RUNS = 20;
     if (!prog.wins.some((x) => x.s === 'todo')) {
       prog.runs = 0;
       for (const x of prog.wins) {
-        if (x.s === 'failed') { x.s = 'todo'; x.tries = 0; }
+        if (x.s === 'failed' || x.s === 'original') { x.s = 'todo'; x.tries = 0; }
       }
     } else if (prog.runs >= MAX_RUNS) {
       // A claim arriving over the cap is a manual retry (continuations stop at
@@ -1463,19 +1499,9 @@ async function cleanWholeAd(
     const doneCount = () => prog!.wins.filter((w) => w.s !== 'todo').length;
     log(`run ${prog.runs}: ${dur.toFixed(1)}s in ${nseg} window(s) of ~${segDur.toFixed(1)}s — ${doneCount()}/${nseg} already resolved`);
 
-    // Where do the captions live? Detected ONCE per ad and persisted: mask
-    // pixels outside this band are discarded, so a white badge or bright object
-    // mid-frame can't get "reconstructed" into a smear — and windows whose only
-    // "text" was such an object never reach the paid model at all.
-    if (prog.band === undefined) {
-      prog.band = await detectCaptionBandWhole(srcFile, W, H, fps, dur, workDir, log);
-      await saveProgress();
-    }
-
-    // Resolve the neural remover once. Each window builds a TIGHT per-frame mask
-    // of the actual caption letters and reconstructs ONLY those pixels — never a
-    // full-width band (that was the "blur enorme / sformato"). Windows without
-    // detectable caption text keep their original footage untouched.
+    // Each window: tight letter mask → MiniMax reconstructs those pixels.
+    // If MiniMax cannot, YOLO video-text-remover reconstructs them instead.
+    // Never a band, never delogo, never "keep the original with the text".
     const fbModel = await resolveMaskModel(token, log);
 
     for (let i = 0; i < nseg; i++) {
@@ -1490,74 +1516,80 @@ async function cleanWholeAd(
       const segFile = path.join(workDir, `seg_${i}.mp4`);
       await cutClip(srcFile, t0, t0 + len, segFile);
 
-      // Build the tight text mask from the caption colour.
       let maskFile: string | null = null;
+      let srcRgb: { buf: Buffer; w: number; h: number } | null = null;
+      let cmBand: { y0: number; y1: number } | null = null;
       try {
         const rgb = await rgbFrames(segFile, W, H, len, fps, workDir);
+        srcRgb = rgb;
         const nf = Math.floor(rgb.buf.length / (rgb.w * rgb.h * 3));
         const cm = captionMasks(rgb.buf, nf, rgb.w, rgb.h, null);
         if (cm && cm.pxPerFrame > 0 && cm.textFrames > 0) {
-          // Drop mask pixels outside the caption band (+ a small margin):
-          // that's a badge/logo/bright object, not subtitle text.
           let px = 0;
-          if (prog.band) {
-            const m0 = Math.max(0, Math.floor((prog.band.y0 - 0.08) * rgb.h));
-            const m1 = Math.min(rgb.h, Math.ceil((prog.band.y1 + 0.08) * rgb.h));
-            for (const m of cm.masks) {
-              if (m0 > 0) m.fill(0, 0, m0 * rgb.w);
-              if (m1 < rgb.h) m.fill(0, m1 * rgb.w);
-            }
-          }
           for (const m of cm.masks) for (let p = 0; p < m.length; p++) if (m[p]) px++;
-          if (px >= nf * 4) { // at least a few caption pixels per frame on average
+          if (px >= nf * 4) {
             const trust = maskIsTrustworthy(cm, rgb.w, rgb.h);
+            cmBand = cm.band;
             maskFile = await writeMaskVideo(cm.masks, rgb.w, rgb.h, Math.round(fps), W, H, workDir);
             log(`window ${i}: caption mask ${trust.ok ? 'ok' : 'weak'} — ${trust.why}`);
-          } else {
-            log(`window ${i}: mask only outside the caption band — treated as no caption`);
           }
         }
       } catch (e) {
         log(`window ${i}: mask build skipped (${(e as Error).message})`);
       }
 
-      // No caption letters here → nothing to remove, keep original untouched.
-      if (!maskFile) {
-        log(`window ${i}: no caption text detected — kept original`);
-        w.s = 'original';
-        await saveProgress();
-        continue;
-      }
+      const segKey = `${projectId}/ads-clean/${adId}_w${i}_${Date.now()}.mp4`;
+      await uploadFile(supabase, segKey, segFile, 'video/mp4');
+      const { data: signedWin } = await supabase.storage.from(BUCKET).createSignedUrl(segKey, 3600);
+      const winUrl = signedWin?.signedUrl || null;
 
-      // Reconstruct ONLY the text pixels; retry in a later run on failure.
-      let cleaned = false;
-      if (fbModel) {
+      let rebuiltFile: string | null = null;
+
+      // 1) MiniMax: reconstruct the letter pixels from the colour mask.
+      if (maskFile && fbModel) {
         try {
-          const segKey = `${projectId}/ads-clean/${adId}_w${i}_${Date.now()}.mp4`;
-          await uploadFile(supabase, segKey, segFile, 'video/mp4');
-          const rebuilt = await textMaskReconstruct({
+          rebuiltFile = await textMaskReconstruct({
             supabase, token, model: fbModel, srcKey: segKey, srcFile: segFile,
             maskFile, maskKey: `${projectId}/ads-clean/${adId}_wmask${i}_${Date.now()}.mp4`,
             W, H, fps, dur: len, workDir, deadline, tag: `w${i}`, log,
           });
-          if (rebuilt) {
-            const winKey = `${projectId}/ads-clean/${adId}_win${i}.mp4`;
-            await uploadFile(supabase, winKey, rebuilt, 'video/mp4');
-            w.s = 'clean';
-            w.key = winKey;
-            cleaned = true;
-            log(`window ${i}: reconstructed the caption text pixels`);
+          if (rebuiltFile && srcRgb) {
+            const outRgb = await rgbFrames(rebuiltFile, W, H, len, fps, workDir);
+            const lo = analyzeLeftoverText(srcRgb.buf, outRgb.buf, srcRgb.w, srcRgb.h, cmBand);
+            const maxDrop = Math.max(2, Math.floor(lo.frames * MAX_DROP));
+            if (lo.maskPx < 200 || lo.bad.length > maxDrop) {
+              log(`window ${i}: MiniMax still shows text (${lo.bad.length}/${lo.frames}) — detector inpaint`);
+              rebuiltFile = null;
+            } else {
+              log(`window ${i}: MiniMax reconstructed the caption pixels`);
+            }
           }
         } catch (e) {
-          log(`window ${i}: text reconstruct failed (${(e as Error).message})`);
+          log(`window ${i}: MiniMax failed (${(e as Error).message})`);
         }
       }
-      if (!cleaned) {
+
+      // 2) Detector inpaint: YOLO finds the letters and reconstructs them.
+      //    Runs even when our colour mask missed the overlay (stylized titles).
+      if (!rebuiltFile && winUrl) {
+        rebuiltFile = await detectorInpaintClip({
+          token, videoUrl: winUrl, W, H, dur: len, workDir, deadline, tag: `w${i}`, log,
+        });
+        if (rebuiltFile) log(`window ${i}: detector reconstructed the caption pixels`);
+      }
+
+      if (rebuiltFile) {
+        const winKey = `${projectId}/ads-clean/${adId}_win${i}.mp4`;
+        await uploadFile(supabase, winKey, rebuiltFile, 'video/mp4');
+        w.s = 'clean';
+        w.key = winKey;
+      } else {
         w.tries = (w.tries || 0) + 1;
-        // Three genuine attempts across runs before giving a window up.
         if (w.tries >= 3) {
-          w.s = 'failed';
-          log(`window ${i}: giving up after ${w.tries} attempts — keeps original footage`);
+          // Colour mask found nothing AND both neural removers failed — no
+          // letters to reconstruct on this window.
+          w.s = maskFile ? 'failed' : 'original';
+          log(`window ${i}: ${w.s === 'failed' ? 'neural reconstruct failed after 3 attempts' : 'no caption text detected — kept original'}`);
         } else {
           log(`window ${i}: attempt ${w.tries} failed — will retry in a later run`);
         }
