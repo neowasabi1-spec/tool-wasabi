@@ -513,19 +513,28 @@ async function compositeThroughMask(opts: {
   }
 }
 
-/** Take reconstructed pixels only where they differ from the source. Base is always original frames. */
+/** Take reconstructed pixels only where they differ from the source, and only
+ *  in the caption zones (top headline / bottom spoken captions). The face and
+ *  the rest of the frame stay the original pixels. */
 async function compositeChangedPixels(opts: {
   srcFile: string; reconFile: string; outFile: string;
   W: number; H: number; log: (...a: unknown[]) => void; tag: string;
 }): Promise<boolean> {
   const { srcFile, reconFile, outFile, W, H, log, tag } = opts;
+  const topH = Math.max(8, Math.round(H * 0.22));
+  const botY = Math.round(H * 0.58);
+  const botH = H - botY;
   try {
     await run(FFMPEG, [
       '-y', '-i', srcFile, '-i', reconFile,
       '-filter_complex',
       `[1:v]scale=${W}:${H}:flags=lanczos,setsar=1[r];` +
       `[0:v][r]blend=all_mode=difference,format=gray,` +
-      `lut=y='if(gte(val\\,32),255,0)',dilation[mk];` +
+      `lut=y='if(gte(val\\,48),255,0)',dilation[diff];` +
+      `[0:v]format=gray,geq=lum=0,` +
+      `drawbox=x=0:y=0:w=iw:h=${topH}:color=white:t=fill,` +
+      `drawbox=x=0:y=${botY}:w=iw:h=${botH}:color=white:t=fill[zones];` +
+      `[diff][zones]blend=all_mode=multiply,format=gray[mk];` +
       `[0:v][r][mk]maskedmerge[v]`,
       '-map', '[v]', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '18',
       '-preset', 'veryfast', '-movflags', '+faststart', '-an', outFile,
@@ -880,23 +889,19 @@ async function detectorInpaintClip(opts: {
   fs.writeFileSync(raw, Buffer.from(await dl.arrayBuffer()));
 
   const outDur = await probeDuration(raw);
-  if (outDur < dur - 0.3) {
-    log(`${tag}: detector truncated to ${outDur.toFixed(2)}s — not cloning frames`);
+  if (outDur < dur * 0.75) {
+    log(`${tag}: detector truncated to ${outDur.toFixed(2)}s of ${dur.toFixed(2)}s`);
     return null;
   }
   const info = await ffprobeInfo(raw);
   const ow = info.width || 0, oh = info.height || 0;
   if (!ow || !oh) { log(`${tag}: detector output has no size`); return null; }
-  if (Math.abs(ow / oh - W / H) / (W / H) > 0.1) {
-    log(`${tag}: detector returned ${ow}x${oh} vs source ${W}x${H} — would smash frames`);
-    return null;
-  }
 
   const scaled = path.join(workDir, `detscale_${tag}.mp4`);
   try {
     await run(FFMPEG, [
       '-y', '-i', raw,
-      '-vf', `scale=${W}:${H}:flags=lanczos,setsar=1`,
+      '-vf', `scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2,setsar=1`,
       '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '18',
       '-preset', 'veryfast', '-movflags', '+faststart', '-an', scaled,
     ]);
@@ -910,10 +915,6 @@ async function detectorInpaintClip(opts: {
     const b = await rgbFrames(scaled, W, H, dur, fps, workDir);
     const cov = changedPixelCoverage(a.buf, b.buf, a.w, a.h);
     log(`${tag}: detector changed ${(cov * 100).toFixed(1)}% of pixels`);
-    if (cov > 0.16) {
-      log(`${tag}: detector rebuilt the whole frame — discarded`);
-      return null;
-    }
     if (cov < 0.002) {
       log(`${tag}: detector changed almost nothing`);
       return null;
@@ -923,12 +924,8 @@ async function detectorInpaintClip(opts: {
   }
 
   const file = path.join(workDir, `detclean_${tag}.mp4`);
-  if (maskFile) {
-    const ok = await compositeThroughMask({
-      srcFile, reconFile: scaled, maskFile, outFile: file, W, H, log, tag: `${tag}_det`,
-    });
-    return ok ? file : null;
-  }
+  // Always paste onto the original. A colour letter mask that already failed
+  // MiniMax would put the original letters back — use caption-zone diffs instead.
   const ok = await compositeChangedPixels({
     srcFile, reconFile: scaled, outFile: file, W, H, log, tag: `${tag}_det`,
   });
@@ -1545,9 +1542,9 @@ async function cleanWholeAd(
     const segDur = dur / nseg;
 
     type WinState = { s: 'todo' | 'clean' | 'original' | 'failed'; key?: string; tries?: number };
-    // v=5: original frames stay; only letter pixels are reconstructed (no YOLO full-frame swap).
+    // v=6: MiniMax only if captions are gone; YOLO pastes caption-zone pixels onto original.
     type Progress = { src: string; nseg: number; runs: number; v?: number; wins: WinState[] };
-    const MASK_PROGRESS_V = 5;
+    const MASK_PROGRESS_V = 6;
     const progressKey = `${projectId}/ads-clean/${adId}_progress.json`;
     let prog: Progress | null = null;
     try {
@@ -1647,8 +1644,9 @@ async function cleanWholeAd(
           if (rebuiltFile && srcRgb) {
             const outRgb = await rgbFrames(rebuiltFile, W, H, len, fps, workDir);
             const lo = analyzeLeftoverText(srcRgb.buf, outRgb.buf, srcRgb.w, srcRgb.h, cmBand);
-            if (lo.maskPx < 200) {
-              log(`window ${i}: MiniMax changed almost nothing`);
+            const maxDrop = Math.max(2, Math.floor(lo.frames * MAX_DROP));
+            if (lo.maskPx < 200 || lo.bad.length > maxDrop) {
+              log(`window ${i}: MiniMax left captions (${lo.bad.length}/${lo.frames}) — YOLO`);
               rebuiltFile = null;
             } else {
               log(`window ${i}: reconstructed letter pixels onto original frames`);

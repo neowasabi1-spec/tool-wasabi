@@ -31,7 +31,7 @@ const SHAPE_DILATE_Y = 2;
 // and the letters fuse into a solid caption bar — MiniMax then repaints the
 // whole strip and the result is a visible blurred fascia, not reconstructed
 // letter pixels.
-const MASK_EDGE = 4;
+const MASK_EDGE = 6;
 // Height ceilings for "this is a line of words", as a share of the frame: one
 // line on its own, and a whole caption block after the lines have been grown
 // together. Measured on these shots a single line runs about 7% and a two-line
