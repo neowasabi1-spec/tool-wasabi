@@ -540,7 +540,7 @@ async function miniMaxClip(opts: MaskOpts & { model: ModelInfo }): Promise<{ fil
   // the letters into a caption-wide strip and the output was a blurred fascia.
   const wanted: Record<string, number> = {
     fps: Math.round(fps), num_frames: frames, width: W, height: H,
-    mask_dilation_iterations: 2, num_inference_steps: 20,
+    mask_dilation_iterations: 4, num_inference_steps: 20,
     ...(tuning || {}),
   };
   for (const [name, value] of Object.entries(wanted)) {
@@ -721,7 +721,7 @@ async function textMaskReconstruct(opts: {
   const input: Record<string, unknown> = { [videoField]: videoUrl, [maskField]: maskUrl };
   const wanted: Record<string, number> = {
     fps: Math.round(fps), num_frames: frames, width: W, height: H,
-    mask_dilation_iterations: 2, num_inference_steps: 20,
+    mask_dilation_iterations: 4, num_inference_steps: 20,
   };
   for (const [name, value] of Object.entries(wanted)) {
     const spec = props[name];
@@ -801,10 +801,8 @@ async function detectorInpaintClip(opts: {
   W: number; H: number; dur: number;
   workDir: string; deadline: number; tag: string;
   log: (...a: unknown[]) => void;
-  srcFile?: string;
-  maskFile?: string | null;
 }): Promise<string | null> {
-  const { token, videoUrl, W, H, dur, workDir, deadline, tag, log, srcFile, maskFile } = opts;
+  const { token, videoUrl, W, H, dur, workDir, deadline, tag, log } = opts;
   let version: string;
   try {
     version = await resolveVersion(token, REPLICATE_MODEL);
@@ -849,21 +847,10 @@ async function detectorInpaintClip(opts: {
     log(`${tag}: detector scale failed (${(e as Error).message})`);
     return null;
   }
-  if (srcFile && maskFile) {
-    const composited = path.join(workDir, `detcomp_${tag}.mp4`);
-    const ok = await compositeThroughMask({
-      srcFile, reconFile: file, maskFile, outFile: composited, W, H, log, tag: `${tag}_det`,
-    });
-    if (!ok) {
-      log(`${tag}: detector output was a smear strip — discarded`);
-      return null;
-    }
-    return composited;
-  }
-  // No letter mask: the detector inpaints a box around each word, which is the
-  // blurred fascia. Don't ship that.
-  log(`${tag}: detector has no letter mask — not shipping a box smear`);
-  return null;
+  // YOLO already detected the caption boxes and reconstructed those pixels.
+  // Compositing through our colour mask put the original letters back whenever
+  // that mask missed a glyph — which is how the video came back untouched.
+  return file;
 }
 
 /**
@@ -1476,9 +1463,9 @@ async function cleanWholeAd(
     const segDur = dur / nseg;
 
     type WinState = { s: 'todo' | 'clean' | 'original' | 'failed'; key?: string; tries?: number };
-    // v=2: letter-tight mask + composite through those pixels (no caption-bar smear).
+    // v=4: YOLO finds captions and reconstructs pixels; MiniMax refines leftovers.
     type Progress = { src: string; nseg: number; runs: number; v?: number; wins: WinState[] };
-    const MASK_PROGRESS_V = 2;
+    const MASK_PROGRESS_V = 4;
     const progressKey = `${projectId}/ads-clean/${adId}_progress.json`;
     let prog: Progress | null = null;
     try {
@@ -1522,9 +1509,9 @@ async function cleanWholeAd(
     const doneCount = () => prog!.wins.filter((w) => w.s !== 'todo').length;
     log(`run ${prog.runs}: ${dur.toFixed(1)}s in ${nseg} window(s) of ~${segDur.toFixed(1)}s — ${doneCount()}/${nseg} already resolved`);
 
-    // Each window: tight letter mask → MiniMax reconstructs those pixels.
-    // If MiniMax cannot, YOLO video-text-remover reconstructs them instead.
-    // Never a band, never delogo, never "keep the original with the text".
+    // Find burned-in captions, erase them, reconstruct those pixels.
+    // YOLO detects the text. MiniMax refines leftover glyphs when we have a
+    // letter mask. Never blur. Never ship the original if a remover produced a file.
     const fbModel = await resolveMaskModel(token, log);
 
     for (let i = 0; i < nseg; i++) {
@@ -1568,38 +1555,42 @@ async function cleanWholeAd(
 
       let rebuiltFile: string | null = null;
 
-      // 1) MiniMax: reconstruct the letter pixels from the colour mask.
+      // 1) YOLO finds the subtitles and reconstructs those pixels.
+      if (winUrl) {
+        rebuiltFile = await detectorInpaintClip({
+          token, videoUrl: winUrl, W, H, dur: len, workDir, deadline, tag: `w${i}`, log,
+        });
+        if (rebuiltFile) log(`window ${i}: detected captions and reconstructed their pixels`);
+      }
+
+      // 2) MiniMax on leftover letter pixels (colour overlay YOLO may miss).
       if (maskFile && fbModel) {
         try {
-          rebuiltFile = await textMaskReconstruct({
-            supabase, token, model: fbModel, srcKey: segKey, srcFile: segFile,
+          let mmSrc = segFile;
+          let mmKey = segKey;
+          if (rebuiltFile) {
+            mmSrc = rebuiltFile;
+            mmKey = `${projectId}/ads-clean/${adId}_wyolo${i}_${Date.now()}.mp4`;
+            await uploadFile(supabase, mmKey, mmSrc, 'video/mp4');
+          }
+          const mm = await textMaskReconstruct({
+            supabase, token, model: fbModel, srcKey: mmKey, srcFile: mmSrc,
             maskFile, maskKey: `${projectId}/ads-clean/${adId}_wmask${i}_${Date.now()}.mp4`,
-            W, H, fps, dur: len, workDir, deadline, tag: `w${i}`, log,
+            W, H, fps, dur: len, workDir, deadline, tag: `w${i}mm`, log,
           });
-          if (rebuiltFile && srcRgb) {
-            const outRgb = await rgbFrames(rebuiltFile, W, H, len, fps, workDir);
+          if (mm && srcRgb) {
+            const outRgb = await rgbFrames(mm, W, H, len, fps, workDir);
             const lo = analyzeLeftoverText(srcRgb.buf, outRgb.buf, srcRgb.w, srcRgb.h, cmBand);
-            const maxDrop = Math.max(2, Math.floor(lo.frames * MAX_DROP));
-            if (lo.maskPx < 200 || lo.bad.length > maxDrop) {
-              log(`window ${i}: MiniMax still shows text (${lo.bad.length}/${lo.frames}) — detector inpaint`);
-              rebuiltFile = null;
+            if (lo.maskPx >= 200) {
+              rebuiltFile = mm;
+              log(`window ${i}: MiniMax reconstructed leftover letter pixels`);
             } else {
-              log(`window ${i}: MiniMax reconstructed the caption pixels`);
+              log(`window ${i}: MiniMax changed almost nothing — keeping prior result`);
             }
           }
         } catch (e) {
           log(`window ${i}: MiniMax failed (${(e as Error).message})`);
         }
-      }
-
-      // 2) Detector inpaint: YOLO finds the letters and reconstructs them.
-      //    Runs even when our colour mask missed the overlay (stylized titles).
-      if (!rebuiltFile && winUrl) {
-        rebuiltFile = await detectorInpaintClip({
-          token, videoUrl: winUrl, W, H, dur: len, workDir, deadline, tag: `w${i}`, log,
-          srcFile: segFile, maskFile,
-        });
-        if (rebuiltFile) log(`window ${i}: detector reconstructed the caption pixels`);
       }
 
       if (rebuiltFile) {

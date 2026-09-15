@@ -31,7 +31,7 @@ const SHAPE_DILATE_Y = 2;
 // and the letters fuse into a solid caption bar — MiniMax then repaints the
 // whole strip and the result is a visible blurred fascia, not reconstructed
 // letter pixels.
-const MASK_EDGE = 2;
+const MASK_EDGE = 4;
 // Height ceilings for "this is a line of words", as a share of the frame: one
 // line on its own, and a whole caption block after the lines have been grown
 // together. Measured on these shots a single line runs about 7% and a two-line
@@ -330,9 +330,13 @@ export function captionMasks(
       const m = fam.masks[f];
       for (let p = 0; p < union.length; p++) if (m[p]) union[p] = 1;
     }
-    const kept = keepTextBlobs(union, w, 0, h, centre, BLOCK_TALLEST);
-    if (kept.px) { fillSum += kept.fill; withText++; }
-    total += kept.px;
+    // Families already passed the line-shape test. Running it again on the
+    // letter-tight union used to wipe the mask (stroke fill < 0.5), so MiniMax
+    // never ran and the video was left untouched.
+    let px = 0;
+    for (let p = 0; p < union.length; p++) if (union[p]) px++;
+    if (px) { fillSum += good[0].blockFill; withText++; }
+    total += px;
     for (let y = 0; y < h; y++) {
       const off = y * w;
       let c = 0;
@@ -430,7 +434,7 @@ function familyMask(
 /**
  * Encode the masks as a white-on-black video at the source resolution, which is
  * the shape the removers expect. Nearest-neighbour scale keeps letter edges;
- * extra ffmpeg dilation used to turn the line into a solid bar.
+ * one extra pixel of dilation after scale covers antialiased glyph edges.
  */
 export async function writeMaskVideo(
   masks: Uint8Array[], w: number, h: number, fps: number,
@@ -447,7 +451,7 @@ export async function writeMaskVideo(
   await run(FFMPEG, [
     '-y', '-f', 'rawvideo', '-pix_fmt', 'gray', '-s', `${w}x${h}`, '-r', String(fps),
     '-i', raw,
-    '-vf', `scale=${outW}:${outH}:flags=neighbor,format=yuv420p`,
+    '-vf', `scale=${outW}:${outH}:flags=neighbor,dilation,format=yuv420p`,
     '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '8', out,
   ]);
   try { fs.rmSync(raw, { force: true }); } catch { /* ignore */ }
