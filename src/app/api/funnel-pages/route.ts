@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getUserAccessContext } from '@/lib/auth/get-current-user';
+import { slimFunnelPageRow } from '@/lib/supabase-operations';
 import { listAccessibleProjectIds } from '@/lib/auth/project-access';
 
 export const dynamic = 'force-dynamic';
@@ -19,7 +20,7 @@ export async function GET(req: NextRequest) {
     .order('created_at', { ascending: true });
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  const rows = data || [];
+  const rows = (data || []).map((r) => slimFunnelPageRow(r as Record<string, unknown>));
 
   if (!ctx.userId || ctx.isMaster) {
     return NextResponse.json(rows);

@@ -567,7 +567,7 @@ interface Store {
   isInitialized: boolean;
 
   // Initialize data from Supabase
-  initializeData: () => Promise<void>;
+  initializeData: (force?: boolean) => Promise<void>;
 
   // Templates
   templates: AppSwipeTemplate[];
@@ -669,59 +669,48 @@ export const useStore = create<Store>()((set, get) => ({
   lastStorageError: null,
 
   // Initialize data from Supabase (with timeout to prevent infinite loading)
-  initializeData: async () => {
-    if (get().isInitialized) return;
-
-    const SUPABASE_INIT_TIMEOUT_MS = 12_000;
+  initializeData: async (force?: boolean) => {
+    if (get().isInitialized && !force) return;
 
     set({ isLoading: true, error: null });
 
-    const fetchWithTimeout = <T>(promise: Promise<T>): Promise<T> => {
-      return Promise.race([
-        promise,
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('Timeout: Supabase did not respond within 12 seconds')), SUPABASE_INIT_TIMEOUT_MS)
-        ),
-      ]);
-    };
-
     try {
-      const [products, projects, templates, funnelPages, postPurchasePages] = await fetchWithTimeout(
-        Promise.all([
-          supabaseOps.fetchProducts(),
-          supabaseOps.fetchProjects().catch(() => [] as Project[]),
-          supabaseOps.fetchTemplates(),
-          supabaseOps.fetchFunnelPages(),
-          supabaseOps.fetchPostPurchasePages(),
-        ])
-      );
-
-      const appFunnelPages = funnelPages.map(dbFunnelPageToApp);
-
-      // Fill in checkoutMode for rows where the column gave us nothing —
-      // either it doesn't exist yet or the row predates it. localStorage is
-      // synchronous so it lands before first paint; the server sidecar is
-      // merged a moment later by hydrateCheckoutModes(). A row that DID come
-      // back with a value from the column is never overwritten.
-      const localModes = readLocalCheckoutModes();
-      for (const p of appFunnelPages) {
-        if (p.checkoutMode === undefined && localModes[p.id]) {
-          p.checkoutMode = localModes[p.id];
-        }
-      }
+      // Boot must not wait on funnel_pages: those JSONB blobs are huge and
+      // used to trip a 12s hard timeout → "Connection Error" on every reload.
+      const [products, projects, templates, postPurchasePages] = await Promise.all([
+        supabaseOps.fetchProducts(),
+        supabaseOps.fetchProjects().catch(() => [] as Project[]),
+        supabaseOps.fetchTemplates().catch(() => [] as SwipeTemplate[]),
+        supabaseOps.fetchPostPurchasePages().catch(() => [] as PostPurchasePage[]),
+      ]);
 
       set({
         products: products.map(dbProductToApp),
         projects: projects.map(dbProjectToApp),
         templates: templates.map(dbTemplateToApp),
-        funnelPages: appFunnelPages,
         postPurchasePages: postPurchasePages.map(dbPostPurchaseToApp),
         isLoading: false,
         isInitialized: true,
+        error: null,
       });
 
       void get().loadCustomPageTypes();
       void get().hydrateCheckoutModes();
+
+      let appFunnelPages: AppFunnelPage[] = [];
+      try {
+        const funnelPages = await supabaseOps.fetchFunnelPages();
+        appFunnelPages = funnelPages.map(dbFunnelPageToApp);
+        const localModes = readLocalCheckoutModes();
+        for (const p of appFunnelPages) {
+          if (p.checkoutMode === undefined && localModes[p.id]) {
+            p.checkoutMode = localModes[p.id];
+          }
+        }
+        set({ funnelPages: appFunnelPages });
+      } catch (e) {
+        console.warn('[store] funnel pages load failed:', (e as Error).message);
+      }
 
       // ── HTML REHYDRATE ────────────────────────────────────────────────
       // `stripHtmlFromJsonb` rimuove l'HTML > 50KB da swiped_data /

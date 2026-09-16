@@ -266,7 +266,7 @@ export async function fetchFunnelPages(): Promise<FunnelPage[]> {
     const res = await fetch('/api/funnel-pages', { cache: 'no-store', headers });
     if (res.ok) {
       const rows = (await res.json()) as FunnelPage[];
-      if (Array.isArray(rows)) return rows;
+      if (Array.isArray(rows)) return rows.map((r) => slimFunnelPageRow(r as unknown as Record<string, unknown>) as FunnelPage);
     }
   } catch (e) {
     console.warn('[funnel_pages] API list failed, falling back to RLS:', (e as Error).message);
@@ -281,7 +281,7 @@ export async function fetchFunnelPages(): Promise<FunnelPage[]> {
     console.error('Error fetching funnel pages:', error);
     throw error;
   }
-  return data || [];
+  return (data || []).map((r) => slimFunnelPageRow(r as unknown as Record<string, unknown>) as FunnelPage);
 }
 
 // =====================================================
@@ -408,6 +408,26 @@ function stripHtmlFromJsonb(jsonb: unknown): unknown {
     }
   }
   return out ?? jsonb;
+}
+
+function slimJsonbBlob(jsonb: unknown): unknown {
+  const stripped = stripHtmlFromJsonb(jsonb);
+  if (!stripped || typeof stripped !== 'object' || Array.isArray(stripped)) return stripped;
+  const obj = stripped as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (typeof v === 'string' && v.length > 8_000) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
+export function slimFunnelPageRow<T extends Record<string, unknown>>(row: T): T {
+  const out = { ...row } as Record<string, unknown>;
+  for (const col of ['cloned_data', 'swiped_data', 'extracted_data']) {
+    if (out[col] != null) out[col] = slimJsonbBlob(out[col]);
+  }
+  return out as T;
 }
 
 function sanitizeFunnelPagePayload<T extends Partial<FunnelPageInsert | FunnelPageUpdate>>(

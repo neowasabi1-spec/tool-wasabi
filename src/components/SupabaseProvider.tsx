@@ -128,7 +128,7 @@ export function SupabaseProvider({ children }: SupabaseProviderProps) {
           </p>
           <div className="flex gap-2 justify-center">
             <button
-              onClick={() => initializeData()}
+              onClick={() => initializeData(true)}
               className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg transition-colors"
             >
               Retry
