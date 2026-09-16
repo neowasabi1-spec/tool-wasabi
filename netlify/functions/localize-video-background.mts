@@ -44,7 +44,7 @@ function assTime(sec: number): string {
 }
 
 function wrapCaption(text: string, maxChars: number): string {
-  const words = text.replace(/\s+/g, ' ').trim().toUpperCase().split(' ');
+  const words = text.replace(/\s+/g, ' ').trim().toUpperCase().split(' ').filter(Boolean);
   const lines: string[] = [];
   let line = '';
   for (const w of words) {
@@ -52,15 +52,53 @@ function wrapCaption(text: string, maxChars: number): string {
     else line = line ? `${line} ${w}` : w;
   }
   if (line) lines.push(line);
-  return lines.join('\\N').replace(/\{/g, '(').replace(/\}/g, ')');
+  return lines.slice(0, 2).join('\\N').replace(/\{/g, '(').replace(/\}/g, ')');
+}
+
+/** 3–5 word bites so captions flip with the voice instead of sitting as a wall. */
+function captionChunks(text: string, wordsPer = 4): string[] {
+  const words = text.replace(/\s+/g, ' ').trim().split(' ').filter(Boolean);
+  if (!words.length) return [];
+  const chunks: string[] = [];
+  let i = 0;
+  while (i < words.length) {
+    let n = Math.min(wordsPer, words.length - i);
+    const left = words.length - i - n;
+    if (left > 0 && left <= 2) n += left;
+    const slice = words.slice(i, i + n);
+    let cut = slice.length;
+    for (let k = 1; k < slice.length - 1; k++) {
+      if (/[,;:…—–]$/.test(slice[k])) { cut = k + 1; break; }
+    }
+    chunks.push(slice.slice(0, cut).join(' '));
+    i += cut;
+  }
+  return chunks;
+}
+
+function cuesForScene(
+  text: string, start: number, dur: number,
+): { start: number; end: number; text: string }[] {
+  const parts = captionChunks(text);
+  if (parts.length <= 1) return [{ start, end: start + dur, text: parts[0] || text }];
+  const weights = parts.map((p) => Math.max(4, p.replace(/\s/g, '').length));
+  const sum = weights.reduce((a, b) => a + b, 0);
+  const cues: { start: number; end: number; text: string }[] = [];
+  let t = start;
+  for (let i = 0; i < parts.length; i++) {
+    const len = i === parts.length - 1 ? start + dur - t : dur * (weights[i] / sum);
+    cues.push({ start: t, end: t + len, text: parts[i] });
+    t += len;
+  }
+  return cues;
 }
 
 function buildAss(
   cues: { start: number; end: number; text: string }[],
   W: number, H: number,
 ): string {
-  const fontSize = Math.max(42, Math.round(Math.min(W, H) * 0.08));
-  const maxChars = Math.max(14, Math.round(18 * (W / 1080)));
+  const fontSize = Math.max(48, Math.round(Math.min(W, H) * 0.09));
+  const maxChars = Math.max(12, Math.min(18, Math.round(14 * (W / 1080))));
   const header = [
     '[Script Info]',
     'ScriptType: v4.00+',
@@ -160,13 +198,15 @@ export default async (req: Request) => {
       // the end and the player only shows the first second over a range request.
       '-movflags', '+faststart', base]);
 
-    // 4. Subtitles: one cue per line, timed to its voiceover clip.
+    // 4. Subtitles: short 3–5 word bites timed inside each spoken line, so
+    // they flip with the voice instead of sitting as a wall of text.
     const cues: { start: number; end: number; text: string }[] = [];
     let t = 0;
     for (let i = 0; i < scenes.length; i++) {
-      cues.push({ start: t, end: t + durs[i], text: scenes[i] });
+      cues.push(...cuesForScene(scenes[i], t, durs[i]));
       t += durs[i];
     }
+    log(`captions: ${cues.length} cues from ${scenes.length} spoken line(s)`);
     fs.writeFileSync(path.join(workDir, 'subs.ass'), buildAss(cues, frameW, frameH));
 
     let fontArg = '';
