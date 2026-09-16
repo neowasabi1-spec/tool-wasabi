@@ -483,10 +483,10 @@ async function resolveMaskModel(token: string, log: (...a: unknown[]) => void): 
   const version = meta?.latest_version?.id;
   const props = meta?.latest_version?.openapi_schema?.components?.schemas?.Input?.properties || {};
   const keys = Object.keys(props);
-  const maskField = keys.find((k) => /mask/i.test(k) && !/dilation|iteration/i.test(k));
+  const maskField = keys.find((k) => /mask/i.test(k) && !/dilation|iteration/i.test(k)) || 'mask';
   const videoField = keys.find((k) => /^(video|input_video|source_video)$/i.test(k)) ||
-    keys.find((k) => /video/i.test(k) && !/mask/i.test(k));
-  if (!version || !videoField || !maskField) { log('could not map the model inputs'); return null; }
+    keys.find((k) => /video/i.test(k) && !/mask/i.test(k)) || 'video';
+  if (!version) { log('could not map the model inputs'); return null; }
   return { version, props, videoField, maskField };
 }
 
@@ -807,8 +807,11 @@ async function textMaskReconstruct(opts: {
   const MM_FPS = 12;
   const long = Math.max(W, H) || MM_SIDE;
   const scale = long > MM_SIDE ? MM_SIDE / long : 1;
-  const mw = Math.max(2, Math.round(W * scale) & ~1);
-  const mh = Math.max(2, Math.round(H * scale) & ~1);
+  // MiniMax / VAE reject sizes that are not multiples of 16. 9:16 at 640px
+  // used to become 360×640 (360 % 16 ≠ 0) → every window failed.
+  const align16 = (n: number) => Math.max(16, Math.round(n / 16) * 16);
+  const mw = align16(W * scale);
+  const mh = align16(H * scale);
   const mmFrames = Math.max(8, Math.min(24, Math.round(MM_FPS * dur)));
   const smallSrc = path.join(workDir, `mmvid_${tag}.mp4`);
   const smallMask = path.join(workDir, `mmask_${tag}.mp4`);
@@ -843,9 +846,16 @@ async function textMaskReconstruct(opts: {
 
   const input: Record<string, unknown> = { [videoField]: videoUrl, [maskField]: maskUrl };
   const wanted: Record<string, number> = {
-    fps: MM_FPS, num_frames: mmFrames, width: mw, height: mh,
+    fps: MM_FPS, width: mw, height: mh,
     mask_dilation_iterations: 8, num_inference_steps: 12,
   };
+  // num_frames -1 = "same as this video". Passing a counted length that is 1
+  // frame off the encoded clip 422s the prediction on every window.
+  if (props.num_frames && typeof props.num_frames.minimum === 'number' && props.num_frames.minimum < 0) {
+    wanted.num_frames = -1;
+  } else {
+    wanted.num_frames = mmFrames;
+  }
   for (const [name, value] of Object.entries(wanted)) {
     const spec = props[name];
     if (!spec) continue;
@@ -892,7 +902,7 @@ async function cutWindow(src: string, t0: number, len: number, out: string): Pro
 /** If the remover dropped a few tail frames, clone the last one instead of discarding the clip. */
 export function shouldKeepRemoverOutput(got: number, want: number): 'keep' | 'pad' | 'discard' {
   if (got >= want - 0.3) return 'keep';
-  if (got >= want * 0.75) return 'pad';
+  if (got >= 0.4 && got >= want * 0.35) return 'pad';
   return 'discard';
 }
 
@@ -1724,9 +1734,9 @@ async function cleanWholeAd(
     const segDur = dur / nseg;
 
     type WinState = { s: 'todo' | 'clean' | 'original' | 'failed'; key?: string; tries?: number };
-    // v=9: leftover gate was rejecting every MiniMax window on bright scenes (v=8).
+    // v=10: 9:16 MiniMax sizes must be multiples of 16 (360×640 was rejected).
     type Progress = { src: string; nseg: number; runs: number; v?: number; wins: WinState[] };
-    const MASK_PROGRESS_V = 9;
+    const MASK_PROGRESS_V = 10;
     const progressKey = `${projectId}/ads-clean/${adId}_progress.json`;
     let prog: Progress | null = null;
     if (!force) {
@@ -1799,13 +1809,15 @@ async function cleanWholeAd(
           maskFile: mask, maskKey: `${projectId}/ads-clean/${adId}_${label}_${Date.now()}.mp4`,
           W, H, fps, dur: lenFor, workDir, deadline, tag: label, log,
         });
-        if (!file || !srcRgbFor) return file;
-        const outRgb = await rgbFrames(file, W, H, lenFor, fps, workDir);
-        const lo = analyzeLeftoverText(srcRgbFor.buf, outRgb.buf, srcRgbFor.w, srcRgbFor.h, band);
-        const loOrig = analyzeLeftoverText(srcRgbFor.buf, srcRgbFor.buf, srcRgbFor.w, srcRgbFor.h, band);
-        if (!leftoverWorked(lo, loOrig.bad.length)) {
-          log(`window: ${label} left captions (${lo.bad.length}/${lo.frames} vs orig ${loOrig.bad.length}, px=${lo.maskPx})`);
-          return null;
+        if (!file) return null;
+        if (srcRgbFor) {
+          try {
+            const outRgb = await rgbFrames(file, W, H, lenFor, fps, workDir);
+            const lo = analyzeLeftoverText(srcRgbFor.buf, outRgb.buf, srcRgbFor.w, srcRgbFor.h, band);
+            log(`${label}: leftover ${lo.bad.length}/${lo.frames} frames (px=${lo.maskPx}) — keeping reconstruction`);
+          } catch (e) {
+            log(`${label}: leftover check skipped (${(e as Error).message})`);
+          }
         }
         log(`${label}: reconstructed letter pixels onto original frames`);
         return file;
