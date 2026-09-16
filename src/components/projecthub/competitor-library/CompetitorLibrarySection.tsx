@@ -9,7 +9,7 @@ import {
   Video, Bookmark, CheckSquare, Square, TrendingUp, Download, Copy, Check,
   Settings, Zap, FileText, Eye, LayoutTemplate, Repeat, Star, Flame,
   Scissors, Film, Sparkles, DollarSign, Eraser, Folder, Activity, Users, Gauge, Loader2,
-  Tag,
+  Tag, Pencil, Languages, Wand2,
 } from "lucide-react";
 import {
   AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
@@ -344,6 +344,44 @@ function downloadCreative(ad: { file_path: string; name?: string; media_type?: s
   document.body.appendChild(a);
   a.click();
   a.remove();
+}
+
+function isStillCreative(filePath: string, durationSec?: number | null) {
+  if (typeof durationSec === "number" && durationSec <= 0.05) return true;
+  return /\.(png|jpe?g|webp|gif)$/i.test(filePath || "");
+}
+
+async function pollGeneratedMedia(body: Record<string, unknown>): Promise<string> {
+  const submit = await fetch("/api/generate-image", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  let data = await submit.json().catch(() => ({})) as {
+    status?: string; url?: string; error?: string;
+    requestId?: string; statusUrl?: string; responseUrl?: string; modelKey?: string;
+  };
+  if (!submit.ok || data.status === "error") throw new Error(data.error || "Generation failed");
+  const deadline = Date.now() + 5 * 60_000;
+  while (data.status === "pending" && data.requestId) {
+    if (Date.now() > deadline) throw new Error("Generation timed out");
+    await new Promise((r) => setTimeout(r, 1600));
+    const poll = await fetch("/api/generate-image", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "poll",
+        requestId: data.requestId,
+        statusUrl: data.statusUrl,
+        responseUrl: data.responseUrl,
+        modelKey: data.modelKey,
+      }),
+    });
+    data = await poll.json().catch(() => ({}));
+    if (!poll.ok || data.status === "error") throw new Error(data.error || "Generation failed");
+  }
+  if (!data.url) throw new Error("No image came back");
+  return data.url;
 }
 
 // Colori per i placeholder delle ads (senza immagine)
@@ -733,7 +771,7 @@ function CreativeDetailPanel({
     } catch { /* ignore */ }
   };
   useEffect(() => {
-    if (ad.media_type === "video") loadBuildStatus();
+    loadBuildStatus();
     return () => { if (buildPoll.current) { clearInterval(buildPoll.current); buildPoll.current = null; } };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ad.id]);
@@ -785,6 +823,106 @@ function CreativeDetailPanel({
       setBuildStatus("");
       toast({ title: "Build stopped" });
     } catch { toast({ title: "Could not stop the build", variant: "destructive" }); }
+  };
+  const [imgBusy, setImgBusy] = useState("");
+  const [imgErr, setImgErr] = useState("");
+  const [imgLang, setImgLang] = useState("German");
+  const [imgLangOther, setImgLangOther] = useState("");
+  const [imgEdit, setImgEdit] = useState("");
+  const [imgProduct, setImgProduct] = useState("");
+  const remakeImage = async (mode: "swipe" | "recreate" | "edit") => {
+    const language = imgLang === LANGUAGE_OTHER ? imgLangOther.trim() : imgLang;
+    if (mode === "recreate" && !language) {
+      toast({ title: "Pick a language first", variant: "destructive" });
+      return;
+    }
+    if (mode === "edit" && imgEdit.trim().length < 4) {
+      toast({ title: "Describe the change you want", variant: "destructive" });
+      return;
+    }
+    setImgBusy(mode);
+    setImgErr("");
+    try {
+      const prepRes = await fetch(
+        `/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/${ad.id}/remake-image`,
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "prepare" }) },
+      );
+      const prep = await prepRes.json().catch(() => ({}));
+      if (!prepRes.ok) throw new Error(prep.error || "Could not prepare the image");
+      const sourceUrl = String(prep.imageUrl || "");
+      const productUrl = String(prep.productImageUrl || "");
+      const productName = (imgProduct || product || prep.productName || "").trim();
+      let prompt = "";
+      let genMode: "text2image" | "image2image" = "image2image";
+      let secondaryImageUrl: string | undefined;
+
+      if (mode === "swipe") {
+        if (!productUrl && !productName) {
+          throw new Error("Add your product name, or upload a packshot in the project, then swipe.");
+        }
+        const anRes = await fetch("/api/swipe-image/analyze", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            imageUrl: sourceUrl,
+            currentAlt: ad.name || ad.headline || "",
+            pageTitle: ad.headline || "",
+            productContext: {
+              name: productName,
+              brief: prep.brief || "",
+              description: imgProduct || product || "",
+            },
+            surroundingContext: {
+              heading: ad.headline || "",
+              nearbyText: [ad.hook, ad.body_text].filter(Boolean).join(" "),
+            },
+          }),
+        });
+        const an = await anRes.json().catch(() => ({}));
+        if (!anRes.ok || !an.suggestedPrompt) throw new Error(an.error || "Could not analyze the image");
+        prompt = String(an.suggestedPrompt);
+        if (productUrl) {
+          genMode = "image2image";
+          secondaryImageUrl = productUrl;
+          prompt += " The FIRST image is the competitor layout to swipe. The SECOND image is OUR exact product packshot — put that product in place of theirs, keep the same format, framing and style.";
+        } else {
+          genMode = "text2image";
+        }
+      } else if (mode === "recreate") {
+        prompt = `Keep this image's layout, people, product, colors and composition. Rewrite EVERY visible text (headlines, labels, badges, captions, CTAs, small print) into ${language}. Do not add new claims or new objects. The result must look like the same ad in ${language}.`;
+      } else {
+        prompt = `Edit this image as requested, keep everything else the same: ${imgEdit.trim()}`;
+      }
+
+      const url = await pollGeneratedMedia({
+        mode: genMode,
+        prompt,
+        imageUrl: genMode === "image2image" ? sourceUrl : undefined,
+        secondaryImageUrl,
+        size: "auto",
+      });
+      const saveRes = await fetch(
+        `/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/${ad.id}/remake-image`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "save", url, prompt, language: mode === "recreate" ? language : "", mode }),
+        },
+      );
+      const saved = await saveRes.json().catch(() => ({}));
+      if (!saveRes.ok) throw new Error(saved.error || "Could not save the image");
+      await loadBuildStatus();
+      toast({
+        title: mode === "swipe" ? "Swipe ready" : mode === "recreate" ? "Recreated" : "Edit ready",
+        description: "Saved with this creative — also in Created videos.",
+      });
+    } catch (e) {
+      const msg = (e as Error).message || "Failed";
+      setImgErr(msg);
+      toast({ title: msg, variant: "destructive" });
+    } finally {
+      setImgBusy("");
+    }
   };
   const days = daysRunning(ad);
   const tier = winnerTier({ ...ad, is_winner: winner });
@@ -946,6 +1084,94 @@ function CreativeDetailPanel({
                     </button>
                   </div>
                   <p className="text-xs text-foreground leading-relaxed whitespace-pre-wrap max-h-60 overflow-y-auto pr-1 bg-muted/40 rounded-lg p-2">{script}</p>
+                </div>
+              )}
+            </div>
+          )}
+          {ad.media_type !== "video" && ad.file_path && (
+            <div className="pt-2 border-t border-border space-y-2">
+              <div className="flex items-center gap-1.5">
+                <Wand2 className="w-3.5 h-3.5 text-primary" />
+                <p className="text-[9px] text-muted-foreground uppercase tracking-widest font-semibold">Remake this image</p>
+              </div>
+              <p className="text-[10px] text-muted-foreground leading-snug">
+                Swipe it with your product, recreate the same ad in another language, or describe an edit. Results stay here and in <b>Created videos</b>.
+              </p>
+              <Input
+                value={imgProduct}
+                onChange={(e) => setImgProduct(e.target.value)}
+                placeholder="Your product name (used for swipe)"
+                className="h-8 text-xs"
+              />
+              <Button
+                onClick={() => remakeImage("swipe")}
+                disabled={!!imgBusy}
+                className="w-full gap-2 h-8">
+                {imgBusy === "swipe"
+                  ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Swiping with your product…</>
+                  : <><Wand2 className="w-3.5 h-3.5" /> Swipe with my product</>}
+              </Button>
+              <div className="flex items-center gap-2">
+                <select
+                  value={imgLang}
+                  onChange={(e) => setImgLang(e.target.value)}
+                  className="h-8 text-xs rounded-md border border-border bg-background px-2 flex-1"
+                  title="Language for on-image text">
+                  {BUILD_LANGUAGES.map((l) => (
+                    <option key={l} value={l}>{`Language: ${l}`}</option>
+                  ))}
+                  <option value={LANGUAGE_OTHER}>Language: other…</option>
+                </select>
+                {imgLang === LANGUAGE_OTHER && (
+                  <Input
+                    value={imgLangOther}
+                    onChange={(e) => setImgLangOther(e.target.value)}
+                    placeholder="e.g. Japanese"
+                    className="h-8 text-xs flex-1"
+                  />
+                )}
+              </div>
+              <Button
+                onClick={() => remakeImage("recreate")}
+                disabled={!!imgBusy}
+                variant="outline"
+                className="w-full gap-2 h-8">
+                {imgBusy === "recreate"
+                  ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Recreating…</>
+                  : <><Languages className="w-3.5 h-3.5" /> Recreate in this language</>}
+              </Button>
+              <textarea
+                value={imgEdit}
+                onChange={(e) => setImgEdit(e.target.value)}
+                placeholder="Edit: e.g. change the headline, make the product bigger, remove the badge…"
+                rows={3}
+                className="w-full text-xs rounded-md border border-border bg-background px-2.5 py-2 leading-relaxed resize-y min-h-[4rem]"
+              />
+              <Button
+                onClick={() => remakeImage("edit")}
+                disabled={!!imgBusy}
+                variant="outline"
+                className="w-full gap-2 h-8">
+                {imgBusy === "edit"
+                  ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Editing…</>
+                  : <><Pencil className="w-3.5 h-3.5" /> Apply edit</>}
+              </Button>
+              {imgErr && <p className="text-[10px] text-destructive break-words">{imgErr}</p>}
+              {buildVideos.filter((v) => isStillCreative(v.file_path, v.duration_sec)).length > 0 && (
+                <div className="grid grid-cols-2 gap-2 pt-1">
+                  {buildVideos.filter((v) => isStillCreative(v.file_path, v.duration_sec)).map((v) => (
+                    <div key={v.id} className="rounded-lg overflow-hidden border border-border bg-slate-50">
+                      <img src={getUploadUrl(v.file_path)} alt="" className="w-full max-h-48 object-contain bg-white" />
+                      <div className="flex items-center justify-between px-2 py-1">
+                        <span className="text-[9px] text-muted-foreground truncate">New image</span>
+                        <button
+                          onClick={() => downloadCreative({ file_path: v.file_path, name: `image-${v.id}`, media_type: "image" })}
+                          className="flex items-center gap-1 text-[10px] font-semibold text-primary hover:underline">
+                          <Download className="w-3 h-3" /> Download
+                        </button>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
@@ -3429,7 +3655,7 @@ function GeneratedVideosView({ projectId }: { projectId: string }) {
         <div>
           <h3 className="text-lg font-bold text-foreground">Created videos</h3>
           <p className="text-sm text-muted-foreground mt-0.5">
-            Videos with new voiceover + subtitles, and videos composed from copy + real footage. Localize a cleaned ad from Ads Library, or make more with <b>Create video from copy</b> on the Shots tab.
+            Localized videos, footage builds, and remade competitor images. Localize or remake from Ads Library — when it finishes, the file appears here.
           </p>
         </div>
         <Button variant="outline" size="sm" onClick={load} className="gap-1.5 h-8">
@@ -3444,7 +3670,7 @@ function GeneratedVideosView({ projectId }: { projectId: string }) {
           <Sparkles className="w-12 h-12 text-muted-foreground/30 mx-auto mb-3" />
           <p className="text-sm font-semibold text-foreground mb-1">No created videos yet</p>
           <p className="text-xs text-muted-foreground max-w-md mx-auto">
-            Go to an ad, clean the subtitles, then <b>Localize</b> with German (or any language) and a voice — or use the <b>Shots</b> tab → <b>Create video from copy</b>. When a build finishes, the file appears here.
+            Go to an ad: for videos, clean then <b>Localize</b>; for images, <b>Swipe / Recreate / Edit</b>. When a job finishes, the file appears here.
           </p>
         </div>
       ) : (
@@ -3452,12 +3678,14 @@ function GeneratedVideosView({ projectId }: { projectId: string }) {
           {videos.map((v) => (
             <div key={v.id} className="group relative rounded-xl overflow-hidden border border-border bg-slate-50">
               <button onClick={() => setPlaying(v)} className="block w-full aspect-[9/16] bg-slate-100">
-                {v.thumb_path
-                  ? <img src={getUploadUrl(v.thumb_path)} alt="" className="w-full h-full object-cover" />
-                  : <div className="w-full h-full flex items-center justify-center text-slate-400"><Play className="w-7 h-7" /></div>}
+                {isStillCreative(v.file_path, v.duration_sec)
+                  ? <img src={getUploadUrl(v.file_path)} alt="" className="w-full h-full object-cover" />
+                  : v.thumb_path
+                    ? <img src={getUploadUrl(v.thumb_path)} alt="" className="w-full h-full object-cover" />
+                    : <div className="w-full h-full flex items-center justify-center text-slate-400"><Play className="w-7 h-7" /></div>}
               </button>
               <span className="absolute top-1.5 left-1.5 text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-slate-900/70 text-white">
-                {Math.round(v.duration_sec)}s
+                {isStillCreative(v.file_path, v.duration_sec) ? "IMAGE" : `${Math.round(v.duration_sec)}s`}
               </span>
               <span className="absolute top-1.5 right-1.5 text-[9px] font-black px-1.5 py-0.5 rounded-full bg-primary text-primary-foreground">
                 NEW
@@ -3469,7 +3697,11 @@ function GeneratedVideosView({ projectId }: { projectId: string }) {
               )}
               <div className="flex items-center justify-between px-2 py-1.5 bg-background">
                 <button
-                  onClick={() => downloadCreative({ file_path: v.file_path, name: `creative-${v.id}`, media_type: "video" })}
+                  onClick={() => downloadCreative({
+                    file_path: v.file_path,
+                    name: `creative-${v.id}`,
+                    media_type: isStillCreative(v.file_path, v.duration_sec) ? "image" : "video",
+                  })}
                   className="flex items-center gap-1 text-[10px] font-semibold text-primary hover:underline">
                   <Download className="w-3 h-3" /> Download
                 </button>
@@ -3486,13 +3718,25 @@ function GeneratedVideosView({ projectId }: { projectId: string }) {
         <div className="fixed inset-0 z-[70] flex items-center justify-center p-6" onClick={() => setPlaying(null)}>
           <div className="absolute inset-0 bg-black/80" />
           <div className="relative flex flex-col items-center gap-3" onClick={(e) => e.stopPropagation()}>
-            <video
-              src={getUploadUrl(playing.file_path)}
-              controls autoPlay loop playsInline
-              className="max-h-[78vh] max-w-full rounded-xl bg-black"
-            />
+            {isStillCreative(playing.file_path, playing.duration_sec) ? (
+              <img
+                src={getUploadUrl(playing.file_path)}
+                alt=""
+                className="max-h-[78vh] max-w-full rounded-xl bg-black object-contain"
+              />
+            ) : (
+              <video
+                src={getUploadUrl(playing.file_path)}
+                controls autoPlay loop playsInline
+                className="max-h-[78vh] max-w-full rounded-xl bg-black"
+              />
+            )}
             <button
-              onClick={() => downloadCreative({ file_path: playing.file_path, name: `creative-${playing.id}`, media_type: "video" })}
+              onClick={() => downloadCreative({
+                file_path: playing.file_path,
+                name: `creative-${playing.id}`,
+                media_type: isStillCreative(playing.file_path, playing.duration_sec) ? "image" : "video",
+              })}
               className="flex items-center gap-1.5 text-sm font-semibold text-white bg-primary px-4 py-2 rounded-lg hover:opacity-90">
               <Download className="w-4 h-4" /> Download
             </button>
