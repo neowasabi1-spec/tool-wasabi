@@ -135,8 +135,8 @@ type Cluster = { b: Box; t0: number; t1: number };
 
 const RGB_W = 400;        // analysis width; height follows the aspect ratio
 const RGB_MAX_PIXELS = 24e6;  // analysed pixels per clip; two clips are held at once
-const COLOR_MIN = 30;     // caption-coloured pixels left -> text still on screen
-const MAX_DROP = 0.25;    // beyond this, freezing frames would be noticeable
+const COLOR_MIN = 12;     // caption-coloured / ghost pixels left -> text still on screen
+const MAX_DROP = 0.08;    // a few leftover frames still read as a caption to the eye
 const MASK_PASSES = 3;    // mask passes; each run only removes what its mask covered
 // The neural remover reconstructs a masked region from a window of frames, so it
 // cleans short clips reliably but leaves readable ghosting on long ones (the
@@ -253,8 +253,13 @@ export function analyzeLeftoverText(
       if (!mask[p]) continue;
       const i = f * fsz + p * 3;
       if (!near(orig, i)) continue;   // no caption colour here to begin with
-      if (!near(clean, i)) continue;  // repainted away
-      if (isWhite && !sharp(clean, p, f)) continue;
+      // Ghost captions: MiniMax often leaves a faded / translucent smear that
+      // is no longer the original yellow/white, so colour-match alone misses it.
+      const stillBright =
+        Math.min(clean[i], clean[i + 1], clean[i + 2]) > 140
+        && (clean[i] + clean[i + 1] + clean[i + 2]) >= (orig[i] + orig[i + 1] + orig[i + 2]) * 0.7;
+      if (!near(clean, i) && !stillBright) continue;
+      if (isWhite && !stillBright && !sharp(clean, p, f)) continue;
       hit++;
     }
     counts.push(hit);
@@ -492,8 +497,8 @@ async function compositeThroughMask(opts: {
   W: number; H: number; log: (...a: unknown[]) => void; tag: string;
 }): Promise<boolean> {
   const { srcFile, reconFile, maskFile, outFile, W, H, log, tag } = opts;
-  const scale = `[1:v]scale=${W}:${H},setsar=1[recon];` +
-    `[2:v]scale=${W}:${H}:flags=neighbor,format=gray[mk];`;
+  const scale = `[1:v]scale=${W}:${H}:flags=lanczos,setsar=1[recon];` +
+    `[2:v]scale=${W}:${H}:flags=neighbor,format=gray,dilation,dilation,dilation[mk];`;
   try {
     await run(FFMPEG, [
       '-y', '-i', srcFile, '-i', reconFile, '-i', maskFile,
@@ -795,7 +800,7 @@ async function textMaskReconstruct(opts: {
   // burned tens of dollars on a 30s clip. The model is documented around
   // 480–832px and 12 steps; we downscale, reconstruct, then paste only those
   // pixels back onto the original frames.
-  const MM_SIDE = 512;
+  const MM_SIDE = 640;
   const MM_FPS = 12;
   const long = Math.max(W, H) || MM_SIDE;
   const scale = long > MM_SIDE ? MM_SIDE / long : 1;
@@ -836,7 +841,7 @@ async function textMaskReconstruct(opts: {
   const input: Record<string, unknown> = { [videoField]: videoUrl, [maskField]: maskUrl };
   const wanted: Record<string, number> = {
     fps: MM_FPS, num_frames: mmFrames, width: mw, height: mh,
-    mask_dilation_iterations: 4, num_inference_steps: 12,
+    mask_dilation_iterations: 8, num_inference_steps: 12,
   };
   for (const [name, value] of Object.entries(wanted)) {
     const spec = props[name];
@@ -1567,7 +1572,7 @@ async function ocrLetterMask(opts: {
   if (Date.now() > deadline - 45000) return null;
   const framesDir = path.join(workDir, `ocr_${tag}`);
   fs.mkdirSync(framesDir, { recursive: true });
-  const nFrames = 1;
+  const nFrames = 2;
   try {
     await run(FFMPEG, [
       '-y', '-i', srcFile,
@@ -1716,9 +1721,9 @@ async function cleanWholeAd(
     const segDur = dur / nseg;
 
     type WinState = { s: 'todo' | 'clean' | 'original' | 'failed'; key?: string; tries?: number };
-    // v=7: user retry wipes the ledger (v=6 "clean" windows were often the original).
+    // v=8: wider letter mask + leftover-ghost gate; v=7 "clean" windows still showed translucent captions.
     type Progress = { src: string; nseg: number; runs: number; v?: number; wins: WinState[] };
-    const MASK_PROGRESS_V = 7;
+    const MASK_PROGRESS_V = 8;
     const progressKey = `${projectId}/ads-clean/${adId}_progress.json`;
     let prog: Progress | null = null;
     if (!force) {
@@ -1853,13 +1858,12 @@ async function cleanWholeAd(
       let rebuiltFile: string | null = null;
       let ocrMask: string | null = null;
 
-      // One MiniMax per attempt. Colour mask first; OCR on the retry if colour
-      // already paid and still left captions.
-      const triedColour = (w.tries || 0) >= 1;
-      if (maskFile && !triedColour) {
+      // Colour mask first; if that leaves ghosts, OCR in the SAME run so
+      // windows are not shipped with translucent leftover letters.
+      if (maskFile) {
         rebuiltFile = await tryMiniMax(maskFile, cmBand, `w${i}`);
       }
-      if (!rebuiltFile && (!maskFile || triedColour)) {
+      if (!rebuiltFile) {
         const ocr = await ocrLetterMask({
           token, srcFile: segFile, W, H, fps, dur: len, workDir, deadline,
           tag: `w${i}`, cache: ocrCache, log,
@@ -1876,14 +1880,10 @@ async function cleanWholeAd(
         w.s = 'clean';
         w.key = winKey;
       } else {
+        const foundLetters = Boolean(maskFile || ocrMask);
+        w.s = foundLetters ? 'failed' : 'original';
         w.tries = (w.tries || 0) + 1;
-        if (w.tries >= 2) {
-          const foundLetters = Boolean(maskFile || ocrMask);
-          w.s = foundLetters ? 'failed' : 'original';
-          log(`window ${i}: ${w.s === 'failed' ? 'neural reconstruct failed after 2 attempts' : 'no caption text detected — kept original'}`);
-        } else {
-          log(`window ${i}: attempt ${w.tries} failed — will retry in a later run`);
-        }
+        log(`window ${i}: ${w.s === 'failed' ? 'reconstruct left leftover captions' : 'no caption text detected — kept original'}`);
       }
       await saveProgress();
     }
