@@ -135,8 +135,8 @@ type Cluster = { b: Box; t0: number; t1: number };
 
 const RGB_W = 400;        // analysis width; height follows the aspect ratio
 const RGB_MAX_PIXELS = 24e6;  // analysed pixels per clip; two clips are held at once
-const COLOR_MIN = 12;     // caption-coloured / ghost pixels left -> text still on screen
-const MAX_DROP = 0.08;    // a few leftover frames still read as a caption to the eye
+const COLOR_MIN = 28;     // caption-coloured pixels left in a frame → still readable
+const MAX_DROP = 0.18;    // a few leftover frames still read as a caption to the eye
 const MASK_PASSES = 3;    // mask passes; each run only removes what its mask covered
 // The neural remover reconstructs a masked region from a window of frames, so it
 // cleans short clips reliably but leaves readable ghosting on long ones (the
@@ -253,13 +253,13 @@ export function analyzeLeftoverText(
       if (!mask[p]) continue;
       const i = f * fsz + p * 3;
       if (!near(orig, i)) continue;   // no caption colour here to begin with
-      // Ghost captions: MiniMax often leaves a faded / translucent smear that
-      // is no longer the original yellow/white, so colour-match alone misses it.
-      const stillBright =
-        Math.min(clean[i], clean[i + 1], clean[i + 2]) > 140
-        && (clean[i] + clean[i + 1] + clean[i + 2]) >= (orig[i] + orig[i + 1] + orig[i + 2]) * 0.7;
-      if (!near(clean, i) && !stillBright) continue;
-      if (isWhite && !stillBright && !sharp(clean, p, f)) continue;
+      // Keep original caption pixels (near) or a faded smear of the SAME colour.
+      // Do NOT treat any bright reconstruction (skin, tiles, packshot) as a ghost:
+      // that rejected every MiniMax window on light scenes.
+      if (!near(clean, i) &&
+          Math.abs(clean[i] - colour[0]) + Math.abs(clean[i + 1] - colour[1]) +
+          Math.abs(clean[i + 2] - colour[2]) > 145) continue;
+      if (isWhite && !sharp(clean, p, f)) continue;
       hit++;
     }
     counts.push(hit);
@@ -276,11 +276,14 @@ export function analyzeLeftoverText(
   };
 }
 
-/** True when the reconstruction actually repainted letters and they did not come back. */
-function leftoverWorked(lo: Leftover): boolean {
-  if (lo.maskPx < 200 || !lo.colour) return false;
-  const maxDrop = Math.max(2, Math.floor(lo.frames * MAX_DROP));
-  return lo.bad.length <= maxDrop;
+/** True when reconstruction removed most caption letters (or we cannot measure). */
+function leftoverWorked(lo: Leftover, origBad = 0): boolean {
+  if (lo.maskPx < 200 || !lo.colour) return true;
+  const maxDrop = Math.max(3, Math.floor(lo.frames * MAX_DROP));
+  if (lo.bad.length <= maxDrop) return true;
+  // Partial clean is still a win vs shipping the original letters.
+  if (origBad > 0 && lo.bad.length <= Math.floor(origBad * 0.5)) return true;
+  return false;
 }
 
 /**
@@ -1721,9 +1724,9 @@ async function cleanWholeAd(
     const segDur = dur / nseg;
 
     type WinState = { s: 'todo' | 'clean' | 'original' | 'failed'; key?: string; tries?: number };
-    // v=8: wider letter mask + leftover-ghost gate; v=7 "clean" windows still showed translucent captions.
+    // v=9: leftover gate was rejecting every MiniMax window on bright scenes (v=8).
     type Progress = { src: string; nseg: number; runs: number; v?: number; wins: WinState[] };
-    const MASK_PROGRESS_V = 8;
+    const MASK_PROGRESS_V = 9;
     const progressKey = `${projectId}/ads-clean/${adId}_progress.json`;
     let prog: Progress | null = null;
     if (!force) {
@@ -1799,8 +1802,9 @@ async function cleanWholeAd(
         if (!file || !srcRgbFor) return file;
         const outRgb = await rgbFrames(file, W, H, lenFor, fps, workDir);
         const lo = analyzeLeftoverText(srcRgbFor.buf, outRgb.buf, srcRgbFor.w, srcRgbFor.h, band);
-        if (!leftoverWorked(lo)) {
-          log(`window: ${label} left captions (${lo.bad.length}/${lo.frames}, px=${lo.maskPx})`);
+        const loOrig = analyzeLeftoverText(srcRgbFor.buf, srcRgbFor.buf, srcRgbFor.w, srcRgbFor.h, band);
+        if (!leftoverWorked(lo, loOrig.bad.length)) {
+          log(`window: ${label} left captions (${lo.bad.length}/${lo.frames} vs orig ${loOrig.bad.length}, px=${lo.maskPx})`);
           return null;
         }
         log(`${label}: reconstructed letter pixels onto original frames`);
