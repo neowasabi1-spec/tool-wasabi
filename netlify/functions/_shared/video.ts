@@ -346,6 +346,31 @@ export async function normalizeShot(src: string, out: string, postFilter?: strin
   ]);
 }
 
+/**
+ * Keep the source aspect ratio (landscape stays landscape). Caps the long side
+ * at 1920 so a 4K file does not explode encode time, never crops to 9:16.
+ */
+export async function keepSourceFrame(src: string, out: string): Promise<{ w: number; h: number }> {
+  const info = await ffprobeInfo(src);
+  let w = info.width || TARGET_W;
+  let h = info.height || TARGET_H;
+  w = Math.max(2, w & ~1);
+  h = Math.max(2, h & ~1);
+  const long = Math.max(w, h);
+  if (long > 1920) {
+    const s = 1920 / long;
+    w = Math.max(2, Math.round(w * s) & ~1);
+    h = Math.max(2, Math.round(h * s) & ~1);
+  }
+  await run(FFMPEG, [
+    '-y', '-i', src, '-an',
+    '-vf', `scale=${w}:${h}:flags=lanczos,setsar=1,fps=30`,
+    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', '-pix_fmt', 'yuv420p',
+    out,
+  ]);
+  return { w, h };
+}
+
 export function srtTime(sec: number): string {
   const ms = Math.max(0, Math.round(sec * 1000));
   const h = Math.floor(ms / 3600000);

@@ -756,7 +756,8 @@ function CreativeDetailPanel({
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           mode: "localize", voice, language,
-          ...(copyMode === "custom" ? { script: custom } : {}),
+          copySource: copyMode,
+          script: copyMode === "custom" ? custom : text.trim(),
         }),
       });
       const j = await r.json().catch(() => ({}));

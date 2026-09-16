@@ -3,7 +3,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import {
   getSupabase, run, FFMPEG, makeWorkDir, probeDuration, ttsScene,
-  normalizeShot, downloadSource, grabThumb, uploadFile, TARGET_W, TARGET_H,
+  keepSourceFrame, downloadSource, grabThumb, uploadFile,
 } from './_shared/video';
 
 /**
@@ -43,7 +43,7 @@ function assTime(sec: number): string {
   return `${h}:${p(m)}:${p(s)}.${p(c)}`;
 }
 
-function wrapCaption(text: string, maxChars = 18): string {
+function wrapCaption(text: string, maxChars: number): string {
   const words = text.replace(/\s+/g, ' ').trim().toUpperCase().split(' ');
   const lines: string[] = [];
   let line = '';
@@ -55,12 +55,17 @@ function wrapCaption(text: string, maxChars = 18): string {
   return lines.join('\\N').replace(/\{/g, '(').replace(/\}/g, ')');
 }
 
-function buildAss(cues: { start: number; end: number; text: string }[]): string {
+function buildAss(
+  cues: { start: number; end: number; text: string }[],
+  W: number, H: number,
+): string {
+  const fontSize = Math.max(42, Math.round(Math.min(W, H) * 0.08));
+  const maxChars = Math.max(14, Math.round(18 * (W / 1080)));
   const header = [
     '[Script Info]',
     'ScriptType: v4.00+',
-    `PlayResX: ${TARGET_W}`,
-    `PlayResY: ${TARGET_H}`,
+    `PlayResX: ${W}`,
+    `PlayResY: ${H}`,
     'WrapStyle: 0',
     'ScaledBorderAndShadow: yes',
     '',
@@ -68,19 +73,17 @@ function buildAss(cues: { start: number; end: number; text: string }[]): string 
     'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, ' +
       'Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, ' +
       'Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
-    // Outline + soft shadow, no background box (BorderStyle=1): white text, thick
-    // black outline, semi-transparent shadow so it reads on any footage.
-    `Style: Default,${CAPTION_FONT},104,&H00FFFFFF,&H000000FF,&H00000000,&H96000000,` +
+    `Style: Default,${CAPTION_FONT},${fontSize},&H00FFFFFF,&H000000FF,&H00000000,&H96000000,` +
       '1,0,0,0,100,100,0,0,1,6,3,5,60,60,60,1',
     '',
     '[Events]',
     'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
   ];
-  const y = Math.round(SUB_BAND * TARGET_H);
-  const x = Math.round(TARGET_W / 2);
+  const y = Math.round(SUB_BAND * H);
+  const x = Math.round(W / 2);
   const events = cues.map((c) =>
     `Dialogue: 0,${assTime(c.start)},${assTime(c.end)},Default,,0,0,0,,` +
-    `{\\an5\\pos(${x},${y})}${wrapCaption(c.text)}`);
+    `{\\an5\\pos(${x},${y})}${wrapCaption(c.text, maxChars)}`);
   return [...header, ...events].join('\n') + '\n';
 }
 
@@ -132,12 +135,12 @@ export default async (req: Request) => {
     const voiceFile = path.join(workDir, 'voice.mp3');
     await run(FFMPEG, ['-y', '-f', 'concat', '-safe', '0', '-i', aList, '-c', 'copy', voiceFile]);
 
-    // 2. Original footage, normalized to the vertical target, fitted to the
-    // voiceover length: looped if shorter, trimmed if longer.
+    // 2. Original footage, same aspect as the source (landscape stays landscape).
+    // Fitted to the voiceover length: looped if shorter, trimmed if longer.
     const raw = path.join(workDir, 'raw.mp4');
     await downloadSource(supabase, sourcePath, raw);
     const norm = path.join(workDir, 'norm.mp4');
-    await normalizeShot(raw, norm);
+    const { w: frameW, h: frameH } = await keepSourceFrame(raw, norm);
     const srcDur = await probeDuration(norm);
     const visual = path.join(workDir, 'visual.mp4');
     if (srcDur >= total - 0.05) {
@@ -147,7 +150,7 @@ export default async (req: Request) => {
       await run(FFMPEG, ['-y', '-stream_loop', '-1', '-i', norm, '-t', total.toFixed(2), '-an',
         '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', '-pix_fmt', 'yuv420p', visual]);
     }
-    log(`source ${srcDur.toFixed(1)}s ${srcDur >= total ? 'trimmed' : 'looped'} to ${total.toFixed(1)}s`);
+    log(`source ${srcDur.toFixed(1)}s ${frameW}x${frameH} ${srcDur >= total ? 'trimmed' : 'looped'} to ${total.toFixed(1)}s`);
 
     // 3. Mux voiceover onto the footage.
     const base = path.join(workDir, 'base.mp4');
@@ -164,7 +167,7 @@ export default async (req: Request) => {
       cues.push({ start: t, end: t + durs[i], text: scenes[i] });
       t += durs[i];
     }
-    fs.writeFileSync(path.join(workDir, 'subs.ass'), buildAss(cues));
+    fs.writeFileSync(path.join(workDir, 'subs.ass'), buildAss(cues, frameW, frameH));
 
     let fontArg = '';
     const fontSrc = findCaptionFont();

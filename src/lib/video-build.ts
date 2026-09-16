@@ -90,6 +90,67 @@ export async function splitScriptToScenes(
   return naive();
 }
 
+function naiveBeats(script: string, maxBeats = 24): BuildScene[] {
+  const chunks: string[] = [];
+  const sentences = script
+    .split(/(?<=[.!?])\s+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 2);
+  const parts = sentences.length > 1
+    ? sentences
+    : script.split(/,\s+|(?<=;)\s+/).map((s) => s.trim()).filter((s) => s.length > 2);
+  const source = parts.length ? parts : [script.trim()].filter(Boolean);
+  for (const p of source) {
+    if (p.length <= 220) {
+      chunks.push(p);
+      continue;
+    }
+    const words = p.split(/\s+/);
+    for (let i = 0; i < words.length; i += 12) {
+      const slice = words.slice(i, i + 12).join(' ').trim();
+      if (slice) chunks.push(slice);
+    }
+  }
+  return chunks.slice(0, maxBeats).map((text) => ({ text, match: text }));
+}
+
+/**
+ * Voiceover lines for localize: the user's copy (transcript or paste), optionally
+ * translated. Never rewrite it into a new hook/CTA script.
+ */
+export async function splitLocalizeCopy(
+  script: string,
+  language: string,
+): Promise<BuildScene[]> {
+  const source = script.trim();
+  if (!source) return [];
+  if (!language) return naiveBeats(source);
+
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return naiveBeats(source);
+
+  try {
+    const anthropic = new Anthropic({ apiKey });
+    const resp = await anthropic.messages.create({
+      model: 'claude-opus-4-8',
+      max_tokens: 4000,
+      system: `You translate a spoken ad transcript into ${language}.
+Keep the same meaning, claims, numbers, names, and sentence order.
+Do NOT add a hook, CTA, offer, or any sentence that is not in the source.
+Do NOT rewrite it as a new ad. Return ONLY the translated transcript — no quotes, no markdown.`,
+      messages: [{ role: 'user', content: source.slice(0, 8000) }],
+    });
+    const tb = resp.content.find((b) => b.type === 'text');
+    const translated = ((tb && 'text' in tb ? tb.text : '') || '')
+      .replace(/```[\s\S]*?```/g, '')
+      .trim();
+    if (translated.length >= 20) return naiveBeats(translated);
+  } catch {
+    /* keep the source language */
+  }
+  return naiveBeats(source);
+}
+
 /**
  * How many shots in the project are usable footage: never had subtitles, or had
  * them removed by AI inpainting (clean_path). Zero means a build cannot run yet.

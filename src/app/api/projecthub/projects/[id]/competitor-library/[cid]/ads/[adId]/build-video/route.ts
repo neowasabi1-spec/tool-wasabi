@@ -3,7 +3,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { canAccessProject } from '@/lib/auth/project-access';
 import {
   countUsableShots, insertBuildJob, normalizeLanguage, normalizeVoice,
-  splitScriptToScenes, triggerBuildBackground,
+  splitLocalizeCopy, splitScriptToScenes, triggerBuildBackground,
 } from '@/lib/video-build';
 
 export const dynamic = 'force-dynamic';
@@ -39,6 +39,7 @@ export async function POST(
   const voice = normalizeVoice(body.voice);
   const language = normalizeLanguage(body.language);
   const customCopy = String(body.script ?? '').trim();
+  const copySource = body.copySource === 'custom' ? 'custom' : 'original';
   const mode = body.mode === 'build' ? 'build' : 'localize';
 
   const { data: ad } = await supabaseAdmin
@@ -62,9 +63,11 @@ export async function POST(
     if (a.media_type !== 'video' || !sourcePath) {
       return NextResponse.json({ error: 'Localize needs a video — this creative has none.' }, { status: 400 });
     }
-    const transcript = String(a.body_text || a.rewritten_script || '').trim();
-    const usingCustomCopy = customCopy.length >= 20;
-    const copy = usingCustomCopy ? customCopy : transcript;
+    // Original copy = the transcript the user saw. Never fall back to
+    // rewritten_script (that's "My script") and never invent a new ad.
+    const transcript = String(a.body_text || '').trim();
+    const usingCustomCopy = copySource === 'custom';
+    const copy = usingCustomCopy ? customCopy : (customCopy || transcript);
     if (copy.length < 20) {
       return NextResponse.json({
         error: usingCustomCopy
@@ -88,7 +91,7 @@ export async function POST(
       return NextResponse.json({ jobId: active.id, status: active.status, queued: false });
     }
 
-    const scenes = await splitScriptToScenes(copy, language);
+    const scenes = await splitLocalizeCopy(copy, language);
     if (scenes.length === 0) {
       return NextResponse.json({ error: 'Could not split the copy into lines' }, { status: 500 });
     }
