@@ -1,18 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { canAccessProject } from '@/lib/auth/project-access';
+import { lastImageGenError, openaiGenerateImage, openaiImageKey } from '@/lib/openai-image';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
-export const maxDuration = 60;
+export const maxDuration = 180;
 
 const BUCKET = 'project-files';
 
 /**
  * Prepare signed URLs + product context for remaking a competitor image,
- * or persist a finished fal.ai result onto the ad.
+ * generate via ChatGPT Images (gpt-image-2, not fal), or persist a result.
  *
  * POST { action: 'prepare' }
+ * POST { action: 'generate', prompt, productImageUrl?, language?, mode? }
  * POST { action: 'save', url, prompt?, language?, mode? }
  */
 export async function POST(
@@ -38,6 +40,7 @@ export async function POST(
   const action = String(body.action || 'prepare');
 
   if (action === 'save') return saveResult(id, brandIdNum, adIdNum, body);
+  if (action === 'generate') return generateWithChatGpt(id, brandIdNum, adIdNum, body);
 
   const { data: ad } = await supabaseAdmin
     .from('competitor_ads')
@@ -78,6 +81,54 @@ export async function POST(
   });
 }
 
+async function generateWithChatGpt(
+  projectId: string,
+  brandId: number,
+  adId: number,
+  body: Record<string, unknown>,
+) {
+  if (!openaiImageKey()) {
+    return NextResponse.json({ error: 'OPENAI_API_KEY is missing' }, { status: 500 });
+  }
+  const prompt = String(body.prompt || '').trim();
+  if (prompt.length < 8) {
+    return NextResponse.json({ error: 'Missing prompt' }, { status: 400 });
+  }
+  const { data: ad } = await supabaseAdmin
+    .from('competitor_ads')
+    .select('id, file_path, media_type')
+    .eq('id', adId)
+    .eq('brand_id', brandId)
+    .eq('project_id', projectId)
+    .maybeSingle();
+  if (!ad) return NextResponse.json({ error: 'Creative not found' }, { status: 404 });
+  const a = ad as { file_path?: string; media_type?: string };
+  if (a.media_type === 'video' || !a.file_path) {
+    return NextResponse.json({ error: 'This action is for still images' }, { status: 400 });
+  }
+  const sourceUrl = await signedUrl(a.file_path);
+  if (!sourceUrl) {
+    return NextResponse.json({ error: 'Could not sign the source image' }, { status: 500 });
+  }
+  const productUrl = String(body.productImageUrl || '').trim();
+  const imageUrls = [sourceUrl, /^https?:\/\//i.test(productUrl) ? productUrl : ''].filter(Boolean);
+  const made = await openaiGenerateImage({
+    prompt,
+    imageUrls,
+    size: 'auto',
+    quality: 'medium',
+    timeoutMs: 150_000,
+    openaiOnly: true,
+  });
+  if (!made) {
+    return NextResponse.json(
+      { error: lastImageGenError() || 'ChatGPT did not return an image' },
+      { status: 502 },
+    );
+  }
+  return saveResult(projectId, brandId, adId, { ...body, url: made });
+}
+
 async function saveResult(
   projectId: string,
   brandId: number,
@@ -85,15 +136,11 @@ async function saveResult(
   body: Record<string, unknown>,
 ) {
   const url = String(body.url || '').trim();
-  if (!/^https?:\/\//i.test(url)) {
-    return NextResponse.json({ error: 'Missing result URL' }, { status: 400 });
+  const bytes = await bytesFromResult(url);
+  if (!bytes) {
+    return NextResponse.json({ error: 'Missing or unreadable result image' }, { status: 400 });
   }
-  const dl = await fetch(url);
-  if (!dl.ok) {
-    return NextResponse.json({ error: `Could not download the result (${dl.status})` }, { status: 502 });
-  }
-  const buf = Buffer.from(await dl.arrayBuffer());
-  const mime = (dl.headers.get('content-type') || 'image/png').split(';')[0].trim();
+  const { buf, mime } = bytes;
   const ext = /webp/i.test(mime) ? 'webp' : /jpe?g/i.test(mime) ? 'jpg' : 'png';
   const key = `${projectId}/generated/${adId}_img_${Date.now()}.${ext}`;
   const { error: upErr } = await supabaseAdmin.storage.from(BUCKET).upload(key, buf, {
@@ -176,6 +223,27 @@ async function loadProjectCtx(projectId: string): Promise<{ name?: string; brief
     .eq('id', projectId)
     .maybeSingle();
   return (slim.data || {}) as { name?: string; description?: string };
+}
+
+async function bytesFromResult(url: string): Promise<{ buf: Buffer; mime: string } | null> {
+  try {
+    if (url.startsWith('data:')) {
+      const m = url.match(/^data:([^;]+);base64,(.+)$/);
+      if (!m) return null;
+      const buf = Buffer.from(m[2], 'base64');
+      if (buf.length < 80) return null;
+      return { buf, mime: m[1] || 'image/png' };
+    }
+    if (!/^https?:\/\//i.test(url)) return null;
+    const dl = await fetch(url, { signal: AbortSignal.timeout(60_000) });
+    if (!dl.ok) return null;
+    const buf = Buffer.from(await dl.arrayBuffer());
+    if (buf.length < 80) return null;
+    const mime = (dl.headers.get('content-type') || 'image/png').split(';')[0].trim();
+    return { buf, mime };
+  } catch {
+    return null;
+  }
 }
 
 async function signedUrl(path: string): Promise<string | null> {

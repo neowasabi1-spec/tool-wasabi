@@ -351,39 +351,6 @@ function isStillCreative(filePath: string, durationSec?: number | null) {
   return /\.(png|jpe?g|webp|gif)$/i.test(filePath || "");
 }
 
-async function pollGeneratedMedia(body: Record<string, unknown>): Promise<string> {
-  const submit = await fetch("/api/generate-image", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  let data = await submit.json().catch(() => ({})) as {
-    status?: string; url?: string; error?: string;
-    requestId?: string; statusUrl?: string; responseUrl?: string; modelKey?: string;
-  };
-  if (!submit.ok || data.status === "error") throw new Error(data.error || "Generation failed");
-  const deadline = Date.now() + 5 * 60_000;
-  while (data.status === "pending" && data.requestId) {
-    if (Date.now() > deadline) throw new Error("Generation timed out");
-    await new Promise((r) => setTimeout(r, 1600));
-    const poll = await fetch("/api/generate-image", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        action: "poll",
-        requestId: data.requestId,
-        statusUrl: data.statusUrl,
-        responseUrl: data.responseUrl,
-        modelKey: data.modelKey,
-      }),
-    });
-    data = await poll.json().catch(() => ({}));
-    if (!poll.ok || data.status === "error") throw new Error(data.error || "Generation failed");
-  }
-  if (!data.url) throw new Error("No image came back");
-  return data.url;
-}
-
 // Colori per i placeholder delle ads (senza immagine)
 const AD_GRADIENTS = [
   { bg: "from-slate-500 to-slate-700", text: "text-white" },
@@ -871,8 +838,7 @@ function CreativeDetailPanel({
       }
       const productName = (imgProduct || product || prep.productName || "").trim();
       let prompt = "";
-      let genMode: "text2image" | "image2image" = "image2image";
-      let secondaryImageUrl: string | undefined;
+      let productImageUrl = "";
 
       if (mode === "swipe") {
         if (!productUrl) {
@@ -899,8 +865,7 @@ function CreativeDetailPanel({
         const an = await anRes.json().catch(() => ({}));
         if (!anRes.ok || !an.suggestedPrompt) throw new Error(an.error || "Could not analyze the image");
         prompt = String(an.suggestedPrompt);
-        genMode = "image2image";
-        secondaryImageUrl = productUrl;
+        productImageUrl = productUrl;
         prompt += " The FIRST image is the competitor layout to swipe. The SECOND image is OUR exact product packshot — put that product in place of theirs, keep the same format, framing and style.";
       } else if (mode === "recreate") {
         prompt = `Keep this image's layout, people, product, colors and composition. Rewrite EVERY visible text (headlines, labels, badges, captions, CTAs, small print) into ${language}. Do not add new claims or new objects. The result must look like the same ad in ${language}.`;
@@ -908,19 +873,18 @@ function CreativeDetailPanel({
         prompt = `Edit this image as requested, keep everything else the same: ${imgEdit.trim()}`;
       }
 
-      const url = await pollGeneratedMedia({
-        mode: genMode,
-        prompt,
-        imageUrl: genMode === "image2image" ? sourceUrl : undefined,
-        secondaryImageUrl,
-        size: "auto",
-      });
       const saveRes = await fetch(
         `/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/${ad.id}/remake-image`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "save", url, prompt, language: mode === "recreate" ? language : "", mode }),
+          body: JSON.stringify({
+            action: "generate",
+            prompt,
+            productImageUrl,
+            language: mode === "recreate" ? language : "",
+            mode,
+          }),
         },
       );
       const saved = await saveRes.json().catch(() => ({}));
