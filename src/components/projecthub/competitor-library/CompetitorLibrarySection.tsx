@@ -64,6 +64,7 @@ type CompetitorAd = {
   headline: string;
   hook: string;
   body_text: string;
+  landing_url?: string | null;
   is_active: string;
   created_at: string;
   /** Added by the daily scrape since this competitor was last opened. */
@@ -113,6 +114,43 @@ function winnerTier(ad: CompetitorAd): WinnerTier {
     if (d >= PROMISING_DAYS) return "promising";
   }
   return null;
+}
+
+function CopyField({
+  label, value, href, onCopy,
+}: {
+  label: string;
+  value?: string | null;
+  href?: boolean;
+  onCopy?: (v: string) => void;
+}) {
+  const v = (value || "").trim();
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <p className="text-[9px] text-muted-foreground uppercase tracking-wider">{label}</p>
+        {v && onCopy && (
+          <button
+            type="button"
+            onClick={() => onCopy(v)}
+            className="flex items-center gap-1 text-[10px] font-semibold text-muted-foreground hover:text-primary transition-colors">
+            <Copy className="w-3 h-3" /> Copy
+          </button>
+        )}
+      </div>
+      {v ? (
+        href ? (
+          <a href={v} target="_blank" rel="noreferrer" className="text-sm text-primary break-all inline-flex items-center gap-1">
+            {v} <ExternalLink className="w-3 h-3 shrink-0" />
+          </a>
+        ) : (
+          <p className="text-sm text-foreground whitespace-pre-wrap">{v}</p>
+        )
+      ) : (
+        <p className="text-[11px] text-muted-foreground">Not captured</p>
+      )}
+    </div>
+  );
 }
 
 function WinnerBadge({ ad, className = "" }: { ad: CompetitorAd; className?: string }) {
@@ -968,18 +1006,16 @@ function CreativeDetailPanel({
         </div>
         <div className="p-4 space-y-4 flex-1">
           <p className="text-[9px] text-muted-foreground uppercase tracking-widest font-semibold">Creative Content</p>
-          {ad.headline && (
-            <div>
-              <p className="text-[9px] text-muted-foreground uppercase tracking-wider mb-1">Headline</p>
-              <p className="text-sm font-semibold text-foreground">{ad.headline}</p>
-            </div>
+          {ad.media_type !== "video" && (
+            <CopyField
+              label="Primary text"
+              value={text}
+              onCopy={(v) => void copyTranscript(v)}
+            />
           )}
-          {ad.hook && (
-            <div>
-              <p className="text-[9px] text-muted-foreground uppercase tracking-wider mb-1">Hook</p>
-              <p className="text-sm text-foreground">{ad.hook}</p>
-            </div>
-          )}
+          <CopyField label="Title" value={ad.headline} onCopy={(v) => void copyTranscript(v)} />
+          <CopyField label="Description" value={ad.hook} onCopy={(v) => void copyTranscript(v)} />
+          <CopyField label="Destination" value={ad.landing_url} href onCopy={(v) => void copyTranscript(v)} />
           {ad.media_type === "video" ? (
             <div>
               <div className="flex items-center justify-between mb-1">
@@ -1002,17 +1038,6 @@ function CreativeDetailPanel({
               {text
                 ? <p className="text-xs text-muted-foreground leading-relaxed whitespace-pre-wrap max-h-48 overflow-y-auto pr-1">{text}</p>
                 : <p className="text-[11px] text-muted-foreground">No transcript yet. Click “Extract text” to transcribe (works for long videos too).</p>}
-            </div>
-          ) : text ? (
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <p className="text-[9px] text-muted-foreground uppercase tracking-wider">Body Text</p>
-                <button onClick={() => copyTranscript(text)}
-                  className="flex items-center gap-1 text-[10px] font-semibold text-muted-foreground hover:text-primary transition-colors">
-                  {copied ? <><Check className="w-3 h-3 text-green-600" /> Copied</> : <><Copy className="w-3 h-3" /> Copy</>}
-                </button>
-              </div>
-              <p className="text-xs text-muted-foreground leading-relaxed whitespace-pre-wrap max-h-48 overflow-y-auto pr-1">{text}</p>
             </div>
           ) : null}
           {text && (

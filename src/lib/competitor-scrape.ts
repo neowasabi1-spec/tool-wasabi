@@ -13,7 +13,7 @@ import {
   type AdPlatform,
   type MappedAd,
 } from '@/lib/apify';
-import { adExistsByExternalId, insertCompetitorAd, ensureBrand } from '@/lib/competitor-ads';
+import { insertCompetitorAd, ensureBrand, fillMissingAdCopy } from '@/lib/competitor-ads';
 import { transcribeVideo } from '@/lib/transcribe';
 import { absolutizeUrlsInHtml } from '@/lib/spa-rescue';
 import { extractLandingMediaFromHtml, isJunkLandingHost } from '@/lib/landing-media';
@@ -492,7 +492,12 @@ export async function ingestDataset(opts: {
       if (!brandId) { failed++; continue; }
       touchedBrands.add(brandId);
 
-      if (mapped.externalId && (await adExistsByExternalId(brandId, mapped.externalId))) {
+      if (mapped.externalId && (await fillMissingAdCopy(brandId, mapped.externalId, {
+        headline: mapped.headline,
+        hook: mapped.hook,
+        body_text: mapped.bodyText,
+        landing_url: mapped.landingUrl || '',
+      }))) {
         skipped++;
         continue;
       }
@@ -528,11 +533,13 @@ export async function ingestDataset(opts: {
         spend: mapped.spend || undefined,
         impressions: mapped.impressions || undefined,
         reach: mapped.reach,
+        landingUrl: mapped.landingUrl,
         meta: {
           name: mapped.headline || mapped.pageName,
           headline: mapped.headline,
           hook: mapped.hook,
           body_text: bodyText,
+          landing_url: mapped.landingUrl || '',
         },
       });
       if (res.ok) added++;

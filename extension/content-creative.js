@@ -32,7 +32,7 @@ function isWasabiTool() {
 (function () {
   if (window.__wasabiCreativeSaver) return;
   window.__wasabiCreativeSaver = true;
-  try { console.debug('[Wasabi] creative saver v1.7.0 (card-aware bulk: videos + ad copy)'); } catch { /* ignore */ }
+  try { console.debug('[Wasabi] creative saver v1.8.0 (Ad Library primary/title/description/link)'); } catch { /* ignore */ }
 
   // Never run inside the Wasabi tool itself — the floating "Save" button would
   // overlap the app's own card actions (Save / Save template). We only want it
@@ -63,6 +63,15 @@ function isWasabiTool() {
       t: d.t || Date.now(),
     });
     if (capturedVideoUrls.length > 60) capturedVideoUrls.shift();
+  });
+
+  const capturedAdCopies = []; // Meta Ad Library snapshot copy, from the sniffer
+  window.addEventListener('message', (e) => {
+    if (e.source !== window) return;
+    const d = e.data;
+    if (!d || typeof d !== 'object' || !d.__wasabiAdCopy) return;
+    capturedAdCopies.push(d.__wasabiAdCopy);
+    if (capturedAdCopies.length > 400) capturedAdCopies.shift();
   });
 
   // Try to resolve the real CDN URL for a (blob) video. Nudges the element to
@@ -314,29 +323,108 @@ function isWasabiTool() {
   function findAdCard(el) {
     let node = el;
     let best = null;
-    for (let i = 0; i < 10 && node; i++) {
+    for (let i = 0; i < 14 && node; i++) {
       node = node.parentElement;
       if (!node || node === document.body || node === document.documentElement) break;
       let r;
       try { r = node.getBoundingClientRect(); } catch { break; }
-      // Full-width ancestors are page sections / virtualized lists, not cards.
-      if (r.width > innerWidth * 0.95) break;
+      // Whole-page ancestors only — Ad Library cards can be nearly full width.
+      if (r.width > innerWidth * 0.99 && r.height > innerHeight * 0.85) break;
       const txt = (node.innerText || '').trim();
-      if (txt.length > 3000) break; // grabbed a container with several ads
+      if (txt.length > 8000) break;
+      if (/library id|see ad details|started running on|platforms/i.test(txt)) return node;
       if (txt.length >= 20) best = node;
     }
     return best;
   }
 
+  function unwrapFbUrl(href) {
+    try {
+      const u = new URL(href, location.href);
+      const nested = u.searchParams.get('u') || u.searchParams.get('url');
+      if (nested && /(?:facebook|fb|instagram)\.com$/i.test(u.hostname.replace(/^www\./, ''))) {
+        return unwrapFbUrl(nested);
+      }
+      const host = u.hostname.replace(/^www\./i, '');
+      if (/^(facebook\.com|fb\.com|fbcdn\.net|instagram\.com|meta\.com)$/i.test(host)) return '';
+      if (/^https?:/i.test(u.href)) return u.origin + u.pathname;
+    } catch { /* ignore */ }
+    return '';
+  }
+
+  function assetKey(u) {
+    try {
+      const p = new URL(u, location.href).pathname;
+      const last = p.split('/').filter(Boolean).pop() || '';
+      return last.replace(/\.(jpg|jpeg|png|webp|gif|mp4|webm).*$/i, '').slice(0, 80);
+    } catch {
+      return String(u || '').slice(0, 80);
+    }
+  }
+
+  function matchSniffedCopy(src) {
+    if (!src || !capturedAdCopies.length) return null;
+    const key = assetKey(src);
+    if (!key || key.length < 6) return null;
+    for (let i = capturedAdCopies.length - 1; i >= 0; i--) {
+      const a = capturedAdCopies[i];
+      const urls = [].concat(a.imageUrls || [], a.videoUrls || []);
+      for (let j = 0; j < urls.length; j++) {
+        if (assetKey(urls[j]) === key) return a;
+      }
+    }
+    return null;
+  }
+
+  function parseDomCopy(card) {
+    const out = { primary: '', title: '', description: '', destination: '', text: '', name: '' };
+    if (!card) return out;
+    try {
+      const links = card.querySelectorAll('a[href]');
+      for (let i = 0; i < links.length; i++) {
+        const dest = unwrapFbUrl(links[i].getAttribute('href') || links[i].href || '');
+        if (dest) { out.destination = dest; break; }
+      }
+    } catch { /* ignore */ }
+    const raw = String(card.innerText || '').replace(/\u00a0/g, ' ');
+    out.text = raw.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim().slice(0, 1500);
+    const chrome = /^(library id|id\b|started running|platforms?|facebook|instagram|messenger|audience network|see ad details|see summary details|open drop-down|sponsored|active|inactive|this ad has|eu transparency|impressions|amount spent|about this advertiser|page likes|get ad info|report ad|multi advertiser|and \d+ more|learn more|shop now|sign up|subscribe|watch more|send message|whatsapp|download|book now|contact us|apply now|get offer|order now|see menu|use this offer|send whatsapp message)$/i;
+    const lines = out.text.split('\n').map((s) => s.trim()).filter((s) => s.length >= 3 && !chrome.test(s) && !/^[\d.,\s]+$/.test(s));
+    const domain = lines.find((s) => /^[a-z0-9.-]+\.[a-z]{2,}(\/[\w./-]*)?$/i.test(s));
+    if (domain && !out.destination) out.destination = 'https://' + domain.replace(/^https?:\/\//i, '');
+    const paras = lines.filter((s) => s.length >= 24 && s !== domain);
+    if (paras[0]) out.primary = paras[0];
+    const shorts = lines.filter((s) => s.length >= 8 && s.length <= 90 && s !== domain && s !== out.primary);
+    if (shorts[0]) out.title = shorts[0];
+    if (shorts[1] && shorts[1] !== out.title) out.description = shorts[1];
+    out.name = (out.title || shorts[0] || lines[0] || '').slice(0, 120);
+    return out;
+  }
+
   function cardContext(el) {
     const card = findAdCard(el);
-    const raw = card ? String(card.innerText || '') : '';
-    const text = raw.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim().slice(0, 1500);
-    const lines = text.split('\n').map((s) => s.trim()).filter((s) => s.length >= 3);
-    const name = (lines.find((s) => s.length >= 8 && s.length <= 90) || lines[0] || '').slice(0, 120);
+    const src = currentSrc(el);
+    const sniffed = matchSniffedCopy(src);
+    const dom = parseDomCopy(card);
+    const primary = (sniffed && sniffed.primary) || dom.primary;
+    const title = (sniffed && sniffed.title) || dom.title;
+    const description = (sniffed && sniffed.description) || dom.description;
+    const destination = (sniffed && sniffed.destination) || dom.destination;
+    const text = primary || dom.text;
+    const name = title || dom.name || guessName(el);
     let video = null;
     try { video = card ? card.querySelector('video') : null; } catch { /* ignore */ }
-    return { card, text, name: name || guessName(el), video };
+    return { card, text, name, video, primary, title, description, destination };
+  }
+
+  function applyAdCopy(payload, copy) {
+    if (!copy) return payload;
+    const primary = (copy.primary || copy.text || '').trim();
+    if (primary) payload.bodyText = primary;
+    if (copy.title) payload.headline = String(copy.title).slice(0, 500);
+    if (copy.description) payload.hook = String(copy.description).slice(0, 500);
+    if (copy.destination) payload.landingUrl = String(copy.destination).slice(0, 2000);
+    return payload;
   }
 
   // Get a downloadable http(s) URL for a video element: direct src first, then
@@ -377,6 +465,10 @@ function isWasabiTool() {
         videoEl: videoEl || null,
         name: ctx.name,
         text: ctx.text,
+        primary: ctx.primary,
+        title: ctx.title,
+        description: ctx.description,
+        destination: ctx.destination,
       });
       applyOutline(el);
     }
@@ -475,6 +567,10 @@ function isWasabiTool() {
           videoEl,
           name: ctx.name,
           text: ctx.text,
+          primary: ctx.primary,
+          title: ctx.title,
+          description: ctx.description,
+          destination: ctx.destination,
         });
         added++;
         continue;
@@ -483,7 +579,10 @@ function isWasabiTool() {
       if (!src) continue;
       const k = srcKey(src);
       if (inSel.has(k) || bulk.has(k)) continue;
-      bulk.set(k, { src, isVideo: false, name: ctx.name, text: ctx.text });
+      bulk.set(k, {
+        src, isVideo: false, name: ctx.name, text: ctx.text,
+        primary: ctx.primary, title: ctx.title, description: ctx.description, destination: ctx.destination,
+      });
       added++;
     }
     return added;
@@ -840,7 +939,9 @@ function isWasabiTool() {
     pop.__src = src;
     pop.__isVideo = isVideo;
     // Ad copy from the surrounding card — saved as the creative's body text.
-    pop.__text = media ? cardContext(media).text : '';
+    const ctx = media ? cardContext(media) : null;
+    pop.__text = ctx ? (ctx.primary || ctx.text) : '';
+    pop.__copy = ctx;
 
     setStatus('<span class="spin"></span>Loading projects…', 'muted');
     const projects = await loadProjects();
@@ -934,7 +1035,7 @@ function isWasabiTool() {
   }
 
   // Build a SAVE_CREATIVE payload for one media. Returns { payload } or { error }.
-  async function buildCreativePayload(projectId, src, isVideo, name, mediaEl, text) {
+  async function buildCreativePayload(projectId, src, isVideo, name, mediaEl, text, copy) {
     const payload = {
       type: 'SAVE_CREATIVE',
       projectId,
@@ -945,6 +1046,7 @@ function isWasabiTool() {
       name: (name || '').trim(),
       bodyText: (text || '').trim(),
     };
+    applyAdCopy(payload, copy || (mediaEl ? cardContext(mediaEl) : null));
     applyDestination(payload);
 
     // For blob:/data:/src-less sources we must get the bytes to the server somehow.
@@ -1014,7 +1116,7 @@ function isWasabiTool() {
   // Upload the bytes straight to storage via a signed URL (no size limit), then
   // register the creative from the stored path. Bypasses the ~6MB save-request
   // body limit that triggers the "video too large" message.
-  async function saveViaSignedUpload(projectId, blob, isVideo, name, text) {
+  async function saveViaSignedUpload(projectId, blob, isVideo, name, text, copy) {
     const contentType = blob.type || (isVideo ? 'video/mp4' : 'image/jpeg');
     const sign = await sendMessage({
       type: 'SIGN_CREATIVE',
@@ -1042,6 +1144,7 @@ function isWasabiTool() {
       storagePath: sign.path,
       contentType: sign.contentType || contentType,
     };
+    applyAdCopy(payload, copy);
     applyDestination(payload);
     return await sendMessage(payload);
   }
@@ -1082,17 +1185,19 @@ function isWasabiTool() {
         if (url) {
           const dest = {};
           applyDestination(dest);
-          const res = await sendMessage({
+          const msg = {
             type: 'FETCH_AND_UPLOAD',
             projectId,
             url,
             isVideo: true,
             name: it.name,
-            bodyText: it.text || '',
+            bodyText: it.primary || it.text || '',
             pageUrl: location.href,
             pageTitle: document.title || '',
             ...dest,
-          });
+          };
+          applyAdCopy(msg, it);
+          const res = await sendMessage(msg);
           if (res && res.ok) ok++;
           else fail++;
         } else {
@@ -1101,7 +1206,7 @@ function isWasabiTool() {
         continue;
       }
 
-      const built = await buildCreativePayload(projectId, it.src, it.isVideo, it.name, it.el, it.text);
+      const built = await buildCreativePayload(projectId, it.src, it.isVideo, it.name, it.el, it.primary || it.text, it);
       if (built.error) { fail++; continue; }
       const res = await sendMessage(built.payload);
       if (res && res.ok) ok++;
@@ -1302,7 +1407,7 @@ function isWasabiTool() {
     if (!pop.__media) { saveBtn.disabled = false; return; }
     setStatus('<span class="spin"></span>Saving…', 'muted');
 
-    const built = await buildCreativePayload(projectId, src, isVideo, nameInput.value, pop.__media, pop.__text);
+    const built = await buildCreativePayload(projectId, src, isVideo, nameInput.value, pop.__media, pop.__text, pop.__copy);
     if (built.error) {
       // Inline shipping failed (too large / unreadable). No size cap from here.
       setStatus('<span class="spin"></span>Uploading large file…', 'muted');
@@ -1322,7 +1427,7 @@ function isWasabiTool() {
       // (src can be empty for srcObject/MSE videos — nothing to read in-page.)
       const blob = src ? await getMediaBlob(src) : null;
       if (blob) {
-        finish(await saveViaSignedUpload(projectId, blob, isVideo, nameInput.value, pop.__text));
+        finish(await saveViaSignedUpload(projectId, blob, isVideo, nameInput.value, pop.__text, pop.__copy));
         return;
       }
 
@@ -1332,8 +1437,7 @@ function isWasabiTool() {
       if (url) {
         const dest = {};
         applyDestination(dest);
-        finish(
-          await sendMessage({
+        const msg = {
             type: 'FETCH_AND_UPLOAD',
             projectId,
             url,
@@ -1343,8 +1447,9 @@ function isWasabiTool() {
             pageUrl: location.href,
             pageTitle: document.title || '',
             ...dest,
-          }),
-        );
+          };
+        applyAdCopy(msg, pop.__copy);
+        finish(await sendMessage(msg));
         return;
       }
 

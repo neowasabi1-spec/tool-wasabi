@@ -351,8 +351,9 @@ async function startApifyAdsRun(adsLibraryUrl: string, count: number, webhookUrl
     urls: [{ url: adsLibraryUrl, method: 'GET' }],
     startUrls: [{ url: adsLibraryUrl }],
     adLibraryUrl: adsLibraryUrl,
-    count: n, maxResults: n, resultsLimit: n,
-    scrapeAdDetails: true, scrapePageAds: true, activeStatus: 'active',
+    count: n, maxResults: n, resultsLimit: n, limitPerSource: n,
+    scrapeAdDetails: true, scrapePageAds: true,
+    'scrapePageAds.activeStatus': 'active', activeStatus: 'active',
   };
   const webhooks = Buffer.from(JSON.stringify([{
     eventTypes: ['ACTOR.RUN.SUCCEEDED', 'ACTOR.RUN.FAILED', 'ACTOR.RUN.ABORTED', 'ACTOR.RUN.TIMED_OUT'],

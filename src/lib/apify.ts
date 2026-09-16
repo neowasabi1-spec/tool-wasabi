@@ -105,8 +105,10 @@ export async function startAdsLibraryRun(opts: {
     count,
     maxResults: count,
     resultsLimit: count,
+    limitPerSource: count,
     scrapeAdDetails: true,
     scrapePageAds: true,
+    'scrapePageAds.activeStatus': 'active',
     activeStatus: 'active',
   };
   return startActorRun(apifyActorId(), input, opts.webhookUrl);
@@ -189,14 +191,116 @@ export async function getDatasetItems(datasetId: string, limit = 200): Promise<u
 // ── Tolerant field extraction ──────────────────────────────────────────────
 
 type AnyRec = Record<string, unknown>;
-const rec = (v: unknown): AnyRec => (v && typeof v === 'object' ? (v as AnyRec) : {});
+const rec = (v: unknown): AnyRec => (v && typeof v === 'object' && !Array.isArray(v) ? (v as AnyRec) : {});
 const str = (v: unknown): string => (typeof v === 'string' ? v : '');
 const arr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
+
+/** Meta often ships `snapshot` (and `cards`) as a JSON string, not an object. */
+function asObject(v: unknown): AnyRec {
+  if (v && typeof v === 'object' && !Array.isArray(v)) return v as AnyRec;
+  if (typeof v === 'string') {
+    const s = v.trim();
+    if (s.startsWith('{')) {
+      try {
+        const p = JSON.parse(s);
+        if (p && typeof p === 'object' && !Array.isArray(p)) return p as AnyRec;
+      } catch { /* ignore */ }
+    }
+  }
+  return {};
+}
+
+function asList(v: unknown): unknown[] {
+  if (Array.isArray(v)) return v;
+  if (typeof v === 'string') {
+    const s = v.trim();
+    if (s.startsWith('[')) {
+      try {
+        const p = JSON.parse(s);
+        if (Array.isArray(p)) return p;
+      } catch { /* ignore */ }
+    }
+  }
+  return [];
+}
+
+/** Unwrap `{ text: "..." }` / Graph API arrays / nested body objects. */
+function textOf(v: unknown, depth = 0): string {
+  if (v == null || depth > 4) return '';
+  if (typeof v === 'string') return v.trim();
+  if (typeof v === 'number' && Number.isFinite(v)) return String(v);
+  if (Array.isArray(v)) {
+    for (const x of v) {
+      const s = textOf(x, depth + 1);
+      if (s) return s;
+    }
+    return '';
+  }
+  if (typeof v === 'object') {
+    const o = v as AnyRec;
+    return textOf(o.text ?? o.body ?? o.title ?? o.value ?? o.markup, depth + 1);
+  }
+  return '';
+}
 
 function firstStr(...vals: unknown[]): string {
   for (const v of vals) {
     const s = str(v).trim();
     if (s) return s;
+  }
+  return '';
+}
+
+function firstText(...vals: unknown[]): string {
+  for (const v of vals) {
+    const s = textOf(v);
+    if (s) return s;
+  }
+  return '';
+}
+
+function cardsOf(snap: AnyRec): AnyRec[] {
+  return asList(snap.cards).map((c) => asObject(c)).filter((c) => Object.keys(c).length > 0);
+}
+
+function fromCards(cards: AnyRec[], ...keys: string[]): string {
+  for (const c of cards) {
+    for (const k of keys) {
+      const s = textOf(c[k]);
+      if (s) return s;
+    }
+  }
+  return '';
+}
+
+function unwrapLanding(raw: string): string {
+  const s = (raw || '').trim();
+  if (!s) return '';
+  try {
+    const u = new URL(s);
+    const nested = u.searchParams.get('u') || u.searchParams.get('url');
+    const host = u.hostname.replace(/^www\./i, '');
+    if (nested && /(^|\.)(facebook|fb|instagram)\.com$/i.test(host)) {
+      return unwrapLanding(nested);
+    }
+    return u.origin + u.pathname;
+  } catch {
+    return s;
+  }
+}
+
+function firstLanding(...vals: unknown[]): string {
+  for (const v of vals) {
+    let s = '';
+    if (typeof v === 'string') s = v.trim();
+    else if (v && typeof v === 'object' && !Array.isArray(v)) {
+      const o = v as AnyRec;
+      s = firstText(o.url, o.link_url, o.linkUrl, o.href, o.destinationUrl, o.landingUrl);
+    } else s = textOf(v);
+    if (/^https?:\/\//i.test(s)) {
+      const u = unwrapLanding(s);
+      if (/^https?:\/\//i.test(u)) return u;
+    }
   }
   return '';
 }
@@ -250,7 +354,7 @@ export interface MappedAd {
   spend: string;
   impressions: string;
   reach: number | null;
-  /** Destination/landing page URL (mainly from Google Ads Transparency). */
+  /** Destination URL the ad clicks through to (Meta snapshot.link_url). */
   landingUrl?: string;
 }
 
@@ -276,7 +380,8 @@ function formatRange(v: unknown, currency = ''): string {
  */
 export function mapApifyAdItem(raw: unknown): MappedAd | null {
   const r = rec(raw);
-  const snap = rec(r.snapshot ?? r.snapshot_v2 ?? r);
+  const parsedSnap = asObject(r.snapshot ?? r.snapshot_v2);
+  const snap = Object.keys(parsedSnap).length ? parsedSnap : r;
 
   const externalId = firstStr(
     r.adArchiveID, r.ad_archive_id, r.adArchiveId, r.archiveID, r.archive_id,
@@ -285,42 +390,59 @@ export function mapApifyAdItem(raw: unknown): MappedAd | null {
 
   const pageName = firstStr(r.pageName, r.page_name, snap.page_name, r.advertiserName);
 
-  // Cards (carousel) can hold the richest media/text.
-  const cards = arr(snap.cards);
-  const card0 = rec(cards[0]);
+  // Cards (carousel / DCO) often hold title, description and destination
+  // while snapshot.body/title stay empty.
+  const cards = cardsOf(snap);
+  const card0 = cards[0] || {};
 
-  const videos = arr(snap.videos ?? r.videos);
+  const videos = asList(snap.videos ?? r.videos);
   const video0 = rec(videos[0]);
-  const images = arr(snap.images ?? r.images);
+  const images = asList(snap.images ?? r.images);
   const image0 = rec(images[0]);
 
-  const videoUrl = firstStr(
+  const videoUrl = firstText(
     video0.video_hd_url, video0.video_sd_url, video0.videoHdUrl, video0.videoSdUrl,
     card0.video_hd_url, card0.video_sd_url,
     r.videoUrl, r.video_url, snap.video_hd_url, snap.video_sd_url,
+    fromCards(cards, 'video_hd_url', 'video_sd_url', 'videoHdUrl', 'videoSdUrl'),
   );
-  const imageUrl = firstStr(
+  const imageUrl = firstText(
     image0.original_image_url, image0.resized_image_url, image0.originalImageUrl,
     card0.original_image_url, card0.resized_image_url,
     r.imageUrl, r.image_url, snap.original_image_url, snap.resized_image_url,
     video0.video_preview_image_url,
+    fromCards(cards, 'original_image_url', 'resized_image_url', 'originalImageUrl'),
   );
 
   const mediaUrl = videoUrl || imageUrl;
   if (!mediaUrl) return null;
   const mediaType: 'image' | 'video' = videoUrl ? 'video' : 'image';
 
-  const bodyText = firstStr(
-    rec(snap.body).text, snap.body, arr(r.ad_creative_bodies)[0],
-    card0.body, r.body, r.text,
+  // Meta Ad Library fields:
+  //   primary text = body / ad_creative_bodies
+  //   title        = title / ad_creative_link_titles
+  //   description  = link_description / ad_creative_link_descriptions
+  //   destination  = link_url (stored separately as landingUrl)
+  const bodyText = firstText(
+    rec(snap.body).text, snap.body, snap.bodyText, r.bodyText, r.primary_text, r.primaryText,
+    r.ad_creative_bodies, r.ad_creative_body, r.body, r.text,
+    fromCards(cards, 'body', 'bodyText', 'text'),
   );
-  const headline = firstStr(
-    snap.title, arr(r.ad_creative_link_titles)[0], card0.title, r.title, r.headline,
+  const headline = firstText(
+    snap.title, snap.headline, r.title, r.headline, r.linkTitle, r.link_title,
+    r.ad_creative_link_titles, fromCards(cards, 'title', 'headline'),
   );
-  const hook = firstStr(
-    snap.caption, arr(r.ad_creative_link_captions)[0], card0.caption,
-    snap.link_description, r.caption,
+  const description = firstText(
+    snap.link_description, snap.linkDescription, r.link_description, r.linkDescription,
+    r.description, r.ad_creative_link_descriptions,
+    fromCards(cards, 'link_description', 'linkDescription', 'description'),
   );
+  const caption = firstText(
+    snap.caption, r.caption, r.ad_creative_link_captions,
+    fromCards(cards, 'caption'),
+  );
+  // Description first. Caption is usually just the display domain (example.com).
+  const hook = description || caption;
 
   // ── Winner signals ──────────────────────────────────────────────────────
   // How long the ad has been running + whether it's still live are the
@@ -351,11 +473,13 @@ export function mapApifyAdItem(raw: unknown): MappedAd | null {
 
   // Real advertiser DESTINATION URL (the landing the ad clicks through to).
   // FB Ad Library exposes it as snapshot.link_url and per-card link_url.
-  const landingRaw = firstStr(snap.link_url, card0.link_url, r.link_url, r.linkUrl, r.link);
-  let landingUrl = '';
-  if (landingRaw) {
-    try { const u = new URL(landingRaw); landingUrl = u.origin + u.pathname; } // drop tracking query
-    catch { landingUrl = landingRaw; }
+  let landingUrl = firstLanding(
+    snap.link_url, snap.linkUrl, card0.link_url, card0.linkUrl,
+    fromCards(cards, 'link_url', 'linkUrl'),
+    r.link_url, r.linkUrl, r.link, r.cta_url, r.ctaUrl,
+  );
+  if (!landingUrl && caption && /^[a-z0-9.-]+\.[a-z]{2,}(\/[\w./-]*)?$/i.test(caption)) {
+    landingUrl = unwrapLanding(`https://${caption.replace(/^https?:\/\//i, '')}`);
   }
 
   // ── Spend / reach (disclosed only for political & social-issue ads) ───────

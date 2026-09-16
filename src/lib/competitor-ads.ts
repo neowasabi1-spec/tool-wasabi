@@ -82,6 +82,7 @@ export interface CreativeMeta {
   headline?: string;
   hook?: string;
   body_text?: string;
+  landing_url?: string;
 }
 
 /** True if this brand already has a creative with the given external id. */
@@ -97,6 +98,51 @@ export async function adExistsByExternalId(
     .eq('external_id', externalId)
     .maybeSingle();
   return !!data?.id;
+}
+
+/**
+ * If this brand already has the ad, fill any empty Meta copy fields
+ * (primary text / title / description / destination) from a later scrape.
+ * Returns true when the row exists (caller should skip inserting a duplicate).
+ */
+export async function fillMissingAdCopy(
+  brandId: number,
+  externalId: string,
+  copy: { headline?: string; hook?: string; body_text?: string; landing_url?: string },
+): Promise<boolean> {
+  if (!externalId) return false;
+  const load = async (cols: string) =>
+    supabaseAdmin
+      .from('competitor_ads')
+      .select(cols)
+      .eq('brand_id', brandId)
+      .eq('external_id', externalId)
+      .maybeSingle();
+
+  let { data, error } = await load('id, headline, hook, body_text, landing_url');
+  if (error && /landing_url|42703|PGRST204/i.test(error.message)) {
+    ({ data, error } = await load('id, headline, hook, body_text'));
+  }
+  if (error || !data) return false;
+  const row = data as {
+    id: number; headline?: string; hook?: string; body_text?: string; landing_url?: string;
+  };
+
+  const patch: Record<string, unknown> = {};
+  if (!(row.headline || '').trim() && copy.headline) patch.headline = copy.headline.slice(0, 500);
+  if (!(row.hook || '').trim() && copy.hook) patch.hook = copy.hook.slice(0, 500);
+  if (!(row.body_text || '').trim() && copy.body_text) patch.body_text = copy.body_text.slice(0, 4000);
+  if (!(row.landing_url || '').trim() && copy.landing_url) patch.landing_url = copy.landing_url.slice(0, 2000);
+  if (Object.keys(patch).length === 0) return true;
+
+  let upd = await supabaseAdmin.from('competitor_ads').update(patch).eq('id', row.id);
+  if (upd.error && patch.landing_url && /landing_url|42703|PGRST204/i.test(upd.error.message)) {
+    delete patch.landing_url;
+    if (Object.keys(patch).length > 0) {
+      upd = await supabaseAdmin.from('competitor_ads').update(patch).eq('id', row.id);
+    }
+  }
+  return true;
 }
 
 /**
@@ -129,6 +175,8 @@ export async function insertCompetitorAd(opts: {
   spend?: string;
   impressions?: string;
   reach?: number | null;
+  /** Advertiser destination URL (Meta snapshot.link_url). */
+  landingUrl?: string;
 }): Promise<{ ok: true; ad: Record<string, unknown> } | { ok: false; error: string }> {
   const { projectId, brandId, buffer, contentType, remoteUrl, meta = {} } = opts;
   const mediaType = mediaTypeForContentType(contentType);
@@ -178,13 +226,16 @@ export async function insertCompetitorAd(opts: {
   // Winner-detection signals (Phase 1). These live behind a newer migration,
   // so track which keys we added and retry without them if the columns don't
   // exist yet — never fail a save because the DB hasn't been migrated.
-  const winnerKeys: string[] = [];
-  if (opts.adStartedAt) { insertRow.ad_started_at = opts.adStartedAt; winnerKeys.push('ad_started_at'); }
-  if (opts.adActive !== undefined) { insertRow.ad_active = opts.adActive || ''; winnerKeys.push('ad_active'); }
-  if (opts.adVariants !== undefined) { insertRow.ad_variants = opts.adVariants || 0; winnerKeys.push('ad_variants'); }
-  if (opts.spend) { insertRow.spend = opts.spend; winnerKeys.push('spend'); }
-  if (opts.impressions) { insertRow.impressions = opts.impressions; winnerKeys.push('impressions'); }
-  if (opts.reach !== undefined && opts.reach !== null) { insertRow.reach = opts.reach; winnerKeys.push('reach'); }
+  const extraKeys: string[] = [];
+  if (opts.adStartedAt) { insertRow.ad_started_at = opts.adStartedAt; extraKeys.push('ad_started_at'); }
+  if (opts.adActive !== undefined) { insertRow.ad_active = opts.adActive || ''; extraKeys.push('ad_active'); }
+  if (opts.adVariants !== undefined) { insertRow.ad_variants = opts.adVariants || 0; extraKeys.push('ad_variants'); }
+  if (opts.spend) { insertRow.spend = opts.spend; extraKeys.push('spend'); }
+  if (opts.impressions) { insertRow.impressions = opts.impressions; extraKeys.push('impressions'); }
+  if (opts.reach !== undefined && opts.reach !== null) { insertRow.reach = opts.reach; extraKeys.push('reach'); }
+  const landingUrl = (opts.landingUrl || meta.landing_url || '').trim();
+  const hasLanding = Boolean(landingUrl);
+  if (hasLanding) insertRow.landing_url = landingUrl.slice(0, 2000);
 
   let { data, error } = await supabaseAdmin
     .from('competitor_ads')
@@ -193,8 +244,17 @@ export async function insertCompetitorAd(opts: {
     .single();
 
   // Missing-column fallback (PostgREST error code 42703 / PGRST204).
-  if (error && winnerKeys.length > 0 && /column|schema cache|42703|PGRST204/i.test(error.message)) {
-    for (const k of winnerKeys) delete insertRow[k];
+  // Drop landing_url first (newest column), then the older winner-signal keys.
+  if (error && hasLanding && /landing_url|column|schema cache|42703|PGRST204/i.test(error.message)) {
+    delete insertRow.landing_url;
+    ({ data, error } = await supabaseAdmin
+      .from('competitor_ads')
+      .insert(insertRow)
+      .select()
+      .single());
+  }
+  if (error && extraKeys.length > 0 && /column|schema cache|42703|PGRST204/i.test(error.message)) {
+    for (const k of extraKeys) delete insertRow[k];
     ({ data, error } = await supabaseAdmin
       .from('competitor_ads')
       .insert(insertRow)

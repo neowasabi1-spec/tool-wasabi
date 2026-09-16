@@ -46,6 +46,7 @@ interface SaveCreativeBody {
   headline?: string;
   hook?: string;
   body_text?: string;
+  landing_url?: string;
   brandId?: number | string; // save into an existing competitor
   brandName?: string; // create/reuse a competitor by name (overrides domain)
   autoScrape?: boolean; // enable daily monitoring on the destination competitor
@@ -294,7 +295,9 @@ export async function POST(req: NextRequest) {
       headline: body.headline,
       hook: body.hook,
       body_text: bodyText,
+      landing_url: body.landing_url,
     },
+    landingUrl: body.landing_url,
   });
 
   if (!result.ok) return NextResponse.json({ error: result.error }, { status: 500 });

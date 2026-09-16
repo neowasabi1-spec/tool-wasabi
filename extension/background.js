@@ -1584,6 +1584,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           contentType,
         };
         if (msg.bodyText) body.body_text = msg.bodyText;
+        if (msg.headline) body.headline = msg.headline;
+        if (msg.hook) body.hook = msg.hook;
+        if (msg.landingUrl) body.landing_url = msg.landingUrl;
         if (msg.brandId) body.brandId = msg.brandId;
         if (msg.brandName) body.brandName = msg.brandName;
         if (msg.autoScrape) {
@@ -1617,6 +1620,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         name: msg.name,
       };
       if (msg.bodyText) body.body_text = msg.bodyText;
+      if (msg.headline) body.headline = msg.headline;
+      if (msg.hook) body.hook = msg.hook;
+      if (msg.landingUrl) body.landing_url = msg.landingUrl;
       if (msg.brandId) body.brandId = msg.brandId;
       if (msg.brandName) body.brandName = msg.brandName;
       if (msg.autoScrape) {

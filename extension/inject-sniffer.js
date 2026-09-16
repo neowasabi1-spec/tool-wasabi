@@ -67,7 +67,15 @@
         } catch {
           /* ignore */
         }
-        return _fetch.apply(this, arguments);
+        const p = _fetch.apply(this, arguments);
+        try {
+          if (p && typeof p.then === 'function') {
+            p.then(function (resp) { sniffAdResponse(resp, input); }).catch(function () {});
+          }
+        } catch {
+          /* ignore */
+        }
+        return p;
       };
     }
   } catch {
@@ -85,7 +93,136 @@
       }
       return _open.apply(this, arguments);
     };
+    const _send = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.send = function () {
+      try {
+        this.addEventListener('load', function () {
+          try {
+            if (typeof this.responseText === 'string') reportAdJson(this.responseText);
+          } catch {
+            /* ignore */
+          }
+        });
+      } catch {
+        /* ignore */
+      }
+      return _send.apply(this, arguments);
+    };
   } catch {
     /* ignore */
+  }
+
+  // ── Meta Ad Library copy (primary / title / description / destination) ──
+  function parseMaybeJson(text) {
+    let s = String(text || '').trim();
+    if (s.startsWith('for (;;);')) s = s.slice(9);
+    if (s.startsWith('while(1);')) s = s.slice(9);
+    try { return JSON.parse(s); } catch { return null; }
+  }
+
+  function textOf(v, depth) {
+    if (v == null || depth > 4) return '';
+    if (typeof v === 'string') return v.trim();
+    if (typeof v === 'number' && isFinite(v)) return String(v);
+    if (Array.isArray(v)) {
+      for (let i = 0; i < v.length; i++) {
+        const s = textOf(v[i], depth + 1);
+        if (s) return s;
+      }
+      return '';
+    }
+    if (typeof v === 'object') return textOf(v.text || v.body || v.title || v.value || v.markup, depth + 1);
+    return '';
+  }
+
+  function pushUrl(list, u) {
+    if (typeof u === 'string' && /^https?:\/\//i.test(u) && list.indexOf(u) === -1) list.push(u);
+  }
+
+  function copyFromSnapshot(id, snap) {
+    if (!snap || typeof snap !== 'object') return null;
+    const imageUrls = [];
+    const videoUrls = [];
+    const imgs = Array.isArray(snap.images) ? snap.images : [];
+    for (let i = 0; i < imgs.length; i++) {
+      const im = imgs[i] || {};
+      pushUrl(imageUrls, im.original_image_url || im.resized_image_url);
+    }
+    const vids = Array.isArray(snap.videos) ? snap.videos : [];
+    for (let i = 0; i < vids.length; i++) {
+      const v = vids[i] || {};
+      pushUrl(videoUrls, v.video_hd_url || v.video_sd_url);
+      pushUrl(imageUrls, v.video_preview_image_url);
+    }
+    const cards = Array.isArray(snap.cards) ? snap.cards : [];
+    const card0 = cards[0] || {};
+    for (let i = 0; i < cards.length; i++) {
+      const c = cards[i] || {};
+      pushUrl(imageUrls, c.original_image_url || c.resized_image_url);
+      pushUrl(videoUrls, c.video_hd_url || c.video_sd_url);
+    }
+    const body = textOf(snap.body, 0) || textOf(card0.body, 0);
+    const title = textOf(snap.title, 0) || textOf(card0.title, 0);
+    const description = textOf(snap.link_description, 0) || textOf(card0.link_description, 0);
+    const destination = textOf(snap.link_url, 0) || textOf(card0.link_url, 0) || textOf(snap.caption, 0);
+    if (!body && !title && !description && !destination && !imageUrls.length && !videoUrls.length) return null;
+    return {
+      id: String(id || ''),
+      primary: body,
+      title,
+      description,
+      destination,
+      imageUrls,
+      videoUrls,
+    };
+  }
+
+  function walkAds(node, out, depth) {
+    if (!node || depth > 28 || out.length >= 250) return;
+    if (Array.isArray(node)) {
+      for (let i = 0; i < node.length; i++) walkAds(node[i], out, depth + 1);
+      return;
+    }
+    if (typeof node !== 'object') return;
+    const id = node.adArchiveID || node.ad_archive_id || node.adArchiveId || '';
+    let snap = node.snapshot || node.snapshot_v2;
+    if (typeof snap === 'string') {
+      try { snap = JSON.parse(snap); } catch { snap = null; }
+    }
+    if (snap && typeof snap === 'object') {
+      const copy = copyFromSnapshot(id, snap);
+      if (copy) out.push(copy);
+    }
+    const keys = Object.keys(node);
+    for (let i = 0; i < keys.length; i++) {
+      const k = keys[i];
+      if (k === 'snapshot' || k === 'snapshot_v2') continue;
+      const v = node[k];
+      if (v && typeof v === 'object') walkAds(v, out, depth + 1);
+    }
+  }
+
+  function reportAdJson(text) {
+    if (!text || text.length < 80 || text.length > 8_000_000) return;
+    if (text.indexOf('snapshot') === -1 && text.indexOf('adArchive') === -1 && text.indexOf('ad_archive') === -1) return;
+    const data = parseMaybeJson(text);
+    if (!data) return;
+    const found = [];
+    walkAds(data, found, 0);
+    for (let i = 0; i < found.length; i++) {
+      try { window.postMessage({ __wasabiAdCopy: found[i], t: Date.now() }, '*'); } catch { /* ignore */ }
+    }
+  }
+
+  function sniffAdResponse(resp, input) {
+    try {
+      if (!resp || !resp.clone) return;
+      const ct = (resp.headers && resp.headers.get && resp.headers.get('content-type')) || '';
+      const u = typeof input === 'string' ? input : (input && input.url) || '';
+      if (!/json|javascript|text\/plain/i.test(ct) && !/graphql|ads\/library/i.test(String(u))) return;
+      resp.clone().text().then(function (text) { reportAdJson(text); }).catch(function () {});
+    } catch {
+      /* ignore */
+    }
   }
 })();
