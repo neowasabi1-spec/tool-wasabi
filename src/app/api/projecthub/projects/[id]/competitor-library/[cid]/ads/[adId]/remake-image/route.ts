@@ -29,6 +29,11 @@ export async function POST(
     return NextResponse.json({ error: 'Invalid id' }, { status: 400 });
   }
 
+  const ct = req.headers.get('content-type') || '';
+  if (ct.includes('multipart/form-data')) {
+    return uploadProductPhoto(req, id);
+  }
+
   const body = await req.json().catch(() => ({} as Record<string, unknown>));
   const action = String(body.action || 'prepare');
 
@@ -116,6 +121,46 @@ async function saveResult(
   }
   if (res.error) return NextResponse.json({ error: res.error.message }, { status: 500 });
   return NextResponse.json({ ok: true, video: res.data });
+}
+
+const MAX_BYTES = 8 * 1024 * 1024;
+const ALLOWED = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp']);
+
+async function uploadProductPhoto(req: NextRequest, projectId: string) {
+  const fd = await req.formData().catch(() => null);
+  if (!fd) return NextResponse.json({ error: 'Expected a photo upload' }, { status: 400 });
+  const file = fd.get('file');
+  if (!(file instanceof File) || file.size <= 0) {
+    return NextResponse.json({ error: 'Choose a product photo' }, { status: 400 });
+  }
+  if (file.size > MAX_BYTES) {
+    return NextResponse.json({ error: 'Photo must be 8 MB or smaller' }, { status: 400 });
+  }
+  const mime = (file.type || '').toLowerCase();
+  if (mime && !ALLOWED.has(mime)) {
+    return NextResponse.json({ error: 'Use a JPG, PNG or WebP photo' }, { status: 400 });
+  }
+  const ext = /webp/.test(mime) ? 'webp' : /png/.test(mime) ? 'png' : 'jpg';
+  const safe = (file.name || 'product').replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80);
+  const key = `${projectId}/product_image/${Date.now()}_swipe_${safe}.${ext}`;
+  const buf = Buffer.from(await file.arrayBuffer());
+  const { error: upErr } = await supabaseAdmin.storage.from(BUCKET).upload(key, buf, {
+    contentType: mime || 'image/jpeg',
+    upsert: false,
+  });
+  if (upErr) return NextResponse.json({ error: upErr.message || 'Upload failed' }, { status: 500 });
+
+  const { error: insErr } = await supabaseAdmin.from('project_files').insert({
+    project_id: projectId,
+    file_type: 'product_image',
+    file_path: key,
+    original_name: file.name || `product.${ext}`,
+  });
+  if (insErr) console.warn('[remake-image] project_files insert:', insErr.message);
+
+  const url = await signedUrl(key);
+  if (!url) return NextResponse.json({ error: 'Uploaded but could not sign the photo' }, { status: 500 });
+  return NextResponse.json({ ok: true, productImageUrl: url, filePath: key });
 }
 
 async function loadProjectCtx(projectId: string): Promise<{ name?: string; brief?: string; description?: string }> {

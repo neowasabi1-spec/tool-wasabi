@@ -830,10 +830,17 @@ function CreativeDetailPanel({
   const [imgLangOther, setImgLangOther] = useState("");
   const [imgEdit, setImgEdit] = useState("");
   const [imgProduct, setImgProduct] = useState("");
+  const [imgPhoto, setImgPhoto] = useState<{ file: File; preview: string } | null>(null);
+  const imgPhotoRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => () => { if (imgPhoto?.preview) URL.revokeObjectURL(imgPhoto.preview); }, [imgPhoto]);
   const remakeImage = async (mode: "swipe" | "recreate" | "edit") => {
     const language = imgLang === LANGUAGE_OTHER ? imgLangOther.trim() : imgLang;
     if (mode === "recreate" && !language) {
       toast({ title: "Pick a language first", variant: "destructive" });
+      return;
+    }
+    if (mode === "swipe" && !imgPhoto) {
+      toast({ title: "Upload a photo of your product first", variant: "destructive" });
       return;
     }
     if (mode === "edit" && imgEdit.trim().length < 4) {
@@ -850,15 +857,26 @@ function CreativeDetailPanel({
       const prep = await prepRes.json().catch(() => ({}));
       if (!prepRes.ok) throw new Error(prep.error || "Could not prepare the image");
       const sourceUrl = String(prep.imageUrl || "");
-      const productUrl = String(prep.productImageUrl || "");
+      let productUrl = String(prep.productImageUrl || "");
+      if (imgPhoto) {
+        const fd = new FormData();
+        fd.append("file", imgPhoto.file);
+        const up = await fetch(
+          `/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/${ad.id}/remake-image`,
+          { method: "POST", body: fd },
+        );
+        const uj = await up.json().catch(() => ({}));
+        if (!up.ok || !uj.productImageUrl) throw new Error(uj.error || "Could not upload your product photo");
+        productUrl = String(uj.productImageUrl);
+      }
       const productName = (imgProduct || product || prep.productName || "").trim();
       let prompt = "";
       let genMode: "text2image" | "image2image" = "image2image";
       let secondaryImageUrl: string | undefined;
 
       if (mode === "swipe") {
-        if (!productUrl && !productName) {
-          throw new Error("Add your product name, or upload a packshot in the project, then swipe.");
+        if (!productUrl) {
+          throw new Error("Upload a photo of your product to swipe it into this ad.");
         }
         const anRes = await fetch("/api/swipe-image/analyze", {
           method: "POST",
@@ -881,13 +899,9 @@ function CreativeDetailPanel({
         const an = await anRes.json().catch(() => ({}));
         if (!anRes.ok || !an.suggestedPrompt) throw new Error(an.error || "Could not analyze the image");
         prompt = String(an.suggestedPrompt);
-        if (productUrl) {
-          genMode = "image2image";
-          secondaryImageUrl = productUrl;
-          prompt += " The FIRST image is the competitor layout to swipe. The SECOND image is OUR exact product packshot — put that product in place of theirs, keep the same format, framing and style.";
-        } else {
-          genMode = "text2image";
-        }
+        genMode = "image2image";
+        secondaryImageUrl = productUrl;
+        prompt += " The FIRST image is the competitor layout to swipe. The SECOND image is OUR exact product packshot — put that product in place of theirs, keep the same format, framing and style.";
       } else if (mode === "recreate") {
         prompt = `Keep this image's layout, people, product, colors and composition. Rewrite EVERY visible text (headlines, labels, badges, captions, CTAs, small print) into ${language}. Do not add new claims or new objects. The result must look like the same ad in ${language}.`;
       } else {
@@ -1100,9 +1114,64 @@ function CreativeDetailPanel({
               <Input
                 value={imgProduct}
                 onChange={(e) => setImgProduct(e.target.value)}
-                placeholder="Your product name (used for swipe)"
+                placeholder="Your product name (optional)"
                 className="h-8 text-xs"
               />
+              <input
+                ref={imgPhotoRef}
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  e.target.value = "";
+                  if (!file) return;
+                  if (file.size > 8 * 1024 * 1024) {
+                    toast({ title: "Photo must be 8 MB or smaller", variant: "destructive" });
+                    return;
+                  }
+                  if (imgPhoto?.preview) URL.revokeObjectURL(imgPhoto.preview);
+                  setImgPhoto({ file, preview: URL.createObjectURL(file) });
+                }}
+              />
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => imgPhotoRef.current?.click()}
+                  disabled={!!imgBusy}
+                  className="w-full flex items-center gap-2 rounded-lg border border-dashed border-border bg-muted/30 px-2 py-2 text-left hover:bg-muted/50">
+                  {imgPhoto ? (
+                    <img src={imgPhoto.preview} alt="" className="h-12 w-12 rounded object-cover shrink-0 bg-white" />
+                  ) : (
+                    <span className="h-12 w-12 rounded bg-muted grid place-items-center shrink-0">
+                      <Upload className="w-4 h-4 text-muted-foreground" />
+                    </span>
+                  )}
+                  <span className="min-w-0">
+                    <span className="block text-[11px] font-semibold text-foreground truncate">
+                      {imgPhoto ? imgPhoto.file.name : "Upload your product photo"}
+                    </span>
+                    <span className="block text-[10px] text-muted-foreground">
+                      {imgPhoto ? "Click to replace — this packshot is swapped into the ad" : "JPG, PNG or WebP — required to swipe"}
+                    </span>
+                  </span>
+                </button>
+                {imgPhoto && (
+                  <button
+                    type="button"
+                    aria-label="Remove product photo"
+                    disabled={!!imgBusy}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      if (imgPhoto.preview) URL.revokeObjectURL(imgPhoto.preview);
+                      setImgPhoto(null);
+                    }}
+                    className="absolute top-1.5 right-1.5 h-6 w-6 rounded-full bg-background/90 border border-border grid place-items-center hover:bg-muted">
+                    <X className="w-3 h-3" />
+                  </button>
+                )}
+              </div>
               <Button
                 onClick={() => remakeImage("swipe")}
                 disabled={!!imgBusy}
