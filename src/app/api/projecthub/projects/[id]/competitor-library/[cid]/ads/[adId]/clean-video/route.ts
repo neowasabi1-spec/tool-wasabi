@@ -33,7 +33,7 @@ function isStale(status: string | null | undefined, cleanError: string | null | 
   return age > (status === 'processing' ? STALE_PROCESSING_MS : STALE_PENDING_MS);
 }
 
-async function triggerBackground(origin: string, payload: { adId: number; projectId: string }) {
+async function triggerBackground(origin: string, payload: { adId: number; projectId: string; force?: boolean }) {
   try {
     await fetch(`${origin}/.netlify/functions/inpaint-shot-background`, {
       method: 'POST',
@@ -81,7 +81,11 @@ export async function POST(
 
   const { error } = await supabaseAdmin
     .from('competitor_ads')
-    .update({ clean_status: 'pending', clean_error: `__ts:${Date.now()}` })
+    .update({
+      clean_status: 'pending',
+      clean_error: `__ts:${Date.now()}`,
+      clean_full_path: null,
+    })
     .eq('id', adIdNum)
     .eq('project_id', id);
   if (error) {
@@ -92,7 +96,9 @@ export async function POST(
     );
   }
 
-  await triggerBackground(new URL(req.url).origin, { adId: adIdNum, projectId: id });
+  // User click always force-resets the window ledger so a previous stitch of
+  // original footage cannot be reused and shown as "cleaned".
+  await triggerBackground(new URL(req.url).origin, { adId: adIdNum, projectId: id, force: true });
   return NextResponse.json({ status: 'pending', queued: true });
 }
 
@@ -119,21 +125,17 @@ export async function GET(
   let error = (ad as { clean_error?: string })?.clean_error || null;
 
   // Self-heal: a run that died mid-flight leaves 'processing'/'pending'
-  // forever. Flip it to a retryable error the moment anyone looks at it.
+  // forever. Flip it to a retryable error — never resurrect an old cleanPath
+  // as success (that file was often the original with captions still on it).
   if (isStale(status, error)) {
-    // If an earlier run already produced a cleaned video, just surface it.
-    if (cleanPath) {
-      status = 'done';
-      error = null;
-    } else {
-      status = 'error';
-      error = 'Cleaning timed out — click Remove subtitles to retry.';
-    }
+    status = 'error';
+    error = 'Cleaning timed out — click Clean again to retry.';
     await supabaseAdmin
       .from('competitor_ads')
       .update({ clean_status: status, clean_error: error })
       .eq('id', adIdNum)
       .eq('project_id', id);
+    return NextResponse.json({ status, cleanPath: null, error });
   }
 
   return NextResponse.json({

@@ -661,9 +661,13 @@ function CreativeDetailPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ad.id]);
   const removeSubtitles = async () => {
-    setCleanStatus("pending"); setCleanErr("");
+    setCleanStatus("pending"); setCleanErr(""); setCleanPath("");
     try {
-      const r = await fetch(`/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/${ad.id}/clean-video`, { method: "POST" });
+      const r = await fetch(`/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/${ad.id}/clean-video`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ force: true }),
+      });
       const j = await r.json().catch(() => ({}));
       if (r.ok) {
         toast({ title: "Removing subtitles…", description: "Runs on the server — may take a minute or two." });
