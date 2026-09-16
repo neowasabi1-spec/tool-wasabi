@@ -50,22 +50,48 @@ function parseResult(json: unknown): string | null {
   return null;
 }
 
-async function blobFromRef(url: string): Promise<Blob | null> {
+function sniffImage(buf: Buffer, hinted = ''): { mime: string; ext: string } {
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) {
+    return { mime: 'image/png', ext: 'png' };
+  }
+  if (buf[0] === 0xff && buf[1] === 0xd8) return { mime: 'image/jpeg', ext: 'jpg' };
+  if (
+    buf.length > 12
+    && buf.toString('ascii', 0, 4) === 'RIFF'
+    && buf.toString('ascii', 8, 12) === 'WEBP'
+  ) {
+    return { mime: 'image/webp', ext: 'webp' };
+  }
+  const h = hinted.toLowerCase();
+  if (h.includes('png')) return { mime: 'image/png', ext: 'png' };
+  if (h.includes('webp')) return { mime: 'image/webp', ext: 'webp' };
+  if (h.includes('jpeg') || h.includes('jpg')) return { mime: 'image/jpeg', ext: 'jpg' };
+  return { mime: 'image/png', ext: 'png' };
+}
+
+async function bytesFromRef(url: string): Promise<{ buf: Buffer; mime: string } | null> {
   try {
     if (url.startsWith('data:')) {
       const m = url.match(/^data:([^;]+);base64,(.+)$/);
       if (!m) return null;
-      return new Blob([Buffer.from(m[2], 'base64')], { type: m[1] || 'image/png' });
+      const buf = Buffer.from(m[2], 'base64');
+      if (buf.length < 100) return null;
+      return { buf, mime: m[1] || 'image/png' };
     }
-    const res = await fetch(url, { signal: AbortSignal.timeout(20_000) });
+    const res = await fetch(url, { signal: AbortSignal.timeout(45_000) });
     if (!res.ok) return null;
     const buf = Buffer.from(await res.arrayBuffer());
     if (buf.length < 100) return null;
-    const type = (res.headers.get('content-type') || 'image/png').split(';')[0];
-    return new Blob([buf], { type });
+    const mime = (res.headers.get('content-type') || 'image/png').split(';')[0].trim();
+    return { buf, mime };
   } catch {
     return null;
   }
+}
+
+function supportsInputFidelity(model: string): boolean {
+  // gpt-image-2 rejects this field (always high fidelity). Only 1 / 1.5 accept it.
+  return /gpt-image-1(\.5)?/i.test(model) && !/mini/i.test(model);
 }
 
 async function openaiEdit(
@@ -77,50 +103,50 @@ async function openaiEdit(
   quality: string,
   timeoutMs: number,
 ): Promise<string | null> {
-  const fidelity = /gpt-image/i.test(model) ? { input_fidelity: 'high' as const } : {};
-  const jsonRes = await fetch('https://api.openai.com/v1/images/edits', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-    body: JSON.stringify({
-      model,
-      prompt: prompt.slice(0, 32_000),
-      images: refs.map((image_url) => ({ image_url })),
-      n: 1,
-      size,
-      quality,
-      ...fidelity,
-    }),
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  if (jsonRes.ok) return parseResult(await jsonRes.json());
-  const jsonErr = await jsonRes.text();
-  setImageErr(`OpenAI edit json ${jsonRes.status}: ${jsonErr.slice(0, 280)}`);
-
-  const form = new FormData();
-  form.append('model', model);
-  form.append('prompt', prompt.slice(0, 32_000));
-  form.append('n', '1');
-  form.append('size', size);
-  form.append('quality', quality);
-  if (/gpt-image/i.test(model)) form.append('input_fidelity', 'high');
-  let attached = 0;
+  const files: File[] = [];
   for (let i = 0; i < refs.length; i++) {
-    const blob = await blobFromRef(refs[i]);
-    if (!blob) continue;
-    form.append('image[]', blob, `ref-${i}.png`);
-    attached++;
+    const raw = await bytesFromRef(refs[i]);
+    if (!raw) continue;
+    const { mime, ext } = sniffImage(raw.buf, raw.mime);
+    files.push(new File([new Uint8Array(raw.buf)], `ref-${i}.${ext}`, { type: mime }));
   }
-  if (!attached) return null;
-  const mp = await fetch('https://api.openai.com/v1/images/edits', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${key}` },
-    body: form,
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  if (!mp.ok) {
-    console.warn('[openai-image] edit multipart', mp.status, (await mp.text()).slice(0, 300));
-    setImageErr(`OpenAI edit multipart ${mp.status}`);
+  if (!files.length) {
+    setImageErr('Could not download the source image for ChatGPT edit');
     return null;
+  }
+
+  const post = async (field: 'image[]' | 'image', extra: Record<string, string> = {}) => {
+    const form = new FormData();
+    form.append('model', model);
+    form.append('prompt', prompt.slice(0, 32_000));
+    form.append('n', '1');
+    if (size && size !== 'auto') form.append('size', size);
+    if (quality) form.append('quality', quality);
+    for (const [k, v] of Object.entries(extra)) form.append(k, v);
+    for (const file of files) form.append(field, file);
+    return fetch('https://api.openai.com/v1/images/edits', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${key}` },
+      body: form,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  };
+
+  const extra: Record<string, string> = {};
+  if (supportsInputFidelity(model)) extra.input_fidelity = 'high';
+
+  let mp = await post(files.length > 1 ? 'image[]' : 'image', extra);
+  if (!mp.ok) {
+    const err = await mp.text();
+    setImageErr(`OpenAI edit multipart ${mp.status}: ${err.slice(0, 280)}`);
+    // Retry the other field name / without optional params if the first shape is rejected.
+    const retryField = files.length > 1 ? 'image' : 'image[]';
+    mp = await post(retryField);
+    if (!mp.ok) {
+      const err2 = await mp.text();
+      setImageErr(`OpenAI edit multipart ${mp.status}: ${err2.slice(0, 280)}`);
+      return null;
+    }
   }
   return parseResult(await mp.json());
 }
