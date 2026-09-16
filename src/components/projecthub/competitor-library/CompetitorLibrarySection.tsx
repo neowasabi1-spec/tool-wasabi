@@ -823,7 +823,6 @@ function CreativeDetailPanel({
       );
       const prep = await prepRes.json().catch(() => ({}));
       if (!prepRes.ok) throw new Error(prep.error || "Could not prepare the image");
-      const sourceUrl = String(prep.imageUrl || "");
       let productUrl = String(prep.productImageUrl || "");
       if (imgPhoto) {
         const fd = new FormData();
@@ -844,29 +843,12 @@ function CreativeDetailPanel({
         if (!productUrl) {
           throw new Error("Upload a photo of your product to swipe it into this ad.");
         }
-        const anRes = await fetch("/api/swipe-image/analyze", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            imageUrl: sourceUrl,
-            currentAlt: ad.name || ad.headline || "",
-            pageTitle: ad.headline || "",
-            productContext: {
-              name: productName,
-              brief: prep.brief || "",
-              description: imgProduct || product || "",
-            },
-            surroundingContext: {
-              heading: ad.headline || "",
-              nearbyText: [ad.hook, ad.body_text].filter(Boolean).join(" "),
-            },
-          }),
-        });
-        const an = await anRes.json().catch(() => ({}));
-        if (!anRes.ok || !an.suggestedPrompt) throw new Error(an.error || "Could not analyze the image");
-        prompt = String(an.suggestedPrompt);
         productImageUrl = productUrl;
-        prompt += " The FIRST image is the competitor layout to swipe. The SECOND image is OUR exact product packshot — put that product in place of theirs, keep the same format, framing and style.";
+        prompt = [
+          `Replace the competitor product in this ad with ${productName || "our product"}.`,
+          "The FIRST image is the ad layout to keep. The SECOND image is our exact packshot — put that product in their place.",
+          "Keep the same format, framing, people, colors, style and on-image text.",
+        ].join(" ");
       } else if (mode === "recreate") {
         prompt = `Keep this image's layout, people, product, colors and composition. Rewrite EVERY visible text (headlines, labels, badges, captions, CTAs, small print) into ${language}. Do not add new claims or new objects. The result must look like the same ad in ${language}.`;
       } else {
@@ -887,8 +869,15 @@ function CreativeDetailPanel({
           }),
         },
       );
-      const saved = await saveRes.json().catch(() => ({}));
-      if (!saveRes.ok) throw new Error(saved.error || "Could not save the image");
+      const raw = await saveRes.text();
+      let saved: { error?: string } = {};
+      try { saved = JSON.parse(raw); } catch { /* html 504/500 */ }
+      if (!saveRes.ok) {
+        throw new Error(
+          saved.error
+          || (saveRes.status === 504 ? "ChatGPT timed out — try again" : `Could not edit the image (${saveRes.status})`),
+        );
+      }
       await loadBuildStatus();
       toast({
         title: mode === "swipe" ? "Swipe ready" : mode === "recreate" ? "Recreated" : "Edit ready",

@@ -42,12 +42,22 @@ function setImageErr(msg: string): void {
   if (lastImageErr) console.warn('[openai-image]', lastImageErr);
 }
 
-function parseResult(json: unknown): string | null {
+function parseResultBytes(json: unknown): { buf: Buffer; mime: string } | null {
   const row = (json as { data?: Array<{ b64_json?: string; url?: string }> })?.data?.[0];
   if (!row) return null;
-  if (row.b64_json) return `data:image/png;base64,${row.b64_json}`;
-  if (row.url) return row.url;
+  if (row.b64_json) {
+    const buf = Buffer.from(String(row.b64_json).replace(/\s/g, ''), 'base64');
+    if (buf.length < 80) return null;
+    return { buf, mime: 'image/png' };
+  }
   return null;
+}
+
+function parseResult(json: unknown): string | null {
+  const bytes = parseResultBytes(json);
+  if (bytes) return `data:${bytes.mime};base64,${bytes.buf.toString('base64')}`;
+  const row = (json as { data?: Array<{ url?: string }> })?.data?.[0];
+  return row?.url || null;
 }
 
 function sniffImage(buf: Buffer, hinted = ''): { mime: string; ext: string } {
@@ -102,13 +112,17 @@ async function openaiEdit(
   size: string,
   quality: string,
   timeoutMs: number,
-): Promise<string | null> {
-  const files: File[] = [];
+): Promise<{ buf: Buffer; mime: string } | null> {
+  const files: Array<{ buf: Buffer; mime: string; name: string }> = [];
   for (let i = 0; i < refs.length; i++) {
     const raw = await bytesFromRef(refs[i]);
     if (!raw) continue;
     const { mime, ext } = sniffImage(raw.buf, raw.mime);
-    files.push(new File([new Uint8Array(raw.buf)], `ref-${i}.${ext}`, { type: mime }));
+    files.push({
+      buf: raw.buf,
+      mime,
+      name: `ref-${i}.${ext}`,
+    });
   }
   if (!files.length) {
     setImageErr('Could not download the source image for ChatGPT edit');
@@ -123,7 +137,9 @@ async function openaiEdit(
     if (size && size !== 'auto') form.append('size', size);
     if (quality) form.append('quality', quality);
     for (const [k, v] of Object.entries(extra)) form.append(k, v);
-    for (const file of files) form.append(field, file);
+    for (const file of files) {
+      form.append(field, new Blob([new Uint8Array(file.buf)], { type: file.mime }), file.name);
+    }
     return fetch('https://api.openai.com/v1/images/edits', {
       method: 'POST',
       headers: { Authorization: `Bearer ${key}` },
@@ -135,20 +151,22 @@ async function openaiEdit(
   const extra: Record<string, string> = {};
   if (supportsInputFidelity(model)) extra.input_fidelity = 'high';
 
-  let mp = await post(files.length > 1 ? 'image[]' : 'image', extra);
+  let mp = await post('image[]', extra);
   if (!mp.ok) {
     const err = await mp.text();
-    setImageErr(`OpenAI edit multipart ${mp.status}: ${err.slice(0, 280)}`);
-    // Retry the other field name / without optional params if the first shape is rejected.
-    const retryField = files.length > 1 ? 'image' : 'image[]';
-    mp = await post(retryField);
-    if (!mp.ok) {
-      const err2 = await mp.text();
-      setImageErr(`OpenAI edit multipart ${mp.status}: ${err2.slice(0, 280)}`);
-      return null;
-    }
+    setImageErr(`OpenAI edit ${mp.status}: ${err.slice(0, 280)}`);
+    return null;
   }
-  return parseResult(await mp.json());
+  if (!mp.ok) return null;
+  const json = await mp.json();
+  const bytes = parseResultBytes(json);
+  if (bytes) return bytes;
+  const url = (json as { data?: Array<{ url?: string }> })?.data?.[0]?.url;
+  if (!url) return null;
+  const dl = await bytesFromRef(url);
+  if (!dl) return null;
+  const sniffed = sniffImage(dl.buf, dl.mime);
+  return { buf: dl.buf, mime: sniffed.mime };
 }
 
 async function openaiGenerateOnce(
@@ -159,7 +177,7 @@ async function openaiGenerateOnce(
   size: string,
   quality: string,
   timeoutMs: number,
-): Promise<string | null> {
+): Promise<{ buf: Buffer; mime: string } | null> {
   if (refs.length) return openaiEdit(key, model, prompt, refs, size, quality, timeoutMs);
   const res = await fetch('https://api.openai.com/v1/images/generations', {
     method: 'POST',
@@ -178,20 +196,23 @@ async function openaiGenerateOnce(
     setImageErr(`OpenAI ${model} ${res.status}: ${(await res.text()).slice(0, 280)}`);
     return null;
   }
-  return parseResult(await res.json());
+  const json = await res.json();
+  const bytes = parseResultBytes(json);
+  if (bytes) return bytes;
+  const url = parseResult(json);
+  if (!url || url.startsWith('data:')) return null;
+  return bytesFromRef(url);
 }
 
-/** Text-to-image, or image-to-image when imageUrls is set. ChatGPT Images only (gpt-image-2). */
-export async function openaiGenerateImage(opts: {
+export async function openaiGenerateImageBytes(opts: {
   prompt: string;
   imageUrls?: string[];
   size?: string;
   quality?: string;
   timeoutMs?: number;
   onTick?: () => Promise<void>;
-  /** Kept for callers; Gemini/Flux are never used. */
   openaiOnly?: boolean;
-}): Promise<string | null> {
+}): Promise<{ buf: Buffer; mime: string } | null> {
   lastImageErr = '';
   const prompt = (opts.prompt || '').trim();
   if (!prompt) {
@@ -213,8 +234,8 @@ export async function openaiGenerateImage(opts: {
     const models = Array.from(new Set([openaiImageModel(), 'gpt-image-2'].filter(Boolean)));
     for (const model of models) {
       try {
-        const url = await openaiGenerateOnce(openaiKey, model, prompt, refs, size, quality, timeoutMs);
-        if (url) return url;
+        const bytes = await openaiGenerateOnce(openaiKey, model, prompt, refs, size, quality, timeoutMs);
+        if (bytes) return bytes;
       } catch (e) {
         setImageErr(`${model}: ${(e as Error).message}`);
       }
@@ -227,4 +248,19 @@ export async function openaiGenerateImage(opts: {
   } finally {
     if (iv) clearInterval(iv);
   }
+}
+
+/** Text-to-image, or image-to-image when imageUrls is set. ChatGPT Images only (gpt-image-2). */
+export async function openaiGenerateImage(opts: {
+  prompt: string;
+  imageUrls?: string[];
+  size?: string;
+  quality?: string;
+  timeoutMs?: number;
+  onTick?: () => Promise<void>;
+  openaiOnly?: boolean;
+}): Promise<string | null> {
+  const bytes = await openaiGenerateImageBytes(opts);
+  if (!bytes) return null;
+  return `data:${bytes.mime};base64,${bytes.buf.toString('base64')}`;
 }

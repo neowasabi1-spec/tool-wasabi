@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { canAccessProject } from '@/lib/auth/project-access';
-import { lastImageGenError, openaiGenerateImage, openaiImageKey } from '@/lib/openai-image';
+import { lastImageGenError, openaiGenerateImageBytes, openaiImageKey } from '@/lib/openai-image';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -87,46 +87,90 @@ async function generateWithChatGpt(
   adId: number,
   body: Record<string, unknown>,
 ) {
-  if (!openaiImageKey()) {
-    return NextResponse.json({ error: 'OPENAI_API_KEY is missing' }, { status: 500 });
-  }
-  const prompt = String(body.prompt || '').trim();
-  if (prompt.length < 8) {
-    return NextResponse.json({ error: 'Missing prompt' }, { status: 400 });
-  }
-  const { data: ad } = await supabaseAdmin
-    .from('competitor_ads')
-    .select('id, file_path, media_type')
-    .eq('id', adId)
-    .eq('brand_id', brandId)
-    .eq('project_id', projectId)
-    .maybeSingle();
-  if (!ad) return NextResponse.json({ error: 'Creative not found' }, { status: 404 });
-  const a = ad as { file_path?: string; media_type?: string };
-  if (a.media_type === 'video' || !a.file_path) {
-    return NextResponse.json({ error: 'This action is for still images' }, { status: 400 });
-  }
-  const sourceUrl = await signedUrl(a.file_path);
-  if (!sourceUrl) {
-    return NextResponse.json({ error: 'Could not sign the source image' }, { status: 500 });
-  }
-  const productUrl = String(body.productImageUrl || '').trim();
-  const imageUrls = [sourceUrl, /^https?:\/\//i.test(productUrl) ? productUrl : ''].filter(Boolean);
-  const made = await openaiGenerateImage({
-    prompt,
-    imageUrls,
-    size: 'auto',
-    quality: 'medium',
-    timeoutMs: 150_000,
-    openaiOnly: true,
-  });
-  if (!made) {
+  try {
+    if (!openaiImageKey()) {
+      return NextResponse.json({ error: 'OPENAI_API_KEY is missing' }, { status: 500 });
+    }
+    const prompt = String(body.prompt || '').trim();
+    if (prompt.length < 8) {
+      return NextResponse.json({ error: 'Missing prompt' }, { status: 400 });
+    }
+    const { data: ad } = await supabaseAdmin
+      .from('competitor_ads')
+      .select('id, file_path, media_type')
+      .eq('id', adId)
+      .eq('brand_id', brandId)
+      .eq('project_id', projectId)
+      .maybeSingle();
+    if (!ad) return NextResponse.json({ error: 'Creative not found' }, { status: 404 });
+    const a = ad as { file_path?: string; media_type?: string };
+    if (a.media_type === 'video' || !a.file_path) {
+      return NextResponse.json({ error: 'This action is for still images' }, { status: 400 });
+    }
+    const sourceUrl = await signedUrl(a.file_path);
+    if (!sourceUrl) {
+      return NextResponse.json({ error: 'Could not sign the source image' }, { status: 500 });
+    }
+    const productUrl = String(body.productImageUrl || '').trim();
+    const imageUrls = [sourceUrl, /^https?:\/\//i.test(productUrl) ? productUrl : ''].filter(Boolean);
+    const made = await openaiGenerateImageBytes({
+      prompt,
+      imageUrls,
+      size: '1024x1536',
+      quality: 'medium',
+      timeoutMs: 120_000,
+      openaiOnly: true,
+    });
+    if (!made) {
+      return NextResponse.json(
+        { error: lastImageGenError() || 'ChatGPT did not return an image' },
+        { status: 502 },
+      );
+    }
+    return persistBytes(projectId, brandId, adId, body, made);
+  } catch (e) {
     return NextResponse.json(
-      { error: lastImageGenError() || 'ChatGPT did not return an image' },
-      { status: 502 },
+      { error: (e as Error).message || 'Image edit failed' },
+      { status: 500 },
     );
   }
-  return saveResult(projectId, brandId, adId, { ...body, url: made });
+}
+
+async function persistBytes(
+  projectId: string,
+  brandId: number,
+  adId: number,
+  body: Record<string, unknown>,
+  made: { buf: Buffer; mime: string },
+) {
+  const mime = made.mime || 'image/png';
+  const ext = /webp/i.test(mime) ? 'webp' : /jpe?g/i.test(mime) ? 'jpg' : 'png';
+  const key = `${projectId}/generated/${adId}_img_${Date.now()}.${ext}`;
+  const { error: upErr } = await supabaseAdmin.storage.from(BUCKET).upload(key, made.buf, {
+    contentType: mime,
+    upsert: true,
+  });
+  if (upErr) return NextResponse.json({ error: upErr.message }, { status: 500 });
+
+  const language = String(body.language || '').trim().slice(0, 40) || null;
+  const prompt = String(body.prompt || body.mode || '').trim().slice(0, 2000);
+  const row: Record<string, unknown> = {
+    project_id: projectId,
+    brand_id: brandId,
+    ad_id: adId,
+    file_path: key,
+    thumb_path: key,
+    duration_sec: 0,
+    script: prompt || null,
+    language,
+  };
+  let res = await supabaseAdmin.from('generated_videos').insert(row).select('id').maybeSingle();
+  if (res.error && /language/i.test(res.error.message)) {
+    delete row.language;
+    res = await supabaseAdmin.from('generated_videos').insert(row).select('id').maybeSingle();
+  }
+  if (res.error) return NextResponse.json({ error: res.error.message }, { status: 500 });
+  return NextResponse.json({ ok: true, video: res.data });
 }
 
 async function saveResult(
