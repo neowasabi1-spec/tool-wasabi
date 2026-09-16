@@ -788,23 +788,55 @@ async function textMaskReconstruct(opts: {
   workDir: string; deadline: number; tag: string;
   log: (...a: unknown[]) => void;
 }): Promise<string | null> {
-  const { supabase, token, model, srcKey, srcFile, maskFile, maskKey, W, H, fps, dur, workDir, deadline, tag, log } = opts;
+  const { supabase, token, model, srcFile, maskFile, maskKey, W, H, dur, workDir, deadline, tag, log } = opts;
   const { version, props, videoField, maskField } = model;
-  const frames = Math.max(1, Math.round(fps * dur));
 
-  await uploadFile(supabase, maskKey, maskFile, 'video/mp4');
+  // Native 1080p / 20-step MiniMax billed ~minutes of L40S per window and
+  // burned tens of dollars on a 30s clip. The model is documented around
+  // 480–832px and 12 steps; we downscale, reconstruct, then paste only those
+  // pixels back onto the original frames.
+  const MM_SIDE = 512;
+  const MM_FPS = 12;
+  const long = Math.max(W, H) || MM_SIDE;
+  const scale = long > MM_SIDE ? MM_SIDE / long : 1;
+  const mw = Math.max(2, Math.round(W * scale) & ~1);
+  const mh = Math.max(2, Math.round(H * scale) & ~1);
+  const mmFrames = Math.max(8, Math.min(24, Math.round(MM_FPS * dur)));
+  const smallSrc = path.join(workDir, `mmvid_${tag}.mp4`);
+  const smallMask = path.join(workDir, `mmask_${tag}.mp4`);
+  try {
+    await run(FFMPEG, [
+      '-y', '-i', srcFile,
+      '-vf', `fps=${MM_FPS},scale=${mw}:${mh}:flags=lanczos,setsar=1`,
+      '-an', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p',
+      smallSrc,
+    ]);
+    await run(FFMPEG, [
+      '-y', '-i', maskFile,
+      '-vf', `fps=${MM_FPS},scale=${mw}:${mh}:flags=neighbor,setsar=1`,
+      '-an', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p',
+      smallMask,
+    ]);
+  } catch (e) {
+    log(`${tag}: MiniMax downscale failed (${(e as Error).message})`);
+    return null;
+  }
+
+  const smallSrcKey = `${maskKey}_v.mp4`;
+  await uploadFile(supabase, smallSrcKey, smallSrc, 'video/mp4');
+  await uploadFile(supabase, maskKey, smallMask, 'video/mp4');
   const sign = async (key: string) => {
     const { data } = await supabase.storage.from(BUCKET).createSignedUrl(key, 3600);
     return data?.signedUrl || null;
   };
-  const videoUrl = await sign(srcKey);
+  const videoUrl = await sign(smallSrcKey);
   const maskUrl = await sign(maskKey);
   if (!videoUrl || !maskUrl) { log(`${tag}: could not sign inpaint inputs`); return null; }
 
   const input: Record<string, unknown> = { [videoField]: videoUrl, [maskField]: maskUrl };
   const wanted: Record<string, number> = {
-    fps: Math.round(fps), num_frames: frames, width: W, height: H,
-    mask_dilation_iterations: 4, num_inference_steps: 20,
+    fps: MM_FPS, num_frames: mmFrames, width: mw, height: mh,
+    mask_dilation_iterations: 4, num_inference_steps: 12,
   };
   for (const [name, value] of Object.entries(wanted)) {
     const spec = props[name];
@@ -813,6 +845,7 @@ async function textMaskReconstruct(opts: {
     const min = typeof spec.minimum === 'number' ? spec.minimum : 0;
     input[name] = Math.max(min, Math.min(max, value));
   }
+  log(`${tag}: MiniMax ${mw}x${mh} ${mmFrames}f/12 steps (source ${W}x${H})`);
 
   let url: string | null = null;
   try {
@@ -1534,7 +1567,7 @@ async function ocrLetterMask(opts: {
   if (Date.now() > deadline - 45000) return null;
   const framesDir = path.join(workDir, `ocr_${tag}`);
   fs.mkdirSync(framesDir, { recursive: true });
-  const nFrames = Math.min(3, Math.max(2, Math.ceil(dur * 2)));
+  const nFrames = 1;
   try {
     await run(FFMPEG, [
       '-y', '-i', srcFile,
@@ -1693,6 +1726,20 @@ async function cleanWholeAd(
         const { data } = await supabase.storage.from(BUCKET).download(progressKey);
         if (data) prog = JSON.parse(Buffer.from(await data.arrayBuffer()).toString('utf8')) as Progress;
       } catch { /* no previous progress */ }
+    } else {
+      try {
+        const { data } = await supabase.storage.from(BUCKET).download(progressKey);
+        if (data) prog = JSON.parse(Buffer.from(await data.arrayBuffer()).toString('utf8')) as Progress;
+      } catch { /* no previous progress */ }
+      if (prog && prog.src === (claimed.file_path as string) && prog.nseg === nseg && prog.v === MASK_PROGRESS_V && Array.isArray(prog.wins)) {
+        // Paid MiniMax windows stay. Only redo ones that never cleaned.
+        prog.runs = 0;
+        for (const x of prog.wins) {
+          if (x.s !== 'clean') { x.s = 'todo'; x.tries = 0; delete x.key; }
+        }
+      } else {
+        prog = null;
+      }
     }
     if (force || !prog || prog.src !== (claimed.file_path as string) || prog.nseg !== nseg || prog.v !== MASK_PROGRESS_V || !Array.isArray(prog.wins)) {
       prog = {
@@ -1778,6 +1825,7 @@ async function cleanWholeAd(
       lenFor = len;
       segFileFor = segFile;
       srcRgbFor = null;
+      segKeyFor = `${projectId}/ads-clean/${adId}_w${i}`;
 
       let maskFile: string | null = null;
       let srcRgb: { buf: Buffer; w: number; h: number } | null = null;
@@ -1802,55 +1850,23 @@ async function cleanWholeAd(
         log(`window ${i}: mask build skipped (${(e as Error).message})`);
       }
 
-      const segKey = `${projectId}/ads-clean/${adId}_w${i}_${Date.now()}.mp4`;
-      await uploadFile(supabase, segKey, segFile, 'video/mp4');
-      const { data: signedWin } = await supabase.storage.from(BUCKET).createSignedUrl(segKey, 3600);
-      const winUrl = signedWin?.signedUrl || null;
-      segKeyFor = segKey;
-
       let rebuiltFile: string | null = null;
-      let ocrBand: { y0: number; y1: number } | null = null;
       let ocrMask: string | null = null;
 
-      // 1) Colour letter mask → MiniMax reconstructs those pixels onto original.
-      if (maskFile) rebuiltFile = await tryMiniMax(maskFile, cmBand, `w${i}`);
-
-      // 2) OCR finds the actual caption boxes when colour missed or MiniMax left them.
-      if (!rebuiltFile) {
+      // One MiniMax per attempt. Colour mask first; OCR on the retry if colour
+      // already paid and still left captions.
+      const triedColour = (w.tries || 0) >= 1;
+      if (maskFile && !triedColour) {
+        rebuiltFile = await tryMiniMax(maskFile, cmBand, `w${i}`);
+      }
+      if (!rebuiltFile && (!maskFile || triedColour)) {
         const ocr = await ocrLetterMask({
           token, srcFile: segFile, W, H, fps, dur: len, workDir, deadline,
           tag: `w${i}`, cache: ocrCache, log,
         });
         if (ocr) {
           ocrMask = ocr.maskFile;
-          ocrBand = ocr.band;
           rebuiltFile = await tryMiniMax(ocr.maskFile, ocr.band, `wocr${i}`);
-        }
-      }
-
-      // 3) YOLO as last finder; leftover-check so a no-op composite is not "clean".
-      if (!rebuiltFile && winUrl) {
-        rebuiltFile = await detectorInpaintClip({
-          token, videoUrl: winUrl, srcFile: segFile, maskFile: ocrMask || maskFile,
-          W, H, fps, dur: len, workDir, deadline, tag: `w${i}`, log,
-        });
-        if (rebuiltFile && srcRgb) {
-          try {
-            const outRgb = await rgbFrames(rebuiltFile, W, H, len, fps, workDir);
-            const lo = analyzeLeftoverText(
-              srcRgb.buf, outRgb.buf, srcRgb.w, srcRgb.h,
-              ocrBand || cmBand,
-            );
-            if (!leftoverWorked(lo)) {
-              log(`window ${i}: YOLO left captions (${lo.bad.length}/${lo.frames}, px=${lo.maskPx})`);
-              rebuiltFile = null;
-            } else {
-              log(`window ${i}: YOLO reconstructed caption pixels onto original frames`);
-            }
-          } catch (e) {
-            log(`window ${i}: YOLO leftover check failed (${(e as Error).message}) — not keeping it`);
-            rebuiltFile = null;
-          }
         }
       }
 
@@ -1861,10 +1877,10 @@ async function cleanWholeAd(
         w.key = winKey;
       } else {
         w.tries = (w.tries || 0) + 1;
-        if (w.tries >= 3) {
+        if (w.tries >= 2) {
           const foundLetters = Boolean(maskFile || ocrMask);
           w.s = foundLetters ? 'failed' : 'original';
-          log(`window ${i}: ${w.s === 'failed' ? 'neural reconstruct failed after 3 attempts' : 'no caption text detected — kept original'}`);
+          log(`window ${i}: ${w.s === 'failed' ? 'neural reconstruct failed after 2 attempts' : 'no caption text detected — kept original'}`);
         } else {
           log(`window ${i}: attempt ${w.tries} failed — will retry in a later run`);
         }
