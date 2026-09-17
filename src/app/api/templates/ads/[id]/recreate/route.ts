@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getCurrentUserId } from '@/lib/auth/get-current-user';
 import { canAccessProject } from '@/lib/auth/project-access';
-import { lastImageGenError, openaiImageKey, pollGptImage2Job, submitGptImage2Job } from '@/lib/openai-image';
+import { lastImageGenError, openaiImageKey, pollGptImage2Job, submitGptImage2Job, waitGptImage2Job } from '@/lib/openai-image';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -222,9 +222,32 @@ async function saveToProjectCreatives(
   return NextResponse.json({ ok: true, creative: created, filePath: dest });
 }
 
+async function persistGenerated(
+  userId: string,
+  name: string,
+  buf: Buffer,
+  mime: string,
+) {
+  const ext = /webp/i.test(mime) ? 'webp' : /jpe?g/i.test(mime) ? 'jpg' : 'png';
+  const outPath = `archive-ads/${userId}/drafts/recreate_${Date.now()}.${ext}`;
+  const { error: saveErr } = await supabaseAdmin.storage.from(BUCKET).upload(outPath, buf, {
+    contentType: mime,
+    upsert: false,
+  });
+  if (saveErr) return NextResponse.json({ error: saveErr.message }, { status: 500 });
+  const previewUrl = await signedUrl(outPath);
+  return NextResponse.json({
+    ok: true,
+    status: 'completed',
+    filePath: outPath,
+    name,
+    previewUrl,
+  });
+}
+
 async function finishRecreateJob(userId: string, body: Record<string, unknown>) {
-  const statusUrl = String(body.statusUrl || '').trim();
-  const responseUrl = String(body.responseUrl || '').trim();
+  const statusUrl = String(body.statusUrl || body.status_url || '').trim();
+  const responseUrl = String(body.responseUrl || body.response_url || '').trim();
   const name = String(body.name || 'Recreated ad').trim().slice(0, 300) || 'Recreated ad';
   if (!statusUrl || !responseUrl) {
     return NextResponse.json({ error: 'Missing ChatGPT Image 2 job' }, { status: 400 });
@@ -242,22 +265,7 @@ async function finishRecreateJob(userId: string, body: Record<string, unknown>) 
   if (polled.status === 'error') {
     return NextResponse.json({ status: 'error', error: polled.error }, { status: 502 });
   }
-
-  const ext = /webp/i.test(polled.mime) ? 'webp' : /jpe?g/i.test(polled.mime) ? 'jpg' : 'png';
-  const outPath = `archive-ads/${userId}/drafts/recreate_${Date.now()}.${ext}`;
-  const { error: saveErr } = await supabaseAdmin.storage.from(BUCKET).upload(outPath, polled.buf, {
-    contentType: polled.mime,
-    upsert: false,
-  });
-  if (saveErr) return NextResponse.json({ error: saveErr.message }, { status: 500 });
-  const previewUrl = await signedUrl(outPath);
-  return NextResponse.json({
-    ok: true,
-    status: 'completed',
-    filePath: outPath,
-    name,
-    previewUrl,
-  });
+  return persistGenerated(userId, name, polled.buf, polled.mime);
 }
 
 export async function GET(req: NextRequest) {
@@ -407,6 +415,13 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     }
 
     const name = `${productName || 'Swipe'} — ${source.name}`.slice(0, 300);
+    const waited = await waitGptImage2Job(job, 120_000);
+    if (waited.status === 'error') {
+      return NextResponse.json({ error: waited.error }, { status: 502 });
+    }
+    if (waited.status === 'completed') {
+      return persistGenerated(userId, name, waited.buf, waited.mime);
+    }
     return NextResponse.json({
       ok: true,
       status: 'pending',

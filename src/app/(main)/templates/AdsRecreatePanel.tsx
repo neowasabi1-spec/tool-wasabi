@@ -158,37 +158,38 @@ export default function AdsRecreatePanel({ ad, onResult }: Props) {
       if (d.analysis) setAnalysis(String(d.analysis));
 
       let payload = d as Record<string, unknown>;
-      if (String(payload.status || '') === 'pending' || payload.statusUrl) {
+      const jobUrl = () => String(payload.statusUrl || payload.status_url || '').trim();
+      const jobResp = () => String(payload.responseUrl || payload.response_url || '').trim();
+      const hasImage = () => Boolean(payload.filePath || payload.file_path || payload.previewUrl || payload.previewDataUrl);
+
+      if (!hasImage() && (String(payload.status || '') === 'pending' || jobUrl())) {
         setWaitMsg('Waiting for ChatGPT Image 2… this can take up to two minutes');
         const started = Date.now();
-        while (Date.now() - started < 180_000) {
-          await new Promise((r) => setTimeout(r, 2000));
+        while (!hasImage() && Date.now() - started < 180_000) {
           const pollRes = await authFetch(`/api/templates/ads/${ad.id}/recreate`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               action: 'poll',
-              statusUrl: payload.statusUrl,
-              responseUrl: payload.responseUrl,
+              statusUrl: jobUrl(),
+              responseUrl: jobResp(),
               name: payload.name || productName.trim(),
             }),
           });
           const poll = await pollRes.json().catch(() => ({} as Record<string, unknown>));
           if (!pollRes.ok) throw new Error(String(poll.error || 'ChatGPT Image 2 failed'));
-          if (String(poll.status || '') === 'completed' || poll.filePath || poll.previewUrl) {
-            payload = poll;
-            break;
-          }
+          payload = poll;
+          if (hasImage() || String(poll.status || '') === 'completed') break;
           const fal = String(poll.falStatus || 'IN_QUEUE');
           setWaitMsg(
             fal === 'IN_PROGRESS'
               ? 'ChatGPT Image 2 is generating…'
               : 'Waiting for ChatGPT Image 2…',
           );
-          payload = poll;
+          await new Promise((r) => setTimeout(r, 2000));
         }
-        if (String(payload.status || '') === 'pending') {
-          throw new Error('ChatGPT Image 2 is still running — try again in a moment');
+        if (!hasImage() && String(payload.status || '') === 'pending') {
+          throw new Error('ChatGPT Image 2 is still running — keep the popup open and try again');
         }
       }
 
@@ -199,7 +200,9 @@ export default function AdsRecreatePanel({ ad, onResult }: Props) {
         name: String(payload.name || productName || 'Recreated ad'),
         previewUrl,
       };
-      if (!preview.filePath && !preview.previewUrl) throw new Error('Generation returned no image');
+      if (!preview.filePath && !preview.previewUrl) {
+        throw new Error(String(payload.error || 'ChatGPT Image 2 has not returned the image yet'));
+      }
       setResult(preview);
       onResult(preview);
       toast.success('Preview ready — save to the project or download');

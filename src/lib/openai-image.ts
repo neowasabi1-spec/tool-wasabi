@@ -131,11 +131,43 @@ export type GptImage2Poll =
 
 function isFalQueueUrl(url: string): boolean {
   try {
-    const host = new URL(url).hostname;
-    return host === 'queue.fal.run' || host.endsWith('.fal.run');
+    const host = new URL(url).hostname.toLowerCase();
+    return (
+      host === 'fal.run'
+      || host.endsWith('.fal.run')
+      || host === 'fal.ai'
+      || host.endsWith('.fal.ai')
+    );
   } catch {
     return false;
   }
+}
+
+function firstFalImageUrl(result: unknown): { url: string; mime: string } | null {
+  const r = (result && typeof result === 'object') ? result as Record<string, unknown> : {};
+  const pick = (item: unknown): { url: string; mime: string } | null => {
+    if (typeof item === 'string' && (/^https?:\/\//i.test(item) || item.startsWith('data:'))) {
+      return { url: item, mime: 'image/png' };
+    }
+    if (!item || typeof item !== 'object') return null;
+    const x = item as Record<string, unknown>;
+    const url = String(x.url || x.file_url || '').trim();
+    if (/^https?:\/\//i.test(url) || url.startsWith('data:')) {
+      return { url, mime: String(x.content_type || x.mime || 'image/png') };
+    }
+    return null;
+  };
+  const arrays = [r.images, r.image, (r.data as Record<string, unknown> | undefined)?.images];
+  for (const arr of arrays) {
+    if (Array.isArray(arr)) {
+      const found = pick(arr[0]);
+      if (found) return found;
+    } else {
+      const found = pick(arr);
+      if (found) return found;
+    }
+  }
+  return pick(r);
 }
 
 async function refsToImageUrls(refs: string[]): Promise<string[]> {
@@ -203,12 +235,14 @@ export async function submitGptImage2Job(opts: {
       setImageErr(`ChatGPT Image 2 (${endpoint}) ${submit.status}: ${redactSecrets(await submit.text()).slice(0, 280)}`);
       return null;
     }
-    const job = await submit.json() as { status_url?: string; response_url?: string };
-    if (!job.status_url || !job.response_url) {
+    const job = await submit.json() as Record<string, unknown>;
+    const statusUrl = String(job.status_url || job.statusUrl || '').trim();
+    const responseUrl = String(job.response_url || job.responseUrl || '').trim();
+    if (!statusUrl || !responseUrl) {
       setImageErr('ChatGPT Image 2 did not return a job');
       return null;
     }
-    return { statusUrl: job.status_url, responseUrl: job.response_url };
+    return { statusUrl, responseUrl };
   } catch (e) {
     setImageErr(`ChatGPT Image 2: ${(e as Error).message}`);
     return null;
@@ -240,12 +274,12 @@ export async function pollGptImage2Job(job: GptImage2Job): Promise<GptImage2Poll
         headers: { Authorization: `Key ${key}` },
         cache: 'no-store',
         signal: AbortSignal.timeout(45_000),
-      }).then((r) => r.json()) as { images?: Array<{ url?: string; content_type?: string }> };
-      const url = result.images?.[0]?.url;
-      if (!url) return { status: 'error', error: 'ChatGPT Image 2 returned no image' };
-      const raw = await bytesFromRef(url);
+      }).then((r) => r.json());
+      const image = firstFalImageUrl(result);
+      if (!image) return { status: 'error', error: 'ChatGPT Image 2 returned no image' };
+      const raw = await bytesFromRef(image.url);
       if (!raw) return { status: 'error', error: 'Could not download the generated image' };
-      const sniffed = sniffImage(raw.buf, result.images?.[0]?.content_type || raw.mime);
+      const sniffed = sniffImage(raw.buf, image.mime || raw.mime);
       return { status: 'completed', buf: raw.buf, mime: sniffed.mime };
     }
     if (status.status === 'ERROR') {
@@ -292,6 +326,17 @@ async function gptImage2ViaGenerateImageQueue(
   }
   setImageErr('ChatGPT Image 2 timed out — the model was still generating');
   return null;
+}
+
+export async function waitGptImage2Job(job: GptImage2Job, timeoutMs: number): Promise<GptImage2Poll> {
+  const deadline = Date.now() + Math.max(8_000, timeoutMs);
+  let last: GptImage2Poll = { status: 'pending' };
+  while (Date.now() < deadline) {
+    last = await pollGptImage2Job(job);
+    if (last.status !== 'pending') return last;
+    await sleep(1_500);
+  }
+  return last;
 }
 
 export async function openaiGenerateImageBytes(opts: {
