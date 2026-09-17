@@ -161,9 +161,6 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   try {
     const userId = await getCurrentUserId(req);
     if (!userId) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
-    if (!openaiImageKey()) {
-      return NextResponse.json({ error: 'OPENAI_API_KEY is missing' }, { status: 500 });
-    }
 
     const { data: ad } = await supabaseAdmin
       .from('archive_ads')
