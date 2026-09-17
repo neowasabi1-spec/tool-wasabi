@@ -125,6 +125,24 @@ async function loadCatalogProduct(productId: string) {
   };
 }
 
+function layoutOnlyAnalysis(raw: string): string {
+  const cleaned = raw.replace(/```json|```/g, '').trim();
+  try {
+    const json = JSON.parse(cleaned) as Record<string, unknown>;
+    return JSON.stringify({
+      layout: json.layout,
+      productPlacement: json.productPlacement,
+      subjects: json.subjects,
+      colors: json.colors,
+      lighting: json.lighting,
+      techniques: json.techniques,
+      notes: json.notes,
+    });
+  } catch {
+    return cleaned.slice(0, 800);
+  }
+}
+
 function buildPrompt(opts: {
   productName: string;
   brief: string;
@@ -132,16 +150,18 @@ function buildPrompt(opts: {
   hasPackshot: boolean;
 }): string {
   const name = opts.productName || 'our product';
+  const layout = opts.analysis ? layoutOnlyAnalysis(opts.analysis) : '';
   return [
     opts.hasPackshot
-      ? 'The FIRST image is the winning ad LAYOUT to keep. The SECOND image is our exact packshot — the product in the new ad MUST be that packshot, not a made-up bottle.'
-      : 'The attached image is the winning ad LAYOUT to keep.',
-    `Recreate a BRAND NEW advertisement for ${name}.`,
-    'Keep the same structure: same format, same number of panels, same product placement vs people, same information hierarchy, same lighting mood and color rhythm.',
-    'Rewrite ALL on-image text (headlines, badges, captions, CTA, small print) so it sells OUR product. Do not copy competitor brand names, logos or medical claims.',
-    opts.brief ? `Our product / project:\n${opts.brief}` : '',
-    opts.analysis ? `Layout analysis of the original:\n${opts.analysis}` : '',
-    'Photorealistic high-end commercial still, sharp typography, no watermarks.',
+      ? 'Image 1 is the LAYOUT to keep. Image 2 is our exact packshot — use that product, do not invent a bottle.'
+      : 'The attached image is the LAYOUT to keep.',
+    `Create a brand-new lifestyle advertisement for ${name}.`,
+    'Keep the same composition: panels, product placement, hierarchy, lighting and color rhythm.',
+    'Rewrite every on-image word for our product. Do not copy competitor brands, logos, disease names, lesions, or medical claims.',
+    'Wellness / cosmetic commercial still only. No medical before/after of infections or conditions.',
+    opts.brief ? `Our product:\n${opts.brief.slice(0, 1200)}` : '',
+    layout ? `Layout notes (structure only):\n${layout}` : '',
+    'Photorealistic, sharp typography, no watermarks.',
   ].filter(Boolean).join('\n\n');
 }
 

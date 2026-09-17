@@ -119,34 +119,45 @@ async function gptImage2ViaGenerateImageQueue(
     setImageErr('FAL_KEY missing. ChatGPT Image 2 in this app is the same as /api/generate-image (openai/gpt-image-2), not OPENAI_API_KEY.');
     return null;
   }
-  const urls = refs.filter((u) => /^https?:\/\//i.test(u));
-  const endpoint = urls.length ? 'openai/gpt-image-2/edit' : 'openai/gpt-image-2';
-  const input = urls.length
-    ? {
-      prompt: prompt.slice(0, 8_000),
-      image_urls: urls.slice(0, 8),
-      image_size: 'auto',
-      quality,
-      num_images: 1,
-      output_format: 'png',
+
+  const imageUrls: string[] = [];
+  for (const ref of refs.slice(0, 8)) {
+    if (ref.startsWith('data:')) {
+      imageUrls.push(ref);
+      continue;
     }
-    : {
-      prompt: prompt.slice(0, 8_000),
-      image_size: sizeToFal(size),
-      quality,
-      num_images: 1,
-      output_format: 'png',
-    };
+    const raw = await bytesFromRef(ref);
+    if (!raw) continue;
+    imageUrls.push(`data:${raw.mime};base64,${raw.buf.toString('base64')}`);
+  }
+  if (refs.length && !imageUrls.length) {
+    setImageErr('Could not load the source images for ChatGPT Image 2');
+    return null;
+  }
+
+  const endpoint = imageUrls.length ? 'openai/gpt-image-2/edit' : 'openai/gpt-image-2';
+  const input: Record<string, unknown> = {
+    prompt: prompt.slice(0, 4_000),
+    quality,
+    num_images: 1,
+    output_format: 'png',
+  };
+  if (imageUrls.length) {
+    input.image_urls = imageUrls;
+    input.image_size = 'auto';
+  } else {
+    input.image_size = sizeToFal(size);
+  }
 
   try {
     const submit = await fetch(`https://queue.fal.run/${endpoint}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Key ${key}` },
       body: JSON.stringify(input),
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(60_000),
     });
     if (!submit.ok) {
-      setImageErr(`ChatGPT Image 2 (${endpoint}) ${submit.status}: ${redactSecrets(await submit.text()).slice(0, 220)}`);
+      setImageErr(`ChatGPT Image 2 (${endpoint}) ${submit.status}: ${redactSecrets(await submit.text()).slice(0, 280)}`);
       return null;
     }
     const job = await submit.json() as { status_url?: string; response_url?: string };
@@ -157,13 +168,19 @@ async function gptImage2ViaGenerateImageQueue(
     const deadline = Date.now() + Math.max(20_000, timeoutMs - 5_000);
     while (Date.now() < deadline) {
       await sleep(1_500);
-      const st = await fetch(job.status_url, {
+      const statusUrl = job.status_url.includes('?') ? `${job.status_url}&logs=1` : `${job.status_url}?logs=1`;
+      const st = await fetch(statusUrl, {
         headers: { Authorization: `Key ${key}` },
         cache: 'no-store',
         signal: AbortSignal.timeout(20_000),
       });
       if (!st.ok) continue;
-      const status = await st.json() as { status?: string; error?: string };
+      const status = await st.json() as {
+        status?: string;
+        error?: string;
+        error_type?: string;
+        logs?: Array<{ message?: string }>;
+      };
       if (status.status === 'COMPLETED') {
         const result = await fetch(job.response_url, {
           headers: { Authorization: `Key ${key}` },
@@ -181,7 +198,19 @@ async function gptImage2ViaGenerateImageQueue(
         return { buf: raw.buf, mime: sniffed.mime };
       }
       if (status.status === 'ERROR') {
-        setImageErr(`ChatGPT Image 2: ${status.error || 'generation failed'}`);
+        let extra = '';
+        try {
+          const failed = await fetch(job.response_url, {
+            headers: { Authorization: `Key ${key}` },
+            cache: 'no-store',
+            signal: AbortSignal.timeout(20_000),
+          });
+          extra = redactSecrets((await failed.text()).slice(0, 220));
+        } catch { /* ignore */ }
+        const logLine = (status.logs || []).map((l) => l.message).filter(Boolean).slice(-3).join(' | ');
+        setImageErr(
+          `ChatGPT Image 2: ${status.error || status.error_type || 'generation failed'}${logLine ? ` — ${logLine}` : ''}${extra ? ` — ${extra}` : ''}`,
+        );
         return null;
       }
     }
