@@ -498,15 +498,18 @@ async function resolveMaskModel(token: string, log: (...a: unknown[]) => void): 
 async function compositeThroughMask(opts: {
   srcFile: string; reconFile: string; maskFile: string; outFile: string;
   W: number; H: number; log: (...a: unknown[]) => void; tag: string;
+  fps?: number;
 }): Promise<boolean> {
   const { srcFile, reconFile, maskFile, outFile, W, H, log, tag } = opts;
+  const fps = opts.fps && opts.fps > 1 ? opts.fps : 0;
+  const fpsV = fps ? `fps=${fps.toFixed(3)}:start_time=0,` : '';
   // yuv420 + gray edges used to 50/50-blend original letters (translucent ghosts).
   // Binarize then grow: cover outlines/halos without a caption-wide fascia.
   const mk =
-    `format=gray,lut=y='if(gte(val\\,16),255,0)',` +
+    `format=gray,lut=y='if(gte(val\\,8),255,0)',` +
     `dilation,dilation,dilation,dilation,dilation,dilation`;
-  const scale = `[1:v]scale=${W}:${H}:flags=lanczos,setsar=1[recon];` +
-    `[2:v]scale=${W}:${H}:flags=neighbor,${mk}[mk];`;
+  const scale = `[1:v]${fpsV}scale=${W}:${H}:flags=lanczos,setsar=1,setpts=PTS-STARTPTS[recon];` +
+    `[2:v]${fpsV}scale=${W}:${H}:flags=neighbor,${mk},setpts=PTS-STARTPTS[mk];`;
   try {
     await run(FFMPEG, [
       '-y', '-i', srcFile, '-i', reconFile, '-i', maskFile,
@@ -675,7 +678,7 @@ async function miniMaxClip(opts: MaskOpts & { model: ModelInfo }): Promise<{ fil
   }
   const file = path.join(workDir, `mask-clean_${path.basename(maskKey)}.mp4`);
   const ok = await compositeThroughMask({
-    srcFile, reconFile: usable, maskFile, outFile: file, W, H, log, tag: 'minimax',
+    srcFile, reconFile: usable, maskFile, outFile: file, W, H, fps, log, tag: 'minimax',
   });
   if (!ok) { note('could not composite reconstructed letter pixels'); return null; }
   return { file, srcRgb, frames, band: cm.band };
@@ -801,15 +804,15 @@ async function textMaskReconstruct(opts: {
   workDir: string; deadline: number; tag: string;
   log: (...a: unknown[]) => void;
 }): Promise<string | null> {
-  const { supabase, token, model, srcFile, maskFile, maskKey, W, H, dur, workDir, deadline, tag, log } = opts;
+  const { supabase, token, model, srcFile, maskFile, maskKey, W, H, fps, dur, workDir, deadline, tag, log } = opts;
   const { version, props, videoField, maskField } = model;
 
-  // Native 1080p / 20-step MiniMax billed ~minutes of L40S per window and
-  // burned tens of dollars on a 30s clip. The model is documented around
-  // 480–832px and 12 steps; we downscale, reconstruct, then paste only those
-  // pixels back onto the original frames.
-  const MM_SIDE = 640;
-  const MM_FPS = 12;
+  // Native 1080p / 20-step MiniMax billed ~minutes of L40S per window.
+  // 12fps recon composited onto 30fps source left moving letters as ghosts;
+  // run at source fps (capped so a window stays under MiniMax's 81-frame limit).
+  const MM_SIDE = 768;
+  const srcFps = Math.max(8, Math.min(60, fps || 30));
+  const MM_FPS = Math.max(8, Math.min(srcFps, Math.floor(80 / Math.max(dur, 0.5))));
   const long = Math.max(W, H) || MM_SIDE;
   const scale = long > MM_SIDE ? MM_SIDE / long : 1;
   // MiniMax / VAE reject sizes that are not multiples of 16. 9:16 at 640px
@@ -817,7 +820,7 @@ async function textMaskReconstruct(opts: {
   const align16 = (n: number) => Math.max(16, Math.round(n / 16) * 16);
   const mw = align16(W * scale);
   const mh = align16(H * scale);
-  const mmFrames = Math.max(8, Math.min(24, Math.round(MM_FPS * dur)));
+  const mmFrames = Math.max(8, Math.min(81, Math.round(MM_FPS * dur)));
   const smallSrc = path.join(workDir, `mmvid_${tag}.mp4`);
   const smallMask = path.join(workDir, `mmask_${tag}.mp4`);
   try {
@@ -829,7 +832,7 @@ async function textMaskReconstruct(opts: {
     ]);
     await run(FFMPEG, [
       '-y', '-i', maskFile,
-      '-vf', `fps=${MM_FPS},scale=${mw}:${mh}:flags=neighbor,setsar=1,format=gray,lut=y='if(gte(val\\,16),255,0)',dilation,dilation,dilation,format=yuv420p`,
+      '-vf', `fps=${MM_FPS},scale=${mw}:${mh}:flags=neighbor,setsar=1,format=gray,lut=y='if(gte(val\\,8),255,0)',dilation,dilation,dilation,dilation,format=yuv420p`,
       '-an', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p',
       smallMask,
     ]);
@@ -891,7 +894,7 @@ async function textMaskReconstruct(opts: {
   // overlay it on the untouched original. Everything but the letters is source.
   const file = path.join(workDir, `textclean_${tag}.mp4`);
   const ok = await compositeThroughMask({
-    srcFile, reconFile: usable, maskFile, outFile: file, W, H, log, tag,
+    srcFile, reconFile: usable, maskFile, outFile: file, W, H, fps, log, tag,
   });
   return ok ? file : null;
 }
@@ -1739,9 +1742,9 @@ async function cleanWholeAd(
     const segDur = dur / nseg;
 
     type WinState = { s: 'todo' | 'clean' | 'original' | 'failed'; key?: string; tries?: number };
-    // v=11: binarize+grow the paste mask so original letter halos are not left translucent.
+    // v=12: mask the blurred halo + MiniMax at source fps so moving letters do not ghost.
     type Progress = { src: string; nseg: number; runs: number; v?: number; wins: WinState[] };
-    const MASK_PROGRESS_V = 11;
+    const MASK_PROGRESS_V = 12;
     const progressKey = `${projectId}/ads-clean/${adId}_progress.json`;
     let prog: Progress | null = null;
     if (!force) {

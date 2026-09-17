@@ -31,7 +31,7 @@ const SHAPE_DILATE_Y = 2;
 // and the letters fuse into a solid caption bar — MiniMax then repaints the
 // whole strip and the result is a visible blurred fascia, not reconstructed
 // letter pixels.
-const MASK_EDGE = 12;
+const MASK_EDGE = 16;
 // Height ceilings for "this is a line of words", as a share of the frame: one
 // line on its own, and a whole caption block after the lines have been grown
 // together. Measured on these shots a single line runs about 7% and a two-line
@@ -194,6 +194,43 @@ function dilate(
           if (xx >= 0 && xx < w) out[yy * w + xx] = 1;
         }
       }
+    }
+  }
+  return out;
+}
+
+/**
+ * Antialiased / blurred caption pixels sit between the letter colour and the
+ * scene, so the strict colour+outline test misses them and they show through
+ * as translucent leftovers. Pull those in once the glyphs themselves are known.
+ */
+function expandBlurredHalo(
+  letters: Uint8Array, buf: Buffer, f: number, w: number, h: number,
+  y0: number, y1: number, colour: [number, number, number],
+): Uint8Array {
+  const out = new Uint8Array(letters);
+  const fsz = w * h * 3;
+  const [cr, cg, cb] = colour;
+  const rHalo = 4;
+  for (let y = y0; y < y1; y++) {
+    for (let x = 0; x < w; x++) {
+      const p = y * w + x;
+      if (letters[p]) continue;
+      let nearL = false;
+      for (let dy = -rHalo; dy <= rHalo && !nearL; dy++) {
+        const yy = y + dy;
+        if (yy < 0 || yy >= h) continue;
+        for (let dx = -rHalo; dx <= rHalo; dx++) {
+          const xx = x + dx;
+          if (xx < 0 || xx >= w) continue;
+          if (letters[yy * w + xx]) { nearL = true; break; }
+        }
+      }
+      if (!nearL) continue;
+      const i = f * fsz + p * 3;
+      const r = buf[i], g = buf[i + 1], b = buf[i + 2];
+      if (Math.max(r, g, b) < 70) continue;
+      if (Math.abs(r - cr) + Math.abs(g - cg) + Math.abs(b - cb) <= 210) out[p] = 1;
     }
   }
   return out;
@@ -416,11 +453,10 @@ function familyMask(
     const grown = dilate(shape, w, h, y0, y1, DILATE, DILATE);
     const kept = keepTextBlobs(grown, w, y0, y1, centre, BLOCK_TALLEST);
     const tight = dilate(shape, w, h, y0, y1, MASK_EDGE, MASK_EDGE);
-    // Captions often cover only part of a clip. Empty frames are fine — the mask
-    // is simply blank there — so they must not drag the shape score down.
+    const withHalo = expandBlurredHalo(tight, buf, f, w, h, y0, y1, colour);
     if (kept.px) { rowConc += kept.fill; withText++; }
     perFrame.push(kept.px);
-    masks.push(tight);
+    masks.push(withHalo);
   }
 
   return {
@@ -451,7 +487,7 @@ export async function writeMaskVideo(
   await run(FFMPEG, [
     '-y', '-f', 'rawvideo', '-pix_fmt', 'gray', '-s', `${w}x${h}`, '-r', String(fps),
     '-i', raw,
-    '-vf', `scale=${outW}:${outH}:flags=neighbor,format=gray,lut=y='if(gte(val\\,16),255,0)',dilation,dilation,dilation,dilation,format=yuv420p`,
+    '-vf', `scale=${outW}:${outH}:flags=neighbor,format=gray,lut=y='if(gte(val\\,8),255,0)',dilation,dilation,dilation,dilation,dilation,format=yuv420p`,
     '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '8', out,
   ]);
   try { fs.rmSync(raw, { force: true }); } catch { /* ignore */ }
