@@ -20,6 +20,7 @@ import {
   type CheckoutMode,
 } from '@/lib/checkout-modes';
 import { injectInteractivityRescue } from '@/lib/spa-rescue';
+import { mapHtmlOutsideScripts, rewriteQuotedJsStrings } from '@/lib/shield-scripts';
 import { SWIPE_MODEL_OPTIONS, SWIPE_MODEL_DEFAULT, normalizeSwipeModel } from '@/lib/swipe-models';
 import SwipeDebugModal, {
   buildSwipeDebugInfo,
@@ -493,6 +494,26 @@ function extractTextsForRewriteClient(html: string): Array<{ original: string; t
     seen.add(val);
     texts.push({ original: val, tag: `attr:${attrMatch[1]}`, position: 0 });
   }
+  // Copy that only lives in JS (comment engines, quiz options, countdowns)
+  // never appears in the static DOM. Pull quoted natural-language strings
+  // from inline scripts so swipe can rewrite them without touching the JS.
+  const scriptRe = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
+  let sm: RegExpExecArray | null;
+  while ((sm = scriptRe.exec(html)) !== null) {
+    if (/\bsrc\s*=/.test(sm[1] || '')) continue;
+    const body = sm[2] || '';
+    const strRe = /["']([^"'\\]{3,200})["']/g;
+    let qm: RegExpExecArray | null;
+    while ((qm = strRe.exec(body)) !== null) {
+      const str = qm[1].trim();
+      if (seen.has(str)) continue;
+      if (str.length < 3 || !/[a-zA-Z]/.test(str)) continue;
+      if (/[{}();=<>]/.test(str) || str.startsWith('http') || str.startsWith('/') || str.startsWith('#')) continue;
+      if (!/\s/.test(str) && str.length < 8) continue;
+      seen.add(str);
+      texts.push({ original: str, tag: 'script:string', position: sm.index || 0 });
+    }
+  }
   return texts;
 }
 
@@ -648,18 +669,29 @@ async function rewriteWithOpenClawFromBrowser(args: {
     throw new Error(`All batches failed. Errors: ${errors.slice(0, 3).join('; ')}`);
   }
 
-  // 4. Apply replacements to the original HTML
-  let resultHtml = html;
+  // 4. Apply replacements to visible HTML only. Scripts are parked so a
+  // headline rewrite cannot smash a comment-engine / checkout bundle; quoted
+  // JS strings still get the swipe with JS-safe escaping.
+  const scriptPairs: Array<{ from: string; to: string }> = [];
   let replacements = 0;
-  for (const rw of rewrites) {
-    const original = texts[rw.id];
-    if (!original || !rw.rewritten || original.original === rw.rewritten) continue;
-    const escaped = original.original.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const regex = new RegExp(escaped, 'g');
-    const before = resultHtml;
-    resultHtml = resultHtml.replace(regex, rw.rewritten);
-    if (resultHtml !== before) replacements++;
-  }
+  const resultHtml = mapHtmlOutsideScripts(
+    html,
+    (visible) => {
+      let result = visible;
+      for (const rw of rewrites) {
+        const original = texts[rw.id];
+        if (!original || !rw.rewritten || original.original === rw.rewritten) continue;
+        scriptPairs.push({ from: original.original, to: rw.rewritten });
+        const escaped = original.original.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const regex = new RegExp(escaped, 'g');
+        const before = result;
+        result = result.replace(regex, rw.rewritten);
+        if (result !== before) replacements++;
+      }
+      return result;
+    },
+    (scriptBlock) => rewriteQuotedJsStrings(scriptBlock, scriptPairs),
+  );
 
   return {
     html: resultHtml,

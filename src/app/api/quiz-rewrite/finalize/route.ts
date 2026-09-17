@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { mapHtmlOutsideScripts, rewriteQuotedJsStrings } from '@/lib/shield-scripts';
 
 export const maxDuration = 26;
 export const dynamic = 'force-dynamic';
@@ -59,51 +60,55 @@ function applyRewrites(
   texts: Array<{ original: string; tag: string }>,
   rewrites: Array<{ id: number; rewritten: string }>,
 ): { html: string; replacements: number } {
-  let resultHtml = html;
-  let replacements = 0;
   let exactHits = 0;
   let tolerantHits = 0;
   let misses = 0;
+  const scriptPairs: Array<{ from: string; to: string }> = [];
 
-  for (const rw of rewrites) {
-    const original = texts[rw.id];
-    if (!original || !rw.rewritten) continue;
-    const trimmed = rw.rewritten.trim();
-    if (!trimmed || original.original === trimmed) continue;
+  const resultHtml = mapHtmlOutsideScripts(
+    html,
+    (visible) => {
+      let result = visible;
+      for (const rw of rewrites) {
+        const original = texts[rw.id];
+        if (!original || !rw.rewritten) continue;
+        const trimmed = rw.rewritten.trim();
+        if (!trimmed || original.original === trimmed) continue;
 
-    const o = original.original;
-    const before = resultHtml;
+        const o = original.original;
+        scriptPairs.push({ from: o, to: trimmed });
+        const before = result;
 
-    // 1) Match esatto su stringa (rapido, copre la maggior parte dei casi)
-    if (resultHtml.includes(o)) {
-      const re = new RegExp(escapeRegex(o), 'g');
-      resultHtml = resultHtml.replace(re, trimmed);
-      if (resultHtml !== before) {
-        exactHits++;
-        replacements++;
-        continue;
+        if (result.includes(o)) {
+          const re = new RegExp(escapeRegex(o), 'g');
+          result = result.replace(re, trimmed);
+          if (result !== before) {
+            exactHits++;
+            continue;
+          }
+        }
+
+        try {
+          const tolerantPattern = buildTolerantPattern(o);
+          const reTol = new RegExp(tolerantPattern, 'gi');
+          const beforeTol = result;
+          result = result.replace(reTol, () => htmlEncode(trimmed));
+          if (result !== beforeTol) {
+            tolerantHits++;
+            continue;
+          }
+        } catch {
+          // pattern troppo complesso, ignora
+        }
+
+        misses++;
       }
-    }
+      return result;
+    },
+    (scriptBlock) => rewriteQuotedJsStrings(scriptBlock, scriptPairs),
+  );
 
-    // 2) Match tollerante: entity-aware + whitespace flessibile.
-    //    Risolve casi tipo &amp;/&#39; e spazi multipli/<br>/<span> in mezzo.
-    try {
-      const tolerantPattern = buildTolerantPattern(o);
-      const reTol = new RegExp(tolerantPattern, 'gi');
-      const beforeTol = resultHtml;
-      resultHtml = resultHtml.replace(reTol, () => htmlEncode(trimmed));
-      if (resultHtml !== beforeTol) {
-        tolerantHits++;
-        replacements++;
-        continue;
-      }
-    } catch {
-      // pattern troppo complesso, ignora
-    }
-
-    misses++;
-  }
-
+  const replacements = exactHits + tolerantHits;
   console.log(
     `[quiz-rewrite/finalize] applied: exact=${exactHits} tolerant=${tolerantHits} miss=${misses} of ${rewrites.length}`,
   );

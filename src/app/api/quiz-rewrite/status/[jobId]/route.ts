@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { mapHtmlOutsideScripts, rewriteQuotedJsStrings } from '@/lib/shield-scripts';
 
 export const maxDuration = 30;
 export const dynamic = 'force-dynamic';
@@ -24,17 +25,26 @@ function applyRewrites(
   texts: Array<{ original: string; tag: string }>,
   rewrites: Array<{ id: number; rewritten: string }>
 ): { html: string; replacements: number } {
-  let resultHtml = html;
+  const scriptPairs: Array<{ from: string; to: string }> = [];
   let replacements = 0;
 
-  for (const rw of rewrites) {
-    const original = texts[rw.id];
-    if (!original || !rw.rewritten || original.original === rw.rewritten) continue;
-    const escaped = original.original.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const before = resultHtml;
-    resultHtml = resultHtml.replace(new RegExp(escaped, 'g'), rw.rewritten);
-    if (resultHtml !== before) replacements++;
-  }
+  const resultHtml = mapHtmlOutsideScripts(
+    html,
+    (visible) => {
+      let result = visible;
+      for (const rw of rewrites) {
+        const original = texts[rw.id];
+        if (!original || !rw.rewritten || original.original === rw.rewritten) continue;
+        scriptPairs.push({ from: original.original, to: rw.rewritten });
+        const escaped = original.original.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const before = result;
+        result = result.replace(new RegExp(escaped, 'g'), rw.rewritten);
+        if (result !== before) replacements++;
+      }
+      return result;
+    },
+    (scriptBlock) => rewriteQuotedJsStrings(scriptBlock, scriptPairs),
+  );
 
   return { html: resultHtml, replacements };
 }
