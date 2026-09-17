@@ -165,6 +165,63 @@ function buildPrompt(opts: {
   ].filter(Boolean).join('\n\n');
 }
 
+async function saveToProjectCreatives(
+  req: NextRequest,
+  userId: string,
+  body: Record<string, unknown>,
+) {
+  const projectId = String(body.projectId || '').trim();
+  const filePath = String(body.filePath || '').trim();
+  const name = String(body.name || 'Recreated ad').trim().slice(0, 300) || 'Recreated ad';
+  if (!projectId) {
+    return NextResponse.json({ error: 'Pick a project to save into Creative' }, { status: 400 });
+  }
+  if (!filePath) {
+    return NextResponse.json({ error: 'Missing generated image' }, { status: 400 });
+  }
+  const allowedPrefix = `archive-ads/${userId}/`;
+  if (!filePath.startsWith(allowedPrefix)) {
+    return NextResponse.json({ error: 'Invalid file' }, { status: 400 });
+  }
+  const { allowed } = await canAccessProject(req, projectId);
+  if (!allowed) return NextResponse.json({ error: 'Project not found' }, { status: 404 });
+
+  const { data: blob, error: dlErr } = await supabaseAdmin.storage.from(BUCKET).download(filePath);
+  if (dlErr || !blob) {
+    return NextResponse.json({ error: dlErr?.message || 'Could not read generated image' }, { status: 500 });
+  }
+  const buf = Buffer.from(await blob.arrayBuffer());
+  const ext = (filePath.split('.').pop() || 'png').replace(/[^a-z0-9]/gi, '') || 'png';
+  const dest = `${projectId}/creatives/recreate_${Date.now()}.${ext}`;
+  const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'webp' ? 'image/webp' : 'image/png';
+  const { error: upErr } = await supabaseAdmin.storage.from(BUCKET).upload(dest, buf, {
+    contentType: mime,
+    upsert: false,
+  });
+  if (upErr) return NextResponse.json({ error: upErr.message }, { status: 500 });
+
+  const { data: created, error: insErr } = await supabaseAdmin
+    .from('creative_templates')
+    .insert({
+      project_id: projectId,
+      name,
+      source_brand: '',
+      category: 'Recreated ads',
+      file_path: dest,
+      media_type: 'image',
+      tags: '',
+    })
+    .select()
+    .single();
+  if (insErr || !created) {
+    return NextResponse.json(
+      { error: insErr?.message || 'Copied file but could not add it to Creative' },
+      { status: 500 },
+    );
+  }
+  return NextResponse.json({ ok: true, creative: created, filePath: dest });
+}
+
 export async function GET(req: NextRequest) {
   const userId = await getCurrentUserId(req);
   if (!userId) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
@@ -182,6 +239,15 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     const userId = await getCurrentUserId(req);
     if (!userId) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
 
+    const ct = req.headers.get('content-type') || '';
+    let jsonBody: Record<string, unknown> | null = null;
+    if (!ct.includes('multipart/form-data')) {
+      jsonBody = await req.json().catch(() => ({} as Record<string, unknown>));
+      if (String(jsonBody.action || '') === 'save') {
+        return saveToProjectCreatives(req, userId, jsonBody);
+      }
+    }
+
     const { data: ad } = await supabaseAdmin
       .from('archive_ads')
       .select('id, name, ad_type, category, media_type, file_path')
@@ -193,7 +259,6 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       return NextResponse.json({ error: 'Recreate is available for still images only' }, { status: 400 });
     }
 
-    const ct = req.headers.get('content-type') || '';
     let projectId = '';
     let productId = '';
     let productNameHint = '';
@@ -220,10 +285,9 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
         };
       }
     } else {
-      const body = await req.json().catch(() => ({}));
-      projectId = String(body.projectId || '').trim();
-      productId = String(body.productId || '').trim();
-      productNameHint = String(body.productName || '').trim();
+      projectId = String(jsonBody?.projectId || '').trim();
+      productId = String(jsonBody?.productId || '').trim();
+      productNameHint = String(jsonBody?.productName || '').trim();
     }
 
     if (projectId) {
@@ -304,7 +368,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     }
 
     const ext = /webp/i.test(made.mime) ? 'webp' : /jpe?g/i.test(made.mime) ? 'jpg' : 'png';
-    const outPath = `archive-ads/${userId}/recreate_${Date.now()}.${ext}`;
+    const outPath = `archive-ads/${userId}/drafts/recreate_${Date.now()}.${ext}`;
     const { error: saveErr } = await supabaseAdmin.storage.from(BUCKET).upload(outPath, made.buf, {
       contentType: made.mime,
       upsert: false,
@@ -312,27 +376,13 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     if (saveErr) return NextResponse.json({ error: saveErr.message, analysis }, { status: 500 });
 
     const name = `${productName || 'Swipe'} — ${source.name}`.slice(0, 300);
-    const row = {
+    return NextResponse.json({
+      ok: true,
+      analysis,
+      filePath: outPath,
       name,
-      ad_type: source.ad_type,
-      category: source.category,
-      media_type: 'image',
-      file_path: outPath,
-      tags: analysis.slice(0, 4000),
-      headline: productName || '',
-      primary_text: brief.slice(0, 4000),
-      owner_user_id: userId,
-    };
-    const { data: created, error: insErr } = await supabaseAdmin
-      .from('archive_ads')
-      .insert(row)
-      .select()
-      .single();
-    if (insErr || !created) {
-      return NextResponse.json({ error: insErr?.message || 'Saved file but could not register the ad', analysis }, { status: 500 });
-    }
-
-    return NextResponse.json({ ok: true, analysis, ad: created });
+      projectId: projectId || null,
+    });
   } catch (e) {
     return NextResponse.json(
       { error: (e as Error).message || 'Recreate failed' },

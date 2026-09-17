@@ -1,30 +1,26 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { ImagePlus, Loader2, Sparkles } from 'lucide-react';
+import { Download, FolderKanban, ImagePlus, Loader2, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
 import { authFetch } from '@/lib/auth/client-fetch';
+import { getUploadUrl } from '@/lib/projecthub-storage';
 import { supabase } from '@/lib/supabase';
 
 type RecreatedAd = {
   id: string;
   name: string;
-  ad_type: string;
-  category: string;
-  media_type: string;
   file_path: string;
-  tags: string;
-  headline: string;
-  primary_text: string;
-  created_at: string;
 };
+
+export type RecreatePreview = { filePath: string; name: string };
 
 type ProjectPick = { id: string; name: string; brief?: string | null; description?: string | null };
 type ProductPick = { id: string; name: string; brand_name?: string | null; image_url?: string | null };
 
 type Props = {
   ad: RecreatedAd;
-  onCreated: (ad: RecreatedAd, analysis: string) => void;
+  onResult: (result: RecreatePreview | null) => void;
 };
 
 function asProjectRows(raw: unknown): ProjectPick[] {
@@ -61,7 +57,7 @@ function parseProjects(hub: unknown, list: unknown, db: unknown): ProjectPick[] 
   });
 }
 
-export default function AdsRecreatePanel({ ad, onCreated }: Props) {
+export default function AdsRecreatePanel({ ad, onResult }: Props) {
   const photoRef = useRef<HTMLInputElement>(null);
   const [projects, setProjects] = useState<ProjectPick[]>([]);
   const [products, setProducts] = useState<ProductPick[]>([]);
@@ -71,7 +67,10 @@ export default function AdsRecreatePanel({ ad, onCreated }: Props) {
   const [photo, setPhoto] = useState<File | null>(null);
   const [photoPreview, setPhotoPreview] = useState('');
   const [busy, setBusy] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
   const [analysis, setAnalysis] = useState('');
+  const [result, setResult] = useState<RecreatePreview | null>(null);
   const [loadingProjects, setLoadingProjects] = useState(true);
 
   useEffect(() => {
@@ -96,6 +95,12 @@ export default function AdsRecreatePanel({ ad, onCreated }: Props) {
       }
     })();
     return () => { cancelled = true; };
+  }, [ad.id]);
+
+  useEffect(() => {
+    setResult(null);
+    setSaved(false);
+    setAnalysis('');
   }, [ad.id]);
 
   useEffect(() => {
@@ -129,6 +134,9 @@ export default function AdsRecreatePanel({ ad, onCreated }: Props) {
     }
     setBusy(true);
     setAnalysis('');
+    setSaved(false);
+    setResult(null);
+    onResult(null);
     try {
       const fd = new FormData();
       if (projectId) fd.append('projectId', projectId);
@@ -142,14 +150,53 @@ export default function AdsRecreatePanel({ ad, onCreated }: Props) {
       const d = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(d.error || 'Recreate failed');
       if (d.analysis) setAnalysis(String(d.analysis));
-      onCreated(d.ad as RecreatedAd, String(d.analysis || ''));
-      toast.success('Ad recreated and saved in this folder');
+      const preview: RecreatePreview = {
+        filePath: String(d.filePath || ''),
+        name: String(d.name || productName || 'Recreated ad'),
+      };
+      if (!preview.filePath) throw new Error('Generation returned no image');
+      setResult(preview);
+      onResult(preview);
+      toast.success('Preview ready — save to the project or download');
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Recreate failed');
     } finally {
       setBusy(false);
     }
   };
+
+  const saveToProject = async () => {
+    if (!result) return;
+    if (!projectId) {
+      toast.error('Pick a project to save into Creative');
+      return;
+    }
+    setSaving(true);
+    try {
+      const res = await authFetch(`/api/templates/ads/${ad.id}/recreate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'save',
+          projectId,
+          filePath: result.filePath,
+          name: result.name,
+        }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(d.error || 'Could not save to Creative');
+      setSaved(true);
+      toast.success('Saved in the project Creative section');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Could not save to Creative');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const downloadHref = result
+    ? getUploadUrl(result.filePath) + (getUploadUrl(result.filePath).includes('?') ? '&' : '?') + 'download=1'
+    : '';
 
   return (
     <div className="flex flex-col gap-3 p-4 bg-gray-900/80 border-t border-white/10 lg:border-t-0 lg:border-l lg:w-[340px] lg:shrink-0">
@@ -158,7 +205,7 @@ export default function AdsRecreatePanel({ ad, onCreated }: Props) {
           <Sparkles className="w-4 h-4 text-violet-300" /> Recreate for your product
         </p>
         <p className="text-xs text-gray-400 mt-1">
-          AI reads this layout, then rebuilds the ad around your project or packshot. Structure stays, copy and branding are new.
+          AI reads this layout, then rebuilds the ad around your project or packshot. The result stays in this popup until you save it to the project Creative tab or download it.
         </p>
       </div>
 
@@ -264,8 +311,39 @@ export default function AdsRecreatePanel({ ad, onCreated }: Props) {
 
       {busy && (
         <p className="text-[11px] text-gray-400">
-          This can take up to a minute. The result is saved next to the original.
+          This can take up to a minute. The new ad stays in this popup — it is not added to this Ads folder.
         </p>
+      )}
+
+      {result && (
+        <div className="rounded-lg border border-violet-400/30 bg-violet-500/10 p-3 space-y-2">
+          <p className="text-xs text-violet-100">
+            Preview is ready. Save it into the selected project’s Creative section, or download the file.
+          </p>
+          {saved && (
+            <p className="text-[11px] text-emerald-300">Saved in Creative → Recreated ads</p>
+          )}
+          <div className="flex flex-col gap-2">
+            <button
+              type="button"
+              onClick={() => void saveToProject()}
+              disabled={saving || busy || !projectId}
+              className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-white text-gray-900 text-sm font-medium hover:bg-gray-100 disabled:opacity-50"
+            >
+              {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <FolderKanban className="w-4 h-4" />}
+              {saved ? 'Saved to project' : 'Save to project Creative'}
+            </button>
+            <a
+              href={downloadHref}
+              className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-white/20 text-white text-sm font-medium hover:bg-white/10"
+            >
+              <Download className="w-4 h-4" /> Download
+            </a>
+            {!projectId && (
+              <p className="text-[11px] text-amber-300">Select a project above to save into Creative.</p>
+            )}
+          </div>
+        </div>
       )}
 
       {analysis && (

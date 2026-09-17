@@ -9,7 +9,7 @@ import { toast } from 'sonner';
 import { authFetch } from '@/lib/auth/client-fetch';
 import { confirmDialog } from '@/components/ui/confirm';
 import { getUploadUrl } from '@/lib/projecthub-storage';
-import AdsRecreatePanel from './AdsRecreatePanel';
+import AdsRecreatePanel, { type RecreatePreview } from './AdsRecreatePanel';
 import {
   AD_TYPE_CATEGORIES,
   BUILT_IN_AD_TYPE_OPTIONS,
@@ -32,6 +32,11 @@ export type ArchiveAd = {
 
 const UNFILED = '__unfiled__';
 
+function downloadHref(path: string) {
+  const url = getUploadUrl(path);
+  return url + (url.includes('?') ? '&' : '?') + 'download=1';
+}
+
 type Props = {
   search: string;
   onFolderCount?: (count: number) => void;
@@ -50,6 +55,7 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
   const [missingTable, setMissingTable] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [preview, setPreview] = useState<ArchiveAd | null>(null);
+  const [recreated, setRecreated] = useState<RecreatePreview | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const items = useMemo(() => rows.filter((r) => r.media_type !== 'folder'), [rows]);
@@ -110,6 +116,10 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
     const n = new Set(items.map((a) => a.ad_type).filter(Boolean)).size;
     onFolderCount?.(n);
   }, [items, onFolderCount]);
+
+  useEffect(() => {
+    setRecreated(null);
+  }, [preview?.id]);
 
   const itemsInType = (type: string) => items.filter((a) => (a.ad_type || 'image') === type);
 
@@ -552,11 +562,15 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
 
       {preview && preview.media_type !== 'folder' && (
         <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4" onClick={() => setPreview(null)}>
-          <div className="w-full max-w-5xl max-h-[92vh] bg-gray-950 rounded-2xl overflow-hidden shadow-2xl flex flex-col" onClick={(e) => e.stopPropagation()}>
+          <div className="w-full max-w-6xl max-h-[92vh] bg-gray-950 rounded-2xl overflow-hidden shadow-2xl flex flex-col" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
               <div>
-                <h3 className="text-white font-semibold">{preview.name}</h3>
-                <p className="text-xs text-gray-400">{humanizeAdTypeSlug(preview.ad_type)}{preview.category ? ` · ${preview.category}` : ''}</p>
+                <h3 className="text-white font-semibold">{recreated?.name || preview.name}</h3>
+                <p className="text-xs text-gray-400">
+                  {recreated
+                    ? 'Preview — not in this Ads folder until you save it to a project'
+                    : `${humanizeAdTypeSlug(preview.ad_type)}${preview.category ? ` · ${preview.category}` : ''}`}
+                </p>
               </div>
               <button onClick={() => setPreview(null)} className="p-1 text-gray-400 hover:text-white"><X className="w-5 h-5" /></button>
             </div>
@@ -564,6 +578,19 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
               <div className="bg-black flex items-center justify-center lg:flex-1 min-h-[40vh]">
                 {preview.media_type === 'video' ? (
                   <video src={getUploadUrl(preview.file_path)} controls autoPlay className="max-h-[70vh] w-full" />
+                ) : recreated ? (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 w-full p-3">
+                    <figure className="min-w-0">
+                      <figcaption className="text-[11px] uppercase tracking-wide text-gray-400 mb-1.5">Original</figcaption>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={getUploadUrl(preview.file_path)} alt={preview.name} className="max-h-[64vh] w-full object-contain rounded-lg bg-black" />
+                    </figure>
+                    <figure className="min-w-0">
+                      <figcaption className="text-[11px] uppercase tracking-wide text-violet-300 mb-1.5">Recreated</figcaption>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={getUploadUrl(recreated.filePath)} alt={recreated.name} className="max-h-[64vh] w-full object-contain rounded-lg bg-black ring-1 ring-violet-400/40" />
+                    </figure>
+                  </div>
                 ) : (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img src={getUploadUrl(preview.file_path)} alt={preview.name} className="max-h-[70vh] w-full object-contain" />
@@ -572,10 +599,7 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
               {preview.media_type !== 'video' && (
                 <AdsRecreatePanel
                   ad={preview}
-                  onCreated={(created) => {
-                    setRows((prev) => [created as ArchiveAd, ...prev]);
-                    setPreview(created as ArchiveAd);
-                  }}
+                  onResult={setRecreated}
                 />
               )}
             </div>
@@ -587,7 +611,7 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
                 Delete
               </button>
               <a
-                href={getUploadUrl(preview.file_path) + (getUploadUrl(preview.file_path).includes('?') ? '&' : '?') + 'download=1'}
+                href={downloadHref(recreated?.filePath || preview.file_path)}
                 className="px-3 py-1.5 bg-white text-gray-900 rounded-lg text-sm font-medium"
               >
                 Download
