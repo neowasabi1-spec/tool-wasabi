@@ -8,7 +8,6 @@ import {
 import { toast } from 'sonner';
 import { authFetch } from '@/lib/auth/client-fetch';
 import { confirmDialog } from '@/components/ui/confirm';
-import { getSupabaseBrowser } from '@/lib/supabase-browser';
 import { getUploadUrl } from '@/lib/projecthub-storage';
 import {
   AD_TYPE_CATEGORIES,
@@ -208,53 +207,38 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
   };
 
   const uploadFiles = async (files: FileList | File[] | null) => {
-    if (!files || (files as FileList).length === 0 || !openType || !openCategory) return;
-    const sb = getSupabaseBrowser();
-    if (!sb) { toast.error('Storage unavailable'); return; }
+    if (!files || (files as FileList).length === 0) return;
+    if (!openType || !openCategory) {
+      toast.error('Open a category folder before uploading.');
+      return;
+    }
     const category = openCategory === UNFILED ? '' : openCategory;
     setUploading(true);
     let ok = 0;
     let ko = 0;
+    let lastError = '';
     for (const file of Array.from(files as FileList | File[])) {
       try {
-        if (!/^(image|video)\//i.test(file.type)) {
-          ko++;
-          continue;
-        }
-        const sr = await authFetch('/api/templates/ads/sign-upload', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ filename: file.name, contentType: file.type || 'application/octet-stream' }),
-        });
-        const sj = await sr.json().catch(() => ({}));
-        if (!sr.ok || !sj.path || !sj.token) throw new Error(sj.error || 'sign failed');
-        const up = await sb.storage.from('project-files').uploadToSignedUrl(sj.path, sj.token, file);
-        if (up.error) throw new Error(up.error.message);
-        const rr = await authFetch('/api/templates/ads', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            kind: 'file',
-            name: file.name.replace(/\.[^.]+$/, ''),
-            file_path: sj.path,
-            media_type: sj.media_type,
-            ad_type: openType,
-            category,
-          }),
-        });
+        const fd = new FormData();
+        fd.append('file', file);
+        fd.append('ad_type', openType);
+        fd.append('category', category);
+        fd.append('name', file.name.replace(/\.[^.]+$/, ''));
+        const rr = await authFetch('/api/templates/ads/upload', { method: 'POST', body: fd });
         const rj = await rr.json().catch(() => ({}));
-        if (!rr.ok) throw new Error(rj.error || 'register failed');
+        if (!rr.ok) throw new Error(rj.error || `Upload failed (${rr.status})`);
         setRows((prev) => [rj as ArchiveAd, ...prev]);
         ok++;
       } catch (e) {
         ko++;
+        lastError = e instanceof Error ? e.message : 'Upload failed';
         console.warn('[ads] upload failed:', e);
       }
     }
     setUploading(false);
     if (fileRef.current) fileRef.current.value = '';
     if (ok > 0) toast.success(`${ok} ad${ok === 1 ? '' : 's'} uploaded`);
-    if (ko > 0) toast.error(`${ko} file${ko === 1 ? '' : 's'} failed`);
+    if (ko > 0) toast.error(lastError || `${ko} file${ko === 1 ? '' : 's'} failed`);
   };
 
   const moveAd = async (ad: ArchiveAd, patch: { ad_type?: string; category?: string }) => {
