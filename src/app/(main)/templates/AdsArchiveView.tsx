@@ -9,6 +9,7 @@ import { toast } from 'sonner';
 import { authFetch } from '@/lib/auth/client-fetch';
 import { confirmDialog } from '@/components/ui/confirm';
 import { getUploadUrl } from '@/lib/projecthub-storage';
+import AdsRecreatePanel from './AdsRecreatePanel';
 import {
   AD_TYPE_CATEGORIES,
   BUILT_IN_AD_TYPE_OPTIONS,
@@ -551,7 +552,7 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
 
       {preview && preview.media_type !== 'folder' && (
         <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4" onClick={() => setPreview(null)}>
-          <div className="w-full max-w-3xl bg-gray-950 rounded-2xl overflow-hidden shadow-2xl" onClick={(e) => e.stopPropagation()}>
+          <div className="w-full max-w-5xl max-h-[92vh] bg-gray-950 rounded-2xl overflow-hidden shadow-2xl flex flex-col" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
               <div>
                 <h3 className="text-white font-semibold">{preview.name}</h3>
@@ -559,15 +560,26 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
               </div>
               <button onClick={() => setPreview(null)} className="p-1 text-gray-400 hover:text-white"><X className="w-5 h-5" /></button>
             </div>
-            <div className="bg-black flex items-center justify-center max-h-[70vh]">
-              {preview.media_type === 'video' ? (
-                <video src={getUploadUrl(preview.file_path)} controls autoPlay className="max-h-[70vh] w-full" />
-              ) : (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={getUploadUrl(preview.file_path)} alt={preview.name} className="max-h-[70vh] w-full object-contain" />
+            <div className="flex-1 min-h-0 overflow-y-auto flex flex-col lg:flex-row">
+              <div className="bg-black flex items-center justify-center lg:flex-1 min-h-[40vh]">
+                {preview.media_type === 'video' ? (
+                  <video src={getUploadUrl(preview.file_path)} controls autoPlay className="max-h-[70vh] w-full" />
+                ) : (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={getUploadUrl(preview.file_path)} alt={preview.name} className="max-h-[70vh] w-full object-contain" />
+                )}
+              </div>
+              {preview.media_type !== 'video' && (
+                <AdsRecreatePanel
+                  ad={preview}
+                  onCreated={(created) => {
+                    setRows((prev) => [created as ArchiveAd, ...prev]);
+                    setPreview(created as ArchiveAd);
+                  }}
+                />
               )}
             </div>
-            <div className="px-4 py-3 flex items-center justify-end gap-2">
+            <div className="px-4 py-3 flex items-center justify-end gap-2 border-t border-white/10">
               <button
                 onClick={() => void deleteAd(preview)}
                 className="px-3 py-1.5 text-sm text-red-400 hover:text-red-300"
