@@ -2709,26 +2709,40 @@ export default function FrontEndFunnel() {
   useEffect(() => {
     if (swipeImportDoneRef.current) return;
     const swipeUrl = searchParams.get('swipe_url');
-    if (!swipeUrl) return;
+    const swipeHtml = searchParams.get('swipe_html');
+    if (!swipeUrl && !swipeHtml) return;
     swipeImportDoneRef.current = true;
 
     const rawType = searchParams.get('swipe_type') || 'landing';
     const validType = BUILT_IN_PAGE_TYPE_OPTIONS.some((o) => o.value === rawType);
     const pageType = (validType ? rawType : 'landing') as PageType;
     const name = (searchParams.get('swipe_name') || '').slice(0, 80) || 'Template';
+    const safeName = name.replace(/[^\w.-]+/g, '-').slice(0, 60) || 'landing';
 
     addFunnelPage({
       name,
       pageType,
       productId: '',
-      urlToSwipe: swipeUrl,
+      urlToSwipe: swipeUrl || `https://uploaded.local/${safeName}.html`,
       prompt: '',
       swipeStatus: 'pending',
       feedback: '',
+      clonedData: swipeHtml
+        ? {
+            html: '',
+            title: name,
+            method_used: 'template',
+            content_length: 0,
+            duration_seconds: 0,
+            cloned_at: new Date(),
+            htmlUrl: swipeHtml,
+          }
+        : undefined,
     });
 
     const url = new URL(window.location.href);
     url.searchParams.delete('swipe_url');
+    url.searchParams.delete('swipe_html');
     url.searchParams.delete('swipe_name');
     url.searchParams.delete('swipe_type');
     window.history.replaceState({}, '', url.toString());
@@ -2744,24 +2758,36 @@ export default function FrontEndFunnel() {
     if (!raw) return;
     swipeStepsDoneRef.current = true;
 
-    let steps: Array<{ url?: string; name?: string; type?: string }> = [];
+    let steps: Array<{ url?: string; html?: string; name?: string; type?: string }> = [];
     try { const parsed = JSON.parse(raw); if (Array.isArray(parsed)) steps = parsed; } catch { steps = []; }
 
     (async () => {
       for (const s of steps) {
-        if (!s || !s.url) continue;
+        if (!s || (!s.url && !s.html)) continue;
         const rawType = s.type || 'landing';
         const validType = BUILT_IN_PAGE_TYPE_OPTIONS.some((o) => o.value === rawType);
         const pageType = (validType ? rawType : 'landing') as PageType;
         const name = (s.name || '').slice(0, 80) || 'Step';
+        const safeName = name.replace(/[^\w.-]+/g, '-').slice(0, 60) || 'landing';
         await addFunnelPage({
           name,
           pageType,
           productId: '',
-          urlToSwipe: s.url,
+          urlToSwipe: s.url || `https://uploaded.local/${safeName}.html`,
           prompt: '',
           swipeStatus: 'pending',
           feedback: '',
+          clonedData: s.html
+            ? {
+                html: '',
+                title: name,
+                method_used: 'template',
+                content_length: 0,
+                duration_seconds: 0,
+                cloned_at: new Date(),
+                htmlUrl: s.html,
+              }
+            : undefined,
         });
       }
     })();

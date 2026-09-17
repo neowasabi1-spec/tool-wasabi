@@ -188,6 +188,22 @@ export function hostOfUrl(url: string): string {
   }
 }
 
+/** Turn "draxory.com" / "www.x.co/path" into an https URL. Empty if it is not a host. */
+export function inferLandingSourceUrl(
+  ...candidates: Array<string | undefined | null>
+): string {
+  for (const raw of candidates) {
+    const t = String(raw || '').trim();
+    if (!t || t === 'null' || t === 'undefined') continue;
+    if (/^https?:\/\//i.test(t)) return t;
+    const host = t.replace(/^\/\//, '').replace(/\/+$/, '');
+    if (/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+\.?(\/[\w.-]*)*$/i.test(host)) {
+      return `https://${host.replace(/\.$/, '')}`;
+    }
+  }
+  return '';
+}
+
 const JUNK_LANDING_HOSTS = /^(google\.com|google\.[a-z.]+|facebook\.com|fb\.com|instagram\.com|tiktok\.com|youtube\.com|youtu\.be|x\.com|twitter\.com|bing\.com)$/i;
 
 /** Icons, stars, payment marks — not product photos. */

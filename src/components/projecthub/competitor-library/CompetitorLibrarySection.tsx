@@ -24,7 +24,7 @@ import { authFetch } from "@/lib/auth/client-fetch";
 import { PAGE_TYPE_OPTIONS } from "@/types";
 import { getSupabaseBrowser } from "@/lib/supabase-browser";
 import { BUILD_LANGUAGES, LANGUAGE_OTHER } from "@/lib/video-languages";
-import { hostOfUrl, LANDING_SECTION_LABEL, type LandingSection } from "@/lib/landing-media";
+import { hostOfUrl, LANDING_SECTION_LABEL, inferLandingSourceUrl, type LandingSection } from "@/lib/landing-media";
 import { fillLandingLibrary, landingFillError } from "@/lib/landing-media-client";
 
 const BASE_URL = "";
@@ -2733,21 +2733,30 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
 
   // Add this landing as a swipe step in Clone/Swipe (front-end-funnel), then go there.
   const cloneSwipe = (l: Landing) => {
-    if (!l.url) { toast({ title: "This landing has no source URL to swipe", variant: "destructive" }); return; }
+    const source = l.url || inferLandingSourceUrl(l.name, l.category);
+    const htmlUrl = l.html_url || "";
+    if (!source && !htmlUrl) {
+      toast({ title: "This landing has no source URL to swipe", variant: "destructive" });
+      return;
+    }
     const q = new URLSearchParams({
-      swipe_url: l.url,
       swipe_name: l.name || "Template",
       swipe_type: l.page_type || "landing",
     });
+    if (source) q.set("swipe_url", source);
+    if (htmlUrl) q.set("swipe_html", htmlUrl);
     router.push(`/front-end-funnel?${q.toString()}`);
   };
 
-  // Load EVERY step of an open funnel into Clone/Swipe as an ordered page list,
-  // so the whole funnel can be swiped/cloned in one go.
   const cloneSwipeFolder = (items: Landing[]) => {
     const steps = items
-      .filter((l) => !!l.url)
-      .map((l) => ({ url: l.url, name: l.name || "Step", type: l.page_type || "landing" }));
+      .map((l) => ({
+        url: l.url || inferLandingSourceUrl(l.name, l.category),
+        html: l.html_url || "",
+        name: l.name || "Step",
+        type: l.page_type || "landing",
+      }))
+      .filter((s) => s.url || s.html);
     if (!steps.length) { toast({ title: "No steps with a source URL to swipe", variant: "destructive" }); return; }
     const q = new URLSearchParams({ swipe_steps: JSON.stringify(steps) });
     router.push(`/front-end-funnel?${q.toString()}`);

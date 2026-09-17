@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { canAccessProject } from '@/lib/auth/project-access';
 import { dedupeStepsByUrl } from '@/lib/archive-placement';
 import { loadSlimArchivedFunnels, type SlimArchiveStep } from '@/lib/slim-archived-funnels';
+import { inferLandingSourceUrl } from '@/lib/landing-media';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -26,11 +27,12 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     const landings = rows.flatMap((row) => {
       const raw = (Array.isArray(row.steps) ? row.steps : []) as Record<string, unknown>[];
       const steps = dedupeStepsByUrl(raw) as SlimArchiveStep[];
+      const folderUrl = inferLandingSourceUrl(row.name);
       if (!steps.length) {
         return [{
           id: row.id,
           name: row.name,
-          url: '',
+          url: folderUrl,
           page_type: 'landing',
           category: row.name || '',
           tags: [] as string[],
@@ -49,7 +51,12 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
         return {
           id: multi ? `${row.id}::${i}` : row.id,
           name: step?.name || row.name,
-          url: cd.source_url || step.url_to_swipe || '',
+          url: inferLandingSourceUrl(
+            cd.source_url,
+            step.url_to_swipe,
+            step.name,
+            row.name,
+          ) || folderUrl,
           page_type: step?.page_type || 'landing',
           category: cd.category || row.name || '',
           tags: Array.isArray(cd.tags) ? cd.tags : [],
