@@ -31,7 +31,7 @@ const SHAPE_DILATE_Y = 2;
 // and the letters fuse into a solid caption bar — MiniMax then repaints the
 // whole strip and the result is a visible blurred fascia, not reconstructed
 // letter pixels.
-const MASK_EDGE = 10;
+const MASK_EDGE = 12;
 // Height ceilings for "this is a line of words", as a share of the frame: one
 // line on its own, and a whole caption block after the lines have been grown
 // together. Measured on these shots a single line runs about 7% and a two-line
@@ -451,7 +451,7 @@ export async function writeMaskVideo(
   await run(FFMPEG, [
     '-y', '-f', 'rawvideo', '-pix_fmt', 'gray', '-s', `${w}x${h}`, '-r', String(fps),
     '-i', raw,
-    '-vf', `scale=${outW}:${outH}:flags=neighbor,dilation,dilation,format=yuv420p`,
+    '-vf', `scale=${outW}:${outH}:flags=neighbor,format=gray,lut=y='if(gte(val\\,16),255,0)',dilation,dilation,dilation,dilation,format=yuv420p`,
     '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '8', out,
   ]);
   try { fs.rmSync(raw, { force: true }); } catch { /* ignore */ }

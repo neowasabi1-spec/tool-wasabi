@@ -500,8 +500,13 @@ async function compositeThroughMask(opts: {
   W: number; H: number; log: (...a: unknown[]) => void; tag: string;
 }): Promise<boolean> {
   const { srcFile, reconFile, maskFile, outFile, W, H, log, tag } = opts;
+  // yuv420 + gray edges used to 50/50-blend original letters (translucent ghosts).
+  // Binarize then grow: cover outlines/halos without a caption-wide fascia.
+  const mk =
+    `format=gray,lut=y='if(gte(val\\,16),255,0)',` +
+    `dilation,dilation,dilation,dilation,dilation,dilation`;
   const scale = `[1:v]scale=${W}:${H}:flags=lanczos,setsar=1[recon];` +
-    `[2:v]scale=${W}:${H}:flags=neighbor,format=gray,dilation,dilation,dilation[mk];`;
+    `[2:v]scale=${W}:${H}:flags=neighbor,${mk}[mk];`;
   try {
     await run(FFMPEG, [
       '-y', '-i', srcFile, '-i', reconFile, '-i', maskFile,
@@ -824,7 +829,7 @@ async function textMaskReconstruct(opts: {
     ]);
     await run(FFMPEG, [
       '-y', '-i', maskFile,
-      '-vf', `fps=${MM_FPS},scale=${mw}:${mh}:flags=neighbor,setsar=1`,
+      '-vf', `fps=${MM_FPS},scale=${mw}:${mh}:flags=neighbor,setsar=1,format=gray,lut=y='if(gte(val\\,16),255,0)',dilation,dilation,dilation,format=yuv420p`,
       '-an', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p',
       smallMask,
     ]);
@@ -847,7 +852,7 @@ async function textMaskReconstruct(opts: {
   const input: Record<string, unknown> = { [videoField]: videoUrl, [maskField]: maskUrl };
   const wanted: Record<string, number> = {
     fps: MM_FPS, width: mw, height: mh,
-    mask_dilation_iterations: 8, num_inference_steps: 12,
+    mask_dilation_iterations: 12, num_inference_steps: 12,
   };
   // num_frames -1 = "same as this video". Passing a counted length that is 1
   // frame off the encoded clip 422s the prediction on every window.
@@ -1734,9 +1739,9 @@ async function cleanWholeAd(
     const segDur = dur / nseg;
 
     type WinState = { s: 'todo' | 'clean' | 'original' | 'failed'; key?: string; tries?: number };
-    // v=10: 9:16 MiniMax sizes must be multiples of 16 (360×640 was rejected).
+    // v=11: binarize+grow the paste mask so original letter halos are not left translucent.
     type Progress = { src: string; nseg: number; runs: number; v?: number; wins: WinState[] };
-    const MASK_PROGRESS_V = 10;
+    const MASK_PROGRESS_V = 11;
     const progressKey = `${projectId}/ads-clean/${adId}_progress.json`;
     let prog: Progress | null = null;
     if (!force) {
