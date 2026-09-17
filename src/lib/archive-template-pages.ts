@@ -87,35 +87,33 @@ export function archiveKeysForStepType(stepType: string, extraKnown: string[] = 
   return [t];
 }
 
-/** Template section folders as optgroups. Matching Type is first; other folders stay visible. */
+/** Only the Template → By Type folder(s) that match this Clone/Swipe Type. */
 export function listTemplateSectionGroups(
   stepType: string,
   archivedFunnels: ArchivedFunnel[],
   knownCustomTypes: string[] = [],
 ): ArchiveTemplateGroup[] {
   const map = listArchivePagesByType(archivedFunnels || [], knownCustomTypes, {
-    includeFunnels: true,
+    includeFunnels: false,
   });
   const preferred = archiveKeysForStepType(stepType, knownCustomTypes);
-  const seenType = new Set<string>();
   const groups: ArchiveTemplateGroup[] = [];
-  const pushType = (type: string) => {
-    if (seenType.has(type)) return;
+  const seenType = new Set<string>();
+  for (const type of preferred) {
+    if (seenType.has(type)) continue;
     const pages = map[type] || [];
-    if (!pages.length) return;
+    if (!pages.length) continue;
     seenType.add(type);
     groups.push({
       type,
       label: type === 'altro' ? 'Altro' : humanizePageTypeSlug(type) || type,
       pages,
     });
-  };
-  for (const k of preferred) pushType(k);
-  for (const k of Object.keys(map).sort()) pushType(k);
+  }
   return groups;
 }
 
-/** All Template-section pages, matching Type first then the rest of the folders. */
+/** Pages from the matching Template → By Type folder only. */
 export function listTemplatesForStepType(
   stepType: string,
   archivedFunnels: ArchivedFunnel[],

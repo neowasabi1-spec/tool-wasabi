@@ -21,8 +21,8 @@ import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { confirmDialog } from "@/components/ui/confirm";
 import { useStore } from "@/store/useStore";
-import { listTemplatesForStepType, type ArchiveTemplatePage } from "@/lib/archive-template-pages";
-import { humanizePageTypeSlug, normalizeArchiveType } from "@/types";
+import { type ArchiveTemplatePage } from "@/lib/archive-template-pages";
+import { TemplatePickerDialog } from "@/components/TemplateTypePicker";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -678,109 +678,6 @@ function FunnelLibraryDialog({
             );
           })}
         </div>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-function TemplatePickerDialog({
-  open,
-  stepType,
-  onClose,
-  onPick,
-}: {
-  open: boolean;
-  stepType: string;
-  onClose: () => void;
-  onPick: (page: ArchiveTemplatePage) => void;
-}) {
-  const {
-    archivedFunnels,
-    archivedFunnelsLoaded,
-    archivedFunnelsLoading,
-    loadArchivedFunnels,
-    customPageTypes,
-    loadCustomPageTypes,
-  } = useStore();
-  const [search, setSearch] = useState("");
-
-  useEffect(() => {
-    if (!open) return;
-    setSearch("");
-    void loadArchivedFunnels(true);
-    void loadCustomPageTypes();
-  }, [open, loadArchivedFunnels, loadCustomPageTypes]);
-
-  const knownCustomTypes = useMemo(
-    () => (customPageTypes || []).map((ct) => ct.value),
-    [customPageTypes],
-  );
-
-  const pages = useMemo(() => {
-    const out = listTemplatesForStepType(
-      stepType,
-      archivedFunnels || [],
-      undefined,
-      knownCustomTypes,
-    );
-    const q = search.trim().toLowerCase();
-    if (!q) return out;
-    return out.filter((p) =>
-      `${p.name} ${p.funnel_name} ${p.url_to_swipe}`.toLowerCase().includes(q),
-    );
-  }, [archivedFunnels, knownCustomTypes, stepType, search]);
-
-  const typeLabel = humanizePageTypeSlug(normalizeArchiveType(stepType, knownCustomTypes)) || stepType;
-
-  return (
-    <Dialog open={open} onOpenChange={(v) => { if (!v) onClose(); }}>
-      <DialogContent className="max-w-3xl max-h-[88vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>Templates — {typeLabel}</DialogTitle>
-        </DialogHeader>
-        <div className="relative">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
-          <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search templates…" className="pl-8 h-9 text-sm" />
-        </div>
-        {archivedFunnelsLoading && !archivedFunnelsLoaded ? (
-          <div className="py-16 text-center text-sm text-muted-foreground">
-            <Loader2 className="w-5 h-5 animate-spin mx-auto mb-2" />
-            Loading templates…
-          </div>
-        ) : pages.length === 0 ? (
-          <div className="py-12 text-center border-2 border-dashed border-border rounded-xl">
-            <LayoutTemplate className="w-8 h-8 text-muted-foreground/40 mx-auto mb-2" />
-            <p className="text-sm font-medium">No pages in Template yet</p>
-            <p className="text-xs text-muted-foreground mt-1">
-              Pages from Template → By Type and Funnel folders show here.
-            </p>
-          </div>
-        ) : (
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-            {pages.map((p) => (
-              <button
-                key={`${p.funnel_id}::${p.url_to_swipe}::${p.name}`}
-                type="button"
-                onClick={() => onPick(p)}
-                className="group rounded-xl border border-border bg-card overflow-hidden text-left hover:border-primary/50 hover:shadow-md transition-all"
-              >
-                <div className="aspect-[9/16] bg-muted overflow-hidden">
-                  {p.screenshotUrl ? (
-                    <img src={p.screenshotUrl} alt={p.name} className="w-full h-full object-cover object-top group-hover:scale-[1.02] transition-transform" />
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center text-muted-foreground/40">
-                      <LayoutTemplate className="w-8 h-8" />
-                    </div>
-                  )}
-                </div>
-                <div className="p-2.5">
-                  <p className="text-xs font-medium truncate">{p.name}</p>
-                  <p className="text-[10px] text-muted-foreground truncate">{p.funnel_name}</p>
-                </div>
-              </button>
-            ))}
-          </div>
-        )}
       </DialogContent>
     </Dialog>
   );

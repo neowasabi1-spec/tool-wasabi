@@ -37,9 +37,9 @@ import {
   VisionJobDetail,
 } from '@/types';
 import {
-  listTemplateSectionGroups,
   pickerValueForTemplate,
 } from '@/lib/archive-template-pages';
+import { TemplatePickerCell } from '@/components/TemplateTypePicker';
 import {
   Plus,
   Trash2,
@@ -1142,8 +1142,6 @@ export default function FrontEndFunnel() {
     customPageTypes,
     addCustomPageType,
     saveCurrentFunnelAsArchive,
-    archivedFunnels,
-    archivedFunnelsLoading,
     loadArchivedFunnels,
   } = useStore();
 
@@ -1168,31 +1166,10 @@ export default function FrontEndFunnel() {
     return option?.label || value;
   };
 
-  const knownCustomTypes = useMemo(
-    () => (customPageTypes || []).map((ct) => ct.value),
-    [customPageTypes],
-  );
-
   useEffect(() => {
     const has = (useStore.getState().archivedFunnels || []).length > 0;
     void loadArchivedFunnels(!has);
   }, [loadArchivedFunnels]);
-
-  const templateGroupsByStepType = useMemo(() => {
-    const cache = new Map<string, ReturnType<typeof listTemplateSectionGroups>>();
-    return (stepType: string) => {
-      const key = stepType || 'landing';
-      const hit = cache.get(key);
-      if (hit) return hit;
-      const groups = listTemplateSectionGroups(
-        key,
-        archivedFunnels || [],
-        knownCustomTypes,
-      );
-      cache.set(key, groups);
-      return groups;
-    };
-  }, [archivedFunnels, knownCustomTypes]);
 
   const [loadingIds, setLoadingIds] = useState<string[]>([]);
   const [analyzingIds, setAnalyzingIds] = useState<string[]>([]);
@@ -6374,8 +6351,6 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                 ) : (
                   (funnelPages || []).map((page, index) => {
                     const isSelected = selectedStepIds.has(page.id);
-                    const templateGroups = templateGroupsByStepType(page.pageType);
-                    const typeTemplates = templateGroups.flatMap((g) => g.pages);
                     return (
                     <tr key={page.id} className={isSelected ? 'bg-purple-50/50' : undefined}>
                       {/* Per-row select checkbox — drives the Save subset.
@@ -6525,16 +6500,17 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                         )}
                       </td>
 
-                      {/* Template to Swipe — Template section, filtered by Type */}
+                      {/* Template — matching Template → By Type folder, preview cards */}
                       <td>
-                        <select
-                          value={page.templateId || ''}
-                          onChange={(e) => {
-                            const templateId = e.target.value;
-                            const pool = typeTemplates;
-                            const selected = pool.find((t) => pickerValueForTemplate(t) === templateId);
+                        <TemplatePickerCell
+                          pageType={page.pageType}
+                          templateId={page.templateId}
+                          typeLabel={getPageTypeLabel(page.pageType)}
+                          onPick={(selected) => {
                             updateFunnelPage(page.id, {
-                              templateId: templateId || undefined,
+                              templateId: selected
+                                ? pickerValueForTemplate(selected)
+                                : undefined,
                               urlToSwipe: selected?.url_to_swipe || page.urlToSwipe,
                               clonedData: selected
                                 ? {
@@ -6549,43 +6525,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                 : page.clonedData,
                             });
                           }}
-                          className="truncate"
-                          title={
-                            archivedFunnelsLoading && typeTemplates.length === 0
-                              ? 'Loading Template section…'
-                              : typeTemplates.length === 0
-                              ? 'No pages in Template yet'
-                              : `Template section — ${typeTemplates.length} page${typeTemplates.length === 1 ? '' : 's'}`
-                          }
-                        >
-                          <option value="">
-                            {archivedFunnelsLoading && typeTemplates.length === 0
-                              ? 'Loading templates…'
-                              : typeTemplates.length === 0
-                              ? 'No Template pages yet'
-                              : `Template… (${typeTemplates.length})`}
-                          </option>
-                          {page.templateId &&
-                            !typeTemplates.some(
-                              (t) => pickerValueForTemplate(t) === page.templateId,
-                            ) && (
-                            <option value={page.templateId}>Saved template</option>
-                          )}
-                          {templateGroups.map((group) => (
-                            <optgroup key={group.type} label={group.label}>
-                              {group.pages.map((template) => (
-                                <option
-                                  key={pickerValueForTemplate(template)}
-                                  value={pickerValueForTemplate(template)}
-                                >
-                                  {template.funnel_name && template.funnel_name !== template.name
-                                    ? `${template.name} — ${template.funnel_name}`
-                                    : template.name}
-                                </option>
-                              ))}
-                            </optgroup>
-                          ))}
-                        </select>
+                        />
                       </td>
 
                       {/* URL to Swipe */}
