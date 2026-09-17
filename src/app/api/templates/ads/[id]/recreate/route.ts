@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getCurrentUserId } from '@/lib/auth/get-current-user';
 import { canAccessProject } from '@/lib/auth/project-access';
-import { lastImageGenError, openaiGenerateImageBytes, geminiImageKey, openaiImageKey } from '@/lib/openai-image';
+import { lastImageGenError, openaiGenerateImageBytes, openaiImageKey } from '@/lib/openai-image';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -38,46 +38,10 @@ async function signedUrl(path: string): Promise<string | null> {
 }
 
 async function analyzeLayout(imageUrl: string): Promise<string> {
-  const geminiKey = geminiImageKey();
-  if (geminiKey) {
-    try {
-      const img = await fetch(imageUrl, { signal: AbortSignal.timeout(30_000) });
-      if (img.ok) {
-        const buf = Buffer.from(await img.arrayBuffer());
-        const mime = (img.headers.get('content-type') || 'image/jpeg').split(';')[0];
-        const res = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(geminiKey)}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              contents: [{
-                parts: [
-                  { inline_data: { mime_type: mime, data: buf.toString('base64') } },
-                  { text: ANALYZE_PROMPT },
-                ],
-              }],
-              generationConfig: { temperature: 0.2 },
-            }),
-            signal: AbortSignal.timeout(60_000),
-          },
-        );
-        if (res.ok) {
-          const json = await res.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
-          const text = String(json.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
-          if (text) return text;
-        } else {
-          console.warn('[ads/recreate] gemini vision', res.status, (await res.text()).slice(0, 240));
-        }
-      }
-    } catch (e) {
-      console.warn('[ads/recreate] gemini vision:', (e as Error).message);
-    }
-  }
-
   const key = openaiImageKey();
   if (!key) return '';
-  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+  const base = (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/+$/, '');
+  const res = await fetch(`${base}/chat/completions`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -197,6 +161,9 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   try {
     const userId = await getCurrentUserId(req);
     if (!userId) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+    if (!openaiImageKey()) {
+      return NextResponse.json({ error: 'OPENAI_API_KEY is missing' }, { status: 500 });
+    }
 
     const { data: ad } = await supabaseAdmin
       .from('archive_ads')
@@ -310,6 +277,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       size: 'auto',
       quality: 'medium',
       timeoutMs: 150_000,
+      openaiOnly: true,
     });
     if (!made) {
       return NextResponse.json(
