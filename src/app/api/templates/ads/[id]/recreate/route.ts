@@ -2,11 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getCurrentUserId } from '@/lib/auth/get-current-user';
 import { canAccessProject } from '@/lib/auth/project-access';
-import { lastImageGenError, submitGptImage2Job } from '@/lib/openai-image';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
-export const maxDuration = 180;
+export const maxDuration = 60;
 
 const BUCKET = 'project-files';
 
@@ -297,11 +296,6 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       if (!allowed) return NextResponse.json({ error: 'Project not found' }, { status: 404 });
     }
 
-    const sourceUrl = await signedUrl(source.file_path);
-    if (!sourceUrl) {
-      return NextResponse.json({ error: 'Could not sign the source ad image' }, { status: 500 });
-    }
-
     let productName = productNameHint;
     let brief = '';
     let productImageUrl: string | null = null;
@@ -342,38 +336,29 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       );
     }
 
+    const hasPackshot = Boolean(productPath || productImageUrl);
     const prompt = buildPrompt({
       productName: productName || 'our product',
       brief,
-      hasPackshot: Boolean(productImageUrl),
+      hasPackshot,
     });
-
-    const imageUrls = [sourceUrl, productImageUrl || ''].filter(Boolean);
-    const job = await submitGptImage2Job({
-      prompt,
-      imageUrls,
-      size: '1024x1536',
-      quality: 'medium',
-    });
-    if (!job) {
-      return NextResponse.json(
-        { error: lastImageGenError() || 'Could not start ChatGPT Image 2' },
-        { status: 502 },
-      );
-    }
 
     const name = `${productName || 'Swipe'} — ${source.name}`.slice(0, 300);
+    const publicProductUrl =
+      productImageUrl && /^https?:\/\//i.test(productImageUrl) && !/supabase\.co\/storage/i.test(productImageUrl)
+        ? productImageUrl
+        : '';
     return NextResponse.json({
       ok: true,
-      status: 'pending',
+      status: 'ready',
       name,
-      requestId: job.requestId,
-      statusUrl: job.statusUrl,
-      responseUrl: job.responseUrl,
-      modelKey: job.modelKey,
+      prompt,
+      imagePath: source.file_path,
+      productPath: productPath || '',
+      productImageUrl: publicProductUrl,
     });
   } catch (e) {
-    const msg = (e as Error).message || lastImageGenError() || 'Recreate failed';
+    const msg = (e as Error).message || 'Recreate failed';
     return NextResponse.json({ error: msg }, { status: 500 });
   }
 }
