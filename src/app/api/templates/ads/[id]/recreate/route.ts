@@ -26,12 +26,6 @@ async function signedUrl(path: string): Promise<string | null> {
   return data.signedUrl;
 }
 
-function publicStreamUrl(req: NextRequest, path: string): string {
-  const origin = String(process.env.DEPLOY_PRIME_URL || process.env.URL || req.nextUrl.origin || '')
-    .replace(/\/$/, '');
-  return `${origin}/api/projecthub/file-proxy?path=${encodeURIComponent(path)}&stream=1`;
-}
-
 async function loadProjectCtx(projectId: string) {
   let name = '';
   let brief = '';
@@ -98,21 +92,18 @@ function buildPrompt(opts: {
   hasPackshot: boolean;
 }): string {
   const name = opts.productName || 'our product';
-  const brief = opts.brief ? ` Our product: ${opts.brief.replace(/\s+/g, ' ').slice(0, 400)}.` : '';
   if (opts.hasPackshot) {
     return [
       `Replace the competitor product in this ad with ${name}.`,
       'The FIRST image is the ad layout to keep. The SECOND image is our exact packshot — put that product in their place.',
-      'Keep the same format, framing, people, colors, style and on-image text hierarchy.',
-      brief,
-    ].filter(Boolean).join(' ');
+      'Keep the same format, framing, people, colors, style and on-image text.',
+    ].join(' ');
   }
   return [
-    `Recreate this advertisement for ${name}.`,
-    'Keep the same layout, people, colors and composition.',
-    'Rewrite visible text for our product.',
-    brief,
-  ].filter(Boolean).join(' ');
+    `Keep this image's layout, people, product, colors and composition.`,
+    `Rewrite EVERY visible text (headlines, labels, badges, captions, CTAs, small print) for ${name}.`,
+    'Do not add new claims or new objects. The result must look like the same ad for our product.',
+  ].join(' ');
 }
 
 async function saveToProjectCreatives(
@@ -185,7 +176,7 @@ async function persistGenerated(
     upsert: false,
   });
   if (saveErr) return NextResponse.json({ error: saveErr.message }, { status: 500 });
-  const previewUrl = await signedUrl(outPath);
+  const previewUrl = `/api/projecthub/file-proxy?path=${encodeURIComponent(outPath)}`;
   return NextResponse.json({
     ok: true,
     status: 'completed',
@@ -347,14 +338,10 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     const prompt = buildPrompt({
       productName: productName || 'our product',
       brief,
-      hasPackshot: Boolean(productImageUrl || productPath),
+      hasPackshot: Boolean(productImageUrl),
     });
 
-    const imageUrls = [
-      publicStreamUrl(req, source.file_path),
-      productPath ? publicStreamUrl(req, productPath) : (productImageUrl || ''),
-    ].filter(Boolean);
-
+    const imageUrls = [sourceUrl, productImageUrl || ''].filter(Boolean);
     const made = await openaiGenerateImageBytes({
       prompt,
       imageUrls,
@@ -365,7 +352,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     });
     if (!made) {
       return NextResponse.json(
-        { error: lastImageGenError() || 'ChatGPT Image 2 failed' },
+        { error: lastImageGenError() || 'ChatGPT did not return an image' },
         { status: 502 },
       );
     }
@@ -373,9 +360,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     const name = `${productName || 'Swipe'} — ${source.name}`.slice(0, 300);
     return persistGenerated(userId, name, made.buf, made.mime);
   } catch (e) {
-    return NextResponse.json(
-      { error: (e as Error).message || 'Recreate failed' },
-      { status: 500 },
-    );
+    const msg = (e as Error).message || lastImageGenError() || 'Recreate failed';
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 }

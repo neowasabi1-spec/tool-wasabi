@@ -108,21 +108,16 @@ async function bytesFromRef(url: string): Promise<{ buf: Buffer; mime: string } 
 }
 
 async function toCompactDataUri(buf: Buffer, mime: string): Promise<string> {
-  const sniffed = sniffImage(buf, mime);
-  // Competitor Ads remake sends the original still. JPEG-compressing graphic ads
-  // makes ChatGPT Image 2 return empty "generation failed".
-  if (buf.length <= 2_500_000) {
-    return `data:${sniffed.mime};base64,${buf.toString('base64')}`;
-  }
   try {
     const sharp = (await import('sharp')).default;
     const out = await sharp(buf)
       .rotate()
-      .resize(1536, 1536, { fit: 'inside', withoutEnlargement: true })
-      .png()
+      .resize(1280, 1280, { fit: 'inside', withoutEnlargement: true })
+      .png({ compressionLevel: 8 })
       .toBuffer();
     return `data:image/png;base64,${out.toString('base64')}`;
   } catch {
+    const sniffed = sniffImage(buf, mime);
     return `data:${sniffed.mime};base64,${buf.toString('base64')}`;
   }
 }
@@ -178,18 +173,9 @@ function firstFalImageUrl(result: unknown): { url: string; mime: string } | null
 async function refsToImageUrls(refs: string[]): Promise<string[]> {
   const imageUrls: string[] = [];
   for (const ref of refs.slice(0, 8)) {
-    if (ref.startsWith('data:')) {
-      const raw = await bytesFromRef(ref);
-      if (!raw) continue;
-      imageUrls.push(await toCompactDataUri(raw.buf, raw.mime));
-      continue;
-    }
-    // Same as /api/generate-image: let ChatGPT Image 2 fetch https URLs.
-    if (/^https?:\/\//i.test(ref)) {
-      imageUrls.push(ref);
-      continue;
-    }
-    const raw = await bytesFromRef(ref);
+    const raw = ref.startsWith('data:')
+      ? await bytesFromRef(ref)
+      : await bytesFromRef(ref);
     if (!raw) continue;
     imageUrls.push(await toCompactDataUri(raw.buf, raw.mime));
   }

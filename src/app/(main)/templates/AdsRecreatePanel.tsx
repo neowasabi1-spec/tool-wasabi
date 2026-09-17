@@ -228,49 +228,24 @@ export default function AdsRecreatePanel({ ad, onResult }: Props) {
         method: 'POST',
         body: fd,
       });
-      const d = await readJson(res);
-      if (!res.ok) throw new Error(String(d.error || 'Recreate failed'));
-
-      let filePath = String(d.filePath || d.file_path || '');
-      let previewUrl = String(d.previewUrl || d.previewDataUrl || '').trim();
-      const name = String(d.name || productName || 'Recreated ad');
-
-      if (!filePath && !previewUrl) {
-        const prompt = String(d.prompt || '').trim();
-        const sourcePath = String(d.sourcePath || '').trim();
-        if (!prompt || !sourcePath) {
-          throw new Error(String(d.error || 'ChatGPT Image 2 failed'));
-        }
-        const imageUrl = absStreamUrl(sourcePath);
-        const secondaryImageUrl = String(d.productPath || '').trim()
-          ? absStreamUrl(String(d.productPath))
-          : (/^https?:\/\//i.test(String(d.productImageUrl || '')) ? String(d.productImageUrl) : '');
-        const falUrl = await generateWithChatGptImage2({
-          prompt,
-          imageUrl,
-          secondaryImageUrl: secondaryImageUrl || undefined,
-          onWait: setWaitMsg,
-        });
-        previewUrl = falUrl;
-        onResult({ filePath: '', name, previewUrl: falUrl });
-        setResult({ filePath: '', name, previewUrl: falUrl });
-        const ingested = await authFetch(`/api/templates/ads/${ad.id}/recreate`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'ingest', url: falUrl, name }),
-        });
-        const saved = await readJson(ingested);
-        if (ingested.ok) {
-          filePath = String(saved.filePath || saved.file_path || '');
-          previewUrl = String(saved.previewUrl || falUrl);
-        }
+      const raw = await res.text();
+      let d: Record<string, unknown> = {};
+      try { d = JSON.parse(raw) as Record<string, unknown>; } catch { /* html 504/500 */ }
+      if (!res.ok) {
+        throw new Error(
+          String(d.error || '')
+          || (res.status === 504 ? 'ChatGPT timed out — try again' : `Recreate failed (HTTP ${res.status})`),
+        );
       }
-
-      if (!filePath && !previewUrl) throw new Error('ChatGPT Image 2 failed');
+      const filePath = String(d.filePath || d.file_path || '');
+      const previewUrl = String(d.previewUrl || '').trim() || (filePath ? getUploadUrl(filePath) : '');
+      if (!filePath && !previewUrl) {
+        throw new Error(String(d.error || 'ChatGPT did not return an image'));
+      }
       const preview: RecreatePreview = {
         filePath,
-        name,
-        previewUrl: previewUrl || getUploadUrl(filePath),
+        name: String(d.name || productName || 'Recreated ad'),
+        previewUrl,
       };
       setResult(preview);
       onResult(preview);
