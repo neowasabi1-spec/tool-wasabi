@@ -29,6 +29,10 @@ import { fillLandingLibrary, landingFillError } from "@/lib/landing-media-client
 
 const BASE_URL = "";
 
+function isVideoSaveFolder(b: { brand_type?: string | null }): boolean {
+  return String(b.brand_type || "") === "video_folder";
+}
+
 type CompetitorWithStats = {
   id: number;
   project_id: string;
@@ -1552,7 +1556,10 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
     if (!silent) setLoading(true);
     try {
       const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library`);
-      if (r.ok) setCompetitors(await r.json());
+      if (r.ok) {
+        const all = await r.json();
+        setCompetitors(Array.isArray(all) ? all.filter((c: CompetitorWithStats) => !isVideoSaveFolder(c)) : []);
+      }
     } finally { if (!silent) setLoading(false); }
   };
 
@@ -3433,6 +3440,7 @@ function ShotsLibraryView({
           projectId={projectId}
           brands={brands}
           onClose={() => setShowCreate(false)}
+          onFolderCreated={(f) => setBrands((p) => (p.some((x) => x.id === f.id) ? p : [f, ...p]))}
           onQueued={(brandId) => { setShowCreate(false); onBuildQueued?.(brandId); }}
         />
       )}
@@ -3513,15 +3521,20 @@ type GeneratedVideo = {
  * shot pool. Not tied to any single competitor creative (ad_id = 0).
  */
 function CustomVideoModal({
-  projectId, brands, onClose, onQueued,
+  projectId, brands, onClose, onQueued, onFolderCreated,
 }: {
   projectId: string;
   brands: { id: number; name: string }[];
   onClose: () => void;
   onQueued: (brandId: number) => void;
+  onFolderCreated?: (folder: { id: number; name: string }) => void;
 }) {
   const { toast } = useToast();
-  const [brandId, setBrandId] = useState<number | "">(brands[0]?.id ?? "");
+  const NEW = "__new__";
+  const [folders, setFolders] = useState<{ id: number; name: string }[]>(brands);
+  const [brandId, setBrandId] = useState<number | typeof NEW | "">(brands[0]?.id ?? NEW);
+  const [newName, setNewName] = useState("");
+  const [creating, setCreating] = useState(false);
   const [copy, setCopy] = useState("");
   const [lang, setLang] = useState("");
   const [langOther, setLangOther] = useState("");
@@ -3530,6 +3543,14 @@ function CustomVideoModal({
   const [previewLoading, setPreviewLoading] = useState(false);
   const previewAudio = useRef<HTMLAudioElement | null>(null);
   const alive = useRef(true);
+
+  useEffect(() => {
+    setFolders(brands);
+    if (typeof brandId === "number" && !brands.some((b) => b.id === brandId) && brands[0]) {
+      setBrandId(brands[0].id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [brands]);
 
   useEffect(() => () => {
     alive.current = false;
@@ -3550,13 +3571,42 @@ function CustomVideoModal({
     finally { setPreviewLoading(false); }
   };
 
+  const createFolder = async () => {
+    const name = newName.trim();
+    if (!name) { toast({ title: "Name the folder first", variant: "destructive" }); return; }
+    setCreating(true);
+    try {
+      const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, brand_type: "video_folder", scrape_count: 10 }),
+      });
+      const j = await r.json().catch(() => ({})) as { id?: number; name?: string; error?: string };
+      if (!r.ok || !j.id) {
+        toast({ title: j.error || "Could not create folder", variant: "destructive" });
+        return;
+      }
+      const folder = { id: Number(j.id), name: String(j.name || name) };
+      setFolders((p) => [folder, ...p.filter((x) => x.id !== folder.id)]);
+      setBrandId(folder.id);
+      setNewName("");
+      onFolderCreated?.(folder);
+      toast({ title: `Folder “${folder.name}” ready` });
+    } catch {
+      toast({ title: "Could not create folder", variant: "destructive" });
+    } finally {
+      setCreating(false);
+    }
+  };
+
   const build = async () => {
-    if (!brandId) { toast({ title: "Pick a folder to save under first", variant: "destructive" }); return; }
+    if (brandId === NEW || brandId === "") {
+      toast({ title: "Pick or create a Created videos folder first", variant: "destructive" });
+      return;
+    }
     if (copy.trim().length < 30) { toast({ title: "Paste a bit more copy (min ~30 chars)", variant: "destructive" }); return; }
     setStatus("pending");
     const language = lang === LANGUAGE_OTHER ? langOther.trim() : lang;
-    // The start request itself can take a while (it splits the copy into scenes)
-    // — bound it so the button can't sit on "Queued…" forever if it hangs.
     const ctrl = new AbortController();
     const abortTimer = setTimeout(() => ctrl.abort(), 130000);
     try {
@@ -3584,6 +3634,7 @@ function CustomVideoModal({
   };
 
   const building = status === "pending" || status === "processing";
+  const pickingNew = brandId === NEW;
 
   return (
     <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
@@ -3601,16 +3652,37 @@ function CustomVideoModal({
             Paste your copy and the builder auto-picks clips from <b>all your clean shots</b>, matched line-by-line to the script, then voices and subtitles them. The finished file lands in the <b>Created videos</b> tab.
           </p>
           <div>
-            <p className="text-[9px] text-muted-foreground uppercase tracking-wider mb-1">Save under (folder)</p>
+            <p className="text-[9px] text-muted-foreground uppercase tracking-wider mb-1">Save in Created videos folder</p>
             <select
               value={brandId}
-              onChange={(e) => setBrandId(e.target.value ? Number(e.target.value) : "")}
+              onChange={(e) => {
+                const v = e.target.value;
+                if (v === NEW) setBrandId(NEW);
+                else setBrandId(v ? Number(v) : "");
+              }}
               className="w-full h-9 text-sm rounded-md border border-border bg-background px-2">
-              {brands.length === 0 && <option value="">No products yet</option>}
-              {brands.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+              {folders.length === 0 && <option value="">No folders yet</option>}
+              {folders.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+              <option value={NEW}>+ New folder…</option>
             </select>
+            {pickingNew && (
+              <div className="mt-2 flex items-center gap-1.5">
+                <Input
+                  value={newName}
+                  onChange={(e) => setNewName(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void createFolder(); } }}
+                  placeholder="Folder name"
+                  className="h-9 text-sm flex-1"
+                  autoFocus
+                />
+                <Button type="button" size="sm" className="h-9 gap-1" onClick={() => void createFolder()} disabled={creating || !newName.trim()}>
+                  {creating ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
+                  Create
+                </Button>
+              </div>
+            )}
             <p className="text-[9px] text-muted-foreground mt-1 leading-snug">
-              This only files the result — footage is <b>not</b> limited to it. Clips are chosen from every clean shot in the project and matched to the script.
+              Pick a folder already in <b>Created videos</b>, or create a new one. Footage still comes from every clean shot — this only files the result.
             </p>
           </div>
           <div>
@@ -3656,7 +3728,7 @@ function CustomVideoModal({
           </div>
         </div>
         <div className="p-4 border-t border-border">
-          <Button onClick={build} disabled={building} className="w-full gap-2">
+          <Button onClick={build} disabled={building || pickingNew || typeof brandId !== "number"} className="w-full gap-2">
             {building
               ? <><RefreshCw className="w-4 h-4 animate-spin" /> {status === "pending" ? "Queued…" : "Building…"}</>
               : <><Zap className="w-4 h-4" /> Build video</>}
@@ -3678,6 +3750,22 @@ function GeneratedVideosView({ projectId }: { projectId: string }) {
   const [brandNames, setBrandNames] = useState<Record<number, string>>({});
   const [loading, setLoading] = useState(true);
   const [playing, setPlaying] = useState<GeneratedVideo | null>(null);
+  const [openFolder, setOpenFolder] = useState<string | null>(null);
+
+  const folders = useMemo(() => {
+    const map = new Map<string, GeneratedVideo[]>();
+    for (const v of videos) {
+      const name = brandNames[v.brand_id] || "Unfiled";
+      const list = map.get(name) || [];
+      list.push(v);
+      map.set(name, list);
+    }
+    return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  }, [videos, brandNames]);
+
+  const openItems = openFolder
+    ? (folders.find(([n]) => n === openFolder)?.[1] || [])
+    : [];
 
   const load = async (quiet = false) => {
     if (!quiet) setLoading(true);
@@ -3732,43 +3820,68 @@ function GeneratedVideosView({ projectId }: { projectId: string }) {
             Go to an ad: for videos, clean then <b>Localize</b>; for images, <b>Swipe / Recreate / Edit</b>. When a job finishes, the file appears here.
           </p>
         </div>
-      ) : (
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
-          {videos.map((v) => (
-            <div key={v.id} className="group relative rounded-xl overflow-hidden border border-border bg-slate-50">
-              <button onClick={() => setPlaying(v)} className="block w-full aspect-[9/16] bg-slate-100">
-                {isStillCreative(v.file_path, v.duration_sec)
-                  ? <img src={getUploadUrl(v.file_path)} alt="" className="w-full h-full object-cover" />
-                  : v.thumb_path
-                    ? <img src={getUploadUrl(v.thumb_path)} alt="" className="w-full h-full object-cover" />
-                    : <div className="w-full h-full flex items-center justify-center text-slate-400"><Play className="w-7 h-7" /></div>}
-              </button>
-              <span className="absolute top-1.5 left-1.5 text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-slate-900/70 text-white">
-                {isStillCreative(v.file_path, v.duration_sec) ? "IMAGE" : `${Math.round(v.duration_sec)}s`}
-              </span>
-              <span className="absolute top-1.5 right-1.5 text-[9px] font-black px-1.5 py-0.5 rounded-full bg-primary text-primary-foreground">
-                NEW
-              </span>
-              {brandNames[v.brand_id] && (
-                <span className="absolute bottom-9 left-1.5 max-w-[80%] truncate text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-900/70 text-white">
-                  {brandNames[v.brand_id]}
+      ) : openFolder ? (
+        <div className="space-y-3">
+          <button
+            type="button"
+            onClick={() => setOpenFolder(null)}
+            className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" /> All folders
+          </button>
+          <div className="flex items-center gap-2">
+            <Folder className="w-4 h-4 text-primary" />
+            <h4 className="text-base font-bold text-foreground">{openFolder}</h4>
+            <span className="text-xs text-muted-foreground">{openItems.length}</span>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+            {openItems.map((v) => (
+              <div key={v.id} className="group relative rounded-xl overflow-hidden border border-border bg-slate-50">
+                <button onClick={() => setPlaying(v)} className="block w-full aspect-[9/16] bg-slate-100">
+                  {isStillCreative(v.file_path, v.duration_sec)
+                    ? <img src={getUploadUrl(v.file_path)} alt="" className="w-full h-full object-cover" />
+                    : v.thumb_path
+                      ? <img src={getUploadUrl(v.thumb_path)} alt="" className="w-full h-full object-cover" />
+                      : <div className="w-full h-full flex items-center justify-center text-slate-400"><Play className="w-7 h-7" /></div>}
+                </button>
+                <span className="absolute top-1.5 left-1.5 text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-slate-900/70 text-white">
+                  {isStillCreative(v.file_path, v.duration_sec) ? "IMAGE" : `${Math.round(v.duration_sec)}s`}
                 </span>
-              )}
-              <div className="flex items-center justify-between px-2 py-1.5 bg-background">
-                <button
-                  onClick={() => downloadCreative({
-                    file_path: v.file_path,
-                    name: `creative-${v.id}`,
-                    media_type: isStillCreative(v.file_path, v.duration_sec) ? "image" : "video",
-                  })}
-                  className="flex items-center gap-1 text-[10px] font-semibold text-primary hover:underline">
-                  <Download className="w-3 h-3" /> Download
-                </button>
-                <button onClick={() => remove(v)} className="text-muted-foreground hover:text-destructive" title="Delete">
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
+                <div className="flex items-center justify-between px-2 py-1.5 bg-background">
+                  <button
+                    onClick={() => downloadCreative({
+                      file_path: v.file_path,
+                      name: `creative-${v.id}`,
+                      media_type: isStillCreative(v.file_path, v.duration_sec) ? "image" : "video",
+                    })}
+                    className="flex items-center gap-1 text-[10px] font-semibold text-primary hover:underline">
+                    <Download className="w-3 h-3" /> Download
+                  </button>
+                  <button onClick={() => remove(v)} className="text-muted-foreground hover:text-destructive" title="Delete">
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
               </div>
-            </div>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+          {folders.map(([name, items]) => (
+            <button
+              key={name}
+              type="button"
+              onClick={() => setOpenFolder(name)}
+              className="text-left rounded-2xl border border-border bg-card p-4 hover:border-primary/40 hover:shadow-md transition-all"
+            >
+              <div className="flex items-center gap-2 mb-2">
+                <span className="h-9 w-9 rounded-lg bg-primary/10 text-primary grid place-items-center">
+                  <Folder className="w-4 h-4" />
+                </span>
+                <span className="text-sm font-semibold text-foreground truncate">{name}</span>
+              </div>
+              <p className="text-xs text-muted-foreground">{items.length} file{items.length === 1 ? "" : "s"}</p>
+            </button>
           ))}
         </div>
       )}
@@ -4068,7 +4181,10 @@ function SectorOverview({ projectId, onOpenBrand, onOpenCreated }: { projectId: 
           fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/landings`),
         ]);
         if (!alive) return;
-        if (rb.ok) setBrands(await rb.json());
+        if (rb.ok) {
+          const all = await rb.json();
+          setBrands(Array.isArray(all) ? all.filter((c: CompetitorWithStats) => !isVideoSaveFolder(c)) : []);
+        }
         if (rc.ok) setCreatives(await rc.json());
         if (rl.ok) setLandings(await rl.json());
       } finally {
