@@ -68,38 +68,27 @@ async function readJson(res: Response): Promise<Record<string, unknown>> {
   }
 }
 
-async function generateWithChatGptImage2(opts: {
-  prompt: string;
-  imageUrl: string;
-  secondaryImageUrl?: string;
+async function pollChatGptJob(opts: {
+  requestId: string;
+  statusUrl: string;
+  responseUrl: string;
+  modelKey: string;
   onWait: (msg: string) => void;
 }): Promise<string> {
-  opts.onWait('Sending to ChatGPT Image 2…');
-  const submitRes = await fetch('/api/generate-image', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      mode: 'image2image',
-      model: 'gpt-image-2-edit',
-      prompt: opts.prompt,
-      size: '1024x1536',
-      style: 'natural',
-      imageUrl: opts.imageUrl,
-      secondaryImageUrl: opts.secondaryImageUrl || undefined,
-    }),
-  });
-  const submit = await readJson(submitRes);
-  if (!submitRes.ok || submit.status === 'error') {
-    throw new Error(String(submit.error || 'ChatGPT Image 2 failed to start'));
-  }
-  let data = submit;
+  let data: Record<string, unknown> = {
+    status: 'pending',
+    requestId: opts.requestId,
+    statusUrl: opts.statusUrl,
+    responseUrl: opts.responseUrl,
+    modelKey: opts.modelKey,
+  };
   const deadline = Date.now() + 5 * 60_000;
-  while (String(data.status || '') === 'pending' && data.requestId) {
+  while (String(data.status || '') === 'pending') {
     if (Date.now() > deadline) throw new Error('ChatGPT Image 2 timed out');
     opts.onWait(
       String(data.falStatus || '') === 'IN_PROGRESS'
         ? 'ChatGPT Image 2 is generating…'
-        : 'Waiting for ChatGPT Image 2…',
+        : 'Waiting for ChatGPT Image 2… keep this popup open',
     );
     await new Promise((r) => setTimeout(r, 1500));
     const pollRes = await fetch('/api/generate-image', {
@@ -237,15 +226,43 @@ export default function AdsRecreatePanel({ ad, onResult }: Props) {
           || (res.status === 504 ? 'ChatGPT timed out — try again' : `Recreate failed (HTTP ${res.status})`),
         );
       }
-      const filePath = String(d.filePath || d.file_path || '');
-      const previewUrl = String(d.previewUrl || '').trim() || (filePath ? getUploadUrl(filePath) : '');
+
+      let filePath = String(d.filePath || d.file_path || '');
+      let previewUrl = String(d.previewUrl || '').trim() || (filePath ? getUploadUrl(filePath) : '');
+      const name = String(d.name || productName || 'Recreated ad');
+
+      if (!filePath && !previewUrl && (d.status === 'pending' || d.requestId || d.statusUrl)) {
+        const falUrl = await pollChatGptJob({
+          requestId: String(d.requestId || 'job'),
+          statusUrl: String(d.statusUrl || ''),
+          responseUrl: String(d.responseUrl || ''),
+          modelKey: String(d.modelKey || 'gpt-image-2-edit'),
+          onWait: setWaitMsg,
+        });
+        previewUrl = falUrl;
+        setResult({ filePath: '', name, previewUrl: falUrl });
+        onResult({ filePath: '', name, previewUrl: falUrl });
+        const ingested = await authFetch(`/api/templates/ads/${ad.id}/recreate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'ingest', url: falUrl, name }),
+        });
+        const savedRaw = await ingested.text();
+        let saved: Record<string, unknown> = {};
+        try { saved = JSON.parse(savedRaw) as Record<string, unknown>; } catch { /* ignore */ }
+        if (ingested.ok) {
+          filePath = String(saved.filePath || saved.file_path || '');
+          previewUrl = String(saved.previewUrl || falUrl);
+        }
+      }
+
       if (!filePath && !previewUrl) {
-        throw new Error(String(d.error || 'ChatGPT did not return an image'));
+        throw new Error(String(d.error || 'ChatGPT Image 2 did not return an image'));
       }
       const preview: RecreatePreview = {
         filePath,
-        name: String(d.name || productName || 'Recreated ad'),
-        previewUrl,
+        name,
+        previewUrl: previewUrl || getUploadUrl(filePath),
       };
       setResult(preview);
       onResult(preview);

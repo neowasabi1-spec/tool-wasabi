@@ -122,7 +122,12 @@ async function toCompactDataUri(buf: Buffer, mime: string): Promise<string> {
   }
 }
 
-export type GptImage2Job = { statusUrl: string; responseUrl: string };
+export type GptImage2Job = {
+  statusUrl: string;
+  responseUrl: string;
+  requestId: string;
+  modelKey: string;
+};
 
 export type GptImage2Poll =
   | { status: 'pending'; falStatus?: string }
@@ -171,15 +176,12 @@ function firstFalImageUrl(result: unknown): { url: string; mime: string } | null
 }
 
 async function refsToImageUrls(refs: string[]): Promise<string[]> {
-  const imageUrls: string[] = [];
-  for (const ref of refs.slice(0, 8)) {
-    const raw = ref.startsWith('data:')
-      ? await bytesFromRef(ref)
-      : await bytesFromRef(ref);
-    if (!raw) continue;
-    imageUrls.push(await toCompactDataUri(raw.buf, raw.mime));
-  }
-  return imageUrls;
+  const converted = await Promise.all(refs.slice(0, 8).map(async (ref) => {
+    const raw = await bytesFromRef(ref);
+    if (!raw) return null;
+    return toCompactDataUri(raw.buf, raw.mime);
+  }));
+  return converted.filter((u): u is string => Boolean(u));
 }
 
 export async function submitGptImage2Job(opts: {
@@ -238,7 +240,12 @@ export async function submitGptImage2Job(opts: {
       setImageErr('ChatGPT Image 2 did not return a job');
       return null;
     }
-    return { statusUrl, responseUrl };
+    return {
+      statusUrl,
+      responseUrl,
+      requestId: String(job.request_id || job.requestId || 'job'),
+      modelKey: imageUrls.length ? 'gpt-image-2-edit' : 'gpt-image-2',
+    };
   } catch (e) {
     setImageErr(`ChatGPT Image 2: ${(e as Error).message}`);
     return null;

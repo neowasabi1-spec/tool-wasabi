@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getCurrentUserId } from '@/lib/auth/get-current-user';
 import { canAccessProject } from '@/lib/auth/project-access';
-import { lastImageGenError, openaiGenerateImageBytes } from '@/lib/openai-image';
+import { lastImageGenError, submitGptImage2Job } from '@/lib/openai-image';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -342,23 +342,29 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     });
 
     const imageUrls = [sourceUrl, productImageUrl || ''].filter(Boolean);
-    const made = await openaiGenerateImageBytes({
+    const job = await submitGptImage2Job({
       prompt,
       imageUrls,
       size: '1024x1536',
       quality: 'medium',
-      timeoutMs: 120_000,
-      openaiOnly: true,
     });
-    if (!made) {
+    if (!job) {
       return NextResponse.json(
-        { error: lastImageGenError() || 'ChatGPT did not return an image' },
+        { error: lastImageGenError() || 'Could not start ChatGPT Image 2' },
         { status: 502 },
       );
     }
 
     const name = `${productName || 'Swipe'} — ${source.name}`.slice(0, 300);
-    return persistGenerated(userId, name, made.buf, made.mime);
+    return NextResponse.json({
+      ok: true,
+      status: 'pending',
+      name,
+      requestId: job.requestId,
+      statusUrl: job.statusUrl,
+      responseUrl: job.responseUrl,
+      modelKey: job.modelKey,
+    });
   } catch (e) {
     const msg = (e as Error).message || lastImageGenError() || 'Recreate failed';
     return NextResponse.json({ error: msg }, { status: 500 });
