@@ -24,7 +24,7 @@ import { authFetch } from "@/lib/auth/client-fetch";
 import { PAGE_TYPE_OPTIONS } from "@/types";
 import { getSupabaseBrowser } from "@/lib/supabase-browser";
 import { BUILD_LANGUAGES, LANGUAGE_OTHER } from "@/lib/video-languages";
-import { hostOfUrl, LANDING_SECTION_LABEL, inferLandingSourceUrl, type LandingSection } from "@/lib/landing-media";
+import { hostOfUrl, LANDING_SECTION_LABEL, type LandingSection } from "@/lib/landing-media";
 import { fillLandingLibrary, landingFillError } from "@/lib/landing-media-client";
 
 const BASE_URL = "";
@@ -2733,31 +2733,28 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
 
   // Add this landing as a swipe step in Clone/Swipe (front-end-funnel), then go there.
   const cloneSwipe = (l: Landing) => {
-    const source = l.url || inferLandingSourceUrl(l.name, l.category);
     const htmlUrl = l.html_url || "";
-    if (!source && !htmlUrl) {
-      toast({ title: "This landing has no source URL to swipe", variant: "destructive" });
+    if (!htmlUrl) {
+      toast({ title: "This landing has no saved HTML to swipe", variant: "destructive" });
       return;
     }
     const q = new URLSearchParams({
+      swipe_html: htmlUrl,
       swipe_name: l.name || "Template",
       swipe_type: l.page_type || "landing",
     });
-    if (source) q.set("swipe_url", source);
-    if (htmlUrl) q.set("swipe_html", htmlUrl);
     router.push(`/front-end-funnel?${q.toString()}`);
   };
 
   const cloneSwipeFolder = (items: Landing[]) => {
     const steps = items
       .map((l) => ({
-        url: l.url || inferLandingSourceUrl(l.name, l.category),
         html: l.html_url || "",
         name: l.name || "Step",
         type: l.page_type || "landing",
       }))
-      .filter((s) => s.url || s.html);
-    if (!steps.length) { toast({ title: "No steps with a source URL to swipe", variant: "destructive" }); return; }
+      .filter((s) => s.html);
+    if (!steps.length) { toast({ title: "No steps with saved HTML to swipe", variant: "destructive" }); return; }
     const q = new URLSearchParams({ swipe_steps: JSON.stringify(steps) });
     router.push(`/front-end-funnel?${q.toString()}`);
   };

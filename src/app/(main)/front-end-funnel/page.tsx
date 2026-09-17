@@ -2723,7 +2723,9 @@ export default function FrontEndFunnel() {
       name,
       pageType,
       productId: '',
-      urlToSwipe: swipeUrl || `https://uploaded.local/${safeName}.html`,
+      urlToSwipe: swipeHtml
+        ? `https://uploaded.local/${safeName}.html`
+        : swipeUrl || '',
       prompt: '',
       swipeStatus: 'pending',
       feedback: '',
@@ -2773,7 +2775,9 @@ export default function FrontEndFunnel() {
           name,
           pageType,
           productId: '',
-          urlToSwipe: s.url || `https://uploaded.local/${safeName}.html`,
+          urlToSwipe: s.html
+            ? `https://uploaded.local/${safeName}.html`
+            : s.url || '',
           prompt: '',
           swipeStatus: 'pending',
           feedback: '',
@@ -4110,7 +4114,7 @@ export default function FrontEndFunnel() {
         }
         if (!uploadedHtml) {
           const tplHtmlUrl = currentPage?.clonedData?.htmlUrl;
-          if (tplHtmlUrl && String(currentPage?.templateId || '').startsWith('arc:')) {
+          if (tplHtmlUrl) {
             try {
               const { fetchHtmlFromStorage } = await import('@/lib/funnel-html-storage');
               const html = (await fetchHtmlFromStorage(tplHtmlUrl)) || '';
@@ -4256,7 +4260,7 @@ export default function FrontEndFunnel() {
         }
         if (!htmlToRewrite) {
           const tplHtmlUrl = currentPage?.clonedData?.htmlUrl;
-          if (tplHtmlUrl && String(currentPage?.templateId || '').startsWith('arc:')) {
+          if (tplHtmlUrl) {
             try {
               const { fetchHtmlFromStorage } = await import('@/lib/funnel-html-storage');
               const html = (await fetchHtmlFromStorage(tplHtmlUrl)) || '';
