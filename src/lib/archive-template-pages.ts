@@ -1,5 +1,5 @@
 import { isStandaloneTemplatePage } from '@/lib/archive-placement';
-import { normalizeArchiveType } from '@/types';
+import { humanizePageTypeSlug, normalizeArchiveType } from '@/types';
 import type { ArchivedFunnel } from '@/types/database';
 
 type ClonedShots = {
@@ -21,6 +21,12 @@ export type ArchiveTemplatePage = {
   htmlUrl: string | null;
 };
 
+export type ArchiveTemplateGroup = {
+  type: string;
+  label: string;
+  pages: ArchiveTemplatePage[];
+};
+
 function cardShotUrl(cd?: ClonedShots | null): string | null {
   return cd?.screenshotMobileUrl || cd?.screenshotDesktopUrl || null;
 }
@@ -36,6 +42,8 @@ export function listArchivePagesByType(
   const map: Record<string, ArchiveTemplatePage[]> = {};
   const all = archivedFunnels || [];
   for (const f of all) {
+    // Competitor Library rows never belong in Templates / Clone-Swipe.
+    if ((f as { project_id?: string | null }).project_id) continue;
     if (!opts?.includeFunnels && !isStandaloneTemplatePage(f, all)) continue;
     const steps = (f.steps as {
       name?: string;
@@ -66,7 +74,7 @@ export function listArchivePagesByType(
   return map;
 }
 
-/** Canonical archive keys that should appear for a Clone/Swipe step type. */
+/** Canonical archive keys that should appear first for a Clone/Swipe step type. */
 export function archiveKeysForStepType(stepType: string, extraKnown: string[] = []): string[] {
   const t = normalizeArchiveType(stepType, extraKnown);
   if (t === 'altro') return [t];
@@ -79,28 +87,43 @@ export function archiveKeysForStepType(stepType: string, extraKnown: string[] = 
   return [t];
 }
 
-/** Templates from Template section folders only (By Type + Funnel), for one step type. */
+/** Template section folders as optgroups. Matching Type is first; other folders stay visible. */
+export function listTemplateSectionGroups(
+  stepType: string,
+  archivedFunnels: ArchivedFunnel[],
+  knownCustomTypes: string[] = [],
+): ArchiveTemplateGroup[] {
+  const map = listArchivePagesByType(archivedFunnels || [], knownCustomTypes, {
+    includeFunnels: true,
+  });
+  const preferred = archiveKeysForStepType(stepType, knownCustomTypes);
+  const seenType = new Set<string>();
+  const groups: ArchiveTemplateGroup[] = [];
+  const pushType = (type: string) => {
+    if (seenType.has(type)) return;
+    const pages = map[type] || [];
+    if (!pages.length) return;
+    seenType.add(type);
+    groups.push({
+      type,
+      label: type === 'altro' ? 'Altro' : humanizePageTypeSlug(type) || type,
+      pages,
+    });
+  };
+  for (const k of preferred) pushType(k);
+  for (const k of Object.keys(map).sort()) pushType(k);
+  return groups;
+}
+
+/** All Template-section pages, matching Type first then the rest of the folders. */
 export function listTemplatesForStepType(
   stepType: string,
   archivedFunnels: ArchivedFunnel[],
   _unusedLibrary?: unknown,
   knownCustomTypes: string[] = [],
 ): ArchiveTemplatePage[] {
-  const map = listArchivePagesByType(archivedFunnels || [], knownCustomTypes, {
-    includeFunnels: true,
-  });
-  const keys = archiveKeysForStepType(stepType, knownCustomTypes);
-  const out: ArchiveTemplatePage[] = [];
-  const seen = new Set<string>();
-  for (const k of keys) {
-    for (const p of map[k] || []) {
-      const dedupe = `${p.url_to_swipe}::${p.name}::${p.funnel_id}`;
-      if (seen.has(dedupe)) continue;
-      seen.add(dedupe);
-      out.push(p);
-    }
-  }
-  return out;
+  return listTemplateSectionGroups(stepType, archivedFunnels || [], knownCustomTypes)
+    .flatMap((g) => g.pages);
 }
 
 /** Stable <option> value for an archive page from Template section. */

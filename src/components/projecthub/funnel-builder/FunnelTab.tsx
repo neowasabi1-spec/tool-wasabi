@@ -707,7 +707,7 @@ function TemplatePickerDialog({
   useEffect(() => {
     if (!open) return;
     setSearch("");
-    void loadArchivedFunnels();
+    void loadArchivedFunnels(true);
     void loadCustomPageTypes();
   }, [open, loadArchivedFunnels, loadCustomPageTypes]);
 
@@ -750,9 +750,9 @@ function TemplatePickerDialog({
         ) : pages.length === 0 ? (
           <div className="py-12 text-center border-2 border-dashed border-border rounded-xl">
             <LayoutTemplate className="w-8 h-8 text-muted-foreground/40 mx-auto mb-2" />
-            <p className="text-sm font-medium">No templates for {stepType || typeLabel}</p>
+            <p className="text-sm font-medium">No pages in Template yet</p>
             <p className="text-xs text-muted-foreground mt-1">
-              Save pages of this type in Templates → Pages, then pick them here.
+              Pages from Template → By Type and Funnel folders show here.
             </p>
           </div>
         ) : (

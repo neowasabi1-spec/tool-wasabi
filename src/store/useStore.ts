@@ -1671,7 +1671,7 @@ export const useStore = create<Store>()((set, get) => ({
       // Supabase query so the rest of the app keeps working — RLS will
       // still scope rows to the caller, so this is a strict superset.
       try {
-        const res = await fetch('/api/valchiria/funnels', { cache: 'no-store' });
+        const res = await authFetch('/api/valchiria/funnels', { cache: 'no-store' });
         const raw = await res.text();
         let json: { success?: boolean; funnels?: unknown; error?: string } | null = null;
         try {

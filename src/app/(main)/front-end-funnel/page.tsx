@@ -37,7 +37,7 @@ import {
   VisionJobDetail,
 } from '@/types';
 import {
-  listTemplatesForStepType,
+  listTemplateSectionGroups,
   pickerValueForTemplate,
 } from '@/lib/archive-template-pages';
 import {
@@ -1143,6 +1143,7 @@ export default function FrontEndFunnel() {
     addCustomPageType,
     saveCurrentFunnelAsArchive,
     archivedFunnels,
+    archivedFunnelsLoading,
     loadArchivedFunnels,
   } = useStore();
 
@@ -1173,23 +1174,22 @@ export default function FrontEndFunnel() {
   );
 
   useEffect(() => {
-    void loadArchivedFunnels();
+    void loadArchivedFunnels(true);
   }, [loadArchivedFunnels]);
 
-  const templatesByStepType = useMemo(() => {
-    const cache = new Map<string, ReturnType<typeof listTemplatesForStepType>>();
+  const templateGroupsByStepType = useMemo(() => {
+    const cache = new Map<string, ReturnType<typeof listTemplateSectionGroups>>();
     return (stepType: string) => {
       const key = stepType || 'landing';
       const hit = cache.get(key);
       if (hit) return hit;
-      const list = listTemplatesForStepType(
+      const groups = listTemplateSectionGroups(
         key,
         archivedFunnels || [],
-        undefined,
         knownCustomTypes,
       );
-      cache.set(key, list);
-      return list;
+      cache.set(key, groups);
+      return groups;
     };
   }, [archivedFunnels, knownCustomTypes]);
 
@@ -4104,6 +4104,16 @@ export default function FrontEndFunnel() {
             );
           }
         }
+        if (!uploadedHtml) {
+          const tplHtmlUrl = currentPage?.clonedData?.htmlUrl;
+          if (tplHtmlUrl && String(currentPage?.templateId || '').startsWith('arc:')) {
+            try {
+              const { fetchHtmlFromStorage } = await import('@/lib/funnel-html-storage');
+              const html = (await fetchHtmlFromStorage(tplHtmlUrl)) || '';
+              if (html && html.length > 30 && !/^\{/.test(html.trim())) uploadedHtml = html;
+            } catch { /* live clone below */ }
+          }
+        }
         let data: {
           content?: string;
           mobileContent?: string | null;
@@ -4238,6 +4248,16 @@ export default function FrontEndFunnel() {
               'Uploaded HTML not found anymore (cleared cache or different device). ' +
                 'Re-upload the .html file for this step.',
             );
+          }
+        }
+        if (!htmlToRewrite) {
+          const tplHtmlUrl = currentPage?.clonedData?.htmlUrl;
+          if (tplHtmlUrl && String(currentPage?.templateId || '').startsWith('arc:')) {
+            try {
+              const { fetchHtmlFromStorage } = await import('@/lib/funnel-html-storage');
+              const html = (await fetchHtmlFromStorage(tplHtmlUrl)) || '';
+              if (html && html.length > 30 && !/^\{/.test(html.trim())) htmlToRewrite = html;
+            } catch { /* clone live URL below */ }
           }
         }
         const chosenAuditorEarly = auditorRef.current;
@@ -6353,8 +6373,8 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                 ) : (
                   (funnelPages || []).map((page, index) => {
                     const isSelected = selectedStepIds.has(page.id);
-                    const typeTemplates = templatesByStepType(page.pageType);
-                    const typeLabel = getPageTypeLabel(page.pageType);
+                    const templateGroups = templateGroupsByStepType(page.pageType);
+                    const typeTemplates = templateGroups.flatMap((g) => g.pages);
                     return (
                     <tr key={page.id} className={isSelected ? 'bg-purple-50/50' : undefined}>
                       {/* Per-row select checkbox — drives the Save subset.
@@ -6515,19 +6535,34 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                             updateFunnelPage(page.id, {
                               templateId: templateId || undefined,
                               urlToSwipe: selected?.url_to_swipe || page.urlToSwipe,
+                              clonedData: selected
+                                ? {
+                                    html: '',
+                                    title: selected.name,
+                                    method_used: 'template',
+                                    content_length: 0,
+                                    duration_seconds: 0,
+                                    cloned_at: new Date(),
+                                    htmlUrl: selected.htmlUrl || undefined,
+                                  }
+                                : page.clonedData,
                             });
                           }}
                           className="truncate"
                           title={
-                            typeTemplates.length === 0
-                              ? `No ${typeLabel} templates in Templates → By Type`
-                              : `Templates for ${typeLabel}`
+                            archivedFunnelsLoading && typeTemplates.length === 0
+                              ? 'Loading Template section…'
+                              : typeTemplates.length === 0
+                              ? 'No pages in Template yet'
+                              : `Template section — ${typeTemplates.length} page${typeTemplates.length === 1 ? '' : 's'}`
                           }
                         >
                           <option value="">
-                            {typeTemplates.length === 0
-                              ? `No ${typeLabel} templates`
-                              : 'Template...'}
+                            {archivedFunnelsLoading && typeTemplates.length === 0
+                              ? 'Loading templates…'
+                              : typeTemplates.length === 0
+                              ? 'No Template pages yet'
+                              : `Template… (${typeTemplates.length})`}
                           </option>
                           {page.templateId &&
                             !typeTemplates.some(
@@ -6535,15 +6570,19 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                             ) && (
                             <option value={page.templateId}>Saved template</option>
                           )}
-                          {typeTemplates.map((template) => (
-                            <option
-                              key={pickerValueForTemplate(template)}
-                              value={pickerValueForTemplate(template)}
-                            >
-                              {template.funnel_name && template.funnel_name !== 'Templates'
-                                ? `${template.name} — ${template.funnel_name}`
-                                : template.name}
-                            </option>
+                          {templateGroups.map((group) => (
+                            <optgroup key={group.type} label={group.label}>
+                              {group.pages.map((template) => (
+                                <option
+                                  key={pickerValueForTemplate(template)}
+                                  value={pickerValueForTemplate(template)}
+                                >
+                                  {template.funnel_name && template.funnel_name !== template.name
+                                    ? `${template.name} — ${template.funnel_name}`
+                                    : template.name}
+                                </option>
+                              ))}
+                            </optgroup>
                           ))}
                         </select>
                       </td>
