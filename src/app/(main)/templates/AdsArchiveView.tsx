@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ChevronRight, FolderOpen, Loader2, Megaphone, Play, Plus, Search,
-  Tag, Trash2, Upload, X,
+  Trash2, Upload, X,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { authFetch } from '@/lib/auth/client-fetch';
@@ -30,26 +30,30 @@ export type ArchiveAd = {
   created_at: string;
 };
 
+const UNFILED = '__unfiled__';
+
 type Props = {
   search: string;
   onFolderCount?: (count: number) => void;
 };
 
 export default function AdsArchiveView({ search, onFolderCount }: Props) {
-  const [ads, setAds] = useState<ArchiveAd[]>([]);
+  const [rows, setRows] = useState<ArchiveAd[]>([]);
   const [customTypes, setCustomTypes] = useState<AdTypeOption[]>([]);
-  const [archiveCategories, setArchiveCategories] = useState<string[]>([]);
-  const [selectedCategory, setSelectedCategory] = useState('');
-  const [addingCategory, setAddingCategory] = useState(false);
-  const [newCategory, setNewCategory] = useState('');
   const [addingType, setAddingType] = useState(false);
   const [newTypeFolder, setNewTypeFolder] = useState('');
+  const [addingCategory, setAddingCategory] = useState(false);
+  const [newCategory, setNewCategory] = useState('');
   const [openType, setOpenType] = useState<string | null>(null);
+  const [openCategory, setOpenCategory] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [missingTable, setMissingTable] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [preview, setPreview] = useState<ArchiveAd | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  const items = useMemo(() => rows.filter((r) => r.media_type !== 'folder'), [rows]);
+  const folderRows = useMemo(() => rows.filter((r) => r.media_type === 'folder'), [rows]);
 
   const loadAds = useCallback(async () => {
     try {
@@ -57,7 +61,7 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
       const d = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(d.error || 'Could not load ads');
       setMissingTable(Boolean(d.missingTable));
-      setAds(Array.isArray(d.ads) ? d.ads : []);
+      setRows(Array.isArray(d.ads) ? d.ads : []);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Could not load ads');
     } finally {
@@ -79,21 +83,10 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
     } catch { /* ignore */ }
   }, []);
 
-  const loadCategories = useCallback(async () => {
-    try {
-      const res = await authFetch('/api/extension/categories');
-      if (res.ok) {
-        const d = await res.json();
-        setArchiveCategories(Array.isArray(d.categories) ? d.categories : []);
-      }
-    } catch { /* ignore */ }
-  }, []);
-
   useEffect(() => {
     void loadAds();
     void loadTypes();
-    void loadCategories();
-  }, [loadAds, loadTypes, loadCategories]);
+  }, [loadAds, loadTypes]);
 
   const typeFolderOptions: AdTypeOption[] = useMemo(() => {
     const seen = new Set(BUILT_IN_AD_TYPE_OPTIONS.map((o) => o.value));
@@ -102,59 +95,38 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
       seen.add(t.value);
       return true;
     })];
-    for (const ad of ads) {
-      const t = String(ad.ad_type || '').trim();
+    for (const row of rows) {
+      const t = String(row.ad_type || '').trim();
       if (!t || seen.has(t)) continue;
       seen.add(t);
       extras.push({ value: t, label: humanizeAdTypeSlug(t), category: 'custom' });
     }
     return [...BUILT_IN_AD_TYPE_OPTIONS, ...extras];
-  }, [ads, customTypes]);
+  }, [rows, customTypes]);
 
   const q = search.trim().toLowerCase();
-  const adsByType = useMemo(() => {
-    const map: Record<string, ArchiveAd[]> = {};
-    for (const ad of ads) {
-      if (q && !ad.name.toLowerCase().includes(q) && !ad.tags.toLowerCase().includes(q)) continue;
-      const t = ad.ad_type || 'image';
-      (map[t] ||= []).push(ad);
-    }
-    return map;
-  }, [ads, q]);
 
   useEffect(() => {
-    const n = new Set(ads.map((a) => a.ad_type).filter(Boolean)).size;
+    const n = new Set(items.map((a) => a.ad_type).filter(Boolean)).size;
     onFolderCount?.(n);
-  }, [ads, onFolderCount]);
+  }, [items, onFolderCount]);
 
-  const addCategory = async () => {
-    const name = newCategory.trim();
-    if (!name) return;
-    try {
-      const res = await authFetch('/api/extension/categories', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name }),
-      });
-      if (res.ok) {
-        const d = await res.json();
-        setArchiveCategories(Array.isArray(d.categories) ? d.categories : []);
-        setSelectedCategory(name);
-      }
-    } catch { /* ignore */ }
-    setNewCategory('');
-    setAddingCategory(false);
+  const itemsInType = (type: string) => items.filter((a) => (a.ad_type || 'image') === type);
+
+  const categoryFolders = (type: string) => {
+    const explicit = folderRows.filter((f) => f.ad_type === type).map((f) => f.name);
+    const implicit = itemsInType(type).map((a) => a.category).filter(Boolean);
+    return Array.from(new Set([...explicit, ...implicit])).sort((a, b) => a.localeCompare(b));
   };
 
-  const deleteCategory = async (name: string) => {
-    try {
-      const res = await authFetch(`/api/extension/categories?name=${encodeURIComponent(name)}`, { method: 'DELETE' });
-      if (res.ok) {
-        const d = await res.json();
-        setArchiveCategories(Array.isArray(d.categories) ? d.categories : []);
-        if (selectedCategory === name) setSelectedCategory('');
-      }
-    } catch { /* ignore */ }
+  const folderRowFor = (type: string, name: string) =>
+    folderRows.find((f) => f.ad_type === type && f.name === name);
+
+  const adsInFolder = (type: string, folder: string | null) => {
+    const list = itemsInType(type);
+    if (!folder) return list;
+    if (folder === UNFILED) return list.filter((a) => !a.category);
+    return list.filter((a) => a.category === folder);
   };
 
   const addTypeFolder = async () => {
@@ -182,10 +154,64 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
     setAddingType(false);
   };
 
-  const uploadFiles = async (files: FileList | File[] | null, adType: string) => {
-    if (!files || (files as FileList).length === 0) return;
+  const addCategoryFolder = async () => {
+    const name = newCategory.trim();
+    if (!name || !openType) return;
+    try {
+      const res = await authFetch('/api/templates/ads', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kind: 'folder', name, ad_type: openType }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(d.error || 'Could not create folder');
+      setRows((prev) => [d as ArchiveAd, ...prev]);
+      toast.success(`Folder "${name}" created`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Could not create folder');
+    }
+    setNewCategory('');
+    setAddingCategory(false);
+  };
+
+  const deleteCategoryFolder = async (type: string, name: string) => {
+    const row = folderRowFor(type, name);
+    const ok = await confirmDialog({
+      title: 'Delete folder',
+      message: `Delete folder "${name}"? Ads inside stay and move to Uncategorized.`,
+      confirmText: 'Delete folder',
+      danger: true,
+    });
+    if (!ok) return;
+    if (row) {
+      const res = await authFetch(`/api/templates/ads/${row.id}`, { method: 'DELETE' });
+      if (!res.ok) { toast.error('Delete failed'); return; }
+      setRows((prev) => prev
+        .filter((x) => x.id !== row.id)
+        .map((x) => (x.ad_type === type && x.category === name && x.media_type !== 'folder' ? { ...x, category: '' } : x)));
+    } else {
+      setRows((prev) => prev.map((x) => (
+        x.ad_type === type && x.category === name && x.media_type !== 'folder' ? { ...x, category: '' } : x
+      )));
+      await Promise.all(
+        itemsInType(type).filter((a) => a.category === name).map((a) =>
+          authFetch(`/api/templates/ads/${a.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ category: '' }),
+          }),
+        ),
+      );
+    }
+    if (openCategory === name) setOpenCategory(null);
+    toast.success('Folder deleted');
+  };
+
+  const uploadFiles = async (files: FileList | File[] | null) => {
+    if (!files || (files as FileList).length === 0 || !openType || !openCategory) return;
     const sb = getSupabaseBrowser();
     if (!sb) { toast.error('Storage unavailable'); return; }
+    const category = openCategory === UNFILED ? '' : openCategory;
     setUploading(true);
     let ok = 0;
     let ko = 0;
@@ -208,16 +234,17 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            kind: 'file',
             name: file.name.replace(/\.[^.]+$/, ''),
             file_path: sj.path,
             media_type: sj.media_type,
-            ad_type: adType,
-            category: selectedCategory || '',
+            ad_type: openType,
+            category,
           }),
         });
         const rj = await rr.json().catch(() => ({}));
         if (!rr.ok) throw new Error(rj.error || 'register failed');
-        setAds((prev) => [rj as ArchiveAd, ...prev]);
+        setRows((prev) => [rj as ArchiveAd, ...prev]);
         ok++;
       } catch (e) {
         ko++;
@@ -230,13 +257,12 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
     if (ko > 0) toast.error(`${ko} file${ko === 1 ? '' : 's'} failed`);
   };
 
-  const moveAd = async (ad: ArchiveAd, adType: string) => {
-    if (adType === ad.ad_type) return;
-    setAds((prev) => prev.map((x) => (x.id === ad.id ? { ...x, ad_type: adType } : x)));
+  const moveAd = async (ad: ArchiveAd, patch: { ad_type?: string; category?: string }) => {
+    setRows((prev) => prev.map((x) => (x.id === ad.id ? { ...x, ...patch } : x)));
     const res = await authFetch(`/api/templates/ads/${ad.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ad_type: adType }),
+      body: JSON.stringify(patch),
     });
     if (!res.ok) {
       toast.error('Move failed');
@@ -252,7 +278,7 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
       danger: true,
     });
     if (!ok) return;
-    setAds((prev) => prev.filter((x) => x.id !== ad.id));
+    setRows((prev) => prev.filter((x) => x.id !== ad.id));
     if (preview?.id === ad.id) setPreview(null);
     const res = await authFetch(`/api/templates/ads/${ad.id}`, { method: 'DELETE' });
     if (!res.ok) {
@@ -263,9 +289,19 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
     }
   };
 
-  const filteredIn = (type: string) => {
-    const all = adsByType[type] || [];
-    return selectedCategory ? all.filter((a) => (a.category || '') === selectedCategory) : all;
+  const matchingAds = useMemo(() => {
+    if (!q) return [] as ArchiveAd[];
+    return items.filter((a) => a.name.toLowerCase().includes(q) || a.tags.toLowerCase().includes(q));
+  }, [items, q]);
+
+  const typeColor = (type: string) => {
+    const opt = typeFolderOptions.find((o) => o.value === type);
+    return AD_TYPE_CATEGORIES.find((c) => c.value === opt?.category)?.color || 'bg-gray-100 text-gray-700';
+  };
+
+  const categoryOptionsFor = (type: string) => {
+    const names = categoryFolders(type);
+    return [{ value: '', label: 'Uncategorized' }, ...names.map((n) => ({ value: n, label: n }))];
   };
 
   return (
@@ -276,62 +312,8 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
         accept="image/*,video/*"
         multiple
         className="hidden"
-        onChange={(e) => {
-          if (openType) void uploadFiles(e.target.files, openType);
-        }}
+        onChange={(e) => { void uploadFiles(e.target.files); }}
       />
-
-      <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 flex flex-wrap items-center gap-3">
-        <div className="flex items-center gap-2">
-          <Tag className="w-4 h-4 text-indigo-500" />
-          <span className="text-sm font-semibold text-gray-700">Category</span>
-        </div>
-        <select
-          value={selectedCategory}
-          onChange={(e) => setSelectedCategory(e.target.value)}
-          className="px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none min-w-[200px]"
-        >
-          <option value="">All categories</option>
-          {archiveCategories.map((c) => (
-            <option key={c} value={c}>{c}</option>
-          ))}
-        </select>
-
-        {addingCategory ? (
-          <div className="flex items-center gap-2">
-            <input
-              autoFocus
-              type="text"
-              value={newCategory}
-              onChange={(e) => setNewCategory(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') { e.preventDefault(); void addCategory(); }
-                if (e.key === 'Escape') { setAddingCategory(false); setNewCategory(''); }
-              }}
-              placeholder="E.g. Survival, Weight loss…"
-              className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
-            />
-            <button onClick={() => void addCategory()} className="px-3 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors">Add</button>
-            <button onClick={() => { setAddingCategory(false); setNewCategory(''); }} className="p-2 text-gray-400 hover:text-gray-600"><X className="w-4 h-4" /></button>
-          </div>
-        ) : (
-          <button
-            onClick={() => setAddingCategory(true)}
-            className="flex items-center gap-1.5 px-3 py-2 border border-dashed border-gray-300 text-gray-600 rounded-lg text-sm hover:border-indigo-400 hover:text-indigo-600 transition-colors"
-          >
-            <Plus className="w-4 h-4" /> New category
-          </button>
-        )}
-
-        {selectedCategory && (
-          <button
-            onClick={() => void deleteCategory(selectedCategory)}
-            className="ml-auto flex items-center gap-1 text-xs text-red-500 hover:text-red-700"
-          >
-            <Trash2 className="w-3.5 h-3.5" /> Delete &ldquo;{selectedCategory}&rdquo;
-          </button>
-        )}
-      </div>
 
       {loading ? (
         <div className="bg-white rounded-xl border border-gray-200 p-12 text-center text-gray-500">
@@ -345,54 +327,35 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
           <p className="text-sm text-gray-500 mt-1">Run <code className="text-xs bg-gray-100 px-1.5 py-0.5 rounded">supabase-migration-archive-ads.sql</code> on Supabase, then reload.</p>
         </div>
       ) : q ? (
-        (() => {
-          const groups = typeFolderOptions
-            .map((opt) => ({ opt, ads: filteredIn(opt.value) }))
-            .filter((g) => g.ads.length > 0);
-          if (groups.length === 0) {
-            return (
-              <div className="bg-white rounded-xl border border-gray-200 p-12 text-center">
-                <Search className="w-10 h-10 text-gray-300 mx-auto mb-3" />
-                <p className="text-gray-500">No ads match “{search.trim()}”.</p>
-              </div>
-            );
-          }
-          return (
-            <div className="space-y-8">
-              {groups.map(({ opt, ads: folderAds }) => (
-                <section key={opt.value} className="space-y-3">
-                  <div className="flex items-center gap-3">
-                    <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${AD_TYPE_CATEGORIES.find((c) => c.value === opt.category)?.color || 'bg-gray-100 text-gray-700'}`}>
-                      {opt.label}
-                    </span>
-                    <span className="text-sm text-gray-400">{folderAds.length}</span>
-                  </div>
-                  <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
-                    {folderAds.map((ad) => (
-                      <AdCard
-                        key={ad.id}
-                        ad={ad}
-                        typeOptions={typeFolderOptions}
-                        onPreview={() => setPreview(ad)}
-                        onMove={(t) => void moveAd(ad, t)}
-                        onDelete={() => void deleteAd(ad)}
-                      />
-                    ))}
-                  </div>
-                </section>
-              ))}
-            </div>
-          );
-        })()
+        matchingAds.length === 0 ? (
+          <div className="bg-white rounded-xl border border-gray-200 p-12 text-center">
+            <Search className="w-10 h-10 text-gray-300 mx-auto mb-3" />
+            <p className="text-gray-500">No ads match “{search.trim()}”.</p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+            {matchingAds.map((ad) => (
+              <AdCard
+                key={ad.id}
+                ad={ad}
+                typeOptions={typeFolderOptions}
+                categoryOptions={categoryOptionsFor(ad.ad_type)}
+                onPreview={() => setPreview(ad)}
+                onMoveType={(t) => void moveAd(ad, { ad_type: t })}
+                onMoveCategory={(c) => void moveAd(ad, { category: c })}
+                onDelete={() => void deleteAd(ad)}
+              />
+            ))}
+          </div>
+        )
       ) : openType === null ? (
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
           {typeFolderOptions.map((opt) => {
-            const count = filteredIn(opt.value).length;
-            const colorClass = AD_TYPE_CATEGORIES.find((c) => c.value === opt.category)?.color || 'bg-gray-100 text-gray-700';
+            const count = itemsInType(opt.value).length;
             return (
               <button
                 key={opt.value}
-                onClick={() => setOpenType(opt.value)}
+                onClick={() => { setOpenType(opt.value); setOpenCategory(null); }}
                 className="group bg-white rounded-2xl border border-gray-200 shadow-sm p-5 flex flex-col items-start gap-3 hover:border-indigo-300 hover:shadow-lg hover:-translate-y-0.5 transition-all text-left"
               >
                 <div className="flex items-center justify-between w-full">
@@ -401,7 +364,7 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
                   </span>
                   <span className="text-3xl font-bold text-gray-800 tabular-nums">{count}</span>
                 </div>
-                <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${colorClass}`}>{opt.label}</span>
+                <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${typeColor(opt.value)}`}>{opt.label}</span>
                 <span className="text-[11px] text-gray-400">{count === 1 ? '1 ad' : `${count} ads`}</span>
               </button>
             );
@@ -421,7 +384,7 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
                 className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
               />
               <div className="flex items-center gap-2">
-                <button onClick={() => void addTypeFolder()} className="px-3 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors">Add folder</button>
+                <button onClick={() => void addTypeFolder()} className="px-3 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors">Add type</button>
                 <button onClick={() => { setAddingType(false); setNewTypeFolder(''); }} className="p-2 text-gray-400 hover:text-gray-600"><X className="w-4 h-4" /></button>
               </div>
             </div>
@@ -434,30 +397,127 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
                 <Plus className="w-5 h-5" />
               </span>
               <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-600">New type</span>
-              <span className="text-[11px] text-gray-400">Add a folder (e.g. Hook)</span>
+              <span className="text-[11px] text-gray-400">Add a type (e.g. Hook)</span>
             </button>
           )}
         </div>
+      ) : openCategory === null ? (
+        (() => {
+          const opt = typeFolderOptions.find((o) => o.value === openType);
+          const folders = categoryFolders(openType);
+          const unfiled = adsInFolder(openType, UNFILED).length;
+          return (
+            <div className="space-y-4">
+              <div className="flex items-center gap-3 flex-wrap">
+                <button onClick={() => { setOpenType(null); setOpenCategory(null); }} className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-800">
+                  <ChevronRight className="w-4 h-4 rotate-180" /> Types
+                </button>
+                <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${typeColor(openType)}`}>{opt?.label || openType}</span>
+                <span className="text-sm text-gray-400">{itemsInType(openType).length} ads</span>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+                {folders.map((name) => {
+                  const count = adsInFolder(openType, name).length;
+                  return (
+                    <div key={name} className="relative group">
+                      <button
+                        onClick={() => setOpenCategory(name)}
+                        className="w-full bg-white rounded-2xl border border-gray-200 shadow-sm p-5 flex flex-col items-start gap-3 hover:border-indigo-300 hover:shadow-lg hover:-translate-y-0.5 transition-all text-left"
+                      >
+                        <div className="flex items-center justify-between w-full">
+                          <span className="inline-flex items-center justify-center w-11 h-11 rounded-xl bg-gradient-to-br from-amber-100 to-amber-200 text-amber-600">
+                            <FolderOpen className="w-5 h-5" />
+                          </span>
+                          <span className="text-3xl font-bold text-gray-800 tabular-nums">{count}</span>
+                        </div>
+                        <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-indigo-100 text-indigo-800">{name}</span>
+                        <span className="text-[11px] text-gray-400">{count === 1 ? '1 ad' : `${count} ads`}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void deleteCategoryFolder(openType, name)}
+                        className="absolute top-3 right-3 p-1 rounded-md text-gray-300 hover:text-red-600 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-opacity"
+                        title="Delete folder"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  );
+                })}
+                {unfiled > 0 && (
+                  <button
+                    onClick={() => setOpenCategory(UNFILED)}
+                    className="bg-white rounded-2xl border border-dashed border-gray-300 shadow-sm p-5 flex flex-col items-start gap-3 hover:border-indigo-300 hover:shadow-lg hover:-translate-y-0.5 transition-all text-left"
+                  >
+                    <div className="flex items-center justify-between w-full">
+                      <span className="inline-flex items-center justify-center w-11 h-11 rounded-xl bg-gray-100 text-gray-500">
+                        <FolderOpen className="w-5 h-5" />
+                      </span>
+                      <span className="text-3xl font-bold text-gray-800 tabular-nums">{unfiled}</span>
+                    </div>
+                    <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-600">Uncategorized</span>
+                    <span className="text-[11px] text-gray-400">{unfiled === 1 ? '1 ad' : `${unfiled} ads`}</span>
+                  </button>
+                )}
+                {addingCategory ? (
+                  <div className="bg-white rounded-2xl border border-dashed border-indigo-300 shadow-sm p-5 flex flex-col gap-3">
+                    <input
+                      autoFocus
+                      type="text"
+                      value={newCategory}
+                      onChange={(e) => setNewCategory(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') { e.preventDefault(); void addCategoryFolder(); }
+                        if (e.key === 'Escape') { setAddingCategory(false); setNewCategory(''); }
+                      }}
+                      placeholder="E.g. Survival, Weight loss…"
+                      className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
+                    />
+                    <div className="flex items-center gap-2">
+                      <button onClick={() => void addCategoryFolder()} className="px-3 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors">Add folder</button>
+                      <button onClick={() => { setAddingCategory(false); setNewCategory(''); }} className="p-2 text-gray-400 hover:text-gray-600"><X className="w-4 h-4" /></button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => setAddingCategory(true)}
+                    className="group bg-white rounded-2xl border border-dashed border-gray-300 shadow-sm p-5 flex flex-col items-start gap-3 hover:border-indigo-400 hover:shadow-lg hover:-translate-y-0.5 transition-all text-left"
+                  >
+                    <span className="inline-flex items-center justify-center w-11 h-11 rounded-xl bg-gray-50 text-gray-400 group-hover:bg-indigo-50 group-hover:text-indigo-600 transition-colors">
+                      <Plus className="w-5 h-5" />
+                    </span>
+                    <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-600">New folder</span>
+                    <span className="text-[11px] text-gray-400">Divide this type by category</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })()
       ) : (() => {
         const opt = typeFolderOptions.find((o) => o.value === openType);
-        const folderAds = filteredIn(openType);
-        const colorClass = AD_TYPE_CATEGORIES.find((c) => c.value === opt?.category)?.color || 'bg-gray-100 text-gray-700';
+        const folderAds = adsInFolder(openType, openCategory);
+        const folderLabel = openCategory === UNFILED ? 'Uncategorized' : openCategory;
         return (
           <div
             className="space-y-4"
             onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }}
             onDrop={(e) => {
               e.preventDefault();
-              void uploadFiles(e.dataTransfer.files, openType);
+              void uploadFiles(e.dataTransfer.files);
             }}
           >
             <div className="flex items-center gap-3 flex-wrap">
-              <button onClick={() => setOpenType(null)} className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-800">
-                <ChevronRight className="w-4 h-4 rotate-180" /> Folders
+              <button onClick={() => { setOpenType(null); setOpenCategory(null); }} className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-800">
+                <ChevronRight className="w-4 h-4 rotate-180" /> Types
               </button>
-              <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${colorClass}`}>{opt?.label || openType}</span>
+              <button onClick={() => setOpenCategory(null)} className={`px-2.5 py-1 rounded-full text-xs font-semibold ${typeColor(openType)} hover:ring-1 hover:ring-indigo-300`}>
+                {opt?.label || openType}
+              </button>
+              <ChevronRight className="w-3.5 h-3.5 text-gray-300" />
+              <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-indigo-100 text-indigo-800">{folderLabel}</span>
               <span className="text-sm text-gray-400">{folderAds.length} {folderAds.length === 1 ? 'ad' : 'ads'}</span>
-              {selectedCategory && <span className="text-xs text-indigo-500">· {selectedCategory}</span>}
               <div className="ml-auto">
                 <button
                   type="button"
@@ -474,7 +534,7 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
             {folderAds.length === 0 ? (
               <div className="bg-white rounded-xl border border-dashed border-gray-200 p-12 text-center">
                 <FolderOpen className="w-10 h-10 text-gray-300 mx-auto mb-3" />
-                <p className="text-gray-500">No ads in this folder{selectedCategory ? ` for "${selectedCategory}"` : ''}.</p>
+                <p className="text-gray-500">No ads in this folder.</p>
                 <p className="text-xs text-gray-400 mt-1">Drop images or videos here, or upload.</p>
                 <button
                   type="button"
@@ -492,8 +552,10 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
                     key={ad.id}
                     ad={ad}
                     typeOptions={typeFolderOptions}
+                    categoryOptions={categoryOptionsFor(openType)}
                     onPreview={() => setPreview(ad)}
-                    onMove={(t) => void moveAd(ad, t)}
+                    onMoveType={(t) => void moveAd(ad, { ad_type: t })}
+                    onMoveCategory={(c) => void moveAd(ad, { category: c })}
                     onDelete={() => void deleteAd(ad)}
                   />
                 ))}
@@ -503,7 +565,7 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
         );
       })()}
 
-      {preview && (
+      {preview && preview.media_type !== 'folder' && (
         <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4" onClick={() => setPreview(null)}>
           <div className="w-full max-w-3xl bg-gray-950 rounded-2xl overflow-hidden shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
@@ -545,14 +607,18 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
 function AdCard({
   ad,
   typeOptions,
+  categoryOptions,
   onPreview,
-  onMove,
+  onMoveType,
+  onMoveCategory,
   onDelete,
 }: {
   ad: ArchiveAd;
   typeOptions: AdTypeOption[];
+  categoryOptions: { value: string; label: string }[];
   onPreview: () => void;
-  onMove: (adType: string) => void;
+  onMoveType: (adType: string) => void;
+  onMoveCategory: (category: string) => void;
   onDelete: () => void;
 }) {
   const src = getUploadUrl(ad.file_path);
@@ -577,12 +643,22 @@ function AdCard({
         <p className="text-sm font-medium text-gray-900 truncate" title={ad.name}>{ad.name}</p>
         <select
           value={ad.ad_type}
-          onChange={(e) => onMove(e.target.value)}
+          onChange={(e) => onMoveType(e.target.value)}
           className="w-full px-2 py-1.5 border border-gray-200 rounded-lg text-xs bg-white text-gray-700 focus:ring-2 focus:ring-indigo-500 outline-none"
-          title="Move to another folder"
+          title="Move to another type"
         >
           {typeOptions.map((opt) => (
             <option key={opt.value} value={opt.value}>{opt.label}</option>
+          ))}
+        </select>
+        <select
+          value={ad.category || ''}
+          onChange={(e) => onMoveCategory(e.target.value)}
+          className="w-full px-2 py-1.5 border border-gray-200 rounded-lg text-xs bg-white text-gray-700 focus:ring-2 focus:ring-indigo-500 outline-none"
+          title="Move to another category folder"
+        >
+          {categoryOptions.map((opt) => (
+            <option key={opt.value || '__none'} value={opt.value}>{opt.label}</option>
           ))}
         </select>
         <button

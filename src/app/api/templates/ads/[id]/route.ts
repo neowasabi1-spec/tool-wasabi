@@ -59,6 +59,16 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     .select()
     .single();
   if (error || !data) return NextResponse.json({ error: error?.message || 'Update failed' }, { status: 500 });
+
+  if (row.media_type === 'folder' && patch.name && patch.name !== row.name) {
+    await supabaseAdmin
+      .from('archive_ads')
+      .update({ category: patch.name })
+      .eq('ad_type', row.ad_type)
+      .eq('category', row.name)
+      .neq('media_type', 'folder');
+  }
+
   return NextResponse.json(data);
 }
 
@@ -69,7 +79,14 @@ export async function DELETE(req: NextRequest, { params }: { params: { id: strin
   const row = await loadRow(params.id);
   if (!row) return NextResponse.json({ ok: true });
 
-  if (row.file_path && row.file_path.startsWith('archive-ads/')) {
+  if (row.media_type === 'folder') {
+    await supabaseAdmin
+      .from('archive_ads')
+      .update({ category: '' })
+      .eq('ad_type', row.ad_type)
+      .eq('category', row.name)
+      .neq('media_type', 'folder');
+  } else if (row.file_path && row.file_path.startsWith('archive-ads/')) {
     await supabaseAdmin.storage.from('project-files').remove([row.file_path]).catch(() => {});
   }
 
