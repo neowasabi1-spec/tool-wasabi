@@ -108,16 +108,21 @@ async function bytesFromRef(url: string): Promise<{ buf: Buffer; mime: string } 
 }
 
 async function toCompactDataUri(buf: Buffer, mime: string): Promise<string> {
+  const sniffed = sniffImage(buf, mime);
+  // Competitor Ads remake sends the original still. JPEG-compressing graphic ads
+  // makes ChatGPT Image 2 return empty "generation failed".
+  if (buf.length <= 2_500_000) {
+    return `data:${sniffed.mime};base64,${buf.toString('base64')}`;
+  }
   try {
     const sharp = (await import('sharp')).default;
     const out = await sharp(buf)
       .rotate()
       .resize(1536, 1536, { fit: 'inside', withoutEnlargement: true })
-      .jpeg({ quality: 82 })
+      .png()
       .toBuffer();
-    return `data:image/jpeg;base64,${out.toString('base64')}`;
+    return `data:image/png;base64,${out.toString('base64')}`;
   } catch {
-    const sniffed = sniffImage(buf, mime);
     return `data:${sniffed.mime};base64,${buf.toString('base64')}`;
   }
 }

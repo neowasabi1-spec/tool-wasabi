@@ -138,7 +138,7 @@ export default function AdsRecreatePanel({ ad, onResult }: Props) {
       return;
     }
     setBusy(true);
-    setWaitMsg('Sending to ChatGPT Image 2…');
+    setWaitMsg('Same ChatGPT Image 2 as Competitor Ads — this can take up to two minutes');
     setAnalysis('');
     setSaved(false);
     setResult(null);
@@ -180,20 +180,11 @@ export default function AdsRecreatePanel({ ad, onResult }: Props) {
           if (!pollRes.ok) throw new Error(String(poll.error || 'ChatGPT Image 2 failed'));
           payload = poll;
           if (hasImage() || String(poll.status || '') === 'completed') break;
-          const fal = String(poll.falStatus || 'IN_QUEUE');
-          setWaitMsg(
-            fal === 'IN_PROGRESS'
-              ? 'ChatGPT Image 2 is generating…'
-              : 'Waiting for ChatGPT Image 2…',
-          );
           await new Promise((r) => setTimeout(r, 2000));
-        }
-        if (!hasImage() && String(payload.status || '') === 'pending') {
-          throw new Error('ChatGPT Image 2 is still running — keep the popup open and try again');
         }
       }
 
-      const previewUrl = String(payload.previewDataUrl || payload.previewUrl || '').trim()
+      const previewUrl = String(payload.previewUrl || '').trim()
         || (payload.filePath || payload.file_path ? getUploadUrl(String(payload.filePath || payload.file_path)) : '');
       const preview: RecreatePreview = {
         filePath: String(payload.filePath || payload.file_path || ''),
@@ -201,7 +192,7 @@ export default function AdsRecreatePanel({ ad, onResult }: Props) {
         previewUrl,
       };
       if (!preview.filePath && !preview.previewUrl) {
-        throw new Error(String(payload.error || 'ChatGPT Image 2 has not returned the image yet'));
+        throw new Error(String(payload.error || 'ChatGPT Image 2 did not return an image'));
       }
       setResult(preview);
       onResult(preview);

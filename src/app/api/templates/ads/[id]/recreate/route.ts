@@ -2,24 +2,13 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getCurrentUserId } from '@/lib/auth/get-current-user';
 import { canAccessProject } from '@/lib/auth/project-access';
-import { lastImageGenError, openaiImageKey, pollGptImage2Job, submitGptImage2Job, waitGptImage2Job } from '@/lib/openai-image';
+import { lastImageGenError, openaiGenerateImageBytes, pollGptImage2Job } from '@/lib/openai-image';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export const maxDuration = 180;
 
 const BUCKET = 'project-files';
-const ANALYZE_PROMPT = `Analyze this advertisement still. Return ONLY JSON (no markdown) with:
-{
-  "layout": "short description of composition (split, overlay, UGC, before/after, product hero, etc.)",
-  "productPlacement": "where the product sits and how large it is",
-  "subjects": "people, setting, props",
-  "colors": "palette and mood",
-  "lighting": "lighting style",
-  "texts": [{"role":"headline|sub|badge|cta|caption|legal","text":"..."}],
-  "techniques": ["before/after","scarcity","authority", "..."],
-  "notes": "anything else needed to rebuild the same structure"
-}`;
 
 type SourceAd = {
   id: string;
@@ -35,35 +24,6 @@ async function signedUrl(path: string): Promise<string | null> {
   const { data, error } = await supabaseAdmin.storage.from(BUCKET).createSignedUrl(path, 3600);
   if (error || !data?.signedUrl) return null;
   return data.signedUrl;
-}
-
-async function analyzeLayout(imageUrl: string): Promise<string> {
-  const key = openaiImageKey();
-  if (!key) return '';
-  const base = (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/+$/, '');
-  const res = await fetch(`${base}/chat/completions`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: 'gpt-4o',
-      max_tokens: 900,
-      temperature: 0.2,
-      messages: [{
-        role: 'user',
-        content: [
-          { type: 'image_url', image_url: { url: imageUrl } },
-          { type: 'text', text: ANALYZE_PROMPT },
-        ],
-      }],
-    }),
-    signal: AbortSignal.timeout(15_000),
-  });
-  if (!res.ok) {
-    console.warn('[ads/recreate] vision', res.status, (await res.text()).slice(0, 240));
-    return '';
-  }
-  const json = await res.json() as { choices?: Array<{ message?: { content?: string } }> };
-  return String(json.choices?.[0]?.message?.content || '').trim();
 }
 
 async function loadProjectCtx(projectId: string) {
@@ -125,44 +85,27 @@ async function loadCatalogProduct(productId: string) {
   };
 }
 
-function layoutOnlyAnalysis(raw: string): string {
-  const cleaned = raw.replace(/```json|```/g, '').trim();
-  try {
-    const json = JSON.parse(cleaned) as Record<string, unknown>;
-    return JSON.stringify({
-      layout: json.layout,
-      productPlacement: json.productPlacement,
-      subjects: json.subjects,
-      colors: json.colors,
-      lighting: json.lighting,
-      techniques: json.techniques,
-      notes: json.notes,
-    });
-  } catch {
-    return cleaned.slice(0, 800);
-  }
-}
-
 function buildPrompt(opts: {
   productName: string;
   brief: string;
-  analysis: string;
   hasPackshot: boolean;
 }): string {
   const name = opts.productName || 'our product';
-  const layout = opts.analysis ? layoutOnlyAnalysis(opts.analysis) : '';
+  const brief = opts.brief ? ` Our product: ${opts.brief.replace(/\s+/g, ' ').slice(0, 400)}.` : '';
+  if (opts.hasPackshot) {
+    return [
+      `Replace the competitor product in this ad with ${name}.`,
+      'The FIRST image is the ad layout to keep. The SECOND image is our exact packshot — put that product in their place.',
+      'Keep the same format, framing, people, colors, style and on-image text hierarchy.',
+      brief,
+    ].filter(Boolean).join(' ');
+  }
   return [
-    opts.hasPackshot
-      ? 'Image 1 is the LAYOUT to keep. Image 2 is our exact packshot — use that product, do not invent a bottle.'
-      : 'The attached image is the LAYOUT to keep.',
-    `Create a brand-new lifestyle advertisement for ${name}.`,
-    'Keep the same composition: panels, product placement, hierarchy, lighting and color rhythm.',
-    'Rewrite every on-image word for our product. Do not copy competitor brands, logos, disease names, lesions, or medical claims.',
-    'Wellness / cosmetic commercial still only. No medical before/after of infections or conditions.',
-    opts.brief ? `Our product:\n${opts.brief.slice(0, 1200)}` : '',
-    layout ? `Layout notes (structure only):\n${layout}` : '',
-    'Photorealistic, sharp typography, no watermarks.',
-  ].filter(Boolean).join('\n\n');
+    `Recreate this advertisement for ${name}.`,
+    'Keep the same layout, people, colors and composition.',
+    'Rewrite visible text for our product.',
+    brief,
+  ].filter(Boolean).join(' ');
 }
 
 async function saveToProjectCreatives(
@@ -386,51 +329,30 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       );
     }
 
-    let analysis = '';
-    try {
-      analysis = await analyzeLayout(sourceUrl);
-    } catch (e) {
-      console.warn('[ads/recreate] analysis failed:', (e as Error).message);
-    }
-
     const prompt = buildPrompt({
       productName: productName || 'our product',
       brief,
-      analysis,
       hasPackshot: Boolean(productImageUrl),
     });
 
     const imageUrls = [sourceUrl, productImageUrl || ''].filter(Boolean);
-    const job = await submitGptImage2Job({
+    const made = await openaiGenerateImageBytes({
       prompt,
       imageUrls,
-      size: 'auto',
+      size: '1024x1536',
       quality: 'medium',
+      timeoutMs: 120_000,
+      openaiOnly: true,
     });
-    if (!job) {
+    if (!made) {
       return NextResponse.json(
-        { error: lastImageGenError() || 'Could not start ChatGPT Image 2' },
+        { error: lastImageGenError() || 'ChatGPT did not return an image' },
         { status: 502 },
       );
     }
 
     const name = `${productName || 'Swipe'} — ${source.name}`.slice(0, 300);
-    const waited = await waitGptImage2Job(job, 120_000);
-    if (waited.status === 'error') {
-      return NextResponse.json({ error: waited.error }, { status: 502 });
-    }
-    if (waited.status === 'completed') {
-      return persistGenerated(userId, name, waited.buf, waited.mime);
-    }
-    return NextResponse.json({
-      ok: true,
-      status: 'pending',
-      analysis,
-      name,
-      projectId: projectId || null,
-      statusUrl: job.statusUrl,
-      responseUrl: job.responseUrl,
-    });
+    return persistGenerated(userId, name, made.buf, made.mime);
   } catch (e) {
     return NextResponse.json(
       { error: (e as Error).message || 'Recreate failed' },
