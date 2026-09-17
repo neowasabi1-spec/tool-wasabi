@@ -1,26 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getUserAccessContext } from '@/lib/auth/get-current-user';
-import { slimFunnelPageRow } from '@/lib/supabase-operations';
 import { listAccessibleProjectIds } from '@/lib/auth/project-access';
+import { loadSlimFunnelPages } from '@/lib/slim-funnel-pages';
 
 export const dynamic = 'force-dynamic';
+export const maxDuration = 26;
 
 /**
  * GET /api/funnel-pages
- * Clone/Swipe list. Service role + project access, so pages Chimera created
- * (owner = master trigger) still show up for the project owner.
+ * Clone/Swipe list. Metadata only — HTML lives in page_html. Selecting the
+ * JSONB blobs here is what made boot + this page hang and 57014 Postgres.
  */
 export async function GET(req: NextRequest) {
   const ctx = await getUserAccessContext(req);
 
-  const { data, error } = await supabaseAdmin
-    .from('funnel_pages')
-    .select('*')
-    .order('created_at', { ascending: true });
-
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  const rows = (data || []).map((r) => slimFunnelPageRow(r as Record<string, unknown>));
+  const { rows, error } = await loadSlimFunnelPages();
+  if (error) return NextResponse.json({ error }, { status: 500 });
 
   if (!ctx.userId || ctx.isMaster) {
     return NextResponse.json(rows);

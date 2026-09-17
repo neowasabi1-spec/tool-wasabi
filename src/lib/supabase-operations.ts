@@ -274,14 +274,25 @@ export async function fetchFunnelPages(): Promise<FunnelPage[]> {
 
   const { data, error } = await supabase
     .from('funnel_pages')
-    .select('*')
+    .select(
+      'id, name, page_type, template_id, product_id, project_id, url_to_swipe, angle, prompt, swipe_status, swipe_result, feedback, analysis_status, analysis_result, created_at, updated_at',
+    )
     .order('created_at', { ascending: true });
 
   if (error) {
     console.error('Error fetching funnel pages:', error);
     throw error;
   }
-  return (data || []).map((r) => slimFunnelPageRow(r as unknown as Record<string, unknown>) as FunnelPage);
+  return (data || []).map((r) => {
+    const row = slimFunnelPageRow(r as unknown as Record<string, unknown>) as FunnelPage;
+    const pointer = (kind: string) =>
+      `/api/funnel-html?pageId=${encodeURIComponent(row.id)}&kind=${kind}&variant=desktop`;
+    return {
+      ...row,
+      cloned_data: row.cloned_data ?? { htmlUrl: pointer('cloned'), htmlSkipped: true },
+      swiped_data: row.swiped_data ?? { htmlUrl: pointer('swiped'), htmlSkipped: true },
+    } as FunnelPage;
+  });
 }
 
 // =====================================================
@@ -1140,7 +1151,7 @@ export async function incrementPromptUseCount(id: string): Promise<void> {
 export async function fetchArchivedFunnels(): Promise<ArchivedFunnel[]> {
   const { data, error } = await supabase
     .from('archived_funnels')
-    .select('*')
+    .select('id, name, total_steps, section, created_at, owner_user_id, show_in_valchiria, share_with_users, project_id')
     .is('project_id', null)
     .order('created_at', { ascending: false });
 
@@ -1148,7 +1159,7 @@ export async function fetchArchivedFunnels(): Promise<ArchivedFunnel[]> {
     console.error('Error fetching archived funnels:', error);
     throw error;
   }
-  return data;
+  return (data || []).map((r) => ({ ...r, steps: [] })) as ArchivedFunnel[];
 }
 
 export async function createArchivedFunnel(funnel: ArchivedFunnelInsert): Promise<ArchivedFunnel> {

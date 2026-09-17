@@ -13,10 +13,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getUserAccessContext } from '@/lib/auth/get-current-user';
 import { dedupeStepsByUrl } from '@/lib/archive-placement';
+import { loadSlimArchivedFunnels } from '@/lib/slim-archived-funnels';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
-export const maxDuration = 15;
+export const maxDuration = 26;
 
 interface ValchiriaFunnelRow {
   id: string;
@@ -40,9 +41,6 @@ interface ValchiriaFunnelRow {
    *     PATCH endpoint. */
   isInMyValchiria: boolean;
 }
-
-const SELECT_COLS =
-  'id, name, total_steps, steps, section, created_at, owner_user_id, show_in_valchiria, share_with_users';
 
 /**
  * Strip the heavy inline HTML blobs from every step before shipping the list
@@ -94,12 +92,21 @@ export async function GET(req: NextRequest) {
   try {
     const ctx = await getUserAccessContext(req);
 
-    const { data, error } = await supabaseAdmin
+    const slim = await loadSlimArchivedFunnels(null, 800);
+    if (slim.error) throw new Error(slim.error);
+
+    const metaRes = await supabaseAdmin
       .from('archived_funnels')
-      .select(SELECT_COLS)
-      .is('project_id', null)
-      .order('created_at', { ascending: false });
-    if (error) throw error;
+      .select('id, owner_user_id, show_in_valchiria, share_with_users')
+      .is('project_id', null);
+    const metaById = new Map(
+      (metaRes.data || []).map((m: {
+        id: string;
+        owner_user_id: string | null;
+        show_in_valchiria: boolean | null;
+        share_with_users: boolean | null;
+      }) => [m.id, m]),
+    );
 
     let pickedIds = new Set<string>();
     if (ctx.userId && !ctx.isMaster) {
@@ -112,15 +119,23 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    const rows: ValchiriaFunnelRow[] = (data || []).map((r) => {
+    const rows: ValchiriaFunnelRow[] = slim.rows.map((r) => {
+      const meta = metaById.get(r.id);
       const cleaned = uniqueSteps(r.steps);
-      const mine = !r.owner_user_id || r.owner_user_id === ctx.userId || ctx.isMaster || !ctx.userId;
+      const ownerId = meta?.owner_user_id ?? null;
+      const mine = !ownerId || ownerId === ctx.userId || ctx.isMaster || !ctx.userId;
       return {
-        ...r,
-        total_steps: cleaned.steps.length || r.total_steps,
+        id: r.id,
+        name: r.name,
+        total_steps: cleaned.steps.length || r.total_steps || 0,
         steps: slimSteps(r.id, cleaned.steps.length ? cleaned.steps : r.steps),
+        section: r.section,
+        created_at: r.created_at,
+        owner_user_id: ownerId,
+        show_in_valchiria: !!meta?.show_in_valchiria,
+        share_with_users: !!meta?.share_with_users,
         isShared: false,
-        isInMyValchiria: mine ? !!r.show_in_valchiria : pickedIds.has(r.id),
+        isInMyValchiria: mine ? !!meta?.show_in_valchiria : pickedIds.has(r.id),
       };
     });
     return NextResponse.json({ success: true, funnels: rows });
