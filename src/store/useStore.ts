@@ -20,6 +20,10 @@ import { normalizeCheckoutMode, type CheckoutMode } from '@/lib/checkout-modes';
 
 const SWIPE_API_URL = '/api/landing/swipe';
 
+let catalogRefreshInFlight = false;
+let catalogRefreshAt = 0;
+const CATALOG_REFRESH_MIN_MS = 45_000;
+
 /** Keep "never chosen" distinct from an explicit 'standard' so we don't write
  *  a value to rows the user never touched. Both behave identically downstream. */
 function normalizeCheckoutModeOrUndefined(raw: unknown): CheckoutMode | undefined {
@@ -1715,13 +1719,14 @@ export const useStore = create<Store>()((set, get) => ({
       } catch (fallbackErr) {
         const fallbackReason =
           fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
-        if (silent && (get().archivedFunnels || []).length > 0) {
+        const kept = get().archivedFunnels || [];
+        if (kept.length > 0) {
           set({ archivedFunnelsLoading: false });
           return;
         }
         set({
-          archivedFunnels: [],
-          archivedFunnelsLoaded: true,
+          archivedFunnels: kept,
+          archivedFunnelsLoaded: false,
           archivedFunnelsLoading: false,
           archivedFunnelsError: `${apiReason || 'API failed'}. Fallback also failed: ${fallbackReason}`,
         });
@@ -1738,24 +1743,28 @@ export const useStore = create<Store>()((set, get) => ({
 
   refreshLiveCatalog: async () => {
     if (!get().isInitialized) return;
-    if (get().archivedFunnelsLoading) return;
+    if (catalogRefreshInFlight) return;
+    if (Date.now() - catalogRefreshAt < CATALOG_REFRESH_MIN_MS) return;
+    catalogRefreshInFlight = true;
     try {
-      const [products, projects, templates, postPurchasePages] = await Promise.all([
+      const [products, projects, postPurchasePages] = await Promise.all([
         supabaseOps.fetchProducts().catch(() => null),
         supabaseOps.fetchProjects().catch(() => null),
-        supabaseOps.fetchTemplates().catch(() => null),
         supabaseOps.fetchPostPurchasePages().catch(() => null),
       ]);
       const patch: Record<string, unknown> = {};
       if (products) patch.products = products.map(dbProductToApp);
       if (projects) patch.projects = projects.map(dbProjectToApp);
-      if (templates) patch.templates = templates.map(dbTemplateToApp);
       if (postPurchasePages) patch.postPurchasePages = postPurchasePages.map(dbPostPurchaseToApp);
       if (Object.keys(patch).length) set(patch as Partial<ReturnType<typeof get>>);
       await get().loadArchivedFunnels(true, { silent: true });
       void get().loadCustomPageTypes();
+      catalogRefreshAt = Date.now();
     } catch (e) {
+      catalogRefreshAt = Date.now();
       console.warn('[refreshLiveCatalog]', e);
+    } finally {
+      catalogRefreshInFlight = false;
     }
   },
 

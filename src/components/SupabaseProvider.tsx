@@ -50,26 +50,36 @@ function LiveRefreshHost() {
   const isInitialized = useStore((s) => s.isInitialized);
   const refreshLiveCatalog = useStore((s) => s.refreshLiveCatalog);
   const pathname = usePathname();
+  const lastPath = useRef<string | null>(null);
 
   useEffect(() => {
     if (!isInitialized) return;
-    void refreshLiveCatalog();
+    // Boot already loaded the catalog in initializeData — don't immediately
+    // hit every API again (that stampede 503'd the Netlify server handler).
+    if (lastPath.current === null) {
+      lastPath.current = pathname;
+      return;
+    }
+    if (lastPath.current === pathname) return;
+    lastPath.current = pathname;
     emitLiveRefresh();
+    void refreshLiveCatalog();
   }, [isInitialized, pathname, refreshLiveCatalog]);
 
   useEffect(() => {
     if (!isInitialized) return;
-    const tick = () => {
+    const tickCatalog = () => {
       if (document.visibilityState !== 'visible') return;
       void refreshLiveCatalog();
-      emitLiveRefresh();
     };
     const onVisible = () => {
-      if (document.visibilityState === 'visible') tick();
+      if (document.visibilityState !== 'visible') return;
+      emitLiveRefresh();
+      void refreshLiveCatalog();
     };
     document.addEventListener('visibilitychange', onVisible);
     window.addEventListener('focus', onVisible);
-    const id = window.setInterval(tick, 15_000);
+    const id = window.setInterval(tickCatalog, 90_000);
     return () => {
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('focus', onVisible);

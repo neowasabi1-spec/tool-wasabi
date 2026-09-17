@@ -12,7 +12,7 @@ export function emitLiveRefresh(): void {
 
 /**
  * Re-run `reload` whenever the app broadcasts a live refresh (tab focus,
- * visibility, or the 15s catalog poll). The callback should be silent:
+ * visibility, or a route change). The callback should be silent:
  * update state, do not flip full-page loading spinners.
  */
 export function useLiveReload(reload: () => void | Promise<void>): void {

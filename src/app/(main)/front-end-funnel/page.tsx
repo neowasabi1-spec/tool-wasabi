@@ -1174,7 +1174,8 @@ export default function FrontEndFunnel() {
   );
 
   useEffect(() => {
-    void loadArchivedFunnels(true);
+    const has = (useStore.getState().archivedFunnels || []).length > 0;
+    void loadArchivedFunnels(!has);
   }, [loadArchivedFunnels]);
 
   const templateGroupsByStepType = useMemo(() => {
