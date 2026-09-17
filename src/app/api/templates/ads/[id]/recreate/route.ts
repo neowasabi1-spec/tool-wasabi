@@ -92,18 +92,25 @@ function buildPrompt(opts: {
   hasPackshot: boolean;
 }): string {
   const name = opts.productName || 'our product';
-  if (opts.hasPackshot) {
-    return [
-      `Replace the competitor product in this ad with ${name}.`,
-      'The FIRST image is the ad layout to keep. The SECOND image is our exact packshot — put that product in their place.',
-      'Keep the same format, framing, people, colors, style and on-image text.',
-    ].join(' ');
+  const facts = opts.brief.replace(/\s+/g, ' ').trim().slice(0, 1400);
+  const parts = [
+    `Recreate this competitor ad as a finished ad for ${name}.`,
+    opts.hasPackshot
+      ? `The FIRST image is the layout to copy. The SECOND image is our exact packshot — replace every competitor product with that packshot, matching its real shape, label and colors.`
+      : `Keep the same layout, people and composition, but the ad must clearly be for ${name}.`,
+    'Keep the same format: grid, framing, people poses, icon/badge positions, and overall composition.',
+    `Rewrite EVERY visible text (headlines, subheads, bullets, badges, captions, CTAs, small print) so it sells ${name}.`,
+    `Do not keep the original product name, category, medical claims, or before/after if they do not match ${name}.`,
+    'Change the color palette, backgrounds, graphic accents and packaging colors to match our product branding from the packshot / product facts.',
+    'Replace original insets, before/after, or category-specific graphics with visuals that make sense for our product.',
+    'Remove competitor logos, competitor brand names, and leftover original claims.',
+  ];
+  if (facts) {
+    parts.push(`Use these product facts in the copy (do not invent extra medical claims): ${facts}`);
+  } else {
+    parts.push(`If the packshot has a brand, product name, or category on the label, use those in the copy together with the name ${name}.`);
   }
-  return [
-    `Keep this image's layout, people, product, colors and composition.`,
-    `Rewrite EVERY visible text (headlines, labels, badges, captions, CTAs, small print) for ${name}.`,
-    'Do not add new claims or new objects. The result must look like the same ad for our product.',
-  ].join(' ');
+  return parts.join(' ');
 }
 
 async function saveToProjectCreatives(
