@@ -13,7 +13,11 @@ type RecreatedAd = {
   file_path: string;
 };
 
-export type RecreatePreview = { filePath: string; name: string };
+export type RecreatePreview = {
+  filePath: string;
+  name: string;
+  previewUrl: string;
+};
 
 type ProjectPick = { id: string; name: string; brief?: string | null; description?: string | null };
 type ProductPick = { id: string; name: string; brand_name?: string | null; image_url?: string | null };
@@ -150,11 +154,14 @@ export default function AdsRecreatePanel({ ad, onResult }: Props) {
       const d = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(d.error || 'Recreate failed');
       if (d.analysis) setAnalysis(String(d.analysis));
+      const previewUrl = String(d.previewDataUrl || d.previewUrl || '').trim()
+        || (d.filePath || d.file_path ? getUploadUrl(String(d.filePath || d.file_path)) : '');
       const preview: RecreatePreview = {
-        filePath: String(d.filePath || ''),
+        filePath: String(d.filePath || d.file_path || ''),
         name: String(d.name || productName || 'Recreated ad'),
+        previewUrl,
       };
-      if (!preview.filePath) throw new Error('Generation returned no image');
+      if (!preview.filePath && !preview.previewUrl) throw new Error('Generation returned no image');
       setResult(preview);
       onResult(preview);
       toast.success('Preview ready — save to the project or download');
@@ -208,6 +215,38 @@ export default function AdsRecreatePanel({ ad, onResult }: Props) {
           AI reads this layout, then rebuilds the ad around your project or packshot. The result stays in this popup until you save it to the project Creative tab or download it.
         </p>
       </div>
+
+      {result?.previewUrl && (
+        <div className="rounded-lg border border-violet-400/30 bg-violet-500/10 p-2 space-y-2">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={result.previewUrl}
+            alt={result.name}
+            className="w-full max-h-64 object-contain rounded-md bg-black"
+          />
+          {saved && (
+            <p className="text-[11px] text-emerald-300 px-1">Saved in Creative → Recreated ads</p>
+          )}
+          <button
+            type="button"
+            onClick={() => void saveToProject()}
+            disabled={saving || busy || !projectId}
+            className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-white text-gray-900 text-sm font-medium hover:bg-gray-100 disabled:opacity-50"
+          >
+            {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <FolderKanban className="w-4 h-4" />}
+            {saved ? 'Saved to project' : 'Save to project Creative'}
+          </button>
+          <a
+            href={downloadHref}
+            className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-white/20 text-white text-sm font-medium hover:bg-white/10"
+          >
+            <Download className="w-4 h-4" /> Download
+          </a>
+          {!projectId && (
+            <p className="text-[11px] text-amber-300 px-1">Select a project above to save into Creative.</p>
+          )}
+        </div>
+      )}
 
       <label className="block">
         <span className="text-[11px] uppercase tracking-wide text-gray-500">My Projects</span>
@@ -313,37 +352,6 @@ export default function AdsRecreatePanel({ ad, onResult }: Props) {
         <p className="text-[11px] text-gray-400">
           This can take up to a minute. The new ad stays in this popup — it is not added to this Ads folder.
         </p>
-      )}
-
-      {result && (
-        <div className="rounded-lg border border-violet-400/30 bg-violet-500/10 p-3 space-y-2">
-          <p className="text-xs text-violet-100">
-            Preview is ready. Save it into the selected project’s Creative section, or download the file.
-          </p>
-          {saved && (
-            <p className="text-[11px] text-emerald-300">Saved in Creative → Recreated ads</p>
-          )}
-          <div className="flex flex-col gap-2">
-            <button
-              type="button"
-              onClick={() => void saveToProject()}
-              disabled={saving || busy || !projectId}
-              className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-white text-gray-900 text-sm font-medium hover:bg-gray-100 disabled:opacity-50"
-            >
-              {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <FolderKanban className="w-4 h-4" />}
-              {saved ? 'Saved to project' : 'Save to project Creative'}
-            </button>
-            <a
-              href={downloadHref}
-              className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-white/20 text-white text-sm font-medium hover:bg-white/10"
-            >
-              <Download className="w-4 h-4" /> Download
-            </a>
-            {!projectId && (
-              <p className="text-[11px] text-amber-300">Select a project above to save into Creative.</p>
-            )}
-          </div>
-        </div>
       )}
 
       {analysis && (

@@ -575,21 +575,24 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
               <button onClick={() => setPreview(null)} className="p-1 text-gray-400 hover:text-white"><X className="w-5 h-5" /></button>
             </div>
             <div className="flex-1 min-h-0 overflow-y-auto flex flex-col lg:flex-row">
-              <div className="bg-black flex items-center justify-center lg:flex-1 min-h-[40vh]">
+              <div className="bg-black flex items-center justify-center lg:flex-1 min-h-[40vh] min-w-0 p-3">
                 {preview.media_type === 'video' ? (
                   <video src={getUploadUrl(preview.file_path)} controls autoPlay className="max-h-[70vh] w-full" />
                 ) : recreated ? (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 w-full p-3">
-                    <figure className="min-w-0">
-                      <figcaption className="text-[11px] uppercase tracking-wide text-gray-400 mb-1.5">Original</figcaption>
+                  <div className="flex flex-col items-center gap-3 w-full">
+                    <p className="text-[11px] uppercase tracking-wide text-violet-300">Recreated</p>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      key={recreated.previewUrl || recreated.filePath}
+                      src={recreated.previewUrl || getUploadUrl(recreated.filePath)}
+                      alt={recreated.name}
+                      className="max-h-[62vh] w-full object-contain rounded-lg bg-black ring-1 ring-violet-400/40"
+                    />
+                    <details className="w-full max-w-xs">
+                      <summary className="text-[11px] text-gray-400 cursor-pointer text-center">Show original</summary>
                       {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={getUploadUrl(preview.file_path)} alt={preview.name} className="max-h-[64vh] w-full object-contain rounded-lg bg-black" />
-                    </figure>
-                    <figure className="min-w-0">
-                      <figcaption className="text-[11px] uppercase tracking-wide text-violet-300 mb-1.5">Recreated</figcaption>
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={getUploadUrl(recreated.filePath)} alt={recreated.name} className="max-h-[64vh] w-full object-contain rounded-lg bg-black ring-1 ring-violet-400/40" />
-                    </figure>
+                      <img src={getUploadUrl(preview.file_path)} alt={preview.name} className="mt-2 max-h-40 w-full object-contain rounded-md opacity-80" />
+                    </details>
                   </div>
                 ) : (
                   // eslint-disable-next-line @next/next/no-img-element

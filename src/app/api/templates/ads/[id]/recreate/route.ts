@@ -376,11 +376,17 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     if (saveErr) return NextResponse.json({ error: saveErr.message, analysis }, { status: 500 });
 
     const name = `${productName || 'Swipe'} — ${source.name}`.slice(0, 300);
+    const previewUrl = await signedUrl(outPath);
+    const previewDataUrl = made.buf.length <= 1_400_000
+      ? `data:${made.mime};base64,${made.buf.toString('base64')}`
+      : null;
     return NextResponse.json({
       ok: true,
       analysis,
       filePath: outPath,
       name,
+      previewUrl,
+      previewDataUrl,
       projectId: projectId || null,
     });
   } catch (e) {
