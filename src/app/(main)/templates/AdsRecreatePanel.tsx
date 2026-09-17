@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ImagePlus, Loader2, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
 import { authFetch } from '@/lib/auth/client-fetch';
+import { supabase } from '@/lib/supabase';
 
 type RecreatedAd = {
   id: string;
@@ -26,6 +27,40 @@ type Props = {
   onCreated: (ad: RecreatedAd, analysis: string) => void;
 };
 
+function asProjectRows(raw: unknown): ProjectPick[] {
+  const list = Array.isArray(raw)
+    ? raw
+    : (raw && typeof raw === 'object' && Array.isArray((raw as { projects?: unknown }).projects)
+      ? (raw as { projects: unknown[] }).projects
+      : []);
+  const out: ProjectPick[] = [];
+  const seen = new Set<string>();
+  for (const row of list) {
+    if (!row || typeof row !== 'object') continue;
+    const p = row as Record<string, unknown>;
+    const id = String(p.id || '').trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push({
+      id,
+      name: typeof p.name === 'string' && p.name.trim() ? p.name : 'Untitled',
+      brief: typeof p.brief === 'string' ? p.brief : null,
+      description: typeof p.description === 'string' ? p.description : null,
+    });
+  }
+  return out;
+}
+
+function parseProjects(hub: unknown, list: unknown, db: unknown): ProjectPick[] {
+  const merged = [...asProjectRows(hub), ...asProjectRows(list), ...asProjectRows(db)];
+  const seen = new Set<string>();
+  return merged.filter((p) => {
+    if (seen.has(p.id)) return false;
+    seen.add(p.id);
+    return true;
+  });
+}
+
 export default function AdsRecreatePanel({ ad, onCreated }: Props) {
   const photoRef = useRef<HTMLInputElement>(null);
   const [projects, setProjects] = useState<ProjectPick[]>([]);
@@ -37,21 +72,28 @@ export default function AdsRecreatePanel({ ad, onCreated }: Props) {
   const [photoPreview, setPhotoPreview] = useState('');
   const [busy, setBusy] = useState(false);
   const [analysis, setAnalysis] = useState('');
+  const [loadingProjects, setLoadingProjects] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      setLoadingProjects(true);
       try {
-        const [pr, pd] = await Promise.all([
-          authFetch('/api/projects/list'),
-          authFetch(`/api/templates/ads/${ad.id}/recreate`),
+        const [hub, list, db, catalog] = await Promise.all([
+          authFetch('/api/projecthub/projects').then((r) => r.json()).catch(() => null),
+          authFetch('/api/projects/list').then((r) => r.json()).catch(() => null),
+          supabase.from('projects').select('id, name, description, brief').order('created_at', { ascending: false }),
+          authFetch(`/api/templates/ads/${ad.id}/recreate`).then((r) => r.json()).catch(() => ({})),
         ]);
-        const pj = await pr.json().catch(() => ({}));
-        const dj = await pd.json().catch(() => ({}));
         if (cancelled) return;
-        if (Array.isArray(pj.projects)) setProjects(pj.projects);
-        if (Array.isArray(dj.products)) setProducts(dj.products);
-      } catch { /* ignore */ }
+        const mapped = parseProjects(hub, list, db.data);
+        setProjects(mapped);
+        if (Array.isArray(catalog?.products)) setProducts(catalog.products);
+      } catch {
+        if (!cancelled) setProjects([]);
+      } finally {
+        if (!cancelled) setLoadingProjects(false);
+      }
     })();
     return () => { cancelled = true; };
   }, [ad.id]);
@@ -121,18 +163,25 @@ export default function AdsRecreatePanel({ ad, onCreated }: Props) {
       </div>
 
       <label className="block">
-        <span className="text-[11px] uppercase tracking-wide text-gray-500">Project</span>
+        <span className="text-[11px] uppercase tracking-wide text-gray-500">My Projects</span>
         <select
           value={projectId}
           onChange={(e) => onPickProject(e.target.value)}
-          disabled={busy}
+          disabled={busy || loadingProjects}
           className="mt-1 w-full px-2.5 py-2 rounded-lg bg-gray-800 border border-white/10 text-sm text-white outline-none focus:ring-2 focus:ring-violet-500"
         >
-          <option value="">No project</option>
+          <option value="">
+            {loadingProjects ? 'Loading projects…' : projects.length === 0 ? 'No projects yet' : 'Select a project'}
+          </option>
           {projects.map((p) => (
             <option key={p.id} value={p.id}>{p.name}</option>
           ))}
         </select>
+        {!loadingProjects && projects.length === 0 && (
+          <span className="mt-1 block text-[11px] text-amber-400">
+            Could not load My Projects. Create one under My Projects, then reopen this ad.
+          </span>
+        )}
       </label>
 
       {products.length > 0 && (
