@@ -6,9 +6,10 @@ import Header from '@/components/Header';
 import { useStore } from '@/store/useStore';
 import { BUILT_IN_PAGE_TYPE_OPTIONS, PAGE_TYPE_CATEGORIES, PageType, PageTypeOption, TemplateCategory, TEMPLATE_CATEGORY_OPTIONS, TemplateViewFormat, TEMPLATE_VIEW_FORMAT_OPTIONS, LIBRARY_TEMPLATES, normalizeArchiveType, humanizePageTypeSlug } from '@/types';
 import type { ArchivedFunnel } from '@/types/database';
-import { Plus, Trash2, Edit2, Save, X, FileCode, ExternalLink, Tag, Filter, Eye, EyeOff, Maximize2, Layers, HelpCircle, FolderPlus, Settings, Monitor, Smartphone, BookOpen, ChevronDown, ChevronRight, ChevronLeft, FolderOpen, Archive, CheckSquare, Square, Package, Sparkles, Send, Loader2, MessageCircle, Search, Download, Swords, Lock, Upload, Link2 } from 'lucide-react';
+import { Plus, Trash2, Edit2, Save, X, FileCode, ExternalLink, Tag, Filter, Eye, EyeOff, Maximize2, Layers, HelpCircle, FolderPlus, Settings, Monitor, Smartphone, BookOpen, ChevronDown, ChevronRight, ChevronLeft, FolderOpen, Archive, CheckSquare, Square, Package, Sparkles, Send, Loader2, MessageCircle, Search, Download, Swords, Lock, Upload, Link2, Megaphone } from 'lucide-react';
 import CachedScreenshot from '@/components/CachedScreenshot';
 import QuizArchiveView from './QuizArchiveView';
+import AdsArchiveView from './AdsArchiveView';
 import { authFetch } from '@/lib/auth/client-fetch';
 import { toast } from 'sonner';
 import { confirmDialog } from '@/components/ui/confirm';
@@ -516,7 +517,8 @@ export default function TemplatesPage() {
   const [valchiriaTogglingId, setValchiriaTogglingId] = useState<string | null>(null);
   const router = useRouter();
   
-  const [mainView, setMainView] = useState<'templates' | 'funnels' | 'byType' | 'quiz'>('byType');
+  const [mainView, setMainView] = useState<'templates' | 'funnels' | 'byType' | 'quiz' | 'ads'>('byType');
+  const [adsFolderCount, setAdsFolderCount] = useState(0);
   const [expandedFunnelIds, setExpandedFunnelIds] = useState<string[]>([]);
   const [expandedTypes, setExpandedTypes] = useState<string[]>([]);
 
@@ -1565,7 +1567,7 @@ export default function TemplatesPage() {
     <div className="min-h-screen">
       <Header
         title="Template"
-        subtitle="Libreria comune — le stesse pagine e gli stessi funnel per tutti"
+        subtitle="Libreria comune — le stesse pagine, gli stessi funnel e gli stessi ads per tutti"
       />
 
       <div className="p-6">
@@ -1598,6 +1600,19 @@ export default function TemplatesPage() {
                 <span className="ml-1 px-1.5 py-0.5 bg-indigo-100 text-indigo-700 rounded-full text-xs font-semibold">{displayFunnels.length}</span>
               )}
             </button>
+            <button
+              onClick={() => setMainView('ads')}
+              title="Template ads salvati per categoria"
+              className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-semibold transition-colors ${
+                mainView === 'ads' ? 'bg-white text-indigo-700 shadow-sm ring-1 ring-black/5' : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              <Megaphone className="w-4 h-4" />
+              Ads
+              {adsFolderCount > 0 && (
+                <span className="ml-1 px-1.5 py-0.5 bg-indigo-100 text-indigo-700 rounded-full text-xs font-semibold">{adsFolderCount}</span>
+              )}
+            </button>
           </div>
 
           {(mainView !== 'templates') && (
@@ -1617,8 +1632,11 @@ export default function TemplatesPage() {
               )}
             </div>
           )}
+        </div>
 
-          )}
+        {/* ============ ADS VIEW ============ */}
+        <div className={mainView === 'ads' ? '' : 'hidden'}>
+          <AdsArchiveView search={archiveSearch} onFolderCount={setAdsFolderCount} />
         </div>
 
         {/* ============ SAVED FUNNELS VIEW ============ */}

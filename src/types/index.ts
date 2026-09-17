@@ -317,6 +317,36 @@ export const PAGE_TYPE_CATEGORIES: { value: PageTypeOption['category']; label: s
   { value: 'custom', label: 'Custom Categories', color: 'bg-indigo-100 text-indigo-800' },
 ];
 
+/** Folder taxonomy for Template → Ads (mirrors page-type folders on Pages). */
+export interface AdTypeOption {
+  value: string;
+  label: string;
+  category: 'image' | 'video' | 'social' | 'custom';
+}
+
+export const BUILT_IN_AD_TYPE_OPTIONS: AdTypeOption[] = [
+  { value: 'image', label: 'Image', category: 'image' },
+  { value: 'video', label: 'Video', category: 'video' },
+  { value: 'carousel', label: 'Carousel', category: 'image' },
+  { value: 'ugc', label: 'UGC', category: 'social' },
+  { value: 'story', label: 'Story', category: 'social' },
+];
+
+export const AD_TYPE_CATEGORIES: { value: AdTypeOption['category']; label: string; color: string }[] = [
+  { value: 'image', label: 'Static', color: 'bg-sky-100 text-sky-800' },
+  { value: 'video', label: 'Video', color: 'bg-violet-100 text-violet-800' },
+  { value: 'social', label: 'Social', color: 'bg-pink-100 text-pink-800' },
+  { value: 'custom', label: 'Custom', color: 'bg-indigo-100 text-indigo-800' },
+];
+
+export function humanizeAdTypeSlug(value: string): string {
+  const key = String(value || '').trim();
+  if (!key) return '';
+  const builtIn = BUILT_IN_AD_TYPE_OPTIONS.find((o) => o.value === key);
+  if (builtIn) return builtIn.label;
+  return key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 // Legacy simple format for backward compatibility
 export const PAGE_TYPE_OPTIONS: { value: PageType; label: string }[] = BUILT_IN_PAGE_TYPE_OPTIONS.map(opt => ({
   value: opt.value,
