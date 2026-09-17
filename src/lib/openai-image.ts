@@ -107,29 +107,72 @@ async function bytesFromRef(url: string): Promise<{ buf: Buffer; mime: string } 
   }
 }
 
-async function gptImage2ViaGenerateImageQueue(
-  prompt: string,
-  refs: string[],
-  size: string,
-  quality: string,
-  timeoutMs: number,
-): Promise<{ buf: Buffer; mime: string } | null> {
+async function toCompactDataUri(buf: Buffer, mime: string): Promise<string> {
+  try {
+    const sharp = (await import('sharp')).default;
+    const out = await sharp(buf)
+      .rotate()
+      .resize(1536, 1536, { fit: 'inside', withoutEnlargement: true })
+      .jpeg({ quality: 82 })
+      .toBuffer();
+    return `data:image/jpeg;base64,${out.toString('base64')}`;
+  } catch {
+    const sniffed = sniffImage(buf, mime);
+    return `data:${sniffed.mime};base64,${buf.toString('base64')}`;
+  }
+}
+
+export type GptImage2Job = { statusUrl: string; responseUrl: string };
+
+export type GptImage2Poll =
+  | { status: 'pending'; falStatus?: string }
+  | { status: 'completed'; buf: Buffer; mime: string }
+  | { status: 'error'; error: string };
+
+function isFalQueueUrl(url: string): boolean {
+  try {
+    const host = new URL(url).hostname;
+    return host === 'queue.fal.run' || host.endsWith('.fal.run');
+  } catch {
+    return false;
+  }
+}
+
+async function refsToImageUrls(refs: string[]): Promise<string[]> {
+  const imageUrls: string[] = [];
+  for (const ref of refs.slice(0, 8)) {
+    if (ref.startsWith('data:')) {
+      const raw = await bytesFromRef(ref);
+      if (!raw) continue;
+      imageUrls.push(await toCompactDataUri(raw.buf, raw.mime));
+      continue;
+    }
+    const raw = await bytesFromRef(ref);
+    if (!raw) continue;
+    imageUrls.push(await toCompactDataUri(raw.buf, raw.mime));
+  }
+  return imageUrls;
+}
+
+export async function submitGptImage2Job(opts: {
+  prompt: string;
+  imageUrls?: string[];
+  size?: string;
+  quality?: string;
+}): Promise<GptImage2Job | null> {
+  lastImageErr = '';
   const key = imageQueueKey();
   if (!key) {
     setImageErr('FAL_KEY missing. ChatGPT Image 2 in this app is the same as /api/generate-image (openai/gpt-image-2), not OPENAI_API_KEY.');
     return null;
   }
-
-  const imageUrls: string[] = [];
-  for (const ref of refs.slice(0, 8)) {
-    if (ref.startsWith('data:')) {
-      imageUrls.push(ref);
-      continue;
-    }
-    const raw = await bytesFromRef(ref);
-    if (!raw) continue;
-    imageUrls.push(`data:${raw.mime};base64,${raw.buf.toString('base64')}`);
+  const prompt = (opts.prompt || '').trim();
+  if (!prompt) {
+    setImageErr('empty image prompt');
+    return null;
   }
+  const refs = (opts.imageUrls || []).filter(Boolean);
+  const imageUrls = await refsToImageUrls(refs);
   if (refs.length && !imageUrls.length) {
     setImageErr('Could not load the source images for ChatGPT Image 2');
     return null;
@@ -138,7 +181,7 @@ async function gptImage2ViaGenerateImageQueue(
   const endpoint = imageUrls.length ? 'openai/gpt-image-2/edit' : 'openai/gpt-image-2';
   const input: Record<string, unknown> = {
     prompt: prompt.slice(0, 4_000),
-    quality,
+    quality: mapQuality(opts.quality),
     num_images: 1,
     output_format: 'png',
   };
@@ -146,7 +189,7 @@ async function gptImage2ViaGenerateImageQueue(
     input.image_urls = imageUrls;
     input.image_size = 'auto';
   } else {
-    input.image_size = sizeToFal(size);
+    input.image_size = sizeToFal(mapSize(opts.size));
   }
 
   try {
@@ -165,61 +208,90 @@ async function gptImage2ViaGenerateImageQueue(
       setImageErr('ChatGPT Image 2 did not return a job');
       return null;
     }
-    const deadline = Date.now() + Math.max(20_000, timeoutMs - 5_000);
-    while (Date.now() < deadline) {
-      await sleep(1_500);
-      const statusUrl = job.status_url.includes('?') ? `${job.status_url}&logs=1` : `${job.status_url}?logs=1`;
-      const st = await fetch(statusUrl, {
-        headers: { Authorization: `Key ${key}` },
-        cache: 'no-store',
-        signal: AbortSignal.timeout(20_000),
-      });
-      if (!st.ok) continue;
-      const status = await st.json() as {
-        status?: string;
-        error?: string;
-        error_type?: string;
-        logs?: Array<{ message?: string }>;
-      };
-      if (status.status === 'COMPLETED') {
-        const result = await fetch(job.response_url, {
-          headers: { Authorization: `Key ${key}` },
-          cache: 'no-store',
-          signal: AbortSignal.timeout(45_000),
-        }).then((r) => r.json()) as { images?: Array<{ url?: string; content_type?: string }> };
-        const url = result.images?.[0]?.url;
-        if (!url) {
-          setImageErr('ChatGPT Image 2 returned no image');
-          return null;
-        }
-        const raw = await bytesFromRef(url);
-        if (!raw) return null;
-        const sniffed = sniffImage(raw.buf, result.images?.[0]?.content_type || raw.mime);
-        return { buf: raw.buf, mime: sniffed.mime };
-      }
-      if (status.status === 'ERROR') {
-        let extra = '';
-        try {
-          const failed = await fetch(job.response_url, {
-            headers: { Authorization: `Key ${key}` },
-            cache: 'no-store',
-            signal: AbortSignal.timeout(20_000),
-          });
-          extra = redactSecrets((await failed.text()).slice(0, 220));
-        } catch { /* ignore */ }
-        const logLine = (status.logs || []).map((l) => l.message).filter(Boolean).slice(-3).join(' | ');
-        setImageErr(
-          `ChatGPT Image 2: ${status.error || status.error_type || 'generation failed'}${logLine ? ` — ${logLine}` : ''}${extra ? ` — ${extra}` : ''}`,
-        );
-        return null;
-      }
-    }
-    setImageErr('ChatGPT Image 2 timed out');
-    return null;
+    return { statusUrl: job.status_url, responseUrl: job.response_url };
   } catch (e) {
     setImageErr(`ChatGPT Image 2: ${(e as Error).message}`);
     return null;
   }
+}
+
+export async function pollGptImage2Job(job: GptImage2Job): Promise<GptImage2Poll> {
+  const key = imageQueueKey();
+  if (!key) return { status: 'error', error: 'FAL_KEY missing' };
+  if (!isFalQueueUrl(job.statusUrl) || !isFalQueueUrl(job.responseUrl)) {
+    return { status: 'error', error: 'Invalid ChatGPT Image 2 job' };
+  }
+  try {
+    const statusUrl = job.statusUrl.includes('?') ? `${job.statusUrl}&logs=1` : `${job.statusUrl}?logs=1`;
+    const st = await fetch(statusUrl, {
+      headers: { Authorization: `Key ${key}` },
+      cache: 'no-store',
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!st.ok) return { status: 'pending' };
+    const status = await st.json() as {
+      status?: string;
+      error?: string;
+      error_type?: string;
+      logs?: Array<{ message?: string }>;
+    };
+    if (status.status === 'COMPLETED') {
+      const result = await fetch(job.responseUrl, {
+        headers: { Authorization: `Key ${key}` },
+        cache: 'no-store',
+        signal: AbortSignal.timeout(45_000),
+      }).then((r) => r.json()) as { images?: Array<{ url?: string; content_type?: string }> };
+      const url = result.images?.[0]?.url;
+      if (!url) return { status: 'error', error: 'ChatGPT Image 2 returned no image' };
+      const raw = await bytesFromRef(url);
+      if (!raw) return { status: 'error', error: 'Could not download the generated image' };
+      const sniffed = sniffImage(raw.buf, result.images?.[0]?.content_type || raw.mime);
+      return { status: 'completed', buf: raw.buf, mime: sniffed.mime };
+    }
+    if (status.status === 'ERROR') {
+      let extra = '';
+      try {
+        const failed = await fetch(job.responseUrl, {
+          headers: { Authorization: `Key ${key}` },
+          cache: 'no-store',
+          signal: AbortSignal.timeout(20_000),
+        });
+        extra = redactSecrets((await failed.text()).slice(0, 220));
+      } catch { /* ignore */ }
+      const logLine = (status.logs || []).map((l) => l.message).filter(Boolean).slice(-3).join(' | ');
+      const detail = status.error || status.error_type || 'generation failed';
+      return {
+        status: 'error',
+        error: `ChatGPT Image 2 is still the model — wait finished with: ${detail}${logLine ? ` — ${logLine}` : ''}${extra ? ` — ${extra}` : ''}`,
+      };
+    }
+    return { status: 'pending', falStatus: status.status };
+  } catch (e) {
+    return { status: 'error', error: `ChatGPT Image 2: ${(e as Error).message}` };
+  }
+}
+
+async function gptImage2ViaGenerateImageQueue(
+  prompt: string,
+  refs: string[],
+  size: string,
+  quality: string,
+  timeoutMs: number,
+): Promise<{ buf: Buffer; mime: string } | null> {
+  const job = await submitGptImage2Job({ prompt, imageUrls: refs, size, quality });
+  if (!job) return null;
+  const deadline = Date.now() + Math.max(20_000, timeoutMs - 5_000);
+  while (Date.now() < deadline) {
+    await sleep(1_500);
+    const polled = await pollGptImage2Job(job);
+    if (polled.status === 'completed') return { buf: polled.buf, mime: polled.mime };
+    if (polled.status === 'error') {
+      setImageErr(polled.error);
+      return null;
+    }
+  }
+  setImageErr('ChatGPT Image 2 timed out — the model was still generating');
+  return null;
 }
 
 export async function openaiGenerateImageBytes(opts: {

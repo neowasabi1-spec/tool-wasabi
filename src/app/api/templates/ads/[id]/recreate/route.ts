@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getCurrentUserId } from '@/lib/auth/get-current-user';
 import { canAccessProject } from '@/lib/auth/project-access';
-import { lastImageGenError, openaiGenerateImageBytes, openaiImageKey } from '@/lib/openai-image';
+import { lastImageGenError, openaiImageKey, pollGptImage2Job, submitGptImage2Job } from '@/lib/openai-image';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -56,7 +56,7 @@ async function analyzeLayout(imageUrl: string): Promise<string> {
         ],
       }],
     }),
-    signal: AbortSignal.timeout(60_000),
+    signal: AbortSignal.timeout(15_000),
   });
   if (!res.ok) {
     console.warn('[ads/recreate] vision', res.status, (await res.text()).slice(0, 240));
@@ -222,6 +222,44 @@ async function saveToProjectCreatives(
   return NextResponse.json({ ok: true, creative: created, filePath: dest });
 }
 
+async function finishRecreateJob(userId: string, body: Record<string, unknown>) {
+  const statusUrl = String(body.statusUrl || '').trim();
+  const responseUrl = String(body.responseUrl || '').trim();
+  const name = String(body.name || 'Recreated ad').trim().slice(0, 300) || 'Recreated ad';
+  if (!statusUrl || !responseUrl) {
+    return NextResponse.json({ error: 'Missing ChatGPT Image 2 job' }, { status: 400 });
+  }
+  const polled = await pollGptImage2Job({ statusUrl, responseUrl });
+  if (polled.status === 'pending') {
+    return NextResponse.json({
+      status: 'pending',
+      falStatus: polled.falStatus || 'IN_QUEUE',
+      statusUrl,
+      responseUrl,
+      name,
+    });
+  }
+  if (polled.status === 'error') {
+    return NextResponse.json({ status: 'error', error: polled.error }, { status: 502 });
+  }
+
+  const ext = /webp/i.test(polled.mime) ? 'webp' : /jpe?g/i.test(polled.mime) ? 'jpg' : 'png';
+  const outPath = `archive-ads/${userId}/drafts/recreate_${Date.now()}.${ext}`;
+  const { error: saveErr } = await supabaseAdmin.storage.from(BUCKET).upload(outPath, polled.buf, {
+    contentType: polled.mime,
+    upsert: false,
+  });
+  if (saveErr) return NextResponse.json({ error: saveErr.message }, { status: 500 });
+  const previewUrl = await signedUrl(outPath);
+  return NextResponse.json({
+    ok: true,
+    status: 'completed',
+    filePath: outPath,
+    name,
+    previewUrl,
+  });
+}
+
 export async function GET(req: NextRequest) {
   const userId = await getCurrentUserId(req);
   if (!userId) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
@@ -245,6 +283,9 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       jsonBody = await req.json().catch(() => ({} as Record<string, unknown>));
       if (String(jsonBody.action || '') === 'save') {
         return saveToProjectCreatives(req, userId, jsonBody);
+      }
+      if (String(jsonBody.action || '') === 'poll') {
+        return finishRecreateJob(userId, jsonBody);
       }
     }
 
@@ -352,42 +393,28 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     });
 
     const imageUrls = [sourceUrl, productImageUrl || ''].filter(Boolean);
-    const made = await openaiGenerateImageBytes({
+    const job = await submitGptImage2Job({
       prompt,
       imageUrls,
       size: 'auto',
       quality: 'medium',
-      timeoutMs: 150_000,
-      openaiOnly: true,
     });
-    if (!made) {
+    if (!job) {
       return NextResponse.json(
-        { error: lastImageGenError() || 'Image generation returned empty', analysis },
+        { error: lastImageGenError() || 'Could not start ChatGPT Image 2' },
         { status: 502 },
       );
     }
 
-    const ext = /webp/i.test(made.mime) ? 'webp' : /jpe?g/i.test(made.mime) ? 'jpg' : 'png';
-    const outPath = `archive-ads/${userId}/drafts/recreate_${Date.now()}.${ext}`;
-    const { error: saveErr } = await supabaseAdmin.storage.from(BUCKET).upload(outPath, made.buf, {
-      contentType: made.mime,
-      upsert: false,
-    });
-    if (saveErr) return NextResponse.json({ error: saveErr.message, analysis }, { status: 500 });
-
     const name = `${productName || 'Swipe'} — ${source.name}`.slice(0, 300);
-    const previewUrl = await signedUrl(outPath);
-    const previewDataUrl = made.buf.length <= 1_400_000
-      ? `data:${made.mime};base64,${made.buf.toString('base64')}`
-      : null;
     return NextResponse.json({
       ok: true,
+      status: 'pending',
       analysis,
-      filePath: outPath,
       name,
-      previewUrl,
-      previewDataUrl,
       projectId: projectId || null,
+      statusUrl: job.statusUrl,
+      responseUrl: job.responseUrl,
     });
   } catch (e) {
     return NextResponse.json(

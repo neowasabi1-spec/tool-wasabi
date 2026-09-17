@@ -71,6 +71,7 @@ export default function AdsRecreatePanel({ ad, onResult }: Props) {
   const [photo, setPhoto] = useState<File | null>(null);
   const [photoPreview, setPhotoPreview] = useState('');
   const [busy, setBusy] = useState(false);
+  const [waitMsg, setWaitMsg] = useState('');
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [analysis, setAnalysis] = useState('');
@@ -137,6 +138,7 @@ export default function AdsRecreatePanel({ ad, onResult }: Props) {
       return;
     }
     setBusy(true);
+    setWaitMsg('Sending to ChatGPT Image 2…');
     setAnalysis('');
     setSaved(false);
     setResult(null);
@@ -151,14 +153,50 @@ export default function AdsRecreatePanel({ ad, onResult }: Props) {
         method: 'POST',
         body: fd,
       });
-      const d = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(d.error || 'Recreate failed');
+      const d = await res.json().catch(() => ({} as Record<string, unknown>));
+      if (!res.ok) throw new Error(String(d.error || 'Recreate failed'));
       if (d.analysis) setAnalysis(String(d.analysis));
-      const previewUrl = String(d.previewDataUrl || d.previewUrl || '').trim()
-        || (d.filePath || d.file_path ? getUploadUrl(String(d.filePath || d.file_path)) : '');
+
+      let payload = d as Record<string, unknown>;
+      if (String(payload.status || '') === 'pending' || payload.statusUrl) {
+        setWaitMsg('Waiting for ChatGPT Image 2… this can take up to two minutes');
+        const started = Date.now();
+        while (Date.now() - started < 180_000) {
+          await new Promise((r) => setTimeout(r, 2000));
+          const pollRes = await authFetch(`/api/templates/ads/${ad.id}/recreate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              action: 'poll',
+              statusUrl: payload.statusUrl,
+              responseUrl: payload.responseUrl,
+              name: payload.name || productName.trim(),
+            }),
+          });
+          const poll = await pollRes.json().catch(() => ({} as Record<string, unknown>));
+          if (!pollRes.ok) throw new Error(String(poll.error || 'ChatGPT Image 2 failed'));
+          if (String(poll.status || '') === 'completed' || poll.filePath || poll.previewUrl) {
+            payload = poll;
+            break;
+          }
+          const fal = String(poll.falStatus || 'IN_QUEUE');
+          setWaitMsg(
+            fal === 'IN_PROGRESS'
+              ? 'ChatGPT Image 2 is generating…'
+              : 'Waiting for ChatGPT Image 2…',
+          );
+          payload = poll;
+        }
+        if (String(payload.status || '') === 'pending') {
+          throw new Error('ChatGPT Image 2 is still running — try again in a moment');
+        }
+      }
+
+      const previewUrl = String(payload.previewDataUrl || payload.previewUrl || '').trim()
+        || (payload.filePath || payload.file_path ? getUploadUrl(String(payload.filePath || payload.file_path)) : '');
       const preview: RecreatePreview = {
-        filePath: String(d.filePath || d.file_path || ''),
-        name: String(d.name || productName || 'Recreated ad'),
+        filePath: String(payload.filePath || payload.file_path || ''),
+        name: String(payload.name || productName || 'Recreated ad'),
         previewUrl,
       };
       if (!preview.filePath && !preview.previewUrl) throw new Error('Generation returned no image');
@@ -169,6 +207,7 @@ export default function AdsRecreatePanel({ ad, onResult }: Props) {
       toast.error(e instanceof Error ? e.message : 'Recreate failed');
     } finally {
       setBusy(false);
+      setWaitMsg('');
     }
   };
 
@@ -345,12 +384,12 @@ export default function AdsRecreatePanel({ ad, onResult }: Props) {
         className="mt-1 inline-flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg bg-violet-600 text-white text-sm font-medium hover:bg-violet-500 disabled:opacity-50"
       >
         {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-        {busy ? 'Analyzing & recreating…' : 'Recreate ad'}
+        {busy ? 'Waiting for ChatGPT Image 2…' : 'Recreate ad'}
       </button>
 
       {busy && (
         <p className="text-[11px] text-gray-400">
-          This can take up to a minute. The new ad stays in this popup — it is not added to this Ads folder.
+          {waitMsg || 'Waiting for ChatGPT Image 2… this can take up to two minutes. The new ad stays in this popup.'}
         </p>
       )}
 
