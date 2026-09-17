@@ -1,10 +1,19 @@
 /**
- * ChatGPT image generation via the OpenAI Images API (not fal).
- * Model: gpt-image-2 (override with PIPELINE_IMAGE_MODEL).
+ * Image generation: fal (same engine as /api/generate-image), then Gemini,
+ * then OpenAI Images. Direct OpenAI often 401s when the Netlify
+ * OPENAI_API_KEY is expired or is a gateway placeholder.
  */
 
 export function openaiImageKey(): string {
   return (process.env.OPENAI_API_KEY || '').trim();
+}
+
+function falKey(): string {
+  return (process.env.FAL_KEY || process.env.FAL_AI_API_KEY || '').trim();
+}
+
+export function geminiImageKey(): string {
+  return (process.env.GOOGLE_GEMINI_API_KEY || process.env.GEMINI_API_KEY || '').trim();
 }
 
 export function openaiImageModel(): string {
@@ -37,9 +46,19 @@ export function lastImageGenError(): string {
   return lastImageErr;
 }
 
+function redactSecrets(msg: string): string {
+  return String(msg || '')
+    .replace(/sk-[a-zA-Z0-9_\-]{8,}/g, 'sk-…')
+    .replace(/Incorrect API key provided:[^"]*/gi, 'OpenAI rejected the configured API key');
+}
+
 function setImageErr(msg: string): void {
-  lastImageErr = String(msg || '').slice(0, 500);
+  lastImageErr = redactSecrets(msg).slice(0, 500);
   if (lastImageErr) console.warn('[openai-image]', lastImageErr);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
 function parseResultBytes(json: unknown): { buf: Buffer; mime: string } | null {
@@ -204,6 +223,115 @@ async function openaiGenerateOnce(
   return bytesFromRef(url);
 }
 
+async function falEditBytes(
+  prompt: string,
+  refs: string[],
+  timeoutMs: number,
+): Promise<{ buf: Buffer; mime: string } | null> {
+  const key = falKey();
+  if (!key) return null;
+  const urls = refs.filter((u) => /^https?:\/\//i.test(u));
+  if (!urls.length) return null;
+  try {
+    const submit = await fetch('https://queue.fal.run/fal-ai/nano-banana-2/edit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Key ${key}` },
+      body: JSON.stringify({
+        prompt: prompt.slice(0, 8_000),
+        image_urls: urls.slice(0, 8),
+        num_images: 1,
+        output_format: 'png',
+      }),
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!submit.ok) {
+      setImageErr(`fal submit ${submit.status}: ${redactSecrets(await submit.text()).slice(0, 220)}`);
+      return null;
+    }
+    const job = await submit.json() as { status_url?: string; response_url?: string };
+    if (!job.status_url || !job.response_url) return null;
+    const deadline = Date.now() + Math.max(20_000, timeoutMs - 8_000);
+    while (Date.now() < deadline) {
+      await sleep(2_000);
+      const st = await fetch(job.status_url, {
+        headers: { Authorization: `Key ${key}` },
+        cache: 'no-store',
+        signal: AbortSignal.timeout(20_000),
+      });
+      if (!st.ok) continue;
+      const status = await st.json() as { status?: string; error?: string };
+      if (status.status === 'COMPLETED') {
+        const result = await fetch(job.response_url, {
+          headers: { Authorization: `Key ${key}` },
+          cache: 'no-store',
+          signal: AbortSignal.timeout(30_000),
+        }).then((r) => r.json()) as { images?: Array<{ url?: string }> };
+        const url = result.images?.[0]?.url;
+        if (!url) {
+          setImageErr('fal returned no image');
+          return null;
+        }
+        return bytesFromRef(url);
+      }
+      if (status.status === 'ERROR') {
+        setImageErr(`fal: ${status.error || 'generation failed'}`);
+        return null;
+      }
+    }
+    setImageErr('fal timed out');
+    return null;
+  } catch (e) {
+    setImageErr(`fal: ${(e as Error).message}`);
+    return null;
+  }
+}
+
+async function geminiEditBytes(
+  prompt: string,
+  refs: string[],
+): Promise<{ buf: Buffer; mime: string } | null> {
+  const key = geminiImageKey();
+  if (!key) return null;
+  const parts: Array<Record<string, unknown>> = [{ text: prompt.slice(0, 8_000) }];
+  for (const ref of refs.slice(0, 4)) {
+    const raw = await bytesFromRef(ref);
+    if (!raw) continue;
+    parts.push({ inline_data: { mime_type: raw.mime || 'image/png', data: raw.buf.toString('base64') } });
+  }
+  if (parts.length < 2) return null;
+  const models = ['gemini-2.5-flash-image', 'gemini-3.1-flash-image-preview'];
+  for (const model of models) {
+    try {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ contents: [{ parts }] }),
+          signal: AbortSignal.timeout(120_000),
+        },
+      );
+      if (!res.ok) {
+        setImageErr(`Gemini ${model} ${res.status}: ${redactSecrets(await res.text()).slice(0, 220)}`);
+        continue;
+      }
+      const json = await res.json() as {
+        candidates?: Array<{ content?: { parts?: Array<{ inlineData?: { data?: string; mimeType?: string }; inline_data?: { data?: string; mime_type?: string } }> } }>;
+      };
+      const part = json.candidates?.[0]?.content?.parts?.find((p) => p.inlineData?.data || p.inline_data?.data);
+      const b64 = part?.inlineData?.data || part?.inline_data?.data;
+      const mime = part?.inlineData?.mimeType || part?.inline_data?.mime_type || 'image/png';
+      if (!b64) continue;
+      const buf = Buffer.from(b64, 'base64');
+      if (buf.length < 80) continue;
+      return { buf, mime };
+    } catch (e) {
+      setImageErr(`Gemini ${model}: ${(e as Error).message}`);
+    }
+  }
+  return null;
+}
+
 export async function openaiGenerateImageBytes(opts: {
   prompt: string;
   imageUrls?: string[];
@@ -226,9 +354,17 @@ export async function openaiGenerateImageBytes(opts: {
   const iv = tick ? setInterval(() => { void tick(); }, 8_000) : null;
   try {
     const refs = (opts.imageUrls || []).filter(Boolean).slice(0, 16);
+
+    const fal = await falEditBytes(prompt, refs, timeoutMs);
+    if (fal) return fal;
+    const gem = await geminiEditBytes(prompt, refs);
+    if (gem) return gem;
+
     const openaiKey = openaiImageKey();
     if (!openaiKey) {
-      setImageErr('OPENAI_API_KEY missing');
+      if (!lastImageErr) {
+        setImageErr('No working image engine. Need FAL_KEY, GOOGLE_GEMINI_API_KEY, or a valid OPENAI_API_KEY.');
+      }
       return null;
     }
     const models = Array.from(new Set([openaiImageModel(), 'gpt-image-2'].filter(Boolean)));
@@ -240,7 +376,11 @@ export async function openaiGenerateImageBytes(opts: {
         setImageErr(`${model}: ${(e as Error).message}`);
       }
     }
-    if (!lastImageErr) setImageErr('ChatGPT image generation returned empty');
+    if (/rejected the configured API key|Incorrect API key|401/i.test(lastImageErr)) {
+      setImageErr('OpenAI rejected OPENAI_API_KEY (invalid or expired). Recreate uses fal/Gemini when those keys are set in Netlify.');
+    } else if (!lastImageErr) {
+      setImageErr('Image generation returned empty');
+    }
     return null;
   } catch (e) {
     setImageErr((e as Error).message);
