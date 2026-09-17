@@ -94,7 +94,8 @@ async function tryJinaRender(url: string): Promise<string | null> {
 
     const ctrl = new AbortController()
     const t = setTimeout(() => ctrl.abort(), 60000)
-    const res = await fetch(`https://r.jina.ai/${url}`, {
+    const jinaTarget = url.replace(/[?#&]/g, (ch: string) => encodeURIComponent(ch))
+    const res = await fetch(`https://r.jina.ai/${jinaTarget}`, {
       headers,
       redirect: 'follow',
       signal: ctrl.signal,

@@ -57,6 +57,12 @@ const COMMERCE_MARKERS = [
   { re: /\b(openCheckout|showCheckout|beginCheckout|toggleCheckout|selectPackage|choosePackage|selectPlan)\s*\(/i, label: 'multi-step popup checkout / package selector' },
 ];
 
+const PLAYER_MARKERS = [
+  { re: /vsl-player\.js|VSLPlayer\.mount/i, label: 'custom HLS VSL player' },
+  { re: /vturb-smartplayer|scripts\.converteai\.net|cdn\.converteai/i, label: 'VTurb/ConverteAI player' },
+  { re: /player\.pandavideo|vidalytics\.com/i, label: 'hosted VSL player' },
+];
+
 /**
  * Detect script-driven commerce/checkout machinery across the whole HTML.
  * @param {string} html
@@ -66,6 +72,13 @@ function detectCommerceMarkers(html) {
   if (!html || typeof html !== 'string') return [];
   const out = [];
   for (const m of COMMERCE_MARKERS) if (m.re.test(html)) out.push(m.label);
+  return out;
+}
+
+function detectPlayerMarkers(html) {
+  if (!html || typeof html !== 'string') return [];
+  const out = [];
+  for (const m of PLAYER_MARKERS) if (m.re.test(html)) out.push(m.label);
   return out;
 }
 
@@ -148,8 +161,9 @@ function detectDynamicScripts(html) {
   // Commerce/checkout machinery lives in external bundles too, so scan the
   // whole HTML — even when there is no inline JS at all.
   const commerceSignals = detectCommerceMarkers(html);
+  const playerSignals = detectPlayerMarkers(html);
 
-  if (!inlineJs.trim() && commerceSignals.length === 0) {
+  if (!inlineJs.trim() && commerceSignals.length === 0 && playerSignals.length === 0) {
     return { functional: false, signals, inlineScriptCount };
   }
 
@@ -157,6 +171,7 @@ function detectDynamicScripts(html) {
     if (p.re.test(inlineJs)) signals.push(p.label);
   }
   for (const s of commerceSignals) signals.push(s);
+  for (const s of playerSignals) signals.push(s);
 
   // NOTE (regression fix 2026-07-08): a loose combo — content keyword + DOM
   // mutation + timer — used to ALSO flag a page as functional. But
@@ -181,6 +196,7 @@ function detectDynamicScripts(html) {
 module.exports = {
   detectDynamicScripts,
   detectCommerceMarkers,
+  detectPlayerMarkers,
   extractInlineScriptText,
   extractReinjectableScripts,
   reattachDynamicScripts,

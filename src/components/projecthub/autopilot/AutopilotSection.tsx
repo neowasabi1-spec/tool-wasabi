@@ -15,6 +15,7 @@ import { ChimeraImageModeToggle, type ChimeraImageMode } from '@/components/proj
 import { ChimeraProductPhoto } from '@/components/projecthub/autopilot/ChimeraProductPhoto';
 import { ChimeraProductPrices } from '@/components/projecthub/autopilot/ChimeraProductPrices';
 import { productsFromSelectedSteps } from '@/lib/archive-placement';
+import { useLiveReload } from '@/lib/live-refresh';
 
 const EMPTY_FUNNEL: ChimeraFunnelPick = { funnelId: '', steps: [] };
 
@@ -132,6 +133,7 @@ export function AutopilotSection({
       if (pollRef.current) clearInterval(pollRef.current);
     };
   }, [loadHistory]);
+  useLiveReload(() => { void loadHistory(); });
 
   const productSlots = useMemo(
     () => productsFromSelectedSteps(funnelPick.steps),

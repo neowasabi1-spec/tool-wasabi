@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useLiveReload } from "@/lib/live-refresh";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -74,15 +75,16 @@ export function AnalyticsSection({ projectId }: { projectId: string }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<Set<number>>(new Set());
 
-  const loadSteps = async () => {
-    setLoading(true);
+  const loadSteps = async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       const resp = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/analytics`);
       if (resp.ok) setSteps(await resp.json());
-    } catch { /* ignore */ } finally { setLoading(false); }
+    } catch { /* ignore */ } finally { if (!silent) setLoading(false); }
   };
 
   useEffect(() => { loadSteps(); }, [projectId]);
+  useLiveReload(() => { void loadSteps(true); });
 
   const visibleSteps = steps.filter(s => s.section === activeSection);
 

@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, ReactNode } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import { useStore } from '@/store/useStore';
 import { ensureFreshSession } from '@/lib/auth/session-refresh';
+import { emitLiveRefresh } from '@/lib/live-refresh';
 
 interface SupabaseProviderProps {
   children: ReactNode;
@@ -43,6 +44,40 @@ function hasStoredSession(): boolean {
   } catch {
     return false;
   }
+}
+
+function LiveRefreshHost() {
+  const isInitialized = useStore((s) => s.isInitialized);
+  const refreshLiveCatalog = useStore((s) => s.refreshLiveCatalog);
+  const pathname = usePathname();
+
+  useEffect(() => {
+    if (!isInitialized) return;
+    void refreshLiveCatalog();
+    emitLiveRefresh();
+  }, [isInitialized, pathname, refreshLiveCatalog]);
+
+  useEffect(() => {
+    if (!isInitialized) return;
+    const tick = () => {
+      if (document.visibilityState !== 'visible') return;
+      void refreshLiveCatalog();
+      emitLiveRefresh();
+    };
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') tick();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onVisible);
+    const id = window.setInterval(tick, 15_000);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', onVisible);
+      window.clearInterval(id);
+    };
+  }, [isInitialized, refreshLiveCatalog]);
+
+  return null;
 }
 
 export function SupabaseProvider({ children }: SupabaseProviderProps) {
@@ -151,5 +186,10 @@ export function SupabaseProvider({ children }: SupabaseProviderProps) {
     );
   }
 
-  return <>{children}</>;
+  return (
+    <>
+      <LiveRefreshHost />
+      {children}
+    </>
+  );
 }

@@ -17,7 +17,7 @@
  * automatically (it just calls our /api routes internally).
  */
 
-import { isSpaShell, rescueViaJina } from '@/lib/spa-rescue';
+import { isSpaShell, rescueViaJina, needsVslHydration } from '@/lib/spa-rescue';
 
 export type FetchHtmlSource =
   /** Plain fetch returned non-SPA HTML — used as-is. */
@@ -96,6 +96,10 @@ export function looksLikeSpaShell(
 ): boolean {
   if (!html) {
     console.log('[SPA-CHECK] isSPA: true (empty html) | html length: 0');
+    return true;
+  }
+  if (needsVslHydration(html)) {
+    console.log(`[SPA-CHECK] isSPA: true (VSL player without mounted media) | html length: ${html.length}`);
     return true;
   }
   const lower = html.toLowerCase();

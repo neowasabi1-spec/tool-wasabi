@@ -6,13 +6,14 @@ import Header from '@/components/Header';
 import { useStore } from '@/store/useStore';
 import { BUILT_IN_PAGE_TYPE_OPTIONS, PAGE_TYPE_CATEGORIES, PageType, PageTypeOption, TemplateCategory, TEMPLATE_CATEGORY_OPTIONS, TemplateViewFormat, TEMPLATE_VIEW_FORMAT_OPTIONS, LIBRARY_TEMPLATES, normalizeArchiveType, humanizePageTypeSlug } from '@/types';
 import type { ArchivedFunnel } from '@/types/database';
-import { Plus, Trash2, Edit2, Save, X, FileCode, ExternalLink, Tag, Filter, Eye, EyeOff, Maximize2, Layers, HelpCircle, FolderPlus, Settings, Monitor, Smartphone, BookOpen, ChevronDown, ChevronRight, ChevronLeft, FolderOpen, Archive, CheckSquare, Square, Package, Sparkles, Send, Loader2, MessageCircle, Search, Download, Swords, Lock } from 'lucide-react';
+import { Plus, Trash2, Edit2, Save, X, FileCode, ExternalLink, Tag, Filter, Eye, EyeOff, Maximize2, Layers, HelpCircle, FolderPlus, Settings, Monitor, Smartphone, BookOpen, ChevronDown, ChevronRight, ChevronLeft, FolderOpen, Archive, CheckSquare, Square, Package, Sparkles, Send, Loader2, MessageCircle, Search, Download, Swords, Lock, Upload, Link2 } from 'lucide-react';
 import CachedScreenshot from '@/components/CachedScreenshot';
 import QuizArchiveView from './QuizArchiveView';
 import { authFetch } from '@/lib/auth/client-fetch';
 import { toast } from 'sonner';
 import { confirmDialog } from '@/components/ui/confirm';
 import { countProductsFromSteps, dedupeStepsByUrl, isStandaloneTemplatePage } from '@/lib/archive-placement';
+import { emitLiveRefresh } from '@/lib/live-refresh';
 
 interface SelectedPage {
   name: string;
@@ -1107,6 +1108,12 @@ export default function TemplatesPage() {
   const [newTypeFolder, setNewTypeFolder] = useState('');
   // Which type "folder" is currently opened (null = show the folder grid).
   const [openType, setOpenType] = useState<string | null>(null);
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const [uploadMode, setUploadMode] = useState<'url' | 'html'>('url');
+  const [uploadUrl, setUploadUrl] = useState('');
+  const [uploadHtml, setUploadHtml] = useState('');
+  const [uploadName, setUploadName] = useState('');
+  const [uploadBusy, setUploadBusy] = useState(false);
 
   const loadCategories = useCallback(async () => {
     try {
@@ -1162,6 +1169,53 @@ export default function TemplatesPage() {
       }
     } catch { /* ignore */ }
   }, [selectedCategory]);
+
+  const resetUploadForm = () => {
+    setUploadOpen(false);
+    setUploadMode('url');
+    setUploadUrl('');
+    setUploadHtml('');
+    setUploadName('');
+    setUploadBusy(false);
+  };
+
+  const handleManualUpload = async () => {
+    if (!openType) return;
+    const url = uploadUrl.trim();
+    const html = uploadHtml.trim();
+    if (uploadMode === 'url' && !url) {
+      toast.error('Paste a page URL');
+      return;
+    }
+    if (uploadMode === 'html' && html.length < 30) {
+      toast.error('Paste the page HTML');
+      return;
+    }
+    setUploadBusy(true);
+    try {
+      const res = await authFetch('/api/templates/upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: uploadMode === 'url' ? url : url || undefined,
+          html: uploadMode === 'html' ? html : undefined,
+          name: uploadName.trim() || undefined,
+          pageType: openType,
+          category: selectedCategory || undefined,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Upload failed');
+      toast.success('Template saved — desktop & mobile screenshots are coming');
+      resetUploadForm();
+      await loadArchivedFunnels(true, { silent: true });
+      emitLiveRefresh();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Upload failed');
+    } finally {
+      setUploadBusy(false);
+    }
+  };
 
   const filteredArchivedFunnels = useMemo(() => {
     if (!archiveSearch.trim()) return archivedFunnels;
@@ -2188,21 +2242,37 @@ export default function TemplatesPage() {
                     <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${colorClass}`}>{opt?.label || openType}</span>
                     <span className="text-sm text-gray-400">{pages.length} {pages.length === 1 ? 'page' : 'pages'}</span>
                     {selectedCategory && <span className="text-xs text-indigo-500">· {selectedCategory}</span>}
-                    {pages.length > 0 && (
+                    <div className="ml-auto flex items-center gap-3">
                       <button
                         type="button"
-                        onClick={() => toggleTypePages(selectedHere)}
-                        className="ml-auto text-sm text-indigo-600 hover:text-indigo-800 font-medium"
+                        onClick={() => setUploadOpen(true)}
+                        className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors"
                       >
-                        {selectedHere.every((p) => isPageSelected(p)) ? 'Deselect all' : 'Select all in folder'}
+                        <Upload className="w-4 h-4" /> Upload
                       </button>
-                    )}
+                      {pages.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => toggleTypePages(selectedHere)}
+                          className="text-sm text-indigo-600 hover:text-indigo-800 font-medium"
+                        >
+                          {selectedHere.every((p) => isPageSelected(p)) ? 'Deselect all' : 'Select all in folder'}
+                        </button>
+                      )}
+                    </div>
                   </div>
 
                   {pages.length === 0 ? (
                     <div className="bg-white rounded-xl border border-gray-200 p-12 text-center">
                       <FolderOpen className="w-10 h-10 text-gray-300 mx-auto mb-3" />
                       <p className="text-gray-500">No pages in this folder{selectedCategory ? ` for "${selectedCategory}"` : ''}.</p>
+                      <button
+                        type="button"
+                        onClick={() => setUploadOpen(true)}
+                        className="mt-4 inline-flex items-center gap-1.5 px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700"
+                      >
+                        <Upload className="w-4 h-4" /> Upload a template
+                      </button>
                     </div>
                   ) : (
                     <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
@@ -3093,6 +3163,123 @@ export default function TemplatesPage() {
               >
                 {savingBundle ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
                 Save funnel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {uploadOpen && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={() => { if (!uploadBusy) resetUploadForm(); }}>
+          <div
+            className="w-full max-w-lg bg-white rounded-2xl shadow-2xl p-5 space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900">Upload template</h3>
+                <p className="text-sm text-gray-500">
+                  Saves HTML plus desktop &amp; mobile screenshots, like the extension.
+                </p>
+              </div>
+              <button type="button" onClick={resetUploadForm} className="p-1 text-gray-400 hover:text-gray-700" disabled={uploadBusy}>
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="flex rounded-lg border border-gray-200 p-1 bg-gray-50">
+              <button
+                type="button"
+                onClick={() => setUploadMode('url')}
+                className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium ${
+                  uploadMode === 'url' ? 'bg-white shadow text-indigo-700' : 'text-gray-600'
+                }`}
+              >
+                <Link2 className="w-4 h-4" /> Link
+              </button>
+              <button
+                type="button"
+                onClick={() => setUploadMode('html')}
+                className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium ${
+                  uploadMode === 'html' ? 'bg-white shadow text-indigo-700' : 'text-gray-600'
+                }`}
+              >
+                <FileCode className="w-4 h-4" /> HTML
+              </button>
+            </div>
+
+            <label className="block">
+              <span className="text-xs font-medium text-gray-500">Name (optional)</span>
+              <input
+                type="text"
+                value={uploadName}
+                onChange={(e) => setUploadName(e.target.value)}
+                placeholder="Leave empty to use the page title"
+                className="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
+              />
+            </label>
+
+            {uploadMode === 'url' ? (
+              <label className="block">
+                <span className="text-xs font-medium text-gray-500">Page URL</span>
+                <input
+                  type="url"
+                  value={uploadUrl}
+                  onChange={(e) => setUploadUrl(e.target.value)}
+                  placeholder="https://…"
+                  className="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
+                />
+              </label>
+            ) : (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-medium text-gray-500">Page HTML</span>
+                  <label className="text-xs text-indigo-600 hover:text-indigo-800 cursor-pointer">
+                    Load .html file
+                    <input
+                      type="file"
+                      accept=".html,.htm,text/html"
+                      className="hidden"
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        const text = await file.text();
+                        setUploadHtml(text);
+                        if (!uploadName.trim()) {
+                          setUploadName(file.name.replace(/\.(html?|htm)$/i, ''));
+                        }
+                        e.target.value = '';
+                      }}
+                    />
+                  </label>
+                </div>
+                <textarea
+                  value={uploadHtml}
+                  onChange={(e) => setUploadHtml(e.target.value)}
+                  rows={8}
+                  placeholder="Paste the full HTML here…"
+                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm font-mono focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
+                />
+              </div>
+            )}
+
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={resetUploadForm}
+                disabled={uploadBusy}
+                className="px-3 py-2 text-sm text-gray-600 hover:text-gray-900"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleManualUpload()}
+                disabled={uploadBusy}
+                className="inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 disabled:opacity-50"
+              >
+                {uploadBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+                {uploadBusy ? 'Saving…' : 'Save template'}
               </button>
             </div>
           </div>

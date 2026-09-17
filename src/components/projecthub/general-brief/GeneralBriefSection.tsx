@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback } from "react";
+import { useLiveReload } from "@/lib/live-refresh";
 import { useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -530,6 +531,12 @@ export function GeneralBriefSection({ projectId, files, projectName, onGoToFunne
       .catch(() => {})
       .finally(() => setPbLoaded(true));
   }, [projectId]);
+  useLiveReload(() => {
+    void fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/product-brief-sections`)
+      .then(r => r.ok ? r.json() : null)
+      .then(data => { if (Array.isArray(data)) setPbSections(data); })
+      .catch(() => {});
+  });
 
   // One-shot backfill: re-extract text from every file in `project_files`
   // (Supabase Storage) into the legacy JSONB columns the rewrite pipeline

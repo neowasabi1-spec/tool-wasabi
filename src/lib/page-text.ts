@@ -8,6 +8,8 @@
  * affiliate offer pages), Jina Reader as a fallback for JS-only pages.
  */
 
+import { jinaProxyUrl } from '@/lib/spa-rescue';
+
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
 
@@ -85,7 +87,7 @@ async function fetchJina(url: string): Promise<string> {
   try {
     const headers: Record<string, string> = { 'X-Return-Format': 'text' };
     if (process.env.JINA_API_KEY) headers.Authorization = `Bearer ${process.env.JINA_API_KEY}`;
-    const res = await fetch(`https://r.jina.ai/${url}`, { headers, signal: AbortSignal.timeout(45_000) });
+    const res = await fetch(jinaProxyUrl(url), { headers, signal: AbortSignal.timeout(45_000) });
     if (!res.ok) return '';
     return await res.text();
   } catch {

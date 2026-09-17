@@ -619,8 +619,11 @@ interface Store {
   archivedFunnelsError: string | null;
   archivedFunnelsLoading: boolean;
   /** `force=true` bypasses the loaded-cache and re-runs the fetch.
-   *  Used by the "Retry" button in the empty state. */
-  loadArchivedFunnels: (force?: boolean) => Promise<void>;
+   *  Used by the "Retry" button in the empty state. `silent` skips the
+   *  loading spinner so background live-refresh doesn't flash the UI. */
+  loadArchivedFunnels: (force?: boolean, opts?: { silent?: boolean }) => Promise<void>;
+  /** Quiet refetch of templates / archives / products / projects. */
+  refreshLiveCatalog: () => Promise<void>;
   saveCurrentFunnelAsArchive: (name: string, section?: string, pageIds?: string[]) => Promise<void>;
   /** Copy selected archive pages (from By Type folders) into one new funnel. */
   assembleArchiveFromPages: (
@@ -1650,9 +1653,10 @@ export const useStore = create<Store>()((set, get) => ({
   archivedFunnelsError: null,
   archivedFunnelsLoading: false,
 
-  loadArchivedFunnels: async (force = false) => {
+  loadArchivedFunnels: async (force = false, opts?: { silent?: boolean }) => {
     if (!force && get().archivedFunnelsLoaded) return;
-    set({ archivedFunnelsLoading: true, archivedFunnelsError: null });
+    const silent = !!opts?.silent;
+    if (!silent) set({ archivedFunnelsLoading: true, archivedFunnelsError: null });
     // Track the last reason we couldn't load so we can show it in the
     // empty state. Without this the UI says "No saved funnels" whether
     // the table is genuinely empty OR the request 500'd, which is
@@ -1711,6 +1715,10 @@ export const useStore = create<Store>()((set, get) => ({
       } catch (fallbackErr) {
         const fallbackReason =
           fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
+        if (silent && (get().archivedFunnels || []).length > 0) {
+          set({ archivedFunnelsLoading: false });
+          return;
+        }
         set({
           archivedFunnels: [],
           archivedFunnelsLoaded: true,
@@ -1723,8 +1731,31 @@ export const useStore = create<Store>()((set, get) => ({
       console.error('Error loading archived funnels:', error);
       set({
         archivedFunnelsLoading: false,
-        archivedFunnelsError: msg,
+        archivedFunnelsError: silent ? get().archivedFunnelsError : msg,
       });
+    }
+  },
+
+  refreshLiveCatalog: async () => {
+    if (!get().isInitialized) return;
+    if (get().archivedFunnelsLoading) return;
+    try {
+      const [products, projects, templates, postPurchasePages] = await Promise.all([
+        supabaseOps.fetchProducts().catch(() => null),
+        supabaseOps.fetchProjects().catch(() => null),
+        supabaseOps.fetchTemplates().catch(() => null),
+        supabaseOps.fetchPostPurchasePages().catch(() => null),
+      ]);
+      const patch: Record<string, unknown> = {};
+      if (products) patch.products = products.map(dbProductToApp);
+      if (projects) patch.projects = projects.map(dbProjectToApp);
+      if (templates) patch.templates = templates.map(dbTemplateToApp);
+      if (postPurchasePages) patch.postPurchasePages = postPurchasePages.map(dbPostPurchaseToApp);
+      if (Object.keys(patch).length) set(patch as Partial<ReturnType<typeof get>>);
+      await get().loadArchivedFunnels(true, { silent: true });
+      void get().loadCustomPageTypes();
+    } catch (e) {
+      console.warn('[refreshLiveCatalog]', e);
     }
   },
 

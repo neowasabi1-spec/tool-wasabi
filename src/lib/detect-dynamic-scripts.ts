@@ -58,6 +58,14 @@ const COMMERCE_MARKERS: Array<{ re: RegExp; label: string }> = [
   { re: /\b(openCheckout|showCheckout|beginCheckout|toggleCheckout|selectPackage|choosePackage|selectPlan)\s*\(/i, label: 'multi-step popup checkout / package selector' },
 ];
 
+// VSL players live in external <script src> (vsl-player.js, VTurb, …) and
+// inject the <video> at runtime. Scan the whole HTML like commerce markers.
+const PLAYER_MARKERS: Array<{ re: RegExp; label: string }> = [
+  { re: /vsl-player\.js|VSLPlayer\.mount/i, label: 'custom HLS VSL player' },
+  { re: /vturb-smartplayer|scripts\.converteai\.net|cdn\.converteai/i, label: 'VTurb/ConverteAI player' },
+  { re: /player\.pandavideo|vidalytics\.com/i, label: 'hosted VSL player' },
+];
+
 /**
  * Detect script-driven commerce/checkout machinery across the whole HTML
  * (external bundles included). Returns the matched signal labels.
@@ -66,6 +74,13 @@ export function detectCommerceMarkers(html: string): string[] {
   if (!html || typeof html !== 'string') return [];
   const out: string[] = [];
   for (const m of COMMERCE_MARKERS) if (m.re.test(html)) out.push(m.label);
+  return out;
+}
+
+export function detectPlayerMarkers(html: string): string[] {
+  if (!html || typeof html !== 'string') return [];
+  const out: string[] = [];
+  for (const m of PLAYER_MARKERS) if (m.re.test(html)) out.push(m.label);
   return out;
 }
 
@@ -156,8 +171,9 @@ export function detectDynamicScripts(html: string): DynamicScriptsResult {
   // whole HTML — even when there is no inline JS at all (e.g. a Shopify
   // checkout whose logic is entirely in cdn.shopify.com bundles).
   const commerceSignals = detectCommerceMarkers(html);
+  const playerSignals = detectPlayerMarkers(html);
 
-  if (!inlineJs.trim() && commerceSignals.length === 0) {
+  if (!inlineJs.trim() && commerceSignals.length === 0 && playerSignals.length === 0) {
     return { functional: false, signals, inlineScriptCount };
   }
 
@@ -165,6 +181,7 @@ export function detectDynamicScripts(html: string): DynamicScriptsResult {
     if (p.re.test(inlineJs)) signals.push(p.label);
   }
   for (const s of commerceSignals) signals.push(s);
+  for (const s of playerSignals) signals.push(s);
 
   // NOTE (regression fix 2026-07-08): a loose combo — content keyword + DOM
   // mutation + timer — used to ALSO flag a page as functional. But

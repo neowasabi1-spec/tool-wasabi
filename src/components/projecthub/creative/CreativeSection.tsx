@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import { useLiveReload } from "@/lib/live-refresh";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -104,15 +105,16 @@ function TemplateSalvati({ projectId }: { projectId: string }) {
   const [form, setForm] = useState({ name: "", source_brand: "", category: "", tags: "" });
   const [fileLabel, setFileLabel] = useState("");
 
-  const load = async () => {
-    setLoading(true);
+  const load = async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/creative/templates`);
       if (r.ok) setTemplates(await r.json());
-    } finally { setLoading(false); }
+    } finally { if (!silent) setLoading(false); }
   };
 
   useEffect(() => { load(); }, [projectId]);
+  useLiveReload(() => { void load(true); });
 
   const upload = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -534,6 +536,7 @@ function Iterazione({ projectId }: { projectId: string }) {
   };
 
   useEffect(() => { loadAds(); loadIterations(); }, [projectId]);
+  useLiveReload(() => { void loadAds(); void loadIterations(); });
 
   const changePeriod = (p: IterPeriod) => { setPeriod(p); if (p !== "custom") loadIterations(p); };
 
@@ -956,8 +959,8 @@ function SwipeTab({ projectId }: { projectId: string }) {
   const [genStream, setGenStream] = useState<Record<number, string>>({});
   const [previewSwipe, setPreviewSwipe] = useState<CreativeSwipe | null>(null);
 
-  const loadAll = async () => {
-    setLoadingBrands(true); setLoadingSwipes(true);
+  const loadAll = async (silent = false) => {
+    if (!silent) { setLoadingBrands(true); setLoadingSwipes(true); }
     try {
       const [rb, ra, rs] = await Promise.all([
         fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/creative/brands`),
@@ -967,10 +970,11 @@ function SwipeTab({ projectId }: { projectId: string }) {
       if (rb.ok) { const all: CompetitorBrand[] = await rb.json(); setBrands(all.filter(b => b.brand_type === "competitor")); }
       if (ra.ok) setAllAds(await ra.json());
       if (rs.ok) setAllSwipes(await rs.json());
-    } finally { setLoadingBrands(false); setLoadingSwipes(false); }
+    } finally { if (!silent) { setLoadingBrands(false); setLoadingSwipes(false); } }
   };
 
   useEffect(() => { loadAll(); }, [projectId]);
+  useLiveReload(() => { void loadAll(true); });
 
   // Filter helpers
   const adsForBrand = (brandId: number) => allAds.filter(a => a.brand_id === brandId);
@@ -1335,8 +1339,8 @@ function NuoveCreative({ projectId }: { projectId: string }) {
   const [loadingGenerated, setLoadingGenerated] = useState(true);
   const [boardPeriod, setBoardPeriod] = useState<GenPeriod>("today");
 
-  const loadAll = async () => {
-    setLoadingAngles(true); setLoadingGenerated(true);
+  const loadAll = async (silent = false) => {
+    if (!silent) { setLoadingAngles(true); setLoadingGenerated(true); }
     try {
       const [ra, rg] = await Promise.all([
         fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/creative/angles`),
@@ -1344,10 +1348,11 @@ function NuoveCreative({ projectId }: { projectId: string }) {
       ]);
       if (ra.ok) setAngles(await ra.json());
       if (rg.ok) setGenerated(await rg.json());
-    } finally { setLoadingAngles(false); setLoadingGenerated(false); }
+    } finally { if (!silent) { setLoadingAngles(false); setLoadingGenerated(false); } }
   };
 
   useEffect(() => { loadAll(); }, [projectId]);
+  useLiveReload(() => { void loadAll(true); });
 
   const now = new Date();
   const boardItems = generated.filter(g => {
@@ -1719,8 +1724,8 @@ function CreativeDashboard({ projectId }: { projectId: string }) {
   const [brandForm, setBrandForm] = useState({ name: "", ads_library_url: "", scrape_count: "10", frequency: "every_7_days", notes: "", creative_quality_notes: "" });
   const [jobForm, setJobForm] = useState({ brand_id: "", mode: "swipe", frequency: "daily", media_type: "both", ads_count: "5", iterations_per_ad: "3" });
 
-  const load = async () => {
-    setLoading(true);
+  const load = async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       const [br, jr] = await Promise.all([
         fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/creative/brands`),
@@ -1728,10 +1733,11 @@ function CreativeDashboard({ projectId }: { projectId: string }) {
       ]);
       if (br.ok) setBrands(await br.json());
       if (jr.ok) setJobs(await jr.json());
-    } finally { setLoading(false); }
+    } finally { if (!silent) setLoading(false); }
   };
 
   useEffect(() => { load(); }, [projectId]);
+  useLiveReload(() => { void load(true); });
 
   const addBrand = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1991,14 +1997,15 @@ function ListaCompetitors({ projectId }: { projectId: string }) {
   const [adding, setAdding] = useState(false);
   const [showForm, setShowForm] = useState(false);
 
-  const load = async () => {
-    setLoading(true);
+  const load = async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/creative/brands`);
       if (r.ok) { const all: CompetitorBrand[] = await r.json(); setItems(all.filter(b => b.brand_type === "competitor")); }
-    } finally { setLoading(false); }
+    } finally { if (!silent) setLoading(false); }
   };
   useEffect(() => { load(); }, [projectId]);
+  useLiveReload(() => { void load(true); });
 
   const add = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -2129,14 +2136,15 @@ function ListaBrand({ projectId }: { projectId: string }) {
   const [adding, setAdding] = useState(false);
   const [showForm, setShowForm] = useState(false);
 
-  const load = async () => {
-    setLoading(true);
+  const load = async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/creative/brands`);
       if (r.ok) { const all: CompetitorBrand[] = await r.json(); setItems(all.filter(b => b.brand_type === "inspiration")); }
-    } finally { setLoading(false); }
+    } finally { if (!silent) setLoading(false); }
   };
   useEffect(() => { load(); }, [projectId]);
+  useLiveReload(() => { void load(true); });
 
   const add = async (e: React.FormEvent) => {
     e.preventDefault();

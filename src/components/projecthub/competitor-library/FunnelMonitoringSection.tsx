@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useLiveReload } from "@/lib/live-refresh";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
@@ -559,8 +560,8 @@ export function FunnelMonitoringSection({ projectId }: { projectId: string }) {
   const [form, setForm] = useState({ brand_name: "", url: "", frequency: "every_15_days", notes: "" });
   const [adding, setAdding] = useState(false);
 
-  const load = async () => {
-    setLoading(true);
+  const load = async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/funnel-monitoring`);
       if (r.ok) {
@@ -568,10 +569,11 @@ export function FunnelMonitoringSection({ projectId }: { projectId: string }) {
         setMonitors(data);
         if (data.length > 0 && !selectedMonitorId) setSelectedMonitorId(data[0].id);
       }
-    } finally { setLoading(false); }
+    } finally { if (!silent) setLoading(false); }
   };
 
   useEffect(() => { load(); }, [projectId]);
+  useLiveReload(() => { void load(true); });
 
   const selectedMonitor = monitors.find(m => m.id === selectedMonitorId) ?? null;
 

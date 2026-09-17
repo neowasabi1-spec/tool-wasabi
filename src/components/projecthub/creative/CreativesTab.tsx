@@ -16,6 +16,7 @@
  */
 
 import { useState, useRef, useEffect, useMemo } from "react";
+import { useLiveReload } from "@/lib/live-refresh";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -68,15 +69,16 @@ export function CreativesTab({ projectId }: { projectId: string }) {
   const [detailText, setDetailText] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const load = async () => {
-    setLoading(true);
+  const load = async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       const r = await fetch(api);
       if (r.ok) setRows(await r.json());
-    } finally { setLoading(false); }
+    } finally { if (!silent) setLoading(false); }
   };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load(); }, [projectId]);
+  useLiveReload(() => { void load(true); });
 
   const items = useMemo(() => rows.filter(r => r.media_type !== "folder"), [rows]);
 

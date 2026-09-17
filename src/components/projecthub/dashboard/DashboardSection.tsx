@@ -7,6 +7,7 @@
  */
 
 import { useEffect, useState } from "react";
+import { useLiveReload } from "@/lib/live-refresh";
 import {
   AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -66,7 +67,7 @@ export function DashboardSection({
     (async () => {
       setLoading(true);
       try {
-        const r = await fetch(`/api/projecthub/projects/${projectId}/dashboard`);
+        const r = await fetch(`/api/projecthub/projects/${projectId}/dashboard`, { cache: "no-store" });
         if (r.ok && alive) setData(await r.json());
       } finally {
         if (alive) setLoading(false);
@@ -74,6 +75,15 @@ export function DashboardSection({
     })();
     return () => { alive = false; };
   }, [projectId]);
+
+  useLiveReload(() => {
+    void (async () => {
+      try {
+        const r = await fetch(`/api/projecthub/projects/${projectId}/dashboard`, { cache: "no-store" });
+        if (r.ok) setData(await r.json());
+      } catch { /* keep last snapshot */ }
+    })();
+  });
 
   if (loading) {
     return <div className="py-20 text-center text-sm text-muted-foreground">Loading dashboard…</div>;

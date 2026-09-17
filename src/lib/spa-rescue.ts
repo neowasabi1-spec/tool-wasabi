@@ -38,6 +38,75 @@ export function isSpaShell(html: string): boolean {
 }
 
 /**
+ * r.jina.ai parses `?` / `&` as ITS OWN query string. A target like
+ * `https://host/vsl?gate=TOKEN` is therefore fetched as `/vsl` — and
+ * multi-funnel hosts (unextstep.site, etc.) serve a completely different
+ * site without the gate. Encode those chars so they stay on the target.
+ */
+export function jinaProxyUrl(targetUrl: string): string {
+  const encoded = String(targetUrl || '').replace(/[?#&]/g, (ch) => encodeURIComponent(ch));
+  return `https://r.jina.ai/${encoded}`;
+}
+
+const VSL_PLAYER_RE =
+  /vsl-player\.js|VSLPlayer\.mount|vturb-smartplayer|vturb\.com|scripts\.converteai\.net|cdn\.converteai|player\.pandavideo|vidalytics/i;
+
+function htmlHasMountedMedia(html: string): boolean {
+  return (
+    /<video\b[^>]*(?:\bsrc\s*=|\bposter\s*=)/i.test(html) ||
+    /<iframe\b[^>]*src\s*=\s*["'][^"']*(?:vturb|converteai|pandavideo|vidalytics|wistia|youtube|vimeo)/i.test(html)
+  );
+}
+
+/**
+ * True when the page is a VSL whose player injects <video>/<iframe> only
+ * after JS runs. SSR copy (headline, fake comments) is enough to fool
+ * `isSpaShell`, so identical-clone must NOT treat that HTML as complete.
+ */
+export function needsVslHydration(html: string): boolean {
+  if (!html) return false;
+  if (!VSL_PLAYER_RE.test(html)) return false;
+  return !htmlHasMountedMedia(html);
+}
+
+/**
+ * Copy poster + m3u8 from the inline VSLPlayer.mount config into an empty
+ * `#vsl` node so snapshot preview still shows the video frame after scripts
+ * are stripped or sandboxed.
+ */
+export function hydrateVslSnapshot(html: string): string {
+  if (!html || htmlHasMountedMedia(html)) return html;
+  if (!VSL_PLAYER_RE.test(html)) return html;
+
+  const videoId = html.match(/videoId:\s*['"]([a-z0-9_-]+)['"]/i)?.[1];
+  const srcFromCfg = html.match(/src:\s*['"](https?:\/\/[^'"]+\.m3u8[^'"]*)['"]/i)?.[1];
+  const posterFromCfg = html.match(/poster:\s*['"](https?:\/\/[^'"]+)['"]/i)?.[1];
+  const cdnBase = html.match(/https?:\/\/video\.[^'"/\s]+/i)?.[0];
+  const m3u8 = html.match(/https?:\/\/[^'"\s]+\/[^'"\s]*master\.m3u8/i)?.[0];
+
+  let src = srcFromCfg || '';
+  let poster = posterFromCfg || '';
+  if (!src && cdnBase && videoId) src = `${cdnBase}/${videoId}/master.m3u8`;
+  if (!poster && cdnBase && videoId) poster = `${cdnBase}/${videoId}/thumbnail.jpg`;
+  if (!src && m3u8) src = m3u8;
+  if (!poster && src) poster = src.replace(/master\.m3u8.*$/i, 'thumbnail.jpg');
+  if (!src && !poster) return html;
+
+  const esc = (u: string) => u.replace(/"/g, '&quot;');
+  const videoTag =
+    `<video playsinline webkit-playsinline preload="metadata"${poster ? ` poster="${esc(poster)}"` : ''}${src ? ` src="${esc(src)}"` : ''} style="width:100%;height:auto;display:block;background:#000"></video>`;
+
+  if (!/\bid\s*=\s*["']vsl["']/i.test(html)) return html;
+  return html.replace(
+    /(<div\b[^>]*\bid\s*=\s*["']vsl["'][^>]*>)([\s\S]*?)(<\/div>)/i,
+    (full, open: string, inner: string, close: string) => {
+      if (/<video\b/i.test(inner)) return full;
+      return `${open}${videoTag}${inner}${close}`;
+    },
+  );
+}
+
+/**
  * Render a JS-only page via r.jina.ai. Tries two strategies in order so
  * that we ALWAYS prefer the highest-fidelity output available:
  *
@@ -90,7 +159,7 @@ async function tryJinaBrowserHtml(url: string, apiKey: string): Promise<string |
     };
     if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
 
-    const res = await fetch(`https://r.jina.ai/${url}`, {
+    const res = await fetch(jinaProxyUrl(url), {
       headers,
       redirect: 'follow',
       // Real browser renders are slow — give them up to 60s before we
@@ -158,6 +227,9 @@ export function stabilizeClonedHtml(
 ): string {
   let out = absolutizeUrlsInHtml(html, originUrl);
   out = injectBaseHref(out, originUrl);
+  // Bake poster/m3u8 into #vsl BEFORE script strip — the mount config lives
+  // in inline JS and would otherwise vanish from snapshot preview.
+  out = hydrateVslSnapshot(out);
   out = neutralizeAnchorHrefs(out);
   out = unlockPageScroll(out);
   out = resetAccordionState(out);
@@ -372,8 +444,8 @@ export function stripNonCarouselScripts(html: string): string {
   // Tutto il resto (analytics, tracking pixel, popup exit-intent,
   // GA/FB pixel, A/B testing, geolocation tracker, FunnelKit loader)
   // viene strippato.
-  const KEEP_SRC = /\b(?:swiper|slick|flickity|glide|splide|owl-carousel|owl\.carousel|jquery|bootstrap|popper)\b/i;
-  const KEEP_INLINE = /(?:new\s+Swiper\s*\(|Swiper\.create\s*\(|\.slick\s*\(|\.flickity\s*\(|\.glide\s*\(|new\s+Splide\s*\(|\.owlCarousel\s*\()/;
+  const KEEP_SRC = /\b(?:swiper|slick|flickity|glide|splide|owl-carousel|owl\.carousel|jquery|bootstrap|popper|vsl-player|hls\.js|hls\.light|vturb|converteai|smartplayer|wistia)\b/i;
+  const KEEP_INLINE = /(?:new\s+Swiper\s*\(|Swiper\.create\s*\(|\.slick\s*\(|\.flickity\s*\(|\.glide\s*\(|new\s+Splide\s*\(|\.owlCarousel\s*\(|VSLPlayer\.mount\s*\()/;
   return html.replace(
     /<script\b([^>]*)>([\s\S]*?)<\/script>/gi,
     (full, attrs: string, body: string) => {
@@ -966,12 +1038,27 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
  * always end with `/`.
  */
 function injectBaseHref(html: string, originUrl: string): string {
-  let baseHref: string;
+  let fallback: string;
   try {
-    const u = new URL(originUrl);
-    baseHref = `${u.origin}/`;
+    fallback = `${new URL(originUrl).origin}/`;
   } catch {
     return html;
+  }
+
+  // Prefer the page's own <base href> (absolutized). Funnel hosts often
+  // mount assets under a subdirectory (`/s/`) — replacing that with the
+  // origin root 404s every relative image/script.
+  let baseHref = fallback;
+  const existing = html.match(/<base\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>/i);
+  if (existing?.[1]) {
+    try {
+      const resolved = new URL(existing[1], originUrl);
+      baseHref = resolved.href.endsWith('/')
+        ? resolved.href
+        : resolved.href.replace(/[^/]*$/, '') || resolved.href;
+    } catch {
+      baseHref = fallback;
+    }
   }
   const tag = `<base href="${baseHref}">`;
 
@@ -1256,7 +1343,7 @@ async function tryJinaMarkdown(url: string, apiKey: string): Promise<string | nu
     };
     if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
 
-    const res = await fetch(`https://r.jina.ai/${url}`, {
+    const res = await fetch(jinaProxyUrl(url), {
       headers,
       redirect: 'follow',
       signal: AbortSignal.timeout(30000),

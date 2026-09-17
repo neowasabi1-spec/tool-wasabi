@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCoreKnowledge } from '@/knowledge/copywriting';
-import { rescueViaJina, stabilizeClonedHtml, isSpaShell } from '@/lib/spa-rescue';
+import { rescueViaJina, stabilizeClonedHtml, isSpaShell, needsVslHydration } from '@/lib/spa-rescue';
 import { inlineExternalAssets } from '@/lib/inline-assets';
 import { fetchHtmlSmart, looksLikeSpaShell } from '@/lib/fetch-html-smart';
 import { detectDynamicScripts } from '@/lib/detect-dynamic-scripts';
@@ -158,9 +158,12 @@ async function fetchPageWithFallbacks(url: string): Promise<
             html.length >= 15000 &&
             /<(h[1-6]|p|article|section|main)[\s>]/i.test(html);
 
-          if (looksLikeSpaShell(html) && !hasRealContent) {
-            details.push(`${attempt.name}: SPA shell detected (${html.length} chars, no real content) — falling through to fetchHtmlSmart (Playwright → Jina)`);
-            console.warn(`[clone-funnel] ${attempt.name} returned SPA shell for ${url} — trying next attempt`);
+          if ((looksLikeSpaShell(html) && !hasRealContent) || needsVslHydration(html)) {
+            const why = needsVslHydration(html)
+              ? `VSL player without mounted media (${html.length} chars)`
+              : `SPA shell detected (${html.length} chars, no real content)`;
+            details.push(`${attempt.name}: ${why} — falling through to fetchHtmlSmart (Playwright → Jina)`);
+            console.warn(`[clone-funnel] ${attempt.name} returned ${why} for ${url} — trying next attempt`);
           } else {
             if (looksLikeSpaShell(html)) {
               console.log(`[clone-funnel] ${attempt.name}: SPA marker present but ${html.length} chars + content tags found — treating as SSR, using as-is`);
@@ -847,8 +850,11 @@ export async function POST(request: NextRequest) {
       // Il secondo tentativo Googlebot bypassa il 90% dei filtri
       // Cloudflare/Shopify bot-detection che 403-ano il chrome UA su
       // siti tipo shop.try-spartan.com.
-      const FETCH_BUDGET_MS = 5000;
+      const FETCH_BUDGET_MS = 12000;
       const JINA_BUDGET_MS = 30000;
+
+      const identicalFetchIsComplete = (html: string) =>
+        !!html && html.length >= 50 && !isSpaShell(html) && !needsVslHydration(html);
 
       type DirectAttempt = { ok: boolean; html: string; status: number; ms: number; name: string; error?: string };
 
@@ -895,9 +901,16 @@ export async function POST(request: NextRequest) {
         }
       );
       console.log(`[clone-funnel] identical: chrome ${chromeAttempt.ok ? 'OK' : 'KO'} status=${chromeAttempt.status} ${chromeAttempt.html.length}ch in ${chromeAttempt.ms}ms${chromeAttempt.error ? ` err=${chromeAttempt.error}` : ''}`);
+      if (chromeAttempt.ok && needsVslHydration(chromeAttempt.html)) {
+        console.log(`[clone-funnel] identical: chrome HTML is VSL shell (player JS, no mounted <video>) for ${cleanUrl} — continuing to Jina`);
+      }
 
-      // Se chrome ha funzionato E non e' un guscio SPA, usalo subito.
-      if (chromeAttempt.ok && !isSpaShell(chromeAttempt.html)) {
+      // Se chrome ha funzionato E non e' un guscio SPA/VSL (player JS
+      // senza <video> montato), usalo subito. Pagine tipo
+      // /vsl?gate=TOKEN hanno headline+commenti SSR ma il player e'
+      // vuoto finche' non gira vsl-player.js — quelle devono passare
+      // da Jina (con la query string) per catturare il DOM post-render.
+      if (chromeAttempt.ok && identicalFetchIsComplete(chromeAttempt.html)) {
         const keepDecision = shouldKeepScripts(chromeAttempt.html, keepScriptsFlag);
         const stabilizedHtml = stabilizeClonedHtml(chromeAttempt.html, cleanUrl, { keepScripts: keepDecision.keep });
         // BUG STORICO — Senza inlineExternalAssets l'HTML clonato
@@ -943,7 +956,7 @@ export async function POST(request: NextRequest) {
       );
       console.log(`[clone-funnel] identical: googlebot ${botAttempt.ok ? 'OK' : 'KO'} status=${botAttempt.status} ${botAttempt.html.length}ch in ${botAttempt.ms}ms${botAttempt.error ? ` err=${botAttempt.error}` : ''}`);
 
-      if (botAttempt.ok && !isSpaShell(botAttempt.html)) {
+      if (botAttempt.ok && identicalFetchIsComplete(botAttempt.html)) {
         const keepDecision = shouldKeepScripts(botAttempt.html, keepScriptsFlag);
         const stabilizedHtml = stabilizeClonedHtml(botAttempt.html, cleanUrl, { keepScripts: keepDecision.keep });
         // Stesso motivo del chrome path sopra: senza inline-css il

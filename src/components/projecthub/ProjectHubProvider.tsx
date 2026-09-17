@@ -1,8 +1,17 @@
 'use client';
 
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
 import { useState, type ReactNode } from 'react';
 import { Toaster } from '@/components/ui/toaster';
+import { useLiveReload } from '@/lib/live-refresh';
+
+function QueryLiveInvalidator() {
+  const queryClient = useQueryClient();
+  useLiveReload(() => {
+    void queryClient.invalidateQueries();
+  });
+  return null;
+}
 
 /**
  * Wraps any projecthub-derived UI tree with:
@@ -17,8 +26,10 @@ export function ProjectHubProvider({ children }: { children: ReactNode }) {
       new QueryClient({
         defaultOptions: {
           queries: {
-            staleTime: 30_000,
-            refetchOnWindowFocus: false,
+            staleTime: 15_000,
+            refetchOnWindowFocus: true,
+            refetchInterval: 20_000,
+            refetchIntervalInBackground: false,
             retry: 1,
           },
         },
@@ -27,6 +38,7 @@ export function ProjectHubProvider({ children }: { children: ReactNode }) {
 
   return (
     <QueryClientProvider client={queryClient}>
+      <QueryLiveInvalidator />
       <div className="projecthub-theme min-h-screen">
         {children}
         <Toaster />

@@ -21,7 +21,7 @@ import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { confirmDialog } from "@/components/ui/confirm";
 import { useStore } from "@/store/useStore";
-import { listArchivePagesByType, type ArchiveTemplatePage } from "@/lib/archive-template-pages";
+import { listTemplatesForStepType, type ArchiveTemplatePage } from "@/lib/archive-template-pages";
 import { humanizePageTypeSlug, normalizeArchiveType } from "@/types";
 import {
   DropdownMenu,
@@ -683,18 +683,6 @@ function FunnelLibraryDialog({
   );
 }
 
-function archiveKeysForStepType(stepType: string, extraKnown: string[]): string[] {
-  const t = normalizeArchiveType(stepType, extraKnown);
-  if (t === "altro") return [t];
-  if (/^upsell(_\d+)?$/.test(t) || t === "upsell_1") {
-    return ["upsell_1", "upsell_2", "upsell_3", t].filter((v, i, a) => a.indexOf(v) === i);
-  }
-  if (/^downsell(_\d+)?$/.test(t) || t === "downsell_1") {
-    return ["downsell_1", "downsell_2", "downsell_3", t].filter((v, i, a) => a.indexOf(v) === i);
-  }
-  return [t];
-}
-
 function TemplatePickerDialog({
   open,
   stepType,
@@ -730,30 +718,12 @@ function TemplatePickerDialog({
   );
 
   const pages = useMemo(() => {
-    const map = listArchivePagesByType(archivedFunnels || [], knownCustomTypes);
-    for (const t of templates || []) {
-      const type = normalizeArchiveType(t.pageType, knownCustomTypes);
-      const url = t.sourceUrl || "";
-      if (!url) continue;
-      const list = map[type] || [];
-      if (list.some((p) => p.url_to_swipe === url)) continue;
-      list.push({
-        funnel_name: "Templates",
-        funnel_id: t.id,
-        name: t.name,
-        url_to_swipe: url,
-        prompt: "",
-        page_type: type,
-        screenshotUrl: t.previewImage || null,
-        htmlUrl: null,
-      });
-      map[type] = list;
-    }
-    const keys = archiveKeysForStepType(stepType, knownCustomTypes);
-    const out: ArchiveTemplatePage[] = [];
-    for (const k of keys) {
-      for (const p of map[k] || []) out.push(p);
-    }
+    const out = listTemplatesForStepType(
+      stepType,
+      archivedFunnels || [],
+      templates || [],
+      knownCustomTypes,
+    );
     const q = search.trim().toLowerCase();
     if (!q) return out;
     return out.filter((p) =>

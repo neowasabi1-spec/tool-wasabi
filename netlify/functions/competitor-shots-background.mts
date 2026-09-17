@@ -9,7 +9,7 @@ import { chromium, type Browser } from 'playwright-core';
  * Decoupled from the Apify webhook so heavy Playwright work never competes
  * with ad ingestion for the webhook's 300s budget.
  *
- * Body: { projectId, secret }
+ * Body: { projectId?, funnelId?, scope?, secret }
  */
 
 // A standalone Netlify function runs either under `netlify dev` locally or on
@@ -51,15 +51,49 @@ async function launchBrowser(): Promise<Browser> {
   return chromium.launch({ headless: true, args: ['--disable-dev-shm-usage', '--disable-gpu'] });
 }
 
-/** Capture DESKTOP + MOBILE full-page JPEGs of a URL in ONE tab, exactly like
+function withBaseHref(html: string, baseUrl: string): string {
+  const href = String(baseUrl || '').replace(/"/g, '');
+  if (!href || /<base\s/i.test(html)) return html;
+  if (/<head[^>]*>/i.test(html)) {
+    return html.replace(/<head[^>]*>/i, (m) => `${m}<base href="${href}">`);
+  }
+  return `<head><base href="${href}"></head>${html}`;
+}
+
+async function loadSavedHtml(
+  sb: SupabaseClient,
+  pageId: string,
+  inline?: string,
+): Promise<string> {
+  if (inline && inline.length > 80) return inline;
+  const { data } = await sb
+    .from('page_html')
+    .select('html')
+    .eq('page_id', pageId)
+    .eq('kind', 'cloned')
+    .eq('variant', 'desktop')
+    .maybeSingle();
+  const raw = typeof data?.html === 'string' ? data.html : '';
+  if (raw.startsWith('@@wasabi-html:')) {
+    const key = raw.slice('@@wasabi-html:'.length).trim();
+    const file = await sb.storage.from('project-files').download(key);
+    if (file.data) return await file.data.text();
+  }
+  return raw;
+}
+
+/** Capture DESKTOP + MOBILE full-page JPEGs in ONE tab, exactly like
  *  the browser extension (background.js): a single page + navigation, switching
  *  device profiles via CDP Emulation.setDeviceMetricsOverride. This is critical
  *  on serverless Chromium (--single-process): opening a SECOND context/page
  *  crashes the renderer ("Target/context/browser has been closed"), so we must
- *  reuse one page and one CDP session for both viewports. */
+ *  reuse one page and one CDP session for both viewports.
+ *
+ *  Live URL is preferred (extension parity). Saved HTML is the fallback for
+ *  pasted templates / pages that block headless Chrome. */
 async function captureBoth(
   browser: Browser,
-  url: string,
+  source: { url?: string; html?: string },
 ): Promise<{ desktop: Buffer | null; mobile: Buffer | null }> {
   const context = await browser.newContext({ ignoreHTTPSErrors: true, bypassCSP: true });
   const page = await context.newPage();
@@ -100,7 +134,24 @@ async function captureBoth(
 
   try {
     await client.send('Page.enable').catch(() => {});
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 25_000 });
+    const liveUrl = String(source.url || '');
+    const html = String(source.html || '');
+    let loaded = false;
+    if (/^https?:\/\//i.test(liveUrl) && !/manual-upload\.local/i.test(liveUrl)) {
+      try {
+        await page.goto(liveUrl, { waitUntil: 'domcontentloaded', timeout: 25_000 });
+        loaded = true;
+      } catch { /* fall through to saved HTML */ }
+    }
+    if (!loaded && html.length > 50) {
+      const base = /^https?:\/\//i.test(liveUrl) ? liveUrl : 'https://templates.local/';
+      await page.setContent(withBaseHref(html, base), {
+        waitUntil: 'domcontentloaded',
+        timeout: 25_000,
+      });
+      loaded = true;
+    }
+    if (!loaded) return { desktop: null, mobile: null };
     await page.waitForTimeout(900); // let hero media + fonts settle
     let desktop: Buffer | null = null;
     let mobile: Buffer | null = null;
@@ -135,11 +186,13 @@ export default async (req: Request) => {
   // recovered archive), instead of a single project's landings.
   const qs = new URL(req.url).searchParams;
   let projectId = qs.get('projectId') || '';
+  let funnelId = qs.get('funnelId') || '';
   let secret = qs.get('secret') || '';
   let scope = qs.get('scope') || '';
   try {
-    const body = (await req.json()) as { projectId?: string; secret?: string; scope?: string };
+    const body = (await req.json()) as { projectId?: string; funnelId?: string; secret?: string; scope?: string };
     if (!projectId) projectId = String(body?.projectId || '');
+    if (!funnelId) funnelId = String(body?.funnelId || '');
     if (!secret) secret = String(body?.secret || '');
     if (!scope) scope = String(body?.scope || '');
   } catch { /* body may be absent for a query-string invocation */ }
@@ -147,13 +200,14 @@ export default async (req: Request) => {
   const expected = process.env.APIFY_WEBHOOK_SECRET || process.env.CRON_SECRET || '';
   if (expected && secret !== expected) return new Response('Unauthorized', { status: 401 });
   const sweepAll = scope === 'all';
-  if (!projectId && !sweepAll) return new Response('missing projectId', { status: 200 });
+  if (!projectId && !funnelId && !sweepAll) return new Response('missing projectId', { status: 200 });
 
-  const log = (...a: unknown[]) => console.log(`[shots ${sweepAll ? 'ALL' : projectId}]`, ...a);
+  const log = (...a: unknown[]) => console.log(`[shots ${sweepAll ? 'ALL' : funnelId || projectId}]`, ...a);
   const sb = getSupabase();
 
   let query = sb.from('archived_funnels').select('id, steps').order('created_at', { ascending: false });
-  if (!sweepAll) query = query.eq('project_id', projectId);
+  if (funnelId) query = query.eq('id', funnelId);
+  else if (!sweepAll) query = query.eq('project_id', projectId);
   const { data: rows } = await query;
 
   // One work item per STEP missing a screenshot — covers single-page saves,
@@ -171,7 +225,6 @@ export default async (req: Request) => {
       if (!cd) return;
       if (cd.screenshotDesktopUrl && cd.screenshotMobileUrl) return; // both done
       const src = typeof cd.source_url === 'string' ? cd.source_url : '';
-      if (!/^https?:\/\//i.test(src)) return;
       const shotKey = typeof step.page_id === 'string' && step.page_id ? (step.page_id as string) : r.id;
       todo.push({ rowId: r.id, stepIdx: i, shotKey, url: src });
     });
@@ -194,7 +247,9 @@ export default async (req: Request) => {
     let browser: Browser | null = null;
     try {
       browser = await launchBrowser();
-      const shots = await captureBoth(browser, t.url);
+      const inlineHtml = typeof cd.html === 'string' ? cd.html : '';
+      const savedHtml = await loadSavedHtml(sb, t.shotKey, inlineHtml);
+      const shots = await captureBoth(browser, { url: t.url, html: savedHtml });
       if (!dUrl && shots.desktop) {
         dUrl = await uploadShot(sb, t.shotKey, 'desktop', shots.desktop);
         if (!dUrl) errs.push('desktop upload failed');

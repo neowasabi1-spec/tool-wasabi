@@ -37,6 +37,10 @@ import {
   VisionJobDetail,
 } from '@/types';
 import {
+  listTemplatesForStepType,
+  pickerValueForTemplate,
+} from '@/lib/archive-template-pages';
+import {
   Plus,
   Trash2,
   Loader2,
@@ -1138,6 +1142,8 @@ export default function FrontEndFunnel() {
     customPageTypes,
     addCustomPageType,
     saveCurrentFunnelAsArchive,
+    archivedFunnels,
+    loadArchivedFunnels,
   } = useStore();
 
   const allPageTypeOptions: PageTypeOption[] = [
@@ -1160,6 +1166,32 @@ export default function FrontEndFunnel() {
     const option = allPageTypeOptions.find(opt => opt.value === value);
     return option?.label || value;
   };
+
+  const knownCustomTypes = useMemo(
+    () => (customPageTypes || []).map((ct) => ct.value),
+    [customPageTypes],
+  );
+
+  useEffect(() => {
+    void loadArchivedFunnels();
+  }, [loadArchivedFunnels]);
+
+  const templatesByStepType = useMemo(() => {
+    const cache = new Map<string, ReturnType<typeof listTemplatesForStepType>>();
+    return (stepType: string) => {
+      const key = stepType || 'landing';
+      const hit = cache.get(key);
+      if (hit) return hit;
+      const list = listTemplatesForStepType(
+        key,
+        archivedFunnels || [],
+        templates || [],
+        knownCustomTypes,
+      );
+      cache.set(key, list);
+      return list;
+    };
+  }, [archivedFunnels, templates, knownCustomTypes]);
 
   const [loadingIds, setLoadingIds] = useState<string[]>([]);
   const [analyzingIds, setAnalyzingIds] = useState<string[]>([]);
@@ -6321,6 +6353,8 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                 ) : (
                   (funnelPages || []).map((page, index) => {
                     const isSelected = selectedStepIds.has(page.id);
+                    const typeTemplates = templatesByStepType(page.pageType);
+                    const typeLabel = getPageTypeLabel(page.pageType);
                     return (
                     <tr key={page.id} className={isSelected ? 'bg-purple-50/50' : undefined}>
                       {/* Per-row select checkbox — drives the Save subset.
@@ -6470,47 +6504,47 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                         )}
                       </td>
 
-                      {/* Template to Swipe */}
+                      {/* Template to Swipe — Template section, filtered by Type */}
                       <td>
                         <select
                           value={page.templateId || ''}
                           onChange={(e) => {
                             const templateId = e.target.value;
-                            const selectedTemplate = (templates || []).find(t => t.id === templateId);
+                            const pool = typeTemplates;
+                            const selected = pool.find((t) => pickerValueForTemplate(t) === templateId);
                             updateFunnelPage(page.id, {
                               templateId: templateId || undefined,
-                              urlToSwipe: selectedTemplate?.sourceUrl || page.urlToSwipe,
+                              urlToSwipe: selected?.url_to_swipe || page.urlToSwipe,
                             });
                           }}
                           className="truncate"
+                          title={
+                            typeTemplates.length === 0
+                              ? `No ${typeLabel} templates in Templates → By Type`
+                              : `Templates for ${typeLabel}`
+                          }
                         >
-                          <option value="">Template...</option>
+                          <option value="">
+                            {typeTemplates.length === 0
+                              ? `No ${typeLabel} templates`
+                              : 'Template...'}
+                          </option>
                           {page.templateId &&
-                            !(templates || []).some((t) => t.id === page.templateId) && (
+                            !typeTemplates.some(
+                              (t) => pickerValueForTemplate(t) === page.templateId,
+                            ) && (
                             <option value={page.templateId}>Saved template</option>
                           )}
-                          {(templates || []).filter(t => (t.category || 'standard') === 'standard').length > 0 && (
-                            <optgroup label="📄 Standard Templates">
-                              {(templates || [])
-                                .filter(t => (t.category || 'standard') === 'standard')
-                                .map((template) => (
-                                  <option key={template.id} value={template.id}>
-                                    {template.name}{template.tags?.length ? ` [${template.tags.join(', ')}]` : ''}
-                                  </option>
-                                ))}
-                            </optgroup>
-                          )}
-                          {(templates || []).filter(t => t.category === 'quiz').length > 0 && (
-                            <optgroup label="❓ Quiz Templates">
-                              {(templates || [])
-                                .filter(t => t.category === 'quiz')
-                                .map((template) => (
-                                  <option key={template.id} value={template.id}>
-                                    {template.name}{template.tags?.length ? ` [${template.tags.join(', ')}]` : ''}
-                                  </option>
-                                ))}
-                            </optgroup>
-                          )}
+                          {typeTemplates.map((template) => (
+                            <option
+                              key={pickerValueForTemplate(template)}
+                              value={pickerValueForTemplate(template)}
+                            >
+                              {template.funnel_name && template.funnel_name !== 'Templates'
+                                ? `${template.name} — ${template.funnel_name}`
+                                : template.name}
+                            </option>
+                          ))}
                         </select>
                       </td>
 

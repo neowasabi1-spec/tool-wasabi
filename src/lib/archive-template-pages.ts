@@ -62,3 +62,84 @@ export function listArchivePagesByType(
   }
   return map;
 }
+
+/** Canonical archive keys that should appear for a Clone/Swipe step type. */
+export function archiveKeysForStepType(stepType: string, extraKnown: string[] = []): string[] {
+  const t = normalizeArchiveType(stepType, extraKnown);
+  if (t === 'altro') return [t];
+  if (/^upsell(_\d+)?$/.test(t) || t === 'upsell_1') {
+    return ['upsell_1', 'upsell_2', 'upsell_3', t].filter((v, i, a) => a.indexOf(v) === i);
+  }
+  if (/^downsell(_\d+)?$/.test(t) || t === 'downsell_1') {
+    return ['downsell_1', 'downsell_2', 'downsell_3', t].filter((v, i, a) => a.indexOf(v) === i);
+  }
+  return [t];
+}
+
+type LibraryTemplate = {
+  id: string;
+  name: string;
+  sourceUrl?: string;
+  pageType?: string;
+  previewImage?: string;
+};
+
+/** Fold swipe_templates (Template library) into the By Type archive map. */
+export function mergeLibraryTemplatesByType(
+  map: Record<string, ArchiveTemplatePage[]>,
+  templates: LibraryTemplate[],
+  knownCustomTypes: string[] = [],
+): Record<string, ArchiveTemplatePage[]> {
+  const out: Record<string, ArchiveTemplatePage[]> = { ...map };
+  for (const t of templates || []) {
+    const type = normalizeArchiveType(t.pageType, knownCustomTypes);
+    const url = t.sourceUrl || '';
+    if (!url) continue;
+    const list = out[type] ? [...out[type]] : [];
+    if (list.some((p) => p.url_to_swipe === url)) continue;
+    list.push({
+      funnel_name: 'Templates',
+      funnel_id: t.id,
+      name: t.name,
+      url_to_swipe: url,
+      prompt: '',
+      page_type: type,
+      screenshotUrl: t.previewImage || null,
+      htmlUrl: null,
+    });
+    out[type] = list;
+  }
+  return out;
+}
+
+/** Templates from Template → By Type plus the library catalog, for one step type. */
+export function listTemplatesForStepType(
+  stepType: string,
+  archivedFunnels: ArchivedFunnel[],
+  templates: LibraryTemplate[],
+  knownCustomTypes: string[] = [],
+): ArchiveTemplatePage[] {
+  const map = mergeLibraryTemplatesByType(
+    listArchivePagesByType(archivedFunnels || [], knownCustomTypes),
+    templates,
+    knownCustomTypes,
+  );
+  const keys = archiveKeysForStepType(stepType, knownCustomTypes);
+  const out: ArchiveTemplatePage[] = [];
+  const seen = new Set<string>();
+  for (const k of keys) {
+    for (const p of map[k] || []) {
+      const dedupe = `${p.url_to_swipe}::${p.name}`;
+      if (seen.has(dedupe)) continue;
+      seen.add(dedupe);
+      out.push(p);
+    }
+  }
+  return out;
+}
+
+/** Stable <option> value: library UUID as-is, archive pages prefixed. */
+export function pickerValueForTemplate(p: ArchiveTemplatePage): string {
+  if (p.funnel_name === 'Templates') return p.funnel_id;
+  return `arc:${p.funnel_id}::${encodeURIComponent(p.url_to_swipe || p.name)}`;
+}

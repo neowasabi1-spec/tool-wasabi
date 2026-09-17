@@ -36,6 +36,7 @@ import { fetchPreview, placeMediaWithAi, samplePackshotPalette } from '../../src
 import { wellFormed } from '../../src/lib/well-formed';
 import { loadStepOffer, knownPriceBlock, stepOfferToMediaItems, numberPagesOfferTypes } from '../../src/lib/step-offer';
 import { fetchPageText } from '../../src/lib/page-text';
+import { jinaProxyUrl } from '../../src/lib/spa-rescue';
 import { batchKeepingGroups, buildSwipePlan, orderAndLinkFragments, planRules } from '../../src/lib/swipe-plan';
 import { bakePairsDom } from '../../src/lib/swipe-bake';
 import { openaiGenerateImage, openaiImageKey } from '../../src/lib/openai-image';
@@ -264,7 +265,7 @@ async function fetchViaJina(url: string): Promise<string> {
   try {
     const headers: Record<string, string> = { 'X-Return-Format': 'html' };
     if (process.env.JINA_API_KEY) headers.Authorization = `Bearer ${process.env.JINA_API_KEY}`;
-    const res = await fetch(`https://r.jina.ai/${url}`, { headers, signal: AbortSignal.timeout(45_000) });
+    const res = await fetch(jinaProxyUrl(url), { headers, signal: AbortSignal.timeout(45_000) });
     if (!res.ok) return '';
     const html = await res.text();
     return html.length > 800 ? html : '';

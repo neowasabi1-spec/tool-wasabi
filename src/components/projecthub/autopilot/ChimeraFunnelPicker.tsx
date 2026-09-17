@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { useLiveReload } from '@/lib/live-refresh';
 import { authFetch } from '@/lib/auth/client-fetch';
 import {
   countProductsFromSteps,
@@ -44,6 +45,7 @@ export function ChimeraFunnelPicker({
         }
         const rows = Array.isArray(data?.funnels) ? data.funnels : [];
         setFunnels(pickerFunnelsFromArchive(rows));
+        setError(null);
       } catch (e) {
         if (!cancelled) setError((e as Error).message || 'Could not load funnels');
       } finally {
@@ -54,6 +56,17 @@ export function ChimeraFunnelPicker({
       cancelled = true;
     };
   }, []);
+
+  useLiveReload(() => {
+    void (async () => {
+      try {
+        const res = await authFetch('/api/valchiria/funnels', { cache: 'no-store' });
+        const data = await res.json().catch(() => null);
+        if (!res.ok || !Array.isArray(data?.funnels)) return;
+        setFunnels(pickerFunnelsFromArchive(data.funnels));
+      } catch { /* keep last list */ }
+    })();
+  });
 
   const selectedFunnel = funnels.find((f) => f.id === value.funnelId) || null;
   const selectedIdx = useMemo(() => new Set(value.steps.map((s) => s.index)), [value.steps]);

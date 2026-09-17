@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useMemo, type MouseEvent, type ReactNode } from "react";
+import { useLiveReload } from "@/lib/live-refresh";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
@@ -499,16 +500,17 @@ function ShotsGrid({
   const [loading, setLoading] = useState(true);
   const [playing, setPlaying] = useState<Shot | null>(null);
 
-  const load = async () => {
-    setLoading(true);
+  const load = async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       const r = await fetch(`/api/projecthub/projects/${projectId}/shots?adId=${ad.id}`);
       const j = await r.json().catch(() => []);
       setShots(Array.isArray(j) ? j : []);
-    } catch { setShots([]); }
-    finally { setLoading(false); }
+    } catch { if (!silent) setShots([]); }
+    finally { if (!silent) setLoading(false); }
   };
   useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [ad.id]);
+  useLiveReload(() => { void load(true); });
 
   const remove = async (s: Shot) => {
     setShots((p) => p.filter((x) => x.id !== s.id));
@@ -1546,15 +1548,16 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
   const [form, setForm] = useState({ name: "", ads_library_url: "", scrape_count: "20", frequency: "every_7_days" });
   const [adding, setAdding] = useState(false);
 
-  const load = async () => {
-    setLoading(true);
+  const load = async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library`);
       if (r.ok) setCompetitors(await r.json());
-    } finally { setLoading(false); }
+    } finally { if (!silent) setLoading(false); }
   };
 
   useEffect(() => { load(); }, [projectId]);
+  useLiveReload(() => { void load(true); });
 
   const add = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1732,8 +1735,8 @@ function CompetitorDetail({ projectId, competitor, onBack, onOpenCreated }: { pr
     is_active: competitor.is_active !== "false",
   });
 
-  const load = async () => {
-    setLoading(true);
+  const load = async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library/${competitor.id}/ads`);
       if (!r.ok) return;
@@ -1742,11 +1745,12 @@ function CompetitorDetail({ projectId, competitor, onBack, onOpenCreated }: { pr
       const arrived = list.filter(a => a.is_new).map(a => a.id);
       if (arrived.length) {
         setNewIds(p => new Set([...p, ...arrived]));
-        // Seen from now on, so the next visit starts clean.
-        fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library/${competitor.id}/seen`, { method: "POST" })
-          .catch(() => {});
+        if (!silent) {
+          fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library/${competitor.id}/seen`, { method: "POST" })
+            .catch(() => {});
+        }
       }
-    } finally { setLoading(false); }
+    } finally { if (!silent) setLoading(false); }
   };
 
   const scrapeNow = async () => {
@@ -1787,6 +1791,7 @@ function CompetitorDetail({ projectId, competitor, onBack, onOpenCreated }: { pr
   };
 
   useEffect(() => { load(); }, [competitor.id]);
+  useLiveReload(() => { void load(true); });
 
   const uploadAd = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -2231,8 +2236,8 @@ function AllCreativesView({ projectId, onOpenCreated }: { projectId: string; onO
   // pick the right CPM when estimating spend.
   const [countryByBrand, setCountryByBrand] = useState<Map<number, string>>(new Map());
 
-  const load = async () => {
-    setLoading(true);
+  const load = async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library/creatives`);
       if (r.ok) setCreatives(await r.json());
@@ -2243,9 +2248,10 @@ function AllCreativesView({ projectId, onOpenCreated }: { projectId: string; onO
         for (const c of comps) m.set(c.id, countryFromAdLibraryUrl(c.ads_library_url));
         setCountryByBrand(m);
       }
-    } finally { setLoading(false); }
+    } finally { if (!silent) setLoading(false); }
   };
   useEffect(() => { load(); }, [projectId]);
+  useLiveReload(() => { void load(true); });
 
   const del = async (ad: CreativeWithBrand) => {
     setCreatives(p => p.filter(a => a.id !== ad.id));
@@ -2740,23 +2746,28 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
     router.push(`/front-end-funnel?${q.toString()}`);
   };
 
-  const load = async () => {
-    setLoading(true);
-    setLoadError("");
+  const load = async (silent = false) => {
+    if (!silent) {
+      setLoading(true);
+      setLoadError("");
+    }
     try {
       const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/landings`);
       if (!r.ok) {
         const body = await r.json().catch(() => ({})) as { error?: string };
-        setLandings([]);
-        setLoadError(body.error || `Could not load landings (${r.status})`);
+        if (!silent) {
+          setLandings([]);
+          setLoadError(body.error || `Could not load landings (${r.status})`);
+        }
       } else {
         const data = await r.json();
         setLandings(Array.isArray(data) ? data : []);
       }
-      void fillLandingLibrary(projectId);
-    } finally { setLoading(false); }
+      if (!silent) void fillLandingLibrary(projectId);
+    } finally { if (!silent) setLoading(false); }
   };
   useEffect(() => { load(); }, [projectId]);
+  useLiveReload(() => { void load(true); });
 
   const del = async (l: Landing) => {
     setPreview(p => (p?.id === l.id ? null : p));
@@ -3209,6 +3220,7 @@ function ShotsLibraryView({
     finally { if (!quiet) setLoading(false); }
   };
   useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [projectId]);
+  useLiveReload(() => { void load(true); });
 
   // While AI subtitle removal is running, refresh quietly until it settles.
   const cleaningCount = shots.filter(
@@ -3817,18 +3829,19 @@ function MyFootageView({ projectId }: { projectId: string }) {
   const fileRef = useRef<HTMLInputElement | null>(null);
   const poll = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const load = async () => {
-    setLoading(true);
+  const load = async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/my-footage`);
       const j = await r.json().catch(() => ({}));
       const vids: FootageVideo[] = Array.isArray(j?.videos) ? j.videos : [];
       setVideos(vids);
       refreshSeg(vids);
-    } catch { setVideos([]); }
-    finally { setLoading(false); }
+    } catch { if (!silent) setVideos([]); }
+    finally { if (!silent) setLoading(false); }
   };
   useEffect(() => { load(); return () => { if (poll.current) clearInterval(poll.current); }; /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [projectId]);
+  useLiveReload(() => { void load(true); });
 
   const refreshSeg = async (vids: FootageVideo[]) => {
     const entries = await Promise.all(vids.map(async (v) => {
@@ -4432,15 +4445,17 @@ function ImageLandingsView({ projectId }: { projectId: string }) {
   const [extracting, setExtracting] = useState(false);
   const [emptyReason, setEmptyReason] = useState("");
 
-  const load = async (force = false) => {
-    setLoading(true);
-    setEmptyReason("");
+  const load = async (force = false, silent = false) => {
+    if (!silent) {
+      setLoading(true);
+      setEmptyReason("");
+    }
     try {
       if (force) {
-        setExtracting(true);
+        if (!silent) setExtracting(true);
         const filled = await fillLandingLibrary(projectId);
         setItems(filled.items as LandingMedia[]);
-        if (!filled.items.length) setEmptyReason(landingFillError(filled) || "");
+        if (!filled.items.length && !silent) setEmptyReason(landingFillError(filled) || "");
         return;
       }
       const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/landing-media`);
@@ -4449,18 +4464,22 @@ function ImageLandingsView({ projectId }: { projectId: string }) {
         setItems(listed);
         return;
       }
+      if (silent) return;
       setExtracting(true);
       const filled = await fillLandingLibrary(projectId);
       setItems(filled.items as LandingMedia[]);
       if (!filled.items.length) setEmptyReason(landingFillError(filled) || "");
     } catch (e) {
-      setEmptyReason((e as Error).message || "Download failed");
+      if (!silent) setEmptyReason((e as Error).message || "Download failed");
     } finally {
-      setExtracting(false);
-      setLoading(false);
+      if (!silent) {
+        setExtracting(false);
+        setLoading(false);
+      }
     }
   };
   useEffect(() => { load(); }, [projectId]);
+  useLiveReload(() => { void load(false, true); });
 
   const extract = async () => {
     setExtracting(true);
