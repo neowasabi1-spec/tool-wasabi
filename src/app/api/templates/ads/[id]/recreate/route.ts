@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getCurrentUserId } from '@/lib/auth/get-current-user';
 import { canAccessProject } from '@/lib/auth/project-access';
-import { lastImageGenError, openaiGenerateImageBytes, pollGptImage2Job } from '@/lib/openai-image';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -63,6 +62,7 @@ async function loadProjectCtx(projectId: string) {
     name,
     brief: brief.slice(0, 3500),
     productImageUrl,
+    productPath: main?.file_path || null,
   };
 }
 
@@ -188,27 +188,32 @@ async function persistGenerated(
   });
 }
 
-async function finishRecreateJob(userId: string, body: Record<string, unknown>) {
-  const statusUrl = String(body.statusUrl || body.status_url || '').trim();
-  const responseUrl = String(body.responseUrl || body.response_url || '').trim();
+async function ingestGenerated(userId: string, body: Record<string, unknown>) {
+  const url = String(body.url || '').trim();
   const name = String(body.name || 'Recreated ad').trim().slice(0, 300) || 'Recreated ad';
-  if (!statusUrl || !responseUrl) {
-    return NextResponse.json({ error: 'Missing ChatGPT Image 2 job' }, { status: 400 });
+  if (!url) return NextResponse.json({ error: 'Missing generated image' }, { status: 400 });
+  try {
+    let buf: Buffer;
+    let mime = 'image/png';
+    if (url.startsWith('data:')) {
+      const m = url.match(/^data:([^;]+);base64,(.+)$/);
+      if (!m) return NextResponse.json({ error: 'Invalid image data' }, { status: 400 });
+      mime = m[1] || 'image/png';
+      buf = Buffer.from(m[2], 'base64');
+    } else {
+      if (!/^https?:\/\//i.test(url)) {
+        return NextResponse.json({ error: 'Invalid image URL' }, { status: 400 });
+      }
+      const dl = await fetch(url, { signal: AbortSignal.timeout(60_000) });
+      if (!dl.ok) return NextResponse.json({ error: 'Could not download the generated image' }, { status: 502 });
+      buf = Buffer.from(await dl.arrayBuffer());
+      mime = (dl.headers.get('content-type') || 'image/png').split(';')[0].trim();
+    }
+    if (buf.length < 80) return NextResponse.json({ error: 'Generated image was empty' }, { status: 502 });
+    return persistGenerated(userId, name, buf, mime);
+  } catch (e) {
+    return NextResponse.json({ error: (e as Error).message || 'Could not save preview' }, { status: 500 });
   }
-  const polled = await pollGptImage2Job({ statusUrl, responseUrl });
-  if (polled.status === 'pending') {
-    return NextResponse.json({
-      status: 'pending',
-      falStatus: polled.falStatus || 'IN_QUEUE',
-      statusUrl,
-      responseUrl,
-      name,
-    });
-  }
-  if (polled.status === 'error') {
-    return NextResponse.json({ status: 'error', error: polled.error }, { status: 502 });
-  }
-  return persistGenerated(userId, name, polled.buf, polled.mime);
 }
 
 export async function GET(req: NextRequest) {
@@ -235,8 +240,8 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       if (String(jsonBody.action || '') === 'save') {
         return saveToProjectCreatives(req, userId, jsonBody);
       }
-      if (String(jsonBody.action || '') === 'poll') {
-        return finishRecreateJob(userId, jsonBody);
+      if (String(jsonBody.action || '') === 'ingest') {
+        return ingestGenerated(userId, jsonBody);
       }
     }
 
@@ -295,12 +300,14 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     let productName = productNameHint;
     let brief = '';
     let productImageUrl: string | null = null;
+    let productPath: string | null = null;
 
     if (projectId) {
       const ctx = await loadProjectCtx(projectId);
       productName = productName || ctx.name;
       brief = ctx.brief;
       productImageUrl = ctx.productImageUrl;
+      productPath = ctx.productPath;
     }
     if (productId) {
       const cat = await loadCatalogProduct(productId);
@@ -319,6 +326,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
         upsert: false,
       });
       if (upErr) return NextResponse.json({ error: `Product photo upload failed: ${upErr.message}` }, { status: 500 });
+      productPath = key;
       productImageUrl = await signedUrl(key);
     }
 
@@ -335,24 +343,16 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       hasPackshot: Boolean(productImageUrl),
     });
 
-    const imageUrls = [sourceUrl, productImageUrl || ''].filter(Boolean);
-    const made = await openaiGenerateImageBytes({
-      prompt,
-      imageUrls,
-      size: '1024x1536',
-      quality: 'medium',
-      timeoutMs: 120_000,
-      openaiOnly: true,
-    });
-    if (!made) {
-      return NextResponse.json(
-        { error: lastImageGenError() || 'ChatGPT did not return an image' },
-        { status: 502 },
-      );
-    }
-
     const name = `${productName || 'Swipe'} — ${source.name}`.slice(0, 300);
-    return persistGenerated(userId, name, made.buf, made.mime);
+    return NextResponse.json({
+      ok: true,
+      status: 'prepare',
+      name,
+      prompt,
+      sourcePath: source.file_path,
+      productPath: productPath || null,
+      productImageUrl: productImageUrl || null,
+    });
   } catch (e) {
     return NextResponse.json(
       { error: (e as Error).message || 'Recreate failed' },

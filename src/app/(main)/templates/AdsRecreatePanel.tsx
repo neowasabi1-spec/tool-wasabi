@@ -51,6 +51,81 @@ function asProjectRows(raw: unknown): ProjectPick[] {
   return out;
 }
 
+function absStreamUrl(path: string): string {
+  if (/^https?:\/\//i.test(path)) return path;
+  return `${window.location.origin}/api/projecthub/file-proxy?path=${encodeURIComponent(path)}&stream=1`;
+}
+
+async function readJson(res: Response): Promise<Record<string, unknown>> {
+  const raw = await res.text();
+  try {
+    return JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    const timeout = res.status === 504 || res.status === 408 || /timeout/i.test(raw);
+    throw new Error(timeout
+      ? `Server timed out (${res.status})`
+      : `Unexpected response (HTTP ${res.status})`);
+  }
+}
+
+async function generateWithChatGptImage2(opts: {
+  prompt: string;
+  imageUrl: string;
+  secondaryImageUrl?: string;
+  onWait: (msg: string) => void;
+}): Promise<string> {
+  opts.onWait('Sending to ChatGPT Image 2…');
+  const submitRes = await fetch('/api/generate-image', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      mode: 'image2image',
+      model: 'gpt-image-2-edit',
+      prompt: opts.prompt,
+      size: '1024x1536',
+      style: 'natural',
+      imageUrl: opts.imageUrl,
+      secondaryImageUrl: opts.secondaryImageUrl || undefined,
+    }),
+  });
+  const submit = await readJson(submitRes);
+  if (!submitRes.ok || submit.status === 'error') {
+    throw new Error(String(submit.error || 'ChatGPT Image 2 failed to start'));
+  }
+  let data = submit;
+  const deadline = Date.now() + 5 * 60_000;
+  while (String(data.status || '') === 'pending' && data.requestId) {
+    if (Date.now() > deadline) throw new Error('ChatGPT Image 2 timed out');
+    opts.onWait(
+      String(data.falStatus || '') === 'IN_PROGRESS'
+        ? 'ChatGPT Image 2 is generating…'
+        : 'Waiting for ChatGPT Image 2…',
+    );
+    await new Promise((r) => setTimeout(r, 1500));
+    const pollRes = await fetch('/api/generate-image', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'poll',
+        requestId: data.requestId,
+        statusUrl: data.statusUrl,
+        responseUrl: data.responseUrl,
+        modelKey: data.modelKey,
+      }),
+    });
+    const next = await readJson(pollRes);
+    if (!pollRes.ok || next.status === 'error') {
+      throw new Error(String(next.error || 'ChatGPT Image 2 failed'));
+    }
+    data = { ...data, ...next };
+  }
+  const url = String(data.url || '').trim();
+  if (String(data.status || '') !== 'completed' || !url) {
+    throw new Error(String(data.error || 'ChatGPT Image 2 did not return an image'));
+  }
+  return url;
+}
+
 function parseProjects(hub: unknown, list: unknown, db: unknown): ProjectPick[] {
   const merged = [...asProjectRows(hub), ...asProjectRows(list), ...asProjectRows(db)];
   const seen = new Set<string>();
@@ -138,7 +213,7 @@ export default function AdsRecreatePanel({ ad, onResult }: Props) {
       return;
     }
     setBusy(true);
-    setWaitMsg('Same ChatGPT Image 2 as Competitor Ads — this can take up to two minutes');
+    setWaitMsg('Preparing ChatGPT Image 2…');
     setAnalysis('');
     setSaved(false);
     setResult(null);
@@ -153,49 +228,48 @@ export default function AdsRecreatePanel({ ad, onResult }: Props) {
         method: 'POST',
         body: fd,
       });
-      const d = await res.json().catch(() => ({} as Record<string, unknown>));
+      const d = await readJson(res);
       if (!res.ok) throw new Error(String(d.error || 'Recreate failed'));
-      if (d.analysis) setAnalysis(String(d.analysis));
 
-      let payload = d as Record<string, unknown>;
-      const jobUrl = () => String(payload.statusUrl || payload.status_url || '').trim();
-      const jobResp = () => String(payload.responseUrl || payload.response_url || '').trim();
-      const hasImage = () => Boolean(payload.filePath || payload.file_path || payload.previewUrl || payload.previewDataUrl);
+      const prompt = String(d.prompt || '').trim();
+      const sourcePath = String(d.sourcePath || '').trim();
+      const productPath = String(d.productPath || '').trim();
+      const productHttps = String(d.productImageUrl || '').trim();
+      if (!prompt || !sourcePath) throw new Error('Could not prepare the ad');
 
-      if (!hasImage() && (String(payload.status || '') === 'pending' || jobUrl())) {
-        setWaitMsg('Waiting for ChatGPT Image 2… this can take up to two minutes');
-        const started = Date.now();
-        while (!hasImage() && Date.now() - started < 180_000) {
-          const pollRes = await authFetch(`/api/templates/ads/${ad.id}/recreate`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              action: 'poll',
-              statusUrl: jobUrl(),
-              responseUrl: jobResp(),
-              name: payload.name || productName.trim(),
-            }),
-          });
-          const poll = await pollRes.json().catch(() => ({} as Record<string, unknown>));
-          if (!pollRes.ok) throw new Error(String(poll.error || 'ChatGPT Image 2 failed'));
-          payload = poll;
-          if (hasImage() || String(poll.status || '') === 'completed') break;
-          await new Promise((r) => setTimeout(r, 2000));
-        }
+      const imageUrl = absStreamUrl(sourcePath);
+      const secondaryImageUrl = productPath
+        ? absStreamUrl(productPath)
+        : (/^https?:\/\//i.test(productHttps) ? productHttps : '');
+
+      const falUrl = await generateWithChatGptImage2({
+        prompt,
+        imageUrl,
+        secondaryImageUrl: secondaryImageUrl || undefined,
+        onWait: setWaitMsg,
+      });
+
+      const name = String(d.name || productName || 'Recreated ad');
+      onResult({ filePath: '', name, previewUrl: falUrl });
+      setResult({ filePath: '', name, previewUrl: falUrl });
+
+      const ingested = await authFetch(`/api/templates/ads/${ad.id}/recreate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'ingest', url: falUrl, name }),
+      });
+      const saved = await readJson(ingested);
+      const filePath = String(saved.filePath || saved.file_path || '');
+      const previewUrl = String(saved.previewUrl || falUrl);
+      if (ingested.ok && (filePath || previewUrl)) {
+        const preview: RecreatePreview = {
+          filePath,
+          name: String(saved.name || name),
+          previewUrl: previewUrl || falUrl,
+        };
+        setResult(preview);
+        onResult(preview);
       }
-
-      const previewUrl = String(payload.previewUrl || '').trim()
-        || (payload.filePath || payload.file_path ? getUploadUrl(String(payload.filePath || payload.file_path)) : '');
-      const preview: RecreatePreview = {
-        filePath: String(payload.filePath || payload.file_path || ''),
-        name: String(payload.name || productName || 'Recreated ad'),
-        previewUrl,
-      };
-      if (!preview.filePath && !preview.previewUrl) {
-        throw new Error(String(payload.error || 'ChatGPT Image 2 did not return an image'));
-      }
-      setResult(preview);
-      onResult(preview);
       toast.success('Preview ready — save to the project or download');
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Recreate failed');
