@@ -701,7 +701,6 @@ function TemplatePickerDialog({
     loadArchivedFunnels,
     customPageTypes,
     loadCustomPageTypes,
-    templates,
   } = useStore();
   const [search, setSearch] = useState("");
 
@@ -721,7 +720,7 @@ function TemplatePickerDialog({
     const out = listTemplatesForStepType(
       stepType,
       archivedFunnels || [],
-      templates || [],
+      undefined,
       knownCustomTypes,
     );
     const q = search.trim().toLowerCase();
@@ -729,7 +728,7 @@ function TemplatePickerDialog({
     return out.filter((p) =>
       `${p.name} ${p.funnel_name} ${p.url_to_swipe}`.toLowerCase().includes(q),
     );
-  }, [archivedFunnels, knownCustomTypes, templates, stepType, search]);
+  }, [archivedFunnels, knownCustomTypes, stepType, search]);
 
   const typeLabel = humanizePageTypeSlug(normalizeArchiveType(stepType, knownCustomTypes)) || stepType;
 

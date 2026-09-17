@@ -25,15 +25,18 @@ function cardShotUrl(cd?: ClonedShots | null): string | null {
   return cd?.screenshotMobileUrl || cd?.screenshotDesktopUrl || null;
 }
 
-/** Standalone Templates → By Type pages, grouped by canonical page_type. */
+/** Pages from Template section folders, grouped by canonical page_type.
+ *  By default only By Type (standalone) pages. Pass includeFunnels to also
+ *  pull matching steps out of Funnel folders. Never includes swipe_templates. */
 export function listArchivePagesByType(
   archivedFunnels: ArchivedFunnel[],
   knownCustomTypes: string[] = [],
+  opts?: { includeFunnels?: boolean },
 ): Record<string, ArchiveTemplatePage[]> {
   const map: Record<string, ArchiveTemplatePage[]> = {};
   const all = archivedFunnels || [];
   for (const f of all) {
-    if (!isStandaloneTemplatePage(f, all)) continue;
+    if (!opts?.includeFunnels && !isStandaloneTemplatePage(f, all)) continue;
     const steps = (f.steps as {
       name?: string;
       page_type?: string;
@@ -76,60 +79,22 @@ export function archiveKeysForStepType(stepType: string, extraKnown: string[] = 
   return [t];
 }
 
-type LibraryTemplate = {
-  id: string;
-  name: string;
-  sourceUrl?: string;
-  pageType?: string;
-  previewImage?: string;
-};
-
-/** Fold swipe_templates (Template library) into the By Type archive map. */
-export function mergeLibraryTemplatesByType(
-  map: Record<string, ArchiveTemplatePage[]>,
-  templates: LibraryTemplate[],
-  knownCustomTypes: string[] = [],
-): Record<string, ArchiveTemplatePage[]> {
-  const out: Record<string, ArchiveTemplatePage[]> = { ...map };
-  for (const t of templates || []) {
-    const type = normalizeArchiveType(t.pageType, knownCustomTypes);
-    const url = t.sourceUrl || '';
-    if (!url) continue;
-    const list = out[type] ? [...out[type]] : [];
-    if (list.some((p) => p.url_to_swipe === url)) continue;
-    list.push({
-      funnel_name: 'Templates',
-      funnel_id: t.id,
-      name: t.name,
-      url_to_swipe: url,
-      prompt: '',
-      page_type: type,
-      screenshotUrl: t.previewImage || null,
-      htmlUrl: null,
-    });
-    out[type] = list;
-  }
-  return out;
-}
-
-/** Templates from Template → By Type plus the library catalog, for one step type. */
+/** Templates from Template section folders only (By Type + Funnel), for one step type. */
 export function listTemplatesForStepType(
   stepType: string,
   archivedFunnels: ArchivedFunnel[],
-  templates: LibraryTemplate[],
+  _unusedLibrary?: unknown,
   knownCustomTypes: string[] = [],
 ): ArchiveTemplatePage[] {
-  const map = mergeLibraryTemplatesByType(
-    listArchivePagesByType(archivedFunnels || [], knownCustomTypes),
-    templates,
-    knownCustomTypes,
-  );
+  const map = listArchivePagesByType(archivedFunnels || [], knownCustomTypes, {
+    includeFunnels: true,
+  });
   const keys = archiveKeysForStepType(stepType, knownCustomTypes);
   const out: ArchiveTemplatePage[] = [];
   const seen = new Set<string>();
   for (const k of keys) {
     for (const p of map[k] || []) {
-      const dedupe = `${p.url_to_swipe}::${p.name}`;
+      const dedupe = `${p.url_to_swipe}::${p.name}::${p.funnel_id}`;
       if (seen.has(dedupe)) continue;
       seen.add(dedupe);
       out.push(p);
@@ -138,8 +103,7 @@ export function listTemplatesForStepType(
   return out;
 }
 
-/** Stable <option> value: library UUID as-is, archive pages prefixed. */
+/** Stable <option> value for an archive page from Template section. */
 export function pickerValueForTemplate(p: ArchiveTemplatePage): string {
-  if (p.funnel_name === 'Templates') return p.funnel_id;
   return `arc:${p.funnel_id}::${encodeURIComponent(p.url_to_swipe || p.name)}`;
 }

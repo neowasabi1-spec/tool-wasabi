@@ -345,6 +345,7 @@ const PAGE_TYPE_SYNONYMS: Record<string, string> = {
   quiz: 'quiz', quiz_funnel: 'quiz', survey: 'quiz', assessment: 'quiz',
   product_page: 'product_page', 'product page': 'product_page', offer_page: 'product_page', offer: 'product_page',
   checkout: 'checkout', 'checkout page': 'checkout', checkout_page: 'checkout', order: 'checkout',
+  checkout_standard: 'checkout', 'checkout standard': 'checkout', checkout_wasabi: 'checkout',
   thank_you: 'thank_you', 'thank you': 'thank_you', 'thank you page': 'thank_you',
   thankpage: 'thank_you', 'thank page': 'thank_you', order_confirmation: 'thank_you', 'order confirmation': 'thank_you',
   upsell: 'upsell_1', upsell_1: 'upsell_1', 'upsell 1': 'upsell_1', upsell1: 'upsell_1', oto: 'upsell_1', oto_1: 'upsell_1',

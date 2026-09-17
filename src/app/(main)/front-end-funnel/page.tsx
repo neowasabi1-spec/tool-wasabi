@@ -1185,13 +1185,13 @@ export default function FrontEndFunnel() {
       const list = listTemplatesForStepType(
         key,
         archivedFunnels || [],
-        templates || [],
+        undefined,
         knownCustomTypes,
       );
       cache.set(key, list);
       return list;
     };
-  }, [archivedFunnels, templates, knownCustomTypes]);
+  }, [archivedFunnels, knownCustomTypes]);
 
   const [loadingIds, setLoadingIds] = useState<string[]>([]);
   const [analyzingIds, setAnalyzingIds] = useState<string[]>([]);
