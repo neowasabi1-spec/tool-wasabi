@@ -213,7 +213,7 @@ export default function AdsRecreatePanel({ ad, onResult }: Props) {
       return;
     }
     setBusy(true);
-    setWaitMsg('Preparing ChatGPT Image 2…');
+    setWaitMsg('Waiting for ChatGPT Image 2… keep this popup open');
     setAnalysis('');
     setSaved(false);
     setResult(null);
@@ -231,45 +231,49 @@ export default function AdsRecreatePanel({ ad, onResult }: Props) {
       const d = await readJson(res);
       if (!res.ok) throw new Error(String(d.error || 'Recreate failed'));
 
-      const prompt = String(d.prompt || '').trim();
-      const sourcePath = String(d.sourcePath || '').trim();
-      const productPath = String(d.productPath || '').trim();
-      const productHttps = String(d.productImageUrl || '').trim();
-      if (!prompt || !sourcePath) throw new Error('Could not prepare the ad');
-
-      const imageUrl = absStreamUrl(sourcePath);
-      const secondaryImageUrl = productPath
-        ? absStreamUrl(productPath)
-        : (/^https?:\/\//i.test(productHttps) ? productHttps : '');
-
-      const falUrl = await generateWithChatGptImage2({
-        prompt,
-        imageUrl,
-        secondaryImageUrl: secondaryImageUrl || undefined,
-        onWait: setWaitMsg,
-      });
-
+      let filePath = String(d.filePath || d.file_path || '');
+      let previewUrl = String(d.previewUrl || d.previewDataUrl || '').trim();
       const name = String(d.name || productName || 'Recreated ad');
-      onResult({ filePath: '', name, previewUrl: falUrl });
-      setResult({ filePath: '', name, previewUrl: falUrl });
 
-      const ingested = await authFetch(`/api/templates/ads/${ad.id}/recreate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'ingest', url: falUrl, name }),
-      });
-      const saved = await readJson(ingested);
-      const filePath = String(saved.filePath || saved.file_path || '');
-      const previewUrl = String(saved.previewUrl || falUrl);
-      if (ingested.ok && (filePath || previewUrl)) {
-        const preview: RecreatePreview = {
-          filePath,
-          name: String(saved.name || name),
-          previewUrl: previewUrl || falUrl,
-        };
-        setResult(preview);
-        onResult(preview);
+      if (!filePath && !previewUrl) {
+        const prompt = String(d.prompt || '').trim();
+        const sourcePath = String(d.sourcePath || '').trim();
+        if (!prompt || !sourcePath) {
+          throw new Error(String(d.error || 'ChatGPT Image 2 failed'));
+        }
+        const imageUrl = absStreamUrl(sourcePath);
+        const secondaryImageUrl = String(d.productPath || '').trim()
+          ? absStreamUrl(String(d.productPath))
+          : (/^https?:\/\//i.test(String(d.productImageUrl || '')) ? String(d.productImageUrl) : '');
+        const falUrl = await generateWithChatGptImage2({
+          prompt,
+          imageUrl,
+          secondaryImageUrl: secondaryImageUrl || undefined,
+          onWait: setWaitMsg,
+        });
+        previewUrl = falUrl;
+        onResult({ filePath: '', name, previewUrl: falUrl });
+        setResult({ filePath: '', name, previewUrl: falUrl });
+        const ingested = await authFetch(`/api/templates/ads/${ad.id}/recreate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'ingest', url: falUrl, name }),
+        });
+        const saved = await readJson(ingested);
+        if (ingested.ok) {
+          filePath = String(saved.filePath || saved.file_path || '');
+          previewUrl = String(saved.previewUrl || falUrl);
+        }
       }
+
+      if (!filePath && !previewUrl) throw new Error('ChatGPT Image 2 failed');
+      const preview: RecreatePreview = {
+        filePath,
+        name,
+        previewUrl: previewUrl || getUploadUrl(filePath),
+      };
+      setResult(preview);
+      onResult(preview);
       toast.success('Preview ready — save to the project or download');
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Recreate failed');

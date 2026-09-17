@@ -184,6 +184,11 @@ async function refsToImageUrls(refs: string[]): Promise<string[]> {
       imageUrls.push(await toCompactDataUri(raw.buf, raw.mime));
       continue;
     }
+    // Same as /api/generate-image: let ChatGPT Image 2 fetch https URLs.
+    if (/^https?:\/\//i.test(ref)) {
+      imageUrls.push(ref);
+      continue;
+    }
     const raw = await bytesFromRef(ref);
     if (!raw) continue;
     imageUrls.push(await toCompactDataUri(raw.buf, raw.mime));

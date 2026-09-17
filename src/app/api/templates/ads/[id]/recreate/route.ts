@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getCurrentUserId } from '@/lib/auth/get-current-user';
 import { canAccessProject } from '@/lib/auth/project-access';
+import { lastImageGenError, openaiGenerateImageBytes } from '@/lib/openai-image';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -23,6 +24,12 @@ async function signedUrl(path: string): Promise<string | null> {
   const { data, error } = await supabaseAdmin.storage.from(BUCKET).createSignedUrl(path, 3600);
   if (error || !data?.signedUrl) return null;
   return data.signedUrl;
+}
+
+function publicStreamUrl(req: NextRequest, path: string): string {
+  const origin = String(process.env.DEPLOY_PRIME_URL || process.env.URL || req.nextUrl.origin || '')
+    .replace(/\/$/, '');
+  return `${origin}/api/projecthub/file-proxy?path=${encodeURIComponent(path)}&stream=1`;
 }
 
 async function loadProjectCtx(projectId: string) {
@@ -340,19 +347,31 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     const prompt = buildPrompt({
       productName: productName || 'our product',
       brief,
-      hasPackshot: Boolean(productImageUrl),
+      hasPackshot: Boolean(productImageUrl || productPath),
     });
 
-    const name = `${productName || 'Swipe'} — ${source.name}`.slice(0, 300);
-    return NextResponse.json({
-      ok: true,
-      status: 'prepare',
-      name,
+    const imageUrls = [
+      publicStreamUrl(req, source.file_path),
+      productPath ? publicStreamUrl(req, productPath) : (productImageUrl || ''),
+    ].filter(Boolean);
+
+    const made = await openaiGenerateImageBytes({
       prompt,
-      sourcePath: source.file_path,
-      productPath: productPath || null,
-      productImageUrl: productImageUrl || null,
+      imageUrls,
+      size: '1024x1536',
+      quality: 'medium',
+      timeoutMs: 120_000,
+      openaiOnly: true,
     });
+    if (!made) {
+      return NextResponse.json(
+        { error: lastImageGenError() || 'ChatGPT Image 2 failed' },
+        { status: 502 },
+      );
+    }
+
+    const name = `${productName || 'Swipe'} — ${source.name}`.slice(0, 300);
+    return persistGenerated(userId, name, made.buf, made.mime);
   } catch (e) {
     return NextResponse.json(
       { error: (e as Error).message || 'Recreate failed' },
