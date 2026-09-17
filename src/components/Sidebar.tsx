@@ -4,7 +4,6 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import {
   LayoutDashboard,
-  ShoppingBag,
   Layers,
   ChevronRight,
   FileCode,
@@ -61,7 +60,6 @@ const menuGroups: MenuGroup[] = [
     label: 'Libreria',
     items: [
       { name: 'Template', href: '/templates', icon: FileCode, sectionId: 'templates' },
-      { name: 'Catalogue', href: '/products', icon: ShoppingBag, sectionId: 'products' },
       { name: 'My Projects', href: '/projects', icon: FolderOpen, sectionId: 'projects' },
     ],
   },

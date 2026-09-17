@@ -5,7 +5,6 @@ import Header from '@/components/Header';
 import { useStore } from '@/store/useStore';
 import {
   Layers,
-  ShoppingBag,
   CheckCircle,
   Clock,
   TrendingUp,
@@ -15,11 +14,12 @@ import {
   Swords,
   ArrowRight,
   Sparkles,
+  FolderOpen,
 } from 'lucide-react';
 import Link from 'next/link';
 
 export default function Dashboard() {
-  const { products, funnelPages, postPurchasePages } = useStore();
+  const { projects, funnelPages, postPurchasePages } = useStore();
 
   const completed = [...funnelPages, ...postPurchasePages].filter(
     (p) => p.swipeStatus === 'completed'
@@ -30,11 +30,11 @@ export default function Dashboard() {
 
   const stats = [
     {
-      name: 'Products',
-      value: products.length,
-      icon: ShoppingBag,
+      name: 'Projects',
+      value: projects.length,
+      icon: FolderOpen,
       tint: 'bg-indigo-50 text-indigo-600',
-      href: '/products',
+      href: '/projects',
     },
     {
       name: 'Funnel Pages',
@@ -75,10 +75,10 @@ export default function Dashboard() {
       tint: 'from-sky-500 to-indigo-600',
     },
     {
-      name: 'Catalogue',
-      desc: 'Manage your products and offers',
-      icon: ShoppingBag,
-      href: '/products',
+      name: 'My Projects',
+      desc: 'Competitor libraries, creatives and funnels by project',
+      icon: FolderOpen,
+      href: '/projects',
       tint: 'from-fuchsia-500 to-purple-600',
     },
     {

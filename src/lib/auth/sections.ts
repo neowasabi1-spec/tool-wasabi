@@ -42,11 +42,6 @@ export const DASHBOARD_SECTIONS: DashboardSection[] = [
     path: '/templates',
   },
   {
-    id: 'products',
-    label: 'Catalogue',
-    path: '/products',
-  },
-  {
     id: 'projects',
     label: 'My Projects',
     path: '/projects',
@@ -99,7 +94,6 @@ export const SAFE_DEFAULT_SECTIONS = [
   'front-end-funnel',
   'quiz-swipe',
   'templates',
-  'products',
   'projects',
   'checkpoint',
 ];
